@@ -1,14 +1,25 @@
-//! A lens or perspective warp's coordinate grid: the geometry tail's output-to-boundary map
-//! sampled at regular output nodes, which the surface interpolates bilinearly for every output
-//! pixel instead of evaluating the warp's steps.
+//! A lens warp's coordinate grid: the geometry tail's output-to-boundary map sampled at regular
+//! output nodes, which the surface interpolates bilinearly for every output pixel instead of
+//! evaluating the warp's steps. A perspective warp with no lens needs none: its map is a
+//! homography, which the surface evaluates exactly (`GpuGeometry::projective`).
 //!
 //! The density is chosen per grid, from the map itself: bilinear interpolation of a smooth map errs
 //! by about `h²/8` of its second derivative across a cell of side `h`, largest near a cell's centre
 //! and the middle of its edges, so the grid is built coarse, its error measured at every cell centre
 //! and edge midpoint, and the spacing narrowed until that error is within half the contract. The
-//! contract is [`GRID_TOLERANCE_PX`] display pixels, measured where it is seen: the displacement in
-//! the output stage of the content the interpolated coordinate reads, `J⁻¹·δ` for the map's local
-//! Jacobian `J` and the interpolation error `δ` in boundary texels.
+//! error is the displacement in the output stage of the content the interpolated coordinate reads,
+//! `J⁻¹·δ` for the map's local Jacobian `J` and the interpolation error `δ` in boundary texels, and
+//! the contract has two parts:
+//!
+//! - **Where it is seen**: [`GRID_TOLERANCE_PX`] display pixels, which a stage drawn magnified
+//!   divides by the magnification.
+//! - **What it reads**: [`GRID_SAMPLE_TOLERANCE_PX`] output pixels at any magnification. A
+//!   displacement too small to see still moves the value a high-frequency source gives the pixel:
+//!   on the zone plate, whose chirp reaches half a cycle a pixel, a lens warp's grid at the display
+//!   bound alone (about 0.04 px) leaves a worst 16 × 16 block of 0.98 ΔE00 at 100%, against the
+//!   pointwise limit of 1.0, and a perspective warp's 1.15 at Fit.
+//!
+//! The tighter of the two holds: the second at Fit and 100%, the first from a fourfold zoom.
 //!
 //! The grid is a function of the output region and the map, never of the image: it covers the
 //! output the surface draws, which the display bounds (4096 px a side, 8 megapixels) or the region
@@ -19,6 +30,11 @@ use crate::{Error, modules::Region, render::map::GeometryMap};
 /// How far, in display pixels, the content a grid's interpolated coordinate reads may lie from
 /// where the exact map puts it.
 pub const GRID_TOLERANCE_PX: f64 = 0.1;
+
+/// How far, in output pixels, the content a grid's interpolated coordinate reads may lie from where
+/// the exact map puts it, whatever the magnification: what a source with detail up to its own
+/// Nyquist limit needs for the value each pixel samples to stay within the pointwise limits.
+pub const GRID_SAMPLE_TOLERANCE_PX: f64 = 0.025;
 
 /// The most nodes one grid holds: 2 MiB of `[f32; 2]`. A map that needs more for the tolerance
 /// over the requested region takes the CPU path.
@@ -49,9 +65,10 @@ pub struct CoordinateGrid {
 
 impl CoordinateGrid {
     /// The grid of `map` over `region` of its output stage, drawn at `magnification` display pixels
-    /// per output pixel: within [`GRID_TOLERANCE_PX`] display pixels everywhere in the region. At
-    /// Fit and at 100% the output stage is drawn at one display pixel per output pixel or fewer, so
-    /// `magnification` is `1`; a stage drawn larger asks for a denser grid.
+    /// per output pixel: within [`GRID_TOLERANCE_PX`] display pixels and
+    /// [`GRID_SAMPLE_TOLERANCE_PX`] output pixels everywhere in the region. At Fit and at 100% the
+    /// output stage is drawn at one display pixel per output pixel or fewer, so `magnification` is
+    /// `1`; a stage drawn more than four times larger asks for a denser grid.
     ///
     /// Refused when the region lies outside the output stage, the map reaches a non-finite
     /// coordinate, or the tolerance needs more than [`GRID_MAX_NODES`] nodes.
@@ -67,7 +84,8 @@ impl CoordinateGrid {
                 "a coordinate grid's magnification must be positive",
             ));
         }
-        let target = ESTIMATE_FRACTION * GRID_TOLERANCE_PX / magnification.max(1.0);
+        let target = ESTIMATE_FRACTION
+            * GRID_SAMPLE_TOLERANCE_PX.min(GRID_TOLERANCE_PX / magnification.max(1.0));
         let mut spacing = COARSEST;
         loop {
             let grid = Self::at(map, region, spacing)?;
