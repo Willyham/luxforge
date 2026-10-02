@@ -3929,7 +3929,7 @@ The 24 MP drag with `--idle`: after its release had dissolved from the drag's la
 
 ### Windows and Linux
 
-Not run, so neither the fallback nor correctness within the limits is shown on another platform's adapter; a skipped check is not a pass. The repository's Linux path is CI: `.github/workflows/check.yml` runs `cargo xtask check`, `editor-acceptance` and eight renderer smoke scenarios on Ubuntu 24.04 x64 with software Vulkan under Xvfb, on a push, which this qualification does not make, and none of those eight drags on the GPU stage. No local Linux VM or container path is documented; Docker Desktop is installed on the host but was not running, and starting one would have loaded the host the timing runs needed quiet. Windows has no CI and no VM path.
+Not run, so neither the fallback nor correctness within the limits is shown on another platform's adapter; a skipped check is not a pass. The repository's Linux path is CI: `.github/workflows/check.yml` runs `cargo xtask check`, `editor-acceptance` and eight renderer smoke scenarios on Ubuntu 24.04 x64 with software Vulkan under Xvfb, on a push, which this qualification does not make, and none of those eight drags on the GPU stage. No local Linux VM or container path is documented; Docker Desktop is installed on the host but was not running, and starting one would have loaded the host the timing runs needed quiet. Windows has no CI and no VM path. The owner chose on 2026-10-02 not to push the branch to run CI.
 
 ### The performance-rules checklist
 
