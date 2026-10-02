@@ -1549,6 +1549,66 @@ mod drags {
             finish(editor, catalog);
         }
     }
+
+    /// A Detail Amount drag at 100% is drawn over the visible region at full scale, here the whole
+    /// 480 × 320 photograph, which the window shows at that zoom: its first tick takes the CPU path and its region job carries the one boundary request, the Detail layer's
+    /// input over the window the region reads; once that is held and the surface has evaluated it,
+    /// every tick is Detail's spatial step in its GPU shape, drawn on the GPU with no preview job
+    /// and no region job.
+    #[test]
+    fn gpu_detail_a_drag_at_100_percent_is_drawn_on_the_gpu_with_no_job_per_tick() {
+        let catalog = catalog("zoom");
+        let (mut editor, _, _) = real_photo(&catalog);
+        deliver_until(&mut editor, "the first frame", |editor| {
+            editor.presentation.dimensions.is_some() && !editor.presentation.queue.is_busy()
+        });
+        editor.session.preview.view.zoom = luxforge_core::Zoom::Percent { value: 100.0 };
+        let stage = editor
+            .presentation
+            .dimensions
+            .expect("the photograph's stage");
+        let wanted = editor.desired_view_for(stage).expect("a visible region");
+        editor.gpu.surface = Some(SurfaceReport::default());
+        let log = attach_log(&mut editor);
+        let _ = slide(&mut editor, "set-detail", "sharpening", 40.0);
+        deliver_until(&mut editor, "the region's boundary", |editor| {
+            editor.gpu.holds_boundary()
+        });
+        let records = logged(&mut editor, &log);
+        let ticks = events(&records, "gpu_preview_tick");
+        assert_eq!(ticks[0]["path"], "cpu");
+        assert_eq!(ticks[0]["boundary_requested"], true);
+        let summary = editor.gpu.summary();
+        assert_eq!(summary["drag"]["zoom"], 100.0, "{summary}");
+        assert_eq!(summary["drag"]["boundary"]["layer"], 0, "{summary}");
+        assert_eq!(
+            summary["drag"]["shape"], "gpu",
+            "every unit fits the budget"
+        );
+        surface_ready(&mut editor);
+        let log = attach_log(&mut editor);
+        for amount in [60.0, 80.0, 100.0] {
+            let _ = slide(&mut editor, "set-detail", "sharpening", amount);
+            let surfaces = editor.surfaces();
+            let plan = surfaces.gpu.expect("the region's plan is drawn");
+            let region = plan.region.expect("a region plan");
+            assert_eq!(
+                region.rect,
+                [wanted.x0, wanted.y0, wanted.x1(), wanted.y1()]
+            );
+            assert_eq!(spatial_program(&editor).as_deref(), Some("lf_detail"));
+            assert!(!editor.view_plan.in_flight, "no region job for the view");
+        }
+        let records = logged(&mut editor, &log);
+        assert_eq!(jobs(&records), 0, "no preview job per tick");
+        let ticks = events(&records, "gpu_preview_tick");
+        assert_eq!(ticks.len(), 3);
+        assert!(ticks.iter().all(|tick| tick["path"] == "gpu"), "{ticks:?}");
+        let _ = editor.update(Message::Draft(
+            super::super::message::draft::DraftMessage::Cancel,
+        ));
+        finish(editor, catalog);
+    }
 }
 
 // ---- The corpus at Fit ------------------------------------------------------------------------
