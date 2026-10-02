@@ -93,10 +93,11 @@ use std::{
 };
 use wgpu::naga;
 
-/// The GPU-preview budget's recorded default: every GPU-preview texture and buffer, resident or
-/// retiring, of every surface together. A Fit boundary of 8 MP is 64 MiB at 8 bytes a texel and its
-/// output 32 MiB, so one replacement may overlap the slot it replaces.
-pub const GPU_PREVIEW_BUDGET: u64 = 256 * 1024 * 1024;
+/// The GPU-preview budget (owner, 2026-10-02): every GPU-preview texture and buffer, resident or
+/// retiring, of every surface together. It holds the heaviest measured 100% spatial slot, all three
+/// Presence fields over a 3026 × 1826 region of the 60 MP JPEG (568 MB), and lets a Fit slot of
+/// 8 MP, 64 MiB of boundary at 8 bytes a texel and 32 MiB of output, overlap the one it replaces.
+pub const GPU_PREVIEW_BUDGET: u64 = 640 * 1024 * 1024;
 
 /// The words before any step's: the texel map's origin and step, then the offset of the output's
 /// first pixel ([`GpuRegion`]): in boundary texels for the content pass of a plan with no tail, in

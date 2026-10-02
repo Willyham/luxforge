@@ -60,6 +60,7 @@ mod gpu_preview_tests;
 pub(crate) mod gpu_qualification;
 // The one conversion Fit drags will hand the photo surface its GPU plan through; the desktop does
 // not draw a gesture on the GPU yet, so only its tests reach it.
+mod drawn_frames;
 #[cfg_attr(
     not(test),
     expect(
@@ -347,6 +348,8 @@ pub(crate) struct Editor {
     pub(crate) gpu: gpu_preview::GpuPreviews,
     /// The settle's hand-off from the GPU frame on screen to the CPU frame that replaces it.
     pub(crate) gpu_settle: gpu_settle::GpuSettle,
+    /// The surface's drawn frames as evidence logs them ([`drawn_frames`]).
+    drawn_frames: drawn_frames::DrawnFrames,
     /// The whole screen as plain data, derived again after every message.
     pub(crate) workspace: Workspace,
 }
@@ -395,7 +398,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 14] = [
+const AFTER_MESSAGE: [AfterMessage; 15] = [
     view_state::after_message,
     performance::after_message,
     slider::after_message,
@@ -410,6 +413,7 @@ const AFTER_MESSAGE: [AfterMessage; 14] = [
     overlay::after_message,
     thumbnails::after_message,
     mask_coverage::after_message,
+    drawn_frames::after_message,
 ];
 
 /// The seams whose work reads the screen just derived: what a capability section or a curve shows
@@ -496,6 +500,7 @@ impl Editor {
             export: Default::default(),
             gpu: Default::default(),
             gpu_settle: Default::default(),
+            drawn_frames: Default::default(),
             workspace: Default::default(),
         };
         // The workers wake the event loop through one channel instead of a poll. The closure is
