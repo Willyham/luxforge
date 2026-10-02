@@ -223,6 +223,7 @@ fn api_draft_view_workspace_preview_palette_and_hover_round_trip() {
         {"wait":{"ms":1000}},
         {"pan":{"x":0.5,"y":1.0}},
         {"performance":{"expanded":true}},
+        {"performance_cancel":{"row":0}},
         {"gallery":{"page":8}},
         {"gallery":{"page":null}},
         {"tools_scroll":1.0},
@@ -246,9 +247,9 @@ fn api_draft_view_workspace_preview_palette_and_hover_round_trip() {
     );
     assert_eq!(steps[22], Step::Preview(PreviewStep::Current));
     assert_eq!(steps[25], Step::hover(12, 34));
-    assert_eq!(steps[31], Step::gallery(None));
+    assert_eq!(steps[32], Step::gallery(None));
     assert_eq!(
-        steps[33],
+        steps[34],
         Step::agent("edit.transform", json!({"transform":"rotate-right"}))
     );
     // An integer where a number is expected is the same number.
@@ -354,6 +355,10 @@ fn api_draft_view_workspace_preview_palette_and_hover_round_trip() {
         (json!({"pan":{"x":1.5,"y":0}}), "fraction from 0 to 1"),
         (json!({"pan":{"x":0,"y":0,"z":0}}), "unknown field `z`"),
         (json!({"performance":{}}), "missing field `expanded`"),
+        (
+            json!({"performance_cancel":{"row":4}}),
+            "performance_cancel row must be below 4",
+        ),
         (json!({"performance":{"expanded":1}}), "expected a boolean"),
         (
             json!({"performance":{"expanded":true,"module":"x"}}),

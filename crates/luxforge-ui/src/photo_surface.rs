@@ -1553,11 +1553,12 @@ fn write_uniforms(
         let region = picture.region_key.map_or(whole_region, |key| {
             key.placement(tile.layout, (picture.width, picture.height))
         });
-        queue.write_buffer(
-            &tile.uniform,
-            0,
-            &uniform_bytes([viewport, destination, region, texels, bright, turn]),
-        );
+        let bytes = uniform_bytes([viewport, destination, region, texels, bright, turn]);
+        let mut written = tile.written_uniform.lock().expect("photo uniform identity");
+        if written.as_ref() != Some(&bytes) {
+            queue.write_buffer(&tile.uniform, 0, &bytes);
+            *written = Some(bytes);
+        }
     }
 }
 
@@ -1660,6 +1661,9 @@ struct Tile {
     capacity: (u32, u32),
     texture: wgpu::Texture,
     uniform: wgpu::Buffer,
+    /// The last bytes written to this tile, independent of pixel version. A resource sample,
+    /// cursor move or mask update with unchanged geometry needs no GPU uniform upload.
+    written_uniform: Mutex<Option<[u8; UNIFORM_SIZE]>>,
     bindings: wgpu::BindGroup,
 }
 
@@ -2019,6 +2023,20 @@ impl PhotoPipeline {
         // The device's limit, not the GPU's: Iced asks wgpu for its default limits, so this is
         // 8192 on the owner's Mac although the GPU could hold larger textures.
         let limit = device.limits().max_texture_dimension_2d;
+        if surface.slots[layer.index()]
+            .as_ref()
+            .is_some_and(|picture| {
+                picture.width == width
+                    && picture.height == height
+                    && picture.limit == limit
+                    && picture.matching_frame(frame, content_id, region_key)
+            })
+        {
+            if layer == Layer::Photo && std::mem::take(&mut surface.deferred_photo) {
+                wake_surface();
+            }
+            return true;
+        }
         let reusable = surface.slots[layer.index()]
             .as_ref()
             // A crop stage is reserved at exactly its frame's size, so the display-size proxy a
@@ -2254,6 +2272,7 @@ impl PhotoPipeline {
             capacity: (width, height),
             texture,
             uniform,
+            written_uniform: Mutex::new(None),
             bindings,
         }
     }
