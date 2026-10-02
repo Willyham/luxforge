@@ -20,7 +20,6 @@ mod processing;
 mod raw;
 mod registry;
 mod spatial;
-mod transform;
 mod vignette;
 
 pub use crate::render::map::{Mapping, RadialModel, WarpStep};
@@ -53,10 +52,12 @@ pub use capabilities_proof::{
 pub use capability::CapabilityModule;
 pub use controls::{CONTROLS_EFFECT, Controls, ControlsModule};
 pub(crate) use crop::CropModule;
+pub use crop::ORIENTATION_EFFECT;
 pub use crop::geometry::{
     BoxRect, CropPayload, CropStage, Edge, MAX_ANGLE, MIN_ANGLE, OutputRect, guide_angle,
     largest_with_ratio_inside,
 };
+pub(crate) use crop::stored_orientation;
 pub use crop::{CROP_EFFECT, CropAspect};
 pub use curve::CURVE_EFFECT;
 pub(crate) use curve::CurveModule;
@@ -130,8 +131,6 @@ pub(crate) use spatial::{
     SPATIAL_BUDGET_BYTES, SpatialUnit,
 };
 pub use spatial::{Region, SpatialOperation};
-pub use transform::ORIENTATION_EFFECT;
-pub(crate) use transform::{TransformModule, stored_orientation};
 pub use vignette::VIGNETTE_EFFECT;
 pub(crate) use vignette::VignetteModule;
 
@@ -536,7 +535,7 @@ pub trait ToolModule: Send + Sync {
     ) -> Result<Processing, Error>;
     /// This stored geometry layer re-expressed for its input stage turned or reflected by
     /// `orientation`, so it selects the same content in the turned stage. `input` is the stage the
-    /// layer received before the orientation. The transform module asks it of every geometry layer
+    /// layer received before the orientation. The crop module asks it of every geometry layer
     /// after the orientation when an action turns or reflects the photograph, and stores what
     /// comes back through the layer's own update, so the orientation goes ahead of a module it
     /// never names. `Ok(None)` says the payload is unchanged, the default: an effect whose payload

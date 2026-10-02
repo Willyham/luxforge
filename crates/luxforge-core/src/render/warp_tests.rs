@@ -89,8 +89,6 @@ impl ToolModule for WarpModule {
 pub(super) fn registry() -> crate::ModuleRegistry {
     let mut r = crate::ModuleRegistry::new();
     r.register(Arc::new(WarpModule::new())).unwrap();
-    r.register(Arc::new(crate::modules::TransformModule::new()))
-        .unwrap();
     r.register(Arc::new(crate::modules::CropModule::new()))
         .unwrap();
     r.register(Arc::new(crate::modules::PerspectiveModule::new()))
@@ -938,7 +936,7 @@ fn all_eight_orientation_actions_carry_lens_perspective_and_crop_together() {
         }
     }
     fn apply(r: &crate::ModuleRegistry, p: &mut Recipe, transform: Transform) {
-        let module = crate::modules::TransformModule::new();
+        let module = crate::modules::CropModule::new();
         let input = module
             .parse(
                 "transform",

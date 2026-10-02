@@ -689,7 +689,7 @@ pub(crate) enum ControlModel {
     Task(TaskControl),
     /// A control this build cannot draw keeps its name on screen rather than disappearing.
     Unsupported(String),
-    /// The host's crop-frame editor, at the top of the declaring module's section.
+    /// The host's crop-frame editor, after the declaring module's own controls.
     CropFrame(Box<CropSectionModel>),
     /// The host's preset library, where the module declares its `presets` control.
     Presets(Box<PresetsModel>),
@@ -823,13 +823,6 @@ fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionModel {
     let layout = section_layout(module, inputs);
     let scope = scope(module, inputs);
     let mut controls = Vec::new();
-    // A declared crop frame is a host interaction, not a control: the host renders its draft panel
-    // here and the module's own controls, Reset crop included, still come below.
-    if let Some(frame) = crop_frame(inputs.modules).filter(|frame| frame.module.id == module.id) {
-        controls.push(ControlModel::CropFrame(Box::new(crop_section(
-            &frame, inputs, enabled,
-        ))));
-    }
     // A stacked module whose controls are one group draws that group's controls directly: a
     // header naming the only group repeats the band above it. The children keep their declared
     // paths under the group, so a nested group's key and reset still name its real position.
@@ -865,6 +858,13 @@ fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionModel {
                 ));
             }
         }
+    }
+    // Exact transforms lead the combined section, followed by the host's Ratio and Angle editor.
+    // The canvas declaration supplies this editor; no module identity is special-cased here.
+    if let Some(frame) = crop_frame(inputs.modules).filter(|frame| frame.module.id == module.id) {
+        controls.push(ControlModel::CropFrame(Box::new(crop_section(
+            &frame, inputs, enabled,
+        ))));
     }
     SectionModel {
         module_id: module.id.clone(),
@@ -1263,16 +1263,24 @@ fn resolved_model(
             let action = button.action.as_str();
             let params = declared_action(inputs.modules, action)
                 .map(|declared| action_params(declared, &button.preset, inputs.fields));
+            let draft_reason = owner
+                .descriptor()
+                .filter(|module| {
+                    inputs.draft.is_some()
+                        && matches!(module.canvas, Some(CanvasInteraction::CropFrame { .. }))
+                })
+                .and(inputs.gesture)
+                .map(|gesture| format!("Finish the open {gesture} before running an action"));
             ControlModel::Action(ActionControl {
                 action: action.to_owned(),
                 label: button.label.clone(),
                 preset: button.preset.clone(),
-                runnable: enabled && matches!(params, Some(Ok(_))),
-                reason: match params {
+                runnable: enabled && draft_reason.is_none() && matches!(params, Some(Ok(_))),
+                reason: draft_reason.or_else(|| match params {
                     Some(Err(message)) => Some(message),
                     Some(Ok(_)) => None,
                     None => Some(format!("No module declares the action {action}")),
-                },
+                }),
                 style: match button.style {
                     ActionStyle::Default => ActionControlStyle::Default,
                     ActionStyle::Primary => ActionControlStyle::Primary,
@@ -2487,6 +2495,7 @@ pub(crate) fn canvas_pick<'a>(
 /// here, so it knows no tool by name.
 pub(crate) struct CropFrame<'a> {
     pub(crate) module: &'a ModuleDescriptor,
+    effect: &'a str,
     pub(crate) action: &'a str,
     pub(crate) angle: &'a str,
     x: &'a str,
@@ -2499,12 +2508,12 @@ pub(crate) struct CropFrame<'a> {
 }
 
 impl CropFrame<'_> {
-    /// The durable effect identity of the crop layer: the module's geometry effect.
+    /// The crop canvas's explicitly bound effect, independent of other owned geometry effects.
     pub(crate) fn effect(&self) -> Option<&str> {
         self.module
             .effects
             .iter()
-            .find(|effect| effect.stage == EffectStage::Geometry)
+            .find(|effect| effect.id == self.effect && effect.stage == EffectStage::Geometry)
             .map(|effect| effect.id.as_str())
     }
 
@@ -2568,6 +2577,7 @@ pub(crate) fn crop_row<'a>(
 pub(crate) fn crop_frame(modules: &[ModuleDescriptor]) -> Option<CropFrame<'_>> {
     modules.iter().find_map(|module| match &module.canvas {
         Some(CanvasInteraction::CropFrame {
+            effect,
             action,
             angle,
             x,
@@ -2580,6 +2590,7 @@ pub(crate) fn crop_frame(modules: &[ModuleDescriptor]) -> Option<CropFrame<'_>> 
             ..
         }) if module.is_available() => Some(CropFrame {
             module,
+            effect,
             action,
             angle,
             x,
@@ -2759,6 +2770,27 @@ mod tests {
         // A parameter no action declares, and an action no module declares, draft nothing.
         assert!(!drafts(&modules, "set-raw-red-gain", "kelvin"));
         assert!(!drafts(&modules, "no-such-action", "ev"));
+    }
+
+    #[test]
+    fn the_crop_canvas_binds_its_layer_independently_of_geometry_descriptor_order() {
+        let mut modules: Vec<_> = luxforge_core::ModuleRegistry::builtin()
+            .descriptors()
+            .into_iter()
+            .cloned()
+            .collect();
+        for reverse in [false, true] {
+            if reverse {
+                modules
+                    .iter_mut()
+                    .find(|module| module.id == "luxforge.crop")
+                    .unwrap()
+                    .effects
+                    .reverse();
+            }
+            let frame = crop_frame(&modules).expect("the combined crop canvas");
+            assert_eq!(frame.effect(), Some(luxforge_core::CROP_EFFECT));
+        }
     }
 
     #[test]

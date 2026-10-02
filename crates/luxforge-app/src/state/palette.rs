@@ -251,12 +251,12 @@ mod tests {
     fn sample() -> Vec<(String, String, PaletteAction)> {
         vec![
             (
-                "Transforms · Rotate right".to_owned(),
+                "Crop, transform, straighten · Rotate 90° right".to_owned(),
                 "edit.transform".to_owned(),
                 PaletteAction::Fit,
             ),
             (
-                "Transforms · Rotate left".to_owned(),
+                "Crop, transform, straighten · Rotate 90° left".to_owned(),
                 "edit.transform".to_owned(),
                 PaletteAction::Fit,
             ),
@@ -278,7 +278,10 @@ mod tests {
         );
         let narrowed = filter(entries.clone(), "ROTATE right");
         assert_eq!(narrowed.len(), 1);
-        assert_eq!(narrowed[0].0, "Transforms · Rotate right");
+        assert_eq!(
+            narrowed[0].0,
+            "Crop, transform, straighten · Rotate 90° right"
+        );
         assert_eq!(
             filter(entries.clone(), "rotate").len(),
             2,
@@ -306,8 +309,8 @@ mod tests {
         let entries = palette_entries(&modules, false, None, None);
         let rotate = entries
             .iter()
-            .find(|(label, ..)| label == "Transforms · Rotate right")
-            .expect("the transform module's own control");
+            .find(|(label, ..)| label == "Crop, transform, straighten · Rotate 90° right")
+            .expect("the combined module's transform control");
         assert_eq!(rotate.1, "edit.transform");
         assert!(matches!(&rotate.2, PaletteAction::Run { action, .. } if action == "transform"));
 

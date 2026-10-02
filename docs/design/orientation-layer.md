@@ -14,7 +14,7 @@ Quarter-turns and reflections are one **orientation** layer holding the composed
 
 Effect `luxforge.geometry.orientation`, format 1, geometry stage, payload `{"mirror": bool, "turns": 0..3}`. Its mapping is: mirror horizontally when `mirror` is true, then rotate clockwise by `turns` quarter-turns. Every one of the eight exact orientations has exactly one such payload; `{"mirror": false, "turns": 0}` is the neutral orientation with an identity mapping and unchanged stage.
 
-The four actions keep their durable history identities (`rotate-left`, `rotate-right`, `mirror-horizontal`, `flip-vertical`) and their generated controls and API. Applying an action to a payload `(m, k)`:
+Crop, transform, straighten (`luxforge.crop`) owns the orientation and crop effects together. Its four transform buttons lead the Ratio and Angle controls; the separate Transforms module is removed. The four actions keep their durable history identities (`rotate-left`, `rotate-right`, `mirror-horizontal`, `flip-vertical`) and their generated controls and API. Applying an action to a payload `(m, k)`:
 
 | Action | Result |
 | --- | --- |
@@ -48,7 +48,7 @@ The previous `luxforge.geometry.transform` effect is removed. Stacks holding it 
 - The crop's parameters (`edit.crop`, `crop-fit`'s `original` ratio, `recipe.describe` values) address the turned stage, the one the person sees.
 - A crop draft left open while a transform commits is marked conflicted, as for any other commit. Reapply carries the draft through the change in orientation ahead of the crop by the same rule, so the frame keeps selecting what it did, and a locked ratio turns with a quarter turn.
 - History, undo, restore, versions and lineage are unchanged: each action is still one entry with its complete resulting stack.
-- The desktop and API keep showing four transform controls and the `edit.transform` action with its `transform` parameter.
+- The desktop shows four transform controls in the combined crop section, and the API keeps `edit.transform` with its `transform` parameter. The header reset remains Reset crop, keeping orientation.
 
 ## Acceptance
 
@@ -58,3 +58,7 @@ The previous `luxforge.geometry.transform` effect is removed. Stacks holding it 
 - A stack with an orientation layer stored after the crop is folded by the next transform, and its render is exactly the stored one under that transform.
 - A crop draft opened after a transform shows the turned photograph, and Reapply across a transform keeps the drafted frame on the same content.
 - Specs, feature status and the user guide describe the orientation layer; `cargo xtask check` passes, which runs the core test that covers the collapse (`four_quarter_turns_leave_one_neutral_orientation_layer_and_four_entries`).
+
+## Performance review
+
+The combined module reuses the exact transform and crop request paths. Source preparation still uses the signature-verified cache; no new reads, hashing, decoding, full-frame allocations, frame copies, timers, polls, subscriptions or caches are introduced. Planning, validation and no-op checks remain metadata and geometry work on the owner, with no rasterization. A transform button uses the existing narrow mutation completion: state and displayed recipe refresh, one preview job and its necessary upload, without fetching the history page. Existing exact-buffer tests cover composed orientations, four-turn identity, undo, and carrying a crop through each transform; they now exercise the combined provider. No performance distribution was collected for this descriptor and control consolidation, and no performance improvement is claimed.
