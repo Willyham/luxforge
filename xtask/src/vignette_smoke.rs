@@ -27,7 +27,6 @@ const VIGNETTE_MODULE: &str = "luxforge.vignette";
 /// default, so it needs no explicit step): collapsed first, so the module's own sliders are on
 /// screen without scrolling.
 const BASIC_MODULE: &str = "luxforge.basic";
-const TRANSFORM_MODULE: &str = "luxforge.transform";
 const CROP_MODULE: &str = "luxforge.crop";
 const SET_VIGNETTE: &str = "set-vignette";
 const AMOUNT: &str = "amount";
@@ -92,14 +91,12 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // expandable section, and Mixer is already collapsed by default, so neither needs a
         // step.
         section("basic-collapsed", BASIC_MODULE, false).collapsed(BASIC_MODULE),
-        section("transform-collapsed", TRANSFORM_MODULE, false).collapsed(TRANSFORM_MODULE),
         section("crop-collapsed", CROP_MODULE, false).collapsed(CROP_MODULE),
         // 4: expand the section, with nothing above it still expanded. Its one group starts
         // expanded, so this alone exposes it.
         section("expanded", VIGNETTE_MODULE, true)
             .expanded(VIGNETTE_MODULE)
             .collapsed(BASIC_MODULE)
-            .collapsed(TRANSFORM_MODULE)
             .collapsed(CROP_MODULE),
         // 5: a drag on Amount, left open: the frame shows the drafted preview, nothing committed.
         Step::new(

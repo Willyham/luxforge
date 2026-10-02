@@ -1,9 +1,11 @@
-//! The crop module: three actions over the single crop layer of a stack.
+//! Crop, transform and straighten: exact orientation and one crop layer of a stack.
 //!
-//! Every action plans against the crop layer's own input stage, which is the stage produced by the
-//! layers before it, and commits a payload that [`CropPayload::output_rect`] has accepted. Planning
-//! is pure geometry over one immutable stage: it never rasterizes and never samples a pixel.
+//! Crop actions plan against the crop layer's own input stage, which is the stage produced by the
+//! layers before it, and commit a payload that [`CropPayload::output_rect`] has accepted. Exact
+//! transforms compose orientation and carry the crop through it. Planning is pure geometry over
+//! immutable stages: it never rasterizes and never samples a pixel.
 use super::geometry::{BoxRect, CropPayload, CropStage, MAX_ANGLE, MIN_ANGLE};
+use super::transform::{self, ORIENTATION_EFFECT, TRANSFORM_ACTION};
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
@@ -146,16 +148,20 @@ impl CropModule {
         Self {
             descriptor: ModuleDescriptor {
                 id: "luxforge.crop".into(),
-                title: "Crop and straighten".into(),
-                hint: Some("Frame, ratio and angle".into()),
-                effects: vec![EffectDescriptor {
-                    // Later than the orientation's default order, so the host places every
-                    // transform ahead of the crop and the crop's input stage carries them all.
-                    order: CROP_ORDER,
-                    single: true,
-                    ..EffectDescriptor::new(CROP_EFFECT, EffectStage::Geometry)
-                }],
+                title: "Crop, transform, straighten".into(),
+                hint: Some("Frame, rotate, mirror and angle".into()),
+                effects: vec![
+                    transform::effect(),
+                    EffectDescriptor {
+                        // Later than the orientation's default order, so the host places every
+                        // transform ahead of the crop and the crop's input stage carries them all.
+                        order: CROP_ORDER,
+                        single: true,
+                        ..EffectDescriptor::new(CROP_EFFECT, EffectStage::Geometry)
+                    },
+                ],
                 actions: vec![
+                    transform::action(),
                     ActionDescriptor {
                         parameters: vec![
                             angle_parameter(),
@@ -210,12 +216,13 @@ impl CropModule {
                 ],
                 // The section's reset is the same API action the header button calls.
                 queries: Vec::new(),
-                controls: Vec::new(),
+                controls: transform::controls(),
                 reset: Some(ResetAction {
                     action: CROP_RESET_ACTION.into(),
                     preset: Map::new(),
                 }),
                 canvas: Some(CanvasInteraction::CropFrame {
+                    effect: CROP_EFFECT.into(),
                     action: CROP_ACTION.into(),
                     angle: "angle".into(),
                     x: "x".into(),
@@ -425,6 +432,7 @@ impl ToolModule for CropModule {
         parameters: &Map<String, Value>,
     ) -> Result<ActionInput, Error> {
         let parameters = match action_id {
+            TRANSFORM_ACTION => return transform::parse(action_id, parameters),
             CROP_ACTION => {
                 let payload = crop_payload(parameters)?;
                 stored([
@@ -446,6 +454,9 @@ impl ToolModule for CropModule {
     }
 
     fn plan(&self, input: &ActionInput, context: &StageContext<'_>) -> Result<ActionPlan, Error> {
+        if transform::is_action(&input.action_id) {
+            return transform::plan(input, context);
+        }
         // The stack's one crop layer. Two of them would each claim their own input stage, so the
         // host refuses to guess which one an action addresses.
         let located = context.own_layer(CROP_EFFECT)?;
@@ -502,6 +513,9 @@ impl ToolModule for CropModule {
     }
 
     fn validate_payload(&self, effect_id: &str, format: u32, value: &Value) -> Result<(), Error> {
+        if effect_id == ORIENTATION_EFFECT {
+            return transform::validate_payload(effect_id, format, value);
+        }
         payload(effect_id, format, value)?.validate()
     }
 
@@ -510,6 +524,9 @@ impl ToolModule for CropModule {
     /// entry without parsing the payload itself; and neutral for the whole image, unstraightened,
     /// the payload `crop-reset` writes.
     fn describe(&self, effect_id: &str, format: u32, value: &Value) -> Result<LayerReport, Error> {
+        if effect_id == ORIENTATION_EFFECT {
+            return transform::describe(effect_id, format, value);
+        }
         let crop = payload(effect_id, format, value)?;
         crop.validate()?;
         let neutral = crop.is_neutral();
@@ -544,6 +561,9 @@ impl ToolModule for CropModule {
 
     /// `Crop 7.5°` for a frame, by its angle, and `Crop 16:9` for a fit, by its aspect option.
     fn label(&self, action: &ActionDescriptor, input: &ActionInput) -> String {
+        if transform::is_action(&input.action_id) {
+            return transform::label(action, input);
+        }
         let named = match input.action_id.as_str() {
             CROP_ACTION => input
                 .parameters
@@ -568,6 +588,9 @@ impl ToolModule for CropModule {
         input: Stage,
         orientation: Orientation,
     ) -> Result<Option<Value>, Error> {
+        if effect_id == ORIENTATION_EFFECT {
+            return Ok(None);
+        }
         let stored = payload(effect_id, format, value)?;
         let carried = stored.carried((input.width, input.height), orientation)?;
         Ok((carried != stored).then(|| crop_value(carried)))
@@ -580,6 +603,9 @@ impl ToolModule for CropModule {
         value: &Value,
         at: crate::CompileStage,
     ) -> Result<Processing, Error> {
+        if effect_id == ORIENTATION_EFFECT {
+            return transform::compile(effect_id, format, value, at);
+        }
         let stage = at.stage;
         let payload = payload(effect_id, format, value)?;
         let crop_stage = input_stage(stage, payload.angle);
@@ -611,7 +637,7 @@ impl ToolModule for CropModule {
 mod tests {
     use super::*;
     use crate::{
-        ORIENTATION_EFFECT, PIXEL_EFFECT,
+        PIXEL_EFFECT,
         modules::{ParameterKind, check_parameters},
     };
     use serde_json::json;
@@ -699,7 +725,7 @@ mod tests {
         let descriptor = module.descriptor();
         descriptor.validate().expect("a valid crop descriptor");
         assert_eq!(descriptor.id, "luxforge.crop");
-        assert_eq!(descriptor.title, "Crop and straighten");
+        assert_eq!(descriptor.title, "Crop, transform, straighten");
         assert!(descriptor.collapsed, "the section starts collapsed");
         assert_eq!(
             descriptor
@@ -707,7 +733,12 @@ mod tests {
                 .iter()
                 .map(|action| action.id.as_str())
                 .collect::<Vec<_>>(),
-            [CROP_ACTION, CROP_FIT_ACTION, CROP_RESET_ACTION]
+            [
+                TRANSFORM_ACTION,
+                CROP_ACTION,
+                CROP_FIT_ACTION,
+                CROP_RESET_ACTION
+            ]
         );
         let crop = descriptor.action(CROP_ACTION).expect("the crop action");
         for name in ["x", "y", "width", "height"] {
@@ -758,6 +789,7 @@ mod tests {
         assert_eq!(
             descriptor.canvas,
             Some(CanvasInteraction::CropFrame {
+                effect: CROP_EFFECT.into(),
                 action: "crop".into(),
                 angle: "angle".into(),
                 x: "x".into(),
@@ -771,8 +803,7 @@ mod tests {
                 icon: Some("crop".into()),
             })
         );
-        // The former Reset crop button is the module's header reset: the same API action.
-        assert!(descriptor.controls.is_empty());
+        // Reset crop remains the header reset, separate from exact orientation.
         assert_eq!(
             descriptor.reset,
             Some(ResetAction {
@@ -780,7 +811,10 @@ mod tests {
                 preset: Map::new(),
             })
         );
-        assert_eq!(descriptor.hint.as_deref(), Some("Frame, ratio and angle"));
+        assert_eq!(
+            descriptor.hint.as_deref(),
+            Some("Frame, rotate, mirror and angle")
+        );
         assert!(!descriptor.developer);
     }
 
@@ -820,7 +854,7 @@ mod tests {
         );
         assert_eq!(
             module
-                .describe(ORIENTATION_EFFECT, EFFECT_FORMAT, &json!({}))
+                .describe(PIXEL_EFFECT, EFFECT_FORMAT, &json!({}))
                 .unwrap_err()
                 .kind,
             ErrorKind::Incompatible
@@ -1015,7 +1049,7 @@ mod tests {
             let error = planned(action, parameters, &layers).expect_err(action);
             assert_eq!(error.kind, ErrorKind::Validation, "{action}");
             assert_eq!(
-                error.detail, "ambiguous Crop and straighten layers",
+                error.detail, "ambiguous Crop, transform, straighten layers",
                 "{action}"
             );
         }
@@ -1211,7 +1245,7 @@ mod tests {
         for (case, effect, format, kind) in [
             (
                 "wrong effect",
-                ORIENTATION_EFFECT,
+                PIXEL_EFFECT,
                 EFFECT_FORMAT,
                 ErrorKind::Incompatible,
             ),

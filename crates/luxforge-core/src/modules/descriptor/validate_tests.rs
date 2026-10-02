@@ -186,6 +186,25 @@ fn identity_rules_accept_declared_names_and_reject_malformed_ones() {
 }
 
 #[test]
+fn a_crop_frame_binds_an_owned_geometry_effect() {
+    for foreign in [false, true] {
+        let mut module = frame_descriptor();
+        if foreign {
+            let Some(CanvasInteraction::CropFrame { effect, .. }) = &mut module.canvas else {
+                panic!("a crop-frame fixture")
+            };
+            *effect = "test.foreign.effect".into();
+        } else {
+            module.effects[0].stage = EffectStage::Pixel;
+        }
+        let error = module
+            .validate()
+            .expect_err("the frame must own a geometry effect");
+        assert!(error.detail.contains("not an owned geometry effect"));
+    }
+}
+
+#[test]
 fn descriptors_reject_malformed_identities_duplicates_and_invalid_controls() {
     assert!(descriptor().validate().is_ok());
     assert!(

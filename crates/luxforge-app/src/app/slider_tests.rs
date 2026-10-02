@@ -161,7 +161,14 @@ fn single_parameter_control(editor: &Editor) -> (String, String) {
         .modules
         .iter()
         .flat_map(|module| module.actions.iter())
-        .find(|action| !action.patch && action.parameters.len() == 1)
+        .find(|action| {
+            !action.patch
+                && action.parameters.len() == 1
+                && matches!(
+                    action.parameters[0].kind,
+                    luxforge_core::ParameterKind::Number { .. }
+                )
+        })
         .expect("a built-in declares a single-parameter action");
     (action.id.clone(), action.parameters[0].name.clone())
 }

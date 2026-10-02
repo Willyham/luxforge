@@ -315,6 +315,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
             preset: Map::new(),
         }),
         canvas: Some(CanvasInteraction::CropFrame {
+            effect: CROP_EFFECT.into(),
             action: "crop".into(),
             angle: "angle".into(),
             x: "x".into(),
