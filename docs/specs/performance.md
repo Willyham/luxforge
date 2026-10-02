@@ -3827,7 +3827,7 @@ LUXFORGE_ARRIVAL=whole cargo test -p luxforge-ui --lib a_boundary_arrival_measur
 
 ## GPU previews qualified on the M4
 
-The native qualification of GPU previews ([design](../design/gpu-preview.md)): the corpus error report at Fit and at 100%. Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal.
+The native qualification of GPU previews ([design](../design/gpu-preview.md)): the corpus error report at Fit and at 100%, the latency of each gesture with the preview on and off, memory, and idle after a dissolve. Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal.
 
 ### The corpus error report
 
@@ -3856,6 +3856,67 @@ Worst of each statistic over a family's measured cells — mean ΔE00, worst 16 
 - **One miss: the perspective warp on the zone plate at Fit.** Its worst block is 1.15 against the pointwise limit of 1.0 (mean 0.161, p99 1.41, ΔL\* −0.002, within theirs); it is the only cell of 201 at Fit or 173 at 100% outside its class's limits. The zone plate's chirp reaches the Nyquist limit, and at Fit the proxy it is reduced to carries that frequency: the warp's coordinate grid holds the mapping within 0.041 px of exact, and at half a cycle per pixel that phase moves a block's codes by more than the limit allows. The same warp at 100% is within the limits (worst block 0.65), and the straightened crop, whose affine map the tail computes exactly, is within them on the zone plate at both views (worst block 0.02). Every photograph's warp cell is within them. The warp tail stays enabled; whether this miss disables it, which would put every drag over a lens-corrected RAW on the CPU path, is open ([design](../design/gpu-preview.md#open-decisions)).
 - **Gaps, not passes.** At Fit, the vignette after a RAW's lens warp on the Z6 and Air 2S (a lens distortion before the boundary). At 100%: a mask that selects nothing inside the region (3 cells); a slot past the 640 MiB budget, which takes the CPU path naming it (Presence's three fields on the Air 2S, Detail on the Air 2S and Detail beside a local Presence on every source, 13 cells); and Detail beside Presence, whose region boundary cannot be planned while a global estimate sits behind an earlier spatial layer (14 cells).
 - **Detail at settle.** Detail is judged against the CPU's moving proxy it stands in for, as the owner decided. Against the exact-derived frame Detail settles to at Fit, the GPU frame and the CPU proxy differ alike: both pass the spatial limits on 30 of 54 cells and miss them on the same 24, the zone plate's nine, the Air 2S's and those beside Presence among them (worst block 15.0 and p99 28.8 on the zone plate, 7.15 and 8.09 on a photograph). That is the jump the settle dissolve covers, the CPU path's own.
+
+### Latency, with the GPU preview on and off
+
+Each case's 30-input drag through `editor-latency`, the GPU preview on and, for the key cases, turned off from the palette first (`--no-gpu-preview`): the same build, the same host, run back to back. The release editor built from `2837c344` (binary SHA-256 `a34b2482…`), the generated 24 MP and 60 MP JPEGs and the X100VI RAF, a hidden 1440 × 900 window at 2× on the 120 Hz display, warm filesystem cache, 2026-10-02. Each run started at a one-minute load between 3.5 and 6.9 (the column), all below the 8.0 threshold; the host carried only the owner's open applications. Each input is one step left open until its frame is on screen, so every figure is one input and one frame. Milliseconds, nearest rank; a drag's 30 inputs are 30 samples, the stroke's 400 positions 400.
+
+- **What presented means on each path.** A CPU frame is presented at its hand-off, the update in which the worker's raster became the photo surface's source (`preview_displayed`); its draw follows at the next redraw. A GPU frame has no hand-off: it is presented at the surface's first draw of the plan tagged with the input's revision, the moment that draw is encoded (`surface_frame_drawn`). The GPU figure therefore includes the wait for the next frame, which the CPU figure does not; neither is scanout. **Drawn** times both paths to that first draw, the like-for-like column; a CPU region at 100% and above has no logged draw. On the 120 Hz display the figures fall at whole frames, 8.3 ms apart.
+- **Frames.** Every drag's first input takes the CPU path asking for its boundary (`boundary-pending`) and its later 29 are drawn on the GPU; its p99 is that first input. With the preview off every input is the CPU's (`preference-off`).
+
+| Case | GPU preview | Load | Frames | Presented p50 / p95 / p99 | GPU frames | CPU frames | Drawn p50 / p95 / p99 |
+| --- | --- | ---: | --- | ---: | ---: | ---: | ---: |
+| 24 MP JPEG at Fit, full Basic | on | 6.86 | 29 GPU, 1 CPU (boundary-pending) | 8.3 / 9.3 / 17.5 | 8.3 / 8.6 / 9.3 | 17.5 / 17.5 / 17.5 | 8.3 / 9.3 / 26.3 |
+|  | on, again | 4.64 | 29 GPU, 1 CPU (boundary-pending) | 8.3 / 9.5 / 17.8 | 8.3 / 8.4 / 9.5 | 17.8 / 17.8 / 17.8 | 8.3 / 9.5 / 27.6 |
+|  | off | 4.84 | 0 GPU, 30 CPU (preference-off) | 17.2 / 25.8 / 26.9 | — | 17.2 / 25.8 / 26.9 | 25.7 / 34.5 / 34.6 |
+|  | off, again | 4.95 | 0 GPU, 30 CPU (preference-off) | 9.5 / 18.0 / 26.1 | — | 9.5 / 18.0 / 26.1 | 18.1 / 26.6 / 35.0 |
+| 60 MP JPEG at Fit, full Basic | on | 4.99 | 29 GPU, 1 CPU (boundary-pending) | 8.4 / 8.9 / 9.3 | 8.4 / 8.7 / 8.9 | 9.3 / 9.3 / 9.3 | 8.4 / 8.9 / 17.0 |
+|  | on, again | 4.23 | 29 GPU, 1 CPU (boundary-pending) | 8.3 / 8.8 / 9.5 | 8.3 / 8.7 / 8.8 | 9.5 / 9.5 / 9.5 | 8.3 / 8.8 / 16.7 |
+|  | off | 4.80 | 0 GPU, 30 CPU (preference-off) | 9.1 / 16.9 / 51.0 | — | 9.1 / 16.9 / 51.0 | 17.8 / 26.0 / 55.5 |
+|  | off, again | 4.42 | 0 GPU, 30 CPU (preference-off) | 9.1 / 10.1 / 17.3 | — | 9.1 / 10.1 / 17.3 | 17.5 / 18.1 / 26.1 |
+| 24 MP, five exports queued | on | 4.57 | 29 GPU, 1 CPU (boundary-pending) | 8.8 / 46.0 / 129.6 | 8.8 / 39.0 / 46.0 | 129.6 / 129.6 / 129.6 | 8.8 / 46.0 / 131.8 |
+| 60 MP, five exports queued | on | 4.47 | 29 GPU, 1 CPU (boundary-pending) | 8.4 / 18.7 / 22.9 | 8.4 / 16.8 / 22.9 | 18.7 / 18.7 / 18.7 | 8.4 / 22.9 / 26.1 |
+|  | off | 4.41 | 0 GPU, 30 CPU (preference-off) | 17.5 / 211.5 / 265.4 | — | 17.5 / 211.5 / 265.4 | 26.0 / 217.4 / 274.5 |
+| 24 MP at 100%, full Basic | on | 4.97 | 29 GPU, 1 CPU (boundary-pending) | 8.3 / 9.4 / 9.6 | 8.3 / 9.3 / 9.4 | 9.6 / 9.6 / 9.6 | 8.3 / 9.3 / 9.4 |
+|  | off | 4.67 | 0 GPU, 30 CPU (preference-off) | 9.3 / 11.9 / 12.4 | — | 9.3 / 11.9 / 12.4 | — |
+| 24 MP at 200%, full Basic | on | 3.78 | 29 GPU, 1 CPU (boundary-pending) | 8.3 / 8.6 / 9.2 | 8.3 / 8.6 / 8.6 | 9.2 / 9.2 / 9.2 | 8.3 / 8.6 / 8.6 |
+| X100VI, Texture drag over Presence | on | 4.77 | 29 GPU, 1 CPU (boundary-pending) | 8.5 / 9.5 / 43.5 | 8.5 / 9.3 / 9.5 | 43.5 / 43.5 / 43.5 | 8.5 / 9.5 / 46.4 |
+|  | off | 4.45 | 0 GPU, 30 CPU (preference-off) | 41.5 / 47.2 / 48.6 | — | 41.5 / 47.2 / 48.6 | 44.1 / 52.3 / 54.5 |
+| X100VI, Clarity drag over Presence | on | 3.64 | 29 GPU, 1 CPU (boundary-pending) | 8.4 / 8.6 / 42.7 | 8.4 / 8.5 / 8.6 | 42.7 / 42.7 / 42.7 | 8.4 / 8.6 / 44.2 |
+| X100VI, Basic drag under Presence | on | 3.47 | 29 GPU, 1 CPU (boundary-pending) | 8.5 / 9.0 / 61.7 | 8.5 / 8.8 / 9.0 | 61.7 / 61.7 / 61.7 | 8.5 / 9.0 / 67.7 |
+| 24 MP, a 400-position brush stroke | on | 4.34 | 399 GPU, 1 CPU (boundary-pending) | 7.1 / 8.5 / 9.2 | 7.1 / 8.5 / 9.2 | 10.5 / 10.5 / 10.5 | — |
+
+- **Against the 16 ms p95 target.** Met with the GPU preview on at Fit at 24 MP and 60 MP (p95 8.8 to 9.5 ms over two runs each), at 100% (9.4) and 200% (8.6), by each X100VI Presence drag and the Basic drag under Presence (8.6 to 9.5), and by every position of the brush stroke (8.5). Each GPU frame is drawn at the first redraw after its input. With the preview off the same drags' p95 is 18.0 and 25.8 ms at 24 MP, 10.1 and 16.9 ms at 60 MP, 11.9 at 100% and 47.2 on the X100VI's Texture; drawn, the CPU frames reach the screen one to two frames after the GPU's (p50 17.5 to 25.7 ms against 8.3 at Fit).
+- **Against the earlier records.** The CPU path's hand-off was 18.1/24.8 ms p50/p95 at 24 MP and 17.2/28.9 at 60 MP on an earlier build; the same build's GPU-off runs now hand off at 9.5 to 17.2 / 18.0 to 25.8 and 9.1 / 10.1 to 16.9, varying by a frame between runs. The GPU frames, measured to their draw, are 8.3/9.3 to 9.5 at 24 MP and 8.3 to 8.4/8.8 to 8.9 at 60 MP, stable across runs.
+- **With an exact render holding the pool.** Five `export.jpeg` jobs of the committed stack are queued just before the drag; the lane renders each exactly on the shared pool, then encodes and writes it, one at a time, and an input sent inside the lane's busy window is contended. At 60 MP all 30 inputs of the GPU run were contended: p50/p95/p99 8.4/18.7/22.9 ms, its GPU frames 8.4/16.8/22.9. **The 16 ms target is missed under contention**, by a frame: the interface thread that draws the GPU frame competes with the exports' renders for cores, so some frames wait one redraw more. The 32 ms acceptable limit is met. With the preview off, 15 of its 30 inputs were contended: 18.1/265.4 ms p50/p95 over those, 17.5/211.5/265.4 over the run, the order of the earlier core measurement of a proxy beside exact renders, 207.2/214.7 ms, which was no desktop gesture. At 24 MP the five exports end within about a second, contending the first 8 inputs: the GPU run's p95 is 46.0 ms over all 30 and 39.0 over its 7 contended GPU frames, **missing both 16 and 32 ms**; its uncontended GPU frames also reached 46.0. The 24 MP run with the preview off could not be bounded: its exports each ran under the activity board's 250 ms record and had ended before the read, so the 60 MP run is the contended baseline.
+- **The brush stroke.** 400 positions, one every 24 ms, on one brush mask and its masked Basic layer: 399 drawn on the GPU, every position on screen with the first frame that carried it, 7.1/8.5/9.2 ms from its own input, the press 10.6 ms from the first position to its frame, none superseded.
+
+### Memory
+
+The GPU preview stage's high-water over each run (`gpu_preview_peak_bytes`), and the process's lifetime peak footprint as the Performance section last read it, beside the RSS `ps` sampled every 50 ms. The footprint peaks include the open, every exact render and histogram, the evidence captures and, in the contended runs, the exports.
+
+| Case | GPU preview | GPU-preview high-water | Process peak footprint | Sampled peak RSS |
+| --- | --- | ---: | ---: | ---: |
+| 24 MP JPEG at Fit | on | 32.5 MB | 1569 MiB | 1176 MiB |
+| 24 MP JPEG at Fit | off | 0.0 MB | 1409 MiB | 1203 MiB |
+| 60 MP JPEG at Fit | on | 30.9 MB | 1727 MiB | 1573 MiB |
+| 60 MP JPEG at Fit | off | 0.0 MB | 2039 MiB | 1601 MiB |
+| 24 MP at 100% | on | 40.7 MB | 1811 MiB | 1287 MiB |
+| 24 MP at 100% | off | 0.0 MB | 1630 MiB | 1328 MiB |
+| 24 MP at 200% | on | 10.2 MB | 1727 MiB | 1255 MiB |
+| 60 MP, five exports queued | on | 30.9 MB | 2148 MiB | 1697 MiB |
+| 60 MP, five exports queued | off | 0.0 MB | 2384 MiB | 1987 MiB |
+| X100VI, Texture over Presence | on | 95.9 MB | 2595 MiB | 2034 MiB |
+| X100VI, Texture over Presence | off | 0.0 MB | 2515 MiB | 2085 MiB |
+| X100VI, Basic under Presence | on | 95.9 MB | 2658 MiB | 2080 MiB |
+| 24 MP brush stroke | on | 32.5 MB | 1053 MiB | 665 MiB |
+
+- **The GPU preview's own share** is 10 to 41 MB at Fit, 100% and 200% on the JPEGs and 96 MB over the X100VI's `f32` boundary with Presence, within the 640 MiB budget, which bounds the heaviest 100% Presence and Detail slots the corpus measured (up to 668 MB, [above](#gpu-previews-at-100)). A boundary arriving at 100% holds up to 2.2 times its bytes during its upload, and the system allocator keeps the freed copy's pages in the footprint afterwards ([a boundary's arrival](#a-boundarys-arrival)).
+- **Against the provisional 1 GiB target for one 60 MP photograph**, which `measure` takes over one open: these gesture runs exceed it, with the GPU preview on and off alike — 1.69 and 1.99 GiB peak footprint for the 60 MP drags, 1.54 and 1.56 GiB sampled RSS — so the GPU preview is not what takes them past it. The peaks vary between runs by more than the GPU preview's share.
+
+### Idle after a dissolve
+
+The 24 MP drag with `--idle`: after its release had dissolved from the drag's last GPU frame (one dissolve started and ended, none cancelled), with the Performance section closed, a 4-second settle and a 10-second window drew one frame and built one view, the window's own, and the process spent 15.1 ms of CPU, 0.15% of one core. The same catalog reopened in an ordinary launch, the Performance section open, used 0.83% of one core over 30 seconds, under the 1% idle target.
 
 ## Method
 
