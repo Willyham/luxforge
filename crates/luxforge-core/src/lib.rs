@@ -115,6 +115,25 @@ pub use source::{LinearImage, OpticalIdentity, SourceImage, SourceOptics, open_s
 #[cfg(feature = "qualification")]
 pub mod qualification {
     pub use crate::modules::presence_qualification as presence;
+
+    /// The proxy plan a Fit job's worker builds for `recipe` over `render`'s source within
+    /// `bounds`, as the GPU preview's plan reads it, and the window of the whole proxy stage the
+    /// proxy source holds (`[x, y, width, height]`) when the stack reads less than all of it.
+    /// `None` when the stack takes no proxy, or none smaller than the source fits.
+    pub fn fit_proxy(
+        render: &crate::Render,
+        registry: &crate::ModuleRegistry,
+        recipe: &crate::Recipe,
+        bounds: crate::ProxyBounds,
+    ) -> Option<(crate::ProxyPlan, Option<[u32; 4]>)> {
+        registry.proxy_eligible(recipe).ok()?;
+        let plan = render.proxy_plan(bounds)?;
+        let plan = render.proxy_window(registry, recipe, plan).plan();
+        let window = plan
+            .window
+            .map(|window| [window.x, window.y, window.width, window.height]);
+        Some((plan, window))
+    }
 }
 
 // The crate root paths the core itself uses.

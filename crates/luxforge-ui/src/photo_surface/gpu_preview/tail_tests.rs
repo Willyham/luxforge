@@ -357,3 +357,73 @@ fn a_quantizing_tail_and_an_output_step() {
         assert_eq!((texel[0] * 255.0).round(), x as f32, "pixel {index}");
     }
 }
+
+/// A masked step after the tail covers the output pixel: its mask's position map, its bounds and
+/// a position-based component all read the output stage, not the boundary's, so a crop's offset
+/// moves nothing it covers.
+#[test]
+fn a_masked_step_after_the_tail_covers_the_output_pixel() {
+    let Some(qualifier) =
+        Qualifier::headless("a_masked_step_after_the_tail_covers_the_output_pixel")
+    else {
+        return;
+    };
+    let (width, height) = (64, 48);
+    let black = vec![[0.0f32; 3]; (width * height) as usize];
+    let output = (32u32, 28u32);
+    let tail = GpuTail::affine(
+        output,
+        [10, 12, 42, 40],
+        false,
+        [1.0, 0.0, 10.0, 0.0, 1.0, 12.0],
+    );
+    // Coverage `(x + ½) / 32` of the output column; over black, a unit that paints white then
+    // leaves exactly the coverage.
+    let ramp = GpuProgram::new(
+        "ramp",
+        "fn ramp(pos: vec2<f32>, rgb: vec3<f32>, words: u32, block: u32) -> f32 {\n    \
+         return clamp((pos.x + 0.5) / 32.0, 0.0, 1.0);\n}\n",
+    );
+    let white = GpuProgram::new(
+        "white",
+        "fn white(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> {\n    \
+         return vec3<f32>(1.0);\n}\n",
+    );
+    let bounds = [4, 2, 28, 26];
+    let masked = GpuStep::Masked(MaskedColour {
+        units: vec![white],
+        position: PositionMap::IDENTITY,
+        mask: Coverage {
+            position: PositionMap::IDENTITY,
+            bounds,
+            supersample: false,
+            components: vec![CoverageComponent {
+                mode: CoverageMode::Add,
+                invert: false,
+                program: ramp,
+            }],
+            invert: false,
+            scale: 1.0,
+        },
+    });
+    let drawn = qualifier
+        .evaluate(&plan(
+            &black,
+            (width, height),
+            (0, 0),
+            vec![GpuStep::Geometry(tail), masked],
+        ))
+        .unwrap();
+    assert_eq!(drawn.len(), (output.0 * output.1) as usize);
+    for (index, texel) in drawn.iter().enumerate() {
+        let (x, y) = (index as u32 % output.0, index as u32 / output.0);
+        let inside = (bounds[0]..bounds[2]).contains(&x) && (bounds[1]..bounds[3]).contains(&y);
+        let expected = if inside { (x as f32 + 0.5) / 32.0 } else { 0.0 };
+        for value in &texel[..3] {
+            assert!(
+                (value - expected).abs() <= 1e-6,
+                "({x}, {y}): {value} for {expected}"
+            );
+        }
+    }
+}
