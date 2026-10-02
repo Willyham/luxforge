@@ -633,17 +633,17 @@ impl SampleStore for Wide {
         p.copy_from_slice(&encoded(rgb, true));
     }
 }
-/// Linear light as the GPU preview's boundary holds it ([`super::boundary`]): four little-endian
-/// half floats a pixel, eight bytes, with the value unclamped and opaque alpha.
+/// Linear light as a JPEG's GPU preview boundary holds it ([`super::boundary`]): four
+/// little-endian half floats a pixel, eight bytes, with the value unclamped and opaque alpha.
 pub(super) struct Half;
 impl SampleStore for Half {
     type Sample = u8;
-    const SAMPLES: usize = super::boundary::TEXEL_BYTES;
+    const SAMPLES: usize = super::boundary::BoundaryFormat::Half.texel_bytes();
     fn load(p: &[u8]) -> [f32; 3] {
-        super::boundary::read_texel(p)
+        super::boundary::read_texel(super::boundary::BoundaryFormat::Half, p)
     }
     fn store(p: &mut [u8], rgb: [f32; 3]) {
-        super::boundary::write_texel(p, rgb);
+        super::boundary::write_texel(super::boundary::BoundaryFormat::Half, p, rgb);
     }
 }
 struct FloatRows<'a, S> {
@@ -741,7 +741,11 @@ pub(super) fn boundary_pass(
     cancel: &Cancel,
     context: &RenderContext,
 ) -> Result<Vec<u8>, Error> {
-    let len = super::boundary::frame_len(segment.width, segment.height)?;
+    let len = super::boundary::frame_len(
+        segment.width,
+        segment.height,
+        super::boundary::BoundaryFormat::Half,
+    )?;
     let mut texels = vec![0u8; len];
     segment_pass(
         &FloatRows::<Half>::new(segment, Some((input, stage))),

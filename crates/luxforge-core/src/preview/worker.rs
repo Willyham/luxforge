@@ -330,9 +330,13 @@ pub(super) fn run(
                                         height: window.height,
                                     });
                                 let result = match (uncut, &proxied) {
-                                    (Some(uncut), Ok(proxy)) => {
-                                        proxy.boundary(&uncut, whole, window, request.position)
-                                    }
+                                    (Some(uncut), Ok(proxy)) => proxy.boundary(
+                                        &uncut,
+                                        whole,
+                                        window,
+                                        request.position,
+                                        request.format,
+                                    ),
                                     _ => Err(drawn_elsewhere()),
                                 };
                                 boundary_answered = true;
@@ -423,6 +427,7 @@ pub(super) fn run(
                         whole,
                         Region::whole(whole),
                         request.position,
+                        request.format,
                     )
                 })
             };

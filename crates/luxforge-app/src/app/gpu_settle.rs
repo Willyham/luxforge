@@ -198,7 +198,13 @@ mod tests {
         let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
         let photo = Frame::new(Arc::new(vec![0, 128, 255, 255]), 1, 1, 21).unwrap();
         let mut hook = GpuIdentity::default();
-        hook.adopt(GpuBoundary::from_linear(1, 1, 21, [[0.0, 0.2, 1.0, 1.0]]));
+        hook.adopt(GpuBoundary::from_linear(
+            luxforge_ui::photo_surface::BoundaryFormat::Half,
+            1,
+            1,
+            21,
+            [[0.0, 0.2, 1.0, 1.0]],
+        ));
         let mut evidence = scripted_evidence("[]");
         evidence.gpu_identity = Some(hook);
         editor.evidence = Some(evidence);

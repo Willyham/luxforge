@@ -51,6 +51,7 @@ fn a_pass_is_reported_complete_by_a_later_submit_without_a_poll() {
     };
     let mut pipeline = own_pipeline(&device, &queue);
     let boundary = GpuBoundary::from_linear(
+        crate::photo_surface::BoundaryFormat::Half,
         SIDE,
         SIDE,
         1,
@@ -99,6 +100,7 @@ fn the_drawn_gpu_frame_reports_its_completion_figure() {
     };
     let mut pipeline = own_pipeline(&device, &queue);
     let boundary = GpuBoundary::from_linear(
+        crate::photo_surface::BoundaryFormat::Half,
         SIDE,
         SIDE,
         1,
@@ -154,6 +156,7 @@ fn gpu_frame_completion_is_measured() {
     };
     let (width, height) = (2400, 1600);
     let boundary = GpuBoundary::from_linear(
+        crate::photo_surface::BoundaryFormat::Half,
         width,
         height,
         1,

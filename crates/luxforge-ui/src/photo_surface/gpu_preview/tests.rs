@@ -254,7 +254,14 @@ fn assembly_includes_a_shared_program_once_and_refuses_what_cannot_be_chained() 
 
 #[test]
 fn the_words_are_the_map_then_each_steps_bases_and_position_then_their_words() {
-    let boundary = GpuBoundary::from_linear(1, 1, 1, [[0.0; 4]]).unwrap();
+    let boundary = GpuBoundary::from_linear(
+        crate::photo_surface::BoundaryFormat::Half,
+        1,
+        1,
+        1,
+        [[0.0; 4]],
+    )
+    .unwrap();
     let mut chain = plan(&boundary, vec![scale(0.5), stripe(0.25, 3), swap(true)]);
     chain.texels = TexelMap {
         origin: [2.0, 5.0],
@@ -302,9 +309,14 @@ fn the_words_are_the_map_then_each_steps_bases_and_position_then_their_words() {
 
 #[test]
 fn a_boundary_holds_exactly_its_half_float_texels() {
-    let boundary =
-        GpuBoundary::from_linear(2, 1, 9, [[0.5, -2.0, 1.0e5, 1.0], [0.0, 1.0, 0.1, 1.0]])
-            .expect("two texels");
+    let boundary = GpuBoundary::from_linear(
+        crate::photo_surface::BoundaryFormat::Half,
+        2,
+        1,
+        9,
+        [[0.5, -2.0, 1.0e5, 1.0], [0.0, 1.0, 0.1, 1.0]],
+    )
+    .expect("two texels");
     assert_eq!((boundary.size(), boundary.version()), ((2, 1), 9));
     let halves: Vec<f32> = (*boundary.texels)
         .as_ref()
@@ -325,16 +337,56 @@ fn a_boundary_holds_exactly_its_half_float_texels() {
         ]
     );
     assert!(
-        GpuBoundary::from_linear(2, 1, 1, [[0.0; 4]]).is_none(),
+        GpuBoundary::from_linear(
+            crate::photo_surface::BoundaryFormat::Half,
+            2,
+            1,
+            1,
+            [[0.0; 4]]
+        )
+        .is_none(),
         "too few"
     );
     assert!(
-        GpuBoundary::from_linear(1, 1, 1, [[0.0; 4]; 2]).is_none(),
+        GpuBoundary::from_linear(
+            crate::photo_surface::BoundaryFormat::Half,
+            1,
+            1,
+            1,
+            [[0.0; 4]; 2]
+        )
+        .is_none(),
         "too many"
     );
-    assert!(GpuBoundary::new(Arc::new(vec![0u8; 15]), 2, 1, 1).is_none());
-    assert!(GpuBoundary::new(Arc::new(vec![0u8; 16]), 2, 1, 1).is_some());
-    assert!(GpuBoundary::new(Arc::new(Vec::<u8>::new()), 0, 0, 1).is_none());
+    let half = crate::photo_surface::BoundaryFormat::Half;
+    let float = crate::photo_surface::BoundaryFormat::Float;
+    assert!(GpuBoundary::new(Arc::new(vec![0u8; 15]), 2, 1, 1, half).is_none());
+    assert!(GpuBoundary::new(Arc::new(vec![0u8; 16]), 2, 1, 1, half).is_some());
+    assert!(GpuBoundary::new(Arc::new(vec![0u8; 16]), 2, 1, 1, float).is_none());
+    assert!(GpuBoundary::new(Arc::new(vec![0u8; 32]), 2, 1, 1, float).is_some());
+    assert!(GpuBoundary::new(Arc::new(Vec::<u8>::new()), 0, 0, 1, half).is_none());
+}
+
+/// An `rgba32float` boundary holds every value as the `f32` it is, a near-black one's sign and a
+/// value past the half range included, sixteen bytes a texel.
+#[test]
+fn a_float_boundary_holds_its_values_exactly() {
+    let values = [[-3.0e-8, 1.0e5, 0.1, 1.0], [2.5e-9, -0.0, 7.0, 1.0]];
+    let boundary =
+        GpuBoundary::from_linear(crate::photo_surface::BoundaryFormat::Float, 2, 1, 4, values)
+            .expect("two texels");
+    assert_eq!(boundary.bytes(), 32);
+    let held: Vec<u32> = (*boundary.texels)
+        .as_ref()
+        .chunks_exact(4)
+        .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        .collect();
+    let expected: Vec<u32> = values
+        .iter()
+        .flatten()
+        .map(|value| value.to_bits())
+        .collect();
+    assert_eq!(held, expected);
 }
 
 #[test]
@@ -631,6 +683,7 @@ pub(super) fn boundary_with_codes(version: u64) -> (GpuBoundary, Vec<[u8; 3]>) {
         });
     }
     let boundary = GpuBoundary::from_linear(
+        crate::photo_surface::BoundaryFormat::Half,
         SIDE,
         SIDE,
         version,
@@ -718,6 +771,7 @@ fn a_magnified_gpu_frame_draws_exactly_as_the_cpu_frame_of_its_codes() {
         })
         .collect();
     let boundary = GpuBoundary::from_linear(
+        crate::photo_surface::BoundaryFormat::Half,
         width,
         height,
         1,
@@ -1180,8 +1234,14 @@ fn a_boundary_past_the_texture_limit_makes_the_frame_the_cpus() {
         return;
     };
     let mut pipeline = own_pipeline(&device, &queue);
-    let wide = GpuBoundary::from_linear(SIDE + 1, 1, 1, std::iter::repeat_n([0.5; 4], 65))
-        .expect("a boundary");
+    let wide = GpuBoundary::from_linear(
+        crate::photo_surface::BoundaryFormat::Half,
+        SIDE + 1,
+        1,
+        1,
+        std::iter::repeat_n([0.5; 4], 65),
+    )
+    .expect("a boundary");
     assert_cpu_frame(&paint(
         &device,
         &queue,

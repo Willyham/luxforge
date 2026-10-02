@@ -314,16 +314,44 @@ enum StepKind {
     },
 }
 
-/// The held input boundary: `rgba16float` texels of scene-linear sRGB, eight bytes each, rows
-/// top to bottom, every half float little-endian. The version decides whether it is uploaded
-/// again, as a [`Frame`](super::Frame)'s does: it changes whenever the texels do and never
-/// otherwise.
+/// How the held boundary's texels are stored: four little-endian half floats (`rgba16float`), as a
+/// JPEG's byte path holds them, or four little-endian `f32` (`rgba32float`), as a developed RAW's
+/// linear path does, where half rounding of a near-black value can flip the sign a spatial
+/// operation divides by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BoundaryFormat {
+    Half,
+    Float,
+}
+
+impl BoundaryFormat {
+    /// Bytes per texel.
+    pub const fn texel_bytes(self) -> usize {
+        match self {
+            Self::Half => 8,
+            Self::Float => 16,
+        }
+    }
+
+    /// The texture the boundary is uploaded to.
+    pub(super) fn texture(self) -> wgpu::TextureFormat {
+        match self {
+            Self::Half => wgpu::TextureFormat::Rgba16Float,
+            Self::Float => wgpu::TextureFormat::Rgba32Float,
+        }
+    }
+}
+
+/// The held input boundary: texels of scene-linear sRGB in `format`, rows top to bottom. The
+/// version decides whether it is uploaded again, as a [`Frame`](super::Frame)'s does: it changes
+/// whenever the texels do and never otherwise.
 #[derive(Clone)]
 pub struct GpuBoundary {
     texels: Arc<dyn AsRef<[u8]> + Send + Sync>,
     width: u32,
     height: u32,
     version: u64,
+    format: BoundaryFormat,
 }
 
 impl std::fmt::Debug for GpuBoundary {
@@ -333,60 +361,80 @@ impl std::fmt::Debug for GpuBoundary {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("version", &self.version)
+            .field("format", &self.format)
             .finish()
     }
 }
 
 impl GpuBoundary {
-    /// Bytes per texel: four half floats.
-    pub const TEXEL_BYTES: usize = 8;
-
-    /// A boundary of `width` × `height` texels held in `texels` as they are, or `None` when the
-    /// buffer does not hold exactly that many. Nothing is copied.
+    /// A boundary of `width` × `height` texels of `format` held in `texels` as they are, or `None`
+    /// when the buffer does not hold exactly that many. Nothing is copied.
     pub fn new<P: AsRef<[u8]> + Send + Sync + 'static>(
         texels: Arc<P>,
         width: u32,
         height: u32,
         version: u64,
+        format: BoundaryFormat,
     ) -> Option<Self> {
         let expected = (width as usize)
             .checked_mul(height as usize)?
-            .checked_mul(Self::TEXEL_BYTES)?;
+            .checked_mul(format.texel_bytes())?;
         (width > 0 && height > 0 && (*texels).as_ref().len() == expected).then(|| Self {
             texels,
             width,
             height,
             version,
+            format,
         })
     }
 
-    /// A boundary of `width` × `height` texels from linear RGBA values in row order, each rounded
-    /// to the nearest half float, or `None` when `pixels` does not yield exactly that many. This is
-    /// frame work: a caller runs it on a worker, never the UI thread.
+    /// A boundary of `width` × `height` texels of `format` from linear RGBA values in row order,
+    /// each rounded to the nearest half float or held as the `f32` it is, or `None` when `pixels`
+    /// does not yield exactly that many. This is frame work: a caller runs it on a worker, never
+    /// the UI thread.
     pub fn from_linear(
+        format: BoundaryFormat,
         width: u32,
         height: u32,
         version: u64,
         pixels: impl IntoIterator<Item = [f32; 4]>,
     ) -> Option<Self> {
         let count = (width as usize).checked_mul(height as usize)?;
+        let bytes = format.texel_bytes();
         // Zeroed, so its pages are faulted in by the pass that writes them.
-        let mut texels = vec![0u8; count.checked_mul(Self::TEXEL_BYTES)?];
+        let mut texels = vec![0u8; count.checked_mul(bytes)?];
         let mut written = 0;
         for pixel in pixels {
-            let texel =
-                texels.get_mut(written * Self::TEXEL_BYTES..(written + 1) * Self::TEXEL_BYTES)?;
-            for (bytes, value) in texel.chunks_exact_mut(2).zip(pixel) {
-                bytes.copy_from_slice(&half::f16::from_f32(value).to_bits().to_le_bytes());
+            let texel = texels.get_mut(written * bytes..(written + 1) * bytes)?;
+            match format {
+                BoundaryFormat::Half => {
+                    for (bytes, value) in texel.chunks_exact_mut(2).zip(pixel) {
+                        bytes.copy_from_slice(&half::f16::from_f32(value).to_bits().to_le_bytes());
+                    }
+                }
+                BoundaryFormat::Float => {
+                    for (bytes, value) in texel.chunks_exact_mut(4).zip(pixel) {
+                        bytes.copy_from_slice(&value.to_le_bytes());
+                    }
+                }
             }
             written += 1;
         }
         (written == count).then_some(())?;
-        Self::new(Arc::new(texels), width, height, version)
+        Self::new(Arc::new(texels), width, height, version, format)
     }
 
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    pub fn format(&self) -> BoundaryFormat {
+        self.format
+    }
+
+    /// The bytes the boundary's texels take, as uploaded.
+    pub fn bytes(&self) -> u64 {
+        u64::from(self.width) * u64::from(self.height) * self.format.texel_bytes() as u64
     }
 
     pub fn version(&self) -> u64 {
@@ -632,16 +680,22 @@ pub(super) struct GpuSlot {
     spatial: Option<Box<SpatialSlot>>,
 }
 
-/// A slot's spatial planes and, for one compiled sequence, the groups that bind them.
+/// A slot's spatial planes and, for one compiled sequence, the groups that bind them, with which
+/// passes a tick still needs to run.
 pub(super) struct SpatialSlot {
     planes: spatial::Planes,
     groups: Option<(u64, spatial::Groups)>,
+    schedule: spatial::Schedule,
+    /// How many passes the slot has dispatched.
+    dispatched: u64,
 }
 
 /// What a slot is allocated for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Shape {
     boundary: (u32, u32),
+    /// How the boundary's texels are stored, which its texture's format follows.
+    format: BoundaryFormat,
     output: (u32, u32),
     /// The tail's intermediate format, when the plan has a tail.
     intermediate: Option<wgpu::TextureFormat>,
@@ -657,6 +711,7 @@ impl Shape {
         });
         Self {
             boundary,
+            format: plan.boundary.format(),
             output: tail.map_or(boundary, GpuTail::output),
             intermediate: tail.map(GpuTail::intermediate),
         }
@@ -677,7 +732,7 @@ impl Shape {
         let intermediate = self.intermediate.map_or(0, |format| {
             texels * u64::from(format.block_copy_size(None).unwrap_or(8))
         });
-        texels * GpuBoundary::TEXEL_BYTES as u64
+        texels * self.format.texel_bytes() as u64
             + intermediate
             + u64::from(capacity.0) * u64::from(capacity.1) * 4
             + UNIFORM_SIZE as u64
@@ -1587,6 +1642,7 @@ impl PhotoPipeline {
                 pipeline_id,
                 spatial::Groups::new(device, &pipeline.spatial, &spatial.planes),
             ));
+            spatial.schedule.reset();
             changed = true;
         }
         if let Some(spatial) = slot.spatial.as_mut() {
@@ -1627,15 +1683,22 @@ impl PhotoPipeline {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("luxforge.gpu_preview.encoder"),
             });
-            // A spatial step's compute passes fill its planes first, from the boundary.
+            // A spatial step's compute passes fill its planes first, from the boundary: only
+            // the passes this tick changes.
+            if let Some(spatial) = slot.spatial.as_mut()
+                && let Some((_, groups)) = spatial.groups.as_ref()
+            {
+                let run = spatial
+                    .schedule
+                    .run(&plan.steps, words, blocks, plan.boundary.version);
+                spatial.dispatched +=
+                    groups.encode(&mut encoder, &pipeline.spatial, &slot.bindings, &run);
+            }
             let groups = slot
                 .spatial
                 .as_ref()
                 .and_then(|spatial| spatial.groups.as_ref())
                 .map(|(_, groups)| groups);
-            if let Some(groups) = groups {
-                groups.encode(&mut encoder, &pipeline.spatial, &slot.bindings);
-            }
             let planes = groups.and_then(|groups| groups.fragment.as_ref());
             // The frame and, where the bucket has room, one more column and row: the edge
             // texels again, which the linear filter reads across the frame's edge as it reads the
@@ -1731,7 +1794,7 @@ impl PhotoPipeline {
         let boundary = texture(
             "luxforge.gpu_preview.boundary",
             (width, height),
-            wgpu::TextureFormat::Rgba16Float,
+            shape.format.texture(),
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             &[],
         );
@@ -1874,6 +1937,8 @@ impl PhotoPipeline {
             slot.spatial = Some(Box::new(SpatialSlot {
                 planes: spatial::Planes::create(device, key),
                 groups: None,
+                schedule: spatial::Schedule::default(),
+                dispatched: 0,
             }));
             slot.evaluated = None;
         }
@@ -1965,6 +2030,7 @@ impl PhotoPipeline {
 /// charge it: the boundary, the output in the photograph's size bucket and its placement uniform,
 /// the words and blocks buffers at their capacities, and a spatial step's planes. For a report and
 /// the tests that hold it to the slot's own figure.
+#[cfg(any(test, feature = "qualification"))]
 pub(super) fn slot_charge(device: &wgpu::Device, plan: &GpuPlan) -> Result<u64, GpuFallback> {
     let shape = Shape::of(plan);
     let limit = device.limits().max_texture_dimension_2d;
@@ -1989,7 +2055,7 @@ fn le_bytes(words: &[u32]) -> Vec<u8> {
 
 /// Queue the boundary's texels straight from the caller's buffer, in bounded chunks of rows.
 fn upload_boundary(queue: &wgpu::Queue, texture: &wgpu::Texture, boundary: &GpuBoundary) {
-    let row_bytes = u64::from(boundary.width) * GpuBoundary::TEXEL_BYTES as u64;
+    let row_bytes = u64::from(boundary.width) * boundary.format.texel_bytes() as u64;
     let rows_per_chunk = (UPLOAD_CHUNK / row_bytes).max(1) as u32;
     let mut row = 0;
     while row < boundary.height {

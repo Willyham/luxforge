@@ -113,10 +113,10 @@ use std::time::Instant;
 
 pub mod gpu_preview;
 pub use gpu_preview::{
-    Coverage, CoverageComponent, CoverageMode, DISSOLVE_DURATION, Dissolve, DrawingPath,
-    DrawnDissolve, GPU_PREVIEW_BUDGET, GpuBoundary, GpuFallback, GpuPlan, GpuProgram, GpuStep,
-    GpuTail, GpuWarm, MaskedColour, OutputEncoding, PIPELINE_CACHE, PRELUDE, PositionMap, TexelMap,
-    install_output_encoding, output_encoding, validate_step,
+    BoundaryFormat, Coverage, CoverageComponent, CoverageMode, DISSOLVE_DURATION, Dissolve,
+    DrawingPath, DrawnDissolve, GPU_PREVIEW_BUDGET, GpuBoundary, GpuFallback, GpuPlan, GpuProgram,
+    GpuStep, GpuTail, GpuWarm, MaskedColour, OutputEncoding, PIPELINE_CACHE, PRELUDE, PositionMap,
+    TexelMap, install_output_encoding, output_encoding, validate_step,
 };
 
 /// Which photo surface a primitive draws. The pipeline keeps one set of textures per id, so two

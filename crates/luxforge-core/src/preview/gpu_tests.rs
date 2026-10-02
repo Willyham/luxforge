@@ -73,6 +73,17 @@ fn draft_job(
     drafted: Vec<Layer>,
     revision: u64,
 ) -> (PreviewJob, Draft) {
+    draft_job_over(source(), action, entry, drafted, revision)
+}
+
+/// [`draft_job`] over `source`.
+fn draft_job_over(
+    source: PreviewSource,
+    action: &str,
+    entry: Vec<Layer>,
+    drafted: Vec<Layer>,
+    revision: u64,
+) -> (PreviewJob, Draft) {
     let asset = AssetId::new();
     let entry = HistoryEntry {
         id: EntryId::new(),
@@ -99,7 +110,7 @@ fn draft_job(
     let evaluation = Evaluation::new(
         Arc::new(ModuleRegistry::builtin()),
         RenderContext::new(),
-        source(),
+        source,
         entry,
         recipe(drafted),
         Some(DraftStamp {
@@ -262,6 +273,8 @@ fn a_job_that_asks_renders_its_boundary_after_its_fit_frame() {
     let outcome = boundary.boundary().unwrap();
     assert_eq!(outcome.key, request.key);
     let frame = outcome.result.as_ref().unwrap();
+    assert_eq!(request.format, crate::BoundaryFormat::Half, "a JPEG's");
+    assert_eq!(frame.format, crate::BoundaryFormat::Half);
     assert_eq!(frame.origin, (window.x, window.y));
     assert_eq!((frame.width, frame.height), (window.width, window.height));
     assert_eq!(
@@ -294,6 +307,60 @@ fn a_job_that_asks_renders_its_boundary_after_its_fit_frame() {
     );
     luxforge_testbase::wait_until("the job to end", || !queue.is_busy());
     assert!(queue.poll().is_none(), "no boundary was asked for");
+}
+
+/// A developed RAW's boundary, on the linear path, holds `f32` texels: every value of the proxy the
+/// Fit frame was rendered from, exactly, as the plan of the linear path reads it.
+#[test]
+fn a_raw_boundary_holds_its_values_as_f32() {
+    let raw = PreviewSource::Raw {
+        image: crate::render::tests::varied(WIDTH, HEIGHT),
+        settings: crate::LinearSettings::default(),
+    };
+    let (mut job, draft) = draft_job_over(
+        raw,
+        "set-basic",
+        Vec::new(),
+        vec![basic(json!({"exposure": 0.3}))],
+        2,
+    );
+    let preview = plan_preview(&job.evaluation, &draft, bounds()).unwrap();
+    let request = preview.boundary.clone().expect("a boundary");
+    assert_eq!(request.format, crate::BoundaryFormat::Float);
+    let plan = request.key.plan().expect("a proxy");
+    let proxied = job.evaluation.source().proxy(plan).unwrap();
+    job.proxy = Some(bounds());
+    job.intent = PreviewIntent::Interactive;
+    job.boundary = Some(request.clone());
+    let mut queue = PreviewQueue::default();
+    queue.request(job);
+    let _ = wait_for("the Fit frame", || queue.poll());
+    let boundary = wait_for("the boundary", || queue.poll());
+    let frame = boundary
+        .boundary()
+        .unwrap()
+        .result
+        .as_ref()
+        .unwrap()
+        .clone();
+    assert_eq!(frame.format, crate::BoundaryFormat::Float);
+    let PreviewSource::Raw { image, .. } = &proxied else {
+        panic!("a RAW proxy")
+    };
+    assert_eq!((frame.width, frame.height), (image.width(), image.height()));
+    assert_eq!(
+        frame.texels.len(),
+        (frame.width * frame.height * 16) as usize
+    );
+    for y in 0..frame.height {
+        for x in 0..frame.width {
+            assert_eq!(
+                frame.texel(x, y).unwrap().map(f32::to_bits),
+                image.pixel(x, y).unwrap().map(f32::to_bits),
+                "texel ({x}, {y})"
+            );
+        }
+    }
 }
 
 /// The plans warmed for a committed stack hold the program sequence every first drag of a colour

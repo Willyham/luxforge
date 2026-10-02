@@ -11,8 +11,8 @@ use luxforge_reference::{
     srgb,
 };
 use luxforge_ui::photo_surface::{
-    GpuPlan, GpuProgram, GpuStep, MaskedColour, TexelMap,
-    gpu_preview::qualification::{Qualifier, boundary, held},
+    BoundaryFormat, GpuPlan, GpuProgram, GpuStep, MaskedColour, TexelMap,
+    gpu_preview::qualification::{Qualifier, boundary_as, held},
 };
 use serde_json::{Value, json};
 
@@ -132,6 +132,7 @@ pub(crate) fn fit_bounds() -> luxforge_core::ProxyBounds {
 pub(crate) struct CorpusSource {
     pub(crate) id: String,
     pub(crate) path: std::path::PathBuf,
+    pub(crate) raw: bool,
 }
 
 /// The corpus's sources this host has: the generated JPEGs under `generated`, and the RAWs the
@@ -161,7 +162,11 @@ pub(crate) fn corpus_sources(
             _ => None,
         };
         match path.filter(|path| path.is_file()) {
-            Some(path) => found.push(CorpusSource { id, path }),
+            Some(path) => found.push(CorpusSource {
+                raw: source["kind"] == "raw",
+                id,
+                path,
+            }),
             None => eprintln!("gap: {id} has no file on this host"),
         }
     }
@@ -227,7 +232,7 @@ fn resolve_names(
 /// `steps`, the corpus recipe's evidence-script steps, applied through the API to `asset`, a mask
 /// or component named by name resolved to its identity. A `section` step only opens a panel and
 /// changes no recipe, so it is passed over.
-fn apply_steps(
+pub(crate) fn apply_steps(
     owner: &luxforge_core::OwnerHandle,
     client: luxforge_core::ClientId,
     asset: &luxforge_core::AssetId,
@@ -447,7 +452,12 @@ pub(crate) fn corpus_cell(
                 return Ok(Cell::Gap(format!("{}: {reason}", reason.code())));
             }
         };
-        let held = boundary(width, height, 1, &texels).ok_or("a boundary")?;
+        // A RAW's boundary holds its values as `f32`, as the worker's boundary job writes it.
+        let format = match &proxied {
+            PreviewSource::Raw { .. } => BoundaryFormat::Float,
+            PreviewSource::Jpeg(_) => BoundaryFormat::Half,
+        };
+        let held = boundary_as(format, width, height, 1, &texels).ok_or("a boundary")?;
         // The frame is the plan's output stage: the boundary's, or its geometry tail's.
         let output_stage = plan.geometry.output();
         let (out_width, out_height) = (output_stage.width, output_stage.height);

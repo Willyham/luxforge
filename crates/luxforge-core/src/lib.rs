@@ -101,7 +101,7 @@ pub use render::gpu::{
     GpuPlaneSize, GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuSpatial, GpuSpatialUnit,
     gpu_plan, gpu_plan_with,
 };
-pub use render::{BOUNDARY_MAX_BYTES, BoundaryFrame};
+pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{
     ContentPoint, GeometryMap, INPUT_GRID_MAX_CELLS, InputGridCache, LinearSettings, MapError,
     MappingDescriptor, MappingShape, PrefixUse, Raster, RegionFrame, Render, RenderContext,

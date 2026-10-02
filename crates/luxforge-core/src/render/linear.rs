@@ -534,12 +534,12 @@ pub(super) struct LinearRows<'e, 'x, 's> {
 }
 
 /// What a pass of [`LinearRows`] writes: terminal bytes through the output quantizer, taken once
-/// for the pass rather than once per channel, or the half floats a GPU preview's boundary holds
+/// for the pass rather than once per channel, or the `f32` texels a GPU preview's boundary holds
 /// ([`super::boundary`]), unquantized.
 #[derive(Clone, Copy)]
 pub(super) enum LinearOutput {
     Terminal(&'static srgb::Quantizer),
-    Half,
+    Boundary,
 }
 
 impl LinearOutput {
@@ -547,7 +547,7 @@ impl LinearOutput {
     fn bytes(self) -> usize {
         match self {
             Self::Terminal(_) => 4,
-            Self::Half => super::boundary::TEXEL_BYTES,
+            Self::Boundary => super::boundary::BoundaryFormat::Float.texel_bytes(),
         }
     }
 
@@ -558,8 +558,12 @@ impl LinearOutput {
             Self::Terminal(quantizer) => {
                 bytes[..4].copy_from_slice(&terminal_pixel_in(quantizer, pixel)?);
             }
-            Self::Half => {
-                super::boundary::write_texel(bytes, pixel.map(|value| value as f32));
+            Self::Boundary => {
+                super::boundary::write_texel(
+                    super::boundary::BoundaryFormat::Float,
+                    bytes,
+                    pixel.map(|value| value as f32),
+                );
             }
         }
         Ok(())
@@ -812,12 +816,13 @@ impl SegmentRows for LinearRows<'_, '_, '_> {
                         rgba.copy_from_slice(&terminal_pixel_in(quantizer, pixel.map(f64::from))?);
                     }
                 }
-                LinearOutput::Half => {
+                LinearOutput::Boundary => {
+                    let format = super::boundary::BoundaryFormat::Float;
                     for (texel, pixel) in chunk
-                        .chunks_exact_mut(super::boundary::TEXEL_BYTES)
+                        .chunks_exact_mut(format.texel_bytes())
                         .zip(scratch.rows.iter())
                     {
-                        super::boundary::write_texel(texel, *pixel);
+                        super::boundary::write_texel(format, texel, *pixel);
                     }
                 }
             }
@@ -828,8 +833,8 @@ impl SegmentRows for LinearRows<'_, '_, '_> {
 
 /// One segment's pass into the GPU preview's boundary ([`super::boundary`]): `segment`, which
 /// stands in for segment `index` of `evaluation`'s compilation and reads what that segment's entry
-/// reads, written as half floats without quantizing, so a boundary inside a colour run holds the
-/// value the run hands the next layer.
+/// reads, written as `f32` texels without quantizing, so a boundary inside a colour run holds the
+/// value the run hands the next layer, exactly.
 pub(super) fn boundary_pass(
     evaluation: &Evaluation<'_, Linear<'_>>,
     index: usize,
@@ -844,14 +849,21 @@ pub(super) fn boundary_pass(
             .geometry
             .is_identity(source.width(), source.height()))
     .then_some(evaluation.domain.reader);
-    let mut texels = vec![0u8; super::boundary::frame_len(segment.width, segment.height)?];
+    let mut texels = vec![
+        0u8;
+        super::boundary::frame_len(
+            segment.width,
+            segment.height,
+            super::boundary::BoundaryFormat::Float,
+        )?
+    ];
     segment_pass(
         &LinearRows {
             evaluation,
             index,
             segment,
             reader,
-            output: LinearOutput::Half,
+            output: LinearOutput::Boundary,
             #[cfg(test)]
             context,
         },
