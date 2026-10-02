@@ -179,6 +179,88 @@ fn all_draws(launch: &Checked) -> Result<Value> {
     )
 }
 
+/// The events of the step whose frame is `name`: from its `script_step` record to the next.
+fn step_events<'a>(launch: &'a Checked, name: &str) -> Result<&'a [Value]> {
+    let step = launch.index(name)? as u64;
+    let events = &launch.events;
+    let start = events
+        .iter()
+        .position(|event| event["event"] == "script_step" && event["detail"]["step"] == step)
+        .ok_or_else(|| format!("no script_step {step} for {name}"))?;
+    let end = events[start + 1..]
+        .iter()
+        .position(|event| event["event"] == "script_step")
+        .map_or(events.len(), |offset| start + 1 + offset);
+    Ok(&events[start..end])
+}
+
+/// What the histogram captured after a drafted step may show
+/// ([basic-and-histogram](../../docs/design/basic-and-histogram.md)). While the draft moves, the
+/// last exact whole-image report stays plotted and marked updating. Once the draft has been quiet
+/// for the shared policy, the exact full-frame analysis of the drafted recipe is its report, as the
+/// `histogram` scenario checks of a paused draft. The step settles on the draft's first frame, and
+/// the capture after it comes whenever the window is read back: on a loaded host that can be after
+/// the quiet policy has settled the draft, and the report is then current. That is correct only
+/// when the report is this draft revision's, reduced by the settle job the quiet policy asked for
+/// after the step's input and adopted before the capture; anything else current in the capture is
+/// a whole-image report adopted during the gesture, and fails.
+fn drafted_histogram(launch: &Checked, name: &str, revision: u64) -> Result<Value> {
+    let histogram = &launch.at(name)?.state()["histogram"];
+    if histogram["stale"] == true {
+        return Ok(json!({"outcome": "updating"}));
+    }
+    let events = step_events(launch, name)?;
+    let input = events
+        .iter()
+        .rposition(|event| event["event"] == "slider_draft_set")
+        .ok_or_else(|| format!("{name} sent no draft.set"))?;
+    let quiet = events[input..]
+        .iter()
+        .position(|event| event["event"] == "preview_quiet_refine")
+        .map(|offset| input + offset);
+    let settle = quiet.and_then(|quiet| {
+        events[quiet..].iter().find(|event| {
+            event["event"] == "preview_view_requested" && event["detail"]["intent"] == "settle"
+        })
+    });
+    let generation = settle.and_then(|settle| settle["detail"]["generation"].as_u64());
+    let adopted = events.iter().find(|event| {
+        event["event"] == "analysis_adopted"
+            && generation.is_some()
+            && event["detail"]["generation"].as_u64() == generation
+            && event["detail"]["draft_revision"].as_u64() == Some(revision)
+    });
+    let identity = &histogram["identity"];
+    ensure(
+        adopted.is_some()
+            && identity["draft_revision"].as_u64() == Some(revision)
+            && identity["generation"].as_u64() == generation,
+        format!(
+            "A drafted viewport made the full histogram current during the gesture: {name}'s report \
+             is {identity}, and the quiet policy's settle for draft revision {revision} {}",
+            match (quiet, generation, adopted) {
+                (None, _, _) => "never ran in the step".to_owned(),
+                (Some(_), None, _) => "asked for no settle job".to_owned(),
+                (Some(_), Some(generation), None) =>
+                    format!("(generation {generation}) adopted no analysis of that revision"),
+                (Some(_), Some(generation), Some(_)) =>
+                    format!("was generation {generation}, which the report does not name"),
+            }
+        ),
+    )?;
+    let at = |index: usize| events[index]["elapsed_ms"].as_f64();
+    Ok(json!({
+        "outcome": "settled by the quiet policy before the capture",
+        "draft_revision": revision,
+        "settle_generation": generation,
+        "quiet_after_input_ms": quiet.and_then(at).zip(at(input)).map(|(quiet, input)| quiet - input),
+        "adopted_after_input_ms": adopted
+            .and_then(|event| event["elapsed_ms"].as_f64())
+            .zip(at(input))
+            .map(|(adopted, input)| adopted - input),
+    }))
+}
+
 fn event<'a>(events: &'a [Value], kind: &str) -> impl Iterator<Item = &'a Value> {
     let kind = kind.to_owned();
     events.iter().filter(move |event| event["event"] == kind)
@@ -260,10 +342,7 @@ pub fn verify_region(run: &mut Run, launches: &[Checked]) -> Result {
     let first_revision = at("first-draft")?["displayed_draft_revision"]
         .as_u64()
         .ok_or("The first draft had no displayed revision")?;
-    ensure(
-        at("first-draft")?["histogram"]["stale"] == true,
-        "A drafted viewport made the full histogram current",
-    )?;
+    let first_histogram = drafted_histogram(launch, "first-draft", first_revision)?;
     let regions: Vec<_> = event(&launch.events, "preview_displayed")
         .filter(|e| e["detail"]["path"] == "region")
         .collect();
@@ -275,21 +354,35 @@ pub fn verify_region(run: &mut Run, launches: &[Checked]) -> Result {
             format!("First draft never displayed a {quality} region"),
         )?;
     }
-    ensure(
-        [
-            "first-draft",
-            "first-pan",
-            "first-pause",
-            "second-pan",
-            "second-pause",
-        ]
+    let captured_region = [
+        "first-draft",
+        "first-pan",
+        "first-pause",
+        "second-pan",
+        "second-pause",
+    ]
+    .iter()
+    .any(|name| {
+        let h = &at(name).unwrap()["histogram"];
+        !h["overlay"].is_null()
+            && !h["overlay"]["region"].is_null()
+            && h["overlay"]["source_assigned"] == true
+    });
+    // When the quiet policy settled the first draft before its capture, its whole frame and that
+    // frame's exact overlay replaced the region grid, and later views of the same draft reuse the
+    // whole frame: no drafted capture can show the grid. Its own event shows it was assigned to a
+    // region the draft displayed.
+    let region_generations: Vec<_> = regions
         .iter()
-        .any(|name| {
-            let h = &at(name).unwrap()["histogram"];
-            !h["overlay"].is_null()
-                && !h["overlay"]["region"].is_null()
-                && h["overlay"]["source_assigned"] == true
-        }),
+        .filter(|e| e["detail"]["draft_revision"] == first_revision)
+        .map(|e| e["detail"]["generation"].clone())
+        .collect();
+    let region_grid = event(&launch.events, "clipping_overlay").any(|e| {
+        e["detail"]["approximate"] == true
+            && region_generations.contains(&e["detail"]["generation"])
+    });
+    ensure(
+        captured_region || (first_histogram["outcome"] != "updating" && region_grid),
         "No drafted capture assigned viewport clipping coverage",
     )?;
     let final_state = at("release-pause")?;
@@ -350,6 +443,12 @@ pub fn verify_region(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
     let mut checks = Checks::new();
     checks.note(
+        launch.at("first-draft")?,
+        "the first draft's histogram: updating, or settled for its own revision by the quiet policy",
+        json!({"histogram": first_histogram, "region_grid_captured": captured_region,
+            "region_grid_logged": region_grid}),
+    );
+    checks.note(
         launch.at("clipping-off")?,
         "the mask and clipping overlays each changed the photograph's pixels",
         json!({"mask_overlay_changed_pixels":tint_pixels,"clipping_overlay_changed_pixels":clipping_pixels}),
@@ -383,14 +482,23 @@ pub fn verify_fallback(run: &mut Run, launches: &[Checked]) -> Result {
             .any(|e| e["detail"]["path"] == "region" && !e["detail"]["draft_revision"].is_null()),
         "Declined draft masqueraded as a viewport region",
     )?;
+    let revision = launch.at("draft")?.state()["displayed_draft_revision"]
+        .as_u64()
+        .ok_or("The draft had no displayed revision")?;
+    let draft_histogram = drafted_histogram(launch, "draft", revision)?;
     ensure(
-        launch.at("draft")?.state()["histogram"]["stale"] == true
-            && launch.at("release-pause")?.state()["histogram"]["stale"] == false
+        launch.at("release-pause")?.state()["histogram"]["stale"] == false
             && launch.at("release-pause")?.state()["histogram"]["identity"]["draft_revision"]
                 .is_null(),
         "Fallback did not settle exact full histogram counts",
     )?;
-    Checks::new().write(run.out(), FALLBACK, json!({"gpu": all_draws(launch)?}))
+    let mut checks = Checks::new();
+    checks.note(
+        launch.at("draft")?,
+        "the draft's histogram: updating, or settled for its own revision by the quiet policy",
+        draft_histogram,
+    );
+    checks.write(run.out(), FALLBACK, json!({"gpu": all_draws(launch)?}))
 }
 
 pub fn verify_idle(run: &mut Run, launches: &[Checked]) -> Result {
