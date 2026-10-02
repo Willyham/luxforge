@@ -6,8 +6,9 @@
 use crate::{
     basic_smoke as basic, capabilities_smoke as capabilities, controls_smoke as controls,
     crop_smoke as crop, curve_smoke as curve, detail_smoke as detail, export_smoke as export,
-    gallery_smoke as gallery, gpu_preview_smoke as gpu_preview, histogram_smoke as histogram,
-    lens_smoke as lens, mask_brush_smoke as mask_brush, mask_combine_smoke as mask_combine,
+    gallery_smoke as gallery, gpu_preview_smoke as gpu_preview,
+    gpu_preview_zoom_smoke as gpu_preview_zoom, histogram_smoke as histogram, lens_smoke as lens,
+    mask_brush_smoke as mask_brush, mask_combine_smoke as mask_combine,
     mask_interactions_smoke as mask_interactions, mask_panel_smoke as mask_panel,
     mask_range_smoke as mask_range, mask_smoke as mask, minify_smoke as minify,
     mixer_smoke as mixer, performance_smoke as performance, presence_smoke as presence,
@@ -339,9 +340,11 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: gpu_preview::SCENARIO,
-        about: "Gestures at Fit drawn on the GPU over a held boundary with no preview job per tick: a Basic drag, a gradient move and a brush stroke, each correlated with the CPU frame of its settings",
+        about: "Gestures at Fit drawn on the GPU over a held boundary with no preview job per tick: a Basic drag, a gradient move, a brush stroke, a Texture and a Clarity drag and a Basic drag under Presence, each correlated with the CPU frame of its settings",
         launches: &[LaunchSpec {
             plan: gpu_preview::plan,
+            // Its Presence drags wait for Presence's sequences to compile.
+            deadline: Some(Duration::from_secs(120)),
             ..APP
         }],
         verify: gpu_preview::verify,
@@ -353,6 +356,26 @@ pub static SCENARIOS: &[Scenario] = &[
              gesture's later ticks are drawn on the GPU with no preview job. The checks read the \
              tick and job events of each step and compare each GPU frame with the CPU frame of \
              the same settings.",
+        ),
+        own: None,
+    },
+    Scenario {
+        name: gpu_preview_zoom::SCENARIO,
+        about: "Basic drags at 100% and 200% drawn on the GPU over the visible region at full scale with no preview job per tick, correlated with the CPU frame of their settings, and a drag at 800% panned past its region",
+        launches: &[LaunchSpec {
+            plan: gpu_preview_zoom::plan,
+            ..APP
+        }],
+        verify: gpu_preview_zoom::verify,
+        source: Source::Fixtures(&[gpu_preview_zoom::FIXTURE]),
+        window: Some(PANELLED),
+        note: Some(
+            "Each drag opens with a CPU tick whose region job carries the one boundary request, for \
+             the region the view shows; a scripted wait lets the boundary arrive and the sequence \
+             compile, and the drag's later ticks are drawn on the GPU with no preview job of any \
+             kind. The checks read each step's tick and job events, the visible region and the \
+             plan's region recorded with each frame, and compare each GPU frame with the CPU frame \
+             its release commits.",
         ),
         own: None,
     },

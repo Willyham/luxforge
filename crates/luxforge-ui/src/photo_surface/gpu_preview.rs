@@ -210,6 +210,9 @@ pub enum GpuStep {
     /// A spatial operation: its passes before the frame's pass, its applies in it, over the
     /// boundary's texels.
     Spatial(Box<GpuSpatial>),
+    /// The clipping overlay's marks over the output ([`ClipMarks`]): a plan's last step, run in
+    /// its last pass after every other.
+    Clipping(ClipMarks),
 }
 
 impl GpuStep {
@@ -228,8 +231,8 @@ impl GpuStep {
                 Box::new(std::iter::once((mask::Role::Colour, program)))
             }
             Self::Masked(masked) => Box::new(masked.programs()),
-            // The tail's mapping is the surface's own text, never a module's program.
-            Self::Geometry(_) => Box::new(std::iter::empty()),
+            // The tail's mapping and the marks are the surface's own text, never a module's program.
+            Self::Geometry(_) | Self::Clipping(_) => Box::new(std::iter::empty()),
             Self::Spatial(spatial) => Box::new(spatial.programs()),
         }
     }
@@ -256,6 +259,7 @@ impl GpuStep {
                 "",
             ))),
             Self::Spatial(spatial) => Box::new(spatial.shape()),
+            Self::Clipping(_) => Box::new(std::iter::once((StepKind::Clipping, "", ""))),
         };
         shape.chain(self.programs().map(|(role, program)| {
             (
@@ -272,6 +276,7 @@ impl GpuStep {
             Self::Masked(masked) => masked.position,
             Self::Geometry(_) => PositionMap::IDENTITY,
             Self::Spatial(_) => PositionMap::IDENTITY,
+            Self::Clipping(_) => PositionMap::IDENTITY,
         }
     }
 
@@ -282,6 +287,7 @@ impl GpuStep {
             Self::Masked(masked) => masked.word_count(),
             Self::Geometry(tail) => tail.program().words.len(),
             Self::Spatial(spatial) => spatial.word_count(),
+            Self::Clipping(_) => ClipMarks::WORDS,
         }
     }
 
@@ -292,6 +298,7 @@ impl GpuStep {
             Self::Masked(masked) => masked.block_count(),
             Self::Geometry(tail) => tail.program().block.len(),
             Self::Spatial(spatial) => spatial.block_count(),
+            Self::Clipping(_) => 0,
         }
     }
 }
@@ -314,6 +321,7 @@ enum StepKind {
     Geometry {
         quantize: bool,
     },
+    Clipping,
 }
 
 /// How the held boundary's texels are stored: four little-endian half floats (`rgba16float`), as a
@@ -559,6 +567,25 @@ impl GpuFallback {
     }
 }
 
+/// The compile thread's figures, which it counts as each compile ends, whether or not a frame is
+/// drawn: compiles finished, and the longest and the last one's wall-clock time, in microseconds.
+#[derive(Default)]
+pub(super) struct CompileFigures {
+    compiled: AtomicU64,
+    max_us: AtomicU64,
+    last_us: AtomicU64,
+}
+
+impl CompileFigures {
+    /// One compile finished after `elapsed`.
+    fn finished(&self, elapsed: std::time::Duration) {
+        let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+        self.compiled.fetch_add(1, Ordering::AcqRel);
+        self.max_us.fetch_max(micros, Ordering::AcqRel);
+        self.last_us.store(micros, Ordering::Release);
+    }
+}
+
 /// What one pipeline counts of its GPU-preview work, beside its photo-texture figures.
 #[derive(Default)]
 pub(super) struct Figures {
@@ -566,12 +593,12 @@ pub(super) struct Figures {
     in_use: AtomicU64,
     peak: AtomicU64,
     passes: AtomicU64,
+    /// Compute passes the spatial steps have dispatched.
+    spatial_passes: AtomicU64,
     /// Sequences handed to the compile thread.
     compiles: AtomicU64,
-    /// Compiles finished, and the longest and the last one's wall-clock time, in microseconds.
-    compiled: AtomicU64,
-    compile_max_us: AtomicU64,
-    compile_last_us: AtomicU64,
+    /// What the compile thread counts as each compile ends.
+    compile: Arc<CompileFigures>,
     /// Words written to the blocks buffers, for the tests of what a tick writes.
     block_words: AtomicU64,
 }
@@ -593,24 +620,21 @@ impl Figures {
         self.passes.load(Ordering::Acquire)
     }
 
+    pub(super) fn spatial_passes(&self) -> u64 {
+        self.spatial_passes.load(Ordering::Acquire)
+    }
+
     pub(super) fn compiles(&self) -> u64 {
         self.compiles.load(Ordering::Acquire)
     }
 
     pub(super) fn compile_us(&self) -> (u64, u64, u64) {
+        let compile = &self.compile;
         (
-            self.compiled.load(Ordering::Acquire),
-            self.compile_max_us.load(Ordering::Acquire),
-            self.compile_last_us.load(Ordering::Acquire),
+            compile.compiled.load(Ordering::Acquire),
+            compile.max_us.load(Ordering::Acquire),
+            compile.last_us.load(Ordering::Acquire),
         )
-    }
-
-    /// One compile finished after `elapsed`.
-    fn compiled(&self, elapsed: std::time::Duration) {
-        let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
-        self.compiled.fetch_add(1, Ordering::AcqRel);
-        self.compile_max_us.fetch_max(micros, Ordering::AcqRel);
-        self.compile_last_us.store(micros, Ordering::Release);
     }
 
     /// Charge `bytes` if they fit the budget beside everything charged already.
@@ -1065,6 +1089,15 @@ enum End {
 /// linear values otherwise; a quantizing tail's content pass writes codes.
 fn assemble_passes(steps: &[GpuStep], encode: bool) -> Result<Vec<String>, String> {
     let last = if encode { End::Codes } else { End::Linear };
+    // The marks read the output the last pass is about to encode, after every other step.
+    if steps
+        .iter()
+        .rev()
+        .skip(1)
+        .any(|step| matches!(step, GpuStep::Clipping(_)))
+    {
+        return Err("clipping marks are a plan's last step".into());
+    }
     let tails: Vec<usize> = steps
         .iter()
         .enumerate()
@@ -1140,8 +1173,14 @@ fn pass_source(
     let (functions, masked) = spatial::masks(steps, range.clone());
     source.push_str(&functions);
     let quantizing = matches!(head, Head::Tail(tail, _) if tail.quantizes());
-    if quantizing || matches!(end, End::Codes) {
+    let marks = steps[range.clone()]
+        .iter()
+        .any(|step| matches!(step, GpuStep::Clipping(_)));
+    if quantizing || marks || matches!(end, End::Codes) {
         source.push_str(tail::encoding()?);
+    }
+    if marks {
+        source.push_str(clipping::SOURCE);
     }
     source.push_str(BOUNDARY_BINDING);
     // A spatial step's applies read its planes in the content pass, the one it precedes.
@@ -1476,6 +1515,7 @@ pub(super) fn pack(plan: &GpuPlan, words: &mut Vec<u32>, blocks: &mut Vec<u32>) 
                 blocks.extend_from_slice(&tail.program().block);
             }
             GpuStep::Spatial(spatial) => spatial.pack(words, blocks),
+            GpuStep::Clipping(marks) => words.extend(marks.words()),
         }
     }
     if blocks.is_empty() {
@@ -1556,7 +1596,9 @@ impl PhotoPipeline {
     /// Make `surface`'s GPU-preview slot hold what `plan` draws and record how this frame is drawn:
     /// with no plan, the slot is released and the frame is the CPU's, unless `dissolve` runs from
     /// the GPU frame the last draw showed, which the slot then keeps ([`dissolve`]); with one, the
-    /// slot evaluates it, or the frame is the CPU's and names why. `surface` is out of the map.
+    /// slot evaluates it, or the frame is the CPU's and names why, and a `dissolve` beside it — the
+    /// caller hands one only while the plan is held — runs from the slot's output. `surface` is out
+    /// of the map.
     pub(super) fn prepare_gpu(
         &mut self,
         surface: &mut SurfaceSlots,
@@ -1579,6 +1621,12 @@ impl PhotoPipeline {
         let outcome = self.evaluate(surface, device, queue, plan);
         if outcome.is_err() {
             self.release_gpu(surface);
+        }
+        // A dissolve handed beside a plan runs behind it while it is held: the slot keeps the
+        // output of the GPU frame the last draw showed, which the plan's unchanged words leave as
+        // it was.
+        if outcome.is_ok() && shown {
+            surface.dissolving = dissolve;
         }
         surface.gpu_outcome = Some(outcome);
     }
@@ -1805,8 +1853,13 @@ impl PhotoPipeline {
                 let run = spatial
                     .schedule
                     .run(&plan.steps, words, blocks, plan.boundary.version);
-                spatial.dispatched +=
+                let dispatched =
                     groups.encode(&mut encoder, &pipeline.spatial, &slot.bindings, &run);
+                spatial.dispatched += dispatched;
+                self.figures
+                    .preview
+                    .spatial_passes
+                    .fetch_add(dispatched, Ordering::Relaxed);
             }
             let groups = slot
                 .spatial
@@ -2115,7 +2168,6 @@ impl PhotoPipeline {
         let figures = Arc::clone(&self.figures);
         let _ = self.gpu.pipeline(device, steps, &figures.preview);
         luxforge_testbase::wait_until("the sequence's compile", || {
-            self.gpu.pipelines.settle(&figures.preview);
             !self.gpu.pipelines.compiling(steps)
         });
     }
@@ -2216,6 +2268,9 @@ pub(crate) use dissolve::{DissolveFrame, dissolving, photo_uniform};
 
 mod timing;
 pub(crate) use timing::PassClock;
+
+mod clipping;
+pub use clipping::ClipMarks;
 
 #[cfg(any(test, feature = "qualification"))]
 pub mod qualification;

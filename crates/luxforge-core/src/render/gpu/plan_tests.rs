@@ -494,8 +494,8 @@ fn stack_shapes_the_plan_cannot_hold_are_named() {
     ));
     assert!(plan.content.is_empty() && plan.spatial.is_some());
     assert!(!plan.boundary.continues_run);
-    // A restoration layer after the boundary is its spatial operation, which Detail's program,
-    // disabled until it qualifies, plans only when qualifying.
+    // A restoration layer after the boundary is its spatial operation: Detail's, one apply per
+    // unit.
     let detail = colour_recipe(vec![
         exposure_layer(&[0.5]),
         Layer::new(
@@ -503,20 +503,14 @@ fn stack_shapes_the_plan_cannot_hold_are_named() {
             json!({"sharpening": 40.0, "luminance": 20.0}),
         ),
     ]);
-    assert_eq!(
-        answer(&registry, &detail, GpuPlanRequest::exact(0, stage(41, 29))),
-        GpuAnswer::Fallback(GpuFallback::DisabledProgram {
-            layer: 1,
-            program: "lf_detail"
-        })
-    );
     let plan = planned(answer(
         &registry,
         &detail,
-        GpuPlanRequest::exact(0, stage(41, 29)).qualifying(),
+        GpuPlanRequest::exact(0, stage(41, 29)),
     ));
     let step = plan.spatial.as_ref().expect("Detail's operation");
     assert_eq!((step.layer, step.applies.len()), (1, 2));
+    assert_eq!(step.program.entry, "lf_detail");
     // A second spatial layer after the boundary has no pass: it is named.
     let mut both = detail.clone();
     both.layers
@@ -991,7 +985,7 @@ fn a_dehaze_light_is_the_stores_when_it_holds_the_boundarys_content() {
     let context = RenderContext::new();
     let estimates = GpuEstimates {
         context: &context,
-        source: RenderSource::Byte(&source),
+        source: RenderSource::Byte(&source).into(),
     };
     let request = GpuPlanRequest::exact(1, stage(41, 29)).qualifying();
     let plan_of = |recipe: &Recipe| {
@@ -1099,4 +1093,65 @@ fn a_presence_plan_holds_nothing_that_scales_with_the_image() {
     assert!(passes.iter().filter(|pass| pass.3 == 0).count() > 8);
     // A later unit's scratch reuses an earlier unit's of the same format and size.
     assert!(planes.len() < 9 + 4 + 4, "{} planes", planes.len());
+}
+
+/// A proxy named for the estimate store before it is built is named as the built proxy's own pixel
+/// domain names it: a JPEG's window, and a RAW's derived development under a cropped and turned
+/// view and a window, equal whenever it is built and apart from its source's.
+#[test]
+fn a_proxy_is_named_as_its_built_pixels_are() {
+    use super::EstimateSource;
+    use crate::{PreviewSource, ProxyBounds, ProxyPlan, ProxyWindow};
+    let jpeg = PreviewSource::Jpeg(gradient(240, 160));
+    let raw = PreviewSource::Raw {
+        image: crate::render::tests::varied(240, 160)
+            .with_view([10, 6, 200, 140], 6)
+            .unwrap(),
+        settings: crate::LinearSettings::default(),
+    };
+    for source in [jpeg, raw] {
+        let (width, height) = source.dimensions();
+        let bounds = ProxyBounds {
+            width: width / 2,
+            height: height / 2,
+        };
+        let plans = [
+            ProxyPlan {
+                width: width / 2,
+                height: height / 2,
+                bounds,
+                window: None,
+            },
+            ProxyPlan {
+                width: width / 2,
+                height: height / 2,
+                bounds,
+                window: Some(ProxyWindow {
+                    x: 7,
+                    y: 5,
+                    width: width / 4,
+                    height: height / 4,
+                }),
+            },
+        ];
+        for plan in plans {
+            let named = EstimateSource::Proxy {
+                source: &source,
+                plan,
+            }
+            .identity("prefix")
+            .unwrap();
+            for _ in 0..2 {
+                let built = source.proxy(plan).unwrap();
+                let own = EstimateSource::Render((&built).into())
+                    .identity("prefix")
+                    .unwrap();
+                assert_eq!(named, own, "{plan:?}");
+            }
+            let whole = EstimateSource::Render((&source).into())
+                .identity("prefix")
+                .unwrap();
+            assert_ne!(named.1, whole.1, "a proxy is not its source");
+        }
+    }
 }
