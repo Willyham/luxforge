@@ -8,7 +8,6 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - Owner review of the proposed error limits, the 150 ms dissolve, the "GPU preview" label and the `gpu_preview` preference
 - Windows and Linux functional checks of the fallback and of correctness within the limits, not run
 - A drag while queued exports hold the shared pool misses 16 ms p95 (18.7 ms at 60 MP) and 32 ms at 24 MP; the reduced-pool proposal in [instant previews](design/instant-preview.md#proposals-and-later-work) is unmeasured
-- A straightened crop's Fit drag on a RAW whose exact-stage boundary passes 256 MiB keeps the CPU path; a boundary windowed to what the crop reads is proposed
 - At 100%, Detail beside Presence (Dehaze's estimate behind Detail) and the stacks past the 640 MiB budget keep the CPU path
 - Later work in the [design](design/gpu-preview.md#later): view changes without a draft, the RAW white-balance draft on the GPU, region padding
 

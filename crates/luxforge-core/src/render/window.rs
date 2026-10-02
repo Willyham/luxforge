@@ -192,6 +192,26 @@ impl WindowPlan {
         }
     }
 
+    /// [`Self::received`], when it is less than the whole stage segment `segment` of `compiled`
+    /// receives from a source of `source` dimensions; `None` when the segment reads all of it.
+    pub(crate) fn received_cut(
+        &self,
+        compiled: &Compiled,
+        source: (u32, u32),
+        segment: usize,
+    ) -> Option<Region> {
+        let whole = input_stage(
+            compiled.segments.get(..=segment)?,
+            segment,
+            Stage {
+                width: source.0,
+                height: source.1,
+            },
+        );
+        let received = self.received(segment);
+        (received != Region::whole(whole)).then_some(received)
+    }
+
     /// Rewrite `compiled`, the stack this plan was made from, to read a source of the window's
     /// dimensions and keep only each segment's window. `globals(index)` answers the estimates the
     /// spatial operation entering segment `index` is handed when its stage is cut and it prepares
@@ -1406,6 +1426,85 @@ mod tests {
                     frame.rgba == whole.rgba,
                     "{domain} {name}: the windowed proxy frame differs from the whole stage's"
                 );
+            }
+        }
+    }
+
+    /// A straightened crop behind a lens or perspective warp is fused into the warp's resample,
+    /// whose segment then writes the crop's stage: its windowed proxy is cut as any other crop's,
+    /// byte for byte the whole proxy stage's frame, tight or as wide as a 16:9 fit at 7°.
+    #[test]
+    fn a_crop_fused_into_a_warp_has_a_windowed_proxy() {
+        let context = RenderContext::new();
+        let registry = crate::render::warp_tests::registry();
+        let lens = layer(
+            "luxforge.lens.distortion",
+            json!({"terms": [-0.079, 0.0, 0.0]}),
+            None,
+        );
+        let perspective = layer(
+            crate::PERSPECTIVE_EFFECT,
+            json!({"horizontal": 20, "vertical": -10}),
+            None,
+        );
+        let basic = layer(BASIC_EFFECT, json!({"exposure": 0.5, "contrast": 25}), None);
+        let wide = Layer::crop(crate::render::tests::fitted_crop(
+            600,
+            400,
+            7.0,
+            [0.0, 0.0, 1.0, 1.0],
+        ));
+        let tight = crop(7.0, 0.42, 0.47, 0.14, 0.12);
+        let bounds = ProxyBounds {
+            width: 60,
+            height: 44,
+        };
+        for (domain, source) in [("jpeg", jpeg(600, 400)), ("raw", raw(600, 400))] {
+            for (name, warps) in [
+                ("lens", vec![lens.clone()]),
+                ("perspective", vec![perspective.clone()]),
+                (
+                    "lens and perspective",
+                    vec![lens.clone(), perspective.clone()],
+                ),
+            ] {
+                for (fit, crop) in [("tight", &tight), ("wide", &wide)] {
+                    let mut layers = vec![basic.clone()];
+                    layers.extend(warps.iter().cloned());
+                    layers.push(crop.clone());
+                    let stack = recipe(layers, Vec::new());
+                    let exact = exact(&context, &registry, &source, &stack);
+                    let fused = exact.compiled.segments.last().expect("a segment");
+                    assert!(
+                        fused.geometry.is_identity(fused.width, fused.height),
+                        "{domain} {name} {fit}: the fused segment's geometry is its own stage's"
+                    );
+                    let (plan, frame) =
+                        windowed_frame(&context, &registry, &source, &exact, &stack, bounds);
+                    let window = plan
+                        .window
+                        .expect("a straightened crop's proxy is windowed");
+                    if fit == "tight" {
+                        assert!(
+                            u64::from(window.width) * u64::from(window.height)
+                                < u64::from(plan.width) * u64::from(plan.height) / 4,
+                            "{domain} {name}: a {window:?} window of a {}x{} stage",
+                            plan.width,
+                            plan.height
+                        );
+                    }
+                    let whole = whole_frame(&context, &registry, &source, &stack, plan);
+                    assert_eq!(
+                        (frame.width, frame.height),
+                        (whole.width, whole.height),
+                        "{domain} {name} {fit}"
+                    );
+                    assert!(
+                        frame.rgba == whole.rgba,
+                        "{domain} {name} {fit}: the windowed proxy frame differs from the whole \
+                         stage's"
+                    );
+                }
             }
         }
     }
