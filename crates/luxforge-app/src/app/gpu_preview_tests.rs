@@ -346,26 +346,42 @@ fn gpu_preview_presence_drags_draw_on_the_gpu_with_no_job_per_tick() {
     finish(editor, catalog);
 }
 
-/// While a clipping overlay is shown, which is derived from the CPU's frames, a drag takes the CPU
-/// path and says why, asking for no boundary.
+/// While a clipping overlay is shown, which is derived from the CPU's frames, a drag is still drawn
+/// on the GPU, its plan marking its own clipped pixels in the overlay's colours by the quantizer's
+/// thresholds; the marks follow the overlay's classes, and its warm sequences carry them.
 #[test]
-fn gpu_preview_a_drag_with_clipping_shown_keeps_the_cpu_path() {
+fn gpu_preview_a_drag_with_clipping_shown_draws_its_own_marks() {
+    use luxforge_ui::photo_surface::GpuStep;
     let catalog = catalog("clipping");
     let (mut editor, _, _) = real_photo(&catalog);
     editor.session.workspace.clip_highlights = true;
-    let log = attach_log(&mut editor);
     let _ = slide(&mut editor, ACTION, FIELD, 0.1);
-    let _ = slide(&mut editor, ACTION, FIELD, 0.2);
+    deliver_until(&mut editor, "the boundary", |editor| {
+        editor.gpu.holds_boundary()
+    });
+    surface_ready(&mut editor);
+    let log = attach_log(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.3);
     let records = logged(&mut editor, &log);
-    assert_eq!(jobs(&records), 2);
-    let ticks = events(&records, "gpu_preview_tick");
-    assert!(
-        ticks
-            .iter()
-            .all(|tick| tick["path"] == "cpu" && tick["reason"] == "clipping-shown")
-    );
-    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is asked for");
-    assert_eq!(editor.gpu_plan_fallback(), Some("clipping-shown".into()));
+    assert_eq!(jobs(&records), 0, "drawn on the GPU");
+    assert_eq!(editor.gpu_plan_fallback(), None);
+    let marks = |editor: &Editor| match editor.surfaces().gpu.and_then(|plan| plan.steps.last()) {
+        Some(GpuStep::Clipping(marks)) => Some(*marks),
+        _ => None,
+    };
+    let shown = marks(&editor).expect("the plan's last step marks clipping");
+    assert_eq!((shown.shadows, shown.highlights), (false, true));
+    let palette = super::overlay::palette();
+    assert_eq!(shown.palette, [palette[1], palette[2], palette[3]]);
+    // Both classes, then none: the next tick's plan follows.
+    editor.session.workspace.clip_shadows = true;
+    let _ = slide(&mut editor, ACTION, FIELD, 0.35);
+    let shown = marks(&editor).expect("marks");
+    assert_eq!((shown.shadows, shown.highlights), (true, true));
+    editor.session.workspace.clip_shadows = false;
+    editor.session.workspace.clip_highlights = false;
+    let _ = slide(&mut editor, ACTION, FIELD, 0.4);
+    assert!(marks(&editor).is_none(), "no overlay, no marks");
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     finish(editor, catalog);
 }
