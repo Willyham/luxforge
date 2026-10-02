@@ -753,6 +753,28 @@ fn boundary_result(
         viewport_declined: None,
         outcome: PhaseOutcome::Boundary(BoundaryOutcome {
             key: request.key.clone(),
+            // A warp's grid, once per draft: the geometry does not change while a colour draft is
+            // open. The whole output stage at one display pixel per output pixel, as at Fit.
+            grid: result
+                .is_ok()
+                .then_some(())
+                .and(request.warp.as_ref())
+                .map(|warp| {
+                    let output = warp.output();
+                    warp.grid(
+                        Region {
+                            x0: 0,
+                            y0: 0,
+                            width: output.width,
+                            height: output.height,
+                        },
+                        1.0,
+                    )
+                    .and_then(|grid| {
+                        grid.map(std::sync::Arc::new)
+                            .ok_or_else(|| crate::Error::internal("a warp tail with no grid"))
+                    })
+                }),
             result,
         }),
         approximate_white_balance,

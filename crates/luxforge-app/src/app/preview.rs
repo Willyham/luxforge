@@ -2148,7 +2148,7 @@ impl Editor {
         };
         let content = self.presentation.admit(&mut job);
         self.request_mask_coverage(&job, content);
-        self.gpu_warm_from(&job);
+        self.gpu_warm_from(job.gpu_warm.as_deref());
         // Reusing pixels cannot complete work the viewport still owes. A moving region is
         // intentionally half detail and carries no whole-image report; Settle must refine it
         // and retain exact pixels. A non-interactive request for analysis also needs its exact

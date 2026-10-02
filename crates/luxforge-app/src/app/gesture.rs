@@ -754,9 +754,11 @@ impl Editor {
                     // A tick the surface draws from the GPU plan the answer carries makes no
                     // preview job and no upload ([`super::gpu_preview`]); any other takes the
                     // CPU path as before.
-                    match self.gpu_tick(&set, &mut job) {
+                    let (tick, boundary) = self.gpu_tick(&set, job.gpu.take());
+                    match tick {
                         super::gpu_preview::Tick::Gpu => self.gpu_ticked(&set),
                         super::gpu_preview::Tick::Cpu => {
+                            job.boundary = boundary;
                             let boundary = job.boundary.is_some();
                             let (generation, requested_at) = if self.log.diagnostics.is_some()
                                 && self.mask_gesture().is_some()

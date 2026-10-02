@@ -93,6 +93,9 @@ pub struct BoundaryOutcome {
     pub key: crate::BoundaryKey,
     /// The texels, or why there are none: a failure, or `cancelled` when the job was abandoned.
     pub result: Result<crate::BoundaryFrame, Error>,
+    /// A lens or perspective warp's coordinate grid over the whole output stage, computed with the
+    /// boundary for the plan's geometry tail, or why it could not be: `None` for an affine tail.
+    pub grid: Option<Result<std::sync::Arc<crate::CoordinateGrid>, Error>>,
 }
 
 /// A visible region, either half-scale interactive detail or full-detail refinement. Its raster

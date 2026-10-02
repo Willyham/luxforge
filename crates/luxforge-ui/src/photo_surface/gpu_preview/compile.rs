@@ -94,7 +94,8 @@ fn matches(signature: &Signature, steps: &[GpuStep]) -> bool {
 enum State {
     /// On the compile thread.
     Compiling,
-    Ready(wgpu::RenderPipeline),
+    /// One pipeline per pass.
+    Ready(Vec<wgpu::RenderPipeline>),
     /// Refused, with why: kept, so it is not compiled again every frame. The reason is read by the
     /// tests that name each failure.
     Failed(#[cfg_attr(not(test), allow(dead_code))] Arc<str>),
@@ -111,7 +112,7 @@ struct Entry {
 /// One finished compile, from the thread.
 struct Done {
     id: u64,
-    result: Result<wgpu::RenderPipeline, String>,
+    result: Result<Vec<wgpu::RenderPipeline>, String>,
     elapsed: Duration,
 }
 
@@ -173,7 +174,7 @@ impl Pipelines {
         layout: &wgpu::PipelineLayout,
         steps: &[GpuStep],
         figures: &Figures,
-    ) -> Result<(wgpu::RenderPipeline, u64), GpuFallback> {
+    ) -> Result<(Vec<wgpu::RenderPipeline>, u64), GpuFallback> {
         self.collect(figures);
         self.clock += 1;
         let clock = self.clock;

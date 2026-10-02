@@ -517,6 +517,16 @@ fn selects_nothing(
         .all(|(out, input)| out[1] == input[1]))
 }
 
+/// A headless qualifier, with the core's output encoding installed for its passes. `None`, having
+/// printed that `test` was skipped, without an adapter.
+pub(crate) fn headless(test: &str) -> Option<Qualifier> {
+    assert!(
+        super::gpu_plan::install_output_encoding(),
+        "the surface holds the core's output encoding"
+    );
+    Qualifier::headless(test)
+}
+
 /// The qualification corpus's recipes of `families` at Fit: for each source this host has, the CPU
 /// frame the preview worker renders and the GPU frame of the same plan over the same source the
 /// worker rendered from, written as `<recipe>--<source>-{cpu,gpu}.png` with the commands that run
@@ -537,7 +547,7 @@ pub(crate) fn corpus_at_fit(test: &str, families: &[&str]) {
         "{} exists: use a new directory",
         output.display()
     );
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = headless(test) else {
         return;
     };
     std::fs::create_dir_all(&output).unwrap();

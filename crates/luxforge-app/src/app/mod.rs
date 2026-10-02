@@ -496,6 +496,9 @@ impl Editor {
         editor.thumbnailer.queue.set_waker(waker::waker());
         editor.coverage_worker.queue.set_waker(waker::waker());
         luxforge_ui::set_surface_waker(waker::waker());
+        // The GPU preview encodes its output with the core's quantizer, which the widget crate
+        // cannot reach.
+        gpu_plan::install_output_encoding();
         // The owner wakes the event sync when another client changes something, so no timer asks
         // it whether anything did.
         editor

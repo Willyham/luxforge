@@ -13,8 +13,8 @@
 //! may turn on (`cargo xtask check-repository`), so no build of the desktop has it: the surface
 //! itself never reads a pixel back or waits on the GPU. Everything here blocks the calling test.
 use super::{
-    GpuBoundary, GpuPlan, OUTPUT_FORMAT, Support, answered, assemble, compile, le_bytes, pack,
-    upload_boundary, validate, validate_step,
+    GpuBoundary, GpuPlan, OUTPUT_FORMAT, Support, answered, assemble_passes, compile, encode_pass,
+    le_bytes, pack, upload_boundary, validate, validate_step,
 };
 use std::sync::mpsc;
 
@@ -93,7 +93,7 @@ impl Qualifier {
     }
 
     /// Every texel of `plan`'s output as the 8-bit sRGB codes the stage's output texture holds:
-    /// the hardware's encoding of the same values, row by row, RGBA.
+    /// the codes its last pass computes as the CPU's quantizer does, row by row, RGBA.
     pub fn evaluate_codes(&self, plan: &GpuPlan) -> Result<Vec<[u8; 4]>, String> {
         let bytes = self.run(plan, OUTPUT_FORMAT, 4)?;
         Ok(bytes
@@ -113,10 +113,19 @@ impl Qualifier {
         for step in &plan.steps {
             validate_step(step)?;
         }
-        validate(&assemble(&plan.steps)?)?;
-        let pipeline = compile(device, &self.support.pipeline_layout, &plan.steps, format)?;
-        let (width, height) = plan.boundary.size();
-        let texture = |label, format, usage| {
+        for source in assemble_passes(&plan.steps, true)? {
+            validate(&source)?;
+        }
+        let pipelines = compile(device, &self.support.pipeline_layout, &plan.steps, format)?;
+        let tail = plan.steps.iter().find_map(|step| match step {
+            super::GpuStep::Geometry(tail) => Some(tail),
+            _ => None,
+        });
+        let boundary_size = plan.boundary.size();
+        // The output is the tail's output stage when the plan has a tail, and the boundary's
+        // size otherwise.
+        let (width, height) = tail.map_or(boundary_size, super::GpuTail::output);
+        let texture = |label, (width, height): (u32, u32), format, usage| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d {
@@ -134,6 +143,7 @@ impl Qualifier {
         };
         let boundary = texture(
             "luxforge.qualification.boundary",
+            boundary_size,
             wgpu::TextureFormat::Rgba16Float,
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         );
@@ -152,30 +162,43 @@ impl Qualifier {
         };
         let words = storage("luxforge.qualification.words", &words);
         let blocks = storage("luxforge.qualification.blocks", &blocks);
-        let boundary_view = boundary.create_view(&wgpu::TextureViewDescriptor::default());
-        let bindings = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("luxforge.qualification.bindings"),
-            layout: &self.support.layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: words.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: blocks.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&boundary_view),
-                },
-            ],
-        });
+        let bind = |texture: &wgpu::Texture| {
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("luxforge.qualification.bindings"),
+                layout: &self.support.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: words.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: blocks.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                ],
+            })
+        };
+        let bindings = bind(&boundary);
         let target = texture(
             "luxforge.qualification.target",
+            (width, height),
             format,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         );
+        // A tail's content pass writes the intermediate the boundary's size, which the tail reads.
+        let intermediate = tail.map(|tail| {
+            texture(
+                "luxforge.qualification.intermediate",
+                boundary_size,
+                tail.intermediate(),
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            )
+        });
         let row = width * texel_bytes;
         let padded =
             row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
@@ -188,26 +211,25 @@ impl Qualifier {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("luxforge.qualification.encoder"),
         });
-        {
-            let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("luxforge.qualification.pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            pass.set_pipeline(&pipeline);
-            pass.set_bind_group(0, &bindings, &[]);
-            pass.draw(0..3, 0..1);
+        let size = |(width, height): (u32, u32)| (width as f32, height as f32);
+        match (&intermediate, pipelines.as_slice()) {
+            (Some(intermediate), [content, last]) => {
+                let view = intermediate.create_view(&wgpu::TextureViewDescriptor::default());
+                encode_pass(&mut encoder, &view, content, &bindings, size(boundary_size));
+                let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+                encode_pass(
+                    &mut encoder,
+                    &view,
+                    last,
+                    &bind(intermediate),
+                    size((width, height)),
+                );
+            }
+            (None, [only]) => {
+                let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+                encode_pass(&mut encoder, &view, only, &bindings, size((width, height)));
+            }
+            _ => return Err("a plan's passes do not match its tail".into()),
         }
         encoder.copy_texture_to_buffer(
             target.as_image_copy(),

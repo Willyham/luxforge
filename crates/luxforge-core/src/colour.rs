@@ -153,6 +153,26 @@ pub mod srgb {
         thresholds
     });
 
+    /// The first `f32` at or above each of [`CODE_THRESHOLDS`]: an `f32` value's output code is the
+    /// number of these at or below it, clamped to `[0, 1]` with NaN taken to 0, which is the code
+    /// [`Quantizer::pixel`] and [`Quantizer::rounded`] give it — a test below holds both to that at
+    /// every threshold. A program that quantizes in `f32` on the GPU compares against these.
+    static CODE_THRESHOLDS_F32: LazyLock<[f32; 255]> = LazyLock::new(|| {
+        CODE_THRESHOLDS.map(|threshold| {
+            let narrowed = threshold as f32;
+            if f64::from(narrowed) < threshold {
+                narrowed.next_up()
+            } else {
+                narrowed
+            }
+        })
+    });
+
+    /// [`CODE_THRESHOLDS_F32`], for the desktop to hand the GPU preview's output encoding.
+    pub fn output_thresholds() -> &'static [f32; 255] {
+        &CODE_THRESHOLDS_F32
+    }
+
     pub(crate) const CODE_BINS: usize = 4096;
 
     /// How close to a code threshold a value must lie before [`Quantizer::rounded`] evaluates the
@@ -656,6 +676,26 @@ mod tests {
     }
 
     use super::*;
+
+    /// Both output quantizers change code at exactly the `f32` thresholds: each threshold takes
+    /// the upper code and the `f32` below it the lower, and both are monotonic, so counting the
+    /// thresholds at or below an `f32` is their code for every `f32` in `[0, 1]`.
+    #[test]
+    fn the_f32_thresholds_are_where_both_quantizers_change_code() {
+        let quantizer = srgb::quantizer();
+        let count = |value: f32| {
+            srgb::output_thresholds().partition_point(|threshold| *threshold <= value) as u8
+        };
+        for (index, threshold) in srgb::output_thresholds().iter().copied().enumerate() {
+            let code = index as u8 + 1;
+            for (value, expected) in [(threshold, code), (threshold.next_down(), code - 1)] {
+                let wide = f64::from(value);
+                assert_eq!(quantizer.pixel([value; 3]), [expected; 3], "{value}");
+                assert_eq!(quantizer.rounded(wide), expected, "{value}");
+                assert_eq!(count(value), expected, "{value}");
+            }
+        }
+    }
 
     #[test]
     fn srgb_round_trip_is_the_identity_across_the_byte_range() {
