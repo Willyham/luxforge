@@ -363,6 +363,17 @@ fn with_neutral(recipe: &Recipe, index: usize, effect: &str, mask: Option<MaskId
     planned
 }
 
+/// The window of the stage segment `segment` of `compiled`, a stack over a `full` source, receives
+/// that the whole output stage reads, through the windowed planner: `None` when the segment reads
+/// all of it or the planner cannot cut the stack. `O(segments)`, no pixel read.
+pub(crate) fn output_window(compiled: &Compiled, full: Stage, segment: usize) -> Option<Region> {
+    let full = (full.width, full.height);
+    let output = Region::whole(compiled.stage());
+    crate::render::window::WindowPlan::of_rect(compiled, full, output)
+        .ok()
+        .and_then(|windows| windows.received_cut(compiled, full, segment))
+}
+
 /// The GPU preview of `evaluation`, an open draft's preview job's evaluation, drawn as `view`
 /// says: the plan from the earliest layer the draft changes, at the stage the job's Fit frame is
 /// drawn at or the exact stage at a percentage zoom, and the boundary it starts from. `O(layers)`
@@ -433,11 +444,7 @@ pub(crate) fn plan_preview(
     if let (GpuAnswer::Plan(plan), None, None) = (&answer, fit.plan, fit.region)
         && !plan.spatial.iter().any(|spatial| spatial.estimated)
     {
-        let full = (fit.full.width, fit.full.height);
-        let output = Region::whole(fit.compiled.stage());
-        window = crate::render::window::WindowPlan::of_rect(&fit.compiled, full, output)
-            .ok()
-            .and_then(|windows| windows.received_cut(&fit.compiled, full, position.0));
+        window = output_window(&fit.compiled, fit.full, position.0);
     }
     if let (GpuAnswer::Plan(plan), Some((rect, _))) = (&answer, fit.region) {
         use crate::render::window::WindowPlan;

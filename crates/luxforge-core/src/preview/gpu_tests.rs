@@ -521,6 +521,68 @@ fn an_exact_fit_boundary_holds_only_the_window_its_output_reads() {
     }
 }
 
+/// What planning the exact-stage window adds to a tick's plan on the catalog owner, which plans it
+/// in the draft's own answer: `plan_preview` of a Basic drag at Fit over a photograph drawn at its
+/// exact stage, whole and under a straightened crop, against the window planning alone over the
+/// same compilation. Wall-clock time of the calling thread, the median and the 95th percentile of
+/// many calls; a measurement, not a gate.
+#[test]
+#[ignore = "a timing measurement: cargo test -p luxforge-core --lib exact_fit_window_planning -- --ignored --nocapture"]
+fn the_exact_fit_window_planning_cost_is_measured() {
+    let PreviewSource::Jpeg(image) = source() else {
+        panic!("a JPEG")
+    };
+    let window = crate::modules::Region {
+        x0: 0,
+        y0: 0,
+        width: 480,
+        height: 320,
+    };
+    let small = PreviewSource::Jpeg(image.window(window, &crate::Cancel::never()).unwrap());
+    let tight = Layer::crop(fitted_crop(480, 320, 7.0, [0.3, 0.3, 0.35, 0.35]));
+    for (name, geometry) in [("whole", Vec::new()), ("straightened crop", vec![tight])] {
+        let mut drafted = vec![basic(json!({"exposure": 0.3}))];
+        drafted.extend(geometry.iter().cloned());
+        let (job, draft) = draft_job_over(small.clone(), "set-basic", geometry, drafted, 2);
+        // The evidence window's Fit bounds, which the 480 × 320 photograph fits.
+        let view = crate::GpuView::Fit(ProxyBounds {
+            width: 1716,
+            height: 1508,
+        });
+        let request = plan_preview(&job.evaluation, &draft, view)
+            .unwrap()
+            .boundary
+            .expect("a boundary");
+        assert_eq!(request.key.plan(), None, "{name}: drawn at the exact stage");
+        let plans: Vec<f64> = (0..2000)
+            .map(|_| {
+                let started = std::time::Instant::now();
+                std::hint::black_box(plan_preview(&job.evaluation, &draft, view).unwrap());
+                started.elapsed().as_secs_f64() * 1e6
+            })
+            .collect();
+        let compiled = job.evaluation.compiled().unwrap();
+        let stage = Stage {
+            width: 480,
+            height: 320,
+        };
+        let windows: Vec<f64> = (0..20000)
+            .map(|_| {
+                let started = std::time::Instant::now();
+                std::hint::black_box(crate::render::gpu::output_window(compiled, stage, 0));
+                started.elapsed().as_secs_f64() * 1e6
+            })
+            .collect();
+        let plans = luxforge_testbase::Distribution::of(plans).expect("plans");
+        let windows = luxforge_testbase::Distribution::of(windows).expect("windows");
+        eprintln!(
+            "exact Fit, {name}: plan_preview p50 {:.1} µs, p95 {:.1} µs; the window planning in \
+             it p50 {:.2} µs, p95 {:.2} µs; window {:?}",
+            plans.p50, plans.p95, windows.p50, windows.p95, request.window
+        );
+    }
+}
+
 /// At the exact stage at Fit a stack the window cannot hold whole keeps the whole stage: a drag
 /// under Dehaze, whose light the GPU then takes from the stage it holds, and a stack with no crop,
 /// whose output reads every pixel.
