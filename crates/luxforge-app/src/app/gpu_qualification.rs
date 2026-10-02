@@ -10,7 +10,10 @@ use luxforge_reference::{
     preview_error::{self, Class, Rgb8, Statistics},
     srgb,
 };
-use luxforge_ui::photo_surface::gpu_preview::qualification::{Qualifier, boundary, held};
+use luxforge_ui::photo_surface::{
+    GpuPlan, GpuProgram, GpuStep, MaskedColour, TexelMap,
+    gpu_preview::qualification::{Qualifier, boundary, held},
+};
 use serde_json::{Value, json};
 
 fn stage(width: u32, height: u32) -> Stage {
@@ -186,8 +189,47 @@ pub(crate) enum Cell {
     Gap(String),
 }
 
-/// `steps`, the corpus recipe's evidence-script steps, applied through the API to `asset`. A
-/// `section` step only opens a panel and changes no recipe, so it is passed over.
+/// A step's `mask` and `component` parameters given as `{"name": ...}`, as the corpus's evidence
+/// script names them, replaced by the identities the asset's recipe holds under those names.
+fn resolve_names(
+    owner: &luxforge_core::OwnerHandle,
+    client: luxforge_core::ClientId,
+    asset: &Value,
+    params: &mut Value,
+) -> Result<(), String> {
+    let named = |key: &str| params.get(key).and_then(|value| value["name"].as_str());
+    if named("mask").is_none() && named("component").is_none() {
+        return Ok(());
+    }
+    let recipe = luxforge_testkit::client::recipe(owner, client, asset)?;
+    let mask = match named("mask") {
+        Some(name) => Some(
+            recipe
+                .masks
+                .iter()
+                .find(|mask| mask.name == name)
+                .ok_or_else(|| format!("no mask is named {name}"))?,
+        ),
+        None => None,
+    };
+    if let Some(name) = named("component") {
+        let mask = mask.ok_or("a component named by name needs its mask named")?;
+        let component = mask
+            .components
+            .iter()
+            .find(|component| component.name == name)
+            .ok_or_else(|| format!("{} holds no component named {name}", mask.name))?;
+        params["component"] = json!(component.id.as_str());
+    }
+    if let Some(mask) = mask {
+        params["mask"] = json!(mask.id.as_str());
+    }
+    Ok(())
+}
+
+/// `steps`, the corpus recipe's evidence-script steps, applied through the API to `asset`, a mask
+/// or component named by name resolved to its identity. A `section` step only opens a panel and
+/// changes no recipe, so it is passed over.
 fn apply_steps(
     owner: &luxforge_core::OwnerHandle,
     client: luxforge_core::ClientId,
@@ -204,6 +246,7 @@ fn apply_steps(
             return Err(format!("{step} is not an API step"));
         };
         let mut params = api["params"].clone();
+        resolve_names(owner, client, &id, &mut params)?;
         params["asset_id"] = id.clone();
         params["mutation"] = mutation(
             revision(owner, client, &id)?,
@@ -244,7 +287,6 @@ pub(crate) fn corpus_cell(
     let asset = crate::app::testing::import_and_adopt(&owner, client, &source.path);
     let result = (|| -> Result<Cell, String> {
         apply_steps(&owner, client, &asset, steps)?;
-        let recipe = luxforge_testkit::client::recipe(&owner, client, &json!(asset.as_str()))?;
         let bounds = fit_bounds();
         // The CPU frame: the desktop's own Fit job, through the preview worker's proxy phase.
         let mut job = crate::app::tasks::ready_preview_job(
@@ -253,6 +295,8 @@ pub(crate) fn corpus_cell(
         )?;
         job.intent = PreviewIntent::Interactive;
         let evaluation = job.evaluation.clone();
+        // The recipe the frame is rendered from, its painted strokes resolved.
+        let recipe = evaluation.recipe().clone();
         let mut queue = PreviewQueue::default();
         let generation = queue.request(job);
         let outcome = luxforge_testbase::wait_for("the Fit frame", || {
@@ -391,6 +435,16 @@ pub(crate) fn corpus_cell(
                 )));
             }
         };
+        // A mask that selects nothing on this source measures nothing about its coverage: the
+        // corpus names such a cell a gap, not a pass. Its first operation's mask is read back
+        // over the boundary it reads.
+        if let Some(GpuStep::Masked(masked)) = converted.steps.first()
+            && selects_nothing(qualifier, &converted.boundary, masked)?
+        {
+            return Ok(Cell::Gap(
+                "the mask selects nothing on this source".to_owned(),
+            ));
+        }
         let drawn = qualifier.evaluate_codes(&converted)?;
         let gpu: Vec<u8> = drawn
             .iter()
@@ -429,6 +483,38 @@ pub(crate) fn corpus_cell(
     finish(owner, join);
     let _ = std::fs::remove_file(&catalog);
     result
+}
+
+/// Whether `masked`'s mask covers no pixel of `boundary`, its operation's input: its coverage read
+/// back through a unit that adds one to every channel, so the output less the input is the
+/// coverage.
+fn selects_nothing(
+    qualifier: &Qualifier,
+    boundary: &luxforge_ui::photo_surface::GpuBoundary,
+    masked: &MaskedColour,
+) -> Result<bool, String> {
+    let add_one = GpuProgram::new(
+        "lf_test_add_one",
+        "fn lf_test_add_one(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) \
+         -> vec3<f32> {\n    return rgb + vec3<f32>(1.0);\n}\n",
+    );
+    let plan = GpuPlan {
+        boundary: boundary.clone(),
+        texels: TexelMap::IDENTITY,
+        steps: vec![GpuStep::Masked(MaskedColour {
+            units: vec![add_one],
+            ..masked.clone()
+        })],
+    };
+    let input = GpuPlan {
+        steps: Vec::new(),
+        ..plan.clone()
+    };
+    let (covered, held) = (qualifier.evaluate(&plan)?, qualifier.evaluate(&input)?);
+    Ok(covered
+        .iter()
+        .zip(&held)
+        .all(|(out, input)| out[1] == input[1]))
 }
 
 /// The qualification corpus's recipes of `families` at Fit: for each source this host has, the CPU

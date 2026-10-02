@@ -1198,3 +1198,5 @@ fn a_boundary_past_the_texture_limit_makes_the_frame_the_cpus() {
     );
     assert_eq!(pipeline.figures.preview.in_use(), 0);
 }
+
+mod masked;
