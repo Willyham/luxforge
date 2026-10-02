@@ -24,7 +24,7 @@ use super::Editor;
 use luxforge_core::{DraftId, EntryId, WorkspaceState};
 use luxforge_ui::{
     Frame,
-    photo_surface::{Dissolve, DrawingPath, GpuPlan},
+    photo_surface::{ClipMarks, Dissolve, DrawingPath, GpuPlan, GpuStep},
 };
 use serde_json::{Value, json};
 
@@ -36,6 +36,44 @@ pub(crate) const PREFERENCE_OFF: &str = "preference-off";
 /// nothing else.
 pub(crate) fn toggle_params(workspace: &WorkspaceState) -> Value {
     json!({ "gpu_preview": !workspace.gpu_preview })
+}
+
+/// The clipping overlay's classes, shadows and highlights, while this client shows one.
+pub(crate) fn clip_flags(workspace: &WorkspaceState) -> Option<[bool; 2]> {
+    (workspace.clip_shadows || workspace.clip_highlights)
+        .then_some([workspace.clip_shadows, workspace.clip_highlights])
+}
+
+/// `steps` with the clipping overlay's marks as their last step while one is shown
+/// ([`ClipMarks`]): the CPU's overlay is derived from the CPU's frames and would mark another
+/// frame's pixels over a GPU one, so the plan marks its own, by the quantizer's thresholds the
+/// core's `plan` names, in the overlay's own colours. Approximate, as evidence says.
+pub(crate) fn marked_steps(
+    mut steps: Vec<GpuStep>,
+    plan: &luxforge_core::GpuPlan,
+    flags: Option<[bool; 2]>,
+) -> Vec<GpuStep> {
+    if let Some([shadows, highlights]) = flags {
+        let palette = super::overlay::palette();
+        steps.push(GpuStep::Clipping(ClipMarks {
+            shadows,
+            highlights,
+            shadow_below: plan.clipping.shadow_below,
+            highlight_from: plan.clipping.highlight_from,
+            palette: [palette[1], palette[2], palette[3]],
+        }));
+    }
+    steps
+}
+
+/// [`marked_steps`] of a converted plan.
+pub(crate) fn marked(
+    mut converted: GpuPlan,
+    plan: &luxforge_core::GpuPlan,
+    flags: Option<[bool; 2]>,
+) -> GpuPlan {
+    converted.steps = marked_steps(std::mem::take(&mut converted.steps), plan, flags);
+    converted
 }
 
 impl Editor {

@@ -697,6 +697,15 @@ impl Editor {
             return true;
         }
         let enabled = self.session.workspace.clip_shadows || self.session.workspace.clip_highlights;
+        // Over a GPU frame the plan's own marks are the overlay: the CPU frame's is not drawn.
+        let diagnostics = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
+        if enabled
+            && diagnostics.drawn_path == Some(luxforge_ui::photo_surface::DrawingPath::Gpu)
+            && diagnostics.drawn_clipping_marks
+                == super::gpu_settle::clip_flags(&self.session.workspace)
+        {
+            return true;
+        }
         let failed = self
             .evidence
             .as_ref()
