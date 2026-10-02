@@ -14,8 +14,9 @@
 //! may turn on (`cargo xtask check-repository`), so no build of the desktop has it: the surface
 //! itself never reads a pixel back or waits on the GPU. Everything here blocks the calling test.
 use super::{
-    GpuBoundary, GpuFallback, GpuPlan, GpuStep, OUTPUT_FORMAT, Support, answered, assemble,
-    compile, le_bytes, pack, slot_charge, spatial, upload_boundary, validate, validate_step,
+    Compiled, GpuBoundary, GpuFallback, GpuPlan, GpuStep, OUTPUT_FORMAT, Support, answered,
+    assemble, compile, le_bytes, pack, slot_charge, spatial, upload_boundary, validate,
+    validate_step,
 };
 use std::sync::mpsc;
 
@@ -80,36 +81,34 @@ impl Qualifier {
     /// Every texel of `plan`'s output, as the `f32` values its last step returned: row by row, the
     /// boundary's size, alpha one.
     pub fn evaluate(&self, plan: &GpuPlan) -> Result<Vec<[f32; 4]>, String> {
-        let bytes = self.run(plan, wgpu::TextureFormat::Rgba32Float, 16)?;
-        Ok(bytes
-            .chunks_exact(16)
-            .map(|texel| {
-                std::array::from_fn(|channel| {
-                    let at = channel * 4;
-                    f32::from_le_bytes([texel[at], texel[at + 1], texel[at + 2], texel[at + 3]])
-                })
-            })
-            .collect())
+        let (bytes, _) = self.run(None, plan, wgpu::TextureFormat::Rgba32Float, 16)?;
+        Ok(floats(&bytes))
+    }
+
+    /// `then`'s output as [`Qualifier::evaluate`] reads it, drawn as a slot that drew `first` draws
+    /// its next tick: over the planes `first`'s passes wrote, running only the passes of `then` the
+    /// slot's schedule runs; with how many those were. The two plans hold the same planes.
+    pub fn evaluate_after(
+        &self,
+        first: &GpuPlan,
+        then: &GpuPlan,
+    ) -> Result<(Vec<[f32; 4]>, u64), String> {
+        let (bytes, ran) = self.run(Some(first), then, wgpu::TextureFormat::Rgba32Float, 16)?;
+        Ok((floats(&bytes), ran))
     }
 
     /// Every texel of `plan`'s output as the 8-bit sRGB codes the stage's output texture holds:
     /// the hardware's encoding of the same values, row by row, RGBA.
     pub fn evaluate_codes(&self, plan: &GpuPlan) -> Result<Vec<[u8; 4]>, String> {
-        let bytes = self.run(plan, OUTPUT_FORMAT, 4)?;
+        let (bytes, _) = self.run(None, plan, OUTPUT_FORMAT, 4)?;
         Ok(bytes
             .chunks_exact(4)
             .map(|texel| [texel[0], texel[1], texel[2], texel[3]])
             .collect())
     }
 
-    /// The plan drawn into a target of `format`, `texel_bytes` a texel, read back unpadded.
-    fn run(
-        &self,
-        plan: &GpuPlan,
-        format: wgpu::TextureFormat,
-        texel_bytes: u32,
-    ) -> Result<Vec<u8>, String> {
-        let device = &self.device;
+    /// `plan` checked as `prepare` checks it, and compiled for a target of `format`.
+    fn compiled(&self, plan: &GpuPlan, format: wgpu::TextureFormat) -> Result<Compiled, String> {
         for step in &plan.steps {
             validate_step(step)?;
         }
@@ -118,14 +117,128 @@ impl Qualifier {
             .steps
             .iter()
             .any(|step| matches!(step, GpuStep::Spatial(_)));
-        if spatial_steps && !spatial::supported(&device.limits()) {
+        if spatial_steps && !spatial::supported(&self.device.limits()) {
             return Err("the device cannot run a spatial step".into());
         }
         if spatial_steps && plan.texels.step != [1.0, 1.0] {
             return Err("a spatial step runs over the boundary's own texels".into());
         }
-        let compiled = compile(device, &self.support, &plan.steps, format)?;
+        compile(&self.device, &self.support, &plan.steps, format)
+    }
+
+    /// `plan`'s boundary uploaded and its words and blocks packed and written, bound as group 0.
+    fn inputs(&self, plan: &GpuPlan) -> Inputs {
+        let device = &self.device;
         let (width, height) = plan.boundary.size();
+        let boundary = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("luxforge.qualification.boundary"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        upload_boundary(&self.queue, &boundary, &plan.boundary);
+        let (mut words, mut blocks) = (Vec::new(), Vec::new());
+        pack(plan, &mut words, &mut blocks);
+        let storage = |label, data: &[u32]| {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: (data.len() * 4) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.queue.write_buffer(&buffer, 0, &le_bytes(data));
+            buffer
+        };
+        let words_buffer = storage("luxforge.qualification.words", &words);
+        let blocks_buffer = storage("luxforge.qualification.blocks", &blocks);
+        let boundary_view = boundary.create_view(&wgpu::TextureViewDescriptor::default());
+        let bindings = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("luxforge.qualification.bindings"),
+            layout: &self.support.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: words_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: blocks_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&boundary_view),
+                },
+            ],
+        });
+        Inputs {
+            bindings,
+            words,
+            blocks,
+            _held: (boundary, words_buffer, blocks_buffer),
+        }
+    }
+
+    /// `plan` drawn into a target of `format`, `texel_bytes` a texel, read back unpadded, after
+    /// `first`'s passes when it is given; with how many of `plan`'s passes ran.
+    fn run(
+        &self,
+        first: Option<&GpuPlan>,
+        plan: &GpuPlan,
+        format: wgpu::TextureFormat,
+        texel_bytes: u32,
+    ) -> Result<(Vec<u8>, u64), String> {
+        let device = &self.device;
+        let compiled = self.compiled(plan, format)?;
+        let (width, height) = plan.boundary.size();
+        let origin_of = |plan: &GpuPlan| {
+            (
+                plan.texels.origin[0].max(0.0) as u32,
+                plan.texels.origin[1].max(0.0) as u32,
+            )
+        };
+        let key = spatial::PlanesKey::of(&plan.steps, (width, height), origin_of(plan));
+        let mut planes = key.clone().map(|key| spatial::Planes::create(device, key));
+        // The slot's schedule, which a first plan leaves knowing what the planes hold.
+        let mut schedule = spatial::Schedule::default();
+        if let Some(first) = first {
+            let first_key =
+                spatial::PlanesKey::of(&first.steps, first.boundary.size(), origin_of(first));
+            if first_key != key {
+                return Err("a plan drawn after another holds the same planes".into());
+            }
+            let first_compiled = self.compiled(first, format)?;
+            let inputs = self.inputs(first);
+            if let Some(planes) = planes.as_mut() {
+                planes.write_parameters(&self.queue, &first.steps);
+                let groups = spatial::Groups::new(device, &first_compiled.spatial, planes);
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("luxforge.qualification.first"),
+                });
+                let run = schedule.run(
+                    &first.steps,
+                    &inputs.words,
+                    &inputs.blocks,
+                    first.boundary.version(),
+                );
+                groups.encode(
+                    &mut encoder,
+                    &first_compiled.spatial,
+                    &inputs.bindings,
+                    &run,
+                );
+                self.queue.submit([encoder.finish()]);
+            }
+        }
+        let inputs = self.inputs(plan);
+        let bindings = &inputs.bindings;
         let texture = |label, format, usage| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -142,45 +255,6 @@ impl Qualifier {
                 view_formats: &[],
             })
         };
-        let boundary = texture(
-            "luxforge.qualification.boundary",
-            wgpu::TextureFormat::Rgba16Float,
-            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        );
-        upload_boundary(&self.queue, &boundary, &plan.boundary);
-        let (mut words, mut blocks) = (Vec::new(), Vec::new());
-        pack(plan, &mut words, &mut blocks);
-        let storage = |label, data: &[u32]| {
-            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size: (data.len() * 4) as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            self.queue.write_buffer(&buffer, 0, &le_bytes(data));
-            buffer
-        };
-        let words = storage("luxforge.qualification.words", &words);
-        let blocks = storage("luxforge.qualification.blocks", &blocks);
-        let boundary_view = boundary.create_view(&wgpu::TextureViewDescriptor::default());
-        let bindings = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("luxforge.qualification.bindings"),
-            layout: &self.support.layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: words.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: blocks.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&boundary_view),
-                },
-            ],
-        });
         let target = texture(
             "luxforge.qualification.target",
             format,
@@ -195,12 +269,6 @@ impl Qualifier {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        let origin = (
-            plan.texels.origin[0].max(0.0) as u32,
-            plan.texels.origin[1].max(0.0) as u32,
-        );
-        let mut planes = spatial::PlanesKey::of(&plan.steps, (width, height), origin)
-            .map(|key| spatial::Planes::create(device, key));
         if let Some(planes) = planes.as_mut() {
             planes.write_parameters(&self.queue, &plan.steps);
         }
@@ -210,8 +278,15 @@ impl Qualifier {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("luxforge.qualification.encoder"),
         });
+        let mut ran = 0;
         if let Some(groups) = &groups {
-            groups.encode(&mut encoder, &compiled.spatial, &bindings);
+            let run = schedule.run(
+                &plan.steps,
+                &inputs.words,
+                &inputs.blocks,
+                plan.boundary.version(),
+            );
+            ran = groups.encode(&mut encoder, &compiled.spatial, bindings, &run);
         }
         {
             let view = target.create_view(&wgpu::TextureViewDescriptor::default());
@@ -231,7 +306,7 @@ impl Qualifier {
                 occlusion_query_set: None,
             });
             pass.set_pipeline(&compiled.render);
-            pass.set_bind_group(0, &bindings, &[]);
+            pass.set_bind_group(0, bindings, &[]);
             if let Some(fragment) = groups.as_ref().and_then(|groups| groups.fragment.as_ref()) {
                 pass.set_bind_group(1, fragment, &[]);
             }
@@ -277,8 +352,29 @@ impl Qualifier {
         }
         drop(mapped);
         readback.unmap();
-        Ok(bytes)
+        Ok((bytes, ran))
     }
+}
+
+/// A plan's group 0 and what it binds, and the words and blocks it packed.
+struct Inputs {
+    bindings: wgpu::BindGroup,
+    words: Vec<u32>,
+    blocks: Vec<u32>,
+    _held: (wgpu::Texture, wgpu::Buffer, wgpu::Buffer),
+}
+
+/// Little-endian `rgba32float` texels as values.
+fn floats(bytes: &[u8]) -> Vec<[f32; 4]> {
+    bytes
+        .chunks_exact(16)
+        .map(|texel| {
+            std::array::from_fn(|channel| {
+                let at = channel * 4;
+                f32::from_le_bytes([texel[at], texel[at + 1], texel[at + 2], texel[at + 3]])
+            })
+        })
+        .collect()
 }
 
 /// A boundary of `width` × `height` texels from `f32` values in row order, each held as the nearest
