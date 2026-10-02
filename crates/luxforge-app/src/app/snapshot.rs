@@ -320,7 +320,15 @@ impl Editor {
                 // output was drawn from, and the GPU-preview budget's own figures.
                 "drawing_path":gpu.drawn_path.map(luxforge_ui::photo_surface::DrawingPath::as_str),
                 "gpu_fallback":gpu.gpu_fallback.map(gpu_fallback),
+                // Why the desktop hands the surface no plan whatever the gesture: this client's
+                // `gpu_preview` preference is off.
+                "plan_fallback":self.gpu_preview_allowed().err().map(|reason| json!({"reason":reason})),
                 "drawn_gpu_boundary":gpu.drawn_gpu_boundary,
+                "gpu_preview_frame_us":gpu.gpu_preview_frame_us,
+                // A settle's dissolve from the GPU frame to the CPU frame, as the draw drew it.
+                "dissolve":gpu.drawn_dissolve.map(|dissolve| json!({"from":dissolve.from,
+                    "to":dissolve.to,"gpu_boundary":dissolve.gpu_boundary,
+                    "progress":dissolve.progress()})),
                 "gpu_preview_budget_bytes":gpu.gpu_preview_budget_bytes,
                 "gpu_preview_in_use_bytes":gpu.gpu_preview_in_use_bytes,
                 "gpu_preview_peak_bytes":gpu.gpu_preview_peak_bytes,
@@ -377,7 +385,7 @@ impl Editor {
     /// and the renderer's figure for the picture on screen.
     pub(super) fn status_bar_summary(&self) -> Value {
         let model = &self.workspace.status;
-        json!({"message":model.message,"readout":model.readout,"render":model.render,"render_ms":self.activity.render.map(|time| time.ms),"render_proxy":self.activity.render.map(|time| time.proxy),"render_approximate":self.activity.render.map(|time| time.approximate)})
+        json!({"message":model.message,"readout":model.readout,"render":model.render,"gpu_ms":model.gpu_us.map(|us| us as f64 / 1000.0),"render_ms":self.activity.render.map(|time| time.ms),"render_proxy":self.activity.render.map(|time| time.proxy),"render_approximate":self.activity.render.map(|time| time.approximate)})
     }
 
     /// The notices the captured frame drew, by title, so a frame's chrome is observable.
