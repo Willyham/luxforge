@@ -1455,7 +1455,9 @@ impl PhotoPipeline {
     /// Make `surface`'s GPU-preview slot hold what `plan` draws and record how this frame is drawn:
     /// with no plan, the slot is released and the frame is the CPU's, unless `dissolve` runs from
     /// the GPU frame the last draw showed, which the slot then keeps ([`dissolve`]); with one, the
-    /// slot evaluates it, or the frame is the CPU's and names why. `surface` is out of the map.
+    /// slot evaluates it, or the frame is the CPU's and names why, and a `dissolve` beside it — the
+    /// caller hands one only while the plan is held — runs from the slot's output. `surface` is out
+    /// of the map.
     pub(super) fn prepare_gpu(
         &mut self,
         surface: &mut SurfaceSlots,
@@ -1478,6 +1480,12 @@ impl PhotoPipeline {
         let outcome = self.evaluate(surface, device, queue, plan);
         if outcome.is_err() {
             self.release_gpu(surface);
+        }
+        // A dissolve handed beside a plan runs behind it while it is held: the slot keeps the
+        // output of the GPU frame the last draw showed, which the plan's unchanged words leave as
+        // it was.
+        if outcome.is_ok() && shown {
+            surface.dissolving = dissolve;
         }
         surface.gpu_outcome = Some(outcome);
     }
