@@ -103,6 +103,25 @@ fn draft_job_in(
     drafted: Vec<Layer>,
     revision: u64,
 ) -> (PreviewJob, Draft) {
+    draft_job_of(
+        context,
+        source,
+        action,
+        recipe(entry),
+        recipe(drafted),
+        revision,
+    )
+}
+
+/// [`draft_job_in`] over whole recipes, masks and all.
+fn draft_job_of(
+    context: RenderContext,
+    source: PreviewSource,
+    action: &str,
+    entry: Recipe,
+    drafted: Recipe,
+    revision: u64,
+) -> (PreviewJob, Draft) {
     let asset = AssetId::new();
     let entry = HistoryEntry {
         id: EntryId::new(),
@@ -119,7 +138,7 @@ fn draft_job_in(
         snapshot: Snapshot {
             id: SnapshotId::new(),
             asset_id: asset.clone(),
-            recipe: recipe(entry),
+            recipe: entry,
         },
         undo_parent: None,
         restore_target: None,
@@ -131,7 +150,7 @@ fn draft_job_in(
         context,
         source,
         entry,
-        recipe(drafted),
+        drafted,
         Some(DraftStamp {
             draft_id: draft.draft_id.clone(),
             draft_revision: revision,
@@ -425,13 +444,11 @@ fn a_raw_boundary_holds_its_values_as_f32() {
 fn the_warmed_plans_hold_every_first_drags_sequence() {
     let crop = crop();
     let (job, _) = draft_job("set-basic", vec![crop.clone()], vec![crop.clone()], 0);
-    let warmed: Vec<Vec<&'static str>> = crate::render::gpu::plan_warm(&job.evaluation, bounds())
-        .unwrap()
-        .iter()
-        .map(sequence)
-        .collect();
-    for (index, one) in warmed.iter().enumerate() {
-        assert!(!warmed[..index].contains(one), "each sequence once");
+    let plans = crate::render::gpu::plan_warm(&job.evaluation, bounds()).unwrap();
+    let warmed: Vec<Vec<&'static str>> = plans.iter().map(sequence).collect();
+    let keys: Vec<Vec<String>> = plans.iter().map(pipelines).collect();
+    for (index, one) in keys.iter().enumerate() {
+        assert!(!keys[..index].contains(one), "each sequence once");
     }
     let (job, draft) = draft_job(
         "set-basic",
@@ -455,6 +472,55 @@ fn the_warmed_plans_hold_every_first_drags_sequence() {
             "{entry} is warmed"
         );
     }
+}
+
+/// The warm list keys a plan as the surface keys its sequence, masks included: a Presence drag
+/// through a mask runs the programs of the same drag unmasked but compiles to another sequence, so
+/// a list holding both keeps both; and a Presence layer through a mask is warmed with its mask.
+#[test]
+fn the_warmed_plans_tell_a_masked_layer_from_an_unmasked_one() {
+    let mut mask = crate::Mask::new("Mask 1");
+    mask.components.push(crate::Component::new(
+        "Radial 1",
+        crate::ComponentMode::Add,
+        "radial",
+        json!({"x": 0.45, "y": 0.55, "radius_x": 0.3, "radius_y": 0.22, "angle": 18.0,
+               "feather": 45.0}),
+    ));
+    let presence = Layer::new(crate::PRESENCE_EFFECT, json!({"clarity": 20}));
+    let stack = |masked: bool| Recipe {
+        masks: vec![mask.clone()],
+        ..recipe(vec![Layer {
+            mask: masked.then(|| mask.id.clone()),
+            ..presence.clone()
+        }])
+    };
+    let warm = |masked: bool| {
+        let (job, _) = draft_job_of(
+            RenderContext::new(),
+            source(),
+            "set-presence",
+            stack(masked),
+            stack(masked),
+            0,
+        );
+        let plans = crate::render::gpu::plan_warm(&job.evaluation, bounds()).unwrap();
+        plans
+            .into_iter()
+            .find(|plan| plan.content.is_empty() && plan.spatial.is_some())
+            .expect("the Presence layer's drag")
+    };
+    let (unmasked, masked) = (warm(false), warm(true));
+    assert!(
+        masked.spatial.as_ref().unwrap().mask.is_some(),
+        "warmed with its mask"
+    );
+    assert_eq!(sequence(&masked), sequence(&unmasked), "the same programs");
+    assert_ne!(
+        crate::render::gpu::warm_sequence(&masked),
+        crate::render::gpu::warm_sequence(&unmasked),
+        "two sequences"
+    );
 }
 
 /// A job whose Fit frame is drawn at another stage than its boundary names still answers the
