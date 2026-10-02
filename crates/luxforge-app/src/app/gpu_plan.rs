@@ -19,15 +19,20 @@
 //! A part the surface cannot run yet answers the reason ([`Unrunnable`]), and the gesture keeps
 //! the CPU path.
 //!
+//! At a percentage zoom the plan's frame is the visible region of the output stage at full scale
+//! ([`surface_plan_over`]): the tail draws that rectangle's output pixels, or, with no tail, the
+//! content pass reads the rectangle out of the held window, and the surface places the frame at
+//! the rectangle.
+//!
 //! Every pass the surface draws ends in the CPU's output encoding, whose tables are the core's:
 //! [`install_output_encoding`] hands them over once at start.
 use luxforge_core::{
     ComponentMode, CoordinateGrid, GpuDescription, GpuGeometry, GpuMask, GpuOperation,
-    GpuPassShape, GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuSpatial, Stage,
+    GpuPassShape, GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuSpatial, Region, Stage,
 };
 use luxforge_ui::photo_surface::{
-    Coverage, CoverageComponent, CoverageMode, GpuBoundary, GpuPlan, GpuProgram, GpuStep, GpuTail,
-    MaskedColour, PositionMap, TexelMap,
+    Coverage, CoverageComponent, CoverageMode, GpuBoundary, GpuPlan, GpuProgram, GpuRegion,
+    GpuStep, GpuTail, MaskedColour, PositionMap, TexelMap,
     gpu_preview::{self, PassShape, PlaneFormat, PlaneSize},
 };
 use std::{borrow::Cow, sync::Arc};
@@ -68,6 +73,9 @@ pub(crate) enum Unrunnable {
     Boundary { held: (u32, u32), stage: (u32, u32) },
     /// A position map with a coefficient the surface's `f32` words cannot hold exactly.
     Position { layer: usize },
+    /// The region a percentage zoom draws does not lie inside the plan's output stage, or, with no
+    /// tail, inside the boundary held for it.
+    Region,
 }
 
 impl Unrunnable {
@@ -77,6 +85,7 @@ impl Unrunnable {
             Self::Grid => "warp-grid",
             Self::Boundary { .. } => "boundary-size",
             Self::Position { .. } => "position-range",
+            Self::Region => "region-outside",
         }
     }
 }
@@ -106,13 +115,58 @@ pub(crate) fn surface_plan_at(
     origin: (u32, u32),
     grid: Option<&CoordinateGrid>,
 ) -> Result<GpuPlan, Unrunnable> {
+    surface_plan_over(plan, boundary, origin, grid, None)
+}
+
+/// [`surface_plan_at`], at a percentage zoom drawing only `region` of the plan's output stage at
+/// full scale: the tail's output is the rectangle, whose first pixel the surface offsets each pixel
+/// by, and with no tail the held window must hold the rectangle, which the content pass reads at
+/// one texel a pixel. `None` draws the whole output stage.
+pub(crate) fn surface_plan_over(
+    plan: &luxforge_core::GpuPlan,
+    boundary: GpuBoundary,
+    origin: (u32, u32),
+    grid: Option<&CoordinateGrid>,
+    region: Option<Region>,
+) -> Result<GpuPlan, Unrunnable> {
     let texels = boundary_map(plan.boundary.stage, &boundary, origin)?;
-    let steps = steps_with(plan, Grid::Held(grid))?;
+    let steps = steps_drawing(
+        plan,
+        Grid::Held(grid),
+        region.map(|rect| (rect.width, rect.height)),
+    )?;
+    let region = match region {
+        None => None,
+        Some(rect) => {
+            let stage = plan.geometry.output();
+            let corners = [rect.x0, rect.y0, rect.x1(), rect.y1()];
+            let tail = steps
+                .iter()
+                .any(|step| matches!(step, GpuStep::Geometry(_)));
+            let (held, inside) = (boundary.size(), |at: u32, end: u32, from: u32, to: u32| {
+                from <= at && end <= to
+            });
+            let drawable = rect.width > 0
+                && rect.height > 0
+                && corners[2] <= stage.width
+                && corners[3] <= stage.height
+                && (tail
+                    || inside(corners[0], corners[2], origin.0, origin.0 + held.0)
+                        && inside(corners[1], corners[3], origin.1, origin.1 + held.1));
+            if !drawable {
+                return Err(Unrunnable::Region);
+            }
+            Some(GpuRegion {
+                rect: corners,
+                stage: (stage.width, stage.height),
+            })
+        }
+    };
     Ok(GpuPlan {
         boundary,
         texels,
         steps,
-        region: None,
+        region,
     })
 }
 
@@ -131,6 +185,16 @@ pub(crate) fn steps_with(
     plan: &luxforge_core::GpuPlan,
     grid: Grid<'_>,
 ) -> Result<Vec<GpuStep>, Unrunnable> {
+    steps_drawing(plan, grid, None)
+}
+
+/// [`steps_with`], the tail drawing `output` pixels — a percentage zoom's region — in place of its
+/// whole output stage when given.
+fn steps_drawing(
+    plan: &luxforge_core::GpuPlan,
+    grid: Grid<'_>,
+    output: Option<(u32, u32)>,
+) -> Result<Vec<GpuStep>, Unrunnable> {
     let mut steps =
         Vec::with_capacity(plan.operations().map(|op| op.units.len()).sum::<usize>() + 1);
     for operation in &plan.content {
@@ -139,7 +203,7 @@ pub(crate) fn steps_with(
     if let Some(spatial) = &plan.spatial {
         steps.push(spatial_step(spatial)?);
     }
-    geometry_steps(plan, &mut steps, grid)?;
+    geometry_steps(plan, &mut steps, grid, output)?;
     Ok(steps)
 }
 
@@ -306,18 +370,21 @@ pub(crate) fn coverage(mask: &GpuMask) -> Option<Coverage> {
 /// whole boundary stage with nothing clamped, which leaves the output stage the boundary's and no
 /// output operation after it; otherwise the tail ([`GpuTail`]), through the plan's affine matrix
 /// or a warp's coordinate `grid`, quantizing where the CPU's segment boundary does, then each
-/// output operation's steps at the output pixel ([`operation_steps`]).
+/// output operation's steps at the output pixel ([`operation_steps`]). The tail draws `output`
+/// pixels when given — a percentage zoom's region, offset by the surface — and the whole output
+/// stage otherwise.
 pub(crate) fn geometry_steps(
     plan: &luxforge_core::GpuPlan,
     steps: &mut Vec<GpuStep>,
     grid: Grid<'_>,
+    output: Option<(u32, u32)>,
 ) -> Result<(), Unrunnable> {
     let geometry = &plan.geometry;
     if identity(geometry, plan.boundary.stage) && plan.output.is_empty() {
         return Ok(());
     }
     let stage = geometry.output();
-    let output = (stage.width, stage.height);
+    let output = output.unwrap_or((stage.width, stage.height));
     let reads = geometry.reads;
     let reads = [
         reads.x0,
@@ -360,6 +427,12 @@ pub(crate) fn geometry_steps(
         operation_steps(operation, steps)?;
     }
     Ok(())
+}
+
+/// Whether the surface draws `plan` through a geometry tail ([`geometry_steps`]): any geometry but
+/// the identity over its whole boundary stage, or any output operation after it.
+pub(crate) fn has_tail(plan: &luxforge_core::GpuPlan) -> bool {
+    !(identity(&plan.geometry, plan.boundary.stage) && plan.output.is_empty())
 }
 
 /// Whether `geometry` takes every pixel of `stage` to itself: an affine identity onto the same

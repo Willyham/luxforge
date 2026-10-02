@@ -1250,6 +1250,12 @@ impl Editor {
             }
             return Task::none();
         };
+        // A gesture's GPU frame of a region holding the view is its motion frame: no region job
+        // until the shared quiet policy settles it.
+        if self.gpu_draws_view(wanted) {
+            self.view_plan.dirty = false;
+            return Task::none();
+        }
         if self.presentation.presenter.full_content() == Some(self.presentation.content_serial)
             && self.presentation.exact.as_ref().is_some_and(|frame| {
                 (frame.raster.width, frame.raster.height) == stage
