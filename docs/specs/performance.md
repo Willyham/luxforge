@@ -3825,6 +3825,38 @@ cargo test -p luxforge-ui --lib a_boundary_arrival_measured -- --ignored --nocap
 LUXFORGE_ARRIVAL=whole cargo test -p luxforge-ui --lib a_boundary_arrival_measured -- --ignored --nocapture
 ```
 
+## GPU previews qualified on the M4
+
+The native qualification of GPU previews ([design](../design/gpu-preview.md)): the corpus error report at Fit and at 100%. Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal.
+
+### The corpus error report
+
+Every program and stack class of the [corpus](../../fixtures/preview/corpus.json) against the CPU frame it stands in for, over every source this host has, from the code at `2837c344`: at Fit, the frame settlement presents, which the dissolve ends on ([colour programs](#gpu-colour-programs-at-fit) set out the frames); at 100%, the exact visible region the quiet policy settles to, in the largest window the owner's display holds ([at 100%](#gpu-previews-at-100)). The five harnesses (`gpu_colour_corpus_at_fit`, `gpu_mask_corpus_at_fit`, `gpu_presence_corpus_at_fit`, `gpu_detail_corpus_at_fit`, `gpu_preview_corpus_at_100_percent`) ran once each in the `test` profile; the pixels are deterministic, so the host's load, 2 to 15 while they ran, does not bear on them. The sources are the generated 24 MP and 60 MP JPEGs, the zone plate and the Presence fixture (each verified against the corpus's SHA-256 by `cargo xtask preview-corpus`) and the Z6 NEF, X100VI RAF and Air 2S DNG through the private RAW manifest. The zone plate is measured now that `generate-fixtures` writes it.
+
+Worst of each statistic over a family's measured cells — mean ΔE00, worst 16 × 16 block, p99 and \|signed mean ΔL\*\| — against the pointwise limits (0.5, 1.0, 2.0, 0.25) or the spatial ones (1.0, 2.5, 5.0, 0.5). The chain is the colour stack, the four colour programs in one pass.
+
+| Family | Class | Fit: within the limits | Fit: mean / block / p99 / \|ΔL\*\| | 100%: within the limits | 100%: mean / block / p99 / \|ΔL\*\| |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Basic | pointwise | 7 of 7 | 0.071 / 0.31 / 0.94 / 0.007 | 7 of 7 | 0.075 / 0.37 / 0.89 / 0.007 |
+| Tone curve | pointwise | 7 of 7 | 0.078 / 0.33 / 1.06 / 0.005 | 7 of 7 | 0.079 / 0.37 / 0.97 / 0.005 |
+| Mixer | pointwise | 7 of 7 | 0.081 / 0.32 / 1.05 / 0.006 | 7 of 7 | 0.079 / 0.35 / 0.97 / 0.006 |
+| Vignette | pointwise | 5 of 5, 2 gaps | 0.004 / 0.04 / 0.21 / 0.001 | 7 of 7 | 0.005 / 0.15 / 0.22 / 0.001 |
+| Colour stack (the chain) | pointwise | 7 of 7 | 0.077 / 0.30 / 1.04 / 0.006 | 7 of 7 | 0.082 / 0.40 / 0.94 / 0.006 |
+| Straightened crop | pointwise | 7 of 7 | 0.073 / 0.34 / 0.94 / 0.006 | 7 of 7 | 0.084 / 0.37 / 0.93 / 0.006 |
+| Lens and perspective | pointwise | 6 of 7 | 0.161 / 1.15 / 1.41 / 0.007 | 7 of 7 | 0.155 / 0.65 / 1.02 / 0.006 |
+| Mask linear | pointwise | 7 of 7 | 0.084 / 0.32 / 0.99 / 0.007 | 7 of 7 | 0.081 / 0.37 / 0.94 / 0.007 |
+| Mask radial | pointwise | 7 of 7 | 0.078 / 0.31 / 1.02 / 0.006 | 6 of 6, 1 gaps | 0.079 / 0.36 / 0.93 / 0.007 |
+| Mask brush | pointwise | 7 of 7 | 0.077 / 0.31 / 1.03 / 0.006 | 5 of 5, 2 gaps | 0.079 / 0.36 / 0.92 / 0.006 |
+| Mask luminance range | pointwise | 7 of 7 | 0.090 / 0.34 / 0.99 / 0.009 | 7 of 7 | 0.088 / 0.36 / 0.90 / 0.009 |
+| Mask colour range | pointwise | 7 of 7 | 0.086 / 0.34 / 0.98 / 0.009 | 7 of 7 | 0.097 / 0.39 / 0.90 / 0.009 |
+| Mask composed | pointwise | 7 of 7 | 0.083 / 0.32 / 0.99 / 0.007 | 7 of 7 | 0.080 / 0.37 / 0.95 / 0.006 |
+| Presence | spatial | 49 of 49 | 0.138 / 0.53 / 1.08 / 0.010 | 46 of 46, 3 gaps | 0.148 / 0.49 / 1.02 / 0.009 |
+| Detail | spatial | 63 of 63 | 0.106 / 0.43 / 1.08 / 0.020 | 39 of 39, 24 gaps | 0.094 / 0.49 / 0.96 / 0.006 |
+
+- **One miss: the perspective warp on the zone plate at Fit.** Its worst block is 1.15 against the pointwise limit of 1.0 (mean 0.161, p99 1.41, ΔL\* −0.002, within theirs); it is the only cell of 201 at Fit or 173 at 100% outside its class's limits. The zone plate's chirp reaches the Nyquist limit, and at Fit the proxy it is reduced to carries that frequency: the warp's coordinate grid holds the mapping within 0.041 px of exact, and at half a cycle per pixel that phase moves a block's codes by more than the limit allows. The same warp at 100% is within the limits (worst block 0.65), and the straightened crop, whose affine map the tail computes exactly, is within them on the zone plate at both views (worst block 0.02). Every photograph's warp cell is within them. The warp tail stays enabled; whether this miss disables it, which would put every drag over a lens-corrected RAW on the CPU path, is open ([design](../design/gpu-preview.md#open-decisions)).
+- **Gaps, not passes.** At Fit, the vignette after a RAW's lens warp on the Z6 and Air 2S (a lens distortion before the boundary). At 100%: a mask that selects nothing inside the region (3 cells); a slot past the 640 MiB budget, which takes the CPU path naming it (Presence's three fields on the Air 2S, Detail on the Air 2S and Detail beside a local Presence on every source, 13 cells); and Detail beside Presence, whose region boundary cannot be planned while a global estimate sits behind an earlier spatial layer (14 cells).
+- **Detail at settle.** Detail is judged against the CPU's moving proxy it stands in for, as the owner decided. Against the exact-derived frame Detail settles to at Fit, the GPU frame and the CPU proxy differ alike: both pass the spatial limits on 30 of 54 cells and miss them on the same 24, the zone plate's nine, the Air 2S's and those beside Presence among them (worst block 15.0 and p99 28.8 on the zone plate, 7.15 and 8.09 on a photograph). That is the jump the settle dissolve covers, the CPU path's own.
+
 ## Method
 
 Optimized builds only, with commit, lockfile, OS, CPU/GPU, RAM, display and storage recorded. Report cold and warm runs separately and say which cold is meant. Keep at least 30 samples and never drop failures or tails silently. Measure user event to presented frame, not shader time, and account CPU RSS, cache bytes, GPU allocations and transient copies without double-counting unified memory. Capture idle after all background work stops. No timing gates in CI; CI enforces exactness, deterministic bounds and coverage. VM checks record hypervisor, guest graphics path and software versus accelerated rendering, and never stand in for native timings.
