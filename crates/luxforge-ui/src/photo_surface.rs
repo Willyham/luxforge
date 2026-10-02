@@ -195,6 +195,7 @@ impl SurfaceFigures {
         overall.gpu_preview_peak_bytes = self.preview.peak();
         overall.gpu_preview_passes = self.preview.passes();
         overall.gpu_preview_spatial_passes = self.preview.spatial_passes();
+        overall.gpu_preview_staged_bytes = self.preview.staged();
         overall.gpu_preview_compiles = self.preview.compiles();
         (
             overall.gpu_preview_compiled,
@@ -394,6 +395,9 @@ pub struct SurfaceDiagnostics {
     /// How many compute passes the GPU stage's spatial steps have dispatched: a pass runs only when
     /// what its plane holds changed, so a tick that moves only an apply's word dispatches none.
     pub gpu_preview_spatial_passes: u64,
+    /// Bytes of boundary texels the GPU stage has written into wgpu's staging, over every frame: a
+    /// new boundary's at most [`gpu_preview::UPLOAD_PER_FRAME`] a frame.
+    pub gpu_preview_staged_bytes: u64,
     /// Program sequences handed to the compile thread, and how many have finished compiling.
     pub gpu_preview_compiles: u64,
     pub gpu_preview_compiled: u64,
@@ -930,6 +934,20 @@ impl PhotoSurface {
         self
     }
 
+    /// Whether the GPU stage is still uploading the boundary of the plan this surface is handed: its
+    /// last frame said so, and the plan still names that boundary with its texels. The widget then
+    /// asks for the next frame, whose `prepare` writes the next chunks; an upload's start wakes the
+    /// desktop, whose update draws the frame that asks.
+    fn uploading(&self) -> bool {
+        self.gpu
+            .as_ref()
+            .is_some_and(|plan| plan.boundary.holds_texels())
+            && matches!(
+                surface_diagnostics(self.id).gpu_fallback,
+                Some(GpuFallback::BoundaryUploading { .. })
+            )
+    }
+
     /// The dissolve this surface draws at `now`, if one runs: into a whole-frame photograph's
     /// frame, or the frame a percentage view draws its current content from.
     fn dissolving(&self, now: Instant) -> Option<gpu_preview::DissolveFrame> {
@@ -1175,7 +1193,7 @@ where
     ) {
         if let Event::Window(window::Event::RedrawRequested(now)) = event {
             self.clock = Some(*now);
-            if self.dissolving(*now).is_some() {
+            if self.dissolving(*now).is_some() || self.uploading() {
                 shell.request_redraw();
             }
         }
@@ -1936,13 +1954,17 @@ impl shader::Primitive for PhotoPrimitive {
                 })
         });
         // Each surface compares against its own last draw, so two surfaces in different states
-        // do not wake each other every frame. A change of drawing path, a new fallback, or a
-        // dissolve's start or end wakes the desktop once too.
+        // do not wake each other every frame. A change of drawing path, a new fallback, a
+        // dissolve's start or end, or a boundary upload's, wakes the desktop once too.
         let status = u8::from(blank_photo)
             | (u8::from(stale_photo) << 1)
             | (u8::from(drawn_path == Some(DrawingPath::Gpu)) << 2)
             | (u8::from(gpu_fallback.is_some()) << 3)
-            | (u8::from(drawn_dissolve.is_some()) << 4);
+            | (u8::from(drawn_dissolve.is_some()) << 4)
+            | (u8::from(matches!(
+                gpu_fallback,
+                Some(GpuFallback::BoundaryUploading { .. })
+            )) << 5);
         let status_changed = surface.drawn_status.swap(status, Ordering::Relaxed) != status;
         diagnostic.drawn_path = drawn_path;
         diagnostic.gpu_fallback = gpu_fallback;
@@ -2394,7 +2416,11 @@ impl PhotoPipeline {
             | (u8::from(diagnostic.drawn_stale_photo) << 1)
             | (u8::from(diagnostic.drawn_path == Some(DrawingPath::Gpu)) << 2)
             | (u8::from(diagnostic.gpu_fallback.is_some()) << 3)
-            | (u8::from(diagnostic.drawn_dissolve.is_some()) << 4);
+            | (u8::from(diagnostic.drawn_dissolve.is_some()) << 4)
+            | (u8::from(matches!(
+                diagnostic.gpu_fallback,
+                Some(GpuFallback::BoundaryUploading { .. })
+            )) << 5);
         SurfaceSlots {
             slots: [None, None, None, None],
             regions: [None, None],

@@ -56,10 +56,13 @@ impl BoundaryFormat {
     }
 }
 
-/// The most bytes one boundary may hold: 16 MP of half-float texels, 8 MP of `f32` ones. A Fit
-/// proxy is at most 8 MP, and a windowed proxy's window is what the display shows plus the margins
-/// its boundaries need.
-pub const BOUNDARY_MAX_BYTES: u64 = 128 * 1024 * 1024;
+/// The most bytes one boundary may hold: 32 MP of half-float texels, 16 MP of `f32` ones (owner,
+/// 2026-10-02). A Fit proxy is at most 8 MP, and a windowed proxy's or a percentage zoom's window
+/// is what the display shows plus the margins its boundaries need: a RAW region's `f32` boundary
+/// with Clarity's margin is up to 212 MB in the largest window the M4's display holds. The desktop
+/// lets its copy go once the photo surface holds it, and the surface uploads it a few chunks a
+/// frame, so its arrival holds about twice its bytes, not three times.
+pub const BOUNDARY_MAX_BYTES: u64 = 256 * 1024 * 1024;
 
 /// The largest finite half float.
 const HALF_MAX: f32 = 65504.0;
