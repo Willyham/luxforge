@@ -526,6 +526,25 @@ impl GpuFallback {
     }
 }
 
+/// The compile thread's figures, which it counts as each compile ends, whether or not a frame is
+/// drawn: compiles finished, and the longest and the last one's wall-clock time, in microseconds.
+#[derive(Default)]
+pub(super) struct CompileFigures {
+    compiled: AtomicU64,
+    max_us: AtomicU64,
+    last_us: AtomicU64,
+}
+
+impl CompileFigures {
+    /// One compile finished after `elapsed`.
+    fn finished(&self, elapsed: std::time::Duration) {
+        let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+        self.compiled.fetch_add(1, Ordering::AcqRel);
+        self.max_us.fetch_max(micros, Ordering::AcqRel);
+        self.last_us.store(micros, Ordering::Release);
+    }
+}
+
 /// What one pipeline counts of its GPU-preview work, beside its photo-texture figures.
 #[derive(Default)]
 pub(super) struct Figures {
@@ -537,10 +556,8 @@ pub(super) struct Figures {
     spatial_passes: AtomicU64,
     /// Sequences handed to the compile thread.
     compiles: AtomicU64,
-    /// Compiles finished, and the longest and the last one's wall-clock time, in microseconds.
-    compiled: AtomicU64,
-    compile_max_us: AtomicU64,
-    compile_last_us: AtomicU64,
+    /// What the compile thread counts as each compile ends.
+    compile: Arc<CompileFigures>,
     /// Words written to the blocks buffers, for the tests of what a tick writes.
     block_words: AtomicU64,
 }
@@ -571,19 +588,12 @@ impl Figures {
     }
 
     pub(super) fn compile_us(&self) -> (u64, u64, u64) {
+        let compile = &self.compile;
         (
-            self.compiled.load(Ordering::Acquire),
-            self.compile_max_us.load(Ordering::Acquire),
-            self.compile_last_us.load(Ordering::Acquire),
+            compile.compiled.load(Ordering::Acquire),
+            compile.max_us.load(Ordering::Acquire),
+            compile.last_us.load(Ordering::Acquire),
         )
-    }
-
-    /// One compile finished after `elapsed`.
-    fn compiled(&self, elapsed: std::time::Duration) {
-        let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
-        self.compiled.fetch_add(1, Ordering::AcqRel);
-        self.compile_max_us.fetch_max(micros, Ordering::AcqRel);
-        self.compile_last_us.store(micros, Ordering::Release);
     }
 
     /// Charge `bytes` if they fit the budget beside everything charged already.
@@ -2012,7 +2022,6 @@ impl PhotoPipeline {
         let figures = Arc::clone(&self.figures);
         let _ = self.gpu.pipeline(device, steps, &figures.preview);
         luxforge_testbase::wait_until("the sequence's compile", || {
-            self.gpu.pipelines.settle(&figures.preview);
             !self.gpu.pipelines.compiling(steps)
         });
     }

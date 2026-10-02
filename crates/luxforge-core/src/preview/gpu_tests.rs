@@ -147,10 +147,18 @@ fn planned(preview: &GpuPreview) -> &GpuPlan {
     }
 }
 
-/// Every program the plan runs, in order: its program sequence.
+/// Every program the plan runs, in order: its program sequence, its spatial operation's passes and
+/// applies after its colour units.
 fn sequence(plan: &GpuPlan) -> Vec<&'static str> {
     plan.operations()
         .flat_map(|operation| operation.units.iter().map(|unit| unit.program.entry))
+        .chain(plan.spatial.iter().flat_map(|spatial| {
+            spatial
+                .passes
+                .iter()
+                .map(|pass| pass.kernel)
+                .chain(spatial.applies.iter().map(|apply| apply.function))
+        }))
         .collect()
 }
 
@@ -520,6 +528,45 @@ fn a_presence_drag_reads_the_light_its_fit_frame_stored() {
         assert!(
             planned(&under).approximate(),
             "{name}: a drag under Presence changes the light's input"
+        );
+    }
+}
+
+/// A drag of a spatial layer the stack holds is warmed in each shape it may draw: Presence as it
+/// stands, and with each field at its default moved off it, so a Clarity drag and the first
+/// Texture and Dehaze drags, of either sign, find their sequences warmed, within the bound.
+#[test]
+fn the_warmed_plans_hold_a_presence_layers_drags() {
+    let presence = |payload: Value| Layer::new(crate::PRESENCE_EFFECT, payload);
+    let entry = vec![presence(json!({"clarity": 30}))];
+    let (job, _) = draft_job("set-presence", entry.clone(), entry.clone(), 0);
+    let plans = crate::render::gpu::plan_warm(&job.evaluation, bounds()).unwrap();
+    // The plans that start at Presence itself; the colour candidates before it hold it too.
+    let spatial = plans
+        .iter()
+        .filter(|plan| plan.spatial.is_some() && plan.content.is_empty())
+        .count();
+    assert_eq!(
+        spatial, 3,
+        "Clarity as it stands, and Texture's and Dehaze's first drags"
+    );
+    let warmed: Vec<Vec<&'static str>> = plans.iter().map(sequence).collect();
+    for drafted in [
+        json!({"clarity": 60}),
+        json!({"clarity": 30, "texture": 20}),
+        json!({"clarity": 30, "dehaze": -25}),
+        json!({"clarity": 30, "dehaze": 40}),
+    ] {
+        let (job, draft) = draft_job(
+            "set-presence",
+            entry.clone(),
+            vec![presence(drafted.clone())],
+            1,
+        );
+        let drag = plan_preview(&job.evaluation, &draft, bounds()).unwrap();
+        assert!(
+            warmed.contains(&sequence(planned(&drag))),
+            "the drag to {drafted} is warmed"
         );
     }
 }

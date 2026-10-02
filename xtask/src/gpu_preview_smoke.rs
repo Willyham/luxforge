@@ -54,9 +54,9 @@ const MASKED: f64 = 1.0;
 /// compile, and for a committed frame to settle. Generous: a 320 × 480 boundary renders in a few
 /// milliseconds and a sequence compiles in tens.
 const QUIET_MS: u64 = 1500;
-/// The same for a stack holding Presence, whose sequences compile in a few hundred milliseconds
-/// each on one compile thread: a committed stack's warm list is compiled first, then the drag's own
-/// sequence when its layer was not warmed.
+/// How long the scenario leaves the editor alone once Presence is committed: the committed stack's
+/// warm list, each Presence drag's shapes among it, compiles meanwhile with no frame drawn, a
+/// Presence sequence taking up to two seconds cold, so every drag after it starts warmed.
 const PRESENCE_QUIET_MS: u64 = 4000;
 
 /// The gradient as the sweep draws it, its middle at the centre, then where each drag leaves it.
@@ -225,7 +225,7 @@ fn drag_steps(name: &str, action: &str, field: &str, values: [f64; 3]) -> Vec<St
     let slider = |value: f64| SliderStep::new(action, field, [value]);
     vec![
         Step::new(format!("{name}-first"), slider(values[0])).commits(0),
-        quiet_for(&format!("{name}-held"), PRESENCE_QUIET_MS),
+        quiet(&format!("{name}-held")),
         Step::new(format!("{name}-gpu-1"), slider(values[1])).commits(0),
         Step::new(format!("{name}-gpu-2"), slider(values[2])).commits(0),
         Step::new(format!("{name}-release"), slider(values[2]).release())
@@ -520,6 +520,21 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         ("clarity", false, true),
         ("under", true, false),
     ] {
+        // Its sequence was warmed: no frame of the drag waits for it to compile.
+        for step in ["first", "held", "gpu-1", "gpu-2"].map(|step| format!("{name}-{step}")) {
+            let gpu = &launch.at(&step)?.state()["surface"]["gpu"];
+            let compiling = json!({"reason": "compiling"});
+            let ticked = named(step_events(launch, &step)?, "gpu_preview_tick")
+                .iter()
+                .any(|tick| tick["detail"]["reason"] == json!("compiling"));
+            ensure(
+                gpu["gpu_fallback"] != compiling && gpu["plan_fallback"] != compiling && !ticked,
+                format!(
+                    "{step} waited for its sequence to compile: fallback {}, plan fallback {}",
+                    gpu["gpu_fallback"], gpu["plan_fallback"]
+                ),
+            )?;
+        }
         let mut counted = Vec::new();
         let mut before = launch.at(&format!("{name}-held"))?;
         for tick in ["gpu-1", "gpu-2"] {
