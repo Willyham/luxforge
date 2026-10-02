@@ -322,6 +322,9 @@ pub(super) fn run(
                                     width: plan.width,
                                     height: plan.height,
                                 };
+                                // A region's boundary is the exact stage's; this frame is a
+                                // proxy's.
+                                let uncut = uncut.filter(|_| request.key.region().is_none());
                                 let window =
                                     plan.window.map_or(Region::whole(whole), |window| Region {
                                         x0: window.x,
@@ -407,39 +410,43 @@ pub(super) fn run(
     let render_ms = compile_ms.unwrap_or(0.0) + milliseconds_since(started);
     // A GPU preview boundary at the exact stage: the job has no proxy, so its frame is the exact
     // one and the boundary is that stage's, rendered from the same compilation.
-    let boundary = job
-        .boundary
-        .as_ref()
-        .filter(|_| !boundary_answered)
-        .map(|request| {
-            let started = Instant::now();
-            let result = if request.key.plan().is_some() || job.layer_count.is_some() {
-                Err(drawn_elsewhere())
-            } else {
-                exact.as_ref().map_err(Clone::clone).and_then(|exact| {
-                    let source = evaluation.source().dimensions();
-                    let whole = Stage {
-                        width: source.0,
-                        height: source.1,
-                    };
-                    exact.boundary(
-                        evaluation.compiled()?,
-                        whole,
-                        Region::whole(whole),
-                        request.position,
-                        request.format,
-                    )
-                })
-            };
-            boundary_result(
-                &job,
-                generation,
-                request,
-                result,
-                started,
-                approximate_white_balance,
-            )
-        });
+    let boundary =
+        job.boundary
+            .as_ref()
+            .filter(|_| !boundary_answered)
+            .map(|request| {
+                let started = Instant::now();
+                let result = if request.key.plan().is_some() || job.layer_count.is_some() {
+                    Err(drawn_elsewhere())
+                } else if let Some(rect) = request.key.region() {
+                    exact.as_ref().map_err(Clone::clone).and_then(|exact| {
+                        exact.region_boundary(rect, request.position, request.format)
+                    })
+                } else {
+                    exact.as_ref().map_err(Clone::clone).and_then(|exact| {
+                        let source = evaluation.source().dimensions();
+                        let whole = Stage {
+                            width: source.0,
+                            height: source.1,
+                        };
+                        exact.boundary(
+                            evaluation.compiled()?,
+                            whole,
+                            Region::whole(whole),
+                            request.position,
+                            request.format,
+                        )
+                    })
+                };
+                boundary_result(
+                    &job,
+                    generation,
+                    request,
+                    result,
+                    started,
+                    approximate_white_balance,
+                )
+            });
     drop(exact);
     // A superseded or abandoned exact phase answers `Cancelled`, so its activity ends cancelled.
     if let Some(activity) = activity {
@@ -601,6 +608,30 @@ fn run_viewport(
             if !send_phase(restoration, running, result) {
                 return None;
             }
+            // A draft's GPU preview boundary at a percentage zoom: the region this view shows at
+            // full scale, from the job's exact compilation, after the region frame.
+            if let Some(request) = &job.boundary {
+                let started = Instant::now();
+                let result = match (request.key.region(), compiled.as_ref()) {
+                    (Some(rect), Ok(exact)) if job.layer_count.is_none() => {
+                        exact.region_boundary(rect, request.position, request.format)
+                    }
+                    (_, Err(error)) => Err(error.clone()),
+                    _ => Err(drawn_elsewhere()),
+                };
+                let boundary = boundary_result(
+                    &job,
+                    generation,
+                    request,
+                    result,
+                    started,
+                    evaluation.source().approximate_white_balance(),
+                );
+                if !send_phase(restoration, running, boundary) {
+                    return None;
+                }
+                job.boundary = None;
+            }
             if job.intent == PreviewIntent::Interactive {
                 if let Some(activity) = activity {
                     activity.finish(Outcome::Completed);
@@ -759,7 +790,8 @@ fn boundary_result(
         outcome: PhaseOutcome::Boundary(BoundaryOutcome {
             key: request.key.clone(),
             // A warp's grid, once per draft: the geometry does not change while a colour draft is
-            // open. The whole output stage at one display pixel per output pixel, as at Fit.
+            // open. At Fit the whole output stage at one display pixel per output pixel; at a
+            // percentage zoom the region drawn, at the zoom's magnification.
             grid: result
                 .is_ok()
                 .then_some(())
@@ -767,13 +799,13 @@ fn boundary_result(
                 .map(|warp| {
                     let output = warp.output();
                     warp.grid(
-                        Region {
+                        request.key.region().unwrap_or(Region {
                             x0: 0,
                             y0: 0,
                             width: output.width,
                             height: output.height,
-                        },
-                        1.0,
+                        }),
+                        request.magnification,
                     )
                     .and_then(|grid| {
                         grid.map(std::sync::Arc::new)
