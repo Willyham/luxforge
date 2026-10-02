@@ -637,6 +637,8 @@ struct Compiled {
 struct Support {
     layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
+    /// The spatial passes' pipelines, kept across sequences.
+    passes: spatial::PassCache,
 }
 
 impl Support {
@@ -680,6 +682,7 @@ impl Support {
         Self {
             layout,
             pipeline_layout,
+            passes: spatial::PassCache::default(),
         }
     }
 }
@@ -1056,7 +1059,7 @@ fn compile(
     let layout = match spatial
         .as_ref()
         .ok()
-        .and_then(|compiled| compiled.fragment.as_ref())
+        .and_then(|(compiled, _)| compiled.fragment.as_ref())
     {
         Some((planes, _)) => {
             planes_layout = planes.clone();
@@ -1100,12 +1103,15 @@ fn compile(
     });
     let validation = answered(device.pop_error_scope());
     let internal = answered(device.pop_error_scope());
-    let spatial = spatial?;
+    let (spatial, made) = spatial?;
     match (validation, internal) {
-        (Some(None), Some(None)) => Ok(Compiled {
-            render: pipeline,
-            spatial,
-        }),
+        (Some(None), Some(None)) => {
+            support.passes.keep(made);
+            Ok(Compiled {
+                render: pipeline,
+                spatial,
+            })
+        }
         (Some(Some(error)), _) | (_, Some(Some(error))) => Err(error.to_string()),
         _ => Err("the pipeline's error scopes were not answered without waiting".into()),
     }
@@ -1319,6 +1325,9 @@ impl PhotoPipeline {
                 spatial::Groups::new(device, &pipeline.spatial, &spatial.planes),
             ));
             changed = true;
+        }
+        if let Some(spatial) = slot.spatial.as_mut() {
+            changed |= spatial.planes.write_parameters(queue, &plan.steps);
         }
         if slot.boundary_version != Some(plan.boundary.version) {
             upload_boundary(queue, &slot.boundary, &plan.boundary);

@@ -64,6 +64,12 @@ impl Qualifier {
         )
     }
 
+    /// How many spatial pass pipelines this qualifier has created: a pass whose module another
+    /// pass or an earlier plan already compiled reuses that pipeline and adds nothing.
+    pub fn pass_pipelines_created(&self) -> u64 {
+        self.support.passes.created()
+    }
+
     /// What the photo surface's slot holding `plan` charges the GPU-preview budget on this device:
     /// the boundary, the output in the photograph's size bucket and its uniform, the words and
     /// blocks buffers and a spatial step's planes.
@@ -193,8 +199,11 @@ impl Qualifier {
             plan.texels.origin[0].max(0.0) as u32,
             plan.texels.origin[1].max(0.0) as u32,
         );
-        let planes = spatial::PlanesKey::of(&plan.steps, (width, height), origin)
+        let mut planes = spatial::PlanesKey::of(&plan.steps, (width, height), origin)
             .map(|key| spatial::Planes::create(device, key));
+        if let Some(planes) = planes.as_mut() {
+            planes.write_parameters(&self.queue, &plan.steps);
+        }
         let groups = planes
             .as_ref()
             .map(|planes| spatial::Groups::new(device, &compiled.spatial, planes));

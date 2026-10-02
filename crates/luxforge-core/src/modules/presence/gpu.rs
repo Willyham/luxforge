@@ -61,12 +61,14 @@ fn plane(format: GpuPlaneFormat, reduction: u32, scratch: bool) -> GpuPlane {
     }
 }
 
+/// A pass of `kernel`, which `reads` its unit's input or only planes.
 fn pass(
     kernel: &'static str,
     inputs: &[usize],
     output: usize,
     words: usize,
     shape: GpuPassShape,
+    reads: bool,
 ) -> GpuPass {
     GpuPass {
         kernel,
@@ -75,6 +77,7 @@ fn pass(
         words,
         source: 0,
         shape,
+        reads_source: reads,
     }
 }
 
@@ -125,15 +128,32 @@ fn guided_self(
         (Some(_), Last::BandFrom(_)) => unreachable!("a band is taken of the encoded input"),
     };
     let w = words.push(&[Word::U(form), Word::U(r), Word::U(RUN)]);
-    passes.push(pass("lf_presence_sum_x", &inputs, sums, w, ACROSS));
+    // The encoded input's sums and the smoothing of it read the unit's input; the rest only
+    // planes.
+    let encoded = source.is_none();
+    passes.push(pass("lf_presence_sum_x", &inputs, sums, w, ACROSS, encoded));
     let w = words.push(&[Word::U(FINISH_SELF), Word::U(r), Word::U(RUN), Word::F(eps)]);
-    passes.push(pass("lf_presence_sum_y", &[sums], coefficients, w, DOWN));
+    passes.push(pass(
+        "lf_presence_sum_y",
+        &[sums],
+        coefficients,
+        w,
+        DOWN,
+        false,
+    ));
     let w = words.push(&[Word::U(FORM_PLANE), Word::U(r), Word::U(RUN)]);
-    passes.push(pass("lf_presence_sum_x", &[coefficients], sums, w, ACROSS));
+    passes.push(pass(
+        "lf_presence_sum_x",
+        &[coefficients],
+        sums,
+        w,
+        ACROSS,
+        false,
+    ));
     let w = words.push(&[Word::U(finish), Word::U(r), Word::U(RUN), Word::F(0.0)]);
     let mut smooth = vec![sums];
     smooth.extend(beside);
-    passes.push(pass("lf_presence_sum_y", &smooth, output, w, DOWN));
+    passes.push(pass("lf_presence_sum_y", &smooth, output, w, DOWN, encoded));
 }
 
 /// Texture: the fine and coarse self-guided smoothers of the encoded input at full resolution, the
@@ -193,7 +213,7 @@ pub(super) fn clarity(unit: &clarity::Clarity) -> GpuSpatialUnit {
     ];
     let mut words = Words::default();
     let w = words.push(&[Word::U(REDUCE_ENCODED), Word::U(s)]);
-    let mut passes = vec![pass("lf_presence_reduce", &[], reduced, w, EACH)];
+    let mut passes = vec![pass("lf_presence_reduce", &[], reduced, w, EACH, true)];
     guided_self(
         &mut words,
         &mut passes,
@@ -262,7 +282,7 @@ pub(super) fn dehaze(unit: &dehaze::Dehaze, global: Option<&Global>) -> GpuSpati
                     .map(|value| Word::F(*value as f32))
                     .collect::<Vec<_>>(),
             );
-            passes.push(pass("lf_presence_constant", &[], light, w, EACH));
+            passes.push(pass("lf_presence_constant", &[], light, w, EACH, false));
         }
         None => {
             let estimate = planes.len();
@@ -275,7 +295,7 @@ pub(super) fn dehaze(unit: &dehaze::Dehaze, global: Option<&Global>) -> GpuSpati
                 Word::U(REDUCE_DARK),
                 Word::U(crate::modules::ESTIMATE_REDUCTION),
             ]);
-            passes.push(pass("lf_presence_reduce", &[], estimate, w, EACH));
+            passes.push(pass("lf_presence_reduce", &[], estimate, w, EACH, true));
             let w = words.push(&[
                 Word::U(dehaze::ATMOSPHERE_DIVISOR),
                 Word::U(dehaze::ATMOSPHERE_MIN_COUNT as u32),
@@ -287,14 +307,22 @@ pub(super) fn dehaze(unit: &dehaze::Dehaze, global: Option<&Global>) -> GpuSpati
                 light,
                 w,
                 GpuPassShape::Workgroup,
+                false,
             ));
         }
     }
     let w = words.push(&[Word::U(REDUCE_DEHAZE), Word::U(s)]);
-    passes.push(pass("lf_presence_reduce", &[light], reduced, w, EACH));
+    passes.push(pass("lf_presence_reduce", &[light], reduced, w, EACH, true));
     let r_dark = radius(unit.dark_radius());
     let w = words.push(&[Word::U(3), Word::U(r_dark)]);
-    passes.push(pass("lf_presence_min_x", &[reduced], minima, w, EACH));
+    passes.push(pass(
+        "lf_presence_min_x",
+        &[reduced],
+        minima,
+        w,
+        EACH,
+        false,
+    ));
     let w = words.push(&[Word::U(r_dark), Word::F(unit.omega())]);
     passes.push(pass(
         "lf_presence_dehaze_transmission",
@@ -302,17 +330,25 @@ pub(super) fn dehaze(unit: &dehaze::Dehaze, global: Option<&Global>) -> GpuSpati
         raw,
         w,
         EACH,
+        false,
     ));
     let r = radius(unit.guide_radius());
     let w = words.push(&[Word::U(FORM_GUIDED), Word::U(r), Word::U(RUN)]);
-    passes.push(pass("lf_presence_sum_x", &[raw], sums, w, ACROSS));
+    passes.push(pass("lf_presence_sum_x", &[raw], sums, w, ACROSS, false));
     let w = words.push(&[
         Word::U(FINISH_GUIDED),
         Word::U(r),
         Word::U(RUN),
         Word::F(dehaze::EPS_DEHAZE),
     ]);
-    passes.push(pass("lf_presence_sum_y", &[sums], coefficients, w, DOWN));
+    passes.push(pass(
+        "lf_presence_sum_y",
+        &[sums],
+        coefficients,
+        w,
+        DOWN,
+        false,
+    ));
     let w = words.push(&[Word::U(FORM_PLANE), Word::U(r), Word::U(RUN)]);
     passes.push(pass(
         "lf_presence_sum_x",
@@ -320,6 +356,7 @@ pub(super) fn dehaze(unit: &dehaze::Dehaze, global: Option<&Global>) -> GpuSpati
         smoothed,
         w,
         ACROSS,
+        false,
     ));
     let w = words.push(&[
         Word::U(FINISH_SMOOTH_PLANE),
@@ -333,6 +370,7 @@ pub(super) fn dehaze(unit: &dehaze::Dehaze, global: Option<&Global>) -> GpuSpati
         refined,
         w,
         DOWN,
+        false,
     ));
     let apply = words.push(&[
         Word::U(u32::from(unit.positive())),
