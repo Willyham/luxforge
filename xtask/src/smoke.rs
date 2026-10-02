@@ -6,8 +6,8 @@
 use crate::{
     basic_smoke as basic, capabilities_smoke as capabilities, controls_smoke as controls,
     crop_smoke as crop, curve_smoke as curve, detail_smoke as detail, export_smoke as export,
-    gallery_smoke as gallery, histogram_smoke as histogram, lens_smoke as lens,
-    mask_brush_smoke as mask_brush, mask_combine_smoke as mask_combine,
+    gallery_smoke as gallery, gpu_preview_smoke as gpu_preview, histogram_smoke as histogram,
+    lens_smoke as lens, mask_brush_smoke as mask_brush, mask_combine_smoke as mask_combine,
     mask_interactions_smoke as mask_interactions, mask_panel_smoke as mask_panel,
     mask_range_smoke as mask_range, mask_smoke as mask, minify_smoke as minify,
     mixer_smoke as mixer, performance_smoke as performance, presence_smoke as presence,
@@ -334,6 +334,25 @@ pub static SCENARIOS: &[Scenario] = &[
              through the photo surface's GPU stage with the identity program, the frame itself \
              staying the fallback. The palette's GPU preview entry then turns the preference off, \
              when the desktop hands the stage no plan, and on again.",
+        ),
+        own: None,
+    },
+    Scenario {
+        name: gpu_preview::SCENARIO,
+        about: "Gestures at Fit drawn on the GPU over a held boundary with no preview job per tick: a Basic drag, a gradient move and a brush stroke, each correlated with the CPU frame of its settings",
+        launches: &[LaunchSpec {
+            plan: gpu_preview::plan,
+            ..APP
+        }],
+        verify: gpu_preview::verify,
+        source: Source::Fixtures(&[gpu_preview::FIXTURE]),
+        window: Some(PANELLED),
+        note: Some(
+            "Each gesture opens with a CPU tick whose preview job carries the one boundary \
+             request; a scripted wait lets the boundary arrive and the sequence compile, and the \
+             gesture's later ticks are drawn on the GPU with no preview job. The checks read the \
+             tick and job events of each step and compare each GPU frame with the CPU frame of \
+             the same settings.",
         ),
         own: None,
     },

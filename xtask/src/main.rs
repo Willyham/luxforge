@@ -20,6 +20,7 @@ mod editor_performance;
 mod export_smoke;
 mod fixtures;
 mod gallery_smoke;
+mod gpu_preview_smoke;
 mod histogram_smoke;
 mod inspect_dng;
 mod launch;
