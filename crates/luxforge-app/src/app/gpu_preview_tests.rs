@@ -268,6 +268,30 @@ fn gpu_preview_a_tick_that_changes_no_pixel_still_asks_for_its_boundary() {
     finish(editor, catalog);
 }
 
+/// While a clipping overlay is shown, which is derived from the CPU's frames, a drag takes the CPU
+/// path and says why, asking for no boundary.
+#[test]
+fn gpu_preview_a_drag_with_clipping_shown_keeps_the_cpu_path() {
+    let catalog = catalog("clipping");
+    let (mut editor, _, _) = real_photo(&catalog);
+    editor.session.workspace.clip_highlights = true;
+    let log = attach_log(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.1);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.2);
+    let records = logged(&mut editor, &log);
+    assert_eq!(jobs(&records), 2);
+    let ticks = events(&records, "gpu_preview_tick");
+    assert!(
+        ticks
+            .iter()
+            .all(|tick| tick["path"] == "cpu" && tick["reason"] == "clipping-shown")
+    );
+    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is asked for");
+    assert_eq!(editor.gpu_plan_fallback(), Some("clipping-shown".into()));
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    finish(editor, catalog);
+}
+
 /// The compile cost of each program sequence a Fit drag of the colour modules draws, measured on
 /// this host's adapter through the stage's own compile (`naga` checks, backend translation and the
 /// driver's pipeline). A functional measurement for the design's choice of one pipeline per
