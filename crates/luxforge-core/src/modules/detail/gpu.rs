@@ -32,16 +32,16 @@ use crate::{
     },
 };
 
-/// The Detail program: every kernel and apply its two units describe. Disabled: at Fit it
-/// reproduces the CPU's moving proxy, and on two of the corpus's cells that proxy misses the
-/// spatial limits against the exact-derived frame a Detail stack settles to
+/// The Detail program: every kernel and apply its two units describe. Enabled: every Detail
+/// recipe of the corpus met the spatial limits at Fit against the CPU's moving proxy it stands in
+/// for, as the owner decided a stack that settles from the exact render is judged
 /// (`gpu_detail_corpus_at_fit`, `docs/specs/performance.md`, "GPU Detail program").
 pub static DETAIL_PROGRAM: GpuProgram = GpuProgram {
     entry: "lf_detail",
     source: include_str!("detail.wgsl"),
     kind: GpuProgramKind::Spatial,
     words: 0,
-    enabled: false,
+    enabled: true,
 };
 
 // The smoothing passes' forms, as `detail.wgsl` names them.
