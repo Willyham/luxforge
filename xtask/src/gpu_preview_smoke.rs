@@ -48,15 +48,15 @@ pub const FIXTURE: &str = "fixtures/s0/orientation-1.jpg";
 
 pub(crate) const BASIC: &str = "set-basic";
 pub(crate) const EXPOSURE: &str = "exposure";
-const PRESENCE: &str = "set-presence";
+pub(crate) const PRESENCE: &str = "set-presence";
 /// The committed Presence the drags start from, then each Presence drag's first tick and its GPU
 /// ticks, one a step, so each GPU step's frame counts one tick's compute passes.
-const DEHAZE: f64 = 40.0;
-const CLARITY: f64 = 30.0;
-const TEXTURE_DRAG: [f64; 3] = [20.0, 35.0, 50.0];
-const CLARITY_DRAG: [f64; 3] = [40.0, 50.0, 60.0];
+pub(crate) const DEHAZE: f64 = 40.0;
+pub(crate) const CLARITY: f64 = 30.0;
+pub(crate) const TEXTURE_DRAG: [f64; 3] = [20.0, 35.0, 50.0];
+pub(crate) const CLARITY_DRAG: [f64; 3] = [40.0, 50.0, 60.0];
 /// The Basic drag under Presence, from the committed exposure.
-const UNDER_DRAG: [f64; 3] = [0.5, 0.4, 0.3];
+pub(crate) const UNDER_DRAG: [f64; 3] = [0.5, 0.4, 0.3];
 /// The most compute passes a tick that changes only Texture's or Clarity's gain may run: Clarity's
 /// five, which read Texture's output.
 const GAIN_PASSES: u64 = 5;
@@ -78,7 +78,7 @@ const QUIET_MS: u64 = 1500;
 /// How long the scenario leaves the editor alone once Presence is committed: the committed stack's
 /// warm list, each Presence drag's shapes among it, compiles meanwhile with no frame drawn, a
 /// Presence sequence taking up to two seconds cold, so every drag after it starts warmed.
-const PRESENCE_QUIET_MS: u64 = 4000;
+pub(crate) const PRESENCE_QUIET_MS: u64 = 4000;
 
 /// The gradient as the sweep draws it, its middle at the centre, then where each drag leaves it.
 const SWEEP: ([f64; 2], [f64; 2]) = ([0.5, 0.3], [0.5, 0.7]);
@@ -123,7 +123,7 @@ pub(crate) fn quiet(name: &str) -> Step {
     quiet_for(name, QUIET_MS)
 }
 
-fn quiet_for(name: &str, ms: u64) -> Step {
+pub(crate) fn quiet_for(name: &str, ms: u64) -> Step {
     Step::new(name, script::Step::Wait { ms }).commits(0)
 }
 
@@ -334,22 +334,40 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             quiet_for("presence-settled", PRESENCE_QUIET_MS).no_draft(),
         ]
         .into_iter()
-        .chain(drag_steps("texture", PRESENCE, "texture", TEXTURE_DRAG))
-        .chain(drag_steps("clarity", PRESENCE, "clarity", CLARITY_DRAG))
-        .chain(drag_steps("under", BASIC, EXPOSURE, UNDER_DRAG))
+        .chain(drag_steps(
+            "texture",
+            PRESENCE,
+            "texture",
+            TEXTURE_DRAG,
+            QUIET_MS,
+        ))
+        .chain(drag_steps(
+            "clarity",
+            PRESENCE,
+            "clarity",
+            CLARITY_DRAG,
+            QUIET_MS,
+        ))
+        .chain(drag_steps("under", BASIC, EXPOSURE, UNDER_DRAG, QUIET_MS))
         .collect(),
     )
 }
 
 /// One drag over a held boundary, a step a tick: `<name>-first`, whose CPU tick asks for the
-/// boundary; `<name>-held`, while it arrives and the surface first runs every pass; `<name>-gpu-1`
-/// and `<name>-gpu-2`, a GPU tick each; `<name>-release`, which commits the last value; and
-/// `<name>-settled`.
-fn drag_steps(name: &str, action: &str, field: &str, values: [f64; 3]) -> Vec<Step> {
+/// boundary; `<name>-held`, `held_ms` while it arrives and the surface first runs every pass;
+/// `<name>-gpu-1` and `<name>-gpu-2`, a GPU tick each; `<name>-release`, which commits the last
+/// value; and `<name>-settled`.
+pub(crate) fn drag_steps(
+    name: &str,
+    action: &str,
+    field: &str,
+    values: [f64; 3],
+    held_ms: u64,
+) -> Vec<Step> {
     let slider = |value: f64| SliderStep::new(action, field, [value]);
     vec![
         Step::new(format!("{name}-first"), slider(values[0])).commits(0),
-        quiet(&format!("{name}-held")),
+        quiet_for(&format!("{name}-held"), held_ms),
         Step::new(format!("{name}-gpu-1"), slider(values[1])).commits(0),
         Step::new(format!("{name}-gpu-2"), slider(values[2])).commits(0),
         Step::new(format!("{name}-release"), slider(values[2]).release())
@@ -708,7 +726,27 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         ("clarity", false, true),
         ("under", true, false),
     ] {
-        // Its sequence was warmed: no frame of the drag waits for it to compile.
+        presence_drag_checks(launch, &mut checks, name, approximate, gain_only, true)?;
+    }
+
+    settle_checks(launch, &mut checks)?;
+    checks.write(&launch.evidence, run.scenario(), json!({}))
+}
+
+/// The checks of one drag made by [`drag_steps`] named `name`: each GPU tick drawn with no preview
+/// job, from a plan whose light is stored or taken on the GPU as `approximate` says, running at most
+/// [`GAIN_PASSES`] compute passes a tick when the drag moves only a gain (`gain_only`), and the
+/// last one's pixels the CPU frame its release commits. When its sequence was `warmed`, no frame
+/// of the drag waits for it to compile.
+pub(crate) fn presence_drag_checks(
+    launch: &Checked,
+    checks: &mut Checks,
+    name: &str,
+    approximate: bool,
+    gain_only: bool,
+    warmed: bool,
+) -> Result {
+    if warmed {
         for step in ["first", "held", "gpu-1", "gpu-2"].map(|step| format!("{name}-{step}")) {
             let gpu = &launch.at(&step)?.state()["surface"]["gpu"];
             let compiling = json!({"reason": "compiling"});
@@ -723,56 +761,54 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
                 ),
             )?;
         }
-        let mut counted = Vec::new();
-        let mut before = launch.at(&format!("{name}-held"))?;
-        for tick in ["gpu-1", "gpu-2"] {
-            let step = format!("{name}-{tick}");
-            let frame = launch.at(&step)?;
-            let drawn = gpu_drawn(frame)?;
-            let (gpu_ticks, cpu_ticks, jobs) = ticks(step_events(launch, &step)?);
-            ensure(
-                gpu_ticks >= 1 && cpu_ticks == 0 && jobs == 0,
-                format!(
-                    "{step} was {gpu_ticks} GPU and {cpu_ticks} CPU ticks with {jobs} preview jobs"
-                ),
-            )?;
-            let summary = &frame.state()["surface"]["gpu"]["gpu_preview"]["drag"];
-            ensure(
-                summary["approximate"] == json!(approximate),
-                format!(
-                    "{step}'s plan is approximate {}, not {approximate}",
-                    summary["approximate"]
-                ),
-            )?;
-            let passes = |frame: &Frame| {
-                frame.state()["surface"]["gpu"]["gpu_preview_spatial_passes"]
-                    .as_u64()
-                    .unwrap_or(0)
-            };
-            let ran = passes(frame).saturating_sub(passes(before));
-            ensure(
-                !gain_only || ran <= GAIN_PASSES * gpu_ticks as u64,
-                format!("{step} ran {ran} compute passes in {gpu_ticks} gain-only ticks"),
-            )?;
-            counted.push(
-                json!({"step": step, "gpu_ticks": gpu_ticks, "compute_passes": ran,
-                "drawn": drawn}),
-            );
-            before = frame;
-        }
-        let compared = same_pixels(
-            launch.at(&format!("{name}-gpu-2"))?,
-            launch.at(&format!("{name}-release"))?,
-        )?;
-        checks.note(
-            launch.at(&format!("{name}-gpu-2"))?,
-            &format!("the {name} drag on the GPU, against the CPU frame its release commits"),
-            json!({"approximate": approximate, "ticks": counted, "against_release": compared}),
-        );
     }
-
-    settle_checks(launch, &mut checks)?;
-    checks.write(&launch.evidence, run.scenario(), json!({}))
+    let mut counted = Vec::new();
+    let mut before = launch.at(&format!("{name}-held"))?;
+    for tick in ["gpu-1", "gpu-2"] {
+        let step = format!("{name}-{tick}");
+        let frame = launch.at(&step)?;
+        let drawn = gpu_drawn(frame)?;
+        let (gpu_ticks, cpu_ticks, jobs) = ticks(step_events(launch, &step)?);
+        ensure(
+            gpu_ticks >= 1 && cpu_ticks == 0 && jobs == 0,
+            format!(
+                "{step} was {gpu_ticks} GPU and {cpu_ticks} CPU ticks with {jobs} preview jobs"
+            ),
+        )?;
+        let summary = &frame.state()["surface"]["gpu"]["gpu_preview"]["drag"];
+        ensure(
+            summary["approximate"] == json!(approximate),
+            format!(
+                "{step}'s plan is approximate {}, not {approximate}",
+                summary["approximate"]
+            ),
+        )?;
+        let passes = |frame: &Frame| {
+            frame.state()["surface"]["gpu"]["gpu_preview_spatial_passes"]
+                .as_u64()
+                .unwrap_or(0)
+        };
+        let ran = passes(frame).saturating_sub(passes(before));
+        ensure(
+            !gain_only || ran <= GAIN_PASSES * gpu_ticks as u64,
+            format!("{step} ran {ran} compute passes in {gpu_ticks} gain-only ticks"),
+        )?;
+        counted.push(
+            json!({"step": step, "gpu_ticks": gpu_ticks, "compute_passes": ran,
+            "drawn": drawn}),
+        );
+        before = frame;
+    }
+    let compared = same_pixels(
+        launch.at(&format!("{name}-gpu-2"))?,
+        launch.at(&format!("{name}-release"))?,
+    )?;
+    checks.note(
+        launch.at(&format!("{name}-gpu-2"))?,
+        &format!("the {name} drag on the GPU, against the CPU frame its release commits"),
+        json!({"approximate": approximate, "ticks": counted, "against_release": compared}),
+    );
+    Ok(())
 }
 
 /// The events from the start of `first`'s step to the end of `last`'s.
