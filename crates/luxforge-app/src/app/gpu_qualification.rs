@@ -303,20 +303,27 @@ pub(crate) fn corpus_cell(
         let registry = evaluation.registry().clone();
         let full = evaluation.source().dimensions();
         // The Fit frame and the source it was rendered from: the proxy phase's frame over the
-        // proxy the worker built, or, for a photograph that fits the bounds at its own size, the
-        // exact phase's frame over the source itself.
-        let (cpu, proxied, is_proxy) = match outcome {
+        // proxy the worker built — a window of the proxy stage when the stack reads less than all
+        // of it, as a crop does — or, for a photograph that fits the bounds at its own size, the
+        // exact phase's frame over the source itself. With the stage the plan addresses and where
+        // in it the source's first texel is.
+        let (cpu, proxied, is_proxy, (stage_width, stage_height), origin) = match outcome {
             PhaseOutcome::Proxy(proxy) => {
                 let context = RenderContext::new();
-                let plan = render(
+                let exact = render(
                     &registry,
                     evaluation.source(),
                     evaluation.recipe(),
                     RenderOptions::exact(&Cancel::never()),
                     &context,
                 )
-                .map_err(|error| error.to_string())?
-                .proxy_plan(bounds)
+                .map_err(|error| error.to_string())?;
+                let (plan, window) = luxforge_core::qualification::fit_proxy(
+                    &exact,
+                    &registry,
+                    evaluation.recipe(),
+                    bounds,
+                )
                 .ok_or("a proxy frame without a proxy plan")?;
                 let proxied = evaluation
                     .source()
@@ -329,12 +336,21 @@ pub(crate) fn corpus_cell(
                         proxied.dimensions()
                     )));
                 }
-                (proxy.raster, proxied, true)
+                let origin = window.map_or((0, 0), |[x, y, _, _]| (x, y));
+                (
+                    proxy.raster,
+                    proxied,
+                    true,
+                    (plan.width, plan.height),
+                    origin,
+                )
             }
             PhaseOutcome::Exact(exact) => (
                 exact.result.map_err(|error| error.to_string())?,
                 evaluation.source().clone(),
                 false,
+                full,
+                (0, 0),
             ),
             PhaseOutcome::Region(_) => return Ok(Cell::Gap("a region at Fit".into())),
             PhaseOutcome::Boundary(_) => return Ok(Cell::Gap("a boundary for a Fit frame".into())),
@@ -343,8 +359,9 @@ pub(crate) fn corpus_cell(
         // The boundary: the input of the first layer that processes pixels (restoration, colour,
         // spatial or finish), which is the source the frame was rendered from when every layer
         // before it compiles to the identity there, as a RAW development does. A geometry layer
-        // before it is part of the plan's geometry tail, which the CPU runs after the content
-        // operations, so it does not change the boundary.
+        // before a content layer is part of the plan's geometry tail, which the CPU runs after the
+        // content operations, so it does not change the boundary; before a finishing layer, which
+        // runs after the tail, it does, and only the worker's boundary job holds that input.
         let stage_of = |layer: &Layer| registry.effect(&layer.effect_id).map(|(_, e)| e.stage);
         let boundary_layer = recipe
             .layers
@@ -361,8 +378,9 @@ pub(crate) fn corpus_cell(
                 )
             })
             .ok_or("no layer that processes pixels")?;
+        let content = stage_of(&recipe.layers[boundary_layer]) != Some(EffectStage::Finish);
         for layer in &recipe.layers[..boundary_layer] {
-            if stage_of(layer) == Some(EffectStage::Geometry) {
+            if content && stage_of(layer) == Some(EffectStage::Geometry) {
                 continue;
             }
             let (module, _) = registry
@@ -409,9 +427,13 @@ pub(crate) fn corpus_cell(
             }
         };
         let request = if is_proxy {
-            GpuPlanRequest::fit(boundary_layer, stage(width, height), stage(full.0, full.1))
+            GpuPlanRequest::fit(
+                boundary_layer,
+                stage(stage_width, stage_height),
+                stage(full.0, full.1),
+            )
         } else {
-            GpuPlanRequest::exact(boundary_layer, stage(width, height))
+            GpuPlanRequest::exact(boundary_layer, stage(stage_width, stage_height))
         }
         .qualifying();
         // A RAW photograph's frames are the linear path's, which clamps no stage boundary.
@@ -451,7 +473,7 @@ pub(crate) fn corpus_cell(
                 )
                 .map_err(|error| error.to_string())?,
         };
-        let converted = match surface_plan_at(&plan, held, (0, 0), grid.as_ref()) {
+        let converted = match surface_plan_at(&plan, held, origin, grid.as_ref()) {
             Ok(converted) => converted,
             Err(reason) => {
                 return Ok(Cell::Gap(format!(

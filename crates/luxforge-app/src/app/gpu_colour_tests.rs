@@ -884,8 +884,18 @@ fn gpu_colour_transcendental_precision_is_measured() {
 
 // ---- The corpus at Fit ------------------------------------------------------------------------
 
-/// The corpus's colour families, which the colour programs are qualified on.
-const COLOUR_FAMILIES: [&str; 5] = ["basic", "tone-curve", "mixer", "vignette", "colour-stack"];
+/// The corpus's colour families, which the colour programs are qualified on, and its geometry
+/// families, a straightened crop and a lens or perspective warp under a Basic edit, which qualify
+/// the geometry tail.
+const COLOUR_FAMILIES: [&str; 7] = [
+    "basic",
+    "tone-curve",
+    "mixer",
+    "vignette",
+    "colour-stack",
+    "crop",
+    "lens-perspective",
+];
 
 /// The qualification corpus's colour recipes at Fit through the shared harness
 /// ([`corpus_at_fit`]): the CPU frame the preview worker renders against the GPU frame of the same
