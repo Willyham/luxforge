@@ -1180,3 +1180,134 @@ fn gpu_presence_pass_pipelines_are_shared_across_plans() {
 fn gpu_presence_corpus_at_fit() {
     corpus_at_fit("gpu_presence_corpus_at_fit", &["presence"]);
 }
+
+/// A tick runs only the passes whose words or inputs changed: after the plan a drag started from,
+/// a change to an amount reruns only the passes that read it, directly or through a unit's input,
+/// and draws exactly what a slot that ran every pass draws.
+#[test]
+fn gpu_presence_a_drag_reruns_only_the_passes_it_changes() {
+    let test = "gpu_presence_a_drag_reruns_only_the_passes_it_changes";
+    let Some(qualifier) = Qualifier::headless(test) else {
+        return;
+    };
+    let registry = ModuleRegistry::builtin();
+    let (width, height) = (480, 320);
+    let pixels = photograph(width, height, 3);
+    let len = pixels.len();
+    let mut planes = vec![0.0_f32; 3 * len];
+    for (index, pixel) in pixels.iter().enumerate() {
+        for channel in 0..3 {
+            planes[channel * len + index] = pixel[channel];
+        }
+    }
+    let image = LinearImage::with_fingerprint(width, height, planes, "sha256:gpu-presence-drag")
+        .expect("a linear image");
+    let source = RenderSource::Linear {
+        image: &image,
+        settings: LinearSettings::default(),
+    };
+    let start = json!({"texture": 40, "clarity": 30, "dehaze": 25});
+    let stored = RenderContext::new();
+    render(
+        &registry,
+        source,
+        &recipe(start.clone()),
+        RenderOptions::exact(&Cancel::never()),
+        &stored,
+    )
+    .and_then(|render| render.frame(SnapshotId::new()))
+    .expect("the CPU frame, which stores the light");
+    let fresh = RenderContext::new();
+    let mut stack = recipe(start.clone());
+    let mut converted = |payload: &Value, context: &RenderContext| {
+        // One recipe, its payload changed in place, as a drag changes it.
+        stack.layers[0].payload = payload.clone();
+        let plan = match gpu_plan_with(
+            &registry,
+            &stack,
+            GpuPlanRequest::exact(0, stage(width, height))
+                .qualifying()
+                .linear(),
+            Some(GpuEstimates { context, source }),
+        )
+        .expect("the stack compiles")
+        {
+            GpuAnswer::Plan(plan) => *plan,
+            GpuAnswer::Fallback(reason) => panic!("{reason}"),
+        };
+        let passes = plan
+            .spatial
+            .as_ref()
+            .map_or(0, |spatial| spatial.passes.len() as u64);
+        let held = boundary(width, height, 1, &pixels).expect("a boundary");
+        (surface_plan(&plan, held).expect("a runnable plan"), passes)
+    };
+    // Each drag: what it starts from, where it goes, the light, and how many passes it may run.
+    let drags = [
+        (
+            "Clarity",
+            json!({"texture": 40, "clarity": -10, "dehaze": 25}),
+            &stored,
+            Some(0),
+        ),
+        (
+            "Texture",
+            json!({"texture": 75, "clarity": 30, "dehaze": 25}),
+            &stored,
+            None,
+        ),
+        (
+            "Dehaze",
+            json!({"texture": 40, "clarity": 30, "dehaze": 60}),
+            &stored,
+            None,
+        ),
+        (
+            "all three",
+            json!({"texture": 75, "clarity": -10, "dehaze": 60}),
+            &stored,
+            None,
+        ),
+        ("nothing", start.clone(), &stored, Some(0)),
+        (
+            "Clarity, light on the GPU",
+            json!({"texture": 40, "clarity": -10, "dehaze": 25}),
+            &fresh,
+            Some(0),
+        ),
+        (
+            "Texture, light on the GPU",
+            json!({"texture": 75, "clarity": 30, "dehaze": 25}),
+            &fresh,
+            None,
+        ),
+        (
+            "Dehaze, light on the GPU",
+            json!({"texture": 40, "clarity": 30, "dehaze": 60}),
+            &fresh,
+            None,
+        ),
+    ];
+    for (drag, payload, context, wanted) in drags {
+        let (first, all) = converted(&start, context);
+        let (then, _) = converted(&payload, context);
+        let (after, ran) = qualifier
+            .evaluate_after(&first, &then)
+            .expect("a readback after the first");
+        let whole = qualifier.evaluate(&then).expect("a readback of every pass");
+        eprintln!("{test}: {drag}: {ran} of {all} passes");
+        if let Some(wanted) = wanted {
+            assert_eq!(ran, wanted, "{drag}");
+        }
+        assert!(ran <= all, "{drag}");
+        let differing = after
+            .iter()
+            .zip(&whole)
+            .filter(|(after, whole)| after.map(f32::to_bits) != whole.map(f32::to_bits))
+            .count();
+        assert_eq!(
+            differing, 0,
+            "{drag}: texels that differ from every pass run"
+        );
+    }
+}
