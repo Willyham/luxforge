@@ -1129,22 +1129,194 @@ fn settle_checks(launch: &Checked, checks: &mut Checks) -> Result {
         "the gradient's Apply dissolved from its GPU frame",
         json!({"dissolve": applied}),
     );
-    let stroke = named(step_events(launch, "stroke")?, "gpu_dissolve_started");
-    ensure(
-        stroke.len() == 1 && stroke[0]["detail"]["case"] == json!("committed"),
-        format!(
-            "The stroke's commit did not dissolve from its GPU frame: {:?}",
-            stroke
-                .iter()
-                .map(|event| &event["detail"])
-                .collect::<Vec<_>>()
-        ),
-    )?;
+    let stroke = stroke_dissolves(step_events(launch, "stroke")?)?;
     let idle = idle_passed(launch, "stroke-idle")?;
     checks.note(
         launch.at("stroke-idle")?,
-        "the stroke dissolved, then idle",
-        json!({"dissolve": stroke[0]["detail"], "idle": idle}),
+        "the stroke dissolved from its GPU frame, then idle",
+        json!({"dissolve": stroke["commit"], "held": stroke["held"], "idle": idle}),
     );
     Ok(())
+}
+
+/// The stroke's dissolves. Its release's commit dissolves once, from the GPU frame on screen when
+/// it started, over that frame's boundary. Before it, the design's held case may dissolve too
+/// (`docs/design/gpu-preview.md`, "Settle and the dissolve"): when the stroke's first job brings its
+/// frame and boundary only after the next position has gone to the CPU with a job of its own — one
+/// 60 ms interval, which a loaded host's first job outlasts — the surface draws that position's plan
+/// over the new boundary, and its own CPU frame, of the same revision, then dissolves in over it,
+/// until the next position's tick cancels the dissolve. Each such dissolve must start from a GPU
+/// frame this stroke drew, over the same boundary, and must end or be cancelled before the commit's
+/// begins; any other dissolve, or a commit from another frame, fails.
+fn stroke_dissolves(events: &[Value]) -> Result<Value> {
+    let started: Vec<(usize, &Value)> = events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| event["event"] == "gpu_dissolve_started")
+        .collect();
+    let details: Vec<&Value> = started.iter().map(|(_, event)| &event["detail"]).collect();
+    let committed: Vec<usize> = started
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, event))| event["detail"]["case"] == json!("committed"))
+        .map(|(index, _)| index)
+        .collect();
+    ensure(
+        committed.len() == 1 && committed[0] == started.len() - 1,
+        format!("The stroke's commit did not dissolve once, last: {details:?}"),
+    )?;
+    let (at, commit) = started[committed[0]];
+    // The GPU frames the stroke drew, each a draft revision over a boundary, in order.
+    let drawn: Vec<(&Value, &Value, usize)> = events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| {
+            event["event"] == "surface_frame_drawn" && event["detail"]["path"] == json!("gpu")
+        })
+        .map(|(index, event)| {
+            (
+                &event["detail"]["draft_revision"],
+                &event["detail"]["boundary"],
+                index,
+            )
+        })
+        .collect();
+    let on_screen = drawn
+        .iter()
+        .rev()
+        .find(|(_, _, index)| *index < at)
+        .ok_or("The stroke drew no GPU frame before its commit")?;
+    ensure(
+        commit["detail"]["from"] == *on_screen.0
+            && commit["detail"]["gpu_boundary"] == *on_screen.1,
+        format!(
+            "The stroke's commit did not dissolve from its GPU frame, revision {} over boundary {}: \
+             {details:?}",
+            on_screen.0, on_screen.1
+        ),
+    )?;
+    let mut held = Vec::new();
+    for (index, dissolve) in &started[..committed[0]] {
+        let detail = &dissolve["detail"];
+        let from_drawn = drawn.iter().any(|(revision, boundary, drawn_at)| {
+            *drawn_at < *index
+                && detail["from"] == **revision
+                && detail["gpu_boundary"] == **boundary
+        });
+        let finished = events[index + 1..at].iter().any(|event| {
+            (event["event"] == "gpu_dissolve_cancelled" || event["event"] == "gpu_dissolve_ended")
+                && event["detail"]["from"] == detail["from"]
+        });
+        ensure(
+            detail["case"] == json!("held") && from_drawn && finished,
+            format!(
+                "The stroke dissolved before its commit other than from a frame it drew, held \
+                 and finished before the commit: {details:?}"
+            ),
+        )?;
+        held.push(detail.clone());
+    }
+    Ok(json!({"commit": commit["detail"], "held": held}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(name: &str, detail: Value) -> Value {
+        json!({"event": name, "detail": detail})
+    }
+
+    fn drawn(revision: u64) -> Value {
+        event(
+            "surface_frame_drawn",
+            json!({"path": "gpu", "draft_revision": revision, "boundary": 6}),
+        )
+    }
+
+    fn started(case: &str, from: u64) -> Value {
+        event(
+            "gpu_dissolve_started",
+            json!({"case": case, "from": from, "to": 19, "gpu_boundary": 6}),
+        )
+    }
+
+    fn cancelled(from: u64) -> Value {
+        event(
+            "gpu_dissolve_cancelled",
+            json!({"from": from, "to": 18, "why": "input"}),
+        )
+    }
+
+    /// The commit's dissolve alone, from the last GPU frame; and with the held dissolve a loaded
+    /// host's late first job brings, from a frame the stroke drew and cancelled by the next tick.
+    #[test]
+    fn a_strokes_commit_dissolves_from_its_gpu_frame_after_any_held_one() {
+        let plain = [drawn(2), drawn(3), drawn(25), started("committed", 25)];
+        let checked = stroke_dissolves(&plain).expect("the commit's dissolve");
+        assert_eq!(checked["held"], json!([]));
+        let loaded = [
+            drawn(2),
+            started("held", 2),
+            cancelled(2),
+            drawn(3),
+            drawn(25),
+            started("committed", 25),
+        ];
+        let checked = stroke_dissolves(&loaded).expect("a held dissolve before the commit's");
+        assert_eq!(checked["held"].as_array().map(Vec::len), Some(1));
+    }
+
+    /// What is not the design's: no commit dissolve, two, a commit from an older frame, a held
+    /// dissolve still running at the commit or from a frame the stroke never drew, and any other
+    /// case before the commit.
+    #[test]
+    fn a_stroke_fails_any_other_dissolve() {
+        let cases: [(&str, Vec<Value>); 6] = [
+            ("no commit dissolve", vec![drawn(25)]),
+            (
+                "two commit dissolves",
+                vec![
+                    drawn(25),
+                    started("committed", 25),
+                    started("committed", 25),
+                ],
+            ),
+            (
+                "a commit from an older frame",
+                vec![drawn(24), drawn(25), started("committed", 24)],
+            ),
+            (
+                "a held dissolve still running",
+                vec![
+                    drawn(2),
+                    started("held", 2),
+                    drawn(25),
+                    started("committed", 25),
+                ],
+            ),
+            (
+                "a held dissolve from a frame never drawn",
+                vec![
+                    started("held", 2),
+                    cancelled(2),
+                    drawn(25),
+                    started("committed", 25),
+                ],
+            ),
+            (
+                "a commit that is not the last dissolve",
+                vec![
+                    drawn(2),
+                    started("committed", 2),
+                    cancelled(2),
+                    drawn(25),
+                    started("held", 25),
+                ],
+            ),
+        ];
+        for (name, events) in cases {
+            assert!(stroke_dissolves(&events).is_err(), "{name} passed");
+        }
+    }
 }
