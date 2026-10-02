@@ -224,6 +224,10 @@ fn gpu_settle_a_clipping_toggle_cancels_the_dissolve() {
     let cancelled = events(&records, "gpu_dissolve_cancelled");
     assert_eq!(cancelled.len(), 1, "{records:?}");
     assert_eq!(cancelled[0]["why"], "view");
+    // The view change is recorded apart from the dissolve, as the scenario reads it.
+    let views = events(&records, "gpu_settle_view");
+    assert_eq!(views.len(), 1, "{records:?}");
+    assert_eq!(views[0]["clipping"], json!([false, true]));
     editor.session.workspace.clip_highlights = false;
     finish(editor, catalog);
 }
