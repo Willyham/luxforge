@@ -114,6 +114,16 @@ const MIN_BUFFER: u64 = 1024;
 /// The upload chunk, as the photograph's: the surface stages no copy of its own.
 const UPLOAD_CHUNK: u64 = 8 * 1024 * 1024;
 
+/// The most of a new boundary one frame's `prepare` uploads: four chunks, 32 MiB. Each frame's
+/// chunks are copied into wgpu's staging and submitted with that frame, and the staging is freed
+/// once the GPU has copied them, so at most a frame's chunks wait in staging while the next
+/// frame's are written: 64 MiB at the most, where a boundary written in one frame stages all of
+/// it at once. A boundary of the 256 MiB the bound allows arrives over eight frames, a Fit
+/// boundary of a JPEG's 8 MP (64 MiB) over two, and one of 32 MiB or less in its first frame, as
+/// before. The frame's copy stays a few chunks of `memcpy` on the interface thread, which never
+/// waits for the GPU.
+pub const UPLOAD_PER_FRAME: u64 = 4 * UPLOAD_CHUNK;
+
 /// The words the blocks are compared and written in, 1 KiB: a tick writes the chunks that changed.
 const BLOCK_CHUNK: usize = 256;
 
@@ -570,6 +580,9 @@ pub enum GpuFallback {
     TextureLimit { width: u32, height: u32, limit: u32 },
     /// The words or the blocks are larger than the device allows a storage binding to be.
     BufferLimit { bytes: u64, limit: u64 },
+    /// The plan's boundary is still being uploaded, at most [`UPLOAD_PER_FRAME`] a frame: `uploaded`
+    /// of its `bytes` so far. The slot is kept, and the frame that writes its last chunk draws it.
+    BoundaryUploading { uploaded: u64, bytes: u64 },
     /// The plan names a boundary whose texels its caller let go ([`GpuBoundary::resident`]), and
     /// the slot no longer holds them.
     BoundaryReleased,
@@ -586,6 +599,7 @@ impl GpuFallback {
             Self::TextureLimit { .. } => "texture-limit",
             Self::BufferLimit { .. } => "buffer-limit",
             Self::BoundaryReleased => "boundary-released",
+            Self::BoundaryUploading { .. } => "boundary-uploading",
         }
     }
 }
@@ -624,6 +638,10 @@ pub(super) struct Figures {
     compile: Arc<CompileFigures>,
     /// Words written to the blocks buffers, for the tests of what a tick writes.
     block_words: AtomicU64,
+    /// Bytes of boundary texels written into wgpu's staging, over every frame.
+    staged: AtomicU64,
+    /// The most of a new boundary one frame uploads: [`UPLOAD_PER_FRAME`], or a test's.
+    upload_per_frame: AtomicU64,
 }
 
 impl Figures {
@@ -645,6 +663,10 @@ impl Figures {
 
     pub(super) fn spatial_passes(&self) -> u64 {
         self.spatial_passes.load(Ordering::Acquire)
+    }
+
+    pub(super) fn staged(&self) -> u64 {
+        self.staged.load(Ordering::Acquire)
     }
 
     pub(super) fn compiles(&self) -> u64 {
@@ -734,7 +756,10 @@ pub(super) struct GpuSlot {
     boundary: wgpu::Texture,
     /// A geometry tail's intermediate: the content pass's result, which the tail reads.
     intermediate: Option<Intermediate>,
+    /// The boundary the texture holds whole.
     boundary_version: Option<u64>,
+    /// A boundary being uploaded, a frame's chunks at a time: its version and the rows written.
+    uploading: Option<(u64, u32)>,
     output: Picture,
     target: wgpu::TextureView,
     words: Charged,
@@ -990,6 +1015,9 @@ impl GpuStage {
         figures: &Figures,
     ) -> Self {
         figures.budget.store(GPU_PREVIEW_BUDGET, Ordering::Release);
+        figures
+            .upload_per_frame
+            .store(UPLOAD_PER_FRAME, Ordering::Release);
         let lost = Arc::new(AtomicBool::new(false));
         let signal = Arc::clone(&lost);
         device.set_device_lost_callback(move |_reason, _message| device_lost(&signal));
@@ -1643,8 +1671,14 @@ impl PhotoPipeline {
         };
         let outcome = self.evaluate(surface, device, queue, plan);
         // A sequence still compiling leaves the slot as it was, its boundary included, for the
-        // frame that finds the pipeline ready; any other fallback lets the slot go.
-        if outcome.is_err() && outcome != Err(GpuFallback::Compiling) {
+        // frame that finds the pipeline ready, and a boundary still uploading leaves it for the
+        // frame that writes the next chunks; any other fallback lets the slot go.
+        if outcome.is_err()
+            && !matches!(
+                outcome,
+                Err(GpuFallback::Compiling | GpuFallback::BoundaryUploading { .. })
+            )
+        {
             self.release_gpu(surface);
         }
         // A dissolve handed beside a plan runs behind it while it is held: the slot keeps the
@@ -1844,7 +1878,31 @@ impl PhotoPipeline {
             changed |= spatial.planes.write_parameters(queue, &plan.steps);
         }
         if slot.boundary_version != Some(plan.boundary.version) {
-            upload_boundary(queue, &slot.boundary, &plan.boundary);
+            // A frame's chunks of it, from the row the last frame reached.
+            let first = slot
+                .uploading
+                .filter(|(version, _)| *version == plan.boundary.version)
+                .map_or(0, |(_, row)| row);
+            let limit = self
+                .figures
+                .preview
+                .upload_per_frame
+                .load(Ordering::Acquire);
+            let (next, staged) = upload_rows(queue, &slot.boundary, &plan.boundary, first, limit);
+            self.figures
+                .preview
+                .staged
+                .fetch_add(staged, Ordering::AcqRel);
+            if next < plan.boundary.height {
+                slot.uploading = Some((plan.boundary.version, next));
+                let row_bytes =
+                    u64::from(plan.boundary.width) * plan.boundary.format.texel_bytes() as u64;
+                return Err(GpuFallback::BoundaryUploading {
+                    uploaded: u64::from(next) * row_bytes,
+                    bytes: plan.boundary.bytes(),
+                });
+            }
+            slot.uploading = None;
             slot.boundary_version = Some(plan.boundary.version);
             changed = true;
         }
@@ -2098,6 +2156,7 @@ impl PhotoPipeline {
             boundary,
             intermediate,
             boundary_version: None,
+            uploading: None,
             output: picture,
             target,
             words,
@@ -2221,6 +2280,15 @@ impl PhotoPipeline {
         self.figures.preview.budget.store(budget, Ordering::Release);
     }
 
+    /// Upload at most `bytes` of a new boundary a frame instead of [`UPLOAD_PER_FRAME`].
+    #[cfg(test)]
+    pub(super) fn set_upload_per_frame(&self, bytes: u64) {
+        self.figures
+            .preview
+            .upload_per_frame
+            .store(bytes, Ordering::Release);
+    }
+
     /// A pipeline whose device has no adapter able to run the stage, for the photograph's draw.
     #[cfg(test)]
     pub(super) fn without_gpu_stage(mut self) -> Self {
@@ -2254,6 +2322,49 @@ pub(super) fn slot_charge(device: &wgpu::Device, plan: &GpuPlan) -> Result<u64, 
 /// `words` as the little-endian bytes the GPU reads.
 fn le_bytes(words: &[u32]) -> Vec<u8> {
     words.iter().flat_map(|word| word.to_le_bytes()).collect()
+}
+
+/// Queue rows of the boundary's texels from `first` straight from the caller's buffer, in bounded
+/// chunks of rows, until `limit` bytes are written or the boundary is: the row it reached, and the
+/// bytes written. A resident boundary writes nothing.
+fn upload_rows(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    boundary: &GpuBoundary,
+    first: u32,
+    limit: u64,
+) -> (u32, u64) {
+    let Some(texels) = &boundary.texels else {
+        return (first, 0);
+    };
+    let row_bytes = u64::from(boundary.width) * boundary.format.texel_bytes() as u64;
+    let rows_per_chunk = (UPLOAD_CHUNK / row_bytes).max(1) as u32;
+    let mut row = first;
+    let mut written = 0;
+    while row < boundary.height && (written == 0 || written < limit) {
+        let rows = rows_per_chunk
+            .min(boundary.height - row)
+            .min(((limit - written) / row_bytes).max(1) as u32);
+        let mut destination = texture.as_image_copy();
+        destination.origin.y = row;
+        queue.write_texture(
+            destination,
+            (**texels).as_ref(),
+            wgpu::TexelCopyBufferLayout {
+                offset: u64::from(row) * row_bytes,
+                bytes_per_row: Some(row_bytes as u32),
+                rows_per_image: Some(rows),
+            },
+            wgpu::Extent3d {
+                width: boundary.width,
+                height: rows,
+                depth_or_array_layers: 1,
+            },
+        );
+        row += rows;
+        written += u64::from(rows) * row_bytes;
+    }
+    (row, written)
 }
 
 /// Queue the boundary's texels straight from the caller's buffer, in bounded chunks of rows.
