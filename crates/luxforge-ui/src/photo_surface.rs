@@ -180,6 +180,7 @@ impl SurfaceFigures {
         overall.gpu_preview_frame_us = drawn.gpu_preview_frame_us;
         overall.drawn_dissolve = drawn.drawn_dissolve;
         overall.drawn_clipping_marks = drawn.drawn_clipping_marks;
+        overall.first_drawn = drawn.first_drawn;
         // Read live, as the budget is: the queue reports the drawn GPU frame's pass complete at a
         // later submit or poll.
         overall.gpu_preview_done_us = self
@@ -293,6 +294,22 @@ pub struct DrawnRegion {
     pub quality: RegionQuality,
 }
 
+/// The frame a surface draws now, and when the surface first drew it: what evidence times an input
+/// to the draw of the frame that carries it by ([`SurfaceDiagnostics::first_drawn`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FirstDrawn {
+    pub path: DrawingPath,
+    /// The CPU frame's picture: the full photograph's version, or the topmost region's. `None` on
+    /// the GPU path.
+    pub picture: Option<u64>,
+    /// The GPU path's boundary version and its plan's tag, the draft revision it was drawn for.
+    pub boundary: Option<u64>,
+    pub tag: Option<u64>,
+    /// When the draw that first drew it was encoded: before the frame is submitted and presented,
+    /// so not display scanout.
+    pub at: Instant,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SurfaceDiagnostics {
     pub photo_writes: u64,
@@ -359,6 +376,9 @@ pub struct SurfaceDiagnostics {
     pub gpu_preview_done_us: Option<u64>,
     /// The settle dissolve the last draw drew, with its identities and progress.
     pub drawn_dissolve: Option<DrawnDissolve>,
+    /// The frame the last draw drew and when it was first drawn: kept across redraws of the same
+    /// frame, stamped anew when the path, the CPU picture or the GPU plan's boundary or tag change.
+    pub first_drawn: Option<FirstDrawn>,
     /// The classes, shadows and highlights, of the clipping marks the GPU output the last draw
     /// drew in place of the photograph carried ([`ClipMarks`]): approximate, and in place of the
     /// CPU frame's overlay, which marks another frame's pixels.
@@ -1833,6 +1853,32 @@ impl shader::Primitive for PhotoPrimitive {
             },
         );
         let gpu_fallback = surface.gpu_outcome.and_then(Result::err);
+        let drawn_gpu_tag = drawn_gpu_boundary.and(surface.gpu_tag);
+        let first_drawn = drawn_path.map(|path| {
+            let (picture, boundary, tag) = match path {
+                DrawingPath::Gpu => (None, drawn_gpu_boundary, drawn_gpu_tag),
+                DrawingPath::Cpu => (drawn_full_version.or(drawn_region_version), None, None),
+            };
+            let previous = pipeline
+                .figures
+                .draws
+                .lock()
+                .expect("surface draw identities lock")
+                .get(&self.surface)
+                .and_then(|drawn| drawn.first_drawn);
+            previous
+                .filter(|first| {
+                    (first.path, first.picture, first.boundary, first.tag)
+                        == (path, picture, boundary, tag)
+                })
+                .unwrap_or(FirstDrawn {
+                    path,
+                    picture,
+                    boundary,
+                    tag,
+                    at: Instant::now(),
+                })
+        });
         // Each surface compares against its own last draw, so two surfaces in different states
         // do not wake each other every frame. A change of drawing path, a new fallback, or a
         // dissolve's start or end wakes the desktop once too.
@@ -1845,7 +1891,8 @@ impl shader::Primitive for PhotoPrimitive {
         diagnostic.drawn_path = drawn_path;
         diagnostic.gpu_fallback = gpu_fallback;
         diagnostic.drawn_gpu_boundary = drawn_gpu_boundary;
-        diagnostic.drawn_gpu_tag = drawn_gpu_boundary.and(surface.gpu_tag);
+        diagnostic.drawn_gpu_tag = drawn_gpu_tag;
+        diagnostic.first_drawn = first_drawn;
         diagnostic.gpu_ready_boundary = surface.gpu_outcome.and_then(Result::ok);
         diagnostic.gpu_preview_frame_us = gpu_frame_us;
         diagnostic.drawn_clipping_marks = drawn_clipping_marks;

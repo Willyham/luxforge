@@ -151,6 +151,13 @@ pub fn read(context: &RenderContext) -> ResourceReport {
     )
 }
 
+/// This process's CPU time so far, in nanoseconds, from the counter [`read`] reports, or `None`
+/// where the platform does not report it. It reads every counter, so it is for an occasional
+/// evidence read at the edges of a window, never a loop.
+pub fn process_cpu_time_ns() -> Option<u64> {
+    shared().sampler.read().cpu_time_ns.ok()
+}
+
 /// Arrange one read of the counters as the report: a value in its field, or its key and reason in
 /// `unavailable`, never both and never a zero standing in for "unknown".
 fn report(monotonic_ns: u64, counters: Counters, budgets: BudgetsReport) -> ResourceReport {
