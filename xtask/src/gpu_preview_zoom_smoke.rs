@@ -14,12 +14,14 @@
 //! light from the store the exact frames filled and run at most five compute passes a tick; a Basic
 //! drag under it, whose light the region alone cannot give, keeps the CPU path and names
 //! `region-estimate`; and with Dehaze back at neutral a Basic drag under Presence is drawn on the GPU,
-//! running every pass a tick.
+//! running every pass a tick. Each Basic release's committed frame dissolves in from the drag's last
+//! GPU frame: the dissolve's start and its identities are checked, and the release's capture either
+//! shows it running or follows its end, which a capture after 150 ms allows.
 use crate::{
     gpu_preview_smoke::{
         BASIC, CLARITY, CLARITY_DRAG, DEHAZE, EXPOSURE, PRESENCE, PRESENCE_QUIET_MS, TEXTURE_DRAG,
-        UNDER_DRAG, drag_steps, gpu_drawn, named, presence_drag_checks, quiet, quiet_for,
-        same_pixels, step_events, ticks,
+        UNDER_DRAG, dissolve_from, drag_steps, gpu_drawn, named, presence_drag_checks, quiet,
+        quiet_for, same_pixels, step_events, ticks,
     },
     scenario::{Checked, Checks, Frame, Plan, Run, Step, plan::only},
     *,
@@ -75,6 +77,8 @@ const PAN_PATH: [[f32; 2]; 6] = [
 const PAN_INTERVAL_MS: u64 = 150;
 /// The panned drag's later ticks, over the new region.
 const PANNED: [f64; 2] = [1.3, 1.4];
+/// The drag back at 100% after the pan: its first tick, then its GPU ticks.
+const BACK: [f64; 3] = [1.0, 0.8, 0.6];
 
 /// Every frame, in order: the open, then one per step.
 pub fn plan(_: &[PathBuf]) -> Plan {
@@ -186,6 +190,28 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         )
         .commits(1)
         .no_draft(),
+        // 44-48: back to 100%, where the whole photograph fits the surface and the scrollable
+        // reports no offset: the view is the whole stage, not the corner the pan left, and a drag
+        // there is drawn on the GPU over it.
+        Step::new("back-100", ViewStep::Percent(100.0))
+            .commits(0)
+            .no_draft(),
+        Step::new("back-first", SliderStep::new(BASIC, EXPOSURE, [BACK[0]]))
+            .commits(0)
+            .draft(BASIC, json!({ EXPOSURE: BACK[0] })),
+        quiet("back-held").draft(BASIC, json!({ EXPOSURE: BACK[0] })),
+        Step::new(
+            "back-gpu",
+            SliderStep::new(BASIC, EXPOSURE, [BACK[1], BACK[2]]),
+        )
+        .commits(0)
+        .draft(BASIC, json!({ EXPOSURE: BACK[2] })),
+        Step::new(
+            "back-release",
+            SliderStep::new(BASIC, EXPOSURE, [BACK[2]]).release(),
+        )
+        .commits(1)
+        .no_draft(),
     ]);
     Plan::new(steps)
 }
@@ -200,6 +226,50 @@ fn regions(frame: &Frame) -> (Option<[u64; 4]>, Option<[u64; 4]>) {
 
 fn holds(outer: [u64; 4], inner: [u64; 4]) -> bool {
     outer[0] <= inner[0] && outer[1] <= inner[1] && outer[2] >= inner[2] && outer[3] >= inner[3]
+}
+
+/// The release's dissolve, from the drag's GPU frame `gpu` into the committed frame of the view:
+/// exactly one began, with the GPU frame's revision and boundary, and none was cancelled or cut
+/// during the release; it may follow a newer frame of the same content. The release's capture shows it running at its own progress, or, when the
+/// capture came after its 150 ms, its end is recorded: never a timing it must meet.
+fn settled_through_a_dissolve(launch: &Checked, release: &str, gpu: &Frame) -> Result<Value> {
+    let events = step_events(launch, release)?;
+    let started = dissolve_from(events, gpu, release)?;
+    let interrupted: Vec<&Value> = ["gpu_dissolve_cancelled", "gpu_dissolve_cut"]
+        .iter()
+        .flat_map(|name| named(events, name))
+        .collect();
+    ensure(
+        interrupted.is_empty(),
+        format!("{release}: its dissolve was interrupted: {interrupted:?}"),
+    )?;
+    // The dissolve follows a newer frame of the same content: the exact region, then the whole
+    // exact frame of the committed entry.
+    let targets: Vec<&Value> = std::iter::once(&started["to"])
+        .chain(
+            named(events, "gpu_dissolve_retargeted")
+                .into_iter()
+                .map(|event| &event["detail"]["to"]),
+        )
+        .collect();
+    let captured = launch.at(release)?;
+    let drawn = &captured.state()["surface"]["gpu"]["dissolve"];
+    let outcome = if drawn.is_null() {
+        json!({"captured": "after it ended",
+            "ended": named(events, "gpu_dissolve_ended")
+                .first()
+                .map(|event| event["detail"].clone())})
+    } else {
+        ensure(
+            drawn["from"] == started["from"] && targets.contains(&&drawn["to"]),
+            format!(
+                "{} drew the dissolve {drawn}, not the one that began, {started}, to {targets:?}",
+                captured["file"]
+            ),
+        )?;
+        json!({"captured": "while it ran", "drawn": drawn, "targets": targets})
+    };
+    Ok(json!({"started": started, "outcome": outcome}))
 }
 
 /// A frame at a percentage zoom drawn on the GPU drew a region holding the view it was captured
@@ -278,12 +348,14 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             ),
         )?;
         let view = never_mixed(dragged)?;
+        let settled = settled_through_a_dissolve(launch, release_name, dragged)?;
         let compared = same_pixels(dragged, launch.at(release_name)?)?;
         checks.note(
             dragged,
             &format!("the drag at {zoom}% drawn on the GPU over the visible region"),
             json!({"drawn": drawn, "gpu_ticks": gpu_ticks, "jobs": jobs, "view": view,
-                "boundary": summary["boundary"], "against_release": compared}),
+                "boundary": summary["boundary"], "against_release": compared,
+                "settled": settled}),
         );
     }
 
@@ -321,11 +393,37 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         .into_iter()
         .map(never_mixed)
         .collect::<Result<Vec<Value>>>()?;
+    let settled = settled_through_a_dissolve(launch, "pan-release", moved)?;
+    // Back at 100%: the view is the whole stage, whatever offset the pan at 800% left, and the
+    // drag there is drawn on the GPU over it.
+    let back = launch.at("back-100")?;
+    let (visible, _) = regions(back);
+    ensure(
+        visible == Some([0, 0, 480, 320]),
+        format!("Back at 100% the view is {visible:?}, not the whole 480 × 320 stage"),
+    )?;
+    let again = launch.at("back-gpu")?;
+    let drawn_back = gpu_drawn(again)?;
+    let view_back = never_mixed(again)?;
+    let (gpu_ticks_back, cpu_ticks_back, jobs_back) = ticks(step_events(launch, "back-gpu")?);
+    ensure(
+        gpu_ticks_back >= 1 && cpu_ticks_back == 0 && jobs_back == 0,
+        format!(
+            "Back at 100% the ticks were {gpu_ticks_back} on the GPU and {cpu_ticks_back} on the \
+             CPU, with {jobs_back} preview jobs"
+        ),
+    )?;
+    checks.note(
+        again,
+        "back at 100% after the pan: the whole stage in view, its drag drawn on the GPU",
+        json!({"visible_region": visible, "drawn": drawn_back, "view": view_back}),
+    );
     checks.note(
         moved,
         "the drag at 800% panned past its region, then drawn over the new one",
         json!({"drawn": drawn, "released_for_a_new_key": changed,
-            "boundary_requests": summary["boundary_requests"], "views": views}),
+            "boundary_requests": summary["boundary_requests"], "views": views,
+            "settled": settled}),
     );
 
     // At 100%: the Presence drags over the stored light, the Basic drag under Presence refused

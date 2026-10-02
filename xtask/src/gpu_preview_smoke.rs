@@ -830,7 +830,7 @@ fn span_events<'a>(launch: &'a Checked, first: &str, last: &str) -> Result<&'a [
 
 /// The one `gpu_dissolve_started` among `events`, from the GPU frame `gpu` drew: its revision and
 /// boundary.
-fn dissolve_from(events: &[Value], gpu: &Frame, what: &str) -> Result<Value> {
+pub(crate) fn dissolve_from(events: &[Value], gpu: &Frame, what: &str) -> Result<Value> {
     let started = named(events, "gpu_dissolve_started");
     let drawn = &gpu.state()["surface"]["gpu"];
     ensure(
