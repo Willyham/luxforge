@@ -95,11 +95,12 @@ fn stroke_path() -> Vec<[f64; 2]> {
 const STROKE_INTERVAL_MS: u64 = 60;
 
 /// The exposure the preference-off drag moves through, the second GPU drag's, and the next
-/// gesture's that cancels its dissolve.
+/// gesture's that cancels its dissolve. Each release differs from the exposure before it, the
+/// cancel's from the Presence section's Basic drag's too, so that each commits.
 const OFF: [f64; 2] = [0.6, 0.65];
 const AGAIN: [f64; 2] = [0.4, 0.45];
 const THIRD: [f64; 2] = [0.2, 0.25];
-const CANCEL: f64 = 0.3;
+const CANCEL: f64 = 0.35;
 /// An idle check: long enough a settle for a 150 ms dissolve to end and the slot to retire, then a
 /// second over which nothing may draw.
 const IDLE: script::IdleStep = script::IdleStep {
