@@ -61,6 +61,10 @@ The plan runs on these; each is a proposal the owner can revise.
 | Storage precision | `rgba16float` for a JPEG's boundary and colour intermediates; `rgba32float` for a RAW's boundary on the linear path, where half rounding of a near-black value can flip the sign of the luminance Presence divides by ([performance](../specs/performance.md#isolated-near-black-pixels)); `r32float` for spatial accumulators | `rgba32float` throughout, at twice the memory |
 | GPU preview budget | 640 MiB for every GPU-preview texture and buffer, beside the photo-texture ceiling; a program that does not fit takes the CPU path. Decided by the owner on 2026-10-02 so the heaviest measured 100% spatial drags draw on the GPU ([decisions](../decisions.md#gpu-previews)) | 256 MiB, which keeps all three Presence fields, Texture with Clarity and Detail at 100% on the CPU path |
 
+### Open decisions
+
+- **The warp tail on the zone plate at Fit.** The qualification's rule is that a program outside its class's limits ships disabled. The perspective warp drawn through its coordinate grid misses the pointwise worst-block limit on one corpus cell, the zone plate at Fit (1.15 against 1.0), and meets every limit on every photograph and at 100% ([performance](../specs/performance.md#the-corpus-error-report)). Disabling the warp tail would put every drag over a lens or perspective warp, every lens-corrected RAW's among them, on the CPU path. It stays enabled until the owner decides; tightening the grid's contract, or computing a perspective's projective map exactly as the affine tail does, are the alternatives.
+
 ## The preview error limit
 
 **What is compared.** The jump a person sees: the GPU frame on screen at the moment of settlement against the CPU frame that replaces it. Both are taken at the same view and as the 8-bit sRGB pixels the surface draws.
