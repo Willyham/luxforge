@@ -12,7 +12,7 @@ use luxforge_reference::{
 };
 use luxforge_ui::photo_surface::{
     BoundaryFormat, GpuPlan, GpuProgram, GpuStep, MaskedColour, TexelMap,
-    gpu_preview::qualification::{Qualifier, boundary_as, held},
+    gpu_preview::qualification::{Qualifier, boundary, boundary_as, held},
 };
 use serde_json::{Value, json};
 
@@ -925,6 +925,70 @@ pub(crate) fn headless(test: &str) -> Option<Qualifier> {
         "the surface holds the core's output encoding"
     );
     Qualifier::headless(test)
+}
+
+/// What a stack's first layer draws in its drafted GPU shape against its CPU shape's plan, over a
+/// linear boundary of `pixels`.
+#[derive(Debug)]
+pub(crate) struct Drafted {
+    /// The drafted shape's output values, bit for bit the boundary's.
+    pub(crate) input: bool,
+    /// The linear values that differ from the CPU shape's plan's, of how many, and the largest
+    /// difference.
+    pub(crate) values: usize,
+    pub(crate) of: usize,
+    pub(crate) largest: f32,
+    /// The largest difference in the codes the two draw.
+    pub(crate) code: u8,
+}
+
+/// [`Drafted`] for `recipe`'s first layer, planned for `request` (on the linear path), over a
+/// `width × height` boundary of `pixels`.
+pub(crate) fn drafted_against_cpu(
+    qualifier: &Qualifier,
+    recipe: &luxforge_core::Recipe,
+    request: GpuPlanRequest,
+    (width, height): (u32, u32),
+    pixels: &[[f32; 3]],
+) -> Drafted {
+    let registry = luxforge_core::ModuleRegistry::builtin();
+    let draw = |request: GpuPlanRequest| {
+        let plan = match gpu_plan(&registry, recipe, request).expect("the stack compiles") {
+            GpuAnswer::Plan(plan) => *plan,
+            GpuAnswer::Fallback(reason) => panic!("{reason}"),
+        };
+        let input = boundary(width, height, 1, pixels).expect("a boundary");
+        let plan = super::gpu_plan::surface_plan(&plan, input).expect("a runnable plan");
+        (
+            qualifier.evaluate(&plan).expect("a readback"),
+            qualifier.evaluate_codes(&plan).expect("a readback"),
+        )
+    };
+    let (drafted, drafted_codes) = draw(request.drafted(0));
+    let (cpu, cpu_codes) = draw(request);
+    let values = |texels: &[[f32; 4]]| -> Vec<f32> {
+        texels
+            .iter()
+            .flat_map(|texel| texel[..3].to_vec())
+            .collect()
+    };
+    let (drafted, cpu) = (values(&drafted), values(&cpu));
+    let pairs = || drafted.iter().zip(&cpu);
+    Drafted {
+        input: drafted
+            .iter()
+            .zip(pixels.iter().flatten())
+            .all(|(drawn, given)| drawn.to_bits() == given.to_bits()),
+        values: pairs().filter(|(a, b)| a.to_bits() != b.to_bits()).count(),
+        of: drafted.len(),
+        largest: pairs().map(|(a, b)| (a - b).abs()).fold(0.0, f32::max),
+        code: drafted_codes
+            .iter()
+            .zip(&cpu_codes)
+            .flat_map(|(a, b)| (0..3).map(move |c| a[c].abs_diff(b[c])))
+            .max()
+            .unwrap_or(0),
+    }
 }
 
 /// The qualification corpus's recipes of `families` at Fit: for each source this host has, the CPU

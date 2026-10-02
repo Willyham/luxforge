@@ -29,6 +29,44 @@ impl Denoise {
         scale: SamplingScale,
     ) -> Self {
         let levels = if colour == 0.0 { 3 } else { 4 };
+        Self::with_levels(
+            luminance,
+            luminance_detail,
+            colour,
+            colour_detail,
+            scale,
+            levels,
+        )
+    }
+
+    /// The unit with every level it can hold, a level whose thresholds are zero changing nothing:
+    /// its GPU shape (`CompileStage::gpu_shape`), whose passes do not change as Colour leaves or
+    /// returns to zero. No CPU frame runs it; the CPU's own shape is [`Self::new`]'s.
+    pub fn every_level(
+        luminance: f64,
+        luminance_detail: f64,
+        colour: f64,
+        colour_detail: f64,
+        scale: SamplingScale,
+    ) -> Self {
+        Self::with_levels(
+            luminance,
+            luminance_detail,
+            colour,
+            colour_detail,
+            scale,
+            BAND_NOISE.len(),
+        )
+    }
+
+    fn with_levels(
+        luminance: f64,
+        luminance_detail: f64,
+        colour: f64,
+        colour_detail: f64,
+        scale: SamplingScale,
+        levels: usize,
+    ) -> Self {
         let mut kernels = filters::denoise_kernels(scale);
         kernels.truncate(levels);
         let halo = (0..2)

@@ -15,7 +15,7 @@
 //! A test with no adapter prints that it was skipped and asserts nothing: the skip is the report,
 //! and `cargo test` counting it as passed does not make it GPU evidence.
 use super::gpu_plan::surface_plan;
-use super::gpu_qualification::{Stream, codes, corpus_at_fit, figures, worst};
+use super::gpu_qualification::{Stream, codes, corpus_at_fit, drafted_against_cpu, figures, worst};
 use luxforge_core::{
     Cancel, GPU_PROGRAMS, GpuAnswer, GpuEstimates, GpuPlanRequest, GpuProgramKind, Layer,
     LinearImage, LinearSettings, ModuleRegistry, PRESENCE_EFFECT, Recipe, RenderContext,
@@ -236,6 +236,7 @@ const FINISH_GUIDED: u32 = 2;
 const FINISH_SMOOTH_PLANE: u32 = 4;
 const REDUCE_ENCODED: u32 = 0;
 const REDUCE_DARK: u32 = 2;
+const REDUCE_NONE: u32 = 3;
 
 /// A plan of one spatial step over a boundary of `values`, its program the core's text with the
 /// test kernels, read back as `f32`.
@@ -721,7 +722,8 @@ fn gpu_presence_soft_clip_matches_the_cpu() {
 
 /// The atmospheric light the GPU takes from the stage it holds: the 16x reduction, then one
 /// workgroup's selection of the brightest dark-channel blocks, ties at the threshold taken in
-/// row-major order. Against the CPU's preparation from the host's reduction of the same stage.
+/// row-major order. Against the CPU's preparation from the host's reduction of the same stage. A
+/// light the CPU stored goes through the same passes and is written exactly as given.
 #[test]
 fn gpu_presence_atmospheric_light_matches_the_cpu() {
     let test = "gpu_presence_atmospheric_light_matches_the_cpu";
@@ -752,31 +754,58 @@ fn gpu_presence_atmospheric_light_matches_the_cpu() {
             .collect();
         let planar: Vec<f32> = channels.concat();
         let cpu = cpu::atmosphere(width, height, &planar);
-        let gpu = run_step(
-            &qualifier,
-            (width, height),
-            &values,
-            vec![REDUCE_DARK, 16, 1000, 16, 1.0e-3_f32.to_bits()],
-            vec![
-                reduced(PlaneFormat::Quad, 16),
-                GpuPlane {
-                    format: PlaneFormat::Quad,
-                    size: PlaneSize::Fixed {
-                        width: 1,
-                        height: 1,
+        // The words of the reduction and of the atmosphere's pass, then whether a light is given
+        // and the light.
+        let run = |reduce: u32, given: Option<[f32; 3]>| {
+            let light = given.unwrap_or_default().map(f32::to_bits);
+            run_step(
+                &qualifier,
+                (width, height),
+                &values,
+                vec![
+                    reduce,
+                    16,
+                    1000,
+                    16,
+                    1.0e-3_f32.to_bits(),
+                    u32::from(given.is_some()),
+                    light[0],
+                    light[1],
+                    light[2],
+                ],
+                vec![
+                    reduced(PlaneFormat::Quad, 16),
+                    GpuPlane {
+                        format: PlaneFormat::Quad,
+                        size: PlaneSize::Fixed {
+                            width: 1,
+                            height: 1,
+                        },
                     },
+                ],
+                vec![
+                    pass("lf_presence_reduce", &[], 0, 0, EACH),
+                    pass("lf_presence_atmosphere", &[0], 1, 2, PassShape::Workgroup),
+                ],
+                GpuApply {
+                    function: Cow::Borrowed("lf_presence_test_show"),
+                    planes: vec![1],
+                    words: 0,
                 },
-            ],
-            vec![
-                pass("lf_presence_reduce", &[], 0, 0, EACH),
-                pass("lf_presence_atmosphere", &[0], 1, 2, PassShape::Workgroup),
-            ],
-            GpuApply {
-                function: Cow::Borrowed("lf_presence_test_show"),
-                planes: vec![1],
-                words: 0,
-            },
+            )
+        };
+        // A light the CPU stored is written as given, through the same passes, which reduce
+        // nothing.
+        let stored = [0.61_f32, 0.83, 1.75];
+        assert_eq!(
+            run(REDUCE_NONE, Some(stored))[0][..3]
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            stored.map(f32::to_bits),
+            "{case}: the given light"
         );
+        let gpu = run(REDUCE_DARK, None);
         let light = gpu[0];
         let difference = (0..3)
             .map(|channel| (f64::from(light[channel]) - cpu[channel]).abs())
@@ -1093,7 +1122,7 @@ fn gpu_presence_on_the_byte_path_meets_the_spatial_limits() {
 
 /// Presence's pass pipelines are their kernels and shapes: all three units compile fewer pipelines
 /// than they run passes, a drag that changes only amounts compiles none, and the plan whose light
-/// is taken on the GPU adds only the light's own two passes to the plan whose light was stored.
+/// is taken on the GPU runs the passes of the plan whose light was stored, compiling none either.
 #[test]
 fn gpu_presence_pass_pipelines_are_shared_across_plans() {
     let test = "gpu_presence_pass_pipelines_are_shared_across_plans";
@@ -1168,16 +1197,16 @@ fn gpu_presence_pass_pipelines_are_shared_across_plans() {
         first,
         "a drag compiles nothing"
     );
-    // The light taken on the GPU: its reduction and its workgroup are new, every other pass is
-    // one already compiled, though the words after Dehaze's sit at other offsets.
-    let (plan, passes) = converted(&stack, &fresh);
+    // The light taken on the GPU: the same passes, which reduce the stage and find the light
+    // where the stored plan's wrote the light given.
+    let (plan, estimated) = converted(&stack, &fresh);
     qualifier.evaluate(&plan).expect("a readback");
     let second = qualifier.pass_pipelines_created();
     eprintln!(
-        "{test}: all three, light taken on the GPU: {passes} passes, {} more pipelines",
+        "{test}: all three, light taken on the GPU: {estimated} passes, {} more pipelines",
         second - first
     );
-    assert_eq!(second - first, 2);
+    assert_eq!((estimated, second), (passes, first));
 }
 
 // ---- The corpus at Fit ------------------------------------------------------------------------
@@ -1330,6 +1359,66 @@ fn gpu_presence_a_drag_reruns_only_the_passes_it_changes() {
             differing, 0,
             "{drag}: texels that differ from every pass run"
         );
+    }
+}
+
+/// A drafted layer's GPU shape — every unit, an amount-0 one its identity through its words — draws
+/// what the CPU's shape of the same values draws: a layer at zero everywhere draws its input bit
+/// for bit, and so does a unit that runs first in both shapes. A unit after an identity one reads
+/// its input through that unit's apply, in pass and frame modules of their own, where Metal's fast
+/// math compiles the same arithmetic a little differently: that difference is measured and held
+/// far inside the spatial limits. At full resolution and at a Fit proxy's scale, on the linear
+/// path, the atmospheric light taken on the GPU.
+#[test]
+fn gpu_presence_the_drafted_shape_draws_what_the_cpus_does() {
+    let test = "gpu_presence_the_drafted_shape_draws_what_the_cpus_does";
+    let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
+        return;
+    };
+    eprintln!("{test}: adapter {}", qualifier.adapter());
+    let (width, height) = (480, 320);
+    let pixels = photograph(width, height, 5);
+    for request in [
+        GpuPlanRequest::exact(0, stage(width, height)),
+        GpuPlanRequest::fit(0, stage(width, height), stage(6000, 4000)),
+    ] {
+        let request = request.linear();
+        let drafted = |payload: Value| {
+            drafted_against_cpu(
+                &qualifier,
+                &recipe(payload),
+                request,
+                (width, height),
+                &pixels,
+            )
+        };
+        assert!(
+            drafted(json!({})).input,
+            "{request:?}: a neutral layer draws its input"
+        );
+        for (payload, first) in [
+            (json!({"dehaze": 25}), true),
+            (json!({"texture": 20, "dehaze": -40}), true),
+            (json!({"texture": 40}), false),
+            (json!({"clarity": -30}), false),
+        ] {
+            let drawn = drafted(payload.clone());
+            eprintln!(
+                "{test}: {} {payload}: {} of {} values differ, largest {:.2e}; codes by {}",
+                if request.proxy { "proxy" } else { "full" },
+                drawn.values,
+                drawn.of,
+                drawn.largest,
+                drawn.code
+            );
+            if first {
+                assert_eq!(drawn.values, 0, "{request:?}: {payload}");
+            }
+            assert!(
+                drawn.largest <= 3.0e-5 && drawn.code <= 1,
+                "{request:?}: {payload}: {drawn:?}"
+            );
+        }
     }
 }
 
