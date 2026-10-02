@@ -108,8 +108,9 @@ impl FieldPatch for Presence {
 
     /// The payload as one spatial operation: dehaze, then texture, then clarity, the frozen order,
     /// with an amount-0 unit omitted because it is the exact identity. Only a layer with a moved
-    /// field reaches here; the shared field patch compiles a neutral one to no units, so the layer
-    /// opens no stage boundary and the render shares the source buffer.
+    /// field reaches here, but for a GPU plan's drafted layer; the shared field patch compiles a
+    /// neutral one to no units, so the layer opens no stage boundary and the render shares the
+    /// source buffer.
     ///
     /// The stage decides every radius and therefore every halo, so each unit is built with the long
     /// side of the stage this layer is compiled against, which is the stage the host evaluates the
@@ -122,14 +123,17 @@ impl FieldPatch for Presence {
             values.number(DEHAZE),
         );
         let long_side = stage.width.max(stage.height);
+        // The GPU shape holds all three units, an amount-0 one as its identity, so a drag across
+        // zero keeps one program sequence (`CompileStage::gpu_shape`). No CPU compile asks for it.
+        let every = at.gpu_shape;
         let mut units: Vec<Arc<dyn SpatialUnit>> = Vec::with_capacity(FIELDS.len());
-        if dehaze != NEUTRAL {
+        if every || dehaze != NEUTRAL {
             units.push(Arc::new(dehaze::Dehaze::new(dehaze, long_side)));
         }
-        if texture != NEUTRAL {
+        if every || texture != NEUTRAL {
             units.push(Arc::new(texture::Texture::new(texture, long_side)));
         }
-        if clarity != NEUTRAL {
+        if every || clarity != NEUTRAL {
             units.push(Arc::new(clarity::Clarity::new(clarity, long_side)));
         }
         Ok(Processing::Spatial(SpatialOperation::new(units)?))

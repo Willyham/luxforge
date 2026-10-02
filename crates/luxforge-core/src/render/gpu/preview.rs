@@ -116,6 +116,15 @@ pub struct GpuPreview {
     pub boundary: Option<BoundaryRequest>,
 }
 
+/// Whether a layer at `stage` has a GPU shape (`CompileStage::gpu_shape`): a colour or finish
+/// layer's every unit, or a restoration or spatial layer's.
+fn shaped(stage: EffectStage) -> bool {
+    matches!(
+        stage,
+        EffectStage::Color | EffectStage::Finish | EffectStage::Restoration | EffectStage::Spatial
+    )
+}
+
 /// The layer a module action drafts, and whether the stack holds it yet.
 struct Drafted {
     index: usize,
@@ -124,9 +133,10 @@ struct Drafted {
     mask: Option<MaskId>,
 }
 
-/// The layer `draft`'s action drafts in `recipe`: the one layer of its field-patch module's colour
-/// or finish effect for the draft's mask target, or where that layer's first commit would join the
-/// stack. `None` for any other action, whose changes the stack comparison finds.
+/// The layer `draft`'s action drafts in `recipe`: the one layer of its field-patch module's colour,
+/// finish, restoration or spatial effect for the draft's mask target, or where that layer's first
+/// commit would join the stack. `None` for any other action, whose changes the stack comparison
+/// finds.
 fn drafted(registry: &ModuleRegistry, recipe: &Recipe, draft: &Draft) -> Option<Drafted> {
     let (provider, action) = registry.action(&draft.action)?;
     if !action.patch {
@@ -135,7 +145,7 @@ fn drafted(registry: &ModuleRegistry, recipe: &Recipe, draft: &Draft) -> Option<
     let [effect] = provider.descriptor().effects.as_slice() else {
         return None;
     };
-    if !matches!(effect.stage, EffectStage::Color | EffectStage::Finish) {
+    if !shaped(effect.stage) {
         return None;
     }
     let mask = match draft.target.get("mask") {
@@ -347,7 +357,16 @@ pub(crate) fn plan_preview(
 ) -> Result<GpuPreview, Error> {
     let registry = evaluation.registry();
     let recipe = evaluation.recipe();
-    let drafted_layer = drafted(registry, recipe, draft);
+    // At a percentage zoom a restoration or spatial layer keeps the CPU's shape: over the visible
+    // region at full scale its slot is what the budget binds, and its GPU shape would charge the
+    // planes of its units at zero too.
+    let drafted_layer = drafted(registry, recipe, draft).filter(|drafted| {
+        matches!(view, GpuView::Fit(_))
+            || !matches!(
+                registry.effect_stage(&drafted.effect),
+                Some(EffectStage::Restoration | EffectStage::Spatial)
+            )
+    });
     let modulated = draft
         .target
         .get("mask")
@@ -440,58 +459,15 @@ pub(crate) fn plan_preview(
     })
 }
 
-/// How many plans of spatial layers a warm list holds: one Presence layer's whole drag repertoire,
-/// its shape as it stands and the first drag of each of its three fields. A spatial layer's shape is
-/// its non-neutral units, so each field a drag moves off neutral is a sequence of its own, and a
-/// Presence sequence is the slowest to compile (up to two seconds cold on the M4). With the colour
+/// How many restoration and spatial layers a warm list warms a drag of, in stack order: one plan
+/// each, the layer in its GPU shape, which is the one sequence every drag of it draws whatever its
+/// values (every unit is held, a neutral one as its identity) and whatever the estimate store holds
+/// (Dehaze takes the same passes for a stored light as for one it finds). A Presence or Detail
+/// sequence is the slowest to compile (up to two seconds cold on the M4); with the colour
 /// candidates — a handful of layers and modules — four keeps the list inside the surface's
-/// 16-sequence pipeline cache, so warming never evicts what it has just warmed; a stack with a
-/// second spatial layer (Presence through a mask) warms the first's, and the second's first drag
-/// compiles on demand, ahead of anything warmed.
+/// 16-sequence pipeline cache, so warming never evicts what it has just warmed. A layer whose drag
+/// takes the CPU path counts against none.
 const WARM_SPATIAL_PLANS: usize = 4;
-
-/// The payloads a drag of spatial `layer` is likely to plan, as [`plan_preview`] plans a drag of
-/// it: the payload as it stands, then for each number field of its module's patch action that is
-/// at its default, the payload with that field at the far end of its range, where the unit it
-/// drives joins the layer. `O(fields)`, no compile.
-fn spatial_shapes(registry: &ModuleRegistry, layer: &Layer) -> Vec<serde_json::Value> {
-    let mut shapes = vec![layer.payload.clone()];
-    let Some(provider) = registry.providers().find(|provider| {
-        provider
-            .descriptor()
-            .effects
-            .iter()
-            .any(|effect| effect.id == layer.effect_id)
-    }) else {
-        return shapes;
-    };
-    let descriptor = provider.descriptor();
-    for action in descriptor.actions.iter().filter(|action| action.patch) {
-        for parameter in &action.parameters {
-            let crate::ParameterKind::Number { min, max } = parameter.kind else {
-                continue;
-            };
-            let neutral = parameter
-                .default
-                .as_ref()
-                .and_then(serde_json::Value::as_f64)
-                .unwrap_or(0.0);
-            let value = layer
-                .payload
-                .get(&parameter.name)
-                .and_then(serde_json::Value::as_f64)
-                .unwrap_or(neutral);
-            if value != neutral || !layer.payload.is_object() {
-                continue;
-            }
-            let far = if max != neutral { max } else { min };
-            let mut payload = layer.payload.clone();
-            payload[&parameter.name] = json!(far);
-            shapes.push(payload);
-        }
-    }
-    shapes
-}
 
 /// What a warmed plan's program sequence is told apart by: its colour units' entries, then its
 /// spatial operation's passes and applies.
@@ -511,11 +487,10 @@ fn warm_sequence(plan: &GpuPlan) -> Vec<&'static str> {
 /// The plans a gesture on `evaluation`'s stack is likely to draw at `bounds`, for the desktop to
 /// warm their program sequences before a drag begins: a drag of each colour or finish layer the
 /// stack holds, and the first drag of each field-patch colour or finish module it does not hold
-/// yet, each from that layer with the layer in its GPU shape, as a draft of it is planned
-/// ([`plan_preview`]); then a drag of each spatial layer the stack holds, from that layer, in its
-/// shape as it stands and with each field at its default moved off it, at most
-/// [`WARM_SPATIAL_PLANS`] of them in stack order, reading the estimates the store holds, which a
-/// drag of a colour layer before them never does. One plan per program sequence. `O(layers ×
+/// yet; then a drag of each restoration or spatial layer the stack holds, at most
+/// [`WARM_SPATIAL_PLANS`] of them, reading the estimates the store holds, which a drag of a colour
+/// layer before them never does. Each is planned from that layer with the layer in its GPU shape,
+/// as a draft of it is planned ([`plan_preview`]). One plan per program sequence. `O(layers ×
 /// modules)` compiles on the catalog owner, with no pixel read.
 pub(crate) fn plan_warm(
     evaluation: &Evaluation,
@@ -530,14 +505,14 @@ pub(crate) fn plan_warm(
             Some(EffectStage::Color | EffectStage::Finish)
         )
     };
-    // Each candidate: the stack it is planned over, its boundary, and whether that layer is
-    // drafted in its GPU shape.
+    // Each candidate: the stack it is planned over, its boundary, and whether it is a drag of a
+    // restoration or spatial layer.
     let mut candidates: Vec<(Recipe, usize, bool)> = recipe
         .layers
         .iter()
         .enumerate()
         .filter(|(_, layer)| colour(&layer.effect_id))
-        .map(|(index, _)| (recipe.clone(), index, true))
+        .map(|(index, _)| (recipe.clone(), index, false))
         .collect();
     for provider in registry.providers() {
         let descriptor = provider.descriptor();
@@ -556,38 +531,35 @@ pub(crate) fn plan_warm(
         }
         let index =
             registry.insertion_index_for_target(&recipe.layers, &effect.id, None, &recipe.masks);
-        candidates.push((with_neutral(recipe, index, &effect.id, None), index, true));
+        candidates.push((with_neutral(recipe, index, &effect.id, None), index, false));
     }
-    let spatial = recipe
-        .layers
-        .iter()
-        .enumerate()
-        .filter(|(_, layer)| registry.effect_stage(&layer.effect_id) == Some(EffectStage::Spatial))
-        .flat_map(|(index, layer)| {
-            spatial_shapes(registry, layer)
-                .into_iter()
-                .map(move |payload| (index, payload))
-        })
-        .take(WARM_SPATIAL_PLANS)
-        .map(|(index, payload)| {
-            let mut planned = recipe.clone();
-            planned.layers[index].payload = payload;
-            (planned, index, false)
-        });
-    candidates.extend(spatial);
+    candidates.extend(
+        recipe
+            .layers
+            .iter()
+            .enumerate()
+            .filter(|(_, layer)| {
+                matches!(
+                    registry.effect_stage(&layer.effect_id),
+                    Some(EffectStage::Restoration | EffectStage::Spatial)
+                )
+            })
+            .map(|(index, _)| (recipe.clone(), index, true)),
+    );
     let mut plans: Vec<GpuPlan> = Vec::new();
     let mut seen: Vec<Vec<&'static str>> = Vec::new();
-    for (planned, index, drafted) in candidates {
+    let mut spatial = 0;
+    for (planned, index, own) in candidates {
+        if own && spatial == WARM_SPATIAL_PLANS {
+            break;
+        }
         // A drag of a colour layer changes the input of every spatial layer after it, so its
         // ticks take their estimates on the GPU; a spatial layer's own drag leaves the layers
         // before it alone, so its ticks read the store, as the warmed plan does.
-        let (request, estimates) = if drafted {
-            (fit.request(index).drafted(index), None)
-        } else {
-            (fit.request(index), Some(fit.estimates(evaluation)))
-        };
-        let answer = gpu_plan_with(registry, &planned, request, estimates)?;
-        if let GpuAnswer::Plan(plan) = answer {
+        let estimates = own.then(|| fit.estimates(evaluation));
+        let request = fit.request(index).drafted(index);
+        if let GpuAnswer::Plan(plan) = gpu_plan_with(registry, &planned, request, estimates)? {
+            spatial += usize::from(own);
             let sequence = warm_sequence(&plan);
             if !seen.contains(&sequence) {
                 seen.push(sequence);
