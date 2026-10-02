@@ -2368,37 +2368,6 @@ fn upload_rows(
     (row, written)
 }
 
-/// Queue the boundary's texels straight from the caller's buffer, in bounded chunks of rows.
-fn upload_boundary(queue: &wgpu::Queue, texture: &wgpu::Texture, boundary: &GpuBoundary) {
-    // A resident boundary is never uploaded: only the slot that holds it draws it.
-    let Some(texels) = &boundary.texels else {
-        return;
-    };
-    let row_bytes = u64::from(boundary.width) * boundary.format.texel_bytes() as u64;
-    let rows_per_chunk = (UPLOAD_CHUNK / row_bytes).max(1) as u32;
-    let mut row = 0;
-    while row < boundary.height {
-        let rows = rows_per_chunk.min(boundary.height - row);
-        let mut destination = texture.as_image_copy();
-        destination.origin.y = row;
-        queue.write_texture(
-            destination,
-            (**texels).as_ref(),
-            wgpu::TexelCopyBufferLayout {
-                offset: u64::from(row) * row_bytes,
-                bytes_per_row: Some(row_bytes as u32),
-                rows_per_image: Some(rows),
-            },
-            wgpu::Extent3d {
-                width: boundary.width,
-                height: rows,
-                depth_or_array_layers: 1,
-            },
-        );
-        row += rows;
-    }
-}
-
 mod compile;
 pub(super) use compile::GpuOptions;
 pub use compile::{GpuWarm, PIPELINE_CACHE};
