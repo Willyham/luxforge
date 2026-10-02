@@ -12,6 +12,7 @@ use luxforge_testbase::wait_until;
 use luxforge_ui::photo_surface::GpuFallback as SurfaceFallback;
 
 const ACTION: &str = "set-basic";
+const PRESENCE: &str = "set-presence";
 const FIELD: &str = "exposure";
 
 fn catalog(name: &str) -> std::path::PathBuf {
@@ -265,6 +266,83 @@ fn gpu_preview_a_tick_that_changes_no_pixel_still_asks_for_its_boundary() {
     });
     assert_eq!(editor.gpu.ticks().2, 1, "asked once");
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    finish(editor, catalog);
+}
+
+/// Commit `field` at `value` with a released slider, and wait for the committed frame.
+fn commit(editor: &mut Editor, action: &str, field: &str, value: f64) {
+    let _ = slide(editor, action, field, value);
+    let _ = let_go(editor, action, field);
+    assert!(run_commit(editor));
+    deliver_until(editor, "the committed frame", |editor| {
+        !editor.gpu.has_drag() && !editor.presentation.queue.is_busy()
+    });
+}
+
+/// A Presence drag, and a Basic drag under Presence, at Fit: each opens with one CPU tick whose
+/// job asks for the boundary, then draws every tick on the GPU from a plan holding Presence's
+/// spatial step, with no preview job. The Presence drag's plan reads Dehaze's light from the store
+/// the committed frame filled; the Basic drag changes the input the light is estimated from, so
+/// its plan takes the light on the GPU and says it is approximate.
+#[test]
+fn gpu_preview_presence_drags_draw_on_the_gpu_with_no_job_per_tick() {
+    let catalog = catalog("presence");
+    let (mut editor, _, _) = real_photo(&catalog);
+    editor.gpu.surface = Some(SurfaceReport::default());
+    commit(&mut editor, PRESENCE, "dehaze", 40.0);
+    let drags: [(&str, &str, [f64; 5], bool); 2] = [
+        (PRESENCE, "clarity", [20.0, 30.0, 45.0, 60.0, 75.0], false),
+        (ACTION, FIELD, [0.1, 0.2, 0.3, 0.45, 0.6], true),
+    ];
+    for (action, field, values, approximate) in drags {
+        editor.gpu.surface = Some(SurfaceReport::default());
+        let log = attach_log(&mut editor);
+        let _ = slide(&mut editor, action, field, values[0]);
+        deliver_until(&mut editor, "the boundary", |editor| {
+            editor.gpu.holds_boundary()
+        });
+        let records = logged(&mut editor, &log);
+        assert_eq!(
+            jobs(&records),
+            1,
+            "{field}: the first tick's job asks for the boundary"
+        );
+        surface_ready(&mut editor);
+        let log = attach_log(&mut editor);
+        for value in &values[1..] {
+            let _ = slide(&mut editor, action, field, *value);
+            let revision = editor.session.draft.as_ref().unwrap().draft_revision;
+            let surfaces = editor.surfaces();
+            assert!(surfaces.gpu.is_some(), "{field}: the plan is drawn");
+            assert_eq!(
+                surfaces.gpu_tag,
+                Some(revision),
+                "{field}: tagged with its tick"
+            );
+        }
+        let records = logged(&mut editor, &log);
+        assert_eq!(jobs(&records), 0, "{field}: no preview job per tick");
+        let ticks = events(&records, "gpu_preview_tick");
+        assert_eq!(ticks.len(), values.len() - 1, "{field}");
+        assert!(ticks.iter().all(|tick| tick["path"] == "gpu"), "{field}");
+        let (plan, _) = editor.gpu.surface_plan().expect("a plan");
+        assert!(
+            plan.steps
+                .iter()
+                .any(|step| matches!(step, luxforge_ui::photo_surface::GpuStep::Spatial(_))),
+            "{field}: Presence is in the plan"
+        );
+        assert_eq!(
+            editor.gpu.summary()["drag"]["approximate"],
+            json!(approximate),
+            "{field}: where the light comes from"
+        );
+        let _ = let_go(&mut editor, action, field);
+        assert!(run_commit(&mut editor));
+        deliver_until(&mut editor, "the committed frame", |editor| {
+            !editor.gpu.has_drag() && !editor.presentation.queue.is_busy()
+        });
+    }
     finish(editor, catalog);
 }
 
