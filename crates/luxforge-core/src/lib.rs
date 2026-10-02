@@ -26,6 +26,7 @@ mod modules;
 /// The host's path primitives: the stored coordinate grid, decimation, the stroke a painting
 /// action captures, and the content-addressed store those strokes live in.
 pub mod path;
+mod preferences;
 mod presets;
 mod preview;
 mod profile;

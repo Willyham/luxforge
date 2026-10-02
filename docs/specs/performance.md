@@ -635,103 +635,68 @@ Every run's frames had the same SHA-256 before and after: `cf45865f…` (24 MP E
 
 The allocation itself explains why the difference is small in a warm loop. A release probe of a 240 MB frame (60 MP RGBA), 14 writer threads: in a fresh process, collecting `repeat_n(0, len)` into an `Arc<[u8]>` is a `malloc` and a serial `bzero` of 10.8 to 12.5 ms, and 12.2 to 13.7 ms with the parallel write after it; `Arc::new(vec![0; len])` returns in 2 to 3 µs, and the parallel write that faults its pages in takes the whole to 8.4 to 9.8 ms (10 processes each). At 96 MB (24 MP) the fresh-process totals are 4.7 to 5.5 ms for the fill and 6.3 to 6.9 ms for the zeroed allocation, so faulting pages in from every writer at once does not pay at that size. Repeating the same allocation in one process, as `editor-performance` does, the allocator hands back the region the last frame freed and both forms cost 1.0 ms to allocate and 2.0 ms with the write (p50 of 30). The render therefore gains most on a first render at a new size and on the identity pass's source copy it no longer makes.
 
-#### A feathered, curved stroke, and the overlay after its frame
+#### Mask feedback and the coverage handoff
 
-The current `editor-latency --mode paint` stroke is 400 positions at 24 ms along a sine across the
-frame (`x = 0.2 + 0.8t`, `y = 0.5 + 0.2 sin 5πt`) with the panel's default feather, 50, radius 0.06
-and flow 100. The feather keeps the brush's ramp wider than two proxy pixels, so the proxy phase
-point samples the mask field, as a person's brush is; a hard edge would measure the 2 × 2
-supersample instead. The curve keeps positions along the decimated path's whole length (37 stored
-at the end of the stroke), so any cost proportional to the path already drawn grows along it.
-`--mask-overlay` turns the selected mask's tint on for the stroke, so every accepted draft also asks
-the independent coverage worker for its grid (the figures below were recorded when that grid was
-filled by the drafted preview job itself). Besides the per-`draft.set` rows above, the report times each position
-from its own `mask_stroke_position` to the first presented frame whose `draft.set` carried it
-(`position_to_presented_frame`), splits the rows into the stroke's first and last quarters, and
-times each frame to its grid's `mask_overlay`.
+Native Apple M4 Pro, 14 cores, 48 GiB, macOS 26.5.2, Rust 1.94.0, Metal, release `--locked`,
+2 October 2026. Hidden background bundles, 2880 × 1800 physical pixels at 2×. The generated
+24 MP JPEG is at Fit; the 60 MP JPEG is at 100%. Each launch paints 240 positions at 24 ms on
+the harness's sine path, radius 0.06, feather 50, flow 100, with the selected mask's tint on.
+The path is decimated by the current frozen rule, and each stroke commits one history entry.
 
-Measured on the host and window above (Apple M4 Pro, macOS 26.5.2, Metal, 2880 × 1800 at 2×),
-release builds, background launches, warm cache, both builds driven by one `xtask` through
-`--binary`. Before is the base build (`56b4315a…`, commit `6de77bbd`), after this change's
-(`a2d1feeb…`). Each block is one launch of 400 positions, run A, B, B, A back to back at each size
-and overlay setting, each launch waiting for a one-minute load under 10 before it started; the start
-load of each block is given. The host was shared with other sessions' builds throughout, and a
-block whose own proxy render climbs from about 3 ms to tens of milliseconds partway through the
-stroke, in either build, is one of their bursts rather than the stroke: those blocks are marked
-and their tails are not read.
+Frozen baseline binary SHA-256 `72bdcfb472e5bfb1c277a362ba4f4dd935efa3dc818b051115ecd71eddffddb4`,
+final optimized binary `e6db8e45d17e206ba3dc1b08349dc324683f61d1c2dff6881fb778e1ac63ec11`,
+Cargo.lock `14235ffe8d1b76708d1f523fc5c171c4d04a42e78f237d32c2f6415cebfcaad1`.
+Each size runs before, after, after, before, serialized under the timing lock with no local build
+or test overlapping. A launch waits for one-minute load below 8: 7.53, 7.09, 6.75, 6.45 at
+24 MP and 6.63, 6.76, 6.62, 7.14 at 60 MP. The first 60 MP baseline ends at 9.87 and
+second optimized leg at 14.18; all other legs end below 8. The second 24 MP baseline has a
+large worker slowdown despite load remaining below 8: one-minute load cannot guarantee a quiet
+stroke. Every run and tail is retained.
 
-| 24 MP, overlay off, p50 / p95 ms | Before A1 (9.4) | After B1 (8.3) | After B2 (6.9) | Before A2 (7.6) |
+The following cells retain both runs per variant, in their own execution order. Raw inputs,
+accepted draft revisions, all distributions and resource samples live in
+`artifacts/mask-perf-20261002/wake-abba-*`, summarized by `comparison.json`; the earlier
+brush diagnostics are also retained there, with their binary identities and limits.
+
+| Metric | 24 MP before | 24 MP after | 60 MP before | 60 MP after |
 | --- | --- | --- | --- | --- |
-| Position to presented frame (399 each) | 8.16 / 9.56 | 8.19 / 9.48 | 8.12 / 9.54 | 8.08 / 9.50 |
-| … first quarter / last quarter, p50 | 8.00 / 8.25 | 8.29 / 8.32 | 8.04 / 8.18 | 8.07 / 8.03 |
-| Proxy render on the worker | 3.08 / 3.87 | 3.07 / 3.80 | 2.99 / 3.69 | 2.93 / 3.40 |
-| Press to first presented frame | 10.33 | 10.43 | 10.26 | 2.81 |
+| Photo adoption count | 239 · 216 | 239 · 239 | 232 · 239 | 239 · 234 |
+| Authoritative coverage count | 237 · 190 | 239 · 239 | 213 · 237 | 239 · 205 |
+| Photo adoption p50, ms | 8.20 · 13.12 | 8.30 · 8.30 | 8.96 · 7.88 | 7.75 · 8.92 |
+| Photo adoption p95, ms | 16.28 · 62.12 | 16.23 · 15.75 | 45.79 · 16.23 | 15.12 · 36.12 |
+| Authoritative coverage p50, ms | 8.22 · 13.25 | 8.33 · 8.50 | 8.69 · 7.90 | 7.84 · 8.94 |
+| Photo event to overlay adoption p50, ms | 2.199 · 2.203 | 0.020 · 0.020 | 3.345 · 3.348 | 0.018 · 0.021 |
+| Photo event to overlay adoption p95, ms | 2.275 · 12.625 | 0.025 · 0.025 | 10.102 · 3.590 | 0.024 · 15.634 |
+| Preview worker p50, ms | 5.21 · 9.29 | 4.42 · 4.46 | 2.15 · 2.41 | 1.33 · 2.31 |
+| Last-quarter preview worker p50, ms | 6.01 · 23.35 | 5.27 · 5.51 | 2.09 · 2.33 | 1.28 · 1.23 |
+| Sampled peak process RSS, MiB | 700.8 · 708.8 | 649.8 · 661.3 | 1418.5 · 1394.2 | 1181.6 · 1133.6 |
 
-| 60 MP, tint on, p50 / p95 ms | Before A1 (9.0) | After B1 (8.8) | After B2 (9.3), burst | Before A2 (9.8), burst |
-| --- | --- | --- | --- | --- |
-| Position to presented frame (≈ 400 each) | 8.32 / 9.51 | 7.58 / 8.76 | 34.89 / 75.67 | 8.77 / 54.10 |
-| Proxy render on the worker | 4.66 / 5.93 | 2.44 / 3.58 | 16.72 / 40.62 | 5.28 / 31.78 |
-| Presented frame to its grid's `mask_overlay` | 2.01 / 2.08 | 11.26 / 11.63 | 11.77 / 59.61 | 2.02 / 5.27 |
-| Press to first presented frame | 11.47 | 11.03 | 11.84 | 10.69 |
+The clear improvement is removal of UI-thread coverage painting: the worker returns shared painted
+RGBA, reducing median overlay handoff from 2.2–3.35 ms to 18–21 µs, roughly 99%. The exact palette,
+support rectangle and contiguous brush index preserve coverage while reducing work. Both optimized
+24 MP legs deliver all 239 post-press positions; their preview-worker medians are 14–15% below the
+first baseline, and their last-quarter medians 8–12% below it. The second baseline's slowdown is
+reported, not used to inflate that saving. At 60 MP sampled RSS is 213–285 MiB lower across these
+runs; this is a scoped process observation, including GPU resources and allocator retention,
+rather than a CPU-heap or whole-editor memory guarantee.
 
-| 24 MP, tint on, first quarter of the stroke, p50 / p95 ms | Before A1 (7.5) | After B1 (9.7) | After B2 (9.5) | Before A2 (9.8) |
-| --- | --- | --- | --- | --- |
-| Position to presented frame (100 each) | 8.32 / 9.66 | 7.26 / 8.70 | 7.55 / 8.58 | 8.21 / 9.62 |
-| Proxy render on the worker | 4.91 / 5.47 | 2.46 / 2.82 | 2.19 / 2.55 | 5.29 / 6.07 |
+A general end-to-end or tail-latency improvement is **not established**. The clean 24 MP photo
+median stays around 8.3 ms, and one optimized p95 narrowly exceeds the provisional 16 ms target.
+The clean 60 MP optimized leg is 7.75/15.12 ms p50/p95, but its loaded partner reaches
+8.92/36.12 ms and delivers fewer positions. Pre-result scheduling and delayed coverage remain
+visible in the raw distributions. Coverage wakes before a matching photograph are suppressed;
+publishing photo content before draining coverage prevents lost wakes, while unchanged-photo
+feedback and unavailable outcomes stay immediate. The tests prove that liveness; the timings do
+not isolate this policy's saving. These are adoption timestamps, not GPU completion or display
+scanout. The synthetic brush workload does not qualify RAW, high-density recipes or general mask
+latency.
 
-| 60 MP, overlay off, p50 / p95 ms (third round) | Before A1 (9.7) | After B1 (8.8) | After B2 (8.9) | Before A2 (8.2) |
-| --- | --- | --- | --- | --- |
-| Position to presented frame (399 each) | 8.25 / 15.48 | 8.09 / 9.55 | 8.07 / 9.47 | 8.33 / 9.25 |
-| … first quarter / last quarter, p50 | 8.67 / 8.10 | 7.99 / 8.15 | 8.24 / 8.07 | 8.81 / 8.03 |
-| Proxy render on the worker | 3.57 / 9.24 | 2.91 / 3.60 | 2.55 / 3.18 | 2.31 / 2.90 |
-| Press to first presented frame | 10.34 | 10.06 | 10.77 | 10.60 |
-
-Three rounds were run; the first three tables are from the second. The blocks not given here took such a burst, in both builds, and a
-burst block used less process CPU over its launch than a clean one of the same workload, 24.9
-against 30.3 s at 60 MP with the tint on, so the editor was starved of the host rather than doing
-more work. The 24 MP tinted blocks all took one in their later quarters, so only their first
-quarter is given above. The load-reliability rule makes every figure here provisional: each block
-started at a one-minute load between 6.9 and 9.8.
-
-**What moved, and what did not.** With the tint on, the proxy frame no longer carries the coverage
-grid, so the proxy render the frame waits for falls by the grid's cost: 4.66 to 2.44 ms at 60 MP
-and 4.9–5.3 to 2.2–2.5 ms at 24 MP, in both orders, and a position reaches the screen 0.7–1.1 ms
-sooner at p50. The grid now follows in its own message, 11.3–11.5 ms after its frame at p50 (the
-grid's own time, one more worker wake and the desktop's painting of it), where before it was taken
-up in the frame's own update, 2.0–2.2 ms after the frame's event. Until it arrives the
-frame is drawn without a tint, so during a tinted stroke the tint follows the picture by about one
-frame. A newer request stops a grid still being filled, so a grid never holds the next position's
-job in the queue. With the overlay off, nothing on the worker changed, and the figures agree
-within 0.3 ms at p50 in both orders at both sizes. The press's first frame is unchanged (the base's 2.81 ms at 24 MP is
-a press that found a frame already presenting).
-
-**The path's own work is not the cause, and is recorded as such.** Along the untinted 24 MP stroke
-the owner's `draft.set` stays at 0.03 ms p50 from the first quarter to the last, and planning the
-drafted preview (capturing and hashing the stroke) goes from 0.08 to 0.09–0.10 ms, in both builds;
-the position-to-frame p50 does not grow along the stroke at all. The per-point work measured on
-its own (`render::mask_tests::painted_stroke_path_work_per_position`, an ignored measurement test,
-release, 200 rounds each on the workload's own sine and brush) is microseconds at every length:
-
-| Positions drawn (stored) | Decimate the whole path | Push one and reduce | Check the posted path | Capture and hash the stroke | Grid index, proxy / 24 MP stage |
-| --- | --- | --- | --- | --- | --- |
-| 100 (34) | 1.8 µs | 1.3 µs | 0.1 µs | 2.3 µs | 1.2 / 1.2 µs |
-| 400 (37) | 5.4 µs | 4.1 µs | 0.1 µs | 2.5 µs | 1.7 / 1.7 µs |
-| 1600 (38) | 19.2 µs | 14.8 µs | 0.1 µs | 2.5 µs | 1.7 / 1.7 µs |
-| 6400 (37) | 76.4 µs | 58.0 µs | 0.1 µs | 2.5 µs | 1.7 / 1.7 µs |
-
-So the index build, the hashing, the recompile per `draft.set` and the decimation are three orders
-of magnitude below a displayed frame; do not re-optimize them for latency. The desktop now checks
-and snaps each painted position once, as it arrives (`path::PathCapture`), and reduces the grid path
-it holds when it posts; the reduction itself stays whole-path, because its first split depends on
-the path's far end and an incremental reduction would store a different stroke. The owner's work per
-`draft.set` is proportional to the stored path, not the drawn one, which is why it is flat above.
-Two further changes were considered and not made, because the figures say they would cost more
-than they save: offering at most one new position per presented drafted frame would hold every
-position that outpaces the frames for the worker-to-desktop wake (the pre-result residual, 4.9 ms
-p50 above), where today it replaces the queue's waiting job at once; and letting `draft.set` append
-raw positions to the draft would move the path's decimation onto the owner, whose per-event capture
-would then grow with the drawn path (6.8 µs at 400 raw positions and 106 µs at 6400, against
-2.5 µs for the stored path) instead of staying flat.
+The [mask performance design](../design/mask-performance.md) records the unchanged numerical and
+memory contracts. Exact brush/range/reference, cancellation, draft, source-preservation, bounded
+handoff and wake/publication checks pass; final native `mask-interactions`, `mask-brush`, `mask-range`,
+`viewport-region`, `performance` and `capabilities` frames correlate state and logs. Twelve native
+Metal surface tests pass, with two separate diagnostic timing probes left out. Final quick
+verification passes across 26 test binaries; 15 slow tests and doctests remain outside that tier.
 
 #### Per-pass parallel thresholds
 
@@ -2041,7 +2006,12 @@ A new worktree's first build of the core's tests compiles 19 fewer packages and 
 
 ## Performance section, activity board and resource counters
 
-Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release builds, 2026-09-23, on a host shared with other sessions: one-minute load averages are given per run. The baseline is commit 9fb1fbb, the tree before this work, built in its own worktree. The `resources_cost` and GPU-walk p50s below are the upper median (the 501st of 1000 reads, the 101st of 200 walks) those tests took before they read the shared nearest-rank `Distribution`, whose p50 is the 500th and the 100th; their p95s are unchanged.
+Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release builds.
+The underlying counter measurements below are from 2026-09-23; the `resources_cost` and
+GPU-walk p50s are the upper median (the 501st of 1000 reads, the 101st of 200 walks)
+those probes took before they read the shared nearest-rank `Distribution`, whose p50 is the
+500th and the 100th; their p95s are unchanged. Counter contracts and one-second resolution are
+unchanged by the 2026-10-02 panel polish.
 
 | Measurement | Result | Scope |
 | --- | --- | --- |
@@ -2050,10 +2020,48 @@ Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release build
 | First read after `declare_gpu_presenter` | 0.6 ms when the Metal device already exists (the desktop), 37.5 ms in a process that has none | One read each |
 | `activity.list` / `resources.read` / `session.state` round trip through the headless `luxforge-json` owner, stdio and JSON included | p50 14.8 / 19.5 / 18.8 µs, p95 23.0 / 28.1 / 30.9 µs | 2000 requests each after 50 warm-up, load 12 to 18 |
 | Activity `begin` + `finish`, uncontended | p50 83 ns, p95 84 to 125 ns | 100,000 iterations; the timer resolves 42 ns |
-| Exposure drag input to presented frame, 24 MP, baseline then this work, then reversed | p50: baseline 14.7 and 16.0 ms, this work 11.1 and 15.4 ms; p95 38.9 (baseline), 44.9, 19.0 (this work) and 35.0 ms (baseline) in run order | `editor-latency --source fixtures/generated/24mp.jpg --samples 30`, one launch each, load 19 to 23. No regression; the p95s follow the host in both builds and set no baseline. The settled histogram read 60 to 68 ms p50 in this work's runs against 93 to 94 ms in the baseline's, in both orders; nothing in this work touches the exact render or its reduction, so that difference is not claimed |
-| Idle CPU, 24 MP open, Performance section collapsed / expanded | 0.75% and 0.79% collapsed, 1.37% and 1.08% expanded, of one core, in the order collapsed, expanded, expanded, collapsed | One 24 s window per launch, 2 s after the first scripted step; evidence launches (`--evidence-script` with the section's step and three 10 s waits), so both carry the evidence mode's own 250 ms tick; the expanded runs made 31 reads each and the collapsed runs none; load 11 to 15 |
 
-Expanding the section costs 0.3 to 0.6% of one core, which is one sample a second: two owner calls of a few microseconds each, the state panel's re-derivation and the window's redraw. Collapsed it costs nothing. The owner chose that it starts open, so from this change every ordinary launch samples, and the timing tier's idle figure (`measure` holds the 60 MP image in an ordinary launch) includes the open section: expect it 0.3 to 0.6% of one core above the figures recorded before.
+The section starts open on first use, saves the last disclosure choice outside the catalog through
+`preferences.read` and `preferences.set`, and samples only while expanded and visible. Collapsed
+or hidden it creates no timer and makes no reads. A listed running job with an ID offers Cancel
+through `job.cancel`; the native `capabilities` check presses that row's actual message and proves
+the matching job cancelled without changing the accepted edit. Native `performance` frames
+independently reconstruct the counters, sparklines and rows and prove collapsed sampling stays
+asleep. Idle Performance messages refresh only their model; active work and evidence keep the
+full derivation path. Unchanged GPU tiles avoid layout allocation and uniform writes.
+
+Ordinary-session idle measurements use baseline binary SHA-256
+`72bdcfb472e5bfb1c277a362ba4f4dd935efa3dc818b051115ecd71eddffddb4` and panel-polish binary
+`066e6f1123ae060d6cd1738d810cb30ec49b90cbea4e1ee6d34d5d140df8c4a7`, with
+before/after/after/before order on 2026-10-02: `editor-latency --source fixtures/generated/24mp.jpg --mask --samples 30
+--idle`. Each run reopens its committed masked Basic stack without evidence mode, settles one
+second, then measures process CPU-time delta for 30 seconds. Performance is expanded; its
+one-second sample and whole-window redraw are included. Native GPU accounting comes from the
+preceding gesture's captured state, not an idle-process capture. No local build or test overlaps.
+
+| Run | CPU, % of one core | Duration, s | Sampled peak RSS, MiB | Idle start → end one-minute load |
+| --- | --- | --- | --- | --- |
+| Before 1 | 0.953 | 30.425 | 380.8 | 13.05 → 16.62 |
+| After 2 | 0.827 | 30.239 | 468.3 | 7.76 → 6.81 |
+| After 3 | 1.190 | 30.264 | 374.5 | 6.58 → 5.86 |
+| Before 4 | 0.894 | 30.217 | 366.3 | 5.63 → 12.90 |
+
+These windows do **not** establish an aggregate idle CPU improvement. Both baseline windows
+encounter host load above the quiet threshold of 8; both optimized windows stay below it, but
+one still exceeds the provisional 1% idle target. RSS includes allocator retention and GPU
+resources and sets no memory-reduction claim here. There is no paired collapsed window, so
+these numbers do not isolate the section's extra CPU. The remaining toolkit view, layout and
+whole-window redraw cost is still open. Raw reports are in
+`artifacts/mask-perf-20261002/idle-*/resources.json` and `comparison.json`.
+
+The isolated release probe `app::performance::tests::performance_model_work` compares the former
+full-workspace derivation route with the scoped refresh on the same final code and imported 24 MP
+photo. Each route receives a changed resource sample, with a full 61-sample history; order alternates
+within each pair. After 200 warm-up pairs, 1000 samples per route give full derivation p50/p95
+60.38/64.21 µs and scoped refresh 1.46/1.58 µs: about 98% less model work. Pixel workers are stopped
+before timing; import, decoding, owner calls, widgets, layout and GPU work are excluded. This is
+a component comparison, not an end-to-end redraw or ordinary-session CPU reduction. The shared
+host's one-minute load is 8.64. Every sample is retained in `model-work.json` beside the idle reports.
 
 ## Isolated rendering kernels
 

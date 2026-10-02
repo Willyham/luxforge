@@ -795,6 +795,8 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-core/src/source.rs",
             "crates/luxforge-core/src/latest.rs",
             "crates/luxforge-core/src/api/owner/point.rs",
+            // Production RGBA handoff backpressure, not a test gate; keeps the overlay byte bound.
+            "crates/luxforge-app/src/app/mask_coverage.rs",
         ],
         mode: Match::Whole,
         tests: true,

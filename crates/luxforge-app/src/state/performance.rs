@@ -10,7 +10,7 @@
 //! every rule can be tested with made-up samples.
 use crate::state::Inputs;
 use luxforge_core::{
-    ActivitySnapshot,
+    ActivitySnapshot, JobId,
     activity::{ActiveActivity, Outcome, RecentActivity},
     resources::{MemoryKind, ResourceReport},
 };
@@ -116,6 +116,8 @@ pub(crate) struct MetricRow {
 /// One job row as the section shows it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct JobRow {
+    pub(crate) job_id: Option<luxforge_core::JobId>,
+    pub(crate) cancelling: bool,
     pub(crate) label: String,
     /// Elapsed while running, duration once finished; empty on the quiet row.
     pub(crate) trailing: String,
@@ -160,8 +162,10 @@ impl PerformanceModel {
     /// message — most of them, a drag sends dozens a second — leaves the model and its sparklines'
     /// version exactly as they were.
     pub(crate) fn refresh(&mut self, inputs: &Inputs<'_>) {
-        let expanded = inputs.performance_expanded;
-        let history = inputs.performance;
+        self.refresh_sample(inputs.performance_expanded, inputs.performance);
+    }
+
+    pub(crate) fn refresh_sample(&mut self, expanded: bool, history: &PerformanceHistory) {
         if self.expanded == expanded && self.version == history.version() {
             return;
         }
@@ -543,6 +547,11 @@ fn running(job: &ActiveActivity) -> JobRow {
         .chain(entry.phase.iter().map(|phase| format!("{phase} phase")))
         .collect();
     JobRow {
+        job_id: entry
+            .job_id
+            .as_ref()
+            .and_then(|id| JobId::parse(id.clone()).ok()),
+        cancelling: false,
         label: entry.label.to_string(),
         trailing: format_elapsed(job.elapsed_ms),
         detail: (!parts.is_empty()).then(|| parts.join(" \u{b7} ")),
@@ -565,6 +574,8 @@ fn finished(job: &RecentActivity) -> JobRow {
     };
     let ago = job.ended_ms_ago.saturating_add(500) / 1000;
     JobRow {
+        job_id: None,
+        cancelling: false,
         label: job.entry.label.to_string(),
         trailing: format_elapsed(job.duration_ms),
         detail: Some(format!("{how} {} s ago", ago.max(1))),
@@ -1010,6 +1021,7 @@ mod tests {
                     detail: Some("DSC_0412.NEF".into()),
                     progress: None,
                     running: true,
+                    ..JobRow::default()
                 },
                 JobRow {
                     label: "Rendering preview".into(),
@@ -1017,6 +1029,7 @@ mod tests {
                     detail: Some("exact phase".into()),
                     progress: None,
                     running: true,
+                    ..JobRow::default()
                 },
                 JobRow {
                     label: "Preparing original".into(),
@@ -1024,6 +1037,7 @@ mod tests {
                     detail: Some("a.jpg \u{b7} decode phase".into()),
                     progress: None,
                     running: true,
+                    ..JobRow::default()
                 },
             ],
             "the finished job is not shown while long work runs"
@@ -1098,6 +1112,7 @@ mod tests {
                 detail: Some("Finished 4 s ago".into()),
                 progress: None,
                 running: false,
+                ..JobRow::default()
             }]
         );
         for (outcome, word) in [

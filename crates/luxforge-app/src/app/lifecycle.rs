@@ -42,6 +42,7 @@ pub(super) fn host_config(config: &Config) -> HostConfig {
     };
     let paths = config.paths.as_ref();
     HostConfig {
+        preferences_dir: paths.map(|paths| paths.config.clone()),
         config_dir: paths.map(Paths::module_config),
         resource_dir: paths.map(Paths::module_resources),
         secrets,
@@ -127,6 +128,10 @@ impl Editor {
     /// The window closed: stop the live server and the owner, finish the log and exit once the
     /// owner thread has joined.
     pub(super) fn close(&mut self) -> Task<Message> {
+        if !self.performance.saving.idle() {
+            self.performance.closing = true;
+            return Task::none();
+        }
         self.event(
             "shutdown",
             || json!({"while_loading":self.activity.pending}),

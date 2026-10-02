@@ -841,6 +841,7 @@ Each step is an object with exactly one key.
 - `preset_import` imports one file through the section's own import task, bypassing only the native
   dialog: `{"path": "fixtures/presets/develop.xmp"}`, relative to the editor's working directory.
   Captured once the library answers; a refused file is a failed step.
+- `performance_cancel {row}` presses Cancel on a displayed running Performance job row, numbered from zero, and captures its command answer; a row without an enabled Cancel fails the step. The `capabilities` scenario cancels a real held task through this button and verifies that its accepted edit remains intact.
 - `performance` opens or closes the state panel's Performance section through its heading's own
   message: `{"expanded": true}` or `{"expanded": false}`. Opening it, with the state panel shown, is
   captured once the section's first `resources.read` and `activity.list` have answered, so the frame

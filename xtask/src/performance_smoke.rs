@@ -311,6 +311,7 @@ fn expected_jobs(activity: &Value) -> Result<(Vec<Value>, Value, Value)> {
                     "trailing": elapsed_text(job["elapsed_ms"].as_u64().unwrap_or_default()),
                     "detail": if parts.is_empty() { Value::Null } else { json!(parts.join(" \u{b7} ")) },
                     "running": true,
+                    "job_id": job["job_id"], "cancelling": false,
                     "progress": progress,
                 })
             })
@@ -351,6 +352,7 @@ fn expected_jobs(activity: &Value) -> Result<(Vec<Value>, Value, Value)> {
                 "trailing": elapsed_text(job["duration_ms"].as_u64().unwrap_or_default()),
                 "detail": format!("{how} {ago} s ago"),
                 "running": false,
+                "job_id": null, "cancelling": false,
                 "progress": Value::Null,
             })
         }
@@ -359,6 +361,7 @@ fn expected_jobs(activity: &Value) -> Result<(Vec<Value>, Value, Value)> {
             "trailing": "",
             "detail": Value::Null,
             "running": false,
+                "job_id": null, "cancelling": false,
             "progress": Value::Null,
         }),
     };
@@ -1036,7 +1039,7 @@ mod tests {
     }
 
     fn finished_row(label: &str) -> Value {
-        json!([{"label":label,"trailing":"0.8 s","detail":"Finished 2 s ago","running":false,"progress":null}])
+        json!([{"label":label,"trailing":"0.8 s","detail":"Finished 2 s ago","running":false,"progress":null,"job_id":null,"cancelling":false}])
     }
 
     /// A running job's bar is the board's own fraction as the section holds it, and a job that
@@ -1048,7 +1051,7 @@ mod tests {
         assert_eq!(
             rows,
             vec![
-                json!({"label":"Rendering preview","trailing":"2.6 s","detail":"exact phase","running":true,"progress":f64::from(0.9_f32)})
+                json!({"label":"Rendering preview","trailing":"2.6 s","detail":"exact phase","running":true,"job_id":null,"cancelling":false,"progress":f64::from(0.9_f32)})
             ]
         );
         assert_eq!((more, caption), (Value::Null, json!("1 job")));
@@ -1089,7 +1092,7 @@ mod tests {
         let idle = frame(
             json!([]),
             json!([]),
-            json!([{"label":"No background work","trailing":"","detail":null,"running":false,"progress":null}]),
+            json!([{"label":"No background work","trailing":"","detail":null,"running":false,"progress":null,"job_id":null,"cancelling":false}]),
         );
         assert!(heavy_work_listed(&before, &idle).is_err());
     }
