@@ -3702,6 +3702,70 @@ cargo test -p luxforge-app gpu_detail_corpus -- --ignored --nocapture
 
 The corpus run writes, beside each pair, `<recipe>--<source>[--lens-reset]-proxy.png`, the CPU's moving proxy, and records its figures in `cells.json` under `settled_from_exact`.
 
+## GPU previews at 100%
+
+The GPU frame of a drag at 100% ([GPU previews](../design/gpu-preview.md#at-100-and-above)) against the exact visible region the shared quiet policy settles it to, on every family of the [corpus](../../fixtures/preview/corpus.json) over every source this host has, in the largest window the owner's display holds. Pixel measurements and charges, not timings.
+
+### Scope
+
+- **The view.** The M4 MacBook Pro's 3024 × 1964 display, a 1512 × 982 logical window at 2× with both panels closed, at 100% and scrolled to the photograph's centre: a 3026 × 1826 region of the output stage (`viewport_rect`, with its guard pixels), or the whole stage where it is smaller (the Presence fixture's 1440 × 960).
+- **The frames.** The CPU frame is the preview worker's exact region of that view, from the job the quiet policy asks for (`viewport` set, `Settle`). The GPU frame is the plan from the recipe's first pixel layer at the exact stage over the boundary the worker renders for a region job (`qualification::region_boundary`, `Render::region_boundary`: the window of the layer's received stage the region reads, with the exact region's whole-stage estimates), converted with the region (`surface_plan_over`), a warp's grid over the region at 100%, and drawn by the photo surface's own shader, read back headlessly. Both are compared at the region's size.
+- **Gaps.** A slot the surface would charge past the 256 MiB budget, or a boundary past the 128 MiB bound on one, is the CPU path and named `budget-exceeded`, as the desktop names it. A plan whose Dehaze light the GPU would take from the region alone is the CPU path and named `region-estimate`, measured all the same. A mask that selects nothing inside the region is a gap, as at Fit.
+- **Host and build.** Apple M4 Pro, macOS 26.5.2, the `Apple M4 Pro` adapter on Metal; the `test` profile build at `d67f1842`, `gpu_preview_corpus_at_100_percent`. One run; the pixels are deterministic.
+- **Sources.** As [at Fit](#gpu-colour-programs-at-fit): the generated 24 MP and 60 MP JPEGs and the Presence fixture, and the Z6, X100VI and Air 2S RAWs through the private RAW manifest; the zone plate has no file.
+
+### Results
+
+Worst of each statistic over a recipe's measured cells, what their slots charge, and its gaps. Every one of the 88 measured cells meets its class's limits; `cargo xtask preview-error` over each pair is in the run's `commands.sh`.
+
+| Recipe | Measured | Mean | Worst block | p99 | \|ΔL\*\| | Max | Charged | Gaps |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| basic-full-jpeg | 3 | 0.010 | 0.16 | 0.68 | 0.002 | 0.84 | 27.8–82.0 MB | — |
+| basic-full-raw | 3 | 0.075 | 0.37 | 0.89 | 0.007 | 2.23 | 126.2–172.8 MB | — |
+| tone-curve | 6 | 0.079 | 0.37 | 0.97 | 0.005 | 2.08 | 27.8–172.8 MB | — |
+| mixer | 6 | 0.079 | 0.35 | 0.97 | 0.006 | 1.94 | 27.8–172.8 MB | — |
+| vignette | 6 | 0.005 | 0.15 | 0.22 | 0.001 | 1.13 | 27.8–126.2 MB | — |
+| colour-stack-jpeg | 3 | 0.013 | 0.25 | 0.57 | 0.001 | 1.16 | 27.8–82.0 MB | — |
+| colour-stack-raw | 3 | 0.082 | 0.40 | 0.94 | 0.006 | 2.81 | 126.2–172.8 MB | — |
+| mask-linear | 6 | 0.081 | 0.37 | 0.94 | 0.007 | 2.15 | 27.8–172.8 MB | — |
+| mask-radial | 5 | 0.079 | 0.36 | 0.93 | 0.007 | 1.95 | 27.8–172.8 MB | 1 the mask selects nothing on this source |
+| mask-brush | 4 | 0.079 | 0.36 | 0.92 | 0.006 | 1.95 | 27.8–172.8 MB | 2 the mask selects nothing on this source |
+| mask-luminance-range | 6 | 0.088 | 0.36 | 0.90 | 0.009 | 2.09 | 27.8–172.8 MB | — |
+| mask-colour-range | 6 | 0.097 | 0.39 | 0.90 | 0.009 | 2.42 | 27.8–172.8 MB | — |
+| mask-composed | 6 | 0.080 | 0.37 | 0.95 | 0.006 | 2.15 | 27.8–172.8 MB | — |
+| crop-straightened | 6 | 0.084 | 0.37 | 0.93 | 0.006 | 2.07 | 32.8–209.3 MB | — |
+| perspective-warp | 3 | 0.015 | 0.18 | 0.34 | 0.001 | 3.89 | 32.4–98.2 MB | — |
+| lens-perspective-warp | 3 | 0.108 | 0.48 | 0.96 | 0.006 | 3.08 | 152.7–160.9 MB | — |
+| presence-texture | 3 | 0.000 | 0.03 | 0.00 | 0.000 | 0.40 | 55.5–223.5 MB | 3 budget-exceeded |
+| presence-clarity | 3 | 0.009 | 0.06 | 0.33 | 0.008 | 0.55 | 29.9–152.9 MB | 3 budget-exceeded |
+| presence-dehaze | 0 | — | — | — | — | — | — | 6 region-estimate |
+| presence-texture-clarity | 1 | 0.003 | 0.03 | 0.25 | 0.002 | 0.40 | 57.6–57.6 MB | 5 budget-exceeded |
+| presence-all | 0 | — | — | — | — | — | — | 5 budget-exceeded, 1 region-estimate |
+| presence-negative | 0 | — | — | — | — | — | — | 5 budget-exceeded, 1 region-estimate |
+| presence-all-masked | 0 | — | — | — | — | — | — | 5 budget-exceeded, 1 region-estimate |
+| detail-moderate | 1 | 0.003 | 0.02 | 0.00 | 0.003 | 0.40 | 121.8–121.8 MB | 5 budget-exceeded |
+| detail-noise-stress | 1 | 0.000 | 0.01 | 0.00 | 0.000 | 0.40 | 116.3–116.3 MB | 5 budget-exceeded |
+| detail-sharpen-stress | 1 | 0.000 | 0.00 | 0.00 | 0.000 | 0.40 | 99.7–99.7 MB | 5 budget-exceeded |
+| detail-moderate-masked | 1 | 0.000 | 0.02 | 0.00 | 0.000 | 0.40 | 121.8–121.8 MB | 5 budget-exceeded |
+| detail-noise-stress-masked | 1 | 0.000 | 0.01 | 0.00 | 0.000 | 0.40 | 116.3–116.3 MB | 5 budget-exceeded |
+| detail-sharpen-stress-masked | 1 | 0.000 | 0.01 | 0.00 | 0.000 | 0.40 | 99.7–99.7 MB | 5 budget-exceeded |
+
+- **Pointwise and geometry.** The largest figures are a mean of 0.108 and a worst block of 0.48 (the Air 2S's lens and perspective warp), a p99 of 0.97 (its tone curve) and a |ΔL\*| of 0.009 (its range masks), against limits of 0.5, 1.0, 2.0 and 0.25. Without a warp the JPEGs' frames are the CPU's to within a fraction of a code, as at Fit. A RAW's vignette, a finishing layer after its lens warp, is measured here: the worker's region boundary holds the warped frame it receives.
+- **The 60 MP JPEG in the largest window.** Its slots charge 82.0 MB for a colour or masked stack, 97.6 MB through a perspective warp, 122.5 MB through the straightened crop, 152.9 MB for Clarity and 219.5 MB for Texture, all within the 268.4 MB (256 MiB) budget. Texture and Clarity together would charge 398.1 MB over a 3782 × 3230 boundary, all three fields 567.6 MB over a 4913 × 3337 one, and Detail 425.7 to 539.7 MB: those drags take the CPU path and name the budget.
+- **The RAWs.** A colour, masked, crop or warp slot charges 126.2 to 209.3 MB. Texture's would charge 273.7 to 356.9 MB; any stack with Clarity reads a margin wide enough that its `f32` boundary passes the 128 MiB bound (3412 × 2928 to 4705 × 2817 texels); Detail's would charge 460.9 to 718.8 MB. All take the CPU path and name the budget.
+- **Dehaze.** With its light taken on the GPU from the region alone, the Z6's frame misses the spatial limits (worst block 13.14, p99 2.87, mean 0.76) and the X100VI's (worst block 3.20): the region's brightest blocks are not the whole stage's, and the exact region reads the whole stage's light. The other four sources pass, the 60 MP JPEG at a mean of 0.25 and a ΔL\* of −0.12. A Dehaze plan over a region is therefore the CPU path (`region-estimate`) until its light comes from the estimate store.
+
+### Reproducing it
+
+```sh
+LUXFORGE_GPU_CORPUS_OUTPUT=/tmp/NEW_DIR \
+LUXFORGE_GENERATED_FIXTURES=fixtures/generated \
+LUXFORGE_RAW_MANIFEST=/path/to/raw-manifest.json \
+cargo test -p luxforge-app gpu_preview_corpus_at_100_percent -- --ignored --nocapture
+```
+
+The run writes `<recipe>--<source>-{cpu,gpu}.png` for each measured cell, `cells.json` with each cell's region, figures and charge and every gap's reason, and `commands.sh`. `LUXFORGE_GPU_CORPUS_RECIPES` (recipe ids, comma-separated) runs only those recipes.
+
 ## Method
 
 Optimized builds only, with commit, lockfile, OS, CPU/GPU, RAM, display and storage recorded. Report cold and warm runs separately and say which cold is meant. Keep at least 30 samples and never drop failures or tails silently. Measure user event to presented frame, not shader time, and account CPU RSS, cache bytes, GPU allocations and transient copies without double-counting unified memory. Capture idle after all background work stops. No timing gates in CI; CI enforces exactness, deterministic bounds and coverage. VM checks record hypervisor, guest graphics path and software versus accelerated rendering, and never stand in for native timings.
