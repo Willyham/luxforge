@@ -30,6 +30,7 @@ pub use crate::render::map::{Mapping, RadialModel, WarpStep};
 /// each under the photo surface's calling convention and fail for a `.wgsl` file this list omits;
 /// the desktop's tests check each against the surface's own prelude and qualify each on a device.
 pub static GPU_PROGRAMS: &[&crate::GpuProgram] = &[
+    &detail::DETAIL_PROGRAM,
     &basic::WHITE_BALANCE_PROGRAM,
     &basic::EXPOSURE_PROGRAM,
     &basic::TONE_PROGRAM,
@@ -80,6 +81,10 @@ pub(crate) use descriptor::{
 };
 pub use detail::DETAIL_EFFECT;
 use detail::DetailModule;
+#[cfg(test)]
+pub(crate) use detail::gpu_functions as detail_gpu_functions;
+#[cfg(feature = "qualification")]
+pub use detail::qualification as detail_qualification;
 pub use field_patch::{FieldPatch, FieldPatchModule, Spec, Values};
 pub use lens::LENS_EFFECT;
 pub(crate) use lens::LensModule;

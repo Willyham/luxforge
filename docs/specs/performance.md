@@ -3592,6 +3592,93 @@ cargo test -p luxforge-app gpu_presence_near_black_pixels -- --ignored --nocaptu
 
 The near-black run writes `near-black.json`, every cell's figures for every variant at each scale. The corpus run writes `<recipe>--<source>[--lens-reset]-{cpu,gpu}.png`, `cells.json` with each cell's figures, its charge and every gap's reason, and `commands.sh`, one `cargo xtask preview-error --class spatial` line per pair, run from the repository root.
 
+## GPU Detail program
+
+The Detail program ([GPU previews](../design/gpu-preview.md#spatial-programs)) on the M4, against the CPU per kernel, per unit and on the [corpus](../../fixtures/preview/corpus.json)'s Detail recipes at Fit. The program ships disabled on these figures: two corpus cells miss the spatial limits against the frame a Detail stack settles to, by what the CPU's own moving proxy misses by. Pixel and arithmetic measurements, not timings.
+
+### Scope
+
+- **Host and build.** Apple M4 Pro, macOS 26.5.2, the `Apple M4 Pro` adapter on Metal (`wgpu-hal` 27.0.4, Metal's default fast math). The `test` profile build of `luxforge-app` at `cdb46dbe`. One run each; the pixels are deterministic.
+- **The readback.** Every GPU figure is the photo surface's own spatial step, its generated pass modules and frame module, run headlessly by the surface's qualification readback.
+- **The CPU.** Per kernel, the production code of `modules/detail/{filters,denoise,sharpen}.rs` over a whole frame (`luxforge_core::qualification::detail`, test builds only). Per unit, the CPU's frame of the same stack: the exact render at full resolution, and the units compiled at a proxy's scale over the whole frame.
+
+### Per kernel
+
+Each kernel through the surface's passes over synthetic planes (Oklab-like lightness and chroma with a ramp, a step edge, a grating and noise, held as half floats as the boundary holds them) against the CPU kernel it transcribes. The largest absolute difference:
+
+| Kernel | Cases | Largest difference |
+| --- | --- | ---: |
+| Oklab of the unit's input | the extreme grid: in range, past white, below black and a half float's extremes | 1.1 × 10⁻⁵ of the value or of one, whichever is larger, over colours in [−1, 16]; finite everywhere |
+| Separable smoothing, every channel | the B3 kernel at spacings 1, 2, 4 and 8; Gaussians of σ 0.05 to 7.9 (2 to 48 taps), alike and different on the two axes | 0 (exact) for B3; 2.4 × 10⁻⁷ |
+| Sharpening's blur and guide together | Radius 0.5, 1 and 3 at full resolution, 1 at a scale of 0.29 and 3 at 0.1716 × 0.1717 | 1.2 × 10⁻⁷ |
+| One level's band, energy and shrinkage | every level's thresholds at Luminance and Colour 40 and 40, 100 and 100, 60 alone and 70 alone; details 0, 0.5 and 1 with 0.2; the first level and later ones (45 cases) | 3.2 × 10⁻⁸ |
+| Sharpening's change of lightness | Amount, Detail and Masking at 50, 25, 0; 150, 100, 0; 150, 0, 100; 60, 25, 50; 1, 50, 30 | 1.2 × 10⁻⁷ |
+| Reconstruction, both applies | a photograph's range; the extreme grid | 1.8 × 10⁻⁶ relative; 3.9 × 10⁻⁵ over its colours in [−1, 16]. A zero change returns the input exactly, a snapped grey stays grey, and every output is finite |
+
+The Oklab and reconstruction maxima are where an extended colour's LMS component cancels to near zero, where the cube root's slope magnifies the one rounding the backend's fused multiply-adds change. `tanh`, which the limiter takes, is within 1.9 × 10⁻⁷ absolute over [0, 16] (501 ulp, 3.0 × 10⁻⁵ relative) and 5.1 × 10⁻⁸ below 1/32, where its relative error reaches 3.1 × 10⁻² ([precision](../design/gpu-preview.md#qualifying-a-program)).
+
+### Per unit
+
+Noise reduction, sharpening and both, at the study's moderate, noise-stress and sharpen-stress settings, Luminance 60 alone, Colour 70 alone and a narrow masked sharpening, over a synthetic photograph (flat patches at four levels under signal-dependent noise, a slanted edge, a grating over chroma blotches and a neutral ramp) at 480 × 320 and 1536 × 1024 on the linear path: at full resolution, unmasked and masked by a feathered radial, and at a Fit proxy's scale (0.29 and 0.256). 36 cases. Worst of each statistic:
+
+| Measured | Mean ΔE00 | Worst block | p99 | Signed ΔL\* | Max |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Program output through the reference quantizer | 0.0001 | 0.006 | 0.00 | +0.0000 | 1.23 |
+| Codes the hardware encoder draws | 0.072 | 0.94 | 1.20 | −0.0117 | 2.43 |
+| Byte path, 960 × 640, the three study settings | 0.015 | 0.075 | 0.61 | −0.0004 | 2.04 |
+
+At a proxy's scale the output is within 2.8 × 10⁻⁶ of the CPU's in linear light. No output is non-finite. Both units run their 17 passes from 6 pipelines, and drags to other settings of the same units compile none.
+
+### The corpus at Fit
+
+`gpu_detail_corpus_at_fit`, the shared harness, over the corpus's six Detail recipes: the study's moderate, noise-stress and sharpen-stress settings, each unmasked and through the radial mask. A Detail stack's Fit settles from the exact render, so the harness holds each GPU frame to the frame the desktop settles to: the preview worker's exact phase reduced to the Fit bounds. It reports the CPU's moving proxy, the frame shown today while a Detail slider moves, against that settled frame, and the GPU frame against the CPU proxy. The GPU frame is planned from the Detail layer over the same proxy source, with the units compiled at the proxy's scale as the CPU's proxy compiles them; the RAW cells are planned for the linear path. Each pair judged by `cargo xtask preview-error --class spatial`: 40 of the 42 measured pairs exit 0. Bounds 1716 × 1508.
+
+Mean, worst 16 × 16 block, p99 and signed mean ΔL\* of the drawn frame against the settled frame, then the worst block of the CPU's moving proxy against the same settled frame, and of the GPU frame against that proxy:
+
+| Recipe, source | Mean ΔE00 | Worst block | p99 | Signed ΔL\* | Worst block, CPU proxy | Worst block, GPU against the proxy | Charged |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Moderate, 24 MP / 60 MP JPEG | 0.004 / 0.002 | 1.18 / 0.58 | 0.05 / 0.00 | −0.000 / −0.000 | 1.18 / 0.58 | 0.02 / 0.01 | 166.0 / 151.1 MB |
+| Moderate, Presence fixture (exact) | 0.007 | 0.04 | 0.39 | −0.001 | – | – | 121.8 MB |
+| Moderate, Z6 / X100VI / Air 2S | 0.199 / 0.097 / 0.540 | 0.82 / 0.45 / 1.96 | 1.13 / 0.95 / 2.25 | +0.002 / +0.002 / +0.001 | 0.82 / 0.44 / 1.97 | 0.34 / 0.39 / 0.35 | 131.7 / 166.0 / 165.8 MB |
+| Noise stress, 24 MP / 60 MP JPEG: **misses on the 24 MP** | 0.016 / 0.013 | 4.40 / 2.32 | 0.26 / 0.10 | +0.003 / +0.002 | 4.40 / 2.32 | 0.03 / 0.03 | 158.1 / 144.0 MB |
+| Noise stress, Presence fixture (exact) | 0.001 | 0.04 | 0.00 | −0.001 | – | – | 116.3 MB |
+| Noise stress, Z6 / X100VI / Air 2S | 0.183 / 0.091 / 0.432 | 0.91 / 0.57 / 1.89 | 1.13 / 0.96 / 2.36 | +0.007 / +0.003 / +0.078 | 0.92 / 0.56 / 1.88 | 0.32 / 0.38 / 0.39 | 125.7 / 158.1 / 158.0 MB |
+| Sharpen stress, 24 MP / 60 MP JPEG | 0.003 / 0.003 | 1.33 / 0.65 | 0.00 / 0.00 | +0.001 / −0.001 | 1.32 / 0.65 | 0.02 / 0.01 | 134.6 / 122.8 MB |
+| Sharpen stress, Presence fixture (exact) | 0.000 | 0.00 | 0.00 | +0.000 | – | – | 99.7 MB |
+| Sharpen stress, Z6 / X100VI / Air 2S: **misses on the Air 2S** | 0.325 / 0.207 / 0.851 | 1.22 / 1.07 / 4.28 | 1.50 / 0.98 / 5.07 | −0.018 / −0.006 / −0.214 | 1.21 / 1.08 / 4.28 | 0.30 / 0.33 / 0.28 | 107.5 / 134.6 / 134.5 MB |
+| Moderate, masked, 24 MP / 60 MP JPEG | 0.001 / 0.001 | 0.22 / 0.16 | 0.00 / 0.00 | +0.000 / +0.000 | 0.23 / 0.15 | 0.03 / 0.01 | 166.0 / 151.1 MB |
+| Moderate, masked, Presence fixture (exact) | 0.000 | 0.03 | 0.00 | −0.000 | – | – | 121.8 MB |
+| Moderate, masked, Z6 / X100VI / Air 2S | 0.171 / 0.105 / 0.199 | 0.75 / 0.45 / 1.37 | 1.11 / 0.96 / 1.37 | −0.003 / −0.002 / +0.015 | 0.74 / 0.38 / 1.36 | 0.33 / 0.34 / 0.31 | 131.7 / 166.0 / 165.8 MB |
+| Noise stress, masked, 24 MP / 60 MP JPEG | 0.005 / 0.004 | 1.08 / 0.81 | 0.00 / 0.00 | +0.001 / +0.001 | 1.08 / 0.81 | 0.03 / 0.03 | 158.1 / 144.0 MB |
+| Noise stress, masked, Presence fixture (exact) | 0.000 | 0.02 | 0.00 | +0.000 | – | – | 116.3 MB |
+| Noise stress, masked, Z6 / X100VI / Air 2S | 0.169 / 0.102 / 0.192 | 0.76 / 0.38 / 1.37 | 1.11 / 0.95 / 1.35 | +0.001 / −0.002 / +0.021 | 0.76 / 0.31 / 1.36 | 0.33 / 0.34 / 0.31 | 125.7 / 158.1 / 158.0 MB |
+| Sharpen stress, masked, 24 MP / 60 MP JPEG | 0.001 / 0.001 | 0.33 / 0.24 | 0.00 / 0.00 | +0.000 / −0.000 | 0.33 / 0.24 | 0.01 / 0.01 | 134.6 / 122.8 MB |
+| Sharpen stress, masked, Presence fixture (exact) | 0.000 | 0.02 | 0.00 | +0.000 | – | – | 99.7 MB |
+| Sharpen stress, masked, Z6 / X100VI / Air 2S | 0.203 / 0.109 / 0.225 | 1.22 / 0.50 / 1.50 | 1.32 / 0.95 / 1.73 | −0.013 / −0.004 / −0.004 | 1.21 / 0.48 / 1.50 | 0.33 / 0.34 / 0.31 | 107.5 / 134.6 / 134.5 MB |
+
+The Presence fixture fits the bounds at its own size, so its Fit frame is the exact render itself and has no proxy; its GPU frame runs the full-resolution B3 levels. The Z6 and Air 2S rows are their `lens reset` cells: as the corpus states them their first open commits a lens profile, a warp the surface does not draw yet (`surface-geometry`), so those 12 cells are gaps. The X100VI commits none, so its two cells are the same. The zone plate has no file.
+
+**The two misses are the proxy's.** Over every cell with a proxy, the GPU frame is within a mean of 0.084, a worst block of 0.39 and a p99 of 1.08 of the CPU's moving proxy, and the proxy misses the settled frame by the same figures the GPU frame does:
+
+- **Noise stress on the 24 MP JPEG**, worst block 4.40 at (16, 560), against 2.5: a row of small dark marks on the edge between the red and blue quadrants. Reduced from the full-resolution result they are darker and firmer than the proxy's (in that block a mean code of 78 against 82 and a spread of 12.9 against 8.4 in 8-bit luma).
+- **Sharpen stress on the Air 2S**, worst block 4.28 at (160, 624) and p99 5.07, against 2.5 and 5.0: sunlit glints on the sea, which Amount 150 at Radius 3 gives more contrast at the proxy's scale than the full-resolution sharpening keeps once it is reduced (a spread of 56.8 against 47.4 in 8-bit luma). Its mean is 0.85 and its signed ΔL\* −0.21.
+
+Moving the GPU frame toward the settled one would mean changing the proxy's formulation, which this program reproduces, or judging Detail differently; neither is decided ([GPU previews](../design/gpu-preview.md#qualifying-a-program)).
+
+**Memory.** "Charged" is what the photo surface's slot drawing the plan charges the GPU-preview budget, as for Presence. Both units hold 68 bytes a pixel of planes, noise reduction 64 alone and sharpening 52 alone. With the moderate settings on the 60 MP JPEG at Fit (a 1716 × 1030 proxy), the slot holds 151.1 MB (144.1 MiB) of the 256 MiB budget, of which the planes are 120.2 MB; over the evidence window's whole 1716 × 1508 bounds it would hold 213.5 MB (203.6 MiB). One slot is held at a time, so this is its peak. A Fit stage past about 3.3 MP passes the budget (2400 × 1600 would charge 303.3 MiB) and takes the CPU path, naming it (`gpu_detail_planes_are_charged_to_the_budget`). The 100% figure waits for the region boundary.
+
+### Reproducing it
+
+```sh
+cargo test -p luxforge-app gpu_detail -- --nocapture
+LUXFORGE_GPU_CORPUS_OUTPUT=/tmp/NEW_DIR \
+LUXFORGE_GENERATED_FIXTURES=fixtures/generated \
+LUXFORGE_RAW_MANIFEST=/path/to/raw-manifest.json \
+cargo test -p luxforge-app gpu_detail_corpus -- --ignored --nocapture
+```
+
+The corpus run writes, beside each pair, `<recipe>--<source>[--lens-reset]-proxy.png`, the CPU's moving proxy, and records its figures in `cells.json` under `settled_from_exact`.
+
 ## Method
 
 Optimized builds only, with commit, lockfile, OS, CPU/GPU, RAM, display and storage recorded. Report cold and warm runs separately and say which cold is meant. Keep at least 30 samples and never drop failures or tails silently. Measure user event to presented frame, not shader time, and account CPU RSS, cache bytes, GPU allocations and transient copies without double-counting unified memory. Capture idle after all background work stops. No timing gates in CI; CI enforces exactness, deterministic bounds and coverage. VM checks record hypervisor, guest graphics path and software versus accelerated rendering, and never stand in for native timings.

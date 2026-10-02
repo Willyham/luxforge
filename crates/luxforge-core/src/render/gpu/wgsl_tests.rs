@@ -78,6 +78,7 @@ const HOST_GLOBALS: &[&str] = &["lf_words", "lf_blocks", "lf_harness_out", "lf_s
 fn spatial_functions(program: &GpuProgram) -> (Vec<&'static str>, Vec<&'static str>) {
     match program.entry {
         "lf_presence" => crate::modules::presence_gpu_functions(),
+        "lf_detail" => crate::modules::detail_gpu_functions(),
         other => panic!("{other}: name the kernels and applies its descriptions use"),
     }
 }

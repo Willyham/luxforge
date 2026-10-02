@@ -63,7 +63,14 @@ fn gpu_presence_the_program_passes_the_surfaces_own_convention() {
         .iter()
         .filter(|program| program.kind == GpuProgramKind::Spatial)
         .collect();
-    assert_eq!(spatial.len(), 1, "Presence is the one spatial program");
+    assert_eq!(
+        spatial
+            .iter()
+            .map(|program| program.entry)
+            .collect::<Vec<_>>(),
+        ["lf_detail", "lf_presence"],
+        "Detail's (`gpu_detail`) and Presence's are the spatial programs"
+    );
     let registry = ModuleRegistry::builtin();
     for payload in [
         json!({"texture": 40}),
