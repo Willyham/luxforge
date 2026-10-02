@@ -186,6 +186,14 @@ impl LinearImage {
         })
     }
 
+    /// This image as development `development`: a proxy's, which is derived from the development
+    /// and view it was downscaled from and from its plan ([`crate::proxy`]), so two proxies of the
+    /// same pixels share it.
+    pub(crate) fn with_development(mut self, development: u64) -> Self {
+        self.development = development;
+        self
+    }
+
     /// Return a cropped/oriented view without copying the source planes.
     ///
     /// `crop` is `[x, y, width, height]` in the base source-plane coordinates. EXIF orientation
