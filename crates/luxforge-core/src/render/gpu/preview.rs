@@ -357,16 +357,7 @@ pub(crate) fn plan_preview(
 ) -> Result<GpuPreview, Error> {
     let registry = evaluation.registry();
     let recipe = evaluation.recipe();
-    // At a percentage zoom a restoration or spatial layer keeps the CPU's shape: over the visible
-    // region at full scale its slot is what the budget binds, and its GPU shape would charge the
-    // planes of its units at zero too.
-    let drafted_layer = drafted(registry, recipe, draft).filter(|drafted| {
-        matches!(view, GpuView::Fit(_))
-            || !matches!(
-                registry.effect_stage(&drafted.effect),
-                Some(EffectStage::Restoration | EffectStage::Spatial)
-            )
-    });
+    let drafted_layer = drafted(registry, recipe, draft);
     let modulated = draft
         .target
         .get("mask")

@@ -914,51 +914,6 @@ fn a_spatial_drag_across_zero_keeps_one_program_sequence_and_one_boundary() {
     }
 }
 
-/// At a percentage zoom a restoration or spatial layer's drag is planned in the CPU's shape, the
-/// units its values need, since over the visible region at full scale its slot is what the budget
-/// binds; at Fit the same drag holds every unit. A colour layer keeps its GPU shape at any view.
-#[test]
-fn at_a_percentage_zoom_a_spatial_drag_keeps_the_cpus_shape() {
-    let region = crate::GpuView::Region {
-        rect: crate::modules::Region {
-            x0: 40,
-            y0: 30,
-            width: 120,
-            height: 90,
-        },
-        magnification: 1.0,
-    };
-    let presence = Layer::new(crate::PRESENCE_EFFECT, json!({"texture": 10}));
-    let entry = vec![presence.clone()];
-    let dragged = vec![Layer {
-        payload: json!({"texture": 10, "clarity": 20}),
-        ..presence
-    }];
-    let (job, draft) = draft_job("set-presence", entry, dragged, 1);
-    let applies = |view| {
-        let preview = plan_preview(&job.evaluation, &draft, view).unwrap();
-        planned(&preview).spatial.as_ref().unwrap().applies.len()
-    };
-    assert_eq!(
-        applies(crate::GpuView::Fit(bounds())),
-        3,
-        "every unit at Fit"
-    );
-    assert_eq!(applies(region), 2, "Texture and Clarity at a zoom");
-    let (job, draft) = draft_job(
-        "set-basic",
-        Vec::new(),
-        vec![basic(json!({"exposure": 0.3}))],
-        1,
-    );
-    let preview = plan_preview(&job.evaluation, &draft, region).unwrap();
-    assert_eq!(
-        planned(&preview).content[0].units.len(),
-        4,
-        "Basic's every unit"
-    );
-}
-
 /// At a percentage zoom a Dehaze drag reads the light the exact visible region's render stored over
 /// the whole stage, as the CPU frame that settles it does: before that render the store holds none
 /// and the drag keeps the CPU path (`region-estimate`); after it the region plan holds the CPU's
