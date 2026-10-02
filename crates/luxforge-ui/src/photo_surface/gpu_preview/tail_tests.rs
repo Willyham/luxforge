@@ -96,6 +96,7 @@ fn plan(values: &[[f32; 3]], size: (u32, u32), origin: (u32, u32), steps: Vec<Gp
             step: [1.0, 1.0],
         },
         steps,
+        region: None,
     }
 }
 
@@ -426,4 +427,79 @@ fn a_masked_step_after_the_tail_covers_the_output_pixel() {
             );
         }
     }
+}
+
+/// A region plan draws only its rectangle of the output stage, each pixel at its own stage
+/// coordinate: without a tail the content pass reads the boundary at the rectangle's offset into
+/// the window it holds; with one the tail draws the rectangle's output pixels. A program after
+/// either sees the output pixel's whole-stage coordinate.
+#[test]
+fn a_region_draws_its_rectangle_of_the_stage() {
+    let Some(qualifier) = Qualifier::headless("a_region_draws_its_rectangle_of_the_stage") else {
+        return;
+    };
+    let (width, height) = (40, 30);
+    let values = texels(width, height);
+    // The boundary holds the window at (10, 8) of a 64 × 48 stage.
+    let origin = (10, 8);
+    let stage = (64, 48);
+    let rect = [14, 11, 34, 27];
+    let region = GpuRegion { rect, stage };
+    let (columns, rows) = region.size();
+    // Red and green from the pixel's stage coordinate, blue the value it was handed.
+    let position = GpuProgram::new(
+        "position",
+        "fn position(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> {\n    \
+         return vec3<f32>(pos.x / 255.0, pos.y / 255.0, rgb.b);\n}\n",
+    );
+    // No tail: the window's texel at the rectangle's pixel.
+    let mut flat = plan(
+        &values,
+        (width, height),
+        origin,
+        vec![GpuStep::colour(position.clone())],
+    );
+    flat.region = Some(region);
+    let drawn = qualifier.evaluate(&flat).unwrap();
+    assert_eq!(drawn.len(), (columns * rows) as usize);
+    for (index, texel) in drawn.iter().enumerate() {
+        let (x, y) = (index as u32 % columns, index as u32 / columns);
+        let (sx, sy) = (rect[0] + x, rect[1] + y);
+        assert_eq!((texel[0] * 255.0).round(), sx as f32, "({x}, {y})");
+        assert_eq!((texel[1] * 255.0).round(), sy as f32, "({x}, {y})");
+        let held = values[((sy - origin.1) * width + sx - origin.0) as usize];
+        assert_eq!(texel[2], held[2], "({x}, {y})");
+    }
+    // A tail of a translation by (2, 1) into the 64 × 48 stage, drawn over the same rectangle:
+    // its pixel (x, y) reads the boundary stage at (x + 2, y + 1).
+    let tail = GpuTail::affine(
+        (columns, rows),
+        [origin.0, origin.1, origin.0 + width, origin.1 + height],
+        false,
+        [1.0, 0.0, 2.0, 0.0, 1.0, 1.0],
+    );
+    let mut tailed = plan(
+        &values,
+        (width, height),
+        origin,
+        vec![GpuStep::Geometry(tail), GpuStep::colour(position)],
+    );
+    tailed.region = Some(region);
+    let drawn = qualifier.evaluate(&tailed).unwrap();
+    assert_eq!(drawn.len(), (columns * rows) as usize);
+    for (index, texel) in drawn.iter().enumerate() {
+        let (x, y) = (index as u32 % columns, index as u32 / columns);
+        let (sx, sy) = (rect[0] + x, rect[1] + y);
+        assert_eq!((texel[0] * 255.0).round(), sx as f32, "tail ({x}, {y})");
+        assert_eq!((texel[1] * 255.0).round(), sy as f32, "tail ({x}, {y})");
+        let held = values[((sy + 1 - origin.1) * width + sx + 2 - origin.0) as usize];
+        assert_eq!(texel[2], held[2], "tail ({x}, {y})");
+    }
+    // A rectangle the window does not hold is no frame of the plan.
+    let mut outside = flat.clone();
+    outside.region = Some(GpuRegion {
+        rect: [4, 11, 24, 27],
+        stage,
+    });
+    assert!(qualifier.evaluate(&outside).is_err());
 }

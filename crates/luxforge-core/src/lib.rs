@@ -99,7 +99,7 @@ pub use render::gpu::{
     GpuBoundary, GpuClipping, GpuComponent, GpuDescription, GpuEstimates, GpuFallback, GpuGeometry,
     GpuMask, GpuOperation, GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest, GpuPlane,
     GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuSpatial,
-    GpuSpatialUnit, gpu_plan, gpu_plan_with,
+    GpuSpatialUnit, GpuView, gpu_plan, gpu_plan_with,
 };
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{
@@ -134,6 +134,29 @@ pub mod qualification {
             .window
             .map(|window| [window.x, window.y, window.width, window.height]);
         Some((plan, window))
+    }
+
+    /// The input of layer `layer` of `render`'s stack over the window of its received stage that
+    /// the output stage's `rect` (`[x, y, width, height]`) reads at full scale, held as `format`:
+    /// the boundary a percentage zoom's GPU preview of a drag from that layer starts from, as the
+    /// preview worker renders it for a job carrying its request.
+    pub fn region_boundary(
+        render: &crate::Render,
+        layer: usize,
+        rect: [u32; 4],
+        format: crate::BoundaryFormat,
+    ) -> Result<crate::BoundaryFrame, crate::Error> {
+        let [x0, y0, width, height] = rect;
+        render.layer_region_boundary(
+            crate::modules::Region {
+                x0,
+                y0,
+                width,
+                height,
+            },
+            layer,
+            format,
+        )
     }
 }
 

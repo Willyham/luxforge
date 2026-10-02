@@ -262,6 +262,7 @@ fn run_step(
         boundary: boundary(width, height, 1, values).expect("a boundary"),
         texels: TexelMap::IDENTITY,
         steps: vec![GpuStep::Spatial(Box::new(spatial))],
+        region: None,
     };
     qualifier.evaluate(&plan).expect("a qualification readback")
 }

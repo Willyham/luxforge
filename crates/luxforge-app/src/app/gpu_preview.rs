@@ -26,9 +26,20 @@
 //!   drafted one is presented, so the screen never falls back to an older drafted frame.
 //! - **Warming.** A committed stack's preview job carries the plans its gestures are likely to draw
 //!   (its `gpu_warm` field), and the surface compiles their sequences before a drag begins.
+//! - **At 100% and above.** A tick asks for the plan over the visible region of the output stage
+//!   at full scale ([`GpuAsk::Region`]), or over the region its drag already asked for while that
+//!   still holds the view, so a pan inside it keeps the boundary. The boundary is that region's
+//!   window, and the surface draws the plan's frame alone at the region's place in the
+//!   photograph. While the frame holds the view it answers it: no region job until the shared
+//!   quiet policy settles the view exactly. A view the region does not hold withdraws the plan, so
+//!   the CPU's frames are drawn, never a mix of the two, until a tick plans the new region and its
+//!   boundary is held. A region whose boundary and frame alone would pass the GPU-preview budget
+//!   asks for no boundary and keeps the CPU path, naming the budget; so does one the surface finds
+//!   over it once held. While the mask overlay is shown at a percentage zoom the gesture keeps the
+//!   CPU path, whose region frames carry the overlay.
 use super::{Editor, gpu_plan};
 use luxforge_core::{
-    BoundaryKey, BoundaryRequest, CoordinateGrid, Draft, DraftId, GpuAnswer, GpuPreview,
+    BoundaryKey, BoundaryRequest, CoordinateGrid, Draft, DraftId, GpuAnswer, GpuPreview, Region,
 };
 use luxforge_ui::photo_surface::{
     self as surface, DrawingPath, GpuBoundary, GpuStep, GpuWarm, SurfaceDiagnostics,
@@ -96,6 +107,11 @@ struct Drag {
     surface: Option<(surface::GpuPlan, u64)>,
     /// Why the latest tick took the CPU path.
     reason: Option<String>,
+    /// The percentage zoom the latest tick's region was asked at; `None` at Fit.
+    zoom: Option<f32>,
+    /// What a region's boundary or slot would take, and the bound on a boundary or the budget it
+    /// passes, when the latest tick asked for no boundary because of them ([`region_charge`]).
+    over_budget: Option<(u64, u64)>,
     /// The presented generation when the draft ended; the drag is released once a newer frame is
     /// presented, or nothing more is coming.
     ended: Option<u64>,
@@ -116,6 +132,8 @@ impl Drag {
             failed: None,
             surface: None,
             reason: None,
+            zoom: None,
+            over_budget: None,
             ended: None,
             gpu_ticks: 0,
             cpu_ticks: 0,
@@ -134,6 +152,58 @@ pub(crate) struct GpuPreviews {
     /// What a test reports for the surface, which no test draws.
     #[cfg(test)]
     pub(crate) surface: Option<SurfaceReport>,
+    /// The budget a test holds a region's boundary to, in place of the surface's.
+    #[cfg(test)]
+    pub(crate) budget: Option<u64>,
+}
+
+/// What a tick asks the owner to plan its GPU preview for, with its preview job.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum GpuAsk {
+    /// No GPU preview: a zoom below 100%, where the surface draws none.
+    Off,
+    /// At Fit, at the job's display bounds.
+    Fit,
+    /// At a percentage zoom of 100% or more: this region of the output stage at full scale, drawn
+    /// at this many physical pixels an output pixel.
+    Region(Region, f64),
+}
+
+/// Before a region's boundary is rendered, what the boundary alone takes and the least the slot
+/// drawing it takes on the GPU: the boundary over the window its request names, at its format's
+/// bytes a texel; a geometry tail's intermediate of the same size, at eight at least; the frame,
+/// at four bytes a pixel of the region; and a spatial step's planes over the window. The surface
+/// charges the rest — the frame's size bucket, its uniform and its buffers — once it is held.
+/// `None` at Fit.
+pub(crate) fn region_charge(plan: &CorePlan, request: &BoundaryRequest) -> Option<(u64, u64)> {
+    let (rect, window) = (request.key.region()?, request.window?);
+    let texels = u64::from(window.width) * u64::from(window.height);
+    let boundary = texels
+        * match request.format {
+            luxforge_core::BoundaryFormat::Half => 8,
+            luxforge_core::BoundaryFormat::Float => 16,
+        };
+    let intermediate = if gpu_plan::has_tail(plan) {
+        texels * 8
+    } else {
+        0
+    };
+    let frame = u64::from(rect.width) * u64::from(rect.height) * 4;
+    let planes = plan.spatial.as_ref().map_or(0, |spatial| {
+        spatial.plane_bytes((window.x0, window.y0), (window.width, window.height))
+    });
+    Some((boundary, boundary + intermediate + frame + planes))
+}
+
+/// A surface region's rectangle of its stage, as the core's.
+fn rect_of(region: surface::GpuRegion) -> Region {
+    let [x0, y0, x1, y1] = region.rect;
+    Region {
+        x0,
+        y0,
+        width: x1.saturating_sub(x0),
+        height: y1.saturating_sub(y0),
+    }
 }
 
 /// One tick's path.
@@ -157,6 +227,11 @@ impl GpuPreviews {
 
     pub(crate) fn warm(&self) -> Option<&GpuWarm> {
         self.warm.as_ref()
+    }
+
+    /// The draft whose plan the surface is handed, open or ended and not yet released.
+    pub(crate) fn draft(&self) -> Option<&DraftId> {
+        self.drag.as_ref().map(|drag| &drag.draft)
     }
 
     /// The boundary version a held boundary is drawn under, for the capture's readiness.
@@ -185,7 +260,14 @@ impl GpuPreviews {
                     "height": held.boundary.size().1,
                     "origin": [held.origin.0, held.origin.1],
                     "layer": held.key.layer(),
+                    "region": held.key.region().map(|rect| {
+                        [rect.x0, rect.y0, rect.width, rect.height]
+                    }),
                 })),
+                "zoom": drag.zoom,
+                "over_budget": drag.over_budget.map(|(requested, budget)| {
+                    json!({"requested": requested, "budget": budget})
+                }),
                 "boundary_requested": drag.requested,
                 "boundary_requests": drag.boundary_requests,
                 "reason": drag.reason,
@@ -216,8 +298,18 @@ impl GpuPreviews {
 }
 
 impl Editor {
+    /// The GPU-preview budget a region's boundary and frame are held to before it is rendered: the
+    /// surface's own.
+    fn gpu_budget(&self) -> u64 {
+        #[cfg(test)]
+        if let Some(budget) = self.gpu.budget {
+            return budget;
+        }
+        surface::gpu_preview::GPU_PREVIEW_BUDGET
+    }
+
     /// What the surface reports of its last frame.
-    fn surface_report(&self) -> SurfaceReport {
+    pub(crate) fn surface_report(&self) -> SurfaceReport {
         #[cfg(test)]
         if let Some(report) = self.gpu.surface {
             return report;
@@ -239,10 +331,27 @@ impl Editor {
         let mut boundary_request = None;
         // With the preference off the plan is never handed over, so nothing is asked for it.
         let allowed = self.gpu_preview_allowed();
-        // The clipping overlay is derived from the CPU's frames, so over a GPU frame it would mark
-        // the pixels of an older one: while it is shown the gesture keeps the CPU path.
-        let clipping =
-            self.session.workspace.clip_shadows || self.session.workspace.clip_highlights;
+        // The clipping overlay is derived from the CPU's frames, so over a GPU frame the plan marks
+        // its own clipped pixels instead.
+        let clip = super::gpu_settle::clip_flags(&self.session.workspace);
+        // At a percentage zoom the mask overlay is drawn with the CPU's region frames, which a
+        // GPU frame drawn alone does not carry: while it is shown the gesture keeps the CPU path.
+        let zoom = match self.session.preview.view.zoom {
+            luxforge_core::Zoom::Percent { value } => Some(value),
+            luxforge_core::Zoom::Fit => None,
+        };
+        let overlay = zoom.is_some() && self.mask_coverage_target().is_some();
+        let budget = self.gpu_budget();
+        // A region whose boundary would pass the bound on a boundary, or whose slot the
+        // GPU-preview budget, is never rendered: the figure, and the bound or budget it passes.
+        let over_budget = |plan: &CorePlan, request: &BoundaryRequest| {
+            let (boundary, slot) = region_charge(plan, request)?;
+            if boundary > luxforge_core::BOUNDARY_MAX_BYTES {
+                Some((boundary, luxforge_core::BOUNDARY_MAX_BYTES))
+            } else {
+                (slot > budget).then_some((slot, budget))
+            }
+        };
         let report = self.surface_report();
         let mut released = None;
         let drag = match &mut self.gpu.drag {
@@ -266,7 +375,7 @@ impl Editor {
                 allowed.err().unwrap_or(super::gpu_settle::PREFERENCE_OFF),
                 &mut released,
             ),
-            _ if clipping => unplanned(drag, "clipping-shown", &mut released),
+            _ if overlay => unplanned(drag, "overlay-shown", &mut released),
             None => unplanned(drag, "not-fit", &mut released),
             Some(luxforge_core::GpuPreview {
                 answer: GpuAnswer::Fallback(reason),
@@ -289,10 +398,19 @@ impl Editor {
                     released = Some(held.boundary.version());
                 }
                 let revision = set.draft_revision;
+                let over_budget = over_budget(&plan, &request);
                 drag.wanted = Some(request.clone());
                 drag.plan = Some((plan, revision));
                 drag.base = Some(set.base_revision);
+                drag.zoom = request.key.region().and(zoom);
+                drag.over_budget = over_budget;
                 match &drag.held {
+                    None if over_budget.is_some() => {
+                        drag.surface = None;
+                        // The surface's own name for a plan over the budget.
+                        drag.reason = Some("budget-exceeded".into());
+                        Tick::Cpu
+                    }
                     None => {
                         drag.surface = None;
                         if drag.failed.as_ref() == Some(&request.key) {
@@ -309,12 +427,15 @@ impl Editor {
                     }
                     Some(held) => {
                         let (plan, _) = drag.plan.as_ref().expect("the plan just kept");
-                        match gpu_plan::surface_plan_at(
+                        match gpu_plan::surface_plan_over(
                             plan,
                             held.boundary.clone(),
                             held.origin,
                             held.grid.as_deref(),
-                        ) {
+                            held.key.region(),
+                        )
+                        .map(|converted| super::gpu_settle::marked(converted, plan, clip))
+                        {
                             Err(unrunnable) => {
                                 drag.surface = None;
                                 drag.reason = Some(unrunnable.code().into());
@@ -431,6 +552,7 @@ impl Editor {
         let luxforge_core::PhaseOutcome::Boundary(outcome) = result.outcome else {
             return;
         };
+        let clip = super::gpu_settle::clip_flags(&self.session.workspace);
         let Some(drag) = self
             .gpu
             .drag
@@ -470,14 +592,17 @@ impl Editor {
                         if let Some((plan, revision)) = &drag.plan
                             && let Some(held) = &drag.held
                         {
-                            drag.surface = gpu_plan::surface_plan_at(
+                            drag.surface = gpu_plan::surface_plan_over(
                                 plan,
                                 held.boundary.clone(),
                                 held.origin,
                                 held.grid.as_deref(),
+                                held.key.region(),
                             )
                             .ok()
-                            .map(|converted| (converted, *revision));
+                            .map(|converted| {
+                                (super::gpu_settle::marked(converted, plan, clip), *revision)
+                            });
                         }
                         json!({"held": true, "version": version, "width": size.0,
                             "height": size.1, "origin": [origin.0, origin.1],
@@ -514,9 +639,15 @@ impl Editor {
         let Some(plans) = plans else {
             return;
         };
+        // While a clipping overlay is shown the gestures' plans carry its marks.
+        let clip = super::gpu_settle::clip_flags(&self.session.workspace);
         let sequences: Vec<Vec<GpuStep>> = plans
             .iter()
-            .filter_map(|plan| gpu_plan::plan_steps(plan).ok())
+            .filter_map(|plan| {
+                gpu_plan::plan_steps(plan)
+                    .ok()
+                    .map(|steps| super::gpu_settle::marked_steps(steps, plan, clip))
+            })
             .collect();
         let same = self
             .gpu
@@ -534,12 +665,64 @@ impl Editor {
         self.gpu.warm = Some(GpuWarm::new(version, sequences));
     }
 
-    /// The open gesture's converted plan and the draft revision it draws, at Fit with no
-    /// comparison on screen, where the surface runs it.
+    /// What the next tick asks the owner to plan its GPU preview for: at Fit, the job's bounds; at
+    /// 100% or more, the visible region of the output stage — or the region the open drag asked
+    /// for at this zoom while it still holds the view, so a pan inside it keeps its boundary.
+    pub(crate) fn gpu_ask(&self) -> GpuAsk {
+        let value = match self.session.preview.view.zoom {
+            luxforge_core::Zoom::Fit => return GpuAsk::Fit,
+            luxforge_core::Zoom::Percent { value } if value >= 100.0 => value,
+            luxforge_core::Zoom::Percent { .. } => return GpuAsk::Off,
+        };
+        let Some(wanted) = self
+            .presentation
+            .dimensions
+            .and_then(|stage| self.desired_view_for(stage))
+        else {
+            return GpuAsk::Off;
+        };
+        let asked = self
+            .gpu
+            .drag
+            .as_ref()
+            .filter(|drag| drag.ended.is_none() && drag.zoom == Some(value))
+            .and_then(|drag| drag.wanted.as_ref())
+            .and_then(|wanted| wanted.key.region())
+            .filter(|rect| super::preview::contains_region(*rect, wanted));
+        GpuAsk::Region(asked.unwrap_or(wanted), f64::from(value) / 100.0)
+    }
+
+    /// Whether the open gesture's GPU frame is the view's motion frame: the surface draws its plan
+    /// of a region holding `wanted`, not held behind a CPU frame, and has evaluated it.
+    pub(crate) fn gpu_draws_view(&self, wanted: Region) -> bool {
+        let Some((plan, _)) = self.gesture_gpu_plan() else {
+            return false;
+        };
+        plan.region
+            .is_some_and(|region| super::preview::contains_region(rect_of(region), wanted))
+            && !self.gpu_held()
+            && self.surface_report().ready_boundary == Some(plan.boundary.version())
+    }
+
+    /// The open gesture's converted plan and the draft revision it draws, where the surface runs
+    /// it, with no comparison on screen: a whole frame's plan at Fit, and at 100% or more a
+    /// region's while its region holds the view.
     pub(crate) fn gesture_gpu_plan(&self) -> Option<(&surface::GpuPlan, u64)> {
-        if self.presentation.compare_after.is_some()
-            || !matches!(self.session.preview.view.zoom, luxforge_core::Zoom::Fit)
-        {
+        if self.presentation.compare_after.is_some() {
+            return None;
+        }
+        let (plan, _) = self.gpu.surface_plan()?;
+        let shown = match (&self.session.preview.view.zoom, plan.region) {
+            (luxforge_core::Zoom::Fit, None) => true,
+            (luxforge_core::Zoom::Percent { value }, Some(region)) if *value >= 100.0 => self
+                .presentation
+                .dimensions
+                .filter(|stage| *stage == region.stage)
+                .and_then(|stage| self.desired_view_for(stage))
+                .is_some_and(|wanted| super::preview::contains_region(rect_of(region), wanted)),
+            _ => false,
+        };
+        if !shown {
             return None;
         }
         // An open draft that another client's commit conflicted, or that was reapplied over a
