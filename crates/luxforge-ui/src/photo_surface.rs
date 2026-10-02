@@ -873,7 +873,8 @@ impl PhotoSurface {
 
     /// Dissolve from the GPU frame this surface last drew to its frame, which must be the version
     /// `dissolve` names, over [`DISSOLVE_DURATION`] in linear light ([`gpu_preview::Dissolve`]).
-    /// The widget asks for redraws only while it runs. A plan handed beside it cancels it, and a
+    /// The widget asks for redraws only while it runs. It runs with no plan, or behind a plan held
+    /// behind the CPU frame ([`PhotoSurface::gpu_hold`]); a plan drawn beside it cancels it, and a
     /// surface whose last frame was not the GPU stage's draws its frame alone.
     pub fn dissolve(mut self, dissolve: Option<Dissolve>) -> Self {
         self.dissolve = dissolve;
@@ -882,8 +883,9 @@ impl PhotoSurface {
 
     /// The dissolve this surface draws at `now`, if one runs.
     fn dissolving(&self, now: Instant) -> Option<gpu_preview::DissolveFrame> {
-        let whole =
-            matches!(self.base, Base::Photo(_)) && self.viewport.is_none() && self.gpu.is_none();
+        let whole = matches!(self.base, Base::Photo(_))
+            && self.viewport.is_none()
+            && (self.gpu.is_none() || self.gpu_options.hold);
         let frame = self
             .layers
             .first()
@@ -1469,9 +1471,12 @@ impl shader::Primitive for PhotoPrimitive {
         pipeline.generate_mips(device, queue, &mut surface, drawn);
         // The GPU stage evaluates a plan into its own slot, or names why this frame is the CPU's;
         // without a plan it releases the slot, unless a dissolve into a frame already in its
-        // texture keeps it for the GPU frame it dissolves from.
+        // texture keeps it for the GPU frame it dissolves from. A dissolve runs beside a plan only
+        // while the plan is held behind the CPU frame: a plan drawn cancels it.
         pipeline.warm_gpu(device, self.gpu_options.warm.as_ref());
-        let dissolve = self.dissolve.filter(|_| self.photo_ready(&surface));
+        let dissolve = self.dissolve.filter(|_| {
+            self.photo_ready(&surface) && (self.gpu.is_none() || self.gpu_options.hold)
+        });
         pipeline.prepare_gpu(&mut surface, device, queue, self.gpu.as_ref(), dissolve);
         surface.gpu_hold = self.gpu_options.hold;
         surface.gpu_tag = self.gpu.as_ref().and(self.gpu_options.tag);
