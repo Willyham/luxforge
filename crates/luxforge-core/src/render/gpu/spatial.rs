@@ -128,9 +128,14 @@ pub struct GpuPass {
     pub output: usize,
     /// Its first word, an index into the operation's words.
     pub words: usize,
-    /// How many of the operation's applies its `lf_source` runs: the index of its unit.
+    /// How many of the operation's applies its `lf_source` runs: the index of its unit for a pass
+    /// that reads its unit's input, else `0`, so a pass that only reads planes is the same module
+    /// whatever unit runs it.
     pub source: usize,
     pub shape: GpuPassShape,
+    /// Whether its kernel reads its unit's input through `lf_source`. A description sets it; the
+    /// composition sets `source` from it.
+    pub reads_source: bool,
 }
 
 /// One unit's apply: its function, the planes it reads and its first word.
@@ -275,8 +280,9 @@ pub(crate) fn compose(
                     .collect::<Result<_, _>>()?,
                 output: place(pass.output)?,
                 words: base + pass.words,
-                source: index,
+                source: if pass.reads_source { index } else { 0 },
                 shape: pass.shape,
+                reads_source: pass.reads_source,
             });
         }
         composed.applies.push(GpuApply {
