@@ -79,6 +79,9 @@ pub(crate) struct Surfaces<'a> {
     pub(crate) gpu_tag: Option<u64>,
     /// The program sequences the committed stack's gestures are likely to need, compiled ahead.
     pub(crate) gpu_warm: Option<&'a luxforge_ui::photo_surface::GpuWarm>,
+    /// A settle's dissolve from the GPU frame on screen to the CPU frame that replaces it
+    /// ([`crate::app::gpu_settle`]).
+    pub(crate) dissolve: Option<luxforge_ui::photo_surface::Dissolve>,
 }
 
 pub(crate) fn workspace<'a>(model: &'a Workspace, surfaces: Surfaces<'a>) -> Element<'a, Message> {

@@ -216,6 +216,27 @@ fn a_plan_cancels_the_dissolve_and_asks_for_no_redraw() {
     );
 }
 
+/// A plan held behind the CPU frame keeps the dissolve: the settle holds the drawn plan for the
+/// next tick, and the dissolve runs and asks for its frames as with no plan.
+#[test]
+fn a_held_plan_keeps_the_dissolve_and_its_redraws() {
+    let frame = solid(3, [255, 0, 0, 255]);
+    let dissolve = Dissolve::start(9, 3);
+    let gpu = plan(&black_boundary(5), vec![identity()]);
+    let mut surface = whole(&frame)
+        .gpu_preview(Some(&gpu))
+        .gpu_hold(true)
+        .dissolve(Some(dissolve));
+    let (asked, drawn) = redraw(&mut surface, dissolve.started + Duration::from_millis(40));
+    assert!(asked, "a running dissolve asks for the next frame");
+    assert!(drawn.dissolve.is_some() && drawn.gpu_options.hold);
+    let (asked, drawn) = redraw(&mut surface, dissolve.started + DISSOLVE_DURATION);
+    assert!(
+        !asked && drawn.dissolve.is_none(),
+        "and nothing once it ends"
+    );
+}
+
 /// A dissolve into a frame other than the one the surface holds, or over a percentage view, is
 /// not drawn and keeps nothing awake.
 #[test]
@@ -408,6 +429,81 @@ fn an_input_mid_dissolve_cancels_it_and_draws_the_next_gpu_frame() {
     assert_eq!(seen.drawn_full_version, None, "the CPU frame was not drawn");
     assert_eq!(seen.gpu_preview_in_use_bytes, slot_bytes, "the same slot");
     assert_eq!(seen.gpu_preview_peak_bytes, slot_bytes);
+}
+
+/// A settle that keeps the plan held behind the CPU frame dissolves from the GPU frame the slot
+/// holds: the held plan stays ready for the next tick, the dissolve's end leaves the CPU frame
+/// with the slot still held, and a tick drawn on the GPU mid-dissolve cancels it.
+#[test]
+fn a_dissolve_runs_behind_a_held_plan_and_a_drawn_one_cancels_it() {
+    let test = "a_dissolve_runs_behind_a_held_plan_and_a_drawn_one_cancels_it";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let boundary = black_boundary(5);
+    let held = |share: Option<f32>| {
+        let mut primitive = primitive(
+            Some(plan(&boundary, vec![identity()])),
+            share.map(|share| (42, share)),
+        );
+        primitive.gpu_options.hold = true;
+        primitive
+    };
+    paint(
+        &device,
+        &queue,
+        &mut pipeline,
+        &primitive(Some(plan(&boundary, vec![identity()])), None),
+    );
+    let slot_bytes = diagnostics(&pipeline, ID).gpu_preview_in_use_bytes;
+
+    let drawn = paint(&device, &queue, &mut pipeline, &held(Some(0.5)));
+    assert_every_pixel(&drawn, linear_mix(0.5), "the dissolve behind the held plan");
+    let seen = diagnostics(&pipeline, ID);
+    assert_eq!(
+        seen.drawn_dissolve
+            .map(|dissolve| (dissolve.from, dissolve.to, dissolve.gpu_boundary)),
+        Some((42, CPU_VERSION, 5))
+    );
+    assert_eq!(seen.drawn_path, Some(DrawingPath::Cpu));
+    assert_eq!(
+        seen.gpu_ready_boundary,
+        Some(5),
+        "the held plan stays ready for the next tick"
+    );
+
+    // Ended: the CPU frame alone, the slot still held for the open draft.
+    let ended = paint(&device, &queue, &mut pipeline, &held(None));
+    assert_every_pixel(&ended, [255, 0, 0], "the CPU frame once it ends");
+    let seen = diagnostics(&pipeline, ID);
+    assert_eq!(seen.drawn_dissolve, None);
+    assert_eq!(seen.gpu_preview_in_use_bytes, slot_bytes);
+
+    // Again, cancelled by the next tick drawn on the GPU.
+    paint(&device, &queue, &mut pipeline, &held(Some(0.25)));
+    assert!(
+        diagnostics(&pipeline, ID).drawn_dissolve.is_none(),
+        "the CPU frame was drawn last, so there is no GPU frame to dissolve from"
+    );
+    paint(
+        &device,
+        &queue,
+        &mut pipeline,
+        &primitive(Some(plan(&boundary, vec![identity()])), None),
+    );
+    paint(&device, &queue, &mut pipeline, &held(Some(0.25)));
+    assert!(diagnostics(&pipeline, ID).drawn_dissolve.is_some());
+    let next = primitive(Some(plan(&boundary, vec![scale(0.5)])), Some((42, 0.3)));
+    let drawn = paint(&device, &queue, &mut pipeline, &next);
+    assert_every_pixel(
+        &drawn,
+        [0, 0, srgb::code(0.5)],
+        "the next tick, drawn alone",
+    );
+    let seen = diagnostics(&pipeline, ID);
+    assert_eq!(seen.drawn_dissolve, None);
+    assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
 }
 
 /// A dissolve with no GPU frame to start from — none was drawn, or the stage fell back — draws

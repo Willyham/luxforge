@@ -8,11 +8,14 @@
 //! the CPU frame over it with the dissolve's share as its opacity, through the photograph's own
 //! pipeline, placement and filter. The stage runs only on an sRGB-typed target, where the hardware
 //! blends in linear light, so the picture is `(1 − t)·gpu + t·cpu` of the linear values, encoded
-//! once. Once the share reaches one the frame is the CPU's alone and the slot is released.
+//! once. Once the share reaches one the frame is the CPU's alone, and the slot is released unless
+//! a plan is still held behind the CPU frame for the open draft's next tick.
 //!
 //! - Only a whole-frame photograph dissolves, and only into the frame its dissolve names, once that
-//!   frame is in its texture. A plan handed beside it cancels it: an input during a dissolve draws
-//!   the next GPU frame.
+//!   frame is in its texture. It runs with no plan, or behind a plan held behind the CPU frame
+//!   (`PhotoSurface::gpu_hold`), whose unchanged words leave the slot's output as the GPU frame
+//!   last shown. A plan drawn beside it cancels it: an input during a dissolve draws the next GPU
+//!   frame.
 //! - With no GPU frame to dissolve from — the last frame drawn was the CPU's, or the stage fell
 //!   back — the CPU frame is drawn alone.
 //! - The widget asks for the next frame only while a dissolve runs, from each redraw's own time, so
@@ -98,7 +101,7 @@ impl DissolveFrame {
 }
 
 /// The dissolve a surface draws at `now`: one was handed to a `whole` photograph — a whole-frame
-/// photograph handed no plan — whose `frame` is the one it names, and its share is still short of
+/// photograph handed no plan, or a plan held behind its frame — whose `frame` is the one it names, and its share is still short of
 /// one. `None` asks for no further redraw.
 pub(crate) fn dissolving(
     dissolve: Option<Dissolve>,

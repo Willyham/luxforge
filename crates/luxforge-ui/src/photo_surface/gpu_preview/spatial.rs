@@ -693,7 +693,7 @@ pub(super) fn masks(
                 (Some(function), Some(statement))
             }
             GpuStep::Spatial(spatial) => (spatial.coverage_function(index, base), None),
-            GpuStep::Colour { .. } | GpuStep::Geometry(_) => (None, None),
+            GpuStep::Colour { .. } | GpuStep::Geometry(_) | GpuStep::Clipping(_) => (None, None),
         };
         if let Some(function) = function {
             if functions.is_empty() {
@@ -724,6 +724,7 @@ pub(super) fn statements(
         GpuStep::Masked(_) => masked[index].clone().expect("a masked step's statements"),
         GpuStep::Spatial(spatial) => frame_statements(index, spatial, slots),
         GpuStep::Geometry(_) => unreachable!("a geometry tail splits the passes"),
+        GpuStep::Clipping(_) => super::clipping::statement(base),
     }
 }
 
@@ -870,7 +871,10 @@ fn pass_count(steps: &[GpuStep]) -> usize {
         .iter()
         .map(|step| match step {
             GpuStep::Spatial(spatial) => spatial.passes.len(),
-            GpuStep::Colour { .. } | GpuStep::Masked(_) | GpuStep::Geometry(_) => 0,
+            GpuStep::Colour { .. }
+            | GpuStep::Masked(_)
+            | GpuStep::Geometry(_)
+            | GpuStep::Clipping(_) => 0,
         })
         .sum()
 }
@@ -1136,7 +1140,10 @@ impl PlanesKey {
             .enumerate()
             .filter_map(|(index, step)| match step {
                 GpuStep::Spatial(spatial) => Some((index, spatial.planes.clone())),
-                GpuStep::Colour { .. } | GpuStep::Masked(_) | GpuStep::Geometry(_) => None,
+                GpuStep::Colour { .. }
+                | GpuStep::Masked(_)
+                | GpuStep::Geometry(_)
+                | GpuStep::Clipping(_) => None,
             })
             .collect();
         (!planes.is_empty()).then_some(Self {
