@@ -260,6 +260,9 @@ impl GpuPreviews {
                     "height": held.boundary.size().1,
                     "origin": [held.origin.0, held.origin.1],
                     "layer": held.key.layer(),
+                    // Whether the desktop still holds the texels, which it lets go once the
+                    // surface's slot holds them.
+                    "texels_held": held.boundary.holds_texels(),
                     "region": held.key.region().map(|rect| {
                         [rect.x0, rect.y0, rect.width, rect.height]
                     }),
@@ -354,6 +357,7 @@ impl Editor {
         };
         let report = self.surface_report();
         let mut released = None;
+        let (mut lost, mut resident) = (None, None);
         let drag = match &mut self.gpu.drag {
             Some(drag) if drag.draft == set.draft_id && drag.ended.is_none() => drag,
             slot => slot.insert(Drag::new(set.draft_id.clone())),
@@ -396,6 +400,24 @@ impl Editor {
                     drag.surface = None;
                     drag.failed = None;
                     released = Some(held.boundary.version());
+                }
+                // The slot let go of a boundary whose texels the desktop no longer holds: the
+                // tick asks for them again.
+                if report.fallback == Some(SurfaceFallback::BoundaryReleased)
+                    && let Some(held) = drag.held.take_if(|held| !held.boundary.holds_texels())
+                {
+                    drag.surface = None;
+                    lost = Some(held.boundary.version());
+                }
+                // Once the surface's slot holds the boundary, the desktop keeps no copy of its
+                // texels for the rest of the gesture.
+                if let Some(held) = &mut drag.held
+                    && held.boundary.holds_texels()
+                    && report.ready_boundary == Some(held.boundary.version())
+                    && report.fallback.is_none()
+                {
+                    held.boundary = held.boundary.resident();
+                    resident = Some(held.boundary.version());
                 }
                 let revision = set.draft_revision;
                 let over_budget = over_budget(&plan, &request);
@@ -470,6 +492,12 @@ impl Editor {
         }
         if let Some(version) = released {
             self.log_release(version, "key-changed");
+        }
+        if let Some(version) = lost {
+            self.log_release(version, "slot-released");
+        }
+        if let Some(version) = resident {
+            self.event("gpu_boundary_resident", || json!({"version": version}));
         }
         (tick, boundary_request)
     }

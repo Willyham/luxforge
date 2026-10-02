@@ -788,3 +788,60 @@ fn gpu_preview_corpus_at_100_percent() {
         100.0,
     );
 }
+
+/// Once the surface reports that its slot holds the boundary, the desktop lets the texels go and
+/// hands the surface the resident boundary from then on, keeping no copy for the rest of the
+/// gesture. A slot that lets it go — the surface names `boundary-released` — makes the next tick
+/// ask for the boundary again, on the CPU path, and the texels it brings are held until the slot
+/// holds them once more.
+#[test]
+fn gpu_preview_the_texels_are_let_go_once_the_slot_holds_them_and_asked_again_if_it_lets_go() {
+    let catalog = catalog("resident");
+    let (mut editor, _, _) = real_photo(&catalog);
+    editor.gpu.surface = Some(SurfaceReport::default());
+    let _ = slide(&mut editor, ACTION, FIELD, 0.1);
+    deliver_until(&mut editor, "the boundary", |editor| {
+        editor.gpu.holds_boundary()
+    });
+    let texels_held =
+        |editor: &Editor| editor.gpu.summary()["drag"]["boundary"]["texels_held"].clone();
+    assert_eq!(
+        texels_held(&editor),
+        json!(true),
+        "until the slot holds them"
+    );
+    let version = editor.gpu.held_version().unwrap();
+    surface_ready(&mut editor);
+    let log = attach_log(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.2);
+    assert_eq!(texels_held(&editor), json!(false));
+    let plan = editor.surfaces().gpu.expect("the plan is drawn");
+    assert!(!plan.boundary.holds_texels(), "the resident boundary");
+    assert_eq!(plan.boundary.version(), version);
+    let records = logged(&mut editor, &log);
+    assert_eq!(events(&records, "gpu_boundary_resident").len(), 1);
+    assert_eq!(jobs(&records), 0, "the tick was drawn on the GPU");
+    // The slot let it go.
+    editor.gpu.surface = Some(SurfaceReport {
+        ready_boundary: None,
+        fallback: Some(SurfaceFallback::BoundaryReleased),
+        drawn: None,
+    });
+    let log = attach_log(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.3);
+    let records = logged(&mut editor, &log);
+    let released = events(&records, "gpu_boundary_released");
+    assert_eq!(released.len(), 1, "{records:?}");
+    assert_eq!(released[0]["why"], "slot-released");
+    let ticks = events(&records, "gpu_preview_tick");
+    assert_eq!(ticks[0]["path"], "cpu");
+    assert_eq!(ticks[0]["reason"], "boundary-pending");
+    assert_eq!(ticks[0]["boundary_requested"], true);
+    assert_eq!(editor.gpu.ticks().2, 2, "asked again");
+    deliver_until(&mut editor, "the boundary again", |editor| {
+        editor.gpu.holds_boundary()
+    });
+    assert_eq!(texels_held(&editor), json!(true));
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    finish(editor, catalog);
+}
