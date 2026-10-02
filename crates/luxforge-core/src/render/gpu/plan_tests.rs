@@ -141,7 +141,7 @@ fn tolerance(plan: &GpuPlan, staged: bool) -> u8 {
     } else if plan.geometry.clamps
         || plan.boundary.continues_run
         || staged
-        || plan.spatial.is_some()
+        || !plan.spatial.is_empty()
         || plan.operations().any(|operation| operation.mask.is_some())
     {
         1
@@ -471,7 +471,7 @@ fn stack_shapes_the_plan_cannot_hold_are_named() {
         &spatial,
         GpuPlanRequest::exact(0, stage(41, 29)),
     ));
-    let step = plan.spatial.as_ref().expect("the spatial operation");
+    let step = plan.spatial.first().expect("the spatial operation");
     assert_eq!((step.layer, step.applies.len()), (1, 1));
     assert!(step.clamps && !step.estimated && !plan.approximate());
     assert_eq!((plan.content.len(), plan.output.len()), (1, 1));
@@ -484,7 +484,7 @@ fn stack_shapes_the_plan_cannot_hold_are_named() {
             .qualifying()
             .linear(),
     ));
-    assert!(!plan.spatial.as_ref().unwrap().clamps);
+    assert!(!plan.spatial.first().unwrap().clamps);
     // From the spatial layer itself, the boundary is the frame its segment wrote, not a colour
     // run's unclamped value.
     let plan = planned(answer(
@@ -492,7 +492,7 @@ fn stack_shapes_the_plan_cannot_hold_are_named() {
         &spatial,
         GpuPlanRequest::exact(1, stage(41, 29)).qualifying(),
     ));
-    assert!(plan.content.is_empty() && plan.spatial.is_some());
+    assert!(plan.content.is_empty() && !plan.spatial.is_empty());
     assert!(!plan.boundary.continues_run);
     // A restoration layer after the boundary is its spatial operation: Detail's, one apply per
     // unit.
@@ -508,21 +508,20 @@ fn stack_shapes_the_plan_cannot_hold_are_named() {
         &detail,
         GpuPlanRequest::exact(0, stage(41, 29)),
     ));
-    let step = plan.spatial.as_ref().expect("Detail's operation");
+    let step = plan.spatial.first().expect("Detail's operation");
     assert_eq!((step.layer, step.applies.len()), (1, 2));
     assert_eq!(step.program.entry, "lf_detail");
-    // A second spatial layer after the boundary has no pass: it is named.
+    // A second spatial layer after the first chains: Detail's operation, then Presence's.
     let mut both = detail.clone();
     both.layers
         .push(Layer::new(crate::PRESENCE_EFFECT, json!({"clarity": 30.0})));
-    assert_eq!(
-        answer(
-            &registry,
-            &both,
-            GpuPlanRequest::exact(0, stage(41, 29)).qualifying()
-        ),
-        GpuAnswer::Fallback(GpuFallback::SpatialUnit { layer: 2 })
-    );
+    let plan = planned(answer(
+        &registry,
+        &both,
+        GpuPlanRequest::exact(0, stage(41, 29)).qualifying(),
+    ));
+    let layers: Vec<usize> = plan.spatial.iter().map(|step| step.layer).collect();
+    assert_eq!(layers, [1, 2]);
     // From after the spatial layer, its output is the boundary and the plan holds.
     let plan = planned(answer(
         &registry,
@@ -997,7 +996,7 @@ fn a_dehaze_light_is_the_stores_when_it_holds_the_boundarys_content() {
     // workgroup over the 16x reduction of the stage it holds.
     let plan = plan_of(&base);
     assert!(plan.approximate());
-    let step = plan.spatial.as_ref().unwrap();
+    let step = plan.spatial.first().unwrap();
     let atmosphere = step
         .passes
         .iter()
@@ -1037,7 +1036,7 @@ fn a_dehaze_light_is_the_stores_when_it_holds_the_boundarys_content() {
     for dehaze in [40.0, -65.0] {
         let plan = plan_of(&with(1, json!({"dehaze": dehaze})));
         assert!(!plan.approximate(), "dehaze {dehaze}");
-        let step = plan.spatial.as_ref().unwrap();
+        let step = plan.spatial.first().unwrap();
         assert_eq!(
             pipelines(step),
             estimated,
@@ -1084,7 +1083,11 @@ fn a_presence_plan_holds_nothing_that_scales_with_the_image() {
             &recipe,
             GpuPlanRequest::exact(0, size).qualifying(),
         ));
-        let step = plan.spatial.expect("the spatial operation");
+        let step = plan
+            .spatial
+            .into_iter()
+            .next()
+            .expect("the spatial operation");
         (
             step.planes.clone(),
             step.passes
@@ -1173,4 +1176,109 @@ fn a_proxy_is_named_as_its_built_pixels_are() {
             assert_ne!(named.1, whole.1, "a proxy is not its source");
         }
     }
+}
+
+/// Spatial and restoration layers after the boundary chain in recipe order, with the colour layers
+/// between them: Detail, then a colour layer on its output, then Presence, plain or through a
+/// mask, then the output's colour, each operation's input the boundary through everything before
+/// it, and the plan draws the CPU frame. Past [`super::spatial::GPU_CHAIN_APPLY_PLANES`] the stack
+/// names `spatial-chain`.
+#[test]
+fn chained_spatial_operations_draw_the_cpu_frame() {
+    let registry = colour_registry();
+    let source = gradient(41, 29);
+    let detail = || {
+        Layer::new(
+            crate::DETAIL_EFFECT,
+            json!({"sharpening": 40.0, "luminance": 20.0, "colour": 20.0}),
+        )
+    };
+    let presence = |payload: serde_json::Value| Layer::new(crate::PRESENCE_EFFECT, payload);
+    let mut mask = Mask::new("Mask 1");
+    mask.components.push(crate::Component::new(
+        "Linear 1",
+        ComponentMode::Add,
+        "linear",
+        json!({"x0": 0.2, "y0": 0.1, "x1": 0.8, "y1": 0.9}),
+    ));
+    let masked = |layer: Layer| Layer {
+        mask: Some(mask.id.clone()),
+        ..layer
+    };
+    let all = json!({"texture": 30.0, "clarity": 30.0, "dehaze": 20.0});
+    for (what, layers) in [
+        (
+            "unmasked",
+            vec![
+                detail(),
+                exposure_layer(&[0.3]),
+                presence(all.clone()),
+                positional_layer(),
+            ],
+        ),
+        (
+            "masked",
+            vec![
+                detail(),
+                exposure_layer(&[0.3]),
+                masked(presence(all.clone())),
+                positional_layer(),
+            ],
+        ),
+    ] {
+        let recipe = Recipe {
+            masks: vec![mask.clone()],
+            ..colour_recipe(layers)
+        };
+        let plan = planned(answer(
+            &registry,
+            &recipe,
+            GpuPlanRequest::exact(0, stage(41, 29)).qualifying(),
+        ));
+        let layers: Vec<usize> = plan.spatial.iter().map(|step| step.layer).collect();
+        assert_eq!(layers, [0, 2], "{what}");
+        let between: Vec<usize> = plan.spatial[0].after.iter().map(|op| op.layer).collect();
+        assert_eq!(between, [1], "{what}: the colour layer between them");
+        assert!(plan.spatial[1].after.is_empty(), "{what}");
+        assert_eq!(plan.output.len(), 1, "{what}");
+        assert_eq!(plan.spatial[1].mask.is_some(), what == "masked");
+        let order: Vec<usize> = plan.operations().map(|op| op.layer).collect();
+        assert_eq!(order, [1, 3], "{what}");
+        assert_draws_the_cpu_frame(&registry, &source, &recipe, &plan, what);
+    }
+    // Detail's three apply planes and two Presences' four each fit; a third Presence does not.
+    let mut second = Mask::new("Mask 2");
+    second.components = mask.components.clone();
+    let through = |layer: Layer, mask: &Mask| Layer {
+        mask: Some(mask.id.clone()),
+        ..layer
+    };
+    let mut layers = vec![
+        detail(),
+        presence(all.clone()),
+        through(presence(all.clone()), &mask),
+    ];
+    let recipe = Recipe {
+        masks: vec![mask.clone(), second.clone()],
+        ..colour_recipe(layers.clone())
+    };
+    let plan = planned(answer(
+        &registry,
+        &recipe,
+        GpuPlanRequest::exact(0, stage(41, 29)).qualifying(),
+    ));
+    assert_eq!(plan.spatial.len(), 3);
+    layers.push(through(presence(all), &second));
+    let recipe = Recipe {
+        masks: vec![mask, second],
+        ..colour_recipe(layers)
+    };
+    assert_eq!(
+        answer(
+            &registry,
+            &recipe,
+            GpuPlanRequest::exact(0, stage(41, 29)).qualifying()
+        ),
+        GpuAnswer::Fallback(GpuFallback::SpatialChain { layer: 3 })
+    );
 }
