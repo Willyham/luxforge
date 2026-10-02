@@ -22,11 +22,18 @@
 //!   the store does not hold yet takes the estimate on the GPU and says it is approximate.
 //! - **The boundary key** names everything the boundary's texels depend on: the source's identity
 //!   (fingerprint, development and view), the layers before the boundary and the masks they read,
-//!   the boundary's index, and the proxy plan with its window, or at a percentage zoom the region
-//!   of the output stage the boundary is held for. Equal keys hold equal texels.
+//!   the boundary's index, and the proxy plan with its window, or at the exact stage at Fit the
+//!   window the output reads, or at a percentage zoom the region of the output stage the boundary
+//!   is held for. Equal keys hold equal texels.
 //! - **Where it is drawn** ([`GpuView`]): at Fit, the stage the job's Fit frame is drawn at; at a
 //!   percentage zoom of 100% or more, the exact stage, over the visible region at full scale, whose
 //!   boundary is the window of the boundary layer's received stage that region reads.
+//! - **What it holds.** Only the part of the boundary layer's received stage the drawn output
+//!   reads: a windowed proxy's window at a Fit proxy; at the exact stage at Fit, which a
+//!   photograph that fits the display bounds is drawn at, the window the whole output stage reads
+//!   through the windowed planner ([`crate::render::window::WindowPlan::of_rect`]) — what a crop,
+//!   a straightening and a warp read, with their resample's taps and margin, clamped to the stage;
+//!   at a percentage zoom, the window the visible region reads.
 use super::{
     EstimateSource, GpuAnswer, GpuEstimates, GpuFallback, GpuPlan, GpuPlanRequest, gpu_plan_with,
 };
@@ -52,6 +59,9 @@ pub struct BoundaryKey {
     /// The proxy the boundary is rendered at, with the window it holds; `None` at the exact stage,
     /// where a photograph that fits the display is drawn, and at a percentage zoom.
     plan: Option<ProxyPlan>,
+    /// At the exact stage at Fit, the window of the boundary layer's received stage the whole
+    /// output reads, when that is less than all of it; `None` otherwise.
+    window: Option<Region>,
     /// At a percentage zoom, the rectangle of the output stage the boundary is held for.
     region: Option<Region>,
 }
@@ -102,9 +112,11 @@ pub struct BoundaryRequest {
     /// Physical pixels an output pixel is drawn at, which a warp's coordinate grid is made dense
     /// enough for: one at Fit, the zoom at a percentage.
     pub(crate) magnification: f64,
-    /// At a percentage zoom, the window of the boundary layer's received stage the region reads,
-    /// which the boundary holds: the region and every margin after it, so what the boundary and
-    /// a slot drawing over it take is known before it is rendered.
+    /// The window of the boundary layer's received stage the boundary holds, so what the boundary
+    /// and a slot drawing over it take is known before it is rendered: at a percentage zoom, the
+    /// one the region reads, the region and every margin after it; at the exact stage at Fit, the
+    /// one the whole output stage reads, when that is less than all of it. `None` at a Fit proxy,
+    /// whose plan names its window, and for a boundary of the whole exact stage.
     pub window: Option<Region>,
 }
 
@@ -414,6 +426,19 @@ pub(crate) fn plan_preview(
     // cut, its estimate behind an earlier spatial layer, is drawn from the exact whole frame at a
     // percentage zoom, and its drag keeps the CPU path with it.
     let mut window = None;
+    // At the exact stage at Fit, the window the whole output stage reads, so a crop's boundary
+    // holds what the crop reads rather than its whole source. A global estimate the GPU takes from
+    // the stage it holds would see the window alone, so such a plan keeps the whole stage; so does
+    // a stack the planner cannot cut.
+    if let (GpuAnswer::Plan(plan), None, None) = (&answer, fit.plan, fit.region)
+        && !plan.spatial.iter().any(|spatial| spatial.estimated)
+    {
+        let full = (fit.full.width, fit.full.height);
+        let output = Region::whole(fit.compiled.stage());
+        window = crate::render::window::WindowPlan::of_rect(&fit.compiled, full, output)
+            .ok()
+            .and_then(|windows| windows.received_cut(&fit.compiled, full, position.0));
+    }
     if let (GpuAnswer::Plan(plan), Some((rect, _))) = (&answer, fit.region) {
         use crate::render::window::WindowPlan;
         let full = (fit.full.width, fit.full.height);
@@ -478,6 +503,7 @@ pub(crate) fn plan_preview(
                 prefix: prefix_hash(&recipe.layers[..boundary], &recipe.masks, fit.sampling())?,
                 layer: boundary,
                 plan: fit.plan,
+                window: window.filter(|_| fit.region.is_none()),
                 region: fit.region.map(|(rect, _)| rect),
             },
             position,

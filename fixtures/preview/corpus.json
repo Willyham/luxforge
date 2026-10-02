@@ -173,6 +173,28 @@
       ]
     },
     {
+      "id": "crop-rotated",
+      "family": "crop",
+      "class": "pointwise",
+      "description": "A 16:9 crop at the largest straightening, 45 degrees, under a Basic edit: the rotation whose crop reads the largest share of the source around what it keeps.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.crop-fit", "params": {"aspect": "16:9", "angle": 45.0}}},
+        {"api": {"method": "edit.set-basic", "params": {"exposure": 0.5, "contrast": 25.0}}}
+      ]
+    },
+    {
+      "id": "crop-straightened-tight",
+      "family": "crop",
+      "class": "pointwise",
+      "description": "A tight straightened crop under a Basic edit, whose output fits the display bounds on most sources, so Fit draws its exact stage over a boundary of only the window the crop reads.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.crop", "params": {"angle": 7.0, "x": 0.41, "y": 0.4, "width": 0.18, "height": 0.2}}},
+        {"api": {"method": "edit.set-basic", "params": {"exposure": 0.5, "contrast": 25.0}}}
+      ]
+    },
+    {
       "id": "perspective-warp",
       "family": "lens-perspective",
       "class": "pointwise",

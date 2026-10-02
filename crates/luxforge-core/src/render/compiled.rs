@@ -446,6 +446,17 @@ impl Segment {
         }
     }
 
+    /// Its resample entry took one more warp or resample into its map, which now writes an
+    /// `output` stage: the segment's frame is that stage, and its geometry the identity over it.
+    /// A segment only fuses while its geometry is the identity, so nothing else changes; keeping
+    /// the stage it had before would map its frame onto a stage it no longer reads, which a
+    /// windowed proxy's cut refuses.
+    pub(crate) fn fused(&mut self, output: Stage) {
+        self.width = output.width;
+        self.height = output.height;
+        self.geometry = ExactGeometry::identity(output.width, output.height);
+    }
+
     /// Whether this pass writes anything into its frame. An identity pass that does not shares the
     /// source allocation instead of copying it.
     pub(super) fn writes_pixels(&self) -> bool {

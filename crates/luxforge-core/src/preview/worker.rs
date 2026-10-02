@@ -434,6 +434,12 @@ pub(super) fn run(
                     exact.as_ref().map_err(Clone::clone).and_then(|exact| {
                         exact.region_boundary(rect, request.position, request.format)
                     })
+                } else if request.window.is_some() {
+                    // At Fit, the window of the stage the whole output reads: what a crop reads.
+                    exact
+                        .as_ref()
+                        .map_err(Clone::clone)
+                        .and_then(|exact| exact.output_boundary(request.position, request.format))
                 } else {
                     exact.as_ref().map_err(Clone::clone).and_then(|exact| {
                         let source = evaluation.source().dimensions();
