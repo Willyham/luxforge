@@ -112,6 +112,10 @@ struct Drag {
     /// What a region's boundary or slot would take, and the bound on a boundary or the budget it
     /// passes, when the latest tick asked for no boundary because of them ([`region_charge`]).
     over_budget: Option<(u64, u64)>,
+    /// At a percentage zoom, the shape the latest tick's restoration or spatial layer is planned
+    /// in when its owner planned both: `gpu`, every unit, or `cpu`, the units its values need,
+    /// when only that one fits the budget. `None` when there was no choice.
+    shape: Option<&'static str>,
     /// The presented generation when the draft ended; the drag is released once a newer frame is
     /// presented, or nothing more is coming.
     ended: Option<u64>,
@@ -134,6 +138,7 @@ impl Drag {
             reason: None,
             zoom: None,
             over_budget: None,
+            shape: None,
             ended: None,
             gpu_ticks: 0,
             cpu_ticks: 0,
@@ -271,6 +276,7 @@ impl GpuPreviews {
                 "over_budget": drag.over_budget.map(|(requested, budget)| {
                     json!({"requested": requested, "budget": budget})
                 }),
+                "shape": drag.shape,
                 "boundary_requested": drag.requested,
                 "boundary_requests": drag.boundary_requests,
                 "reason": drag.reason,
@@ -297,6 +303,13 @@ impl GpuPreviews {
     #[cfg(test)]
     pub(crate) fn has_drag(&self) -> bool {
         self.drag.is_some()
+    }
+
+    /// What the latest tick's plan takes over its region ([`region_charge`]).
+    #[cfg(test)]
+    pub(crate) fn region_charge(&self) -> Option<(u64, u64)> {
+        let drag = self.drag.as_ref()?;
+        region_charge(&drag.plan.as_ref()?.0, drag.wanted.as_ref()?)
     }
 }
 
@@ -389,6 +402,7 @@ impl Editor {
             Some(luxforge_core::GpuPreview {
                 answer: GpuAnswer::Plan(plan),
                 boundary,
+                cpu_shape,
             }) => {
                 let Some(request) = boundary else {
                     drag.reason = Some("unplannable".into());
@@ -412,7 +426,18 @@ impl Editor {
                 }
 
                 let revision = set.draft_revision;
-                let over_budget = over_budget(&plan, &request);
+                // At a percentage zoom a spatial layer is drawn in its GPU shape when that fits,
+                // else in the CPU's shape when that does, with a compile where a value crosses
+                // zero; when neither fits, the CPU's shape names the least the drag would take.
+                let (plan, over_budget, shape) = match (over_budget(&plan, &request), cpu_shape) {
+                    (Some(_), Some(smaller)) => {
+                        let over = over_budget(&smaller, &request);
+                        (smaller, over, Some("cpu"))
+                    }
+                    (over, Some(_)) => (plan, over, Some("gpu")),
+                    (over, None) => (plan, over, None),
+                };
+                drag.shape = shape;
                 drag.wanted = Some(request.clone());
                 drag.plan = Some((plan, revision));
                 drag.base = Some(set.base_revision);

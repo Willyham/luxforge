@@ -33,6 +33,8 @@ pub use plan::{
 };
 #[cfg(feature = "qualification")]
 pub(crate) use preview::position;
+#[cfg(test)]
+pub(crate) use preview::warm_sequence;
 pub use preview::{BoundaryKey, BoundaryRequest, GpuPreview, GpuView};
 pub(crate) use preview::{plan_preview, plan_warm};
 #[cfg(test)]
