@@ -209,6 +209,38 @@ fn gpu_preview_an_ineligible_drag_names_its_reason() {
     finish(editor, catalog);
 }
 
+/// A tick drawn on the GPU puts the gesture's newest frame on screen as a CPU frame would: an
+/// evidence step waiting for the drained slider's frame settles on it, and the capture then waits
+/// for the surface's draw of that tick.
+#[test]
+fn gpu_preview_a_gpu_tick_settles_the_slider_step_waiting_for_it() {
+    let catalog = catalog("settle");
+    let (mut editor, _, _) = real_photo(&catalog);
+    editor.gpu.surface = Some(SurfaceReport::default());
+    let _ = slide(&mut editor, ACTION, FIELD, 0.1);
+    deliver_until(&mut editor, "the boundary", |editor| {
+        editor.gpu.holds_boundary()
+    });
+    surface_ready(&mut editor);
+    editor.evidence = Some(crate::app::testing::scripted_evidence("[]"));
+    editor.await_step(evidence::Settle::SliderDraft);
+    let log = attach_log(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.3);
+    let records = logged(&mut editor, &log);
+    assert_eq!(jobs(&records), 0, "the tick was drawn on the GPU");
+    assert_eq!(editor.gpu.ticks().0, 1);
+    assert!(
+        editor.evidence.as_ref().unwrap().awaiting.is_none(),
+        "the step settled on the GPU tick"
+    );
+    let settled = events(&records, "script_step_settled");
+    assert_eq!(settled.len(), 1);
+    assert_eq!(settled[0]["waited_for"], "slider_draft");
+    editor.evidence = None;
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    finish(editor, catalog);
+}
+
 /// The compile cost of each program sequence a Fit drag of the colour modules draws, measured on
 /// this host's adapter through the stage's own compile (`naga` checks, backend translation and the
 /// driver's pipeline). A functional measurement for the design's choice of one pipeline per

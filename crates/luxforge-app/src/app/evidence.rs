@@ -594,6 +594,9 @@ impl Editor {
         {
             return true;
         }
+        // The status bar names the frame the surface drew last, which only that draw can say: a
+        // change of drawing path wakes the desktop, whose next update derives the label again.
+        let label_current = self.workspace.status.gpu_us == self.gpu_frame_us();
         // A gesture drawn on the GPU: the frame to capture is the GPU draw of its newest tick, once
         // its pipeline is ready. Until the surface has evaluated it, or while it is held behind
         // the CPU frame of its revision, the CPU frame is the one drawn.
@@ -607,10 +610,11 @@ impl Editor {
             .gpu_ready_boundary
             == Some(boundary)
         {
-            return photo_drawn(
-                ExpectedPhotoDraw::GpuTick { boundary, revision },
-                luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE),
-            );
+            return label_current
+                && photo_drawn(
+                    ExpectedPhotoDraw::GpuTick { boundary, revision },
+                    luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE),
+                );
         }
         let full = self
             .presentation
@@ -663,9 +667,6 @@ impl Editor {
                 }
             })
         });
-        // The status bar names the frame the surface drew last, which only that draw can say: a
-        // change of drawing path wakes the desktop, whose next update derives the label again.
-        let label_current = self.workspace.status.gpu_us == self.gpu_frame_us();
         label_current
             && expected.is_some_and(|expected| {
                 photo_drawn(

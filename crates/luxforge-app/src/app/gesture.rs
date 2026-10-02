@@ -747,6 +747,7 @@ impl Editor {
         match result {
             Ok((set, job, round_trip)) => {
                 self.session.draft = Some(set.clone());
+                let mut drawn_on_gpu = false;
                 if let Some(mut job) = job {
                     if self.view_plan.released_draft.as_ref() != Some(&set.draft_id) {
                         self.note_view_motion();
@@ -756,7 +757,15 @@ impl Editor {
                     // CPU path as before.
                     let (tick, boundary) = self.gpu_tick(&set, job.gpu.take());
                     match tick {
-                        super::gpu_preview::Tick::Gpu => self.gpu_ticked(&set),
+                        super::gpu_preview::Tick::Gpu => {
+                            // The mask overlay's coverage follows the tick through its own
+                            // worker, as on the CPU path, over the frame on screen, whose
+                            // geometry a colour or mask draft does not change.
+                            let content = self.presentation.presented_content;
+                            self.request_mask_coverage(&job, content);
+                            self.gpu_ticked(&set);
+                            drawn_on_gpu = true;
+                        }
                         super::gpu_preview::Tick::Cpu => {
                             job.boundary = boundary;
                             let boundary = job.boundary.is_some();
@@ -776,7 +785,11 @@ impl Editor {
                         }
                     }
                 }
-                self.drive(Event::Set(Ok(set)))
+                let task = self.drive(Event::Set(Ok(set)));
+                if drawn_on_gpu {
+                    self.gpu_tick_presented();
+                }
+                task
             }
             Err(error) => {
                 self.set_unpreviewed(&error);
