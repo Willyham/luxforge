@@ -265,6 +265,9 @@ impl GpuPreviews {
                     "height": held.boundary.size().1,
                     "origin": [held.origin.0, held.origin.1],
                     "layer": held.key.layer(),
+                    // Whether the desktop still holds the texels, which it lets go once the
+                    // surface's slot holds them.
+                    "texels_held": held.boundary.holds_texels(),
                     "region": held.key.region().map(|rect| {
                         [rect.x0, rect.y0, rect.width, rect.height]
                     }),
@@ -365,8 +368,10 @@ impl Editor {
                 (slot > budget).then_some((slot, budget))
             }
         };
+        self.gpu_release_texels();
         let report = self.surface_report();
         let mut released = None;
+        let mut lost = None;
         let drag = match &mut self.gpu.drag {
             Some(drag) if drag.draft == set.draft_id && drag.ended.is_none() => drag,
             slot => slot.insert(Drag::new(set.draft_id.clone())),
@@ -411,6 +416,15 @@ impl Editor {
                     drag.failed = None;
                     released = Some(held.boundary.version());
                 }
+                // The slot let go of a boundary whose texels the desktop no longer holds: the
+                // tick asks for them again.
+                if report.fallback == Some(SurfaceFallback::BoundaryReleased)
+                    && let Some(held) = drag.held.take_if(|held| !held.boundary.holds_texels())
+                {
+                    drag.surface = None;
+                    lost = Some(held.boundary.version());
+                }
+
                 let revision = set.draft_revision;
                 // At a percentage zoom a spatial layer is drawn in its GPU shape when that fits,
                 // else in the CPU's shape when that does, with a compile where a value crosses
@@ -496,7 +510,39 @@ impl Editor {
         if let Some(version) = released {
             self.log_release(version, "key-changed");
         }
+        if let Some(version) = lost {
+            self.log_release(version, "slot-released");
+        }
         (tick, boundary_request)
+    }
+
+    /// Once the surface reports that its slot holds the open drag's boundary, let its texels go:
+    /// the held boundary, and the plan handed to the surface, name the resident boundary from then
+    /// on ([`GpuBoundary::resident`]), so the desktop keeps no copy for the rest of the gesture.
+    /// Run after every message and at each tick.
+    pub(crate) fn gpu_release_texels(&mut self) {
+        let report = self.surface_report();
+        let Some(drag) = &mut self.gpu.drag else {
+            return;
+        };
+        let Some(held) = drag.held.as_mut().filter(|held| {
+            held.boundary.holds_texels()
+                && report.ready_boundary == Some(held.boundary.version())
+                && report.fallback.is_none()
+        }) else {
+            return;
+        };
+        held.boundary = held.boundary.resident();
+        let resident = held.boundary.clone();
+        if let Some((plan, _)) = &mut drag.surface
+            && plan.boundary.version() == resident.version()
+        {
+            plan.boundary = resident.clone();
+        }
+        self.event(
+            "gpu_boundary_resident",
+            || json!({"version": resident.version()}),
+        );
     }
 
     /// The tick's job, carrying the boundary request, was queued as `generation`.
@@ -800,6 +846,7 @@ impl Editor {
 /// After every message: a draft that ended keeps its drawn plan until the frame that replaces it
 /// is presented, or until nothing more is coming, and then releases its boundary.
 pub(super) fn after_message(editor: &mut Editor, _: &super::Before) -> iced::Task<super::Message> {
+    editor.gpu_release_texels();
     let open = editor
         .core_gesture()
         .map(|gesture| gesture.draft.draft_id.clone());

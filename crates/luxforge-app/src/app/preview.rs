@@ -879,6 +879,11 @@ pub(super) fn bounds_of((width, height): (f32, f32)) -> Option<ProxyBounds> {
 /// The output pixels a percentage view can display now. The scrollable reports its offset in
 /// logical pixels, while percent zoom is defined in physical pixels; the widget's box uses the
 /// same division by display scale. One guard pixel covers snapped edges and linear sampling.
+///
+/// The offset is the scrollable's, which it holds between zero and how far the zoomed photograph
+/// overhangs the surface on each axis, as the canvas places the photograph ([`crate::view::canvas`]'s
+/// `drawn_photo`). A `pan` past that — an offset kept from a deeper zoom, which the scrollable never
+/// reports again once the photograph fits the surface — is held to it here too.
 pub(super) fn viewport_rect(
     stage: (u32, u32),
     zoom: &Zoom,
@@ -905,6 +910,7 @@ pub(super) fn viewport_rect(
         return None;
     }
     let edge = |start: f32, length: f32, limit: u32| {
+        let start = start.clamp(0.0, (limit as f32 * scale - length).max(0.0));
         let first = ((start / scale).floor() as i64 - 1).clamp(0, i64::from(limit)) as u32;
         let last = (((start + length) / scale).ceil() as i64 + 1)
             .clamp(i64::from(first), i64::from(limit)) as u32;
