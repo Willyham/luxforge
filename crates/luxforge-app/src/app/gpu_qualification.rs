@@ -193,6 +193,9 @@ pub(crate) enum Cell {
         /// For a stack whose Fit settles from the exact render, judged against the CPU's moving
         /// proxy it stands in for: the jump that settlement makes beside it.
         settled: Option<Box<Settled>>,
+        /// At a percentage zoom, the shape a restoration or spatial layer is drawn in: `gpu`,
+        /// every unit, or `cpu`, the units its values need, when only that one fits the budget.
+        shape: Option<&'static str>,
     },
     Gap(String),
 }
@@ -560,6 +563,7 @@ pub(crate) fn corpus_cell(
             program,
             charged,
             settled,
+            shape: None,
         })
     })();
     finish(owner, join);
@@ -765,65 +769,97 @@ pub(crate) fn region_cell(
             }
             Err(error) => return Err(error.to_string()),
         };
-        // The plan from that layer at the exact stage, over the whole stage the layer receives.
+        // The plan from that layer at the exact stage, over the whole stage the layer receives. A
+        // restoration or spatial layer's drag draws its GPU shape, every unit, while that slot
+        // fits the budget, and its CPU shape when only that one does (`GpuPreview::cpu_shape`):
+        // the shapes are tried in that order.
         let request = GpuPlanRequest::exact(boundary_layer, frame.stage).qualifying();
         let request = if linear { request.linear() } else { request };
-        let plan = match gpu_plan(&registry, &recipe, request).map_err(|e| e.to_string())? {
-            GpuAnswer::Plan(plan) => *plan,
-            GpuAnswer::Fallback(reason) => {
-                return Ok(Cell::Gap(format!("{}: {reason}", reason.code())));
-            }
+        let spatial = matches!(
+            registry
+                .effect(&recipe.layers[boundary_layer].effect_id)
+                .map(|(_, effect)| effect.stage),
+            Some(luxforge_core::EffectStage::Restoration | luxforge_core::EffectStage::Spatial)
+        );
+        let shapes = if spatial {
+            vec![
+                (request.drafted(boundary_layer), Some("gpu")),
+                (request, Some("cpu")),
+            ]
+        } else {
+            vec![(request, None)]
         };
-        let held = luxforge_ui::photo_surface::GpuBoundary::new(
-            frame.texels.clone(),
-            frame.width,
-            frame.height,
-            1,
-            super::gpu_plan::boundary_format(frame.format),
-        )
-        .ok_or("a boundary")?;
-        // A warp's coordinate grid over the region at the zoom, as the boundary's job computes it.
-        let grid = match plan.geometry.affine() {
-            Some(_) => None,
-            None => plan
-                .geometry
-                .grid(rect, f64::from(zoom) / 100.0)
-                .map_err(|error| error.to_string())?,
-        };
-        let converted = match super::gpu_plan::surface_plan_over(
-            &plan,
-            held,
-            frame.origin,
-            grid.as_ref(),
-            Some(rect),
-        ) {
-            Ok(converted) => converted,
-            Err(reason) => {
-                return Ok(Cell::Gap(format!(
-                    "{}: the surface cannot run {reason:?} yet",
-                    reason.code()
-                )));
-            }
-        };
-        if let Some(GpuStep::Masked(masked)) = converted.steps.first()
-            && selects_nothing(qualifier, &converted.boundary, masked)?
-        {
-            return Ok(Cell::Gap(
-                "the mask selects nothing on this source".to_owned(),
-            ));
-        }
-        let charged = qualifier
-            .charged_bytes(&converted)
-            .map_err(|reason| format!("{reason:?}"))?;
         let budget = luxforge_ui::photo_surface::gpu_preview::GPU_PREVIEW_BUDGET;
-        if charged > budget {
-            return Ok(Cell::Gap(format!(
-                "budget-exceeded: the slot for the {}x{} region over a {}x{} boundary would \
-                 charge {charged} B of the {budget} B GPU-preview budget, so the drag takes the \
-                 CPU path",
-                rect.width, rect.height, frame.width, frame.height
-            )));
+        let mut over = String::new();
+        let mut chosen = None;
+        for (request, shape) in shapes {
+            let plan = match gpu_plan(&registry, &recipe, request).map_err(|e| e.to_string())? {
+                GpuAnswer::Plan(plan) => *plan,
+                GpuAnswer::Fallback(reason) => {
+                    return Ok(Cell::Gap(format!("{}: {reason}", reason.code())));
+                }
+            };
+            let held = luxforge_ui::photo_surface::GpuBoundary::new(
+                frame.texels.clone(),
+                frame.width,
+                frame.height,
+                1,
+                super::gpu_plan::boundary_format(frame.format),
+            )
+            .ok_or("a boundary")?;
+            // A warp's coordinate grid over the region at the zoom, as the boundary's job
+            // computes it.
+            let grid = match plan.geometry.affine() {
+                Some(_) => None,
+                None => plan
+                    .geometry
+                    .grid(rect, f64::from(zoom) / 100.0)
+                    .map_err(|error| error.to_string())?,
+            };
+            let converted = match super::gpu_plan::surface_plan_over(
+                &plan,
+                held,
+                frame.origin,
+                grid.as_ref(),
+                Some(rect),
+            ) {
+                Ok(converted) => converted,
+                Err(reason) => {
+                    return Ok(Cell::Gap(format!(
+                        "{}: the surface cannot run {reason:?} yet",
+                        reason.code()
+                    )));
+                }
+            };
+            if let Some(GpuStep::Masked(masked)) = converted.steps.first()
+                && selects_nothing(qualifier, &converted.boundary, masked)?
+            {
+                return Ok(Cell::Gap(
+                    "the mask selects nothing on this source".to_owned(),
+                ));
+            }
+            let charged = qualifier
+                .charged_bytes(&converted)
+                .map_err(|reason| format!("{reason:?}"))?;
+            if charged > budget {
+                over = format!(
+                    "budget-exceeded: the slot for the {}x{} region over a {}x{} boundary would \
+                     charge {charged} B{} of the {budget} B GPU-preview budget, so the drag takes \
+                     the CPU path",
+                    rect.width,
+                    rect.height,
+                    frame.width,
+                    frame.height,
+                    shape.map_or(String::new(), |shape| format!(" in the {shape} shape"))
+                );
+                continue;
+            }
+            chosen = Some((plan, converted, charged, shape));
+            break;
         }
+        let Some((plan, converted, charged, shape)) = chosen else {
+            return Ok(Cell::Gap(over));
+        };
         let (width, height) = (rect.width, rect.height);
         let gpu: Vec<u8> = qualifier
             .evaluate_codes(&converted)?
@@ -876,6 +912,7 @@ pub(crate) fn region_cell(
             program,
             charged,
             settled: None,
+            shape,
         })
     })();
     owner.stop();
@@ -1096,12 +1133,14 @@ fn corpus_at(test: &str, families: &[&str], zoom: Option<f32>) {
                         passed,
                         charged,
                         settled,
+                        shape,
                     } => {
                         eprintln!(
-                            "{name} at {}x{}{}: drawn {} | program {} | charged {charged} B{}",
+                            "{name} at {}x{}{}{}: drawn {} | program {} | charged {charged} B{}",
                             proxy.0,
                             proxy.1,
                             if *is_proxy { "" } else { " (exact)" },
+                            shape.map_or(String::new(), |shape| format!(", {shape} shape")),
                             figures(statistics),
                             figures(program),
                             if *passed { "" } else { " MISS" }
@@ -1137,7 +1176,7 @@ fn corpus_at(test: &str, families: &[&str], zoom: Option<f32>) {
                             "stage": [proxy.0, proxy.1], "proxy": is_proxy,
                             "region": region.map(|rect| [rect.x0, rect.y0, rect.width, rect.height]),
                             "drawn": stats(statistics), "program": stats(program),
-                            "passed": passed, "charged_bytes": charged
+                            "passed": passed, "charged_bytes": charged, "shape": shape
                         });
                         if let Some(settled) = settled {
                             cell["settled_from_exact"] = json!({
