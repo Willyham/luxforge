@@ -912,8 +912,9 @@ fn measure_unit(
     let approximate = plan.approximate();
     let planes = plan
         .spatial
-        .as_ref()
-        .map_or(0, |spatial| spatial.plane_bytes((0, 0), (width, height)));
+        .iter()
+        .map(|spatial| spatial.plane_bytes((0, 0), (width, height)))
+        .sum::<u64>();
     let held_boundary = boundary(width, height, 1, pixels).expect("a boundary");
     let converted = surface_plan(&plan, held_boundary).expect("a runnable plan");
     let gpu = qualifier.evaluate(&converted).expect("a readback");
@@ -1097,7 +1098,7 @@ fn gpu_presence_on_the_byte_path_meets_the_spatial_limits() {
             GpuAnswer::Plan(plan) => *plan,
             GpuAnswer::Fallback(reason) => panic!("{reason}"),
         };
-        assert!(plan.spatial.as_ref().unwrap().clamps && !plan.approximate());
+        assert!(plan.spatial.first().unwrap().clamps && !plan.approximate());
         let converted = surface_plan(&plan, boundary(width, height, 1, &texels).unwrap()).unwrap();
         let gpu = qualifier.evaluate(&converted).unwrap();
         let reference: Vec<u8> = cpu
@@ -1176,8 +1177,9 @@ fn gpu_presence_pass_pipelines_are_shared_across_plans() {
         };
         let passes = plan
             .spatial
-            .as_ref()
-            .map_or(0, |spatial| spatial.passes.len());
+            .iter()
+            .map(|spatial| spatial.passes.len())
+            .sum::<usize>();
         let held = boundary(width, height, 1, &pixels).expect("a boundary");
         (surface_plan(&plan, held).expect("a runnable plan"), passes)
     };
@@ -1287,8 +1289,9 @@ fn gpu_presence_a_drag_reruns_only_the_passes_it_changes() {
         };
         let passes = plan
             .spatial
-            .as_ref()
-            .map_or(0, |spatial| spatial.passes.len() as u64);
+            .iter()
+            .map(|spatial| spatial.passes.len() as u64)
+            .sum::<u64>();
         let held = boundary(width, height, 1, &pixels).expect("a boundary");
         (surface_plan(&plan, held).expect("a runnable plan"), passes)
     };
@@ -1424,3 +1427,6 @@ fn gpu_presence_the_drafted_shape_draws_what_the_cpus_does() {
 
 // Near-black outliers on the linear path, measured for a decision.
 mod near_black;
+
+// Detail followed by Presence, chained in one plan.
+mod chain;

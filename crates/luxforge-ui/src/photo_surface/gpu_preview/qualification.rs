@@ -322,6 +322,7 @@ impl Qualifier {
                     &inputs.words,
                     &inputs.blocks,
                     first.boundary.version(),
+                    &planes.key,
                 );
                 groups.encode(
                     &mut encoder,
@@ -410,12 +411,13 @@ impl Qualifier {
             label: Some("luxforge.qualification.encoder"),
         });
         let mut ran = 0;
-        if let Some(groups) = &groups {
+        if let (Some(groups), Some(planes)) = (&groups, &planes) {
             let run = schedule.run(
                 &plan.steps,
                 &inputs.words,
                 &inputs.blocks,
                 plan.boundary.version(),
+                &planes.key,
             );
             ran = groups.encode(&mut encoder, &compiled.spatial, bindings, &run);
         }

@@ -413,7 +413,7 @@ pub(crate) fn plan_preview(
     let mut window = None;
     if let (GpuAnswer::Plan(plan), Some((rect, _))) = (&answer, fit.region) {
         let full = (fit.full.width, fit.full.height);
-        answer = match plan.spatial.as_ref().filter(|spatial| spatial.estimated) {
+        answer = match plan.spatial.iter().find(|spatial| spatial.estimated) {
             Some(spatial) => GpuAnswer::Fallback(GpuFallback::RegionEstimate {
                 layer: spatial.layer,
             }),
@@ -447,10 +447,11 @@ pub(crate) fn plan_preview(
             drafted: None,
             ..request
         };
-        let extent = |plan: &GpuPlan| {
+        let extent = |plan: &GpuPlan| -> Vec<(usize, usize)> {
             plan.spatial
-                .as_ref()
+                .iter()
                 .map(|spatial| (spatial.passes.len(), spatial.applies.len()))
+                .collect()
         };
         if let GpuAnswer::Plan(smaller) = gpu_plan_with(
             registry,
@@ -529,7 +530,8 @@ pub(crate) fn warm_sequence(plan: &GpuPlan) -> Vec<String> {
             .collect()
     };
     let mut keys = colour(&plan.content);
-    if let Some(spatial) = &plan.spatial {
+    // Each chained spatial operation in order, the colour operations after it among them.
+    for spatial in &plan.spatial {
         keys.push(format!(
             "{}, clamps {}",
             spatial.program.entry, spatial.clamps
@@ -543,6 +545,7 @@ pub(crate) fn warm_sequence(plan: &GpuPlan) -> Vec<String> {
             )
         }));
         keys.extend(spatial.applies.iter().map(|apply| format!("{apply:?}")));
+        keys.extend(colour(&spatial.after));
     }
     keys.push(format!(
         "geometry affine {}, clamps {}",
