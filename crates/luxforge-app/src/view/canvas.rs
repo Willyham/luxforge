@@ -620,11 +620,13 @@ fn plain<'a>(
                         .overlays(clipping.filter(|_| whole), coverage.filter(|_| whole))
                         .region_overlays(surfaces.region_clipping, surfaces.region_coverage)
                         // At 100% and above a gesture's plan draws the visible region at full
-                        // scale, placed at its rectangle of the stage.
+                        // scale, placed at its rectangle of the stage, and settles into the
+                        // view's own frame through the dissolve.
                         .gpu_preview(gpu)
                         .gpu_hold(gpu_hold)
                         .gpu_tag(gpu_tag)
                         .gpu_warm(gpu_warm)
+                        .dissolve(dissolve)
                         .into()
                     };
                 let handles = mask_draft
