@@ -67,6 +67,9 @@ pub struct BoundaryRequest {
     /// A lens or perspective warp's geometry tail, whose coordinate grid the worker computes with
     /// the boundary, once per draft and off the interface thread; `None` for an affine tail.
     pub(crate) warp: Option<super::GpuGeometry>,
+    /// How the boundary's texels are held: `f32` for a plan of the linear path, half floats
+    /// otherwise.
+    pub format: crate::BoundaryFormat,
 }
 
 /// A draft's GPU preview: the plan a tick is drawn from, or why the gesture takes the CPU path,
@@ -315,6 +318,7 @@ pub(crate) fn plan_preview(
                     "the GPU preview's boundary layer {boundary} is past the stack"
                 ))
             })?,
+            format: crate::BoundaryFormat::of(fit.linear),
             warp: plan
                 .geometry
                 .affine()

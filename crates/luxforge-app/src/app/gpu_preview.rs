@@ -431,7 +431,8 @@ impl Editor {
                 let version = self.gpu.versions;
                 let size = (frame.width, frame.height);
                 let origin = frame.origin;
-                match GpuBoundary::new(frame.texels, size.0, size.1, version) {
+                let format = gpu_plan::boundary_format(frame.format);
+                match GpuBoundary::new(frame.texels, size.0, size.1, version, format) {
                     Some(boundary) => {
                         drag.held = Some(Held {
                             key: outcome.key,

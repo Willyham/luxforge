@@ -1,7 +1,7 @@
 //! The GPU preview's boundary against the CPU's own input of its layer: the value a colour layer
 //! receives inside its run, unclamped, on both pixel domains, through exact steps and after a
 //! resample.
-use super::boundary::BoundaryFrame;
+use super::boundary::{BoundaryFormat, BoundaryFrame};
 use super::tests::{
     colour_recipe, colour_registry, exposure_layer, fitted_crop, gradient, positional_layer, turn,
     varied,
@@ -29,6 +29,14 @@ fn position(compiled: &Compiled, layer: usize) -> (usize, usize) {
     }
 }
 
+/// The boundary format of `source`'s path: half floats on the byte path, `f32` on the linear.
+fn format_of(source: RenderSource<'_>) -> BoundaryFormat {
+    match source {
+        RenderSource::Byte(_) => BoundaryFormat::Half,
+        RenderSource::Linear { .. } => BoundaryFormat::Float,
+    }
+}
+
 /// The boundary of layer `layer` of `recipe` over `source`, at the exact stage and whole.
 fn boundary(
     registry: &ModuleRegistry,
@@ -53,6 +61,7 @@ fn boundary(
             whole,
             Region::whole(whole),
             position(&rendered.compiled, layer),
+            format_of(source),
         )
         .unwrap()
 }
@@ -73,7 +82,15 @@ fn assert_layer_input(
     assert_eq!((frame.width, frame.height), (stage.width, stage.height));
     for y in 0..stage.height {
         for x in 0..stage.width {
-            let expected = input.linear(x, y).unwrap().unwrap().map(|v| held(v as f32));
+            // A half float on the byte path; on the linear path the value itself.
+            let expected = input
+                .linear(x, y)
+                .unwrap()
+                .unwrap()
+                .map(|v| match frame.format {
+                    BoundaryFormat::Half => held(v as f32),
+                    BoundaryFormat::Float => v as f32,
+                });
             assert_eq!(
                 frame.texel(x, y).unwrap(),
                 expected,
@@ -176,16 +193,64 @@ fn a_boundary_behind_a_resample_is_the_frame_it_writes() {
     }
 }
 
-/// A value past the half range is held at the largest finite half of its sign, never infinite.
+/// A value past the half range is held at the largest finite half of its sign, never infinite;
+/// an `f32` texel holds every value as it is, a near-black one's sign included.
 #[test]
 fn a_value_past_the_half_range_is_held_finite() {
     let mut texel = [0u8; 8];
-    super::boundary::write_texel(&mut texel, [1.0e9, -1.0e9, 0.5]);
+    super::boundary::write_texel(BoundaryFormat::Half, &mut texel, [1.0e9, -1.0e9, 0.5]);
     assert_eq!(
-        super::boundary::read_texel(&texel),
+        super::boundary::read_texel(BoundaryFormat::Half, &texel),
         [65504.0, -65504.0, 0.5]
     );
     assert_eq!(&texel[6..8], &half::f16::ONE.to_bits().to_le_bytes());
+    let mut texel = [0u8; 16];
+    let values = [1.0e9, -3.0e-8, 0.1];
+    super::boundary::write_texel(BoundaryFormat::Float, &mut texel, values);
+    assert_eq!(
+        super::boundary::read_texel(BoundaryFormat::Float, &texel).map(f32::to_bits),
+        values.map(f32::to_bits)
+    );
+    assert_eq!(&texel[12..16], &1.0f32.to_le_bytes());
+}
+
+/// A boundary is asked in its path's format: half floats of a byte render, `f32` of a linear one.
+#[test]
+fn a_boundary_in_another_paths_format_is_refused() {
+    let registry = colour_registry();
+    let jpeg = gradient(9, 7);
+    let planes = varied(9, 7);
+    let recipe = colour_recipe(vec![exposure_layer(&[0.1]), positional_layer()]);
+    let context = RenderContext::new();
+    let whole = Stage {
+        width: 9,
+        height: 7,
+    };
+    for (source, wrong) in [
+        (RenderSource::Byte(&jpeg), BoundaryFormat::Float),
+        (
+            RenderSource::Linear {
+                image: &planes,
+                settings: LinearSettings::default(),
+            },
+            BoundaryFormat::Half,
+        ),
+    ] {
+        let rendered = render(
+            &registry,
+            source,
+            &recipe,
+            RenderOptions::exact(&Cancel::never()),
+            &context,
+        )
+        .unwrap();
+        let at = position(&rendered.compiled, 1);
+        assert!(
+            rendered
+                .boundary(&rendered.compiled, whole, Region::whole(whole), at, wrong)
+                .is_err()
+        );
+    }
 }
 
 /// The render a boundary is asked of must render the compilation it names.
@@ -214,7 +279,13 @@ fn a_boundary_of_another_compilation_is_refused() {
     };
     assert!(
         rendered
-            .boundary(&other, whole, Region::whole(whole), (0, 0))
+            .boundary(
+                &other,
+                whole,
+                Region::whole(whole),
+                (0, 0),
+                BoundaryFormat::Half
+            )
             .is_err()
     );
 }

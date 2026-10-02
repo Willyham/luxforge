@@ -3558,7 +3558,21 @@ The Z6 and Air 2S rows are their `lens reset` cells: as the corpus states them t
 
 ### Isolated near-black pixels
 
-The largest maxima, 108.8 on the Air 2S and 11.2 on the Z6 with all three fields, are single pixels: 45 of the Air 2S's 1.96 M pixels differ by more than eight codes, 14 of the Z6's 1.51 M. Each is near black in a RAW's shadow noise, where a channel's sign straddles zero, so the luminance the luminance-ratio reconstruction divides by is near zero and the half-float boundary moves it enough to change the ratio entirely (the CPU frame itself draws, for example, saturated magenta there). No statistic the limits judge notices them. Holding a RAW boundary as `rgba32float` would remove them at twice the boundary's memory.
+The largest maxima, 108.8 on the Air 2S and 11.2 on the Z6 with all three fields, are single pixels: 45 of the Air 2S's 1.96 M pixels differ by more than eight codes, 14 of the Z6's 1.51 M. They need not be dark in the boundary (the Air 2S's reach 0.2 to 0.3 there): Dehaze at +100 recovers them to channels of mixed sign whose luminance is within about 10⁻⁴ of zero, and Texture's and Clarity's luminance-ratio reconstruction divides by that luminance. The half-float boundary's rounding, amplified by Dehaze's recovery, moves the luminance by more than its size, often across zero, so the ratio changes entirely: the Air 2S's worst pixel leaves Dehaze with luminance 1.2 × 10⁻⁴ over the half-float boundary and −3.1 × 10⁻⁶ over the same pixels unrounded, and draws green where the CPU draws saturated magenta (`gpu_presence_near_black_pixels`). No statistic the limits judge notices them.
+
+`gpu_presence_near_black_variants` measured two remedies over every Presence recipe on the three RAWs (21 cells, lens reset) at Fit and on two full-resolution crops the size of the 1796 × 1660 100% view, the centre and the region round the Fit frame's worst pixel, each rendered by the CPU as a photograph of its own (so Dehaze's light is the crop's on both sides). The CPU frame is unchanged throughout.
+
+| Boundary and near-black rule | Outliers, Fit / 100% centre / 100% worst | Largest ΔE00, Fit / 100% |
+| --- | ---: | ---: |
+| `rgba16float`, the CPU's rule (additive below 10⁻⁶), as today | 63 / 67 / 89 | 108.8 / 25.2 |
+| `rgba32float`, the CPU's rule | 3 / 0 / 2 | 17.3 / 8.1 |
+| `rgba16float`, additive below 10⁻⁵ | 150 / 183 / 184 | 108.8 / 25.2 |
+| `rgba16float`, additive below 10⁻⁴ | 1,458 / 2,181 / 1,913 | 96.5 / 66.9 |
+| `rgba16float`, additive below 10⁻³ | 18,693 / 40,453 / 27,760 | 96.5 / 83.0 |
+| `rgba16float`, additive below 2⁻⁸ of \|r\| + \|g\| + \|b\| | 686 / 781 / 834 | 96.5 / 82.5 |
+| `rgba32float`, additive below 2⁻⁸ of \|r\| + \|g\| + \|b\| | 665 / 796 / 827 | 96.5 / 82.5 |
+
+The four statistics barely move: over the 21 cells an `rgba32float` boundary leaves the worst mean, p99 and signed ΔL\* within 0.01 of today's at both scales, and lowers the Air 2S's worst block with all three fields at Fit from 0.50 to 0.25. Of its remaining pixels, the Z6's leaves Dehaze with luminance 1.2 × 10⁻⁶, beside the CPU's own 10⁻⁶ threshold, where the filters' `f32` arithmetic decides which side of it a frame falls. It holds eight bytes a texel more: all three fields charge 77.8 rather than 65.7 MB on the Z6 at Fit and 95.9 rather than 80.2 MB on the X100VI and Air 2S, and 137.0 rather than 113.1 MB over a 1796 × 1660 region at 100%, before any margin the region adds, of the 256 MiB budget. A wider near-black rule in the GPU apply cannot follow the CPU, which keeps the ratio down to 10⁻⁶ (the GPU already holds the CPU's rule and its constant): every rule measured adds outliers. The format of the linear path's boundary is undecided.
 
 ### Reproducing it
 
@@ -3568,9 +3582,15 @@ LUXFORGE_GPU_CORPUS_OUTPUT=/tmp/NEW_DIR \
 LUXFORGE_GENERATED_FIXTURES=fixtures/generated \
 LUXFORGE_RAW_MANIFEST=/path/to/raw-manifest.json \
 cargo test -p luxforge-app gpu_presence_corpus -- --ignored --nocapture
+LUXFORGE_GPU_CORPUS_OUTPUT=/tmp/NEW_DIR \
+LUXFORGE_RAW_MANIFEST=/path/to/raw-manifest.json \
+cargo test -p luxforge-app gpu_presence_near_black_variants -- --ignored --nocapture
+LUXFORGE_GPU_CORPUS_OUTPUT=/tmp/NEW_DIR LUXFORGE_NEAR_BLACK_CELL=presence-all/raw-air2s \
+LUXFORGE_RAW_MANIFEST=/path/to/raw-manifest.json \
+cargo test -p luxforge-app gpu_presence_near_black_pixels -- --ignored --nocapture
 ```
 
-The corpus run writes `<recipe>--<source>[--lens-reset]-{cpu,gpu}.png`, `cells.json` with each cell's figures, its charge and every gap's reason, and `commands.sh`, one `cargo xtask preview-error --class spatial` line per pair, run from the repository root.
+The near-black run writes `near-black.json`, every cell's figures for every variant at each scale. The corpus run writes `<recipe>--<source>[--lens-reset]-{cpu,gpu}.png`, `cells.json` with each cell's figures, its charge and every gap's reason, and `commands.sh`, one `cargo xtask preview-error --class spatial` line per pair, run from the repository root.
 
 ## Method
 

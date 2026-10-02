@@ -47,6 +47,16 @@ pub(crate) fn install_output_encoding() -> bool {
     luxforge_ui::photo_surface::install_output_encoding(output_encoding())
 }
 
+/// The core's boundary format as the surface's: half floats on the byte path, `f32` on the linear.
+pub(crate) fn boundary_format(
+    format: luxforge_core::BoundaryFormat,
+) -> luxforge_ui::photo_surface::BoundaryFormat {
+    match format {
+        luxforge_core::BoundaryFormat::Half => luxforge_ui::photo_surface::BoundaryFormat::Half,
+        luxforge_core::BoundaryFormat::Float => luxforge_ui::photo_surface::BoundaryFormat::Float,
+    }
+}
+
 /// Why the surface cannot run a plan the core answered. Each is a stage the surface does not
 /// have yet, or a boundary that does not fit the plan; the gesture takes the CPU path.
 #[derive(Clone, Debug, PartialEq, Eq)]

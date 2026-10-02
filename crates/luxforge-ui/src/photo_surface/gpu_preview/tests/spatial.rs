@@ -201,7 +201,14 @@ fn a_spatial_step_is_checked_against_the_spatial_convention() {
 /// validates with the naga wgpu uses.
 #[test]
 fn the_frame_and_every_pass_assemble_into_modules_that_validate() {
-    let boundary = GpuBoundary::from_linear(1, 1, 1, [[0.0; 4]]).unwrap();
+    let boundary = GpuBoundary::from_linear(
+        crate::photo_surface::BoundaryFormat::Half,
+        1,
+        1,
+        1,
+        [[0.0; 4]],
+    )
+    .unwrap();
     let plan = spatial_plan(&boundary);
     let frame = assemble(&plan.steps).expect("the frame's module");
     validate(&frame).expect("the frame's module validates");
@@ -264,27 +271,33 @@ fn a_reduced_plane_holds_the_stage_blocks_its_boundary_reaches() {
 /// horizontal mean over seven texels of the red and green, edge-clamped, and the lanes' half
 /// scaled into the blue, then clamped and encoded.
 fn expected_codes(values: &[[f32; 3]]) -> Vec<[u8; 3]> {
+    expected_codes_with(values, 0.5, RADIUS, SCALE)
+}
+
+/// The codes the test plan draws with its colour step's `factor`, the mean's `radius` and the
+/// apply's `scale`.
+fn expected_codes_with(values: &[[f32; 3]], factor: f32, radius: u32, scale: f32) -> Vec<[u8; 3]> {
     let side = SIDE as i64;
     let input = |x: i64, y: i64, channel: usize| {
         let x = x.clamp(0, side - 1);
         let value = values[(y * side + x) as usize][channel];
         // The pass held the copy as a half float.
-        let halved = f64::from((value * 0.5).clamp(0.0, 1.0));
+        let halved = f64::from((value * factor).clamp(0.0, 1.0));
         f64::from(half::f16::from_f64(halved).to_f32())
     };
     (0..side * side)
         .map(|index| {
             let (x, y) = (index % side, index / side);
             let mean = |channel| {
-                (-(RADIUS as i64)..=RADIUS as i64)
+                (-(radius as i64)..=radius as i64)
                     .map(|dx| input(x + dx, y, channel))
                     .sum::<f64>()
-                    / f64::from(2 * RADIUS + 1)
+                    / f64::from(2 * radius + 1)
             };
             [
                 srgb::code(mean(0).clamp(0.0, 1.0)),
                 srgb::code(mean(1).clamp(0.0, 1.0)),
-                srgb::code(0.5 * f64::from(SCALE)),
+                srgb::code(0.5 * f64::from(scale)),
             ]
         })
         .collect()
@@ -304,6 +317,7 @@ fn boundary_values() -> (GpuBoundary, Vec<[f32; 3]>) {
         });
     }
     let boundary = GpuBoundary::from_linear(
+        crate::photo_surface::BoundaryFormat::Half,
         SIDE,
         SIDE,
         1,
@@ -514,4 +528,95 @@ fn pass_pipelines_depend_on_their_kernel_and_shape_alone() {
         3,
         "the stage keeps each module once"
     );
+}
+
+/// A tick runs only the passes whose words, upstream or inputs changed since the planes the
+/// applies read were written: a change to the apply's word alone encodes no compute pass and
+/// still draws what it asks, while a change to the passes' words, to a step before, or to the
+/// boundary runs them again.
+#[test]
+fn a_change_to_an_apply_alone_runs_no_pass() {
+    let test = "a_change_to_an_apply_alone_runs_no_pass";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let (boundary, values) = boundary_values();
+    let shaped = |boundary: &GpuBoundary, factor: f32, radius: u32, scale_by: f32| {
+        let mut spatial = test_spatial();
+        spatial.program.words = vec![radius, scale_by.to_bits()];
+        GpuPlan {
+            boundary: boundary.clone(),
+            texels: TexelMap::IDENTITY,
+            steps: vec![
+                GpuStep::colour(scale(factor)),
+                GpuStep::Spatial(Box::new(spatial)),
+            ],
+        }
+    };
+    let dispatched = |pipeline: &PhotoPipeline| {
+        pipeline.surfaces[&ID]
+            .gpu
+            .as_ref()
+            .and_then(|slot| slot.spatial.as_ref())
+            .expect("a spatial slot")
+            .dispatched
+    };
+    let other = GpuBoundary::from_linear(
+        crate::photo_surface::BoundaryFormat::Half,
+        SIDE,
+        SIDE,
+        boundary.version() + 1,
+        values.iter().map(|[r, g, b]| [*r, *g, *b, 1.0]),
+    )
+    .unwrap();
+    // Each tick: its plan, and the passes it runs.
+    let ticks = [
+        ("the first", shaped(&boundary, 0.5, RADIUS, SCALE), 3),
+        ("the apply's word", shaped(&boundary, 0.5, RADIUS, 0.25), 0),
+        (
+            "the apply's word again",
+            shaped(&boundary, 0.5, RADIUS, 0.75),
+            0,
+        ),
+        ("the passes' word", shaped(&boundary, 0.5, 1, 0.75), 3),
+        ("the step before", shaped(&boundary, 0.25, 1, 0.75), 3),
+        ("the boundary", shaped(&other, 0.25, 1, 0.75), 3),
+        ("the apply's word last", shaped(&other, 0.25, 1, SCALE), 0),
+    ];
+    let mut before = 0;
+    for (change, plan, runs) in ticks {
+        let GpuStep::Colour { program, .. } = &plan.steps[0] else {
+            unreachable!()
+        };
+        let factor = f32::from_bits(program.words[0]);
+        let GpuStep::Spatial(spatial) = &plan.steps[1] else {
+            unreachable!()
+        };
+        let (radius, scale_by) = (
+            spatial.program.words[0],
+            f32::from_bits(spatial.program.words[1]),
+        );
+        let drawn = paint(&device, &queue, &mut pipeline, &primitive(ID, Some(plan)));
+        assert_eq!(
+            diagnostics(&pipeline, ID).drawn_path,
+            Some(DrawingPath::Gpu),
+            "{change}"
+        );
+        let now = dispatched(&pipeline);
+        assert_eq!(now - before, runs, "{change}");
+        before = now;
+        let expected = expected_codes_with(&values, factor, radius, scale_by);
+        for (index, (pixel, [r, g, b])) in drawn.chunks_exact(4).zip(&expected).enumerate() {
+            for (drawn, wanted) in [(pixel[2], *r), (pixel[1], *g), (pixel[0], *b)] {
+                assert!(
+                    drawn.abs_diff(wanted) <= 1,
+                    "{change}: texel ({}, {}): {drawn} against {wanted}",
+                    index as u32 % SIDE,
+                    index as u32 / SIDE
+                );
+            }
+        }
+        eprintln!("{test}: {change}: {runs} passes");
+    }
 }
