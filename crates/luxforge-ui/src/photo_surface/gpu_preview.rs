@@ -578,10 +578,14 @@ pub(super) struct GpuSlot {
     spatial: Option<Box<SpatialSlot>>,
 }
 
-/// A slot's spatial planes and, for one compiled sequence, the groups that bind them.
+/// A slot's spatial planes and, for one compiled sequence, the groups that bind them, with which
+/// passes a tick still needs to run.
 pub(super) struct SpatialSlot {
     planes: spatial::Planes,
     groups: Option<(u64, spatial::Groups)>,
+    schedule: spatial::Schedule,
+    /// How many passes the slot has dispatched.
+    dispatched: u64,
 }
 
 impl GpuSlot {
@@ -1324,6 +1328,7 @@ impl PhotoPipeline {
                 pipeline_id,
                 spatial::Groups::new(device, &pipeline.spatial, &spatial.planes),
             ));
+            spatial.schedule.reset();
             changed = true;
         }
         if let Some(spatial) = slot.spatial.as_mut() {
@@ -1364,14 +1369,20 @@ impl PhotoPipeline {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("luxforge.gpu_preview.encoder"),
             });
+            if let Some(spatial) = slot.spatial.as_mut()
+                && let Some((_, groups)) = spatial.groups.as_ref()
+            {
+                let run = spatial
+                    .schedule
+                    .run(&plan.steps, words, blocks, plan.boundary.version);
+                spatial.dispatched +=
+                    groups.encode(&mut encoder, &pipeline.spatial, &slot.bindings, &run);
+            }
             let groups = slot
                 .spatial
                 .as_ref()
                 .and_then(|spatial| spatial.groups.as_ref())
                 .map(|(_, groups)| groups);
-            if let Some(groups) = groups {
-                groups.encode(&mut encoder, &pipeline.spatial, &slot.bindings);
-            }
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("luxforge.gpu_preview.pass"),
@@ -1583,6 +1594,8 @@ impl PhotoPipeline {
             slot.spatial = Some(Box::new(SpatialSlot {
                 planes: spatial::Planes::create(device, key),
                 groups: None,
+                schedule: spatial::Schedule::default(),
+                dispatched: 0,
             }));
             slot.evaluated = None;
         }
@@ -1662,6 +1675,7 @@ impl PhotoPipeline {
 /// charge it: the boundary, the output in the photograph's size bucket and its placement uniform,
 /// the words and blocks buffers at their capacities, and a spatial step's planes. For a report and
 /// the tests that hold it to the slot's own figure.
+#[cfg(any(test, feature = "qualification"))]
 pub(super) fn slot_charge(device: &wgpu::Device, plan: &GpuPlan) -> Result<u64, GpuFallback> {
     let (width, height) = plan.boundary.size();
     let limit = device.limits().max_texture_dimension_2d;
