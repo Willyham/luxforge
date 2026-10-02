@@ -178,6 +178,9 @@ pub(crate) struct GpuSettle {
     cancelled: u64,
     /// The newest GPU frame's replacement, as evidence records it.
     last: Option<Value>,
+    /// What the surface last showed over the photograph, whose changes evidence records
+    /// (`gpu_settle_view`): when a view input took effect, beside or apart from a dissolve.
+    view: Option<SettleView>,
 }
 
 impl GpuSettle {
@@ -254,6 +257,12 @@ impl Editor {
         let fit = matches!(self.session.preview.view.zoom, luxforge_core::Zoom::Fit)
             && self.presentation.compare_after.is_none();
         let view = (clip_flags(&self.session.workspace), fit);
+        if self.gpu_settle.view.replace(view) != Some(view) {
+            self.event(
+                "gpu_settle_view",
+                || json!({"clipping": view.0, "fit": view.1}),
+            );
+        }
         if let Some(running) = self.gpu_settle.running.clone() {
             let elapsed_ms = running.dissolve.started.elapsed().as_secs_f64() * 1000.0;
             let detail = |why: &str| {
