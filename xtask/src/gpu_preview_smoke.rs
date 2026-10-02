@@ -736,8 +736,9 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
 /// The checks of one drag made by [`drag_steps`] named `name`: each GPU tick drawn with no preview
 /// job, from a plan whose light is stored or taken on the GPU as `approximate` says, running at most
 /// [`GAIN_PASSES`] compute passes a tick when the drag moves only a gain (`gain_only`), and the
-/// last one's pixels the CPU frame its release commits. When its sequence was `warmed`, no frame
-/// of the drag waits for it to compile.
+/// last one's pixels the CPU frame its release commits. When its sequence was `warmed` and the warm
+/// list had finished compiling as the drag began, no frame of the drag waits for it to compile;
+/// when it had not, how many sequences were still compiling is recorded.
 pub(crate) fn presence_drag_checks(
     launch: &Checked,
     checks: &mut Checks,
@@ -746,7 +747,31 @@ pub(crate) fn presence_drag_checks(
     gain_only: bool,
     warmed: bool,
 ) -> Result {
-    if warmed {
+    // Whether the warm list had finished compiling when the drag began, from the compile figures
+    // of the frame before its first tick's. Only then is a tick waiting on `compiling` a miss: a
+    // host under load can leave warmed sequences compiling past the quiet before the drag, and a
+    // tick that draws the CPU frame naming `compiling` meanwhile is the right fallback, so that is
+    // recorded rather than failed. That warming covers a drag's shapes is proven in the core
+    // (`the_warmed_plans_hold_a_spatial_layers_drags`), not by timing.
+    let first = launch.index(&format!("{name}-first"))?;
+    let before = &launch.frames[first.checked_sub(1).ok_or("a frame before the drag")?];
+    let figures = &before.state()["surface"]["gpu"];
+    let figure = |key: &str| figures[key].as_u64().unwrap_or(0);
+    let pending = figure("gpu_preview_compiles").saturating_sub(figure("gpu_preview_compiled"));
+    if warmed && pending > 0 {
+        checks.note(
+            launch.at(&format!("{name}-first"))?,
+            &format!("the {name} drag began with warmed sequences still compiling"),
+            json!({
+                "pending": pending,
+                "compiles": figure("gpu_preview_compiles"),
+                "compiled": figure("gpu_preview_compiled"),
+                "after": launch.names()[first - 1],
+                "waited_ms": before["step"]["request"]["wait"]["ms"],
+            }),
+        );
+    }
+    if warmed && pending == 0 {
         for step in ["first", "held", "gpu-1", "gpu-2"].map(|step| format!("{name}-{step}")) {
             let gpu = &launch.at(&step)?.state()["surface"]["gpu"];
             let compiling = json!({"reason": "compiling"});
