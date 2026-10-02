@@ -173,6 +173,8 @@ impl GpuPreviews {
             "drag": {
                 "draft_id": drag.draft.as_str(),
                 "plan_revision": drag.plan.as_ref().map(|(_, revision)| *revision),
+                // A global estimate taken on the GPU rather than read from the store.
+                "approximate": drag.plan.as_ref().map(|(plan, _)| plan.approximate()),
                 "surface_revision": drag.surface.as_ref().map(|(_, revision)| *revision),
                 "boundary": drag.held.as_ref().map(|held| json!({
                     "version": held.boundary.version(),

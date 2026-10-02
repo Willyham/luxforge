@@ -533,6 +533,8 @@ pub(super) struct Figures {
     in_use: AtomicU64,
     peak: AtomicU64,
     passes: AtomicU64,
+    /// Compute passes the spatial steps have dispatched.
+    spatial_passes: AtomicU64,
     /// Sequences handed to the compile thread.
     compiles: AtomicU64,
     /// Compiles finished, and the longest and the last one's wall-clock time, in microseconds.
@@ -558,6 +560,10 @@ impl Figures {
 
     pub(super) fn passes(&self) -> u64 {
         self.passes.load(Ordering::Acquire)
+    }
+
+    pub(super) fn spatial_passes(&self) -> u64 {
+        self.spatial_passes.load(Ordering::Acquire)
     }
 
     pub(super) fn compiles(&self) -> u64 {
@@ -1691,8 +1697,13 @@ impl PhotoPipeline {
                 let run = spatial
                     .schedule
                     .run(&plan.steps, words, blocks, plan.boundary.version);
-                spatial.dispatched +=
+                let dispatched =
                     groups.encode(&mut encoder, &pipeline.spatial, &slot.bindings, &run);
+                spatial.dispatched += dispatched;
+                self.figures
+                    .preview
+                    .spatial_passes
+                    .fetch_add(dispatched, Ordering::Relaxed);
             }
             let groups = slot
                 .spatial
