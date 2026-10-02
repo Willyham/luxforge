@@ -6,7 +6,7 @@ use super::super::super::{PhotoPipeline, PhotoPrimitive};
 use super::super::tests::{
     ID, SIDE, diagnostics, headless, identity, own_pipeline, paint, plan, primitive, scale, settle,
 };
-use super::super::{GpuBoundary, GpuProgram};
+use super::super::{DrawingPath, GpuBoundary, GpuProgram};
 use super::*;
 use iced::widget::shader::{Primitive as _, Viewport};
 use iced::{Rectangle, Size};
@@ -126,6 +126,53 @@ fn the_drawn_gpu_frame_reports_its_completion_figure() {
     }
     paint(&device, &queue, &mut pipeline, &primitive(ID, None));
     assert_eq!(diagnostics(&pipeline, ID).gpu_preview_done_us, None);
+    settle(&pipeline);
+}
+
+/// Each frame's first draw is stamped once, as evidence times an input to the draw of the frame
+/// that carries it: a redraw of the same GPU frame keeps its instant, a plan over a new boundary
+/// and the CPU frame drawn after it are each stamped anew, on the path that drew them.
+#[test]
+fn a_frame_is_stamped_at_its_first_draw_and_kept_across_redraws() {
+    let test = "a_frame_is_stamped_at_its_first_draw_and_kept_across_redraws";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let boundary = |version| {
+        GpuBoundary::from_linear(
+            crate::photo_surface::BoundaryFormat::Half,
+            SIDE,
+            SIDE,
+            version,
+            std::iter::repeat_n([0.2, 0.4, 0.6, 1.0], (SIDE * SIDE) as usize),
+        )
+        .expect("a boundary")
+    };
+    let (first, second) = (boundary(1), boundary(2));
+    let draw = |pipeline: &mut PhotoPipeline, plan| {
+        paint(&device, &queue, pipeline, &primitive(ID, plan));
+        diagnostics(pipeline, ID)
+            .first_drawn
+            .expect("a frame drawn")
+    };
+    let drawn = draw(&mut pipeline, Some(plan(&first, vec![identity()])));
+    assert_eq!(
+        (drawn.path, drawn.boundary, drawn.picture),
+        (DrawingPath::Gpu, Some(1), None)
+    );
+    let redrawn = draw(&mut pipeline, Some(plan(&first, vec![identity()])));
+    assert_eq!(
+        redrawn, drawn,
+        "a redraw of the same frame keeps its first draw"
+    );
+    let next = draw(&mut pipeline, Some(plan(&second, vec![identity()])));
+    assert_eq!(next.boundary, Some(2));
+    assert!(next.at > drawn.at, "a new frame is stamped anew");
+    let cpu = draw(&mut pipeline, None);
+    assert_eq!((cpu.path, cpu.boundary), (DrawingPath::Cpu, None));
+    assert!(cpu.picture.is_some() && cpu.at > next.at);
+    assert_eq!(draw(&mut pipeline, None), cpu);
     settle(&pipeline);
 }
 
