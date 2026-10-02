@@ -114,6 +114,11 @@ pub struct GpuPreview {
     pub answer: GpuAnswer,
     /// The boundary of [`Self::answer`]'s plan; `None` when there is no plan.
     pub boundary: Option<BoundaryRequest>,
+    /// At a percentage zoom, when [`Self::answer`]'s plan holds a drafted restoration or spatial
+    /// layer in its GPU shape: the plan of that layer in the CPU's shape, the units its values
+    /// need, from the same boundary. Over the region's window the GPU shape charges the planes of
+    /// its units at zero too, so the desktop draws this one when only it fits the budget.
+    pub cpu_shape: Option<Box<GpuPlan>>,
 }
 
 /// Whether a layer at `stage` has a GPU shape (`CompileStage::gpu_shape`): a colour or finish
@@ -380,6 +385,7 @@ pub(crate) fn plan_preview(
         return Ok(GpuPreview {
             answer: GpuAnswer::Fallback(GpuFallback::Unchanged),
             boundary: None,
+            cpu_shape: None,
         });
     };
     let fit = FitStage::of_view(evaluation, view)?;
@@ -423,6 +429,40 @@ pub(crate) fn plan_preview(
             },
         };
     }
+    // At a percentage zoom a drafted restoration or spatial layer's GPU shape charges the planes
+    // of its units at zero over the window too: the plan of its CPU shape rides beside it, from
+    // the same boundary, when it holds less.
+    let spatial = |effect: &str| {
+        matches!(
+            registry.effect_stage(effect),
+            Some(EffectStage::Restoration | EffectStage::Spatial)
+        )
+    };
+    let mut cpu_shape = None;
+    if let (GpuAnswer::Plan(plan), Some(_), Some(drafted)) = (&answer, fit.region, &drafted_layer)
+        && request.drafted.is_some()
+        && spatial(&drafted.effect)
+    {
+        let unshaped = GpuPlanRequest {
+            drafted: None,
+            ..request
+        };
+        let extent = |plan: &GpuPlan| {
+            plan.spatial
+                .as_ref()
+                .map(|spatial| (spatial.passes.len(), spatial.applies.len()))
+        };
+        if let GpuAnswer::Plan(smaller) = gpu_plan_with(
+            registry,
+            &planned,
+            unshaped,
+            Some(fit.estimates(evaluation)),
+        )? && extent(&smaller) != extent(plan)
+            && !smaller.approximate()
+        {
+            cpu_shape = Some(smaller);
+        }
+    }
     let boundary_request = match &answer {
         GpuAnswer::Fallback(_) => None,
         GpuAnswer::Plan(plan) => Some(BoundaryRequest {
@@ -447,6 +487,7 @@ pub(crate) fn plan_preview(
     Ok(GpuPreview {
         answer,
         boundary: boundary_request,
+        cpu_shape,
     })
 }
 

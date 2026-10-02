@@ -757,6 +757,68 @@ fn gpu_preview_a_region_over_the_budget_keeps_the_cpu_path_and_names_it() {
     finish(editor, catalog);
 }
 
+/// At a percentage zoom a Presence drag is drawn in its GPU shape, every unit, while that slot
+/// fits the budget; when it does not but the CPU's shape does, in the CPU's shape, the units its
+/// values need, from the same held boundary; and when neither fits it takes the CPU path naming the
+/// budget with the least it would take, the CPU shape's.
+#[test]
+fn gpu_preview_a_percentage_spatial_drag_draws_the_shape_the_budget_holds() {
+    let catalog = catalog("shape");
+    let (mut editor, _, _) = real_photo(&catalog);
+    editor.gpu.surface = Some(SurfaceReport::default());
+    zoomed(&mut editor);
+    let shape = |editor: &Editor| editor.gpu.summary()["drag"]["shape"].clone();
+    let applies = |editor: &Editor| {
+        editor.surfaces().gpu.and_then(|plan| {
+            plan.steps.iter().find_map(|step| match step {
+                luxforge_ui::photo_surface::GpuStep::Spatial(spatial) => {
+                    Some(spatial.applies.len())
+                }
+                _ => None,
+            })
+        })
+    };
+    // Neither shape fits.
+    editor.gpu.budget = Some(1);
+    let _ = slide(&mut editor, PRESENCE, "clarity", 20.0);
+    let (_, cpu) = editor.gpu.region_charge().expect("a region plan");
+    let summary = editor.gpu.summary();
+    assert_eq!(summary["drag"]["reason"], "budget-exceeded");
+    assert_eq!(shape(&editor), "cpu");
+    assert_eq!(summary["drag"]["over_budget"]["requested"], json!(cpu));
+    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is asked for");
+    // The budget holds the GPU shape.
+    editor.gpu.budget = Some(u64::MAX);
+    let _ = slide(&mut editor, PRESENCE, "clarity", 25.0);
+    assert_eq!(shape(&editor), "gpu");
+    let (_, gpu) = editor.gpu.region_charge().expect("a region plan");
+    assert!(
+        cpu < gpu,
+        "the CPU shape takes {cpu} B, the GPU shape {gpu} B"
+    );
+    assert_eq!(editor.gpu.ticks().2, 1, "the boundary is asked for");
+    deliver_until(&mut editor, "the region's boundary", |editor| {
+        editor.gpu.holds_boundary()
+    });
+    surface_ready(&mut editor);
+    let version = editor.gpu.held_version();
+    let log = attach_log(&mut editor);
+    let _ = slide(&mut editor, PRESENCE, "clarity", 30.0);
+    assert_eq!(applies(&editor), Some(3), "Dehaze, Texture and Clarity");
+    // Only the CPU's shape fits: Clarity alone, over the same boundary.
+    editor.gpu.budget = Some(cpu);
+    let _ = slide(&mut editor, PRESENCE, "clarity", 35.0);
+    assert_eq!(shape(&editor), "cpu");
+    assert_eq!(applies(&editor), Some(1), "Clarity alone");
+    assert_eq!(editor.gpu.held_version(), version, "the same boundary");
+    let records = logged(&mut editor, &log);
+    assert_eq!(jobs(&records), 0, "no preview job per tick");
+    let ticks = events(&records, "gpu_preview_tick");
+    assert!(ticks.iter().all(|tick| tick["path"] == "gpu"), "{ticks:?}");
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    finish(editor, catalog);
+}
+
 /// Every family of the qualification corpus at 100%, in the largest window the owner's display
 /// holds: the worker's exact visible region against the GPU frame of the region plan over the
 /// region's own boundary, each held to its recipe's class, and a slot over the GPU-preview budget
