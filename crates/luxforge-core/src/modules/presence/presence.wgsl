@@ -45,6 +45,12 @@ const lf_presence_finish_band_encoded: u32 = 5u;
 const lf_presence_reduce_encoded: u32 = 0u;
 const lf_presence_reduce_dehaze: u32 = 1u;
 const lf_presence_reduce_dark: u32 = 2u;
+const lf_presence_reduce_none: u32 = 3u;
+
+// Dehaze's apply modes.
+const lf_presence_dehaze_add: u32 = 0u;
+const lf_presence_dehaze_remove: u32 = 1u;
+const lf_presence_dehaze_none: u32 = 2u;
 
 // ---- The shared colour equations ---------------------------------------------------------------
 
@@ -257,9 +263,13 @@ fn lf_presence_block(at: vec2<i32>, s: i32) -> vec4<i32> {
 // The mean over one block of the unit's input, stored by form: the encoded luminance's mean
 // (Clarity); the colour's mean beside its dark channel normalized by the atmospheric light in plane
 // 0, `min_c clamp(mean_c / A_c, 0, 1)` (Dehaze); or the colour's mean beside its channel minimum,
-// which the atmospheric light is chosen by (the global estimate). Words: 0 the form, 1 s.
+// which the atmospheric light is chosen by (the global estimate); or nothing, where the light the
+// estimate is for is stored. Words: 0 the form, 1 s.
 fn lf_presence_reduce(at: vec2<i32>, words: u32, block: u32) {
     let form = lf_word(words);
+    if form == lf_presence_reduce_none {
+        return;
+    }
     let s = i32(lf_word(words + 1u));
     let cut = lf_presence_block(at, s);
     var sum = vec3<f32>(0.0);
@@ -331,12 +341,17 @@ fn lf_presence_at_or_above(lane: u32, chunk: u32, n: u32, width: u32, threshold:
 // divisor))` blocks by that minimum, ties taken in row-major order, each channel floored. Every
 // lane takes a contiguous run of blocks; the threshold is found by bisecting the keys, so the
 // selection is the CPU's exactly. Stores `(A, 1)` at texel (0, 0). Words: 0 the divisor (the
-// reciprocal of the selected fraction), 1 the minimum count, 2 the floor.
+// reciprocal of the selected fraction), 1 the minimum count, 2 the floor, 3 whether the light is
+// given (1) or not (0), 4..6 the light given.
+//
+// A given light, the one the CPU stored, is written in place of one found: plane 0 holds nothing
+// then, and the search runs over no blocks, because every lane must still reach each barrier.
 fn lf_presence_atmosphere(at: vec2<i32>, words: u32, block: u32) {
     let lane = u32(at.x);
     let size = lf_plane_size(0u);
     let width = u32(size.x);
-    let n = width * u32(size.y);
+    let given = lf_word(words + 3u) == 1u;
+    let n = select(width * u32(size.y), 0u, given);
     let divisor = lf_word(words);
     let wanted = clamp(max(lf_word(words + 1u), (n + divisor - 1u) / divisor), 1u, n);
     let chunk = (n + 255u) / 256u;
@@ -397,15 +412,15 @@ fn lf_presence_atmosphere(at: vec2<i32>, words: u32, block: u32) {
     let red = lf_presence_total(lane, sum.x);
     let green = lf_presence_total(lane, sum.y);
     let blue = lf_presence_total(lane, sum.z);
-    let light = max(vec3<f32>(red, green, blue) / f32(wanted), vec3<f32>(lf_f32(words + 2u)));
+    let found = max(vec3<f32>(red, green, blue) / f32(wanted), vec3<f32>(lf_f32(words + 2u)));
+    let light = select(
+        found,
+        vec3<f32>(lf_f32(words + 4u), lf_f32(words + 5u), lf_f32(words + 6u)),
+        given,
+    );
     if lane == 0u {
         lf_store(vec2<i32>(0), vec4<f32>(light, 1.0));
     }
-}
-
-// A global estimate the CPU stored, written as the plane the units read. Words: 0..3 the values.
-fn lf_presence_constant(at: vec2<i32>, words: u32, block: u32) {
-    lf_store(at, vec4<f32>(lf_f32(words), lf_f32(words + 1u), lf_f32(words + 2u), 1.0));
 }
 
 // ---- The applies -------------------------------------------------------------------------------
@@ -426,12 +441,16 @@ fn lf_presence_upsample(slot: u32, at: vec2<i32>, s: f32) -> f32 {
 
 // Dehaze: the transmission refined on the reduced grid in plane `planes`, upsampled and held in
 // [floor, 1], inverts the veil for a positive amount and deepens it for a negative one, with the
-// atmospheric light in plane `planes + 1`. Words: 0 positive (1) or not (0), 1 the veil factor, 2
-// the transmission floor, 3 the reduction.
+// atmospheric light in plane `planes + 1`, and leaves its input alone for an amount of 0. Words: 0
+// the mode (add, remove or none), 1 the veil factor, 2 the transmission floor, 3 the reduction.
 fn lf_presence_dehaze(rgb: vec3<f32>, at: vec2<i32>, words: u32, block: u32, planes: u32) -> vec3<f32> {
+    let mode = lf_word(words);
+    if mode == lf_presence_dehaze_none {
+        return rgb;
+    }
     let t = clamp(lf_presence_upsample(planes, at, lf_f32(words + 3u)), lf_f32(words + 2u), 1.0);
     let light = lf_plane(planes + 1u, vec2<i32>(0)).xyz;
-    if lf_word(words) == 1u {
+    if mode == lf_presence_dehaze_remove {
         return (rgb - light) / t + light;
     }
     let veil = t * lf_f32(words + 1u);

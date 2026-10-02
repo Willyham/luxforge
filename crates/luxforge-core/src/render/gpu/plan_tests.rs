@@ -966,7 +966,8 @@ fn clipping_marks_agree_with_the_output_quantizer() {
 
 /// Dehaze's atmospheric light is the store's when it holds the one a CPU frame of the boundary's
 /// content at the plan's stage prepared, which every Dehaze amount shares; otherwise the GPU takes
-/// it from the stage it holds and the plan says the frame is approximate.
+/// it from the stage it holds and the plan says the frame is approximate. The passes are the same
+/// either way, so a store that fills mid-gesture changes words alone.
 #[test]
 fn a_dehaze_light_is_the_stores_when_it_holds_the_boundarys_content() {
     use super::{GpuEstimates, GpuPassShape, gpu_plan_with};
@@ -1003,8 +1004,19 @@ fn a_dehaze_light_is_the_stores_when_it_holds_the_boundarys_content() {
         .find(|pass| pass.kernel == "lf_presence_atmosphere")
         .expect("the estimate's pass");
     assert_eq!(atmosphere.shape, GpuPassShape::Workgroup);
+    // What decides the operation's pipelines: every pass but its words, and every apply.
+    let pipelines = |step: &super::GpuSpatial| {
+        let passes: Vec<_> = step
+            .passes
+            .iter()
+            .map(|pass| (pass.kernel, pass.inputs.clone(), pass.output, pass.shape))
+            .collect();
+        (step.planes.clone(), passes, step.applies.clone())
+    };
+    let estimated = pipelines(step);
 
-    // The CPU frame stores it; the plan then writes the stored light as its words.
+    // The CPU frame stores it; the plan then writes the stored light as its words, through the
+    // same passes, which reduce nothing.
     Render::compiled(
         RenderSource::Byte(&source),
         registry
@@ -1026,8 +1038,15 @@ fn a_dehaze_light_is_the_stores_when_it_holds_the_boundarys_content() {
         let plan = plan_of(&with(1, json!({"dehaze": dehaze})));
         assert!(!plan.approximate(), "dehaze {dehaze}");
         let step = plan.spatial.as_ref().unwrap();
-        assert_eq!(step.passes[0].kernel, "lf_presence_constant");
-        let light = &step.words[step.passes[0].words..step.passes[0].words + 3];
+        assert_eq!(
+            pipelines(step),
+            estimated,
+            "the same passes whether the light is stored or not"
+        );
+        let [reduce, atmosphere] = [0, 1].map(|pass| step.passes[pass].words);
+        assert_eq!(step.words[reduce], 3, "the reduction reduces nothing");
+        assert_eq!(step.words[atmosphere + 3], 1, "the light is given");
+        let light = &step.words[atmosphere + 4..atmosphere + 7];
         assert_eq!(
             light
                 .iter()
