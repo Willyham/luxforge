@@ -605,6 +605,12 @@ fn a_change_to_an_apply_alone_runs_no_pass() {
         );
         let now = dispatched(&pipeline);
         assert_eq!(now - before, runs, "{change}");
+        // The figure evidence reports is the slot's own.
+        assert_eq!(
+            diagnostics(&pipeline, ID).gpu_preview_spatial_passes,
+            now,
+            "{change}"
+        );
         before = now;
         let expected = expected_codes_with(&values, factor, radius, scale_by);
         for (index, (pixel, [r, g, b])) in drawn.chunks_exact(4).zip(&expected).enumerate() {
