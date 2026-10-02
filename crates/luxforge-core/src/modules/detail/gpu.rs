@@ -429,4 +429,89 @@ mod tests {
         assert_eq!(first.describe(), second.describe());
         assert_eq!(first.gpu(None), second.gpu(None));
     }
+
+    /// A Detail layer's GPU shape — what a GPU plan's drafted layer is compiled in — holds both
+    /// units and noise reduction's every level whatever the values, one at zero the identity
+    /// through its words, so a drag across a strength's zero, Colour's included, changes words
+    /// alone. The CPU's shape holds only the units, and the levels, the values need.
+    #[test]
+    fn the_gpu_shape_holds_both_units_and_every_level() {
+        use crate::modules::{Processing, SpatialOperation, ToolModule};
+        use serde_json::json;
+        let module = super::super::DetailModule::new();
+        let compile = |payload: serde_json::Value, shaped: bool, at: SamplingScale| {
+            let stage = crate::Stage {
+                width: 600,
+                height: 400,
+            };
+            let full = crate::Stage {
+                width: (600.0 / at.x) as u32,
+                height: (400.0 / at.y) as u32,
+            };
+            let at = crate::CompileStage::sampled(stage, full).shaped(shaped);
+            match module
+                .compile(super::super::DETAIL_EFFECT, 1, &payload, at)
+                .unwrap()
+            {
+                Processing::Spatial(operation) => operation,
+                other => panic!("expected a spatial operation, got {other:?}"),
+            }
+        };
+        let described = |operation: &SpatialOperation| {
+            operation
+                .units()
+                .iter()
+                .map(|unit| unit.gpu(None).expect("a description"))
+                .collect::<Vec<_>>()
+        };
+        let structure = |units: &[GpuSpatialUnit]| {
+            units
+                .iter()
+                .map(|unit| {
+                    let passes: Vec<_> = unit
+                        .passes
+                        .iter()
+                        .map(|pass| (pass.kernel, pass.inputs.clone(), pass.output))
+                        .collect();
+                    (unit.planes.clone(), passes, unit.apply.clone())
+                })
+                .collect::<Vec<_>>()
+        };
+        for at in [scale(1.0, 1.0), scale(0.29, 0.31)] {
+            let neutral = described(&compile(json!({}), true, at));
+            assert_eq!(neutral.len(), 2, "noise reduction and sharpening");
+            for payload in [
+                json!({"sharpening": 40}),
+                json!({"luminance": 30}),
+                json!({"colour": 30}),
+                json!({"sharpening": 150, "luminance": 100, "colour": 100, "radius": 3}),
+            ] {
+                let shaped = described(&compile(payload.clone(), true, at));
+                assert_eq!(structure(&shaped), structure(&neutral), "{payload}");
+            }
+            // Every threshold and the gain are zero: no level shrinks and nothing is sharpened.
+            let [denoise, sharpen] = [&neutral[0], &neutral[1]];
+            let shrinks: Vec<&GpuPass> = denoise
+                .passes
+                .iter()
+                .filter(|pass| pass.kernel == "lf_detail_shrink")
+                .collect();
+            assert_eq!(shrinks.len(), 4, "every level");
+            for pass in shrinks {
+                assert_eq!(denoise.words[pass.words + 1..pass.words + 3], [0, 0]);
+            }
+            assert_eq!(sharpen.words[sharpen.apply.words], 0.0_f32.to_bits());
+            // The CPU's shape: nothing at zero, one unit for one strength, and three levels
+            // without Colour.
+            assert!(compile(json!({}), false, at).is_empty());
+            let cpu = described(&compile(json!({"luminance": 30}), false, at));
+            assert_eq!(cpu.len(), 1);
+            let levels = cpu[0]
+                .passes
+                .iter()
+                .filter(|pass| pass.kernel == "lf_detail_shrink")
+                .count();
+            assert_eq!(levels, 3);
+        }
+    }
 }

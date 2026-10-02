@@ -491,6 +491,14 @@ fn main_result() -> Result {
                 .transpose()?;
             let moving_pan = a.flag("--moving-pan");
             let mask_overlay = a.flag("--mask-overlay");
+            let contend = a
+                .value("--contend")?
+                .map(|value| value.to_string_lossy().parse::<usize>())
+                .transpose()?;
+            let warm_ms = a
+                .value("--warm")?
+                .map(|value| value.to_string_lossy().parse::<u64>())
+                .transpose()?;
             let control = match a.value("--control")?.as_deref().and_then(OsStr::to_str) {
                 None | Some("slider") => editor_latency::Control::Slider,
                 Some("curve") => editor_latency::Control::Curve,
@@ -561,6 +569,8 @@ fn main_result() -> Result {
                     zoom,
                     moving_pan,
                     mask_overlay,
+                    contend,
+                    warm_ms,
                 },
             )?;
         }

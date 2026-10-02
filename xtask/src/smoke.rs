@@ -1271,7 +1271,7 @@ const GPU_PREVIEW_OFF: &str = "gpu-preview-off";
 const GPU_PREVIEW_ON: &str = "gpu-preview-on";
 
 /// The GPU-preview budget the editor records, its recorded default.
-const GPU_PREVIEW_BUDGET: u64 = 256 * 1024 * 1024;
+const GPU_PREVIEW_BUDGET: u64 = 640 * 1024 * 1024;
 
 /// The open's frame, then the palette's GPU preview entry run twice: off, then on again. Each
 /// toggle is captured on the session round trip it sends.

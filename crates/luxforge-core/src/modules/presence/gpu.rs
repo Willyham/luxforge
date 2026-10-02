@@ -48,6 +48,11 @@ const FINISH_BAND_ENCODED: u32 = 5;
 const REDUCE_ENCODED: u32 = 0;
 const REDUCE_DEHAZE: u32 = 1;
 const REDUCE_DARK: u32 = 2;
+const REDUCE_NONE: u32 = 3;
+// Dehaze's apply: deepen the veil, remove it, or, for an amount of 0, nothing.
+const DEHAZE_ADD: u32 = 0;
+const DEHAZE_REMOVE: u32 = 1;
+const DEHAZE_NONE: u32 = 2;
 
 const ACROSS: GpuPassShape = GpuPassShape::Texels { span: [RUN, 1] };
 const DOWN: GpuPassShape = GpuPassShape::Texels { span: [1, RUN] };
@@ -246,7 +251,8 @@ pub(super) fn clarity(unit: &clarity::Clarity) -> GpuSpatialUnit {
 
 /// Dehaze: the atmospheric light (the stored estimate, or one taken on the GPU from the 16x
 /// reduction of the stage it holds), the 4x reduction normalized by it, the dark channel's box
-/// minimum and the raw transmission, its guided refinement, and the apply upsampling it.
+/// minimum and the raw transmission, its guided refinement, and the apply upsampling it, which
+/// leaves its input alone for an amount of 0.
 pub(super) fn dehaze(unit: &dehaze::Dehaze, global: Option<&Global>) -> GpuSpatialUnit {
     let s = dehaze::REDUCTION as u32;
     let (light, reduced, minima, raw, sums, coefficients, smoothed, refined) =
@@ -270,47 +276,51 @@ pub(super) fn dehaze(unit: &dehaze::Dehaze, global: Option<&Global>) -> GpuSpati
     ];
     let mut words = Words::default();
     let mut passes = Vec::new();
+    // The CPU unit narrows the stored f64 light to f32 where it applies it. An amount-0 unit,
+    // which only the GPU shape holds, reads no light, so it is given one.
+    let neutral = unit.neutral();
     let stored = global
         .map(Global::values)
-        .filter(|values| values.len() == 3);
-    match stored {
-        Some(values) => {
-            // The CPU unit narrows the stored f64 light to f32 where it applies it.
-            let w = words.push(
-                &values
-                    .iter()
-                    .map(|value| Word::F(*value as f32))
-                    .collect::<Vec<_>>(),
-            );
-            passes.push(pass("lf_presence_constant", &[], light, w, EACH, false));
-        }
-        None => {
-            let estimate = planes.len();
-            planes.push(plane(
-                GpuPlaneFormat::Quad,
-                crate::modules::ESTIMATE_REDUCTION,
-                true,
-            ));
-            let w = words.push(&[
-                Word::U(REDUCE_DARK),
-                Word::U(crate::modules::ESTIMATE_REDUCTION),
-            ]);
-            passes.push(pass("lf_presence_reduce", &[], estimate, w, EACH, true));
-            let w = words.push(&[
-                Word::U(dehaze::ATMOSPHERE_DIVISOR),
-                Word::U(dehaze::ATMOSPHERE_MIN_COUNT as u32),
-                Word::F(dehaze::A_FLOOR as f32),
-            ]);
-            passes.push(pass(
-                "lf_presence_atmosphere",
-                &[estimate],
-                light,
-                w,
-                GpuPassShape::Workgroup,
-                false,
-            ));
-        }
-    }
+        .filter(|values| values.len() == 3)
+        .map(|values| values.iter().map(|value| *value as f32).collect::<Vec<_>>())
+        .or_else(|| neutral.then(|| vec![1.0; 3]));
+    // The passes are the same whether the light is stored or taken here, so a CPU frame that
+    // stores it mid-gesture never changes the program sequence, and a warm list planned before
+    // the committed stack's frame fills the store plans the sequence its drags draw. A stored
+    // light reduces nothing, and the atmosphere's pass writes it from its words.
+    let estimate = planes.len();
+    planes.push(plane(
+        GpuPlaneFormat::Quad,
+        crate::modules::ESTIMATE_REDUCTION,
+        true,
+    ));
+    let w = words.push(&[
+        Word::U(if stored.is_some() {
+            REDUCE_NONE
+        } else {
+            REDUCE_DARK
+        }),
+        Word::U(crate::modules::ESTIMATE_REDUCTION),
+    ]);
+    passes.push(pass("lf_presence_reduce", &[], estimate, w, EACH, true));
+    let given = stored.as_deref().unwrap_or(&[0.0; 3]);
+    let w = words.push(&[
+        Word::U(dehaze::ATMOSPHERE_DIVISOR),
+        Word::U(dehaze::ATMOSPHERE_MIN_COUNT as u32),
+        Word::F(dehaze::A_FLOOR as f32),
+        Word::U(u32::from(stored.is_some())),
+        Word::F(given[0]),
+        Word::F(given[1]),
+        Word::F(given[2]),
+    ]);
+    passes.push(pass(
+        "lf_presence_atmosphere",
+        &[estimate],
+        light,
+        w,
+        GpuPassShape::Workgroup,
+        false,
+    ));
     let w = words.push(&[Word::U(REDUCE_DEHAZE), Word::U(s)]);
     passes.push(pass("lf_presence_reduce", &[light], reduced, w, EACH, true));
     let r_dark = radius(unit.dark_radius());
@@ -372,8 +382,13 @@ pub(super) fn dehaze(unit: &dehaze::Dehaze, global: Option<&Global>) -> GpuSpati
         DOWN,
         false,
     ));
+    let mode = match (neutral, unit.positive()) {
+        (true, _) => DEHAZE_NONE,
+        (false, true) => DEHAZE_REMOVE,
+        (false, false) => DEHAZE_ADD,
+    };
     let apply = words.push(&[
-        Word::U(u32::from(unit.positive())),
+        Word::U(mode),
         Word::F(unit.veil()),
         Word::F(dehaze::T_FLOOR),
         Word::F(s as f32),
@@ -423,6 +438,7 @@ pub(crate) fn functions() -> (Vec<&'static str>, Vec<&'static str>) {
 mod tests {
     use super::*;
     use crate::{colour::luma, render::gpu::testing::wgsl_constant};
+    use serde_json::json;
 
     /// The constants the program restates are the `f32` values the CPU units hold, bit for bit.
     #[test]
@@ -474,6 +490,7 @@ mod tests {
                 clarity(&clarity::Clarity::new(-100.0, long_side)),
                 dehaze(&dehaze::Dehaze::new(100.0, long_side), Some(&light)),
                 dehaze(&dehaze::Dehaze::new(-100.0, long_side), None),
+                dehaze(&dehaze::Dehaze::new(0.0, long_side), None),
             ] {
                 let mut written = vec![false; unit.planes.len()];
                 for pass in &unit.passes {
@@ -495,5 +512,79 @@ mod tests {
                 assert!(unit.apply.words < unit.words.len());
             }
         }
+    }
+
+    /// A Presence layer's GPU shape — what a GPU plan's drafted layer is compiled in — holds all
+    /// three units whatever the values, an amount-0 one the identity through its words, with the
+    /// same planes, passes and applies whether the atmospheric light is stored or not: a drag
+    /// across zero, or a light stored mid-gesture, changes words alone. The CPU's shape holds only
+    /// the units the values move.
+    #[test]
+    fn the_gpu_shape_holds_every_unit_whatever_the_values() {
+        use crate::modules::{Processing, SpatialOperation, ToolModule};
+        let module = super::super::PresenceModule::new();
+        let at = crate::CompileStage::exact(crate::Stage {
+            width: 600,
+            height: 400,
+        });
+        let light = Global::new(vec![0.7, 0.75, 0.8]).unwrap();
+        let compile = |payload: serde_json::Value, shaped: bool| -> SpatialOperation {
+            match module
+                .compile(
+                    super::super::PRESENCE_EFFECT,
+                    1,
+                    &payload,
+                    at.shaped(shaped),
+                )
+                .unwrap()
+            {
+                Processing::Spatial(operation) => operation,
+                other => panic!("expected a spatial operation, got {other:?}"),
+            }
+        };
+        let described = |operation: &SpatialOperation, global: Option<&Global>| {
+            operation
+                .units()
+                .iter()
+                .map(|unit| unit.gpu(global).expect("a description"))
+                .collect::<Vec<_>>()
+        };
+        let structure = |units: &[GpuSpatialUnit]| {
+            units
+                .iter()
+                .map(|unit| {
+                    let passes: Vec<_> = unit
+                        .passes
+                        .iter()
+                        .map(|pass| (pass.kernel, pass.inputs.clone(), pass.output, pass.shape))
+                        .collect();
+                    (unit.planes.clone(), passes, unit.apply.clone())
+                })
+                .collect::<Vec<_>>()
+        };
+        let neutral = described(&compile(json!({}), true), None);
+        assert_eq!(neutral.len(), 3, "dehaze, texture and clarity");
+        for payload in [
+            json!({"dehaze": 40}),
+            json!({"clarity": 5}),
+            json!({"texture": -100, "clarity": 100, "dehaze": -100}),
+        ] {
+            for global in [None, Some(&light)] {
+                let shaped = described(&compile(payload.clone(), true), global);
+                assert_eq!(structure(&shaped), structure(&neutral), "{payload}");
+            }
+        }
+        // Each amount-0 unit is the identity through its words: Dehaze's apply mode, with a light
+        // given so nothing is reduced or estimated, and Texture's and Clarity's zero gain.
+        let [dehaze, texture, clarity] = [0, 1, 2].map(|unit| &neutral[unit]);
+        assert_eq!(dehaze.words[dehaze.apply.words], DEHAZE_NONE);
+        assert_eq!(dehaze.words[dehaze.passes[0].words], REDUCE_NONE);
+        assert!(!dehaze.estimated);
+        for unit in [texture, clarity] {
+            assert_eq!(unit.words[unit.apply.words], 0.0_f32.to_bits());
+        }
+        // The CPU's shape.
+        assert!(compile(json!({}), false).is_empty());
+        assert_eq!(compile(json!({"clarity": 5}), false).len(), 1);
     }
 }

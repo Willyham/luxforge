@@ -16,7 +16,9 @@
 //! A test with no adapter prints that it was skipped and asserts nothing: the skip is the report,
 //! and `cargo test` counting it as passed does not make it GPU evidence.
 use super::gpu_plan::surface_plan;
-use super::gpu_qualification::{Stream, codes, corpus_at_fit, figures, grid, worst};
+use super::gpu_qualification::{
+    Stream, codes, corpus_at_fit, drafted_against_cpu, figures, grid, worst,
+};
 use luxforge_core::{
     Cancel, DETAIL_EFFECT, GPU_PROGRAMS, GpuAnswer, GpuPlanRequest, Layer, LinearImage,
     LinearSettings, ModuleRegistry, Recipe, RenderContext, RenderOptions, RenderSource, SnapshotId,
@@ -1166,9 +1168,10 @@ fn gpu_detail_pass_pipelines_are_shared() {
 }
 
 /// What the photo surface's slot drawing both Detail units charges the GPU-preview budget at Fit:
-/// the 60 MP JPEG's Fit stage and the evidence window's whole Fit bounds fit it; a stage past about
-/// 3 MP does not, so the surface refuses it before creating anything and draws the CPU's frame,
-/// naming the budget (`spatial_planes_are_charged_released_and_refused_past_the_budget`).
+/// the 60 MP JPEG's Fit stage, the evidence window's whole Fit bounds and a 3026 × 1826 region (the
+/// largest 100% window measured) fit it; a stage past about 8 MP does not, so the surface refuses it
+/// before creating anything and draws the CPU's frame, naming the budget
+/// (`spatial_planes_are_charged_released_and_refused_past_the_budget`).
 #[test]
 fn gpu_detail_planes_are_charged_to_the_budget() {
     let test = "gpu_detail_planes_are_charged_to_the_budget";
@@ -1180,8 +1183,10 @@ fn gpu_detail_planes_are_charged_to_the_budget() {
     for ((width, height), full, fits) in [
         ((1716, 1030), (10000, 6000), true),
         ((1716, 1508), (4024, 3537), true),
-        ((2400, 1600), (6000, 4000), false),
-        ((3464, 2309), (10000, 6667), false),
+        ((2400, 1600), (6000, 4000), true),
+        ((3026, 1826), (10000, 6000), true),
+        ((3464, 2309), (10000, 6667), true),
+        ((4000, 2667), (10000, 6667), false),
     ] {
         let plan = planned(
             gpu_plan(
@@ -1208,6 +1213,67 @@ fn gpu_detail_planes_are_charged_to_the_budget() {
         );
         assert_eq!(planes, 68 * u64::from(width * height));
         assert_eq!(charged <= budget, fits, "{width}x{height}");
+    }
+}
+
+/// A drafted layer's GPU shape — both units and every level of noise reduction, one at zero its
+/// identity through its words — draws what the CPU's shape of the same values draws: a layer at
+/// zero everywhere draws its input bit for bit, and so does every stack whose noise reduction runs
+/// in both shapes, its fourth level at zero included. Sharpening alone runs after noise reduction's
+/// identity in the drafted shape and reads its input through that unit's apply, in pass and frame
+/// modules of their own, where Metal's fast math compiles the same arithmetic a little differently:
+/// that difference is measured and held far inside the spatial limits. At full resolution and at a
+/// Fit proxy's scale, on the linear path.
+#[test]
+fn gpu_detail_the_drafted_shape_draws_what_the_cpus_does() {
+    let test = "gpu_detail_the_drafted_shape_draws_what_the_cpus_does";
+    let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
+        return;
+    };
+    eprintln!("{test}: adapter {}", qualifier.adapter());
+    let (width, height) = (480, 320);
+    let pixels = photograph(width, height, 5);
+    for request in [
+        GpuPlanRequest::exact(0, stage(width, height)),
+        GpuPlanRequest::fit(0, stage(width, height), stage(1655, 1103)),
+    ] {
+        let request = request.linear();
+        let drafted = |payload: Value| {
+            drafted_against_cpu(
+                &qualifier,
+                &recipe(payload),
+                request,
+                (width, height),
+                &pixels,
+            )
+        };
+        assert!(
+            drafted(json!({})).input,
+            "{request:?}: a neutral layer draws its input"
+        );
+        for (payload, first) in [
+            (json!({"luminance": 40}), true),
+            (json!({"colour": 30}), true),
+            (moderate(), true),
+            (json!({"sharpening": 60}), false),
+        ] {
+            let drawn = drafted(payload.clone());
+            eprintln!(
+                "{test}: {} {payload}: {} of {} values differ, largest {:.2e}; codes by {}",
+                if request.proxy { "proxy" } else { "full" },
+                drawn.values,
+                drawn.of,
+                drawn.largest,
+                drawn.code
+            );
+            if first {
+                assert_eq!(drawn.values, 0, "{request:?}: {payload}");
+            }
+            assert!(
+                drawn.largest <= 3.0e-5 && drawn.code <= 1,
+                "{request:?}: {payload}: {drawn:?}"
+            );
+        }
     }
 }
 
@@ -1386,6 +1452,102 @@ mod drags {
             super::super::message::draft::DraftMessage::Cancel,
         ));
         finish(editor, catalog);
+    }
+
+    /// What the surface keys the spatial step's pipelines by: its clamp and mask, its planes, its
+    /// passes and its applies, but for every word's value.
+    fn spatial_shape(editor: &Editor) -> Option<String> {
+        editor.surfaces().gpu.and_then(|plan| {
+            plan.steps.iter().find_map(|step| match step {
+                GpuStep::Spatial(spatial) => {
+                    let passes: Vec<_> = spatial
+                        .passes
+                        .iter()
+                        .map(|pass| {
+                            let (kernel, inputs) = (&pass.kernel, &pass.inputs);
+                            format!(
+                                "{kernel} {inputs:?} {} {} {:?}",
+                                pass.output, pass.source, pass.shape
+                            )
+                        })
+                        .collect();
+                    Some(format!(
+                        "clamps {} masked {}: {:?} {passes:?} {:?}",
+                        spatial.clamps,
+                        spatial.mask.is_some(),
+                        spatial.planes,
+                        spatial.applies
+                    ))
+                }
+                _ => None,
+            })
+        })
+    }
+
+    /// A drag of a Detail strength or a Presence field from zero, through values of both signs
+    /// where the field has them, back to zero and off it again: every tick's spatial step has the
+    /// shape of the first, so the surface draws all of them from one compiled sequence, and every
+    /// tick after the boundary is held is drawn on the GPU with no preview job. Colour crossing
+    /// zero adds and removes noise reduction's coarsest level on the CPU; Dehaze crossing it adds
+    /// and removes a unit, and its first frame stores the atmospheric light the later ticks read.
+    #[test]
+    fn gpu_detail_and_presence_drags_across_zero_keep_one_sequence() {
+        for (name, committed, action, field, values) in [
+            (
+                "colour",
+                Some(("set-detail", "sharpening", 40.0)),
+                "set-detail",
+                "colour",
+                [30.0, 60.0, 0.0, 25.0, 0.0],
+            ),
+            (
+                "dehaze",
+                None,
+                "set-presence",
+                "dehaze",
+                [40.0, -30.0, 0.0, 20.0, 0.0],
+            ),
+        ] {
+            let catalog = catalog(&format!("across-{name}"));
+            let (mut editor, _, _) = real_photo(&catalog);
+            let _ = editor.update(Message::View(ViewMessage::Resized(900.0, 600.0)));
+            if let Some((action, field, value)) = committed {
+                let _ = slide(&mut editor, action, field, value);
+                let _ = let_go(&mut editor, action, field);
+                assert!(run_commit(&mut editor));
+                deliver_until(&mut editor, "the committed frame", |editor| {
+                    !editor.gpu.has_drag() && editor.presentation.presented_settled
+                });
+            }
+            editor.gpu.surface = Some(SurfaceReport::default());
+            let _ = slide(&mut editor, action, field, values[0]);
+            deliver_until(&mut editor, "the boundary", |editor| {
+                editor.gpu.holds_boundary()
+            });
+            let first = spatial_shape(&editor).expect("the first tick's spatial step");
+            surface_ready(&mut editor);
+            let log = attach_log(&mut editor);
+            for &value in &values[1..] {
+                let _ = slide(&mut editor, action, field, value);
+                assert_eq!(
+                    spatial_shape(&editor).as_ref(),
+                    Some(&first),
+                    "{name} at {value}: one sequence"
+                );
+            }
+            let records = logged(&mut editor, &log);
+            let ticks = events(&records, "gpu_preview_tick");
+            assert_eq!(ticks.len(), values.len() - 1, "{name}");
+            assert!(
+                ticks.iter().all(|tick| tick["path"] == "gpu"),
+                "{name}: {ticks:?}"
+            );
+            assert_eq!(jobs(&records), 0, "{name}: no preview job per tick");
+            let _ = editor.update(Message::Draft(
+                super::super::message::draft::DraftMessage::Cancel,
+            ));
+            finish(editor, catalog);
+        }
     }
 }
 

@@ -83,19 +83,35 @@ impl FieldPatch for Detail {
                 "Detail sampling scales must be finite and in (0, 1]",
             ));
         }
+        // The CPU omits a unit at zero, and noise reduction's coarsest level while Colour is zero.
+        // The GPU shape holds both units and every level, a zero one changing nothing, so a drag
+        // across zero keeps one program sequence (`CompileStage::gpu_shape`).
+        let every = at.gpu_shape;
         let mut units: Vec<Arc<dyn SpatialUnit>> = Vec::with_capacity(2);
         let (luminance, colour) = (values.number(LUMINANCE), values.number(COLOUR));
-        if luminance != 0.0 || colour != 0.0 {
+        let (luminance_detail, colour_detail) = (
+            values.number(LUMINANCE_DETAIL),
+            values.number(COLOUR_DETAIL),
+        );
+        if every {
+            units.push(Arc::new(denoise::Denoise::every_level(
+                luminance,
+                luminance_detail,
+                colour,
+                colour_detail,
+                at.scale,
+            )));
+        } else if luminance != 0.0 || colour != 0.0 {
             units.push(Arc::new(denoise::Denoise::new(
                 luminance,
-                values.number(LUMINANCE_DETAIL),
+                luminance_detail,
                 colour,
-                values.number(COLOUR_DETAIL),
+                colour_detail,
                 at.scale,
             )));
         }
         let sharpening = values.number(SHARPENING);
-        if sharpening != 0.0 {
+        if every || sharpening != 0.0 {
             units.push(Arc::new(sharpen::Sharpen::new(
                 sharpening,
                 values.number(RADIUS),

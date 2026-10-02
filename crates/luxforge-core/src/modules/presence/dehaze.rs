@@ -123,6 +123,11 @@ impl Dehaze {
     pub(super) fn positive(&self) -> bool {
         self.amount > 0.0
     }
+
+    /// Whether the amount is 0: a unit only the GPU shape holds, which changes nothing.
+    pub(super) fn neutral(&self) -> bool {
+        self.amount == 0.0
+    }
 }
 
 impl SpatialUnit for Dehaze {
