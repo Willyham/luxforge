@@ -47,7 +47,7 @@ Export jobs are records in the catalog owner's one job table and run on its `exp
 
 ## Desktop
 
-The title bar's Export button, beside Open, offers **Export JPEG…** and **Export JPEG, keep metadata…**. `Cmd+E` runs the first and `Shift+Cmd+E` the second; the command palette lists both. Each asks `export.plan` for the suggested name, opens the native save dialog in the original's folder with that name, and sends `export.jpeg` for the displayed entry: the current entry, or the entry being previewed from history. The status bar reads *Exporting DSC_0042-edited.jpg…*, then *Exported DSC_0042-edited.jpg · 6000 × 4000 · 8.4 MB*, or the refusal's reason. The Performance section shows the running export with its phase, as it shows every other long job.
+The title bar's Export button, beside Open, offers **Export JPEG…** and **Export JPEG, keep metadata…**. `Cmd+E` runs the first and `Shift+Cmd+E` the second; the command palette lists both. Each asks `export.plan` for the suggested name, opens the native save dialog in the original's folder with that name, and sends `export.jpeg` for the displayed entry: the current entry, or the entry being previewed from history. While the Before/After slider is open, export uses its fixed After entry, including when the divider shows only Before. The status bar reads *Exporting DSC_0042-edited.jpg…*, then *Exported DSC_0042-edited.jpg · 6000 × 4000 · 8.4 MB*, or the refusal's reason. The Performance section shows the running export with its phase, as it shows every other long job.
 
 ## Bounds and cost
 

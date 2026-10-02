@@ -435,7 +435,7 @@ Nothing downloads, loads or leaves your machine until you ask. When a module fir
 
 ## Exporting
 
-The Export button beside Open in the title bar opens a small menu with **Export JPEG…** and **Export JPEG, keep metadata…**; Escape or a click elsewhere closes it. Cmd+E runs the first and Shift+Cmd+E the second, and Cmd+K lists both. Either exports the entry on screen: the current state, or the history entry you are previewing. A draft is never exported; the export is the saved entry behind it.
+The Export button beside Open in the title bar opens a small menu with **Export JPEG…** and **Export JPEG, keep metadata…**; Escape or a click elsewhere closes it. Cmd+E runs the first and Shift+Cmd+E the second, and Cmd+K lists both. Either exports the entry on screen: the current state, or the history entry you are previewing. While the Before/After slider is open, export writes the fixed After entry, even with the divider moved to show only Before. A draft is never exported; the export is the saved entry behind it.
 
 A save dialog opens in the original's folder with `<name>-edited.jpg` suggested, or `<name>-edited-2.jpg` and so on when that name is taken; any other name or folder can be chosen there. The file is a quality-90 JPEG in sRGB with its colour profile embedded, at the photograph's own size after orientation and crop: nothing is resized. While it is written the status bar reads "Exporting <name>…", then "Exported <name> · width × height · size", or why it failed, and the Performance section lists the running export with its phase.
 

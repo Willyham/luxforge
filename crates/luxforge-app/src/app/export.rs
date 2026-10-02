@@ -1,9 +1,10 @@
 //! Exporting the displayed entry as a JPEG ([export design](../../../../docs/design/export.md#desktop)).
 //!
 //! The desktop holds no export logic. One chain of owner requests runs off the update loop:
-//! `export.plan` for the displayed entry's suggested name, the native save dialog in the original's
-//! folder, and `export.jpeg` for that entry with the chosen destination, asked again once the source
-//! is prepared when the owner answers `preparation-required`. The job then runs on the core's export
+//! `export.plan` for the displayed entry's suggested name (the fixed After entry during slider
+//! comparison), the native save dialog in the original's folder, and `export.jpeg` for that entry
+//! with the chosen destination, asked again once the source is prepared when the owner answers
+//! `preparation-required`. The job then runs on the core's export
 //! lane, and the desktop reads it with `job.read` until it ends, on a timer that exists only
 //! while this window's export is queued or running (performance rule 8). The status bar says what
 //! happened; the Performance section lists the running job from `activity.list` like any other.
@@ -127,7 +128,21 @@ impl Editor {
         }
     }
 
-    /// Start exporting the displayed entry: the current entry, or the one previewed from history.
+    /// The saved photograph being exported, including the comparison's fixed After entry.
+    pub(super) fn export_entry(&self) -> Option<EntryId> {
+        self.session
+            .preview
+            .comparison
+            .as_ref()
+            .filter(|comparison| {
+                self.document.state.as_ref().map(|state| &state.asset.id)
+                    == Some(&comparison.asset_id)
+            })
+            .map(|comparison| comparison.after_entry.clone())
+            .or_else(|| self.displayed_entry())
+    }
+
+    /// Start exporting the displayed saved entry, or the comparison's fixed After entry.
     /// `destination` bypasses the save dialog, for an evidence step; without it the dialog chooses.
     pub(crate) fn export_start(
         &mut self,
@@ -139,7 +154,7 @@ impl Editor {
             self.status.text = refusal;
             return Task::none();
         }
-        let Some(entry) = self.displayed_entry() else {
+        let Some(entry) = self.export_entry() else {
             self.status.text = "No history entry is displayed".into();
             return Task::none();
         };

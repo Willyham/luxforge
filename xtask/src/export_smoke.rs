@@ -2,8 +2,9 @@
 //! fixture, brightens it by one stop and crops it to 16:9, so the output differs from the original
 //! in pixels, in orientation and in size; opens the title bar's Export menu; exports the displayed
 //! entry with metadata stripped and again keeping it, into the run's evidence directory through the
-//! chain the menu starts (only the save dialog is bypassed); and exports once more with Keep
-//! metadata to the stripped file's name, which the core refuses without touching the file.
+//! chain the menu starts (only the save dialog is bypassed); exports while the comparison selects
+//! Before, checking identical edited JPEG bytes; and exports once more with Keep metadata to the
+//! stripped file's name, which the core refuses without touching the file.
 //!
 //! The written files are checked independently of the editor: each is decoded here with the `image`
 //! crate and must have the dimensions of the captured output stage and of the job's own record, the
@@ -21,6 +22,7 @@ use luxforge_evidence as script;
 pub const FIXTURE: &str = "fixtures/s0/orientation-6.jpg";
 const STRIPPED: &str = "export-stripped.jpg";
 const KEPT: &str = "export-kept.jpg";
+const COMPARED: &str = "export-compared.jpg";
 /// The EXIF Orientation tag.
 const ORIENTATION: u16 = 0x0112;
 /// How much brighter than the original, in mean luminance codes, the one-stop export must read.
@@ -36,7 +38,7 @@ const MENU_BAND: f64 = 60.0;
 /// The mean per-channel change across that band that counts as a menu drawn over it.
 const MENU_CHANGE: f64 = 1.0;
 
-/// Every frame, in order: the open, two edits, the menu, two exports and a refused one.
+/// Export the edited entry normally and during comparison, then refuse an existing destination.
 pub fn plan(_: &[PathBuf]) -> Plan {
     Plan::new(vec![
         Step::opened("opened"),
@@ -55,6 +57,9 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         Step::new("menu", script::Step::export_menu()).commits(0),
         Step::new("stripped", script::Step::export(STRIPPED, false)).commits(0),
         Step::new("kept", script::Step::export(KEPT, true)).commits(0),
+        Step::new("compare", script::CompareStep::Tap).commits(0),
+        Step::new("compared", script::Step::export(COMPARED, false)).commits(0),
+        Step::new("compare-exited", script::CompareStep::Tap).commits(0),
         // Keep metadata to the stripped file's name: were anything replaced, that file would
         // gain an APP1. The status bar says why nothing was written.
         Step::new("refused", script::Step::export(STRIPPED, true))
@@ -256,7 +261,11 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let original = mean_luminance(mean_rgb(&source));
 
     let mut written = Vec::new();
-    for (step, file, keep) in [("stripped", STRIPPED, false), ("kept", KEPT, true)] {
+    for (step, file, keep) in [
+        ("stripped", STRIPPED, false),
+        ("kept", KEPT, true),
+        ("compared", COMPARED, false),
+    ] {
         let frame = launch.at(step)?;
         let export = record(frame, step)?;
         let result = &export["record"]["result"];
@@ -345,6 +354,21 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         0.0,
         Tolerance::Within(SAME),
     )?;
+    let compared = launch.at("compared")?;
+    ensure(
+        compared["state"]["comparison"]["after_entry"] == json!(entry)
+            && compared["state"]["stack"]["displayed"]["entry"] != json!(entry),
+        "The comparison must select Before while retaining the edited After entry",
+    )?;
+    ensure(
+        fs::read(launch.evidence.join(COMPARED))? == fs::read(launch.evidence.join(STRIPPED))?,
+        "Export during comparison differs from the edited entry's export",
+    )?;
+    checks.note(
+        compared,
+        "comparison exports the fixed After entry, with identical JPEG bytes",
+        json!({"entry_id": entry, "files": [STRIPPED, COMPARED]}),
+    );
 
     // The refusal, whose reason the plan holds, and the stripped file exactly as the first export
     // left it.
