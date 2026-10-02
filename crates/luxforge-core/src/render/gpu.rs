@@ -30,7 +30,7 @@ pub use plan::{
     GpuAnswer, GpuBoundary, GpuClipping, GpuComponent, GpuEstimates, GpuFallback, GpuGeometry,
     GpuMask, GpuOperation, GpuPlan, GpuPlanRequest, GpuPosition, gpu_plan, gpu_plan_with,
 };
-pub use preview::{BoundaryKey, BoundaryRequest, GpuPreview};
+pub use preview::{BoundaryKey, BoundaryRequest, GpuPreview, GpuView};
 pub(crate) use preview::{plan_preview, plan_warm};
 #[cfg(test)]
 pub(crate) use program::testing;
