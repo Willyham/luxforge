@@ -893,6 +893,11 @@ impl SpatialEntry {
         }
     }
 
+    /// The SHA-256 of the layers before this one, which a stored estimate's key names.
+    pub(super) fn prefix_hash(&self) -> &str {
+        &self.prefix_hash
+    }
+
     /// Whether any unit of the operation prepares a global estimate from a reduction of its stage.
     pub(super) fn prepares_estimates(&self) -> bool {
         self.operation

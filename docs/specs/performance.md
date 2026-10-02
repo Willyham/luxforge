@@ -3483,6 +3483,92 @@ cargo test -p luxforge-app gpu_mask_corpus -- --ignored --nocapture
 
 The run writes the same files as the colour corpus.
 
+## GPU Presence program
+
+The Presence program ([GPU previews](../design/gpu-preview.md#spatial-programs)) on the M4, against the CPU per filter, per unit and on the [corpus](../../fixtures/preview/corpus.json)'s Presence recipes at Fit. These are the figures the program was enabled on. Pixel and arithmetic measurements, not timings.
+
+### Scope
+
+- **Host and build.** Apple M4 Pro, macOS 26.5.2, the `Apple M4 Pro` adapter on Metal (`wgpu-hal` 27.0.4, Metal's default fast math). The `test` profile build of `luxforge-app` at `618d02eb`. One run each; the pixels are deterministic.
+- **The readback.** Every GPU figure is the photo surface's own spatial step: its generated pass modules and frame module, run headlessly by the surface's qualification readback ([qualifying a program](../design/gpu-preview.md#qualifying-a-program)).
+- **The CPU.** Per filter, the production filters of `modules/presence/filters.rs` over a whole frame (`luxforge_core::qualification`, test builds only). Per unit and on the corpus, the CPU frame of the same stack.
+
+### Per filter
+
+Each kernel through the surface's passes over a synthetic plane (a ramp, a step edge, noise and a flat patch, held as half floats as the boundary holds them) against the CPU filter it transcribes, which accumulates its box sums in `f64`. The largest absolute difference:
+
+| Filter | Cases | Largest difference |
+| --- | --- | ---: |
+| Box mean, two passes | radii 1, 2, 6, 14, 24, 38 × runs 1, 4, 16, 64, values in [−0.25, 1.5] | 1.1 × 10⁻⁶ |
+| Box minimum, two passes | radii 1, 2, 3, 5 | 0 (exact) |
+| `1 − ω · min`, the raw transmission | ω = 0.8 | 6.0 × 10⁻⁸, one rounding: Metal fuses the multiply-add |
+| Self-guided filter | Texture's ε at radii 1, 2, 6; Clarity's at 6, 24, 38; runs 1 and 16 | 4.4 × 10⁻⁶ |
+| Guided filter | Dehaze's ε (10⁻⁴) at radii 1, 3, 6, 10; runs 1 and 16 | 2.0 × 10⁻⁵ |
+| 4× reduction of the encoded luminance | 203 × 131, partial last blocks | 2.4 × 10⁻⁷ |
+| 16× reduction of the colour | the same | 1.2 × 10⁻⁷ |
+| Bilinear upsample by 4 | the same | 1.5 × 10⁻⁸ |
+| Soft clip | excursions in [−4, 4], encoded values in [−0.2, 1.2], both units' limits | 1.5 × 10⁻⁸; no zero moved |
+| Atmospheric light | 640 × 480 (the minimum count), 2600 × 1700 (17,441 blocks, 18 selected), a tied bright plateau | 0: the CPU's light narrowed to `f32` |
+
+The run length of the box means' running sums does not change their precision measurably: every run from 1 (a direct sum per output) to 64 stays within 1.1 × 10⁻⁶ at every radius. The program runs 16.
+
+### Per unit
+
+Every Presence combination at ±100 (each field alone, Texture and Clarity, all three) and one mixed case, over a synthetic photograph (a hazy sky over darker ground, a hard horizon, fine texture and noise) at 480 × 320 and 1536 × 1024 on the linear path, against the CPU frame of the same stack; Dehaze both with the light the CPU frame stored and with the one the GPU takes from the stage it holds. 32 cases. Worst of each statistic:
+
+| Measured | Mean ΔE00 | Worst block | p99 | Signed ΔL\* | Max |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Program output through the reference quantizer | 0.0007 | 0.009 | 0.00 | +0.0000 | 1.22 |
+| Codes the hardware encoder draws | 0.030 | 0.18 | 0.76 | +0.0013 | 1.71 |
+| Byte path, 960 × 640, all three at +100 and −100, light stored | 0.093 | 0.69 | 0.76 | −0.0008 | 34.9 |
+
+No output is non-finite. The light taken on the GPU gives the same frame as the stored one at every size here. On the byte path the boundary holds each 8-bit code's value as a half float where the CPU reads it in `f32`, and Dehaze's recovery and Texture's gain amplify that rounding; the one large maximum is a near-black pixel ([below](#isolated-near-black-pixels)).
+
+### The corpus at Fit
+
+`gpu_presence_corpus_at_fit`, the shared harness the colour programs were qualified with ([GPU colour programs at Fit](#gpu-colour-programs-at-fit)): the desktop's Fit job for the CPU frame, the same stack planned from the Presence layer over the same proxy source for the GPU frame, the RAW cells planned for the linear path. The light is taken on the GPU (the harness holds no store of the worker's), which over a whole Fit stage selects the CPU's blocks. Each pair judged by `cargo xtask preview-error --class spatial`: all 42 measured pairs exit 0. Bounds 1716 × 1508.
+
+| Recipe | Mean ΔE00 | Worst block | p99 | Signed ΔL\* | Max | Charged |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Texture, 24 MP / 60 MP JPEG | 0.0004 / 0.0004 | 0.04 / 0.04 | 0.00 / 0.00 | +0.000 / +0.000 | 0.37 / 0.37 | 71.7 / 66.3 MB |
+| Texture, Presence fixture (exact) | 0.0003 | 0.02 | 0.00 | −0.000 | 0.40 | 55.5 MB |
+| Texture, Z6 / X100VI / Air 2S | 0.080 / 0.061 / 0.085 | 0.28 / 0.33 / 0.27 | 1.07 / 0.92 / 1.03 | −0.004 / −0.002 / −0.003 | 2.36 / 2.34 / 2.33 | 59.1 / 71.7 / 71.7 MB |
+| Clarity, 24 MP / 60 MP JPEG | 0.003 / 0.003 | 0.06 / 0.06 | 0.12 / 0.13 | +0.000 / +0.000 | 0.55 / 0.55 | 35.4 / 33.6 MB |
+| Clarity, Presence fixture (exact) | 0.018 | 0.07 | 0.38 | +0.000 | 0.40 | 29.9 MB |
+| Clarity, Z6 / X100VI / Air 2S | 0.088 / 0.066 / 0.093 | 0.29 / 0.32 / 0.27 | 1.09 / 0.93 / 1.05 | −0.002 / −0.001 / −0.002 | 2.36 / 2.28 / 2.31 | 31.2 / 35.4 / 35.4 MB |
+| Dehaze, 24 MP / 60 MP JPEG | 0.011 / 0.011 | 0.04 / 0.04 | 0.04 / 0.04 | +0.007 / +0.007 | 0.46 / 0.50 | 40.5 / 38.1 MB |
+| Dehaze, Presence fixture (exact) | 0.019 | 0.19 | 0.32 | −0.007 | 0.69 | 33.5 MB |
+| Dehaze, Z6 / X100VI / Air 2S | 0.111 / 0.110 / 0.112 | 0.31 / 0.31 / 0.27 | 1.08 / 0.99 / 1.00 | −0.001 / +0.001 / −0.001 | 2.26 / 2.26 / 2.11 | 35.0 / 40.5 / 40.4 MB |
+| Texture and Clarity, 24 MP / 60 MP JPEG | 0.003 / 0.003 | 0.05 / 0.05 | 0.12 / 0.12 | +0.000 / +0.000 | 0.55 / 0.55 | 74.7 / 68.9 MB |
+| Texture and Clarity, Presence fixture (exact) | 0.007 | 0.06 | 0.33 | −0.001 | 0.40 | 57.6 MB |
+| Texture and Clarity, Z6 / X100VI / Air 2S | 0.091 / 0.065 / 0.097 | 0.30 / 0.31 / 0.28 | 1.10 / 0.93 / 1.05 | −0.002 / −0.001 / −0.001 | 2.38 / 2.32 / 2.39 | 61.4 / 74.7 / 74.6 MB |
+| All three, 24 MP / 60 MP JPEG | 0.011 / 0.012 | 0.04 / 0.05 | 0.04 / 0.09 | +0.006 / +0.006 | 0.54 / 0.54 | 80.2 / 73.9 MB |
+| All three, Presence fixture (exact) | 0.039 | 0.49 | 0.64 | +0.004 | 1.31 | 61.4 MB |
+| All three, Z6 / X100VI / Air 2S | 0.107 / 0.116 / 0.106 | 0.27 / 0.33 / 0.50 | 1.03 / 0.99 / 0.99 | −0.002 / +0.002 / +0.001 | 11.2 / 2.19 / 108.8 | 65.7 / 80.2 / 80.2 MB |
+| All three at −100, 24 MP / 60 MP JPEG | 0.002 / 0.003 | 0.06 / 0.09 | 0.00 / 0.00 | +0.000 / +0.001 | 0.77 / 0.81 | 80.2 / 73.9 MB |
+| All three at −100, Presence fixture (exact) | 0.001 | 0.02 | 0.00 | +0.001 | 0.26 | 61.4 MB |
+| All three at −100, Z6 / X100VI / Air 2S | 0.033 / 0.017 / 0.025 | 0.16 / 0.11 / 0.10 | 0.90 / 0.56 / 0.78 | −0.000 / +0.001 / +0.001 | 1.42 / 1.16 / 1.47 | 65.7 / 80.2 / 80.2 MB |
+
+The Z6 and Air 2S rows are their `lens reset` cells: as the corpus states them their first open commits a lens profile, a warp the surface does not draw yet (`surface-geometry`), so those cells are gaps. The X100VI commits none, so its two cells are the same. The masked recipe was not measured: the harness then sent the mask by name, which the API refuses, and the surface had no coverage step for a spatial operation. The zone plate has no file.
+
+**Memory.** "Charged" is what the photo surface's slot drawing the plan charges the GPU-preview budget, the figure its `gpu_preview_in_use_bytes` reports (a surface test holds the two equal): the boundary, the output in the photograph's size bucket and its uniform, the words and blocks buffers, and the planes. With all three fields on the 60 MP JPEG at Fit (a 1716 × 1030 proxy), the slot holds 73.9 MB (70.5 MiB) of the 256 MiB budget, of which the planes are 43 MB: about 24 bytes a pixel, Texture's three full-resolution planes 20 of them. One slot is held at a time, so this is its peak; a replacement overlaps the slot it replaces until that retires. The 100% figure waits for the region boundary.
+
+### Isolated near-black pixels
+
+The largest maxima, 108.8 on the Air 2S and 11.2 on the Z6 with all three fields, are single pixels: 45 of the Air 2S's 1.96 M pixels differ by more than eight codes, 14 of the Z6's 1.51 M. Each is near black in a RAW's shadow noise, where a channel's sign straddles zero, so the luminance the luminance-ratio reconstruction divides by is near zero and the half-float boundary moves it enough to change the ratio entirely (the CPU frame itself draws, for example, saturated magenta there). No statistic the limits judge notices them. Holding a RAW boundary as `rgba32float` would remove them at twice the boundary's memory.
+
+### Reproducing it
+
+```sh
+cargo test -p luxforge-app gpu_presence -- --nocapture
+LUXFORGE_GPU_CORPUS_OUTPUT=/tmp/NEW_DIR \
+LUXFORGE_GENERATED_FIXTURES=fixtures/generated \
+LUXFORGE_RAW_MANIFEST=/path/to/raw-manifest.json \
+cargo test -p luxforge-app gpu_presence_corpus -- --ignored --nocapture
+```
+
+The corpus run writes `<recipe>--<source>[--lens-reset]-{cpu,gpu}.png`, `cells.json` with each cell's figures, its charge and every gap's reason, and `commands.sh`, one `cargo xtask preview-error --class spatial` line per pair, run from the repository root.
+
 ## Method
 
 Optimized builds only, with commit, lockfile, OS, CPU/GPU, RAM, display and storage recorded. Report cold and warm runs separately and say which cold is meant. Keep at least 30 samples and never drop failures or tails silently. Measure user event to presented frame, not shader time, and account CPU RSS, cache bytes, GPU allocations and transient copies without double-counting unified memory. Capture idle after all background work stops. No timing gates in CI; CI enforces exactness, deterministic bounds and coverage. VM checks record hypervisor, guest graphics path and software versus accelerated rendering, and never stand in for native timings.

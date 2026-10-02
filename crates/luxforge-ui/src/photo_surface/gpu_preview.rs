@@ -40,6 +40,9 @@
 //!   to the pixel of the stage the boundary holds, and the step's own [`PositionMap`] takes that
 //!   pixel to `pos`. Every colour step runs in that one pass today; a step after a geometry step,
 //!   when there is one, will run in output space, its map taking the output pixel to `pos`.
+//! - **A spatial operation** ([`GpuStep::Spatial`]): compute passes over the boundary that fill
+//!   planes, then one apply per unit in the frame's pass, under the spatial convention
+//!   ([`spatial`]). Its planes are charged to the budget with the slot.
 //!
 //! The surface generates the entry points: a vertex stage that covers the output with one triangle,
 //! and a fragment stage that loads the boundary texel, chains each program's entry in step order,
@@ -196,6 +199,9 @@ pub enum GpuStep {
     /// ([`MaskedColour`]): its units are colour programs, its components coverage programs,
     /// `fn <entry>(pos: vec2<f32>, rgb: vec3<f32>, words: u32, block: u32) -> f32`.
     Masked(MaskedColour),
+    /// A spatial operation: its passes before the frame's pass, its applies in it, over the
+    /// boundary's texels.
+    Spatial(Box<GpuSpatial>),
 }
 
 impl GpuStep {
@@ -214,38 +220,40 @@ impl GpuStep {
                 Box::new(std::iter::once((mask::Role::Colour, program)))
             }
             Self::Masked(masked) => Box::new(masked.programs()),
+            Self::Spatial(spatial) => Box::new(spatial.programs()),
         }
     }
 
-    /// What decides the step's pipeline: the shape of a masked step, then each program's role,
-    /// entry and source in order. Its words are data and are not part of it.
+    /// What decides the step's pipeline: the shape of a masked step, or a spatial step's planes,
+    /// passes and applies, then each program's role, entry and source in order. Its words are
+    /// data and are not part of it.
     fn signature(&self) -> impl Iterator<Item = (StepKind, &str, &str)> {
-        let shape = match self {
-            Self::Colour { .. } => None,
-            Self::Masked(masked) => Some((
+        let shape: Box<dyn Iterator<Item = (StepKind, &str, &str)> + '_> = match self {
+            Self::Colour { .. } => Box::new(std::iter::empty()),
+            Self::Masked(masked) => Box::new(std::iter::once((
                 StepKind::Masked {
                     units: masked.units.len(),
                     components: masked.mask.components.len(),
                 },
                 "",
                 "",
-            )),
+            ))),
+            Self::Spatial(spatial) => Box::new(spatial.shape()),
         };
-        shape
-            .into_iter()
-            .chain(self.programs().map(|(role, program)| {
-                (
-                    StepKind::Program(role),
-                    program.entry.as_ref(),
-                    program.source.as_ref(),
-                )
-            }))
+        shape.chain(self.programs().map(|(role, program)| {
+            (
+                StepKind::Program(role),
+                program.entry.as_ref(),
+                program.source.as_ref(),
+            )
+        }))
     }
 
     fn position(&self) -> PositionMap {
         match self {
             Self::Colour { position, .. } => *position,
             Self::Masked(masked) => masked.position,
+            Self::Spatial(_) => PositionMap::IDENTITY,
         }
     }
 
@@ -254,6 +262,7 @@ impl GpuStep {
         match self {
             Self::Colour { program, .. } => program.words.len(),
             Self::Masked(masked) => masked.word_count(),
+            Self::Spatial(spatial) => spatial.word_count(),
         }
     }
 
@@ -262,6 +271,7 @@ impl GpuStep {
         match self {
             Self::Colour { program, .. } => program.block.len(),
             Self::Masked(masked) => masked.block_count(),
+            Self::Spatial(spatial) => spatial.block_count(),
         }
     }
 }
@@ -269,7 +279,18 @@ impl GpuStep {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StepKind {
     Program(mask::Role),
-    Masked { units: usize, components: usize },
+    Masked {
+        units: usize,
+        components: usize,
+    },
+    /// A spatial step's clamp and the words its mask takes before its program's.
+    Spatial {
+        clamps: bool,
+        mask_words: Option<usize>,
+    },
+    Plane(spatial::GpuPlane),
+    Pass(spatial::PassKey),
+    Apply(spatial::ApplyKey),
 }
 
 /// The held input boundary: `rgba16float` texels of scene-linear sRGB, eight bytes each, rows
@@ -505,6 +526,7 @@ struct Charged {
 enum Held {
     Slot(Box<GpuSlot>),
     Buffer(wgpu::Buffer),
+    Planes(Box<SpatialSlot>),
 }
 
 /// A GPU-preview resource on its way out, with its charge, which ends when the GPU is done with it.
@@ -552,11 +574,25 @@ pub(super) struct GpuSlot {
     passes: u64,
     /// When the GPU finished the slot's passes, as the queue reports it ([`timing`]).
     clock: Arc<PassClock>,
+    /// A spatial plan's planes and the groups that bind them, for the pipeline they were made for.
+    spatial: Option<Box<SpatialSlot>>,
+}
+
+/// A slot's spatial planes and, for one compiled sequence, the groups that bind them.
+pub(super) struct SpatialSlot {
+    planes: spatial::Planes,
+    groups: Option<(u64, spatial::Groups)>,
 }
 
 impl GpuSlot {
     fn bytes(&self) -> u64 {
-        self.texture_bytes + self.words.bytes + self.blocks.bytes
+        self.texture_bytes
+            + self.words.bytes
+            + self.blocks.bytes
+            + self
+                .spatial
+                .as_ref()
+                .map_or(0, |spatial| spatial.planes.bytes)
     }
 
     pub(super) fn output(&self) -> &Picture {
@@ -576,7 +612,7 @@ impl GpuSlot {
 /// One compiled — or failed — program sequence.
 struct Cached {
     signature: Vec<(StepKind, String, String)>,
-    pipeline: Result<wgpu::RenderPipeline, Arc<str>>,
+    pipeline: Result<Compiled, Arc<str>>,
     id: u64,
     used: u64,
 }
@@ -590,6 +626,13 @@ impl Cached {
     }
 }
 
+/// A compiled sequence: the frame's render pipeline and every spatial step's passes.
+#[derive(Clone)]
+struct Compiled {
+    render: wgpu::RenderPipeline,
+    spatial: spatial::CompiledSpatial,
+}
+
 /// What the device must offer for the stage to run, made once with the pipeline.
 struct Support {
     layout: wgpu::BindGroupLayout,
@@ -600,9 +643,11 @@ impl Support {
     /// The programs' bind group layout — the words, the blocks and the boundary — and the pipeline
     /// layout over it.
     fn new(device: &wgpu::Device) -> Self {
+        // The spatial step's passes bind the same words, blocks and boundary as the frame's pass.
+        let visibility = wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE;
         let storage = |binding| wgpu::BindGroupLayoutEntry {
             binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
+            visibility,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Storage { read_only: true },
                 has_dynamic_offset: false,
@@ -617,7 +662,7 @@ impl Support {
                 storage(1),
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
@@ -693,7 +738,7 @@ impl GpuStage {
         device: &wgpu::Device,
         steps: &[GpuStep],
         figures: &Figures,
-    ) -> Result<(wgpu::RenderPipeline, u64), GpuFallback> {
+    ) -> Result<(Compiled, u64), GpuFallback> {
         self.clock += 1;
         let clock = self.clock;
         if let Some(cached) = self.cache.iter_mut().find(|cached| cached.matches(steps)) {
@@ -705,8 +750,7 @@ impl GpuStage {
         }
         let support = self.support.as_ref().ok_or(GpuFallback::NoAdapter)?;
         figures.compiles.fetch_add(1, Ordering::Relaxed);
-        let pipeline = compile(device, &support.pipeline_layout, steps, OUTPUT_FORMAT)
-            .map_err(Arc::<str>::from);
+        let pipeline = compile(device, support, steps, OUTPUT_FORMAT).map_err(Arc::<str>::from);
         if self.cache.len() >= PIPELINE_CACHE
             && let Some(oldest) = self
                 .cache
@@ -759,6 +803,15 @@ const SURFACE_NAMES: &[&str] = &[
     "lf_boundary",
     "lf_vertex",
     "lf_fragment",
+    "lf_shared",
+    "lf_plane",
+    "lf_plane_size",
+    "lf_source",
+    "lf_origin",
+    "lf_size",
+    "lf_store",
+    "lf_out",
+    "lf_pass",
 ];
 
 /// Whether `name` may name an entry function: a WGSL identifier that is none of the surface's own.
@@ -772,7 +825,13 @@ fn entry_name(name: &str) -> Result<(), String> {
     {
         return Err(format!("{name:?} is not a WGSL identifier"));
     }
-    if SURFACE_NAMES.contains(&name) || name.starts_with(mask::GENERATED) {
+    // A program's names start with its entry, so an entry no surface name starts with cannot
+    // collide with one, nor with the planes a module binds as `lf_plane_<slot>`.
+    if SURFACE_NAMES
+        .iter()
+        .any(|surface| surface.starts_with(name))
+        || name.starts_with(mask::GENERATED)
+    {
         return Err(format!("{name:?} is one of the surface's own names"));
     }
     Ok(())
@@ -803,19 +862,16 @@ fn assemble(steps: &[GpuStep]) -> Result<String, String> {
         }
     }
     // Each masked step's coverage, composed by a function of its own.
-    let mut masked = Vec::new();
-    for (index, step) in steps.iter().enumerate() {
-        if let GpuStep::Masked(step) = step {
-            if masked.is_empty() {
-                source.push_str(mask::COMPOSE);
-            }
-            let (function, fragment) = step.assemble(index, MAP_WORDS + STEP_WORDS * index);
-            source.push_str(&function);
-            masked.push(fragment);
-        }
-    }
-    let mut masked = masked.into_iter();
+    let (functions, masked) = spatial::masks(steps, steps.len());
+    source.push_str(&functions);
     source.push_str(BOUNDARY_BINDING);
+    let spatial = steps.iter().any(|step| matches!(step, GpuStep::Spatial(_)));
+    let (declarations, slots) = if spatial {
+        spatial::fragment_declarations(steps)
+    } else {
+        (String::new(), spatial::Slots::default())
+    };
+    source.push_str(&declarations);
     source.push_str(
         "
 @fragment
@@ -826,17 +882,8 @@ fn lf_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32>
     let stage = vec2<f32>(lf_f32(0u), lf_f32(1u)) + vec2<f32>(texel) * vec2<f32>(lf_f32(2u), lf_f32(3u));
 ",
     );
-    for (index, step) in steps.iter().enumerate() {
-        let base = MAP_WORDS + STEP_WORDS * index;
-        match step {
-            GpuStep::Colour { program, .. } => source.push_str(&format!(
-                "    rgb = {}(rgb, {}, lf_words[{base}u], lf_words[{}u]);\n",
-                program.entry,
-                PositionMap::wgsl(base + 2, "stage"),
-                base + 1
-            )),
-            GpuStep::Masked(_) => source.push_str(&masked.next().expect("its statements")),
-        }
+    for index in 0..steps.len() {
+        source.push_str(&spatial::statements(steps, index, &slots, &masked));
     }
     source.push_str("    return vec4<f32>(rgb, 1.0);\n}\n");
     Ok(source)
@@ -863,6 +910,9 @@ fn validate(source: &str) -> Result<naga::Module, String> {
 /// point — each named starting with its entry's name, and its entry function has the signature
 /// its step needs. A caller's tests can check every program it hands the surface with this.
 pub fn validate_step(step: &GpuStep) -> Result<(), String> {
+    if let GpuStep::Spatial(spatial) = step {
+        return spatial::validate_spatial(spatial);
+    }
     for (role, program) in step.programs() {
         validate_program(role, program)?;
     }
@@ -872,6 +922,11 @@ pub fn validate_step(step: &GpuStep) -> Result<(), String> {
 /// One program of a step against the convention, with its role's signature.
 fn validate_program(role: mask::Role, program: &GpuProgram) -> Result<(), String> {
     let entry = &program.entry;
+    if role == mask::Role::Spatial {
+        return Err(format!(
+            "{entry:?} is a spatial program, which only its step checks"
+        ));
+    }
     entry_name(entry)?;
     let module = validate(&format!("{PRELUDE}\n{}", program.source))?;
     let only = "a program has only functions and constants";
@@ -944,6 +999,7 @@ fn validate_program(role: mask::Role, program: &GpuProgram) -> Result<(), String
             naga::TypeInner::Scalar(naga::Scalar::F32),
             "(pos: vec2<f32>, rgb: vec3<f32>, words: u32, block: u32) -> f32",
         ),
+        mask::Role::Spatial => unreachable!("a spatial program is refused above"),
     };
     let declared: Vec<&naga::TypeInner> = function
         .arguments
@@ -982,10 +1038,10 @@ fn answered<F: std::future::Future>(future: F) -> Option<F::Output> {
 /// failed. The stage writes [`OUTPUT_FORMAT`]; only qualification asks for another.
 fn compile(
     device: &wgpu::Device,
-    layout: &wgpu::PipelineLayout,
+    support: &Support,
     steps: &[GpuStep],
     format: wgpu::TextureFormat,
-) -> Result<wgpu::RenderPipeline, String> {
+) -> Result<Compiled, String> {
     for step in steps {
         validate_step(step)?;
     }
@@ -993,6 +1049,26 @@ fn compile(
     validate(&source)?;
     device.push_error_scope(wgpu::ErrorFilter::Internal);
     device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let spatial = spatial::compile_passes(device, support, steps);
+    // A spatial plan's frame binds its applies' planes as a second group.
+    let planes_layout;
+    let spatial_layout;
+    let layout = match spatial
+        .as_ref()
+        .ok()
+        .and_then(|compiled| compiled.fragment.as_ref())
+    {
+        Some((planes, _)) => {
+            planes_layout = planes.clone();
+            spatial_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("luxforge.gpu_preview.spatial_layout"),
+                bind_group_layouts: &[&support.layout, &planes_layout],
+                push_constant_ranges: &[],
+            });
+            &spatial_layout
+        }
+        None => &support.pipeline_layout,
+    };
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("luxforge.gpu_preview.shader"),
         source: wgpu::ShaderSource::Wgsl(Cow::Owned(source)),
@@ -1024,8 +1100,12 @@ fn compile(
     });
     let validation = answered(device.pop_error_scope());
     let internal = answered(device.pop_error_scope());
+    let spatial = spatial?;
     match (validation, internal) {
-        (Some(None), Some(None)) => Ok(pipeline),
+        (Some(None), Some(None)) => Ok(Compiled {
+            render: pipeline,
+            spatial,
+        }),
         (Some(Some(error)), _) | (_, Some(Some(error))) => Err(error.to_string()),
         _ => Err("the pipeline's error scopes were not answered without waiting".into()),
     }
@@ -1053,6 +1133,7 @@ pub(super) fn pack(plan: &GpuPlan, words: &mut Vec<u32>, blocks: &mut Vec<u32>) 
                 blocks.extend_from_slice(&program.block);
             }
             GpuStep::Masked(masked) => masked.pack(words, blocks),
+            GpuStep::Spatial(spatial) => spatial.pack(words, blocks),
         }
     }
     if blocks.is_empty() {
@@ -1140,6 +1221,19 @@ impl PhotoPipeline {
                 limit,
             });
         }
+        if plan
+            .steps
+            .iter()
+            .any(|step| matches!(step, GpuStep::Spatial(_)))
+        {
+            // A spatial step runs compute passes over the boundary's own texels.
+            if !spatial::supported(&device.limits()) {
+                return Err(GpuFallback::NoAdapter);
+            }
+            if plan.texels.step != [1.0, 1.0] {
+                return Err(GpuFallback::PipelineFailed);
+            }
+        }
         let (pipeline, pipeline_id) =
             self.gpu
                 .pipeline(device, &plan.steps, &self.figures.preview)?;
@@ -1168,7 +1262,7 @@ impl PhotoPipeline {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         plan: &GpuPlan,
-        (pipeline, pipeline_id): (&wgpu::RenderPipeline, u64),
+        (pipeline, pipeline_id): (&Compiled, u64),
         words: &[u32],
         blocks: &[u32],
     ) -> Result<u64, GpuFallback> {
@@ -1215,7 +1309,17 @@ impl PhotoPipeline {
             slot.written_blocks.clear();
             slot.evaluated = None;
         }
+        self.fit_planes(slot, device, plan)?;
         let mut changed = slot.evaluated != Some(pipeline_id);
+        if let Some(spatial) = slot.spatial.as_mut()
+            && spatial.groups.as_ref().map(|(id, _)| *id) != Some(pipeline_id)
+        {
+            spatial.groups = Some((
+                pipeline_id,
+                spatial::Groups::new(device, &pipeline.spatial, &spatial.planes),
+            ));
+            changed = true;
+        }
         if slot.boundary_version != Some(plan.boundary.version) {
             upload_boundary(queue, &slot.boundary, &plan.boundary);
             slot.boundary_version = Some(plan.boundary.version);
@@ -1251,6 +1355,14 @@ impl PhotoPipeline {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("luxforge.gpu_preview.encoder"),
             });
+            let groups = slot
+                .spatial
+                .as_ref()
+                .and_then(|spatial| spatial.groups.as_ref())
+                .map(|(_, groups)| groups);
+            if let Some(groups) = groups {
+                groups.encode(&mut encoder, &pipeline.spatial, &slot.bindings);
+            }
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("luxforge.gpu_preview.pass"),
@@ -1280,8 +1392,11 @@ impl PhotoPipeline {
                     0.0,
                     1.0,
                 );
-                pass.set_pipeline(pipeline);
+                pass.set_pipeline(&pipeline.render);
                 pass.set_bind_group(0, &slot.bindings, &[]);
+                if let Some(fragment) = groups.and_then(|groups| groups.fragment.as_ref()) {
+                    pass.set_bind_group(1, fragment, &[]);
+                }
                 pass.draw(0..3, 0..1);
             }
             // Submitted now, ahead of the frame's own submission, whose draw samples the output;
@@ -1425,10 +1540,44 @@ impl PhotoPipeline {
             written_words: Vec::new(),
             written_blocks: Vec::new(),
             evaluated: None,
+            spatial: None,
             frame_us: 0,
             passes: 0,
             clock: Arc::default(),
         })
+    }
+
+    /// Make `slot` hold the planes `plan`'s spatial steps write, charged before anything is
+    /// created: none for a plan without one, and new ones when the planes or the boundary they
+    /// cover change, the old ones retiring with their charge.
+    fn fit_planes(
+        &self,
+        slot: &mut GpuSlot,
+        device: &wgpu::Device,
+        plan: &GpuPlan,
+    ) -> Result<(), GpuFallback> {
+        let origin = (
+            plan.texels.origin[0].max(0.0) as u32,
+            plan.texels.origin[1].max(0.0) as u32,
+        );
+        let key = spatial::PlanesKey::of(&plan.steps, slot.size, origin);
+        if slot.spatial.as_ref().map(|spatial| &spatial.planes.key) == key.as_ref() {
+            return Ok(());
+        }
+        if let Some(old) = slot.spatial.take() {
+            let bytes = old.planes.bytes;
+            self.retire_preview(Held::Planes(old), bytes);
+            slot.evaluated = None;
+        }
+        if let Some(key) = key {
+            self.figures.preview.charge(key.bytes())?;
+            slot.spatial = Some(Box::new(SpatialSlot {
+                planes: spatial::Planes::create(device, key),
+                groups: None,
+            }));
+            slot.evaluated = None;
+        }
+        Ok(())
     }
 
     /// The programs' bindings: the words, the blocks and the boundary.
@@ -1500,6 +1649,32 @@ impl PhotoPipeline {
     }
 }
 
+/// What a slot holding `plan` charges the budget on `device`, as `allocate` and `fit_planes`
+/// charge it: the boundary, the output in the photograph's size bucket and its placement uniform,
+/// the words and blocks buffers at their capacities, and a spatial step's planes. For a report and
+/// the tests that hold it to the slot's own figure.
+pub(super) fn slot_charge(device: &wgpu::Device, plan: &GpuPlan) -> Result<u64, GpuFallback> {
+    let (width, height) = plan.boundary.size();
+    let limit = device.limits().max_texture_dimension_2d;
+    let capacity = super::full_capacity((width, height), limit);
+    let texels = u64::from(width) * u64::from(height);
+    let output_bytes = u64::from(capacity.0) * u64::from(capacity.1) * 4;
+    let (mut words, mut blocks) = (Vec::new(), Vec::new());
+    pack(plan, &mut words, &mut blocks);
+    let origin = (
+        plan.texels.origin[0].max(0.0) as u32,
+        plan.texels.origin[1].max(0.0) as u32,
+    );
+    let planes =
+        spatial::PlanesKey::of(&plan.steps, (width, height), origin).map_or(0, |key| key.bytes());
+    Ok(texels * GpuBoundary::TEXEL_BYTES as u64
+        + output_bytes
+        + UNIFORM_SIZE as u64
+        + buffer_capacity(device, (words.len() * 4) as u64)?
+        + buffer_capacity(device, (blocks.len() * 4) as u64)?
+        + planes)
+}
+
 /// `words` as the little-endian bytes the GPU reads.
 fn le_bytes(words: &[u32]) -> Vec<u8> {
     words.iter().flat_map(|word| word.to_le_bytes()).collect()
@@ -1536,6 +1711,12 @@ mod mask;
 mod position;
 pub use mask::{Coverage, CoverageComponent, CoverageMode, MaskedColour};
 pub use position::PositionMap;
+
+pub mod spatial;
+pub use spatial::{
+    GpuApply, GpuPass, GpuPlane, GpuSpatial, PASS_INPUTS, PassShape, PlaneFormat, PlaneSize,
+    SPATIAL_PRELUDE,
+};
 
 mod dissolve;
 pub use dissolve::{DISSOLVE_DURATION, Dissolve, DrawnDissolve};

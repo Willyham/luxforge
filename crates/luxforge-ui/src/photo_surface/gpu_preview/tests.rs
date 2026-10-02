@@ -1174,3 +1174,4 @@ fn a_boundary_past_the_texture_limit_makes_the_frame_the_cpus() {
 }
 
 mod masked;
+mod spatial;

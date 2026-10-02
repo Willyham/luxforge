@@ -94,9 +94,11 @@ pub use preview::{
 };
 pub use proxy::{ProxyApproximation, ProxyBounds, ProxyIdentity, ProxyPlan};
 pub use render::gpu::{
-    CoordinateGrid, GRID_MAX_NODES, GRID_TOLERANCE_PX, GpuAnswer, GpuBoundary, GpuClipping,
-    GpuComponent, GpuDescription, GpuFallback, GpuGeometry, GpuMask, GpuOperation, GpuPlan,
-    GpuPlanRequest, GpuPosition, GpuProgram, GpuProgramKind, gpu_plan,
+    CoordinateGrid, GPU_PASS_INPUTS, GPU_SHARED_VALUES, GPU_WORKGROUP_LANES, GRID_MAX_NODES,
+    GRID_TOLERANCE_PX, GpuAnswer, GpuApply, GpuBoundary, GpuClipping, GpuComponent, GpuDescription,
+    GpuEstimates, GpuFallback, GpuGeometry, GpuMask, GpuOperation, GpuPass, GpuPassShape, GpuPlan,
+    GpuPlanRequest, GpuPlane, GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuProgram,
+    GpuProgramKind, GpuSpatial, GpuSpatialUnit, gpu_plan, gpu_plan_with,
 };
 pub use render::{
     ContentPoint, GeometryMap, INPUT_GRID_MAX_CELLS, InputGridCache, LinearSettings, MapError,
@@ -105,6 +107,13 @@ pub use render::{
     render, stage_transform,
 };
 pub use source::{LinearImage, OpticalIdentity, SourceImage, SourceOptics, open_source};
+
+/// Qualification only: CPU filters the desktop's GPU readback tests hold each GPU kernel to. Built
+/// only with the `qualification` feature, which only a `[dev-dependencies]` table may turn on.
+#[cfg(feature = "qualification")]
+pub mod qualification {
+    pub use crate::modules::presence_qualification as presence;
+}
 
 // The crate root paths the core itself uses.
 pub(crate) use editor::{AnalysisPlan, AnalysisSelection};

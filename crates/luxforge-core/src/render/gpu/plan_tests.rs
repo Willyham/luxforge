@@ -133,13 +133,15 @@ fn largest_difference(left: &[u8], right: &[u8]) -> u8 {
 /// units over an exact tail, whose arithmetic is the same `f32` in the same order; one code where
 /// the CPU quantizes a frame the plan carries in float (a resample's input and output, a boundary
 /// inside a colour run), holds a stage boundary's frame at 16 bits that these tests read back at 8
-/// (`staged`), or folds a mask in `f64`; two through a warp's grid.
+/// (`staged`), quantizes a spatial operation's output, or folds a mask in `f64`; two through a
+/// warp's grid.
 fn tolerance(plan: &GpuPlan, staged: bool) -> u8 {
     if plan.geometry.affine().is_none() {
         2
     } else if plan.geometry.clamps
         || plan.boundary.continues_run
         || staged
+        || plan.spatial.is_some()
         || plan.operations().any(|operation| operation.mask.is_some())
     {
         1
@@ -168,7 +170,13 @@ fn assert_draws_the_cpu_frame(
         .compile(source.width, source.height, recipe)
         .unwrap();
     let staged = compiled.layers[plan.boundary.layer].0 > 0;
-    let gpu = interpret::execute(plan, &texels, &compiled.colour_operations()).unwrap();
+    let gpu = interpret::execute_with(
+        plan,
+        &texels,
+        &compiled.colour_operations(),
+        &compiled.spatial_operations(),
+    )
+    .unwrap();
     let difference = largest_difference(&cpu.rgba, &gpu);
     assert!(
         difference <= tolerance(plan, staged),
@@ -263,27 +271,26 @@ fn every_stack_shape_of_the_render_table_plans_in_recipe_order_or_names_a_reason
             true,
             "plan",
         ),
-        (
-            "colour after a spatial operation's frame",
-            0,
-            false,
-            "spatial-unit",
-        ),
+        // Presence's program is enabled: the spatial operation joins the plan between the
+        // content and the tail.
+        ("colour after a spatial operation's frame", 0, false, "plan"),
+        ("colour after a spatial operation's frame", 0, true, "plan"),
         ("colour after a spatial operation's frame", 2, true, "plan"),
         (
             "a spatial operation then a straightened crop",
             0,
             true,
-            "spatial-unit",
+            "plan",
         ),
         // The units and the linear mask component have enabled programs.
         ("a masked colour layer", 0, false, "plan"),
         ("a masked colour layer", 0, true, "plan"),
+        // A masked Presence layer behind geometry plans, its mask with it.
         (
             "a masked spatial operation behind geometry",
             1,
             true,
-            "spatial-unit",
+            "plan",
         ),
         ("a positional unit alone", 0, false, "plan"),
         (
@@ -422,8 +429,9 @@ fn positions_follow_the_cpu_addressing_through_every_pass() {
     );
 }
 
-/// A colour layer between two resamples has no pass; a spatial layer after the boundary has no
-/// program; a boundary inside a colour run continues it.
+/// A colour layer between two resamples has no pass; a spatial layer after the boundary whose
+/// units have no program, or whose program is disabled, is named; a spatial layer's own input is
+/// the frame its segment wrote; a boundary inside a colour run continues it.
 #[test]
 fn stack_shapes_the_plan_cannot_hold_are_named() {
     let registry = colour_registry();
@@ -450,8 +458,48 @@ fn stack_shapes_the_plan_cannot_hold_are_named() {
         Layer::new(crate::PRESENCE_EFFECT, json!({"clarity": 30.0})),
         positional_layer(),
     ]);
+    // The operation follows the content operation at the boundary's stage, its input and output
+    // clamped as the byte path quantizes them; the colour after it is the output pass's, over an
+    // exact tail with nothing more to clamp.
+    let plan = planned(answer(
+        &registry,
+        &spatial,
+        GpuPlanRequest::exact(0, stage(41, 29)),
+    ));
+    let step = plan.spatial.as_ref().expect("the spatial operation");
+    assert_eq!((step.layer, step.applies.len()), (1, 1));
+    assert!(step.clamps && !step.estimated && !plan.approximate());
+    assert_eq!((plan.content.len(), plan.output.len()), (1, 1));
+    assert!(!plan.geometry.clamps);
+    // On the linear path nothing is clamped.
+    let plan = planned(answer(
+        &registry,
+        &spatial,
+        GpuPlanRequest::exact(0, stage(41, 29))
+            .qualifying()
+            .linear(),
+    ));
+    assert!(!plan.spatial.as_ref().unwrap().clamps);
+    // From the spatial layer itself, the boundary is the frame its segment wrote, not a colour
+    // run's unclamped value.
+    let plan = planned(answer(
+        &registry,
+        &spatial,
+        GpuPlanRequest::exact(1, stage(41, 29)).qualifying(),
+    ));
+    assert!(plan.content.is_empty() && plan.spatial.is_some());
+    assert!(!plan.boundary.continues_run);
+    // A restoration layer's units have no program: Detail after the boundary is named.
+    let detail = colour_recipe(vec![
+        exposure_layer(&[0.5]),
+        Layer::new(crate::DETAIL_EFFECT, json!({"sharpening": 40.0})),
+    ]);
     assert_eq!(
-        answer(&registry, &spatial, GpuPlanRequest::exact(0, stage(41, 29))),
+        answer(
+            &registry,
+            &detail,
+            GpuPlanRequest::exact(0, stage(41, 29)).qualifying()
+        ),
         GpuAnswer::Fallback(GpuFallback::SpatialUnit { layer: 1 })
     );
     // From after the spatial layer, its output is the boundary and the plan holds.
@@ -673,7 +721,12 @@ fn masked_operations_carry_their_blend_and_draw_the_cpu_frame() {
             let what = format!("stack {index}, supersampled {supersample}");
             let compiled = with_ramps(&registry, &recipe, supersample);
             let plan = match compiled
-                .gpu_plan(0, stage(41, 29), Some(EffectStage::Color), false)
+                .gpu_plan(
+                    0,
+                    stage(41, 29),
+                    Some(EffectStage::Color),
+                    Default::default(),
+                )
                 .unwrap()
             {
                 GpuAnswer::Plan(plan) => *plan,
@@ -888,4 +941,128 @@ fn clipping_marks_agree_with_the_output_quantizer() {
             value = value.next_up();
         }
     }
+}
+
+/// Dehaze's atmospheric light is the store's when it holds the one a CPU frame of the boundary's
+/// content at the plan's stage prepared, which every Dehaze amount shares; otherwise the GPU takes
+/// it from the stage it holds and the plan says the frame is approximate.
+#[test]
+fn a_dehaze_light_is_the_stores_when_it_holds_the_boundarys_content() {
+    use super::{GpuEstimates, GpuPassShape, gpu_plan_with};
+    let registry = colour_registry();
+    let source = gradient(41, 29);
+    // One stack, its layers' identities kept as its values change, as a drag keeps them.
+    let base = colour_recipe(vec![
+        exposure_layer(&[0.3]),
+        Layer::new(crate::PRESENCE_EFFECT, json!({"dehaze": 40.0})),
+    ]);
+    let with = |layer: usize, payload: serde_json::Value| {
+        let mut recipe = base.clone();
+        recipe.layers[layer].payload = payload;
+        recipe
+    };
+    let context = RenderContext::new();
+    let estimates = GpuEstimates {
+        context: &context,
+        source: RenderSource::Byte(&source),
+    };
+    let request = GpuPlanRequest::exact(1, stage(41, 29)).qualifying();
+    let plan_of = |recipe: &Recipe| {
+        planned(gpu_plan_with(&registry, recipe, request, Some(estimates)).unwrap())
+    };
+
+    // Before any CPU frame the store holds nothing: the light is taken on the GPU, by one
+    // workgroup over the 16x reduction of the stage it holds.
+    let plan = plan_of(&base);
+    assert!(plan.approximate());
+    let step = plan.spatial.as_ref().unwrap();
+    let atmosphere = step
+        .passes
+        .iter()
+        .find(|pass| pass.kernel == "lf_presence_atmosphere")
+        .expect("the estimate's pass");
+    assert_eq!(atmosphere.shape, GpuPassShape::Workgroup);
+
+    // The CPU frame stores it; the plan then writes the stored light as its words.
+    Render::compiled(
+        RenderSource::Byte(&source),
+        registry
+            .compile(source.width, source.height, &base)
+            .unwrap(),
+        RenderOptions::exact(&crate::Cancel::never()),
+        &context,
+    )
+    .unwrap()
+    .frame(SnapshotId::new())
+    .unwrap();
+    let stored: Vec<f32> = {
+        let keys = context.estimates().keys();
+        assert_eq!(keys.len(), 1);
+        let global = context.estimates().cached(&keys[0]).unwrap().unwrap();
+        global.values().iter().map(|value| *value as f32).collect()
+    };
+    for dehaze in [40.0, -65.0] {
+        let plan = plan_of(&with(1, json!({"dehaze": dehaze})));
+        assert!(!plan.approximate(), "dehaze {dehaze}");
+        let step = plan.spatial.as_ref().unwrap();
+        assert_eq!(step.passes[0].kernel, "lf_presence_constant");
+        let light = &step.words[step.passes[0].words..step.passes[0].words + 3];
+        assert_eq!(
+            light
+                .iter()
+                .map(|word| f32::from_bits(*word))
+                .collect::<Vec<_>>(),
+            stored,
+            "every amount reads the one stored light"
+        );
+    }
+    // A new upstream is new content: the store holds nothing for it.
+    let mut moved = base.clone();
+    moved.layers[0].payload = exposure_layer(&[-0.4]).payload;
+    assert!(plan_of(&moved).approximate());
+    // Without a store, the light is always taken on the GPU.
+    assert!(
+        planned(answer(&registry, &base, request)).approximate(),
+        "no store, no stored light"
+    );
+    // A request on one path with a source of the other is refused.
+    assert!(gpu_plan_with(&registry, &base, request.linear(), Some(estimates)).is_err());
+}
+
+/// A Presence plan's planes, passes and words are the same at the smallest and the largest stage
+/// but for the radii its words hold: nothing in it scales with the image.
+#[test]
+fn a_presence_plan_holds_nothing_that_scales_with_the_image() {
+    let registry = colour_registry();
+    let recipe = colour_recipe(vec![Layer::new(
+        crate::PRESENCE_EFFECT,
+        json!({"texture": 30.0, "clarity": -20.0, "dehaze": 15.0}),
+    )]);
+    let shape = |size: Stage| {
+        let plan = planned(answer(
+            &registry,
+            &recipe,
+            GpuPlanRequest::exact(0, size).qualifying(),
+        ));
+        let step = plan.spatial.expect("the spatial operation");
+        (
+            step.planes.clone(),
+            step.passes
+                .iter()
+                .map(|pass| (pass.kernel, pass.inputs.clone(), pass.output, pass.source))
+                .collect::<Vec<_>>(),
+            step.words.len(),
+            step.applies.len(),
+        )
+    };
+    let small = shape(stage(40, 30));
+    assert_eq!(small, shape(stage(16384, 12288)));
+    // Dehaze, then Texture, then Clarity, each unit's passes before the next's.
+    let (planes, passes, _, applies) = small;
+    assert_eq!(applies, 3);
+    let sources: Vec<usize> = passes.iter().map(|pass| pass.3).collect();
+    assert!(sources.windows(2).all(|pair| pair[0] <= pair[1]));
+    assert_eq!((sources[0], *sources.last().unwrap()), (0, 2));
+    // A later unit's scratch reuses an earlier unit's of the same format and size.
+    assert!(planes.len() < 9 + 4 + 4, "{} planes", planes.len());
 }

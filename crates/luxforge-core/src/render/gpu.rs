@@ -11,6 +11,7 @@
 mod grid;
 mod plan;
 mod program;
+mod spatial;
 
 #[cfg(test)]
 mod grid_tests;
@@ -23,9 +24,14 @@ mod wgsl_tests;
 
 pub use grid::{CoordinateGrid, GRID_MAX_NODES, GRID_TOLERANCE_PX};
 pub use plan::{
-    GpuAnswer, GpuBoundary, GpuClipping, GpuComponent, GpuFallback, GpuGeometry, GpuMask,
-    GpuOperation, GpuPlan, GpuPlanRequest, GpuPosition, gpu_plan,
+    GpuAnswer, GpuBoundary, GpuClipping, GpuComponent, GpuEstimates, GpuFallback, GpuGeometry,
+    GpuMask, GpuOperation, GpuPlan, GpuPlanRequest, GpuPosition, gpu_plan, gpu_plan_with,
 };
 #[cfg(test)]
 pub(crate) use program::testing;
 pub use program::{GpuDescription, GpuProgram, GpuProgramKind};
+pub use spatial::{
+    GPU_PASS_INPUTS, GPU_SHARED_VALUES, GPU_WORKGROUP_LANES, GpuApply, GpuPass, GpuPassShape,
+    GpuPlane, GpuPlaneFormat, GpuPlaneSize, GpuSpatial, GpuSpatialUnit,
+};
+pub(crate) use spatial::{Word, Words};
