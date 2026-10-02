@@ -550,14 +550,14 @@ mod tests {
             let source = sources[id];
             assert_eq!(source.sha256.is_some(), source.gap.is_none(), "{id}");
         }
-        // The zone plate has no committed generator, so it is the one recorded gap.
+        // Every source has a file: the zone plate is generated with the other JPEGs.
         let gaps: Vec<&str> = corpus
             .sources
             .iter()
             .filter(|s| s.gap.is_some())
             .map(|s| s.id.as_str())
             .collect();
-        assert_eq!(gaps, ["zone-plate"]);
+        assert!(gaps.is_empty(), "{gaps:?}");
         // The RAWs resolve through the private manifest by the ids the editor manifest uses.
         let raws: Vec<(&str, &str)> = corpus
             .sources
@@ -623,13 +623,15 @@ mod tests {
         );
         assert!(
             refused(|c| {
-                source(c, "zone-plate")["sha256"] = json!("a".repeat(64));
+                source(c, "zone-plate")["gap"] = json!("both a hash and a gap");
             })
             .contains("its SHA-256 or an explicit gap")
         );
         assert!(
             refused(|c| {
-                source(c, "zone-plate")["gap"] = json!(" ");
+                let zone = source(c, "zone-plate").as_object_mut().unwrap();
+                zone.remove("sha256");
+                zone.insert("gap".into(), json!(" "));
             })
             .contains("empty gap")
         );
@@ -967,8 +969,8 @@ mod tests {
         let report = corpus.resolve(root, None).unwrap();
         assert_eq!(
             report["counts"],
-            json!({"verified": 0, "gap": 1, "unresolved": 6}),
-            "three generated files and three RAWs are not checked here; the zone plate is a gap"
+            json!({"verified": 0, "gap": 0, "unresolved": 7}),
+            "four generated files and three RAWs are not checked here"
         );
         let error = run(root, Args(vec![])).unwrap_err();
         assert!(
@@ -978,7 +980,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("6 source(s) could not be checked"),
+                .contains("7 source(s) could not be checked"),
             "{error}"
         );
         assert!(run(root, Args(vec!["--surprise".into()])).is_err());
