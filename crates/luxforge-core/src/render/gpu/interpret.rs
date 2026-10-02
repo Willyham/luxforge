@@ -309,8 +309,19 @@ pub(super) fn execute_with(
             .iter()
             .fold(*texel, |value, step| operation(units, step, value, x, y));
     }
-    if let Some(step) = &plan.spatial {
+    for step in &plan.spatial {
         spatial(spatials, step, stage, &mut texels)?;
+        // The colour operations its segment holds run on its output before the next one.
+        for (index, texel) in texels.iter_mut().enumerate() {
+            let (x, y) = (
+                (index as u32 % stage.width) as i64,
+                (index as u32 / stage.width) as i64,
+            );
+            *texel = step
+                .after
+                .iter()
+                .fold(*texel, |value, after| operation(units, after, value, x, y));
+        }
     }
     if plan.geometry.clamps {
         for texel in texels.iter_mut() {

@@ -416,7 +416,7 @@ pub(crate) fn plan_preview(
     let mut window = None;
     if let (GpuAnswer::Plan(plan), Some((rect, _))) = (&answer, fit.region) {
         let full = (fit.full.width, fit.full.height);
-        answer = match plan.spatial.as_ref().filter(|spatial| spatial.estimated) {
+        answer = match plan.spatial.iter().find(|spatial| spatial.estimated) {
             Some(spatial) => GpuAnswer::Fallback(GpuFallback::RegionEstimate {
                 layer: spatial.layer,
             }),

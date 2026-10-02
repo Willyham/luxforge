@@ -21,7 +21,7 @@
 //! itself wherever `M` is exactly zero, so a value the CPU never computes cannot reach the frame.
 use super::grid::CoordinateGrid;
 use super::program::{GpuDescription, GpuProgramKind};
-use super::spatial::{self, GpuSpatial};
+use super::spatial::{self, GPU_CHAIN_APPLY_PLANES, GpuSpatial};
 use crate::{
     ComponentMode, EffectStage, Error, ModuleRegistry, PreviewSource, ProxyPlan, Recipe,
     colour::srgb,
@@ -255,8 +255,12 @@ pub enum GpuFallback {
     /// the geometry itself, which a plan from its input cannot hold.
     BoundaryStage { layer: usize, stage: EffectStage },
     /// A spatial or restoration layer after the boundary that the plan cannot hold: a unit without
-    /// a GPU program, an exact step between the boundary and it, or a second spatial layer.
+    /// a GPU program, or an exact step between the boundary and it or between it and the spatial
+    /// layer before it.
     SpatialUnit { layer: usize },
+    /// A spatial or restoration layer that would chain more planes to the plan's applies than a
+    /// pass can bind beside the boundary ([`GPU_CHAIN_APPLY_PLANES`]).
+    SpatialChain { layer: usize },
     /// A colour layer between two resamples after the boundary: its stage is neither the
     /// boundary's nor the output's, and a plan has only those two passes.
     BetweenResamples { layer: usize },
@@ -283,6 +287,7 @@ impl GpuFallback {
             Self::PixelStage { .. } => "pixel-stage",
             Self::BoundaryStage { .. } => "boundary-stage",
             Self::SpatialUnit { .. } => "spatial-unit",
+            Self::SpatialChain { .. } => "spatial-chain",
             Self::BetweenResamples { .. } => "between-resamples",
             Self::NoProgram { .. } => "no-program",
             Self::DisabledProgram { .. } => "disabled-program",
@@ -298,6 +303,7 @@ impl GpuFallback {
             Self::PixelStage { layer }
             | Self::BoundaryStage { layer, .. }
             | Self::SpatialUnit { layer }
+            | Self::SpatialChain { layer }
             | Self::BetweenResamples { layer }
             | Self::NoProgram { layer, .. }
             | Self::DisabledProgram { layer, .. }
@@ -322,6 +328,10 @@ impl std::fmt::Display for GpuFallback {
                     "layer {layer} is a spatial layer the GPU plan cannot hold"
                 )
             }
+            Self::SpatialChain { layer } => write!(
+                f,
+                "layer {layer} would chain more spatial planes than a GPU pass can bind"
+            ),
             Self::BetweenResamples { layer } => {
                 write!(f, "layer {layer} is a colour layer between two resamples")
             }
@@ -571,9 +581,11 @@ pub struct GpuPlan {
     pub boundary: GpuBoundary,
     /// Over the boundary's texels, in recipe order.
     pub content: Vec<GpuOperation>,
-    /// The spatial operation the content operations' frame enters, at the boundary's stage: its
-    /// passes over the boundary, then its applies over the content operations' output.
-    pub spatial: Option<GpuSpatial>,
+    /// The spatial operations the content operations' frame enters, in recipe order, at the
+    /// boundary's stage: each one's passes over its own input, the boundary through everything
+    /// before it, then its applies, then the colour operations it holds after it
+    /// ([`GpuSpatial::after`]).
+    pub spatial: Vec<GpuSpatial>,
     pub geometry: GpuGeometry,
     /// Over the output stage's pixels, after the geometry tail, in recipe order.
     pub output: Vec<GpuOperation>,
@@ -581,18 +593,19 @@ pub struct GpuPlan {
 }
 
 impl GpuPlan {
-    /// Every colour operation, content then output: the recipe order, with the spatial operation,
-    /// when there is one, between the two.
+    /// Every colour operation in recipe order: content, those between spatial operations, then
+    /// output, with the spatial operations among them.
     pub fn operations(&self) -> impl Iterator<Item = &GpuOperation> {
-        self.content.iter().chain(&self.output)
+        self.content
+            .iter()
+            .chain(self.spatial.iter().flat_map(|spatial| &spatial.after))
+            .chain(&self.output)
     }
 
     /// The frame is approximate beyond the GPU's arithmetic: a global estimate is taken on the GPU
     /// from the stage it holds, not read from the store.
     pub fn approximate(&self) -> bool {
-        self.spatial
-            .as_ref()
-            .is_some_and(|spatial| spatial.estimated)
+        self.spatial.iter().any(|spatial| spatial.estimated)
     }
 }
 
@@ -781,28 +794,72 @@ impl Compiled {
             }
         }
 
-        // The spatial operation the boundary segment's frame enters, at that frame's stage, when
-        // the frame is the boundary's own texels: nothing but colour lies between them.
-        let mut spatial = None;
-        if let Some(Some(Entry::Spatial(entry))) =
-            self.segments.get(first + 1).map(|next| &next.entry)
+        // The spatial operations the boundary segment's frame enters, in order, at that frame's
+        // stage, while it is the boundary's own texels: nothing but colour lies between them. Each
+        // spatial segment's colour operations run on its output before the next one enters; a
+        // spatial segment with exact steps of its own ends the chain, and a spatial entry after it
+        // has no pass.
+        let mut spatial: Vec<GpuSpatial> = Vec::new();
+        let mut chained_planes = 0;
+        let mut index = first + 1;
+        while let Some(Some(Entry::Spatial(entry))) =
+            self.segments.get(index).map(|next| &next.entry)
         {
-            let layer = self.entry_layer(first + 1);
-            if after != ExactGeometry::identity(received.width, received.height) {
+            let layer = self.entry_layer(index);
+            let previous = &self.segments[index - 1];
+            let exact = |segment: &crate::render::Segment| {
+                segment
+                    .operations
+                    .iter()
+                    .any(|operation| matches!(operation, Processing::ExactGeometry(_)))
+            };
+            if after != ExactGeometry::identity(received.width, received.height)
+                || (index > first + 1 && (exact(previous) || previous.stage() != received))
+            {
                 return Ok(Err(GpuFallback::SpatialUnit { layer }));
             }
+            // The colour operations of the spatial segment before this one run between the two.
+            if let Some(before) = spatial.last_mut() {
+                for (position, operation) in previous.operations.iter().enumerate() {
+                    if let Processing::Color(colour) = operation {
+                        let at = ExactGeometry::identity(received.width, received.height);
+                        match plan_operation(
+                            self.layer_at(index - 1, position),
+                            colour,
+                            origin(previous),
+                            GpuPosition::inverse(at),
+                            qualifying,
+                        )? {
+                            Ok(operation) => before.after.push(operation),
+                            Err(fallback) => return Ok(Err(fallback)),
+                        }
+                    }
+                }
+            }
             match plan_spatial(layer, entry, received, planning)? {
-                Ok(planned) => spatial = Some(planned),
+                Ok(planned) => {
+                    chained_planes += planned
+                        .applies
+                        .iter()
+                        .map(|apply| apply.planes.len())
+                        .sum::<usize>();
+                    if chained_planes > GPU_CHAIN_APPLY_PLANES {
+                        return Ok(Err(GpuFallback::SpatialChain { layer }));
+                    }
+                    spatial.push(planned);
+                }
                 Err(fallback) => return Ok(Err(fallback)),
             }
+            index += 1;
         }
-        let content_end = first + usize::from(spatial.is_some());
+        let content_end = first + spatial.len();
 
-        // Every later segment: a resample or warp joins the tail; a second spatial entry has no
-        // pass. Colour in the last one runs over the output stage; anywhere between, it has no
+        // Every later segment: a resample or warp joins the tail; a spatial entry past the chain
+        // has no pass. Colour in the last one runs over the output stage; in a chained spatial
+        // segment before the last it ran between two spatial operations; anywhere else it has no
         // pass.
         let mut output_operations = Vec::new();
-        for index in first + 1..=last {
+        for index in (first + 1..=last).filter(|index| *index >= content_end) {
             let segment = &self.segments[index];
             if index > content_end
                 && let Some(Entry::Spatial(_)) = &segment.entry

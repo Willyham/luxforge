@@ -189,9 +189,11 @@ pub(crate) fn region_charge(plan: &CorePlan, request: &BoundaryRequest) -> Optio
         0
     };
     let frame = u64::from(rect.width) * u64::from(rect.height) * 4;
-    let planes = plan.spatial.as_ref().map_or(0, |spatial| {
-        spatial.plane_bytes((window.x0, window.y0), (window.width, window.height))
-    });
+    let planes: u64 = plan
+        .spatial
+        .iter()
+        .map(|spatial| spatial.plane_bytes((window.x0, window.y0), (window.width, window.height)))
+        .sum();
     Some((boundary, boundary + intermediate + frame + planes))
 }
 
