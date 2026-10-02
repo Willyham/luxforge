@@ -17,7 +17,7 @@
 use super::{
     BoundaryFormat, Compiled, GpuBoundary, GpuFallback, GpuPlan, GpuStep, GpuTail, OUTPUT_FORMAT,
     Support, answered, assemble_passes, compile, encode_pass, le_bytes, pack, slot_charge, spatial,
-    upload_boundary, validate, validate_step,
+    upload_rows, validate, validate_step,
 };
 use std::sync::mpsc;
 
@@ -228,7 +228,15 @@ impl Qualifier {
                     );
                 }
             }
-            None => upload_boundary(&self.queue, &boundary, &plan.boundary),
+            // The slot's own chunked upload, every row at once: a slot spreads the same chunks over
+            // frames, which only changes when they are written.
+            None => {
+                let (row, _) = upload_rows(&self.queue, &boundary, &plan.boundary, 0, u64::MAX);
+                debug_assert!(
+                    !plan.boundary.holds_texels() || row == plan.boundary.size().1,
+                    "every row is written"
+                );
+            }
         }
         let (mut words, mut blocks) = (Vec::new(), Vec::new());
         pack(plan, &mut words, &mut blocks);
