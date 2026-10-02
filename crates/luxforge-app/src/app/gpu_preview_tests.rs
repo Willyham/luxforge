@@ -1016,3 +1016,54 @@ fn gpu_preview_the_texels_are_let_go_once_the_slot_holds_them_and_asked_again_if
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     finish(editor, catalog);
 }
+
+/// While the surface is still uploading the boundary, a few chunks a frame, a tick takes the CPU
+/// path naming `boundary-uploading`, its job going to the worker and no boundary asked for again,
+/// and the desktop keeps the texels the next frames upload; once the surface holds the boundary the
+/// message its draw wakes lets them go.
+#[test]
+fn gpu_preview_a_tick_during_the_upload_keeps_the_texels_and_names_it() {
+    let catalog = catalog("uploading");
+    let (mut editor, _, _) = real_photo(&catalog);
+    editor.gpu.surface = Some(SurfaceReport::default());
+    let _ = slide(&mut editor, ACTION, FIELD, 0.1);
+    deliver_until(&mut editor, "the boundary", |editor| {
+        editor.gpu.holds_boundary()
+    });
+    let texels_held =
+        |editor: &Editor| editor.gpu.summary()["drag"]["boundary"]["texels_held"].clone();
+    let version = editor.gpu.held_version().unwrap();
+    editor.gpu.surface = Some(SurfaceReport {
+        ready_boundary: None,
+        fallback: Some(SurfaceFallback::BoundaryUploading {
+            uploaded: 1,
+            bytes: 2,
+        }),
+        drawn: None,
+    });
+    let log = attach_log(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.2);
+    let records = logged(&mut editor, &log);
+    let ticks = events(&records, "gpu_preview_tick");
+    assert_eq!(ticks[0]["path"], "cpu");
+    assert_eq!(ticks[0]["reason"], "boundary-uploading");
+    assert_eq!(ticks[0]["boundary_requested"], false);
+    assert_eq!(jobs(&records), 1, "the tick's job goes to the worker");
+    assert_eq!(editor.gpu.ticks().2, 1, "asked once");
+    assert_eq!(
+        texels_held(&editor),
+        json!(true),
+        "the frames still upload them"
+    );
+    let plan = editor
+        .surfaces()
+        .gpu
+        .expect("the plan is still handed over");
+    assert!(plan.boundary.holds_texels());
+    assert_eq!(plan.boundary.version(), version);
+    surface_ready(&mut editor);
+    let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    assert_eq!(texels_held(&editor), json!(false));
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    finish(editor, catalog);
+}

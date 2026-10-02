@@ -2019,6 +2019,7 @@ dependencies = [
  "half",
  "iced",
  "iced_wgpu",
+ "luxforge-process",
  "luxforge-reference",
  "luxforge-testbase",
  "wgpu",

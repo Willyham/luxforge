@@ -1413,3 +1413,192 @@ fn a_resident_boundary_draws_from_the_slot_that_holds_it() {
     assert_codes(&drawn, &codes);
     settle(&pipeline);
 }
+
+/// A boundary larger than a frame's upload arrives over several frames' `prepare`s, at most the
+/// frame's bound each: until its last chunk the frame is the CPU's, the fallback naming the upload
+/// and how far it is, the slot kept and every chunk staged once; the frame that writes the last
+/// chunk draws the plan, exactly. A boundary of another version starts over.
+#[test]
+fn a_boundary_arrives_a_frames_chunks_at_a_time() {
+    let test = "a_boundary_arrives_a_frames_chunks_at_a_time";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let (boundary, codes) = boundary_with_codes(3);
+    let row = u64::from(SIDE) * 8;
+    // Twenty rows a frame: the 64-row boundary arrives over four frames.
+    pipeline.set_upload_per_frame(20 * row);
+    let plan_of = |boundary: &GpuBoundary| primitive(ID, Some(plan(boundary, vec![identity()])));
+    let staged = |pipeline: &PhotoPipeline| diagnostics(pipeline, ID).gpu_preview_staged_bytes;
+    let mut before = staged(&pipeline);
+    for rows in [20u64, 40, 60] {
+        let drawn = paint(&device, &queue, &mut pipeline, &plan_of(&boundary));
+        assert_cpu_frame(&drawn);
+        let seen = diagnostics(&pipeline, ID);
+        assert_eq!(
+            seen.gpu_fallback,
+            Some(GpuFallback::BoundaryUploading {
+                uploaded: rows * row,
+                bytes: boundary.bytes(),
+            }),
+            "after {rows} rows"
+        );
+        assert_eq!(seen.gpu_ready_boundary, None);
+        assert!(seen.gpu_preview_in_use_bytes > 0, "the slot is kept");
+        assert_eq!(
+            seen.gpu_preview_staged_bytes - before,
+            20 * row,
+            "one frame's chunks"
+        );
+        before = seen.gpu_preview_staged_bytes;
+    }
+    let drawn = paint(&device, &queue, &mut pipeline, &plan_of(&boundary));
+    assert_codes(&drawn, &codes);
+    let seen = diagnostics(&pipeline, ID);
+    assert_eq!(seen.gpu_fallback, None);
+    assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
+    assert_eq!(seen.gpu_ready_boundary, Some(3));
+    assert_eq!(
+        seen.gpu_preview_staged_bytes - before,
+        4 * row,
+        "the last rows"
+    );
+    // Drawn again, nothing more is staged.
+    let before = staged(&pipeline);
+    assert_codes(
+        &paint(&device, &queue, &mut pipeline, &plan_of(&boundary)),
+        &codes,
+    );
+    assert_eq!(staged(&pipeline), before);
+    // Another version starts over, from its first row.
+    let (next, _) = boundary_with_codes(4);
+    assert_cpu_frame(&paint(&device, &queue, &mut pipeline, &plan_of(&next)));
+    assert_eq!(
+        diagnostics(&pipeline, ID).gpu_fallback,
+        Some(GpuFallback::BoundaryUploading {
+            uploaded: 20 * row,
+            bytes: next.bytes(),
+        })
+    );
+    // At the recorded bound the same boundary, 32 KiB, arrives in its first frame.
+    pipeline.set_upload_per_frame(UPLOAD_PER_FRAME);
+    let (small, small_codes) = boundary_with_codes(5);
+    assert_codes(
+        &paint(&device, &queue, &mut pipeline, &plan_of(&small)),
+        &small_codes,
+    );
+    settle(&pipeline);
+}
+
+/// A functional measurement of one boundary's arrival, not a timing: the largest `f32` boundary a
+/// RAW region with Clarity's margin reads in the largest window, 4705 × 2817 texels (212 MB), held
+/// as the desktop holds it, handed to the surface frame by frame until the surface has it, then let
+/// go as the desktop lets it go. Each frame records what the surface has staged, what the
+/// GPU-preview slot holds and the process's footprint; the process's own peak footprint catches
+/// what falls between frames. `LUXFORGE_ARRIVAL=whole` uploads the boundary in its first frame, as
+/// before the upload was spread; anything else spreads it at [`UPLOAD_PER_FRAME`]. Run each in its
+/// own process, so the peak is the arrival's.
+#[test]
+#[ignore = "a functional measurement of a boundary's arrival: LUXFORGE_ARRIVAL=spread|whole, one \
+            process each"]
+fn a_boundary_arrival_measured() {
+    let test = "a_boundary_arrival_measured";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let whole = std::env::var("LUXFORGE_ARRIVAL").is_ok_and(|mode| mode == "whole");
+    let mut pipeline = own_pipeline(&device, &queue);
+    pipeline.set_upload_per_frame(if whole { u64::MAX } else { UPLOAD_PER_FRAME });
+    let mut sampler = luxforge_process::Sampler::new();
+    let mut footprint = || {
+        let memory = sampler.read().memory;
+        (
+            memory.bytes.expect("the footprint"),
+            memory.peak_bytes.expect("the peak footprint"),
+        )
+    };
+    let mb = |bytes: u64| bytes as f64 / 1e6;
+    let (width, height) = (4705u32, 2817u32);
+    let bytes = u64::from(width) * u64::from(height) * 16;
+    // The pipeline is up and the identity sequence compiled before anything is counted.
+    let warm = GpuBoundary::from_linear(BoundaryFormat::Float, 4, 4, 1, [[0.5; 4]; 16]).unwrap();
+    paint(
+        &device,
+        &queue,
+        &mut pipeline,
+        &primitive(ID, Some(plan(&warm, vec![identity()]))),
+    );
+    paint(&device, &queue, &mut pipeline, &primitive(ID, None));
+    settle(&pipeline);
+    let (baseline, _) = footprint();
+    // The worker's render, which the desktop holds: every page written.
+    let texels = Arc::new(vec![1u8; bytes as usize]);
+    let boundary = GpuBoundary::new(texels, width, height, 2, BoundaryFormat::Float).unwrap();
+    let (held, _) = footprint();
+    eprintln!(
+        "{test}: {} — boundary {:.1} MB; baseline {:.1} MB, held {:+.1} MB",
+        if whole { "whole" } else { "spread" },
+        mb(bytes),
+        mb(baseline),
+        mb(held - baseline)
+    );
+    let mut frames = 0;
+    let mut sampled_peak = held;
+    loop {
+        let before = diagnostics(&pipeline, ID).gpu_preview_staged_bytes;
+        paint(
+            &device,
+            &queue,
+            &mut pipeline,
+            &primitive(ID, Some(plan(&boundary, vec![identity()]))),
+        );
+        frames += 1;
+        let seen = diagnostics(&pipeline, ID);
+        let (now, _) = footprint();
+        sampled_peak = sampled_peak.max(now);
+        eprintln!(
+            "{test}: frame {frames}: staged {:.1} MB, slot {:.1} MB, footprint {:+.1} MB, {:?}",
+            mb(seen.gpu_preview_staged_bytes - before),
+            mb(seen.gpu_preview_in_use_bytes),
+            mb(now - baseline),
+            seen.gpu_fallback.map(GpuFallback::as_str)
+        );
+        if seen.gpu_ready_boundary == Some(2) {
+            break;
+        }
+        assert!(frames < 64, "the boundary never arrived");
+    }
+    // The desktop lets its copy go once the surface holds the boundary.
+    let resident = boundary.resident();
+    assert_eq!(
+        boundary.texels.as_ref().map(Arc::strong_count),
+        Some(1),
+        "nothing but the desktop's copy holds the texels"
+    );
+    drop(boundary);
+    let (dropped, _) = footprint();
+    eprintln!(
+        "{test}: the copy let go: footprint {:+.1} MB",
+        mb(dropped - baseline)
+    );
+    paint(
+        &device,
+        &queue,
+        &mut pipeline,
+        &primitive(ID, Some(plan(&resident, vec![identity()]))),
+    );
+    settle(&pipeline);
+    let (after, peak) = footprint();
+    let slot = diagnostics(&pipeline, ID).gpu_preview_in_use_bytes;
+    eprintln!(
+        "{test}: arrived in {frames} frames; sampled peak {:+.1} MB ({:.2} × the boundary), \
+         process peak {:+.1} MB ({:.2} ×); after the copy is let go {:+.1} MB, the slot {:.1} MB",
+        mb(sampled_peak - baseline),
+        (sampled_peak - baseline) as f64 / bytes as f64,
+        mb(peak.saturating_sub(baseline)),
+        peak.saturating_sub(baseline) as f64 / bytes as f64,
+        mb(after.saturating_sub(baseline)),
+        mb(slot)
+    );
+}

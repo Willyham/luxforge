@@ -282,6 +282,61 @@ fn a_dissolve_into_another_frame_asks_for_nothing_and_a_percentage_view_into_its
     }
 }
 
+/// While its last frame said the plan's boundary is still uploading, the widget asks for the next
+/// frame, whose `prepare` writes the next chunks; once it is not — drawn, another fallback, or a
+/// resident boundary no upload is for — it asks for nothing, so an idle editor stays asleep.
+#[test]
+fn the_widget_asks_for_frames_only_while_its_plans_boundary_uploads() {
+    use super::super::super::{SurfaceDiagnostics, SurfaceId, process_figures};
+    let id = SurfaceId::new(901);
+    let report = |fallback: Option<crate::photo_surface::GpuFallback>| {
+        process_figures()
+            .draws
+            .lock()
+            .expect("surface draw identities lock")
+            .insert(
+                id,
+                SurfaceDiagnostics {
+                    gpu_fallback: fallback,
+                    ..Default::default()
+                },
+            );
+    };
+    let frame = solid(3, [255, 0, 0, 255]);
+    let boundary = black_boundary(5);
+    let held = plan(&boundary, vec![identity()]);
+    let resident = plan(&boundary.resident(), vec![identity()]);
+    let now = Instant::now();
+    let surface = |plan: &GpuPlan| {
+        photo_surface(id, &frame, Placement::Contain, Length::Fill, Length::Fill)
+            .gpu_preview(Some(plan))
+    };
+    let uploading = crate::photo_surface::GpuFallback::BoundaryUploading {
+        uploaded: 1,
+        bytes: 2,
+    };
+    for (what, fallback, plan, asks) in [
+        ("drawn", None, &held, false),
+        ("uploading", Some(uploading), &held, true),
+        ("a resident boundary", Some(uploading), &resident, false),
+        (
+            "compiling",
+            Some(crate::photo_surface::GpuFallback::Compiling),
+            &held,
+            false,
+        ),
+    ] {
+        report(fallback);
+        let (asked, _) = redraw(&mut surface(plan), now);
+        assert_eq!(asked, asks, "{what}");
+    }
+    process_figures()
+        .draws
+        .lock()
+        .expect("surface draw identities lock")
+        .remove(&id);
+}
+
 // ---- On a headless device ---------------------------------------------------------------------
 
 /// A solid `SIDE` × `SIDE` frame of `rgba`, at `version`.
