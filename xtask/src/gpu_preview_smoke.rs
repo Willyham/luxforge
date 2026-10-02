@@ -7,7 +7,12 @@
 //! release commits, and the boundary and the slot are let go once the committed frame has settled.
 //! Then, in Mask mode, a linear gradient bound to a masked exposure is moved by its middle handle
 //! in two drags, the second drawn on the GPU with the coverage overlay following it, and a brush
-//! stroke is painted through the same mask, its later positions drawn on the GPU.
+//! stroke is painted through the same mask, its later positions drawn on the GPU. Last, back in
+//! the pointer mode, Presence is committed with Dehaze and Clarity, and a Texture drag, a Clarity
+//! drag and a Basic drag under Presence are each drawn on the GPU after their first tick: the two
+//! Presence drags read Dehaze's light from the store and run at most five of Presence's compute
+//! passes a tick (the spatial passes the tick's words change), and the Basic drag, which changes
+//! the light's input, takes the light on the GPU and runs them all.
 //!
 //! **Correlated readbacks.** Every frame drawn on the GPU is checked against the state the editor
 //! recorded with it — the drawing path, the boundary version and the draft revision the surface
@@ -29,6 +34,18 @@ pub const FIXTURE: &str = "fixtures/s0/orientation-1.jpg";
 
 const BASIC: &str = "set-basic";
 const EXPOSURE: &str = "exposure";
+const PRESENCE: &str = "set-presence";
+/// The committed Presence the drags start from, then each Presence drag's first tick and its GPU
+/// ticks, one a step, so each GPU step's frame counts one tick's compute passes.
+const DEHAZE: f64 = 40.0;
+const CLARITY: f64 = 30.0;
+const TEXTURE_DRAG: [f64; 3] = [20.0, 35.0, 50.0];
+const CLARITY_DRAG: [f64; 3] = [40.0, 50.0, 60.0];
+/// The Basic drag under Presence, from the committed exposure.
+const UNDER_DRAG: [f64; 3] = [0.5, 0.4, 0.3];
+/// The most compute passes a tick that changes only Texture's or Clarity's gain may run: Clarity's
+/// five, which read Texture's output.
+const GAIN_PASSES: u64 = 5;
 /// The drag's values: its first tick, before any boundary is held, then its GPU ticks.
 const FIRST: f64 = 0.25;
 const DRAGGED: [f64; 2] = [0.5, 0.75];
@@ -37,6 +54,10 @@ const MASKED: f64 = 1.0;
 /// compile, and for a committed frame to settle. Generous: a 320 × 480 boundary renders in a few
 /// milliseconds and a sequence compiles in tens.
 const QUIET_MS: u64 = 1500;
+/// The same for a stack holding Presence, whose sequences compile in a few hundred milliseconds
+/// each on one compile thread: a committed stack's warm list is compiled first, then the drag's own
+/// sequence when its layer was not warmed.
+const PRESENCE_QUIET_MS: u64 = 4000;
 
 /// The gradient as the sweep draws it, its middle at the centre, then where each drag leaves it.
 const SWEEP: ([f64; 2], [f64; 2]) = ([0.5, 0.3], [0.5, 0.7]);
@@ -65,104 +86,153 @@ fn stroke_path() -> Vec<[f64; 2]> {
 const STROKE_INTERVAL_MS: u64 = 60;
 
 fn quiet(name: &str) -> Step {
-    Step::new(name, script::Step::Wait { ms: QUIET_MS }).commits(0)
+    quiet_for(name, QUIET_MS)
+}
+
+fn quiet_for(name: &str, ms: u64) -> Step {
+    Step::new(name, script::Step::Wait { ms }).commits(0)
 }
 
 /// Every frame, in order: the open, then one per step.
 pub fn plan(_: &[PathBuf]) -> Plan {
     let mask = |name: &str, step: MaskStep| Step::new(name, script::Step::Mask(step));
-    Plan::new(vec![
-        Step::opened("opened").no_draft().masks(0),
-        // 1: the drag's first tick: the CPU frame, its job carrying the boundary request.
-        Step::new("drag-first", SliderStep::new(BASIC, EXPOSURE, [FIRST]))
+    Plan::new(
+        vec![
+            Step::opened("opened").no_draft().masks(0),
+            // 1: the drag's first tick: the CPU frame, its job carrying the boundary request.
+            Step::new("drag-first", SliderStep::new(BASIC, EXPOSURE, [FIRST]))
+                .commits(0)
+                .draft(BASIC, json!({ EXPOSURE: FIRST })),
+            // 2: nothing asked; the boundary arrives and the sequence compiles meanwhile.
+            quiet("boundary-held").draft(BASIC, json!({ EXPOSURE: FIRST })),
+            // 3: the same gesture's later ticks, drawn on the GPU with no preview job.
+            Step::new("drag-gpu", SliderStep::new(BASIC, EXPOSURE, DRAGGED))
+                .commits(0)
+                .draft(BASIC, json!({ EXPOSURE: DRAGGED[1] })),
+            // 4: released at the last value: one entry, the CPU's frame of the same settings.
+            Step::new(
+                "release",
+                SliderStep::new(BASIC, EXPOSURE, [DRAGGED[1]]).release(),
+            )
+            .commits(1)
+            .no_draft()
+            .payload(BASIC_EFFECT, json!({ EXPOSURE: DRAGGED[1] })),
+            // 5: settled: the boundary and the slot let go.
+            quiet("settled").no_draft(),
+            // 6-10: Mask mode, a linear gradient swept and applied.
+            Step::new(
+                "mask-mode",
+                script::Step::Workspace(WorkspaceStep::default().mode("mask")),
+            )
             .commits(0)
-            .draft(BASIC, json!({ EXPOSURE: FIRST })),
-        // 2: nothing asked; the boundary arrives and the sequence compiles meanwhile.
-        quiet("boundary-held").draft(BASIC, json!({ EXPOSURE: FIRST })),
-        // 3: the same gesture's later ticks, drawn on the GPU with no preview job.
-        Step::new("drag-gpu", SliderStep::new(BASIC, EXPOSURE, DRAGGED))
+            .mode("mask"),
+            mask("new-linear", MaskStep::New("linear".into())).commits(0),
+            mask(
+                "sweep",
+                MaskStep::Sweep {
+                    from: SWEEP.0,
+                    to: SWEEP.1,
+                },
+            )
+            .commits(0),
+            mask("sweep-release", MaskStep::Release).commits(0),
+            mask("apply-linear", MaskStep::Apply).commits(1).masks(1),
+            // 11: a masked exposure through it, as the panel's own drag.
+            Step::new(
+                "masked",
+                SliderStep::new(BASIC, EXPOSURE, [MASKED]).release(),
+            )
+            .commits(1)
+            .no_draft(),
+            // 12: the coverage tint chosen, so the moved gradient's frames and the frame its Apply
+            // commits draw the same overlay, and their pixels compare.
+            Step::new(
+                "overlay-tint",
+                script::Step::Workspace(WorkspaceStep::default().mask_overlay("tint")),
+            )
             .commits(0)
-            .draft(BASIC, json!({ EXPOSURE: DRAGGED[1] })),
-        // 4: released at the last value: one entry, the CPU's frame of the same settings.
-        Step::new(
-            "release",
-            SliderStep::new(BASIC, EXPOSURE, [DRAGGED[1]]).release(),
-        )
-        .commits(1)
-        .no_draft()
-        .payload(BASIC_EFFECT, json!({ EXPOSURE: DRAGGED[1] })),
-        // 5: settled: the boundary and the slot let go.
-        quiet("settled").no_draft(),
-        // 6-10: Mask mode, a linear gradient swept and applied.
-        Step::new(
-            "mask-mode",
-            script::Step::Workspace(WorkspaceStep::default().mode("mask")),
-        )
-        .commits(0)
-        .mode("mask"),
-        mask("new-linear", MaskStep::New("linear".into())).commits(0),
-        mask(
-            "sweep",
-            MaskStep::Sweep {
-                from: SWEEP.0,
-                to: SWEEP.1,
-            },
-        )
-        .commits(0),
-        mask("sweep-release", MaskStep::Release).commits(0),
-        mask("apply-linear", MaskStep::Apply).commits(1).masks(1),
-        // 11: a masked exposure through it, as the panel's own drag.
-        Step::new(
-            "masked",
-            SliderStep::new(BASIC, EXPOSURE, [MASKED]).release(),
-        )
-        .commits(1)
-        .no_draft(),
-        // 12: the coverage tint chosen, so the moved gradient's frames and the frame its Apply
-        // commits draw the same overlay, and their pixels compare.
-        Step::new(
-            "overlay-tint",
-            script::Step::Workspace(WorkspaceStep::default().mask_overlay("tint")),
-        )
-        .commits(0)
-        .workspace("mask_overlay", json!("tint")),
-        // 13-17: the gradient reopened and moved by its middle handle twice: the reopening's tick
-        // asks for the boundary, and the moves' ticks are drawn on the GPU once it is held; then
-        // applied.
-        mask("edit-shape", MaskStep::EditShape(Reference::Index(0))).commits(0),
-        mask(
-            "move-first",
-            MaskStep::Drag {
-                handle: DragHandle::Middle,
-                points: FIRST_MOVE.to_vec(),
-            },
-        )
-        .commits(0),
-        quiet("move-held"),
-        mask(
-            "move-gpu",
-            MaskStep::Drag {
-                handle: DragHandle::Middle,
-                points: SECOND_MOVE.to_vec(),
-            },
-        )
-        .commits(0),
-        mask("move-apply", MaskStep::Apply).commits(1),
-        // 17-18: a brush on the same mask, and one stroke painted a position per tick: its first
-        // positions ask for the boundary, its later ones are drawn on the GPU, and its release
-        // commits it as one entry.
-        mask("new-brush", MaskStep::Paint(PaintStep::NewBrush)).commits(0),
-        mask(
-            "stroke",
-            MaskStep::Stroke {
-                points: stroke_path(),
-                release: true,
-                interval_ms: Some(STROKE_INTERVAL_MS),
-                settle_between: false,
-            },
-        )
-        .commits(1),
-    ])
+            .workspace("mask_overlay", json!("tint")),
+            // 13-17: the gradient reopened and moved by its middle handle twice: the reopening's tick
+            // asks for the boundary, and the moves' ticks are drawn on the GPU once it is held; then
+            // applied.
+            mask("edit-shape", MaskStep::EditShape(Reference::Index(0))).commits(0),
+            mask(
+                "move-first",
+                MaskStep::Drag {
+                    handle: DragHandle::Middle,
+                    points: FIRST_MOVE.to_vec(),
+                },
+            )
+            .commits(0),
+            quiet("move-held"),
+            mask(
+                "move-gpu",
+                MaskStep::Drag {
+                    handle: DragHandle::Middle,
+                    points: SECOND_MOVE.to_vec(),
+                },
+            )
+            .commits(0),
+            mask("move-apply", MaskStep::Apply).commits(1),
+            // 17-18: a brush on the same mask, and one stroke painted a position per tick: its first
+            // positions ask for the boundary, its later ones are drawn on the GPU, and its release
+            // commits it as one entry.
+            mask("new-brush", MaskStep::Paint(PaintStep::NewBrush)).commits(0),
+            mask(
+                "stroke",
+                MaskStep::Stroke {
+                    points: stroke_path(),
+                    release: true,
+                    interval_ms: Some(STROKE_INTERVAL_MS),
+                    settle_between: false,
+                },
+            )
+            .commits(1),
+            // 19-: back in the pointer mode, Presence committed, then three drags on the GPU.
+            Step::new(
+                "pointer-mode",
+                script::Step::Workspace(WorkspaceStep::default().mode("pointer")),
+            )
+            .commits(0)
+            .mode("pointer"),
+            Step::new(
+                "dehaze",
+                SliderStep::new(PRESENCE, "dehaze", [DEHAZE]).release(),
+            )
+            .commits(1)
+            .no_draft(),
+            Step::new(
+                "clarity",
+                SliderStep::new(PRESENCE, "clarity", [CLARITY]).release(),
+            )
+            .commits(1)
+            .no_draft(),
+            quiet_for("presence-settled", PRESENCE_QUIET_MS).no_draft(),
+        ]
+        .into_iter()
+        .chain(drag_steps("texture", PRESENCE, "texture", TEXTURE_DRAG))
+        .chain(drag_steps("clarity", PRESENCE, "clarity", CLARITY_DRAG))
+        .chain(drag_steps("under", BASIC, EXPOSURE, UNDER_DRAG))
+        .collect(),
+    )
+}
+
+/// One drag over a held boundary, a step a tick: `<name>-first`, whose CPU tick asks for the
+/// boundary; `<name>-held`, while it arrives and the surface first runs every pass; `<name>-gpu-1`
+/// and `<name>-gpu-2`, a GPU tick each; `<name>-release`, which commits the last value; and
+/// `<name>-settled`.
+fn drag_steps(name: &str, action: &str, field: &str, values: [f64; 3]) -> Vec<Step> {
+    let slider = |value: f64| SliderStep::new(action, field, [value]);
+    vec![
+        Step::new(format!("{name}-first"), slider(values[0])).commits(0),
+        quiet_for(&format!("{name}-held"), PRESENCE_QUIET_MS),
+        Step::new(format!("{name}-gpu-1"), slider(values[1])).commits(0),
+        Step::new(format!("{name}-gpu-2"), slider(values[2])).commits(0),
+        Step::new(format!("{name}-release"), slider(values[2]).release())
+            .commits(1)
+            .no_draft(),
+        quiet(&format!("{name}-settled")).no_draft(),
+    ]
 }
 
 /// The events of the step whose frame is `frame`: from its `script_step` record to the next.
@@ -441,6 +511,62 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             "The stroke was {gpu_ticks} GPU and {cpu_ticks} CPU ticks with {jobs} preview jobs"
         ),
     )?;
+
+    // The Presence drags and the Basic drag under Presence: each GPU tick drawn with no preview
+    // job, from a plan whose light is stored or taken on the GPU, running the compute passes its
+    // words change; its pixels the CPU's frame of the same settings.
+    for (name, approximate, gain_only) in [
+        ("texture", false, true),
+        ("clarity", false, true),
+        ("under", true, false),
+    ] {
+        let mut counted = Vec::new();
+        let mut before = launch.at(&format!("{name}-held"))?;
+        for tick in ["gpu-1", "gpu-2"] {
+            let step = format!("{name}-{tick}");
+            let frame = launch.at(&step)?;
+            let drawn = gpu_drawn(frame)?;
+            let (gpu_ticks, cpu_ticks, jobs) = ticks(step_events(launch, &step)?);
+            ensure(
+                gpu_ticks >= 1 && cpu_ticks == 0 && jobs == 0,
+                format!(
+                    "{step} was {gpu_ticks} GPU and {cpu_ticks} CPU ticks with {jobs} preview jobs"
+                ),
+            )?;
+            let summary = &frame.state()["surface"]["gpu"]["gpu_preview"]["drag"];
+            ensure(
+                summary["approximate"] == json!(approximate),
+                format!(
+                    "{step}'s plan is approximate {}, not {approximate}",
+                    summary["approximate"]
+                ),
+            )?;
+            let passes = |frame: &Frame| {
+                frame.state()["surface"]["gpu"]["gpu_preview_spatial_passes"]
+                    .as_u64()
+                    .unwrap_or(0)
+            };
+            let ran = passes(frame).saturating_sub(passes(before));
+            ensure(
+                !gain_only || ran <= GAIN_PASSES * gpu_ticks as u64,
+                format!("{step} ran {ran} compute passes in {gpu_ticks} gain-only ticks"),
+            )?;
+            counted.push(
+                json!({"step": step, "gpu_ticks": gpu_ticks, "compute_passes": ran,
+                "drawn": drawn}),
+            );
+            before = frame;
+        }
+        let compared = same_pixels(
+            launch.at(&format!("{name}-gpu-2"))?,
+            launch.at(&format!("{name}-release"))?,
+        )?;
+        checks.note(
+            launch.at(&format!("{name}-gpu-2"))?,
+            &format!("the {name} drag on the GPU, against the CPU frame its release commits"),
+            json!({"approximate": approximate, "ticks": counted, "against_release": compared}),
+        );
+    }
 
     checks.write(&launch.evidence, run.scenario(), json!({}))
 }

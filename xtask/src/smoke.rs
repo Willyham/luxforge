@@ -339,9 +339,11 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: gpu_preview::SCENARIO,
-        about: "Gestures at Fit drawn on the GPU over a held boundary with no preview job per tick: a Basic drag, a gradient move and a brush stroke, each correlated with the CPU frame of its settings",
+        about: "Gestures at Fit drawn on the GPU over a held boundary with no preview job per tick: a Basic drag, a gradient move, a brush stroke, a Texture and a Clarity drag and a Basic drag under Presence, each correlated with the CPU frame of its settings",
         launches: &[LaunchSpec {
             plan: gpu_preview::plan,
+            // Its Presence drags wait for Presence's sequences to compile.
+            deadline: Some(Duration::from_secs(120)),
             ..APP
         }],
         verify: gpu_preview::verify,

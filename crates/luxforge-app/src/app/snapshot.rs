@@ -344,6 +344,7 @@ impl Editor {
                 "gpu_preview_in_use_bytes":gpu.gpu_preview_in_use_bytes,
                 "gpu_preview_peak_bytes":gpu.gpu_preview_peak_bytes,
                 "gpu_preview_passes":gpu.gpu_preview_passes,
+                "gpu_preview_spatial_passes":gpu.gpu_preview_spatial_passes,
                 "gpu_identity":self.evidence.as_ref().is_some_and(|evidence| evidence.gpu_identity.is_some()),
                 // The open gesture's GPU preview: its held boundary, the plan's revision, why the
                 // latest tick took the CPU path, and its tick counts; and the warm list's version.

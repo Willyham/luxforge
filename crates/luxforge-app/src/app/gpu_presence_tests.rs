@@ -864,7 +864,7 @@ fn measure_unit(
     let fresh = RenderContext::new();
     let estimates = GpuEstimates {
         context: if stored { &context } else { &fresh },
-        source,
+        source: source.into(),
     };
     let plan = match gpu_plan_with(
         registry,
@@ -1059,7 +1059,7 @@ fn gpu_presence_on_the_byte_path_meets_the_spatial_limits() {
             GpuPlanRequest::exact(0, stage(width, height)).qualifying(),
             Some(GpuEstimates {
                 context: &context,
-                source: RenderSource::Byte(&image),
+                source: RenderSource::Byte(&image).into(),
             }),
         )
         .unwrap()
@@ -1134,7 +1134,10 @@ fn gpu_presence_pass_pipelines_are_shared_across_plans() {
             GpuPlanRequest::exact(0, stage(width, height))
                 .qualifying()
                 .linear(),
-            Some(GpuEstimates { context, source }),
+            Some(GpuEstimates {
+                context,
+                source: source.into(),
+            }),
         )
         .expect("the stack compiles")
         {
@@ -1242,7 +1245,10 @@ fn gpu_presence_a_drag_reruns_only_the_passes_it_changes() {
             GpuPlanRequest::exact(0, stage(width, height))
                 .qualifying()
                 .linear(),
-            Some(GpuEstimates { context, source }),
+            Some(GpuEstimates {
+                context,
+                source: source.into(),
+            }),
         )
         .expect("the stack compiles")
         {
