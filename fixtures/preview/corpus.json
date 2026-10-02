@@ -9,6 +9,7 @@
     {"id": "jpeg-24mp", "kind": "generated-jpeg", "path": "fixtures/generated/24mp.jpg", "generator": "cargo xtask generate-fixtures", "dimensions": [6000, 4000], "sha256": "b54c2a158a3d384674f5d731f940d553039d61f51b83a0e7b1e3b0247aa056eb", "description": "The generated 24 MP workload: four flat colour quadrants, corner labels, an arrow and fine vertical detail, at 6000 x 4000."},
     {"id": "jpeg-60mp", "kind": "generated-jpeg", "path": "fixtures/generated/60mp.jpg", "generator": "cargo xtask generate-fixtures", "dimensions": [10000, 6000], "sha256": "b9e0118ab69b5d889b62087759be0b33f41b010f8d5bf14d2864dd9e47340221", "description": "The generated 60 MP workload: the same pattern at 10000 x 6000."},
     {"id": "zone-plate", "kind": "generated-jpeg", "path": "fixtures/generated/zone-plate.jpg", "generator": "cargo xtask generate-fixtures", "dimensions": [6000, 4000], "sha256": "dfae0f2dd0b6b70e81f76cff0360e3231ea1f713330c149c3ea50e6612be9949", "description": "A high-frequency probe for minification and resampling: a grey radial chirp, 127.5 + 127.5 cos(pi k r^2), whose frequency reaches 0.5 cycles per pixel in the corners, at JPEG quality 95 without chroma subsampling."},
+    {"id": "lens-zone-plate", "kind": "generated-jpeg", "path": "fixtures/generated/lens-zone-plate.jpg", "generator": "cargo xtask generate-fixtures", "dimensions": [6048, 4024], "sha256": "65de25c76a4a9a62b781ff9d21293c83264945cc946d2b1f47b9e929514899e6", "description": "The zone plate's chirp at a Nikon Z 6's size, reaching 0.5 cycles per pixel in the corners, with the Z 6 and NIKKOR Z 24-70mm f/4 S identity at 24 mm in its EXIF, so a lens profile applies to it: the high-frequency probe for a lens warp's coordinate grid."},
     {"id": "presence-fixture", "kind": "generated-jpeg", "path": "fixtures/generated/presence.jpg", "generator": "cargo xtask generate-fixtures", "dimensions": [1440, 960], "sha256": "2491b2d01219c933fed72ea6754876412f4a0774dda21fb51e491d0041429638", "description": "The Presence scenario's own fixture: a smooth gradient, a hard step edge, a low-amplitude checker and a flat grey, one in each quadrant."},
     {"id": "raw-z6", "kind": "raw", "manifest_id": "nikon-z6", "dimensions": [4024, 6048], "sha256": "e4db4e1f152110da0a3feb77a4b666c9de4e005509c4c443d15a2d8071bd49fb", "description": "The owner's Nikon Z 6 NEF, resolved through the private RAW manifest."},
     {"id": "raw-x100vi", "kind": "raw", "manifest_id": "fujifilm-x100vi", "dimensions": [7728, 5152], "sha256": "187e3403bdb93617a906e059209e91037e56efbaf5b6824700e96e0d4abd7246", "description": "The owner's Fujifilm X100VI RAF, resolved through the private RAW manifest."},
@@ -190,6 +191,19 @@
       "sources": ["raw-z6", "raw-x100vi", "raw-air2s"],
       "steps": [
         {"section": {"module": "luxforge.lens", "expanded": true}},
+        {"api": {"method": "edit.set-perspective", "params": {"horizontal": 20, "vertical": -10}}},
+        {"api": {"method": "edit.set-basic", "params": {"exposure": 0.5, "contrast": 25.0}}}
+      ]
+    },
+    {
+      "id": "lens-perspective-warp-jpeg",
+      "family": "lens-perspective",
+      "class": "pointwise",
+      "description": "A JPEG's detected lens profile, applied as the Lens section's Apply applies it, with a Perspective warp, under a Basic edit, on the zone plate that carries a camera and lens identity.",
+      "sources": ["lens-zone-plate"],
+      "steps": [
+        {"section": {"module": "luxforge.lens", "expanded": true}},
+        {"controls": {"gesture": "query-choice-apply", "action": "select-lens-profile"}},
         {"api": {"method": "edit.set-perspective", "params": {"horizontal": 20, "vertical": -10}}},
         {"api": {"method": "edit.set-basic", "params": {"exposure": 0.5, "contrast": 25.0}}}
       ]
