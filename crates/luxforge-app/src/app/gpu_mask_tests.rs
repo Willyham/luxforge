@@ -424,6 +424,7 @@ fn measure(
             position: PositionMap::IDENTITY,
             mask: converted,
         })],
+        region: None,
     };
     let drawn = qualifier.evaluate(&readback).expect("a qualification pass");
     let gpu: Vec<f64> = drawn

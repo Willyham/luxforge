@@ -182,6 +182,16 @@ impl WindowPlan {
         })
     }
 
+    /// The rectangle of the whole stage segment `segment` receives that this plan keeps: the
+    /// source's window for the first segment, and the window of the stage the boundary entering
+    /// any other writes, which is the previous segment's kept output.
+    pub(crate) fn received(&self, segment: usize) -> Region {
+        match segment {
+            0 => self.source,
+            _ => self.outputs[segment - 1],
+        }
+    }
+
     /// Rewrite `compiled`, the stack this plan was made from, to read a source of the window's
     /// dimensions and keep only each segment's window. `globals(index)` answers the estimates the
     /// spatial operation entering segment `index` is handed when its stage is cut and it prepares
