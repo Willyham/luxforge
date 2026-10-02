@@ -187,8 +187,19 @@ pub(crate) enum Cell {
         passed: bool,
         /// What the photo surface's slot drawing the plan charges the GPU-preview budget.
         charged: u64,
+        /// For a stack whose Fit settles from the exact render, whose reduction the figures are
+        /// judged against: the CPU's own moving proxy beside it, which the GPU frame previews.
+        settled: Option<Box<Settled>>,
     },
     Gap(String),
+}
+
+/// What a Fit that settles from the exact render adds to a cell: the CPU's moving proxy against
+/// the exact-derived frame it settles to, and the GPU frame against that proxy, which leaves the
+/// proxy's own approximation out.
+pub(crate) struct Settled {
+    pub(crate) proxy: Statistics,
+    pub(crate) gpu_against_proxy: Statistics,
 }
 
 /// A step's `mask` and `component` parameters given as `{"name": ...}`, as the corpus's evidence
@@ -290,12 +301,21 @@ pub(crate) fn corpus_cell(
     let result = (|| -> Result<Cell, String> {
         apply_steps(&owner, client, &asset, steps)?;
         let bounds = fit_bounds();
-        // The CPU frame: the desktop's own Fit job, through the preview worker's proxy phase.
+        // The CPU frame: the desktop's own Fit job, through the preview worker's proxy phase; or,
+        // for a stack whose Fit settles from the exact render (Detail's), the reduction of the
+        // exact phase's frame that settlement presents, the proxy kept beside it.
         let mut job = crate::app::tasks::ready_preview_job(
             &owner,
             PreviewRequest::new(client, asset.clone()).proxy(bounds),
         )?;
-        job.intent = PreviewIntent::Interactive;
+        // An immediate job runs both phases: the moving proxy, then the exact frame with its
+        // reduction.
+        let settles = job.evaluation.settles_from_exact();
+        job.intent = if settles {
+            PreviewIntent::Immediate
+        } else {
+            PreviewIntent::Interactive
+        };
         let evaluation = job.evaluation.clone();
         // The recipe the frame is rendered from, its painted strokes resolved.
         let recipe = evaluation.recipe().clone();
@@ -312,6 +332,7 @@ pub(crate) fn corpus_cell(
         // of it, as a crop does — or, for a photograph that fits the bounds at its own size, the
         // exact phase's frame over the source itself. With the stage the plan addresses and where
         // in it the source's first texel is.
+        let mut settled_proxy = None;
         let (cpu, proxied, is_proxy, (stage_width, stage_height), origin) = match outcome {
             PhaseOutcome::Proxy(proxy) => {
                 let context = RenderContext::new();
@@ -342,13 +363,28 @@ pub(crate) fn corpus_cell(
                     )));
                 }
                 let origin = window.map_or((0, 0), |[x, y, _, _]| (x, y));
-                (
-                    proxy.raster,
-                    proxied,
-                    true,
-                    (plan.width, plan.height),
-                    origin,
-                )
+                let stage = (plan.width, plan.height);
+                if settles {
+                    let exact = luxforge_testbase::wait_for("the settled Fit frame", || {
+                        let result = queue.poll()?;
+                        match result.outcome {
+                            PhaseOutcome::Exact(exact) if result.generation == generation => {
+                                Some(exact)
+                            }
+                            _ => None,
+                        }
+                    });
+                    exact.result.map_err(|error| error.to_string())?;
+                    let Some(display) = exact.display else {
+                        return Ok(Cell::Gap(
+                            "the exact phase presented no settled Fit frame".to_owned(),
+                        ));
+                    };
+                    settled_proxy = Some(proxy.raster);
+                    (display, proxied, true, stage, origin)
+                } else {
+                    (proxy.raster, proxied, true, stage, origin)
+                }
             }
             PhaseOutcome::Exact(exact) => (
                 exact.result.map_err(|error| error.to_string())?,
@@ -533,6 +569,27 @@ pub(crate) fn corpus_cell(
             preview_error::compare(frame(&gpu)?, frame(&reference)?, [0, 0, width, height])?;
         let program =
             preview_error::compare(frame(&program)?, frame(&reference)?, [0, 0, width, height])?;
+        // The CPU's moving proxy, written beside the pair, against the frame it settles to, and
+        // the GPU frame against it.
+        let settled = match settled_proxy {
+            Some(proxy) => {
+                let proxy: Vec<u8> = proxy
+                    .rgba
+                    .chunks_exact(4)
+                    .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
+                    .collect();
+                image::RgbImage::from_raw(width, height, proxy.clone())
+                    .ok_or("a whole frame")?
+                    .save(output.join(format!("{name}-proxy.png")))
+                    .map_err(|error| error.to_string())?;
+                let rect = [0, 0, width, height];
+                Some(Box::new(Settled {
+                    proxy: preview_error::compare(frame(&proxy)?, frame(&reference)?, rect)?,
+                    gpu_against_proxy: preview_error::compare(frame(&gpu)?, frame(&proxy)?, rect)?,
+                }))
+            }
+            None => None,
+        };
         Ok(Cell::Measured {
             stage: (width, height),
             proxy: is_proxy,
@@ -540,6 +597,7 @@ pub(crate) fn corpus_cell(
             statistics,
             program,
             charged,
+            settled,
         })
     })();
     finish(owner, join);
@@ -660,6 +718,7 @@ pub(crate) fn corpus_at_fit(test: &str, families: &[&str]) {
                         program,
                         passed,
                         charged,
+                        settled,
                     } => {
                         eprintln!(
                             "{name} at {}x{}{}: drawn {} | program {} | charged {charged} B{}",
@@ -670,6 +729,14 @@ pub(crate) fn corpus_at_fit(test: &str, families: &[&str]) {
                             figures(program),
                             if *passed { "" } else { " MISS" }
                         );
+                        if let Some(settled) = settled {
+                            eprintln!(
+                                "{name}: settled from exact: CPU proxy {} | GPU against the CPU \
+                                 proxy {}",
+                                figures(&settled.proxy),
+                                figures(&settled.gpu_against_proxy)
+                            );
+                        }
                         commands.push(format!(
                             "cargo xtask preview-error --candidate {dir}/{name}-gpu.png \
                              --reference {dir}/{name}-cpu.png --photo-rect 0,0,{w},{h} \
@@ -688,12 +755,19 @@ pub(crate) fn corpus_at_fit(test: &str, families: &[&str]) {
                                 "mean_delta_l": s.mean_delta_l, "max": s.max
                             })
                         };
-                        cells.push(json!({
+                        let mut cell = json!({
                             "cell": name, "class": class.name(),
                             "stage": [proxy.0, proxy.1], "proxy": is_proxy,
                             "drawn": stats(statistics), "program": stats(program),
                             "passed": passed, "charged_bytes": charged
-                        }));
+                        });
+                        if let Some(settled) = settled {
+                            cell["settled_from_exact"] = json!({
+                                "cpu_proxy": stats(&settled.proxy),
+                                "gpu_against_cpu_proxy": stats(&settled.gpu_against_proxy)
+                            });
+                        }
+                        cells.push(cell);
                     }
                     Cell::Gap(reason) => {
                         eprintln!("{name}: gap: {reason}");
