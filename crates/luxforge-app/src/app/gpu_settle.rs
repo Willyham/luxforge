@@ -151,6 +151,9 @@ impl Content {
     }
 }
 
+/// The clipping overlays shown, and whether the photograph is at Fit with no comparison.
+type SettleView = (Option<[bool; 2]>, bool);
+
 /// A dissolve handed to the surface.
 #[derive(Clone, Debug)]
 struct Running {
@@ -158,6 +161,9 @@ struct Running {
     /// The open draft and its revision when it began: any newer tick, or another gesture, is an
     /// input that cancels it.
     input: Option<(DraftId, u64)>,
+    /// What the surface showed over the photograph when it began: a clipping overlay turned on or
+    /// off, a zoom away from Fit or a comparison is an input that cancels it too.
+    view: SettleView,
     content: Content,
     boundary: u64,
 }
@@ -245,16 +251,24 @@ impl Editor {
             .draft
             .as_ref()
             .map(|draft| (draft.draft_id.clone(), draft.draft_revision));
+        let fit = matches!(self.session.preview.view.zoom, luxforge_core::Zoom::Fit)
+            && self.presentation.compare_after.is_none();
+        let view = (clip_flags(&self.session.workspace), fit);
         if let Some(running) = self.gpu_settle.running.clone() {
             let elapsed_ms = running.dissolve.started.elapsed().as_secs_f64() * 1000.0;
             let detail = |why: &str| {
                 json!({"from": running.dissolve.from, "to": running.dissolve.to,
                     "elapsed_ms": elapsed_ms, "why": why})
             };
-            if input != running.input {
+            if input != running.input || view != running.view {
                 self.gpu_settle.running = None;
                 self.gpu_settle.cancelled += 1;
-                self.event("gpu_dissolve_cancelled", || detail("input"));
+                let why = if input == running.input {
+                    "view"
+                } else {
+                    "input"
+                };
+                self.event("gpu_dissolve_cancelled", || detail(why));
             } else if running.dissolve.share(std::time::Instant::now()) >= 1.0 {
                 self.gpu_settle.running = None;
                 self.event("gpu_dissolve_ended", || detail("ended"));
@@ -291,8 +305,6 @@ impl Editor {
             && photo != shown.photo
         {
             self.gpu_settle.shown = None;
-            let fit = matches!(self.session.preview.view.zoom, luxforge_core::Zoom::Fit)
-                && self.presentation.compare_after.is_none();
             let content = self.shown_content(&shown).filter(|_| fit);
             let decision = match (&content, photo) {
                 (Some(content), Some(to)) => {
@@ -300,6 +312,7 @@ impl Editor {
                     self.gpu_settle.running = Some(Running {
                         dissolve,
                         input: input.clone(),
+                        view,
                         content: content.clone(),
                         boundary: shown.boundary,
                     });

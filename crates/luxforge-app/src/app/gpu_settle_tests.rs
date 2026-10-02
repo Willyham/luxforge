@@ -202,3 +202,28 @@ fn gpu_settle_a_cancel_swaps_with_no_dissolve() {
     assert_eq!(swapped[0]["why"], "older content");
     finish(editor, catalog);
 }
+
+/// A clipping overlay turned on while the committed frame dissolves in is an input too: it cancels
+/// the dissolve, so the CPU frame's own overlay is drawn at once rather than after it.
+#[test]
+fn gpu_settle_a_clipping_toggle_cancels_the_dissolve() {
+    let catalog = catalog("view");
+    let (mut editor, _, _) = real_photo(&catalog);
+    gpu_drag(&mut editor, &[0.2, 0.35]);
+    let log = attach_log(&mut editor);
+    let _ = let_go(&mut editor, ACTION, FIELD);
+    assert!(run_commit(&mut editor));
+    deliver_until(&mut editor, "the committed frame", |editor| {
+        editor.gpu_settle.dissolve().is_some()
+    });
+    editor.session.workspace.clip_highlights = true;
+    let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    assert!(editor.gpu_settle.dissolve().is_none());
+    assert!(editor.surfaces().dissolve.is_none());
+    let records = logged(&mut editor, &log);
+    let cancelled = events(&records, "gpu_dissolve_cancelled");
+    assert_eq!(cancelled.len(), 1, "{records:?}");
+    assert_eq!(cancelled[0]["why"], "view");
+    editor.session.workspace.clip_highlights = false;
+    finish(editor, catalog);
+}
