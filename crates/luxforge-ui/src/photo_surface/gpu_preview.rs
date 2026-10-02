@@ -494,6 +494,10 @@ pub(super) struct GpuSlot {
     written_blocks: Vec<u32>,
     /// The cached pipeline last run into `output`.
     evaluated: Option<u64>,
+    /// The interface thread's time, in microseconds, to prepare what `output` holds: fitting the
+    /// slot, writing the words and blocks, uploading a new boundary, encoding and submitting the
+    /// pass. The device Iced creates has no timestamp queries, so the GPU's own time is not read.
+    frame_us: u64,
 }
 
 impl GpuSlot {
@@ -503,6 +507,10 @@ impl GpuSlot {
 
     pub(super) fn output(&self) -> &Picture {
         &self.output
+    }
+
+    pub(super) fn frame_us(&self) -> u64 {
+        self.frame_us
     }
 }
 
@@ -990,18 +998,26 @@ fn storage_buffer(device: &wgpu::Device, label: &str, bytes: u64) -> wgpu::Buffe
 
 impl PhotoPipeline {
     /// Make `surface`'s GPU-preview slot hold what `plan` draws and record how this frame is drawn:
-    /// with no plan, the slot is released and the frame is the CPU's; with one, the slot evaluates
-    /// it, or the frame is the CPU's and names why. `surface` is out of the map.
+    /// with no plan, the slot is released and the frame is the CPU's, unless `dissolve` runs from
+    /// the GPU frame the last draw showed, which the slot then keeps ([`dissolve`]); with one, the
+    /// slot evaluates it, or the frame is the CPU's and names why. `surface` is out of the map.
     pub(super) fn prepare_gpu(
         &mut self,
         surface: &mut SurfaceSlots,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         plan: Option<&GpuPlan>,
+        dissolve: Option<DissolveFrame>,
     ) {
+        // The GPU frame the last draw showed, which is all a dissolve may start from.
+        let shown = surface.gpu_output().is_some() || surface.dissolving.is_some();
         surface.gpu_outcome = None;
+        surface.dissolving = None;
         let Some(plan) = plan else {
-            self.release_gpu(surface);
+            match dissolve {
+                Some(frame) if shown && surface.gpu.is_some() => surface.dissolving = Some(frame),
+                _ => self.release_gpu(surface),
+            }
             return;
         };
         let outcome = self.evaluate(surface, device, queue, plan);
@@ -1072,6 +1088,7 @@ impl PhotoPipeline {
         words: &[u32],
         blocks: &[u32],
     ) -> Result<u64, GpuFallback> {
+        let started = std::time::Instant::now();
         let size = plan.boundary.size();
         let word_bytes = (words.len() * 4) as u64;
         let block_bytes = (blocks.len() * 4) as u64;
@@ -1175,6 +1192,7 @@ impl PhotoPipeline {
             queue.submit([encoder.finish()]);
             slot.evaluated = Some(pipeline_id);
             slot.output.version = plan.boundary.version;
+            slot.frame_us = started.elapsed().as_micros() as u64;
             self.figures.preview.passes.fetch_add(1, Ordering::Relaxed);
         }
         Ok(plan.boundary.version)
@@ -1308,6 +1326,7 @@ impl PhotoPipeline {
             written_words: Vec::new(),
             written_blocks: Vec::new(),
             evaluated: None,
+            frame_us: 0,
         })
     }
 
@@ -1414,6 +1433,10 @@ fn upload_boundary(queue: &wgpu::Queue, texture: &wgpu::Texture, boundary: &GpuB
 
 mod position;
 pub use position::PositionMap;
+
+mod dissolve;
+pub use dissolve::{DISSOLVE_DURATION, Dissolve, DrawnDissolve};
+pub(crate) use dissolve::{DissolveFrame, dissolving, photo_uniform};
 
 #[cfg(feature = "qualification")]
 pub mod qualification;
