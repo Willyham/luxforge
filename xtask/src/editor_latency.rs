@@ -38,7 +38,7 @@ use crate::{
 use luxforge_core::{CanvasInteraction, ModuleRegistry, ParameterKind, SourceTag};
 use luxforge_evidence::{
     self as script, BrushStep, CurveStep, CurveStepEvent, DraftStep, MaskStep, PaintStep,
-    Reference, SliderEnd, SliderStep, ViewStep, WorkspaceStep,
+    PaletteStep, Reference, SliderEnd, SliderStep, ViewStep, WorkspaceStep,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -1198,6 +1198,9 @@ pub struct Options<'a> {
     /// before the gesture, so the GPU programs the committed stack's warm list names finish
     /// compiling off the interface thread, as they would before a person's next drag.
     pub warm_ms: Option<u64>,
+    /// Drag and commit modes only: turn the GPU preview off from the palette before anything else,
+    /// as a person does, so every tick takes the CPU path: the same build's baseline for a GPU run.
+    pub gpu_preview_off: bool,
 }
 
 fn zoom_step(options: &Options) -> Option<script::Step> {
@@ -1407,7 +1410,12 @@ fn paint_script(options: &Options, path: Vec<[f64; 2]>) -> Vec<script::Step> {
 /// layers asked for, then for a curve its seed (a module's curve only) and its view steps. The
 /// frame captured after the last of them is the one the curve's readiness is checked on.
 fn setup_steps(options: &Options, field: &FieldTarget, source: SourceTag) -> Vec<script::Step> {
-    let mut steps = geometry_preconditions(options);
+    let mut steps: Vec<script::Step> = options
+        .gpu_preview_off
+        .then(|| script::Step::Palette(PaletteStep::Run("gpu preview".into())))
+        .into_iter()
+        .collect();
+    steps.extend(geometry_preconditions(options));
     if options.curve_layer {
         steps.push(crate::scenario::recipe::moderate_curve());
     }
@@ -3208,6 +3216,10 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         options.control == Control::Slider || matches!(options.mode, Mode::Drag | Mode::Commit),
         "--control curve measures a drag or a commit; pass --mode drag or --mode commit",
     )?;
+    ensure(
+        !options.gpu_preview_off || matches!(options.mode, Mode::Drag | Mode::Commit),
+        "--no-gpu-preview measures a drag or a commit; pass --mode drag or --mode commit",
+    )?;
     if let Some(ms) = options.warm_ms {
         ensure(
             options.mode == Mode::Drag && (1..=script::MAX_WAIT_MS).contains(&ms),
@@ -3447,6 +3459,19 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         captured.push(json!({"frame": frame["file"], "path": gpu["drawing_path"],
             "drawn_gpu_revision": gpu["drawn_gpu_revision"], "gpu_ms": frame["state"]["status_bar"]["gpu_ms"],
             "approximate": gpu["gpu_preview"]["drag"]["approximate"]}));
+    }
+    if options.gpu_preview_off {
+        ensure(
+            last["state"]["workspace"]["gpu_preview"] == false
+                && drained.iter().all(|input| {
+                    input.path == FramePath::Cpu
+                        && input
+                            .reason
+                            .as_deref()
+                            .is_none_or(|reason| reason == "preference-off")
+                }),
+            "--no-gpu-preview left the GPU preview on, or a drained input drew another way",
+        )?;
     }
     let unpreviewed = measured.iter().filter(|input| input.unpreviewed).count();
     ensure(
@@ -3763,6 +3788,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
             })
             .collect::<Vec<_>>()
     );
+    result["gpu_preview"] = json!(!options.gpu_preview_off);
     result["paths"] = paths(drained, &events);
     result["compile_queue_before_gesture"] = compile_queue;
     result["contention"] = contended.map_or(Value::Null, |(_, report)| report);
@@ -4511,6 +4537,7 @@ mod tests {
             mask_overlay: false,
             contend: None,
             warm_ms: None,
+            gpu_preview_off: false,
         };
         let geometry = geometry_preconditions(&options);
         // A JPEG's Lens precondition is the section and its Apply.
@@ -4649,6 +4676,7 @@ mod tests {
                             mask_overlay: false,
                             contend: None,
                             warm_ms: None,
+                            gpu_preview_off: false,
                         };
                         let mut tag = format!("crop{}-mask{mask}-basic{basic}", crop.is_some());
                         if let Some(zoom) = zoom {
@@ -4731,6 +4759,7 @@ mod tests {
                             mask_overlay: false,
                             contend: None,
                             warm_ms: None,
+                            gpu_preview_off: false,
                         };
                         let tag =
                             format!("crop{}-mask{mask}-basic{basic}-zoom{zoom}", crop.is_some());
@@ -4790,6 +4819,7 @@ mod tests {
             mask_overlay: true,
             contend: None,
             warm_ms: None,
+            gpu_preview_off: false,
             zoom: None,
             moving_pan: false,
         };
@@ -4832,6 +4862,7 @@ mod tests {
             mask_overlay: false,
             contend: None,
             warm_ms: None,
+            gpu_preview_off: false,
             zoom: Some(100.0),
             moving_pan: true,
         };
@@ -4900,6 +4931,7 @@ mod tests {
             mask_overlay: false,
             contend: None,
             warm_ms: None,
+            gpu_preview_off: false,
         };
         let field = FieldTarget::basic_exposure();
         let (steps, positions) = viewport_script(&options, &field);
@@ -4956,6 +4988,7 @@ mod tests {
             mask_overlay: false,
             contend: None,
             warm_ms: None,
+            gpu_preview_off: false,
         };
         let field = FieldTarget::lookup("set-perspective", "horizontal").unwrap();
         let values = field.gesture_values(30);
@@ -5025,6 +5058,7 @@ mod tests {
             mask_overlay: false,
             contend: None,
             warm_ms: None,
+            gpu_preview_off: false,
         }
     }
 
@@ -5401,6 +5435,7 @@ mod tests {
             mask_overlay: false,
             contend: None,
             warm_ms: None,
+            gpu_preview_off: false,
             zoom: None,
             moving_pan: false,
         };
@@ -5977,6 +6012,7 @@ mod tests {
             mask_overlay: false,
             contend: None,
             warm_ms: None,
+            gpu_preview_off: false,
         };
         let values = gesture_values(4, Control::Slider, &field);
         let plain = gesture_script(&options, &field, SourceTag::Jpeg, &values, true);
@@ -6018,6 +6054,17 @@ mod tests {
             commit,
             gesture_script(&idle, &field, SourceTag::Jpeg, &values, false)
         );
+        // `--no-gpu-preview` turns the preference off from the palette before anything else.
+        let off = Options {
+            gpu_preview_off: true,
+            ..options
+        };
+        let steps = measured_script(&off, &field, SourceTag::Jpeg, &values, true, &dir);
+        assert_eq!(
+            steps[0],
+            script::Step::Palette(PaletteStep::Run("gpu preview".into()))
+        );
+        assert_eq!(steps[1..], plain[..]);
     }
 
     /// The lane is busy from the first export's acceptance to the end the activity board reads
