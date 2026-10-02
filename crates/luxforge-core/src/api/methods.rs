@@ -3962,11 +3962,7 @@ mod tests {
                     ))
                     .collect::<Vec<_>>(),
                 [
-                    (
-                        json!("luxforge.transform"),
-                        json!("Rotate left"),
-                        json!(true)
-                    ),
+                    (json!("luxforge.crop"), json!("Rotate left"), json!(true)),
                     (json!("test.mark"), json!("Marked"), json!(true)),
                 ]
             );
@@ -4106,7 +4102,7 @@ mod tests {
             ),
             (
                 "a module that declares no canvas",
-                json!({"mode": "luxforge.transform"}),
+                json!({"mode": "luxforge.vignette"}),
                 "mode must be one of",
             ),
             ("an unknown field", json!({"panel": true}), "unknown field"),
@@ -4876,7 +4872,7 @@ mod tests {
     /// gesture a desktop slider of such a control makes. `draft.set` validates the one field,
     /// `draft_recipe` plans the drafted action against the stored stack without persisting it, and
     /// `draft.commit` applies it as exactly one history entry. No module is named by the draft
-    /// machinery; the transform module is used here because it is registered and declares exactly
+    /// machinery; the registered transform action is used here because it declares exactly
     /// one parameter, which is the shape the rule turns on.
     #[test]
     fn a_draft_over_a_single_parameter_action_previews_and_commits_one_entry() {

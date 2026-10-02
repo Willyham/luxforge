@@ -210,7 +210,7 @@ One gesture commits one attributed action on release, key-up or Enter; Escape or
 
 Detail, Tone curve, Lens and Perspective share these host contracts:
 
-- **Order.** `linked_modules` and the panel: Presets · (Pixel) · (RAW) · Basic · Tone curve · Detail · Presence · Colour mixer · Transforms · Lens correction · Perspective · Crop · Vignette · (Controls). The registry array, its doc comment and the order test in `registry/tests.rs` cover this order.
+- **Order.** `linked_modules` and the panel: Crop, transform, straighten · Presets · (Pixel) · (RAW) · Basic · Tone curve · Detail · Presence · Colour mixer · Lens correction · Perspective · Vignette · (Controls). The registry array, its doc comment and the order test in `registry/tests.rs` cover this order.
 - **Compile context.** `CompileStage` is threaded through `ToolModule::compile`, `FieldPatch::compile` and `compile_bound`; stage-independent modules ignore its scale. Lens freezes a dimensionless scale in its payload and does not need it.
 - **Field patches.** `modules/field_patch.rs` supports Tone curve's curve values, Detail's restoration shape, Lens's geometry shape and non-presettable actions, with shared framework tests.
 - **Queries.** `Planned::Query` is the one route for pixel-reading queries through a spatial prefix. `query.sample-curve` reads no pixels and stays an owner query. Lens warp point work (bounded mapping and four taps) stays on the owner; only spatial prefixes use the point worker. Point queries cost `O(layers)` unless a spatial layer precedes the sampled stage.
