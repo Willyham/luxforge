@@ -21,7 +21,7 @@ pub(crate) struct QueryChoiceRequest {
     control: QueryChoiceControl,
 }
 
-fn declaration(
+pub(crate) fn declaration(
     modules: &[luxforge_core::ModuleDescriptor],
     action: &str,
 ) -> Option<QueryChoiceControl> {

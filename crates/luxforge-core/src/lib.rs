@@ -95,11 +95,11 @@ pub use preview::{
 pub use proxy::{ProxyApproximation, ProxyBounds, ProxyIdentity, ProxyPlan};
 pub use render::gpu::{
     BoundaryKey, BoundaryRequest, CoordinateGrid, EstimateSource, GPU_PASS_INPUTS,
-    GPU_SHARED_VALUES, GPU_WORKGROUP_LANES, GRID_MAX_NODES, GRID_TOLERANCE_PX, GpuAnswer, GpuApply,
-    GpuBoundary, GpuClipping, GpuComponent, GpuDescription, GpuEstimates, GpuFallback, GpuGeometry,
-    GpuMask, GpuOperation, GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest, GpuPlane,
-    GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuSpatial,
-    GpuSpatialUnit, GpuView, gpu_plan, gpu_plan_with,
+    GPU_SHARED_VALUES, GPU_WORKGROUP_LANES, GRID_MAX_NODES, GRID_SAMPLE_TOLERANCE_PX,
+    GRID_TOLERANCE_PX, GpuAnswer, GpuApply, GpuBoundary, GpuClipping, GpuComponent, GpuDescription,
+    GpuEstimates, GpuFallback, GpuGeometry, GpuMask, GpuOperation, GpuPass, GpuPassShape, GpuPlan,
+    GpuPlanRequest, GpuPlane, GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuPreview, GpuProgram,
+    GpuProgramKind, GpuSpatial, GpuSpatialUnit, GpuView, gpu_plan, gpu_plan_with,
 };
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{

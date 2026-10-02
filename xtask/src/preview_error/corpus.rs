@@ -969,8 +969,8 @@ mod tests {
         let report = corpus.resolve(root, None).unwrap();
         assert_eq!(
             report["counts"],
-            json!({"verified": 0, "gap": 0, "unresolved": 7}),
-            "four generated files and three RAWs are not checked here"
+            json!({"verified": 0, "gap": 0, "unresolved": 8}),
+            "five generated files and three RAWs are not checked here"
         );
         let error = run(root, Args(vec![])).unwrap_err();
         assert!(
@@ -980,7 +980,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("7 source(s) could not be checked"),
+                .contains("8 source(s) could not be checked"),
             "{error}"
         );
         assert!(run(root, Args(vec!["--surprise".into()])).is_err());
