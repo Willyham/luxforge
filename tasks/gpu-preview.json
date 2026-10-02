@@ -234,7 +234,7 @@
     {
       "id": "TASK-005",
       "description": "Write the GPU programs for every mask kind and the masked blend, and qualify them against CPU coverage.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002",
