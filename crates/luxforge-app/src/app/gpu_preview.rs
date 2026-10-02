@@ -156,6 +156,11 @@ impl GpuPreviews {
         self.warm.as_ref()
     }
 
+    /// The draft whose plan the surface is handed, open or ended and not yet released.
+    pub(crate) fn draft(&self) -> Option<&DraftId> {
+        self.drag.as_ref().map(|drag| &drag.draft)
+    }
+
     /// The boundary version a held boundary is drawn under, for the capture's readiness.
     pub(crate) fn held_version(&self) -> Option<u64> {
         self.drag
@@ -212,7 +217,7 @@ impl GpuPreviews {
 
 impl Editor {
     /// What the surface reports of its last frame.
-    fn surface_report(&self) -> SurfaceReport {
+    pub(crate) fn surface_report(&self) -> SurfaceReport {
         #[cfg(test)]
         if let Some(report) = self.gpu.surface {
             return report;
