@@ -1957,6 +1957,7 @@ impl Owner {
                                 error.detail,
                             )),
                             boundary: None,
+                            cpu_shape: None,
                         },
                     ),
                 ));

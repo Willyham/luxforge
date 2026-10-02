@@ -114,6 +114,11 @@ pub struct GpuPreview {
     pub answer: GpuAnswer,
     /// The boundary of [`Self::answer`]'s plan; `None` when there is no plan.
     pub boundary: Option<BoundaryRequest>,
+    /// At a percentage zoom, when [`Self::answer`]'s plan holds a drafted restoration or spatial
+    /// layer in its GPU shape: the plan of that layer in the CPU's shape, the units its values
+    /// need, from the same boundary. Over the region's window the GPU shape charges the planes of
+    /// its units at zero too, so the desktop draws this one when only it fits the budget.
+    pub cpu_shape: Option<Box<GpuPlan>>,
 }
 
 /// Whether a layer at `stage` has a GPU shape (`CompileStage::gpu_shape`): a colour or finish
@@ -357,16 +362,7 @@ pub(crate) fn plan_preview(
 ) -> Result<GpuPreview, Error> {
     let registry = evaluation.registry();
     let recipe = evaluation.recipe();
-    // At a percentage zoom a restoration or spatial layer keeps the CPU's shape: over the visible
-    // region at full scale its slot is what the budget binds, and its GPU shape would charge the
-    // planes of its units at zero too.
-    let drafted_layer = drafted(registry, recipe, draft).filter(|drafted| {
-        matches!(view, GpuView::Fit(_))
-            || !matches!(
-                registry.effect_stage(&drafted.effect),
-                Some(EffectStage::Restoration | EffectStage::Spatial)
-            )
-    });
+    let drafted_layer = drafted(registry, recipe, draft);
     let modulated = draft
         .target
         .get("mask")
@@ -389,6 +385,7 @@ pub(crate) fn plan_preview(
         return Ok(GpuPreview {
             answer: GpuAnswer::Fallback(GpuFallback::Unchanged),
             boundary: None,
+            cpu_shape: None,
         });
     };
     let fit = FitStage::of_view(evaluation, view)?;
@@ -432,6 +429,40 @@ pub(crate) fn plan_preview(
             },
         };
     }
+    // At a percentage zoom a drafted restoration or spatial layer's GPU shape charges the planes
+    // of its units at zero over the window too: the plan of its CPU shape rides beside it, from
+    // the same boundary, when it holds less.
+    let spatial = |effect: &str| {
+        matches!(
+            registry.effect_stage(effect),
+            Some(EffectStage::Restoration | EffectStage::Spatial)
+        )
+    };
+    let mut cpu_shape = None;
+    if let (GpuAnswer::Plan(plan), Some(_), Some(drafted)) = (&answer, fit.region, &drafted_layer)
+        && request.drafted.is_some()
+        && spatial(&drafted.effect)
+    {
+        let unshaped = GpuPlanRequest {
+            drafted: None,
+            ..request
+        };
+        let extent = |plan: &GpuPlan| {
+            plan.spatial
+                .as_ref()
+                .map(|spatial| (spatial.passes.len(), spatial.applies.len()))
+        };
+        if let GpuAnswer::Plan(smaller) = gpu_plan_with(
+            registry,
+            &planned,
+            unshaped,
+            Some(fit.estimates(evaluation)),
+        )? && extent(&smaller) != extent(plan)
+            && !smaller.approximate()
+        {
+            cpu_shape = Some(smaller);
+        }
+    }
     let boundary_request = match &answer {
         GpuAnswer::Fallback(_) => None,
         GpuAnswer::Plan(plan) => Some(BoundaryRequest {
@@ -456,6 +487,7 @@ pub(crate) fn plan_preview(
     Ok(GpuPreview {
         answer,
         boundary: boundary_request,
+        cpu_shape,
     })
 }
 
@@ -469,19 +501,56 @@ pub(crate) fn plan_preview(
 /// takes the CPU path counts against none.
 const WARM_SPATIAL_PLANS: usize = 4;
 
-/// What a warmed plan's program sequence is told apart by: its colour units' entries, then its
-/// spatial operation's passes and applies.
-fn warm_sequence(plan: &GpuPlan) -> Vec<&'static str> {
-    plan.operations()
-        .flat_map(|operation| operation.units.iter().map(|unit| unit.program.entry))
-        .chain(plan.spatial.iter().flat_map(|spatial| {
-            spatial
-                .passes
+/// What a warmed plan's program sequence is told apart by, as the surface keys a sequence or
+/// finer: each colour operation's programs and its mask's components; the spatial operation's
+/// program, clamp, mask, planes, passes but for their words, and applies; and the geometry tail's
+/// kind. Two plans of one key compile to one sequence, so a warm list holds one of them.
+pub(crate) fn warm_sequence(plan: &GpuPlan) -> Vec<String> {
+    let mask = |mask: &Option<super::GpuMask>| {
+        mask.as_ref().map(|mask| {
+            let components: Vec<&str> = mask
+                .components
                 .iter()
-                .map(|pass| pass.kernel)
-                .chain(spatial.applies.iter().map(|apply| apply.function))
-        }))
-        .collect()
+                .map(|component| component.program.program.entry)
+                .collect();
+            format!("masked by {components:?}")
+        })
+    };
+    let colour = |operations: &[super::GpuOperation]| -> Vec<String> {
+        operations
+            .iter()
+            .flat_map(|operation| {
+                operation
+                    .units
+                    .iter()
+                    .map(|unit| unit.program.entry.to_owned())
+                    .chain(mask(&operation.mask))
+            })
+            .collect()
+    };
+    let mut keys = colour(&plan.content);
+    if let Some(spatial) = &plan.spatial {
+        keys.push(format!(
+            "{}, clamps {}",
+            spatial.program.entry, spatial.clamps
+        ));
+        keys.extend(mask(&spatial.mask));
+        keys.extend(spatial.planes.iter().map(|plane| format!("{plane:?}")));
+        keys.extend(spatial.passes.iter().map(|pass| {
+            format!(
+                "{} {:?} -> {}, source {}, {:?}",
+                pass.kernel, pass.inputs, pass.output, pass.source, pass.shape
+            )
+        }));
+        keys.extend(spatial.applies.iter().map(|apply| format!("{apply:?}")));
+    }
+    keys.push(format!(
+        "geometry affine {}, clamps {}",
+        plan.geometry.affine().is_some(),
+        plan.geometry.clamps
+    ));
+    keys.extend(colour(&plan.output));
+    keys
 }
 
 /// The plans a gesture on `evaluation`'s stack is likely to draw at `bounds`, for the desktop to
@@ -547,7 +616,7 @@ pub(crate) fn plan_warm(
             .map(|(index, _)| (recipe.clone(), index, true)),
     );
     let mut plans: Vec<GpuPlan> = Vec::new();
-    let mut seen: Vec<Vec<&'static str>> = Vec::new();
+    let mut seen: Vec<Vec<String>> = Vec::new();
     let mut spatial = 0;
     for (planned, index, own) in candidates {
         if own && spatial == WARM_SPATIAL_PLANS {
