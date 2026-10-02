@@ -137,6 +137,15 @@ pub mod qualification {
         Some((plan, window))
     }
 
+    /// A Lens correction layer holding a frozen Poly3 profile of `k1`, resolved for a `stage`, as
+    /// a detected profile's Apply commits one: a lens warp for the GPU tests, with no lens index.
+    pub fn lens_layer(k1: f64, stage: (u32, u32)) -> crate::Layer {
+        crate::Layer::new(
+            crate::LENS_EFFECT,
+            crate::modules::lens::payload::qualification(k1, stage),
+        )
+    }
+
     /// The input of layer `layer` of `render`'s stack over the window of its received stage that
     /// the output stage's `rect` (`[x, y, width, height]`) reads at full scale, held as `format`:
     /// the boundary a percentage zoom's GPU preview of a drag from that layer starts from, as the
