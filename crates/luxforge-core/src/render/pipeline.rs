@@ -355,6 +355,33 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         Ok(evaluation)
     }
 
+    /// The evaluation [`Self::frames_prefix`] would end with at `boundary`, from that segment's
+    /// input `planes` already held: nothing is evaluated.
+    pub(super) fn frames_held(
+        domain: D,
+        compiled: Cow<'a, Compiled>,
+        tiling: Tiling,
+        cancel: &Cancel,
+        context: &'a RenderContext,
+        boundary: usize,
+        planes: Arc<D::SpatialFrame>,
+    ) -> Result<Self, Error> {
+        let mut evaluation = Self::new(
+            domain,
+            compiled,
+            tiling,
+            SpatialMode::Point,
+            cancel,
+            context,
+        )?;
+        evaluation.tiles = None;
+        evaluation.frame = Some(SpatialFrame {
+            index: boundary,
+            planes,
+        });
+        Ok(evaluation)
+    }
+
     fn materialize(&mut self, start: usize, end: usize, cancel: &Cancel) -> Result<(), Error> {
         for index in start..end {
             let Some(entry) = &self.compiled.segments[index].entry else {

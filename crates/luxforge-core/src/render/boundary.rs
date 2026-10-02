@@ -24,7 +24,7 @@
 //! finite. A developed RAW's, on the linear path, is `rgba32float`, every value as the CPU holds
 //! it: half rounding of a near-black value can flip the sign of a luminance a spatial operation
 //! divides by (`docs/specs/performance.md`, "Isolated near-black pixels").
-use super::{Compiled, Entry, Render, RenderSource, Segment, linear};
+use super::{Compiled, Entry, Render, RenderSource, Segment, linear, restoration::PrefixPixels};
 use crate::{
     Error,
     modules::{ExactGeometry, Processing, Region, Stage},
@@ -175,6 +175,22 @@ impl Render<'_> {
         position: (usize, usize),
         format: BoundaryFormat,
     ) -> Result<BoundaryFrame, Error> {
+        self.boundary_reading(uncut, source, source_window, position, format, None)
+    }
+
+    /// [`Self::boundary`], its segment's input read from `held` when that is the held
+    /// restoration prefix's output this render's frame read ([`Render::held_prefix`]) and the
+    /// boundary lies in the segment it opens: the same frame the render would build, so the
+    /// prefix is not evaluated again.
+    pub(crate) fn boundary_reading(
+        &self,
+        uncut: &Compiled,
+        source: Stage,
+        source_window: Region,
+        position: (usize, usize),
+        format: BoundaryFormat,
+        held: Option<&super::restoration::HeldPrefix>,
+    ) -> Result<BoundaryFrame, Error> {
         let path = match self.source {
             RenderSource::Byte(_) => BoundaryFormat::Half,
             RenderSource::Linear { .. } => BoundaryFormat::Float,
@@ -229,8 +245,24 @@ impl Render<'_> {
             }
         };
         let cancel = &self.options.cancel;
-        let texels = match self.source {
-            RenderSource::Byte(image) => {
+        let held = held.filter(|held| held.segment == first);
+        let texels = match (self.source, held.map(|held| (&held.pixels, held.stage))) {
+            (RenderSource::Byte(_), Some((PrefixPixels::Byte(frame), stage))) => {
+                super::byte::boundary_pass(&stand_in, frame, stage, cancel, self.context)?
+            }
+            (RenderSource::Linear { image, settings }, Some((PrefixPixels::Linear(planes), _))) => {
+                let evaluation = super::Evaluation::frames_held(
+                    linear::Linear::new(image, settings)?,
+                    Cow::Borrowed(cut),
+                    self.options.tiling,
+                    cancel,
+                    self.context,
+                    first,
+                    planes.clone(),
+                )?;
+                linear::boundary_pass(&evaluation, first, &stand_in, cancel, self.context)?
+            }
+            (RenderSource::Byte(image), _) => {
                 let (frame, stage) = super::byte::frames(
                     image,
                     cut,
@@ -242,7 +274,7 @@ impl Render<'_> {
                 )?;
                 super::byte::boundary_pass(&stand_in, &frame, stage, cancel, self.context)?
             }
-            RenderSource::Linear { image, settings } => {
+            (RenderSource::Linear { image, settings }, _) => {
                 let evaluation = super::Evaluation::frames_prefix(
                     linear::Linear::new(image, settings)?,
                     Cow::Borrowed(cut),

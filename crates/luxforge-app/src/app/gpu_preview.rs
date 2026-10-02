@@ -83,6 +83,8 @@ struct Drag {
     draft: DraftId,
     /// The latest tick's plan and the draft revision it was planned at.
     plan: Option<(Box<CorePlan>, u64)>,
+    /// The revision of the entry that plan's draft was planned over.
+    base: Option<u64>,
     /// The boundary that plan starts from.
     wanted: Option<BoundaryRequest>,
     held: Option<Held>,
@@ -107,6 +109,7 @@ impl Drag {
         Self {
             draft,
             plan: None,
+            base: None,
             wanted: None,
             held: None,
             requested: None,
@@ -288,6 +291,7 @@ impl Editor {
                 let revision = set.draft_revision;
                 drag.wanted = Some(request.clone());
                 drag.plan = Some((plan, revision));
+                drag.base = Some(set.base_revision);
                 match &drag.held {
                     None => {
                         drag.surface = None;
@@ -533,10 +537,23 @@ impl Editor {
     /// The open gesture's converted plan and the draft revision it draws, at Fit with no
     /// comparison on screen, where the surface runs it.
     pub(crate) fn gesture_gpu_plan(&self) -> Option<(&surface::GpuPlan, u64)> {
-        (self.presentation.compare_after.is_none()
-            && matches!(self.session.preview.view.zoom, luxforge_core::Zoom::Fit))
-        .then(|| self.gpu.surface_plan())
-        .flatten()
+        if self.presentation.compare_after.is_some()
+            || !matches!(self.session.preview.view.zoom, luxforge_core::Zoom::Fit)
+        {
+            return None;
+        }
+        // An open draft that another client's commit conflicted, or that was reapplied over a
+        // newer entry and whose first tick there has not answered yet, draws none of its plans:
+        // each was planned over the entry before, which is no longer the photograph. The frame is
+        // the CPU's until a tick plans over the current entry.
+        let drag = self.gpu.drag.as_ref()?;
+        if let Some(gesture) = self.core_gesture()
+            && gesture.draft.draft_id == drag.draft
+            && (gesture.draft.conflicted || Some(gesture.draft.base_revision) != drag.base)
+        {
+            return None;
+        }
+        self.gpu.surface_plan()
     }
 
     /// Why the desktop hands the surface no plan for the open gesture's newest tick, or why that
