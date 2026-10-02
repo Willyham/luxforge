@@ -5,8 +5,7 @@
 //! independent reference, the placement of Presence, the mixer and the vignette, and a masked
 //! catalog, with the masked Tone curve's placement proved on the way, reopened through a fresh
 //! owner. The M1 through M4 journey of history, orientation, crop
-//! and reopen is the core's own tests (`editor::history`, `editor::plan`, `modules::transform` and
-//! `modules::crop`), and the host behaviour every module shares is the conformance suite's.
+//! and reopen is the core's own tests (`editor::history`, `editor::plan`, `modules::crop`), and the host behaviour every module shares is the conformance suite's.
 use crate::*;
 use std::time::Instant;
 

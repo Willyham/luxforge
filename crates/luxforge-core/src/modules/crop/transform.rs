@@ -1,21 +1,21 @@
-//! The exact transform module: quarter turns and reflections as integer coordinate mappings.
+//! The crop module's exact transforms: quarter turns and reflections as integer mappings.
 //!
 //! The four actions are the vocabulary; the stack holds the orientation they compose into. The
 //! orientation goes ahead of the crop, and the next action updates it in place, so a stage carries
 //! one layer however many times it is turned or reflected and the crop always frames the turned
 //! photograph.
-use super::{
-    ActionDescriptor, ActionInput, ActionPlan, Availability, Control, EffectDescriptor,
-    EffectStage, ExactGeometry, LayerEdit, LayerReport, LayerUpdate, ModuleDescriptor, NewLayer,
-    ParameterDescriptor, Processing, StageContext, ToolModule, decode_parameters, label_value,
-};
 #[cfg(test)]
 use crate::ErrorKind;
+use crate::modules::{
+    ActionDescriptor, ActionInput, ActionPlan, Control, EffectDescriptor, EffectStage,
+    ExactGeometry, LayerEdit, LayerReport, LayerUpdate, NewLayer, ParameterDescriptor, Processing,
+    StageContext, decode_parameters, label_value,
+};
 use crate::{EFFECT_FORMAT, Error, Layer, Orientation, Transform};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-/// The transform module's one geometry effect: the composed exact orientation of the stage ahead of
+/// The crop module's one geometry effect: the composed exact orientation of the stage ahead of
 /// the crop.
 pub const ORIENTATION_EFFECT: &str = "luxforge.geometry.orientation";
 
@@ -170,71 +170,61 @@ fn control(transform: Transform, label: &str) -> Control {
         .into()
 }
 
-#[derive(Debug)]
-pub(crate) struct TransformModule {
-    descriptor: ModuleDescriptor,
+/// The exact orientation effect owned by the crop module, ahead of its crop effect.
+pub(super) fn effect() -> EffectDescriptor {
+    EffectDescriptor::new(ORIENTATION_EFFECT, EffectStage::Geometry)
 }
 
-impl Default for TransformModule {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl TransformModule {
-    pub(crate) fn new() -> Self {
-        Self {
-            descriptor: ModuleDescriptor {
-                id: "luxforge.transform".into(),
-                title: "Transforms".into(),
-                hint: Some("Rotate, mirror and flip".into()),
-                effects: vec![EffectDescriptor::new(
-                    ORIENTATION_EFFECT,
-                    EffectStage::Geometry,
-                )],
-                actions: vec![ActionDescriptor {
-                    parameters: vec![
-                        ParameterDescriptor::enumeration(
-                            "transform",
-                            [
-                                Transform::RotateLeft.action_id(),
-                                Transform::RotateRight.action_id(),
-                                Transform::MirrorHorizontal.action_id(),
-                                Transform::FlipVertical.action_id(),
-                            ],
-                        )
-                        .required(true)
-                        .notes("the exact transform to compose into the stack's orientation"),
-                    ],
-                    ..ActionDescriptor::new(
-                        TRANSFORM_ACTION,
-                        "Transform",
-                        "exact quarter turns and reflections; integer mappings with no interpolation",
-                    )
-                }],
-                queries: Vec::new(),
-                controls: vec![
-                    Control::group(
-                        "Exact transforms",
-                        vec![
-                            control(Transform::RotateLeft, "Rotate left"),
-                            control(Transform::RotateRight, "Rotate right"),
-                            control(Transform::MirrorHorizontal, "Mirror horizontal"),
-                            control(Transform::FlipVertical, "Flip vertical"),
-                        ],
-                    )
-                    .into(),
+/// The shared UI/API action; its four options keep their durable history identities.
+pub(super) fn action() -> ActionDescriptor {
+    ActionDescriptor {
+        parameters: vec![
+            ParameterDescriptor::enumeration(
+                "transform",
+                [
+                    Transform::RotateLeft.action_id(),
+                    Transform::RotateRight.action_id(),
+                    Transform::MirrorHorizontal.action_id(),
+                    Transform::FlipVertical.action_id(),
                 ],
-                reset: None,
-                canvas: None,
-                developer: false,
-                collapsed: true,
-                layout: crate::ModuleLayout::Stacked,
-                availability: Availability::Available,
-                ..ModuleDescriptor::default()
-            },
-        }
+            )
+            .required(true)
+            .notes("the exact transform to compose into the stack's orientation"),
+        ],
+        ..ActionDescriptor::new(
+            TRANSFORM_ACTION,
+            "Transform",
+            "exact quarter turns and reflections; integer mappings with no interpolation",
+        )
     }
+}
+
+/// The crop section's four transform buttons, with explicit quarter-turn tooltips.
+pub(super) fn controls() -> Vec<Control> {
+    vec![
+        Control::group(
+            "Transform",
+            vec![
+                control(Transform::RotateLeft, "Rotate 90° left"),
+                control(Transform::RotateRight, "Rotate 90° right"),
+                control(Transform::MirrorHorizontal, "Mirror horizontal"),
+                control(Transform::FlipVertical, "Flip vertical"),
+            ],
+        )
+        .into(),
+    ]
+}
+
+/// A normalized transform's durable action identity, which `parse` stores on history.
+pub(super) fn is_action(action_id: &str) -> bool {
+    [
+        Transform::RotateLeft,
+        Transform::RotateRight,
+        Transform::MirrorHorizontal,
+        Transform::FlipVertical,
+    ]
+    .into_iter()
+    .any(|transform| transform.action_id() == action_id)
 }
 
 /// A `transform` request, which the generic check has already validated.
@@ -247,7 +237,7 @@ fn transform_value(parameters: &Map<String, Value>) -> Result<Transform, Error> 
     decode_parameters::<Request>(TRANSFORM_ACTION, parameters).map(|request| request.transform)
 }
 
-/// A stored orientation layer's payload, checked exactly as the transform module checks its own,
+/// A stored orientation layer's payload, checked exactly as the crop module checks its own,
 /// so the recipe description reports the orientation a stage has been given from the same numbers.
 pub(crate) fn stored_orientation(layer: &Layer) -> Result<Orientation, Error> {
     payload(&layer.effect_id, layer.effect_format, &layer.payload)
@@ -281,7 +271,7 @@ fn payload(effect_id: &str, format: u32, payload: &Value) -> Result<Orientation,
 /// transform composes into the orientation layer just before that position when there is one, and
 /// otherwise commits a new layer there. Every geometry layer from `at` on is re-expressed so the
 /// output is this transform applied to what the stack produced: each one is carried through it by
-/// its own module ([`ToolModule::carry`]), the crop selecting the same content in the turned
+/// its own module ([`crate::modules::ToolModule::carry`]), the crop selecting the same content in the turned
 /// stage, and an orientation layer after them, which the host never places there but a stored stack
 /// may hold, is folded into the layer ahead of it and left neutral, the other geometry carried
 /// through it too. Their input stages therefore include every transform once this has run. Finish
@@ -373,7 +363,7 @@ fn orientation_value(orientation: Orientation) -> Value {
 /// payload applies first, then the quarter turns, joined with a separator. Two of the eight have a
 /// declared action of their own and are named by it, and the neutral orientation says so rather
 /// than reading as an empty row.
-fn describe(orientation: Orientation) -> String {
+fn orientation_summary(orientation: Orientation) -> String {
     let turn = match orientation.turns {
         1 => Some("Rotate right"),
         2 => Some("Rotate 180°"),
@@ -390,87 +380,79 @@ fn describe(orientation: Orientation) -> String {
     }
 }
 
-impl ToolModule for TransformModule {
-    fn descriptor(&self) -> &ModuleDescriptor {
-        &self.descriptor
+pub(super) fn parse(
+    action_id: &str,
+    parameters: &Map<String, Value>,
+) -> Result<ActionInput, Error> {
+    if action_id != TRANSFORM_ACTION {
+        return Err(Error::validation(format!("unknown action {action_id}")));
     }
+    let transform = transform_value(parameters)?;
+    let mut stored = Map::new();
+    stored.insert("transform".into(), Value::from(transform.action_id()));
+    Ok(ActionInput {
+        // The durable history identity is the transform itself, unchanged since M2.
+        action_id: transform.action_id().into(),
+        parameters: stored,
+    })
+}
 
-    fn parse(
-        &self,
-        action_id: &str,
-        parameters: &Map<String, Value>,
-    ) -> Result<ActionInput, Error> {
-        if action_id != TRANSFORM_ACTION {
-            return Err(Error::validation(format!("unknown action {action_id}")));
-        }
-        let transform = transform_value(parameters)?;
-        let mut stored = Map::new();
-        stored.insert("transform".into(), Value::from(transform.action_id()));
-        Ok(ActionInput {
-            // The durable history identity is the transform itself, unchanged since M2.
-            action_id: transform.action_id().into(),
-            parameters: stored,
-        })
-    }
+pub(super) fn plan(input: &ActionInput, context: &StageContext<'_>) -> Result<ActionPlan, Error> {
+    let transform = transform_value(&input.parameters)?;
+    // Every exact transform changes the output: four quarter turns are an identity, one is
+    // not, so a transform is never a no-op and always has at least one edit.
+    Ok(
+        match <[LayerEdit; 1]>::try_from(edits(transform, context)?) {
+            Ok([LayerEdit::Commit(layer)]) => ActionPlan::Commit(layer),
+            Ok([LayerEdit::Update(layer)]) => ActionPlan::Update(layer),
+            Err(edits) => ActionPlan::Edits(edits),
+        },
+    )
+}
 
-    fn plan(&self, input: &ActionInput, context: &StageContext<'_>) -> Result<ActionPlan, Error> {
-        let transform = transform_value(&input.parameters)?;
-        // Every exact transform changes the output: four quarter turns are an identity, one is
-        // not, so a transform is never a no-op and always has at least one edit.
-        Ok(
-            match <[LayerEdit; 1]>::try_from(edits(transform, context)?) {
-                Ok([LayerEdit::Commit(layer)]) => ActionPlan::Commit(layer),
-                Ok([LayerEdit::Update(layer)]) => ActionPlan::Update(layer),
-                Err(edits) => ActionPlan::Edits(edits),
-            },
-        )
-    }
+pub(super) fn validate_payload(effect_id: &str, format: u32, value: &Value) -> Result<(), Error> {
+    payload(effect_id, format, value).map(|_| ())
+}
 
-    fn validate_payload(&self, effect_id: &str, format: u32, value: &Value) -> Result<(), Error> {
-        payload(effect_id, format, value).map(|_| ())
-    }
+/// The orientation the layer holds ([`describe`]), neutral at the identity orientation, which
+/// is what four quarter turns leave behind.
+pub(super) fn describe(effect_id: &str, format: u32, value: &Value) -> Result<LayerReport, Error> {
+    let orientation = payload(effect_id, format, value)?;
+    Ok(LayerReport {
+        neutral: orientation == Orientation::NEUTRAL,
+        ..LayerReport::new(orientation_summary(orientation))
+    })
+}
 
-    /// The orientation the layer holds ([`describe`]), neutral at the identity orientation, which
-    /// is what four quarter turns leave behind.
-    fn describe(&self, effect_id: &str, format: u32, value: &Value) -> Result<LayerReport, Error> {
-        let orientation = payload(effect_id, format, value)?;
-        Ok(LayerReport {
-            neutral: orientation == Orientation::NEUTRAL,
-            ..LayerReport::new(describe(orientation))
-        })
+/// The transform requested, as its option reads: `Rotate left`, `Mirror horizontal`.
+pub(super) fn label(action: &ActionDescriptor, input: &ActionInput) -> String {
+    match input.parameters.get("transform") {
+        Some(transform) => label_value(transform),
+        None => action.title.clone(),
     }
+}
 
-    /// The transform requested, as its option reads: `Rotate left`, `Mirror horizontal`.
-    fn label(&self, action: &ActionDescriptor, input: &ActionInput) -> String {
-        match input.parameters.get("transform") {
-            Some(transform) => label_value(transform),
-            None => action.title.clone(),
-        }
-    }
-
-    fn compile(
-        &self,
-        effect_id: &str,
-        format: u32,
-        value: &Value,
-        at: crate::CompileStage,
-    ) -> Result<Processing, Error> {
-        let stage = at.stage;
-        Ok(Processing::ExactGeometry(
-            payload(effect_id, format, value)?.geometry(stage.width, stage.height),
-        ))
-    }
+pub(super) fn compile(
+    effect_id: &str,
+    format: u32,
+    value: &Value,
+    at: crate::CompileStage,
+) -> Result<Processing, Error> {
+    let stage = at.stage;
+    Ok(Processing::ExactGeometry(
+        payload(effect_id, format, value)?.geometry(stage.width, stage.height),
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Stage;
     use crate::{
         ActionControl, CROP_EFFECT, CropPayload, GroupControl, LayerId, ModuleRegistry,
         PIXEL_EFFECT, VIGNETTE_EFFECT,
         modules::{ParameterKind, StageQuestions, check_parameters},
     };
+    use crate::{Stage, ToolModule};
     use serde_json::json;
 
     /// A non-square stage, so a quarter turn that went the wrong way or was dropped shows up in
@@ -499,7 +481,7 @@ mod tests {
     /// orientation layers change a stage here, so the stage before any index folds them; a
     /// transform asks for the stage before the crop and nothing else.
     fn planned(transform: Transform, layers: &[Layer]) -> ActionPlan {
-        let module = TransformModule::new();
+        let module = crate::modules::CropModule::new();
         let declared = module
             .descriptor()
             .action(TRANSFORM_ACTION)
@@ -602,19 +584,13 @@ mod tests {
     }
 
     #[test]
-    fn the_descriptor_keeps_the_four_actions_controls_and_one_geometry_effect() {
-        let module = TransformModule::new();
+    fn the_combined_descriptor_keeps_the_four_transform_controls_and_orientation_effect() {
+        let module = crate::modules::CropModule::new();
         let descriptor = module.descriptor();
         descriptor.validate().expect("a valid transform descriptor");
-        assert_eq!(descriptor.id, "luxforge.transform");
+        assert_eq!(descriptor.id, "luxforge.crop");
         assert!(descriptor.collapsed, "the section starts collapsed");
-        assert_eq!(
-            descriptor.effects,
-            vec![EffectDescriptor::new(
-                ORIENTATION_EFFECT,
-                EffectStage::Geometry,
-            )]
-        );
+        assert!(descriptor.effects.contains(&effect()));
         let action = descriptor
             .action(TRANSFORM_ACTION)
             .expect("the one transform action");
@@ -771,7 +747,7 @@ mod tests {
     /// A single-action layer compiles to exactly the mapping M2 declared for that action.
     #[test]
     fn a_single_action_orientation_compiles_to_that_actions_own_mapping() {
-        let module = TransformModule::new();
+        let module = crate::modules::CropModule::new();
         for transform in ACTIONS {
             let layer = Layer::orientation(Orientation::of(transform));
             assert_eq!(
@@ -803,7 +779,7 @@ mod tests {
 
     #[test]
     fn a_payload_is_validated_against_its_declared_effect_format_and_range() {
-        let module = TransformModule::new();
+        let module = crate::modules::CropModule::new();
         let valid = json!({"mirror":true,"turns":3});
         assert!(
             module
@@ -813,13 +789,7 @@ mod tests {
         for (case, effect, format, kind) in [
             (
                 "wrong effect",
-                CROP_EFFECT,
-                EFFECT_FORMAT,
-                ErrorKind::Incompatible,
-            ),
-            (
-                "the retired transform effect",
-                "luxforge.geometry.transform",
+                PIXEL_EFFECT,
                 EFFECT_FORMAT,
                 ErrorKind::Incompatible,
             ),
@@ -1092,7 +1062,7 @@ mod tests {
 
     #[test]
     fn an_unknown_action_and_a_missing_or_invalid_parameter_are_refused() {
-        let module = TransformModule::new();
+        let module = crate::modules::CropModule::new();
         let mut parameters = Map::new();
         assert_eq!(
             module
