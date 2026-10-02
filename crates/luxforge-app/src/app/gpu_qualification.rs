@@ -182,6 +182,8 @@ pub(crate) enum Cell {
         /// the hardware encoder's rounding out.
         program: Statistics,
         passed: bool,
+        /// What the photo surface's slot drawing the plan charges the GPU-preview budget.
+        charged: u64,
     },
     Gap(String),
 }
@@ -374,6 +376,11 @@ pub(crate) fn corpus_cell(
             GpuPlanRequest::exact(boundary_layer, stage(width, height))
         }
         .qualifying();
+        // A RAW photograph's frames are the linear path's, which clamps no stage boundary.
+        let request = match &proxied {
+            PreviewSource::Raw { .. } => request.linear(),
+            PreviewSource::Jpeg(_) => request,
+        };
         let plan = match gpu_plan(&registry, &recipe, request).map_err(|e| e.to_string())? {
             GpuAnswer::Plan(plan) => *plan,
             GpuAnswer::Fallback(reason) => {
@@ -390,6 +397,9 @@ pub(crate) fn corpus_cell(
                 )));
             }
         };
+        let charged = qualifier
+            .charged_bytes(&converted)
+            .map_err(|reason| format!("{reason:?}"))?;
         let drawn = qualifier.evaluate_codes(&converted)?;
         let gpu: Vec<u8> = drawn
             .iter()
@@ -423,6 +433,7 @@ pub(crate) fn corpus_cell(
             passed: preview_error::verdict(&statistics, class).passed(),
             statistics,
             program,
+            charged,
         })
     })();
     finish(owner, join);
@@ -507,9 +518,10 @@ pub(crate) fn corpus_at_fit(test: &str, families: &[&str]) {
                         statistics,
                         program,
                         passed,
+                        charged,
                     } => {
                         eprintln!(
-                            "{name} at {}x{}{}: drawn {} | program {}{}",
+                            "{name} at {}x{}{}: drawn {} | program {} | charged {charged} B{}",
                             proxy.0,
                             proxy.1,
                             if *is_proxy { "" } else { " (exact)" },
@@ -539,7 +551,7 @@ pub(crate) fn corpus_at_fit(test: &str, families: &[&str]) {
                             "cell": name, "class": class.name(),
                             "stage": [proxy.0, proxy.1], "proxy": is_proxy,
                             "drawn": stats(statistics), "program": stats(program),
-                            "passed": passed
+                            "passed": passed, "charged_bytes": charged
                         }));
                     }
                     Cell::Gap(reason) => {

@@ -1245,6 +1245,20 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         reason: "only a [dev-dependencies] table may turn on luxforge-ui's qualification feature, \
                  so no build of the desktop reads a GPU pixel back",
     },
+    // The CPU filters a GPU kernel is qualified against are for qualification: only a
+    // `[dev-dependencies]` table turns the core's `qualification` feature on.
+    DependencyRule {
+        name: "core-qualification-only-in-tests",
+        refuses: Depends::Feature {
+            dependency: "luxforge-core",
+            feature: "qualification",
+        },
+        manifests: &["", "crates/*", "xtask"],
+        tables: &[Table::Normal, Table::Build, Table::Workspace],
+        allowed: &[],
+        reason: "only a [dev-dependencies] table may turn on luxforge-core's qualification \
+                 feature, so no build of a binary exposes its qualification filters",
+    },
 ];
 
 /// A rule that every variant of one message enum has a sender in product code: a production line,
@@ -3305,6 +3319,50 @@ mod tests {
             (
                 "Cargo.toml",
                 "[workspace.dependencies]\nluxforge-ui = { path = \"crates/luxforge-ui\", \
+                 features = [\"qualification\"] }\n",
+            ),
+        ] {
+            write_all(root, &[(path, text)]);
+            let error = refusal(root, &rules, path);
+            assert!(
+                error.contains(path) && error.contains("[dev-dependencies] table"),
+                "{path}: {error}"
+            );
+            fs::remove_file(root.join(path)).unwrap();
+        }
+    }
+
+    #[test]
+    fn only_tests_turn_on_the_cores_qualification_filters() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // A dev-dependency may turn it on; a dependency without it is the desktop's own.
+        write_all(
+            root,
+            &[(
+                "crates/luxforge-app/Cargo.toml",
+                "[dependencies]\nluxforge-core = { path = \"../luxforge-core\" }\n\n\
+                 [dev-dependencies]\nluxforge-core = { path = \"../luxforge-core\", \
+                 features = [\"test-skip-disk-flush\", \"qualification\"] }\n",
+            )],
+        );
+        let rules = ["core-qualification-only-in-tests"];
+        assert!(read(root, &rules).is_ok());
+        // A normal, build or workspace dependency that turns it on is refused.
+        for (path, text) in [
+            (
+                "crates/luxforge-cli/Cargo.toml",
+                "[dependencies]\nluxforge-core = { path = \"../luxforge-core\", \
+                 features = [\"qualification\"] }\n",
+            ),
+            (
+                "xtask/Cargo.toml",
+                "[build-dependencies.luxforge-core]\npath = \"../crates/luxforge-core\"\n\
+                 features = [\"qualification\"]\n",
+            ),
+            (
+                "Cargo.toml",
+                "[workspace.dependencies]\nluxforge-core = { path = \"crates/luxforge-core\", \
                  features = [\"qualification\"] }\n",
             ),
         ] {
