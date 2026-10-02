@@ -307,6 +307,93 @@ fn a_grid_tail_interpolates_its_nodes() {
     assert!(worst <= 1, "{worst} codes from the affine reference");
 }
 
+/// A projective tail evaluates its homography at every pixel and draws the reference's blend through
+/// it, within a code, on its own and over a window of the stage; with no perspective in it, it draws
+/// what the affine tail draws.
+#[test]
+fn a_projective_tail_draws_the_reference_blend() {
+    let Some(qualifier) = Qualifier::headless("a_projective_tail_draws_the_reference_blend") else {
+        return;
+    };
+    let (width, height) = (64, 48);
+    let values = texels(width, height);
+    let output: (u32, u32) = (60, 40);
+    let tilted = [0.95f32, 0.04, 2.5, -0.03, 1.02, 3.0, 0.0021, -0.0014, 1.0];
+    let affine = [0.9f32, 0.05, 3.0, -0.04, 0.95, 4.0];
+    let flat = [
+        affine[0], affine[1], affine[2], affine[3], affine[4], affine[5], 0.0, 0.0, 1.0,
+    ];
+    let homography = |m: [f32; 9]| {
+        move |x: f32, y: f32| {
+            let w = m[6] * x + m[7] * y + m[8];
+            (
+                (m[0] * x + m[1] * y + m[2]) / w,
+                (m[3] * x + m[4] * y + m[5]) / w,
+            )
+        }
+    };
+    for (what, origin, matrix) in [
+        ("a perspective", (0, 0), tilted),
+        ("a perspective over a window of the stage", (2, 3), tilted),
+        ("a homography with no perspective", (0, 0), flat),
+    ] {
+        let held_size = (width - origin.0, height - origin.1);
+        let window: Vec<[f32; 3]> = (0..held_size.1)
+            .flat_map(|y| {
+                let values = &values;
+                (0..held_size.0)
+                    .map(move |x| values[((y + origin.1) * width + x + origin.0) as usize])
+            })
+            .collect();
+        let reads = [0, 0, width, height];
+        let tail = GpuTail::projective(output, reads, false, matrix);
+        let drawn = qualifier
+            .evaluate_codes(&plan(
+                &window,
+                held_size,
+                origin,
+                vec![GpuStep::Geometry(tail)],
+            ))
+            .unwrap();
+        let expected = reference(
+            &window,
+            held_size,
+            origin,
+            reads,
+            output,
+            homography(matrix),
+            false,
+        );
+        let (worst, differing) = compare(&drawn, &expected);
+        eprintln!(
+            "{what}: worst {worst}, {differing} of {} differ",
+            expected.len()
+        );
+        assert!(worst <= 1, "{what}: {worst} codes from the reference");
+    }
+    // The flat homography is the affine tail's matrix: both draw the same codes.
+    let draw = |step: GpuTail| {
+        qualifier
+            .evaluate_codes(&plan(
+                &values,
+                (width, height),
+                (0, 0),
+                vec![GpuStep::Geometry(step)],
+            ))
+            .unwrap()
+    };
+    let reads = [0, 0, width, height];
+    let projective = draw(GpuTail::projective(output, reads, false, flat));
+    let affine = draw(GpuTail::affine(output, reads, false, affine));
+    let worst = projective
+        .iter()
+        .zip(&affine)
+        .flat_map(|(a, b)| (0..3).map(move |channel| a[channel].abs_diff(b[channel])))
+        .max()
+        .unwrap();
+    assert!(worst <= 1, "{worst} codes between the two tails");
+}
+
 /// A quantizing tail writes the content pass's result as codes and decodes them, and quantizes its
 /// own blend, as a JPEG's segments do; a step after the tail runs at the output pixel.
 #[test]

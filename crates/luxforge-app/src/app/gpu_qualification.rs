@@ -461,22 +461,20 @@ pub(crate) fn corpus_cell(
                 cpu.width, cpu.height
             )));
         }
-        // A warp's coordinate grid over the whole output stage, as the boundary's job computes it.
-        let grid = match plan.geometry.affine() {
-            Some(_) => None,
-            None => plan
-                .geometry
-                .grid(
-                    luxforge_core::Region {
-                        x0: 0,
-                        y0: 0,
-                        width: out_width,
-                        height: out_height,
-                    },
-                    1.0,
-                )
-                .map_err(|error| error.to_string())?,
-        };
+        // A lens warp's coordinate grid over the whole output stage, as the boundary's job
+        // computes it; none for an affine or perspective tail, which the surface evaluates exactly.
+        let grid = plan
+            .geometry
+            .grid(
+                luxforge_core::Region {
+                    x0: 0,
+                    y0: 0,
+                    width: out_width,
+                    height: out_height,
+                },
+                1.0,
+            )
+            .map_err(|error| error.to_string())?;
         let converted = match surface_plan_at(&plan, held, origin, grid.as_ref()) {
             Ok(converted) => converted,
             Err(reason) => {
@@ -835,15 +833,12 @@ pub(crate) fn region_cell(
                 super::gpu_plan::boundary_format(frame.format),
             )
             .ok_or("a boundary")?;
-            // A warp's coordinate grid over the region at the zoom, as the boundary's job
-            // computes it.
-            let grid = match plan.geometry.affine() {
-                Some(_) => None,
-                None => plan
-                    .geometry
-                    .grid(rect, f64::from(zoom) / 100.0)
-                    .map_err(|error| error.to_string())?,
-            };
+            // A lens warp's coordinate grid over the region at the zoom, as the boundary's job
+            // computes it; none for an affine or perspective tail.
+            let grid = plan
+                .geometry
+                .grid(rect, f64::from(zoom) / 100.0)
+                .map_err(|error| error.to_string())?;
             let converted = match super::gpu_plan::surface_plan_over(
                 &plan,
                 held,

@@ -529,21 +529,59 @@ impl GpuGeometry {
         }
     }
 
-    /// A lens or perspective warp's coordinate grid over `region` of the output stage, within
+    /// The output-to-boundary homography `[a, b, c, d, e, f, g, h, i]` when the tail is a
+    /// perspective warp with no lens distortion, alone or composed with the exact steps, crops and
+    /// straightenings around it: `u = (a·x + b·y + c) / w`, `v = (d·x + e·y + f) / w` for
+    /// `w = g·x + h·y + i`, which is the map's own steps multiplied together, with no grid between
+    /// them. Scaled so `w` is one at the output stage's centre, and `None` unless `w` is positive at
+    /// every corner of the output stage, so the map is finite across it.
+    pub fn projective(&self) -> Option<[f64; 9]> {
+        let MappingShape::Warp { steps, .. } = &self.map.mapping else {
+            return None;
+        };
+        // `GeometryMap::content_at` applies the last step first, so the map is the first step's
+        // matrix times the next's, and so on.
+        let mut product = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        for step in steps {
+            let step = step.homography()?;
+            product = std::array::from_fn(|at| {
+                let (row, column) = (at / 3, at % 3);
+                (0..3)
+                    .map(|k| product[row * 3 + k] * step[k * 3 + column])
+                    .sum()
+            });
+        }
+        let output = self.output();
+        let (width, height) = (f64::from(output.width), f64::from(output.height));
+        let w = |x: f64, y: f64| product[6] * x + product[7] * y + product[8];
+        let centre = w(width / 2.0, height / 2.0);
+        let finite = [(0.0, 0.0), (width, 0.0), (0.0, height), (width, height)]
+            .iter()
+            .all(|&(x, y)| w(x, y) > 0.0)
+            && product.iter().all(|value| value.is_finite());
+        (finite && centre.is_finite() && centre > 0.0).then(|| product.map(|value| value / centre))
+    }
+
+    /// Whether the tail is drawn through a coordinate grid ([`Self::grid`]): a lens warp's, which
+    /// neither [`Self::affine`] nor [`Self::projective`] states exactly.
+    pub fn needs_grid(&self) -> bool {
+        self.affine().is_none() && self.projective().is_none()
+    }
+
+    /// A lens warp's coordinate grid over `region` of the output stage, within
     /// [`super::GRID_TOLERANCE_PX`] of the map, drawn at `magnification` display pixels per output
-    /// pixel ([`CoordinateGrid::new`]). `None` for an affine tail, which needs no grid. Once per
-    /// draft, not per tick: the geometry does not change while a colour draft is open.
+    /// pixel ([`CoordinateGrid::new`]). `None` for an affine or projective tail, whose matrix the
+    /// surface evaluates exactly at every pixel. Once per draft, not per tick: the geometry does not
+    /// change while a colour draft is open.
     pub fn grid(
         &self,
         region: Region,
         magnification: f64,
     ) -> Result<Option<CoordinateGrid>, Error> {
-        match &self.map.mapping {
-            MappingShape::Affine { .. } => Ok(None),
-            MappingShape::Warp { .. } => {
-                CoordinateGrid::new(&self.map, region, magnification).map(Some)
-            }
+        if !self.needs_grid() {
+            return Ok(None);
         }
+        CoordinateGrid::new(&self.map, region, magnification).map(Some)
     }
 }
 

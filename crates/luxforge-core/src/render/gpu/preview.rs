@@ -92,8 +92,9 @@ pub struct BoundaryRequest {
     /// The segment and operation index the boundary layer begins at in the drafted stack's
     /// compilation at the boundary's stage.
     pub(crate) position: (usize, usize),
-    /// A lens or perspective warp's geometry tail, whose coordinate grid the worker computes with
-    /// the boundary, once per draft and off the interface thread; `None` for an affine tail.
+    /// A lens warp's geometry tail, whose coordinate grid the worker computes with the boundary,
+    /// once per draft and off the interface thread; `None` for an affine or projective tail, which
+    /// the surface evaluates exactly.
     pub(crate) warp: Option<super::GpuGeometry>,
     /// How the boundary's texels are held: `f32` for a plan of the linear path, half floats
     /// otherwise.
@@ -478,11 +479,7 @@ pub(crate) fn plan_preview(
             format: crate::BoundaryFormat::of(fit.linear),
             magnification: fit.region.map_or(1.0, |(_, magnification)| magnification),
             window,
-            warp: plan
-                .geometry
-                .affine()
-                .is_none()
-                .then(|| plan.geometry.clone()),
+            warp: plan.geometry.needs_grid().then(|| plan.geometry.clone()),
         }),
     };
     Ok(GpuPreview {
@@ -548,8 +545,9 @@ pub(crate) fn warm_sequence(plan: &GpuPlan) -> Vec<String> {
         keys.extend(colour(&spatial.after));
     }
     keys.push(format!(
-        "geometry affine {}, clamps {}",
+        "geometry affine {}, projective {}, clamps {}",
         plan.geometry.affine().is_some(),
+        plan.geometry.projective().is_some(),
         plan.geometry.clamps
     ));
     keys.extend(colour(&plan.output));
