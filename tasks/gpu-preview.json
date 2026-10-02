@@ -467,7 +467,7 @@
     {
       "id": "TASK-009",
       "description": "Write the GPU programs for Presence (Texture, Clarity, Dehaze) and qualify them under the spatial limits at Fit and 100%.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002",
@@ -624,7 +624,7 @@
     {
       "id": "TASK-012",
       "description": "Qualify GPU previews natively: the corpus error report, latency and memory on the M4, functional checks on Windows and Linux, and current documentation.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-008",
         "TASK-010",
