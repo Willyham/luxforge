@@ -46,11 +46,12 @@ fn jobs(records: &[Value]) -> usize {
     events(records, "preview_job_requested").len()
 }
 
-/// A Fit drag of Basic's exposure: its first tick takes the CPU path and its job carries the one
-/// boundary request; ticks before the boundary arrives take the CPU path and ask for it no more;
-/// once it is held and the surface has evaluated it, every tick is drawn on the GPU with no preview
-/// job, each GPU frame tagged with its tick's draft revision; and the release commits and
-/// releases the boundary once the committed frame is presented.
+/// A Fit drag of Basic's exposure: its first tick takes the CPU path and its job carries the
+/// boundary request; ticks before the boundary arrives take the CPU path, and one is rendered, by
+/// the last job that asked, so no request is made while another is in flight; once it is held and
+/// the surface has evaluated it, every tick is drawn on the GPU with no preview job, each GPU frame
+/// tagged with its tick's draft revision; and the release commits and releases the boundary once
+/// the committed frame is presented.
 #[test]
 fn gpu_preview_a_fit_drag_makes_one_boundary_job_and_no_job_per_tick() {
     let catalog = catalog("drag");
@@ -64,19 +65,36 @@ fn gpu_preview_a_fit_drag_makes_one_boundary_job_and_no_job_per_tick() {
         editor.gpu.holds_boundary()
     });
     let (gpu, cpu, requests) = editor.gpu.ticks();
-    assert_eq!((gpu, cpu, requests), (0, 2, 1), "one boundary request");
+    assert_eq!((gpu, cpu), (0, 2));
     let records = logged(&mut editor, &log);
     assert_eq!(
         jobs(&records),
         2,
         "each tick before the boundary has its job"
     );
-    let held = events(&records, "gpu_boundary");
-    assert_eq!(held.len(), 1);
-    assert_eq!(held[0]["held"], true);
     let ticks = events(&records, "gpu_preview_tick");
     assert!(ticks.iter().all(|tick| tick["path"] == "cpu"));
     assert_eq!(ticks[0]["reason"], "boundary-pending");
+    // The first tick asks for the boundary. The second asks again only if the first's job was
+    // still waiting in the pending slot, where the second's replaces it so it never starts; which
+    // it was depends on how soon the worker took the first job up. Either way one boundary is
+    // rendered, by the last job that asked: had a job that asked earlier started, its boundary
+    // would have been delivered first.
+    let asked: Vec<&Value> = ticks
+        .iter()
+        .copied()
+        .filter(|tick| tick["boundary_requested"] == true)
+        .collect();
+    assert_eq!(ticks[0]["boundary_requested"], true, "the first tick asks");
+    assert_eq!(asked.len() as u64, requests);
+    let held = events(&records, "gpu_boundary");
+    assert_eq!(held.len(), 1, "one boundary rendered");
+    assert_eq!(held[0]["held"], true);
+    assert_eq!(
+        held[0]["generation"],
+        asked.last().unwrap()["generation"],
+        "rendered by the last job that asked"
+    );
     // The boundary is drawn at once, under the newest tick's revision; a tick waits for the
     // surface's report that it evaluated it.
     let revision = editor.session.draft.as_ref().unwrap().draft_revision;
@@ -96,7 +114,7 @@ fn gpu_preview_a_fit_drag_makes_one_boundary_job_and_no_job_per_tick() {
     let ticks = events(&records, "gpu_preview_tick");
     assert_eq!(ticks.len(), 4);
     assert!(ticks.iter().all(|tick| tick["path"] == "gpu"));
-    assert_eq!(editor.gpu.ticks(), (4, 2, 1));
+    assert_eq!(editor.gpu.ticks(), (4, 2, requests), "and asks for none");
     // The release commits; the boundary is held until the committed frame replaces the drafted
     // one, then released.
     let log = attach_log(&mut editor);
