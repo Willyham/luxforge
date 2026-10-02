@@ -211,6 +211,10 @@ pub enum GpuFallback {
     /// The draft changes no layer of the stack yet, and drafts no layer of its own: there is
     /// nothing for a plan to start from, and its frame is the entry's.
     Unchanged,
+    /// At a percentage zoom, the spatial layer's global estimate would be taken on the GPU from
+    /// the visible region alone, where the exact visible region reads the whole stage's: Dehaze's
+    /// atmospheric light, which misses the spatial limits there on the corpus.
+    RegionEstimate { layer: usize },
     /// Planning a draft's GPU preview failed for this reason, which the CPU path answers in its
     /// own way.
     Unplannable(String),
@@ -227,6 +231,7 @@ impl GpuFallback {
             Self::NoProgram { .. } => "no-program",
             Self::DisabledProgram { .. } => "disabled-program",
             Self::Unchanged => "unchanged",
+            Self::RegionEstimate { .. } => "region-estimate",
             Self::Unplannable(_) => "unplannable",
         }
     }
@@ -239,7 +244,8 @@ impl GpuFallback {
             | Self::SpatialUnit { layer }
             | Self::BetweenResamples { layer }
             | Self::NoProgram { layer, .. }
-            | Self::DisabledProgram { layer, .. } => Some(*layer),
+            | Self::DisabledProgram { layer, .. }
+            | Self::RegionEstimate { layer } => Some(*layer),
             Self::Unchanged | Self::Unplannable(_) => None,
         }
     }
@@ -270,6 +276,10 @@ impl std::fmt::Display for GpuFallback {
                 write!(f, "layer {layer} needs the disabled GPU program {program}")
             }
             Self::Unchanged => write!(f, "the draft changes no layer yet"),
+            Self::RegionEstimate { layer } => write!(
+                f,
+                "layer {layer}'s global estimate would be taken from the visible region alone"
+            ),
             Self::Unplannable(reason) => {
                 write!(f, "the GPU preview could not be planned: {reason}")
             }

@@ -482,6 +482,20 @@ impl<'a> Render<'a> {
         )
     }
 
+    /// [`Self::region_boundary`] of layer `layer`, wherever it begins in this render's
+    /// compilation: the boundary a percentage zoom's GPU preview of a drag from that layer holds.
+    #[cfg(feature = "qualification")]
+    pub(crate) fn layer_region_boundary(
+        &self,
+        rect: Region,
+        layer: usize,
+        format: super::BoundaryFormat,
+    ) -> Result<super::BoundaryFrame, Error> {
+        let position = super::gpu::position(&self.compiled, layer)
+            .ok_or_else(|| Error::validation(format!("layer {layer} is past the stack")))?;
+        self.region_boundary(rect, position, format)
+    }
+
     /// Plan the first moving viewport phase against a source stage roughly half the exact size on
     /// each side. The returned source window participates in the existing one-entry proxy key.
     pub(crate) fn plan_proxy_region(

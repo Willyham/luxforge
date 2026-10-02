@@ -30,6 +30,8 @@ pub use plan::{
     GpuAnswer, GpuBoundary, GpuClipping, GpuComponent, GpuEstimates, GpuFallback, GpuGeometry,
     GpuMask, GpuOperation, GpuPlan, GpuPlanRequest, GpuPosition, gpu_plan, gpu_plan_with,
 };
+#[cfg(feature = "qualification")]
+pub(crate) use preview::position;
 pub use preview::{BoundaryKey, BoundaryRequest, GpuPreview, GpuView};
 pub(crate) use preview::{plan_preview, plan_warm};
 #[cfg(test)]
