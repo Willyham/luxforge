@@ -194,6 +194,24 @@ impl Render<'_> {
         format: BoundaryFormat,
         held: Option<&super::restoration::HeldPrefix>,
     ) -> Result<BoundaryFrame, Error> {
+        self.boundary_kept(uncut, source, source_window, position, format, held, None)
+    }
+
+    /// [`Self::boundary_reading`], holding `keep` of the whole stage the layer's segment receives
+    /// when it is given: a rectangle inside the one this render's cut frame holds there, such as
+    /// the part a GPU preview's region reads past a spatial operation's tile-aligned cut
+    /// ([`super::window::WindowPlan::reads`]).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn boundary_kept(
+        &self,
+        uncut: &Compiled,
+        source: Stage,
+        source_window: Region,
+        position: (usize, usize),
+        format: BoundaryFormat,
+        held: Option<&super::restoration::HeldPrefix>,
+        keep: Option<Region>,
+    ) -> Result<BoundaryFrame, Error> {
         let path = match self.source {
             RenderSource::Byte(_) => BoundaryFormat::Half,
             RenderSource::Linear { .. } => BoundaryFormat::Float,
@@ -234,7 +252,18 @@ impl Render<'_> {
                 }
             }
         };
-        let stand_in = stand_in(&cut.segments[first], segment, start, whole, window)?;
+        let kept = keep.unwrap_or(window);
+        if kept.is_empty()
+            || kept.x0 < window.x0
+            || kept.y0 < window.y0
+            || kept.x1() > window.x1()
+            || kept.y1() > window.y1()
+        {
+            return Err(Error::internal(
+                "a GPU preview boundary keeps more than its segment's frame holds",
+            ));
+        }
+        let stand_in = stand_in(&cut.segments[first], segment, start, whole, window, kept)?;
         let received = {
             let mut before = ExactGeometry::identity(whole.width, whole.height);
             for operation in &segment.operations[..start] {
@@ -303,17 +332,18 @@ impl Render<'_> {
 
 /// The segment whose pass writes the boundary: `segment`'s operations before `start`, over the
 /// frame `cut` reads — its entry, which holds `window` of the `whole` stage the segment receives —
-/// kept to the rectangle of the received stage that window covers. The window is placed at its
-/// origin ahead of the exact steps, and the crop to the rectangle held follows them as an exact
-/// step of its own, so a masked operation maps its frame coordinate back to its mask's own pixel
-/// exactly as a windowed proxy's cut segment does ([`super::window`]); the rectangle's origin is
-/// the coordinate the pointwise units are handed.
+/// kept to the rectangle of the received stage that `kept`, inside the window, covers. The window
+/// is placed at its origin ahead of the exact steps, and the crop to the rectangle held follows
+/// them as an exact step of its own, so a masked operation maps its frame coordinate back to its
+/// mask's own pixel exactly as a windowed proxy's cut segment does ([`super::window`]); the
+/// rectangle's origin is the coordinate the pointwise units are handed.
 fn stand_in(
     cut: &Segment,
     segment: &Segment,
     start: usize,
     whole: Stage,
     window: Region,
+    kept: Region,
 ) -> Result<Segment, Error> {
     let mut operations: Vec<Processing> = segment.operations[..start].to_vec();
     let mut before = ExactGeometry::identity(whole.width, whole.height);
@@ -326,7 +356,7 @@ fn stand_in(
         width: before.output_width,
         height: before.output_height,
     };
-    let held = before.map_region(window);
+    let held = before.map_region(kept);
     if held.is_empty() {
         return Err(Error::internal(
             "a GPU preview boundary's window holds nothing of its stage",

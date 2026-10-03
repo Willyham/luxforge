@@ -289,3 +289,130 @@ fn a_boundary_of_another_compilation_is_refused() {
             .is_err()
     );
 }
+
+/// At a percentage zoom the region's boundary holds the window the GPU reads and no more: the
+/// region grown by the summed halo of every spatial operation after the boundary, with no snap to
+/// the CPU's tile grid, since the GPU evaluates every pixel of its window at once. A spatial
+/// operation before the boundary is still the CPU's, over the window it cuts on its tile grid, and
+/// the boundary keeps only what the GPU reads of that cut: never the band inside the cut's own
+/// halo at an edge within the stage, where its reads clamp at the cut. So every texel is the whole
+/// stage's own input of the layer, on both domains and for a region inside the stage and at its
+/// origin: before Detail, whose input is a colour layer's output, and before Presence, whose input
+/// is Detail's output.
+#[test]
+fn a_region_boundary_holds_the_gpus_halo_and_the_whole_stages_input() {
+    use super::Entry;
+    let registry = ModuleRegistry::builtin();
+    let (width, height) = (1536, 1100);
+    let jpeg = gradient(width, height);
+    let planes = varied(width, height);
+    let recipe = Recipe {
+        layers: vec![
+            Layer::new(crate::BASIC_EFFECT, serde_json::json!({"exposure": 0.4})),
+            Layer::new(
+                crate::DETAIL_EFFECT,
+                serde_json::json!({"luminance": 40, "colour": 40, "sharpening": 50}),
+            ),
+            Layer::new(
+                crate::PRESENCE_EFFECT,
+                serde_json::json!({"texture": 50, "clarity": 50}),
+            ),
+        ],
+        ..Recipe::default()
+    };
+    // A region whose margins cross the tiles Detail and Presence run in on the CPU, and one at the
+    // stage's origin, whose window's far edges lie inside the stage.
+    let rects = [
+        Region {
+            x0: 1030,
+            y0: 560,
+            width: 300,
+            height: 200,
+        },
+        Region {
+            x0: 0,
+            y0: 0,
+            width: 300,
+            height: 200,
+        },
+    ];
+    for (domain, source) in [
+        ("JPEG", RenderSource::Byte(&jpeg)),
+        (
+            "RAW",
+            RenderSource::Linear {
+                image: &planes,
+                settings: LinearSettings::default(),
+            },
+        ),
+    ] {
+        let context = RenderContext::new();
+        let exact = render(
+            &registry,
+            source,
+            &recipe,
+            RenderOptions::exact(&Cancel::never()),
+            &context,
+        )
+        .unwrap();
+        let whole = Stage { width, height };
+        let spatial = |segment: usize| match &exact.compiled.segments[segment].entry {
+            Some(Entry::Spatial(entry)) => entry.clone(),
+            _ => panic!("segment {segment} opens with a spatial operation"),
+        };
+        let (detail, presence) = (spatial(1), spatial(2));
+        let (detail_halo, presence_halo) = (
+            detail.operation.summed_halo(whole),
+            presence.operation.summed_halo(whole),
+        );
+        for rect in rects {
+            for (layer, margin) in [(1, detail_halo + presence_halo), (2, presence_halo)] {
+                let what = format!("{domain}, {rect:?}, the input of layer {layer}");
+                let at = position(&exact.compiled, layer);
+                let frame = exact
+                    .region_boundary(rect, at, format_of(source))
+                    .unwrap_or_else(|error| panic!("{what}: {error}"));
+                let kept = Region {
+                    x0: frame.origin.0,
+                    y0: frame.origin.1,
+                    width: frame.width,
+                    height: frame.height,
+                };
+                let grown = rect.grown(margin, whole);
+                if rect.x0 > 0 {
+                    assert_ne!(grown.x0 % 512, 0, "{what}: off the tile grid");
+                }
+                assert_eq!(
+                    kept, grown,
+                    "{what}: the region grown by the halos after the boundary"
+                );
+                if layer == 2 {
+                    // Detail's cut, as the CPU makes it on its tile grid: what the boundary keeps
+                    // lies at least Detail's halo inside every edge of it within the stage.
+                    let cut = detail.reads(kept, whole);
+                    let inside = |cut: u32, kept: u32, edge: u32| {
+                        cut == edge || cut.abs_diff(kept) >= detail_halo
+                    };
+                    assert!(
+                        inside(cut.x0, kept.x0, 0)
+                            && inside(cut.y0, kept.y0, 0)
+                            && inside(cut.x1(), kept.x1(), width)
+                            && inside(cut.y1(), kept.y1(), height),
+                        "{what}: {kept:?} reaches the clamped band of Detail's cut {cut:?}"
+                    );
+                }
+                let reference = boundary(&registry, source, &recipe, layer, &context);
+                for y in 0..frame.height {
+                    for x in 0..frame.width {
+                        let (sx, sy) = (x + frame.origin.0, y + frame.origin.1);
+                        assert_eq!(
+                            frame.texel(x, y).unwrap().map(f32::to_bits),
+                            reference.texel(sx, sy).unwrap().map(f32::to_bits),
+                            "{what}: texel ({x}, {y})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

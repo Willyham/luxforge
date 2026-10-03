@@ -433,7 +433,9 @@ pub(crate) fn plan_preview(
     // At a percentage zoom, the window of the received stage the boundary will hold, planned now
     // so what it takes is known before it is rendered; and a global estimate the store does not
     // hold yet, which the GPU would take from the region alone where the exact visible region
-    // reads the whole stage's, keeps the drag on the CPU.
+    // reads the whole stage's, keeps the drag on the CPU. A stack whose own region the CPU cannot
+    // cut, its estimate behind an earlier spatial layer, is drawn from the exact whole frame at a
+    // percentage zoom, and its drag keeps the CPU path with it.
     let mut window = None;
     // At the exact stage at Fit, the window the whole output stage reads, so a crop's boundary
     // holds what the crop reads rather than its whole source. A global estimate the GPU takes from
@@ -445,14 +447,17 @@ pub(crate) fn plan_preview(
         window = output_window(&fit.compiled, fit.full, position.0);
     }
     if let (GpuAnswer::Plan(plan), Some((rect, _))) = (&answer, fit.region) {
+        use crate::render::window::WindowPlan;
         let full = (fit.full.width, fit.full.height);
+        let windows = WindowPlan::of_rect(&fit.compiled, full, rect)
+            .and_then(|_| WindowPlan::of_gpu_rect(&fit.compiled, full, rect, position.0));
         answer = match plan.spatial.iter().find(|spatial| spatial.estimated) {
             Some(spatial) => GpuAnswer::Fallback(GpuFallback::RegionEstimate {
                 layer: spatial.layer,
             }),
-            None => match crate::render::window::WindowPlan::of_rect(&fit.compiled, full, rect) {
+            None => match windows {
                 Ok(windows) => {
-                    window = Some(windows.received(position.0));
+                    window = Some(windows.reads(position.0));
                     answer
                 }
                 Err(reason) => GpuAnswer::Fallback(GpuFallback::Unplannable(format!(

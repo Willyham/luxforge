@@ -1129,8 +1129,12 @@ enum Head<'a> {
 
 /// What a pass's fragment stage writes.
 enum End {
-    /// The linear value: an `rgba16float` intermediate, or a qualification's `rgba32float` target.
+    /// The linear value, into a qualification's `rgba32float` target.
     Linear,
+    /// The linear value rounded to the nearest half, ties to even, into a RAW tail's
+    /// `rgba16float` intermediate: the M4 converts a render target's value toward zero, which held
+    /// every texel up to half a step darker than the CPU's value.
+    Half,
     /// The CPU quantizer's 8-bit codes, through a Unorm view.
     Codes,
 }
@@ -1175,7 +1179,7 @@ fn assemble_passes(steps: &[GpuStep], encode: bool) -> Result<Vec<String>, Strin
             let content = if tail.quantizes() {
                 End::Codes
             } else {
-                End::Linear
+                End::Half
             };
             Ok(vec![
                 pass_source(steps, 0..*index, Head::Boundary { offset: false }, content)?,
@@ -1279,8 +1283,12 @@ fn lf_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32>
     }
     source.push_str(match end {
         End::Linear => "    return vec4<f32>(rgb, 1.0);\n}\n",
+        End::Half => "    return lf_surface_half(vec4<f32>(rgb, 1.0));\n}\n",
         End::Codes => "    return vec4<f32>(lf_output_encode(rgb), 1.0);\n}\n",
     });
+    if matches!(end, End::Half) {
+        source.push_str(spatial::HALF_ROUNDING);
+    }
     Ok(source)
 }
 
