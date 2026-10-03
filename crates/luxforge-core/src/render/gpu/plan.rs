@@ -689,7 +689,8 @@ impl GpuClipping {
 pub struct GpuPlan {
     pub boundary: GpuBoundary,
     /// The plan previews a RAW photograph's linear path, whose boundary is held in `f32`
-    /// ([`crate::BoundaryFormat::Float`]); otherwise the byte path's, held in half floats.
+    /// ([`crate::BoundaryFormat::Float`]) and whose boundary and geometry frames stay unclamped;
+    /// otherwise the byte path's, held in half floats.
     pub linear: bool,
     /// Over the boundary's texels, in recipe order.
     pub content: Vec<GpuOperation>,

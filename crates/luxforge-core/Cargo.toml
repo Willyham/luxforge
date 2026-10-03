@@ -7,7 +7,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-# The GPU preview's held boundary is rgba16float, which the preview worker writes as it renders it.
+# The GPU preview's held boundary is rgba16float for JPEGs and rgba32float for RAW linear renders.
 half = { version = "=2.7.1", default-features = false }
 idna_adapter.workspace = true
 luxforge-jpeg = { path = "../luxforge-jpeg" }

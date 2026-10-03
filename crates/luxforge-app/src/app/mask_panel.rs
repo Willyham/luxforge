@@ -382,6 +382,11 @@ impl Editor {
                 self.status.text = "Select a component to invert it".into();
                 Task::none()
             }
+            // A mask never exists empty, so its only component goes with the mask: the key does
+            // what the row's menu offers in that position, Delete mask.
+            (MaskKey::Delete, Some(_)) if report.components.len() == 1 => self.mask_message(
+                MaskMessage::Row(RowEdit::DeleteMask(report.id.as_str().to_owned())),
+            ),
             (MaskKey::Delete, Some(index)) => {
                 if let Err(error) = rules::delete_component(&report.name, report.components.len()) {
                     self.status.text = error.detail;
@@ -474,12 +479,13 @@ fn move_refusal(name: &str, step: i8) -> String {
 
 /// After every message: the panel's selection follows the stack and the mode before anything is
 /// derived from it, so a section is never bound to a mask the recipe no longer holds, and the
-/// brush in hand follows the stack it paints on.
+/// brush in hand follows the stack it paints on, and the selected gradient's handles rest on it.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     if editor.follow_mask_selection() {
         editor.seed_values();
     }
-    editor.follow_armed_brush()
+    let armed = editor.follow_armed_brush();
+    Task::batch([armed, editor.follow_resting_handles()])
 }
 
 /// A reorder by drag ends wherever the button comes up, inside the panel or not, so its release is

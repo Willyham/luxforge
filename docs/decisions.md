@@ -232,6 +232,7 @@ The owner requests [interaction repairs](design/masking-interactions.md): unplac
 - The panel is the design's: rows at the module-panel density, a Masks band, one overlay row, New mask and Add component as kind menus, the Brush section only while a brush is armed or selected, and an accent scope chip on each band bound to the open mask.
 - Each component row carries its own `+ − ∩` mode control; the first component's shows `+` alone, dimmed, with the host's reason.
 - Tool starts over Off show Tint automatically, including new gradients and brushes; explicit O/Off during the tool is honoured. Existing visible presentations are kept.
+- Gradients work as Lightroom's do (decided 2026-10-03): each gradient drag, including the one that places it, commits on release as one entry with no Apply; a committed gradient's handles [rest on the canvas](design/masking-interactions.md#resting-handles) while it is selected; a drawn gradient is selected, and opening a mask selects its first gradient. `⌫` on a mask's only component deletes the mask.
 - Renames happen in place, from the row's menu. A component rename is a host command, `mask.rename-component`, with `mask.rename`'s rules.
 - `mask.list` reports each stroke's settings so a stroke row can say what it painted.
 - The luminance range is drawn with a generic `range` control kind above its four fields.

@@ -1190,6 +1190,43 @@ fn a_spatial_drag_across_zero_keeps_one_program_sequence_and_one_boundary() {
     }
 }
 
+/// A 100% region's held boundary identity changes when a spatial drag needs more input support.
+#[test]
+fn a_region_spatial_window_growth_requests_a_new_boundary() {
+    let detail = Layer::new(
+        crate::DETAIL_EFFECT,
+        json!({"sharpening": 100, "radius": 0.5}),
+    );
+    let view = crate::GpuView::Region {
+        rect: crate::modules::Region {
+            x0: 150,
+            y0: 100,
+            width: 200,
+            height: 150,
+        },
+        magnification: 1.0,
+    };
+    let request = |radius: f64| {
+        let changed = Layer {
+            payload: json!({"sharpening": 100, "radius": radius}),
+            ..detail.clone()
+        };
+        let (job, draft) = draft_job("set-detail", vec![detail.clone()], vec![changed], 1);
+        plan_preview(&job.evaluation, &draft, view)
+            .unwrap()
+            .boundary
+            .expect("a spatial boundary")
+    };
+    let small = request(0.5);
+    let large = request(3.0);
+    assert_eq!(small.key.region(), large.key.region());
+    assert_ne!(
+        small.window, large.window,
+        "the required input support grows"
+    );
+    assert_ne!(small.key, large.key, "the old boundary must be released");
+}
+
 /// At a percentage zoom a restoration or spatial layer's drag is planned in its GPU shape, with
 /// the plan of its CPU shape beside it, from the same boundary, for the desktop to draw when only
 /// that one fits the budget; the CPU shape holds less. A layer every unit of which is moved has

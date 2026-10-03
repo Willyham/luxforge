@@ -90,7 +90,7 @@ const PARAM_ORIGIN: usize = PARAMS_WORDS - 2;
 const UNLIMITED: u32 = i32::MAX as u32;
 
 /// How many compiled pass modules the stage keeps across sequences, the least recently used
-/// evicted first: every pass of the eight sequences [`super::PIPELINE_CACHE`] keeps holds its
+/// evicted first: every pass of the [`super::PIPELINE_CACHE`] sequences the pipeline keeps holds its
 /// pipeline itself, so this bounds only what an evicted sequence can reuse.
 pub(super) const PASS_CACHE: usize = 64;
 
