@@ -184,6 +184,30 @@ pub(crate) struct Reduction {
 }
 
 impl Reduction {
+    /// Qualification only: this reduction with `apply` run over each reduced row, given the row's
+    /// index and its pixels.
+    #[cfg(feature = "qualification")]
+    pub(crate) fn with_rows(&self, mut apply: impl FnMut(u32, &mut [[f32; 3]])) -> Self {
+        let (width, len) = (self.width as usize, (self.width * self.height) as usize);
+        let mut values = self.values.clone();
+        let mut row = vec![[0.0f32; 3]; width];
+        for y in 0..self.height as usize {
+            for (x, pixel) in row.iter_mut().enumerate() {
+                *pixel = std::array::from_fn(|c| values[c * len + y * width + x]);
+            }
+            apply(y as u32, &mut row);
+            for (x, pixel) in row.iter().enumerate() {
+                for (c, value) in pixel.iter().enumerate() {
+                    values[c * len + y * width + x] = *value;
+                }
+            }
+        }
+        Self {
+            values,
+            ..self.clone()
+        }
+    }
+
     /// The reduced dimensions of a stage at this factor.
     pub(crate) fn dimensions(stage: Stage, factor: u32) -> (u32, u32) {
         let factor = factor.max(1);

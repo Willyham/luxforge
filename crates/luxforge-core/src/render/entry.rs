@@ -997,6 +997,61 @@ impl<'a> Render<'a> {
         })
     }
 
+    /// Qualification only: hold `globals` in this render's estimate store for the spatial
+    /// operation entering segment `index`, under the keys a frame of this render asks with.
+    #[cfg(feature = "qualification")]
+    pub(crate) fn hold_spatial_globals(
+        &self,
+        index: usize,
+        globals: &[Option<Global>],
+    ) -> Result<(), Error> {
+        match self.source {
+            RenderSource::Byte(image) => self
+                .evaluation(Byte(image), SpatialMode::Point)?
+                .hold_globals(index, globals),
+            RenderSource::Linear { image, settings } => self
+                .evaluation(Linear::new(image, settings)?, SpatialMode::Point)?
+                .hold_globals(index, globals),
+        }
+    }
+
+    /// Qualification only: the first spatial unit of this render's compilation that prepares a
+    /// global estimate.
+    #[cfg(feature = "qualification")]
+    pub(crate) fn estimating_unit(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::modules::SpatialUnit>> {
+        self.compiled
+            .segments
+            .iter()
+            .find_map(|segment| match &segment.entry {
+                Some(super::Entry::Spatial(entry)) => entry
+                    .operation
+                    .units()
+                    .iter()
+                    .find(|unit| unit.estimate_key().is_some())
+                    .cloned(),
+                _ => None,
+            })
+    }
+
+    /// Qualification only: the segment whose entry is layer `layer`'s spatial operation, when it
+    /// has one in this render's compilation.
+    #[cfg(feature = "qualification")]
+    pub(crate) fn spatial_segment_of(&self, layer: usize) -> Option<usize> {
+        let (segment, operation) = super::gpu::position(&self.compiled, layer)?;
+        let next = segment + 1;
+        (operation == self.compiled.segments[segment].operations.len()
+            && matches!(
+                self.compiled
+                    .segments
+                    .get(next)
+                    .and_then(|s| s.entry.as_ref()),
+                Some(super::Entry::Spatial(_))
+            ))
+        .then_some(next)
+    }
+
     /// Resolve a proxy's exact-stage estimate under the proxy token, independently of the
     /// exact frame's cancellation token, while reusing this render's one compilation.
     fn spatial_globals_with_cancel(

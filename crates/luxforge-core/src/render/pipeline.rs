@@ -482,6 +482,39 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         }
     }
 
+    /// Qualification only: hold `globals` in the estimate store under the keys a frame of this
+    /// compilation asks with for the spatial operation entering segment `index`, as a frame that
+    /// prepared them would. A key the store already holds keeps its estimate.
+    #[cfg(feature = "qualification")]
+    pub(crate) fn hold_globals(
+        &self,
+        index: usize,
+        globals: &[Option<Global>],
+    ) -> Result<(), Error> {
+        let Some(super::Entry::Spatial(entry)) = &self.compiled.segments[index].entry else {
+            return Err(Error::internal(format!(
+                "segment {index} enters through no spatial operation"
+            )));
+        };
+        let stage = self.spatial_stage(index);
+        let prefix = input_prefix_key(&self.domain, entry.prefix_hash());
+        for (unit, global) in entry.operation.units().iter().zip(globals) {
+            if let Some(estimate) = unit.estimate_key() {
+                self.context.estimates().remember(
+                    crate::render::context::EstimateKey {
+                        fingerprint: self.domain.fingerprint().to_owned(),
+                        prefix_hash: prefix.clone().into_owned(),
+                        width: stage.width,
+                        height: stage.height,
+                        estimate,
+                    },
+                    global.clone(),
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// The final spatial prefix on one output rectangle, through the render's own tile function.
     /// Input grids use a whole tile for dense cells and a one-pixel window for sparse cells.
     pub(crate) fn restoration_region(&self, region: Region) -> Result<Vec<D::Pixel>, Error> {
