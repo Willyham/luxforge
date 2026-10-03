@@ -578,13 +578,12 @@ fn gpu_window_an_exact_fit_crop_holds_the_window_its_output_reads() {
     );
     assert!(held_width >= u64::from(width) && held_height >= u64::from(height));
     assert_eq!(held["region"], Value::Null, "at Fit");
-    // A JPEG's boundary is eight bytes a texel; the slot adds the tail's intermediate and the
-    // frame.
+    // A JPEG's boundary is eight bytes a texel; the slot adds the tail's intermediate, the 8-bit
+    // codes its quantizing pass writes, and the frame: four bytes a texel of the photograph's
+    // square bucket, its longer side's next power of two at this size, and its 96-byte uniform.
     assert_eq!(boundary, held_width * held_height * 8);
-    assert_eq!(
-        slot,
-        boundary * 2 + u64::from(width) * u64::from(height) * 4
-    );
+    let edge = u64::from(width.max(height).next_power_of_two());
+    assert_eq!(slot, boundary + boundary / 2 + edge * edge * 4 + 96);
     let _ = editor.update(Message::Draft(
         crate::app::message::draft::DraftMessage::Cancel,
     ));

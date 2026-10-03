@@ -82,8 +82,8 @@ impl Qualifier {
     }
 
     /// What the photo surface's slot holding `plan` charges the GPU-preview budget on this device:
-    /// the boundary, the output in the photograph's size bucket and its uniform, the words and
-    /// blocks buffers and a spatial step's planes.
+    /// the boundary, the output in its size bucket and its uniform, the words and blocks buffers
+    /// and a spatial step's planes.
     pub fn charged_bytes(&self, plan: &GpuPlan) -> Result<u64, GpuFallback> {
         slot_charge(&self.device, plan)
     }
@@ -91,7 +91,7 @@ impl Qualifier {
     /// Every texel of `plan`'s output, as the `f32` values its last step returned: row by row, the
     /// boundary's size, or its region's or tail's output, alpha one.
     pub fn evaluate(&self, plan: &GpuPlan) -> Result<Vec<[f32; 4]>, String> {
-        let (bytes, _) = self.run(None, plan, None, wgpu::TextureFormat::Rgba32Float, 16)?;
+        let (bytes, _) = self.run(&[], plan, None, wgpu::TextureFormat::Rgba32Float, 16)?;
         Ok(floats(&bytes))
     }
 
@@ -103,20 +103,23 @@ impl Qualifier {
         first: &GpuPlan,
         then: &GpuPlan,
     ) -> Result<(Vec<[f32; 4]>, u64), String> {
-        let (bytes, ran) = self.run(
-            Some(first),
-            then,
-            None,
-            wgpu::TextureFormat::Rgba32Float,
-            16,
-        )?;
+        self.evaluate_ticks(&[first, then])
+    }
+
+    /// The last of `ticks`' outputs as [`Qualifier::evaluate`] reads it, drawn as a slot that drew
+    /// every plan before it in turn draws its next tick: over the planes their passes left, running
+    /// only the passes of the last that the slot's schedule runs; with how many those were. Every
+    /// plan holds the same planes.
+    pub fn evaluate_ticks(&self, ticks: &[&GpuPlan]) -> Result<(Vec<[f32; 4]>, u64), String> {
+        let (last, before) = ticks.split_last().ok_or("a tick to draw")?;
+        let (bytes, ran) = self.run(before, last, None, wgpu::TextureFormat::Rgba32Float, 16)?;
         Ok((floats(&bytes), ran))
     }
 
     /// Every texel of `plan`'s output as the 8-bit sRGB codes the stage's output texture holds:
     /// the codes its last pass computes as the CPU's quantizer does, row by row, RGBA.
     pub fn evaluate_codes(&self, plan: &GpuPlan) -> Result<Vec<[u8; 4]>, String> {
-        let (bytes, _) = self.run(None, plan, None, OUTPUT_FORMAT, 4)?;
+        let (bytes, _) = self.run(&[], plan, None, OUTPUT_FORMAT, 4)?;
         Ok(codes(&bytes))
     }
 
@@ -129,7 +132,7 @@ impl Qualifier {
         pixels: &[[f32; 3]],
     ) -> Result<Vec<[f32; 4]>, String> {
         let float = Some(pixels);
-        let (bytes, _) = self.run(None, plan, float, wgpu::TextureFormat::Rgba32Float, 16)?;
+        let (bytes, _) = self.run(&[], plan, float, wgpu::TextureFormat::Rgba32Float, 16)?;
         Ok(floats(&bytes))
     }
 
@@ -140,7 +143,7 @@ impl Qualifier {
         plan: &GpuPlan,
         pixels: &[[f32; 3]],
     ) -> Result<Vec<[u8; 4]>, String> {
-        let (bytes, _) = self.run(None, plan, Some(pixels), OUTPUT_FORMAT, 4)?;
+        let (bytes, _) = self.run(&[], plan, Some(pixels), OUTPUT_FORMAT, 4)?;
         Ok(codes(&bytes))
     }
 
@@ -282,12 +285,12 @@ impl Qualifier {
     }
 
     /// `plan` drawn into a target of `format`, `texel_bytes` a texel, read back unpadded, after
-    /// `first`'s passes when it is given and over `float`'s boundary when that is; with how many
-    /// of `plan`'s passes ran. A plan with a geometry tail draws its output stage; one without, the
-    /// boundary's size.
+    /// the passes of each plan `before` it in turn and over `float`'s boundary when that is given;
+    /// with how many of `plan`'s passes ran. A plan with a geometry tail draws its output stage;
+    /// one without, the boundary's size.
     fn run(
         &self,
-        first: Option<&GpuPlan>,
+        before: &[&GpuPlan],
         plan: &GpuPlan,
         float: Option<&[[f32; 3]]>,
         format: wgpu::TextureFormat,
@@ -309,9 +312,9 @@ impl Qualifier {
         };
         let key = spatial::PlanesKey::of(&plan.steps, (width, height), origin_of(plan));
         let mut planes = key.clone().map(|key| spatial::Planes::create(device, key));
-        // The slot's schedule, which a first plan leaves knowing what the planes hold.
+        // The slot's schedule, which the plans drawn first leave knowing what the planes hold.
         let mut schedule = spatial::Schedule::default();
-        if let Some(first) = first {
+        for first in before {
             let first_key =
                 spatial::PlanesKey::of(&first.steps, first.boundary.size(), origin_of(first));
             if first_key != key {

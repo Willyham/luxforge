@@ -2376,7 +2376,29 @@ fn full_capacity((width, height): (u32, u32), limit: u32) -> (u32, u32) {
 /// A half-detail region reserves its exact-stage footprint, plus a small bucket for the one-pixel
 /// floor/ceil changes of moving pans. The reservation itself must fit one 32 MiB region set.
 fn region_capacity(region: &RegionFrame, limit: u32) -> (u32, u32) {
-    let (width, height) = region.frame.size();
+    region_reservation(region.frame.size(), region.stage, region.full_stage, limit)
+}
+
+/// What the CPU's region picture of `size` pixels of the exact stage reserves ([`region_capacity`]),
+/// and so what a GPU region frame's output reserves, which draws in that picture's place sampled as
+/// it is. The output is one texture, so a reservation past `limit` on a side is the region's size.
+fn exact_region_capacity(size: (u32, u32), limit: u32) -> (u32, u32) {
+    let reserved = region_reservation(size, size, size, limit);
+    if reserved.0 <= limit && reserved.1 <= limit {
+        reserved
+    } else {
+        size
+    }
+}
+
+/// [`region_capacity`] of a region of `(width, height)` pixels of `stage`, whose exact stage is
+/// `full_stage`.
+fn region_reservation(
+    (width, height): (u32, u32),
+    stage: (u32, u32),
+    full_stage: (u32, u32),
+    limit: u32,
+) -> (u32, u32) {
     let projected = |used: u32, stage: u32, full: u32| {
         let exact = u64::from(used)
             .saturating_mul(u64::from(full))
@@ -2386,8 +2408,8 @@ fn region_capacity(region: &RegionFrame, limit: u32) -> (u32, u32) {
         exact.max(used).next_multiple_of(64)
     };
     let reserved = (
-        projected(width, region.stage.0, region.full_stage.0),
-        projected(height, region.stage.1, region.full_stage.1),
+        projected(width, stage.0, full_stage.0),
+        projected(height, stage.1, full_stage.1),
     );
     if allocated_bytes(&tile_layout(reserved, limit)) <= REGION_SET_BUDGET {
         reserved

@@ -447,8 +447,9 @@ fn lf_presence_upsample(slot: u32, at: vec2<i32>, s: f32) -> f32 {
 
 // Dehaze: the transmission refined on the reduced grid in plane `planes`, upsampled and held in
 // [floor, 1], inverts the veil for a positive amount and deepens it for a negative one, with the
-// atmospheric light in plane `planes + 1`, and leaves its input alone for an amount of 0. Words: 0
-// the mode (add, remove or none), 1 the veil factor, 2 the transmission floor, 3 the reduction.
+// atmospheric light in plane `planes + 1`, and leaves its input alone for an amount of 0, before
+// it reads either plane. Words: 0 the mode (add, remove or none), 1 the veil factor, 2 the
+// transmission floor, 3 the reduction.
 fn lf_presence_dehaze(rgb: vec3<f32>, at: vec2<i32>, words: u32, block: u32, planes: u32) -> vec3<f32> {
     let mode = lf_word(words);
     if mode == lf_presence_dehaze_none {
@@ -464,11 +465,18 @@ fn lf_presence_dehaze(rgb: vec3<f32>, at: vec2<i32>, words: u32, block: u32, pla
 }
 
 // Texture: the band between the fine and coarse self-guided smoothers of the encoded luminance,
-// held in plane `planes`, scaled, soft-clipped and reapplied. Words: 0 the gain, 1 the limit.
+// held in plane `planes`, scaled, soft-clipped and reapplied. Words: 0 the gain, 1 the limit. A
+// gain of 0, an amount-0 unit's, returns the input before the band is read, as the soft clip of a
+// finite band at that gain would: a tick need not run the passes that write it, so the plane may
+// hold anything.
 fn lf_presence_texture(rgb: vec3<f32>, at: vec2<i32>, words: u32, block: u32, planes: u32) -> vec3<f32> {
+    let gain = lf_f32(words);
+    if gain == 0.0 {
+        return rgb;
+    }
     let encoded = lf_presence_encoded(rgb);
     let band = lf_plane(planes, at).x;
-    let delta = lf_presence_soft_clip(lf_f32(words) * band, encoded, lf_f32(words + 1u));
+    let delta = lf_presence_soft_clip(gain * band, encoded, lf_f32(words + 1u));
     if delta == 0.0 {
         return rgb;
     }
@@ -477,10 +485,15 @@ fn lf_presence_texture(rgb: vec3<f32>, at: vec2<i32>, words: u32, block: u32, pl
 
 // Clarity: the residual against the base smoothed on the reduced grid in plane `planes`,
 // upsampled, scaled, soft-clipped and reapplied. Words: 0 the gain, 1 the limit, 2 the reduction.
+// A gain of 0 returns the input before the base is read, as Texture's does.
 fn lf_presence_clarity(rgb: vec3<f32>, at: vec2<i32>, words: u32, block: u32, planes: u32) -> vec3<f32> {
+    let gain = lf_f32(words);
+    if gain == 0.0 {
+        return rgb;
+    }
     let encoded = lf_presence_encoded(rgb);
     let residual = encoded - lf_presence_upsample(planes, at, lf_f32(words + 2u));
-    let delta = lf_presence_soft_clip(lf_f32(words) * residual, encoded, lf_f32(words + 1u));
+    let delta = lf_presence_soft_clip(gain * residual, encoded, lf_f32(words + 1u));
     if delta == 0.0 {
         return rgb;
     }

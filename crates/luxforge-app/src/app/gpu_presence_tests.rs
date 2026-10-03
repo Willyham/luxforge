@@ -274,6 +274,7 @@ fn show(plane: u32) -> GpuApply {
         function: Cow::Borrowed("lf_presence_test_show"),
         planes: vec![plane],
         words: 0,
+        identity: false,
     }
 }
 
@@ -664,6 +665,7 @@ fn gpu_presence_upsample_matches_the_cpu() {
             function: Cow::Borrowed("lf_presence_test_upsample"),
             planes: vec![0],
             words: 0,
+            identity: false,
         },
     );
     let gpu: Vec<f32> = gpu.iter().map(|texel| texel[0]).collect();
@@ -706,6 +708,7 @@ fn gpu_presence_soft_clip_matches_the_cpu() {
             function: Cow::Borrowed("lf_presence_test_soft_clip"),
             planes: vec![0],
             words: 0,
+            identity: false,
         },
     );
     let cpu: Vec<f32> = values
@@ -794,6 +797,7 @@ fn gpu_presence_atmospheric_light_matches_the_cpu() {
                     function: Cow::Borrowed("lf_presence_test_show"),
                     planes: vec![1],
                     words: 0,
+                    identity: false,
                 },
             )
         };
@@ -1462,6 +1466,190 @@ fn gpu_presence_a_drag_reruns_only_the_passes_it_changes() {
             differing, 0,
             "{drag}: texels that differ from every pass run"
         );
+    }
+}
+
+/// A drafted layer's amount-0 units are the identity through applies that read no plane, so a tick
+/// runs none of the passes only they need: a Dehaze drag with Texture and Clarity at zero runs only
+/// the Dehaze passes its words change, as many as a drag of Dehaze alone in the CPU's shape, and a
+/// Texture drag with Clarity at zero none. Within one drag, a unit leaving zero runs, in that tick,
+/// every pass whose input moved while it was neutral, or every one when it has never run; one
+/// returning to a value its planes still hold runs none. Every tick draws, bit for bit, what a run
+/// of every pass draws, the atmospheric light stored and taken on the GPU.
+#[test]
+fn gpu_presence_a_neutral_unit_runs_no_pass_until_it_leaves_zero() {
+    let test = "gpu_presence_a_neutral_unit_runs_no_pass_until_it_leaves_zero";
+    let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
+        return;
+    };
+    let registry = ModuleRegistry::builtin();
+    let (width, height) = (480, 320);
+    let pixels = photograph(width, height, 3);
+    let len = pixels.len();
+    let mut planes = vec![0.0_f32; 3 * len];
+    for (index, pixel) in pixels.iter().enumerate() {
+        for channel in 0..3 {
+            planes[channel * len + index] = pixel[channel];
+        }
+    }
+    let image = LinearImage::with_fingerprint(width, height, planes, "sha256:gpu-presence-neutral")
+        .expect("a linear image");
+    let source = RenderSource::Linear {
+        image: &image,
+        settings: LinearSettings::default(),
+    };
+    let stored = RenderContext::new();
+    render(
+        &registry,
+        source,
+        &recipe(json!({"texture": 40, "clarity": 30, "dehaze": 25})),
+        RenderOptions::exact(&Cancel::never()),
+        &stored,
+    )
+    .and_then(|render| render.frame(SnapshotId::new()))
+    .expect("the CPU frame, which stores the light");
+    let fresh = RenderContext::new();
+    // One recipe, its payload changed in place, as a drag changes it; drafted, the layer holds
+    // every unit, an amount-0 one the identity.
+    let stack = std::cell::RefCell::new(recipe(json!({})));
+    let plan = |payload: &Value, context: &RenderContext, drafted: bool| {
+        let mut stack = stack.borrow_mut();
+        stack.layers[0].payload = payload.clone();
+        let request = GpuPlanRequest::exact(0, stage(width, height))
+            .qualifying()
+            .linear();
+        let request = if drafted { request.drafted(0) } else { request };
+        let plan = match gpu_plan_with(
+            &registry,
+            &stack,
+            request,
+            Some(GpuEstimates {
+                context,
+                source: source.into(),
+            }),
+        )
+        .expect("the stack compiles")
+        {
+            GpuAnswer::Plan(plan) => *plan,
+            GpuAnswer::Fallback(reason) => panic!("{reason}"),
+        };
+        let held = boundary(width, height, 1, &pixels).expect("a boundary");
+        surface_plan(&plan, held).expect("a runnable plan")
+    };
+    let passes = |plan: &GpuPlan| {
+        plan.steps
+            .iter()
+            .map(|step| match step {
+                GpuStep::Spatial(spatial) => spatial.passes.len() as u64,
+                _ => 0,
+            })
+            .sum::<u64>()
+    };
+    // The plan with no apply the identity: every pass runs, and an amount-0 unit's apply still
+    // returns its input through its words.
+    let every = |plan: &GpuPlan| {
+        let mut plan = plan.clone();
+        for step in &mut plan.steps {
+            if let GpuStep::Spatial(spatial) = step {
+                for apply in &mut spatial.applies {
+                    apply.identity = false;
+                }
+            }
+        }
+        plan
+    };
+    // Each unit's passes, as the CPU's shape of it alone holds them, and what a drag of Dehaze
+    // alone reruns there: the passes its words change.
+    let [dehaze, texture, clarity] = [
+        json!({"dehaze": 25}),
+        json!({"texture": 40}),
+        json!({"clarity": 30}),
+    ]
+    .map(|payload| passes(&plan(&payload, &stored, false)));
+    let all = dehaze + texture + clarity;
+    let (_, moved) = qualifier
+        .evaluate_after(
+            &plan(&json!({"dehaze": 25}), &stored, false),
+            &plan(&json!({"dehaze": 60}), &stored, false),
+        )
+        .expect("a readback of Dehaze alone");
+    eprintln!(
+        "{test}: Dehaze {dehaze}, Texture {texture} and Clarity {clarity} passes; a drag of \
+         Dehaze alone reruns {moved}"
+    );
+    assert!(0 < moved && moved < dehaze, "{moved} of {dehaze}");
+    // Each drag: its ticks, each with the passes it may run.
+    let drags = [
+        (
+            "Dehaze, Texture and Clarity at zero",
+            &stored,
+            vec![
+                (json!({"dehaze": 25}), dehaze),
+                (json!({"dehaze": 60}), moved),
+            ],
+        ),
+        (
+            "Texture, Clarity at zero",
+            &stored,
+            vec![
+                (json!({"texture": 40, "dehaze": 25}), dehaze + texture),
+                (json!({"texture": 75, "dehaze": 25}), 0),
+            ],
+        ),
+        (
+            "across zero",
+            &stored,
+            vec![
+                (json!({"texture": 40, "dehaze": 25}), dehaze + texture),
+                (json!({"texture": 0, "dehaze": 25}), 0),
+                // Texture's input moves while it is neutral.
+                (json!({"texture": 0, "dehaze": 60}), moved),
+                (json!({"texture": 20, "dehaze": 60}), texture),
+                // Clarity has never run.
+                (json!({"texture": 20, "clarity": 10, "dehaze": 60}), clarity),
+                (json!({"texture": 20, "clarity": 0, "dehaze": 60}), 0),
+                // Its planes still hold what this value reads.
+                (json!({"texture": 20, "clarity": 10, "dehaze": 60}), 0),
+                // The units after Dehaze read their input through its apply.
+                (json!({"texture": 20, "clarity": 10}), texture + clarity),
+            ],
+        ),
+        (
+            "Dehaze across zero, light on the GPU",
+            &fresh,
+            vec![
+                (json!({"texture": 40}), texture),
+                (json!({"texture": 40, "dehaze": 30}), dehaze + texture),
+                (json!({"texture": 40}), texture),
+            ],
+        ),
+    ];
+    for (drag, context, ticks) in drags {
+        let plans: Vec<GpuPlan> = ticks
+            .iter()
+            .map(|(payload, _)| plan(payload, context, true))
+            .collect();
+        for (index, (payload, wanted)) in ticks.iter().enumerate() {
+            let drawn: Vec<&GpuPlan> = plans[..=index].iter().collect();
+            let (after, ran) = qualifier
+                .evaluate_ticks(&drawn)
+                .expect("a readback after the ticks before");
+            let (whole, ran_whole) = qualifier
+                .evaluate_ticks(&[&every(&plans[index])])
+                .expect("a readback of every pass");
+            eprintln!("{test}: {drag}: {payload}: {ran} of {all} passes");
+            assert_eq!(ran_whole, all, "{drag}: {payload}: every pass");
+            assert_eq!(ran, *wanted, "{drag}: {payload}");
+            let differing = after
+                .iter()
+                .zip(&whole)
+                .filter(|(after, whole)| after.map(f32::to_bits) != whole.map(f32::to_bits))
+                .count();
+            assert_eq!(
+                differing, 0,
+                "{drag}: {payload}: texels that differ from every pass run"
+            );
+        }
     }
 }
 

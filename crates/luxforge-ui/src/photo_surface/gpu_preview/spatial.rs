@@ -47,7 +47,8 @@
 //! written rounded to the nearest half, ties to even ([`HALF_ROUNDING`]): the M4's own conversion of
 //! a storage write, and of a render target's, rounds toward zero. A pass or an apply reads the step's words from its offset up to the next
 //! offset any pass or apply of its step names; a tick runs only the passes whose words, upstream or
-//! inputs changed since the planes the applies read were last written ([`Schedule`]). The passes run in order before the frame's pass, which binds the
+//! inputs changed since the planes the applies read were last written, and none that only an
+//! identity apply's planes need ([`Schedule`]). The passes run in order before the frame's pass, which binds the
 //! applies' planes as a second bind group, so the operation holds no colour plane of its own: its
 //! memory is its planes, charged to the GPU-preview budget with the slot. Nothing is read back.
 use super::{
@@ -232,6 +233,10 @@ pub struct GpuApply {
     pub planes: Vec<u32>,
     /// Its first word, after the step's base index.
     pub words: u32,
+    /// Its unit is the identity at this tick's words, which it returns its input for before it
+    /// reads a plane: a tick runs none of the passes only its planes need ([`Schedule`]). Like the
+    /// words it is the tick's, no part of the sequence's shape.
+    pub identity: bool,
 }
 
 /// A spatial operation: its program (the words are the operation's), its planes, its passes in
@@ -1589,6 +1594,12 @@ impl Groups {
 /// sequence or new planes start from nothing kept, which runs every pass the applies need. The key
 /// is kept by texture, so a scratch texture chained steps share holds the key of the step that
 /// wrote it last.
+///
+/// An identity apply ([`GpuApply::identity`]) reads no plane, in the frame or in a later unit's
+/// source: its planes need not be current, and they are in no key of what reads through it. A pass
+/// only they need does not run and keeps no key, so the planes keep the key of what they last held,
+/// and once the unit is not the identity, within a drag too, they are stale against what its
+/// passes would write and run with every input they need.
 #[derive(Default)]
 pub(super) struct Schedule {
     /// The key of what each texture holds ([`PlanesKey::texture`]).
@@ -1651,8 +1662,10 @@ impl Schedule {
                 let inward = hash_of((upstream, position, program_blocks));
                 let texture = |plane: u32| textures.texture(index, plane);
                 let keys = self.step(&texture, spatial, program, inward, &mut run);
-                // A later step's source runs this one's applies over its planes.
-                upstream = hash_of((upstream, position, own, own_blocks, keys));
+                // A later step's source runs this one's applies over the planes they read.
+                let identities: Vec<bool> =
+                    spatial.applies.iter().map(|apply| apply.identity).collect();
+                upstream = hash_of((upstream, position, own, own_blocks, identities, keys));
             } else {
                 upstream = hash_of((upstream, position, own, own_blocks));
             }
@@ -1660,7 +1673,8 @@ impl Schedule {
         run
     }
 
-    /// One spatial step's passes, appended to `run`; answers its apply planes' keys.
+    /// One spatial step's passes, appended to `run`; answers the keys of the planes its applies
+    /// read, an identity apply none.
     fn step(
         &mut self,
         texture: &dyn Fn(u32) -> usize,
@@ -1692,14 +1706,16 @@ impl Schedule {
         let holds = |held: &[u64], plane: &u32| held.get(*plane as usize).copied().unwrap_or(0);
         let mut keys = Vec::with_capacity(spatial.passes.len());
         for (number, pass) in spatial.passes.iter().enumerate() {
-            // The applies its source runs, by their words and the planes they read.
-            let applies: Vec<(&[u32], Vec<u64>)> = spatial
+            // The applies its source runs, by their words and the planes they read: an identity
+            // apply reads none.
+            let applies: Vec<(&[u32], Option<Vec<u64>>)> = spatial
                 .applies
                 .iter()
                 .take(pass.source as usize)
                 .map(|apply| {
                     let planes = apply.planes.iter().map(|plane| holds(&held, plane));
-                    (slice(apply.words), planes.collect())
+                    let read = (!apply.identity).then(|| planes.collect());
+                    (slice(apply.words), read)
                 })
                 .collect();
             let inputs: Vec<u64> = pass
@@ -1713,10 +1729,12 @@ impl Schedule {
             }
             keys.push(key);
         }
+        // The planes the frame's applies read, which must be current: none of an identity apply's.
         let read: Vec<u32> = {
             let mut read: Vec<u32> = spatial
                 .applies
                 .iter()
+                .filter(|apply| !apply.identity)
                 .flat_map(|apply| apply.planes.iter().copied())
                 .collect();
             read.sort_unstable();
