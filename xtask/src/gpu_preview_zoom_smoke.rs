@@ -3,20 +3,23 @@
 //! (`docs/design/gpu-preview.md`, "At 100% and above").
 //!
 //! One launch over the quadrant fixture the `gpu-preview` scenario uses. A Basic exposure drag at
-//! 100% and at 200% opens with a CPU tick whose region job carries the one boundary request, for
-//! the region the view shows; once the boundary is held and the sequence compiled, its ticks are
-//! drawn on the GPU with no preview job — no tick's, and no region job for the view — the plan's
-//! region holding the view, their pixels against the CPU frame the release commits. At 800%, where
-//! the view shows a corner of the photograph, the drag is panned across it while it ticks: the pan
-//! past the held region lets that boundary go and a later tick asks for the new region's, and every
-//! frame drawn on the GPU draws a region that holds the view it was captured with. Before that, back
-//! at 100%, Presence is committed with Dehaze and Clarity: a Texture and a Clarity drag read Dehaze's
-//! light from the store the exact frames filled and run at most five compute passes a tick; a Basic
-//! drag under it, whose light the region alone cannot give, keeps the CPU path and names
-//! `region-estimate`; and with Dehaze back at neutral a Basic drag under Presence is drawn on the GPU,
-//! running every pass a tick. Each Basic release's committed frame dissolves in from the drag's last
-//! GPU frame: the dissolve's start and its identities are checked, and the release's capture either
-//! shows it running or follows its end, which a capture after 150 ms allows.
+//! 100% opens with a CPU tick whose region job carries the one boundary request, for the region the
+//! view shows; once the boundary is held and the sequence compiled, its ticks are drawn on the GPU
+//! with no preview job — no tick's, and no region job for the view — the plan's region holding the
+//! view, their pixels against the CPU frame the release commits. The boundary stays on the GPU as
+//! the resident one when the drag ends, and at 200%, where the view still shows the whole
+//! photograph, the same region at full scale, a drag draws from it at its first tick, asking for
+//! nothing. At 800%, where the view shows a corner of the photograph, the drag is panned across it
+//! while it ticks: the pan past the held region lets that boundary go and a later tick asks for the
+//! new region's, and every frame drawn on the GPU draws a region that holds the view it was
+//! captured with. Before that, back at 100%, Presence is committed with Dehaze and Clarity: a
+//! Texture and a Clarity drag read Dehaze's light from the store the exact frames filled and run at
+//! most five compute passes a tick; a Basic drag under it, whose light the region alone cannot
+//! give, keeps the CPU path and names `region-estimate`; and with Dehaze back at neutral a Basic
+//! drag under Presence is drawn on the GPU, running every pass a tick. Each Basic release's
+//! committed frame dissolves in from the drag's last GPU frame: the dissolve's start and its
+//! identities are checked, and the release's capture either shows it running or follows its end,
+//! which a capture after 150 ms allows.
 use crate::{
     gpu_preview_smoke::{
         BASIC, CLARITY, CLARITY_DRAG, DEHAZE, EXPOSURE, PRESENCE, PRESENCE_QUIET_MS, TEXTURE_DRAG,
@@ -31,14 +34,27 @@ use luxforge_evidence::{SliderStep, ViewStep};
 pub const SCENARIO: &str = "gpu-preview-zoom";
 pub use crate::gpu_preview_smoke::FIXTURE;
 
-/// The percentage zooms a drag is drawn at over the visible region, each with its first tick's
-/// value, its GPU ticks' values and its steps' names.
-const ZOOMED: [(f32, f64, [f64; 2], [&str; 6]); 2] = [
-    (
-        100.0,
-        0.5,
-        [0.25, 0.1],
-        [
+/// A percentage zoom a drag is drawn at over the visible region.
+struct Zoomed {
+    zoom: f32,
+    /// Whether the drag's first tick draws from the resident boundary an earlier drag left over the
+    /// same region, rather than asking for one.
+    resident: bool,
+    /// The first tick's value, then the GPU ticks' values.
+    first: f64,
+    dragged: [f64; 2],
+    /// The steps' names: the zoom, the first tick, the wait, the GPU ticks, the release and the
+    /// wait after it.
+    names: [&'static str; 6],
+}
+
+const ZOOMED: [Zoomed; 2] = [
+    Zoomed {
+        zoom: 100.0,
+        resident: false,
+        first: 0.5,
+        dragged: [0.25, 0.1],
+        names: [
             "zoom-100",
             "drag-100-first",
             "boundary-100",
@@ -46,12 +62,13 @@ const ZOOMED: [(f32, f64, [f64; 2], [&str; 6]); 2] = [
             "release-100",
             "settled-100",
         ],
-    ),
-    (
-        200.0,
-        0.3,
-        [0.45, 0.6],
-        [
+    },
+    Zoomed {
+        zoom: 200.0,
+        resident: true,
+        first: 0.3,
+        dragged: [0.45, 0.6],
+        names: [
             "zoom-200",
             "drag-200-first",
             "boundary-200",
@@ -59,7 +76,7 @@ const ZOOMED: [(f32, f64, [f64; 2], [&str; 6]); 2] = [
             "release-200",
             "settled-200",
         ],
-    ),
+    },
 ];
 /// The zoom the pan is drawn at, where the view shows a corner of the photograph.
 const PANNED_ZOOM: f32 = 800.0;
@@ -83,9 +100,17 @@ const BACK: [f64; 3] = [1.0, 0.8, 0.6];
 /// Every frame, in order: the open, then one per step.
 pub fn plan(_: &[PathBuf]) -> Plan {
     let mut steps = vec![Step::opened("opened").no_draft().masks(0)];
-    // 1-12: at 100% and at 200%, the drag's first tick asks for the region's boundary, its later
-    // ticks are drawn on the GPU, and its release commits.
-    for (zoom, first, dragged, names) in ZOOMED {
+    // 1-12: at 100% and at 200%, the drag's first tick asks for the region's boundary at 100% and
+    // draws from the resident one at 200%, its later ticks are drawn on the GPU, and its release
+    // commits.
+    for Zoomed {
+        zoom,
+        first,
+        dragged,
+        names,
+        ..
+    } in ZOOMED
+    {
         let [
             zoom_name,
             first_name,
@@ -117,7 +142,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
     // 13-38: back at 100%, Presence committed, its drags drawn on the GPU, a Basic drag under it
     // refused while Dehaze's light would come from the region alone, and drawn once Dehaze is
     // neutral. Each drag's first tick changes Presence's shape, which a percentage zoom does not
-    // warm, so its boundary wait also covers a compile.
+    // warm, so the wait after it also covers a compile.
     let release = |name: &str, field: &str, value: f64| {
         Step::new(name, SliderStep::new(PRESENCE, field, [value]).release())
             .commits(1)
@@ -300,27 +325,57 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
     let mut checks = Checks::new();
 
-    // At 100% and 200%: the region's boundary from one request, its ticks drawn on the GPU with
-    // no preview job, and their pixels the CPU's.
-    for (zoom, _, _, names) in ZOOMED {
+    // At 100% the region's boundary from one request, and at 200% the resident boundary the 100%
+    // drag left over the same region, asking for none: the ticks drawn on the GPU with no preview
+    // job, and their pixels the CPU's.
+    let mut left: Option<Value> = None;
+    for Zoomed {
+        zoom,
+        resident,
+        names,
+        ..
+    } in ZOOMED
+    {
         let [_, first_name, held_name, gpu_name, release_name, _] = names;
         let first = launch.at(first_name)?;
         let events = step_events(launch, first_name)?;
         let (gpu_ticks, cpu_ticks, _) = ticks(events);
-        let asked = named(events, "gpu_preview_tick")
+        let first_ticks = named(events, "gpu_preview_tick");
+        let asked = first_ticks
             .iter()
             .filter(|tick| tick["detail"]["boundary_requested"] == json!(true))
             .count();
-        ensure(
-            first.state()["surface"]["gpu"]["drawing_path"] == json!("cpu")
-                && gpu_ticks == 0
-                && cpu_ticks >= 1
-                && asked == 1,
-            format!(
-                "At {zoom}% the first tick was not a CPU frame asking for the boundary: \
-                 {gpu_ticks} GPU and {cpu_ticks} CPU ticks, {asked} asking"
-            ),
-        )?;
+        let requests = if resident {
+            let left = left
+                .as_ref()
+                .ok_or("a boundary an earlier drag left resident")?;
+            gpu_drawn(first)?;
+            ensure(
+                gpu_ticks >= 1
+                    && cpu_ticks == 0
+                    && asked == 0
+                    && first_ticks
+                        .iter()
+                        .all(|tick| &tick["detail"]["boundary"] == left),
+                format!(
+                    "At {zoom}% the first tick was not drawn from the resident boundary {left}: \
+                     {gpu_ticks} GPU and {cpu_ticks} CPU ticks, {asked} asking"
+                ),
+            )?;
+            0
+        } else {
+            ensure(
+                first.state()["surface"]["gpu"]["drawing_path"] == json!("cpu")
+                    && gpu_ticks == 0
+                    && cpu_ticks >= 1
+                    && asked == 1,
+                format!(
+                    "At {zoom}% the first tick was not a CPU frame asking for the boundary: \
+                     {gpu_ticks} GPU and {cpu_ticks} CPU ticks, {asked} asking"
+                ),
+            )?;
+            1
+        };
         let held = launch.at(held_name)?;
         let summary = &held.state()["surface"]["gpu"]["gpu_preview"]["drag"];
         let (visible, _) = regions(held);
@@ -328,15 +383,16 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             .ok()
             .map(|[x, y, width, height]| [x, y, x + width, y + height]);
         ensure(
-            summary["boundary_requests"] == json!(1)
+            summary["boundary_requests"] == json!(requests)
                 && summary["zoom"] == json!(zoom)
                 && region.is_some()
                 && region == visible,
             format!(
-                "At {zoom}% the boundary held is not the visible region's from one request: \
-                 {summary}, the view {visible:?}"
+                "At {zoom}% the boundary held is not the visible region's from {requests} \
+                 requests: {summary}, the view {visible:?}"
             ),
         )?;
+        left = Some(summary["boundary"]["version"].clone());
         let dragged = launch.at(gpu_name)?;
         let drawn = gpu_drawn(dragged)?;
         let (gpu_ticks, cpu_ticks, jobs) = ticks(step_events(launch, gpu_name)?);

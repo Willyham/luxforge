@@ -159,6 +159,11 @@ fn smooth(s: f64) -> f64 {
 /// whose shape is drawn rather than typed.
 struct ComponentKind {
     kind: &'static str,
+    /// Where two GPU descriptions of this kind's coverage program may draw other coverage: a
+    /// rectangle of the program's `pos` pixels `[x0, y0, x1, y1]`, `Some(None)` for nowhere, or
+    /// `None` when the kind cannot say, which counts as anywhere ([`component_gpu_changed`]). A
+    /// painted stroke's tick is the one change narrowed to where it happens.
+    gpu_changed: fn(&GpuDescription, &GpuDescription) -> Option<Option<[f64; 4]>>,
     /// Everything about a stored payload that can be checked without a stage: its shape, and every
     /// stored value being finite and inside its legal range. It is the stage-free half of `compile`
     /// and is what admission runs on a mask no layer draws yet.
@@ -254,6 +259,7 @@ struct ColourSamples {
 const COMPONENT_KINDS: &[ComponentKind] = &[
     ComponentKind {
         kind: linear::KIND,
+        gpu_changed: anywhere,
         validate: linear::validate,
         compile: linear::compile,
         parameters: Some(linear::parameters),
@@ -266,6 +272,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
     },
     ComponentKind {
         kind: radial::KIND,
+        gpu_changed: anywhere,
         validate: radial::validate,
         compile: radial::compile,
         parameters: Some(radial::parameters),
@@ -278,6 +285,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
     },
     ComponentKind {
         kind: brush::KIND,
+        gpu_changed: brush::gpu_changed,
         validate: brush::validate,
         compile: brush::compile,
         parameters: None,
@@ -290,6 +298,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
     },
     ComponentKind {
         kind: range::LUMINANCE_KIND,
+        gpu_changed: anywhere,
         validate: range::validate_luminance,
         compile: range::compile_luminance,
         parameters: Some(range::luminance_parameters),
@@ -302,6 +311,7 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
     },
     ComponentKind {
         kind: range::COLOUR_KIND,
+        gpu_changed: anywhere,
         validate: range::validate_colour,
         compile: range::compile_colour,
         parameters: Some(range::colour_parameters),
@@ -317,6 +327,27 @@ const COMPONENT_KINDS: &[ComponentKind] = &[
         band: None,
     },
 ];
+
+/// A kind whose GPU coverage cannot say where two of its descriptions differ: a change of it counts
+/// as a change anywhere.
+fn anywhere(_: &GpuDescription, _: &GpuDescription) -> Option<Option<[f64; 4]>> {
+    None
+}
+
+/// Where the coverage two GPU descriptions of a `kind` component give may differ, in the program's
+/// `pos` pixels `[x0, y0, x1, y1]`: `Some(None)` for nowhere, `None` for anywhere, which a kind
+/// this build does not know answers, and the kind's own answer otherwise.
+pub(crate) fn component_gpu_changed(
+    kind: &str,
+    old: &GpuDescription,
+    new: &GpuDescription,
+) -> Option<Option<[f64; 4]>> {
+    if old.words == new.words && old.block == new.block {
+        return Some(None);
+    }
+    let entry = COMPONENT_KINDS.iter().find(|entry| entry.kind == kind)?;
+    (entry.gpu_changed)(old, new)
+}
 
 /// Whether this build can evaluate `kind`, which is the question the refusal below answers in the
 /// negative. It reads the table rather than a second list, so the two cannot drift.

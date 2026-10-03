@@ -9,7 +9,9 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - Windows and Linux functional checks of the fallback and of correctness within the limits, not run
 - A drag while queued exports hold the shared pool misses 16 ms p95 (18.7 ms at 60 MP) and 32 ms at 24 MP; the reduced-pool proposal in [instant previews](design/instant-preview.md#proposals-and-later-work) is unmeasured
 - A straightened crop's Fit drag on a RAW whose exact-stage boundary passes 256 MiB keeps the CPU path; a boundary windowed to what the crop reads is proposed
-- At 100%, Detail beside Presence (Dehaze's estimate behind Detail) and the stacks past the 640 MiB budget keep the CPU path
+- At 100%, Detail beside Presence (Dehaze's estimate behind Detail) keeps the CPU path, and so does Detail beside a local Presence layer on the 60 MP JPEG, past the 2 GiB budget
+- The first stroke after a zoom to 100% or a pan over a frame already in hand waits 78 to 113 ms for its region's boundary; a boundary rendered alone when such a view settles is proposed
+- Whether more than four masked spatial layers are allowed, so tens of masks can hold Clarity, Texture and Detail as in Lightroom ([masking](design/masking.md#resource-and-responsiveness-constraints)): the owner's decision
 - Later work in the [design](design/gpu-preview.md#later): view changes without a draft, the RAW white-balance draft on the GPU, region padding
 
 **GPU memory accounting** ([plan](../tasks/rendering.json)). Measure and bound the GPU resources outside the provisional 1088 MiB photo-texture ceiling (crop textures, overlays and backend staging) before any total-memory guarantee.

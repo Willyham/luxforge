@@ -114,9 +114,10 @@ use std::time::Instant;
 pub mod gpu_preview;
 pub use gpu_preview::{
     BoundaryFormat, ClipMarks, Coverage, CoverageComponent, CoverageMode, DISSOLVE_DURATION,
-    Dissolve, DrawingPath, DrawnDissolve, GPU_PREVIEW_BUDGET, GpuBoundary, GpuFallback, GpuPlan,
-    GpuProgram, GpuRegion, GpuStep, GpuTail, GpuWarm, MaskedColour, OutputEncoding, PIPELINE_CACHE,
-    PRELUDE, PositionMap, TexelMap, install_output_encoding, output_encoding, validate_step,
+    Dissolve, DrawingPath, DrawnDissolve, GPU_PREVIEW_BUDGET, GpuBoundary, GpuChange, GpuFallback,
+    GpuPlan, GpuProgram, GpuRegion, GpuStep, GpuTail, GpuWarm, MaskedColour, OutputEncoding,
+    PIPELINE_CACHE, PRELUDE, PositionMap, TexelMap, install_output_encoding, output_encoding,
+    validate_step,
 };
 
 /// Which photo surface a primitive draws. The pipeline keeps one set of textures per id, so two
@@ -177,6 +178,7 @@ impl SurfaceFigures {
         overall.drawn_gpu_boundary = drawn.drawn_gpu_boundary;
         overall.drawn_gpu_tag = drawn.drawn_gpu_tag;
         overall.gpu_ready_boundary = drawn.gpu_ready_boundary;
+        overall.gpu_evaluated_serial = drawn.gpu_evaluated_serial;
         overall.gpu_preview_frame_us = drawn.gpu_preview_frame_us;
         overall.drawn_dissolve = drawn.drawn_dissolve;
         overall.drawn_clipping_marks = drawn.drawn_clipping_marks;
@@ -365,6 +367,9 @@ pub struct SurfaceDiagnostics {
     /// output or held it behind the CPU frame ([`PhotoSurface::gpu_hold`]): the plan's pipeline is
     /// ready and its slot holds that boundary, so the next tick can be drawn from it.
     pub gpu_ready_boundary: Option<u64>,
+    /// The serial of the plan whose values the GPU-preview slot holds, when its caller gave one
+    /// ([`GpuChange`]): what the caller measures the next plan's change from.
+    pub gpu_evaluated_serial: Option<u64>,
     /// The interface thread's time, in microseconds, to prepare the GPU frame the last draw drew:
     /// writing its words and blocks, uploading a new boundary, encoding and submitting its pass.
     /// The device Iced creates has no timestamp queries, so the GPU's own time is not in it.
@@ -913,6 +918,14 @@ impl PhotoSurface {
     /// correlates each GPU frame with the input that produced it.
     pub fn gpu_tag(mut self, tag: Option<u64>) -> Self {
         self.gpu_options.tag = tag;
+        self
+    }
+
+    /// Where the plan draws other values than the plan handed under an earlier tag: when the slot
+    /// last evaluated that one, it evaluates only that part of this one again
+    /// ([`GpuChange`]).
+    pub fn gpu_change(mut self, change: Option<GpuChange>) -> Self {
+        self.gpu_options.change = change;
         self
     }
 
@@ -1577,7 +1590,14 @@ impl shader::Primitive for PhotoPrimitive {
             self.dissolve_ready(&surface, frame.dissolve.to)
                 && (self.gpu.is_none() || self.gpu_options.hold)
         });
-        pipeline.prepare_gpu(&mut surface, device, queue, self.gpu.as_ref(), dissolve);
+        pipeline.prepare_gpu(
+            &mut surface,
+            device,
+            queue,
+            self.gpu.as_ref(),
+            dissolve,
+            self.gpu_options.change,
+        );
         // A whole frame's GPU output dissolves under a whole-frame photograph, and a region's
         // under the percentage view of its own stage: any other pairing draws the CPU frame alone.
         if surface.dissolved_output().is_some_and(|output| {
@@ -1627,10 +1647,28 @@ impl shader::Primitive for PhotoPrimitive {
             for picture in surface.regions.iter().flatten() {
                 write_uniforms(queue, picture, viewport, destination, bright, picture_turn);
             }
+            // Over a gesture's GPU region frame the mask's region coverage is placed at its own
+            // rectangle, which the coverage worker computed for the gesture over the view's region.
+            let gpu_region = surface
+                .gpu_output()
+                .is_some_and(|output| output.region_key.is_some());
             for (index, layer) in [Layer::Clipping, Layer::Coverage].into_iter().enumerate() {
                 if let Some(overlay) = &self.region_overlays[index]
                     && let Some(picture) = &surface.slots[layer.index()]
                 {
+                    if gpu_region {
+                        let mut overlay_turn = turn;
+                        overlay_turn[2] = 0.0;
+                        write_uniforms(
+                            queue,
+                            picture,
+                            viewport,
+                            destination,
+                            region_physical_rect(destination, overlay.key()),
+                            overlay_turn,
+                        );
+                        continue;
+                    }
                     let matched =
                         if surface.slots[Layer::Photo.index()]
                             .as_ref()
@@ -1709,6 +1747,19 @@ impl shader::Primitive for PhotoPrimitive {
             drawn_gpu_boundary = Some(output.version);
             gpu_frame_us = surface.gpu_frame_us();
             gpu_clock = surface.gpu_clock();
+            // The mask's coverage over the view's region, which the coverage worker computes for
+            // each of the gesture's ticks, laid over the GPU frame as over a CPU region. The plan's
+            // own marks are its clipping overlay.
+            if let (Some(view), Some(overlay)) = (&self.viewport, &self.region_overlays[1]) {
+                let key = overlay.key();
+                if key.content_id == view.current_content
+                    && key.full_stage == view.full_stage
+                    && let Some(picture) = &surface.slots[Layer::Coverage.index()]
+                    && picture.region_key == Some(key)
+                {
+                    draw_picture(render_pass, picture);
+                }
+            }
         } else if let Some(view) = &self.viewport {
             // A dissolve draws the GPU region frame it starts from first; the view's own pictures
             // below are laid over it at the dissolve's share.
@@ -1972,6 +2023,10 @@ impl shader::Primitive for PhotoPrimitive {
         diagnostic.drawn_gpu_tag = drawn_gpu_tag;
         diagnostic.first_drawn = first_drawn;
         diagnostic.gpu_ready_boundary = surface.gpu_outcome.and_then(Result::ok);
+        diagnostic.gpu_evaluated_serial = surface
+            .gpu
+            .as_ref()
+            .and_then(gpu_preview::GpuSlot::evaluated_serial);
         diagnostic.gpu_preview_frame_us = gpu_frame_us;
         diagnostic.drawn_clipping_marks = drawn_clipping_marks;
         diagnostic.drawn_dissolve = drawn_dissolve;

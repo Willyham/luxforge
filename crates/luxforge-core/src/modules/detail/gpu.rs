@@ -78,6 +78,7 @@ fn pass(kernel: &'static str, inputs: &[usize], output: usize, words: usize) -> 
         source: 0,
         shape: EACH,
         reads_source: false,
+        unit: 0,
     }
 }
 

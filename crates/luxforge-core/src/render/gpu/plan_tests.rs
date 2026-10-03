@@ -1342,8 +1342,8 @@ fn a_proxy_is_named_as_its_built_pixels_are() {
 /// Spatial and restoration layers after the boundary chain in recipe order, with the colour layers
 /// between them: Detail, then a colour layer on its output, then Presence, plain or through a
 /// mask, then the output's colour, each operation's input the boundary through everything before
-/// it, and the plan draws the CPU frame. Past [`super::spatial::GPU_CHAIN_APPLY_PLANES`] the stack
-/// names `spatial-chain`.
+/// it, and the plan draws the CPU frame. The surface runs each spatial operation as a link of its
+/// own, so a chain of any length plans: four Presence layers after Detail among them.
 #[test]
 fn chained_spatial_operations_draw_the_cpu_frame() {
     let registry = colour_registry();
@@ -1407,7 +1407,7 @@ fn chained_spatial_operations_draw_the_cpu_frame() {
         assert_eq!(order, [1, 3], "{what}");
         assert_draws_the_cpu_frame(&registry, &source, &recipe, &plan, what);
     }
-    // Detail's three apply planes and two Presences' four each fit; a third Presence does not.
+    // Detail's three apply planes and any number of Presences' four: each is its own link.
     let mut second = Mask::new("Mask 2");
     second.components = mask.components.clone();
     let through = |layer: Layer, mask: &Mask| Layer {
@@ -1429,17 +1429,18 @@ fn chained_spatial_operations_draw_the_cpu_frame() {
         GpuPlanRequest::exact(0, stage(41, 29)).qualifying(),
     ));
     assert_eq!(plan.spatial.len(), 3);
-    layers.push(through(presence(all), &second));
+    let mut third = Mask::new("Mask 3");
+    third.components = mask.components.clone();
+    layers.push(through(presence(all.clone()), &second));
+    layers.push(through(presence(all), &third));
     let recipe = Recipe {
-        masks: vec![mask, second],
+        masks: vec![mask, second, third],
         ..colour_recipe(layers)
     };
-    assert_eq!(
-        answer(
-            &registry,
-            &recipe,
-            GpuPlanRequest::exact(0, stage(41, 29)).qualifying()
-        ),
-        GpuAnswer::Fallback(GpuFallback::SpatialChain { layer: 3 })
-    );
+    let plan = planned(answer(
+        &registry,
+        &recipe,
+        GpuPlanRequest::exact(0, stage(41, 29)).qualifying(),
+    ));
+    assert_eq!(plan.spatial.len(), 5);
 }

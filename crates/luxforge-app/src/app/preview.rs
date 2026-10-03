@@ -741,6 +741,7 @@ impl Presentation {
             gpu: None,
             gpu_hold: false,
             gpu_tag: None,
+            gpu_change: None,
             dissolve: None,
             gpu_warm: None,
         }
@@ -1220,6 +1221,11 @@ impl Editor {
             None => None,
         };
         self.view_plan.in_flight = true;
+        // The view's GPU plans once it settles, not on every frame of a pan.
+        let gpu = match (intent, self.gpu_preview_allowed()) {
+            (PreviewIntent::Settle, Ok(())) => self.gpu_ask(),
+            _ => super::gpu_preview::GpuAsk::Off,
+        };
         tasks::view_preview_task(
             self.owner.clone(),
             self.client,
@@ -1228,6 +1234,7 @@ impl Editor {
             draft,
             self.view_plan.epoch,
             intent,
+            gpu,
         )
     }
 
@@ -1316,7 +1323,13 @@ impl Editor {
         {
             return Task::none();
         }
-        if self.presentation.analysis_content == Some(self.presentation.content_serial)
+        // A draft whose newest revision only the GPU has drawn has no CPU frame yet, whatever the
+        // frame on screen is.
+        let drawn_on_gpu_only = self.session.draft.as_ref().is_some_and(|draft| {
+            self.presentation.displayed_draft_revision != Some(draft.draft_revision)
+        });
+        if !drawn_on_gpu_only
+            && self.presentation.analysis_content == Some(self.presentation.content_serial)
             && self.presentation.exact_content() == Some(self.presentation.content_serial)
         {
             self.view_plan.quiet_since = None;
@@ -2162,6 +2175,16 @@ impl Editor {
         let content = self.presentation.admit(&mut job);
         self.request_mask_coverage(&job, content);
         self.gpu_warm_from(job.gpu_warm.as_deref());
+        let committed = job.layer_count.is_none()
+            && job.evaluation.draft_revision().is_none()
+            && job.boundary.is_none();
+        if let Some(request) =
+            self.gpu_resident_from(job.gpu_resident.take(), job.viewport.is_some(), committed)
+        {
+            job.boundary = Some(request);
+        }
+        let resident_requested =
+            job.boundary.is_some() && job.evaluation.draft_revision().is_none();
         // Reusing pixels cannot complete work the viewport still owes. A moving region is
         // intentionally half detail and carries no whole-image report; Settle must refine it
         // and retain exact pixels. A non-interactive request for analysis also needs its exact
@@ -2242,6 +2265,9 @@ impl Editor {
             "preview_job_requested",
             || json!({"generation":generation,"layer_count":layer_count}),
         );
+        if resident_requested {
+            self.gpu_resident_requested(generation);
+        }
         if replaced.is_some() && replaced == self.view_plan.request_generation {
             self.view_plan.request_generation = None;
             self.view_plan.dirty = true;

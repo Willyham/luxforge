@@ -23,7 +23,7 @@ fn prepare(
     primitive: &PhotoPrimitive,
 ) {
     if let Some(plan) = &primitive.gpu {
-        pipeline.compile_now(device, &plan.steps);
+        pipeline.compile_now(device, plan);
     }
     let bounds = Rectangle::new(iced::Point::ORIGIN, Size::new(SIDE as f32, SIDE as f32));
     let viewport = Viewport::with_physical_size(Size::new(SIDE, SIDE), 1.0);
