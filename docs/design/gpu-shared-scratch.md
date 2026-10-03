@@ -41,7 +41,7 @@ Measured on 2026-10-03 with the qualifier's slot charge (`Qualifier::charged_byt
 | Each layer after the first, shared and Texture's band in one channel (predicted) | 42.9 | 70.9 | 119.3 | 197.2 |
 | **Layers within the budget, both (predicted)** | **47** | **28** | **15** | **9** |
 
-The shared rows are today's charges minus the scratch of every layer after the first. The last two rows also subtract 4 bytes a pixel of kept plane from every layer, the band change below. A recipe holds at most 16 masks.
+The 100% totals were measured while a region's output took the photograph's square size bucket. It now takes the bucket the CPU's region picture reserves, which lowers every total in a 100% column by the same amount and changes no increment or count. The shared rows are today's charges minus the scratch of every layer after the first. The last two rows also subtract 4 bytes a pixel of kept plane from every layer, the band change below. A recipe holds at most 16 masks.
 
 **What sharing costs.** It was measured by forgetting every link's scratch before each tick, which is the most sharing can ever cost.
 
@@ -53,7 +53,7 @@ The extra Dehaze pass happens only when another spatial link runs after the drag
 
 **What sharing does not change.**
 
-- **Detail beside Presence.** Once Detail holds noise reduction, all its planes are `rgba16float`, while Presence's are `r32float`, `rg32float` and `rgba32float`. Such a chain shares nothing, so the 100% peak, Detail then all three Presence fields at 1,174.1 MB, stays where it is. Sharpening alone keeps its planes in `r32float` and `rg32float`, which do share with Presence's.
+- **Detail beside Presence.** Once Detail holds noise reduction, all its planes are `rgba16float`, while Presence's are `r32float`, `rg32float` and `rgba32float`. Such a chain shares nothing, so the 100% peak, Detail then all three Presence fields at 1,159.2 MB, stays where it is. Sharpening alone keeps its planes in `r32float` and `rg32float`, which do share with Presence's.
 - **Kept planes and intermediates.** Each layer still adds these ([later](#later)).
 
 ## Scope
@@ -108,6 +108,7 @@ Out of scope:
 - **Holder.** A holder is a link schedule's generation. It is drawn from a counter in the slot when the link's planes are created, and again at every reset.
 - **Reading a key.** A link reads a pool texture's key only when the holder is its own current generation. Otherwise the texture is unknown, and the passes the applies need run as for planes never written.
 - **Writing.** Running a pass that writes a pool texture records the link's generation and the pass's key.
+- **Units at zero.** An apply whose unit is the identity at the tick's words (`GpuApply::identity`) returns its input before reading a plane, and the schedule runs no pass only such an apply needs until the unit leaves zero. A pass skipped that way records nothing in the pool, and a link whose unit leaves zero after another link wrote those textures runs their passes as for planes never written.
 - **After an incremental tick.** `keep_only` keeps only the apply planes' keys, as it does today, and also clears the pool records the link holds, since that tick wrote them only where it ran.
 - **Precision.** Links that share no class, such as a Detail link with noise reduction and a Presence link, never forget each other's scratch. A coarser rule, forgetting every pool texture whenever another link has run, would cost those links passes for nothing.
 
@@ -205,6 +206,8 @@ Reasons that pass within a tick or two show nothing: `boundary-pending`, `bounda
   - *Guarded by:* the tick returns the refusal before encoding anything, as a refused link does today. The next frame, after the retirement, fits again.
 - **The surface and the qualification harness lay out planes differently.**
   - *Guarded by:* one constructor.
+- **The efficiency work changes the same block writes.**
+  - *Guarded by:* [the efficiency design](efficiency.md#the-desktop) skips program blocks whose shared buffer is unchanged in the slot's and each link's writes; whichever lands second keeps the other's block handling and each link's own schedule.
 - **The desktop's estimate drifts from the slot's charge.**
   - *Guarded by:* one function, and a test holding the two together.
 - **Extra work on the interface thread.**

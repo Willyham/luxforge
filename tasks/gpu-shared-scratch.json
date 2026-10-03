@@ -112,6 +112,7 @@
         "Prove that with a test-only poison. A switch (cfg(test) on PhotoPipeline, the qualification feature on Qualifier) writes NaN bits into every pool texture with queue.write_texture and clears the pool's records before each link's passes. Pool textures gain COPY_DST only in builds with that switch.",
         "The qualification harness: Session (qualification.rs) builds its pool and planes through the slot's own constructor and compares them in same_planes. evaluate_sequence, or a sibling, reports passes tick by tick so tests can pin each tick's count. slot_charge, which Qualifier::charged_bytes reports, and the slot's own figure both come from the TASK-001 function plus the slot's boundary, output, uniform and buffers.",
         "Evidence: SurfaceDiagnostics (crates/luxforge-ui/src/photo_surface.rs) and the snapshot (crates/luxforge-app/src/app/snapshot.rs) report the pool's bytes in state.surface.gpu beside gpu_preview_in_use_bytes; a suggested name is gpu_preview_scratch_bytes. Update the xtask readers of those figures to match.",
+        "Units at zero: an apply whose unit is the identity at the tick's words (GpuApply::identity: a Texture or Clarity gain of 0, Dehaze at 0) returns its input before it reads a plane, and the schedule runs no pass only such an apply needs, running them in the tick the unit leaves zero. A pass skipped that way writes no pool record, and a link whose unit leaves zero after another link wrote those pool textures runs their passes as for planes never written. gpu_presence_a_neutral_unit_runs_no_pass_until_it_leaves_zero passes, and passes again with the poison on.",
         "Pass counts that stay as they are:",
         "- gpu_presence_a_drag_reruns_only_the_passes_it_changes: Texture 5, Clarity 0, Dehaze 19 of 22.",
         "- gpu_presence_after_detail_reruns_only_the_passes_a_tick_changes: 0, 5, 17 and 13 of 27, since Detail and Presence share no class.",
@@ -120,7 +121,8 @@
         "- spatial_planes_are_charged_released_and_refused_past_the_budget;",
         "- a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own, whose wider scratch plane now replaces a pool texture;",
         "- every_allocation_is_charged_and_a_released_slot_returns_the_budget_to_zero.",
-        "Correct the doc comment of gpu_presence_after_detail_reruns_only_the_passes_a_tick_changes, which says chained steps share their scratch textures; until now they shared none."
+        "Correct the doc comment of gpu_presence_after_detail_reruns_only_the_passes_a_tick_changes, which says chained steps share their scratch textures; until now they shared none.",
+        "The efficiency work (docs/design/efficiency.md, The desktop) also changes the block writes in gpu_preview.rs and gpu_preview/chain.rs, skipping blocks whose shared buffer is unchanged. If it lands first, rebase onto it and keep its block handling; it keeps each link's own schedule."
       ],
       "context_links": [
         {
@@ -185,7 +187,7 @@
         "Over a chain of at least three spatial links, no texture an apply reads is written by another link's pass, and no pool texture has two holders.",
         "Through the slot's own prepare path (the widget crate's headless tests), a chain of at least three spatial links with colour links between them draws every frame bit for bit as a fresh pipeline draws the same plan. Its ticks change, in turn, one link's pass words, another link's apply word, the step before, and the boundary. A link whose scratch is still its own skips its first writer, and runs it again after another link has written that pool texture.",
         "Through the qualifier, over masked Presence layers of all three fields on at least three masks, a global Presence layer and a masked Basic layer, drags of different links in turn over at least 20 ticks are bit for bit the whole evaluation, with each tick's pass count pinned.",
-        "gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it, gpu_mask_a_moved_radial_is_evaluated_where_its_bounds_were_and_are, gpu_mask_a_mask_grown_toward_the_edge_reads_its_inputs_latest_values and gpu_presence_a_masked_layer_runs_its_passes_over_its_mask_alone pass, and pass again with the poison on.",
+        "gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it, gpu_mask_a_moved_radial_is_evaluated_where_its_bounds_were_and_are, gpu_mask_a_mask_grown_toward_the_edge_reads_its_inputs_latest_values and gpu_presence_a_masked_layer_runs_its_passes_over_its_mask_alone pass, and pass again with the poison on, as does gpu_presence_a_neutral_unit_runs_no_pass_until_it_leaves_zero.",
         "The single-link pass counts stand, and the multi-link Dehaze count is pinned.",
         "slot_charge, Qualifier::charged_bytes and the live slot report one figure. Four masked Texture and Clarity layers over 2292 x 1528 on a JPEG charge about 328 MB where they charged 551.6 MB; the test pins the exact figure.",
         "Captured frames report the pool's bytes."
@@ -294,7 +296,7 @@
         "- Texture then holds 24 bytes a pixel instead of 28: sums 8, coefficients 8, fine 4, band 4.",
         "- All three units hold about 28.6 bytes a pixel instead of 32.6.",
         "The band is an f32 in r32float as it was in rg32float, so frames do not change. Prove it with a test that draws a plan in both layouts (the converted spatial step edited back to a two-channel band) and compares them bit for bit.",
-        "The band's pass now writes r32float, which makes it another pass module. If the pipeline count moves from 22 passes on 13 pipelines (docs/design/gpu-preview.md, Pipelines), record the new count.",
+        "The band's pass now writes r32float, which makes it another pass module. If the pipeline count moves from 22 passes from 14 pipelines (docs/design/gpu-preview.md, Pipelines), record the new count.",
         "Correct texture()'s doc comment, which says 20 bytes a pixel and says Texture takes Detail's half-precision planes behind Detail; no link does either. Also correct every test or doc figure that pins Texture's 28 or Presence's 32.6 bytes a pixel.",
         "This task is independent of the pool and may run before it or beside it. Together they leave a masked Presence layer about 4.25 bytes a pixel of kept planes, plus its intermediate."
       ],
@@ -560,7 +562,7 @@
         "- The three-mask rows compare like for like. At 10 masks the base build gives Presence to four, so the 10- and 16-mask rows are new workloads, reported as such.",
         "- Report p50 and p95, each frame's path and the notice it showed, and the GPU-preview peak. Latency at three masks should be unchanged within noise, and the peak lower wherever two or more spatial layers are held.",
         "- Run gpu_mask_a_painted_stroke_costs_where_it_changes before and after as well.",
-        "Corpora, run once in the release profile with the RAW manifest: Presence and Detail at Fit, and every family at 100%. Every cell must be within its limits. Record the heaviest slot: Detail then all three Presence fields, 1,174.1 MB before; sharing leaves it, and Texture's band lowers it.",
+        "Corpora, run once in the release profile with the RAW manifest: Presence and Detail at Fit, and every family at 100%. Every cell must be within its limits. Record the heaviest slot: Detail then all three Presence fields, 1,159.2 MB before; sharing leaves it, and Texture's band lowers it.",
         "Docs:",
         "- Fold the pool, the charges, the band and the cap into docs/design/gpu-preview.md: the tick's plane paragraph, Plane sharing and precision, Bounds and typical sizes, Verification, and the Later entry.",
         "- Then delete docs/design/gpu-shared-scratch.md. Repoint every link to it, including docs/decisions.md's link to the notice's recorded defaults, tasks/README.md, docs/plan.md and this plan's context links.",

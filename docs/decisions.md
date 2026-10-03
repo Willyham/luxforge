@@ -325,7 +325,7 @@ Decided by the owner on 2026-10-03, after a read-only audit of the workspace ([d
 - Clarity's and Dehaze's stage-anchored reductions get a disposable cache under rule 14, at about 15 to 45 MB per entry at 60 MP within 64 MiB in total ([the reduced-grid cache](design/efficiency.md#the-reduced-grid-cache)).
 - The normalized float mosaic is removed from RAW development's peak through a checked-in librtprocess patch that the build applies reproducibly; vendored sources are never edited.
 - The catalog uses WAL with `synchronous=FULL`, `fullfsync` and `checkpoint_fullfsync` on, so a commit reaches the drive with one full flush ([catalog durability](design/efficiency.md#catalog-durability)).
-- Packaging and timing build with a separate `dist` profile with LTO and one codegen unit; the daily release build is unchanged.
+- Packaging and timing build with a separate `dist` profile with LTO and one codegen unit; the daily release build is unchanged. Deferred the same day until the timing runs other plans have outstanding are recorded, since they and every recorded baseline build `release`.
 - Not adopted: DCT-scaled JPEG decode for proxies, parallel restart-marker JPEG export, cropping masked sensor margins, `target-cpu=apple-m4` and `panic = "abort"`.
 
 ## Open product questions
