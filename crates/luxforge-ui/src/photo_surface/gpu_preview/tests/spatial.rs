@@ -77,6 +77,7 @@ fn test_spatial() -> GpuSpatial {
                 words: 0,
                 source: 0,
                 shape: PassShape::Texels { span: [1, 1] },
+                unit: 0,
             },
             GpuPass {
                 kernel: Cow::Borrowed("lf_test_mean_x"),
@@ -85,6 +86,7 @@ fn test_spatial() -> GpuSpatial {
                 words: 0,
                 source: 0,
                 shape: PassShape::Texels { span: [1, 1] },
+                unit: 0,
             },
             GpuPass {
                 kernel: Cow::Borrowed("lf_test_lanes"),
@@ -93,6 +95,7 @@ fn test_spatial() -> GpuSpatial {
                 words: 0,
                 source: 0,
                 shape: PassShape::Workgroup,
+                unit: 0,
             },
         ],
         applies: vec![GpuApply {
@@ -102,6 +105,7 @@ fn test_spatial() -> GpuSpatial {
         }],
         clamps: true,
         mask: None,
+        halos: Vec::new(),
     }
 }
 
@@ -384,6 +388,9 @@ fn spatial_planes_are_charged_released_and_refused_past_the_budget() {
     let plan = spatial_plan(&boundary);
     // The three planes, and each of the three passes' 256-byte slice of the parameters.
     let planes = 64 * 64 * 8 + 64 * 64 * 16 + 16 + 3 * 256;
+    // The colour step before the spatial one is the chain's first link: its intermediate, the
+    // boundary's size at its eight bytes a texel, and its words and blocks buffers.
+    let link = 64 * 64 * 8 + 2 * 1024;
     paint(
         &device,
         &queue,
@@ -392,7 +399,7 @@ fn spatial_planes_are_charged_released_and_refused_past_the_budget() {
     );
     let seen = diagnostics(&pipeline, ID);
     assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
-    assert_eq!(seen.gpu_preview_in_use_bytes, SLOT_BYTES + planes);
+    assert_eq!(seen.gpu_preview_in_use_bytes, SLOT_BYTES + planes + link);
     // The figure a qualification report states is the slot's own.
     assert_eq!(
         slot_charge(&device, &plan),
@@ -439,12 +446,14 @@ fn a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own() {
     let mut pipeline = own_pipeline(&device, &queue);
     let (boundary, _) = boundary_values();
     let single = spatial_plan(&boundary);
-    let chained = GpuPlan {
+    // The same chain, its spatial step's copy held in a plane twice as wide: the last link's planes
+    // are replaced, and the colour link before it is kept.
+    let mut wider = test_spatial();
+    wider.planes[0].format = PlaneFormat::Quad;
+    let larger = GpuPlan {
         steps: vec![
             GpuStep::colour(scale(0.5)),
-            GpuStep::Spatial(Box::new(test_spatial())),
-            GpuStep::colour(scale(1.0)),
-            GpuStep::Spatial(Box::new(test_spatial())),
+            GpuStep::Spatial(Box::new(wider)),
         ],
         ..single.clone()
     };
@@ -453,10 +462,13 @@ fn a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own() {
             .expect("planes")
             .bytes()
     };
-    let (small, large) = (planes(&single), planes(&chained));
+    let (small, large) = (planes(&single), planes(&larger));
+    // The colour step before the spatial one is the chain's first link: its intermediate, the
+    // boundary's size at its eight bytes a texel, and its words and blocks buffers.
+    let link = 64 * 64 * 8 + 2 * 1024;
     // The slot with either plan's planes, never both.
-    let budget = SLOT_BYTES + large;
-    assert!(SLOT_BYTES + small + large > budget);
+    let budget = SLOT_BYTES + link + large;
+    assert!(SLOT_BYTES + link + small + large > budget);
     pipeline.set_gpu_budget(budget);
     paint(
         &device,
@@ -466,13 +478,13 @@ fn a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own() {
     );
     let seen = diagnostics(&pipeline, ID);
     assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
-    assert_eq!(seen.gpu_preview_in_use_bytes, SLOT_BYTES + small);
+    assert_eq!(seen.gpu_preview_in_use_bytes, SLOT_BYTES + link + small);
     // Straight after it: the smaller planes still retire.
     let first = paint(
         &device,
         &queue,
         &mut pipeline,
-        &primitive(ID, Some(chained.clone())),
+        &primitive(ID, Some(larger.clone())),
     );
     let seen = diagnostics(&pipeline, ID);
     match seen.drawn_path {
@@ -496,7 +508,7 @@ fn a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own() {
             &device,
             &queue,
             &mut pipeline,
-            &primitive(ID, Some(chained.clone())),
+            &primitive(ID, Some(larger.clone())),
         );
         let seen = diagnostics(&pipeline, ID);
         assert_eq!(
@@ -504,7 +516,7 @@ fn a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own() {
             (Some(DrawingPath::Gpu), None),
             "frame {frame} once the replaced planes retired"
         );
-        assert_eq!(seen.gpu_preview_in_use_bytes, SLOT_BYTES + large);
+        assert_eq!(seen.gpu_preview_in_use_bytes, SLOT_BYTES + link + large);
         assert!(seen.gpu_preview_peak_bytes <= budget);
     }
     assert_eq!(
@@ -547,6 +559,7 @@ fn pass_pipelines_depend_on_their_kernel_and_shape_alone() {
                 words: lead,
                 source: 0,
                 shape: PassShape::Texels { span: [1, 1] },
+                unit: 0,
             },
             GpuPass {
                 kernel: Cow::Borrowed("lf_test_mean_x"),
@@ -555,6 +568,7 @@ fn pass_pipelines_depend_on_their_kernel_and_shape_alone() {
                 words: lead,
                 source: 0,
                 shape: PassShape::Texels { span: [1, 1] },
+                unit: 0,
             },
             GpuPass {
                 kernel: Cow::Borrowed("lf_test_mean_x"),
@@ -563,6 +577,7 @@ fn pass_pipelines_depend_on_their_kernel_and_shape_alone() {
                 words: lead + 1,
                 source: 0,
                 shape: PassShape::Texels { span: [1, 1] },
+                unit: 0,
             },
             GpuPass {
                 kernel: Cow::Borrowed("lf_test_lanes"),
@@ -571,6 +586,7 @@ fn pass_pipelines_depend_on_their_kernel_and_shape_alone() {
                 words: lead,
                 source: 0,
                 shape: PassShape::Workgroup,
+                unit: 0,
             },
         ];
         spatial.applies[0].planes = vec![1, 3];
@@ -615,8 +631,9 @@ fn pass_pipelines_depend_on_their_kernel_and_shape_alone() {
             }
         }
     }
-    // The two plans are two sequences, each its own frame pipeline over the shared passes.
-    assert_eq!(pipeline.figures.preview.compiles.load(Ordering::Relaxed), 2);
+    // Each plan is a chain of two links: the colour step's, which the two share, and the spatial
+    // step's, each its own frame pipeline over the shared passes.
+    assert_eq!(pipeline.figures.preview.compiles.load(Ordering::Relaxed), 3);
     assert_eq!(
         pipeline.gpu.support.as_ref().unwrap().passes.len(),
         3,

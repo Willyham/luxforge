@@ -316,8 +316,8 @@ pub enum GpuFallback {
     /// a GPU program, or an exact step between the boundary and it or between it and the spatial
     /// layer before it.
     SpatialUnit { layer: usize },
-    /// A spatial or restoration layer that would chain more planes to the plan's applies than a
-    /// pass can bind beside the boundary ([`GPU_CHAIN_APPLY_PLANES`]).
+    /// A spatial or restoration layer whose applies read more planes than a pass can bind beside
+    /// its input ([`GPU_CHAIN_APPLY_PLANES`]).
     SpatialChain { layer: usize },
     /// A colour layer between two resamples after the boundary: its stage is neither the
     /// boundary's nor the output's, and a plan has only those two passes.
@@ -688,7 +688,9 @@ impl GpuClipping {
 #[derive(Clone, Debug, PartialEq)]
 pub struct GpuPlan {
     pub boundary: GpuBoundary,
-    /// Whether boundary and geometry frames stay unclamped in the RAW linear path.
+    /// The plan previews a RAW photograph's linear path, whose boundary is held in `f32`
+    /// ([`crate::BoundaryFormat::Float`]) and whose boundary and geometry frames stay unclamped;
+    /// otherwise the byte path's, held in half floats.
     pub linear: bool,
     /// Over the boundary's texels, in recipe order.
     pub content: Vec<GpuOperation>,
@@ -930,7 +932,6 @@ impl Compiled {
         // spatial segment with exact steps of its own ends the chain, and a spatial entry after it
         // has no pass.
         let mut spatial: Vec<GpuSpatial> = Vec::new();
-        let mut chained_planes = 0;
         let mut index = first + 1;
         while let Some(Some(Entry::Spatial(entry))) =
             self.segments.get(index).map(|next| &next.entry)
@@ -968,12 +969,14 @@ impl Compiled {
             }
             match plan_spatial(layer, entry, received, planning)? {
                 Ok(planned) => {
-                    chained_planes += planned
+                    // Each operation is a link of its own on the surface, which binds only its
+                    // own applies' planes.
+                    let planes = planned
                         .applies
                         .iter()
                         .map(|apply| apply.planes.len())
                         .sum::<usize>();
-                    if chained_planes > GPU_CHAIN_APPLY_PLANES {
+                    if planes > GPU_CHAIN_APPLY_PLANES {
                         return Ok(Err(GpuFallback::SpatialChain { layer }));
                     }
                     spatial.push(planned);
@@ -1294,6 +1297,7 @@ fn plan_spatial(
         }
     };
     let mut composed = spatial::compose(layer, units, !planning.linear, mask)?;
+    composed.halos = operation.halos(stage);
     composed.held = held;
     Ok(Ok(composed))
 }

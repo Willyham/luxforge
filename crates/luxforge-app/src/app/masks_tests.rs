@@ -4908,7 +4908,18 @@ fn an_evidence_overlay_choice_rejects_a_grid_that_beats_its_session_answer() {
             json!({"mask_overlay":"tint"}),
         )
         .expect("the initial green Tint persists at the owner");
+        // Coverage already asked for is taken up first, and the paint slot is held across the
+        // refresh: the coverage it asks for completes after the message and waits here, rather
+        // than being adopted by the message itself when the host is busy.
+        luxforge_testbase::wait_until("earlier coverage is taken up", || {
+            let _ = masking
+                .editor
+                .update(Message::Preview(PreviewMessage::Poll));
+            !masking.editor.coverage_worker.queue.is_busy()
+        });
+        let painting = masking.editor.coverage_worker.queue.hold_painting();
         masking.refresh();
+        drop(painting);
         luxforge_testbase::wait_until("the old green coverage completes", || {
             masking.editor.coverage_worker.queue.ready()
         });
@@ -6118,11 +6129,12 @@ fn the_coverage_overlay_of_a_curve_only_mask_reads_the_curve_layers_input() {
     );
 }
 
-/// At a percentage zoom the mask overlay is drawn with the CPU's region frames, which a GPU frame
-/// drawn alone does not carry: a mask gesture with its overlay shown keeps the CPU path, names why
-/// and asks for no boundary.
+/// At a percentage zoom the mask overlay's region coverage, which the coverage worker computes for
+/// each tick over the view's region, is laid over the GPU region frame, so an overlay shown does
+/// not keep a gesture on the CPU path: a new mask that no layer reads yet changes no pixel, which
+/// is the reason its ticks name, and asks for no boundary.
 #[test]
-fn a_percentage_mask_gesture_with_its_overlay_shown_keeps_the_cpu_path() {
+fn a_percentage_mask_gesture_with_its_overlay_shown_is_kept_off_the_gpu_only_by_its_own_reason() {
     let mut masking = Masking::opened();
     luxforge_testbase::wait_until("the first frame", || {
         let _ = masking
@@ -6139,10 +6151,7 @@ fn a_percentage_mask_gesture_with_its_overlay_shown_keeps_the_cpu_path() {
         masking.editor.mask_coverage_target().is_some(),
         "the overlay is shown"
     );
-    assert_eq!(
-        masking.editor.gpu_plan_fallback(),
-        Some("overlay-shown".into())
-    );
+    assert_eq!(masking.editor.gpu_plan_fallback(), Some("unchanged".into()));
     assert_eq!(masking.editor.gpu.ticks().2, 0, "no boundary is asked for");
     assert!(masking.editor.surfaces().gpu.is_none());
     masking.draft(DraftMessage::Cancel);

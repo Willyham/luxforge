@@ -845,6 +845,7 @@ impl Editor {
         {
             surfaces.gpu_hold = self.gpu_held();
             surfaces.gpu_tag = Some(revision);
+            surfaces.gpu_change = self.gpu.surface_change();
         }
         surfaces.gpu_warm = self.gpu.warm();
         surfaces.dissolve = self.gpu_settle.dissolve();

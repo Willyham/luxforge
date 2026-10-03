@@ -312,6 +312,7 @@ pub(crate) fn spatial_step(spatial: &GpuSpatial) -> Result<GpuStep, Unrunnable> 
                     GpuPassShape::Texels { span } => PassShape::Texels { span },
                     GpuPassShape::Workgroup => PassShape::Workgroup,
                 },
+                unit: index(pass.unit),
             })
             .collect(),
         applies: spatial
@@ -325,6 +326,7 @@ pub(crate) fn spatial_step(spatial: &GpuSpatial) -> Result<GpuStep, Unrunnable> 
             .collect(),
         clamps: spatial.clamps,
         mask,
+        halos: spatial.halos.clone(),
     })))
 }
 

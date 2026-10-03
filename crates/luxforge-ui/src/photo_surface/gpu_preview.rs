@@ -93,11 +93,13 @@ use std::{
 };
 use wgpu::naga;
 
-/// The GPU-preview budget (owner, 2026-10-02): every GPU-preview texture and buffer, resident or
-/// retiring, of every surface together. It holds the heaviest measured 100% spatial slot, all three
-/// Presence fields over a 3026 × 1826 region of the 60 MP JPEG (568 MB), and lets a Fit slot of
-/// 8 MP, 64 MiB of boundary at 8 bytes a texel and 32 MiB of output, overlap the one it replaces.
-pub const GPU_PREVIEW_BUDGET: u64 = 640 * 1024 * 1024;
+/// The GPU-preview budget: every GPU-preview texture and buffer, resident or retiring, of every
+/// surface together. A plan runs as a chain of links, each spatial operation's output kept by
+/// content in an intermediate the boundary's size beside its planes, so a full-screen Fit slot of a
+/// RAW's `f32` boundary with Detail and three masked Presence layers holds 0.86 GB, and a 100%
+/// region of ten masks, four with Presence, 1.47 GB; 2 GiB holds them and a slot overlapping the
+/// one it replaces (owner, 2026-10-03: interactive speed comes before memory).
+pub const GPU_PREVIEW_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
 
 /// The words before any step's: the texel map's origin and step, then the offset of the output's
 /// first pixel ([`GpuRegion`]): in boundary texels for the content pass of a plan with no tail, in
@@ -539,6 +541,19 @@ impl GpuRegion {
     }
 }
 
+/// A plan's serial, which its caller gives every plan it hands over, and where it draws other
+/// values than an earlier one: `since` names that plan's serial and the rectangle `[x0, y0, x1,
+/// y1)` of the plan's boundary stage the changes lie inside, before any spatial step's
+/// neighbourhood grows them — a painted tick's new segments; `None` for a change anywhere. When the
+/// slot last evaluated that plan it evaluates only that part of this one again: each link of the
+/// chain over the rectangle its input's changes reach, and the rest of what it holds kept. An empty
+/// rectangle is no change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GpuChange {
+    pub serial: u64,
+    pub since: Option<(u64, [u32; 4])>,
+}
+
 /// Which path drew a surface's photograph.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DrawingPath {
@@ -759,6 +774,7 @@ enum Held {
     Slot(Box<GpuSlot>),
     Buffer(wgpu::Buffer),
     Planes(Box<SpatialSlot>),
+    Link(Box<chain::LinkSlot>),
 }
 
 /// A GPU-preview resource on its way out, with its charge, which ends when the GPU is done with it.
@@ -815,16 +831,227 @@ pub(super) struct GpuSlot {
     clock: Arc<PassClock>,
     /// A spatial plan's planes and the groups that bind them, for the pipeline they were made for.
     spatial: Option<Box<SpatialSlot>>,
+    /// The links of the plan's chain before its last, each with the intermediate it writes
+    /// ([`chain`]); the last link reads the last of them as its boundary.
+    chain: Vec<chain::LinkSlot>,
+    /// The content key of what the last link's input held when the output was last evaluated.
+    input_key: Option<u64>,
+    /// The serial of the plan whose values every link and the output hold, when the caller gave
+    /// one, and the version of the boundary they were evaluated over: what a later plan's change is
+    /// measured from over the same boundary ([`GpuChange::since`]).
+    evaluated_serial: Option<(u64, u64)>,
 }
 
 /// A slot's spatial planes and, for one compiled sequence, the groups that bind them, with which
-/// passes a tick still needs to run.
+/// passes a tick still needs to run and over which rectangle of the boundary the planes hold it.
 pub(super) struct SpatialSlot {
     planes: spatial::Planes,
     groups: Option<(u64, spatial::Groups)>,
     schedule: spatial::Schedule,
     /// How many passes the slot has dispatched.
     dispatched: u64,
+    /// The rectangle of the boundary over which the planes hold what the schedule says they do:
+    /// a masked step's passes run only over its mask's bounds grown by its halo, so outside it they
+    /// hold an earlier tick's values. `None` before anything is written.
+    valid: Option<spatial::Rect>,
+}
+
+impl SpatialSlot {
+    fn new(planes: spatial::Planes) -> Self {
+        Self {
+            planes,
+            groups: None,
+            schedule: spatial::Schedule::default(),
+            dispatched: 0,
+            valid: None,
+        }
+    }
+
+    /// Forget what the planes hold: every pass the applies need runs again.
+    fn forget(&mut self) {
+        self.schedule.reset();
+        self.valid = None;
+    }
+
+    /// Encode this tick's passes of `steps` over `input`, whose key is `input`, a boundary of
+    /// `size` texels placed by `texels`, with `programs` as group 0: the passes whose content
+    /// changed, over the rectangle the step's mask needs ([`spatial::GpuSpatial::pass_rect`]).
+    /// When the planes hold nothing over part of that rectangle, every pass the applies need runs:
+    /// over the rectangle when the content changed anyway, and over the whole boundary when it did
+    /// not, so a mask that grows over an unchanged input runs them once.
+    ///
+    /// On an incremental tick (`dirty`, the rectangle of the input and of the step's own coverage
+    /// that changed since the planes were written) the planes must hold the step's values over the
+    /// rectangle its mask needs, or every pass the applies need runs over the whole boundary once
+    /// — a mask that grew, as a painted one does — after which they hold them everywhere. Then
+    /// each unit's passes run only around where its apply can change — the change so far grown by
+    /// the unit's reach ([`spatial::GpuSpatial::reach`]) — and, while the planes hold the step's
+    /// values only where its mask needs them, only there, reading what the planes hold beyond it:
+    /// the pass that writes a plane the apply reads over that rectangle alone, so the plane keeps
+    /// its values everywhere else, and every other pass over it grown by the reach once more, so
+    /// what that pass reads there is this tick's. Answers how many passes ran, and on an
+    /// incremental tick the rectangle the step's output can have changed in: its input's change
+    /// and, where its mask covers anything, its last unit's.
+    #[allow(clippy::too_many_arguments)]
+    fn tick(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        (compiled, pipeline): (&spatial::CompiledSpatial, u64),
+        programs: &wgpu::BindGroup,
+        steps: &[GpuStep],
+        (words, blocks): (&[u32], &[u32]),
+        input: u64,
+        (texels, size): (TexelMap, (u32, u32)),
+        dirty: Option<spatial::Rect>,
+    ) -> (u64, Option<spatial::Rect>) {
+        if self.groups.as_ref().map(|(id, _)| *id) != Some(pipeline) {
+            self.groups = Some((
+                pipeline,
+                spatial::Groups::new(device, compiled, &self.planes),
+            ));
+            self.forget();
+        }
+        if self.planes.moved(steps) {
+            self.forget();
+        }
+        let whole = spatial::Rect::whole(size);
+        let spatial_steps = steps
+            .iter()
+            .filter(|step| matches!(step, GpuStep::Spatial(_)))
+            .count();
+        let single = match steps.first() {
+            Some(GpuStep::Spatial(spatial)) if spatial_steps == 1 => Some(spatial),
+            _ => None,
+        };
+        let rect = single.map_or(whole, |spatial| spatial.pass_rect(texels, size));
+        let mut run = self
+            .schedule
+            .run(steps, words, blocks, input, &self.planes.key);
+        let changed = run.iter().any(|run| *run);
+        // A step whose output can change only near its input's changes.
+        let local = single.filter(|spatial| !spatial.global() && spatial.reaches() != u32::MAX);
+        if let Some(dirty) = dirty
+            && let Some(spatial) = local
+        {
+            // Where the mask can cover anything: the applies read the planes nowhere else, so no
+            // pass runs, and the output does not change, past what that needs.
+            let bounds = spatial.mask_rect(texels, size, 0);
+            let reaches: Vec<u32> = (0..spatial.applies.len())
+                .map(|unit| spatial.reach(unit))
+                .collect();
+            // Each unit's apply can change where the change so far grown by its reach does.
+            let mut changes = Vec::with_capacity(reaches.len());
+            let mut reached = dirty;
+            for reach in &reaches {
+                reached = reached.grown(*reach, size);
+                changes.push(reached);
+            }
+            // The frame reads the last apply's planes around each pixel.
+            let read = spatial.apply_reach(reaches.len().saturating_sub(1));
+            let output = dirty.union(&reached.grown(read, size).intersect(&bounds.grown(1, size)));
+            let rects = if !self.valid.is_some_and(|valid| valid.contains(&rect)) {
+                // The planes do not hold what the applies now need — a mask that grew, as a
+                // painted one does at nearly every tick: every pass over the whole boundary once,
+                // after which they hold the step's values everywhere and a tick runs only around
+                // its change.
+                self.schedule.reset();
+                run = self
+                    .schedule
+                    .run(steps, words, blocks, input, &self.planes.key);
+                self.valid = Some(whole);
+                vec![whole; run.len()]
+            } else if !changed {
+                return (0, Some(dirty));
+            } else {
+                // Every pass the applies need, since a scratch plane holds what an earlier
+                // incremental tick wrote only where it ran.
+                self.schedule.reset();
+                run = self
+                    .schedule
+                    .run(steps, words, blocks, input, &self.planes.key);
+                // Planes that hold the step's values only where its mask needs them are kept so:
+                // each unit's apply plane where the mask covers anything, grown by what reads it
+                // there ([`spatial::GpuSpatial::needed`]), and on a side where the pass rectangle
+                // reaches the boundary's edge, out to that edge, as a run over the rectangle leaves
+                // it. A mask that grows toward that edge stays inside `valid`, so what its apply
+                // then reads there must be this input's.
+                let clipped = self.valid != Some(whole);
+                let kept = |unit: usize| {
+                    let needed = bounds.grown(spatial.needed(unit), size);
+                    spatial::Rect {
+                        x0: if rect.x0 == 0 { 0 } else { needed.x0 },
+                        y0: if rect.y0 == 0 { 0 } else { needed.y0 },
+                        x1: if rect.x1 == size.0 { size.0 } else { needed.x1 },
+                        y1: if rect.y1 == size.1 { size.1 } else { needed.y1 },
+                    }
+                };
+                let mut rects = vec![spatial::Rect::whole((0, 0)); run.len()];
+                for (unit, apply) in spatial.applies.iter().enumerate() {
+                    let writes = if clipped {
+                        changes[unit].intersect(&kept(unit))
+                    } else {
+                        changes[unit]
+                    };
+                    let reads = writes.grown(reaches[unit], size);
+                    for (number, pass) in spatial.passes.iter().enumerate() {
+                        if pass.unit as usize == unit {
+                            rects[number] = if apply.planes.contains(&pass.output) {
+                                writes
+                            } else {
+                                reads
+                            };
+                        }
+                    }
+                }
+                // Clipped, they hold them only where this mask needs them now, so a mask that
+                // shrank and grows again past that runs every pass once more.
+                if clipped {
+                    self.valid = Some(rect);
+                }
+                rects
+            };
+            let Some((_, groups)) = &self.groups else {
+                return (0, Some(output));
+            };
+            let places = groups.places_each(&rects);
+            self.planes.write_parameters(queue, steps, &places);
+            let dispatched = groups.encode(encoder, compiled, programs, &run, &places);
+            self.dispatched += dispatched;
+            // Only the planes the applies read hold their values past this tick's rectangles.
+            let applied: Vec<usize> = spatial
+                .applies
+                .iter()
+                .flat_map(|apply| &apply.planes)
+                .map(|plane| self.planes.key.texture(0, *plane))
+                .collect();
+            self.schedule.keep_only(&applied);
+            return (dispatched, Some(output));
+        }
+        let over = if self.valid.is_some_and(|valid| valid.contains(&rect)) {
+            if changed {
+                self.valid = Some(rect);
+            }
+            rect
+        } else {
+            self.schedule.reset();
+            run = self
+                .schedule
+                .run(steps, words, blocks, input, &self.planes.key);
+            let over = if changed { rect } else { whole };
+            self.valid = Some(over);
+            over
+        };
+        let Some((_, groups)) = &self.groups else {
+            return (0, None);
+        };
+        let places = groups.places(over);
+        self.planes.write_parameters(queue, steps, &places);
+        let dispatched = groups.encode(encoder, compiled, programs, &run, &places);
+        self.dispatched += dispatched;
+        (dispatched, dirty.map(|_| whole))
+    }
 }
 
 /// What a slot is allocated for.
@@ -888,14 +1115,20 @@ struct Intermediate {
 }
 
 /// One render pass of `pipeline` into `target` over a viewport of `size`, binding the programs'
-/// `bindings` and, for a spatial plan's content pass, its applies' planes.
-fn encode_pass(
+/// `bindings` and, for a spatial plan's content pass, its applies' planes: over the whole target,
+/// or when `scissor` is given only over it, keeping the rest of what the target holds — an
+/// incremental tick's pass ([`GpuChange`]).
+fn encode_pass_over(
     encoder: &mut wgpu::CommandEncoder,
     target: &wgpu::TextureView,
     pipeline: &wgpu::RenderPipeline,
     (bindings, planes): (&wgpu::BindGroup, Option<&wgpu::BindGroup>),
     size: (f32, f32),
+    scissor: Option<spatial::Rect>,
 ) {
+    if scissor.is_some_and(|rect| rect.is_empty()) {
+        return;
+    }
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("luxforge.gpu_preview.pass"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -903,7 +1136,10 @@ fn encode_pass(
             resolve_target: None,
             depth_slice: None,
             ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                load: match scissor {
+                    Some(_) => wgpu::LoadOp::Load,
+                    None => wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                },
                 store: wgpu::StoreOp::Store,
             },
         })],
@@ -912,6 +1148,9 @@ fn encode_pass(
         occlusion_query_set: None,
     });
     pass.set_viewport(0.0, 0.0, size.0, size.1, 0.0, 1.0);
+    if let Some(rect) = scissor {
+        pass.set_scissor_rect(rect.x0, rect.y0, rect.x1 - rect.x0, rect.y1 - rect.y0);
+    }
     pass.set_pipeline(pipeline);
     pass.set_bind_group(0, bindings, &[]);
     if let Some(planes) = planes {
@@ -929,6 +1168,23 @@ impl GpuSlot {
                 .spatial
                 .as_ref()
                 .map_or(0, |spatial| spatial.planes.bytes)
+            + self.chain.iter().map(chain::LinkSlot::bytes).sum::<u64>()
+    }
+
+    /// Whether the slot holds boundary `version` whole in a texture a slot of `shape` would hold
+    /// it in: the same size and format, whatever the output and the tail.
+    fn holds(&self, shape: Shape, version: u64) -> bool {
+        self.shape.boundary == shape.boundary
+            && self.shape.format == shape.format
+            && self.boundary_version == Some(version)
+            && self.uploading.is_none()
+    }
+
+    /// What the last link reads as its boundary: the last intermediate, or the boundary itself.
+    fn last_input(&self) -> &wgpu::Texture {
+        self.chain
+            .last()
+            .map_or(&self.boundary, |link| &link.texture)
     }
 
     pub(super) fn output(&self) -> &Picture {
@@ -937,6 +1193,11 @@ impl GpuSlot {
 
     pub(super) fn frame_us(&self) -> u64 {
         self.frame_us
+    }
+
+    /// The serial of the plan whose values the slot holds ([`GpuChange`]).
+    pub(super) fn evaluated_serial(&self) -> Option<u64> {
+        self.evaluated_serial.map(|(serial, _)| serial)
     }
 
     /// The clock the queue reports the slot's passes complete to.
@@ -1032,6 +1293,27 @@ fn supported(limits: &wgpu::Limits, format: wgpu::TextureFormat) -> bool {
         && u64::from(limits.max_storage_buffer_binding_size) >= MIN_BUFFER
 }
 
+/// The format a chain's intermediates take over a boundary of `format`: the boundary's own, so a
+/// link's output holds its values as the boundary held its input.
+fn intermediate_format(format: BoundaryFormat) -> wgpu::TextureFormat {
+    format.texture()
+}
+
+/// Each link of `steps`' chain with the format its last pass writes: an intermediate for every
+/// link but the last, and the output's codes for the last.
+fn link_sequences(
+    steps: &[GpuStep],
+    boundary: BoundaryFormat,
+) -> impl Iterator<Item = (&[GpuStep], wgpu::TextureFormat)> {
+    let chain = chain::chain(steps);
+    let intermediate = intermediate_format(boundary);
+    chain
+        .links
+        .into_iter()
+        .map(move |link| (link, intermediate))
+        .chain(std::iter::once((chain.last, OUTPUT_FORMAT)))
+}
+
 /// What a lost device's callback does, and what a test that simulates one calls.
 fn device_lost(lost: &AtomicBool) {
     lost.store(true, Ordering::Release);
@@ -1071,14 +1353,43 @@ impl GpuStage {
         &mut self,
         device: &wgpu::Device,
         steps: &[GpuStep],
+        format: wgpu::TextureFormat,
         figures: &Figures,
     ) -> Result<(Compiled, u64), GpuFallback> {
         let support = self.support.as_ref().ok_or(GpuFallback::NoAdapter)?;
-        self.pipelines.get(device, support, steps, figures)
+        self.pipelines.get(device, support, steps, format, figures)
+    }
+
+    /// The ready pipelines of every link of `steps`' chain over a boundary of `boundary`, the last
+    /// one's last, or why the frame draws the CPU's. Every link not ready yet is asked for in the
+    /// same call, so a chain's links compile together rather than one a frame; a failed link
+    /// fails the plan.
+    fn chain_pipelines(
+        &mut self,
+        device: &wgpu::Device,
+        steps: &[GpuStep],
+        boundary: BoundaryFormat,
+        figures: &Figures,
+    ) -> Result<Vec<(Compiled, u64)>, GpuFallback> {
+        let mut ready = Vec::new();
+        let mut missing = None;
+        for (steps, format) in link_sequences(steps, boundary) {
+            match self.pipeline(device, steps, format, figures) {
+                Ok(found) => ready.push(found),
+                Err(GpuFallback::Compiling) => {
+                    missing.get_or_insert(GpuFallback::Compiling);
+                }
+                Err(other) => missing = Some(other),
+            }
+        }
+        match missing {
+            Some(fallback) => Err(fallback),
+            None => Ok(ready),
+        }
     }
 
     /// Hand `sequences` the stage does not hold yet to the compile thread.
-    fn warm(&mut self, device: &wgpu::Device, sequences: &[Vec<GpuStep>], figures: &Figures) {
+    fn warm(&mut self, device: &wgpu::Device, sequences: &[compile::Sequence], figures: &Figures) {
         if let Some(support) = &self.support {
             self.pipelines.warm(device, support, sequences, figures);
         }
@@ -1086,7 +1397,7 @@ impl GpuStage {
 
     #[cfg(test)]
     fn failure(&self, steps: &[GpuStep]) -> Option<Arc<str>> {
-        self.pipelines.failure(steps)
+        self.pipelines.failure(steps, OUTPUT_FORMAT)
     }
 }
 
@@ -1147,7 +1458,7 @@ fn entry_name(name: &str) -> Result<(), String> {
 /// entry points, writing the output's codes. The first pass's shader of a plan with a tail.
 #[cfg(test)]
 fn assemble(steps: &[GpuStep]) -> Result<String, String> {
-    Ok(assemble_passes(steps, true)?.swap_remove(0))
+    Ok(assemble_passes(steps, End::Codes)?.swap_remove(0))
 }
 
 /// What a pass's fragment stage starts from.
@@ -1160,21 +1471,23 @@ enum Head<'a> {
 }
 
 /// What a pass's fragment stage writes.
-enum End {
-    /// The linear value, into a qualification's `rgba32float` target.
+pub(super) enum End {
+    /// The linear value, into an `rgba32float` target: a qualification's, or a chain's intermediate
+    /// over a RAW's boundary.
     Linear,
-    /// The linear value rounded to the nearest half, ties to even, into a half-precision
-    /// intermediate.
+    /// The linear value rounded to the nearest half, ties to even, into an `rgba16float` target: a
+    /// half-precision tail's intermediate, or a chain's intermediate over a JPEG's boundary. The
+    /// M4 converts a render target's value toward zero, which would hold every texel up to half a
+    /// step darker than the CPU's value, again at every link of a chain.
     Half,
     /// The CPU quantizer's 8-bit codes, through a Unorm view.
     Codes,
 }
 
 /// The shaders of `steps`, one per pass: the content steps, then, when a geometry tail splits them,
-/// the tail and the steps after it. The last pass writes the output's codes when `encode`, and its
-/// linear values otherwise; a quantizing tail's content pass writes codes.
-fn assemble_passes(steps: &[GpuStep], encode: bool) -> Result<Vec<String>, String> {
-    let last = if encode { End::Codes } else { End::Linear };
+/// the tail and the steps after it. The last pass writes as `last` says; a quantizing tail's
+/// content pass writes codes.
+pub(super) fn assemble_passes(steps: &[GpuStep], last: End) -> Result<Vec<String>, String> {
     // The marks read the output the last pass is about to encode, after every other step.
     if steps
         .iter()
@@ -1483,11 +1796,12 @@ fn compile(
     for step in steps {
         validate_step(step)?;
     }
-    let encode = !matches!(
-        format,
-        wgpu::TextureFormat::Rgba32Float | wgpu::TextureFormat::Rgba16Float
-    );
-    let sources = assemble_passes(steps, encode)?;
+    let last = match format {
+        wgpu::TextureFormat::Rgba32Float => End::Linear,
+        wgpu::TextureFormat::Rgba16Float => End::Half,
+        _ => End::Codes,
+    };
+    let sources = assemble_passes(steps, last)?;
     for source in &sources {
         validate(source)?;
     }
@@ -1580,39 +1894,9 @@ fn render_pipeline(
 
 /// The tick's words — the texel map, each step's base indices and position map, then every
 /// program's words — and its blocks, concatenated, at least one word.
+#[cfg(test)]
 pub(super) fn pack(plan: &GpuPlan, words: &mut Vec<u32>, blocks: &mut Vec<u32>) {
-    words.clear();
-    blocks.clear();
-    let map = plan.texels;
-    words.extend([map.origin[0], map.origin[1], map.step[0], map.step[1]].map(f32::to_bits));
-    let offset = output_offset(plan);
-    words.extend([offset.0, offset.1]);
-    let header = MAP_WORDS + STEP_WORDS * plan.steps.len();
-    let (mut word, mut block) = (header, 0);
-    for step in &plan.steps {
-        words.extend([word as u32, block as u32]);
-        words.extend(step.position().words());
-        word += step.word_count();
-        block += step.block_count();
-    }
-    for step in &plan.steps {
-        match step {
-            GpuStep::Colour { program, .. } => {
-                words.extend_from_slice(&program.words);
-                blocks.extend_from_slice(&program.block);
-            }
-            GpuStep::Masked(masked) => masked.pack(words, blocks),
-            GpuStep::Geometry(tail) => {
-                words.extend_from_slice(&tail.program().words);
-                blocks.extend_from_slice(&tail.program().block);
-            }
-            GpuStep::Spatial(spatial) => spatial.pack(words, blocks),
-            GpuStep::Clipping(marks) => words.extend(marks.words()),
-        }
-    }
-    if blocks.is_empty() {
-        blocks.push(0);
-    }
+    chain::pack_steps(plan.texels, output_offset(plan), &plan.steps, words, blocks);
 }
 
 /// The offset of `plan`'s first output pixel: zero for a whole frame; for a region, its origin in
@@ -1698,6 +1982,7 @@ impl PhotoPipeline {
         queue: &wgpu::Queue,
         plan: Option<&GpuPlan>,
         dissolve: Option<DissolveFrame>,
+        change: Option<GpuChange>,
     ) {
         // The GPU frame the last draw showed, which is all a dissolve may start from.
         let shown = surface.gpu_output().is_some() || surface.dissolving.is_some();
@@ -1710,7 +1995,7 @@ impl PhotoPipeline {
             }
             return;
         };
-        let outcome = self.evaluate(surface, device, queue, plan);
+        let outcome = self.evaluate(surface, device, queue, plan, change);
         // A sequence still compiling leaves the slot as it was, its boundary included, for the
         // frame that finds the pipeline ready, and a boundary still uploading leaves it for the
         // frame that writes the next chunks; any other fallback lets the slot go.
@@ -1737,8 +2022,15 @@ impl PhotoPipeline {
             && self.gpu.warmed != Some(warm.version())
         {
             self.gpu.warmed = Some(warm.version());
-            self.gpu
-                .warm(device, warm.sequences(), &self.figures.preview);
+            // Each link of each plan's chain is a sequence of its own.
+            let sequences: Vec<compile::Sequence> = warm
+                .sequences()
+                .iter()
+                .flat_map(|(steps, format)| {
+                    link_sequences(steps, *format).map(|(link, format)| (link.to_vec(), format))
+                })
+                .collect();
+            self.gpu.warm(device, &sequences, &self.figures.preview);
             self.figures
                 .preview
                 .compile
@@ -1760,6 +2052,7 @@ impl PhotoPipeline {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         plan: &GpuPlan,
+        change: Option<GpuChange>,
     ) -> Result<u64, GpuFallback> {
         if self.gpu.support.is_none() {
             return Err(GpuFallback::NoAdapter);
@@ -1805,12 +2098,14 @@ impl PhotoPipeline {
                 return Err(GpuFallback::PipelineFailed);
             }
         }
-        let (pipeline, pipeline_id) =
-            self.gpu
-                .pipeline(device, &plan.steps, &self.figures.preview)?;
+        let pipelines = self.gpu.chain_pipelines(
+            device,
+            &plan.steps,
+            plan.boundary.format(),
+            &self.figures.preview,
+        )?;
         let mut words = std::mem::take(&mut self.gpu.words);
         let mut blocks = std::mem::take(&mut self.gpu.blocks);
-        pack(plan, &mut words, &mut blocks);
         let shape = Shape::of(plan);
         let result = self.run(
             surface,
@@ -1818,16 +2113,18 @@ impl PhotoPipeline {
             queue,
             plan,
             shape,
-            (&pipeline, pipeline_id),
-            &words,
-            &blocks,
+            &pipelines,
+            (&mut words, &mut blocks),
+            change,
         );
         self.gpu.words = words;
         self.gpu.blocks = blocks;
         result
     }
 
-    /// Fit the slot to the plan, write what changed and encode the pass when anything did.
+    /// Fit the slot to the plan, write what changed and encode the passes when anything did: each
+    /// link of the plan's chain whose content changed into its intermediate, then the last link
+    /// into the output ([`chain`]). `pipelines` holds every link's, the last link's last.
     #[allow(clippy::too_many_arguments)]
     fn run(
         &self,
@@ -1836,28 +2133,48 @@ impl PhotoPipeline {
         queue: &wgpu::Queue,
         plan: &GpuPlan,
         shape: Shape,
-        (pipeline, pipeline_id): (&Compiled, u64),
-        words: &[u32],
-        blocks: &[u32],
+        pipelines: &[(Compiled, u64)],
+        (words, blocks): (&mut Vec<u32>, &mut Vec<u32>),
+        change: Option<GpuChange>,
     ) -> Result<u64, GpuFallback> {
         let started = std::time::Instant::now();
+        let chain = chain::chain(&plan.steps);
+        let (pipeline, pipeline_id) = pipelines
+            .last()
+            .map(|(compiled, id)| (compiled, *id))
+            .ok_or(GpuFallback::PipelineFailed)?;
+        if pipelines.len() != chain.links.len() + 1 {
+            return Err(GpuFallback::PipelineFailed);
+        }
+        // The last link's words: over the boundary's texels, with the output's offset.
+        chain::pack_steps(plan.texels, output_offset(plan), chain.last, words, blocks);
+        let words: &[u32] = words;
+        let blocks: &[u32] = blocks;
         let word_bytes = (words.len() * 4) as u64;
         let block_bytes = (blocks.len() * 4) as u64;
         // A boundary whose texels were let go is drawn only from the slot that holds them.
         if !plan.boundary.holds_texels()
-            && surface.gpu.as_ref().is_none_or(|slot| {
-                slot.shape != shape || slot.boundary_version != Some(plan.boundary.version)
-            })
+            && surface
+                .gpu
+                .as_ref()
+                .is_none_or(|slot| !slot.holds(shape, plan.boundary.version))
         {
             return Err(GpuFallback::BoundaryReleased);
         }
         if surface.gpu.as_ref().is_some_and(|slot| slot.shape != shape)
             && let Some(slot) = surface.gpu.take()
         {
+            // A slot refitted to another output or tail over the same boundary keeps the
+            // boundary's texture and what it holds, whose texels the caller may have let go.
+            let kept = slot
+                .boundary_version
+                .filter(|version| slot.holds(shape, *version))
+                .map(|version| (slot.boundary.clone(), version));
             self.retire_slot(slot);
+            surface.gpu = Some(self.allocate(device, shape, word_bytes, block_bytes, kept)?);
         }
         if surface.gpu.is_none() {
-            surface.gpu = Some(self.allocate(device, shape, word_bytes, block_bytes)?);
+            surface.gpu = Some(self.allocate(device, shape, word_bytes, block_bytes, None)?);
         }
         let slot = surface.gpu.as_mut().expect("an admitted slot");
         // A region plan's frame is placed at its rectangle of the whole stage, as a region of the
@@ -1870,6 +2187,8 @@ impl PhotoPipeline {
             content_id: 0,
             generation: 0,
         });
+        // The chain's intermediates, before the last link's bindings, which read the last of them.
+        self.fit_chain(slot, device, chain.links.len())?;
         let mut rebind = false;
         for (charged, bytes, label) in [
             (&mut slot.words, word_bytes, "luxforge.gpu_preview.words"),
@@ -1892,7 +2211,7 @@ impl PhotoPipeline {
         if rebind {
             slot.bindings = self.program_bindings(
                 device,
-                &slot.boundary,
+                slot.last_input(),
                 &slot.words.buffer,
                 &slot.blocks.buffer,
             );
@@ -1908,20 +2227,24 @@ impl PhotoPipeline {
             slot.written_blocks.clear();
             slot.evaluated = None;
         }
-        self.fit_planes(slot, device, plan)?;
+        let origin = (
+            plan.texels.origin[0].max(0.0) as u32,
+            plan.texels.origin[1].max(0.0) as u32,
+        );
+        if self.fit_spatial(
+            &mut slot.spatial,
+            device,
+            chain.last,
+            shape.boundary,
+            origin,
+        )? {
+            slot.evaluated = None;
+        }
         let mut changed = slot.evaluated != Some(pipeline_id);
-        if let Some(spatial) = slot.spatial.as_mut()
+        if let Some(spatial) = slot.spatial.as_ref()
             && spatial.groups.as_ref().map(|(id, _)| *id) != Some(pipeline_id)
         {
-            spatial.groups = Some((
-                pipeline_id,
-                spatial::Groups::new(device, &pipeline.spatial, &spatial.planes),
-            ));
-            spatial.schedule.reset();
             changed = true;
-        }
-        if let Some(spatial) = slot.spatial.as_mut() {
-            changed |= spatial.planes.write_parameters(queue, &plan.steps);
         }
         if slot.boundary_version != Some(plan.boundary.version) {
             // A frame's chunks of it, from the row the last frame reached.
@@ -1952,6 +2275,80 @@ impl PhotoPipeline {
             slot.boundary_version = Some(plan.boundary.version);
             changed = true;
         }
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("luxforge.gpu_preview.encoder"),
+        });
+        // An incremental tick: the slot holds the values of the plan this one changes, every link
+        // and the output, over this boundary, so each link evaluates again only where its input's
+        // changes reach. Another boundary is other texels everywhere, whatever the plans' change.
+        // The change is in the boundary's stage; the boundary's texel `(0, 0)` is its origin.
+        let size = shape.boundary;
+        let incremental = change
+            .and_then(|change| change.since)
+            .filter(|(since, _)| {
+                slot.evaluated_serial == Some((*since, plan.boundary.version))
+                    && slot.evaluated == Some(pipeline_id)
+                    && slot.input_key.is_some()
+            })
+            .map(|(_, [x0, y0, x1, y1])| {
+                let texel = |at: u32, origin: u32, limit: u32| at.saturating_sub(origin).min(limit);
+                spatial::Rect {
+                    x0: texel(x0, origin.0, size.0),
+                    y0: texel(y0, origin.1, size.1),
+                    x1: texel(x1, origin.0, size.0),
+                    y1: texel(y1, origin.1, size.1),
+                }
+            });
+        // Each link before the last, from the boundary: run only when what it would write is not
+        // what its intermediate holds, and on an incremental tick only where its input's changes
+        // reach, which grows link by link with each spatial step's neighbourhood.
+        let mut input = chain::boundary_key(plan.boundary.version);
+        let mut encoded = false;
+        let mut dirty = incremental;
+        let (mut link_words, mut link_blocks) = (Vec::new(), Vec::new());
+        for (index, steps) in chain.links.iter().enumerate() {
+            let (compiled, id) = &pipelines[index];
+            chain::pack_steps(
+                plan.texels,
+                (0, 0),
+                steps,
+                &mut link_words,
+                &mut link_blocks,
+            );
+            self.fit_link(slot, device, index, &link_words, &link_blocks)?;
+            let link = &mut slot.chain[index];
+            let block_words = link.write(queue, &link_words, &link_blocks);
+            self.figures
+                .preview
+                .block_words
+                .fetch_add(block_words, Ordering::Relaxed);
+            if self.fit_spatial(&mut link.spatial, device, steps, shape.boundary, origin)? {
+                link.forget();
+            }
+            let (ran, dispatched, reached) = link.encode(
+                device,
+                queue,
+                &mut encoder,
+                (compiled, *id),
+                steps,
+                (&link_words, &link_blocks),
+                input,
+                (plan.texels, shape.boundary),
+                dirty,
+            );
+            // The next link's input changed where this one evaluated again; its own steps' changes
+            // are the plan's, which every link's rectangle holds.
+            dirty = incremental
+                .zip(reached)
+                .map(|(changed, reached)| changed.union(&reached));
+            encoded |= ran;
+            self.figures
+                .preview
+                .spatial_passes
+                .fetch_add(dispatched, Ordering::Relaxed);
+            input = link.key().unwrap_or(input);
+        }
+        changed |= slot.input_key != Some(input);
         if slot.written_words != words {
             // The tick's one write: the header and every program's words.
             queue.write_buffer(&slot.words.buffer, 0, &le_bytes(words));
@@ -1979,24 +2376,23 @@ impl PhotoPipeline {
             changed = true;
         }
         if changed {
-            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("luxforge.gpu_preview.encoder"),
-            });
-            // A spatial step's compute passes fill its planes first, from the boundary: only
-            // the passes this tick changes.
-            if let Some(spatial) = slot.spatial.as_mut()
-                && let Some((_, groups)) = spatial.groups.as_ref()
-            {
-                let run = spatial.schedule.run(
-                    &plan.steps,
-                    words,
-                    blocks,
-                    plan.boundary.version,
-                    &spatial.planes.key,
+            // The last link's spatial step's compute passes fill its planes first, from its
+            // input: only the passes this tick changes, over what its mask needs.
+            let mut reached = dirty;
+            if let Some(spatial) = slot.spatial.as_mut() {
+                let (dispatched, over) = spatial.tick(
+                    device,
+                    queue,
+                    &mut encoder,
+                    (&pipeline.spatial, pipeline_id),
+                    &slot.bindings,
+                    chain.last,
+                    (words, blocks),
+                    input,
+                    (plan.texels, shape.boundary),
+                    dirty,
                 );
-                let dispatched =
-                    groups.encode(&mut encoder, &pipeline.spatial, &slot.bindings, &run);
-                spatial.dispatched += dispatched;
+                reached = dirty.zip(over).map(|(dirty, over)| dirty.union(&over));
                 self.figures
                     .preview
                     .spatial_passes
@@ -2019,39 +2415,120 @@ impl PhotoPipeline {
             );
             match (&slot.intermediate, &pipeline.tail) {
                 // A plan with a geometry tail runs its content steps into the intermediate first,
-                // over exactly the boundary's texels, and its tail reads them.
+                // over exactly the boundary's texels, and its tail reads them. An identity tail
+                // takes each output pixel from its own stage pixel's texel, so an incremental tick
+                // draws both passes only where the changes reached; any other resamples, and
+                // draws whole.
                 (Some(intermediate), Some(tail)) => {
                     let (width, height) = shape.boundary;
-                    encode_pass(
+                    let identity = plan
+                        .steps
+                        .iter()
+                        .any(|step| matches!(step, GpuStep::Geometry(tail) if tail.identity()));
+                    let scissors = reached.filter(|_| identity).map(|reached| {
+                        let grown = reached.grown(1, size);
+                        // Output pixel `q` is the stage pixel `q` plus the region's origin, and the
+                        // texel the stage pixel less the boundary's origin.
+                        let (dx, dy) = output_offset(plan);
+                        let origin = plan.texels.origin.map(|value| value.max(0.0) as u32);
+                        let bound = (frame.0 as u32, frame.1 as u32);
+                        let to = |at: u32, origin: u32, offset: u32, limit: u32| {
+                            (at + origin).saturating_sub(offset).min(limit)
+                        };
+                        let output = spatial::Rect {
+                            x0: to(grown.x0, origin[0], dx, bound.0),
+                            y0: to(grown.y0, origin[1], dy, bound.1),
+                            x1: to(grown.x1, origin[0], dx, bound.0),
+                            y1: to(grown.y1, origin[1], dy, bound.1),
+                        };
+                        // The edge texels repeated past the frame follow the edge they repeat.
+                        let (columns, rows) = shape.output;
+                        let output = spatial::Rect {
+                            x1: if output.x1 >= columns {
+                                bound.0
+                            } else {
+                                output.x1
+                            },
+                            y1: if output.y1 >= rows {
+                                bound.1
+                            } else {
+                                output.y1
+                            },
+                            ..output
+                        };
+                        (grown, output)
+                    });
+                    encode_pass_over(
                         &mut encoder,
                         &intermediate.target,
                         &pipeline.render,
                         (&slot.bindings, planes),
                         (width as f32, height as f32),
+                        scissors.map(|(content, _)| content),
                     );
-                    encode_pass(
+                    encode_pass_over(
                         &mut encoder,
                         &slot.target,
                         tail,
                         (&intermediate.bindings, None),
                         frame,
+                        scissors.map(|(_, output)| output),
                     );
                 }
-                (None, None) => encode_pass(
-                    &mut encoder,
-                    &slot.target,
-                    &pipeline.render,
-                    (&slot.bindings, planes),
-                    frame,
-                ),
+                // With no tail the output's pixel is the boundary's texel less the region's
+                // offset: an incremental tick draws only where the changes reached, and the edge
+                // column and row past the frame with them.
+                (None, None) => {
+                    let scissor = reached.map(|reached| {
+                        let (dx, dy) = output_offset(plan);
+                        let bound = (frame.0 as u32, frame.1 as u32);
+                        let grown = reached.grown(1, size);
+                        spatial::Rect {
+                            x0: grown.x0.saturating_sub(dx).min(bound.0),
+                            y0: grown.y0.saturating_sub(dy).min(bound.1),
+                            x1: grown.x1.saturating_sub(dx).min(bound.0),
+                            y1: grown.y1.saturating_sub(dy).min(bound.1),
+                        }
+                    });
+                    let scissor = scissor.map(|rect| {
+                        // The edge texels repeated past the frame follow the edge they repeat.
+                        let (width, height) = shape.output;
+                        spatial::Rect {
+                            x1: if rect.x1 >= width {
+                                (width + 1).min(frame.0 as u32)
+                            } else {
+                                rect.x1
+                            },
+                            y1: if rect.y1 >= height {
+                                (height + 1).min(frame.1 as u32)
+                            } else {
+                                rect.y1
+                            },
+                            ..rect
+                        }
+                    });
+                    encode_pass_over(
+                        &mut encoder,
+                        &slot.target,
+                        &pipeline.render,
+                        (&slot.bindings, planes),
+                        frame,
+                        scissor,
+                    );
+                }
                 _ => return Err(GpuFallback::PipelineFailed),
             }
+        }
+        // The slot now holds this plan's values, whatever ran to make them so.
+        slot.evaluated_serial = change.map(|change| (change.serial, plan.boundary.version));
+        if changed || encoded {
             // Submitted now, ahead of the frame's own submission, whose draw samples the output;
             // the queue's writes above are flushed with it. Nothing waits for it.
             queue.submit([encoder.finish()]);
             slot.passes += 1;
             slot.clock.follow(queue, slot.passes, started);
             slot.evaluated = Some(pipeline_id);
+            slot.input_key = Some(input);
             slot.output.version = plan.boundary.version;
             slot.frame_us = started.elapsed().as_micros() as u64;
             self.figures.preview.passes.fetch_add(1, Ordering::Relaxed);
@@ -2059,13 +2536,15 @@ impl PhotoPipeline {
         Ok(plan.boundary.version)
     }
 
-    /// A slot of `shape`, charged before anything is created.
+    /// A slot of `shape`, charged before anything is created, over `kept` when it is given: a
+    /// boundary texture of the shape's size and format and the version it holds whole.
     fn allocate(
         &self,
         device: &wgpu::Device,
         shape: Shape,
         word_bytes: u64,
         block_bytes: u64,
+        kept: Option<(wgpu::Texture, u64)>,
     ) -> Result<GpuSlot, GpuFallback> {
         let limit = device.limits().max_texture_dimension_2d;
         let (width, height) = shape.boundary;
@@ -2099,13 +2578,19 @@ impl PhotoPipeline {
                     view_formats,
                 })
             };
-        let boundary = texture(
-            "luxforge.gpu_preview.boundary",
-            (width, height),
-            shape.format.texture(),
-            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            &[],
-        );
+        let (boundary, boundary_version) = match kept {
+            Some((texture, version)) => (texture, Some(version)),
+            None => (
+                texture(
+                    "luxforge.gpu_preview.boundary",
+                    (width, height),
+                    shape.format.texture(),
+                    wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    &[],
+                ),
+                None,
+            ),
+        };
         // Written through a Unorm view as the codes the last pass computes, and sampled through an
         // sRGB-typed view, as the photograph's textures are.
         let output = texture(
@@ -2202,7 +2687,7 @@ impl PhotoPipeline {
             shape,
             boundary,
             intermediate,
-            boundary_version: None,
+            boundary_version,
             uploading: None,
             output: picture,
             target,
@@ -2214,43 +2699,162 @@ impl PhotoPipeline {
             written_blocks: Vec::new(),
             evaluated: None,
             spatial: None,
+            chain: Vec::new(),
+            input_key: None,
+            evaluated_serial: None,
             frame_us: 0,
             passes: 0,
             clock: Arc::default(),
         })
     }
 
-    /// Make `slot` hold the planes `plan`'s spatial steps write, charged before anything is
-    /// created: none for a plan without one, and new ones when the planes or the boundary they
-    /// cover change, the old ones retiring with their charge.
-    fn fit_planes(
+    /// Make `held` hold the planes `steps`' spatial steps write over a boundary of `size` at stage
+    /// `origin`, charged before anything is created: none for steps without one, and new ones when
+    /// the planes or the boundary they cover change, the old ones retiring with their charge.
+    /// Answers whether the planes changed, so what they held is no longer known.
+    fn fit_spatial(
         &self,
-        slot: &mut GpuSlot,
+        held: &mut Option<Box<SpatialSlot>>,
         device: &wgpu::Device,
-        plan: &GpuPlan,
-    ) -> Result<(), GpuFallback> {
-        let origin = (
-            plan.texels.origin[0].max(0.0) as u32,
-            plan.texels.origin[1].max(0.0) as u32,
-        );
-        let key = spatial::PlanesKey::of(&plan.steps, slot.shape.boundary, origin);
-        if slot.spatial.as_ref().map(|spatial| &spatial.planes.key) == key.as_ref() {
-            return Ok(());
+        steps: &[GpuStep],
+        size: (u32, u32),
+        origin: (u32, u32),
+    ) -> Result<bool, GpuFallback> {
+        let key = spatial::PlanesKey::of(steps, size, origin);
+        if held.as_ref().map(|spatial| &spatial.planes.key) == key.as_ref() {
+            return Ok(false);
         }
-        if let Some(old) = slot.spatial.take() {
+        if let Some(old) = held.take() {
             let bytes = old.planes.bytes;
             self.retire_preview(Held::Planes(old), bytes);
-            slot.evaluated = None;
         }
         if let Some(key) = key {
             self.figures.preview.charge(key.bytes())?;
-            slot.spatial = Some(Box::new(SpatialSlot {
-                planes: spatial::Planes::create(device, key),
-                groups: None,
-                schedule: spatial::Schedule::default(),
-                dispatched: 0,
-            }));
-            slot.evaluated = None;
+            *held = Some(Box::new(SpatialSlot::new(spatial::Planes::create(
+                device, key,
+            ))));
+        }
+        Ok(true)
+    }
+
+    /// Make `slot` hold `count` links before its last, each with an intermediate of the boundary's
+    /// size and format, charged before it is created; and bind the last link to the last of them.
+    fn fit_chain(
+        &self,
+        slot: &mut GpuSlot,
+        device: &wgpu::Device,
+        count: usize,
+    ) -> Result<(), GpuFallback> {
+        if slot.chain.len() == count {
+            return Ok(());
+        }
+        while slot.chain.len() > count {
+            if let Some(link) = slot.chain.pop() {
+                let bytes = link.bytes();
+                self.retire_preview(Held::Link(Box::new(link)), bytes);
+            }
+        }
+        let (width, height) = slot.shape.boundary;
+        let format = intermediate_format(slot.shape.format);
+        let texture_bytes = u64::from(width)
+            * u64::from(height)
+            * u64::from(format.block_copy_size(None).unwrap_or(16));
+        while slot.chain.len() < count {
+            let (words, blocks) = (
+                buffer_capacity(device, MIN_BUFFER)?,
+                buffer_capacity(device, MIN_BUFFER)?,
+            );
+            self.figures
+                .preview
+                .charge(texture_bytes + words + blocks)?;
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("luxforge.gpu_preview.link"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            let words = Charged {
+                buffer: storage_buffer(device, "luxforge.gpu_preview.link_words", words),
+                bytes: words,
+            };
+            let blocks = Charged {
+                buffer: storage_buffer(device, "luxforge.gpu_preview.link_blocks", blocks),
+                bytes: blocks,
+            };
+            let bindings =
+                self.program_bindings(device, slot.last_input(), &words.buffer, &blocks.buffer);
+            slot.chain.push(chain::LinkSlot::new(
+                texture,
+                words,
+                blocks,
+                bindings,
+                texture_bytes,
+            ));
+        }
+        slot.bindings = self.program_bindings(
+            device,
+            slot.last_input(),
+            &slot.words.buffer,
+            &slot.blocks.buffer,
+        );
+        slot.evaluated = None;
+        slot.input_key = None;
+        Ok(())
+    }
+
+    /// Make link `index` of `slot`'s chain hold buffers large enough for `words` and `blocks`,
+    /// rebinding it to what it reads when they grow.
+    fn fit_link(
+        &self,
+        slot: &mut GpuSlot,
+        device: &wgpu::Device,
+        index: usize,
+        words: &[u32],
+        blocks: &[u32],
+    ) -> Result<(), GpuFallback> {
+        let (before, rest) = slot.chain.split_at_mut(index);
+        let input = before.last().map_or(&slot.boundary, |link| &link.texture);
+        let link = &mut rest[0];
+        let mut rebind = false;
+        for (charged, bytes, label) in [
+            (
+                &mut link.words,
+                (words.len() * 4) as u64,
+                "luxforge.gpu_preview.link_words",
+            ),
+            (
+                &mut link.blocks,
+                (blocks.len() * 4) as u64,
+                "luxforge.gpu_preview.link_blocks",
+            ),
+        ] {
+            if bytes > charged.bytes {
+                let capacity = buffer_capacity(device, bytes)?;
+                self.figures.preview.charge(capacity)?;
+                let old = std::mem::replace(
+                    charged,
+                    Charged {
+                        buffer: storage_buffer(device, label, capacity),
+                        bytes: capacity,
+                    },
+                );
+                self.retire_preview(Held::Buffer(old.buffer), old.bytes);
+                rebind = true;
+            }
+        }
+        if rebind {
+            link.bindings =
+                self.program_bindings(device, input, &link.words.buffer, &link.blocks.buffer);
+            link.forget();
         }
         Ok(())
     }
@@ -2307,11 +2911,19 @@ impl PhotoPipeline {
     /// Compile `steps` on the compile thread and wait until it has finished, as a frame after the
     /// compile would find it: what a test that is not about compiling does before it draws.
     #[cfg(test)]
-    pub(super) fn compile_now(&mut self, device: &wgpu::Device, steps: &[GpuStep]) {
+    pub(super) fn compile_now(&mut self, device: &wgpu::Device, plan: &GpuPlan) {
         let figures = Arc::clone(&self.figures);
-        let _ = self.gpu.pipeline(device, steps, &figures.preview);
+        let format = plan.boundary.format();
+        let _ = self
+            .gpu
+            .chain_pipelines(device, &plan.steps, format, &figures.preview);
+        let sequences: Vec<compile::Sequence> = link_sequences(&plan.steps, format)
+            .map(|(link, format)| (link.to_vec(), format))
+            .collect();
         luxforge_testbase::wait_until("the sequence's compile", || {
-            !self.gpu.pipelines.compiling(steps)
+            sequences
+                .iter()
+                .all(|(steps, format)| !self.gpu.pipelines.compiling(steps, *format))
         });
     }
 
@@ -2344,26 +2956,50 @@ impl PhotoPipeline {
     }
 }
 
-/// What a slot holding `plan` charges the budget on `device`, as `allocate` and `fit_planes`
-/// charge it: the boundary, the output in the photograph's size bucket and its placement uniform,
-/// the words and blocks buffers at their capacities, and a spatial step's planes. For a report and
+/// What a slot holding `plan` charges the budget on `device`, as `allocate`, `fit_chain`,
+/// `fit_link` and `fit_spatial` charge it: the boundary, the output in the photograph's size bucket
+/// and its placement uniform, the last link's words and blocks buffers at their capacities and its
+/// spatial step's planes, and each earlier link's intermediate, buffers and planes. For a report and
 /// the tests that hold it to the slot's own figure.
 #[cfg(any(test, feature = "qualification"))]
 pub(super) fn slot_charge(device: &wgpu::Device, plan: &GpuPlan) -> Result<u64, GpuFallback> {
     let shape = Shape::of(plan);
     let limit = device.limits().max_texture_dimension_2d;
-    let (mut words, mut blocks) = (Vec::new(), Vec::new());
-    pack(plan, &mut words, &mut blocks);
+    let chain = chain::chain(&plan.steps);
     let origin = (
         plan.texels.origin[0].max(0.0) as u32,
         plan.texels.origin[1].max(0.0) as u32,
     );
-    let planes =
-        spatial::PlanesKey::of(&plan.steps, shape.boundary, origin).map_or(0, |key| key.bytes());
-    Ok(shape.texture_bytes(limit)
+    let planes = |steps: &[GpuStep]| {
+        spatial::PlanesKey::of(steps, shape.boundary, origin).map_or(0, |key| key.bytes())
+    };
+    let (mut words, mut blocks) = (Vec::new(), Vec::new());
+    chain::pack_steps(
+        plan.texels,
+        output_offset(plan),
+        chain.last,
+        &mut words,
+        &mut blocks,
+    );
+    let mut total = shape.texture_bytes(limit)
         + buffer_capacity(device, (words.len() * 4) as u64)?
         + buffer_capacity(device, (blocks.len() * 4) as u64)?
-        + planes)
+        + planes(chain.last);
+    let texels = u64::from(shape.boundary.0) * u64::from(shape.boundary.1);
+    let intermediate = texels
+        * u64::from(
+            intermediate_format(shape.format)
+                .block_copy_size(None)
+                .unwrap_or(16),
+        );
+    for link in &chain.links {
+        chain::pack_steps(plan.texels, (0, 0), link, &mut words, &mut blocks);
+        total += intermediate
+            + buffer_capacity(device, (words.len() * 4) as u64)?
+            + buffer_capacity(device, (blocks.len() * 4) as u64)?
+            + planes(link);
+    }
+    Ok(total)
 }
 
 /// `words` as the little-endian bytes the GPU reads.
@@ -2414,6 +3050,7 @@ fn upload_rows(
     (row, written)
 }
 
+mod chain;
 mod compile;
 pub(super) use compile::GpuOptions;
 pub use compile::{GpuWarm, PIPELINE_CACHE};
