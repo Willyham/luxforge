@@ -95,12 +95,19 @@ pub(crate) type Globals = Arc<Vec<Option<Global>>>;
 pub(crate) struct WindowPlan {
     /// The rectangle of the whole proxy source the first segment reads.
     pub(crate) source: Region,
-    /// Per segment, the rectangle of its output stage that is kept.
-    outputs: Vec<Region>,
-    /// Per segment, the rectangle of the whole stage it receives that its kept output reads
-    /// through its exact geometry: inside what its boundary's cut frame holds, which a spatial
-    /// operation grows by its halo and the CPU's tile grid.
-    reads: Vec<Region>,
+    /// Per segment, what is cut ([`SegmentCut`]).
+    cuts: Vec<SegmentCut>,
+}
+
+/// Where one segment of a [`WindowPlan`] is cut.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SegmentCut {
+    /// The rectangle of its output stage that is kept.
+    output: Region,
+    /// The rectangle of the whole stage it receives that its kept output reads through its exact
+    /// geometry: inside what its boundary's cut frame holds, which a spatial operation grows by
+    /// its halo and the CPU's tile grid.
+    read: Region,
 }
 
 /// The stage segment `index` reads: the source for the first, or the whole stage the boundary
@@ -131,7 +138,7 @@ impl WindowPlan {
 
     /// Plan a non-empty requested rectangle in the *uncut* output stage. Unlike the cropped-proxy
     /// convenience above, the final output may itself be cut even when the whole source is read.
-    /// Its original stage coordinates are kept in `outputs` for positional finish units.
+    /// Its original stage coordinates are kept in its cuts for positional finish units.
     pub(crate) fn of_rect(
         compiled: &Compiled,
         source: (u32, u32),
@@ -177,8 +184,14 @@ impl WindowPlan {
         if requested.x1() > output.width || requested.y1() > output.height {
             return Err(RegionFallback::UnplannableGeometry);
         }
-        let mut outputs = vec![Region::whole(segments[count - 1].stage()); count];
-        let mut reads = outputs.clone();
+        let whole = Region::whole(segments[count - 1].stage());
+        let mut cuts = vec![
+            SegmentCut {
+                output: whole,
+                read: whole,
+            };
+            count
+        ];
         // What the segment being walked must produce, in its output stage's coordinates.
         let mut needed = requested;
         let mut read_source = None;
@@ -187,7 +200,7 @@ impl WindowPlan {
             if needed.is_empty() {
                 return Err(RegionFallback::UnplannableGeometry);
             }
-            outputs[index] = needed;
+            cuts[index].output = needed;
             let cut = needed != Region::whole(segment.stage());
             if cut && segment.has_pixels {
                 return Err(RegionFallback::PointReplacement);
@@ -197,7 +210,7 @@ impl WindowPlan {
             if read.x1() > input.width || read.y1() > input.height {
                 return Err(RegionFallback::UnplannableGeometry);
             }
-            reads[index] = read;
+            cuts[index].read = read;
             match &segment.entry {
                 None => read_source = Some(read),
                 Some(entry) if gpu_after.is_some_and(|boundary| index > boundary) => {
@@ -214,8 +227,7 @@ impl WindowPlan {
         }
         Ok(Self {
             source: read_source.ok_or(RegionFallback::UnplannableGeometry)?,
-            outputs,
-            reads,
+            cuts,
         })
     }
 
@@ -224,7 +236,7 @@ impl WindowPlan {
     /// frame inside that boundary's own margins, which a GPU preview's region boundary in it holds
     /// ([`Self::of_gpu_rect`]).
     pub(crate) fn reads(&self, segment: usize) -> Region {
-        self.reads[segment]
+        self.cuts[segment].read
     }
 
     /// [`Self::reads`], when it is less than the whole stage segment `segment` of `compiled`
@@ -276,7 +288,7 @@ impl WindowPlan {
             width: source.0,
             height: source.1,
         };
-        if self.outputs.len() != compiled.segments.len() || last >= compiled.segments.len() {
+        if self.cuts.len() != compiled.segments.len() || last >= compiled.segments.len() {
             return Err(Error::internal(
                 "a proxy window was planned for another compilation",
             ));
@@ -295,8 +307,8 @@ impl WindowPlan {
             let input = match &mut segment.entry {
                 None => self.source,
                 Some(entry) => {
-                    let read = segment.geometry.unmap_region(self.outputs[index]);
-                    entry.cut(read, self.outputs[index - 1], whole_input, || {
+                    let read = segment.geometry.unmap_region(self.cuts[index].output);
+                    entry.cut(read, self.cuts[index - 1].output, whole_input, || {
                         globals(index)
                     })?
                 }
@@ -312,7 +324,7 @@ impl WindowPlan {
                 );
                 segment.geometry = place.then(segment.geometry);
             }
-            let kept = self.outputs[index];
+            let kept = self.cuts[index].output;
             if kept != Region::whole(segment.stage()) {
                 segment.output_origin = (kept.x0, kept.y0);
                 let cut = ExactGeometry::crop(
