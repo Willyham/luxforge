@@ -1067,3 +1067,65 @@ fn gpu_preview_a_tick_during_the_upload_keeps_the_texels_and_names_it() {
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     finish(editor, catalog);
 }
+
+/// While the slot a drag's plan replaces still retires, the surface refuses the new slot naming
+/// the budget (`a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own`): each such
+/// tick takes the CPU path naming `budget-exceeded`, its job going to the worker, and keeps the
+/// boundary, its texels and the plan handed over, asking for nothing again; once the retirement
+/// has ended and the surface holds the boundary, the next tick is drawn on the GPU. Nothing is
+/// asked for, let go or allocated twice: the drag falls back for those ticks and does not thrash.
+#[test]
+fn gpu_preview_a_tick_the_budget_refuses_while_a_slot_retires_keeps_its_boundary() {
+    let catalog = catalog("retiring");
+    let (mut editor, _, _) = real_photo(&catalog);
+    editor.gpu.surface = Some(SurfaceReport::default());
+    let _ = slide(&mut editor, ACTION, FIELD, 0.1);
+    deliver_until(&mut editor, "the boundary", |editor| {
+        editor.gpu.holds_boundary()
+    });
+    let texels_held =
+        |editor: &Editor| editor.gpu.summary()["drag"]["boundary"]["texels_held"].clone();
+    let version = editor.gpu.held_version().unwrap();
+    let refused = SurfaceReport {
+        ready_boundary: None,
+        fallback: Some(SurfaceFallback::BudgetExceeded {
+            requested: 600 << 20,
+            in_use: 120 << 20,
+            budget: 640 << 20,
+        }),
+        drawn: None,
+    };
+    for (tick, value) in [0.2, 0.3].into_iter().enumerate() {
+        editor.gpu.surface = Some(refused);
+        let log = attach_log(&mut editor);
+        let _ = slide(&mut editor, ACTION, FIELD, value);
+        let records = logged(&mut editor, &log);
+        let ticks = events(&records, "gpu_preview_tick");
+        let last = ticks.last().expect("a tick");
+        assert_eq!(last["path"], "cpu", "tick {tick}");
+        assert_eq!(last["reason"], "budget-exceeded", "tick {tick}");
+        assert_eq!(last["boundary_requested"], false, "tick {tick}");
+        assert_eq!(jobs(&records), 1, "tick {tick}: its job goes to the worker");
+        assert!(
+            events(&records, "gpu_boundary_released").is_empty(),
+            "tick {tick}: the boundary is kept"
+        );
+        assert_eq!(texels_held(&editor), json!(true), "tick {tick}");
+        let plan = editor
+            .surfaces()
+            .gpu
+            .expect("the plan is still handed over");
+        assert_eq!(plan.boundary.version(), version);
+    }
+    assert_eq!(editor.gpu.ticks().2, 1, "the boundary was asked for once");
+    // The retirement ended and the next frame holds the slot.
+    surface_ready(&mut editor);
+    let log = attach_log(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.4);
+    let records = logged(&mut editor, &log);
+    let ticks = events(&records, "gpu_preview_tick");
+    assert_eq!(ticks.last().expect("a tick")["path"], "gpu");
+    assert_eq!(jobs(&records), 0, "the drawn tick sends no job");
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    finish(editor, catalog);
+}
