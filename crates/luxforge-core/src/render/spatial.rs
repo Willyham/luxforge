@@ -1032,6 +1032,12 @@ impl<'a> PointTiles<'a> {
 /// operation's input stage. The reduction is built at most once, and only when a unit that declares
 /// a key is missing from the store: a stack evaluated twice reduces nothing the second time, and
 /// neither does one whose units changed only in coefficients their keys do not name.
+/// Qualification only: the last reduction a global estimate was prepared from, for the corpus to
+/// prepare an estimate from a reduction it changes.
+#[cfg(feature = "qualification")]
+pub(crate) static CAPTURED_REDUCTION: std::sync::Mutex<Option<crate::modules::Reduction>> =
+    std::sync::Mutex::new(None);
+
 pub(crate) fn resolve_globals(
     store: &EstimateStore,
     operation: &SpatialOperation,
@@ -1067,6 +1073,12 @@ pub(crate) fn resolve_globals(
         return Ok(globals);
     }
     let reduction = reduce()?;
+    #[cfg(feature = "qualification")]
+    {
+        *CAPTURED_REDUCTION
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reduction.clone());
+    }
     // Two units of one operation that declare the same key share one preparation, as they would
     // share one stored entry.
     let mut prepared: Vec<(&EstimateKey, Option<Global>)> = Vec::with_capacity(missing.len());

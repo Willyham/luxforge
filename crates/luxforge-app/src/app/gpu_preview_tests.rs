@@ -926,6 +926,59 @@ fn gpu_preview_presence_drags_at_100_percent() {
     finish(editor, catalog);
 }
 
+/// At a percentage zoom with Dehaze behind Detail, the CPU cannot cut the view's region: it draws
+/// the whole frame's proxy while a drag moves and the whole exact frame once the view settles, which
+/// stores the light. A Presence drag then reads that light, the drafted stack's own, and is drawn on
+/// the GPU over the visible region with no preview job per tick, its boundary rendered after the
+/// first tick's declined region job; and a Detail drag reads the light the stack it started from
+/// stored, held for the drag, and is drawn on the GPU too, its plan approximate. (A store that holds
+/// no light, which this photograph's exact Fit frames never leave, keeps the drag on the CPU path:
+/// `behind_detail_a_region_plan_holds_dehazes_stored_light` in the core.)
+#[test]
+fn gpu_preview_dehaze_behind_detail_draws_its_region_on_the_gpu() {
+    let catalog = catalog("dehaze-detail");
+    let (mut editor, _, _) = real_photo(&catalog);
+    editor.gpu.surface = Some(SurfaceReport::default());
+    deliver_until(&mut editor, "the first frame", |editor| {
+        editor.presentation.dimensions.is_some() && !editor.presentation.queue.is_busy()
+    });
+    let zoomed = |editor: &mut Editor| {
+        editor.session.preview.view.zoom = luxforge_core::Zoom::Percent { value: 400.0 };
+        let stage = editor
+            .presentation
+            .dimensions
+            .expect("the photograph's stage");
+        editor.desired_view_for(stage).expect("a visible region")
+    };
+    zoomed(&mut editor);
+    commit(&mut editor, "set-detail", "sharpening", 40.0);
+    zoomed(&mut editor);
+    commit(&mut editor, PRESENCE, "dehaze", 40.0);
+    let wanted = zoomed(&mut editor);
+    let region = |plan: &luxforge_ui::photo_surface::GpuPlan| plan.region.map(|region| region.rect);
+    let spatial = |plan: &luxforge_ui::photo_surface::GpuPlan| {
+        plan.steps
+            .iter()
+            .filter(|step| matches!(step, luxforge_ui::photo_surface::GpuStep::Spatial(_)))
+            .count()
+    };
+    let corners = Some([wanted.x0, wanted.y0, wanted.x1(), wanted.y1()]);
+    let plan = gpu_drag(&mut editor, PRESENCE, "clarity", &[20.0, 30.0, 45.0], false);
+    assert_eq!(region(&plan), corners, "the visible region");
+    assert_eq!(spatial(&plan), 1, "Presence over Detail's output");
+    zoomed(&mut editor);
+    let plan = gpu_drag(
+        &mut editor,
+        "set-detail",
+        "sharpening",
+        &[50.0, 60.0, 70.0],
+        true,
+    );
+    assert_eq!(region(&plan), corners, "the visible region");
+    assert_eq!(spatial(&plan), 2, "Detail's operation, then Presence's");
+    finish(editor, catalog);
+}
+
 /// Every family of the qualification corpus at 100%, in the largest window the owner's display
 /// holds: the worker's exact visible region against the GPU frame of the region plan over the
 /// region's own boundary, each held to its recipe's class, and a slot over the GPU-preview budget

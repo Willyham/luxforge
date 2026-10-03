@@ -506,7 +506,21 @@ pub(crate) fn corpus_cell(
             PreviewSource::Raw { .. } => request.linear(),
             PreviewSource::Jpeg(_) => request,
         };
-        let plan = match gpu_plan(&registry, &recipe, request).map_err(|e| e.to_string())? {
+        // A windowed proxy's spatial operations are handed the exact stage's estimates, which the
+        // job's exact phase stored: the plan reads them, as a drag's does once its committed frame
+        // is drawn. Any other proxy takes them over the stage it holds, as its CPU frame does.
+        let estimates = (origin != (0, 0) || (width, height) != (stage_width, stage_height))
+            .then(|| luxforge_core::GpuEstimates {
+                context: evaluation.context(),
+                source: luxforge_core::EstimateSource::Whole {
+                    source: evaluation.source().into(),
+                    stage: stage(full.0, full.1),
+                },
+            })
+            .filter(|_| is_proxy);
+        let plan = match luxforge_core::gpu_plan_with(&registry, &recipe, request, estimates)
+            .map_err(|e| e.to_string())?
+        {
             GpuAnswer::Plan(plan) => *plan,
             GpuAnswer::Fallback(reason) => {
                 return Ok(Cell::Gap(format!("{}: {reason}", reason.code())));
@@ -711,7 +725,7 @@ pub(crate) fn corpus_cell(
 /// content operations, so it does not change the boundary; before a finishing layer, which runs
 /// after the tail, it does, and only the worker's boundary job holds that input. `Err` inside names
 /// the gap.
-fn boundary_layer(
+pub(crate) fn boundary_layer(
     registry: &luxforge_core::ModuleRegistry,
     recipe: &luxforge_core::Recipe,
     (width, height): (u32, u32),
@@ -895,11 +909,10 @@ pub(crate) fn region_cell(
             [rect.x0, rect.y0, rect.width, rect.height],
             format,
         );
-        // A stack the worker renders whole at a percentage zoom, an estimate behind an earlier
-        // spatial layer among them, is the CPU path at a percentage zoom: its drag plans no
-        // region (`unplannable`). Where the GPU's window can still hold its region, its frame is
-        // measured against the exact frame's region, the frame the view draws, so what the slot
-        // would take and how far it would move stand on figures.
+        // A stack whose region the worker cannot cut, an estimate behind an earlier spatial layer,
+        // is drawn from the exact whole frame at a percentage zoom: its GPU frame is measured
+        // against that frame's region, the frame the view settles to. Its region plan reads the
+        // estimate the whole frame stored, as a drag's does once the view has settled.
         let declined = match cpu {
             Ok(_) => None,
             Err(ref whole) => match &boundary {
@@ -924,7 +937,6 @@ pub(crate) fn region_cell(
             }
             Err(error) => return Err(error.to_string()),
         };
-        let frame_size = (frame.width, frame.height);
         // The plan from that layer at the exact stage, over the whole stage the layer receives,
         // reading the global estimates the exact visible region stored, as a drag's plan reads
         // them once the view has settled. A restoration or spatial layer's drag draws its GPU
@@ -1026,10 +1038,7 @@ pub(crate) fn region_cell(
             let over = format!(
                 "{over} of the {budget} B GPU-preview budget, so the drag takes the CPU path"
             );
-            return Ok(Cell::Gap(match declined {
-                Some(_) => format!("region-declined, and {over}"),
-                None => over,
-            }));
+            return Ok(Cell::Gap(over));
         };
         let (width, height) = (rect.width, rect.height);
         let gpu: Vec<u8> = qualifier
@@ -1077,22 +1086,6 @@ pub(crate) fn region_cell(
                 "region-estimate: the GPU takes the global estimate from the region alone, so the \
                  drag takes the CPU path; measured over the region: {}",
                 figures(&statistics)
-            )));
-        }
-        if declined.is_some() {
-            return Ok(Cell::Gap(format!(
-                "region-declined: the worker renders this stack's whole exact frame at a \
-                 percentage zoom, so the drag takes the CPU path; measured against that frame's \
-                 region over a {}x{} boundary{}: {} ({}), charged {charged} B",
-                frame_size.0,
-                frame_size.1,
-                shape.map_or(String::new(), |shape| format!(" in the {shape} shape")),
-                figures(&statistics),
-                if preview_error::verdict(&statistics, class).passed() {
-                    "within the limits"
-                } else {
-                    "MISS"
-                }
             )));
         }
         Ok(Cell::Measured {

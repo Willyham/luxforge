@@ -168,6 +168,137 @@ pub mod qualification {
             format,
         )
     }
+
+    /// `plan` over its whole proxy stage, with no window.
+    pub fn whole_proxy(plan: crate::ProxyPlan) -> crate::ProxyPlan {
+        plan.whole()
+    }
+
+    /// A light for a colour drag under Dehaze from a held reduced stage: the atmospheric light
+    /// prepared from the reduction of the Presence input of `prefix` — the layers before the
+    /// drag's first colour layer, then the Presence layer — over its whole exact stage, with the
+    /// colour operations `colour` compiles to run over the reduced pixels, colour after the
+    /// reduction standing in for the reduction after colour. Answers the light and how long the
+    /// part a tick would repeat took: the colour over the reduction and the preparation, not the
+    /// reduction, which a boundary job would hold.
+    pub fn light_after_reduction(
+        registry: &crate::ModuleRegistry,
+        source: crate::RenderSource<'_>,
+        prefix: &crate::Recipe,
+        colour: &crate::Recipe,
+    ) -> Result<(Option<Vec<f64>>, std::time::Duration), crate::Error> {
+        let captured = || {
+            crate::render::spatial::CAPTURED_REDUCTION
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+        };
+        let context = crate::RenderContext::new();
+        let render = crate::render(
+            registry,
+            source,
+            prefix,
+            crate::RenderOptions::exact(&crate::Cancel::never()),
+            &context,
+        )?;
+        captured();
+        render.frame(crate::SnapshotId::new())?;
+        let reduction = captured().ok_or_else(|| crate::Error::internal("no reduction"))?;
+        let unit = render
+            .estimating_unit()
+            .ok_or_else(|| crate::Error::validation("no unit prepares an estimate"))?;
+        let (width, height) = source.dimensions();
+        let compiled = registry.compile_sampled(
+            width,
+            height,
+            width,
+            height,
+            colour,
+            crate::mask_field::MaskSampling::Point,
+        )?;
+        let units: Vec<std::sync::Arc<dyn crate::modules::PointwiseColor>> = compiled
+            .segments
+            .iter()
+            .flat_map(|segment| &segment.operations)
+            .filter_map(|operation| match operation {
+                crate::modules::Processing::Color(colour) => Some(colour.units().to_vec()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        // The byte path hands a spatial operation a quantized frame, so its colour is clamped to
+        // [0, 1] before it is reduced; the linear path's is not.
+        let clamps = matches!(source, crate::RenderSource::Byte(_));
+        let started = std::time::Instant::now();
+        let changed = reduction.with_rows(|y, row| {
+            for unit in &units {
+                unit.apply_row(y, 0, row);
+            }
+            if clamps {
+                for pixel in row.iter_mut() {
+                    *pixel = pixel.map(|value| value.clamp(0.0, 1.0));
+                }
+            }
+        });
+        let light = unit.prepare(&changed);
+        let elapsed = started.elapsed();
+        Ok((light.map(|light| light.values().to_vec()), elapsed))
+    }
+
+    /// The proxy phase of `render`'s stack as a preview job's worker renders it at `bounds`: the
+    /// stack compiled at the proxy stage of [`fit_proxy`]'s plan, cut to its window when it has
+    /// one, over `proxied`, the proxy source that plan builds, in `context`, whose store a frame of
+    /// it fills.
+    pub fn proxy_render<'s>(
+        render: &crate::Render,
+        registry: &crate::ModuleRegistry,
+        recipe: &crate::Recipe,
+        bounds: crate::ProxyBounds,
+        proxied: crate::RenderSource<'s>,
+        context: &'s crate::RenderContext,
+    ) -> Result<crate::Render<'s>, crate::Error> {
+        let plan = render
+            .proxy_plan(bounds)
+            .ok_or_else(|| crate::Error::validation("no proxy fits these bounds"))?;
+        let stage = render.proxy_window(registry, recipe, plan);
+        render.render_proxy(proxied, stage, &crate::Cancel::never(), context)
+    }
+
+    /// The global estimates the spatial operation of layer `layer` reads in a frame of `render`,
+    /// from its context's estimate store alone: each unit's values, `None` for a unit that
+    /// prepares none. `None` when the store does not hold them, as before any frame of `render`.
+    pub fn held_estimates(
+        render: &crate::Render,
+        layer: usize,
+    ) -> Result<Option<Vec<Option<Vec<f64>>>>, crate::Error> {
+        let index = render
+            .spatial_segment_of(layer)
+            .ok_or_else(|| crate::Error::validation(format!("layer {layer} is not spatial")))?;
+        Ok(render.held_spatial_globals(index)?.map(|globals| {
+            globals
+                .into_iter()
+                .map(|global| global.map(|global| global.values().to_vec()))
+                .collect()
+        }))
+    }
+
+    /// Hold `estimates`, each unit's values or `None`, in `render`'s estimate store for the
+    /// spatial operation of layer `layer`, under the keys a frame of `render` asks with, as a
+    /// frame that prepared them would: a GPU plan over `render`'s context then reads them.
+    pub fn hold_estimates(
+        render: &crate::Render,
+        layer: usize,
+        estimates: &[Option<Vec<f64>>],
+    ) -> Result<(), crate::Error> {
+        let index = render
+            .spatial_segment_of(layer)
+            .ok_or_else(|| crate::Error::validation(format!("layer {layer} is not spatial")))?;
+        let globals = estimates
+            .iter()
+            .map(|values| values.clone().map(crate::modules::Global::new).transpose())
+            .collect::<Result<Vec<_>, _>>()?;
+        render.hold_spatial_globals(index, &globals)
+    }
 }
 
 // The crate root paths the core itself uses.
