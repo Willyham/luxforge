@@ -465,6 +465,56 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         }
     }
 
+    /// [`Self::globals_of`] from the estimate store alone, under the key a frame of this
+    /// compilation asks with: `None` when the store does not hold every one, which nothing here
+    /// reduces. `O(units)`, and reads no pixel.
+    pub(crate) fn held_globals_of(&self, index: usize) -> Option<Vec<Option<Global>>> {
+        match &self.compiled.segments[index].entry {
+            Some(super::Entry::Spatial(entry)) => entry
+                .globals(
+                    &self.domain,
+                    self.context,
+                    self.spatial_stage(index),
+                    || Err(Error::internal("a held estimate is never reduced")),
+                )
+                .ok(),
+            _ => Some(Vec::new()),
+        }
+    }
+
+    /// Qualification only: hold `globals` in the estimate store under the keys a frame of this
+    /// compilation asks with for the spatial operation entering segment `index`, as a frame that
+    /// prepared them would. A key the store already holds keeps its estimate.
+    #[cfg(feature = "qualification")]
+    pub(crate) fn hold_globals(
+        &self,
+        index: usize,
+        globals: &[Option<Global>],
+    ) -> Result<(), Error> {
+        let Some(super::Entry::Spatial(entry)) = &self.compiled.segments[index].entry else {
+            return Err(Error::internal(format!(
+                "segment {index} enters through no spatial operation"
+            )));
+        };
+        let stage = self.spatial_stage(index);
+        let prefix = input_prefix_key(&self.domain, entry.prefix_hash());
+        for (unit, global) in entry.operation.units().iter().zip(globals) {
+            if let Some(estimate) = unit.estimate_key() {
+                self.context.estimates().remember(
+                    crate::render::context::EstimateKey {
+                        fingerprint: self.domain.fingerprint().to_owned(),
+                        prefix_hash: prefix.clone().into_owned(),
+                        width: stage.width,
+                        height: stage.height,
+                        estimate,
+                    },
+                    global.clone(),
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// The final spatial prefix on one output rectangle, through the render's own tile function.
     /// Input grids use a whole tile for dense cells and a one-pixel window for sparse cells.
     pub(crate) fn restoration_region(&self, region: Region) -> Result<Vec<D::Pixel>, Error> {
@@ -939,7 +989,7 @@ impl SpatialEntry {
     /// the whole stage's own tiles there.
     pub(super) fn reads(&self, window: Region, received: Stage) -> Region {
         let operation = &self.operation;
-        let grown = window.grown(operation.summed_halo(received), received);
+        let grown = self.halo_reads(window, received);
         let tile = Tiling::Halo.tile(operation, received);
         let x0 = grown.x0 / tile * tile;
         let y0 = grown.y0 / tile * tile;
@@ -949,6 +999,17 @@ impl SpatialEntry {
             width: grown.x1() - x0,
             height: grown.y1() - y0,
         }
+    }
+
+    /// The rectangle of its `received` stage that producing `window` of it reads when no tiles cut
+    /// it: `window` grown by the operation's summed halo and clamped to the stage. A GPU preview's
+    /// spatial step evaluates every pixel of the window it holds at once, so a unit's value at a
+    /// pixel inside the window shrunk by its halo is the whole stage's whatever the window's
+    /// origin, and the tile grid [`Self::reads`] snaps to is the CPU's alone. A reduced unit's
+    /// halo already reaches the far end of every block its output reads (`reduced_halo`), so a
+    /// window whose origin cuts a block reads only whole blocks for the pixels it is asked for.
+    pub(super) fn halo_reads(&self, window: Region, received: Stage) -> Region {
+        window.grown(self.operation.summed_halo(received), received)
     }
 
     /// Cut to `previous`, the rectangle of its `whole` stage its cut stage holds: its mask is read
