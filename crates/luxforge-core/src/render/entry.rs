@@ -427,9 +427,16 @@ impl<'a> Render<'a> {
     /// render's compilation — held over the window of its received stage that the output stage's
     /// `rect` reads at full scale: the visible region and every margin the boundaries after it
     /// need on the GPU, through the windowed planner ([`WindowPlan::of_gpu_rect`]). The segments
-    /// up to the layer's are cut as the CPU cuts them, with the same whole-stage spatial estimates
-    /// the exact region uses, and those after it are left whole, since the GPU evaluates them. A
-    /// stack the planner cannot cut answers its reason as an error, as a region the boundary
+    /// up to the layer's are cut as the CPU cuts them, and those after it are left whole, since the
+    /// GPU evaluates them.
+    ///
+    /// - A spatial operation the boundary is rendered through reads the same whole-stage
+    ///   estimates the exact region uses: from the store, or one reduction of its stage.
+    /// - One behind an earlier spatial operation reads the store alone, since no window can reduce
+    ///   its stage, and one the store does not hold is an error. The catalog owner checks the store
+    ///   before it asks for such a boundary (`gpu::preview`).
+    ///
+    /// A stack the planner cannot cut answers its reason as an error, as a region the boundary
     /// cannot hold is no frame of it.
     pub(crate) fn region_boundary(
         &self,
@@ -451,6 +458,18 @@ impl<'a> Render<'a> {
                     reason.reason()
                 ))
             })?;
+        let globals = |index: usize| -> Result<Vec<Option<Global>>, Error> {
+            if !self.compiled.spatial_before(index) {
+                return self.spatial_globals(index);
+            }
+            self.held_spatial_globals(index)?.ok_or_else(|| {
+                Error::validation(format!(
+                    "the GPU preview's region boundary: the estimate store does not hold the \
+                     global estimate of the spatial operation entering segment {index}, which \
+                     lies behind an earlier spatial layer that no window can reduce"
+                ))
+            })
+        };
         self.options.cancel.check()?;
         let source = match self.source {
             RenderSource::Byte(image) => RegionSource::Byte(
@@ -474,7 +493,7 @@ impl<'a> Render<'a> {
             Compiled::clone(&self.compiled),
             source_size,
             position.0,
-            |index| self.spatial_globals(index),
+            globals,
         )?;
         // A spatial operation before the boundary is cut on its tile grid, and the boundary keeps
         // only what the region reads of its output.
@@ -959,6 +978,23 @@ impl<'a> Render<'a> {
     /// evaluation, so no frame is materialized for it.
     pub(crate) fn spatial_globals(&self, index: usize) -> Result<Vec<Option<Global>>, Error> {
         self.spatial_globals_with_cancel(index, &self.options.cancel)
+    }
+
+    /// [`Self::spatial_globals`] from the estimate store alone, under the key a frame of this render
+    /// asks with: `None` when the store does not hold every one, which this never reduces.
+    /// `O(units)`, and reads no pixel.
+    pub(crate) fn held_spatial_globals(
+        &self,
+        index: usize,
+    ) -> Result<Option<Vec<Option<Global>>>, Error> {
+        Ok(match self.source {
+            RenderSource::Byte(image) => self
+                .evaluation(Byte(image), SpatialMode::Point)?
+                .held_globals_of(index),
+            RenderSource::Linear { image, settings } => self
+                .evaluation(Linear::new(image, settings)?, SpatialMode::Point)?
+                .held_globals_of(index),
+        })
     }
 
     /// Resolve a proxy's exact-stage estimate under the proxy token, independently of the

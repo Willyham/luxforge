@@ -153,7 +153,9 @@ impl WindowPlan {
     /// grown by its halo alone ([`super::Entry::plan_gpu_window`]). A spatial step evaluates every
     /// pixel of the window it holds, so it needs no tile grid, which is the CPU's. Only
     /// [`Self::reads`] of segments up to `boundary` and [`Self::apply_through`] to it are the
-    /// CPU's own cuts.
+    /// CPU's own cuts. A global estimate behind an earlier spatial layer is no refusal here: the
+    /// boundary's render reads one before the boundary from the estimate store alone
+    /// (`Render::region_boundary`), and the plan carries its own for those after it.
     pub(crate) fn of_gpu_rect(
         compiled: &Compiled,
         source: (u32, u32),
@@ -216,11 +218,14 @@ impl WindowPlan {
                 Some(entry) if gpu_after.is_some_and(|boundary| index > boundary) => {
                     needed = entry.plan_gpu_window(read, segments[index - 1].stage())?;
                 }
+                // A GPU preview's boundary reads an estimate behind an earlier spatial layer from
+                // the estimate store, never from a reduction of the cut stage, so only the CPU's
+                // own region refuses one.
                 Some(entry) => {
                     needed = entry.plan_window(
                         read,
                         segments[index - 1].stage(),
-                        compiled.spatial_before(index),
+                        compiled.spatial_before(index) && gpu_after.is_none(),
                     )?;
                 }
             }

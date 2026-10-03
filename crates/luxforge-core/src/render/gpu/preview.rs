@@ -36,13 +36,14 @@
 //!   at a percentage zoom, the window the visible region reads.
 use super::{
     EstimateSource, GpuAnswer, GpuEstimates, GpuFallback, GpuPlan, GpuPlanRequest, gpu_plan_with,
+    plan::{HeldPrefix, gpu_plan_holding},
 };
 use crate::{
     Draft, EFFECT_FORMAT, EffectStage, Error, Evaluation, Layer, LayerId, MaskId, ModuleRegistry,
     ProxyBounds, ProxyIdentity, ProxyPlan, Recipe,
     mask_field::MaskSampling,
     modules::{Region, Stage},
-    render::{Compiled, spatial::prefix_hash},
+    render::{Compiled, spatial::prefix_hash, window::WindowPlan},
 };
 use serde_json::json;
 
@@ -322,10 +323,20 @@ impl FitStage {
 
     /// Where `evaluation`'s CPU frames at this stage keep their global estimates: its context's
     /// store, under its proxy at this plan, or under its source at the exact stage.
+    ///
+    /// A windowed proxy reduces no stage of its own: its spatial operations are handed the exact
+    /// stage's estimates (`Render::render_proxy`), so its store is read under the exact stage's
+    /// key, the source's own stage being where a spatial layer, which comes before any geometry,
+    /// reads. A layer whose prefix holds a mask hashes it under the proxy's sampling, so such a
+    /// lookup misses and the GPU takes the estimate from the window, approximate.
     fn estimates<'a>(&self, evaluation: &'a Evaluation) -> GpuEstimates<'a> {
         GpuEstimates {
             context: evaluation.context(),
             source: match self.plan {
+                Some(plan) if plan.window.is_some() => EstimateSource::Whole {
+                    source: evaluation.source().into(),
+                    stage: self.full,
+                },
                 Some(plan) => EstimateSource::Proxy {
                     source: evaluation.source(),
                     plan,
@@ -363,13 +374,84 @@ fn with_neutral(recipe: &Recipe, index: usize, effect: &str, mask: Option<MaskId
     planned
 }
 
+/// For each spatial layer of `planned`, the drafted stack, whose input differs from the one it had
+/// in `entry`'s stack only through restoration layers: the prefix its global estimates were stored
+/// under in `entry` ([`HeldPrefix`]). A drag of Detail changes Dehaze's input only by its filters,
+/// which barely move the block means the atmospheric light is chosen from, so it reads the light
+/// `entry`'s settled frame stored, held for the drag (`docs/specs/performance.md`, "Dehaze behind
+/// Detail at 100%"). A colour layer before a spatial one moves those means by its tone, as three
+/// stops of exposure does far past the spatial limits, so a drag that changes one holds none.
+/// `O(layers)`, hashing each such layer's prefix once in each stack.
+fn held_prefixes(
+    registry: &ModuleRegistry,
+    entry: &crate::HistoryEntry,
+    planned: &Recipe,
+    sampling: MaskSampling,
+) -> Result<Vec<HeldPrefix>, Error> {
+    let committed = &entry.snapshot.recipe;
+    let stage_of = |layer: &Layer| registry.effect_stage(&layer.effect_id);
+    let mask_of = |recipe: &Recipe, layer: &Layer| {
+        layer
+            .mask
+            .as_ref()
+            .and_then(|id| recipe.masks.iter().find(|mask| &mask.id == id).cloned())
+    };
+    let mut held = Vec::new();
+    for (layer, drafted) in planned.layers.iter().enumerate() {
+        if stage_of(drafted) != Some(EffectStage::Spatial) {
+            continue;
+        }
+        let Some(at) = committed
+            .layers
+            .iter()
+            .position(|stored| stored.id == drafted.id)
+        else {
+            continue;
+        };
+        let (before, was) = (&planned.layers[..layer], &committed.layers[..at]);
+        // Every layer before it the draft adds, removes or changes, its mask included, is a
+        // restoration layer.
+        let changed = |layer: &Layer, ours: &Recipe, other: (&[Layer], &Recipe)| {
+            other
+                .0
+                .iter()
+                .find(|stored| stored.id == layer.id)
+                .is_none_or(|stored| {
+                    stored != layer || mask_of(other.1, stored) != mask_of(ours, layer)
+                })
+        };
+        let restoration_only = before
+            .iter()
+            .filter(|layer| changed(layer, planned, (was, committed)))
+            .chain(
+                was.iter()
+                    .filter(|layer| changed(layer, committed, (before, planned))),
+            )
+            .all(|layer| stage_of(layer) == Some(EffectStage::Restoration));
+        if !restoration_only {
+            continue;
+        }
+        let prefix = prefix_hash(was, &committed.masks, sampling)?;
+        if prefix != prefix_hash(before, &planned.masks, sampling)? {
+            held.push(HeldPrefix {
+                layer,
+                prefix_hash: prefix,
+            });
+        }
+    }
+    Ok(held)
+}
+
 /// The window of the stage segment `segment` of `compiled`, a stack over a `full` source, receives
-/// that the whole output stage reads, through the windowed planner: `None` when the segment reads
-/// all of it or the planner cannot cut the stack. `O(segments)`, no pixel read.
+/// that the whole output stage reads, planned as the boundary's render plans it
+/// (`Render::output_boundary`, [`WindowPlan::of_gpu_rect`]): `None` when the segment reads all of
+/// it or the planner cannot cut the stack. A spatial operation before the segment whose estimate
+/// lies behind an earlier one reads it from the store alone, which the caller checks
+/// ([`Compiled::unheld_estimate`]). `O(segments)`, no pixel read.
 pub(crate) fn output_window(compiled: &Compiled, full: Stage, segment: usize) -> Option<Region> {
     let full = (full.width, full.height);
     let output = Region::whole(compiled.stage());
-    crate::render::window::WindowPlan::of_rect(compiled, full, output)
+    WindowPlan::of_gpu_rect(compiled, full, output, segment)
         .ok()
         .and_then(|windows| windows.received_cut(compiled, full, segment))
 }
@@ -424,38 +506,63 @@ pub(crate) fn plan_preview(
         Some(drafted) if drafted.held => (recipe.clone(), request.drafted(drafted.index)),
         _ => (recipe.clone(), request),
     };
-    let mut answer = gpu_plan_with(registry, &planned, request, Some(fit.estimates(evaluation)))?;
+    // At a percentage zoom, a spatial layer's estimates the store holds for the stack the draft was
+    // opened over, held for the drag where it holds none for the drafted stack. A windowed Fit
+    // proxy never holds a restoration layer before an estimate: the CPU's planner keeps such a
+    // proxy whole, since no window can prepare the estimate behind it.
+    let held = match fit.region {
+        Some(_) => held_prefixes(registry, evaluation.entry(), &planned, fit.sampling())?,
+        None => Vec::new(),
+    };
+    let estimates = fit.estimates(evaluation);
+    let mut answer = gpu_plan_holding(registry, &planned, request, Some(estimates), &held)?;
     let position = position(&fit.compiled, boundary).ok_or_else(|| {
         Error::internal(format!(
             "the GPU preview's boundary layer {boundary} is past the stack"
         ))
     })?;
     // At a percentage zoom, the window of the received stage the boundary will hold, planned now
-    // so what it takes is known before it is rendered; and a global estimate the store does not
-    // hold yet, which the GPU would take from the region alone where the exact visible region
-    // reads the whole stage's, keeps the drag on the CPU. A stack whose own region the CPU cannot
-    // cut, its estimate behind an earlier spatial layer, is drawn from the exact whole frame at a
-    // percentage zoom, and its drag keeps the CPU path with it.
+    // so what it takes is known before it is rendered. Every global estimate is held rather than
+    // reduced over that window: the plan's own, read from the store, and one the boundary's render
+    // reads behind an earlier spatial layer, which the store must hold. One the GPU would take
+    // from the region alone, where the exact frame reads the whole stage's, or one the store does
+    // not hold behind an earlier spatial layer, keeps the drag on the CPU.
     let mut window = None;
     // At the exact stage at Fit, the window the whole output stage reads, so a crop's boundary
     // holds what the crop reads rather than its whole source. A global estimate the GPU takes from
     // the stage it holds would see the window alone, so such a plan keeps the whole stage; so does
     // a stack the planner cannot cut.
+    // The window is planned as the boundary's render plans it (`Render::output_boundary`), whose
+    // estimate behind an earlier spatial layer the store must hold.
     if let (GpuAnswer::Plan(plan), None, None) = (&answer, fit.plan, fit.region)
         && !plan.spatial.iter().any(|spatial| spatial.estimated)
+        && fit
+            .compiled
+            .unheld_estimate(position.0, &estimates)?
+            .is_none()
     {
         window = output_window(&fit.compiled, fit.full, position.0);
     }
+    // Behind a windowed proxy the CPU's light is the exact stage's, which the plan reads from the
+    // store or holds for a Detail drag; one it would take on the GPU, over the proxy, would be the
+    // proxy's, which misses the spatial limits on the corpus.
+    if let (GpuAnswer::Plan(plan), Some(_)) =
+        (&answer, fit.plan.filter(|plan| plan.window.is_some()))
+        && let Some(spatial) = plan.spatial.iter().find(|spatial| spatial.estimated)
+    {
+        answer = GpuAnswer::Fallback(GpuFallback::WindowEstimate {
+            layer: spatial.layer,
+        });
+    }
     if let (GpuAnswer::Plan(plan), Some((rect, _))) = (&answer, fit.region) {
-        use crate::render::window::WindowPlan;
         let full = (fit.full.width, fit.full.height);
-        let windows = WindowPlan::of_rect(&fit.compiled, full, rect)
-            .and_then(|_| WindowPlan::of_gpu_rect(&fit.compiled, full, rect, position.0));
-        answer = match plan.spatial.iter().find(|spatial| spatial.estimated) {
-            Some(spatial) => GpuAnswer::Fallback(GpuFallback::RegionEstimate {
-                layer: spatial.layer,
-            }),
-            None => match windows {
+        let unheld = match plan.spatial.iter().find(|spatial| spatial.estimated) {
+            Some(spatial) => Some(spatial.layer),
+            None => fit.compiled.unheld_estimate(position.0, &estimates)?,
+        };
+        answer = match unheld {
+            Some(layer) => GpuAnswer::Fallback(GpuFallback::RegionEstimate { layer }),
+            None => match WindowPlan::of_gpu_rect(&fit.compiled, full, rect, position.0) {
                 Ok(windows) => {
                     window = Some(windows.reads(position.0));
                     answer
@@ -491,13 +598,10 @@ pub(crate) fn plan_preview(
                 .map(|spatial| (spatial.passes.len(), spatial.applies.len()))
                 .collect()
         };
-        if let GpuAnswer::Plan(smaller) = gpu_plan_with(
-            registry,
-            &planned,
-            unshaped,
-            Some(fit.estimates(evaluation)),
-        )? && extent(&smaller) != extent(plan)
-            && !smaller.approximate()
+        if let GpuAnswer::Plan(smaller) =
+            gpu_plan_holding(registry, &planned, unshaped, Some(estimates), &held)?
+            && extent(&smaller) != extent(plan)
+            && !smaller.spatial.iter().any(|spatial| spatial.estimated)
         {
             cpu_shape = Some(smaller);
         }
