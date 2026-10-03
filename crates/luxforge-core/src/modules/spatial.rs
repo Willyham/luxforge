@@ -184,6 +184,30 @@ pub(crate) struct Reduction {
 }
 
 impl Reduction {
+    /// Qualification only: this reduction with `apply` run over each reduced row, given the row's
+    /// index and its pixels.
+    #[cfg(feature = "qualification")]
+    pub(crate) fn with_rows(&self, mut apply: impl FnMut(u32, &mut [[f32; 3]])) -> Self {
+        let (width, len) = (self.width as usize, (self.width * self.height) as usize);
+        let mut values = self.values.clone();
+        let mut row = vec![[0.0f32; 3]; width];
+        for y in 0..self.height as usize {
+            for (x, pixel) in row.iter_mut().enumerate() {
+                *pixel = std::array::from_fn(|c| values[c * len + y * width + x]);
+            }
+            apply(y as u32, &mut row);
+            for (x, pixel) in row.iter().enumerate() {
+                for (c, value) in pixel.iter().enumerate() {
+                    values[c * len + y * width + x] = *value;
+                }
+            }
+        }
+        Self {
+            values,
+            ..self.clone()
+        }
+    }
+
     /// The reduced dimensions of a stage at this factor.
     pub(crate) fn dimensions(stage: Stage, factor: u32) -> (u32, u32) {
         let factor = factor.max(1);
@@ -537,6 +561,15 @@ pub(crate) trait SpatialUnit: Send + Sync {
     /// nothing that scales with the image.
     fn gpu(&self, _global: Option<&Global>) -> Option<crate::render::gpu::GpuSpatialUnit> {
         None
+    }
+
+    /// Whether a GPU preview may draw this unit with the estimate prepared from its input before
+    /// a restoration layer changed it, held for a drag (`docs/design/gpu-preview.md`, "At 100%
+    /// and above"): the unit's own judgement of how far its output follows such an estimate, which
+    /// the qualification corpus measures. The default is no, so a unit with an estimate keeps the
+    /// CPU path for such a drag unless it says otherwise. Answered while planning.
+    fn holds_restored_estimate(&self) -> bool {
+        false
     }
 
     /// Run one tile under the render's cancellation token. Units with several passes override

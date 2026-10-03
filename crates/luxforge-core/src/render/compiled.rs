@@ -187,6 +187,23 @@ impl Entry {
         }
     }
 
+    /// [`Self::plan_window`] for a boundary a GPU preview evaluates rather than the CPU
+    /// ([`super::window::WindowPlan::of_gpu_rect`]): a resample's taps as the CPU reads them, which
+    /// the geometry tail clamps to, and a spatial operation's halo with no tile grid
+    /// ([`SpatialEntry::halo_reads`]). A global estimate is never prepared from the window: the
+    /// GPU reads the whole stage's from the estimate store, or takes it from the stage it holds
+    /// and says so, so an estimate behind an earlier spatial layer cuts like any other.
+    pub(crate) fn plan_gpu_window(
+        &self,
+        read: Region,
+        received: Stage,
+    ) -> Result<Region, RegionFallback> {
+        match self {
+            Self::Resample(_) => self.plan_window(read, received, false),
+            Self::Spatial(entry) => Ok(entry.halo_reads(read, received)),
+        }
+    }
+
     /// Cut this boundary for a windowed proxy ([`super::window::WindowPlan::apply`]): `read` is the
     /// rectangle of its whole output stage `whole` that its segment reads, and `previous` the
     /// rectangle of the whole stage it receives that the cut frame before it holds. Answers the
@@ -427,6 +444,17 @@ impl Segment {
             has_color: false,
             output_origin: (0, 0),
         }
+    }
+
+    /// Its resample entry took one more warp or resample into its map, which now writes an
+    /// `output` stage: the segment's frame is that stage, and its geometry the identity over it.
+    /// A segment only fuses while its geometry is the identity, so nothing else changes; keeping
+    /// the stage it had before would map its frame onto a stage it no longer reads, which a
+    /// windowed proxy's cut refuses.
+    pub(crate) fn fused(&mut self, output: Stage) {
+        self.width = output.width;
+        self.height = output.height;
+        self.geometry = ExactGeometry::identity(output.width, output.height);
     }
 
     /// Whether this pass writes anything into its frame. An identity pass that does not shares the

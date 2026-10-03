@@ -164,14 +164,18 @@ fn guided_self(
 /// Texture: the fine and coarse self-guided smoothers of the encoded input at full resolution, the
 /// apply reading their band. The fine smoother is held; the coarse one's last pass writes the band
 /// itself into the coefficients' plane, which it no longer reads, so the operation holds three
-/// full-resolution planes (20 bytes a pixel) rather than four.
+/// full-resolution planes (20 bytes a pixel) rather than four. The coefficients and band, and the
+/// fine smoother, are planes half precision holds, so behind Detail they take two of the
+/// half-precision planes it leaves free and Texture adds only its running sums, which stay `f32`:
+/// the variance the vertical pass takes from them cancels.
 pub(super) fn texture(unit: &texture::Texture) -> GpuSpatialUnit {
     let (sums, band, fine) = (0, 1, 2);
     let planes = vec![
+        // The running sums' horizontal means, which the vertical pass's variance cancels.
         plane(GpuPlaneFormat::Pair, 1, true),
         // The coefficients of each smoother, then the band the apply reads.
-        plane(GpuPlaneFormat::Pair, 1, false),
-        plane(GpuPlaneFormat::Scalar, 1, true),
+        plane(GpuPlaneFormat::HalfPair, 1, false),
+        plane(GpuPlaneFormat::HalfScalar, 1, true),
     ];
     let mut words = Words::default();
     let mut passes = Vec::new();
