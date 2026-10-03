@@ -445,6 +445,19 @@ const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 9] = [
     export::subscription,
 ];
 
+/// The graphics backend and adapter, asked of the renderer only by an evidence run, which is the
+/// only thing that reads them: its frames' `state.backend`, its capture gate and its `backend`
+/// event. A normal launch asks for nothing, because iced answers the request with
+/// `System::new_all()` and `refresh_all()` on a spawned thread, a walk of every process on the
+/// host that returns two strings no one in a normal launch reads. The workspace keeps iced's
+/// `sysinfo` feature for this call; without it the request never answers.
+fn system_information(evidence: bool) -> Task<Message> {
+    if !evidence {
+        return Task::none();
+    }
+    iced::system::information().map(|value| Message::Evidence(EvidenceMessage::Info(value)))
+}
+
 impl Editor {
     pub(crate) fn new(boot: Boot) -> (Self, Task<Message>) {
         let Boot {
@@ -555,8 +568,7 @@ impl Editor {
             .and_then(iced::window::scale_factor)
             .map(|value| Message::View(ViewMessage::ScaleFactor(value)));
         let trackpad = view_state::install_trackpad();
-        let backend = iced::system::information()
-            .map(|value| Message::Evidence(EvidenceMessage::Info(value)));
+        let backend = system_information(editor.evidence.is_some());
         // Tool controls are discovered once, through the same API every other client uses, and the
         // preset library is listed the same way; the event sync keeps it current afterwards.
         let modules = modules_task(editor.owner.clone(), editor.client);
