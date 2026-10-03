@@ -1772,7 +1772,7 @@ impl Owner {
             .log
             .since_naming(held.wait.after, held.wait.asset_id.as_ref());
         let response = match methods::value(since) {
-            Ok(value) => ApiResponse::success(held.id, self.log.sequence, value),
+            Ok(value) => ApiResponse::value(held.id, self.log.sequence, value),
             Err(error) => ApiResponse::failure(held.id, self.log.sequence, error),
         };
         // A caller that has gone has nobody to answer.
