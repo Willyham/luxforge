@@ -207,9 +207,10 @@ impl MaskDraft {
         Self::opened(Some(mask), None, kind, MaskDraftOp::Add(mode), None, brush)
     }
 
-    /// Edit an existing component: the shape starts at exactly the stored payload, so reopening a
-    /// draft shows what was committed. A brush component has no shape to start from — its strokes
-    /// are already drawn — so this opens the next stroke on it instead.
+    /// Edit an existing component: the shape starts at exactly the stored payload, so its handles
+    /// show what was committed. A gradient is then edited [directly](Self::direct). A brush
+    /// component has no shape to start from — its strokes are already drawn — so this opens the
+    /// next stroke on it instead.
     pub(crate) fn editing(
         mask: MaskId,
         component: ComponentId,
@@ -273,10 +274,19 @@ impl MaskDraft {
         self.op == MaskDraftOp::Create
     }
 
-    /// A creation, or a held gradient, owns the other controls until Apply or Cancel. A brush on
-    /// an existing mask leaves them available between strokes.
+    /// An existing gradient edited by its handles, as Lightroom's are: a press on a handle opens the
+    /// draft, the release commits it as one entry, and nothing is held between drags. A press away
+    /// from its handles never redraws it, so a stray click on the photograph cannot replace a shape
+    /// that is already committed.
+    pub(crate) fn direct(&self) -> bool {
+        self.op == MaskDraftOp::Set && !self.paints()
+    }
+
+    /// A creation, or a gradient being placed or added, owns the other controls until Apply or
+    /// Cancel. A brush on an existing mask leaves them available between strokes, and an existing
+    /// gradient between drags.
     pub(crate) fn owns_controls(&self) -> bool {
-        self.owns_creation() || !self.paints()
+        self.owns_creation() || !(self.paints() || self.direct())
     }
 
     /// Take a placed tool back to unplaced, as a start that could not open its draft leaves it.
@@ -286,9 +296,11 @@ impl MaskDraft {
         self.shape.release();
     }
 
+    /// Why a tool in hand has nothing to commit yet: its gradient is placed, and committed, by one
+    /// drag on the photograph.
     pub(crate) fn placement_refusal(&self) -> Option<String> {
         self.unplaced()
-            .then(|| "Click and drag to place the mask before applying".to_owned())
+            .then(|| "Click and drag on the photograph to place the mask".to_owned())
     }
 
     /// The pointer went down on the photograph: this stroke starts here.
@@ -455,6 +467,9 @@ impl MaskDraft {
 
     /// Draw a whole shape in one stroke, from a press that grabbed no handle to the pointer.
     pub(crate) fn sweep(&mut self, from: (f64, f64), to: (f64, f64)) {
+        if self.direct() {
+            return;
+        }
         if self.unplaced() {
             if !self.shape.placement_valid(from, to, self.aspect) {
                 return;
@@ -822,7 +837,7 @@ mod tests {
 
     #[test]
     fn a_sweep_draws_the_whole_gradient_from_the_press_to_the_pointer() {
-        let mut draft = draft();
+        let mut draft = MaskDraft::creating(LINEAR, NEUTRAL_BRUSH).expect("a drawn kind");
         draft.sweep((0.2, 0.1), (0.8, 0.9));
         let now = linear(&draft).expect("a gradient");
         assert_eq!((now.x0, now.y0), (0.2, 0.1));
@@ -840,13 +855,20 @@ mod tests {
         let mut still = MaskDraft::creating(LINEAR, NEUTRAL_BRUSH).expect("a drawn kind");
         still.sweep((0.4, 0.4), (0.4, 0.4));
         assert!(still.unplaced() && still.fields().is_empty());
+        // An existing gradient is edited by its handles alone: a sweep never redraws it.
+        let mut existing = self::draft();
+        let stored = existing.fields();
+        existing.sweep((0.2, 0.1), (0.8, 0.9));
+        assert!(existing.direct() && !existing.dragging());
+        assert_eq!(existing.fields(), stored);
     }
 
     /// A radial's sweep is the same stroke read as an extent: the press is the centre and the drag
     /// sets both radii, in mask-space units of the stage's height on both axes.
     #[test]
     fn a_radial_sweep_sets_the_centre_and_both_radii_in_mask_space() {
-        let mut draft = radial_draft();
+        let mut draft = MaskDraft::creating(RADIAL, NEUTRAL_BRUSH).expect("a drawn kind");
+        draft.set_aspect(1.5);
         draft.sweep((0.4, 0.5), (0.6, 0.8));
         let now = radial(&draft).expect("an ellipse");
         assert_eq!((now.x, now.y), (0.4, 0.5));
