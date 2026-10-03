@@ -338,6 +338,8 @@ fn gpu_detail_oklab_matches_the_cpu() {
     let (mut in_range, mut past, mut non_finite) = (0.0_f64, 0.0_f64, 0);
     let mut at = [0.0_f32; 3];
     for (rgb, texel) in values.iter().zip(&gpu) {
+        // The plane holds lightness less its offset (`lf_detail_lightness_offset`).
+        let texel = [texel[0] + 0.5, texel[1], texel[2]];
         let lab = cpu::oklab(*rgb);
         for c in 0..3 {
             if lab[c].is_finite() && !texel[c].is_finite() {
@@ -1171,9 +1173,12 @@ fn gpu_detail_pass_pipelines_are_shared() {
 }
 
 /// What the photo surface's slot drawing both Detail units charges the GPU-preview budget at Fit:
-/// the 60 MP JPEG's Fit stage, the evidence window's whole Fit bounds, a 3026 × 1826 region (the
-/// largest 100% window measured) and a 4000 × 2667 stage fit it; a stage past about 21 MP does not,
-/// so the surface refuses it before creating anything and draws the CPU's frame, naming the budget
+/// six half-precision planes, 48 bytes a pixel, sharpening's scratch in the ones noise reduction
+/// leaves free and each unit's apply reading a plane of its own that one pass writes, which an
+/// incremental tick keeps. The 60 MP JPEG's Fit stage, the evidence window's whole Fit bounds, a
+/// 3026 × 1826 region (the largest 100% window measured) and a 7000 × 4667 stage fit it; a stage
+/// past about 33 MP does not, so the surface refuses it before creating anything and draws the
+/// CPU's frame, naming the budget
 /// (`spatial_planes_are_charged_released_and_refused_past_the_budget`).
 #[test]
 fn gpu_detail_planes_are_charged_to_the_budget() {
@@ -1190,7 +1195,9 @@ fn gpu_detail_planes_are_charged_to_the_budget() {
         ((3026, 1826), (10000, 6000), true),
         ((3464, 2309), (10000, 6667), true),
         ((4000, 2667), (10000, 6667), true),
-        ((6400, 4267), (10000, 6667), false),
+        ((6400, 4267), (10000, 6667), true),
+        ((7000, 4667), (10000, 6667), true),
+        ((7200, 4800), (10000, 6667), false),
     ] {
         let plan = planned(
             gpu_plan(
@@ -1215,7 +1222,7 @@ fn gpu_detail_planes_are_charged_to_the_budget() {
             charged as f64 / 1048576.0,
             budget / 1048576
         );
-        assert_eq!(planes, 84 * u64::from(width * height));
+        assert_eq!(planes, 48 * u64::from(width * height));
         assert_eq!(charged <= budget, fits, "{width}x{height}");
     }
 }
@@ -1225,9 +1232,11 @@ fn gpu_detail_planes_are_charged_to_the_budget() {
 /// zero everywhere draws its input bit for bit, and so does every stack whose noise reduction runs
 /// in both shapes, its fourth level at zero included. Sharpening alone runs after noise reduction's
 /// identity in the drafted shape and reads its input through that unit's apply, in pass and frame
-/// modules of their own, where Metal's fast math compiles the same arithmetic a little differently:
-/// that difference is measured and held far inside the spatial limits. At full resolution and at a
-/// Fit proxy's scale, on the linear path.
+/// modules of their own, where Metal's fast math compiles the same arithmetic a little differently,
+/// and its planes are the half-precision ones noise reduction leaves free, where the CPU's shape
+/// gives it full-precision planes of its own, which cost no more for one or two channels: within
+/// one code, measured and held far inside the spatial limits. At full resolution and at a Fit
+/// proxy's scale, on the linear path.
 #[test]
 fn gpu_detail_the_drafted_shape_draws_what_the_cpus_does() {
     let test = "gpu_detail_the_drafted_shape_draws_what_the_cpus_does";
@@ -1273,10 +1282,191 @@ fn gpu_detail_the_drafted_shape_draws_what_the_cpus_does() {
             if first {
                 assert_eq!(drawn.values, 0, "{request:?}: {payload}");
             }
+            // A half's step of lightness held about zero, through the reconstruction: 4.6e-4 at
+            // most on the M4.
             assert!(
-                drawn.largest <= 3.0e-5 && drawn.code <= 1,
+                drawn.largest <= 1.0e-3 && drawn.code <= 1,
                 "{request:?}: {payload}: {drawn:?}"
             );
+        }
+    }
+}
+
+// ---- Plane precision --------------------------------------------------------------------------
+
+/// The format a plane of `format` takes at full precision, and at half: `rgba16float`, the one
+/// half-precision format a texture is stored in.
+fn at_precision(format: PlaneFormat, half: bool) -> PlaneFormat {
+    match (format, half) {
+        (_, true) => PlaneFormat::Colour,
+        (PlaneFormat::Colour, false) => PlaneFormat::Quad,
+        (PlaneFormat::HalfPair, false) => PlaneFormat::Pair,
+        (PlaneFormat::HalfScalar, false) => PlaneFormat::Scalar,
+        (format, false) => format,
+    }
+}
+
+/// `plan` with every spatial step's plane `(step, plane)` given the format `format` answers.
+fn with_formats(
+    plan: &GpuPlan,
+    format: impl Fn(usize, usize, PlaneFormat) -> PlaneFormat,
+) -> GpuPlan {
+    let mut plan = plan.clone();
+    for (index, step) in plan.steps.iter_mut().enumerate() {
+        if let GpuStep::Spatial(spatial) = step {
+            for (number, plane) in spatial.planes.iter_mut().enumerate() {
+                plane.format = format(index, number, plane.format);
+            }
+        }
+    }
+    plan
+}
+
+/// What each spatial plane's precision costs, plane by plane: each stack the corpus chains, Detail
+/// and Presence alone, in the GPU shape a drag draws, over the synthetic photograph on the linear
+/// path at full resolution against the CPU's exact frame. For each, the program with every plane
+/// at full precision, as shipped, and with each plane alone at half precision, each judged by the
+/// spatial limits and measured against the full-precision program in linear light. A measurement
+/// with no assertion, which the shipped formats rest on (`docs/specs/performance.md`, "Plane
+/// precision").
+#[test]
+#[ignore = "a measurement, printed: run with --ignored --nocapture"]
+fn gpu_detail_plane_precision_is_measured() {
+    let test = "gpu_detail_plane_precision_is_measured";
+    let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
+        return;
+    };
+    eprintln!("{test}: adapter {}", qualifier.adapter());
+    let registry = ModuleRegistry::builtin();
+    let (width, height) = (1536, 1024);
+    let pixels = photograph(width, height, 1536);
+    let presence = |payload: Value| Layer::new(luxforge_core::PRESENCE_EFFECT, payload);
+    let chained = |detail: Value, fields: Value| Recipe {
+        layers: vec![Layer::new(DETAIL_EFFECT, detail), presence(fields)],
+        ..Recipe::default()
+    };
+    let stacks = [
+        ("detail moderate", recipe(moderate())),
+        ("detail noise stress", recipe(noise_stress())),
+        ("detail sharpen stress", recipe(sharpen_stress())),
+        (
+            "detail then texture and clarity",
+            chained(moderate(), json!({"texture": 50, "clarity": 50})),
+        ),
+        (
+            "detail then all three",
+            chained(
+                moderate(),
+                json!({"texture": 50, "clarity": 50, "dehaze": 30}),
+            ),
+        ),
+        (
+            "texture and clarity",
+            Recipe {
+                layers: vec![presence(json!({"texture": 100, "clarity": 100}))],
+                ..Recipe::default()
+            },
+        ),
+    ];
+    let len = pixels.len();
+    let mut planes = vec![0.0_f32; 3 * len];
+    for (index, pixel) in pixels.iter().enumerate() {
+        for c in 0..3 {
+            planes[c * len + index] = pixel[c];
+        }
+    }
+    let image = LinearImage::with_fingerprint(width, height, planes, "sha256:gpu-precision")
+        .expect("a linear image");
+    let table = luxforge_core::colour::srgb::decode_table();
+    for (name, stack) in stacks {
+        let cpu = render(
+            &registry,
+            RenderSource::Linear {
+                image: &image,
+                settings: LinearSettings::default(),
+            },
+            &stack,
+            RenderOptions::exact(&Cancel::never()),
+            &RenderContext::new(),
+        )
+        .and_then(|render| render.frame(SnapshotId::new()))
+        .expect("the CPU frame");
+        let reference = codes(
+            cpu.rgba
+                .chunks_exact(4)
+                .map(|p| [0, 1, 2].map(|c| table[usize::from(p[c])])),
+        );
+        let plan = planned(
+            gpu_plan(
+                &registry,
+                &stack,
+                GpuPlanRequest::exact(0, stage(width, height))
+                    .qualifying()
+                    .linear()
+                    .drafted(0),
+            )
+            .unwrap(),
+        );
+        let shipped =
+            surface_plan(&plan, boundary(width, height, 1, &pixels).unwrap()).expect("runnable");
+        let full = with_formats(&shipped, |_, _, format| at_precision(format, false));
+        let run = |plan: &GpuPlan| -> (Statistics, Vec<[f32; 4]>) {
+            let gpu = qualifier.evaluate(plan).expect("a readback");
+            let program = codes(gpu.iter().map(|texel| [texel[0], texel[1], texel[2]]));
+            let frame = |bytes| Rgb8::new(width, height, bytes).expect("a whole frame");
+            let statistics =
+                preview_error::compare(frame(&program), frame(&reference), [0, 0, width, height])
+                    .expect("comparable frames");
+            (statistics, gpu)
+        };
+        let (_, baseline) = run(&full);
+        let against = |gpu: &[[f32; 4]]| {
+            let (mut largest, mut sum) = (0.0_f64, 0.0_f64);
+            for (g, b) in gpu.iter().zip(&baseline) {
+                for c in 0..3 {
+                    let d = f64::from((g[c] - b[c]).abs());
+                    largest = largest.max(d);
+                    sum += d;
+                }
+            }
+            (largest, sum / (3 * gpu.len()) as f64)
+        };
+        let report = |label: &str, plan: &GpuPlan| {
+            let (statistics, gpu) = run(plan);
+            let (largest, mean) = against(&gpu);
+            eprintln!(
+                "{test}: {name}: {label}: {} | against full precision: largest {largest:.2e}, \
+                 mean {mean:.2e}{}",
+                figures(&statistics),
+                if preview_error::verdict(&statistics, Class::Spatial).passed() {
+                    ""
+                } else {
+                    " MISS"
+                }
+            );
+        };
+        report("every plane at full precision", &full);
+        report("as shipped", &shipped);
+        for (index, step) in shipped.steps.iter().enumerate() {
+            let GpuStep::Spatial(spatial) = step else {
+                continue;
+            };
+            for (number, plane) in spatial.planes.iter().enumerate() {
+                if plane.size != PlaneSize::Reduced(1) {
+                    continue;
+                }
+                let half = with_formats(&shipped, |at, n, format| {
+                    at_precision(format, (at, n) == (index, number))
+                });
+                report(
+                    &format!(
+                        "step {index} plane {number} ({:?}, {} B a texel) alone at half",
+                        plane.format,
+                        plane.format.texel_bytes()
+                    ),
+                    &half,
+                );
+            }
         }
     }
 }

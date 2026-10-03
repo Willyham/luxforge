@@ -23,6 +23,10 @@ pub const MAX_SCRIPT_STEPS: usize = 64;
 
 /// The longest one `wait` step may idle, so a script cannot spend its deadline doing nothing.
 pub const MAX_WAIT_MS: u64 = 10_000;
+/// The longest one `gpu_warmed` step may wait for the GPU preview's compile thread: a cold shader
+/// cache on a loaded host compiles a Presence sequence in seconds, and a committed stack's warm
+/// list holds several.
+pub const MAX_WARM_MS: u64 = 60_000;
 /// The one named key a `key` step presses; every other is a single letter or digit.
 pub const KEY_ESCAPE: &str = "Escape";
 
@@ -173,6 +177,15 @@ pub enum Step {
     Wait {
         ms: u64,
     },
+    /// Ask nothing of the editor for at least `quiet_ms`, then until the GPU preview's compile
+    /// thread has compiled everything handed to it — the desktop's newest warm list taken, and no
+    /// sequence queued or compiling — or until `ms` from the step's start, then capture: what a
+    /// committed stack's warming means before the next gesture. The step's record says whether it
+    /// finished and how long it waited.
+    GpuWarmed {
+        quiet_ms: u64,
+        ms: u64,
+    },
     /// One key pressed with no text field focused, answered by the desktop's own key table exactly
     /// as the keyboard is: one letter or digit (`w`), or `Escape`.
     Key {
@@ -311,6 +324,16 @@ impl Step {
             Self::Preset(pick) | Self::PresetDelete(pick) => pick.validate(),
             Self::PresetCreate(step) => step.validate(),
             Self::PresetImport { path } => text(path, "preset_import path"),
+            Self::GpuWarmed { quiet_ms, ms } => {
+                if *quiet_ms <= MAX_WAIT_MS && (1..=MAX_WARM_MS).contains(ms) && quiet_ms <= ms {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "gpu_warmed takes a quiet_ms of at most {MAX_WAIT_MS} and an ms from it to \
+                         {MAX_WARM_MS}"
+                    ))
+                }
+            }
             Self::Wait { ms } => {
                 if (1..=MAX_WAIT_MS).contains(ms) {
                     Ok(())

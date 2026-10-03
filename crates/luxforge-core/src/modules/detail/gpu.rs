@@ -16,13 +16,19 @@
 //! their 17 passes from 6 modules: the two Oklab passes (the second runs noise reduction's apply
 //! in its source), the two smoothing passes, the shrinkage and the sharpening.
 //!
-//! **Planes.** Noise reduction holds four `rgba32float` planes at the boundary's size: the current
-//! and next levels' smoothed Oklab, swapped each level, and two that each level's horizontal pass
-//! and shrinkage share in turn, so that the change accumulated so far is never overwritten before
-//! the next level reads it. The last level's change is the one plane the apply reads. Sharpening
-//! holds three `rgba32float` scratch planes, which reuse noise reduction's in one operation, and
-//! the `r32float` change of lightness its apply reads. The two units together hold 68 bytes a
-//! pixel.
+//! **Planes.** Noise reduction holds four half-precision `rgba16float` planes at the boundary's
+//! size: the current and next levels' smoothed Oklab, swapped each level, and two that each level's
+//! horizontal pass and shrinkage share in turn, so that the change accumulated so far is never
+//! overwritten before the next level reads it. The last level's change is the one plane the apply
+//! reads. Lightness is held less one half (`lf_detail_lightness_offset`), where a half's step is
+//! finer. Sharpening holds three planes of one or two channels that half precision holds: the
+//! lightness, the blur and guide's horizontal pass and then the change of lightness its apply
+//! reads, and the blur and guide smoothed. In one operation they take the three noise reduction
+//! leaves free, so the two units together hold 32 bytes a pixel; sharpening alone takes `r32float`
+//! and `rg32float` planes of its own, 20 bytes a pixel, since half precision saves nothing under
+//! three channels. Every plane at half precision moves the units' figures against the CPU from a
+//! mean ΔE00 of 0.0001 to about 0.03, far inside the spatial limits
+//! (`gpu_detail_plane_precision_is_measured`, `docs/specs/performance.md`, "Plane precision").
 use super::filters::Kernel;
 use crate::{
     GpuProgram, GpuProgramKind,
@@ -60,9 +66,10 @@ fn slot(kernel: &Kernel) -> Option<Vec<Word>> {
     Some(words)
 }
 
-fn quad(scratch: bool) -> GpuPlane {
+/// A full-resolution plane of `format`.
+fn plane(format: GpuPlaneFormat, scratch: bool) -> GpuPlane {
     GpuPlane {
-        format: GpuPlaneFormat::Quad,
+        format,
         size: GpuPlaneSize::Reduced(1),
         scratch,
     }
@@ -116,7 +123,12 @@ pub(super) fn denoise(
     // odd number of levels and in Q after an even one.
     let (a, b, p, q) = (0, 1, 2, 3);
     let last = if levels % 2 == 1 { p } else { q };
-    let planes = vec![quad(true), quad(true), quad(last != p), quad(last != q)];
+    let planes = vec![
+        plane(GpuPlaneFormat::Colour, true),
+        plane(GpuPlaneFormat::Colour, true),
+        plane(GpuPlaneFormat::Colour, last != p),
+        plane(GpuPlaneFormat::Colour, last != q),
+    ];
     let mut words = Words::default();
     let mut passes = Vec::with_capacity(1 + 3 * levels);
     let first = words.push(&[Word::U(0)]);
@@ -169,16 +181,15 @@ pub(super) fn sharpen(
     theta_squared: f32,
     mask_squared: f32,
 ) -> Option<GpuSpatialUnit> {
-    let (oklab, across, smoothed, change) = (0, 1, 2, 3);
+    // The lightness the blur, the guide and the change read; the blur and guide's horizontal
+    // pass, which nothing reads once the vertical pass has, and then the change of lightness the
+    // apply reads; and the blur and guide smoothed.
+    let (oklab, across, smoothed) = (0, 1, 2);
+    let change = across;
     let planes = vec![
-        quad(true),
-        quad(true),
-        quad(true),
-        GpuPlane {
-            format: GpuPlaneFormat::Scalar,
-            size: GpuPlaneSize::Reduced(1),
-            scratch: false,
-        },
+        plane(GpuPlaneFormat::HalfScalar, true),
+        plane(GpuPlaneFormat::HalfPair, false),
+        plane(GpuPlaneFormat::HalfPair, true),
     ];
     let mut words = Words::default();
     let first = words.push(&[Word::F(gain), Word::F(theta_squared), Word::F(mask_squared)]);

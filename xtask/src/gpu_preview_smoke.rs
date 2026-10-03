@@ -76,10 +76,15 @@ const EDGES: [[f64; 2]; 2] = [[0.5, 0.25], [0.25, 0.5]];
 /// compile, and for a committed frame to settle. Generous: a 320 × 480 boundary renders in a few
 /// milliseconds and a sequence compiles in tens.
 const QUIET_MS: u64 = 1500;
-/// How long the scenario leaves the editor alone once Presence is committed: the committed stack's
-/// warm list, each Presence drag's shapes among it, compiles meanwhile with no frame drawn, a
-/// Presence sequence taking up to two seconds cold, so every drag after it starts warmed.
+/// How long the 100% scenario leaves the editor alone once Presence is committed, and while a
+/// drag's region boundary arrives and its sequence compiles: a percentage view's plans are not
+/// warmed.
 pub(crate) const PRESENCE_QUIET_MS: u64 = 4000;
+/// The most the scenario waits, after a commit's quiet, for the committed stack's warm list to
+/// compile before the next Presence drag begins: each drag of a Presence layer or of a layer under
+/// it compiles its own Presence passes, about a second each on a cold shader cache and several on
+/// a loaded host, and a commit warms half a dozen. It ends as soon as nothing is left to compile.
+const WARM_MS: u64 = 60_000;
 
 /// The gradient as the sweep draws it, its middle at the centre, then where each drag leaves it.
 const SWEEP: ([f64; 2], [f64; 2]) = ([0.5, 0.3], [0.5, 0.7]);
@@ -126,6 +131,19 @@ pub(crate) fn quiet(name: &str) -> Step {
 
 pub(crate) fn quiet_for(name: &str, ms: u64) -> Step {
     Step::new(name, script::Step::Wait { ms }).commits(0)
+}
+
+/// [`quiet`], then until the GPU preview has compiled everything handed to it, the committed
+/// stack's warm list among it, at most [`WARM_MS`] in all.
+fn warmed(name: &str) -> Step {
+    Step::new(
+        name,
+        script::Step::GpuWarmed {
+            quiet_ms: QUIET_MS,
+            ms: WARM_MS,
+        },
+    )
+    .commits(0)
 }
 
 /// Every frame, in order: the open, then one per step.
@@ -330,7 +348,9 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             )
             .commits(1)
             .no_draft(),
-            quiet_for("presence-settled", PRESENCE_QUIET_MS).no_draft(),
+            // The committed stack's warm list compiles before the first Presence drag, and each
+            // drag's release warms the next stack before the next drag begins.
+            warmed("presence-settled").no_draft(),
         ]
         .into_iter()
         .chain(drag_steps(
@@ -338,41 +358,86 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             PRESENCE,
             "texture",
             TEXTURE_DRAG,
-            QUIET_MS,
+            Held::Quiet(QUIET_MS),
+            Settled::Warmed,
         ))
         .chain(drag_steps(
             "clarity",
             PRESENCE,
             "clarity",
             CLARITY_DRAG,
-            QUIET_MS,
+            Held::Quiet(QUIET_MS),
+            Settled::Warmed,
         ))
-        .chain(drag_steps("under", BASIC, EXPOSURE, UNDER_DRAG, QUIET_MS))
+        .chain(drag_steps(
+            "under",
+            BASIC,
+            EXPOSURE,
+            UNDER_DRAG,
+            Held::Quiet(QUIET_MS),
+            Settled::Quiet,
+        ))
         .collect(),
     )
 }
 
+/// How a drag's `<name>-held` step waits after its first tick.
+#[derive(Clone, Copy)]
+pub(crate) enum Held {
+    /// This many milliseconds of quiet while the boundary arrives, the drag's sequence warmed.
+    Quiet(u64),
+    /// This many milliseconds of quiet while the boundary arrives, then until the sequence the
+    /// held boundary's first plan asked for has compiled, at most [`WARM_MS`] in all: a percentage
+    /// view's plans are not warmed, so its drag compiles its own.
+    Compiled(u64),
+}
+
+/// How a drag's last step waits after its release.
+#[derive(Clone, Copy)]
+pub(crate) enum Settled {
+    /// [`QUIET_MS`] of quiet.
+    Quiet,
+    /// The quiet, then until the committed stack's warm list has compiled ([`warmed`]).
+    Warmed,
+}
+
 /// One drag over a held boundary, a step a tick: `<name>-first`, drawn from the resident boundary
-/// or asking for one; `<name>-held`, `held_ms` while a boundary asked for arrives, the surface
+/// or asking for one; `<name>-held`, as `held` says, while a boundary asked for arrives, the surface
 /// first runs every pass and the pause settles the tick; `<name>-gpu-1` and `<name>-gpu-2`, a GPU
-/// tick each; `<name>-release`, which commits the last value; and `<name>-settled`.
+/// tick each; `<name>-release`, which commits the last value; and `<name>-settled`, as `settled`
+/// says.
 pub(crate) fn drag_steps(
     name: &str,
     action: &str,
     field: &str,
     values: [f64; 3],
-    held_ms: u64,
+    held: Held,
+    settled: Settled,
 ) -> Vec<Step> {
     let slider = |value: f64| SliderStep::new(action, field, [value]);
     vec![
         Step::new(format!("{name}-first"), slider(values[0])).commits(0),
-        quiet_for(&format!("{name}-held"), held_ms),
+        match held {
+            Held::Quiet(ms) => quiet_for(&format!("{name}-held"), ms),
+            Held::Compiled(quiet_ms) => Step::new(
+                format!("{name}-held"),
+                script::Step::GpuWarmed {
+                    quiet_ms,
+                    ms: WARM_MS,
+                },
+            )
+            .commits(0),
+        },
         Step::new(format!("{name}-gpu-1"), slider(values[1])).commits(0),
         Step::new(format!("{name}-gpu-2"), slider(values[2])).commits(0),
         Step::new(format!("{name}-release"), slider(values[2]).release())
             .commits(1)
             .no_draft(),
-        quiet(&format!("{name}-settled")).no_draft(),
+        match settled {
+            Settled::Quiet => quiet(&format!("{name}-settled")),
+            Settled::Warmed => warmed(&format!("{name}-settled")),
+        }
+        .no_draft(),
     ]
 }
 
@@ -773,31 +838,36 @@ pub(crate) fn presence_drag_checks(
     gain_only: bool,
     warmed: bool,
 ) -> Result {
-    // Whether the warm list had finished compiling when the drag began, from the compile figures
-    // of the frame before its first tick's. Only then is a tick waiting on `compiling` a miss: a
-    // host under load can leave warmed sequences compiling past the quiet before the drag, and a
-    // tick that draws the CPU frame naming `compiling` meanwhile is the right fallback, so that is
-    // recorded rather than failed. That warming covers a drag's shapes is proven in the core
-    // (`the_warmed_plans_hold_a_spatial_layers_drags`), not by timing.
+    // A warmed drag begins once the step before it, a `gpu_warmed` wait, has seen the committed
+    // stack's warm list compile: from then on no frame of the drag may wait for a compile, since
+    // its sequence is among what was warmed. A wait that reached its deadline first fails the
+    // drag, naming what was still compiling; a `compiling` frame is never taken for a GPU frame.
+    // That warming covers a drag's shapes is proven in the core too
+    // (`the_warmed_plans_hold_a_spatial_layers_drags`).
     let first = launch.index(&format!("{name}-first"))?;
     let before = &launch.frames[first.checked_sub(1).ok_or("a frame before the drag")?];
     let figures = &before.state()["surface"]["gpu"];
     let figure = |key: &str| figures[key].as_u64().unwrap_or(0);
-    let pending = figure("gpu_preview_compiles").saturating_sub(figure("gpu_preview_compiled"));
-    if warmed && pending > 0 {
+    let pending = figure("gpu_preview_compile_pending");
+    if warmed {
+        let wait = &before["step"]["gpu_warmed"];
+        ensure(
+            pending == 0 && wait["finished"] == json!(true),
+            format!(
+                "the {name} drag began with {pending} sequences still compiling after {}: {wait}",
+                launch.names()[first - 1]
+            ),
+        )?;
         checks.note(
             launch.at(&format!("{name}-first"))?,
-            &format!("the {name} drag began with warmed sequences still compiling"),
-            json!({
-                "pending": pending,
+            &format!("the {name} drag began once the warm list had compiled"),
+            json!({"after": launch.names()[first - 1], "gpu_warmed": wait,
                 "compiles": figure("gpu_preview_compiles"),
                 "compiled": figure("gpu_preview_compiled"),
-                "after": launch.names()[first - 1],
-                "waited_ms": before["step"]["request"]["wait"]["ms"],
-            }),
+                "compile_max_us": figure("gpu_preview_compile_max_us")}),
         );
     }
-    if warmed && pending == 0 {
+    if warmed {
         for step in ["first", "held", "gpu-1", "gpu-2"].map(|step| format!("{name}-{step}")) {
             let gpu = &launch.at(&step)?.state()["surface"]["gpu"];
             let compiling = json!({"reason": "compiling"});
@@ -1155,22 +1225,194 @@ fn settle_checks(launch: &Checked, checks: &mut Checks) -> Result {
         "the gradient's Apply dissolved from its GPU frame",
         json!({"dissolve": applied}),
     );
-    let stroke = named(step_events(launch, "stroke")?, "gpu_dissolve_started");
-    ensure(
-        stroke.len() == 1 && stroke[0]["detail"]["case"] == json!("committed"),
-        format!(
-            "The stroke's commit did not dissolve from its GPU frame: {:?}",
-            stroke
-                .iter()
-                .map(|event| &event["detail"])
-                .collect::<Vec<_>>()
-        ),
-    )?;
+    let stroke = stroke_dissolves(step_events(launch, "stroke")?)?;
     let idle = idle_passed(launch, "stroke-idle")?;
     checks.note(
         launch.at("stroke-idle")?,
-        "the stroke dissolved, then idle",
-        json!({"dissolve": stroke[0]["detail"], "idle": idle}),
+        "the stroke dissolved from its GPU frame, then idle",
+        json!({"dissolve": stroke["commit"], "held": stroke["held"], "idle": idle}),
     );
     Ok(())
+}
+
+/// The stroke's dissolves. Its release's commit dissolves once, from the GPU frame on screen when
+/// it started, over that frame's boundary. Before it, the design's held case may dissolve too
+/// (`docs/design/gpu-preview.md`, "Settle and the dissolve"): when the stroke's first job brings its
+/// frame and boundary only after the next position has gone to the CPU with a job of its own — one
+/// 60 ms interval, which a loaded host's first job outlasts — the surface draws that position's plan
+/// over the new boundary, and its own CPU frame, of the same revision, then dissolves in over it,
+/// until the next position's tick cancels the dissolve. Each such dissolve must start from a GPU
+/// frame this stroke drew, over the same boundary, and must end or be cancelled before the commit's
+/// begins; any other dissolve, or a commit from another frame, fails.
+fn stroke_dissolves(events: &[Value]) -> Result<Value> {
+    let started: Vec<(usize, &Value)> = events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| event["event"] == "gpu_dissolve_started")
+        .collect();
+    let details: Vec<&Value> = started.iter().map(|(_, event)| &event["detail"]).collect();
+    let committed: Vec<usize> = started
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, event))| event["detail"]["case"] == json!("committed"))
+        .map(|(index, _)| index)
+        .collect();
+    ensure(
+        committed.len() == 1 && committed[0] == started.len() - 1,
+        format!("The stroke's commit did not dissolve once, last: {details:?}"),
+    )?;
+    let (at, commit) = started[committed[0]];
+    // The GPU frames the stroke drew, each a draft revision over a boundary, in order.
+    let drawn: Vec<(&Value, &Value, usize)> = events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| {
+            event["event"] == "surface_frame_drawn" && event["detail"]["path"] == json!("gpu")
+        })
+        .map(|(index, event)| {
+            (
+                &event["detail"]["draft_revision"],
+                &event["detail"]["boundary"],
+                index,
+            )
+        })
+        .collect();
+    let on_screen = drawn
+        .iter()
+        .rev()
+        .find(|(_, _, index)| *index < at)
+        .ok_or("The stroke drew no GPU frame before its commit")?;
+    ensure(
+        commit["detail"]["from"] == *on_screen.0
+            && commit["detail"]["gpu_boundary"] == *on_screen.1,
+        format!(
+            "The stroke's commit did not dissolve from its GPU frame, revision {} over boundary {}: \
+             {details:?}",
+            on_screen.0, on_screen.1
+        ),
+    )?;
+    let mut held = Vec::new();
+    for (index, dissolve) in &started[..committed[0]] {
+        let detail = &dissolve["detail"];
+        let from_drawn = drawn.iter().any(|(revision, boundary, drawn_at)| {
+            *drawn_at < *index
+                && detail["from"] == **revision
+                && detail["gpu_boundary"] == **boundary
+        });
+        let finished = events[index + 1..at].iter().any(|event| {
+            (event["event"] == "gpu_dissolve_cancelled" || event["event"] == "gpu_dissolve_ended")
+                && event["detail"]["from"] == detail["from"]
+        });
+        ensure(
+            detail["case"] == json!("held") && from_drawn && finished,
+            format!(
+                "The stroke dissolved before its commit other than from a frame it drew, held \
+                 and finished before the commit: {details:?}"
+            ),
+        )?;
+        held.push(detail.clone());
+    }
+    Ok(json!({"commit": commit["detail"], "held": held}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(name: &str, detail: Value) -> Value {
+        json!({"event": name, "detail": detail})
+    }
+
+    fn drawn(revision: u64) -> Value {
+        event(
+            "surface_frame_drawn",
+            json!({"path": "gpu", "draft_revision": revision, "boundary": 6}),
+        )
+    }
+
+    fn started(case: &str, from: u64) -> Value {
+        event(
+            "gpu_dissolve_started",
+            json!({"case": case, "from": from, "to": 19, "gpu_boundary": 6}),
+        )
+    }
+
+    fn cancelled(from: u64) -> Value {
+        event(
+            "gpu_dissolve_cancelled",
+            json!({"from": from, "to": 18, "why": "input"}),
+        )
+    }
+
+    /// The commit's dissolve alone, from the last GPU frame; and with the held dissolve a loaded
+    /// host's late first job brings, from a frame the stroke drew and cancelled by the next tick.
+    #[test]
+    fn a_strokes_commit_dissolves_from_its_gpu_frame_after_any_held_one() {
+        let plain = [drawn(2), drawn(3), drawn(25), started("committed", 25)];
+        let checked = stroke_dissolves(&plain).expect("the commit's dissolve");
+        assert_eq!(checked["held"], json!([]));
+        let loaded = [
+            drawn(2),
+            started("held", 2),
+            cancelled(2),
+            drawn(3),
+            drawn(25),
+            started("committed", 25),
+        ];
+        let checked = stroke_dissolves(&loaded).expect("a held dissolve before the commit's");
+        assert_eq!(checked["held"].as_array().map(Vec::len), Some(1));
+    }
+
+    /// What is not the design's: no commit dissolve, two, a commit from an older frame, a held
+    /// dissolve still running at the commit or from a frame the stroke never drew, and any other
+    /// case before the commit.
+    #[test]
+    fn a_stroke_fails_any_other_dissolve() {
+        let cases: [(&str, Vec<Value>); 6] = [
+            ("no commit dissolve", vec![drawn(25)]),
+            (
+                "two commit dissolves",
+                vec![
+                    drawn(25),
+                    started("committed", 25),
+                    started("committed", 25),
+                ],
+            ),
+            (
+                "a commit from an older frame",
+                vec![drawn(24), drawn(25), started("committed", 24)],
+            ),
+            (
+                "a held dissolve still running",
+                vec![
+                    drawn(2),
+                    started("held", 2),
+                    drawn(25),
+                    started("committed", 25),
+                ],
+            ),
+            (
+                "a held dissolve from a frame never drawn",
+                vec![
+                    started("held", 2),
+                    cancelled(2),
+                    drawn(25),
+                    started("committed", 25),
+                ],
+            ),
+            (
+                "a commit that is not the last dissolve",
+                vec![
+                    drawn(2),
+                    started("committed", 2),
+                    cancelled(2),
+                    drawn(25),
+                    started("held", 25),
+                ],
+            ),
+        ];
+        for (name, events) in cases {
+            assert!(stroke_dissolves(&events).is_err(), "{name} passed");
+        }
+    }
 }

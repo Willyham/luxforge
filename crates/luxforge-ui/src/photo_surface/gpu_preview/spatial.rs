@@ -37,7 +37,10 @@
 //! pipeline, which the stage keeps across sequences ([`PassCache`]). Its planes
 //! are textures: `rgba16float`, `r32float`, `rg32float` or `rgba32float` by the plane's
 //! [`PlaneFormat`], each sized to the boundary or to the stage's blocks it reaches
-//! ([`GpuPlane::extent`]). A pass or an apply reads the step's words from its offset up to the next
+//! ([`GpuPlane::extent`]), or a texture an earlier step left free that holds the plane
+//! ([`PlanesKey`]), whose format a pass writing the plane then stores in. A half-float texture is
+//! written rounded to the nearest half, ties to even ([`HALF_ROUNDING`]): the M4's own conversion of
+//! a storage write, and of a render target's, rounds toward zero. A pass or an apply reads the step's words from its offset up to the next
 //! offset any pass or apply of its step names; a tick runs only the passes whose words, upstream or
 //! inputs changed since the planes the applies read were last written ([`Schedule`]). The passes run in order before the frame's pass, which binds the
 //! applies' planes as a second bind group, so the operation holds no colour plane of its own: its
@@ -91,10 +94,12 @@ const UNLIMITED: u32 = i32::MAX as u32;
 /// pipeline itself, so this bounds only what an evicted sequence can reuse.
 pub(super) const PASS_CACHE: usize = 64;
 
-/// What a plane's texels hold, as the texture format it is kept in.
+/// What a plane's texels hold — how many channels, and whether half precision holds them — and so
+/// the texture format it is kept in when it has a texture of its own. A plane may instead share a
+/// texture whose format [holds](Self::holds) it ([`PlanesKey`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PlaneFormat {
-    /// `rgba16float`: a colour intermediate.
+    /// `rgba16float`: four channels at half precision.
     Colour,
     /// `r32float`: one accumulator.
     Scalar,
@@ -102,14 +107,19 @@ pub enum PlaneFormat {
     Pair,
     /// `rgba32float`: four.
     Quad,
+    /// One channel half precision holds, `r32float` of its own: `rgba16float` is the one
+    /// half-precision format every adapter stores to.
+    HalfScalar,
+    /// Two channels half precision holds, `rg32float` of its own.
+    HalfPair,
 }
 
 impl PlaneFormat {
     pub(super) fn texture(self) -> wgpu::TextureFormat {
         match self {
             Self::Colour => wgpu::TextureFormat::Rgba16Float,
-            Self::Scalar => wgpu::TextureFormat::R32Float,
-            Self::Pair => wgpu::TextureFormat::Rg32Float,
+            Self::Scalar | Self::HalfScalar => wgpu::TextureFormat::R32Float,
+            Self::Pair | Self::HalfPair => wgpu::TextureFormat::Rg32Float,
             Self::Quad => wgpu::TextureFormat::Rgba32Float,
         }
     }
@@ -117,8 +127,8 @@ impl PlaneFormat {
     fn wgsl(self) -> &'static str {
         match self {
             Self::Colour => "rgba16float",
-            Self::Scalar => "r32float",
-            Self::Pair => "rg32float",
+            Self::Scalar | Self::HalfScalar => "r32float",
+            Self::Pair | Self::HalfPair => "rg32float",
             Self::Quad => "rgba32float",
         }
     }
@@ -126,10 +136,25 @@ impl PlaneFormat {
     /// The bytes one texel takes.
     pub fn texel_bytes(self) -> u64 {
         match self {
-            Self::Scalar => 4,
-            Self::Colour | Self::Pair => 8,
+            Self::Scalar | Self::HalfScalar => 4,
+            Self::Colour | Self::Pair | Self::HalfPair => 8,
             Self::Quad => 16,
         }
+    }
+
+    fn channels(self) -> u32 {
+        match self {
+            Self::Scalar | Self::HalfScalar => 1,
+            Self::Pair | Self::HalfPair => 2,
+            Self::Colour | Self::Quad => 4,
+        }
+    }
+
+    /// Whether a texture of this format holds a plane of `plane`'s: as many channels or more, and
+    /// full precision unless half precision holds the plane.
+    pub fn holds(self, plane: Self) -> bool {
+        let half = matches!(plane, Self::Colour | Self::HalfScalar | Self::HalfPair);
+        self.channels() >= plane.channels() && (self != Self::Colour || half)
     }
 }
 
@@ -1028,11 +1053,13 @@ pub(super) fn pass_module(
     let GpuStep::Spatial(spatial) = &steps[index] else {
         return Err("a pass belongs to a spatial step".into());
     };
-    let format = spatial
+    // The format of the texture that holds its output, which may be one an earlier step left free.
+    spatial
         .planes
         .get(pass.output as usize)
-        .ok_or("a pass writes a plane its step does not declare")?
-        .format;
+        .ok_or("a pass writes a plane its step does not declare")?;
+    let format = written_format(steps, index, pass.output)
+        .ok_or("a pass writes a plane no texture holds")?;
     let mut slots = Slots::default();
     slots
         .planes
@@ -1057,12 +1084,22 @@ pub(super) fn pass_module(
     source.push_str(&functions);
     source.push_str("\n@group(0) @binding(2) var lf_boundary: texture_2d<f32>;\n");
     source.push_str(&declarations(&slots));
+    // A half-float texture is written rounded to the nearest half, ties to even, first: a storage
+    // write's own conversion is the adapter's, and on the M4 it rounds toward zero, which biases
+    // every level of a chain of smoothings that reads the last one's output darker. `f32` keeps a
+    // half's ten mantissa bits exactly, so the write then converts nothing but the subnormals.
+    let stored = if format == PlaneFormat::Colour {
+        source.push_str(HALF_ROUNDING);
+        "lf_surface_half(value)"
+    } else {
+        "value"
+    };
     source.push_str(&format!(
         "@group(1) @binding({OUTPUT_BINDING}) var lf_out: texture_storage_2d<{}, write>;\n\
          fn lf_store(at: vec2<i32>, value: vec4<f32>) {{\n    \
          let low = vec2<i32>(i32(lf_param({PARAM_LIMIT}u)), i32(lf_param({}u)));\n    \
          let high = vec2<i32>(i32(lf_param({}u)), i32(lf_param({}u)));\n    \
-         if all(at >= low) && all(at < high) {{\n        textureStore(lf_out, at, value);\n    }}\n}}\n\
+         if all(at >= low) && all(at < high) {{\n        textureStore(lf_out, at, {stored});\n    }}\n}}\n\
          @group(1) @binding({PARAMS_BINDING}) var<storage, read> lf_params: array<u32>;\n\
          fn lf_param(i: u32) -> u32 {{\n    return lf_params[i];\n}}\n",
         format.wgsl(),
@@ -1161,6 +1198,26 @@ pub(super) fn parameters(steps: &[GpuStep], places: &[Place]) -> Vec<u32> {
     }
     words
 }
+
+/// What the planes of `steps`' spatial steps take of the GPU-preview budget over a boundary of
+/// `size` texels whose texel `(0, 0)` is stage pixel `origin`: their textures, chained steps
+/// sharing them as a slot shares them ([`PlanesKey`]), and the passes' parameters. What the
+/// desktop holds a region's plan to before its boundary exists; it creates nothing.
+pub fn plane_bytes(steps: &[GpuStep], size: (u32, u32), origin: (u32, u32)) -> u64 {
+    PlanesKey::of(steps, size, origin).map_or(0, |key| key.bytes())
+}
+
+/// `value` rounded to the nearest half float, ties to even, within the finite halves, as `f32`:
+/// its mantissa rounded to ten bits by integer arithmetic on its bits, which carries into the
+/// exponent as the rounding does. WGSL's `quantizeToF16` would need a capability the surface's
+/// device does not have.
+pub(super) const HALF_ROUNDING: &str = "
+fn lf_surface_half(value: vec4<f32>) -> vec4<f32> {
+    let bits = bitcast<vec4<u32>>(clamp(value, vec4<f32>(-65504.0), vec4<f32>(65504.0)));
+    let even = (bits >> vec4<u32>(13u)) & vec4<u32>(1u);
+    return bitcast<vec4<f32>>((bits + vec4<u32>(0x0fffu) + even) & vec4<u32>(0xffffe000u));
+}
+";
 
 /// How many passes `steps` run.
 fn pass_count(steps: &[GpuStep]) -> usize {
@@ -1359,7 +1416,9 @@ pub(super) fn compile_passes(
         };
         for pass in &spatial.passes {
             let (source, slots) = pass_module(steps, index, pass)?;
-            let format = spatial.planes[pass.output as usize].format.texture();
+            let format = written_format(steps, index, pass.output)
+                .ok_or("a pass writes a plane no texture holds")?
+                .texture();
             let made = modules
                 .iter()
                 .find(|(text, ..)| *text == source)
@@ -1423,9 +1482,13 @@ pub(super) fn compile_passes(
 /// its stage origin, and which texture holds each plane.
 ///
 /// A plane no apply reads is scratch: only its own step's passes use it, and they have all run
-/// before a later step's first pass. A later step's scratch plane of the same format and extent
-/// therefore takes an earlier step's scratch texture, so chained spatial steps hold one texture for
-/// both; a plane an apply reads keeps its own, which the frame and every later step's input read.
+/// before a later step's first pass. A later step's plane therefore takes an earlier step's scratch
+/// texture of the same size whose format [holds](PlaneFormat::holds) it, the smallest such, so
+/// chained spatial steps hold one texture for both: a scratch plane, which leaves the texture free
+/// for a step after it, or a plane an apply reads, which keeps it, since the frame and every later
+/// step's input read it. Which texture each plane takes, and so the format a pass writes, depends
+/// on the steps alone ([`texture_formats`]), never on the boundary's size, so the pipelines a
+/// sequence compiles serve every boundary.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct PlanesKey {
     planes: Vec<(usize, Vec<GpuPlane>)>,
@@ -1439,65 +1502,105 @@ pub(super) struct PlanesKey {
     origin: (u32, u32),
 }
 
-impl PlanesKey {
-    pub(super) fn of(steps: &[GpuStep], size: (u32, u32), origin: (u32, u32)) -> Option<Self> {
-        let planes: Vec<(usize, Vec<GpuPlane>)> = steps
+/// Each spatial step's planes, which texture holds each, and the textures, each the plane that
+/// first took it.
+type Assignment = (
+    Vec<(usize, Vec<GpuPlane>)>,
+    Vec<(usize, Vec<usize>)>,
+    Vec<GpuPlane>,
+);
+
+/// Which texture holds each plane of `steps`' spatial steps ([`PlanesKey`]).
+fn assign(steps: &[GpuStep]) -> Assignment {
+    let planes: Vec<(usize, Vec<GpuPlane>)> = steps
+        .iter()
+        .enumerate()
+        .filter_map(|(index, step)| match step {
+            GpuStep::Spatial(spatial) => Some((index, spatial.planes.clone())),
+            GpuStep::Colour { .. }
+            | GpuStep::Masked(_)
+            | GpuStep::Geometry(_)
+            | GpuStep::Clipping(_) => None,
+        })
+        .collect();
+    // Earlier steps' scratch textures, free for a later step's planes.
+    let mut textures: Vec<GpuPlane> = Vec::new();
+    let mut scratch: Vec<usize> = Vec::new();
+    let mut aliases = Vec::with_capacity(planes.len());
+    for (index, step_planes) in &planes {
+        let GpuStep::Spatial(spatial) = &steps[*index] else {
+            continue;
+        };
+        let read = |plane: usize| {
+            spatial
+                .applies
+                .iter()
+                .any(|apply| apply.planes.contains(&(plane as u32)))
+        };
+        let mut taken: Vec<usize> = Vec::new();
+        let mut made_scratch: Vec<usize> = Vec::new();
+        let step_aliases = step_planes
             .iter()
             .enumerate()
-            .filter_map(|(index, step)| match step {
-                GpuStep::Spatial(spatial) => Some((index, spatial.planes.clone())),
-                GpuStep::Colour { .. }
-                | GpuStep::Masked(_)
-                | GpuStep::Geometry(_)
-                | GpuStep::Clipping(_) => None,
+            .map(|(number, plane)| {
+                let shared = scratch
+                    .iter()
+                    .copied()
+                    .filter(|texture| {
+                        !taken.contains(texture)
+                            && textures[*texture].size == plane.size
+                            && textures[*texture].format.holds(plane.format)
+                    })
+                    .min_by_key(|texture| textures[*texture].format.texel_bytes());
+                if let Some(texture) = shared
+                    && read(number)
+                {
+                    // An apply reads it from here on: no later step may take it.
+                    scratch.retain(|free| *free != texture);
+                }
+                let texture = shared.unwrap_or_else(|| {
+                    textures.push(*plane);
+                    if !read(number) {
+                        made_scratch.push(textures.len() - 1);
+                    }
+                    textures.len() - 1
+                });
+                taken.push(texture);
+                texture
             })
             .collect();
+        scratch.extend(made_scratch);
+        aliases.push((*index, step_aliases));
+    }
+    (planes, aliases, textures)
+}
+
+/// The format of the texture that holds each plane of each spatial step of `steps`, indexed as
+/// the steps and their planes are: the format a pass writing the plane stores in.
+pub(super) fn texture_formats(steps: &[GpuStep]) -> Vec<(usize, Vec<PlaneFormat>)> {
+    let (_, aliases, textures) = assign(steps);
+    aliases
+        .into_iter()
+        .map(|(index, aliases)| {
+            let formats = aliases.iter().map(|&texture| textures[texture].format);
+            (index, formats.collect())
+        })
+        .collect()
+}
+
+/// The format a pass of step `index` writing plane `plane` stores in.
+pub(super) fn written_format(steps: &[GpuStep], index: usize, plane: u32) -> Option<PlaneFormat> {
+    texture_formats(steps)
+        .into_iter()
+        .find(|(step, _)| *step == index)
+        .and_then(|(_, formats)| formats.get(plane as usize).copied())
+}
+
+impl PlanesKey {
+    pub(super) fn of(steps: &[GpuStep], size: (u32, u32), origin: (u32, u32)) -> Option<Self> {
+        let (planes, aliases, textures) = assign(steps);
         if planes.is_empty() {
             return None;
-        }
-        // Earlier steps' scratch textures, free for a later step's scratch planes.
-        let mut textures: Vec<GpuPlane> = Vec::new();
-        let mut scratch: Vec<usize> = Vec::new();
-        let mut aliases = Vec::with_capacity(planes.len());
-        for (index, step_planes) in &planes {
-            let GpuStep::Spatial(spatial) = &steps[*index] else {
-                continue;
-            };
-            let read = |plane: usize| {
-                spatial
-                    .applies
-                    .iter()
-                    .any(|apply| apply.planes.contains(&(plane as u32)))
-            };
-            let mut taken: Vec<usize> = Vec::new();
-            let mut made_scratch: Vec<usize> = Vec::new();
-            let step_aliases = step_planes
-                .iter()
-                .enumerate()
-                .map(|(number, plane)| {
-                    let extent = plane.extent(origin, size);
-                    let shared = (!read(number))
-                        .then(|| {
-                            scratch.iter().copied().find(|texture| {
-                                !taken.contains(texture)
-                                    && textures[*texture].format == plane.format
-                                    && textures[*texture].extent(origin, size) == extent
-                            })
-                        })
-                        .flatten();
-                    let texture = shared.unwrap_or_else(|| {
-                        textures.push(*plane);
-                        if !read(number) {
-                            made_scratch.push(textures.len() - 1);
-                        }
-                        textures.len() - 1
-                    });
-                    taken.push(texture);
-                    texture
-                })
-                .collect();
-            scratch.extend(made_scratch);
-            aliases.push((*index, step_aliases));
         }
         Some(Self {
             planes,

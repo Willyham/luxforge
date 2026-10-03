@@ -17,7 +17,7 @@
 use super::{
     BoundaryFormat, Compiled, GpuBoundary, GpuFallback, GpuPlan, GpuStep, GpuTail, OUTPUT_FORMAT,
     SpatialSlot, Support, answered, assemble_passes, chain, compile, encode_pass_over, le_bytes,
-    slot_charge, spatial, upload_boundary, validate, validate_step,
+    slot_charge, spatial, upload_rows, validate, validate_step,
 };
 use std::sync::mpsc;
 
@@ -175,7 +175,7 @@ impl Qualifier {
         for step in &plan.steps {
             validate_step(step)?;
         }
-        for source in assemble_passes(&plan.steps, true)? {
+        for source in assemble_passes(&plan.steps, super::End::Codes)? {
             validate(&source)?;
         }
         let spatial_steps = plan
@@ -497,7 +497,16 @@ impl Session {
                     );
                 }
             }
-            None => upload_boundary(&qualifier.queue, &boundary, &plan.boundary),
+            // The slot's own chunked upload, every row at once: a slot spreads the same chunks over
+            // frames, which only changes when they are written.
+            None => {
+                let (row, _) =
+                    upload_rows(&qualifier.queue, &boundary, &plan.boundary, 0, u64::MAX);
+                debug_assert!(
+                    !plan.boundary.holds_texels() || row == plan.boundary.size().1,
+                    "every row is written"
+                );
+            }
         }
         let origin = (
             plan.texels.origin[0].max(0.0) as u32,

@@ -1278,6 +1278,49 @@ fn a_presence_plan_holds_nothing_that_scales_with_the_image() {
     assert!(planes.len() < 9 + 4 + 4, "{} planes", planes.len());
 }
 
+/// Every plane an apply of a Presence or a Detail operation reads has one writer among all the
+/// operation's passes, a plane its unit took from an earlier unit's scratch included: an
+/// incremental tick runs that writer only where its output changes, and the plane keeps its values
+/// everywhere else (`docs/design/gpu-preview.md`, "Incremental ticks").
+#[test]
+fn every_plane_an_apply_reads_has_one_writer() {
+    let registry = colour_registry();
+    for layer in [
+        Layer::new(
+            crate::PRESENCE_EFFECT,
+            json!({"texture": 30.0, "clarity": -20.0, "dehaze": 15.0}),
+        ),
+        Layer::new(
+            crate::DETAIL_EFFECT,
+            json!({"sharpening": 60.0, "luminance": 40.0, "colour": 40.0}),
+        ),
+    ] {
+        let recipe = colour_recipe(vec![layer]);
+        let plan = planned(answer(
+            &registry,
+            &recipe,
+            GpuPlanRequest::exact(0, stage(400, 300)).qualifying(),
+        ));
+        assert!(!plan.spatial.is_empty(), "a spatial operation");
+        for step in &plan.spatial {
+            for (unit, apply) in step.applies.iter().enumerate() {
+                for plane in &apply.planes {
+                    let writers = step
+                        .passes
+                        .iter()
+                        .filter(|pass| pass.output == *plane)
+                        .count();
+                    assert_eq!(
+                        writers, 1,
+                        "{}'s unit {unit} applies plane {plane}, which {writers} passes write",
+                        step.program.entry
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// A proxy named for the estimate store before it is built is named as the built proxy's own pixel
 /// domain names it: a JPEG's window, and a RAW's derived development under a cropped and turned
 /// view and a window, equal whenever it is built and apart from its source's.
