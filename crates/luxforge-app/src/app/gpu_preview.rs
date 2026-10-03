@@ -342,8 +342,8 @@ pub(crate) fn region_charge(plan: &CorePlan, request: &BoundaryRequest) -> Optio
         region,
         super::compare_after::DEVICE_TEXTURE_LIMIT,
     );
-    // The spatial steps' planes as the surface's slot holds them, chained steps sharing textures;
-    // each operation's own planes summed where a step cannot be converted.
+    // The spatial steps' planes as the surface's slot holds them, each step's in textures of its
+    // own; each operation's own planes summed where a step cannot be converted.
     let (origin, size) = ((window.x0, window.y0), (window.width, window.height));
     let steps: Option<Vec<surface::GpuStep>> = plan
         .spatial

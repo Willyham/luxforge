@@ -42,8 +42,10 @@
 //! ([`PassCache`]). Its planes
 //! are textures: `rgba16float`, `r32float`, `rg32float` or `rgba32float` by the plane's
 //! [`PlaneFormat`], each sized to the boundary or to the stage's blocks it reaches
-//! ([`GpuPlane::extent`]), or a texture an earlier step left free that holds the plane
-//! ([`PlanesKey`]), whose format a pass writing the plane then stores in. A half-float texture is
+//! ([`GpuPlane::extent`]), a texture for every plane. A plane an apply reads is kept; every other is
+//! scratch, read only by its step's own passes within a tick, and laid out so that one pool of
+//! scratch textures can serve every link of a chain in turn, which a chain's charge counts once
+//! ([`PlanesKey`], [`PoolKey`], [`super::chain_charge`]). A half-float texture is
 //! written rounded to the nearest half, ties to even ([`HALF_ROUNDING`]): the M4's own conversion of
 //! a storage write, and of a render target's, rounds toward zero. A pass or an apply reads the step's words from its offset up to the next
 //! offset any pass or apply of its step names; a tick runs only the passes whose words, upstream or
@@ -101,9 +103,8 @@ const UNLIMITED: u32 = i32::MAX as u32;
 pub(super) const PASS_CACHE: usize = 64;
 
 /// What a plane's texels hold — how many channels, and whether half precision holds them — and so
-/// the texture format it is kept in when it has a texture of its own. A plane may instead share a
-/// texture whose format [holds](Self::holds) it ([`PlanesKey`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// the texture format it is kept in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PlaneFormat {
     /// `rgba16float`: four channels at half precision.
     Colour,
@@ -148,24 +149,19 @@ impl PlaneFormat {
         }
     }
 
-    fn channels(self) -> u32 {
+    /// The format that names its texture's: `Scalar` for `HalfScalar`, `Pair` for `HalfPair`, and
+    /// every other its own, so two formats kept in one texture format answer one.
+    fn kept_as(self) -> Self {
         match self {
-            Self::Scalar | Self::HalfScalar => 1,
-            Self::Pair | Self::HalfPair => 2,
-            Self::Colour | Self::Quad => 4,
+            Self::HalfScalar => Self::Scalar,
+            Self::HalfPair => Self::Pair,
+            other => other,
         }
-    }
-
-    /// Whether a texture of this format holds a plane of `plane`'s: as many channels or more, and
-    /// full precision unless half precision holds the plane.
-    pub fn holds(self, plane: Self) -> bool {
-        let half = matches!(plane, Self::Colour | Self::HalfScalar | Self::HalfPair);
-        self.channels() >= plane.channels() && (self != Self::Colour || half)
     }
 }
 
 /// A plane's size against the boundary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PlaneSize {
     /// The stage's `s × s` blocks, anchored at the stage origin, the boundary reaches: `s = 1` is
     /// the boundary.
@@ -225,8 +221,8 @@ pub struct GpuPass {
     /// How many of the step's applies its `lf_source` runs.
     pub source: u32,
     /// Whether its kernel reads its unit's input through `lf_source`. A pass that reads only
-    /// planes runs no apply (`source` is 0), and its module holds its own step's program alone:
-    /// the steps before its step change it only through the texture its output takes
+    /// planes runs no apply (`source` is 0), and its module holds its own step's program alone,
+    /// whatever steps come before its step: its output's texture takes its plane's own format
     /// ([`PlanesKey`]).
     pub reads_source: bool,
     pub shape: PassShape,
@@ -1080,8 +1076,8 @@ const SOURCE_STUB: &str = "fn lf_source(at: vec2<i32>) -> vec3<f32> {\n    \
 /// inputs, then, for a pass that reads its unit's input, the applies' planes its `lf_source` runs;
 /// its output at [`OUTPUT_BINDING`]. Only such a pass holds the programs of the steps before its
 /// own and their statements: a pass that reads only planes holds its step's spatial program alone,
-/// beside [`SOURCE_STUB`], so the steps before its step decide its module, its layout and its
-/// pipeline only through the format of the texture its output takes ([`PlanesKey`]).
+/// beside [`SOURCE_STUB`], so the steps before its step decide neither its module, nor its layout,
+/// nor its pipeline: its output's texture takes its plane's own format ([`PlanesKey`]).
 pub(super) fn pass_module(
     steps: &[GpuStep],
     index: usize,
@@ -1090,7 +1086,7 @@ pub(super) fn pass_module(
     let GpuStep::Spatial(spatial) = &steps[index] else {
         return Err("a pass belongs to a spatial step".into());
     };
-    // The format of the texture that holds its output, which may be one an earlier step left free.
+    // The format of the texture that holds its output: its plane's own.
     spatial
         .planes
         .get(pass.output as usize)
@@ -1245,9 +1241,9 @@ pub(super) fn parameters(steps: &[GpuStep], places: &[Place]) -> Vec<u32> {
 }
 
 /// What the planes of `steps`' spatial steps take of the GPU-preview budget over a boundary of
-/// `size` texels whose texel `(0, 0)` is stage pixel `origin`: their textures, chained steps
-/// sharing them as a slot shares them ([`PlanesKey`]), and the passes' parameters. What the
-/// desktop holds a region's plan to before its boundary exists; it creates nothing.
+/// `size` texels whose texel `(0, 0)` is stage pixel `origin`: a texture for every plane of every
+/// step, as each step's link holds them ([`PlanesKey::bytes`]), and the passes' parameters. What
+/// the desktop holds a region's plan to before its boundary exists; it creates nothing.
 pub fn plane_bytes(steps: &[GpuStep], size: (u32, u32), origin: (u32, u32)) -> u64 {
     PlanesKey::of(steps, size, origin).map_or(0, |key| key.bytes())
 }
@@ -1530,112 +1526,96 @@ pub(super) fn compile_passes(
     Ok((compiled, modules))
 }
 
-/// What a spatial plan's planes are keyed by: each spatial step's planes, the boundary's size and
-/// its stage origin, and which texture holds each plane.
+/// A texture's class: the texture format a plane's own format gives it, and the plane's size.
+/// `Scalar` and `HalfScalar` planes are of one class format, `r32float`, and `Pair` and `HalfPair`
+/// of another, `rg32float`. Every link of a slot covers the boundary's size and origin, so a class
+/// has one extent there. Classes are ordered, so a layout compares by what it holds, not by the
+/// order its planes were seen in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(super) struct Class {
+    /// The plane format that names the class's texture format ([`PlaneFormat::kept_as`]).
+    pub(super) format: PlaneFormat,
+    pub(super) size: PlaneSize,
+}
+
+impl Class {
+    pub(super) fn of(plane: GpuPlane) -> Self {
+        Self {
+            format: plane.format.kept_as(),
+            size: plane.size,
+        }
+    }
+
+    /// A plane of the class, whose texture format, extent and bytes are the class's.
+    pub(super) fn plane(self) -> GpuPlane {
+        GpuPlane {
+            format: self.format,
+            size: self.size,
+        }
+    }
+}
+
+/// Where one plane of a link's spatial step is held.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum PlaneTexture {
+    /// The link's kept texture at this index: a plane an apply of its step reads.
+    Kept(usize),
+    /// The pool's `k`-th texture of the class ([`PoolKey`]): a scratch plane, the link's `k`-th of
+    /// its class in its own plane order.
+    Pool(Class, usize),
+}
+
+/// How a link lays out its planes, and what decides whether the planes it holds serve another
+/// plan: each spatial step's planes, where each is held, the link's kept textures, how many scratch
+/// planes of each class it holds, its passes, and the boundary's size and stage origin.
 ///
-/// A plane no apply reads is scratch: only its own step's passes use it, and they have all run
-/// before a later step's first pass. A later step's plane therefore takes an earlier step's scratch
-/// texture of the same size whose format [holds](PlaneFormat::holds) it, the smallest such, so
-/// chained spatial steps hold one texture for both: a scratch plane, which leaves the texture free
-/// for a step after it, or a plane an apply reads, which keeps it, since the frame and every later
-/// step's input read it. Which texture each plane takes, and so the format a pass writes, depends
-/// on the steps alone ([`texture_formats`]), never on the boundary's size, so the pipelines a
-/// sequence compiles serve every boundary.
+/// A plane any apply of its step reads ([`GpuApply::planes`]) is **kept** in a texture of the
+/// link's own: the frame's pass reads it, and so does every later tick that changes only an apply's
+/// word or rewrites the plane only around a change. Every other plane is **scratch**, reduced and
+/// fixed-size ones included: only its own step's passes read it, within the tick that writes it. A
+/// link's `k`-th scratch plane of a [`Class`], in its own plane order, is texture `k` of that class
+/// ([`PlaneTexture::Pool`]), so where a plane is held depends on the link's own steps alone, and one
+/// pool holding, for each class, the most any link of a chain holds can serve every link in turn
+/// ([`PoolKey`]).
+///
+/// No two planes of a link share a texture. A link holds at most one spatial step
+/// ([`super::chain::chain`]), whose composition already gave every plane alive at once its own
+/// (`compose` in the core), and a scratch plane takes a texture of its own class alone, never one of
+/// another format that would hold it. Each pass therefore writes the format its plane's own
+/// [`PlaneFormat`] gives it ([`texture_formats`]), whatever the boundary, so the pipelines a sequence
+/// compiles serve every boundary. [`Planes`] creates the link's textures ([`PlanesKey::textures`]):
+/// its kept textures, then a texture for each scratch plane.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct PlanesKey {
+    /// Each spatial step's index among the steps, and its planes.
     planes: Vec<(usize, Vec<GpuPlane>)>,
-    /// Each step's planes' textures, indices into `textures`.
-    aliases: Vec<(usize, Vec<usize>)>,
-    /// The textures, each the plane that first took it.
-    textures: Vec<GpuPlane>,
+    /// Where each spatial step's planes are held, indexed as `planes`.
+    locations: Vec<(usize, Vec<PlaneTexture>)>,
+    /// The kept textures, each the plane it holds, in plane order.
+    kept: Vec<GpuPlane>,
+    /// How many scratch planes of each class the link holds, in class order.
+    scratch: Vec<(Class, usize)>,
     /// How many passes the parameter buffer holds a slice for.
     passes: usize,
     size: (u32, u32),
     origin: (u32, u32),
 }
 
-/// Each spatial step's planes, which texture holds each, and the textures, each the plane that
-/// first took it.
-type Assignment = (
-    Vec<(usize, Vec<GpuPlane>)>,
-    Vec<(usize, Vec<usize>)>,
-    Vec<GpuPlane>,
-);
-
-/// Which texture holds each plane of `steps`' spatial steps ([`PlanesKey`]).
-fn assign(steps: &[GpuStep]) -> Assignment {
-    let planes: Vec<(usize, Vec<GpuPlane>)> = steps
+/// The format of the texture that holds each plane of each spatial step of `steps`, indexed as
+/// the steps and their planes are: the plane's own, which a pass writing the plane stores in.
+pub(super) fn texture_formats(steps: &[GpuStep]) -> Vec<(usize, Vec<PlaneFormat>)> {
+    steps
         .iter()
         .enumerate()
         .filter_map(|(index, step)| match step {
-            GpuStep::Spatial(spatial) => Some((index, spatial.planes.clone())),
+            GpuStep::Spatial(spatial) => Some((
+                index,
+                spatial.planes.iter().map(|plane| plane.format).collect(),
+            )),
             GpuStep::Colour { .. }
             | GpuStep::Masked(_)
             | GpuStep::Geometry(_)
             | GpuStep::Clipping(_) => None,
-        })
-        .collect();
-    // Earlier steps' scratch textures, free for a later step's planes.
-    let mut textures: Vec<GpuPlane> = Vec::new();
-    let mut scratch: Vec<usize> = Vec::new();
-    let mut aliases = Vec::with_capacity(planes.len());
-    for (index, step_planes) in &planes {
-        let GpuStep::Spatial(spatial) = &steps[*index] else {
-            continue;
-        };
-        let read = |plane: usize| {
-            spatial
-                .applies
-                .iter()
-                .any(|apply| apply.planes.contains(&(plane as u32)))
-        };
-        let mut taken: Vec<usize> = Vec::new();
-        let mut made_scratch: Vec<usize> = Vec::new();
-        let step_aliases = step_planes
-            .iter()
-            .enumerate()
-            .map(|(number, plane)| {
-                let shared = scratch
-                    .iter()
-                    .copied()
-                    .filter(|texture| {
-                        !taken.contains(texture)
-                            && textures[*texture].size == plane.size
-                            && textures[*texture].format.holds(plane.format)
-                    })
-                    .min_by_key(|texture| textures[*texture].format.texel_bytes());
-                if let Some(texture) = shared
-                    && read(number)
-                {
-                    // An apply reads it from here on: no later step may take it.
-                    scratch.retain(|free| *free != texture);
-                }
-                let texture = shared.unwrap_or_else(|| {
-                    textures.push(*plane);
-                    if !read(number) {
-                        made_scratch.push(textures.len() - 1);
-                    }
-                    textures.len() - 1
-                });
-                taken.push(texture);
-                texture
-            })
-            .collect();
-        scratch.extend(made_scratch);
-        aliases.push((*index, step_aliases));
-    }
-    (planes, aliases, textures)
-}
-
-/// The format of the texture that holds each plane of each spatial step of `steps`, indexed as
-/// the steps and their planes are: the format a pass writing the plane stores in.
-pub(super) fn texture_formats(steps: &[GpuStep]) -> Vec<(usize, Vec<PlaneFormat>)> {
-    let (_, aliases, textures) = assign(steps);
-    aliases
-        .into_iter()
-        .map(|(index, aliases)| {
-            let formats = aliases.iter().map(|&texture| textures[texture].format);
-            (index, formats.collect())
         })
         .collect()
 }
@@ -1649,36 +1629,115 @@ pub(super) fn written_format(steps: &[GpuStep], index: usize, plane: u32) -> Opt
 }
 
 impl PlanesKey {
+    /// The layout of `steps`' spatial steps over a boundary of `size` texels whose texel `(0, 0)`
+    /// is stage pixel `origin`, or `None` for steps without one.
     pub(super) fn of(steps: &[GpuStep], size: (u32, u32), origin: (u32, u32)) -> Option<Self> {
-        let (planes, aliases, textures) = assign(steps);
+        let mut planes = Vec::new();
+        let mut locations = Vec::new();
+        let mut kept = Vec::new();
+        let mut scratch = std::collections::BTreeMap::<Class, usize>::new();
+        for (index, step) in steps.iter().enumerate() {
+            let GpuStep::Spatial(spatial) = step else {
+                continue;
+            };
+            let read = |plane: usize| {
+                spatial
+                    .applies
+                    .iter()
+                    .any(|apply| apply.planes.contains(&(plane as u32)))
+            };
+            let held = spatial
+                .planes
+                .iter()
+                .enumerate()
+                .map(|(number, plane)| {
+                    if read(number) {
+                        kept.push(*plane);
+                        PlaneTexture::Kept(kept.len() - 1)
+                    } else {
+                        let class = Class::of(*plane);
+                        let count = scratch.entry(class).or_default();
+                        *count += 1;
+                        PlaneTexture::Pool(class, *count - 1)
+                    }
+                })
+                .collect();
+            planes.push((index, spatial.planes.clone()));
+            locations.push((index, held));
+        }
         if planes.is_empty() {
             return None;
         }
         Some(Self {
             planes,
-            aliases,
-            textures,
+            locations,
+            kept,
+            scratch: scratch.into_iter().collect(),
             passes: pass_count(steps),
             size,
             origin,
         })
     }
 
-    /// The texture that holds plane `plane` of step `step`.
-    pub(super) fn texture(&self, step: usize, plane: u32) -> usize {
-        self.aliases
+    /// Where plane `plane` of step `step` is held.
+    pub(super) fn location(&self, step: usize, plane: u32) -> Option<PlaneTexture> {
+        self.locations
             .iter()
             .find(|(index, _)| *index == step)
-            .map_or(usize::MAX, |(_, aliases)| aliases[plane as usize])
+            .and_then(|(_, held)| held.get(plane as usize).copied())
     }
 
-    /// The bytes every texture takes, and the passes' parameter buffer.
-    pub(super) fn bytes(&self) -> u64 {
-        self.textures
+    /// How many scratch planes of each class the link holds, in class order.
+    pub(super) fn scratch(&self) -> &[(Class, usize)] {
+        &self.scratch
+    }
+
+    /// The link's textures, as [`PlanesKey::texture`] numbers them: each kept texture, then a
+    /// texture for each scratch plane, class by class.
+    pub(super) fn textures(&self) -> impl Iterator<Item = GpuPlane> + '_ {
+        self.kept.iter().copied().chain(
+            self.scratch
+                .iter()
+                .flat_map(|&(class, count)| std::iter::repeat_n(class.plane(), count)),
+        )
+    }
+
+    /// The texture of [`PlanesKey::textures`] that holds plane `plane` of step `step`.
+    pub(super) fn texture(&self, step: usize, plane: u32) -> usize {
+        match self.location(step, plane) {
+            Some(PlaneTexture::Kept(index)) => index,
+            Some(PlaneTexture::Pool(class, number)) => {
+                let before: usize = self
+                    .scratch
+                    .iter()
+                    .take_while(|(held, _)| *held != class)
+                    .map(|(_, count)| count)
+                    .sum();
+                self.kept.len() + before + number
+            }
+            None => usize::MAX,
+        }
+    }
+
+    /// The bytes the kept textures take, and the passes' parameter buffer: what the link holds
+    /// beside the pool.
+    pub(super) fn kept_bytes(&self) -> u64 {
+        self.kept
             .iter()
             .map(|plane| plane.bytes(self.origin, self.size))
             .sum::<u64>()
             + self.parameter_bytes()
+    }
+
+    /// The bytes every texture of [`PlanesKey::textures`] takes, and the passes' parameter buffer:
+    /// what the link holds with a texture of its own for each scratch plane.
+    pub(super) fn bytes(&self) -> u64 {
+        self.kept_bytes()
+            + self
+                .scratch
+                .iter()
+                .map(|&(class, count)| count as u64 * class.plane().bytes(self.origin, self.size))
+                .sum::<u64>()
     }
 
     fn parameter_bytes(&self) -> u64 {
@@ -1686,10 +1745,72 @@ impl PlanesKey {
     }
 }
 
+/// The pool of scratch textures the links of a chain can take their scratch planes from in turn:
+/// for each class, as many textures as the most scratch planes of that class any one link holds,
+/// over the boundary's size and stage origin every link shares. A link's scratch plane
+/// `(class, k)` ([`PlaneTexture::Pool`]) is the pool's texture `k` of that class, so distinct
+/// scratch planes of one link, alive together within its tick, take distinct textures, and no plane
+/// an apply reads is one of them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PoolKey {
+    /// How many textures of each class it holds, in class order.
+    textures: Vec<(Class, usize)>,
+    size: (u32, u32),
+    origin: (u32, u32),
+}
+
+impl PoolKey {
+    /// The pool the spatial steps of `links` take their scratch planes from over a boundary of
+    /// `size` texels whose texel `(0, 0)` is stage pixel `origin`: every link of a chain, the last
+    /// one included ([`super::chain::Chain`]).
+    pub(super) fn of<'a>(
+        links: impl IntoIterator<Item = &'a [GpuStep]>,
+        size: (u32, u32),
+        origin: (u32, u32),
+    ) -> Self {
+        let mut most = std::collections::BTreeMap::<Class, usize>::new();
+        for key in links
+            .into_iter()
+            .filter_map(|steps| PlanesKey::of(steps, size, origin))
+        {
+            for &(class, count) in key.scratch() {
+                let held = most.entry(class).or_default();
+                *held = (*held).max(count);
+            }
+        }
+        Self {
+            textures: most.into_iter().collect(),
+            size,
+            origin,
+        }
+    }
+
+    /// How many textures of each class it holds, in class order.
+    pub(super) fn textures(&self) -> &[(Class, usize)] {
+        &self.textures
+    }
+
+    /// The extent of each of its textures of `class`.
+    pub(super) fn extent(&self, class: Class) -> (u32, u32) {
+        class.plane().extent(self.origin, self.size)
+    }
+
+    /// The bytes its textures take.
+    pub(super) fn bytes(&self) -> u64 {
+        self.textures()
+            .iter()
+            .map(|&(class, count)| {
+                let (width, height) = self.extent(class);
+                count as u64 * u64::from(width) * u64::from(height) * class.format.texel_bytes()
+            })
+            .sum()
+    }
+}
+
 /// A plan's planes, created at their extents, with their views.
 pub(super) struct Planes {
     pub(super) key: PlanesKey,
-    /// Each texture of [`PlanesKey`], which one or more planes share.
+    /// Each texture of [`PlanesKey::textures`], one for every plane.
     textures: Vec<(wgpu::Texture, wgpu::TextureView)>,
     /// Every pass's parameters, a [`PARAMS_STRIDE`] slice each, in plan order.
     parameters: wgpu::Buffer,
@@ -1705,8 +1826,7 @@ impl Planes {
     /// Every plane of `key`, created. The caller has charged [`PlanesKey::bytes`].
     pub(super) fn create(device: &wgpu::Device, key: PlanesKey) -> Self {
         let textures = key
-            .textures
-            .iter()
+            .textures()
             .map(|plane| {
                 let (width, height) = plane.extent(key.origin, key.size);
                 let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -1983,8 +2103,7 @@ impl Groups {
 /// what that writer would write. A pass that writes an apply's plane on the way to its last writer
 /// runs that last writer too, so an apply never reads a plane a scratch use left behind. A new
 /// sequence or new planes start from nothing kept, which runs every pass the applies need. The key
-/// is kept by texture, so a scratch texture chained steps share holds the key of the step that
-/// wrote it last.
+/// is kept by texture ([`PlanesKey::texture`]).
 ///
 /// An identity apply ([`GpuApply::identity`]) reads no plane, in the frame or in a later unit's
 /// source: its planes need not be current, and they are in no key of what reads through it. A pass

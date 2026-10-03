@@ -1811,3 +1811,106 @@ fn gpu_presence_a_masked_layer_runs_its_passes_over_its_mask_alone() {
         "some plans ran their passes over less than the boundary"
     );
 }
+
+/// One, two and four masked Presence layers of Texture and Clarity, each through a radial of its
+/// own, over a 24 MP photograph's full-screen Fit stage on a JPEG's half-float boundary, laid out
+/// with their scratch planes in one pool (`chain_charge`): each layer is a link keeping the planes
+/// its applies read, each link but the last writes an intermediate, and the pool holds one link's
+/// scratch for all of them. A layer after the first adds its kept planes and an intermediate, where
+/// today's slot, each link holding its scratch planes as its own, adds them as well
+/// (`Qualifier::charged_bytes`, on a device).
+#[test]
+fn gpu_presence_masked_layers_take_their_scratch_from_one_pool() {
+    use luxforge_ui::photo_surface::{BoundaryFormat, gpu_preview::chain_charge};
+    let test = "gpu_presence_masked_layers_take_their_scratch_from_one_pool";
+    let registry = ModuleRegistry::builtin();
+    let (width, height) = (2292u32, 1528u32);
+    let texels = Arc::new(vec![0u8; (width * height) as usize * 8]);
+    let held =
+        GpuBoundary::new(texels, width, height, 1, BoundaryFormat::Half).expect("a boundary");
+    let plan_of = |layers: usize| {
+        let mut stack = Recipe::default();
+        for index in 0..layers {
+            let mut mask = luxforge_core::Mask::new(format!("Mask {}", index + 1));
+            mask.components.push(luxforge_core::Component::new(
+                "Radial 1",
+                luxforge_core::ComponentMode::Add,
+                "radial",
+                json!({"x": 0.2 + 0.2 * index as f64, "y": 0.5, "radius_x": 0.12,
+                       "radius_y": 0.1, "angle": 0.0, "feather": 40.0}),
+            ));
+            stack.layers.push(Layer {
+                mask: Some(mask.id.clone()),
+                ..Layer::new(PRESENCE_EFFECT, json!({"texture": 40, "clarity": 30}))
+            });
+            stack.masks.push(mask);
+        }
+        let request = GpuPlanRequest::fit(0, stage(width, height), stage(6000, 4000));
+        let plan = match gpu_plan(&registry, &stack, request).expect("the stack compiles") {
+            GpuAnswer::Plan(plan) => *plan,
+            GpuAnswer::Fallback(reason) => panic!("{layers} layers: {reason}"),
+        };
+        // Each operation's planes as the core declares them, every one in a texture of its own.
+        let planes: Vec<u64> = plan
+            .spatial
+            .iter()
+            .map(|spatial| spatial.plane_bytes((0, 0), (width, height)))
+            .collect();
+        (
+            surface_plan(&plan, held.clone()).expect("a runnable plan"),
+            planes,
+        )
+    };
+    // The figures over the boundary's 3,502,176 texels: an intermediate at eight bytes a texel;
+    // each link's kept planes, 8.25 bytes a texel, and its 13 passes' parameter slices; and the
+    // pool, one link's 21.25 bytes a texel of scratch.
+    const INTERMEDIATE: u64 = 28_017_408;
+    const KEPT: u64 = 28_892_952 + 13 * 256;
+    const POOL: u64 = 74_421_240;
+    // Each layer after the first adds its kept planes and an intermediate to the chain: 56.9 MB.
+    const LAYER: u64 = 56_913_688;
+    // Today's slot adds the link's scratch planes, and its words and blocks buffers, too: 131.3 MB.
+    const SLOT_LAYER: u64 = LAYER + POOL + 2 * 1024;
+    let qualifier = crate::app::gpu_qualification::headless(test);
+    for (layers, chain, slot) in [
+        (1usize, 103_317_520, 157_551_472),
+        (2, 160_231_208, 288_888_448),
+        (4, 274_058_584, 551_562_400),
+    ] {
+        let (plan, planes) = plan_of(layers);
+        let spatial = plan
+            .steps
+            .iter()
+            .filter(|step| matches!(step, GpuStep::Spatial(_)))
+            .count();
+        assert_eq!(spatial, layers, "a spatial step a layer");
+        // The pool holds one link's scratch: its planes less those its applies read.
+        assert_eq!(planes, vec![KEPT - 13 * 256 + POOL; layers]);
+        let origin = (
+            plan.texels.origin[0].max(0.0) as u32,
+            plan.texels.origin[1].max(0.0) as u32,
+        );
+        let charge = chain_charge(&plan.steps, (width, height), origin, BoundaryFormat::Half);
+        eprintln!(
+            "{test}: {layers} layers: intermediates {:?}, kept {:?}, pool {} B, chain {} B",
+            charge.intermediates,
+            charge.kept,
+            charge.pool,
+            charge.total()
+        );
+        assert_eq!(charge.intermediates, vec![INTERMEDIATE; layers - 1]);
+        assert_eq!(charge.kept, vec![KEPT; layers]);
+        assert_eq!(charge.pool, POOL);
+        assert_eq!(charge.total(), chain);
+        let after = layers as u64 - 1;
+        assert_eq!(chain, KEPT + POOL + after * LAYER);
+        assert_eq!(LAYER, KEPT + INTERMEDIATE);
+        // Today's slot on a device, where its boundary, output and buffers are known.
+        if let Some(qualifier) = &qualifier {
+            let charged = qualifier.charged_bytes(&plan).expect("a charge");
+            eprintln!("{test}: {layers} layers: today's slot {charged} B");
+            assert_eq!(charged, slot);
+            assert_eq!(slot - 157_551_472, after * SLOT_LAYER);
+        }
+    }
+}
