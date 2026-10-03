@@ -13,7 +13,9 @@
 //!   edge, and `lf_plane_size(slot: u32) -> vec2<i32>`;
 //! - `lf_source(at: vec2<i32>) -> vec3<f32>`, the input of the pass's unit at boundary texel `at`,
 //!   clamped to the boundary: the boundary through every step before the spatial one, clamped to
-//!   `[0, 1]` where the step says the CPU quantizes, then the applies of the units before it;
+//!   `[0, 1]` where the step says the CPU quantizes, then the applies of the units before it. Only
+//!   a pass that reads its unit's input ([`GpuPass::reads_source`]) computes it; any other module
+//!   declares a stub ([`SOURCE_STUB`]);
 //! - `lf_origin() -> vec2<i32>`, the stage pixel of boundary texel `(0, 0)`, and `lf_size() ->
 //!   vec2<i32>`, the boundary's size;
 //! - `lf_store(at: vec2<i32>, value: vec4<f32>)`, which writes the pass's output plane.
@@ -30,11 +32,14 @@
 //! # Execution
 //!
 //! A pass is a compute pipeline of its own module: the prelude, the programs the steps before it
-//! run, the spatial program, the declarations above and an entry the surface generates. Every
-//! number that places a pass in its plan — its step's header, its words, its span, the words of the
-//! applies its source runs — is data, read from the pass's slice of the planes' parameter buffer,
-//! so a module is its kernel and its shape alone: passes and plans that differ only there share one
-//! pipeline, which the stage keeps across sequences ([`PassCache`]). Its planes
+//! run when its kernel reads its unit's input, the spatial program, the declarations above and an
+//! entry the surface generates. Every number that places a pass in its plan — its step's header,
+//! its words, its span, the words of the applies its source runs — is data, read from the pass's
+//! slice of the planes' parameter buffer, so a module is its kernel and its shape alone, with the
+//! steps before its own only for a pass that reads its unit's input: passes and plans that differ
+//! only in those numbers share one pipeline, and a pass that reads only planes shares it with plans
+//! whose colour steps before its step differ, which the stage keeps across sequences
+//! ([`PassCache`]). Its planes
 //! are textures: `rgba16float`, `r32float`, `rg32float` or `rgba32float` by the plane's
 //! [`PlaneFormat`], each sized to the boundary or to the stage's blocks it reaches
 //! ([`GpuPlane::extent`]), or a texture an earlier step left free that holds the plane
@@ -211,6 +216,11 @@ pub struct GpuPass {
     pub words: u32,
     /// How many of the step's applies its `lf_source` runs.
     pub source: u32,
+    /// Whether its kernel reads its unit's input through `lf_source`. A pass that reads only
+    /// planes runs no apply (`source` is 0), and its module holds its own step's program alone:
+    /// the steps before its step change it only through the texture its output takes
+    /// ([`PlanesKey`]).
+    pub reads_source: bool,
     pub shape: PassShape,
 }
 
@@ -249,6 +259,7 @@ pub(super) struct PassKey {
     count: usize,
     output: u32,
     source: u32,
+    reads_source: bool,
     shape: PassShape,
 }
 
@@ -332,6 +343,7 @@ impl GpuSpatial {
                     count: pass.inputs.len(),
                     output: pass.output,
                     source: pass.source,
+                    reads_source: pass.reads_source,
                     shape: pass.shape,
                 }),
                 pass.kernel.as_ref(),
@@ -389,7 +401,8 @@ pub(super) const SPATIAL_FUNCTIONS: &[&str] = &[
 ];
 
 /// Check a spatial step on its own: its program under the convention, every kernel and apply its
-/// passes and applies name with its signature, and every plane, input, word and source in range.
+/// passes and applies name with its signature, every plane, input, word and source in range, and
+/// no source for a pass that reads only planes.
 pub(super) fn validate_spatial(spatial: &GpuSpatial) -> Result<(), String> {
     let program = &spatial.program;
     let entry = &program.entry;
@@ -496,6 +509,11 @@ pub(super) fn validate_spatial(spatial: &GpuSpatial) -> Result<(), String> {
         if pass.words >= words.max(1) || pass.source as usize > spatial.applies.len() {
             return Err(format!(
                 "{kernel:?} names a word or an apply the step does not hold"
+            ));
+        }
+        if !pass.reads_source && pass.source != 0 {
+            return Err(format!(
+                "{kernel:?} reads only planes, so its source runs no apply"
             ));
         }
         if let PassShape::Texels { span } = pass.shape
@@ -766,8 +784,22 @@ pub(super) fn fragment_declarations(steps: &[GpuStep]) -> (String, Slots) {
     (text, slots)
 }
 
+/// What a pass that reads only planes declares as `lf_source`, which its kernel may still name in a
+/// branch its words never take: the texel's own coordinates as a colour, as [`SPATIAL_PRELUDE`]'s
+/// stub returns. No boundary holds such values, and they change from texel to texel, so a pass
+/// described as reading only planes that does read its input fills its plane with what no
+/// photograph holds and fails the frame's comparison with the CPU's. A zero, or any constant,
+/// could pass unseen: a smoothing of a constant is the constant, Dehaze's dark channel of zero
+/// leaves its input alone, and Texture's band of it is zero.
+const SOURCE_STUB: &str = "fn lf_source(at: vec2<i32>) -> vec3<f32> {\n    \
+     return vec3<f32>(vec2<f32>(at), 0.5);\n}\n";
+
 /// One pass's whole module and the planes its second group binds, in slot order: the pass's
-/// inputs, then the applies' planes its `lf_source` runs, then its output at [`OUTPUT_BINDING`].
+/// inputs, then, for a pass that reads its unit's input, the applies' planes its `lf_source` runs;
+/// its output at [`OUTPUT_BINDING`]. Only such a pass holds the programs of the steps before its
+/// own and their statements: a pass that reads only planes holds its step's spatial program alone,
+/// beside [`SOURCE_STUB`], so the steps before its step decide its module, its layout and its
+/// pipeline only through the format of the texture its output takes ([`PlanesKey`]).
 pub(super) fn pass_module(
     steps: &[GpuStep],
     index: usize,
@@ -783,16 +815,20 @@ pub(super) fn pass_module(
         .ok_or("a pass writes a plane its step does not declare")?;
     let format = written_format(steps, index, pass.output)
         .ok_or("a pass writes a plane no texture holds")?;
+    // The steps whose statements its source runs: every one before its own, or none.
+    let before = if pass.reads_source { index } else { 0 };
     let mut slots = Slots::default();
     slots
         .planes
         .extend(pass.inputs.iter().map(|input| (index, *input)));
-    slots.bind_applies(steps, index, pass.source as usize);
+    if pass.reads_source {
+        slots.bind_applies(steps, index, pass.source as usize);
+    }
     let mut source = String::from(super::PRELUDE);
     let mut included: Vec<&GpuProgram> = Vec::new();
     // The steps before, whose statements its source runs, and its own step's spatial program: not
     // the step's own mask, which only the frame's pass blends by.
-    let programs = steps[..index]
+    let programs = steps[..before]
         .iter()
         .flat_map(GpuStep::programs)
         .map(|(_, program)| program)
@@ -803,7 +839,7 @@ pub(super) fn pass_module(
             included.push(program);
         }
     }
-    let (functions, masked) = masks(steps, 0..index);
+    let (functions, masked) = masks(steps, 0..before);
     source.push_str(&functions);
     source.push_str("\n@group(0) @binding(2) var lf_boundary: texture_2d<f32>;\n");
     source.push_str(&declarations(&slots));
@@ -824,24 +860,28 @@ pub(super) fn pass_module(
          fn lf_param(i: u32) -> u32 {{\n    return lf_params[i];\n}}\n",
         format.wgsl()
     ));
-    source.push_str(
-        "fn lf_source(at: vec2<i32>) -> vec3<f32> {\n    \
-         let texel = vec2<u32>(clamp(at, vec2<i32>(0), lf_size() - vec2<i32>(1)));\n    \
-         var rgb = textureLoad(lf_boundary, texel, 0).rgb;\n    \
-         let stage = vec2<f32>(lf_f32(0u), lf_f32(1u)) + vec2<f32>(texel) * \
-         vec2<f32>(lf_f32(2u), lf_f32(3u));\n",
-    );
-    for earlier in 0..index {
-        source.push_str(&statements(steps, earlier, &slots, &masked));
+    if pass.reads_source {
+        source.push_str(
+            "fn lf_source(at: vec2<i32>) -> vec3<f32> {\n    \
+             let texel = vec2<u32>(clamp(at, vec2<i32>(0), lf_size() - vec2<i32>(1)));\n    \
+             var rgb = textureLoad(lf_boundary, texel, 0).rgb;\n    \
+             let stage = vec2<f32>(lf_f32(0u), lf_f32(1u)) + vec2<f32>(texel) * \
+             vec2<f32>(lf_f32(2u), lf_f32(3u));\n",
+        );
+        for earlier in 0..index {
+            source.push_str(&statements(steps, earlier, &slots, &masked));
+        }
+        source.push_str(&applies(
+            index,
+            spatial,
+            pass.source as usize,
+            &slots,
+            Offsets::Parameters,
+        ));
+        source.push_str("    return rgb;\n}\n");
+    } else {
+        source.push_str(SOURCE_STUB);
     }
-    source.push_str(&applies(
-        index,
-        spatial,
-        pass.source as usize,
-        &slots,
-        Offsets::Parameters,
-    ));
-    source.push_str("    return rgb;\n}\n");
     let call = format!(
         "{}(at, lf_words[lf_param({PARAM_STEP}u)] + lf_param({PARAM_WORDS}u), \
          lf_words[lf_param({PARAM_STEP}u) + 1u]);",
@@ -1027,7 +1067,8 @@ struct CachedPass {
 /// The pass pipelines the stage keeps across sequences, keyed by their module's text, at most
 /// [`PASS_CACHE`], the least recently used evicted first. A module is its kernel and its shape, so a
 /// sequence that differs from another in a unit or an estimate compiles only the passes that
-/// differ. Only a pipeline whose sequence compiled cleanly joins it.
+/// differ, and one that differs only in the colour steps before a spatial step compiles only the
+/// passes that read their unit's input. Only a pipeline whose sequence compiled cleanly joins it.
 #[derive(Default)]
 pub(super) struct PassCache {
     entries: std::sync::Mutex<(Vec<CachedPass>, u64)>,
@@ -1106,6 +1147,11 @@ pub(super) type MadePasses = Vec<(String, wgpu::ComputePipeline, wgpu::BindGroup
 /// Compile every spatial step's passes of `steps`, each module validated as the surface
 /// validates, inside the caller's error scopes. One module serves every pass with the same text,
 /// within the sequence and, through the stage's [`PassCache`], across sequences.
+///
+/// wgpu is handed the module validated here, compacted to its entry point, rather than its text:
+/// naga's backends translate every function of a module with one entry point, so the driver would
+/// compile the whole spatial program, and every program before it, for every pass. Compacted, it
+/// compiles only what the pass's kernel reaches, and nothing is parsed twice.
 pub(super) fn compile_passes(
     device: &wgpu::Device,
     support: &Support,
@@ -1129,7 +1175,8 @@ pub(super) fn compile_passes(
             let (pipeline, layout) = match made.or_else(|| support.passes.lookup(&source)) {
                 Some((pipeline, layout)) => (pipeline, layout),
                 None => {
-                    validate(&source)?;
+                    let mut compacted = validate(&source)?;
+                    naga::compact::compact(&mut compacted, naga::compact::KeepUnused::No);
                     let layout = plane_layout(
                         device,
                         slots.len(),
@@ -1144,7 +1191,7 @@ pub(super) fn compile_passes(
                         });
                     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                         label: Some("luxforge.gpu_preview.pass"),
-                        source: wgpu::ShaderSource::Wgsl(Cow::Owned(source.clone())),
+                        source: wgpu::ShaderSource::Naga(Cow::Owned(compacted)),
                     });
                     let pipeline =
                         device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {

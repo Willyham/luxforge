@@ -586,6 +586,150 @@ fn gpu_preview_compile_cost_per_sequence() {
     }
 }
 
+/// The compile cost of the spatial sequences the editor compiles around a Presence layer, on a
+/// cold shader cache: a Presence drag's own first, then drags of the layers before it and a Detail
+/// drag with Presence after it, in one process, as the editor's warm lists compile them, so a
+/// sequence finds the pass pipelines an earlier one created. Every kernel and apply of the spatial
+/// programs opens with a test of its words against this process's own constant, which no word
+/// holds: the code the driver compiles is new to its shader cache in every process, where a comment
+/// would not reach it at all. `LUXFORGE_COMPILE_CONSTANT` names the constant instead, so a second
+/// run with an earlier run's constant measures the same sequences on a warm cache. A functional
+/// measurement, not a timing gate: run it on purpose, with `--ignored --nocapture`, and record the
+/// build profile, host and load beside its figures.
+#[test]
+#[ignore = "a measurement, run on purpose"]
+fn gpu_preview_spatial_compile_cost_on_a_cold_cache() {
+    use luxforge_core::{
+        DETAIL_EFFECT, GpuPlanRequest, Layer, ModuleRegistry, PRESENCE_EFFECT, Recipe, Stage,
+        gpu_plan,
+    };
+    use luxforge_ui::photo_surface::GpuStep;
+    let test = "gpu_preview_spatial_compile_cost_on_a_cold_cache";
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
+        return;
+    };
+    let registry = ModuleRegistry::builtin();
+    let clock = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("a clock after the epoch")
+        .as_nanos() as u32;
+    let nonce = std::env::var("LUXFORGE_COMPILE_CONSTANT")
+        .ok()
+        .and_then(|constant| constant.parse::<u32>().ok())
+        .unwrap_or((clock ^ std::process::id().rotate_left(16)) | 0x8000_0000);
+    let cold = |source: &str| {
+        source
+            .replace(
+                "words: u32, block: u32) {",
+                &format!("words: u32, block: u32) {{\n    if words == {nonce}u {{ return; }}"),
+            )
+            .replace(
+                "planes: u32) -> vec3<f32> {",
+                &format!(
+                    "planes: u32) -> vec3<f32> {{\n    if words == {nonce}u {{ return rgb; }}"
+                ),
+            )
+    };
+    let basic = || Layer::new(luxforge_core::BASIC_EFFECT, json!({"exposure": 0.5}));
+    let curve = || {
+        Layer::new(
+            "luxforge.curve.tone",
+            json!({"luminance": [[0.0, 0.0], [0.4, 0.5], [1.0, 1.0]]}),
+        )
+    };
+    let mixer = || Layer::new(luxforge_core::MIXER_EFFECT, json!({"red-hue": 20.0}));
+    let dehaze = || Layer::new(PRESENCE_EFFECT, json!({"dehaze": 25}));
+    let presence = || {
+        Layer::new(
+            PRESENCE_EFFECT,
+            json!({"texture": 40, "clarity": 30, "dehaze": 25}),
+        )
+    };
+    let detail = || {
+        Layer::new(
+            DETAIL_EFFECT,
+            json!({"luminance": 40, "colour": 40, "sharpening": 50, "radius": 1.0}),
+        )
+    };
+    let stage = Stage {
+        width: 1600,
+        height: 1067,
+    };
+    let full = Stage {
+        width: 6000,
+        height: 4000,
+    };
+    let cases: [(&str, Vec<Layer>, usize); 7] = [
+        ("A Presence drag", vec![presence()], 0),
+        (
+            "Basic under Presence, Dehaze alone",
+            vec![basic(), dehaze()],
+            0,
+        ),
+        (
+            "Basic under Presence, all three",
+            vec![basic(), presence()],
+            0,
+        ),
+        (
+            "The curve under Presence, all three",
+            vec![basic(), curve(), presence()],
+            1,
+        ),
+        (
+            "The mixer under Presence, all three",
+            vec![basic(), curve(), mixer(), presence()],
+            2,
+        ),
+        (
+            "A Detail drag, Presence after it",
+            vec![detail(), presence()],
+            0,
+        ),
+        (
+            "Basic under Detail and Presence",
+            vec![basic(), detail(), presence()],
+            0,
+        ),
+    ];
+    eprintln!("{test}: adapter {}, constant {nonce}", qualifier.adapter());
+    let mut total = std::time::Duration::ZERO;
+    for (what, layers, drafted) in cases {
+        let recipe = Recipe {
+            format: luxforge_core::RECIPE_FORMAT,
+            layers,
+            ..Recipe::default()
+        };
+        let request = GpuPlanRequest::fit(drafted, stage, full).drafted(drafted);
+        let plan = match gpu_plan(&registry, &recipe, request).unwrap() {
+            luxforge_core::GpuAnswer::Plan(plan) => plan,
+            luxforge_core::GpuAnswer::Fallback(reason) => panic!("{what}: {reason}"),
+        };
+        let mut steps = super::gpu_plan::plan_steps(&plan).expect("a sequence the surface runs");
+        let mut passes = 0;
+        for step in &mut steps {
+            if let GpuStep::Spatial(spatial) = step {
+                spatial.program.source = std::borrow::Cow::Owned(cold(&spatial.program.source));
+                passes += spatial.passes.len();
+            }
+        }
+        let before = qualifier.pass_pipelines_created();
+        let time = qualifier.compile_time(&steps).expect("it compiles");
+        total += time;
+        eprintln!(
+            "{test}: {what}: {} steps, {passes} passes, {} new pass pipelines, {:.1} ms",
+            steps.len(),
+            qualifier.pass_pipelines_created() - before,
+            time.as_secs_f64() * 1000.0
+        );
+    }
+    eprintln!(
+        "{test}: every sequence: {} pass pipelines, {:.1} ms",
+        qualifier.pass_pipelines_created(),
+        total.as_secs_f64() * 1000.0
+    );
+}
+
 /// The visible region of the 480 × 320 photograph at 400%, which the window shows only part of.
 fn zoomed(editor: &mut Editor) -> luxforge_core::Region {
     deliver_until(editor, "the first frame", |editor| {

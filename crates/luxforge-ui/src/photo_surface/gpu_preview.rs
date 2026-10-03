@@ -78,7 +78,9 @@
 //! Shader compilation is checked without waiting: the assembled WGSL is validated with the `naga`
 //! that `wgpu` itself uses before a module is created, and pipeline creation runs inside error
 //! scopes whose answers wgpu's native backends give immediately; they are polled once and never
-//! awaited. All of it runs on the compile thread.
+//! awaited. A spatial pass's module is handed over as the validated `naga` module, compacted to its
+//! entry point, so the driver compiles only what the pass runs ([`spatial`]). All of it runs on the
+//! compile thread.
 
 use super::{
     PhotoPipeline, Picture, SurfaceFigures, SurfaceSlots, Tile, TileLayout, UNIFORM_SIZE,
