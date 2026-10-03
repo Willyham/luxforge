@@ -1940,20 +1940,20 @@ fn gpu_presence_masked_layers_take_their_scratch_from_one_pool() {
         )
     };
     // The figures over the boundary's 3,502,176 texels: an intermediate at eight bytes a texel;
-    // each link's kept planes, 8.25 bytes a texel, and its 13 passes' parameter slices; and the
+    // each link's kept planes, 4.25 bytes a texel, and its 13 passes' parameter slices; and the
     // pool, one link's 21.25 bytes a texel of scratch.
     const INTERMEDIATE: u64 = 28_017_408;
-    const KEPT: u64 = 28_892_952 + 13 * 256;
+    const KEPT: u64 = 14_884_248 + 13 * 256;
     const POOL: u64 = 74_421_240;
-    // Each layer after the first adds its kept planes and an intermediate to the chain: 56.9 MB.
-    const LAYER: u64 = 56_913_688;
-    // Today's slot adds the link's scratch planes, and its words and blocks buffers, too: 131.3 MB.
+    // Each layer after the first adds its kept planes and an intermediate to the chain: 42.9 MB.
+    const LAYER: u64 = 42_904_984;
+    // Today's slot adds the link's scratch planes, and its words and blocks buffers, too: 117.3 MB.
     const SLOT_LAYER: u64 = LAYER + POOL + 2 * 1024;
     let qualifier = crate::app::gpu_qualification::headless(test);
     for (layers, chain, slot) in [
-        (1usize, 103_317_520, 157_551_472),
-        (2, 160_231_208, 288_888_448),
-        (4, 274_058_584, 551_562_400),
+        (1usize, 89_308_816, 143_542_768),
+        (2, 132_213_800, 260_871_040),
+        (4, 218_023_768, 495_527_584),
     ] {
         let (plan, planes) = plan_of(layers);
         let spatial = plan
@@ -1988,7 +1988,7 @@ fn gpu_presence_masked_layers_take_their_scratch_from_one_pool() {
             let charged = qualifier.charged_bytes(&plan).expect("a charge");
             eprintln!("{test}: {layers} layers: today's slot {charged} B");
             assert_eq!(charged, slot);
-            assert_eq!(slot - 157_551_472, after * SLOT_LAYER);
+            assert_eq!(slot - 143_542_768, after * SLOT_LAYER);
         }
     }
 }
