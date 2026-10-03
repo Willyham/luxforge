@@ -58,22 +58,28 @@ pub(crate) fn rebuild(job: &mut PreviewJob, change: impl FnOnce(&mut Parts)) {
 }
 
 pub(crate) fn boot() -> (Editor, PathBuf) {
+    let (editor, _, catalog) = boot_with(Config::default());
+    (editor, catalog)
+}
+
+/// An editor started from `config`, the startup task it asked the runtime for, and its catalog.
+pub(crate) fn boot_with(config: Config) -> (Editor, iced::Task<Message>, PathBuf) {
     let catalog = std::env::temp_dir().join(format!(
         "luxforge-desktop-{}-{}.sqlite",
         std::process::id(),
         REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
     ));
     let (owner, join) = luxforge_core::OwnerHandle::start(&catalog).unwrap();
-    let (editor, _) = Editor::new(Boot {
+    let (editor, startup) = Editor::new(Boot {
         owner,
         join,
         live_server: None,
-        config: Config::default(),
+        config,
         client: None,
         initial_import: None,
         window: (1440.0, 900.0),
     });
-    (editor, catalog)
+    (editor, startup, catalog)
 }
 
 /// An editor with every built-in discovered and one real photograph open, imported by a second
