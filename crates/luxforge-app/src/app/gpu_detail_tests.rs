@@ -190,6 +190,8 @@ fn full(format: PlaneFormat) -> GpuPlane {
 
 const EACH: PassShape = PassShape::Texels { span: [1, 1] };
 
+/// A pass of `kernel`: the loaders and the Oklab pass read the unit's input, and every other kernel
+/// these tests run reads planes alone.
 fn pass(kernel: &'static str, inputs: &[u32], output: u32, words: u32) -> GpuPass {
     GpuPass {
         kernel: Cow::Borrowed(kernel),
@@ -197,6 +199,7 @@ fn pass(kernel: &'static str, inputs: &[u32], output: u32, words: u32) -> GpuPas
         output,
         words,
         source: 0,
+        reads_source: kernel.starts_with("lf_detail_test_load") || kernel == "lf_detail_lab",
         shape: EACH,
     }
 }

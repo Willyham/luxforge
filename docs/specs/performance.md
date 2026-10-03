@@ -3664,11 +3664,36 @@ What each program sequence the `gpu-preview` scenario compiles costs the editor'
 | Everything a run compiles | 11,738 | 12,657 | 410 | 675 |
 
 - **Compile time barely moved.** A Presence drag's own sequence costs 4% more cold, and every sequence before Presence 0 to 4%, but for two that now create more pass pipelines: the Mixer before all three Presence fields (+17%) and a Detail drag with all three after it (+26%, 14 new against 8), whose Presence passes store into Detail's free half-precision planes, so they share fewer modules with the other sequences. A run's whole compile work is 8% more cold and 265 ms more warm.
-- **What the scenario waited for.** A drag of a Presence layer, and a drag of every colour layer under it, each compiles its own Presence passes, since a pass's module carries the programs of the steps before it: about a second a sequence on a cold cache. The Dehaze commit warms six, the Presence drag's own last, and on both builds that one was ready 5.9 to 6.4 s after the commit (main 5.87 to 5.95 s, the follow-ups 5.94 to 6.39 s, 7.3 s in one run on a host at load 30 to 60). The scenario's fixed 4 s quiet after the Clarity commit, and the 1.5 s while the drag's boundary arrived, covered that only on an idle host, so a cold cache under load failed the Texture drag's first GPU tick (`compiling`) on either build. The scenario now waits for the warm list to compile ([design](../design/gpu-preview.md#where-the-code-lives)).
+- **What the scenario waited for.** On these builds a drag of a Presence layer, and a drag of every colour layer under it, each compiled its own Presence passes, since every pass's module carried the programs of the steps before it: about a second a sequence on a cold cache ([since](#pass-modules-shared-across-sequences), a pass that reads only planes is shared). The Dehaze commit warms six, the Presence drag's own last, and on both builds that one was ready 5.9 to 6.4 s after the commit (main 5.87 to 5.95 s, the follow-ups 5.94 to 6.39 s, 7.3 s in one run on a host at load 30 to 60). The scenario's fixed 4 s quiet after the Clarity commit, and the 1.5 s while the drag's boundary arrived, covered that only on an idle host, so a cold cache under load failed the Texture drag's first GPU tick (`compiling`) on either build. The scenario now waits for the warm list to compile ([design](../design/gpu-preview.md#where-the-code-lives)).
 - **Warm**, every sequence compiles in 1 to 106 ms, the Presence drag's in 25 to 30.
 - **With the wait.** On the follow-ups with the scenario's `gpu_warmed` steps, five runs on a cold cache passed: the wait after the Presence commits took 6.3 to 6.6 s, and 8.5 to 8.6 s with twelve busy loops beside the editor, each longer than the fixed quiet that preceded it; the waits after the Texture and Clarity drags' releases took 3.1 to 4.5 s and 1.5 to 1.7 s. Eight consecutive runs on the shared warm cache, the first two on a freshly built editor, passed at loads 3.4 to 9.7.
 - **At 100%** (`gpu-preview-zoom`) a percentage view's plans are not warmed, and each drag compiles its own when its boundary is first drawn: cold, a Presence drag's region sequence in 1.09 to 1.12 s, a Basic drag under Presence's in 0.57 s and a Detail drag with Presence after it (Dehaze behind Detail) in 1.85 to 1.90 s, warm in 23 to 52 ms. Each of those drags is now held after its first tick until that compile has ended, at least 4 s and at most 60 s: two cold runs, one beside twelve busy loops, and one warm passed, every held step ending at 4.0 to 4.2 s.
 
+
+
+### Pass modules shared across sequences
+
+What the spatial sequences cost to compile once a pass that reads only planes holds its own step's program alone and every pass module reaches wgpu compacted to its entry point ([GPU previews](../design/gpu-preview.md#where-the-code-lives)). `gpu_preview_spatial_compile_cost_on_a_cold_cache` compiles, in one process and in the order the editor's warm lists do, a Presence drag's own sequence, then drags of the layers before it and a Detail drag with Presence after it. Every kernel and apply opens with a test of its words against the process's own constant, so the driver's shader cache holds none of them; a second run handed the first run's constant measures the same sequences warm. A functional measurement, not a timing gate: the headless `test` profile build of `luxforge-app` on the `Apple M4 Pro` adapter (Metal), the builds before and after the change interleaved, three runs each, on a shared host at a one-minute load of 18 to 31 cold and 16 warm. Milliseconds; the pipelines are the spatial pass pipelines each sequence created, the others found in the passes' cache.
+
+| Sequence | Pass pipelines, before → after | Cold, before | Cold, after |
+| --- | ---: | ---: | ---: |
+| A Presence drag: Presence in its GPU shape, 22 passes | 14 → 14 | 1,164 to 1,507 | 927 to 1,044 |
+| Basic under Presence, Dehaze alone (9 passes) | 9 → 2 | 849 to 962 | 213 to 252 |
+| Basic under Presence, all three | 5 → 4 | 567 to 716 | 496 to 602 |
+| The Tone curve under Presence | 14 → 6 | 1,241 to 1,499 | 573 to 806 |
+| The Mixer under Presence | 14 → 6 | 1,321 to 1,497 | 620 to 682 |
+| A Detail drag, Presence after it (39 passes) | 21 → 13 | 1,938 to 2,166 | 1,040 to 1,122 |
+| Basic under Detail and Presence | 21 → 8 | 2,268 to 3,002 | 951 to 1,008 |
+| All seven | 98 → 53 | 9,348 to 11,133 | 4,819 to 5,332 |
+
+- **Warm**, all seven compile in 129 to 168 ms, against 374 to 526 before; a Presence drag's own in 23 to 28 ms, against 39 to 62.
+- **Compaction's own share.** Paired in one process, eight pairs in alternating order at a load of 27 to 37, a Presence drag's sequence took a median 1,210 ms cold compacted against 1,533 uncompacted (faster in 7 of 8), and a Detail drag with Presence after it 1,420 against 1,768 (6 of 8). Warm, all seven took 188 to 199 ms from WGSL text, 154 to 159 ms from the uncompacted `naga` module and 117 to 118 ms compacted. Frames are the same each way: every GPU test prints the same figures, and a Basic, Detail and Presence plan drawn with every pass forced to read its input differs in none of 38,400 texels (`gpu_presence_passes_that_read_only_planes_read_no_input`).
+- **The editor** was not measured again: the scenario figures above are from the builds before.
+
+```sh
+cargo test -p luxforge-app gpu_preview_spatial_compile_cost_on_a_cold_cache -- --ignored --nocapture
+LUXFORGE_COMPILE_CONSTANT=EARLIER_RUNS_CONSTANT cargo test -p luxforge-app gpu_preview_spatial_compile_cost_on_a_cold_cache -- --ignored --nocapture
+```
 
 
 ## GPU Detail program

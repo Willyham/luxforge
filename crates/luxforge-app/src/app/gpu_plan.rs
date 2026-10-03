@@ -308,6 +308,7 @@ pub(crate) fn spatial_step(spatial: &GpuSpatial) -> Result<GpuStep, Unrunnable> 
                 output: index(pass.output),
                 words: index(pass.words),
                 source: index(pass.source),
+                reads_source: pass.reads_source,
                 shape: match pass.shape {
                     GpuPassShape::Texels { span } => PassShape::Texels { span },
                     GpuPassShape::Workgroup => PassShape::Workgroup,

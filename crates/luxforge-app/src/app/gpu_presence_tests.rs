@@ -199,6 +199,8 @@ fn reduced(format: PlaneFormat, s: u32) -> GpuPlane {
     }
 }
 
+/// A pass of `kernel`: the loader and the reduction read the unit's input, and every other kernel
+/// these tests run reads planes alone.
 fn pass(
     kernel: &'static str,
     inputs: &[u32],
@@ -212,6 +214,7 @@ fn pass(
         output,
         words,
         source: 0,
+        reads_source: matches!(kernel, "lf_presence_test_load" | "lf_presence_reduce"),
         shape,
     }
 }
@@ -1124,6 +1127,9 @@ fn gpu_presence_on_the_byte_path_meets_the_spatial_limits() {
 /// Presence's pass pipelines are their kernels and shapes: all three units compile fewer pipelines
 /// than they run passes, a drag that changes only amounts compiles none, and the plan whose light
 /// is taken on the GPU runs the passes of the plan whose light was stored, compiling none either.
+/// A step before Presence is held only by the passes that read their unit's input, so a plan with
+/// Basic before it compiles only theirs, and one with Detail before it Detail's own, theirs and the
+/// one whose plane takes a half-precision texture Detail leaves free.
 #[test]
 fn gpu_presence_pass_pipelines_are_shared_across_plans() {
     let test = "gpu_presence_pass_pipelines_are_shared_across_plans";
@@ -1209,6 +1215,100 @@ fn gpu_presence_pass_pipelines_are_shared_across_plans() {
         second - first
     );
     assert_eq!((estimated, second), (passes, first));
+    // Basic before Presence: the six modules of the passes that read their unit's input — Dehaze's
+    // two reductions, Texture's sums of its encoded input and its two finishes against it, and
+    // Clarity's reduction — are new; every pass that reads only planes runs a pipeline above.
+    let mut lifted = stack.clone();
+    lifted.layers.insert(
+        0,
+        Layer::new(luxforge_core::BASIC_EFFECT, json!({"exposure": 0.3})),
+    );
+    let (plan, lifted_passes) = converted(&lifted, &fresh);
+    qualifier.evaluate(&plan).expect("a readback");
+    let third = qualifier.pass_pipelines_created();
+    eprintln!(
+        "{test}: Basic, then all three: {lifted_passes} passes, {} more pipelines",
+        third - second
+    );
+    assert_eq!((lifted_passes, third - second), (passes, 6));
+    // Detail before Presence: Detail's six, the same six of Presence's, and the vertical pass that
+    // writes Texture's coefficients, whose plane takes a half-precision texture Detail leaves free.
+    let mut detailed = stack.clone();
+    detailed.layers.insert(
+        0,
+        Layer::new(
+            luxforge_core::DETAIL_EFFECT,
+            json!({"luminance": 40, "colour": 40, "sharpening": 50}),
+        ),
+    );
+    let (plan, detailed_passes) = converted(&detailed, &fresh);
+    qualifier.evaluate(&plan).expect("a readback");
+    let fourth = qualifier.pass_pipelines_created();
+    eprintln!(
+        "{test}: Detail, then all three: {detailed_passes} passes, {} more pipelines",
+        fourth - third
+    );
+    assert_eq!(fourth - third, 6 + 6 + 1);
+}
+
+/// Every pass Presence's and Detail's units describe as reading only planes reads no input: a plan
+/// of both after a colour layer draws exactly what it draws with every pass reading its unit's
+/// input through everything before it. A pass that reads its input while described otherwise
+/// reads the stub its module then declares, whose values no photograph holds, and its frame would
+/// differ.
+#[test]
+fn gpu_presence_passes_that_read_only_planes_read_no_input() {
+    let test = "gpu_presence_passes_that_read_only_planes_read_no_input";
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
+        return;
+    };
+    let registry = ModuleRegistry::builtin();
+    let (width, height) = (240, 160);
+    let pixels = photograph(width, height, 11);
+    let stack = Recipe {
+        layers: vec![
+            Layer::new(luxforge_core::BASIC_EFFECT, json!({"exposure": 0.3})),
+            Layer::new(
+                luxforge_core::DETAIL_EFFECT,
+                json!({"luminance": 40, "colour": 40, "sharpening": 50}),
+            ),
+            Layer::new(
+                PRESENCE_EFFECT,
+                json!({"texture": 40, "clarity": 30, "dehaze": 25}),
+            ),
+        ],
+        ..Recipe::default()
+    };
+    let request = GpuPlanRequest::exact(0, stage(width, height))
+        .qualifying()
+        .linear();
+    let Ok(GpuAnswer::Plan(plan)) = gpu_plan(&registry, &stack, request) else {
+        panic!("{test}: a plan");
+    };
+    let described = surface_plan(&plan, boundary(width, height, 1, &pixels).unwrap()).unwrap();
+    let mut reading = described.clone();
+    let mut planes_alone = 0;
+    for step in &mut reading.steps {
+        if let GpuStep::Spatial(spatial) = step {
+            for pass in &mut spatial.passes {
+                planes_alone += usize::from(!pass.reads_source);
+                pass.reads_source = true;
+            }
+        }
+    }
+    let drawn = qualifier.evaluate(&described).expect("a readback");
+    let read = qualifier.evaluate(&reading).expect("a readback");
+    let differing = drawn
+        .iter()
+        .zip(&read)
+        .filter(|(drawn, read)| drawn != read)
+        .count();
+    eprintln!(
+        "{test}: {planes_alone} passes read only planes; {differing} of {} texels differ",
+        drawn.len()
+    );
+    assert!(planes_alone > 0);
+    assert_eq!(differing, 0);
 }
 
 // ---- The corpus at Fit ------------------------------------------------------------------------
