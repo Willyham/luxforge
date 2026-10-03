@@ -351,6 +351,31 @@ impl<'a> Planes<'a> {
             )
         })
     }
+
+    /// The rectangle these values cover.
+    pub(crate) fn region(&self) -> Region {
+        self.region
+    }
+
+    /// Row `y` of the red, green and blue planes across the whole rectangle, its first value at the
+    /// rectangle's `x0`, with [`Self::sample`]'s edge clamping applied to `y`. A pass that reads
+    /// whole rows uses it in place of one `sample` per pixel: column `x` of the stage is
+    /// `row[(x - region.x0)]` for `x` inside the rectangle, and the pass clamps and checks its
+    /// columns once rather than per read. A row outside the rectangle after clamping panics, as
+    /// `sample` does.
+    pub(crate) fn row(&self, y: i64) -> [&'a [f32]; 3] {
+        let y = y.clamp(0, i64::from(self.stage.height.saturating_sub(1))) as u32;
+        assert!(
+            y >= self.region.y0 && y < self.region.y1(),
+            "a spatial unit read row {y}, outside the {:?} it was given",
+            self.region
+        );
+        let len = self.region.pixels() as usize;
+        let width = self.region.width as usize;
+        let start = (y - self.region.y0) as usize * width;
+        let values: &'a [f32] = self.values;
+        std::array::from_fn(|channel| &values[channel * len + start..channel * len + start + width])
+    }
 }
 
 /// The rectangle of planar `f32` linear-sRGB RGB a unit writes, with its position in the stage.
@@ -858,5 +883,49 @@ mod tests {
         let mut output = PlanesMut::new(stage, rect, &mut written).unwrap();
         output.set(3, 2, [1.0, 2.0, 3.0]);
         assert_eq!(output.plane_mut(1)[rect.width as usize + 1], 2.0);
+    }
+
+    #[test]
+    fn a_row_of_planes_is_what_sample_reads_at_each_of_its_columns() {
+        let stage = Stage {
+            width: 8,
+            height: 6,
+        };
+        // Every value distinct, so a row taken one plane, one row or one column off fails.
+        for rect in [region(2, 1, 4, 3), region(0, 0, 3, 2), region(5, 3, 3, 3)] {
+            let values: Vec<f32> = (0..rect.pixels() as usize * 3)
+                .map(|index| index as f32)
+                .collect();
+            let planes = Planes::new(stage, rect, &values).unwrap();
+            assert_eq!(planes.region(), rect);
+            for y in -3..i64::from(stage.height) + 3 {
+                let clamped = y.clamp(0, i64::from(stage.height) - 1) as u32;
+                if clamped < rect.y0 || clamped >= rect.y1() {
+                    continue;
+                }
+                let row = planes.row(y);
+                for (column, x) in (rect.x0..rect.x1()).enumerate() {
+                    let expected = planes.sample(i64::from(x), y);
+                    let actual = std::array::from_fn(|channel| row[channel][column]);
+                    assert_eq!(
+                        actual.map(f32::to_bits),
+                        expected.map(f32::to_bits),
+                        "{rect:?} row {y} column {x}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "outside the")]
+    fn a_row_outside_the_planes_panics() {
+        let stage = Stage {
+            width: 8,
+            height: 6,
+        };
+        let rect = region(2, 1, 4, 3);
+        let values = vec![0.0; rect.pixels() as usize * 3];
+        Planes::new(stage, rect, &values).unwrap().row(4);
     }
 }
