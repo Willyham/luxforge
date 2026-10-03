@@ -85,6 +85,12 @@ impl Step {
         Self::Wait { ms }
     }
 
+    /// At least `quiet_ms` of quiet, then until the GPU preview has compiled what it was handed,
+    /// at most `ms` in all.
+    pub fn gpu_warmed(quiet_ms: u64, ms: u64) -> Self {
+        Self::GpuWarmed { quiet_ms, ms }
+    }
+
     /// The tools panel scrolled to this fraction of its range.
     pub fn tools_scroll(fraction: f64) -> Self {
         Self::ToolsScroll(fraction)
