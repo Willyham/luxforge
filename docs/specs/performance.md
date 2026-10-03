@@ -175,8 +175,10 @@ quote.
 
 ### The masked colour primitive, its own run
 
-A masked colour layer costs the units it would have cost unmasked, plus one coverage evaluation and
-one blend per pixel **inside the mask's bounds rectangle**, and nothing at all outside it. Measured on
+On the build measured here, a masked colour layer cost the units it would have cost unmasked, plus one
+coverage evaluation and one blend per pixel **inside the mask's bounds rectangle**, and nothing at all
+outside it; inside the rectangle its units and blend now run only where the coverage is not zero
+([below](#units-only-where-the-coverage-is-not-zero)). Measured on
 the host above, release, single invocation, three measured renders after one warm pass, over a
 programmatically filled 6000 × 4000 frame with one `+1 EV` exposure unit
 (`render::mask_tests::masked_colour_cost_on_a_24_megapixel_frame`, an ignored measurement test):
@@ -195,13 +197,52 @@ chunk when every operation in its run is masked and the chunk lies outside every
 and is not built. The unit-evaluation claim itself is asserted rather than inferred, by a counting
 colour unit in
 `render::mask_tests::a_masked_operation_evaluates_no_unit_outside_its_bounds`, which requires the count to
-equal the rectangle's area exactly.
+equal the rectangle's pixels whose coverage is not zero, and the rectangle's area exactly under the
+rule before, kept for the tests.
 
 `editor-performance` on 24 MP, 30 samples, after the change: colour baseline 33.1 / 38.3 ms and one
 `+1 EV` Basic layer 40.3 / 45.5 ms, both inside the recorded ranges above, on a host whose load was
 shared with other sessions. There is no paired before-run from this worktree; the unmasked path's
 arithmetic is unchanged by construction and proved byte-identical by the colour tests, and the mask is
 consulted once per operation per row rather than per pixel.
+
+#### Units only where the coverage is not zero
+
+Inside its bounds rectangle a masked colour operation evaluates each pixel's coverage first and runs
+its units only over the stretches of pixels whose coverage is not zero, or whose input holds a −0.0 or
+a value that is not finite ([masking](../design/masking.md)); a pixel it skips keeps its input, the bit
+the blend gives there, so every output is the same to the bit (`a_pixel_whose_coverage_is_zero_runs_no_unit_and_keeps_its_bits`,
+`a_render_that_skips_uncovered_pixels_is_identical_and_samples_equal_it`).
+`render::mask_tests::masked_colour_cost_on_a_24_megapixel_frame` times one exposure unit and a full
+Basic layer over a programmatically filled 6000 × 4000 frame, unmasked and under four masks, each
+masked case under the rule before and the rule now back to back, and prints the process's CPU time
+beside the wall time and the least of 30 single-thread passes over 64 rows. Release build, Apple M4
+Pro, a shared host at a one-minute load of 21 to 62, which moved the wall times by up to four times:
+the CPU times and the single-thread figures are the stable ones. Two alternated pairs:
+
+| Case, 24 MP | Non-zero coverage | CPU ms per render, before | After | Single thread, ns per pixel, before | After |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Basic, bright band (80–100) | 14.95% | 2,025 / 2,046 | 883 / 894 | 67.4 / 68.6 | 24.8 / 24.8 |
+| Basic, middle band (25–38) | 25.40% | 1,981 / 1,986 | 1,066 / 1,075 | 68.4 / 68.6 | 31.6 / 31.6 |
+| Basic, whole-frame gradient | 100% | 1,648 / 1,667 | 1,672 / 1,678 | 54.5 / 54.6 | 53.8 / 53.9 |
+| Basic, unmasked | – | 1,490 / 1,499 | 1,496 / 1,497 | – | – |
+| Exposure, bright band | 14.95% | 626 / 657 | 675 / 681 | 19.6 / 19.7 | 18.2 / 18.3 |
+| Exposure, whole frame | 100% | 266 / 275 | 290 / 294 | 5.44 / 5.47 | 4.80 / 4.81 |
+
+- **A band mask over a full Basic layer** takes 46 to 57% less CPU than it did (the middle band 46%, the bright
+  band 56 to 57%), and its wall time is 78 to 114 ms against 172 to 176. On the generated `24mp.jpg` (`LUXFORGE_MASKED_COLOUR_SOURCE`),
+  whose four flat quadrants a band selects whole, one pair at a load of 21 to 24 took 877 and 890 CPU
+  ms against 1,798 and 1,834.
+- **A single exposure unit** costs too little for the units skipped to show: its render's CPU time
+  moved within ±10% with no consistent direction across sessions, the band's cost being its
+  coverage's luminance encode at every pixel of the stage.
+- **Coverage that alternates every pixel**, one-pixel stretches, is the worst case: one exposure unit
+  took 12.4 to 14.2 ns a pixel against 10.1 to 12.1, and a full Basic layer about the same either way.
+
+```sh
+cargo test --release --package luxforge-core --lib render::mask_tests::masked_colour_cost_on_a_24_megapixel_frame -- --ignored --nocapture
+LUXFORGE_MASKED_COLOUR_SOURCE=fixtures/generated/24mp.jpg cargo test --release --package luxforge-core --lib render::mask_tests::masked_colour_cost_on_a_24_megapixel_frame -- --ignored --nocapture
+```
 
 ### The masked spatial primitive, one to four layers
 
@@ -560,8 +601,8 @@ well under the 8.0 a quotable figure needs, so it is not the host.
 
 That recipe is also the heaviest the scenario builds: **four masked colour layers**, three of whose masks
 hold a luminance range or a colour range. A value-based component answers the *whole stage* for its
-conservative rectangle, by [P13](../design/range-study.md#proposals), so those three layers are
-evaluated at every pixel with no span skipped — the cost the range study measured at 28–44 ns per pixel
+conservative rectangle, by [P13](../design/range-study.md#proposals), so on that build those three
+layers were evaluated at every pixel with no span skipped — the cost the range study measured at 28–44 ns per pixel
 over 100% of the stage, against a placed gradient's 14.6–20.0 ns over 40%. It was recorded here with
 the reading that most of the figure was that recipe. **The bare-recipe measurement below withdraws
 that reading**, and the correction is the more useful of the two results.

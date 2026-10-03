@@ -1,10 +1,11 @@
-//! The masked colour primitive: its blend, its bounds and its cost.
+//! The masked colour primitive: its blend, its bounds, the pixels it skips and its cost.
 
-use super::testing::{frame_in, render, sample, sample_in};
+use super::colour_runs::{NON_FINITE_COLOR, UnitSkip, set_unit_skip};
+use super::testing::{frame_in, linear, point_evaluated, render, sample, sample_in};
 use super::tests::*;
 use super::*;
 use crate::{
-    Layer, Recipe, SnapshotId, SourceImage, Transform,
+    Error, Layer, Recipe, SnapshotId, SourceImage, Transform,
     colour::srgb::decode_pixel,
     modules::{ModuleRegistry, Stage},
 };
@@ -211,9 +212,21 @@ fn a_masked_operation_blends_against_its_own_input_inside_the_run() {
     }
 }
 
-/// Outside the bounds rectangle a masked operation evaluates **no unit at all**, counted. The
-/// same test states the rectangle's own conservatism: it is at most one pixel larger on each side
-/// than the rows whose coverage is non-zero.
+/// What `evaluate` returns under `skip` on this thread, with every pass this thread asks for forced
+/// serial so the rule reaches every row it runs; both are returned to what they were afterwards.
+fn with_skip<T>(skip: UnitSkip, evaluate: impl FnOnce() -> T) -> T {
+    let skips = set_unit_skip(skip);
+    let forced = parallel::force(Some(false));
+    let result = evaluate();
+    parallel::force(forced);
+    set_unit_skip(skips);
+    result
+}
+
+/// Outside the bounds rectangle a masked operation evaluates **no unit at all**, and inside it none
+/// at a pixel whose coverage is zero, both counted. The same test states the rectangle's own
+/// conservatism: it is at most one pixel larger on each side than the rows whose coverage is
+/// non-zero, which is what the rule before the skip still ran the unit over.
 #[test]
 fn a_masked_operation_evaluates_no_unit_outside_its_bounds() {
     let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -229,18 +242,42 @@ fn a_masked_operation_evaluates_no_unit_outside_its_bounds() {
         vec![masked(colour_layer(json!({"counting": true})), &mask)],
         vec![mask.clone()],
     );
-    counter.store(0, std::sync::atomic::Ordering::Relaxed);
-    let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
-    let counted = counter.load(std::sync::atomic::Ordering::Relaxed);
+    let count = |skip: UnitSkip| {
+        with_skip(skip, || {
+            counter.store(0, std::sync::atomic::Ordering::Relaxed);
+            let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
+            (raster, counter.load(std::sync::atomic::Ordering::Relaxed))
+        })
+    };
+    let (raster, counted) = count(UnitSkip::Proved);
+    let (everywhere, before) = count(UnitSkip::Never);
+    assert_eq!(
+        raster.rgba, everywhere.rgba,
+        "skipping uncovered pixels changed the frame"
+    );
     let compiled =
         crate::mask::CompiledMask::new(&mask, stage, &crate::path::StrokeTable::default()).unwrap();
     let bounds = compiled.bounds();
     assert_eq!(
-        counted as u64,
+        before as u64,
         bounds.pixels(),
-        "the unit ran over {counted} pixels against a {}x{} rectangle",
+        "without the skip the unit ran over {before} pixels against a {}x{} rectangle",
         bounds.width,
         bounds.height
+    );
+    let covered = (0..source.height)
+        .flat_map(|y| (0..source.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| compiled.evaluate(x, y, ANY_PIXEL_F32) != 0.0)
+        .count();
+    assert_eq!(
+        counted, covered,
+        "the unit ran over {counted} pixels, and {covered} have coverage"
+    );
+    // What the skip saves here is the rectangle's conservatism: at most a row on each side.
+    assert!(
+        (covered as u64) < bounds.pixels() && bounds.pixels() - covered as u64 <= 2 * 200,
+        "{covered} covered pixels in a rectangle of {}",
+        bounds.pixels()
     );
     // The frame is 20000 pixels and the rectangle is a small part of it: the saving is the point.
     assert!(
@@ -362,7 +399,7 @@ fn the_masked_blend_does_not_depend_on_the_snapshot_block_size() {
         let mut pixels: Vec<[f32; 3]> = (0..source.width)
             .map(|x| decode_pixel([x as u8, (x as u8).wrapping_add(20), 0]))
             .collect();
-        let mut scratch = vec![[0.0f32; 3]; block];
+        let mut scratch = vec![MaskedInput::default(); block];
         for run in color_runs(segment) {
             apply_units(&run, 2, 0, &mut pixels, &mut scratch).unwrap();
         }
@@ -404,13 +441,14 @@ fn a_masked_run_reserves_its_row_snapshot_from_the_existing_budget() {
         vec![masked(exposure_layer(&[1.0]), &mask)],
         vec![mask.clone()],
     );
-    // One row chunk plus one row of snapshot. The budget is a **target and not a limit**, so a
-    // target that fits the chunk but not the snapshot renders anyway rather than refusing: what
-    // the snapshot costs is visible in the high-water mark, never in an error. Below the
-    // parallel threshold the chunks run one after another, so each context's high-water mark
-    // is exactly what one chunk of its render carried.
+    // One row chunk plus one row of snapshot, each pixel's input and its coverage. The budget is a
+    // **target and not a limit**, so a target that fits the chunk but not the snapshot renders
+    // anyway rather than refusing: what the snapshot costs is visible in the high-water mark, never
+    // in an error. Below the parallel threshold the chunks run one after another, so each
+    // context's high-water mark is exactly what one chunk of its render carried.
     let chunk = (color_chunk_rows(source.width) * source.width as usize * 12) as u64;
-    let snapshot = source.width as u64 * 12;
+    let snapshot = source.width as u64 * 16;
+    assert_eq!(std::mem::size_of::<MaskedInput>(), 16);
     let render_at = |context: &RenderContext, recipe: &Recipe| {
         frame_in(
             context,
@@ -461,6 +499,638 @@ fn a_masked_run_reserves_its_row_snapshot_from_the_existing_budget() {
     assert_eq!(empty.scratch().peak(), 0, "a sample reserves no scratch");
 }
 
+/// One mask of one `add` luminance band, at full amount, on the histogram's `0..100` axis. Its
+/// rectangle is the whole stage, whatever it selects.
+fn band_mask(low: f64, low_feather: f64, high: f64, high_feather: f64) -> crate::Mask {
+    let mut mask = crate::Mask::new("Mask 1");
+    mask.components = vec![crate::Component::new(
+        "Luminance range 1",
+        crate::ComponentMode::Add,
+        "luminance-range",
+        json!({"low": low, "low_feather": low_feather, "high": high, "high_feather": high_feather}),
+    )];
+    mask
+}
+
+/// Basic with every field non-neutral: the most per-pixel work one colour layer asks for.
+fn full_basic() -> Layer {
+    Layer::new(
+        crate::BASIC_EFFECT,
+        json!({
+            "exposure": 0.5, "contrast": 25.0, "highlights": -30.0, "shadows": 30.0,
+            "whites": -15.0, "blacks": 15.0, "temperature": 20.0, "tint": -10.0,
+            "vibrance": 30.0, "saturation": 15.0,
+        }),
+    )
+}
+
+/// The masks under which a pixel the bounds rectangle admits can still have coverage of exactly
+/// zero, each with the stroke table its brush reads: a luminance band and a colour range, whose
+/// rectangles are always the whole stage; an inverted radial, which its inversion gives the whole
+/// stage too; an inverted radial subtracted from a gradient over the whole frame; a diagonal
+/// gradient, a hard-edged radial and a brush stroke, whose rectangles hold corners their fields
+/// leave at zero; a gradient intersected with a band; a band at a partial amount; and a gradient
+/// whose coverage is exactly one over the whole frame, which leaves nothing to skip. Positions are
+/// fractions of the stage and a radius a fraction of its height. Every radial draws a hard edge, a
+/// feature no pixel grid resolves, so the proxy phase supersamples the masks that hold one.
+fn uncovered_masks() -> Vec<(&'static str, crate::Mask, crate::path::StrokeTable)> {
+    use crate::{Component, ComponentMode, Mask};
+    let radial = |x: f64, y: f64, radius: f64| {
+        json!({"x": x, "y": y, "radius_x": radius, "radius_y": radius, "angle": 0.0,
+               "feather": 0.0})
+    };
+    let whole = json!({"x0": -1.0, "y0": 0.5, "x1": -0.5, "y1": 0.5});
+    let band = band_mask(40.0, 10.0, 70.0, 0.0);
+    let mut colours = Mask::new("Colours");
+    colours.components.push(Component::new(
+        "Colour range 1",
+        ComponentMode::Add,
+        "colour-range",
+        json!({"samples": [[0.6, 0.25, 0.1]], "refine": 40.0}),
+    ));
+    let mut inverted = Mask::new("Inverted radial");
+    inverted.components.push(Component::new(
+        "Radial 1",
+        ComponentMode::Add,
+        "radial",
+        radial(0.6, 0.5, 0.3),
+    ));
+    inverted.invert = true;
+    let mut subtracted = Mask::new("Subtracted radial");
+    subtracted.components.push(Component::new(
+        "Linear 1",
+        ComponentMode::Add,
+        "linear",
+        whole.clone(),
+    ));
+    let mut hole = Component::new(
+        "Radial 1",
+        ComponentMode::Subtract,
+        "radial",
+        radial(0.4, 0.5, 0.2),
+    );
+    // Inverted, the radial covers everything but its core; subtracting that leaves the core.
+    hole.invert = true;
+    subtracted.components.push(hole);
+    subtracted.amount = 60.0;
+    let diagonal = linear_mask(0.45, 0.45, 0.15, 0.15);
+    let mut hard = Mask::new("Hard radial");
+    hard.components.push(Component::new(
+        "Radial 1",
+        ComponentMode::Add,
+        "radial",
+        radial(0.5, 0.5, 0.3),
+    ));
+    let stroke = crate::mask::Stroke::capture(
+        &[[0.2, 0.3], [0.5, 0.65], [0.8, 0.4]],
+        0.15,
+        50.0,
+        100.0,
+        false,
+    )
+    .expect("a legal stroke");
+    let (brush, strokes) = brush_mask(std::slice::from_ref(&stroke));
+    let mut intersected = Mask::new("Gradient and band");
+    intersected.components.push(Component::new(
+        "Linear 1",
+        ComponentMode::Add,
+        "linear",
+        whole,
+    ));
+    intersected.components.push(Component::new(
+        "Luminance range 1",
+        ComponentMode::Intersect,
+        "luminance-range",
+        json!({"low": 40.0, "low_feather": 10.0, "high": 70.0, "high_feather": 0.0}),
+    ));
+    let mut partial = band.clone();
+    partial.amount = 60.0;
+    let none = crate::path::StrokeTable::default;
+    vec![
+        ("band", band, none()),
+        ("colour range", colours, none()),
+        ("inverted radial", inverted, none()),
+        ("inverted radial subtracted", subtracted, none()),
+        ("diagonal gradient", diagonal, none()),
+        ("hard-edged radial", hard, none()),
+        ("brush", brush, strokes),
+        ("gradient intersected with a band", intersected, none()),
+        ("band at a partial amount", partial, none()),
+        ("covering", linear_mask(0.5, -1.0, 0.5, -0.5), none()),
+    ]
+}
+
+/// One recipe of `layers` and `mask`, with the stroke table its brush reads.
+fn recipe_with(
+    layers: Vec<Layer>,
+    mask: &crate::Mask,
+    strokes: &crate::path::StrokeTable,
+) -> Recipe {
+    Recipe {
+        format: crate::RECIPE_FORMAT,
+        layers,
+        masks: vec![mask.clone()],
+        strokes: strokes.clone(),
+        ..Recipe::default()
+    }
+}
+
+/// Whether a pixel of this input keeps it where its coverage is zero: every channel finite and
+/// none `−0.0`. The independent statement of the rule the tests count against.
+fn clean(input: [f32; 3]) -> bool {
+    input
+        .iter()
+        .all(|value| value.is_finite() && value.to_bits() != (-0.0_f32).to_bits())
+}
+
+/// A pixel the bounds rectangle admits whose coverage is exactly zero runs no unit, and that changes
+/// no bit. [`apply_units`] is compared with itself, the skip on and off, over every row of a small
+/// stage, under every mask that leaves such pixels, through three stacks: the masked operation
+/// between two unmasked ones in one run, a position-dependent unit inside it, and a whole Basic
+/// layer. The rows hold what a linear source can — negative values, values past white and both
+/// zeros — and one row holds `−0.0`, the value the skip excludes, while another holds a value that
+/// is not a number, whose verdict must come out unchanged too. Each row is evaluated whole and as
+/// a tail starting at a later column, in snapshot blocks of 1, 3 and the whole row, so a stretch
+/// that crosses a block or starts past the slice's first column still hands its units and its mask
+/// the coordinates the whole row does. A counting unit shows the skip is not vacuous: with it on,
+/// the units run at exactly the pixels the rectangle admits that do not keep their input; with it
+/// off, at every pixel the rectangle admits.
+#[test]
+fn a_pixel_whose_coverage_is_zero_runs_no_unit_and_keeps_its_bits() {
+    let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let registry = counting_registry(counter.clone());
+    let (width, height) = (53_u32, 23_u32);
+    let (negative_zeros, not_a_number) = (5_u32, 11_u32);
+    let row = |y: u32| -> Vec<[f32; 3]> {
+        (0..width)
+            .map(|x| {
+                let mut pixel = [0_u32, 1, 2].map(|channel| {
+                    ((x * 37 + y * 101 + channel * 53) % 97) as f32 / 97.0 * 1.6 - 0.2
+                });
+                if (x + y).is_multiple_of(9) {
+                    pixel = [0.0; 3];
+                }
+                if y == negative_zeros && x.is_multiple_of(2) {
+                    pixel[(x / 2 % 3) as usize] = -0.0;
+                }
+                if y == not_a_number && x == 31 {
+                    pixel[2] = f32::NAN;
+                }
+                pixel
+            })
+            .collect()
+    };
+    for (name, mask, strokes) in uncovered_masks() {
+        for (stack, layers) in [
+            (
+                "inside a run",
+                vec![
+                    exposure_layer(&[0.5]),
+                    masked(exposure_layer(&[1.5]), &mask),
+                    exposure_layer(&[-0.25]),
+                ],
+            ),
+            (
+                "positional",
+                vec![masked(
+                    colour_layer(json!({"exposure": [0.7], "positional": true})),
+                    &mask,
+                )],
+            ),
+            ("Basic", vec![masked(full_basic(), &mask)]),
+            (
+                "counting",
+                vec![masked(colour_layer(json!({"counting": true})), &mask)],
+            ),
+        ] {
+            let what = format!("{name}, {stack}");
+            let compiled = registry
+                .compile(width, height, &recipe_with(layers, &mask, &strokes))
+                .unwrap();
+            let segment = compiled.segments.last().unwrap();
+            // Row `y` from column `x0` on, through every run of the segment, under `skip`, in
+            // snapshot blocks of `block` pixels: every value's bits, or the refusal.
+            let evaluate = |skip: UnitSkip, y: u32, x0: u32, block: usize| {
+                let mut pixels = row(y)[x0 as usize..].to_vec();
+                let mut scratch = vec![MaskedInput::default(); block];
+                let skips = set_unit_skip(skip);
+                let result = color_runs(segment)
+                    .try_for_each(|run| apply_units(&run, y, x0, &mut pixels, &mut scratch));
+                set_unit_skip(skips);
+                result
+                    .map(|()| {
+                        pixels
+                            .iter()
+                            .flatten()
+                            .map(|value| value.to_bits())
+                            .collect::<Vec<_>>()
+                    })
+                    .map_err(|error| (error.kind, error.detail))
+            };
+            for y in 0..height {
+                let whole = evaluate(UnitSkip::Never, y, 0, width as usize);
+                assert!(
+                    whole.is_ok() || y == not_a_number,
+                    "{what}: row {y} failed without the skip: {whole:?}"
+                );
+                for block in [1, 3, width as usize] {
+                    assert_eq!(
+                        evaluate(UnitSkip::Proved, y, 0, block),
+                        whole,
+                        "{what}: row {y} in blocks of {block}"
+                    );
+                    let tail = evaluate(UnitSkip::Proved, y, 7, block);
+                    assert_eq!(
+                        tail,
+                        evaluate(UnitSkip::Never, y, 7, width as usize),
+                        "{what}: the tail of row {y} from column 7 in blocks of {block}"
+                    );
+                    if let (Ok(tail), Ok(whole)) = (&tail, &whole) {
+                        assert_eq!(
+                            tail[..],
+                            whole[7 * 3..],
+                            "{what}: the tail of row {y} is not the row's own"
+                        );
+                    }
+                }
+            }
+            if stack != "counting" {
+                continue;
+            }
+            let field = segment
+                .operations
+                .iter()
+                .find_map(|operation| match operation {
+                    crate::modules::Processing::Color(operation) => operation.mask(),
+                    _ => None,
+                })
+                .expect("the counting layer is masked");
+            let bounds = field.bounds();
+            // Every row but the one whose stretch fails part way through it.
+            let rows = || (0..height).filter(|y| *y != not_a_number);
+            let (mut admitted, mut kept) = (0, 0);
+            for y in rows() {
+                for (x, input) in (0..width).zip(row(y)) {
+                    if bounds.contains(x, y) {
+                        admitted += 1;
+                        if field.evaluate(x, y, input) == 0.0 && clean(input) {
+                            kept += 1;
+                        }
+                    }
+                }
+            }
+            let ran = |skip: UnitSkip| {
+                counter.store(0, std::sync::atomic::Ordering::Relaxed);
+                for y in rows() {
+                    evaluate(skip, y, 0, width as usize).unwrap();
+                }
+                counter.load(std::sync::atomic::Ordering::Relaxed)
+            };
+            assert_eq!(ran(UnitSkip::Never), admitted, "{what}");
+            assert_eq!(ran(UnitSkip::Proved), admitted - kept, "{what}");
+            assert!(
+                (kept > 0) == (name != "covering"),
+                "{what}: {kept} of {admitted} pixels the rectangle admits kept their input"
+            );
+        }
+    }
+}
+
+/// A linear source holding negative values, values past white and `−0.0` in one channel of every
+/// fifth pixel, the one input value a pixel whose coverage is zero still runs the units for.
+fn signed_zeros(width: u32, height: u32) -> crate::LinearImage {
+    let pixels: Vec<[f32; 3]> = (0..width * height)
+        .map(|index| {
+            let value = index as f32;
+            let mut pixel = [
+                (value * 0.037) % 1.3 - 0.1,
+                (value * 0.051) % 1.1,
+                (value * 0.023) % 1.6 - 0.2,
+            ];
+            if index.is_multiple_of(5) {
+                pixel[(index / 5 % 3) as usize] = -0.0;
+            }
+            pixel
+        })
+        .collect();
+    image(width, height, &pixels)
+}
+
+/// The input of layer `layer` of `recipe` over `source`, as a GPU preview's boundary holds it: the
+/// value the CPU's run hands that layer, written by the rows a frame is written by, as half floats
+/// on the byte path and as `f32` on the linear path.
+fn boundary_texels(
+    registry: &ModuleRegistry,
+    source: RenderSource<'_>,
+    recipe: &Recipe,
+    layer: usize,
+    options: RenderOptions,
+) -> Vec<u8> {
+    let context = RenderContext::new();
+    let rendered = crate::render::render(registry, source, recipe, options, &context).unwrap();
+    let (width, height) = source.dimensions();
+    let whole = Stage { width, height };
+    let format = match source {
+        RenderSource::Byte(_) => BoundaryFormat::Half,
+        RenderSource::Linear { .. } => BoundaryFormat::Float,
+    };
+    rendered
+        .boundary(
+            &rendered.compiled,
+            whole,
+            crate::modules::Region::whole(whole),
+            rendered.compiled.layers[layer],
+            format,
+        )
+        .unwrap()
+        .texels
+        .to_vec()
+}
+
+/// The same claim through the one render entry point, on the byte path and the RAW linear path, in
+/// the exact phase and in the proxy phase, where the hard-edged radials are supersampled: with the
+/// skip on, serially and on the pool, the frame is the bytes it is with the skip off, and so is the
+/// value a colour layer after the masked one receives inside the run, read by rows as a GPU
+/// boundary (half floats and `f32`) and by points as a mask's input (`f32`), bit for bit. A masked
+/// layer before a spatial one hands it the byte path's 16-bit frame. A sample equals the rendered
+/// byte at every pixel of the exact phase and on a grid of the proxy phase.
+#[test]
+fn a_render_that_skips_uncovered_pixels_is_identical_and_samples_equal_it() {
+    let registry = colour_registry();
+    let (width, height) = (47, 31);
+    let byte = gradient(width, height);
+    let planes = signed_zeros(width, height);
+    let tail = exposure_layer(&[-0.5]);
+    let presence = Layer::new(crate::PRESENCE_EFFECT, json!({"clarity": 40.0}));
+    for (name, mask, strokes) in uncovered_masks() {
+        for (stack, layers, colour_tail) in [
+            (
+                "Basic",
+                vec![masked(full_basic(), &mask), tail.clone()],
+                true,
+            ),
+            (
+                "a position-dependent unit inside a run",
+                vec![
+                    exposure_layer(&[0.25]),
+                    masked(
+                        colour_layer(json!({"exposure": [0.7], "positional": true})),
+                        &mask,
+                    ),
+                    tail.clone(),
+                ],
+                true,
+            ),
+            (
+                "Basic before a spatial layer",
+                vec![masked(full_basic(), &mask), presence.clone()],
+                false,
+            ),
+        ] {
+            let recipe = recipe_with(layers, &mask, &strokes);
+            let last = recipe.layers.len() - 1;
+            for (domain, source) in [
+                ("byte", RenderSource::Byte(&byte)),
+                ("linear", linear(&planes, LinearSettings::default())),
+            ] {
+                for (phase, options) in [
+                    ("exact", RenderOptions::default()),
+                    ("proxy", RenderOptions::proxy(&crate::Cancel::never())),
+                ] {
+                    let what = format!("{name}, {stack}, {domain}, {phase}");
+                    if phase == "proxy" && name.contains("radial") {
+                        assert!(
+                            registry.proxy_approximation(&recipe, width, height).mask,
+                            "{what}: the hard edge is supersampled"
+                        );
+                    }
+                    let context = RenderContext::new();
+                    let frame = || {
+                        frame_in(
+                            &context,
+                            &registry,
+                            source,
+                            SnapshotId::new(),
+                            &recipe,
+                            options.clone(),
+                        )
+                        .unwrap_or_else(|error| panic!("{what}: {error}"))
+                    };
+                    let everywhere = with_skip(UnitSkip::Never, frame);
+                    for pooled in [false, true] {
+                        parallel::force(Some(pooled));
+                        let skipped = frame();
+                        parallel::force(None);
+                        assert!(
+                            skipped.rgba == everywhere.rgba,
+                            "{what}, pooled {pooled}: skipping uncovered pixels changed the frame"
+                        );
+                    }
+                    if phase == "exact" {
+                        let (_, _, sampled) = point_evaluated(
+                            &context,
+                            &registry,
+                            source,
+                            &recipe,
+                            SpatialMode::Point,
+                        )
+                        .unwrap();
+                        assert!(
+                            sampled == everywhere.rgba.as_slice(),
+                            "{what}: a sample is not the rendered byte"
+                        );
+                    } else {
+                        for y in (0..height).step_by(3) {
+                            for x in (0..width).step_by(4) {
+                                let sample = sample_in(
+                                    &context,
+                                    &registry,
+                                    source,
+                                    &recipe,
+                                    options.clone(),
+                                    x,
+                                    y,
+                                )
+                                .unwrap();
+                                assert_eq!(
+                                    sample.rgba,
+                                    everywhere.pixel(x, y),
+                                    "{what}: the sample at ({x}, {y})"
+                                );
+                            }
+                        }
+                    }
+                    if !colour_tail {
+                        continue;
+                    }
+                    let rows = with_skip(UnitSkip::Never, || {
+                        boundary_texels(&registry, source, &recipe, last, options.clone())
+                    });
+                    parallel::force(Some(true));
+                    let skipped =
+                        boundary_texels(&registry, source, &recipe, last, options.clone());
+                    parallel::force(None);
+                    assert!(
+                        skipped == rows,
+                        "{what}: the run's value at its last layer changed"
+                    );
+                    if phase == "exact" {
+                        let points = |skip: UnitSkip| {
+                            let previous = set_unit_skip(skip);
+                            let context = RenderContext::new();
+                            let (_, input) =
+                                layer_input(&registry, source, &recipe, last, &context).unwrap();
+                            let bits: Vec<u64> = (0..height)
+                                .flat_map(|y| (0..width).map(move |x| (x, y)))
+                                .flat_map(|(x, y)| input.linear(x, y).unwrap().unwrap())
+                                .map(f64::to_bits)
+                                .collect();
+                            set_unit_skip(previous);
+                            bits
+                        };
+                        assert!(
+                            points(UnitSkip::Proved) == points(UnitSkip::Never),
+                            "{what}: a point's value at the run's last layer changed"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What the skip changes, and the one thing it changes: a unit whose value is not finite at a pixel
+/// the mask leaves uncovered fails neither the render nor a sample there, on either path, where the
+/// rule before the skip failed both; a sample equals the rendered byte at every pixel; and a pixel
+/// the mask covers still fails both, the same way. The masked layer's two `overflow` units turn
+/// every non-zero channel into an infinity and leave a zero one zero, and a hard-edged band
+/// selects exactly the black pixels, so only a pixel the mask leaves uncovered produces one.
+#[test]
+fn a_non_finite_unit_value_where_coverage_is_zero_fails_neither_the_render_nor_a_sample() {
+    let registry = colour_registry();
+    let (width, height) = (24_u32, 16_u32);
+    // Black in the top-left quarter and a bright grey elsewhere, with one dim pixel in the black
+    // quarter that only the second band's shoulder reaches.
+    let dim = (3_u32, 2_u32);
+    let code = |x: u32, y: u32| -> u8 {
+        match (x, y) {
+            _ if (x, y) == dim => 10,
+            _ if x < width / 2 && y < height / 2 => 0,
+            _ => 150,
+        }
+    };
+    let byte = SourceImage {
+        width,
+        height,
+        rgba: (0..height)
+            .flat_map(|y| (0..width).map(move |x| (x, y)))
+            .flat_map(|(x, y)| {
+                let value = code(x, y);
+                [value, value, value, 255]
+            })
+            .collect::<Vec<_>>()
+            .into(),
+        fingerprint: "sha256:black-quarter".into(),
+        orientation: 1,
+        capture: Default::default(),
+    };
+    let pixels: Vec<[f32; 3]> = (0..height)
+        .flat_map(|y| (0..width).map(move |x| (x, y)))
+        .map(|(x, y)| [decode_pixel([code(x, y); 3])[0]; 3])
+        .collect();
+    let planes = image(width, height, &pixels);
+    let overflow = colour_layer(json!({"overflow": 2}));
+    // Only black: a hard band from 0 to 1 on the histogram's axis, where the dim pixel sits at 3.9.
+    let black = band_mask(0.0, 0.0, 1.0, 0.0);
+    // Black and the dim pixel, through a shoulder that ends at 6.
+    let dark = band_mask(0.0, 0.0, 1.0, 5.0);
+    let identity = colour_recipe(vec![]);
+    for (domain, source) in [
+        ("byte", RenderSource::Byte(&byte)),
+        ("linear", linear(&planes, LinearSettings::default())),
+    ] {
+        let context = RenderContext::new();
+        let frame = |recipe: &Recipe| {
+            frame_in(
+                &context,
+                &registry,
+                source,
+                SnapshotId::new(),
+                recipe,
+                RenderOptions::default(),
+            )
+        };
+        let sampled = |recipe: &Recipe, x: u32, y: u32| {
+            sample_in(
+                &context,
+                &registry,
+                source,
+                recipe,
+                RenderOptions::default(),
+                x,
+                y,
+            )
+        };
+        let refused = |error: Error, what: &str| {
+            assert_eq!(
+                (error.kind, error.detail.as_str()),
+                (crate::ErrorKind::ResourceLimit, NON_FINITE_COLOR),
+                "{domain}: {what}"
+            );
+        };
+        let recipe = masked_recipe(vec![masked(overflow.clone(), &black)], vec![black.clone()]);
+        // The rule before the skip ran the units at every pixel and refused the bright ones.
+        with_skip(UnitSkip::Never, || {
+            refused(frame(&recipe).unwrap_err(), "the render before the skip");
+            refused(
+                sampled(&recipe, width - 1, height - 1).unwrap_err(),
+                "a bright sample before the skip",
+            );
+        });
+        // Now the bright pixels keep their input, and the black ones blend black at full coverage.
+        let expected = frame(&identity).unwrap();
+        for pooled in [false, true] {
+            parallel::force(Some(pooled));
+            let rendered = frame(&recipe);
+            parallel::force(None);
+            let rendered = rendered.unwrap_or_else(|error| panic!("{domain}: {error}"));
+            assert_eq!(
+                rendered.rgba, expected.rgba,
+                "{domain}, pooled {pooled}: the frame is not its input"
+            );
+        }
+        for y in 0..height {
+            for x in 0..width {
+                assert_eq!(
+                    sampled(&recipe, x, y).unwrap().rgba,
+                    expected.pixel(x, y),
+                    "{domain}: the sample at ({x}, {y})"
+                );
+            }
+        }
+        // A pixel the mask covers still runs the units, and its infinity fails the render and the
+        // sample there alike, while a sample of any other pixel answers its byte.
+        let recipe = masked_recipe(vec![masked(overflow.clone(), &dark)], vec![dark.clone()]);
+        for pooled in [false, true] {
+            parallel::force(Some(pooled));
+            let rendered = frame(&recipe);
+            parallel::force(None);
+            refused(rendered.unwrap_err(), "a covered pixel's infinity");
+        }
+        refused(
+            sampled(&recipe, dim.0, dim.1).unwrap_err(),
+            "the covered pixel's sample",
+        );
+        for (x, y) in [(0, 0), (dim.0 + 1, dim.1), (width - 1, height - 1)] {
+            assert_eq!(
+                sampled(&recipe, x, y).unwrap().rgba,
+                expected.pixel(x, y),
+                "{domain}: the sample at ({x}, {y})"
+            );
+        }
+    }
+}
+
 /// What a masked colour layer costs on a photo-sized frame, and what the bounds rectangle saves.
 /// Ignored by default because it is a recorded measurement rather than a pass/fail property:
 ///
@@ -468,52 +1138,147 @@ fn a_masked_run_reserves_its_row_snapshot_from_the_existing_budget() {
 /// cargo test --release --package luxforge-core --lib \
 ///     render::mask_tests::masked_colour_cost_on_a_24_megapixel_frame -- --ignored --nocapture
 /// ```
+///
+/// Two layers are measured, one `+1 EV` exposure unit and a full Basic layer, each unmasked and
+/// under four masks: two linear gradients, whose rectangles admit about a twentieth and all of the
+/// frame, and two luminance bands, whose rectangles are always the whole stage and which select a
+/// minority of it. Each masked case is measured twice, back to back, with the rule set on every
+/// pool thread: the units at every pixel the rectangle admits, as before the zero-coverage skip,
+/// and the skip itself. Each render prints its wall time and the process's CPU time, and each
+/// masked case the least cost per pixel of its rows on one thread, which a loaded host disturbs
+/// least. The source is a programmatically filled 6000 × 4000 gradient, on which the bright band
+/// selects the brightest part of the frame in long runs and the middle band a diagonal band in
+/// shorter ones; `LUXFORGE_MASKED_COLOUR_SOURCE` names a JPEG to measure instead. On a generated
+/// photo-size fixture, four flat colour quadrants, each band selects one quadrant whole: the middle
+/// band the blue one, and the bright band the yellow one through its shoulder.
 #[test]
 #[ignore = "a recorded measurement, not an assertion"]
 fn masked_colour_cost_on_a_24_megapixel_frame() {
     let registry = colour_registry();
-    let source = gradient(6000, 4000);
+    let source = match std::env::var("LUXFORGE_MASKED_COLOUR_SOURCE") {
+        Ok(path) => crate::open_source(std::path::Path::new(&path)).expect("a JPEG source"),
+        Err(_) => gradient(6000, 4000),
+    };
     let stage = Stage {
         width: source.width,
         height: source.height,
     };
+    let frame = f64::from(source.width) * f64::from(source.height);
     // A gradient over the bottom twentieth of the frame against one over the whole frame: the same
     // mask mathematics and the same units, differing only in how much of the frame the bounds
     // rectangle admits.
     let small = linear_mask(0.5, 0.95, 0.5, 1.0);
     let whole = linear_mask(0.5, 0.0, 0.5, 1.0);
-    let unmasked = colour_recipe(vec![exposure_layer(&[1.0])]);
-    let identity = colour_recipe(vec![]);
-    let measure = |name: &str, recipe: &Recipe| {
+    let bright = band_mask(80.0, 5.0, 100.0, 0.0);
+    let middle = band_mask(25.0, 5.0, 38.0, 3.0);
+    // The process's CPU time beside the wall time: on a host other sessions load, the work a render
+    // did moves far less than how long it waited for a core.
+    let mut sampler = luxforge_process::Sampler::new();
+    let mut measure = |name: &str, recipe: &Recipe| {
         // One warm pass, then three measured ones: the frame allocation dominates a single run.
         render(&registry, &source, SnapshotId::new(), recipe).unwrap();
+        let cpu = sampler.read().cpu_time_ns.expect("this process's CPU time");
         let started = std::time::Instant::now();
         for _ in 0..3 {
             std::hint::black_box(render(&registry, &source, SnapshotId::new(), recipe).unwrap());
         }
+        let wall = started.elapsed();
+        let cpu = sampler.read().cpu_time_ns.expect("this process's CPU time") - cpu;
         println!(
-            "{name}: {:.1} ms per 24 MP render",
-            started.elapsed().as_secs_f64() * 1000.0 / 3.0
+            "{name}: {:.1} ms per render, {:.1} ms of CPU",
+            wall.as_secs_f64() * 1000.0 / 3.0,
+            cpu as f64 / 1e6 / 3.0
         );
     };
-    measure("identity", &identity);
-    measure("unmasked exposure", &unmasked);
-    for (name, mask) in [("small bounds", small), ("whole frame", whole)] {
+    measure("identity", &colour_recipe(vec![]));
+    let masks = [
+        ("small bounds", small),
+        ("whole frame", whole),
+        ("bright band", bright),
+        ("middle band", middle),
+    ];
+    for (name, mask) in &masks {
+        // Each masked layer here is the stack's first, so the pixel its mask reads is the
+        // decoded source pixel.
         let compiled =
-            crate::mask::CompiledMask::new(&mask, stage, &crate::path::StrokeTable::default())
+            crate::mask::CompiledMask::new(mask, stage, &crate::path::StrokeTable::default())
                 .unwrap();
-        let bounds = compiled.bounds();
+        let covered = (0..source.height)
+            .flat_map(|y| (0..source.width).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let offset = ((y * source.width + x) * 4) as usize;
+                let rgb = &source.rgba[offset..offset + 3];
+                compiled.evaluate(x, y, decode_pixel([rgb[0], rgb[1], rgb[2]])) != 0.0
+            })
+            .count();
         println!(
-            "{name}: the rectangle admits {:.2}% of the frame",
-            100.0 * bounds.pixels() as f64 / (6000.0 * 4000.0)
+            "{name}: the rectangle admits {:.2}% of the frame, and coverage is not zero at {:.2}%",
+            100.0 * compiled.bounds().pixels() as f64 / frame,
+            100.0 * covered as f64 / frame
         );
+    }
+    // One thread's cost per pixel of the rows a masked colour run evaluates, the least of thirty
+    // passes over 64 rows spread down the frame: a pass that waited for a core is never the least,
+    // so a loaded host still reproduces it.
+    let rows: Vec<(u32, Vec<[f32; 3]>)> = (0..64)
+        .map(|index| {
+            let y = index * source.height / 64;
+            let row = (0..source.width)
+                .map(|x| {
+                    let offset = ((y * source.width + x) * 4) as usize;
+                    let rgb = &source.rgba[offset..offset + 3];
+                    decode_pixel([rgb[0], rgb[1], rgb[2]])
+                })
+                .collect();
+            (y, row)
+        })
+        .collect();
+    let per_pixel = |recipe: &Recipe| {
+        let compiled = registry
+            .compile(source.width, source.height, recipe)
+            .unwrap();
+        let segment = compiled.segments.last().unwrap();
+        let mut scratch = vec![MaskedInput::default(); source.width as usize];
+        let mut least = f64::MAX;
+        for _ in 0..30 {
+            let mut pass = rows.clone();
+            let started = std::time::Instant::now();
+            for (y, row) in &mut pass {
+                for run in color_runs(segment) {
+                    apply_units(&run, *y, 0, row, &mut scratch).unwrap();
+                }
+            }
+            least = least.min(started.elapsed().as_secs_f64());
+            std::hint::black_box(&pass);
+        }
+        least * 1e9 / (rows.len() as f64 * f64::from(source.width))
+    };
+    for (layer_name, layer) in [
+        ("one exposure unit", exposure_layer(&[1.0])),
+        ("full Basic", full_basic()),
+    ] {
         measure(
-            name,
-            &masked_recipe(
-                vec![masked(exposure_layer(&[1.0]), &mask)],
-                vec![mask.clone()],
-            ),
+            &format!("{layer_name}, unmasked"),
+            &colour_recipe(vec![layer.clone()]),
         );
+        for (name, mask) in &masks {
+            let recipe = masked_recipe(vec![masked(layer.clone(), mask)], vec![mask.clone()]);
+            for (rule, skip) in [
+                (
+                    ", units at every pixel the rectangle admits",
+                    UnitSkip::Never,
+                ),
+                ("", UnitSkip::Proved),
+            ] {
+                set_unit_skip(skip);
+                rayon::broadcast(|_| set_unit_skip(skip));
+                measure(&format!("{layer_name}, {name}{rule}"), &recipe);
+                println!(
+                    "{layer_name}, {name}{rule}: {:.2} ns per pixel of rows on one thread",
+                    per_pixel(&recipe)
+                );
+            }
+        }
     }
 }
 

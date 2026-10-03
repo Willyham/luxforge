@@ -57,7 +57,7 @@ mod warp_tests;
 
 pub use boundary::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 use byte::{Byte, check_source, rasterize};
-use colour_runs::{ColorRun, apply_units, color_chunk_rows, color_runs};
+use colour_runs::{ColorRun, MaskedInput, apply_units, color_chunk_rows, color_runs};
 use compiled::ResampleEntry;
 use compiled::mapped_replacements;
 pub(crate) use compiled::{Compiled, Entry, Segment};
