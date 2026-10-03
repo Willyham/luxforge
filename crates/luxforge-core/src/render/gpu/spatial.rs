@@ -54,27 +54,64 @@ pub const GPU_CHAIN_APPLY_PLANES: usize = 11;
 pub const GPU_WORKGROUP_LANES: u32 = 256;
 pub const GPU_SHARED_VALUES: u32 = 1024;
 
-/// What one plane's texels hold, as the texture format the surface keeps it in.
+/// What one plane's texels hold: how many channels and whether half precision holds them, and so
+/// the texture format the surface keeps it in when it takes a texture of its own.
+///
+/// A plane may instead take a texture an earlier unit or operation no longer needs, when that
+/// texture's format [holds](Self::holds) it: as many channels or more, at its precision or a finer
+/// one. Half precision saves memory only for three or four channels, since `rgba16float` is the one
+/// half-precision format every adapter stores to: a plane of one or two channels that half
+/// precision holds takes `r32float` or `rg32float` when it takes a texture of its own, which costs
+/// no more, and an `rgba16float` an earlier unit left free when one is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GpuPlaneFormat {
-    /// `rgba16float`: a colour intermediate at the recorded default precision.
+    /// Four channels at half precision, `rgba16float`.
     Colour,
-    /// `r32float`: one spatial accumulator.
+    /// One accumulator, `r32float`.
     Scalar,
-    /// `rg32float`: two accumulators read together, such as a mean and a mean square.
+    /// Two accumulators read together, such as a mean and a mean square, `rg32float`.
     Pair,
-    /// `rgba32float`: four accumulators, or a reduced colour with one more channel beside it.
+    /// Four accumulators, or a reduced colour with one more channel beside it, `rgba32float`.
     Quad,
+    /// One channel half precision holds: `r32float` of its own.
+    HalfScalar,
+    /// Two channels half precision holds: `rg32float` of its own.
+    HalfPair,
 }
 
 impl GpuPlaneFormat {
     /// The bytes one texel takes.
     pub fn texel_bytes(self) -> u64 {
         match self {
-            Self::Scalar => 4,
-            Self::Colour | Self::Pair => 8,
+            Self::Scalar | Self::HalfScalar => 4,
+            Self::Colour | Self::Pair | Self::HalfPair => 8,
             Self::Quad => 16,
         }
+    }
+
+    /// How many channels it holds.
+    pub fn channels(self) -> u32 {
+        match self {
+            Self::Scalar | Self::HalfScalar => 1,
+            Self::Pair | Self::HalfPair => 2,
+            Self::Colour | Self::Quad => 4,
+        }
+    }
+
+    /// Whether its texture stores half floats.
+    pub fn stores_half(self) -> bool {
+        matches!(self, Self::Colour)
+    }
+
+    /// Whether half precision holds what it is declared for.
+    pub fn half_holds(self) -> bool {
+        matches!(self, Self::Colour | Self::HalfScalar | Self::HalfPair)
+    }
+
+    /// Whether a texture of this format holds a plane of `plane`'s: as many channels or more, and
+    /// full precision unless half precision holds the plane.
+    pub fn holds(self, plane: Self) -> bool {
+        self.channels() >= plane.channels() && (!self.stores_half() || plane.half_holds())
     }
 }
 
@@ -189,6 +226,9 @@ pub struct GpuSpatial {
     /// A global estimate is computed on the GPU from the stage it holds instead of read from the
     /// estimate store, so the frame is labelled approximate, as the CPU proxy is.
     pub estimated: bool,
+    /// A global estimate is the one the stack the draft was opened over stored, held for the drag
+    /// because the store holds none for the drafted stack: approximate too.
+    pub held: bool,
     /// The colour operations of its segment, which run on its output before the next spatial
     /// operation of the plan enters: empty for the last, whose segment's colour operations are the
     /// plan's output operations.
@@ -209,9 +249,9 @@ impl GpuSpatial {
 }
 
 /// The units of one operation as one [`GpuSpatial`]: each unit's words after the last's, its planes
-/// placed, a scratch plane of one unit given to a later unit's scratch plane of the same format and
-/// size, and every pass's `source` set to its unit's index. Every unit must carry the same program,
-/// one each of the operation's applies.
+/// placed, a scratch plane of one unit given to a later unit's plane of the same size whose format
+/// it [holds](GpuPlaneFormat::holds), and every pass's `source` set to its unit's index. Every unit
+/// must carry the same program, one each of the operation's applies.
 pub(crate) fn compose(
     layer: usize,
     units: Vec<GpuSpatialUnit>,
@@ -234,6 +274,7 @@ pub(crate) fn compose(
         clamps,
         mask,
         estimated: false,
+        held: false,
         after: Vec::new(),
     };
     // Scratch planes the units before this one wrote, free for this one.
@@ -252,19 +293,26 @@ pub(crate) fn compose(
             .planes
             .iter()
             .map(|plane| {
-                let reused = plane
-                    .scratch
-                    .then(|| {
-                        free.iter().position(|&candidate| {
-                            composed.planes[candidate] == *plane && !taken.contains(&candidate)
-                        })
+                // The smallest free plane that holds it. Every pass of the units before has run
+                // before this unit's first, so an apply's plane may take one as well as a scratch
+                // plane, and then no later unit may.
+                let reused = free
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, &candidate)| {
+                        let held = composed.planes[candidate];
+                        held.size == plane.size
+                            && held.format.holds(plane.format)
+                            && !taken.contains(&candidate)
                     })
-                    .flatten()
+                    .min_by_key(|&(_, &candidate)| composed.planes[candidate].format.texel_bytes())
+                    .map(|(position, _)| position)
                     .map(|position| free.remove(position));
                 let placed = reused.unwrap_or_else(|| {
                     composed.planes.push(*plane);
                     composed.planes.len() - 1
                 });
+                composed.planes[placed].scratch &= plane.scratch;
                 taken.push(placed);
                 placed
             })

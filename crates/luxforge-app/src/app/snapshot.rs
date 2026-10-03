@@ -334,6 +334,11 @@ impl Editor {
                 "gpu_preview_compiled":gpu.gpu_preview_compiled,
                 "gpu_preview_compile_max_us":gpu.gpu_preview_compile_max_us,
                 "gpu_preview_compile_last_us":gpu.gpu_preview_compile_last_us,
+                // What the compile thread still has to compile, and the newest warm list it has
+                // been handed beside the desktop's own.
+                "gpu_preview_compile_pending":gpu.gpu_preview_compile_pending,
+                "gpu_preview_warmed":gpu.gpu_preview_warmed,
+                "gpu_preview_warm":self.gpu.warm().map(luxforge_ui::photo_surface::GpuWarm::version),
                 "gpu_preview_frame_us":gpu.gpu_preview_frame_us,
                 "gpu_preview_done_us":gpu.gpu_preview_done_us,
                 // The clipping marks the GPU frame drawn carried, which stand for the overlay over it:

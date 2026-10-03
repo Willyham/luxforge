@@ -14,14 +14,19 @@
 //! light from the store the exact frames filled and run at most five compute passes a tick; a Basic
 //! drag under it, whose light the region alone cannot give, keeps the CPU path and names
 //! `region-estimate`; and with Dehaze back at neutral a Basic drag under Presence is drawn on the GPU,
-//! running every pass a tick. Each Basic release's committed frame dissolves in from the drag's last
-//! GPU frame: the dissolve's start and its identities are checked, and the release's capture either
-//! shows it running or follows its end, which a capture after 150 ms allows.
+//! running every pass a tick. Then Detail is committed under Presence and Dehaze again, so Dehaze's
+//! light sits behind Detail, where the CPU cannot cut the view's region and draws the whole exact
+//! frame: a Texture drag reads the light that frame stored and a Detail drag the one its starting
+//! stack stored, held for the drag and named approximate, both on the GPU; Dehaze then goes back to
+//! neutral, Detail staying under Presence for the drags after. Each Basic release's committed frame
+//! dissolves in from the drag's last GPU frame: the dissolve's start and its identities are
+//! checked, and the release's capture either shows it running or follows its end, which a capture
+//! after 150 ms allows.
 use crate::{
     gpu_preview_smoke::{
-        BASIC, CLARITY, CLARITY_DRAG, DEHAZE, EXPOSURE, PRESENCE, PRESENCE_QUIET_MS, TEXTURE_DRAG,
-        UNDER_DRAG, dissolve_from, drag_steps, gpu_drawn, named, presence_drag_checks, quiet,
-        quiet_for, same_pixels, step_events, ticks,
+        BASIC, CLARITY, CLARITY_DRAG, DEHAZE, EXPOSURE, Held, PRESENCE, PRESENCE_QUIET_MS, Settled,
+        TEXTURE_DRAG, UNDER_DRAG, dissolve_from, drag_steps, gpu_drawn, named,
+        presence_drag_checks, quiet, quiet_for, same_pixels, step_events, ticks,
     },
     scenario::{Checked, Checks, Frame, Plan, Run, Step, plan::only},
     *,
@@ -79,6 +84,13 @@ const PAN_INTERVAL_MS: u64 = 150;
 const PANNED: [f64; 2] = [1.3, 1.4];
 /// The drag back at 100% after the pan: its first tick, then its GPU ticks.
 const BACK: [f64; 3] = [1.0, 0.8, 0.6];
+/// Dehaze behind Detail at 100%: the Detail layer committed under Presence, a Texture drag over
+/// it and a Detail drag from it.
+const DETAIL: &str = "set-detail";
+const SHARPENING: &str = "sharpening";
+const BEHIND_DETAIL: f64 = 40.0;
+const BEHIND_TEXTURE: [f64; 3] = [30.0, 40.0, 60.0];
+const BEHIND_SHARPEN: [f64; 3] = [55.0, 70.0, 85.0];
 
 /// Every frame, in order: the open, then one per step.
 pub fn plan(_: &[PathBuf]) -> Plan {
@@ -136,14 +148,16 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         PRESENCE,
         "texture",
         TEXTURE_DRAG,
-        PRESENCE_QUIET_MS,
+        Held::Compiled(PRESENCE_QUIET_MS),
+        Settled::Quiet,
     ));
     steps.extend(drag_steps(
         "clarity-100",
         PRESENCE,
         "clarity",
         CLARITY_DRAG,
-        PRESENCE_QUIET_MS,
+        Held::Compiled(PRESENCE_QUIET_MS),
+        Settled::Quiet,
     ));
     steps.extend([
         Step::new(
@@ -164,9 +178,44 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         BASIC,
         EXPOSURE,
         UNDER_DRAG,
-        PRESENCE_QUIET_MS,
+        Held::Compiled(PRESENCE_QUIET_MS),
+        Settled::Quiet,
     ));
-    // 39-43: at 800%, a drag panned past its region as it ticks, then ticked over the new region,
+    // Still at 100%, Detail committed under Presence and Dehaze committed again, so Dehaze's light
+    // sits behind Detail and the CPU cannot cut the view's region: a Presence drag reads the light
+    // the whole exact frame stored, and a Detail drag the one the stack it started from stored,
+    // held for the drag. Dehaze then goes back to neutral for the drags after them, which a
+    // Detail layer under Presence leaves on the GPU; the evidence script's 64 steps hold no more,
+    // so a Basic drag between Detail and Presence, which keeps the CPU path as the one above does,
+    // is the core's to prove (`behind_detail_a_region_plan_holds_dehazes_stored_light`).
+    let detail = |name: &str, value: f64| {
+        Step::new(name, SliderStep::new(DETAIL, SHARPENING, [value]).release())
+            .commits(1)
+            .no_draft()
+    };
+    steps.extend([
+        detail("behind-detail-commit-100", BEHIND_DETAIL),
+        release("behind-dehaze-100", "dehaze", DEHAZE),
+        quiet_for("behind-settled-100", PRESENCE_QUIET_MS).no_draft(),
+    ]);
+    steps.extend(drag_steps(
+        "behind-texture-100",
+        PRESENCE,
+        "texture",
+        BEHIND_TEXTURE,
+        Held::Compiled(PRESENCE_QUIET_MS),
+        Settled::Quiet,
+    ));
+    steps.extend(drag_steps(
+        "behind-sharpen-100",
+        DETAIL,
+        SHARPENING,
+        BEHIND_SHARPEN,
+        Held::Compiled(PRESENCE_QUIET_MS),
+        Settled::Quiet,
+    ));
+    steps.push(release("behind-dehaze-off-100", "dehaze", 0.0));
+    // Then at 800%, a drag panned past its region as it ticks, then ticked over the new region,
     // then released.
     steps.extend([
         Step::new("zoom-800", ViewStep::Percent(PANNED_ZOOM))
@@ -190,7 +239,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         )
         .commits(1)
         .no_draft(),
-        // 44-48: back to 100%, where the whole photograph fits the surface and the scrollable
+        // Then back to 100%, where the whole photograph fits the surface and the scrollable
         // reports no offset: the view is the whole stage, not the corner the pan left, and a drag
         // there is drawn on the GPU over it.
         Step::new("back-100", ViewStep::Percent(100.0))
@@ -428,10 +477,14 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
 
     // At 100%: the Presence drags over the stored light, the Basic drag under Presence refused
     // while Dehaze's light would come from the region alone, then drawn once it is neutral.
+    // Behind Detail: the Texture drag over the stored light and the Detail drag over the held
+    // one, approximate, both drawn on the GPU over the whole stage the CPU cannot cut.
     for (name, approximate, gain_only) in [
         ("texture-100", false, true),
         ("clarity-100", false, true),
         ("under-100", false, false),
+        ("behind-texture-100", false, true),
+        ("behind-sharpen-100", true, false),
     ] {
         presence_drag_checks(launch, &mut checks, name, approximate, gain_only, false)?;
     }
