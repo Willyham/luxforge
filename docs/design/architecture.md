@@ -237,6 +237,7 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | --- | --- | --- |
 | Colour scratch, aggregate (*target*) | 64 MiB | `DEFAULT_SCRATCH_BYTES`, `crates/luxforge-core/src/render/context.rs` |
 | One colour chunk's scratch | 1 MiB | `COLOR_CHUNK_SCRATCH_BYTES`, `crates/luxforge-core/src/render/colour_runs.rs` |
+| The 16-bit sRGB tables a wide JPEG frame converts through, built once per process | 256 KiB of decoded values, 256 KiB of code thresholds and a 128 KiB index into the thresholds | Fixed sizes: `TO_LINEAR16` and `QUANTIZER16` (`CODE_BINS16`), `crates/luxforge-core/src/colour.rs` |
 | Pointwise units per colour operation | 8 | `MAX_COLOR_UNITS`, `crates/luxforge-core/src/modules/processing.rs` |
 | Spatial tile working sets, aggregate (*target*) | 256 MiB | `SPATIAL_BUDGET_BYTES`, `crates/luxforge-core/src/modules/spatial.rs` |
 | Spatial units per spatial operation | 4 | `MAX_SPATIAL_UNITS`, `crates/luxforge-core/src/modules/spatial.rs` |
