@@ -335,8 +335,9 @@ fn gpu_window_a_windowed_boundary_draws_the_whole_boundarys_frame() {
 }
 
 /// A spatial step over the window a crop reads, the planner's margin for its filters included,
-/// draws what it draws over the whole boundary stage: Texture and Clarity under a straightened
-/// crop, on both formats, within 10⁻⁵ in linear light and the same codes (measured: bit for bit).
+/// draws what it draws over the whole boundary stage, but for the rounding of its running sums:
+/// Texture and Clarity under a straightened crop, on both formats, within 2 × 10⁻³ in linear light
+/// and the pointwise limits.
 #[test]
 fn gpu_window_a_spatial_step_over_a_window_draws_the_whole_boundarys_frame() {
     let Some(qualifier) =
@@ -439,13 +440,46 @@ fn gpu_window_a_spatial_step_over_a_window_draws_the_whole_boundarys_frame() {
                 .zip(&whole_codes)
                 .filter(|(a, b)| a != b)
                 .count();
+            // The window holds the operation's halo alone, its origin inside the stage where the
+            // CPU's tile grid moved it to the stage's: a box mean's running sums are reseeded every
+            // 16 texels from the boundary texture's own edge, so over a window they start at other
+            // pixels than over the whole stage and round differently in `f32`, which the guided
+            // filters' variances amplify where the picture is flat. With direct sums (a run of one)
+            // every case is the whole boundary's bit for bit. Measured: at most 7.2 × 10⁻⁴ in linear
+            // light (the `f32` boundary, middle crop), three pixels' codes and a worst block of
+            // 0.0025; held to 2 × 10⁻³ and the pointwise limits against the whole boundary's frame.
+            let rgb = |codes: &[[u8; 4]]| -> Vec<u8> {
+                codes
+                    .iter()
+                    .flat_map(|code| [code[0], code[1], code[2]])
+                    .collect()
+            };
+            let (drawn, whole) = (rgb(&codes), rgb(&whole_codes));
+            let statistics = luxforge_reference::preview_error::compare(
+                luxforge_reference::preview_error::Rgb8::new(output.width, output.height, &drawn)
+                    .expect("a frame"),
+                luxforge_reference::preview_error::Rgb8::new(output.width, output.height, &whole)
+                    .expect("a frame"),
+                [0, 0, output.width, output.height],
+            )
+            .expect("the comparison");
             eprintln!(
                 "gpu_window spatial {name}: a {}x{} window of {WIDTH}x{HEIGHT}, largest value \
-                 difference {largest:e}, {codes_differ} pixels' codes differ",
-                window.width, window.height
+                 difference {largest:e}, {codes_differ} pixels' codes differ, {}",
+                window.width,
+                window.height,
+                super::gpu_qualification::figures(&statistics)
             );
-            assert!(largest <= 1e-5, "{name}: {largest}");
-            assert_eq!(codes_differ, 0, "{name}: the codes");
+            assert!(largest <= 2e-3, "{name}: {largest}");
+            assert!(
+                luxforge_reference::preview_error::verdict(
+                    &statistics,
+                    luxforge_reference::preview_error::Class::Pointwise
+                )
+                .passed(),
+                "{name}: {}",
+                super::gpu_qualification::figures(&statistics)
+            );
         }
     }
     assert!(cut_windows >= 4, "the windows cut the stage");

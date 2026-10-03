@@ -226,6 +226,9 @@ pub struct GpuSpatial {
     /// A global estimate is computed on the GPU from the stage it holds instead of read from the
     /// estimate store, so the frame is labelled approximate, as the CPU proxy is.
     pub estimated: bool,
+    /// A global estimate is the one the stack the draft was opened over stored, held for the drag
+    /// because the store holds none for the drafted stack: approximate too.
+    pub held: bool,
     /// The colour operations of its segment, which run on its output before the next spatial
     /// operation of the plan enters: empty for the last, whose segment's colour operations are the
     /// plan's output operations.
@@ -271,6 +274,7 @@ pub(crate) fn compose(
         clamps,
         mask,
         estimated: false,
+        held: false,
         after: Vec::new(),
     };
     // Scratch planes the units before this one wrote, free for this one.
