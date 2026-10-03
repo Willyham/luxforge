@@ -22,6 +22,8 @@
 //!   together, the least recently asked for evicted first when a compile ends, and at most as many
 //!   wait in the queue; a warmed sequence that finds the queue full is not queued, and one a frame
 //!   asks for takes the place of the newest warmed one waiting.
+//!   If a full queue contains only sequences already asked for by frames, a new sequence retries
+//!   admission on a later prepare while its frame uses the CPU.
 //!
 //! The compile thread takes wgpu's error scopes around the pipeline it creates. wgpu 27's scopes
 //! belong to the device, not to a thread, and the UI thread pushes none of its own, so the stack
@@ -154,7 +156,8 @@ impl Shared {
     }
 
     /// Queue `steps` under a new identity, first when a frame `asked` for them and last when they
-    /// are warmed. `false` when the queue has no room for a warmed sequence.
+    /// are warmed. `false` when the bounded queue has no room, including when it holds only asked
+    /// sequences and none can be displaced by a new request.
     fn queue(&mut self, steps: &[GpuStep], asked: bool) -> bool {
         if self.queue.len() >= PIPELINE_CACHE {
             if !asked {
@@ -171,6 +174,8 @@ impl Shared {
             {
                 self.entries.retain(|entry| entry.id != id);
                 self.dropped += 1;
+            } else {
+                return false;
             }
         }
         self.clock += 1;
@@ -364,7 +369,9 @@ impl Pipelines {
             return Err(GpuFallback::Compiling);
         }
         let dropped = shared.dropped;
-        shared.queue(steps, true);
+        if !shared.queue(steps, true) {
+            return Err(GpuFallback::Compiling);
+        }
         // Counted under the lock, before the thread can take it and count its end.
         figures.compile.queued(1);
         figures.compile.leave(shared.dropped - dropped);
@@ -503,5 +510,21 @@ mod tests {
         assert_eq!(figures.pending.load(Ordering::Acquire), 1);
         figures.leave(5);
         assert_eq!(figures.pending.load(Ordering::Acquire), 0);
+    }
+
+    /// A full queue of requested sequences rejects another request and keeps both bounds intact.
+    #[test]
+    fn requested_sequences_cannot_grow_the_full_queue() {
+        let mut shared = Shared::default();
+        for index in 0..PIPELINE_CACHE {
+            let entry = Box::leak(format!("asked_{index}").into_boxed_str());
+            assert!(shared.queue(&steps(entry), true));
+        }
+        assert_eq!(shared.queue.len(), PIPELINE_CACHE);
+        assert_eq!(shared.entries.len(), PIPELINE_CACHE);
+        assert!(!shared.queue(&steps("deferred"), true));
+        assert_eq!(shared.queue.len(), PIPELINE_CACHE);
+        assert_eq!(shared.entries.len(), PIPELINE_CACHE);
+        assert!(shared.entries.iter().all(|entry| entry.asked));
     }
 }
