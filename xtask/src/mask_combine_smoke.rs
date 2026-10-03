@@ -141,7 +141,7 @@ fn component(name: &str, mode: &str, shape: &Shape, label: &str, components: &[&
             },
         )
         .commits(0),
-        Step::new(format!("{name}-applied"), MaskStep::Apply)
+        Step::new(format!("{name}-applied"), MaskStep::Release)
             .commits(1)
             .label(label)
             .no_draft()
@@ -177,8 +177,8 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         Step::new("mask-mode", WorkspaceStep::default().mode("mask"))
             .commits(0)
             .mode("mask"),
-        // 2-5: the first component. A new mask whose first component is a radial, swept from its
-        // centre out to one radius, the pointer lifted, then committed.
+        // 2-4: the first component. A new mask whose first component is a radial, swept from its
+        // centre out to one radius and committed when the pointer lifts.
         Step::new("add-new", MaskStep::New(RADIAL.into())).commits(0),
         Step::new(
             "add-swept",
@@ -188,14 +188,13 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             },
         )
         .commits(0),
-        Step::new("add-released", MaskStep::Release).commits(0),
-        Step::new("add-applied", MaskStep::Apply)
+        Step::new("add-applied", MaskStep::Release)
             .commits(1)
             .label("Add radial")
             .no_draft()
             .masks(1)
             .components(&FINISHED[..1]),
-        // 6: the coverage itself on screen, which is what every reading below is taken from.
+        // 5: the coverage itself on screen, which is what every reading below is taken from.
         Step::new(
             "overlay-on",
             WorkspaceStep::default().mask_overlay("mask-on-black"),
@@ -203,7 +202,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         .commits(0)
         .workspace("mask_overlay", json!("mask-on-black")),
     ];
-    // 7-10: a subtract.
+    // 6-9: a subtract.
     steps.extend(component(
         "subtract",
         "subtract",
@@ -211,7 +210,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         "Add subtract radial",
         &FINISHED[..2],
     ));
-    // 11-14: an intersect.
+    // 10-13: an intersect.
     steps.extend(component(
         "intersect",
         "intersect",
@@ -219,9 +218,9 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         "Add intersect radial",
         &FINISHED[..3],
     ));
-    // 15-18: a second add, over the region the subtraction took out.
+    // 14-17: a second add, over the region the subtraction took out.
     steps.extend(component("restore", "add", &D, "Add radial", &FINISHED));
-    // 19-22: each component's own contribution, by putting the pointer on its row. This is what
+    // 18-21: each component's own contribution, by putting the pointer on its row. This is what
     // makes a subtraction on top of a gradient legible instead of guesswork. Pointing commits
     // nothing.
     steps.extend(
@@ -230,9 +229,9 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         }),
     );
     steps.extend([
-        // 23: the pointer off the list, so the composition is shown again.
+        // 22: the pointer off the list, so the composition is shown again.
         Step::new("hover-off", MaskStep::Hover(None)).commits(0),
-        // 24: the one move this list refuses: a subtract at the front. The panel states that rule
+        // 23: the one move this list refuses: a subtract at the front. The panel states that rule
         // on the row rather than offering the move, so only an explicit position reaches the
         // host's own refusal — and the refusal is what ends this step, because a refused command
         // renders nothing for it to settle on. It commits nothing, and the list does not move.
@@ -246,7 +245,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         .commits(0)
         .refused("validation: mask Mask 1 begins with a subtract component")
         .components(&FINISHED),
-        // 25: the reorder that does change the picture: the second add above the subtraction, so
+        // 24: the reorder that does change the picture: the second add above the subtraction, so
         // what it put back is taken out again.
         Step::new(
             "reorder",
@@ -259,11 +258,11 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         .label("Move Radial 4")
         .no_draft()
         .components(&REORDERED),
-        // 26: the overlay off, leaving the photograph.
+        // 25: the overlay off, leaving the photograph.
         Step::new("overlay-off", WorkspaceStep::default().mask_overlay("off"))
             .commits(0)
             .workspace("mask_overlay", json!("off")),
-        // 27: Presence through the mask, as the panel's own drag: the sections below the list are
+        // 26: Presence through the mask, as the panel's own drag: the sections below the list are
         // bound to the open mask, so this commits a masked spatial layer.
         Step::new(
             "dehaze",
@@ -273,7 +272,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         .label("Mask 1 · Dehaze +30")
         .no_draft()
         .payload(PRESENCE_EFFECT, json!({ DEHAZE: DEHAZED })),
-        // 28: and undone: the layer gone, the reorder's entry current again.
+        // 27: and undone: the layer gone, the reorder's entry current again.
         Step::new("undo", script::Step::api("history.undo"))
             .commits(1)
             .label("Move Radial 4")

@@ -494,6 +494,7 @@ fn plain<'a>(
     let mask_map = surfaces.mask_map;
     let gpu = surfaces.gpu;
     let (gpu_hold, gpu_tag, gpu_warm) = (surfaces.gpu_hold, surfaces.gpu_tag, surfaces.gpu_warm);
+    let gpu_change = surfaces.gpu_change;
     let dissolve = surfaces.dissolve;
     match model.zoom {
         ZoomView::Fit => {
@@ -517,6 +518,7 @@ fn plain<'a>(
                 .gpu_preview(gpu)
                 .gpu_hold(gpu_hold)
                 .gpu_tag(gpu_tag)
+                .gpu_change(gpu_change)
                 .gpu_warm(gpu_warm)
                 .dissolve(dissolve)
                 .into();
@@ -625,6 +627,7 @@ fn plain<'a>(
                         .gpu_preview(gpu)
                         .gpu_hold(gpu_hold)
                         .gpu_tag(gpu_tag)
+                        .gpu_change(gpu_change)
                         .gpu_warm(gpu_warm)
                         .dissolve(dissolve)
                         .into()
@@ -1275,6 +1278,7 @@ mod tests {
             gpu: None,
             gpu_hold: false,
             gpu_tag: None,
+            gpu_change: None,
             dissolve: None,
             gpu_warm: None,
         };

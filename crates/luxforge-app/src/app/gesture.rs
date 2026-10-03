@@ -365,13 +365,15 @@ impl Editor {
             }
             (Kind::Mask(mask), Starting::Mode) => {
                 return Some(format!(
-                    "Apply or Cancel the {} gesture before leaving Mask mode",
+                    "Finish or cancel the {} gesture before leaving Mask mode",
                     mask.shape.op.label().to_lowercase()
                 ));
             }
             (Kind::Crop(_), Starting::Mode) => {
                 return Some("Apply or Cancel the crop draft before leaving this mode".into());
             }
+            // A mask gesture is finished by its release, or by Done for a brush; a crop by Apply.
+            (Kind::Mask(_), _) => format!("Finish or cancel the {}", gesture.kind.noun()),
             (kind, _) => format!("Apply or Cancel the {}", kind.noun()),
         };
         Some(format!("{held} {}", starting.clause()))
@@ -563,13 +565,6 @@ impl Editor {
     /// open, Done, Enter, Cancel and Escape put the brush down ([`Editor::put_brush_down`]).
     pub(crate) fn draft_message(&mut self, message: DraftMessage) -> Task<Message> {
         match message {
-            DraftMessage::Commit if self.mask_shape().is_some_and(MaskDraft::unplaced) => {
-                self.status.text = self
-                    .mask_shape()
-                    .and_then(MaskDraft::placement_refusal)
-                    .expect("unplaced reason");
-                Task::none()
-            }
             DraftMessage::Commit | DraftMessage::Cancel
                 if self.gesture.is_none() && self.armed.is_some() =>
             {

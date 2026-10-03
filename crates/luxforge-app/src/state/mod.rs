@@ -336,7 +336,8 @@ pub(crate) struct Inputs<'a> {
 }
 
 impl Inputs<'_> {
-    /// A mask creation or held gradient owns the other controls until Apply or Cancel.
+    /// A mask creation or a gradient being placed owns the other controls until it commits or is
+    /// cancelled.
     pub(crate) fn mask_tool_owns_controls(&self) -> bool {
         self.mask_draft
             .is_some_and(crate::mask_draft::MaskDraft::owns_controls)
@@ -2262,8 +2263,9 @@ mod tests {
         assert_eq!(bar.subject.as_deref(), Some("Radial · Add"));
         assert_eq!(bar.kind, Some(RADIAL));
         assert_eq!(bar.readout, "Click and drag to place");
-        assert!(!bar.can_apply && !bar.done);
-        assert_eq!(bar.apply_reason, scene.apply_refusal);
+        // Every mask gesture ends with Done, which puts an unplaced tool down: there is no Apply
+        // to refuse.
+        assert!(bar.can_apply && bar.done && bar.apply_reason.is_none());
         assert!(adding.values().is_empty() && adding.handles().is_empty());
         adding.sweep((0.5, 0.5), (0.7, 0.74));
         adding.end();
@@ -2285,7 +2287,7 @@ mod tests {
         // A readout, not an entry field: compact, as the board draws it, while the panel's fields
         // keep the declared precision.
         assert_eq!(bar.readout, "0.180 × 0.240 · \u{2212}12° · feather 60");
-        assert!(bar.can_apply && !bar.done);
+        assert!(bar.can_apply && bar.done);
 
         // Editing the stored Radial 1 names it, with the mode it holds.
         scene.mask_draft = Some(
@@ -2313,8 +2315,9 @@ mod tests {
         assert_eq!(bar.title, "New mask");
         assert_eq!(bar.subject.as_deref(), Some("Linear · Add"));
         assert_eq!(bar.readout, "Click and drag to place");
-        assert!(!bar.can_apply && !bar.done);
-        assert_eq!(bar.apply_reason, scene.apply_refusal);
+        // Every mask gesture ends with Done, which puts an unplaced tool down: there is no Apply
+        // to refuse.
+        assert!(bar.can_apply && bar.done && bar.apply_reason.is_none());
         creating.sweep((0.1, 0.92), (0.14, 0.38));
         creating.end();
         scene.apply_refusal = creating.placement_refusal();
@@ -2323,7 +2326,7 @@ mod tests {
         assert_eq!(bar.title, "New mask");
         assert_eq!(bar.subject.as_deref(), Some("Linear · Add"));
         assert_eq!(bar.readout, "0.100, 0.920 → 0.140, 0.380");
-        assert!(bar.can_apply && !bar.done && bar.apply_reason.is_none());
+        assert!(bar.can_apply && bar.done && bar.apply_reason.is_none());
 
         // A brush ends with Done: each stroke committed on release, so an Apply refusal is not the
         // bar's to state. Idle, it reads the brush the next stroke takes; with the stroke down,

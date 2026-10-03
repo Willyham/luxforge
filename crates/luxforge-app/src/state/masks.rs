@@ -283,8 +283,8 @@ pub(crate) struct ComponentRow {
     /// component leading is refused by the command family.
     pub(crate) up_reason: Option<String>,
     pub(crate) down_reason: Option<String>,
-    /// This row can be edited on the canvas: its kind has a handle editor in this build.
-    pub(crate) can_edit_shape: bool,
+    /// This row is a brush that can be painted on again in this build.
+    pub(crate) can_paint_more: bool,
     /// This component's geometry is painted, so the canvas gesture for it is another stroke rather
     /// than a handle drag, and the row says so.
     pub(crate) painted: bool,
@@ -757,7 +757,7 @@ pub(crate) fn create_mode_reason(mode: ComponentMode) -> Option<String> {
 pub(crate) fn interaction_refusal(draft: Option<&MaskDraft>) -> Option<String> {
     draft.filter(|draft| draft.owns_controls()).map(|draft| {
         format!(
-            "Apply or Cancel the {} gesture before using other controls",
+            "Finish or cancel the {} gesture before using other controls",
             draft.op.label().to_lowercase()
         )
     })
@@ -796,7 +796,12 @@ pub(crate) fn effective_overlay(
     panel: &MaskPanel,
     stored: MaskOverlayMode,
 ) -> MaskOverlayMode {
-    if draft.is_some() && !panel.overlay_manual && stored == MaskOverlayMode::Off {
+    // An existing gradient's drag is not a tool start: its handles and the drafted picture show
+    // what it moves, so a hidden overlay stays hidden rather than flashing on for every nudge.
+    if draft.is_some_and(|draft| !draft.direct())
+        && !panel.overlay_manual
+        && stored == MaskOverlayMode::Off
+    {
         MaskOverlayMode::Tint
     } else {
         stored
@@ -1094,9 +1099,9 @@ fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Ve
                 hovered: inputs.mask_panel.hovered_component.as_ref() == Some(&component.id),
                 mode_reason,
                 delete_reason,
-                can_edit_shape: enabled
+                can_paint_more: enabled
                     && component.available
-                    && crate::mask_draft::drawable(&component.kind),
+                    && crate::mask_draft::paintable(&component.kind),
                 painted: crate::mask_draft::paintable(&component.kind),
                 strokes: if selected {
                     stroke_rows(&component.strokes, &component.name, refusal)

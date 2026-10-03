@@ -5,7 +5,7 @@
 //! evidence: the skip is the report.
 use super::super::super::{Frame, Layer, PhotoPrimitive};
 use super::super::tests::{ID, SIDE, diagnostics, headless, identity, own_pipeline, paint, plan};
-use super::super::{GpuBoundary, GpuFallback, GpuStep, assemble_passes, output_encoding};
+use super::super::{End, GpuBoundary, GpuFallback, GpuStep, assemble_passes, output_encoding};
 use super::*;
 use iced::{Size, Vector};
 use luxforge_reference::srgb;
@@ -173,7 +173,7 @@ fn the_marks_are_a_plans_last_step() {
         GpuStep::Clipping(marks(true, true)),
         GpuStep::colour(identity()),
     ];
-    let error = assemble_passes(&steps, true).unwrap_err();
+    let error = assemble_passes(&steps, End::Codes).unwrap_err();
     assert!(error.contains("last step"), "{error}");
     assert!(
         assemble_passes(
@@ -181,7 +181,7 @@ fn the_marks_are_a_plans_last_step() {
                 GpuStep::colour(identity()),
                 GpuStep::Clipping(marks(true, false))
             ],
-            true
+            End::Codes
         )
         .is_ok()
     );

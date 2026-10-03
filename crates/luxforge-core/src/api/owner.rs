@@ -1930,15 +1930,6 @@ impl Owner {
         // error the job's own frame would fail with.
         let job = job.map(|mut job| {
             job.analyse = request.analyse;
-            // A committed stack's job carries the plans its gestures are likely to draw, so the
-            // desktop warms their pipelines when the stack changes rather than when a drag begins.
-            if let (true, None, Some(bounds), None) =
-                (request.gpu, draft, request.proxy, request.layer_count)
-            {
-                job.gpu_warm = crate::render::gpu::plan_warm(&job.evaluation, bounds)
-                    .ok()
-                    .map(Into::into);
-            }
             let view = match (request.gpu_region, request.proxy) {
                 (Some((rect, magnification)), _) => Some(crate::GpuView::Region {
                     rect,
@@ -1947,6 +1938,20 @@ impl Owner {
                 (None, Some(bounds)) => Some(crate::GpuView::Fit(bounds)),
                 (None, None) => None,
             };
+            // A committed stack's job carries the plans its gestures are likely to draw at its
+            // view, so the desktop warms their pipelines when the stack or the view changes rather
+            // than when a drag begins; and the stack's own plan and the boundary every gesture
+            // starts from, which the desktop holds before a gesture begins.
+            if let (true, None, Some(view), None) = (request.gpu, draft, view, request.layer_count)
+            {
+                job.gpu_warm = crate::render::gpu::plan_warm(&job.evaluation, view)
+                    .ok()
+                    .map(Into::into);
+                job.gpu_resident = crate::render::gpu::plan_resident(&job.evaluation, view)
+                    .ok()
+                    .flatten()
+                    .map(Box::new);
+            }
             if let (true, Some(draft), Some(view), None) =
                 (request.gpu, draft, view, request.layer_count)
             {
