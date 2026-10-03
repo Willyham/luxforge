@@ -24,7 +24,7 @@
 //! after 150 ms allows.
 use crate::{
     gpu_preview_smoke::{
-        BASIC, CLARITY, CLARITY_DRAG, DEHAZE, EXPOSURE, PRESENCE, PRESENCE_QUIET_MS, Settled,
+        BASIC, CLARITY, CLARITY_DRAG, DEHAZE, EXPOSURE, Held, PRESENCE, PRESENCE_QUIET_MS, Settled,
         TEXTURE_DRAG, UNDER_DRAG, dissolve_from, drag_steps, gpu_drawn, named,
         presence_drag_checks, quiet, quiet_for, same_pixels, step_events, ticks,
     },
@@ -148,7 +148,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         PRESENCE,
         "texture",
         TEXTURE_DRAG,
-        PRESENCE_QUIET_MS,
+        Held::Compiled(PRESENCE_QUIET_MS),
         Settled::Quiet,
     ));
     steps.extend(drag_steps(
@@ -156,7 +156,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         PRESENCE,
         "clarity",
         CLARITY_DRAG,
-        PRESENCE_QUIET_MS,
+        Held::Compiled(PRESENCE_QUIET_MS),
         Settled::Quiet,
     ));
     steps.extend([
@@ -178,7 +178,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         BASIC,
         EXPOSURE,
         UNDER_DRAG,
-        PRESENCE_QUIET_MS,
+        Held::Compiled(PRESENCE_QUIET_MS),
         Settled::Quiet,
     ));
     // Still at 100%, Detail committed under Presence and Dehaze committed again, so Dehaze's light
@@ -203,7 +203,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         PRESENCE,
         "texture",
         BEHIND_TEXTURE,
-        PRESENCE_QUIET_MS,
+        Held::Compiled(PRESENCE_QUIET_MS),
         Settled::Quiet,
     ));
     steps.extend(drag_steps(
@@ -211,7 +211,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         DETAIL,
         SHARPENING,
         BEHIND_SHARPEN,
-        PRESENCE_QUIET_MS,
+        Held::Compiled(PRESENCE_QUIET_MS),
         Settled::Quiet,
     ));
     steps.push(release("behind-dehaze-off-100", "dehaze", 0.0));

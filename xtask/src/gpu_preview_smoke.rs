@@ -359,7 +359,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             PRESENCE,
             "texture",
             TEXTURE_DRAG,
-            QUIET_MS,
+            Held::Quiet(QUIET_MS),
             Settled::Warmed,
         ))
         .chain(drag_steps(
@@ -367,7 +367,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             PRESENCE,
             "clarity",
             CLARITY_DRAG,
-            QUIET_MS,
+            Held::Quiet(QUIET_MS),
             Settled::Warmed,
         ))
         .chain(drag_steps(
@@ -375,11 +375,22 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             BASIC,
             EXPOSURE,
             UNDER_DRAG,
-            QUIET_MS,
+            Held::Quiet(QUIET_MS),
             Settled::Quiet,
         ))
         .collect(),
     )
+}
+
+/// How a drag's `<name>-held` step waits after its first tick.
+#[derive(Clone, Copy)]
+pub(crate) enum Held {
+    /// This many milliseconds of quiet while the boundary arrives, the drag's sequence warmed.
+    Quiet(u64),
+    /// This many milliseconds of quiet while the boundary arrives, then until the sequence the
+    /// held boundary's first plan asked for has compiled, at most [`WARM_MS`] in all: a percentage
+    /// view's plans are not warmed, so its drag compiles its own.
+    Compiled(u64),
 }
 
 /// How a drag's last step waits after its release.
@@ -392,7 +403,7 @@ pub(crate) enum Settled {
 }
 
 /// One drag over a held boundary, a step a tick: `<name>-first`, whose CPU tick asks for the
-/// boundary; `<name>-held`, `held_ms` while it arrives and the surface first runs every pass;
+/// boundary; `<name>-held`, as `held` says, while it arrives and the surface first runs every pass;
 /// `<name>-gpu-1` and `<name>-gpu-2`, a GPU tick each; `<name>-release`, which commits the last
 /// value; and `<name>-settled`, as `settled` says.
 pub(crate) fn drag_steps(
@@ -400,13 +411,23 @@ pub(crate) fn drag_steps(
     action: &str,
     field: &str,
     values: [f64; 3],
-    held_ms: u64,
+    held: Held,
     settled: Settled,
 ) -> Vec<Step> {
     let slider = |value: f64| SliderStep::new(action, field, [value]);
     vec![
         Step::new(format!("{name}-first"), slider(values[0])).commits(0),
-        quiet_for(&format!("{name}-held"), held_ms),
+        match held {
+            Held::Quiet(ms) => quiet_for(&format!("{name}-held"), ms),
+            Held::Compiled(quiet_ms) => Step::new(
+                format!("{name}-held"),
+                script::Step::GpuWarmed {
+                    quiet_ms,
+                    ms: WARM_MS,
+                },
+            )
+            .commits(0),
+        },
         Step::new(format!("{name}-gpu-1"), slider(values[1])).commits(0),
         Step::new(format!("{name}-gpu-2"), slider(values[2])).commits(0),
         Step::new(format!("{name}-release"), slider(values[2]).release())
