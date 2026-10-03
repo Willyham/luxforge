@@ -302,6 +302,51 @@
       ]
     },
     {
+      "id": "crop-dehaze",
+      "family": "presence",
+      "class": "spatial",
+      "description": "Dehaze +100 behind the corpus's straightened crop, whose Fit proxy holds only the window the crop reads and is handed the exact stage's atmospheric light.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "lens-zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.crop-fit", "params": {"aspect": "16:9", "angle": 7.0}}},
+        {"api": {"method": "edit.set-presence", "params": {"dehaze": 100}}}
+      ]
+    },
+    {
+      "id": "crop-dehaze-negative",
+      "family": "presence",
+      "class": "spatial",
+      "description": "Dehaze -100 behind the corpus's straightened crop.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "lens-zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.crop-fit", "params": {"aspect": "16:9", "angle": 7.0}}},
+        {"api": {"method": "edit.set-presence", "params": {"dehaze": -100}}}
+      ]
+    },
+    {
+      "id": "crop-presence-all",
+      "family": "presence",
+      "class": "spatial",
+      "description": "All three Presence fields at +100 behind the corpus's straightened crop.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "lens-zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.crop-fit", "params": {"aspect": "16:9", "angle": 7.0}}},
+        {"api": {"method": "edit.set-presence", "params": {"texture": 100, "clarity": 100, "dehaze": 100}}}
+      ]
+    },
+    {
+      "id": "crop-basic-under-dehaze",
+      "family": "presence",
+      "class": "spatial",
+      "description": "Exposure +0.5 and Contrast +25 under Dehaze +100, behind the corpus's straightened crop.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "lens-zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.crop-fit", "params": {"aspect": "16:9", "angle": 7.0}}},
+        {"api": {"method": "edit.set-basic", "params": {"exposure": 0.5, "contrast": 25.0}}},
+        {"api": {"method": "edit.set-presence", "params": {"dehaze": 100}}}
+      ]
+    },
+    {
       "id": "detail-moderate",
       "family": "detail",
       "class": "spatial",

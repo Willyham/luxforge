@@ -31,7 +31,7 @@ pub use plan::{
     GpuGeometry, GpuMask, GpuOperation, GpuPlan, GpuPlanRequest, GpuPosition, gpu_plan,
     gpu_plan_with,
 };
-#[cfg(feature = "qualification")]
+#[cfg(any(test, feature = "qualification"))]
 pub(crate) use preview::position;
 pub use preview::{BoundaryKey, BoundaryRequest, GpuPreview, GpuView};
 #[cfg(test)]
