@@ -1315,6 +1315,84 @@ fn gpu_presence_passes_that_read_only_planes_read_no_input() {
     assert_eq!(differing, 0);
 }
 
+/// Texture's band is an `f32` in a plane of one channel or two: a plan drawn with the band's plane
+/// edited back to the two-channel `rg32float` it once took draws the frame its one-channel
+/// `r32float` plane draws, bit for bit, and its slot charges 4 bytes a texel more. Texture alone
+/// and with Clarity and Dehaze, unmasked and masked by a feathered radial, on the byte path, the
+/// linear path and in the GPU shape a drag draws.
+#[test]
+fn gpu_presence_texture_band_in_one_channel_draws_what_two_did() {
+    let test = "gpu_presence_texture_band_in_one_channel_draws_what_two_did";
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
+        return;
+    };
+    let registry = ModuleRegistry::builtin();
+    let (width, height) = (480, 320);
+    let pixels = photograph(width, height, 13);
+    let held = boundary(width, height, 1, &pixels).expect("a boundary");
+    let at = GpuPlanRequest::exact(0, stage(width, height));
+    for payload in [
+        json!({"texture": 60}),
+        json!({"texture": -45, "clarity": 40, "dehaze": 30}),
+    ] {
+        for masking in [false, true] {
+            let stack = if masking {
+                masked(recipe(payload.clone()), &radial())
+            } else {
+                recipe(payload.clone())
+            };
+            for (path, request) in [
+                ("byte", at),
+                ("linear", at.linear()),
+                ("drafted", at.linear().drafted(0)),
+            ] {
+                let plan = match gpu_plan(&registry, &stack, request).unwrap() {
+                    GpuAnswer::Plan(plan) => *plan,
+                    GpuAnswer::Fallback(reason) => panic!("{reason}"),
+                };
+                let one = surface_plan(&plan, held.clone()).expect("a runnable plan");
+                let mut two = one.clone();
+                let GpuStep::Spatial(spatial) = &mut two.steps[0] else {
+                    panic!("a spatial step first");
+                };
+                let texture = spatial
+                    .applies
+                    .iter()
+                    .find(|apply| apply.function == "lf_presence_texture")
+                    .expect("Texture's apply");
+                let [band] = texture.planes[..] else {
+                    panic!("Texture's apply reads its band alone");
+                };
+                let band = &mut spatial.planes[band as usize];
+                assert_eq!(band.format, PlaneFormat::HalfScalar);
+                band.format = PlaneFormat::HalfPair;
+                let (left, right) = (
+                    qualifier.evaluate(&one).expect("a readback"),
+                    qualifier.evaluate(&two).expect("a readback"),
+                );
+                let differing = left
+                    .iter()
+                    .zip(&right)
+                    .filter(|(a, b)| a.map(f32::to_bits) != b.map(f32::to_bits))
+                    .count();
+                let charged = |plan: &GpuPlan| qualifier.charged_bytes(plan).expect("a charge");
+                let more = charged(&two) - charged(&one);
+                let name = format!(
+                    "{payload}{} on the {path} path",
+                    if masking { " masked" } else { "" }
+                );
+                eprintln!(
+                    "{test}: {name}: {differing} of {} texels differ; two channels charge {more} B \
+                     more",
+                    left.len()
+                );
+                assert_eq!(differing, 0, "{name}");
+                assert_eq!(more, 4 * u64::from(width) * u64::from(height), "{name}");
+            }
+        }
+    }
+}
+
 // ---- The corpus at Fit ------------------------------------------------------------------------
 
 /// The qualification corpus's Presence recipes at Fit through the shared harness
