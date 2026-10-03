@@ -119,6 +119,15 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         view("original", script::Step::Preview(PreviewStep::Sequence(0))),
         // Back to current, because a gesture is refused while a historical entry is shown.
         view("current", script::Step::Preview(PreviewStep::Current)),
+        // The drafted render's counts are the CPU's: with the GPU preview on, a drag is drawn on
+        // the GPU from its first tick and the plot keeps its updating state until the quiet policy
+        // settles the draft on the CPU, so the drag runs with the preview turned off.
+        Step::new(
+            "gpu-preview-off",
+            luxforge_evidence::PaletteStep::Run("gpu preview".into()),
+        )
+        .commits(0)
+        .workspace("gpu_preview", json!(false)),
         // An Exposure drag left open, so the photograph on screen is the drafted render.
         Step::new("drag", SliderStep::new("set-basic", "exposure", [0.5, 1.0]))
             .commits(0)

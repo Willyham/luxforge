@@ -266,7 +266,7 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | A lens warp's GPU-preview coordinate grid | 262,144 nodes (2 MiB) | `GRID_MAX_NODES`, `crates/luxforge-core/src/render/gpu/grid.rs` |
 | A held GPU-preview boundary | 256 MiB, its CPU copy let go once the photo surface holds it | `BOUNDARY_MAX_BYTES`, `crates/luxforge-core/src/render/boundary.rs` |
 | A boundary's upload a frame | 32 MiB, so its arrival stages at most two frames' chunks | `UPLOAD_PER_FRAME`, `crates/luxforge-ui/src/photo_surface/gpu_preview.rs` |
-| GPU-preview textures and buffers, every photo surface's together, resident or retiring | 640 MiB, one slot per surface | `GPU_PREVIEW_BUDGET`, `crates/luxforge-ui/src/photo_surface/gpu_preview.rs` |
+| GPU-preview textures and buffers, every photo surface's together, resident or retiring | 2 GiB, one slot per surface | `GPU_PREVIEW_BUDGET`, `crates/luxforge-ui/src/photo_surface/gpu_preview.rs` |
 | Compiled GPU-preview program sequences per photo pipeline, failed ones included | 8 | `PIPELINE_CACHE`, as above |
 
 **Catalog and API**

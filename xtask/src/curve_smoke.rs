@@ -647,10 +647,20 @@ fn correlate_log(checks: &mut Checks, launch: &Checked) -> Result {
                 .rev()
                 .find(|e| e["event"] == "slider_draft_preview")
                 .map(|e| &e["detail"]["value"]);
+            // A tick the GPU preview drew previews the draft's newest revision as its CPU frame
+            // would.
+            let drawn_on_gpu = group
+                .iter()
+                .rev()
+                .find(|e| e["event"] == "gpu_preview_tick")
+                .is_some_and(|e| {
+                    e["detail"]["path"] == "gpu"
+                        && e["detail"]["draft_revision"] == draft["draft_revision"]
+                });
             ensure(
                 commits == 0
                     && sent.last() == Some(&&draft["fields"])
-                    && previewed == Some(&draft["fields"][LUMINANCE]),
+                    && (previewed == Some(&draft["fields"][LUMINANCE]) || drawn_on_gpu),
                 format!(
                     "{name}: the log sent {sent:?} and previewed {previewed:?} for the draft {}, with {commits} commit(s)",
                     draft["fields"]

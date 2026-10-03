@@ -1,21 +1,22 @@
 //! The `gpu-preview` smoke scenario: gestures at Fit drawn on the GPU over a held boundary, with
 //! no preview job per tick, on the real editor (`docs/design/gpu-preview.md`, "A tick").
 //!
-//! One launch over the quadrant fixture. A Basic exposure drag opens with a CPU tick whose job
-//! carries the one boundary request; once the boundary is held and the drag's program sequence
-//! compiled, its ticks are drawn on the GPU, each frame tagged with its tick's draft revision; its
-//! release commits, and the boundary and the slot are let go once the committed frame has settled.
-//! A Detail Amount drag follows the same course from the Detail layer's own input, its ticks
-//! Detail's spatial step; the photograph fits the window at its own size, so its Fit frame is the
-//! exact render and its release settles to exact pixels. Then, in Mask mode, a linear gradient
-//! bound to a masked exposure is moved by its middle handle in two drags, the second drawn on the
-//! GPU with the coverage overlay following it, and a brush stroke is painted through the same
-//! mask, its later positions drawn on the GPU. Last, back in
-//! the pointer mode, Presence is committed with Dehaze and Clarity, and a Texture drag, a Clarity
-//! drag and a Basic drag under Presence are each drawn on the GPU after their first tick: the two
-//! Presence drags read Dehaze's light from the store and run at most five of Presence's compute
-//! passes a tick (the spatial passes the tick's words change), and the Basic drag, which changes
-//! the light's input, takes the light on the GPU and runs them all.
+//! One launch over the quadrant fixture. A Basic exposure drag over the bare photograph opens with
+//! a CPU tick whose job carries the one boundary request; once the boundary is held and the drag's
+//! program sequence compiled, its ticks are drawn on the GPU, each frame tagged with its tick's
+//! draft revision; its release commits, and once the committed frame has settled the boundary stays
+//! on the GPU as the resident one, which a later gesture over the photograph's own input draws
+//! from at its first tick. A Detail Amount drag draws from it, the Detail layer's input being the
+//! photograph's, its ticks Detail's spatial step; the photograph fits the window at its own size,
+//! so its Fit frame is the exact render and its release settles to exact pixels. Then, in Mask
+//! mode, a linear gradient bound to a masked exposure is moved by its middle handle in two drags,
+//! drawn on the GPU with the coverage overlay following it, and a brush stroke is painted through
+//! the same mask, its positions drawn on the GPU. Last, back in the pointer mode, Presence is
+//! committed with Dehaze and Clarity, and a Texture drag, a Clarity drag and a Basic drag under
+//! Presence are each drawn on the GPU: the two Presence drags read Dehaze's light from the store
+//! and run at most five of Presence's compute passes a tick (the spatial passes the tick's words
+//! change), and the Basic drag, which changes the light's input, takes the light on the GPU and
+//! runs them all.
 //!
 //! **Correlated readbacks.** Every frame drawn on the GPU is checked against the state the editor
 //! recorded with it — the drawing path, the boundary version and the draft revision the surface
@@ -177,7 +178,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             .no_draft()
             .payload(BASIC_EFFECT, json!({ EXPOSURE: DRAGGED[1] })),
             // 5: settled: the dissolve the release started has ended, nothing draws once it has,
-            // and the boundary and the slot are let go.
+            // and the boundary stays on the GPU as the resident one.
             Step::new("settled", script::Step::Idle(IDLE))
                 .commits(0)
                 .no_draft(),
@@ -233,9 +234,9 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             )
             .commits(1)
             .no_draft(),
-            // 6-10: a Detail Amount drag. Its first tick takes the CPU path and asks for the
-            // boundary, the restoration layer's input; its later ticks are Detail's spatial step
-            // drawn on the GPU; its release commits; and once settled nothing is held.
+            // 6-10: a Detail Amount drag. Its ticks are Detail's spatial step drawn on the GPU
+            // from the first, over the resident boundary, the restoration layer's input; its
+            // release commits; and once settled the boundary is still the resident one.
             Step::new(
                 "detail-first",
                 SliderStep::new(DETAIL, AMOUNT, [DETAIL_FIRST]),
@@ -290,8 +291,8 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             .commits(0)
             .workspace("mask_overlay", json!("tint")),
             // 13-17: the gradient selected, its handles resting, and its middle handle pressed and
-            // moved twice without letting go: the press's tick asks for the boundary, and the moves'
-            // ticks are drawn on the GPU once it is held; then Apply commits the held drag.
+            // moved twice without letting go, the press's tick and the moves' drawn on the GPU over
+            // the resident boundary; then Apply commits the held drag.
             mask(
                 "select-linear",
                 MaskStep::SelectComponent(Some(Reference::Index(0))),
@@ -319,9 +320,8 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             mask("move-apply", MaskStep::Release).commits(1),
             // The applied gradient once its dissolve has ended: the frame that replaced the GPU one.
             quiet("apply-settled"),
-            // 17-18: a brush on the same mask, and one stroke painted a position per tick: its first
-            // positions ask for the boundary, its later ones are drawn on the GPU, and its release
-            // commits it as one entry.
+            // 17-18: a brush on the same mask, and one stroke painted a position per tick, each
+            // drawn on the GPU, its release committing it as one entry.
             mask("new-brush", MaskStep::Paint(PaintStep::NewBrush)).commits(0),
             mask(
                 "stroke",
@@ -407,10 +407,11 @@ pub(crate) enum Settled {
     Warmed,
 }
 
-/// One drag over a held boundary, a step a tick: `<name>-first`, whose CPU tick asks for the
-/// boundary; `<name>-held`, as `held` says, while it arrives and the surface first runs every pass;
-/// `<name>-gpu-1` and `<name>-gpu-2`, a GPU tick each; `<name>-release`, which commits the last
-/// value; and `<name>-settled`, as `settled` says.
+/// One drag over a held boundary, a step a tick: `<name>-first`, drawn from the resident boundary
+/// or asking for one; `<name>-held`, as `held` says, while a boundary asked for arrives, the surface
+/// first runs every pass and the pause settles the tick; `<name>-gpu-1` and `<name>-gpu-2`, a GPU
+/// tick each; `<name>-release`, which commits the last value; and `<name>-settled`, as `settled`
+/// says.
 pub(crate) fn drag_steps(
     name: &str,
     action: &str,
@@ -572,6 +573,43 @@ fn same_pixels_at(gpu: &Frame, cpu: &Frame, patches: &[[f64; 2]]) -> Result<Valu
     Ok(json!(readings))
 }
 
+/// The frame `name`, once the drag `release` ended has settled: the photograph the CPU's, no drag
+/// open, and the boundary `version` the drag drew from kept on the GPU as the resident one, its
+/// slot within the budget, handed over when the drag ended.
+fn resident_kept(launch: &Checked, release: &str, name: &str, version: &Value) -> Result<Value> {
+    let gpu = &launch.at(name)?.state()["surface"]["gpu"];
+    let figure = |key: &str| gpu[key].as_u64().unwrap_or(0);
+    let handed = named(span_events(launch, release, name)?, "gpu_boundary_resident")
+        .iter()
+        .filter(|event| {
+            event["detail"]["why"] == "draft-ended" && &event["detail"]["version"] == version
+        })
+        .count();
+    ensure(
+        !version.is_null()
+            && gpu["drawing_path"] == json!("cpu")
+            && gpu["gpu_preview"]["drag"].is_null()
+            && &gpu["gpu_preview"]["resident"]["version"] == version
+            && figure("gpu_preview_in_use_bytes") > 0
+            && figure("gpu_preview_in_use_bytes") <= figure("gpu_preview_budget_bytes")
+            && handed >= 1,
+        format!(
+            "After {release} settled the GPU preview does not hold boundary {version} as the \
+             resident one: path {}, drag {}, resident {}, {} bytes in use of {}, handed over \
+             {handed} times",
+            gpu["drawing_path"],
+            gpu["gpu_preview"]["drag"],
+            gpu["gpu_preview"]["resident"],
+            gpu["gpu_preview_in_use_bytes"],
+            gpu["gpu_preview_budget_bytes"]
+        ),
+    )?;
+    Ok(
+        json!({"drawing_path": gpu["drawing_path"], "resident": gpu["gpu_preview"]["resident"],
+            "in_use": gpu["gpu_preview_in_use_bytes"], "handed_over": handed}),
+    )
+}
+
 pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
     let mut checks = Checks::new();
@@ -649,55 +687,56 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             "against_release": compared}),
     );
 
-    // Settled: the boundary and the slot let go, the photograph the CPU's.
+    // Settled: the photograph the CPU's, and the drag's boundary kept on the GPU as the resident
+    // one.
     let settled = launch.at("settled")?;
-    let gpu = &settled.state()["surface"]["gpu"];
-    let released_events: Vec<&Value> = launch
-        .events
-        .iter()
-        .filter(|event| event["event"] == "gpu_boundary_released")
-        .collect();
+    let version = &dragged.state()["surface"]["gpu"]["gpu_preview"]["drag"]["boundary"]["version"];
+    let kept = resident_kept(launch, "release", "settled", version)?;
     checks.note(
         settled,
-        "settled after the release: nothing held",
-        json!({"drawing_path": gpu["drawing_path"], "in_use": gpu["gpu_preview_in_use_bytes"],
-            "drag": gpu["gpu_preview"]["drag"], "released": released_events}),
+        "settled after the release: the boundary kept as the resident one",
+        kept,
     );
-    ensure(
-        gpu["drawing_path"] == json!("cpu")
-            && gpu["gpu_preview_in_use_bytes"] == json!(0)
-            && gpu["gpu_preview"]["drag"].is_null()
-            && released_events
-                .iter()
-                .any(|event| event["detail"]["why"] == "draft-ended"),
-        format!(
-            "After settling the GPU preview still holds something: path {}, {} bytes in use, \
-             drag {}",
-            gpu["drawing_path"], gpu["gpu_preview_in_use_bytes"], gpu["gpu_preview"]["drag"]
-        ),
-    )?;
 
-    // The Detail drag: its first tick a CPU frame asking for the boundary, the Detail layer's own
-    // input; its later ticks drawn on the GPU with no preview job, the pixels its release
-    // commits; and nothing held once settled.
+    // The Detail drag: drawn on the GPU from its first tick over the resident boundary, which the
+    // third drag drew from and is the Detail layer's own input, asking for none; its later ticks
+    // with no preview job, the pixels its release commits; and the boundary still the resident
+    // one once settled.
+    let resident = &launch.at("third-gpu")?.state()["surface"]["gpu"]["gpu_preview"]["drag"]["boundary"]
+        ["version"];
     let events = step_events(launch, "detail-first")?;
     let (gpu_ticks, cpu_ticks, _) = ticks(events);
-    let asked = named(events, "gpu_preview_tick")
+    let first_ticks = named(events, "gpu_preview_tick");
+    let asked = first_ticks
         .iter()
         .filter(|tick| tick["detail"]["boundary_requested"] == json!(true))
         .count();
     ensure(
-        gpu_ticks == 0 && cpu_ticks >= 1 && asked == 1,
+        gpu_ticks >= 1
+            && cpu_ticks == 0
+            && asked == 0
+            && first_ticks
+                .iter()
+                .all(|tick| &tick["detail"]["boundary"] == resident),
         format!(
             "The Detail drag's first tick was {gpu_ticks} GPU and {cpu_ticks} CPU ticks, {asked} \
-             asking for the boundary"
+             asking for a boundary, not drawn from the resident boundary {resident}: {:?}",
+            first_ticks
+                .iter()
+                .map(|tick| &tick["detail"])
+                .collect::<Vec<_>>()
         ),
     )?;
     let held = launch.at("detail-held")?;
     let summary = &held.state()["surface"]["gpu"]["gpu_preview"]["drag"];
     ensure(
-        summary["boundary"]["layer"] == json!(0) && summary["boundary_requests"] == json!(1),
-        format!("The Detail drag holds no boundary at the Detail layer's input: {summary}"),
+        summary["boundary"]["layer"] == json!(0)
+            && &summary["boundary"]["version"] == resident
+            && summary["boundary_requests"] == json!(0),
+        format!(
+            "The Detail drag does not hold the resident boundary {resident} at the Detail \
+             layer's input: {summary}"
+        ),
     )?;
     let detailed = launch.at("detail-gpu")?;
     let drawn = gpu_drawn(detailed)?;
@@ -716,24 +755,13 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let committed = launch.at("detail-release")?;
     let patches: Vec<[f64; 2]> = PATCHES.iter().chain(&EDGES).copied().collect();
     let compared = same_pixels_at(detailed, committed, &patches)?;
-    let after = launch.at("detail-settled")?;
-    let gpu = &after.state()["surface"]["gpu"];
-    ensure(
-        gpu["drawing_path"] == json!("cpu")
-            && gpu["gpu_preview_in_use_bytes"] == json!(0)
-            && gpu["gpu_preview"]["drag"].is_null(),
-        format!(
-            "After the Detail drag settled the GPU preview still holds something: path {}, {} \
-             bytes in use, drag {}",
-            gpu["drawing_path"], gpu["gpu_preview_in_use_bytes"], gpu["gpu_preview"]["drag"]
-        ),
-    )?;
+    let kept = resident_kept(launch, "detail-release", "detail-settled", resident)?;
     checks.note(
         detailed,
-        "a Detail drag drawn on the GPU from the Detail layer's input, against the CPU frame its \
-         release commits",
+        "a Detail drag drawn on the GPU from the resident boundary, the Detail layer's input, \
+         against the CPU frame its release commits",
         json!({"drawn": drawn, "gpu_ticks": gpu_ticks, "jobs": jobs,
-            "against_release": compared, "settled_in_use": gpu["gpu_preview_in_use_bytes"]}),
+            "against_release": compared, "settled": kept}),
     );
 
     // The gradient's second drag: drawn on the GPU, the overlay's coverage following it.
@@ -769,13 +797,13 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             "coverage_overlays": coverage, "overlay": overlay, "against_apply": compared}),
     );
 
-    // The stroke: its later positions drawn on the GPU, each with no preview job of its own.
+    // The stroke: its positions drawn on the GPU, each with no preview job of its own.
     let stroked = launch.at("stroke")?;
     let events = step_events(launch, "stroke")?;
     let (gpu_ticks, cpu_ticks, jobs) = ticks(events);
     checks.note(
         stroked,
-        "the stroke painted, its later positions drawn on the GPU",
+        "the stroke painted, its positions drawn on the GPU",
         json!({"gpu_ticks": gpu_ticks, "cpu_ticks": cpu_ticks, "jobs": jobs,
             "positions": stroke_path().len()}),
     );

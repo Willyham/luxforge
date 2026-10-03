@@ -570,7 +570,7 @@ fn paint_into(
     // These tests are about drawing, so the plan's sequence is compiled first, as a frame after
     // its compile finds it; `compile_tests` is about compiling.
     if let Some(plan) = &primitive.gpu {
-        pipeline.compile_now(device, &plan.steps);
+        pipeline.compile_now(device, plan);
     }
     draw_into(device, queue, pipeline, primitive, (width, height))
 }
@@ -1070,6 +1070,7 @@ fn a_destroyed_devices_callback_names_the_loss() {
         &queue,
         Some(&plan(&boundary, vec![identity()])),
         None,
+        None,
     );
     assert_eq!(surface.gpu_outcome, Some(Err(GpuFallback::DeviceLost)));
     assert!(surface.gpu.is_none());
@@ -1346,7 +1347,8 @@ fn a_percentage_view_draws_a_region_plans_frame_at_its_rectangle() {
 }
 
 /// A boundary whose texels its caller let go once the slot held them draws from that slot, a tick
-/// changing only its words; a slot that no longer holds it — released by a frame with no plan —
+/// changing only its words, and a plan of another output or tail over it refits the slot around
+/// the boundary it holds; a slot that no longer holds it — released by a frame with no plan —
 /// falls back naming it, drawing the CPU frame, and the texels uploaded again draw once more. A
 /// sequence still compiling leaves the slot, and the boundary it holds, as they were.
 #[test]
@@ -1388,7 +1390,7 @@ fn a_resident_boundary_draws_from_the_slot_that_holds_it() {
         seen.gpu_preview_in_use_bytes, slot_bytes,
         "the slot is kept"
     );
-    pipeline.compile_now(&device, &scaled.steps);
+    pipeline.compile_now(&device, &scaled);
     paint(&device, &queue, &mut pipeline, &primitive(ID, Some(scaled)));
     let seen = diagnostics(&pipeline, ID);
     assert_eq!(
@@ -1397,6 +1399,28 @@ fn a_resident_boundary_draws_from_the_slot_that_holds_it() {
         "drawn from the slot it kept"
     );
     assert_eq!(seen.gpu_fallback, None);
+    // A plan of another shape over the same boundary — here the identity tail a colour step after
+    // a stack's last spatial one brings — refits the slot and keeps the boundary it holds.
+    let (width, height) = resident.size();
+    let mut tailed = plan(&resident, vec![identity()]);
+    tailed.steps.push(GpuStep::Geometry(GpuTail::affine(
+        (width, height),
+        [0, 0, width, height],
+        false,
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+    )));
+    tailed.steps.push(GpuStep::colour(identity()));
+    pipeline.compile_now(&device, &tailed);
+    let drawn = paint(&device, &queue, &mut pipeline, &primitive(ID, Some(tailed)));
+    assert_codes(&drawn, &codes);
+    let seen = diagnostics(&pipeline, ID);
+    assert_eq!(
+        seen.drawn_path,
+        Some(DrawingPath::Gpu),
+        "drawn from the kept boundary"
+    );
+    assert_eq!(seen.gpu_fallback, None);
+    assert_eq!(seen.gpu_ready_boundary, Some(3));
     // A frame with no plan lets the slot go; the resident boundary cannot be drawn then.
     assert_cpu_frame(&paint(&device, &queue, &mut pipeline, &primitive(ID, None)));
     let drawn = paint(&device, &queue, &mut pipeline, &identity_of(&resident));
@@ -1411,6 +1435,53 @@ fn a_resident_boundary_draws_from_the_slot_that_holds_it() {
     // Its texels, brought again, draw.
     let drawn = paint(&device, &queue, &mut pipeline, &identity_of(&boundary));
     assert_codes(&drawn, &codes);
+    settle(&pipeline);
+}
+
+/// A plan over a boundary of another version, handed with a change measured from the plan the
+/// slot holds — no change, as a caller comparing only the plans' operations measures it — is
+/// evaluated whole: the new boundary's texels differ everywhere, so the frame is all of its codes,
+/// not the old boundary's with nothing drawn again.
+#[test]
+fn a_change_measured_over_another_boundary_is_evaluated_whole() {
+    let test = "a_change_measured_over_another_boundary_is_evaluated_whole";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let changed = |boundary: &GpuBoundary, serial: u64, since: Option<(u64, [u32; 4])>| {
+        let mut primitive = primitive(ID, Some(plan(boundary, vec![identity()])));
+        primitive.gpu_options.change = Some(GpuChange { serial, since });
+        primitive
+    };
+    let (first, codes) = boundary_with_codes(3);
+    let drawn = paint(&device, &queue, &mut pipeline, &changed(&first, 1, None));
+    assert_codes(&drawn, &codes);
+    // The same shape and format, other values: every texel another code.
+    let other: Vec<f32> = (0..SIDE * SIDE * 3)
+        .map(|index| held(((index * 37 + 11) % 256) as u8))
+        .collect();
+    let second = GpuBoundary::from_linear(
+        crate::photo_surface::BoundaryFormat::Half,
+        SIDE,
+        SIDE,
+        4,
+        other
+            .chunks_exact(3)
+            .map(|rgb| [rgb[0], rgb[1], rgb[2], 1.0]),
+    )
+    .expect("a whole boundary");
+    let other_codes: Vec<[u8; 3]> = other
+        .chunks_exact(3)
+        .map(|rgb| [0, 1, 2].map(|channel| srgb::code(f64::from(rgb[channel]))))
+        .collect();
+    let drawn = paint(
+        &device,
+        &queue,
+        &mut pipeline,
+        &changed(&second, 2, Some((1, [0; 4]))),
+    );
+    assert_codes(&drawn, &other_codes);
     settle(&pipeline);
 }
 
