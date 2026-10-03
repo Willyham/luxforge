@@ -60,11 +60,11 @@ pub struct BoundaryKey {
     /// The proxy the boundary is rendered at, with the window it holds; `None` at the exact stage,
     /// where a photograph that fits the display is drawn, and at a percentage zoom.
     plan: Option<ProxyPlan>,
-    /// At the exact stage at Fit, the window of the boundary layer's received stage the whole
-    /// output reads, when that is less than all of it; `None` otherwise.
-    window: Option<Region>,
     /// At a percentage zoom, the rectangle of the output stage the boundary is held for.
     region: Option<Region>,
+    /// The rectangle of the boundary stage whose texels it holds, including spatial support
+    /// margins. The output region alone does not identify a spatial input window.
+    window: Option<Region>,
 }
 
 impl BoundaryKey {
@@ -614,8 +614,8 @@ pub(crate) fn plan_preview(
                 prefix: prefix_hash(&recipe.layers[..boundary], &recipe.masks, fit.sampling())?,
                 layer: boundary,
                 plan: fit.plan,
-                window: window.filter(|_| fit.region.is_none()),
                 region: fit.region.map(|(rect, _)| rect),
+                window,
             },
             position,
             format: crate::BoundaryFormat::of(fit.linear),

@@ -1,6 +1,6 @@
 //! The GPU stage: a preview plan evaluated over a held input boundary in the frame that draws it.
 //!
-//! The plan is plain data — WGSL text, uniform words, storage words and an `rgba16float` boundary —
+//! The plan is plain data — WGSL text, uniform words, storage words and a path-specific boundary —
 //! so this crate still names no core type. [`GpuPlan`] is what a caller hands the photograph's
 //! surface with [`PhotoSurface::gpu_preview`](super::PhotoSurface::gpu_preview); `prepare` then
 //! uploads the boundary when its version changes, writes the tick's words with one
@@ -257,6 +257,7 @@ impl GpuStep {
             Self::Geometry(tail) => Box::new(std::iter::once((
                 StepKind::Geometry {
                     quantize: tail.quantizes(),
+                    preserve_f32: tail.preserves_f32(),
                 },
                 tail.program().entry.as_ref(),
                 tail.program().source.as_ref(),
@@ -331,6 +332,7 @@ enum StepKind {
     Apply(spatial::ApplyKey),
     Geometry {
         quantize: bool,
+        preserve_f32: bool,
     },
     Clipping,
 }
@@ -1161,9 +1163,8 @@ enum Head<'a> {
 enum End {
     /// The linear value, into a qualification's `rgba32float` target.
     Linear,
-    /// The linear value rounded to the nearest half, ties to even, into a RAW tail's
-    /// `rgba16float` intermediate: the M4 converts a render target's value toward zero, which held
-    /// every texel up to half a step darker than the CPU's value.
+    /// The linear value rounded to the nearest half, ties to even, into a half-precision
+    /// intermediate.
     Half,
     /// The CPU quantizer's 8-bit codes, through a Unorm view.
     Codes,
@@ -1208,6 +1209,8 @@ fn assemble_passes(steps: &[GpuStep], encode: bool) -> Result<Vec<String>, Strin
             }
             let content = if tail.quantizes() {
                 End::Codes
+            } else if tail.preserves_f32() {
+                End::Linear
             } else {
                 End::Half
             };

@@ -688,6 +688,8 @@ impl GpuClipping {
 #[derive(Clone, Debug, PartialEq)]
 pub struct GpuPlan {
     pub boundary: GpuBoundary,
+    /// Whether boundary and geometry frames stay unclamped in the RAW linear path.
+    pub linear: bool,
     /// Over the boundary's texels, in recipe order.
     pub content: Vec<GpuOperation>,
     /// The spatial operations the content operations' frame enters, in recipe order, at the
@@ -1066,6 +1068,7 @@ impl Compiled {
                 stage: received,
                 continues_run,
             },
+            linear: planning.linear,
             content: content_operations,
             spatial,
             geometry: GpuGeometry {
