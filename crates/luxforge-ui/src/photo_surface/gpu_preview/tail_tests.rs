@@ -601,13 +601,13 @@ fn toward_zero(value: f32) -> f32 {
     }
 }
 
-/// A RAW's tail reads the content pass's result from an `rgba16float` intermediate, which the
-/// content pass writes as a render target: every value is held as its nearest half float, ties to
-/// even, which is what the CPU's own rounding gives, never truncated toward zero. Over an exact
-/// identity tail of an `f32` boundary, values in every binade a frame holds, of both signs.
+/// A RAW's tail reads its content pass's result from an `rgba32float` intermediate without
+/// narrowing the linear values. An exact identity tail preserves values in every binade, of both
+/// signs, bit for bit.
 #[test]
-fn a_linear_tails_intermediate_holds_the_nearest_half() {
-    let Some(qualifier) = Qualifier::headless("a_linear_tails_intermediate_holds_the_nearest_half")
+fn a_raw_linear_tail_preserves_f32_intermediate_values() {
+    let Some(qualifier) =
+        Qualifier::headless("a_raw_linear_tail_preserves_f32_intermediate_values")
     else {
         return;
     };
@@ -633,7 +633,8 @@ fn a_linear_tails_intermediate_holds_the_nearest_half() {
         [0, 0, width, height],
         false,
         [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-    );
+    )
+    .preserve_f32();
     let plan = GpuPlan {
         boundary: gpu_boundary,
         texels: TexelMap::IDENTITY,
@@ -641,25 +642,18 @@ fn a_linear_tails_intermediate_holds_the_nearest_half() {
         region: None,
     };
     let drawn = qualifier.evaluate(&plan).expect("a readback");
-    let (mut nearest, mut truncated, mut neither) = (0, 0, 0);
+    let mut changed = 0;
     for (texel, value) in drawn.iter().zip(&values) {
         for c in 0..3 {
-            let (got, want) = (texel[c], value[c]);
-            if got == held(want) {
-                nearest += 1;
-            } else if got == toward_zero(want) {
-                truncated += 1;
-            } else {
-                neither += 1;
+            if texel[c].to_bits() != value[c].to_bits() {
+                changed += 1;
             }
         }
     }
-    eprintln!(
-        "a_linear_tails_intermediate_holds_the_nearest_half: {nearest} nearest, {truncated} \
-         toward zero, {neither} neither, of {}",
-        3 * values.len()
+    assert_eq!(
+        changed, 0,
+        "identity geometry must preserve every f32 value"
     );
-    assert_eq!((truncated, neither), (0, 0));
 }
 
 /// A spatial step's half-precision plane (`PlaneFormat::Colour`) holds each value a pass stores as
@@ -702,6 +696,7 @@ fn lf_test_show(rgb: vec3<f32>, at: vec2<i32>, words: u32, block: u32, planes: u
             source: 0,
             reads_source: true,
             shape: PassShape::Texels { span: [1, 1] },
+            unit: 0,
         }],
         applies: vec![GpuApply {
             function: std::borrow::Cow::Borrowed("lf_test_show"),
@@ -711,6 +706,7 @@ fn lf_test_show(rgb: vec3<f32>, at: vec2<i32>, words: u32, block: u32, planes: u
         }],
         clamps: false,
         mask: None,
+        halos: Vec::new(),
     };
     let plan = GpuPlan {
         boundary: GpuBoundary::from_linear(

@@ -21,9 +21,20 @@
 //! - **Settlement.** The shared quiet policy and the release settle on the CPU as before. When the
 //!   CPU frame of the drawn revision is presented, the surface holds the plan behind it: the CPU
 //!   frame is the reference, and the next tick draws again with no upload.
-//! - **Lifetime.** The boundary is held for the open draft only. A tick whose plan names another
-//!   key releases it; so does the draft's end — commit or cancel — once the frame that replaces the
-//!   drafted one is presented, so the screen never falls back to an older drafted frame.
+//! - **Lifetime.** A drag's boundary is held while its draft is open and, once the draft ends —
+//!   commit or cancel — and the frame that replaces the drafted one is presented, kept as the
+//!   resident boundary, with the stack's own plan held behind the CPU frame, so the screen never
+//!   falls back to an older drafted frame and the next gesture over the stack starts from it. A
+//!   tick whose plan names another key releases it; so does another photograph.
+//! - **The resident boundary.** A committed stack's preview job carries the stack's own plan and
+//!   the boundary every gesture over it starts from (its `gpu_resident` field): at Fit, and for a
+//!   view settled at 100% or more over its region. The job asks for the boundary when no held one
+//!   has its key; it is held as the resident one when it arrives, or taken by a drag still waiting
+//!   for it, so a gesture's first tick draws on the GPU.
+//! - **Incremental ticks.** Every plan handed to the surface carries a serial and what changed
+//!   since a plan of the last 16 handed that the surface evaluated (`Stamps::hand`, from the core's
+//!   `GpuPlan::changes_since`): a painted tick's rectangle, so the surface evaluates each link of
+//!   the chain only where that change reaches.
 //! - **Warming.** A committed stack's preview job carries the plans its gestures are likely to draw
 //!   (its `gpu_warm` field), and the surface compiles their sequences before a drag begins.
 //! - **At 100% and above.** A tick asks for the plan over the visible region of the output stage
@@ -35,8 +46,7 @@
 //!   the CPU's frames are drawn, never a mix of the two, until a tick plans the new region and its
 //!   boundary is held. A region whose boundary and frame alone would pass the GPU-preview budget
 //!   asks for no boundary and keeps the CPU path, naming the budget; so does one the surface finds
-//!   over it once held. While the mask overlay is shown at a percentage zoom the gesture keeps the
-//!   CPU path, whose region frames carry the overlay.
+//!   over it once held. The mask overlay's region coverage is laid over the GPU region frame.
 use super::{Editor, gpu_plan};
 use luxforge_core::{
     BoundaryKey, BoundaryRequest, CoordinateGrid, Draft, DraftId, GpuAnswer, GpuPreview, Region,
@@ -60,6 +70,8 @@ pub(crate) struct SurfaceReport {
     pub(crate) fallback: Option<SurfaceFallback>,
     /// The boundary and draft revision whose GPU output the last frame drew.
     pub(crate) drawn: Option<(u64, u64)>,
+    /// The serial of the plan whose values the surface's slot holds ([`surface::GpuChange`]).
+    pub(crate) evaluated: Option<u64>,
 }
 
 impl SurfaceReport {
@@ -74,6 +86,7 @@ impl SurfaceReport {
                         .zip(diagnostics.drawn_gpu_tag)
                 })
                 .flatten(),
+            evaluated: diagnostics.gpu_evaluated_serial,
         }
     }
 }
@@ -87,6 +100,99 @@ struct Held {
     /// A warp tail's coordinate grid, computed with the boundary; `None` for an affine tail, or a
     /// warp whose grid could not be built, which then keeps the CPU path.
     grid: Option<Arc<CoordinateGrid>>,
+}
+
+/// A plan handed to the surface: converted, the draft revision it is tagged with, and its serial
+/// with where it changes since the plan the surface held when it was converted.
+#[derive(Clone)]
+struct Handed {
+    plan: surface::GpuPlan,
+    revision: u64,
+    change: surface::GpuChange,
+}
+
+/// How many handed plans' core plans are kept to measure a later plan's change from.
+const STAMP_HISTORY: usize = 16;
+
+/// What a handed plan draws besides its core plan's operations: the boundary, where its texels
+/// lie, the region and the clipping marks. A plan whose context is not an earlier one's changes
+/// anywhere, whatever its core plan's change: another boundary is other texels everywhere, and the
+/// marks are drawn over the whole frame.
+#[derive(Clone, PartialEq)]
+struct Context {
+    boundary: u64,
+    texels: surface::TexelMap,
+    region: Option<surface::GpuRegion>,
+    marks: Option<surface::ClipMarks>,
+}
+
+impl Context {
+    fn of(plan: &surface::GpuPlan) -> Self {
+        Self {
+            boundary: plan.boundary.version(),
+            texels: plan.texels,
+            region: plan.region,
+            marks: plan.steps.iter().find_map(|step| match step {
+                GpuStep::Clipping(marks) => Some(*marks),
+                _ => None,
+            }),
+        }
+    }
+}
+
+/// The serials of the plans handed to the surface, with the core plans they were converted from
+/// and their contexts: what a later plan's change is measured from, so the surface evaluates only
+/// where it changes ([`surface::GpuChange`]).
+#[derive(Default)]
+struct Stamps {
+    serials: u64,
+    history: std::collections::VecDeque<(u64, Arc<CorePlan>, Context)>,
+}
+
+impl Stamps {
+    /// `plan`, converted from `core`, as handed to a surface whose slot holds the values of the plan
+    /// of serial `evaluated`: a new serial, and where it changes since that plan when it is one of
+    /// the last few handed and drawn in the same context ([`CorePlan::changes_since`]).
+    fn hand(
+        &mut self,
+        plan: surface::GpuPlan,
+        revision: u64,
+        core: &CorePlan,
+        evaluated: Option<u64>,
+    ) -> Handed {
+        self.serials += 1;
+        let serial = self.serials;
+        let context = Context::of(&plan);
+        let since = evaluated.and_then(|evaluated| {
+            let (_, previous, _) = self
+                .history
+                .iter()
+                .find(|(serial, _, earlier)| *serial == evaluated && *earlier == context)?;
+            match core.changes_since(previous) {
+                luxforge_core::GpuChange::Nothing => Some((evaluated, [0; 4])),
+                luxforge_core::GpuChange::Inside(rect) => Some((
+                    evaluated,
+                    [
+                        rect.x0,
+                        rect.y0,
+                        rect.x0 + rect.width,
+                        rect.y0 + rect.height,
+                    ],
+                )),
+                luxforge_core::GpuChange::Anywhere => None,
+            }
+        });
+        if self.history.len() == STAMP_HISTORY {
+            self.history.pop_front();
+        }
+        self.history
+            .push_back((serial, Arc::new(core.clone()), context));
+        Handed {
+            plan,
+            revision,
+            change: surface::GpuChange { serial, since },
+        }
+    }
 }
 
 /// The open draft's GPU preview.
@@ -103,8 +209,11 @@ struct Drag {
     requested: Option<u64>,
     /// A boundary of this key could not be rendered; the draft keeps the CPU path for it.
     failed: Option<BoundaryKey>,
-    /// The plan the surface draws, converted, and its draft revision.
-    surface: Option<(surface::GpuPlan, u64)>,
+    /// The plan the surface draws.
+    surface: Option<Handed>,
+    /// The resident boundary's last plan, which the surface holds behind the CPU frame while this
+    /// draft has no plan of its own to draw, so its slot keeps the boundary.
+    standby: Option<Handed>,
     /// Why the latest tick took the CPU path.
     reason: Option<String>,
     /// The percentage zoom the latest tick's region was asked at; `None` at Fit.
@@ -135,6 +244,7 @@ impl Drag {
             requested: None,
             failed: None,
             surface: None,
+            standby: None,
             reason: None,
             zoom: None,
             over_budget: None,
@@ -147,10 +257,27 @@ impl Drag {
     }
 }
 
-/// The desktop's GPU previews: the open draft's, and the warm list of the committed stack.
+/// A boundary held between drafts: every gesture over one source and view is planned from the
+/// same boundary (the stack's first content layer's input), so the next draft finds it, with the
+/// surface's slot, its links' intermediates and their planes, still on the GPU and draws its first
+/// tick there. The last plan drawn over it is handed to the surface behind the CPU frame, which
+/// keeps the slot; the asset it was held for lets a different photograph let it go.
+struct Resident {
+    held: Held,
+    plan: Option<Handed>,
+    asset: Option<luxforge_core::AssetId>,
+}
+
+/// The desktop's GPU previews: the open draft's, the boundary held between drafts and the warm
+/// list of the committed stack.
 #[derive(Default)]
 pub(crate) struct GpuPreviews {
     drag: Option<Drag>,
+    resident: Option<Resident>,
+    /// A committed stack's plan whose boundary a queued job asks for, to hold as the resident one:
+    /// its key, the plan and the job's generation.
+    pending_resident: Option<(BoundaryKey, Box<CorePlan>, Option<u64>)>,
+    stamps: Stamps,
     /// The last boundary version handed out: each held boundary is uploaded once.
     versions: u64,
     warm: Option<GpuWarm>,
@@ -178,8 +305,9 @@ pub(crate) enum GpuAsk {
 /// it takes on the GPU, as the surface charges them: the boundary over the window its request
 /// names, at its format's bytes a texel; a geometry tail's intermediate of the same size; the frame
 /// in its size bucket, a region's or a whole frame's, with its placement uniform
-/// ([`surface::gpu_preview::texture_charge`]); and a spatial step's planes over the window. The
-/// surface adds only its words and blocks buffers once it is held. At Fit at the exact stage the
+/// ([`surface::gpu_preview::texture_charge`]); and a spatial step's planes over the window. For a
+/// plan of one link the surface adds only its words and blocks buffers once it is held; a chain of
+/// several adds each earlier link's intermediate and planes then. At Fit at the exact stage the
 /// frame is the whole output stage and the boundary the window it reads, or the whole boundary
 /// stage. `None` at a Fit proxy, which the display bounds bound.
 pub(crate) fn region_charge(plan: &CorePlan, request: &BoundaryRequest) -> Option<(u64, u64)> {
@@ -204,12 +332,13 @@ pub(crate) fn region_charge(plan: &CorePlan, request: &BoundaryRequest) -> Optio
             luxforge_core::BoundaryFormat::Half => 8,
             luxforge_core::BoundaryFormat::Float => 16,
         };
-    // A tail quantizes where the CPU clamps before its resample, as `gpu_plan` builds it.
+    // A tail quantizes where the CPU clamps before its resample, and keeps `f32` values on the
+    // RAW linear path, as `gpu_plan` builds it.
     let textures = surface::gpu_preview::texture_charge(
         (window.width, window.height),
         gpu_plan::boundary_format(request.format),
         (rect.width, rect.height),
-        gpu_plan::has_tail(plan).then_some(plan.geometry.clamps),
+        gpu_plan::has_tail(plan).then_some((plan.geometry.clamps, plan.linear)),
         region,
         super::compare_after::DEVICE_TEXTURE_LIMIT,
     );
@@ -254,12 +383,39 @@ pub(crate) enum Tick {
 
 impl GpuPreviews {
     /// The plan the surface is handed this frame, whether it holds it behind the CPU frame, and
-    /// the draft revision it is tagged with.
+    /// the draft revision it is tagged with: the open drag's, or between drafts the resident
+    /// boundary's last plan, which the surface holds behind the CPU frame.
     pub(crate) fn surface_plan(&self) -> Option<(&surface::GpuPlan, u64)> {
-        self.drag
-            .as_ref()
-            .and_then(|drag| drag.surface.as_ref())
-            .map(|(plan, revision)| (plan, *revision))
+        self.handed().map(|handed| (&handed.plan, handed.revision))
+    }
+
+    /// The plan handed to the surface, from the open drag or the resident boundary.
+    fn handed(&self) -> Option<&Handed> {
+        match &self.drag {
+            Some(drag) => drag.surface.as_ref().or(drag.standby.as_ref()),
+            None => self
+                .resident
+                .as_ref()
+                .and_then(|resident| resident.plan.as_ref()),
+        }
+    }
+
+    /// The serial of the plan handed to the surface, and where it changes since the plan the
+    /// surface held when it was converted.
+    pub(crate) fn surface_change(&self) -> Option<surface::GpuChange> {
+        self.handed().map(|handed| handed.change)
+    }
+
+    /// Whether the plan handed to the surface is the resident boundary's, held between drafts or
+    /// while a draft has no plan of its own to draw.
+    pub(crate) fn resident_plan(&self) -> bool {
+        match &self.drag {
+            Some(drag) => drag.surface.is_none() && drag.standby.is_some(),
+            None => self
+                .resident
+                .as_ref()
+                .is_some_and(|resident| resident.plan.is_some()),
+        }
     }
 
     pub(crate) fn warm(&self) -> Option<&GpuWarm> {
@@ -276,13 +432,18 @@ impl GpuPreviews {
         self.drag
             .as_ref()
             .and_then(|drag| drag.held.as_ref())
+            .or(self.resident.as_ref().map(|resident| &resident.held))
             .map(|held| held.boundary.version())
     }
 
     /// The open drag's figures, as evidence and the tests read them.
     pub(crate) fn summary(&self) -> Value {
+        let resident = self.resident.as_ref().map(|resident| {
+            json!({"version": resident.held.boundary.version(), "layer": resident.held.key.layer()})
+        });
         let Some(drag) = &self.drag else {
-            return json!({"drag": null, "warm": self.warm.as_ref().map(GpuWarm::version)});
+            return json!({"drag": null, "resident": resident,
+                "warm": self.warm.as_ref().map(GpuWarm::version)});
         };
         json!({
             "drag": {
@@ -290,7 +451,7 @@ impl GpuPreviews {
                 "plan_revision": drag.plan.as_ref().map(|(_, revision)| *revision),
                 // A global estimate taken on the GPU rather than read from the store.
                 "approximate": drag.plan.as_ref().map(|(plan, _)| plan.approximate()),
-                "surface_revision": drag.surface.as_ref().map(|(_, revision)| *revision),
+                "surface_revision": drag.surface.as_ref().map(|handed| handed.revision),
                 "boundary": drag.held.as_ref().map(|held| json!({
                     "version": held.boundary.version(),
                     "width": held.boundary.size().0,
@@ -316,6 +477,7 @@ impl GpuPreviews {
                 "gpu_ticks": drag.gpu_ticks,
                 "cpu_ticks": drag.cpu_ticks,
             },
+            "resident": resident,
             "warm": self.warm.as_ref().map(GpuWarm::version),
         })
     }
@@ -382,13 +544,12 @@ impl Editor {
         // The clipping overlay is derived from the CPU's frames, so over a GPU frame the plan marks
         // its own clipped pixels instead.
         let clip = super::gpu_settle::clip_flags(&self.session.workspace);
-        // At a percentage zoom the mask overlay is drawn with the CPU's region frames, which a
-        // GPU frame drawn alone does not carry: while it is shown the gesture keeps the CPU path.
+        // At a percentage zoom the mask overlay's region coverage, which the coverage worker
+        // computes for each tick over the view's region, is laid over the GPU region frame.
         let zoom = match self.session.preview.view.zoom {
             luxforge_core::Zoom::Percent { value } => Some(value),
             luxforge_core::Zoom::Fit => None,
         };
-        let overlay = zoom.is_some() && self.mask_coverage_target().is_some();
         let budget = self.gpu_budget();
         // A region's boundary, or one at the exact stage at Fit, that would pass the bound on a
         // boundary, or whose slot the GPU-preview budget, is never rendered: the figure, and the
@@ -405,17 +566,35 @@ impl Editor {
         let report = self.surface_report();
         let mut released = None;
         let mut lost = None;
+        let resident = &mut self.gpu.resident;
+        let stamps = &mut self.gpu.stamps;
         let drag = match &mut self.gpu.drag {
             Some(drag) if drag.draft == set.draft_id && drag.ended.is_none() => drag,
-            slot => slot.insert(Drag::new(set.draft_id.clone())),
+            slot => {
+                // A new draft starts from the boundary held between drafts, which the surface's
+                // slot still holds: its first tick is drawn on the GPU when its key is the same.
+                let mut drag = Drag::new(set.draft_id.clone());
+                if let Some(resident) = resident.take() {
+                    drag.held = Some(resident.held);
+                    drag.standby = resident.plan;
+                }
+                slot.insert(drag)
+            }
         };
-        // A tick with no plan wants no boundary: one held is let go, as on any change of key.
+        // A tick with no plan draws nothing of its own; the boundary stays held, behind the CPU
+        // frame, for the next tick or draft that plans from it. Only the preference turned off,
+        // which hands the surface no plan at all, lets it go.
         let unplanned = |drag: &mut Drag, reason: &str, released: &mut Option<u64>| {
-            drag.surface = None;
+            if let Some(handed) = drag.surface.take() {
+                drag.standby = Some(handed);
+            }
             drag.plan = None;
             drag.wanted = None;
-            if let Some(held) = drag.held.take() {
+            if reason == super::gpu_settle::PREFERENCE_OFF
+                && let Some(held) = drag.held.take()
+            {
                 *released = Some(held.boundary.version());
+                drag.standby = None;
             }
             drag.reason = Some(reason.into());
             Tick::Cpu
@@ -426,7 +605,6 @@ impl Editor {
                 allowed.err().unwrap_or(super::gpu_settle::PREFERENCE_OFF),
                 &mut released,
             ),
-            _ if overlay => unplanned(drag, "overlay-shown", &mut released),
             None => unplanned(drag, "not-fit", &mut released),
             Some(luxforge_core::GpuPreview {
                 answer: GpuAnswer::Fallback(reason),
@@ -515,7 +693,8 @@ impl Editor {
                             }
                             Ok(converted) => {
                                 let version = held.boundary.version();
-                                drag.surface = Some((converted, revision));
+                                drag.surface =
+                                    Some(stamps.hand(converted, revision, plan, report.evaluated));
                                 if report.ready_boundary == Some(version)
                                     && report.fallback.is_none()
                                 {
@@ -555,6 +734,25 @@ impl Editor {
     /// Run after every message and at each tick.
     pub(crate) fn gpu_release_texels(&mut self) {
         let report = self.surface_report();
+        if self.gpu.drag.is_none()
+            && let Some(resident) = &mut self.gpu.resident
+            && resident.held.boundary.holds_texels()
+            && report.ready_boundary == Some(resident.held.boundary.version())
+            && report.fallback.is_none()
+        {
+            resident.held.boundary = resident.held.boundary.resident();
+            let held = resident.held.boundary.clone();
+            if let Some(handed) = &mut resident.plan
+                && handed.plan.boundary.version() == held.version()
+            {
+                handed.plan.boundary = held.clone();
+            }
+            self.event(
+                "gpu_boundary_resident",
+                || json!({"version": held.version(), "why": "texels-let-go"}),
+            );
+            return;
+        }
         let Some(drag) = &mut self.gpu.drag else {
             return;
         };
@@ -567,10 +765,10 @@ impl Editor {
         };
         held.boundary = held.boundary.resident();
         let resident = held.boundary.clone();
-        if let Some((plan, _)) = &mut drag.surface
-            && plan.boundary.version() == resident.version()
+        if let Some(handed) = &mut drag.surface
+            && handed.plan.boundary.version() == resident.version()
         {
-            plan.boundary = resident.clone();
+            handed.plan.boundary = resident.clone();
         }
         self.event(
             "gpu_boundary_resident",
@@ -657,11 +855,98 @@ impl Editor {
             return;
         };
         let clip = super::gpu_settle::clip_flags(&self.session.workspace);
+        let evaluated = self.surface_report().evaluated;
+        // A committed stack's job asked for the boundary every gesture starts from: an open drag
+        // that waits for one of its key takes it, and otherwise it is held as the resident one, its
+        // plan behind the CPU frame.
+        if draft.is_none()
+            && let Some((key, plan, _)) = self
+                .gpu
+                .pending_resident
+                .take_if(|(key, _, _)| *key == outcome.key)
+        {
+            let detail = match outcome.result {
+                Ok(frame) => {
+                    self.gpu.versions += 1;
+                    let version = self.gpu.versions;
+                    let size = (frame.width, frame.height);
+                    let format = gpu_plan::boundary_format(frame.format);
+                    match GpuBoundary::new(frame.texels, size.0, size.1, version, format) {
+                        Some(boundary) => {
+                            let held = Held {
+                                key,
+                                boundary,
+                                origin: frame.origin,
+                                grid: outcome.grid.and_then(Result::ok),
+                            };
+                            let over = |plan: &CorePlan, held: &Held| {
+                                gpu_plan::surface_plan_over(
+                                    plan,
+                                    held.boundary.clone(),
+                                    held.origin,
+                                    held.grid.as_deref(),
+                                    held.key.region(),
+                                )
+                                .ok()
+                                .map(|converted| super::gpu_settle::marked(converted, plan, clip))
+                            };
+                            let stamps = &mut self.gpu.stamps;
+                            let standby = over(&plan, &held)
+                                .map(|converted| stamps.hand(converted, 0, &plan, evaluated));
+                            let asset = self
+                                .document
+                                .state
+                                .as_ref()
+                                .map(|state| state.asset.id.clone());
+                            match self.gpu.drag.as_mut() {
+                                // An open drag still waiting for this boundary draws from it.
+                                Some(drag)
+                                    if drag.ended.is_none()
+                                        && drag.held.is_none()
+                                        && drag
+                                            .wanted
+                                            .as_ref()
+                                            .is_some_and(|wanted| wanted.key == held.key) =>
+                                {
+                                    drag.surface =
+                                        drag.plan.as_ref().and_then(|(plan, revision)| {
+                                            over(plan, &held).map(|converted| {
+                                                stamps.hand(converted, *revision, plan, evaluated)
+                                            })
+                                        });
+                                    drag.standby = standby;
+                                    drag.failed = None;
+                                    drag.held = Some(held);
+                                }
+                                _ => {
+                                    self.gpu.resident = Some(Resident {
+                                        held,
+                                        plan: standby,
+                                        asset,
+                                    });
+                                }
+                            }
+                            json!({"held": true, "resident": true, "version": version,
+                                "width": size.0, "height": size.1, "render_ms": render_ms})
+                        }
+                        None => json!({"held": false, "why": "malformed texels"}),
+                    }
+                }
+                Err(error) => json!({"held": false, "resident": true, "why": error.to_string()}),
+            };
+            self.event("gpu_boundary", || {
+                let mut detail = detail;
+                detail["generation"] = json!(generation);
+                detail
+            });
+            return;
+        }
+        let stamps = &mut self.gpu.stamps;
         let Some(drag) = self
             .gpu
             .drag
             .as_mut()
-            .filter(|drag| Some(&drag.draft) == draft.as_ref() && drag.ended.is_none())
+            .filter(|drag| Some(&drag.draft) == draft.as_ref())
         else {
             self.event(
                 "gpu_boundary_dropped",
@@ -669,6 +954,9 @@ impl Editor {
             );
             return;
         };
+        // A draft that ended while its boundary rendered keeps it, drawing nothing from it: it
+        // stays resident when the drag is let go.
+        let ended = drag.ended.is_some();
         if drag.requested == Some(generation) {
             drag.requested = None;
         }
@@ -693,7 +981,8 @@ impl Editor {
                         });
                         drag.failed = None;
                         // The latest tick's plan is drawn now, before the next input.
-                        if let Some((plan, revision)) = &drag.plan
+                        if !ended
+                            && let Some((plan, revision)) = &drag.plan
                             && let Some(held) = &drag.held
                         {
                             drag.surface = gpu_plan::surface_plan_over(
@@ -705,7 +994,12 @@ impl Editor {
                             )
                             .ok()
                             .map(|converted| {
-                                (super::gpu_settle::marked(converted, plan, clip), *revision)
+                                stamps.hand(
+                                    super::gpu_settle::marked(converted, plan, clip),
+                                    *revision,
+                                    plan,
+                                    evaluated,
+                                )
                             });
                         }
                         json!({"held": true, "version": version, "width": size.0,
@@ -730,11 +1024,98 @@ impl Editor {
         });
     }
 
+    /// A committed stack's job, about to be queued: the plan of the stack itself it carries
+    /// (`resident`) is held behind the CPU frame over the resident boundary when that boundary has
+    /// its key, so the surface keeps the stack's spatial outputs for the next gesture; otherwise
+    /// the answer is the boundary request the job asks with, the boundary becoming the resident one
+    /// when it arrives, unless a gesture is open then, which holds its own. `region` is whether the
+    /// job's view is a percentage zoom's region, and `committed` whether the job draws the whole
+    /// committed stack with no boundary request of its own. Nothing with the preference off.
+    pub(crate) fn gpu_resident_from(
+        &mut self,
+        resident: Option<Box<GpuPreview>>,
+        region: bool,
+        committed: bool,
+    ) -> Option<BoundaryRequest> {
+        // A committed stack's job may be queued while the gesture that committed it is still
+        // winding down; its boundary is adopted only if no gesture is open when it arrives.
+        if self.gpu_preview_allowed().is_err() || !committed {
+            return None;
+        }
+        let Some(GpuPreview {
+            answer: GpuAnswer::Plan(plan),
+            boundary: Some(request),
+            ..
+        }) = resident.map(|resident| *resident)
+        else {
+            return None;
+        };
+        // A region's boundary rides only on a job of a region, and Fit's only on Fit's: the job's
+        // view is the one it was queued at, and the worker renders a boundary only at its frame's.
+        if region != request.key.region().is_some() {
+            return None;
+        }
+        // A drag that ended holds the boundary until its committed frame is presented, and then
+        // leaves it resident.
+        if self
+            .gpu
+            .drag
+            .as_ref()
+            .and_then(|drag| drag.held.as_ref())
+            .is_some_and(|held| held.key == request.key)
+        {
+            return None;
+        }
+        let clip = super::gpu_settle::clip_flags(&self.session.workspace);
+        let evaluated = self.surface_report().evaluated;
+        let stamps = &mut self.gpu.stamps;
+        if let Some(resident) = self
+            .gpu
+            .resident
+            .as_mut()
+            .filter(|resident| resident.held.key == request.key)
+        {
+            let held = &resident.held;
+            resident.plan = gpu_plan::surface_plan_over(
+                &plan,
+                held.boundary.clone(),
+                held.origin,
+                held.grid.as_deref(),
+                held.key.region(),
+            )
+            .ok()
+            .map(|converted| {
+                stamps.hand(
+                    super::gpu_settle::marked(converted, &plan, clip),
+                    0,
+                    &plan,
+                    evaluated,
+                )
+            });
+            return None;
+        }
+        // A request still in flight for the same key is asked again: the job that carried it may
+        // have been replaced before it started, and a boundary rendered twice costs one copy of
+        // the proxy, where one never answered would leave every gesture without it.
+        self.gpu.pending_resident = Some((request.key.clone(), plan, None));
+        Some(request)
+    }
+
+    /// The committed job carrying the resident boundary's request was queued as `generation`.
+    pub(crate) fn gpu_resident_requested(&mut self, generation: u64) {
+        if let Some((_, _, requested)) = &mut self.gpu.pending_resident
+            && requested.is_none()
+        {
+            *requested = Some(generation);
+        }
+    }
+
     /// The preview queue was cancelled: a boundary request in flight will not be answered.
     pub(crate) fn gpu_queue_cancelled(&mut self) {
         if let Some(drag) = &mut self.gpu.drag {
             drag.requested = None;
         }
+        self.gpu.pending_resident = None;
     }
 
     /// A committed stack's job carries the plans its gestures are likely to draw: hand their
@@ -745,12 +1126,15 @@ impl Editor {
         };
         // While a clipping overlay is shown the gestures' plans carry its marks.
         let clip = super::gpu_settle::clip_flags(&self.session.workspace);
-        let sequences: Vec<Vec<GpuStep>> = plans
+        let sequences: Vec<(Vec<GpuStep>, surface::BoundaryFormat)> = plans
             .iter()
             .filter_map(|plan| {
-                gpu_plan::plan_steps(plan)
-                    .ok()
-                    .map(|steps| super::gpu_settle::marked_steps(steps, plan, clip))
+                gpu_plan::plan_steps(plan).ok().map(|steps| {
+                    (
+                        super::gpu_settle::marked_steps(steps, plan, clip),
+                        gpu_plan::boundary_format(luxforge_core::BoundaryFormat::of(plan.linear)),
+                    )
+                })
             })
             .collect();
         let same = self
@@ -815,7 +1199,7 @@ impl Editor {
         if self.presentation.compare_after.is_some() {
             return None;
         }
-        let (plan, _) = self.gpu.surface_plan()?;
+        let (plan, revision) = self.gpu.surface_plan()?;
         let shown = match (&self.session.preview.view.zoom, plan.region) {
             (luxforge_core::Zoom::Fit, None) => true,
             (luxforge_core::Zoom::Percent { value }, Some(region)) if *value >= 100.0 => self
@@ -828,6 +1212,11 @@ impl Editor {
         };
         if !shown {
             return None;
+        }
+        // Between drafts the resident boundary's last plan is held behind the CPU frame, which
+        // keeps the surface's slot for the next draft.
+        if self.gpu.resident_plan() {
+            return Some((plan, revision));
         }
         // An open draft that another client's commit conflicted, or that was reapplied over a
         // newer entry and whose first tick there has not answered yet, draws none of its plans:
@@ -859,6 +1248,10 @@ impl Editor {
         let Some((_, revision)) = self.gpu.surface_plan() else {
             return false;
         };
+        // The resident boundary's plan is always held: between drafts the CPU frame is drawn.
+        if self.gpu.resident_plan() {
+            return true;
+        }
         let draft = self.gpu.drag.as_ref().map(|drag| &drag.draft);
         self.presentation.displayed_draft_id.as_ref() == draft
             && self
@@ -877,9 +1270,26 @@ impl Editor {
 }
 
 /// After every message: a draft that ended keeps its drawn plan until the frame that replaces it
-/// is presented, or until nothing more is coming, and then releases its boundary.
+/// is presented, or until nothing more is coming, and then hands its boundary to the resident slot
+/// the next draft starts from; a resident boundary of another photograph is let go.
 pub(super) fn after_message(editor: &mut Editor, _: &super::Before) -> iced::Task<super::Message> {
     editor.gpu_release_texels();
+    let asset = editor
+        .document
+        .state
+        .as_ref()
+        .map(|state| state.asset.id.clone());
+    if let Some(resident) = editor
+        .gpu
+        .resident
+        .take_if(|resident| resident.asset != asset)
+    {
+        let version = resident.held.boundary.version();
+        editor.event(
+            "gpu_boundary_released",
+            || json!({"version": version, "why": "asset-changed"}),
+        );
+    }
     let open = editor
         .core_gesture()
         .map(|gesture| gesture.draft.draft_id.clone());
@@ -893,12 +1303,90 @@ pub(super) fn after_message(editor: &mut Editor, _: &super::Before) -> iced::Tas
     }
     let ended = *drag.ended.get_or_insert(presented);
     if presented > ended || idle {
-        let released = drag.held.as_ref().map(|held| held.boundary.version());
-        editor.gpu.drag = None;
-        editor.event(
-            "gpu_boundary_released",
-            || json!({"version": released, "why": "draft-ended"}),
-        );
+        let Some(drag) = editor.gpu.drag.take() else {
+            return iced::Task::none();
+        };
+        match drag.held {
+            // The boundary stays on the GPU for the next draft, behind the CPU frame.
+            Some(held) => {
+                let version = held.boundary.version();
+                editor.gpu.resident = Some(Resident {
+                    held,
+                    plan: drag.surface.or(drag.standby),
+                    asset,
+                });
+                editor.event(
+                    "gpu_boundary_resident",
+                    || json!({"version": version, "why": "draft-ended"}),
+                );
+            }
+            None => editor.event(
+                "gpu_boundary_released",
+                || json!({"version": null, "why": "draft-ended"}),
+            ),
+        }
     }
     iced::Task::none()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use luxforge_core::{
+        BASIC_EFFECT, GpuAnswer, GpuPlanRequest, Layer, ModuleRegistry, Recipe, Stage,
+    };
+
+    /// A plan's change is measured from an earlier one only in the same context: over another
+    /// boundary, or with other clipping marks, it changes anywhere, however its operations compare.
+    #[test]
+    fn a_change_is_measured_only_over_the_same_boundary_and_marks() {
+        let recipe = Recipe {
+            layers: vec![Layer::new(BASIC_EFFECT, json!({"exposure": 0.5}))],
+            ..Recipe::default()
+        };
+        let side = Stage {
+            width: 64,
+            height: 64,
+        };
+        let request = GpuPlanRequest::fit(0, side, side);
+        let GpuAnswer::Plan(core) =
+            luxforge_core::gpu_plan(&ModuleRegistry::builtin(), &recipe, request)
+                .expect("the stack compiles")
+        else {
+            panic!("a plan");
+        };
+        let over = |version: u64| {
+            let boundary = GpuBoundary::from_linear(
+                surface::BoundaryFormat::Half,
+                64,
+                64,
+                version,
+                std::iter::repeat_n([0.25, 0.5, 0.75, 1.0], 64 * 64),
+            )
+            .expect("a whole boundary");
+            gpu_plan::surface_plan(&core, boundary).expect("a runnable plan")
+        };
+        let marked = |version: u64, flags: [bool; 2]| {
+            super::super::gpu_settle::marked(over(version), &core, Some(flags))
+        };
+        let mut stamps = Stamps::default();
+        let first = stamps.hand(over(1), 0, &core, None).change;
+        assert_eq!(first.since, None, "nothing evaluated yet");
+        let same = stamps.hand(over(1), 0, &core, Some(first.serial)).change;
+        assert_eq!(same.since, Some((first.serial, [0; 4])));
+        let other = stamps.hand(over(2), 0, &core, Some(same.serial)).change;
+        assert_eq!(other.since, None, "another boundary");
+        let shadows = stamps
+            .hand(marked(2, [true, false]), 0, &core, Some(other.serial))
+            .change;
+        assert_eq!(shadows.since, None, "marks shown");
+        let both = stamps
+            .hand(marked(2, [true, true]), 0, &core, Some(shadows.serial))
+            .change;
+        assert_eq!(both.since, None, "other marks");
+        let again = stamps
+            .hand(marked(2, [true, true]), 0, &core, Some(both.serial))
+            .change;
+        assert_eq!(again.since, Some((both.serial, [0; 4])), "the same marks");
+    }
 }

@@ -312,7 +312,7 @@ pub fn plan2(_: &[PathBuf]) -> Plan {
                 to: radial_to(),
             }),
         ),
-        Step::new("apply-radial", MaskStep::Apply)
+        Step::new("apply-radial", MaskStep::Release)
             .commits(1)
             .label("Add radial")
             .components(&COMPOSED[..2]),

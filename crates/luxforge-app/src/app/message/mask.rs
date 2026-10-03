@@ -73,7 +73,8 @@ pub(crate) enum BrushEdit {
 pub(crate) enum MaskMessage {
     /// Open one mask, by its identity. Per-client selection; it commits nothing.
     Select(String),
-    /// Select one component of the open mask, which shows its handles and its number fields.
+    /// Select one component of the open mask, which shows its number fields and, for a gradient,
+    /// rests its handles on the canvas to be dragged.
     SelectComponent(String),
     /// The eye: show or hide this mask's overlay. View state; the mask still applies.
     ToggleVisible(String),
@@ -90,8 +91,6 @@ pub(crate) enum MaskMessage {
     New(String),
     /// Draw a further component of this kind on the open mask, in the chosen mode.
     Add(String),
-    /// Reopen one component's geometry as a gesture.
-    EditShape(String),
     /// One pointer step of the open gesture.
     Handle(MaskPointer),
     /// Open a painted gesture: a new mask, a further brush on the open mask in the chosen mode, or

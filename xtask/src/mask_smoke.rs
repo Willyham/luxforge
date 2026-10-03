@@ -88,20 +88,16 @@ pub fn launch1(_: &[PathBuf]) -> Plan {
         .commits(0)
         .draft(LINEAR_METHOD, swept())
         .masks(0),
-        // 4: the pointer lifted. The gradient stays; nothing is committed by a release.
-        Step::new("release", MaskStep::Release)
-            .commits(0)
-            .draft(LINEAR_METHOD, swept())
-            .masks(0),
-        // 5: Apply: one history entry, one mask of one linear component, no layer bound to it yet.
-        Step::new("apply", MaskStep::Apply)
+        // 4: the pointer lifted, which commits the drag: one history entry, one mask of one linear
+        // component, no layer bound to it yet.
+        Step::new("apply", MaskStep::Release)
             .commits(1)
             .label("Add linear")
             .no_draft()
             .no_layer(BASIC_EFFECT)
             .masks(1)
             .components(&["add linear"]),
-        // 6: the masked Exposure gesture. The sections below the list are bound to the mask the
+        // 5: the masked Exposure gesture. The sections below the list are bound to the mask the
         // commit opened, so this is the panel's own drag on the masked layer.
         Step::new(
             "drag",
@@ -111,7 +107,7 @@ pub fn launch1(_: &[PathBuf]) -> Plan {
         .label(DRAGGED_LABEL)
         .no_draft()
         .payload(BASIC_EFFECT, json!({ EXPOSURE: DRAGGED })),
-        // 7: the same layer from JSON, naming the mask by the name the host gave it: updated in
+        // 6: the same layer from JSON, naming the mask by the name the host gave it: updated in
         // place, not replaced.
         Step::new(
             "json-edit",
@@ -124,15 +120,15 @@ pub fn launch1(_: &[PathBuf]) -> Plan {
         .label(RETYPED_LABEL)
         .payload(BASIC_EFFECT, json!({ EXPOSURE: RETYPED }))
         .same_layer(BASIC_EFFECT, "drag"),
-        // 8: the coverage overlay on, which commits nothing.
+        // 7: the coverage overlay on, which commits nothing.
         Step::new("overlay-on", WorkspaceStep::default().mask_overlay("tint"))
             .commits(0)
             .workspace("mask_overlay", json!("tint")),
-        // 9: and off again.
+        // 8: and off again.
         Step::new("overlay-off", WorkspaceStep::default().mask_overlay("off"))
             .commits(0)
             .workspace("mask_overlay", json!("off")),
-        // 10: undo, back to the exposure the drag committed, on the same layer.
+        // 9: undo, back to the exposure the drag committed, on the same layer.
         Step::new("undo", script::Step::api("history.undo"))
             .commits(1)
             .label(DRAGGED_LABEL)
@@ -263,25 +259,22 @@ fn verify_launch1(launch: &Checked, checks: &mut Checks) -> Result<Left> {
         opened_draft["kind"] == json!("linear")
             && opened_draft["mask"] == Value::Null
             && opened_draft["placed"] == json!(false)
-            && launch.at("new")?.state()["draft_bar"]["can_apply"] == json!(false),
+            && launch.at("new")?.state()["draft_bar"]["done"] == json!(true),
         format!("The new step must hold an unplaced create tool: {opened_draft}"),
     )?;
-    // The sweep put the gradient exactly where the script drew it, pointer down; the release
-    // leaves it there with the gesture still open, because a release commits nothing on its own.
-    for (step, dragging) in [("sweep", true), ("release", false)] {
-        let draft = &launch.at(step)?.state()["mask_draft"];
-        ensure(
-            draft["shape"] == swept() && draft["dragging"] == json!(dragging),
-            format!("The {step}'s gesture holds {draft}"),
-        )?;
-    }
+    // The sweep put the gradient exactly where the script drew it, pointer down and uncommitted.
+    let draft = &launch.at("sweep")?.state()["mask_draft"];
+    ensure(
+        draft["shape"] == swept() && draft["dragging"] == json!(true),
+        format!("The sweep's gesture holds {draft}"),
+    )?;
 
-    // Apply. One mask, one linear component, no layer bound to it — so the photograph is
-    // byte-unchanged: a mask on its own is a selection, not an edit.
+    // The release committed it. One mask, one linear component, no layer bound to it — so the
+    // photograph is byte-unchanged: a mask on its own is a selection, not an edit.
     let apply = launch.at("apply")?;
     ensure(
         apply.state()["mask_draft"] == Value::Null,
-        "The gesture is still open after Apply",
+        "The gesture is still open after its release",
     )?;
     let mask = mask_id(apply)?.to_owned();
     let name = apply.only_mask()?["name"]

@@ -202,18 +202,33 @@ impl Frame {
     }
 
     /// The frame displays the draft its client holds: the photograph on screen was drawn from the
-    /// draft's own revision, one or later.
+    /// draft's own revision, one or later, as the CPU's frame of it or as the GPU preview's plan of
+    /// it, which draws a drag from its first tick once the boundary every gesture starts from is
+    /// held ([`Frame::drawn_on_gpu`]).
     pub fn displays_draft(&self) -> Result {
         let revision = &self.draft()["draft_revision"];
         ensure(
             revision.as_u64().is_some_and(|revision| revision >= 1)
-                && &self.state()["displayed_draft_revision"] == revision,
+                && (&self.state()["displayed_draft_revision"] == revision || self.drawn_on_gpu()),
             format!(
-                "The frame displays draft revision {} while the draft is {}",
+                "The frame displays draft revision {} while the draft is {}, the GPU preview \
+                 drawing revision {} on the {} path",
                 self.state()["displayed_draft_revision"],
-                self.draft()
+                self.draft(),
+                self.state()["surface"]["gpu"]["drawn_gpu_revision"],
+                self.state()["surface"]["gpu"]["drawing_path"]
             ),
         )
+    }
+
+    /// The GPU preview drew the frame's photograph: the plan of the draft's own revision, in place
+    /// of a CPU frame of it.
+    pub fn drawn_on_gpu(&self) -> bool {
+        let gpu = &self.state()["surface"]["gpu"];
+        let revision = &self.draft()["draft_revision"];
+        gpu["drawing_path"] == json!("gpu")
+            && revision.as_u64().is_some()
+            && &gpu["drawn_gpu_revision"] == revision
     }
 
     /// The module registry's entry for `module`, as the frame lists it.
@@ -381,6 +396,16 @@ mod tests {
             frame(json!({"state":{"draft":{"draft_revision":2},"displayed_draft_revision":1}}));
         assert!(behind.displays_draft().is_err());
         assert!(empty.displays_draft().is_err(), "no draft revision at all");
+        // The GPU preview's plan of the draft's revision displays it too; an older plan does not.
+        let gpu = |drawn: u64| {
+            frame(
+                json!({"state":{"draft":{"draft_revision":2},"displayed_draft_revision":null,
+                "surface":{"gpu":{"drawing_path":"gpu","drawn_gpu_revision":drawn}}}}),
+            )
+        };
+        assert!(gpu(2).displays_draft().is_ok() && gpu(2).drawn_on_gpu());
+        assert!(gpu(1).displays_draft().is_err() && !gpu(1).drawn_on_gpu());
+        assert!(!drafted.drawn_on_gpu());
     }
 
     #[test]
