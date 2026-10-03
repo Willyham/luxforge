@@ -590,3 +590,159 @@ fn a_region_draws_its_rectangle_of_the_stage() {
     });
     assert!(qualifier.evaluate(&outside).is_err());
 }
+
+/// The nearest half float toward zero of `value`, as a conversion that truncates gives it.
+fn toward_zero(value: f32) -> f32 {
+    let nearest = half::f16::from_f32(value);
+    if nearest.to_f32().abs() > value.abs() {
+        half::f16::from_bits(nearest.to_bits() - 1).to_f32()
+    } else {
+        nearest.to_f32()
+    }
+}
+
+/// A RAW's tail reads the content pass's result from an `rgba16float` intermediate, which the
+/// content pass writes as a render target: every value is held as its nearest half float, ties to
+/// even, which is what the CPU's own rounding gives, never truncated toward zero. Over an exact
+/// identity tail of an `f32` boundary, values in every binade a frame holds, of both signs.
+#[test]
+fn a_linear_tails_intermediate_holds_the_nearest_half() {
+    let Some(qualifier) = Qualifier::headless("a_linear_tails_intermediate_holds_the_nearest_half")
+    else {
+        return;
+    };
+    let (width, height) = (256, 64);
+    let values: Vec<[f32; 3]> = (0..width * height)
+        .map(|index| {
+            let t = index as f32 / (width * height) as f32;
+            // From about 1e-3 to about 8, and a sign that flips.
+            let value = 1.0e-3 * (9.0 * t).exp2() * (1.0 + 0.371 * (index as f32 * 0.77).sin());
+            [value, -value * 0.73, value * 1.13 + 1.0e-4]
+        })
+        .collect();
+    let gpu_boundary = GpuBoundary::from_linear(
+        BoundaryFormat::Float,
+        width,
+        height,
+        1,
+        values.iter().map(|[r, g, b]| [*r, *g, *b, 1.0]),
+    )
+    .expect("a boundary");
+    let tail = GpuTail::affine(
+        (width, height),
+        [0, 0, width, height],
+        false,
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+    );
+    let plan = GpuPlan {
+        boundary: gpu_boundary,
+        texels: TexelMap::IDENTITY,
+        steps: vec![GpuStep::Geometry(tail)],
+        region: None,
+    };
+    let drawn = qualifier.evaluate(&plan).expect("a readback");
+    let (mut nearest, mut truncated, mut neither) = (0, 0, 0);
+    for (texel, value) in drawn.iter().zip(&values) {
+        for c in 0..3 {
+            let (got, want) = (texel[c], value[c]);
+            if got == held(want) {
+                nearest += 1;
+            } else if got == toward_zero(want) {
+                truncated += 1;
+            } else {
+                neither += 1;
+            }
+        }
+    }
+    eprintln!(
+        "a_linear_tails_intermediate_holds_the_nearest_half: {nearest} nearest, {truncated} \
+         toward zero, {neither} neither, of {}",
+        3 * values.len()
+    );
+    assert_eq!((truncated, neither), (0, 0));
+}
+
+/// A spatial step's half-precision plane (`PlaneFormat::Colour`) holds each value a pass stores as
+/// its nearest half float, ties to even: the M4's own conversion of a storage write rounds toward
+/// zero, which the surface's rounding before the write replaces. A copy of an `f32` boundary into
+/// the plane, shown by the frame's apply.
+#[test]
+fn a_half_planes_texels_are_the_nearest_half() {
+    let Some(qualifier) = Qualifier::headless("a_half_planes_texels_are_the_nearest_half") else {
+        return;
+    };
+    let (width, height) = (256, 64);
+    let values: Vec<[f32; 3]> = (0..width * height)
+        .map(|index| {
+            let t = index as f32 / (width * height) as f32;
+            let value = 1.0e-3 * (9.0 * t).exp2() * (1.0 + 0.371 * (index as f32 * 0.77).sin());
+            [value, -value * 0.73, value * 1.13 + 1.0e-4]
+        })
+        .collect();
+    let program = "\
+fn lf_test_copy(at: vec2<i32>, words: u32, block: u32) {
+    lf_store(at, vec4<f32>(lf_source(at), 1.0));
+}
+
+fn lf_test_show(rgb: vec3<f32>, at: vec2<i32>, words: u32, block: u32, planes: u32) -> vec3<f32> {
+    return lf_plane(planes, at).xyz;
+}
+";
+    let spatial = GpuSpatial {
+        program: GpuProgram::new("lf_test", program),
+        planes: vec![GpuPlane {
+            format: PlaneFormat::Colour,
+            size: PlaneSize::Reduced(1),
+        }],
+        passes: vec![GpuPass {
+            kernel: std::borrow::Cow::Borrowed("lf_test_copy"),
+            inputs: vec![],
+            output: 0,
+            words: 0,
+            source: 0,
+            shape: PassShape::Texels { span: [1, 1] },
+            unit: 0,
+        }],
+        applies: vec![GpuApply {
+            function: std::borrow::Cow::Borrowed("lf_test_show"),
+            planes: vec![0],
+            words: 0,
+        }],
+        clamps: false,
+        mask: None,
+        halos: Vec::new(),
+    };
+    let plan = GpuPlan {
+        boundary: GpuBoundary::from_linear(
+            BoundaryFormat::Float,
+            width,
+            height,
+            1,
+            values.iter().map(|[r, g, b]| [*r, *g, *b, 1.0]),
+        )
+        .expect("a boundary"),
+        texels: TexelMap::IDENTITY,
+        steps: vec![GpuStep::Spatial(Box::new(spatial))],
+        region: None,
+    };
+    let drawn = qualifier.evaluate(&plan).expect("a readback");
+    let (mut nearest, mut truncated, mut neither) = (0, 0, 0);
+    for (texel, value) in drawn.iter().zip(&values) {
+        for c in 0..3 {
+            let (got, want) = (texel[c], value[c]);
+            if got == held(want) {
+                nearest += 1;
+            } else if got == toward_zero(want) {
+                truncated += 1;
+            } else {
+                neither += 1;
+            }
+        }
+    }
+    eprintln!(
+        "a_half_planes_texels_are_the_nearest_half: {nearest} nearest, {truncated} toward zero, \
+         {neither} neither, of {}",
+        3 * values.len()
+    );
+    assert_eq!((truncated, neither), (0, 0));
+}

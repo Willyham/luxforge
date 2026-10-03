@@ -149,6 +149,9 @@ struct Shared {
     entries: Vec<Entry>,
     queue: VecDeque<u64>,
     clock: u64,
+    /// How many warmed sequences a frame's has taken the place of in a full queue: dropped
+    /// unqueued, never compiled.
+    dropped: u64,
     /// The pipeline that owns the thread is gone: the thread ends.
     closed: bool,
 }
@@ -177,6 +180,7 @@ impl Shared {
                 && let Some(id) = self.queue.remove(at)
             {
                 self.entries.retain(|entry| entry.id != id);
+                self.dropped += 1;
             }
         }
         self.clock += 1;
@@ -281,8 +285,11 @@ impl Worker {
                         Ok(pipeline) => State::Ready(pipeline),
                         Err(error) => State::Failed(Arc::from(error)),
                     };
-                    figures.finished(started.elapsed());
+                    let elapsed = started.elapsed();
                     let asked = lock_shared(&thread).finish(id, state);
+                    // Counted once its pipeline is kept, so nothing waits on a sequence the
+                    // figures call done.
+                    figures.finished(elapsed);
                     if asked {
                         wake_surface();
                     }
@@ -368,7 +375,11 @@ impl Pipelines {
             }
             return Err(GpuFallback::Compiling);
         }
+        let dropped = shared.dropped;
         shared.queue(steps, format, true);
+        // Counted under the lock, before the thread can take it and count its end.
+        figures.compile.queued(1);
+        figures.compile.leave(shared.dropped - dropped);
         drop(shared);
         figures.compiles.fetch_add(1, Ordering::Relaxed);
         worker.notify();
@@ -396,6 +407,8 @@ impl Pipelines {
             }
             queued += 1;
         }
+        // Counted under the lock, before the thread can take one and count its end.
+        figures.compile.queued(queued);
         drop(shared);
         figures.compiles.fetch_add(queued, Ordering::Relaxed);
         if queued > 0 {
@@ -490,7 +503,9 @@ mod tests {
             !shared.queue(&steps("refused"), format, false),
             "a full queue warms no more"
         );
+        assert_eq!(shared.dropped, 0);
         assert!(shared.queue(&steps("asked_again"), format, true));
+        assert_eq!(shared.dropped, 1, "counted, so no wait counts on it");
         let order = order(&shared);
         assert_eq!(order[..2], ["asked_again", "asked"]);
         assert_eq!(order.len(), PIPELINE_CACHE);
@@ -498,5 +513,18 @@ mod tests {
             !order.contains(&warmed[PIPELINE_CACHE - 2].to_owned()),
             "the newest warmed one gave its place"
         );
+    }
+
+    /// What waits on the compile thread is counted exactly: a queued sequence adds one, a finished
+    /// one or a warmed one dropped from a full queue takes one away, and it never goes below zero.
+    #[test]
+    fn the_pending_figure_counts_what_waits() {
+        let figures = CompileFigures::default();
+        figures.queued(3);
+        figures.finished(std::time::Duration::from_millis(1));
+        figures.leave(1);
+        assert_eq!(figures.pending.load(Ordering::Acquire), 1);
+        figures.leave(5);
+        assert_eq!(figures.pending.load(Ordering::Acquire), 0);
     }
 }

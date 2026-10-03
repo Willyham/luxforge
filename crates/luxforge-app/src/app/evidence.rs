@@ -111,6 +111,8 @@ pub(crate) struct Evidence {
     /// When a `wait` step's frame may be captured. The evidence tick checks it, so a wait adds no
     /// timer of its own.
     pub(crate) wait_until: Option<Instant>,
+    /// A running `gpu_warmed` step, which the evidence tick checks as it checks a `wait`.
+    pub(crate) warm_wait: Option<WarmWait>,
     /// The run's second client, registered on the owner at the first `agent` step and disconnected
     /// when the run finishes.
     pub(crate) agent: Option<ClientId>,
@@ -144,6 +146,14 @@ pub(crate) struct Recorded {
     pub(crate) performance: VecDeque<(u64, Value)>,
     /// The Performance section's last `activity.list` answer as the owner sent it.
     pub(crate) activity: Option<Value>,
+}
+
+/// A running `gpu_warmed` step: when it began, and the earliest and the latest it may end.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WarmWait {
+    started: Instant,
+    quiet_until: Instant,
+    deadline: Instant,
 }
 
 /// What a running `agent` step waits for. The desktop sends nothing for it: the owner wakes the
@@ -188,6 +198,7 @@ impl Evidence {
             tools_scroll: None,
             capability_wait: None,
             wait_until: None,
+            warm_wait: None,
             agent: None,
             agent_wait: None,
             sync: CaptureSync::default(),
@@ -1144,6 +1155,7 @@ impl Editor {
                 self.update(Message::Performance(PerformanceMessage::Cancel(job_id)))
             }
             Step::Wait { ms } => self.wait_step(ms),
+            Step::GpuWarmed { quiet_ms, ms } => self.warm_wait_step(quiet_ms, ms),
             Step::Key { key } => self.key_step(key),
             Step::Pan { x, y } => self.pan_step(x, y),
             Step::Capability(step) => self.capability_step(step),
@@ -3019,8 +3031,67 @@ impl Editor {
         Task::none()
     }
 
+    fn warm_wait_step(&mut self, quiet_ms: u64, ms: u64) -> Task<Message> {
+        if let Some(evidence) = &mut self.evidence {
+            let started = Instant::now();
+            evidence.warm_wait = Some(WarmWait {
+                started,
+                quiet_until: started + Duration::from_millis(quiet_ms),
+                deadline: started + Duration::from_millis(ms),
+            });
+        }
+        Task::none()
+    }
+
+    /// Whether the GPU stage has compiled everything handed to it: the desktop's newest warm list
+    /// taken, and nothing queued or compiling.
+    fn gpu_warmed(&self) -> (bool, Value) {
+        let gpu = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
+        let wanted = self
+            .gpu
+            .warm()
+            .map(luxforge_ui::photo_surface::GpuWarm::version);
+        let taken = wanted.is_none() || gpu.gpu_preview_warmed == wanted;
+        let warmed = taken && gpu.gpu_preview_compile_pending == 0;
+        (
+            warmed,
+            json!({"warm": wanted, "taken": gpu.gpu_preview_warmed,
+                "pending": gpu.gpu_preview_compile_pending}),
+        )
+    }
+
+    /// Called by every evidence tick: a `gpu_warmed` step captures its frame once its quiet has
+    /// passed and the GPU stage has compiled what it was handed, or at its deadline.
+    fn warm_wait_elapsed(&mut self) {
+        let Some(wait) = self
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.warm_wait)
+        else {
+            return;
+        };
+        let now = Instant::now();
+        if now < wait.quiet_until {
+            return;
+        }
+        let (warmed, figures) = self.gpu_warmed();
+        let late = now >= wait.deadline;
+        if !warmed && !late {
+            return;
+        }
+        if let Some(evidence) = &mut self.evidence {
+            evidence.warm_wait = None;
+        }
+        let mut detail = figures;
+        detail["finished"] = json!(warmed);
+        detail["waited_ms"] = json!(now.duration_since(wait.started).as_secs_f64() * 1000.0);
+        self.note_step(json!({"gpu_warmed": detail}));
+        self.capture_next_frame();
+    }
+
     /// Called by every evidence tick: a `wait` step whose time is up captures its frame.
     pub(crate) fn wait_elapsed(&mut self) {
+        self.warm_wait_elapsed();
         let due = self.evidence.as_ref().is_some_and(|evidence| {
             evidence
                 .wait_until
@@ -5157,6 +5228,7 @@ mod tests {
             tools_scroll: None,
             capability_wait: None,
             wait_until: None,
+            warm_wait: None,
             agent: None,
             agent_wait: None,
             sync: CaptureSync::default(),

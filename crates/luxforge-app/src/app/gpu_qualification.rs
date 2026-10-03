@@ -506,7 +506,21 @@ pub(crate) fn corpus_cell(
             PreviewSource::Raw { .. } => request.linear(),
             PreviewSource::Jpeg(_) => request,
         };
-        let plan = match gpu_plan(&registry, &recipe, request).map_err(|e| e.to_string())? {
+        // A windowed proxy's spatial operations are handed the exact stage's estimates, which the
+        // job's exact phase stored: the plan reads them, as a drag's does once its committed frame
+        // is drawn. Any other proxy takes them over the stage it holds, as its CPU frame does.
+        let estimates = (origin != (0, 0) || (width, height) != (stage_width, stage_height))
+            .then(|| luxforge_core::GpuEstimates {
+                context: evaluation.context(),
+                source: luxforge_core::EstimateSource::Whole {
+                    source: evaluation.source().into(),
+                    stage: stage(full.0, full.1),
+                },
+            })
+            .filter(|_| is_proxy);
+        let plan = match luxforge_core::gpu_plan_with(&registry, &recipe, request, estimates)
+            .map_err(|e| e.to_string())?
+        {
             GpuAnswer::Plan(plan) => *plan,
             GpuAnswer::Fallback(reason) => {
                 return Ok(Cell::Gap(format!("{}: {reason}", reason.code())));
@@ -517,7 +531,6 @@ pub(crate) fn corpus_cell(
             PreviewSource::Raw { .. } => BoundaryFormat::Float,
             PreviewSource::Jpeg(_) => BoundaryFormat::Half,
         };
-        let held = boundary_as(format, width, height, 1, &texels).ok_or("a boundary")?;
         // The frame is the plan's output stage: the boundary's, or its geometry tail's.
         let output_stage = plan.geometry.output();
         let (out_width, out_height) = (output_stage.width, output_stage.height);
@@ -527,6 +540,60 @@ pub(crate) fn corpus_cell(
                 cpu.width, cpu.height
             )));
         }
+        // At the exact stage a Fit drag's boundary holds the window of its stage the whole output
+        // reads, as the worker renders it, unless the plan takes a global estimate on the GPU,
+        // which keeps the whole stage; a proxy's is the window the proxy source holds. One past
+        // the bound on a boundary is the CPU path, as the desktop finds before it asks.
+        let core_format = match format {
+            BoundaryFormat::Float => luxforge_core::BoundaryFormat::Float,
+            BoundaryFormat::Half => luxforge_core::BoundaryFormat::Half,
+        };
+        let (held, origin) = if !is_proxy && !plan.spatial.iter().any(|spatial| spatial.estimated) {
+            let context = RenderContext::new();
+            let exact = render(
+                &registry,
+                evaluation.source(),
+                evaluation.recipe(),
+                RenderOptions::exact(&Cancel::never()),
+                &context,
+            )
+            .map_err(|error| error.to_string())?;
+            let frame = match luxforge_core::qualification::region_boundary(
+                &exact,
+                boundary_layer,
+                [0, 0, out_width, out_height],
+                core_format,
+            ) {
+                Ok(frame) => frame,
+                Err(error) if error.kind == luxforge_core::ErrorKind::ResourceLimit => {
+                    return Ok(Cell::Gap(format!(
+                        "budget-exceeded: {}, so the drag takes the CPU path",
+                        error.detail
+                    )));
+                }
+                Err(error) => return Err(error.to_string()),
+            };
+            let held = luxforge_ui::photo_surface::GpuBoundary::new(
+                frame.texels.clone(),
+                frame.width,
+                frame.height,
+                1,
+                format,
+            )
+            .ok_or("a boundary")?;
+            (held, frame.origin)
+        } else {
+            let bytes = u64::from(width) * u64::from(height) * core_format.texel_bytes() as u64;
+            if bytes > luxforge_core::BOUNDARY_MAX_BYTES {
+                return Ok(Cell::Gap(format!(
+                    "budget-exceeded: a {width}x{height} boundary of {bytes} B passes the {} B \
+                     bound on one, so the drag takes the CPU path",
+                    luxforge_core::BOUNDARY_MAX_BYTES
+                )));
+            }
+            let held = boundary_as(format, width, height, 1, &texels).ok_or("a boundary")?;
+            (held, origin)
+        };
         // A lens warp's coordinate grid over the whole output stage, as the boundary's job
         // computes it; none for an affine or perspective tail, which the surface evaluates exactly.
         let grid = plan
@@ -563,6 +630,22 @@ pub(crate) fn corpus_cell(
         let charged = qualifier
             .charged_bytes(&converted)
             .map_err(|reason| format!("{reason:?}"))?;
+        let (held_width, held_height) = converted.boundary.size();
+        eprintln!(
+            "{name}: boundary {held_width}x{held_height} at {origin:?} of {}x{}, {} B",
+            plan.boundary.stage.width,
+            plan.boundary.stage.height,
+            u64::from(held_width) * u64::from(held_height) * core_format.texel_bytes() as u64
+        );
+        let budget = luxforge_ui::photo_surface::gpu_preview::GPU_PREVIEW_BUDGET;
+        if charged > budget {
+            return Ok(Cell::Gap(format!(
+                "budget-exceeded: the slot over a {}x{} boundary would charge {charged} B of the \
+                 {budget} B GPU-preview budget, so the drag takes the CPU path",
+                converted.boundary.size().0,
+                converted.boundary.size().1
+            )));
+        }
         let drawn = qualifier.evaluate_codes(&converted)?;
         let gpu: Vec<u8> = drawn
             .iter()
@@ -642,7 +725,7 @@ pub(crate) fn corpus_cell(
 /// content operations, so it does not change the boundary; before a finishing layer, which runs
 /// after the tail, it does, and only the worker's boundary job holds that input. `Err` inside names
 /// the gap.
-fn boundary_layer(
+pub(crate) fn boundary_layer(
     registry: &luxforge_core::ModuleRegistry,
     recipe: &luxforge_core::Recipe,
     (width, height): (u32, u32),
@@ -759,7 +842,8 @@ pub(crate) fn region_cell(
         let registry = evaluation.registry().clone();
         let mut queue = PreviewQueue::default();
         let generation = queue.request(job);
-        // `None` when the worker declines the region and renders the whole exact frame instead.
+        // `Err` holding the whole exact frame when the worker declines the region and renders that
+        // instead, which the view then draws its region from.
         let cpu = luxforge_testbase::wait_for("the exact visible region", || {
             let result = queue.poll()?;
             if result.generation != generation {
@@ -767,18 +851,15 @@ pub(crate) fn region_cell(
             }
             match result.outcome {
                 PhaseOutcome::Region(region) if region.frame.stage == region.frame.full_stage => {
-                    Some(Ok(Some(region.frame)))
+                    Some(Ok(Ok(region.frame)))
                 }
-                PhaseOutcome::Exact(exact) => Some(
-                    exact
-                        .result
-                        .map(|_| None)
-                        .map_err(|error| error.to_string()),
-                ),
+                PhaseOutcome::Exact(exact) => {
+                    Some(exact.result.map(Err).map_err(|error| error.to_string()))
+                }
                 _ => None,
             }
         })?;
-        if let Some(cpu) = &cpu
+        if let Ok(cpu) = &cpu
             && cpu.full_rect != rect
         {
             return Ok(Cell::Gap(format!(
@@ -828,19 +909,22 @@ pub(crate) fn region_cell(
             [rect.x0, rect.y0, rect.width, rect.height],
             format,
         );
-        // A stack the worker renders whole at a percentage zoom: the GPU's region plan cannot hold
-        // the region either, and the drag is the CPU's.
-        let Some(cpu) = cpu else {
-            return Ok(Cell::Gap(match boundary {
-                Err(error) => format!(
-                    "region-declined: the worker renders this stack's whole exact frame at a \
-                     percentage zoom, and the region's boundary cannot be planned: {}",
-                    error.detail
-                ),
-                Ok(_) => "region-declined: the worker renders this stack's whole exact frame at \
-                          a percentage zoom"
-                    .to_owned(),
-            }));
+        // A stack whose region the worker cannot cut, an estimate behind an earlier spatial layer,
+        // is drawn from the exact whole frame at a percentage zoom: its GPU frame is measured
+        // against that frame's region, the frame the view settles to. Its region plan reads the
+        // estimate the whole frame stored, as a drag's does once the view has settled.
+        let declined = match cpu {
+            Ok(_) => None,
+            Err(ref whole) => match &boundary {
+                Err(error) => {
+                    return Ok(Cell::Gap(format!(
+                        "region-declined: the worker renders this stack's whole exact frame at a \
+                         percentage zoom, and the region's boundary cannot be planned: {}",
+                        error.detail
+                    )));
+                }
+                Ok(_) => Some(region_of(whole, rect)),
+            },
         };
         let frame = match boundary {
             Ok(frame) => frame,
@@ -931,22 +1015,29 @@ pub(crate) fn region_cell(
                 .charged_bytes(&converted)
                 .map_err(|reason| format!("{reason:?}"))?;
             if charged > budget {
-                over = format!(
-                    "budget-exceeded: the slot for the {}x{} region over a {}x{} boundary would \
-                     charge {charged} B{} of the {budget} B GPU-preview budget, so the drag takes \
-                     the CPU path",
-                    rect.width,
-                    rect.height,
-                    frame.width,
-                    frame.height,
+                // Every shape's charge, the GPU's first, so the gap names what each would take.
+                let charge = format!(
+                    "{charged} B{}",
                     shape.map_or(String::new(), |shape| format!(" in the {shape} shape"))
                 );
+                over = if over.is_empty() {
+                    format!(
+                        "budget-exceeded: the slot for the {}x{} region over a {}x{} boundary \
+                         would charge {charge}",
+                        rect.width, rect.height, frame.width, frame.height,
+                    )
+                } else {
+                    format!("{over} and {charge}")
+                };
                 continue;
             }
             chosen = Some((plan, converted, charged, shape));
             break;
         }
         let Some((plan, converted, charged, shape)) = chosen else {
+            let over = format!(
+                "{over} of the {budget} B GPU-preview budget, so the drag takes the CPU path"
+            );
             return Ok(Cell::Gap(over));
         };
         let (width, height) = (rect.width, rect.height);
@@ -961,16 +1052,20 @@ pub(crate) fn region_cell(
                 .iter()
                 .map(|texel| [texel[0], texel[1], texel[2]]),
         );
-        let reference: Vec<u8> = cpu
-            .raster
+        let raster = match (&cpu, &declined) {
+            (Ok(cpu), _) => &cpu.raster,
+            (Err(_), Some(region)) => region,
+            (Err(_), None) => unreachable!("a declined region is measured over the whole frame's"),
+        };
+        let reference: Vec<u8> = raster
             .rgba
             .chunks_exact(4)
             .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
             .collect();
-        if (cpu.raster.width, cpu.raster.height) != (width, height) {
+        if (raster.width, raster.height) != (width, height) {
             return Ok(Cell::Gap(format!(
                 "the exact region's raster is {}x{}, not the region's {width}x{height}",
-                cpu.raster.width, cpu.raster.height
+                raster.width, raster.height
             )));
         }
         for (suffix, bytes) in [("gpu", &gpu), ("cpu", &reference)] {
@@ -1009,6 +1104,21 @@ pub(crate) fn region_cell(
     let _ = join.join();
     let _ = std::fs::remove_file(&catalog);
     result
+}
+
+/// `rect` of `whole`, a whole frame: what a view draws of its region from the exact whole frame.
+fn region_of(whole: &luxforge_core::Raster, rect: luxforge_core::Region) -> luxforge_core::Raster {
+    let row = |y: u32| {
+        let start = ((y * whole.width + rect.x0) * 4) as usize;
+        &whole.rgba[start..start + rect.width as usize * 4]
+    };
+    let rgba = (rect.y0..rect.y1()).flat_map(row).copied().collect();
+    luxforge_core::Raster {
+        width: rect.width,
+        height: rect.height,
+        rgba: std::sync::Arc::new(rgba),
+        ..whole.clone()
+    }
 }
 
 /// Whether `masked`'s mask covers no pixel of `boundary`, its operation's input: its coverage read

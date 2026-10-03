@@ -620,12 +620,18 @@ impl GpuFallback {
 }
 
 /// The compile thread's figures, which it counts as each compile ends, whether or not a frame is
-/// drawn: compiles finished, and the longest and the last one's wall-clock time, in microseconds.
+/// drawn: compiles finished, and the longest and the last one's wall-clock time, in microseconds;
+/// and what waits for it.
 #[derive(Default)]
 pub(super) struct CompileFigures {
     compiled: AtomicU64,
     max_us: AtomicU64,
     last_us: AtomicU64,
+    /// Sequences queued or compiling: each queued adds one, and each that finishes, or that a
+    /// frame's sequence takes the place of in a full queue, takes one away.
+    pending: AtomicU64,
+    /// The newest warm list's version the pipeline has queued, plus one; zero before any.
+    warmed: AtomicU64,
 }
 
 impl CompileFigures {
@@ -635,6 +641,21 @@ impl CompileFigures {
         self.compiled.fetch_add(1, Ordering::AcqRel);
         self.max_us.fetch_max(micros, Ordering::AcqRel);
         self.last_us.store(micros, Ordering::Release);
+        self.leave(1);
+    }
+
+    /// `count` sequences queued.
+    fn queued(&self, count: u64) {
+        self.pending.fetch_add(count, Ordering::AcqRel);
+    }
+
+    /// `count` sequences no longer wait: finished, or dropped from the queue unqueued.
+    fn leave(&self, count: u64) {
+        let _ = self
+            .pending
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+                Some(pending.saturating_sub(count))
+            });
     }
 }
 
@@ -694,6 +715,15 @@ impl Figures {
             compile.compiled.load(Ordering::Acquire),
             compile.max_us.load(Ordering::Acquire),
             compile.last_us.load(Ordering::Acquire),
+        )
+    }
+
+    /// Sequences queued or compiling, and the newest warm list's version queued.
+    pub(super) fn compile_pending(&self) -> (u64, Option<u64>) {
+        let compile = &self.compile;
+        (
+            compile.pending.load(Ordering::Acquire),
+            compile.warmed.load(Ordering::Acquire).checked_sub(1),
         )
     }
 
@@ -1426,7 +1456,7 @@ fn entry_name(name: &str) -> Result<(), String> {
 /// entry points, writing the output's codes. The first pass's shader of a plan with a tail.
 #[cfg(test)]
 fn assemble(steps: &[GpuStep]) -> Result<String, String> {
-    Ok(assemble_passes(steps, true)?.swap_remove(0))
+    Ok(assemble_passes(steps, End::Codes)?.swap_remove(0))
 }
 
 /// What a pass's fragment stage starts from.
@@ -1439,18 +1469,23 @@ enum Head<'a> {
 }
 
 /// What a pass's fragment stage writes.
-enum End {
-    /// The linear value: an `rgba16float` intermediate, or a qualification's `rgba32float` target.
+pub(super) enum End {
+    /// The linear value, into an `rgba32float` target: a qualification's, or a chain's intermediate
+    /// over a RAW's boundary.
     Linear,
+    /// The linear value rounded to the nearest half, ties to even, into an `rgba16float` target: a
+    /// RAW tail's intermediate, or a chain's intermediate over a JPEG's boundary. The M4 converts a
+    /// render target's value toward zero, which held every texel up to half a step darker than the
+    /// CPU's value, again at every link of a chain.
+    Half,
     /// The CPU quantizer's 8-bit codes, through a Unorm view.
     Codes,
 }
 
 /// The shaders of `steps`, one per pass: the content steps, then, when a geometry tail splits them,
-/// the tail and the steps after it. The last pass writes the output's codes when `encode`, and its
-/// linear values otherwise; a quantizing tail's content pass writes codes.
-fn assemble_passes(steps: &[GpuStep], encode: bool) -> Result<Vec<String>, String> {
-    let last = if encode { End::Codes } else { End::Linear };
+/// the tail and the steps after it. The last pass writes as `last` says; a quantizing tail's
+/// content pass writes codes.
+pub(super) fn assemble_passes(steps: &[GpuStep], last: End) -> Result<Vec<String>, String> {
     // The marks read the output the last pass is about to encode, after every other step.
     if steps
         .iter()
@@ -1486,7 +1521,7 @@ fn assemble_passes(steps: &[GpuStep], encode: bool) -> Result<Vec<String>, Strin
             let content = if tail.quantizes() {
                 End::Codes
             } else {
-                End::Linear
+                End::Half
             };
             Ok(vec![
                 pass_source(steps, 0..*index, Head::Boundary { offset: false }, content)?,
@@ -1590,8 +1625,12 @@ fn lf_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32>
     }
     source.push_str(match end {
         End::Linear => "    return vec4<f32>(rgb, 1.0);\n}\n",
+        End::Half => "    return lf_surface_half(vec4<f32>(rgb, 1.0));\n}\n",
         End::Codes => "    return vec4<f32>(lf_output_encode(rgb), 1.0);\n}\n",
     });
+    if matches!(end, End::Half) {
+        source.push_str(spatial::HALF_ROUNDING);
+    }
     Ok(source)
 }
 
@@ -1753,11 +1792,12 @@ fn compile(
     for step in steps {
         validate_step(step)?;
     }
-    let encode = !matches!(
-        format,
-        wgpu::TextureFormat::Rgba32Float | wgpu::TextureFormat::Rgba16Float
-    );
-    let sources = assemble_passes(steps, encode)?;
+    let last = match format {
+        wgpu::TextureFormat::Rgba32Float => End::Linear,
+        wgpu::TextureFormat::Rgba16Float => End::Half,
+        _ => End::Codes,
+    };
+    let sources = assemble_passes(steps, last)?;
     for source in &sources {
         validate(source)?;
     }
@@ -1987,6 +2027,11 @@ impl PhotoPipeline {
                 })
                 .collect();
             self.gpu.warm(device, &sequences, &self.figures.preview);
+            self.figures
+                .preview
+                .compile
+                .warmed
+                .store(warm.version().saturating_add(1), Ordering::Release);
         }
     }
 
@@ -2999,38 +3044,6 @@ fn upload_rows(
         written += u64::from(rows) * row_bytes;
     }
     (row, written)
-}
-
-/// Queue the boundary's texels straight from the caller's buffer, in bounded chunks of rows.
-#[cfg(any(test, feature = "qualification"))]
-fn upload_boundary(queue: &wgpu::Queue, texture: &wgpu::Texture, boundary: &GpuBoundary) {
-    // A resident boundary is never uploaded: only the slot that holds it draws it.
-    let Some(texels) = &boundary.texels else {
-        return;
-    };
-    let row_bytes = u64::from(boundary.width) * boundary.format.texel_bytes() as u64;
-    let rows_per_chunk = (UPLOAD_CHUNK / row_bytes).max(1) as u32;
-    let mut row = 0;
-    while row < boundary.height {
-        let rows = rows_per_chunk.min(boundary.height - row);
-        let mut destination = texture.as_image_copy();
-        destination.origin.y = row;
-        queue.write_texture(
-            destination,
-            (**texels).as_ref(),
-            wgpu::TexelCopyBufferLayout {
-                offset: u64::from(row) * row_bytes,
-                bytes_per_row: Some(row_bytes as u32),
-                rows_per_image: Some(rows),
-            },
-            wgpu::Extent3d {
-                width: boundary.width,
-                height: rows,
-                depth_or_array_layers: 1,
-            },
-        );
-        row += rows;
-    }
 }
 
 mod chain;
