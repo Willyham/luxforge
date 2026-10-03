@@ -177,18 +177,15 @@ pub(crate) fn showing(sequence: u64, label: &str) -> String {
 pub(crate) const COMPARING: &str = "Comparing with the original";
 
 /// What the status bar says while a mask gesture is open in Mask mode: the mode, the mask, the
-/// component and how the gesture becomes history. A shape is one draft that Apply or Enter commits
-/// as one entry — a pointer release only lets go of the handle — while a brush commits every stroke
-/// on its own release. `painting` is `None` for a shape, and for a brush whether its stroke is down.
+/// component and how the gesture becomes history. Each drag of a gradient is one draft that its
+/// release commits as one entry, as each stroke of a brush is. `painting` is `None` for a shape, and for a brush whether its stroke is down.
 pub(crate) fn mask_gesture(
     names: &crate::state::canvas::GestureNames,
     painting: Option<bool>,
 ) -> String {
     let (mask, component) = (&names.mask, &names.component);
     match painting {
-        None => format!(
-            "Mask mode \u{b7} {mask} \u{b7} {component} draft \u{b7} Apply or Enter commits one entry"
-        ),
+        None => format!("Mask mode \u{b7} {mask} \u{b7} {component} \u{b7} each drag is one entry"),
         Some(true) => {
             format!(
                 "Mask mode \u{b7} {mask} \u{b7} {component} painting \u{b7} each stroke is one entry"
@@ -486,7 +483,7 @@ mod tests {
         };
         assert_eq!(
             mask_gesture(&names, None),
-            "Mask mode \u{b7} Face \u{b7} Radial 1 draft \u{b7} Apply or Enter commits one entry"
+            "Mask mode \u{b7} Face \u{b7} Radial 1 \u{b7} each drag is one entry"
         );
         let brush = crate::state::canvas::GestureNames {
             component: "Brush 1".into(),

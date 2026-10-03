@@ -256,7 +256,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             .label("Reset Tone curve")
             .payload(CURVE_EFFECT, json!({}))
             .same_layer(CURVE_EFFECT, "identity"),
-        // 13-17: Mask mode, and a radial drawn, released and applied as the first mask.
+        // 13-16: Mask mode, and a radial drawn and committed by its release as the first mask.
         quiet(
             "mask-mode",
             luxforge_evidence::WorkspaceStep::default().mode(MASK_MODE),
@@ -269,15 +269,15 @@ pub fn plan(_: &[PathBuf]) -> Plan {
                 to: RADIAL_TO,
             },
         ),
-        quiet("radial-released", MaskStep::Release),
-        Step::new("radial-applied", MaskStep::Apply)
+        // The pointer lifted: the release commits the radial it placed.
+        Step::new("radial-applied", MaskStep::Release)
             .commits(1)
             .label(format!("Add {RADIAL}"))
             .no_draft()
             .mode(MASK_MODE)
             .mask_names(&[MASK])
             .open_mask(Some(MASK)),
-        // 18: the white point dragged down through the mask and held: the draft is the mask's.
+        // 17: the white point dragged down through the mask and held: the draft is the mask's.
         Step::new(
             "masked-drag",
             drag(
@@ -290,7 +290,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         .mode(MASK_MODE)
         .draft(SET_CURVE, drafted(&[[0.0, 0.0], [1.0, wide(MASKED[1])]]))
         .payload(CURVE_EFFECT, json!({})),
-        // 19: released: one entry, labelled with the mask it went through.
+        // 18: released: one entry, labelled with the mask it went through.
         Step::new(
             "masked-release",
             drag(1, vec![[1.0, MASKED[1]]], SliderEnd::Release),
