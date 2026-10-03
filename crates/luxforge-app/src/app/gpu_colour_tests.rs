@@ -90,6 +90,91 @@ fn recipe(layers: Vec<Layer>) -> Recipe {
     }
 }
 
+/// A RAW's geometry pass preserves the range of its f32 boundary like the CPU's linear render.
+#[test]
+fn gpu_colour_raw_geometry_tail_preserves_the_float_range() {
+    use luxforge_ui::photo_surface::BoundaryFormat;
+
+    let Some(qualifier) =
+        Qualifier::headless("gpu_colour_raw_geometry_tail_preserves_the_float_range")
+    else {
+        return;
+    };
+    assert!(super::gpu_plan::install_output_encoding());
+
+    // Separate masked Basic layers are valid targets and allow the recipe to exercise several
+    // individually bounded exposure edits before and after its crop.
+    let masks: Vec<_> = (0..8)
+        .map(|index| {
+            let mut mask = luxforge_core::Mask::new(format!("Range probe {index}"));
+            mask.components.push(luxforge_core::Component::new(
+                "Full",
+                luxforge_core::ComponentMode::Add,
+                "linear",
+                json!({"x0": -1.0, "y0": 0.0, "x1": 0.0, "y1": 0.0}),
+            ));
+            mask
+        })
+        .collect();
+    let basic = |index: usize, exposure: f64| Layer {
+        mask: Some(masks[index].id.clone()),
+        ..Layer::new(BASIC_EFFECT, json!({"exposure": exposure}))
+    };
+    let mut layers: Vec<_> = (0..4).map(|index| basic(index, 5.0)).collect();
+    layers.push(Layer::new(
+        luxforge_core::CROP_EFFECT,
+        json!({"angle": 4.0, "x": 0.1, "y": 0.1, "width": 0.8, "height": 0.8}),
+    ));
+    layers.extend((4..8).map(|index| basic(index, -5.0)));
+    let recipe = Recipe {
+        layers,
+        masks,
+        ..Recipe::default()
+    };
+    let core = planned(
+        &registry(),
+        &recipe,
+        GpuPlanRequest::fit(0, stage(32, 32), stage(32, 32)).linear(),
+    );
+    let boundary = GpuBoundary::from_linear(
+        BoundaryFormat::Float,
+        32,
+        32,
+        2,
+        [[0.25, 0.25, 0.25, 1.0]; 32 * 32],
+    )
+    .expect("a full-float RAW boundary");
+    let plan = surface_plan(&core, boundary).expect("the core plan converts");
+    let drawn = qualifier
+        .evaluate_codes(&plan)
+        .expect("the linear geometry tail draws");
+
+    let source = luxforge_core::LinearImage::new(32, 32, vec![0.25; 32 * 32 * 3])
+        .expect("a finite linear source");
+    let context = luxforge_core::RenderContext::new();
+    let cpu = luxforge_core::render(
+        &registry(),
+        luxforge_core::RenderSource::Linear {
+            image: &source,
+            settings: Default::default(),
+        },
+        &recipe,
+        luxforge_core::RenderOptions::default(),
+        &context,
+    )
+    .expect("the CPU recipe renders")
+    .frame(luxforge_core::SnapshotId::new())
+    .expect("the CPU frame draws");
+    assert_eq!(drawn.len(), (cpu.width * cpu.height) as usize);
+    for (gpu, cpu) in drawn.iter().zip(cpu.rgba.chunks_exact(4)) {
+        assert_eq!(
+            &gpu[..3],
+            &cpu[..3],
+            "the geometry intermediate preserves range"
+        );
+    }
+}
+
 /// The full colour stack the corpus check measures: a full Basic layer, a Tone curve, the mixer
 /// and a vignette.
 fn colour_stack() -> Vec<Layer> {

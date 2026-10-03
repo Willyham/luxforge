@@ -110,9 +110,17 @@ fn lf_detail_reconstruct(rgb: vec3<f32>, lab: vec3<f32>, delta: vec3<f32>) -> ve
 
 // ---- The unit's input in Oklab -----------------------------------------------------------------
 
-// The Oklab of the unit's input at `at`: L, a and b, then zero.
+// Lightness is held less this in every plane the units smooth, so a half-float plane holds it
+// about zero, where a half's step is finer: two to four times finer than at the lightness itself
+// over most of its range. Every kernel that reads a plane takes differences of it — the
+// smoothing's taps against the centre, a level's band, the residual, the gradient, the extrema
+// and the change — and a smoothing's weights sum to one, so no value they compute depends on it.
+const lf_detail_lightness_offset: f32 = 0.5;
+
+// The Oklab of the unit's input at `at`: L less the offset, a and b, then zero.
 fn lf_detail_lab(at: vec2<i32>, words: u32, block: u32) {
-    lf_store(at, vec4<f32>(lf_detail_to_oklab(lf_source(at)), 0.0));
+    let lab = lf_detail_to_oklab(lf_source(at));
+    lf_store(at, vec4<f32>(lab.x - lf_detail_lightness_offset, lab.y, lab.z, 0.0));
 }
 
 // ---- Separable smoothing -----------------------------------------------------------------------

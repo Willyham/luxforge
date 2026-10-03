@@ -422,6 +422,98 @@ fn spatial_planes_are_charged_released_and_refused_past_the_budget() {
     assert_eq!(diagnostics(&pipeline, ID).gpu_preview_in_use_bytes, 0);
 }
 
+/// A plan whose planes the budget holds only once the ones they replace have gone, drawn straight
+/// after the smaller plan: the planes it replaces stay charged until their retirement ends, when
+/// the GPU is done with them, so the larger plan's first frame is the CPU's, naming the budget,
+/// and nothing of it is created. Once the retirement ends, the next frame holds the larger planes
+/// and every frame after it draws them on the GPU, the slot charged the same: one frame falls
+/// back, and nothing is allocated again or released after it. The in-use figure never passes the
+/// budget. A drag at 100% whose slot replaces a Fit slot, or another region's, meets this as its
+/// boundary arrives.
+#[test]
+fn a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own() {
+    let test = "a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let (boundary, _) = boundary_values();
+    let single = spatial_plan(&boundary);
+    let chained = GpuPlan {
+        steps: vec![
+            GpuStep::colour(scale(0.5)),
+            GpuStep::Spatial(Box::new(test_spatial())),
+            GpuStep::colour(scale(1.0)),
+            GpuStep::Spatial(Box::new(test_spatial())),
+        ],
+        ..single.clone()
+    };
+    let planes = |plan: &GpuPlan| {
+        super::super::spatial::PlanesKey::of(&plan.steps, (SIDE, SIDE), (0, 0))
+            .expect("planes")
+            .bytes()
+    };
+    let (small, large) = (planes(&single), planes(&chained));
+    // The slot with either plan's planes, never both.
+    let budget = SLOT_BYTES + large;
+    assert!(SLOT_BYTES + small + large > budget);
+    pipeline.set_gpu_budget(budget);
+    paint(
+        &device,
+        &queue,
+        &mut pipeline,
+        &primitive(ID, Some(single.clone())),
+    );
+    let seen = diagnostics(&pipeline, ID);
+    assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
+    assert_eq!(seen.gpu_preview_in_use_bytes, SLOT_BYTES + small);
+    // Straight after it: the smaller planes still retire.
+    let first = paint(
+        &device,
+        &queue,
+        &mut pipeline,
+        &primitive(ID, Some(chained.clone())),
+    );
+    let seen = diagnostics(&pipeline, ID);
+    match seen.drawn_path {
+        Some(DrawingPath::Cpu) => {
+            assert_cpu_frame(&first);
+            assert!(
+                matches!(seen.gpu_fallback, Some(GpuFallback::BudgetExceeded { requested, .. })
+                    if requested == large),
+                "{:?}",
+                seen.gpu_fallback
+            );
+            eprintln!("{test}: the first frame is the CPU's, naming the budget");
+        }
+        // The retirement ended before the larger planes were charged.
+        Some(DrawingPath::Gpu) => eprintln!("{test}: the replaced planes had retired already"),
+        None => panic!("a frame was drawn"),
+    }
+    settle(&pipeline);
+    for frame in 0..5 {
+        paint(
+            &device,
+            &queue,
+            &mut pipeline,
+            &primitive(ID, Some(chained.clone())),
+        );
+        let seen = diagnostics(&pipeline, ID);
+        assert_eq!(
+            (seen.drawn_path, seen.gpu_fallback),
+            (Some(DrawingPath::Gpu), None),
+            "frame {frame} once the replaced planes retired"
+        );
+        assert_eq!(seen.gpu_preview_in_use_bytes, SLOT_BYTES + large);
+        assert!(seen.gpu_preview_peak_bytes <= budget);
+    }
+    assert_eq!(
+        pipeline.figures.retirement_pending.load(Ordering::Acquire),
+        0,
+        "nothing more retires"
+    );
+}
+
 /// A pass's pipeline is its kernel and its shape: two passes of one kernel at different word
 /// offsets share one, and a second plan whose words sit at other offsets compiles none, yet draws
 /// what its own words ask.

@@ -332,10 +332,23 @@ pub(super) fn run(
                                         width: window.width,
                                         height: window.height,
                                     });
-                                let result = match (uncut, &proxied) {
+                                let result = match (request.key.region(), uncut, &proxied) {
+                                    // A region whose own frame this job could not render, so it
+                                    // drew the whole frame's proxy in its place: the boundary is
+                                    // still the region's window of the exact stage, from the job's
+                                    // exact compilation, as a region job renders it.
+                                    (Some(rect), _, _) if job.layer_count.is_none() => {
+                                        exact.as_ref().map_err(Clone::clone).and_then(|exact| {
+                                            exact.region_boundary(
+                                                rect,
+                                                request.position,
+                                                request.format,
+                                            )
+                                        })
+                                    }
                                     // Read from the restoration prefix this frame just held,
                                     // when the boundary lies in the segment it opens.
-                                    (Some(uncut), Ok(proxy)) => proxy.boundary_reading(
+                                    (None, Some(uncut), Ok(proxy)) => proxy.boundary_reading(
                                         &uncut,
                                         whole,
                                         window,
@@ -434,6 +447,12 @@ pub(super) fn run(
                     exact.as_ref().map_err(Clone::clone).and_then(|exact| {
                         exact.region_boundary(rect, request.position, request.format)
                     })
+                } else if request.window.is_some() {
+                    // At Fit, the window of the stage the whole output reads: what a crop reads.
+                    exact
+                        .as_ref()
+                        .map_err(Clone::clone)
+                        .and_then(|exact| exact.output_boundary(request.position, request.format))
                 } else {
                     exact.as_ref().map_err(Clone::clone).and_then(|exact| {
                         let source = evaluation.source().dimensions();

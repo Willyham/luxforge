@@ -22,6 +22,8 @@
 //!   together, the least recently asked for evicted first when a compile ends, and at most as many
 //!   wait in the queue; a warmed sequence that finds the queue full is not queued, and one a frame
 //!   asks for takes the place of the newest warmed one waiting.
+//!   If a full queue contains only sequences already asked for by frames, a new sequence retries
+//!   admission on a later prepare while its frame uses the CPU.
 //!
 //! The compile thread takes wgpu's error scopes around the pipeline it creates. wgpu 27's scopes
 //! belong to the device, not to a thread, and the UI thread pushes none of its own, so the stack
@@ -139,6 +141,9 @@ struct Shared {
     entries: Vec<Entry>,
     queue: VecDeque<u64>,
     clock: u64,
+    /// How many warmed sequences a frame's has taken the place of in a full queue: dropped
+    /// unqueued, never compiled.
+    dropped: u64,
     /// The pipeline that owns the thread is gone: the thread ends.
     closed: bool,
 }
@@ -151,7 +156,8 @@ impl Shared {
     }
 
     /// Queue `steps` under a new identity, first when a frame `asked` for them and last when they
-    /// are warmed. `false` when the queue has no room for a warmed sequence.
+    /// are warmed. `false` when the bounded queue has no room, including when it holds only asked
+    /// sequences and none can be displaced by a new request.
     fn queue(&mut self, steps: &[GpuStep], asked: bool) -> bool {
         if self.queue.len() >= PIPELINE_CACHE {
             if !asked {
@@ -167,6 +173,9 @@ impl Shared {
                 && let Some(id) = self.queue.remove(at)
             {
                 self.entries.retain(|entry| entry.id != id);
+                self.dropped += 1;
+            } else {
+                return false;
             }
         }
         self.clock += 1;
@@ -270,8 +279,11 @@ impl Worker {
                         Ok(pipeline) => State::Ready(pipeline),
                         Err(error) => State::Failed(Arc::from(error)),
                     };
-                    figures.finished(started.elapsed());
+                    let elapsed = started.elapsed();
                     let asked = lock_shared(&thread).finish(id, state);
+                    // Counted once its pipeline is kept, so nothing waits on a sequence the
+                    // figures call done.
+                    figures.finished(elapsed);
                     if asked {
                         wake_surface();
                     }
@@ -356,7 +368,13 @@ impl Pipelines {
             }
             return Err(GpuFallback::Compiling);
         }
-        shared.queue(steps, true);
+        let dropped = shared.dropped;
+        if !shared.queue(steps, true) {
+            return Err(GpuFallback::Compiling);
+        }
+        // Counted under the lock, before the thread can take it and count its end.
+        figures.compile.queued(1);
+        figures.compile.leave(shared.dropped - dropped);
         drop(shared);
         figures.compiles.fetch_add(1, Ordering::Relaxed);
         worker.notify();
@@ -384,6 +402,8 @@ impl Pipelines {
             }
             queued += 1;
         }
+        // Counted under the lock, before the thread can take one and count its end.
+        figures.compile.queued(queued);
         drop(shared);
         figures.compiles.fetch_add(queued, Ordering::Relaxed);
         if queued > 0 {
@@ -467,7 +487,9 @@ mod tests {
             !shared.queue(&steps("refused"), false),
             "a full queue warms no more"
         );
+        assert_eq!(shared.dropped, 0);
         assert!(shared.queue(&steps("asked_again"), true));
+        assert_eq!(shared.dropped, 1, "counted, so no wait counts on it");
         let order = order(&shared);
         assert_eq!(order[..2], ["asked_again", "asked"]);
         assert_eq!(order.len(), PIPELINE_CACHE);
@@ -475,5 +497,34 @@ mod tests {
             !order.contains(&warmed[PIPELINE_CACHE - 2].to_owned()),
             "the newest warmed one gave its place"
         );
+    }
+
+    /// What waits on the compile thread is counted exactly: a queued sequence adds one, a finished
+    /// one or a warmed one dropped from a full queue takes one away, and it never goes below zero.
+    #[test]
+    fn the_pending_figure_counts_what_waits() {
+        let figures = CompileFigures::default();
+        figures.queued(3);
+        figures.finished(std::time::Duration::from_millis(1));
+        figures.leave(1);
+        assert_eq!(figures.pending.load(Ordering::Acquire), 1);
+        figures.leave(5);
+        assert_eq!(figures.pending.load(Ordering::Acquire), 0);
+    }
+
+    /// A full queue of requested sequences rejects another request and keeps both bounds intact.
+    #[test]
+    fn requested_sequences_cannot_grow_the_full_queue() {
+        let mut shared = Shared::default();
+        for index in 0..PIPELINE_CACHE {
+            let entry = Box::leak(format!("asked_{index}").into_boxed_str());
+            assert!(shared.queue(&steps(entry), true));
+        }
+        assert_eq!(shared.queue.len(), PIPELINE_CACHE);
+        assert_eq!(shared.entries.len(), PIPELINE_CACHE);
+        assert!(!shared.queue(&steps("deferred"), true));
+        assert_eq!(shared.queue.len(), PIPELINE_CACHE);
+        assert_eq!(shared.entries.len(), PIPELINE_CACHE);
+        assert!(shared.entries.iter().all(|entry| entry.asked));
     }
 }
