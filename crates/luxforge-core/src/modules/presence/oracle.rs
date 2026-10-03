@@ -177,9 +177,9 @@ fn evaluate(
         .map(|unit| unit.prepare(&reduction))
         .collect();
     let mut output = vec![[0.0_f32; 3]; pixels.len()];
-    // One slot's scratch for every tile, as a render's batch slot reuses it, so the frozen
-    // tolerance is checked against units that find the previous tile's values in it.
-    let mut scratch = TileScratch::default();
+    // One slot for every tile, as a render's batch slot is reused, so the frozen tolerance is
+    // checked against units that find the previous tile's values in their planes and scratch.
+    let mut scratch = TileScratch::for_plan(&plan);
     for tile in plan.tiles() {
         let (region, values) = run_tile(
             &plan,
@@ -194,7 +194,7 @@ fn evaluate(
         for y in tile.y0..tile.y1() {
             for x in tile.x0..tile.x1() {
                 output[(y * stage.width + x) as usize] =
-                    crate::render::spatial::plane_pixel(region, &values, x, y);
+                    crate::render::spatial::plane_pixel(region, values, x, y);
             }
         }
     }
@@ -339,6 +339,54 @@ fn one_tile_of_a_large_stage_fits_the_spatial_budget() {
             operation.summed_halo(stage) <= crate::modules::MAX_SPATIAL_HALO,
             "{width}x{height}: the summed halo is over the host's bound"
         );
+    }
+}
+
+/// What a tile slot holds while its tile runs — two plane buffers, a masked tile's snapshot and the
+/// unit scratch, each grown to the plan's largest tile — never passes the working set the tile is
+/// charged, which sums every region of the chain. So reusing a slot's planes leaves the spatial
+/// budget's charge, its concurrency and its high-water mark for a 24 or 60 MP Presence render with
+/// all three units exactly what they were, masked or not, and the slot itself holds less.
+#[test]
+fn a_tile_slot_holds_less_than_the_working_set_it_is_charged() {
+    use crate::{
+        Component, ComponentMode, Mask,
+        mask_field::{MaskField, MaskSampling},
+        path::StrokeTable,
+    };
+
+    let module = PresenceModule::new();
+    let mut mask = Mask::new("Gradient");
+    mask.components.push(Component::new(
+        "Linear 1",
+        ComponentMode::Add,
+        "linear",
+        json!({"x0": 0.2, "y0": 0.5, "x1": 0.8, "y1": 0.5}),
+    ));
+    for (width, height) in [(6000_u32, 4000_u32), (10_000, 6000)] {
+        let stage = Stage { width, height };
+        let crate::modules::Processing::Spatial(operation) = module
+            .compile(
+                PRESENCE_EFFECT,
+                1,
+                &json!({"texture": 100.0, "clarity": 100.0, "dehaze": 100.0}),
+                crate::CompileStage::exact(stage),
+            )
+            .expect("a compiled operation")
+        else {
+            panic!("a spatial operation");
+        };
+        let field = MaskField::compile(&mask, stage, &StrokeTable::default(), MaskSampling::Point)
+            .expect("a compiled mask");
+        for operation in [operation.clone(), operation.with_mask(field)] {
+            let plan = SpatialPlan::new(&operation, stage, Tiling::Halo).expect("a plan");
+            assert!(
+                plan.slot_bytes() < plan.working_set(),
+                "{width}x{height}, {operation:?}: a slot holds {} bytes of a {} byte working set",
+                plan.slot_bytes(),
+                plan.working_set()
+            );
+        }
     }
 }
 
@@ -715,6 +763,8 @@ fn slow_a_tile_evaluated_on_the_pool_is_bit_identical_to_a_serial_one() {
                     &crate::Cancel::never(),
                     |region, planes| fill_planes(region, planes, parallelism, read),
                 )
+                // Owned, because each run's slot is dropped once it has answered.
+                .map(|(region, values)| (region, values.to_vec()))
                 .expect("a tile")
             });
             assert_eq!(serial.0, pooled.0, "{payload}: the same rectangle");
