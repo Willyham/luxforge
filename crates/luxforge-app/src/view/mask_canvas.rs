@@ -1,5 +1,5 @@
-//! The mask shape canvas: it draws the open gesture's handles over the photograph and turns pointer
-//! events into gesture messages.
+//! The mask shape canvas: it draws the open gesture's handles, or the selected gradient's resting
+//! ones, over the photograph and turns pointer events into gesture messages.
 //!
 //! The canvas owns no editing state. It borrows the draft and its [`ContentMap`] for one `view`
 //! call, maps pointer positions into normalized content coordinates and publishes messages; every
@@ -244,6 +244,9 @@ impl canvas::Program<Message> for MaskCanvas<'_> {
                         state.sweep_from = None;
                         Some(self.pointer(MaskPointer::Begin { handle, x, y }))
                     }
+                    // An existing gradient is moved and reshaped by its handles alone, so a press
+                    // away from them is left to the photograph beneath.
+                    None if self.draft.direct() => None,
                     // A press away from every handle draws a whole gradient in one stroke, from the
                     // untouched side towards the affected one. Nothing is published until it moves,
                     // so a click that grabs nothing changes nothing.
@@ -367,6 +370,7 @@ impl canvas::Program<Message> for MaskCanvas<'_> {
             // The handles that move the whole figure say so; the rest are grips.
             Some(handle) if handle.moves_figure() => mouse::Interaction::Move,
             Some(_) => mouse::Interaction::Grab,
+            None if self.draft.direct() => mouse::Interaction::None,
             None => mouse::Interaction::Crosshair,
         }
     }
@@ -467,7 +471,11 @@ mod tests {
     fn a_press_on_a_handle_drags_it_and_a_press_on_the_photograph_sweeps() {
         use canvas::Program;
         let placement = placement((480, 320), Size::new(480.0, 320.0));
-        let draft = existing_gradient(LINEAR);
+        // A gradient being drawn: placed by its first sweep, and not yet committed.
+        let mut draft =
+            MaskDraft::creating(LINEAR, crate::mask_draft::NEUTRAL_BRUSH).expect("a drawn kind");
+        draft.sweep((0.5, 0.2), (0.5, 0.8));
+        draft.end();
         let program = MaskCanvas::new(&draft, placement.clone());
         let bounds = Rectangle::new(Point::new(0.0, 0.0), Size::new(480.0, 320.0));
         let mut state = Interaction::default();
@@ -523,6 +531,44 @@ mod tests {
             Cursor::Available(empty),
         );
         assert!(state.sweep_from.is_none());
+    }
+
+    /// An existing gradient's resting handles answer a press on a handle and leave every other press
+    /// to the photograph beneath, so a stray click cannot redraw a committed shape.
+    #[test]
+    fn an_existing_gradient_answers_its_handles_and_leaves_the_photograph_alone() {
+        use canvas::Program;
+        let placement = placement((480, 320), Size::new(480.0, 320.0));
+        let bounds = Rectangle::new(Point::new(0.0, 0.0), Size::new(480.0, 320.0));
+        for kind in [LINEAR, RADIAL] {
+            let draft = existing_gradient(kind);
+            assert!(draft.direct());
+            let program = MaskCanvas::new(&draft, placement.clone());
+            let (handle, at) = draft.handles()[0];
+            let grip = placement.canvas_point(at.0, at.1).unwrap();
+            let mut state = Interaction::default();
+            let action = program.update(
+                &mut state,
+                &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                bounds,
+                Cursor::Available(grip),
+            );
+            assert!(action.is_some(), "{kind} {handle:?} answers its press");
+            let empty = placement.canvas_point(0.02, 0.02).unwrap();
+            let action = program.update(
+                &mut state,
+                &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                bounds,
+                Cursor::Available(empty),
+            );
+            assert!(action.is_none(), "{kind}: a press away is not captured");
+            assert!(state.sweep_from.is_none(), "{kind}: no sweep begins");
+            assert_eq!(
+                program.mouse_interaction(&state, bounds, Cursor::Available(empty)),
+                mouse::Interaction::None,
+                "{kind}: the pointer away from the handles is the photograph's"
+            );
+        }
     }
 
     /// A quarter turn and a crop as one affine, so a brush's circles and its painted path can be

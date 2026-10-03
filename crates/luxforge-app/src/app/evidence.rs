@@ -1628,14 +1628,29 @@ impl Editor {
             return self.fail_step("a mask step needs Mask mode");
         }
         let overlay = self.mask_coverage_target().is_some();
+        let selecting = matches!(step, MaskStep::SelectComponent(Some(_)));
         // A drag is several messages; every other gesture is exactly one.
-        if let MaskStep::Drag { handle, points } = &step {
+        if let MaskStep::Drag {
+            handle,
+            points,
+            release,
+        } = &step
+        {
             let handle = mask_handle(*handle);
             let Some((first, rest)) = points.split_first() else {
                 return self.fail_step("a mask drag needs at least one point");
             };
-            if self.held_mask().is_none() {
-                return self.fail_step("no mask gesture is open to drag");
+            if self.drawn_mask().is_none() {
+                return self
+                    .fail_step("no mask gesture is open and no gradient is selected to drag");
+            }
+            if self.held_mask().is_none()
+                && self
+                    .resting
+                    .as_ref()
+                    .is_none_or(|resting| resting.mask.map.is_none())
+            {
+                return self.fail_step("the selected gradient's handles have no content map");
             }
             let asked = self.presentation.preview_generation;
             let mut tasks = vec![self.mask_message(MaskMessage::Handle(MaskPointer::Begin {
@@ -1649,7 +1664,9 @@ impl Editor {
                     y: point[1],
                 })));
             }
-            tasks.push(self.mask_message(MaskMessage::Handle(MaskPointer::End)));
+            if *release {
+                tasks.push(self.mask_message(MaskMessage::Handle(MaskPointer::End)));
+            }
             self.await_mask_frame(asked);
             self.note_step(json!({"masks": self.workspace.masks.summary()}));
             return Task::batch(tasks);
@@ -1745,10 +1762,6 @@ impl Editor {
                 };
                 (Message::View(ViewMessage::OpenMenu(target)), Expect::Redraw)
             }
-            MaskStep::EditShape(reference) => match self.resolve_component(None, &reference) {
-                Ok(id) => (Message::Mask(MaskMessage::EditShape(id)), Expect::Gesture),
-                Err(reason) => return self.fail_step(reason),
-            },
             // Choosing the next component's mode changes no pixel and asks for nothing: it is the
             // Add row's own state, and its captured frame is the panel showing that choice.
             MaskStep::Mode(mode) => {
@@ -1913,13 +1926,19 @@ impl Editor {
                     Expect::Gesture,
                 )
             }
+            // A gradient's release commits the draft its placement opened, so its frame is the
+            // commit's; a release that placed nothing sends nothing.
             MaskStep::Release => {
                 if self.held_mask().is_none() {
                     return self.fail_step("no mask gesture is open to release");
                 }
                 (
                     Message::Mask(MaskMessage::Handle(MaskPointer::End)),
-                    Expect::Gesture,
+                    if self.mask_gesture().is_some() {
+                        Expect::RoundTrip
+                    } else {
+                        Expect::Gesture
+                    },
                 )
             }
             // The host's own pick, entered and left the way the panel's button does: one
@@ -2009,10 +2028,17 @@ impl Editor {
             MaskStep::Drag { .. } => unreachable!("a drag is answered above"),
         };
         if matches!(expect, Expect::Redraw) {
-            self.capture_next_frame();
             let task = self.dispatch(message);
+            // A selected gradient's handles come to rest once their content map answers, and a
+            // later drag is placed by that map, so the step waits for it rather than the redraw.
+            let resting = self.follow_resting_handles();
+            if selecting && self.resting.as_ref().is_some_and(|resting| resting.stale()) {
+                self.await_step(Settle::MaskMap);
+            } else {
+                self.capture_next_frame();
+            }
             self.note_step(json!({"masks": self.workspace.masks.summary()}));
-            return task;
+            return Task::batch([task, resting]);
         }
         // A row edit the panel refuses sends nothing, so the step would wait for a frame nothing
         // arms. Whether one went out is read from the request the panel records as it sends it,

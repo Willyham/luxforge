@@ -289,11 +289,14 @@ pub fn launch1_plan(_: &[PathBuf]) -> Plan {
             json!({"mode":"intersect","x0":GRADIENT_FROM[0],"y0":GRADIENT_FROM[1],
                    "x1":GRADIENT_TO[0],"y1":GRADIENT_TO[1]}),
         ),
-        Step::new("gradient-applied", MaskStep::Apply)
+        Step::new("gradient-applied", MaskStep::Release)
             .commits(1)
             .label("Add intersect linear")
             .no_draft()
             .components(&BANDED[..2]),
+        // Applying selects the gradient, whose handles then rest over the patches the probes read,
+        // so its row is put down before the frames that are read.
+        Step::new("gradient-deselected", MaskStep::SelectComponent(None)).commits(0),
         // One stop down through the mask, as the panel's own drag. **This is the failure frame**:
         // the band was drawn for the sky and takes the grey card beside it, because the two are 1.4
         // output codes apart on the axis the band measures.
