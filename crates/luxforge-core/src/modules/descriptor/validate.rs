@@ -244,6 +244,7 @@ impl ModuleDescriptor {
                 self.declared_action(action)?;
             }
             Some(CanvasInteraction::CropFrame {
+                effect,
                 action,
                 angle,
                 x,
@@ -257,6 +258,16 @@ impl ModuleDescriptor {
                 icon,
             }) => {
                 self.check_canvas_mode(title, shortcut.as_deref(), icon.as_deref())?;
+                if !self
+                    .effects
+                    .iter()
+                    .any(|owned| owned.id == *effect && owned.stage == EffectStage::Geometry)
+                {
+                    return Err(Error::validation(format!(
+                        "crop-frame effect {effect} is not an owned geometry effect of module {}",
+                        self.id
+                    )));
+                }
                 let declared = self.declared_action(action)?;
                 for name in [angle, x, y, width, height] {
                     self.canvas_number(declared, name)?;

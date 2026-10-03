@@ -972,10 +972,79 @@ mod tests {
     }
 
     fn crop_model(workspace: &Workspace, id: &str) -> tools::CropSectionModel {
-        match section(workspace, id).controls.first() {
-            Some(ControlModel::CropFrame(frame)) => (**frame).clone(),
-            other => panic!("the crop section starts with its frame controls, not {other:?}"),
+        section(workspace, id)
+            .controls
+            .iter()
+            .find_map(|control| match control {
+                ControlModel::CropFrame(frame) => Some((**frame).clone()),
+                _ => None,
+            })
+            .expect("the crop section contains its frame controls")
+    }
+
+    #[test]
+    fn the_combined_crop_section_tracks_orientation_and_keeps_transform_buttons_out_of_drafts() {
+        let mut scene = Scene::new(descriptors()).opened(vec![luxforge_core::Layer::orientation(
+            luxforge_core::Orientation::of(luxforge_core::Transform::RotateRight),
+        )]);
+        let workspace = scene.derive();
+        let crop = section(&workspace, "luxforge.crop");
+        assert_eq!(
+            tools::crop_frame(&scene.modules).unwrap().effect(),
+            Some(luxforge_core::CROP_EFFECT)
+        );
+        assert_eq!(crop.title, "Crop, transform, straighten");
+        assert!(crop.active, "orientation lights the combined module's dot");
+        assert!(
+            workspace
+                .tools
+                .all()
+                .all(|module| module.module_id != "luxforge.transform")
+        );
+        let buttons = &crop.controls[..4];
+        let transforms: Vec<_> = buttons
+            .iter()
+            .map(|control| match control {
+                ControlModel::Action(action) => {
+                    assert!(action.runnable);
+                    assert_eq!(action.action, "transform");
+                    action.preset["transform"].as_str().unwrap()
+                }
+                _ => panic!("four transform buttons lead the crop section"),
+            })
+            .collect();
+        assert_eq!(
+            transforms,
+            [
+                "rotate-left",
+                "rotate-right",
+                "mirror-horizontal",
+                "flip-vertical"
+            ]
+        );
+        assert!(matches!(crop.controls[4], ControlModel::CropFrame(_)));
+        assert_eq!(crop.reset.as_ref().unwrap().action, "crop-reset");
+
+        scene.draft = Some(CropDraft::neutral(
+            luxforge_core::CropStage {
+                width: 320,
+                height: 480,
+                angle: 0.0,
+            },
+            1,
+        ));
+        let workspace = scene.derive();
+        for control in &section(&workspace, "luxforge.crop").controls[..4] {
+            let ControlModel::Action(action) = control else {
+                panic!("transform button")
+            };
+            assert!(!action.runnable);
+            assert!(action.reason.as_ref().unwrap().contains("crop draft"));
         }
+        assert!(
+            crop_model(&workspace, "luxforge.crop").enabled,
+            "crop controls stay live"
+        );
     }
 
     fn chosen(model: &tools::CropSectionModel) -> Vec<&str> {
@@ -1206,9 +1275,7 @@ mod tests {
             0,
         ));
         let workspace = scene.derive();
-        let ControlModel::CropFrame(frame) = &section(&workspace, &crop.id).controls[0] else {
-            panic!("the crop section is first in its module")
-        };
+        let frame = crop_model(&workspace, &crop.id);
         assert!(frame.drafting && !frame.conflicted && frame.can_apply);
         assert_eq!(frame.presets.len(), 7, "the ratios are generated");
         assert!(workspace.canvas.notices.is_empty());
@@ -1218,9 +1285,7 @@ mod tests {
         scene.apply_refusal =
             Some("Changed elsewhere: discard the crop draft or reapply it".into());
         let workspace = scene.derive();
-        let ControlModel::CropFrame(frame) = &section(&workspace, &crop.id).controls[0] else {
-            panic!("the crop section is first in its module")
-        };
+        let frame = crop_model(&workspace, &crop.id);
         assert!(frame.conflicted && !frame.can_apply);
         assert_eq!(
             workspace.canvas.notices[0].title, "Changed elsewhere",
@@ -1611,7 +1676,7 @@ mod tests {
                     .iter()
                     .any(|effect| effect.id == luxforge_core::ORIENTATION_EFFECT)
             })
-            .expect("the registered transform module");
+            .expect("the registered crop module");
         let oriented = |orientation| {
             Scene::new(vec![transforms.clone()])
                 .opened(vec![luxforge_core::Layer::orientation(orientation)])
@@ -1735,7 +1800,7 @@ mod tests {
                 .count(),
             "a module with nothing of its own to draw has no section"
         );
-        // Crop declares no controls but draws the host's crop frame; the RAW development draws
+        // Crop draws its transforms and the host's crop frame; the RAW development draws
         // nothing of its own.
         let listed: Vec<&str> = untouched
             .tools
@@ -2794,12 +2859,7 @@ mod tests {
                 .filter(|control| matches!(control, ControlModel::Group(_)))
                 .count()
         };
-        for id in [
-            "luxforge.transform",
-            "luxforge.pixel",
-            "luxforge.presence",
-            "luxforge.vignette",
-        ] {
+        for id in ["luxforge.pixel", "luxforge.presence", "luxforge.vignette"] {
             let module = modules.iter().find(|module| module.id == id).unwrap();
             let [luxforge_core::Control::Group(luxforge_core::GroupControl { controls, .. })] =
                 module.controls.as_slice()

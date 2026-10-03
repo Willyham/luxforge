@@ -315,14 +315,14 @@ mod tests {
                     true
                 ),
                 (
-                    Some("luxforge.transform"),
-                    Some("Transforms"),
+                    Some("luxforge.crop"),
+                    Some("Crop, transform, straighten"),
                     "Rotate 180°",
                     true
                 ),
                 (
                     Some("luxforge.crop"),
-                    Some("Crop and straighten"),
+                    Some("Crop, transform, straighten"),
                     "50% × 50%",
                     true
                 ),

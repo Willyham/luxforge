@@ -767,7 +767,6 @@ fn the_one_assembly_serves_test_modules_only_in_developer_mode() {
             "luxforge.detail",
             "luxforge.presence",
             "luxforge.mixer",
-            "luxforge.transform",
             "luxforge.lens",
             "luxforge.perspective",
             "luxforge.vignette",
@@ -804,6 +803,19 @@ fn the_one_assembly_serves_test_modules_only_in_developer_mode() {
             reason: DISABLED_REASON.into()
         }
     );
+
+    let combined = assemble(&["luxforge.crop"], false, None).unwrap();
+    for effect in [crate::CROP_EFFECT, crate::ORIENTATION_EFFECT] {
+        let (provider, _) = combined
+            .effect(effect)
+            .expect("both geometry effects remain declared");
+        assert_eq!(provider.descriptor().id, "luxforge.crop");
+        assert!(
+            !provider.descriptor().is_available(),
+            "disabling the combined module refuses both effects"
+        );
+    }
+    assert!(combined.module("luxforge.transform").is_none());
 
     // The capability proof joins a developer run that names a proof endpoint, and no other.
     let proof = assemble(&[], true, Some("http://127.0.0.1:9")).unwrap();
@@ -906,8 +918,8 @@ fn every_payload_check_names_a_foreign_effect_in_its_data() {
         .collect();
     assert_eq!(
         modules.len(),
-        12,
-        "basic, curve, detail, presence, mixer, lens, perspective, vignette, pixel, transform, crop, controls"
+        11,
+        "basic, curve, detail, presence, mixer, lens, perspective, vignette, pixel, crop, controls"
     );
     modules.push(&proof);
     for module in modules {

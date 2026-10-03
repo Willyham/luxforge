@@ -49,7 +49,7 @@ Decided on 2026-09-21:
 Decided on 2026-09-23:
 
 - The state panel's [Performance section](design/performance-panel.md#decisions) starts open on every launch. Memory is shown in binary units with Activity Monitor's MB and GB labels, and CPU as a percentage of one core, so it passes 100% whenever more than one core is busy.
-- A module whose controls are a single group shows them without a sub-group header: a header naming the module's only group, such as RAW's "RAW development" or Transforms' "Exact transforms", repeats the band above it. The band keeps the module's reset. Descriptors and the API are unchanged.
+- A module whose controls are a single group shows them without a sub-group header: a header naming the module's only group, such as Presence's "Presence" or Vignette's "Vignette", repeats the band above it. The band keeps the module's reset. Descriptors and the API are unchanged.
 
 Decided on 2026-09-26, aligning the shell with the boards:
 
