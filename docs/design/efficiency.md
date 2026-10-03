@@ -1,12 +1,12 @@
 # CPU and memory efficiency
 
-Status: planned. The owner accepted the scope and the decisions below on 2026-10-03; implementation has not started. The task plan is [efficiency](../../tasks/efficiency.json).
+Status: planned. The owner accepted the scope and the decisions below on 2026-10-03. The 16-bit quantizer and most of Detail's kernel work are done; the rest has not started, and the `dist` build profile is deferred. The task plan is [efficiency](../../tasks/efficiency.json).
 
 ## Outcome
 
 Spend less CPU time and hold less memory for the same pictures, the same numbers and the same or better latency. Every change in this plan leaves every output byte, histogram count, sample and digest identical, except the catalog's journal mode, which changes how a commit reaches the disk and not what it stores.
 
-The work comes from a read-only audit of the whole workspace on 2026-10-03. The audit found the idle path, the desktop's texture and upload handling, the subscriptions and the GPU preview's steady state already tight. The remaining cost is concentrated in four places: per-pixel kernels (the 16-bit quantizer, spatial tiles, the Detail and Presence filters, the RAW input reads), source preparation (hashing, zero-fills, reads), per-tick copying on the owner and the desktop while painting, and build configuration. Every figure below is an estimate from reading the code. None was measured, and none may be claimed until the measurement task records it under [rule 13](../engineering/performance-rules.md#rules).
+The work comes from a read-only audit of the whole workspace on 2026-10-03. The audit found the idle path, the desktop's texture and upload handling, the subscriptions and the GPU preview's steady state already tight. The remaining cost is concentrated in four places: per-pixel kernels (spatial tiles, the Detail and Presence filters, the RAW input reads), source preparation (hashing, zero-fills, reads), per-tick copying on the owner and the desktop while painting, and build configuration. Every figure below is an estimate from reading the code. None was measured, and none may be claimed until the measurement task records it under [rule 13](../engineering/performance-rules.md#rules).
 
 ## Constraints
 
@@ -24,7 +24,7 @@ The work comes from a read-only audit of the whole workspace on 2026-10-03. The 
 - **Clarity and Dehaze get a reduced-grid cache** under rule 14, with the contract in [the reduced-grid cache](#the-reduced-grid-cache).
 - **The float mosaic is removed from the RAW development peak** through a reproducible, checked-in librtprocess patch, never by editing vendored code.
 - **The catalog moves to WAL with full flushes**, as recommended in [catalog durability](#catalog-durability).
-- **Packaging and timing use a separate optimized profile**, as recommended in [build profile](#build-profile). The daily release build is unchanged.
+- **Packaging and timing use a separate optimized profile**, as recommended in [build profile](#build-profile). The daily release build is unchanged. The same day the owner deferred it until the timing runs other plans have outstanding are recorded, so this plan measures in `release`.
 - Not adopted, all of which change bytes or break something: DCT-scaled JPEG decode for proxies, parallel restart-marker JPEG export, cropping masked sensor margins, `target-cpu=apple-m4`, and `panic = "abort"`.
 
 ## Work
@@ -38,9 +38,11 @@ The work comes from a read-only audit of the whole workspace on 2026-10-03. The 
   - Digests are identical, so this is not a format change.
 - **JPEG XL DNG decode on the shared pool.** `jxl-oxide` is built with `default-features = false`, which drops its `rayon` feature, so a JPEG XL DNG (Pixel, Galaxy) decodes serially on the source worker and cannot be cancelled during `render_frame`. With `rayon` enabled its default pool is the global one, so no private pool is added (rule 9). The decode is deterministic.
 - **Half floats on x86.** `half` is built without `std`, so x86_64 cannot detect F16C at run time and converts each boundary texel in software. Enable `std`. aarch64 already uses the hardware conversion, so the M4 is unchanged.
-- **The system scan at launch.** `app/mod.rs:554` calls `iced::system::information()`. Iced's `sysinfo` path runs `System::new_all()` and `refresh_all()`, walking every process on the host, to supply two strings: `state.backend`'s graphics backend and adapter. Supply them without a process scan: from the renderer's adapter information if a hook is cheap, or by deferring the call until something reads them. `state.backend` keeps reporting the same strings to every client, with no extra wait for an API reader.
+- **The system scan at launch.** `app/mod.rs:558` calls `iced::system::information()`. Iced's `sysinfo` path runs `System::new_all()` and `refresh_all()`, walking every process on the host, to supply two strings: `state.backend`'s graphics backend and adapter. Supply them without a process scan: from the renderer's adapter information if a hook is cheap, or by deferring the call until something reads them. `state.backend` keeps reporting the same strings to every client, with no extra wait for an API reader.
 
 ### Build profile
+
+Deferred by the owner on 2026-10-03: the other plans' outstanding timing runs and every baseline the [performance spec](../specs/performance.md) records build `release`, and a `dist` figure is never compared with a `release` one. Its task stays blocked until the owner reopens it.
 
 Add `[profile.dist]`, inheriting from `release` with `codegen-units = 1` and LTO. Thin and fat LTO are measured against each other and the faster is kept, unless fat LTO's build time is unreasonable for the timing tier. `cargo xtask package` and the timing commands (`editor-performance`, `editor-latency`, `measure`, the `timing` tier) build with `dist`. `develop`, `smoke`, `quick` and `rendered` keep `release`, so the edit loop does not slow down. `panic` stays `unwind`, because `mozjpeg` unwinds libjpeg errors into Rust. Timing reports already record their profile, and a dist figure is never compared with a release baseline.
 
@@ -52,19 +54,16 @@ Add `[profile.dist]`, inheriting from `release` with `codegen-units = 1` and LTO
 
 ### The 16-bit quantizer
 
-`colour::quantize16` (`colour.rs:123`) answers each channel with `partition_point` over 65,535 `f32` thresholds (256 KiB): about 16 dependent loads, the last ones missing L1. It runs for every channel of the JPEG domain's wide RGB16 hand-off, which is any colour layer followed by a spatial or restoration layer, and for spatial-to-spatial hand-offs. The estimate is about 1 s of CPU, or about 100 ms of wall time, per 24 MP pass.
-
-Replace the search with a bucket index. The index is a table keyed by the high bits of the value's `f32` representation, holding the first code whose threshold could be reached. A forward scan over the same threshold table then runs while `T[code] <= v`. Non-finite values, values at or below zero and `+inf` keep their current answers. Take the tables once per row rather than through a `LazyLock` on every call. `byte_quantize16_is_monotone_and_exact_at_every_threshold` and an added exhaustive comparison against `partition_point`, over every `f32` bit pattern in the thresholds' range, prove equality.
+Done. `colour::srgb::Quantizer16` replaced the search over 65,535 `f32` thresholds with a 128 KiB index of the square root of `[0, 1]` in 65,536 bins, no bin holding more than two thresholds, and row passes take the tables once. `slow_byte_quantize16_is_the_threshold_search_at_every_f32_in_the_unit_interval` proves it gives the search's code for every `f32` in `[0, 1]` and the special values. Its figures are in the [performance spec](../specs/performance.md).
 
 ### Spatial tiles
 
-- **Reuse the tile planes.** `run_tile` (`render/spatial.rs:381`, `:404`) allocates a fresh, zeroed `vec!` for the tile's input and for each unit's output, about 34–125 MB per tile under Presence. At 60 MP that is several GB of new zero pages per render. Only the unit scratch (`TileScratch`) is reused today. Give each batch slot two ping-pong plane buffers, one for the input and even units and one for odd units, grown to the largest request and never cleared. `fill` and `PlanesMut` already write every value, the same contract `TileScratch` relies on. A point query keeps owned buffers. The tile's working set charged to the spatial budget does not grow.
-- **No barrier between batches.** `run_batches` (`render/spatial.rs:718`) waits for a whole batch before reserving the next. On the M4 Pro's 10 performance and 4 efficiency cores, a serial tile on an efficiency core holds the batch back. Replace the barrier with a rolling window under the same reservation: start a tile when one finishes, and write tiles back in order. The cancellation check stays between tiles, and the budget bounds what runs at once exactly as now.
+- **Reuse the tile planes.** `run_tile` (`render/spatial.rs:327`, allocating at `:368`, `:377` and `:406`) allocates a fresh, zeroed `vec!` for the tile's input and for each unit's output, about 34–125 MB per tile under Presence. At 60 MP that is several GB of new zero pages per render. Only the unit scratch (`TileScratch`) is reused today. Give each batch slot two ping-pong plane buffers, one for the input and even units and one for odd units, grown to the largest request and never cleared. `fill` and `PlanesMut` already write every value, the same contract `TileScratch` relies on. A point query keeps owned buffers. The tile's working set charged to the spatial budget does not grow.
+- **No barrier between batches.** `run_batches` (`render/spatial.rs:706`) waits for a whole batch before reserving the next. On the M4 Pro's 10 performance and 4 efficiency cores, a serial tile on an efficiency core holds the batch back. Replace the barrier with a rolling window under the same reservation: start a tile when one finishes, and write tiles back in order. The cancellation check stays between tiles, and the budget bounds what runs at once exactly as now.
 
 ### Detail and Presence kernels
 
-- **Detail's plane index.** `Geometry::index` (`modules/detail/filters.rs:116`) clamps both coordinates and runs a release-mode `assert!` on every tap of smoothing, denoise and sharpening. Add an interior path over row slices for pixels whose whole reach is inside the held region, with the clamped, asserted path kept for the band near the stage edge. The halo assertion keeps guarding that band.
-- **One chroma factor for a and b.** `denoise::shrink` (`modules/detail/denoise.rs:262`) computes the same 3×3 chroma energy, protection, effective threshold and shrink factor for channel 1 and channel 2. Compute them once per pixel and write both channels' deltas.
+- **Detail's limiter and reconstruction.** Smoothing, noise reduction's shrinkage (one chroma factor for a and b) and its level planes already run over row slices, with the halo checked once a pass and frozen references in `modules/detail/exactness.rs`. What still reads through the clamped, release-asserted `Geometry::index` (`modules/detail/filters.rs:128`) per pixel is `Sharpen::limited` (`sharpen.rs:57`, 14 indexed reads a pixel: the pixel, its blur, the guide's four neighbours and the 3×3 extrema) and the reconstruction loops that end Denoise and Sharpen. Add an interior path over row slices for pixels whose 3×3 reach is inside the held region, keeping the clamped, asserted path for the band near the stage edge, and freeze today's limiter as the reference first.
 - **Presence's box and guided passes.** `horizontal_mean`, `vertical_strip`, the combine and `upsample` in `modules/presence/filters.rs`, and `Planes::sample` in `modules/spatial.rs`, read every tap through clamps and bounds checks. The horizontal running sum is one dependent `f64` add chain. Read interior rows as slices, interleave two to four rows' independent sums, and precompute `upsample`'s per-column index and weight once per call. Each output value's own sequence of operations is unchanged.
 
 ### The reduced-grid cache
@@ -77,14 +76,14 @@ Clarity's reduced source (`modules/presence/clarity.rs:142`) and Dehaze's reduce
 - **Fill.** Built on the shared pool by the render that first needs it, as a pass of its own before that operation's tiles, never on the owner or the interface thread. Its cancellation is the render's.
 - **Use.** A tile reads the sub-rectangle it needs, and the guided filter stays per tile. When the plane covers the operation's reach, the tile's own fill shrinks to what the other units' halos still need. A point sample reads the cached plane when present and otherwise computes its window as today; both give the same byte.
 - **Disposable.** Losing an entry costs only time. It is never part of history, an artifact or a source.
-- **Adoption.** Its hit rate across an amount drag and across settle, its rebuild cost and its retained bytes are measured on 24 MP and 60 MP inputs before it is kept.
+- **Adoption.** Its hit rate across an amount drag and across settle, its rebuild cost and its retained bytes are measured on 24 MP and 60 MP inputs before it is kept. Each masked layer reads its own input and so has its own entry, and at 60 MP the budget holds about one Dehaze entry; with up to 16 masked spatial layers ([GPU shared scratch](gpu-shared-scratch.md#sixteen-masked-spatial-layers)), the measurement includes a stack of several masked Clarity and Dehaze layers.
 
 ### RAW rendering reads
 
-- **Row reads instead of pixel reads.** `load_pulled` (`render/linear.rs:669`) and `region_in` (`render/pipeline.rs:726`) read each pixel through the geometry's unmap, the view's orientation `match`, the entry and white-balance adjustment, as `f64` through a `Vec<[f64; 3]>`, then narrow back to `f32` with a per-pixel `finish` check. For a signed-permutation geometry with no entry, compose the geometry and the view into a first index and stride per row and copy spans. For a spatial frame entry, copy the three plane rows. Keep `f32` end to end where the value is already `f32`. Hoist the white-balance test out of the loop. The per-pixel white-balance overflow error stays reported exactly as now.
+- **Row reads instead of pixel reads.** `load_pulled` (`render/linear.rs:639`) and `region_in` (`render/pipeline.rs:715`) read each pixel through the geometry's unmap, the view's orientation `match`, the entry and white-balance adjustment, as `f64` through a `Vec<[f64; 3]>`, then narrow back to `f32` with a per-pixel `finish` check. For a signed-permutation geometry with no entry, compose the geometry and the view into a first index and stride per row and copy spans. For a spatial frame entry, copy the three plane rows. Keep `f32` end to end where the value is already `f32`. Hoist the white-balance test out of the loop. The per-pixel white-balance overflow error stays reported exactly as now.
 - **Portrait planes read in blocks.** `ViewReader::row` (`source/linear.rs:408`) walks orientations 5 to 8 down a column, touching a new row of all three planes for every output pixel. Load each chunk as a blocked transpose: walk source rows in order and write the chunk's output rows from each contiguous span.
-- **Resolve without replacements.** `Segment::resolve` (`render/compiled.rs:648`) composes every operation's geometry per pixel even when the segment has no pixel replacements. Return straight after the unmap when it has none.
-- **Quantize `f32` without the guard.** The terminal path (`render/linear.rs:828`) widens an `f32` to `f64` and uses `Quantizer::rounded`'s ±1e-12 guard. For an `f32` input the guard band can contain only a threshold and its `next_down`, which `the_f32_thresholds_are_where_both_quantizers_change_code` already pins. Use the direct quantizer for `f32` rows.
+- **Resolve without replacements.** `Segment::resolve` (`render/compiled.rs:631`) composes every operation's geometry per pixel even when the segment has no pixel replacements. Return straight after the unmap when it has none.
+- **Quantize `f32` without the guard.** The terminal path (`terminal_srgb`, `render/linear.rs:157`) widens an `f32` to `f64` and uses `Quantizer::rounded`'s ±1e-12 guard. For an `f32` input the guard band can contain only a threshold and its `next_down`, which `the_f32_thresholds_are_where_both_quantizers_change_code` already pins. Use the direct quantizer for `f32` rows.
 
 ### The RAW float mosaic
 
@@ -126,7 +125,6 @@ Byte-identical findings of the same audit that were not taken into scope. Each n
 - per-row view resolution in the RAW proxy;
 - a pooled Air 2S warp copy-back;
 - once-per-stage GainMap taps for sensor-stage maps;
-- denoise swapping its level buffers instead of copying them;
 - Clarity fusing encode with block-sum;
 - Texture squaring its encoded plane once;
 - a guard band before the luminance-range `powf`;
@@ -159,7 +157,7 @@ The consequences, each covered by a test or documented:
 
 - Every task's own exactness, recovery and bound tests pass. No existing exactness test is loosened or deleted, and new byte-identity claims have tests that would fail on a one-code difference.
 - `cargo xtask check` and `cargo xtask verify --tier quick` pass after integration, and `verify --tier rendered` passes after the desktop and rendering changes.
-- The measurement task records, on the M4 under `dist`, with the base and the branch built back to back and run in alternating order:
+- The measurement task records, on the M4 in `release`, with the base and the branch built back to back and run in alternating order:
   - `editor-performance` on the generated 24 MP and 60 MP JPEGs: Basic with Presence, Detail, and the masked stacks;
   - cold open and committed white balance on the owner's RAW manifest sources, with peak RSS;
   - `editor-latency` slider, paint and settle on 24 MP and 60 MP;
