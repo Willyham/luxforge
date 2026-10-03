@@ -605,12 +605,18 @@ impl GpuFallback {
 }
 
 /// The compile thread's figures, which it counts as each compile ends, whether or not a frame is
-/// drawn: compiles finished, and the longest and the last one's wall-clock time, in microseconds.
+/// drawn: compiles finished, and the longest and the last one's wall-clock time, in microseconds;
+/// and what waits for it.
 #[derive(Default)]
 pub(super) struct CompileFigures {
     compiled: AtomicU64,
     max_us: AtomicU64,
     last_us: AtomicU64,
+    /// Sequences queued or compiling: each queued adds one, and each that finishes, or that a
+    /// frame's sequence takes the place of in a full queue, takes one away.
+    pending: AtomicU64,
+    /// The newest warm list's version the pipeline has queued, plus one; zero before any.
+    warmed: AtomicU64,
 }
 
 impl CompileFigures {
@@ -620,6 +626,21 @@ impl CompileFigures {
         self.compiled.fetch_add(1, Ordering::AcqRel);
         self.max_us.fetch_max(micros, Ordering::AcqRel);
         self.last_us.store(micros, Ordering::Release);
+        self.leave(1);
+    }
+
+    /// `count` sequences queued.
+    fn queued(&self, count: u64) {
+        self.pending.fetch_add(count, Ordering::AcqRel);
+    }
+
+    /// `count` sequences no longer wait: finished, or dropped from the queue unqueued.
+    fn leave(&self, count: u64) {
+        let _ = self
+            .pending
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+                Some(pending.saturating_sub(count))
+            });
     }
 }
 
@@ -679,6 +700,15 @@ impl Figures {
             compile.compiled.load(Ordering::Acquire),
             compile.max_us.load(Ordering::Acquire),
             compile.last_us.load(Ordering::Acquire),
+        )
+    }
+
+    /// Sequences queued or compiling, and the newest warm list's version queued.
+    pub(super) fn compile_pending(&self) -> (u64, Option<u64>) {
+        let compile = &self.compile;
+        (
+            compile.pending.load(Ordering::Acquire),
+            compile.warmed.load(Ordering::Acquire).checked_sub(1),
         )
     }
 
@@ -1706,6 +1736,11 @@ impl PhotoPipeline {
             self.gpu.warmed = Some(warm.version());
             self.gpu
                 .warm(device, warm.sequences(), &self.figures.preview);
+            self.figures
+                .preview
+                .compile
+                .warmed
+                .store(warm.version().saturating_add(1), Ordering::Release);
         }
     }
 

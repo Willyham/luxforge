@@ -357,6 +357,7 @@ pub(crate) fn scripted_evidence(steps: &str) -> Evidence {
         tools_scroll: None,
         capability_wait: None,
         wait_until: None,
+        warm_wait: None,
         agent: None,
         agent_wait: None,
         sync: crate::app::evidence::CaptureSync::default(),

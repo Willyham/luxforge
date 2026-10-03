@@ -239,6 +239,11 @@ fn the_compile_queue_drains_with_no_frame_drawn() {
             wanted,
             "every sequence is queued"
         );
+        assert_eq!(
+            figures.preview.compile_pending().1,
+            Some(version as u64),
+            "the warm list taken"
+        );
         wait_until("every sequence to compile", || {
             figures.preview.compile_us().0 == wanted
         });
@@ -246,6 +251,8 @@ fn the_compile_queue_drains_with_no_frame_drawn() {
             list.iter()
                 .all(|steps| !pipeline.gpu.pipelines.compiling(steps))
         );
+        // Nothing left once the last compile is kept: what a scripted wait for warming reads.
+        assert_eq!(figures.preview.compile_pending().0, 0);
     }
     assert_eq!(pipeline.gpu.pipelines.len(), PIPELINE_CACHE);
     for steps in &sequences[PIPELINE_CACHE..] {
