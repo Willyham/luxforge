@@ -8,7 +8,7 @@
 
 use super::{
     ColorRun, Compiled, Entry, Evaluation, MaskedInput, PixelDomain, Raster, RenderContext,
-    ResampleEntry, RowScratch, Segment, SegmentRows, Taps, apply_units, segment_pass,
+    ResampleEntry, RowScratch, Segment, SegmentRows, Taps, apply_units, segment_pass, spatial,
 };
 #[cfg(test)]
 use crate::ErrorKind;
@@ -244,7 +244,8 @@ impl PixelDomain for Linear<'_> {
     type Pixel = [f64; 3];
     /// Three `f32` planes inside the RAW planar limit.
     type SpatialFrame = Vec<f32>;
-    type TileOutput = (Region, Vec<f32>);
+    /// The tile's own three planes.
+    type TileOutput = Vec<f32>;
 
     fn fingerprint(&self) -> &str {
         self.source.fingerprint()
@@ -407,34 +408,28 @@ impl PixelDomain for Linear<'_> {
         Ok(vec![0.0_f32; values])
     }
 
-    /// The last unit's planes as they are: they already hold rows in the frame's planar layout, and
-    /// away from the stage edges their rectangle is the tile itself, so a copy here would only move
-    /// the same rows twice.
+    /// The tile's own three planes, cut out of the last unit's rectangle in the slot the tile ran
+    /// in, which its next tile overwrites: one row per plane appended, in the parallel phase,
+    /// without zero-filling first ([`spatial::cut_out`]). Only the tile is copied, never the halo
+    /// an edge tile's rectangle keeps.
     fn tile_output(
         region: Region,
-        values: Vec<f32>,
-        _: Region,
+        values: &[f32],
+        tile: Region,
         _: Parallelism,
         _: bool,
-    ) -> (Region, Vec<f32>) {
-        (region, values)
+    ) -> Vec<f32> {
+        spatial::cut_out(region, values, tile)
     }
 
-    /// Each of the tile's rows, one `copy_from_slice` per plane, from wherever the tile lies in the
-    /// last unit's rectangle.
-    fn write_tile(
-        frame: &mut Vec<f32>,
-        stage: Stage,
-        tile: Region,
-        (region, values): (Region, Vec<f32>),
-    ) {
+    /// Each of the tile's rows, one `copy_from_slice` per plane, from the tile's own planes.
+    fn write_tile(frame: &mut Vec<f32>, stage: Stage, tile: Region, values: Vec<f32>) {
         let plane = (u64::from(stage.width) * u64::from(stage.height)) as usize;
-        let source = region.pixels() as usize;
+        let source = tile.pixels() as usize;
         let width = tile.width as usize;
-        for y in tile.y0..tile.y1() {
+        for (row, y) in (tile.y0..tile.y1()).enumerate() {
             let to = (u64::from(y) * u64::from(stage.width) + u64::from(tile.x0)) as usize;
-            let from =
-                (y - region.y0) as usize * region.width as usize + (tile.x0 - region.x0) as usize;
+            let from = row * width;
             for channel in 0..3 {
                 let (to, from) = (channel * plane + to, channel * source + from);
                 frame[to..to + width].copy_from_slice(&values[from..from + width]);

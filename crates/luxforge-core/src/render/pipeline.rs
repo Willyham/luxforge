@@ -168,10 +168,12 @@ pub(crate) trait PixelDomain: Sync {
     fn spatial_frame(stage: Stage, wide: bool) -> Result<Self::SpatialFrame, Error>;
 
     /// One tile's output, from the rectangle `region` its last unit wrote, with each of the tile's
-    /// rows in the layout the frame holds it in, computed in the parallel phase.
+    /// rows in the layout the frame holds it in, computed in the parallel phase. `values` is
+    /// borrowed from the batch slot the tile ran in, whose next tile writes over it, so the output
+    /// owns a copy of the tile and of nothing else.
     fn tile_output(
         region: Region,
-        values: Vec<f32>,
+        values: &[f32],
         tile: Region,
         parallelism: Parallelism,
         wide: bool,
@@ -541,13 +543,16 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         } else {
             crate::modules::Parallelism::Serial
         };
+        // One region, in a slot of its own whose buffers fit what this region's chain asks: a
+        // one-pixel window allocates its own small rectangles, not a whole tile's.
+        let mut slot = super::spatial::TileScratch::default();
         let (written, values) = run_tile(
             &plan,
             &entry.operation,
             &globals,
             region,
             parallelism,
-            &mut super::spatial::TileScratch::default(),
+            &mut slot,
             &self.cancel,
             |input, planes| self.fill_rows(index - 1, input, planes, parallelism),
         )?;
@@ -1064,7 +1069,9 @@ impl SpatialEntry {
 /// Every tile runs through [`run_tile`], in batches whose concurrency the spatial budget sets,
 /// checking `cancel` between batches. No full-frame float buffer exists beside the output, only
 /// one tile's working set per tile in flight, charged to the spatial budget before each batch of
-/// tiles allocates.
+/// tiles allocates, and held in the batch slot the tile runs in, which reuses its planes for every
+/// tile it runs ([`run_batches`]). Each tile's output is taken out of its slot in the parallel
+/// phase ([`PixelDomain::tile_output`]).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spatial_entry<D: PixelDomain>(
     domain: &D,

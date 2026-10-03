@@ -11,7 +11,8 @@ fn tiled(op: &SpatialOperation, input: &[[f32; 3]], stage: Stage, tile: u32) -> 
         return input.to_vec();
     }
     let plan = SpatialPlan::new(op, stage, Tiling::Fixed(tile)).unwrap();
-    let mut scratch = TileScratch::default();
+    // One slot for every tile, reused as a render's batch slot is.
+    let mut scratch = TileScratch::for_plan(&plan);
     let mut out = vec![[0.0; 3]; input.len()];
     let globals = vec![None; op.len()];
     for tile in plan.tiles() {
@@ -33,7 +34,7 @@ fn tiled(op: &SpatialOperation, input: &[[f32; 3]], stage: Stage, tile: u32) -> 
         for y in tile.y0..tile.y1() {
             for x in tile.x0..tile.x1() {
                 out[(y * stage.width + x) as usize] =
-                    crate::render::spatial::plane_pixel(region, &values, x, y);
+                    crate::render::spatial::plane_pixel(region, values, x, y);
             }
         }
     }
