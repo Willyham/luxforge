@@ -117,6 +117,7 @@ fn number_parameters_and_the_crop_frame_canvas_keep_their_serialized_form() {
         canvas,
         json!({
             "kind": "crop-frame",
+            "effect": "test.module.effect",
             "action": "set-frame",
             "angle": "angle",
             "x": "x",

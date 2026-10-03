@@ -315,3 +315,122 @@ fn an_export_through_the_owner_writes_a_new_file_and_never_replaces_it() {
     std::fs::remove_dir_all(&folder).unwrap();
     finish(editor, catalog);
 }
+
+/// A real slider commit must be the After raster and the JPEG target, including while the
+/// comparison session selects the Original for its Before surface.
+#[test]
+fn a_slider_edit_is_compared_and_exported_while_before_is_selected() {
+    use super::{
+        export::{plan_now, send_now},
+        message::{history::HistoryMessage, preview::PreviewMessage},
+        testing::{let_go, real_photo, run_commit, slide},
+    };
+    use luxforge_core::PreviewRequest;
+
+    let dir = luxforge_testbase::paths::temp_dir("compare-export-edited");
+    let catalog = dir.join("catalog.sqlite");
+    let (mut editor, asset, _) = real_photo(&catalog);
+    let settle = |editor: &mut Editor| {
+        luxforge_testbase::wait_until("the saved entry's exact frame", || {
+            let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+            editor.presentation.exact().is_some()
+                && editor.presentation.presented_entry == editor.document.display_entry
+                && editor.presentation.displayed_draft_id.is_none()
+        });
+    };
+    settle(&mut editor);
+    let original = editor.presentation.exact().unwrap().raster.clone();
+    let original_entry = editor.displayed_entry().unwrap();
+    let _ = slide(&mut editor, "set-basic", "exposure", 0.8);
+    let _ = let_go(&mut editor, "set-basic", "exposure");
+    assert!(run_commit(&mut editor));
+    settle(&mut editor);
+    let edited = editor.presentation.exact().unwrap().raster.clone();
+    let edited_entry = editor.displayed_entry().unwrap();
+    assert_ne!(edited_entry, original_entry);
+    assert_ne!(edited.rgba, original.rgba, "the commit changes real pixels");
+
+    let _ = editor.update(Message::History(HistoryMessage::CompareToggle));
+    let after = editor.presentation.compare_after.as_ref().unwrap();
+    assert_eq!(after.full().pixels(), edited.rgba.as_slice());
+    let before_entry = editor
+        .session
+        .preview
+        .selected_entry(&asset)
+        .unwrap()
+        .clone();
+    assert_eq!(before_entry, original_entry);
+    let job = editor
+        .owner
+        .preview_job(
+            PreviewRequest::new(editor.client, asset.clone())
+                .entry(Some(before_entry))
+                .analyse(),
+        )
+        .unwrap();
+    let session = editor.session.clone();
+    let _ = editor.update(Message::Preview(PreviewMessage::Loaded(Ok(Box::new(
+        tasks::PreviewPayload { job, session },
+    )))));
+    settle(&mut editor);
+    assert_eq!(
+        editor.presentation.exact().unwrap().raster.rgba,
+        original.rgba
+    );
+    assert_eq!(
+        editor
+            .presentation
+            .compare_after
+            .as_ref()
+            .unwrap()
+            .full()
+            .pixels(),
+        edited.rgba.as_slice()
+    );
+
+    let destination = dir.join("edited.jpg");
+    let _ = editor.export_start(false, Some(destination.clone()));
+    assert!(editor.export.active());
+    let target = editor.export_entry().unwrap();
+    let plan = plan_now(&editor.owner, editor.client, &asset, &target).unwrap();
+    assert_eq!(
+        plan["entry_id"],
+        json!(edited_entry),
+        "comparison exports After"
+    );
+    let choice = ExportChoice {
+        asset_id: asset,
+        entry_id: target,
+        destination: destination.clone(),
+        keep_metadata: false,
+        plan,
+    };
+    let queued = send_now(&editor.owner, editor.client, &choice).unwrap();
+    let job = queued["job_id"].as_str().unwrap();
+    luxforge_testbase::wait_until("the edited JPEG", || {
+        let read = super::export::read_now(&editor.owner, editor.client, job).unwrap();
+        if read["status"] == "ready" {
+            return true;
+        }
+        assert!(
+            matches!(read["status"].as_str(), Some("queued" | "running")),
+            "{read}"
+        );
+        false
+    });
+    let decoded = image::open(destination).unwrap().to_rgba8();
+    let delta = |reference: &luxforge_core::Raster| -> u64 {
+        decoded
+            .as_raw()
+            .iter()
+            .zip(reference.rgba.iter())
+            .map(|(a, b)| u64::from(a.abs_diff(*b)))
+            .sum()
+    };
+    assert!(
+        delta(&edited) < delta(&original),
+        "JPEG pixels follow the edit"
+    );
+    finish(editor, catalog);
+    std::fs::remove_dir_all(dir).unwrap();
+}

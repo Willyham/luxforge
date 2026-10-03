@@ -44,7 +44,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Every smoke scenario, with its launches and frame counts, what it opens and its window | `cargo xtask smoke --list` |
 | A recorded smoke run's checks again, over a copy and without launching | `cargo xtask smoke --verify-only RUN_DIR --output NEW_DIR [--scenario NAME] [--source RAW]` |
 | Rendered crop workflow and overlay | `cargo xtask smoke --scenario crop --output NEW_DIR`, `--scenario crop-draft` |
-| Rendered workspace panels, mode, preview, the Transforms icon row, an agent's conflicting commit and palette; unavailable-provider notice | `cargo xtask smoke --scenario workspace --output NEW_DIR`, `--scenario unavailable` |
+| Rendered workspace panels, mode, preview, the combined crop section’s transform icon row, an agent's conflicting commit and palette; unavailable-provider notice | `cargo xtask smoke --scenario workspace --output NEW_DIR`, `--scenario unavailable` |
 | Rendered Basic slider gesture: draft, commit, typed value, undo, reset and an agent's conflicting commit | `cargo xtask smoke --scenario basic --output NEW_DIR` |
 | Rendered Basic panel on a JPEG: all three groups, the White balance group's four controls (Temperature, Tint, Neutral picker, As shot) with As shot sending Basic's own 0 and 0, historical values, a group reset, the neutral picker, As shot after a warm drag, and the default screen with Basic expanded and every other section collapsed | `cargo xtask smoke --scenario basic-panel --output NEW_DIR` |
 | Rendered histogram, clipping overlays, pointer readout and a drafted frame | `cargo xtask smoke --scenario histogram --output NEW_DIR` |
@@ -596,7 +596,7 @@ placement, masked order and sample query](#the-field-patch-conformance-chapter) 
 a [masked catalog reopened through a fresh owner](#the-masking-acceptance-chapter). Everything the
 core's own tests prove stays there: history order, the read-only preview, undo, redo and restore,
 the orientation layer, the crop and reopen are `editor::history`, `editor::plan`,
-`modules::transform` and `modules::crop`'s tests, the module and method discovery is the [descriptor
+`modules::crop`'s tests, the module and method discovery is the [descriptor
 snapshot](#the-built-in-descriptor-snapshot) and the method table's, and the mask commands, their
 refusals, a disabled maskable module and a missing or changed original are the `mask` test binary's,
 the command family's own tests and the conformance suite. A new step here needs a property that only
