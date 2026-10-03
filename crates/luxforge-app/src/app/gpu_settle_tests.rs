@@ -53,6 +53,7 @@ fn drawn_on_the_gpu(editor: &mut Editor) {
         ready_boundary: Some(version),
         fallback: None,
         drawn: Some((version, revision(editor))),
+        evaluated: None,
     });
     let _ = editor.update(Message::Preview(PreviewMessage::Poll));
 }
@@ -68,6 +69,7 @@ fn gpu_drag(editor: &mut Editor, values: &[f64]) {
         ready_boundary: Some(version),
         fallback: None,
         drawn: None,
+        evaluated: None,
     });
     for value in values {
         let _ = slide(editor, ACTION, FIELD, *value);
@@ -107,8 +109,9 @@ fn gpu_settle_a_commit_dissolves_from_the_gpu_frame_to_the_committed_frame() {
     assert_eq!(Some(dissolve.to), photo(&editor), "to the frame on screen");
     assert_eq!(editor.surfaces().dissolve, Some(dissolve));
     assert!(
-        editor.surfaces().gpu.is_none(),
-        "the drag let go; the surface keeps its slot for the dissolve"
+        editor.surfaces().gpu.is_some() && editor.surfaces().gpu_hold,
+        "the drag ended; its boundary stays resident, its plan held behind the CPU frame, and \
+         the surface keeps its slot for the dissolve"
     );
     // Ended: the next message after its 150 ms lets it go.
     wait_until("the dissolve's duration", || {
@@ -144,6 +147,7 @@ fn gpu_settle_a_cpu_frame_of_the_draft_dissolves_and_the_next_tick_cancels_it() 
         ready_boundary: None,
         fallback: Some(SurfaceFallback::Compiling),
         drawn: Some((version, drawn)),
+        evaluated: None,
     });
     let _ = slide(&mut editor, ACTION, FIELD, 0.5);
     let newer = revision(&editor);
@@ -164,6 +168,7 @@ fn gpu_settle_a_cpu_frame_of_the_draft_dissolves_and_the_next_tick_cancels_it() 
         ready_boundary: Some(version),
         fallback: None,
         drawn: Some((version, drawn)),
+        evaluated: None,
     });
     let _ = slide(&mut editor, ACTION, FIELD, 0.6);
     assert!(editor.gpu_settle.dissolve().is_none());
@@ -328,6 +333,7 @@ fn gpu_settle_at_a_percentage_zoom_the_drafts_region_dissolves_and_a_zoom_cancel
             ready_boundary: None,
             fallback: Some(SurfaceFallback::Compiling),
             drawn: Some((version, drawn)),
+            evaluated: None,
         });
         let _ = slide(editor, ACTION, FIELD, value);
         deliver_until(editor, "the drafted region", |editor| {

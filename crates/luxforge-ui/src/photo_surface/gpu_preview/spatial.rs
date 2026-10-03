@@ -76,14 +76,21 @@ const PARAMS_STRIDE: u64 = 256;
 const PARAMS_WORDS: usize = (PARAMS_STRIDE / 4) as usize;
 
 /// A pass's parameters: its step's header index, its words' offset in the step's words, its span,
-/// then the offsets of the applies its source runs.
+/// then the offsets of the applies its source runs, the rectangle of its output it writes,
+/// `[x0, y0, x1, y1)`, and last the texel of its output its first invocation starts at, the corner
+/// of the rectangle a tick runs it over.
 const PARAM_STEP: usize = 0;
 const PARAM_WORDS: usize = 1;
 const PARAM_SPAN: usize = 2;
 const PARAM_APPLIES: usize = 4;
+const PARAM_LIMIT: usize = PARAMS_WORDS - 6;
+const PARAM_ORIGIN: usize = PARAMS_WORDS - 2;
+
+/// A limit's far edge that no plane reaches, which a `vec2<i32>` holds.
+const UNLIMITED: u32 = i32::MAX as u32;
 
 /// How many compiled pass modules the stage keeps across sequences, the least recently used
-/// evicted first: every pass of the eight sequences [`super::PIPELINE_CACHE`] keeps holds its
+/// evicted first: every pass of the [`super::PIPELINE_CACHE`] sequences the pipeline keeps holds its
 /// pipeline itself, so this bounds only what an evicted sequence can reuse.
 pub(super) const PASS_CACHE: usize = 64;
 
@@ -212,6 +219,8 @@ pub struct GpuPass {
     /// How many of the step's applies its `lf_source` runs.
     pub source: u32,
     pub shape: PassShape,
+    /// The index of its unit, whose apply is the step's `applies[unit]`.
+    pub unit: u32,
 }
 
 /// One unit's apply.
@@ -240,6 +249,102 @@ pub struct GpuSpatial {
     /// spatial operation. Its words come first in the step's, in the masked colour step's layout
     /// with no units ([`MaskedColour`]), and its blocks after the program's.
     pub mask: Option<Coverage>,
+    /// How far beyond a pixel, in stage pixels, each unit's apply depends on the unit's input, as
+    /// the CPU's tiles read it. A masked operation's passes run only over its mask's bounds grown
+    /// by every unit's reach ([`GpuSpatial::pass_rect`]), and an incremental tick's only over its
+    /// change grown unit by unit. An operation that names no halo for a unit runs whole.
+    pub halos: Vec<u32>,
+}
+
+/// A half-open rectangle `[x0, x1) × [y0, y1)` of a boundary's texels or of a plane's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Rect {
+    pub x0: u32,
+    pub y0: u32,
+    pub x1: u32,
+    pub y1: u32,
+}
+
+impl Rect {
+    /// The whole of a `size` texels.
+    pub fn whole(size: (u32, u32)) -> Self {
+        Self {
+            x0: 0,
+            y0: 0,
+            x1: size.0,
+            y1: size.1,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.x0 >= self.x1 || self.y0 >= self.y1
+    }
+
+    /// Whether every texel of `other` is one of this rectangle's.
+    pub fn contains(&self, other: &Rect) -> bool {
+        other.is_empty()
+            || (self.x0 <= other.x0
+                && self.y0 <= other.y0
+                && other.x1 <= self.x1
+                && other.y1 <= self.y1)
+    }
+
+    /// The rectangle holding both, or the other when one is empty.
+    pub fn union(&self, other: &Rect) -> Rect {
+        if self.is_empty() {
+            return *other;
+        }
+        if other.is_empty() {
+            return *self;
+        }
+        Rect {
+            x0: self.x0.min(other.x0),
+            y0: self.y0.min(other.y0),
+            x1: self.x1.max(other.x1),
+            y1: self.y1.max(other.y1),
+        }
+    }
+
+    /// This rectangle grown by `by` texels on every side, within a boundary of `size`; empty
+    /// stays empty.
+    pub fn grown(&self, by: u32, size: (u32, u32)) -> Rect {
+        if self.is_empty() {
+            return *self;
+        }
+        Rect {
+            x0: self.x0.saturating_sub(by),
+            y0: self.y0.saturating_sub(by),
+            x1: self.x1.saturating_add(by).min(size.0),
+            y1: self.y1.saturating_add(by).min(size.1),
+        }
+    }
+
+    /// The texels this rectangle and `other` share.
+    pub fn intersect(&self, other: &Rect) -> Rect {
+        Rect {
+            x0: self.x0.max(other.x0),
+            y0: self.y0.max(other.y0),
+            x1: self.x1.min(other.x1),
+            y1: self.y1.min(other.y1),
+        }
+    }
+
+    /// This rectangle of a boundary of `origin` stage pixels, as a rectangle of a plane of `size`
+    /// whose texels are the stage's `s × s` blocks anchored at the stage origin: every block a
+    /// texel of it touches.
+    fn reduced(&self, s: u32, origin: (u32, u32), size: (u32, u32)) -> Rect {
+        let s = s.max(1);
+        let axis = |origin: u32, from: u32, to: u32, limit: u32| {
+            let first = origin / s;
+            (
+                ((origin + from) / s - first).min(limit),
+                ((origin + to).div_ceil(s) - first).min(limit),
+            )
+        };
+        let (x0, x1) = axis(origin.0, self.x0, self.x1, size.0);
+        let (y0, y1) = axis(origin.1, self.y0, self.y1, size.1);
+        Rect { x0, y0, x1, y1 }
+    }
 }
 
 /// What decides one pass's pipeline besides its kernel's name.
@@ -355,6 +460,164 @@ impl GpuSpatial {
     fn coverage_function(&self, index: usize, base: usize) -> Option<String> {
         self.coverage()
             .map(|coverage| coverage.assemble(index, base).0)
+    }
+
+    /// Whether a pass reads the whole input: a workgroup's pass, or one that writes a plane of a
+    /// fixed size. Such an operation's output may change anywhere its input does.
+    pub(super) fn global(&self) -> bool {
+        self.passes
+            .iter()
+            .any(|pass| matches!(pass.shape, PassShape::Workgroup))
+            || self
+                .planes
+                .iter()
+                .any(|plane| matches!(plane.size, PlaneSize::Fixed { .. }))
+    }
+
+    /// The reduction of the plane pass `pass` writes: one texel a block of `s × s` stage pixels.
+    fn block(&self, pass: &GpuPass) -> u32 {
+        match self
+            .planes
+            .get(pass.output as usize)
+            .map(|plane| plane.size)
+        {
+            Some(PlaneSize::Reduced(s)) => s.max(1),
+            _ => 1,
+        }
+    }
+
+    /// The passes of unit `unit`.
+    fn unit_passes(&self, unit: usize) -> impl Iterator<Item = &GpuPass> {
+        self.passes
+            .iter()
+            .filter(move |pass| pass.unit as usize == unit)
+    }
+
+    /// How far, in boundary texels, unit `unit`'s apply depends on the unit's input when its
+    /// passes run over part of the boundary and keep, bit for bit, what they give over the whole:
+    /// its halo; for each pass that runs along an axis, the texels before its own where a run
+    /// starts, which its sums read, in its plane's blocks; and two of the unit's largest blocks,
+    /// which a reduced plane's texels round a rectangle out to. `u32::MAX` for a unit the operation
+    /// names no halo for.
+    pub(super) fn reach(&self, unit: usize) -> u32 {
+        let Some(&halo) = self.halos.get(unit) else {
+            return u32::MAX;
+        };
+        let mut along = [0u32; 2];
+        for pass in self.unit_passes(unit) {
+            let s = self.block(pass);
+            if let PassShape::Texels { span } = pass.shape {
+                along[0] = along[0].saturating_add(span[0].saturating_sub(1).saturating_mul(s));
+                along[1] = along[1].saturating_add(span[1].saturating_sub(1).saturating_mul(s));
+            }
+        }
+        halo.saturating_add(along[0].max(along[1]))
+            .saturating_add(self.apply_reach(unit))
+    }
+
+    /// How far around a pixel unit `unit`'s apply reads its planes, in boundary texels: two of the
+    /// unit's largest blocks, which an upsample's neighbouring texel of a reduced plane reaches.
+    pub(super) fn apply_reach(&self, unit: usize) -> u32 {
+        2 * self
+            .unit_passes(unit)
+            .map(|pass| self.block(pass))
+            .max()
+            .unwrap_or(1)
+    }
+
+    /// How far beyond the mask's bounds unit `unit`'s apply plane must hold the operation's values:
+    /// its apply's own reach ([`GpuSpatial::apply_reach`]), and for each later unit, whose input
+    /// runs this apply, that unit's reach and its apply's.
+    pub(super) fn needed(&self, unit: usize) -> u32 {
+        (unit + 1..self.applies.len())
+            .map(|later| self.reach(later).saturating_add(self.apply_reach(later)))
+            .fold(self.apply_reach(unit), u32::saturating_add)
+    }
+
+    /// Every unit's reach and its apply's summed: how far beyond the mask's bounds every pass must
+    /// run, over one rectangle, for every apply plane to hold the operation's values where it is
+    /// needed ([`GpuSpatial::needed`]).
+    pub(super) fn reaches(&self) -> u32 {
+        (0..self.applies.len())
+            .map(|unit| self.reach(unit).saturating_add(self.apply_reach(unit)))
+            .fold(0, u32::saturating_add)
+    }
+
+    /// The rectangle of a boundary of `size` texels, which `texels` places in the stage, that the
+    /// operation's passes must fill for its applies to be exact wherever its mask covers anything:
+    /// the mask's rectangle ([`GpuSpatial::mask_rect`]) grown by every unit's reach and its apply's
+    /// ([`GpuSpatial::reaches`]); possibly empty, when the mask covers nothing of this boundary. The
+    /// whole boundary for an unmasked operation, for one whose passes read the whole input
+    /// ([`GpuSpatial::global`]) and for one with a unit of no named halo.
+    pub fn pass_rect(&self, texels: super::TexelMap, size: (u32, u32)) -> Rect {
+        let reach = self.reaches();
+        if self.mask.is_none() || self.global() || reach == u32::MAX {
+            return Rect::whole(size);
+        }
+        self.mask_rect(texels, size, reach)
+    }
+
+    /// The rectangle of a boundary of `size` texels, which `texels` places in the stage, where the
+    /// operation's mask can cover anything, grown by `by` texels: the mask's bounds, taken back
+    /// through its position map to the boundary's texels, within the boundary; possibly empty. The
+    /// whole boundary for an unmasked operation, and over texels that are not the stage's own.
+    pub fn mask_rect(&self, texels: super::TexelMap, size: (u32, u32), by: u32) -> Rect {
+        let whole = Rect::whole(size);
+        let Some(mask) = &self.mask else {
+            return whole;
+        };
+        if texels.step != [1.0, 1.0] {
+            return whole;
+        }
+        // The stage pixels the map takes into the bounds: the map's linear part is a signed
+        // permutation, so the preimage of a rectangle is the rectangle of its corners' preimages.
+        let map = mask.position;
+        let [x0, y0, x1, y1] = mask.bounds.map(i64::from);
+        if x0 >= x1 || y0 >= y1 {
+            return Rect {
+                x0: 0,
+                y0: 0,
+                x1: 0,
+                y1: 0,
+            };
+        }
+        let (a, b, c, d) = (
+            i64::from(map.a),
+            i64::from(map.b),
+            i64::from(map.c),
+            i64::from(map.d),
+        );
+        let (tx, ty) = (i64::from(map.tx), i64::from(map.ty));
+        // The inverse of a signed permutation is its transpose.
+        let back = |qx: i64, qy: i64| {
+            let (u, v) = (qx - tx, qy - ty);
+            (a * u + c * v, b * u + d * v)
+        };
+        let corners = [
+            back(x0, y0),
+            back(x1 - 1, y0),
+            back(x0, y1 - 1),
+            back(x1 - 1, y1 - 1),
+        ];
+        let reach = i64::from(by);
+        let origin = (
+            texels.origin[0].round() as i64,
+            texels.origin[1].round() as i64,
+        );
+        let low = |axis: fn(&(i64, i64)) -> i64, origin: i64, limit: u32| {
+            let least = corners.iter().map(axis).min().unwrap_or(0);
+            (least - origin - reach).clamp(0, i64::from(limit)) as u32
+        };
+        let high = |axis: fn(&(i64, i64)) -> i64, origin: i64, limit: u32| {
+            let most = corners.iter().map(axis).max().unwrap_or(0);
+            (most + 1 - origin + reach).clamp(0, i64::from(limit)) as u32
+        };
+        Rect {
+            x0: low(|corner| corner.0, origin.0, size.0),
+            y0: low(|corner| corner.1, origin.1, size.1),
+            x1: high(|corner| corner.0, origin.0, size.0),
+            y1: high(|corner| corner.1, origin.1, size.1),
+        }
     }
 
     /// The bytes every plane takes over a boundary of `size` at stage `origin`.
@@ -676,23 +939,37 @@ fn applies(
 }
 
 /// The frame pass's statements for spatial step `index`: its clamp, its applies, its mask's blend
-/// against the operation's input and its clamp, in a block of their own.
+/// against the operation's input and its clamp, in a block of their own. A masked step composes its
+/// coverage first and runs its applies only where it is not exactly zero, which is all its passes
+/// fill the planes for ([`GpuSpatial::pass_rect`]); elsewhere the input is the output, as the
+/// blend would make it.
 pub(super) fn frame_statements(index: usize, spatial: &GpuSpatial, slots: &Slots) -> String {
     let mut text = String::from("    {\n");
-    text.push_str(&applies(
+    let applied = applies(
         index,
         spatial,
         spatial.applies.len(),
         slots,
         Offsets::Written,
-    ));
+    );
     if spatial.mask.is_some() {
+        // The clamp and the input the blend is against, then the coverage, then the applies.
+        let (head, rest) = applied
+            .split_once("    let lf_spatial_input = rgb;\n")
+            .expect("a masked step's applies keep their input");
+        text.push_str(head);
+        text.push_str("    let lf_spatial_input = rgb;\n");
         text.push_str(&format!(
             "    let lf_spatial_coverage = lf_surface_mask_{index}(stage, lf_spatial_input);\n    \
-             if lf_spatial_coverage == 0.0 {{\n        rgb = lf_spatial_input;\n    }} else {{\n        \
-             rgb = (1.0 - lf_spatial_coverage) * lf_spatial_input + lf_spatial_coverage * rgb;\n    \
-             }}\n"
+             if lf_spatial_coverage != 0.0 {{\n"
         ));
+        text.push_str(rest);
+        text.push_str(
+            "    rgb = (1.0 - lf_spatial_coverage) * lf_spatial_input + lf_spatial_coverage * rgb;\n    \
+             }\n",
+        );
+    } else {
+        text.push_str(&applied);
     }
     if spatial.clamps {
         text.push_str("    rgb = clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));\n");
@@ -819,10 +1096,16 @@ pub(super) fn pass_module(
     };
     source.push_str(&format!(
         "@group(1) @binding({OUTPUT_BINDING}) var lf_out: texture_storage_2d<{}, write>;\n\
-         fn lf_store(at: vec2<i32>, value: vec4<f32>) {{\n    textureStore(lf_out, at, {stored});\n}}\n\
+         fn lf_store(at: vec2<i32>, value: vec4<f32>) {{\n    \
+         let low = vec2<i32>(i32(lf_param({PARAM_LIMIT}u)), i32(lf_param({}u)));\n    \
+         let high = vec2<i32>(i32(lf_param({}u)), i32(lf_param({}u)));\n    \
+         if all(at >= low) && all(at < high) {{\n        textureStore(lf_out, at, {stored});\n    }}\n}}\n\
          @group(1) @binding({PARAMS_BINDING}) var<storage, read> lf_params: array<u32>;\n\
          fn lf_param(i: u32) -> u32 {{\n    return lf_params[i];\n}}\n",
-        format.wgsl()
+        format.wgsl(),
+        PARAM_LIMIT + 1,
+        PARAM_LIMIT + 2,
+        PARAM_LIMIT + 3,
     ));
     source.push_str(
         "fn lf_source(at: vec2<i32>) -> vec3<f32> {\n    \
@@ -852,11 +1135,13 @@ pub(super) fn pass_module(
             "\n@compute @workgroup_size({GROUP_SIDE}, {GROUP_SIDE})\n\
              fn lf_pass(@builtin(global_invocation_id) id: vec3<u32>) {{\n    \
              let span = vec2<i32>(i32(lf_param({PARAM_SPAN}u)), i32(lf_param({}u)));\n    \
-             let at = vec2<i32>(id.xy) * span;\n    \
+             let corner = vec2<i32>(i32(lf_param({PARAM_ORIGIN}u)), i32(lf_param({}u)));\n    \
+             let at = corner + vec2<i32>(id.xy) * span;\n    \
              let size = vec2<i32>(textureDimensions(lf_out));\n    \
              if at.x >= size.x || at.y >= size.y {{\n        return;\n    }}\n    \
              {call}\n}}\n",
-            PARAM_SPAN + 1
+            PARAM_SPAN + 1,
+            PARAM_ORIGIN + 1
         )),
         PassShape::Workgroup => source.push_str(&format!(
             "\n@compute @workgroup_size({WORKGROUP_LANES})\n\
@@ -869,9 +1154,11 @@ pub(super) fn pass_module(
 }
 
 /// Every pass's parameters in plan order, each in a slice of [`PARAMS_WORDS`] words: what the
-/// planes' parameter buffer holds for `steps`.
-pub(super) fn parameters(steps: &[GpuStep]) -> Vec<u32> {
+/// planes' parameter buffer holds for `steps`, each pass at its place of `places`, in plan order,
+/// or starting at its output's first texel and writing all of it where `places` names none.
+pub(super) fn parameters(steps: &[GpuStep], places: &[Place]) -> Vec<u32> {
     let mut words = Vec::new();
+    let mut number = 0;
     for (index, step) in steps.iter().enumerate() {
         let GpuStep::Spatial(spatial) = step else {
             continue;
@@ -891,12 +1178,22 @@ pub(super) fn parameters(steps: &[GpuStep]) -> Vec<u32> {
                 .applies
                 .iter()
                 .take(pass.source as usize)
-                .take(PARAMS_WORDS - PARAM_APPLIES)
+                .take(PARAM_LIMIT - PARAM_APPLIES)
                 .enumerate()
             {
                 slice[PARAM_APPLIES + number] = mask_words + apply.words;
             }
+            let place = places.get(number);
+            let [x, y] = place.map_or([0, 0], |place| place.origin);
+            slice[PARAM_ORIGIN] = x;
+            slice[PARAM_ORIGIN + 1] = y;
+            let limit = place.map_or([0, 0, UNLIMITED, UNLIMITED], |place| {
+                let Rect { x0, y0, x1, y1 } = place.limit;
+                [x0, y0, x1, y1].map(|edge| edge.min(UNLIMITED))
+            });
+            slice[PARAM_LIMIT..PARAM_LIMIT + 4].copy_from_slice(&limit);
             words.extend_from_slice(&slice);
+            number += 1;
         }
     }
     words
@@ -1346,6 +1643,9 @@ pub(super) struct Planes {
     parameters: wgpu::Buffer,
     /// What `parameters` holds, so a tick whose passes keep their places writes nothing.
     written: Vec<u32>,
+    /// The parameters with every pass starting at its output's first texel: what places the
+    /// passes in their plan, which the rectangle a tick runs them over does not change.
+    placed: Vec<u32>,
     pub(super) bytes: u64,
 }
 
@@ -1388,19 +1688,33 @@ impl Planes {
             textures,
             parameters,
             written: Vec::new(),
+            placed: Vec::new(),
             bytes,
         }
     }
 
-    /// Write every pass's parameters for `steps` when they changed, and say whether they did.
-    pub(super) fn write_parameters(&mut self, queue: &wgpu::Queue, steps: &[GpuStep]) -> bool {
-        let parameters = parameters(steps);
-        if parameters == self.written {
-            return false;
+    /// Whether the passes of `steps` take other places in their plan than the last ones did,
+    /// which the planes' contents then no longer follow.
+    pub(super) fn moved(&mut self, steps: &[GpuStep]) -> bool {
+        let placed = parameters(steps, &[]);
+        let moved = placed != self.placed;
+        self.placed = placed;
+        moved
+    }
+
+    /// Write every pass's parameters for `steps`, each pass at its place of `places`, when they
+    /// changed.
+    pub(super) fn write_parameters(
+        &mut self,
+        queue: &wgpu::Queue,
+        steps: &[GpuStep],
+        places: &[Place],
+    ) {
+        let parameters = parameters(steps, places);
+        if parameters != self.written {
+            queue.write_buffer(&self.parameters, 0, &super::le_bytes(&parameters));
+            self.written = parameters;
         }
-        queue.write_buffer(&self.parameters, 0, &super::le_bytes(&parameters));
-        self.written = parameters;
-        true
     }
 
     fn view(&self, step: usize, plane: u32) -> &wgpu::TextureView {
@@ -1408,13 +1722,18 @@ impl Planes {
     }
 
     fn extent(&self, step: usize, plane: u32) -> (u32, u32) {
+        self.plane(step, plane)
+            .extent(self.key.origin, self.key.size)
+    }
+
+    fn plane(&self, step: usize, plane: u32) -> GpuPlane {
         let (_, planes) = self
             .key
             .planes
             .iter()
             .find(|(index, _)| *index == step)
             .expect("a spatial step's planes");
-        planes[plane as usize].extent(self.key.origin, self.key.size)
+        planes[plane as usize]
     }
 
     /// A second group binding `slots` and, for a pass, its output and its slice `number` of the
@@ -1457,9 +1776,29 @@ impl Planes {
     }
 }
 
+/// Where one pass runs: the texel of its output its first invocation starts at, the rectangle of
+/// its output it writes, and the workgroups it dispatches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Place {
+    pub(super) origin: [u32; 2],
+    pub(super) limit: Rect,
+    pub(super) dispatch: [u32; 3],
+}
+
+/// One pass's second group, with the plane it writes, that plane's extent and how it runs.
+struct BoundPass {
+    group: wgpu::BindGroup,
+    plane: GpuPlane,
+    extent: (u32, u32),
+    shape: PassShape,
+}
+
 /// The second groups of one compiled plan over its planes: each pass's, and the frame's.
 pub(super) struct Groups {
-    passes: Vec<(wgpu::BindGroup, [u32; 3])>,
+    passes: Vec<BoundPass>,
+    /// The stage pixel of the boundary's first texel, which the reduced planes' blocks are
+    /// anchored against.
+    origin: (u32, u32),
     pub(super) fragment: Option<wgpu::BindGroup>,
 }
 
@@ -1469,40 +1808,89 @@ impl Groups {
             .passes
             .iter()
             .enumerate()
-            .map(|(number, pass)| {
-                let group = planes.group(
+            .map(|(number, pass)| BoundPass {
+                group: planes.group(
                     device,
                     &pass.layout,
                     &pass.slots,
                     Some((pass.step, pass.output, number)),
-                );
-                let (width, height) = planes.extent(pass.step, pass.output);
-                let dispatch = match pass.shape {
-                    PassShape::Texels { span } => [
-                        width.div_ceil(span[0]).div_ceil(GROUP_SIDE),
-                        height.div_ceil(span[1]).div_ceil(GROUP_SIDE),
-                        1,
-                    ],
-                    PassShape::Workgroup => [1, 1, 1],
-                };
-                (group, dispatch)
+                ),
+                plane: planes.plane(pass.step, pass.output),
+                extent: planes.extent(pass.step, pass.output),
+                shape: pass.shape,
             })
             .collect();
         let fragment = compiled
             .fragment
             .as_ref()
             .map(|(layout, slots)| planes.group(device, layout, slots, None));
-        Self { passes, fragment }
+        Self {
+            passes,
+            origin: planes.key.origin,
+            fragment,
+        }
     }
 
-    /// Encode the passes `run` marks, in order, group 0 the plan's words, blocks and boundary, and
-    /// answer how many.
+    /// Where each pass runs to fill `rect` of the boundary: its output plane's texels over it, a
+    /// reduced plane's blocks the rectangle touches, and a fixed plane, or a workgroup's pass,
+    /// whole.
+    pub(super) fn places(&self, rect: Rect) -> Vec<Place> {
+        self.places_each(&vec![rect; self.passes.len()])
+    }
+
+    /// [`Groups::places`] with each pass over its own rectangle of `rects`, in plan order.
+    pub(super) fn places_each(&self, rects: &[Rect]) -> Vec<Place> {
+        self.passes
+            .iter()
+            .zip(rects)
+            .map(|(pass, rect)| {
+                let covered = match pass.plane.size {
+                    PlaneSize::Reduced(s) => rect.reduced(s, self.origin, pass.extent),
+                    PlaneSize::Fixed { .. } => Rect::whole(pass.extent),
+                };
+                match pass.shape {
+                    // A pass's invocations start where they would over the whole plane, every
+                    // `span` texels from its first: a running sum's drift depends on where its run
+                    // begins, so the texels a smaller rectangle fills are those the whole plane's
+                    // pass gives, bit for bit. It writes only the rectangle's texels, not the rest
+                    // of the runs and workgroups that reach past it.
+                    PassShape::Texels { span } if !covered.is_empty() => {
+                        let x0 = covered.x0 / span[0] * span[0];
+                        let y0 = covered.y0 / span[1] * span[1];
+                        Place {
+                            origin: [x0, y0],
+                            limit: covered,
+                            dispatch: [
+                                (covered.x1 - x0).div_ceil(span[0]).div_ceil(GROUP_SIDE),
+                                (covered.y1 - y0).div_ceil(span[1]).div_ceil(GROUP_SIDE),
+                                1,
+                            ],
+                        }
+                    }
+                    PassShape::Texels { .. } => Place {
+                        origin: [0, 0],
+                        limit: covered,
+                        dispatch: [0, 0, 0],
+                    },
+                    PassShape::Workgroup => Place {
+                        origin: [0, 0],
+                        limit: Rect::whole((UNLIMITED, UNLIMITED)),
+                        dispatch: [1, 1, 1],
+                    },
+                }
+            })
+            .collect()
+    }
+
+    /// Encode the passes `run` marks, in order, each at its place of `places`, group 0 the plan's
+    /// words, blocks and boundary, and answer how many.
     pub(super) fn encode(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         compiled: &CompiledSpatial,
         programs: &wgpu::BindGroup,
         run: &[bool],
+        places: &[Place],
     ) -> u64 {
         let count = run.iter().filter(|run| **run).count() as u64;
         if count == 0 {
@@ -1513,14 +1901,17 @@ impl Groups {
             timestamp_writes: None,
         });
         pass.set_bind_group(0, programs, &[]);
-        for ((compiled, (group, dispatch)), run) in
-            compiled.passes.iter().zip(&self.passes).zip(run)
+        for ((compiled, bound), (run, Place { dispatch, .. })) in compiled
+            .passes
+            .iter()
+            .zip(&self.passes)
+            .zip(run.iter().zip(places))
         {
-            if !run {
+            if !run || dispatch.contains(&0) {
                 continue;
             }
             pass.set_pipeline(&compiled.pipeline);
-            pass.set_bind_group(1, group, &[]);
+            pass.set_bind_group(1, &bound.group, &[]);
             pass.dispatch_workgroups(dispatch[0], dispatch[1], dispatch[2]);
         }
         count
@@ -1559,6 +1950,12 @@ impl Schedule {
     /// Forget every plane's content: a new sequence's groups or new planes.
     pub(super) fn reset(&mut self) {
         self.kept.clear();
+    }
+
+    /// Forget what every texture but `textures` holds: an incremental tick's passes wrote the rest
+    /// only where they ran.
+    pub(super) fn keep_only(&mut self, textures: &[usize]) {
+        self.kept.retain(|(texture, _)| textures.contains(texture));
     }
 
     fn kept(&self, texture: usize) -> Option<u64> {

@@ -560,6 +560,37 @@ fn run_viewport(
     let evaluation = job.evaluation.clone();
     let snapshot_id = evaluation.entry().snapshot.id.clone();
     let compiled = evaluation.exact(cancel);
+    // A draft's GPU preview boundary at a percentage zoom: the window of the boundary layer's
+    // received stage the region reads at full scale, from the job's exact compilation. It does not
+    // depend on the region frame, so it goes first: a gesture's GPU frames start while the CPU's
+    // region still renders, which with a spatial layer in the stack is the longer of the two. A
+    // committed stack's boundary, which the next gesture starts from, follows its frame.
+    let layer_count = job.layer_count;
+    let drafted = evaluation.draft_revision().is_some();
+    if let Some(request) = job
+        .boundary
+        .take_if(|request| request.key.region().is_some() && layer_count.is_none() && drafted)
+    {
+        let started = Instant::now();
+        let result = match (request.key.region(), compiled.as_ref()) {
+            (Some(rect), Ok(exact)) => {
+                exact.region_boundary(rect, request.position, request.format)
+            }
+            (_, Err(error)) => Err(error.clone()),
+            _ => Err(drawn_elsewhere()),
+        };
+        let boundary = boundary_result(
+            &job,
+            generation,
+            &request,
+            result,
+            started,
+            evaluation.source().approximate_white_balance(),
+        );
+        if !send_phase(restoration, running, boundary) {
+            return None;
+        }
+    }
     let mut prefix_use = None;
     let region = match compiled.as_ref() {
         Err(error) => {
@@ -639,8 +670,8 @@ fn run_viewport(
             if !send_phase(restoration, running, result) {
                 return None;
             }
-            // A draft's GPU preview boundary at a percentage zoom: the region this view shows at
-            // full scale, from the job's exact compilation, after the region frame.
+            // A boundary this job still asks for, of a truncated stack: the region this view
+            // shows at full scale, from the job's exact compilation, after the region frame.
             if let Some(request) = &job.boundary {
                 let started = Instant::now();
                 let result = match (request.key.region(), compiled.as_ref()) {

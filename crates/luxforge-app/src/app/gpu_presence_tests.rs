@@ -213,6 +213,7 @@ fn pass(
         words,
         source: 0,
         shape,
+        unit: 0,
     }
 }
 
@@ -256,6 +257,7 @@ fn run_step(
         applies: vec![apply],
         clamps: false,
         mask: None,
+        halos: Vec::new(),
     };
     let plan = GpuPlan {
         boundary: boundary(width, height, 1, values).expect("a boundary"),
@@ -1430,3 +1432,96 @@ mod near_black;
 
 // Detail followed by Presence, chained in one plan.
 mod chain;
+
+/// A masked Presence layer's passes run only over its mask's bounds grown by every unit's reach
+/// (`GpuSpatial::pass_rect`), and its applies only where its coverage is not zero: the frame is the
+/// one its passes give run over the whole boundary, which widening the mask's bounds to the whole
+/// stage asks for — coverage outside the true bounds is exactly zero either way — bit for bit:
+/// the reach covers each running sum's run back to where it starts over the whole plane, so no
+/// sum the applies read carries a value an earlier pass left outside the rectangle. A small radial
+/// off centre, a radial at the edge and a linear gradient, at Fit's thin-feature scale and at the
+/// exact stage, with Texture, Clarity and Dehaze, whose global estimate keeps the whole boundary,
+/// and with Clarity alone.
+#[test]
+fn gpu_presence_a_masked_layer_runs_its_passes_over_its_mask_alone() {
+    let test = "gpu_presence_a_masked_layer_runs_its_passes_over_its_mask_alone";
+    let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
+        return;
+    };
+    let registry = ModuleRegistry::builtin();
+    let (width, height) = (720, 480);
+    let pixels = photograph(width, height, 11);
+    let held = boundary(width, height, 1, &pixels).expect("a boundary");
+    let components = [
+        luxforge_core::Component::new(
+            "Radial 1",
+            luxforge_core::ComponentMode::Add,
+            "radial",
+            json!({"x": 0.3, "y": 0.4, "radius_x": 0.12, "radius_y": 0.1, "angle": 25.0,
+                   "feather": 40.0}),
+        ),
+        luxforge_core::Component::new(
+            "Radial 2",
+            luxforge_core::ComponentMode::Add,
+            "radial",
+            json!({"x": 0.97, "y": 0.9, "radius_x": 0.15, "radius_y": 0.12, "angle": 0.0,
+                   "feather": 60.0}),
+        ),
+        luxforge_core::Component::new(
+            "Linear 1",
+            luxforge_core::ComponentMode::Add,
+            "linear",
+            json!({"x0": 0.6, "y0": 0.2, "x1": 0.85, "y1": 0.3}),
+        ),
+    ];
+    let mut restricted = 0;
+    for payload in [
+        json!({"texture": 60, "clarity": 70, "dehaze": 30}),
+        json!({"texture": 40, "clarity": 50}),
+        json!({"clarity": -50}),
+    ] {
+        for component in &components {
+            for request in [
+                GpuPlanRequest::fit(0, stage(width, height), stage(width * 4, height * 4)),
+                GpuPlanRequest::exact(0, stage(width, height)),
+            ] {
+                let stack = masked(recipe(payload.clone()), component);
+                let plan = match gpu_plan(&registry, &stack, request).unwrap() {
+                    GpuAnswer::Plan(plan) => *plan,
+                    GpuAnswer::Fallback(reason) => panic!("{reason}"),
+                };
+                let bounded = surface_plan(&plan, held.clone()).expect("a runnable plan");
+                let mut whole = bounded.clone();
+                let GpuStep::Spatial(spatial) = &mut whole.steps[0] else {
+                    panic!("a spatial step first");
+                };
+                let rect = spatial.pass_rect(bounded.texels, (width, height));
+                let mask = spatial.mask.as_mut().expect("a masked step");
+                // The mask's whole stage, where the plan addresses the doubled one under the
+                // thin-feature supersample.
+                mask.bounds = [0, 0, 4 * width, 4 * height];
+                if rect != spatial.pass_rect(whole.texels, (width, height)) {
+                    restricted += 1;
+                }
+                let (left, right) = (
+                    qualifier.evaluate(&bounded).expect("a readback"),
+                    qualifier.evaluate(&whole).expect("a readback"),
+                );
+                let largest = left
+                    .iter()
+                    .zip(&right)
+                    .flat_map(|(a, b)| (0..3).map(move |channel| (a[channel] - b[channel]).abs()))
+                    .fold(0.0_f32, f32::max);
+                eprintln!(
+                    "{test}: {payload} {} over {rect:?}: largest difference {largest:e}",
+                    component.name
+                );
+                assert!(largest == 0.0, "{payload} {}: {largest}", component.name);
+            }
+        }
+    }
+    assert!(
+        restricted > 0,
+        "some plans ran their passes over less than the boundary"
+    );
+}

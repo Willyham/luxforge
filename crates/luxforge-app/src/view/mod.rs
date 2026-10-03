@@ -77,6 +77,8 @@ pub(crate) struct Surfaces<'a> {
     pub(crate) gpu_hold: bool,
     /// The draft revision the plan's output is reported under.
     pub(crate) gpu_tag: Option<u64>,
+    /// The plan's serial and where it changes since the plan the surface holds.
+    pub(crate) gpu_change: Option<luxforge_ui::photo_surface::GpuChange>,
     /// The program sequences the committed stack's gestures are likely to need, compiled ahead.
     pub(crate) gpu_warm: Option<&'a luxforge_ui::photo_surface::GpuWarm>,
     /// A settle's dissolve from the GPU frame on screen to the CPU frame that replaces it

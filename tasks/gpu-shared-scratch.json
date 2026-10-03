@@ -1,0 +1,689 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "gpu-shared-scratch",
+  "title": "GPU preview: shared scratch planes, sixteen masked spatial layers and the CPU fallback notice",
+  "objective": "Let a recipe hold 16 masked Presence or Detail layers and paint over them on the GPU preview. Each GPU-preview slot holds one set of scratch planes that every link of its chain uses in turn, so each further masked spatial layer costs only the planes its applies keep and its intermediate. Every frame stays bit for bit as it is, and the surface, the qualification report and the desktop's estimate charge one figure for a plan. When a gesture is drawn on the slower CPU path for a reason that lasts, the status bar says why. The result is measured once on the M4.",
+  "context_summary": "The GPU preview runs a plan as a chain of links (crates/luxforge-ui/src/photo_surface/gpu_preview/chain.rs). Each spatial link holds its own planes (SpatialSlot: spatial::Planes, Groups, Schedule), so N masked Presence layers hold N sets of scratch planes that only their own passes read. Measured on 2026-10-03 (docs/design/gpu-shared-scratch.md): a masked Texture and Clarity layer costs 131.3 MB after the first at a 24 MP photograph's full-screen Fit stage and 365.3 MB in the 100% window on a JPEG, of which 74.4 and 207.0 MB are scratch. Sharing the scratch fits about 35 and 11 such layers in the 2 GiB GPU-preview budget instead of 16 and 5, at worst one more pass for a Dehaze drag, and changes no pixel. Owner decisions of 2026-10-03 (docs/decisions.md, GPU previews): the plan itself, under the direction that interactive speed comes before memory rules; a recipe may hold 16 masked spatial layers; and a preview drawn on the CPU says why, whose place, timing and wording are recorded defaults in the design that the owner may revise. The design is the contract. Kept planes never share. Each link decides its own texture formats, so pass modules and compiled sequences stay as they are. A pool texture's content key is trusted only by the schedule generation that wrote it. One function charges a chain for the slot, slot_charge and the desktop's region_charge. Texture's one-channel band and the notice are independent of the pool and may run beside it. The cap rises only once the pool, the desktop's charge and the notice are in, so 16 layers arrive with their memory and their explanation. Run only the targeted tests while working (docs/engineering/development.md, When to verify). The plan measures once, in its last task, on a quiet host, with the before and after runs back to back. A command that names a test, flag, scenario step or figure a task adds exists only after that task. NEW_DIR is a fresh output directory, DIR the generated fixtures, FILE the owner's private RAW manifest and PATH a release binary of the base commit.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Lay out a chain's planes as each link's kept textures plus one pool of scratch textures for the slot, and compute the chain's whole charge from that layout without a device.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "What happens today:",
+        "- spatial::PlanesKey::of(steps, size, origin) (crates/luxforge-ui/src/photo_surface/gpu_preview/spatial.rs) runs assign over one link's steps.",
+        "- slot_charge (gpu_preview.rs) sums each link's PlanesKey::bytes and intermediate.",
+        "- The public spatial::plane_bytes runs assign over every spatial step of a plan at once. That shares scratch between steps and lets an apply plane take an earlier step's scratch, neither of which the slot does, and it counts no intermediate.",
+        "Kept and scratch: a texture is kept when it holds a plane any apply of its step reads. Every other texture is scratch, reduced and fixed-size ones included (Dehaze's 16x estimate plane). After the core's compose and single_writer (crates/luxforge-core/src/render/gpu/spatial.rs), an apply plane has one writer and is no unit's scratch; every_plane_an_apply_reads_has_one_writer holds that.",
+        "Classes: a class is the texture format the link's own assignment gives a texture (PlaneFormat::texture) together with its PlaneSize. Scalar and HalfScalar share r32float, and Pair and HalfPair share rg32float. Every link of a slot shares the boundary's size and origin, so a class has one extent.",
+        "Pool size and mapping: the pool holds, for each class, the most scratch textures of that class any one link holds. A link's k-th scratch texture of a class, in its own texture order, maps to the pool's k-th texture of that class, so the mapping depends on the link's own steps alone.",
+        "Formats stay the link's. texture_formats and written_format answer what they answer today, so pass modules and compiled sequences do not change. A scratch plane never takes a texture of another format, even one whose format would hold it.",
+        "Drop assign's sharing between spatial steps: a link holds at most one spatial step, because chain::chain splits before each. Replace chained_spatial_steps_share_their_scratch_textures (gpu_preview/tests/spatial.rs) with the pool's tests.",
+        "The charge function is pure and public, so the desktop can call it; a suggested signature is chain_charge(steps, boundary, origin, format). It sums:",
+        "- each link's intermediate before the last: the boundary's texels at 8 bytes on a JPEG's rgba16float or 16 on a RAW's rgba32float, as intermediate_format chooses;",
+        "- each link's kept textures and its passes' parameter slices (PARAMS_STRIDE a pass);",
+        "- the pool, once.",
+        "slot_charge keeps the boundary, the output, the uniform and the buffers, which need the device's limits.",
+        "This task only lays out and computes. The slot, slot_charge and region_charge keep their current figures until the tasks that wire them, so every existing charge test still holds."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Shared scratch design",
+          "target": "docs/design/gpu-shared-scratch.md",
+          "locator": "The pool; What may share, and what may not; Binding and charging",
+          "relevance": "The layout, the classes, the mapping and the charge this task implements."
+        },
+        {
+          "kind": "file",
+          "label": "Plane layout",
+          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview/spatial.rs",
+          "locator": "PlanesKey, assign, texture_formats, written_format, plane_bytes, PARAMS_STRIDE",
+          "relevance": "Today's per-link assignment and the public plane figure the desktop calls."
+        },
+        {
+          "kind": "file",
+          "label": "Slot charge",
+          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview.rs",
+          "locator": "slot_charge, intermediate_format, Shape::texture_bytes",
+          "relevance": "What a slot charges today, link by link, and the intermediate's format."
+        },
+        {
+          "kind": "file",
+          "label": "The chain",
+          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview/chain.rs",
+          "locator": "chain, LinkSlot",
+          "relevance": "How a plan splits into links, each with at most one spatial step at its start."
+        },
+        {
+          "kind": "file",
+          "label": "Composition",
+          "target": "crates/luxforge-core/src/render/gpu/spatial.rs",
+          "locator": "compose, single_writer, GpuPlane::scratch",
+          "relevance": "Why an apply plane has one writer and is never another unit's scratch."
+        }
+      ],
+      "acceptance_criteria": [
+        "For any plan, every link's textures are its kept textures plus pool textures. No texture an apply reads is a pool texture. Distinct scratch textures of one link map to distinct pool textures of their own class, and the pool holds, per class, the most any one link needs.",
+        "A single-link plan lays out exactly the textures it holds today, with the same formats and extents, and its chain charge equals today's planes plus intermediates.",
+        "A luxforge-app test over 1, 2 and 4 masked Presence layers of Texture and Clarity at 2292 x 1528 on a JPEG boundary shows the pool holding one link's scratch (74.4 MB) and each link keeping 28.9 MB of planes and a 28.0 MB intermediate before the last. The chain charge therefore grows by 56.9 MB a layer, where today's slot grows by 131.3 MB.",
+        "The widget crate's GPU-preview tests and the luxforge-app Presence and mask tests pass; clippy and rustfmt are clean."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Widget-crate unit tests over hand-built spatial steps (the test program in gpu_preview/tests/spatial.rs): two and three links of one shape and of different shapes, colour links between them, a reduced and a fixed-size plane. Check the kept and pool layout, the classes, the mapping and the charge.",
+          "A luxforge-app test, named with the gpu_presence_ prefix, that converts core plans of masked Presence layers and holds the layout's figures."
+        ],
+        "commands": [
+          "cargo test -p luxforge-ui --lib gpu_preview",
+          "cargo test -p luxforge-app --bin luxforge -- gpu_presence gpu_mask",
+          "cargo xtask lint",
+          "cargo xtask fmt"
+        ],
+        "expected_results": [
+          "Each link's layout and the pool follow the design's rules, a single link's layout and charge are unchanged, and N like links share one set of scratch textures in the computed charge."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Hold the pool in each GPU-preview slot and run every link's scratch planes from it, with a schedule that trusts a pool texture only when the link itself wrote it last, keeping every frame bit for bit what today's evaluation draws.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "Fitting: fit the pool in PhotoPipeline::run (gpu_preview.rs) after fit_chain and before any link's fit_spatial, from chain.links and chain.last.",
+        "- Charge additions with Figures::charge before creating them.",
+        "- Retire textures past the need through retire_preview, with a new Held variant.",
+        "- Bump the pool's generation whenever a texture is removed or replaced. A new boundary size or origin replaces the whole pool.",
+        "- GpuSlot::bytes counts the pool once, and retire_slot takes it with the slot.",
+        "- A refusal part-way through fitting returns before anything is encoded, as a refused link's planes do today.",
+        "Binding: SpatialSlot and spatial::Planes hold the link's kept textures, its parameters and its mapping into the pool, and Groups::new resolves each plane's view from either. A link whose groups were built under another pool generation rebuilds them and forgets, as a new pipeline makes it do today.",
+        "Schedule, own textures: spatial::Schedule keeps their content keys as today.",
+        "Schedule, pool textures: a pool texture's key is a record (holder, key) in the pool.",
+        "- The holder is the schedule's generation. It comes from a counter in the slot, drawn when the planes are created and again at every reset.",
+        "- kept() answers a pool texture's key only to its own holder, and a pass that writes one records (holder, key).",
+        "- keep_only(applied), after an incremental tick, also clears the records this schedule holds.",
+        "- Pass the pool to SpatialSlot::tick and to the schedule's run, keep_only and reset.",
+        "Leave unchanged where passes run: pass_rect, valid, needed and the incremental rectangles. A pass's output is read only within the dependency cone that GpuSpatial::reach bounds, and the tick writes that cone itself.",
+        "Prove that with a test-only poison. A switch (cfg(test) on PhotoPipeline, the qualification feature on Qualifier) writes NaN bits into every pool texture with queue.write_texture and clears the pool's records before each link's passes. Pool textures gain COPY_DST only in builds with that switch.",
+        "The qualification harness: Session (qualification.rs) builds its pool and planes through the slot's own constructor and compares them in same_planes. evaluate_sequence, or a sibling, reports passes tick by tick so tests can pin each tick's count. slot_charge, which Qualifier::charged_bytes reports, and the slot's own figure both come from the TASK-001 function plus the slot's boundary, output, uniform and buffers.",
+        "Evidence: SurfaceDiagnostics (crates/luxforge-ui/src/photo_surface.rs) and the snapshot (crates/luxforge-app/src/app/snapshot.rs) report the pool's bytes in state.surface.gpu beside gpu_preview_in_use_bytes; a suggested name is gpu_preview_scratch_bytes. Update the xtask readers of those figures to match.",
+        "Pass counts that stay as they are:",
+        "- gpu_presence_a_drag_reruns_only_the_passes_it_changes: Texture 5, Clarity 0, Dehaze 19 of 22.",
+        "- gpu_presence_after_detail_reruns_only_the_passes_a_tick_changes: 0, 5, 17 and 13 of 27, since Detail and Presence share no class.",
+        "The one count expected to change: over two masked Presence links, a Dehaze drag of the first runs 20 of its 22 passes on a tick after the second has run. Measure any other figure before pinning it.",
+        "Update the tests that pin plane bytes to the pooled layout, keeping what each one proves:",
+        "- spatial_planes_are_charged_released_and_refused_past_the_budget;",
+        "- a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own, whose wider scratch plane now replaces a pool texture;",
+        "- every_allocation_is_charged_and_a_released_slot_returns_the_budget_to_zero.",
+        "Correct the doc comment of gpu_presence_after_detail_reruns_only_the_passes_a_tick_changes, which says chained steps share their scratch textures; until now they shared none."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Shared scratch design",
+          "target": "docs/design/gpu-shared-scratch.md",
+          "locator": "The schedule across links; Partial and incremental evaluation; The qualification harness",
+          "relevance": "The pool's lifetime, the holder records, why the incremental path is unchanged, and the poison test."
+        },
+        {
+          "kind": "file",
+          "label": "The slot",
+          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview.rs",
+          "locator": "GpuSlot, SpatialSlot::tick, PhotoPipeline::run, fit_spatial, fit_chain, retire_preview, Held, slot_charge",
+          "relevance": "Where the pool is held, fitted, charged and retired, and where every link is ticked."
+        },
+        {
+          "kind": "file",
+          "label": "Planes, groups and schedule",
+          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview/spatial.rs",
+          "locator": "Planes, Groups, Schedule",
+          "relevance": "The textures a link binds and the keys that let a tick skip passes."
+        },
+        {
+          "kind": "file",
+          "label": "Qualification session",
+          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview/qualification.rs",
+          "locator": "Session, evaluate_after, evaluate_sequence, charged_bytes",
+          "relevance": "The headless chain loop every bit-exact test runs through, which must lay out planes exactly as the slot does."
+        },
+        {
+          "kind": "file",
+          "label": "Slot tests",
+          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview/tests/spatial.rs",
+          "locator": "test_spatial, a_change_to_an_apply_alone_runs_no_pass, a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own",
+          "relevance": "The pattern for headless tests through the slot's own prepare path, pass counts and charges."
+        },
+        {
+          "kind": "file",
+          "label": "Incremental mask tests",
+          "target": "crates/luxforge-app/src/app/gpu_mask_tests.rs",
+          "locator": "gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it, gpu_mask_a_moved_radial_is_evaluated_where_its_bounds_were_and_are, gpu_mask_a_mask_grown_toward_the_edge_reads_its_inputs_latest_values",
+          "relevance": "Bit-exact incremental tests over several masked Presence links, which exercise the pool once it is shared and must pass with the poison on."
+        },
+        {
+          "kind": "file",
+          "label": "Chained pass counts",
+          "target": "crates/luxforge-app/src/app/gpu_presence_tests/chain.rs",
+          "locator": "gpu_presence_after_detail_reruns_only_the_passes_a_tick_changes",
+          "relevance": "Pass counts and bit-exactness over Detail then Presence; its doc comment is stale."
+        },
+        {
+          "kind": "file",
+          "label": "Evidence",
+          "target": "crates/luxforge-app/src/app/snapshot.rs",
+          "locator": "state.surface.gpu",
+          "relevance": "Where the pool's bytes join the captured GPU-preview figures."
+        }
+      ],
+      "acceptance_criteria": [
+        "A slot holds one pool. Its bytes are charged once, before creation; refused past the budget, naming budget-exceeded; and released with the slot, so the in-use figure returns to zero. A pool texture whose predecessor is still retiring waits a frame, as planes do, and nothing is allocated twice.",
+        "Over a chain of at least three spatial links, no texture an apply reads is written by another link's pass, and no pool texture has two holders.",
+        "Through the slot's own prepare path (the widget crate's headless tests), a chain of at least three spatial links with colour links between them draws every frame bit for bit as a fresh pipeline draws the same plan. Its ticks change, in turn, one link's pass words, another link's apply word, the step before, and the boundary. A link whose scratch is still its own skips its first writer, and runs it again after another link has written that pool texture.",
+        "Through the qualifier, over masked Presence layers of all three fields on at least three masks, a global Presence layer and a masked Basic layer, drags of different links in turn over at least 20 ticks are bit for bit the whole evaluation, with each tick's pass count pinned.",
+        "gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it, gpu_mask_a_moved_radial_is_evaluated_where_its_bounds_were_and_are, gpu_mask_a_mask_grown_toward_the_edge_reads_its_inputs_latest_values and gpu_presence_a_masked_layer_runs_its_passes_over_its_mask_alone pass, and pass again with the poison on.",
+        "The single-link pass counts stand, and the multi-link Dehaze count is pinned.",
+        "slot_charge, Qualifier::charged_bytes and the live slot report one figure. Four masked Texture and Clarity layers over 2292 x 1528 on a JPEG charge about 328 MB where they charged 551.6 MB; the test pins the exact figure.",
+        "Captured frames report the pool's bytes."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Headless widget-crate tests through PhotoPipeline's prepare path cover the pool's charge, refusal, retirement and generation, alternating ticks across links, the skipped and re-run first writer, and the poison.",
+          "Qualifier tests in luxforge-app, named with the gpu_presence_ or gpu_mask_ prefix, cover alternating drags of different masked Presence links with per-tick pass counts; then rerun the existing incremental and partial tests with the poison on.",
+          "Rerun the Detail, Dehaze and window tests, whose charges and pass counts the pool may move."
+        ],
+        "commands": [
+          "cargo test -p luxforge-ui --lib gpu_preview",
+          "cargo test -p luxforge-app --bin luxforge -- gpu_presence gpu_mask gpu_detail gpu_dehaze gpu_preview gpu_window",
+          "cargo test -p luxforge-core --lib gpu",
+          "cargo xtask lint",
+          "cargo xtask fmt"
+        ],
+        "expected_results": [
+          "Every frame matches its unshared evaluation bit for bit, the poison changes no result, pass counts move only where another link wrote a link's scratch, and the slot charges the pooled figure."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Hold a plan to the slot's own charge before its boundary exists, by making the desktop's region_charge count every link's intermediate and the shared planes through the chain charge.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002"
+      ],
+      "extra_context": [
+        "Today region_charge (crates/luxforge-app/src/app/gpu_preview.rs) answers the boundary over the request's window, plus the least the slot takes:",
+        "- the boundary;",
+        "- a tail's intermediate;",
+        "- the frame;",
+        "- plane_bytes over the plan's spatial steps, converted alone through gpu_plan::spatial_step. That shares apply planes the slot never shares, and it counts no link's intermediate, so a chain of four masked layers is under-counted by three intermediates and its unshared planes.",
+        "The change: convert every step with gpu_plan::plan_steps and call the TASK-001 function over the window's size and origin, at the request's format. Where a step cannot be converted, fall back to the core's GpuSpatial::plane_bytes for each operation plus the intermediates, as today's fallback sums the operations.",
+        "The figure decides three things:",
+        "- the 256 MiB boundary bound and the budget, before a boundary is asked for at 100% and at Fit's exact stage, with the over_budget evidence;",
+        "- at a percentage zoom, whether the GPU shape or the CPU shape is drawn (GpuPreview::cpu_shape).",
+        "Both now see the pooled figure."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Shared scratch design",
+          "target": "docs/design/gpu-shared-scratch.md",
+          "locator": "Binding and charging",
+          "relevance": "One charge for the slot, slot_charge and the desktop."
+        },
+        {
+          "kind": "file",
+          "label": "The desktop's estimate",
+          "target": "crates/luxforge-app/src/app/gpu_preview.rs",
+          "locator": "region_charge, Editor::gpu_tick",
+          "relevance": "The figure held to the boundary bound and the budget before a boundary is rendered."
+        },
+        {
+          "kind": "file",
+          "label": "Plan conversion",
+          "target": "crates/luxforge-app/src/app/gpu_plan.rs",
+          "locator": "plan_steps, spatial_step, has_tail",
+          "relevance": "Converts a core plan's steps without a boundary."
+        },
+        {
+          "kind": "file",
+          "label": "Budget at 100%",
+          "target": "docs/design/gpu-preview.md",
+          "locator": "At 100% and above: The budget; Spatial layers",
+          "relevance": "How the estimate gates a region's boundary and the choice of shape."
+        }
+      ],
+      "acceptance_criteria": [
+        "For a chained masked plan (a Basic layer, three masked Presence layers and a global one) over a 100% region and at Fit's exact stage, the desktop's slot figure is at most the surface's slot_charge for the converted plan. The two differ only by the output's size bucket beyond the frame, the placement uniform and the words and blocks buffers, which the test computes.",
+        "A plan whose shared slot fits a test budget that its unshared sum would pass asks for its boundary. A plan over the budget names budget-exceeded, with the new figure in over_budget.",
+        "gpu_window_an_exact_fit_crop_holds_the_window_its_output_reads, gpu_window_an_exact_fit_slot_over_the_budget_keeps_the_cpu_path and gpu_preview_a_percentage_spatial_drag_draws_the_shape_the_budget_holds pass. Their figures change only where a chain's intermediates or shared planes now count."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Hold region_charge to the qualifier's slot_charge for chained masked plans at a region and at Fit's exact stage, with the remainder computed.",
+          "Drive the desktop with editor.gpu.budget to show that the shared figure admits a boundary which the unshared figure would refuse."
+        ],
+        "commands": [
+          "cargo test -p luxforge-app --bin luxforge -- gpu_window gpu_preview",
+          "cargo xtask lint",
+          "cargo xtask fmt"
+        ],
+        "expected_results": [
+          "The desktop asks for a boundary exactly when the slot that draws it fits, and its evidence names the slot's figure."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Keep Texture's band in a one-channel plane of its own, so a Texture unit keeps 4 bytes a pixel instead of 8, with every frame bit for bit as before.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Today texture() (crates/luxforge-core/src/modules/presence/gpu.rs) declares three planes:",
+        "- sums, a Pair;",
+        "- the coefficients, a HalfPair that is not scratch, because the coarse smoother's last pass writes the band into it;",
+        "- the fine smoother, a HalfScalar.",
+        "compose's single_writer then gives the band a plane of its own, copied from the coefficients' format: rg32float, 8 bytes a pixel kept, though lf_presence_texture reads only .x.",
+        "The change: declare a fourth plane for the band, a HalfScalar that is not scratch, and have the coarse smoother's last pass (guided_self's output) write it. The coefficients become scratch.",
+        "- Texture then holds 24 bytes a pixel instead of 28: sums 8, coefficients 8, fine 4, band 4.",
+        "- All three units hold about 28.6 bytes a pixel instead of 32.6.",
+        "The band is an f32 in r32float as it was in rg32float, so frames do not change. Prove it with a test that draws a plan in both layouts (the converted spatial step edited back to a two-channel band) and compares them bit for bit.",
+        "The band's pass now writes r32float, which makes it another pass module. If the pipeline count moves from 22 passes on 13 pipelines (docs/design/gpu-preview.md, Pipelines), record the new count.",
+        "Correct texture()'s doc comment, which says 20 bytes a pixel and says Texture takes Detail's half-precision planes behind Detail; no link does either. Also correct every test or doc figure that pins Texture's 28 or Presence's 32.6 bytes a pixel.",
+        "This task is independent of the pool and may run before it or beside it. Together they leave a masked Presence layer about 4.25 bytes a pixel of kept planes, plus its intermediate."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Shared scratch design",
+          "target": "docs/design/gpu-shared-scratch.md",
+          "locator": "Texture's band in one channel",
+          "relevance": "The layout change and why it is bit for bit."
+        },
+        {
+          "kind": "file",
+          "label": "Presence's GPU description",
+          "target": "crates/luxforge-core/src/modules/presence/gpu.rs",
+          "locator": "texture, guided_self, Last::BandFrom",
+          "relevance": "Where Texture declares its planes and writes its band."
+        },
+        {
+          "kind": "file",
+          "label": "Presence program",
+          "target": "crates/luxforge-core/src/modules/presence/presence.wgsl",
+          "locator": "lf_presence_texture, lf_presence_sum_y",
+          "relevance": "The apply reads one channel of the band; the last pass stores it."
+        },
+        {
+          "kind": "file",
+          "label": "Composition",
+          "target": "crates/luxforge-core/src/render/gpu/spatial.rs",
+          "locator": "single_writer",
+          "relevance": "Why the band's own plane is a two-channel copy today."
+        },
+        {
+          "kind": "file",
+          "label": "Plane figures",
+          "target": "docs/design/gpu-preview.md",
+          "locator": "Bounds; Spatial programs; Plane sharing and precision",
+          "relevance": "The stated plane sizes this change moves."
+        }
+      ],
+      "acceptance_criteria": [
+        "Texture's planes take 24 bytes a pixel and keep 4, and every plane an apply reads still has one writer (every_plane_an_apply_reads_has_one_writer).",
+        "A plan drawn with the band in a two-channel plane and in a one-channel plane gives the same frame bit for bit, and the Presence per-unit and chained tests pass with their error figures unchanged.",
+        "Every stated figure for Texture's and Presence's planes, in code comments, tests and docs/design/gpu-preview.md, is current."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the core's Presence and GPU plan tests, then the luxforge-app Presence tests, including the new two-layout comparison, which is named with the gpu_presence_ prefix."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib -- presence gpu",
+          "cargo test -p luxforge-app --bin luxforge -- gpu_presence",
+          "cargo xtask lint",
+          "cargo xtask fmt"
+        ],
+        "expected_results": [
+          "Texture keeps half the bytes it kept, and no frame changes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Say in the status bar why a gesture is drawn on the slower CPU path when the GPU preview is on and the reason lasts, in the place, timing and wording the design records as defaults.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Today the status bar's render slot (StatusBarModel in crates/luxforge-app/src/state/status.rs) names the frame on screen. It reads gpu_text while a GPU frame is drawn, then Rendering… or the CPU frame's RenderTime::text. Why a gesture took the CPU path reaches only the evidence: Editor::gpu_plan_fallback (crates/luxforge-app/src/app/gpu_preview.rs) answers the preference or the drag's reason, which the snapshot records as state.surface.gpu.plan_fallback (crates/luxforge-app/src/app/snapshot.rs). The drag's reason holds the plan's code, the desktop's own reasons and the surface's fallback.",
+        "Defaults, from the design's notice section (each a proposal the owner may revise):",
+        "- a short muted phrase after the render slot, with a tooltip of one sentence, and nothing drawn on the photograph;",
+        "- it shows from the first tick of a gesture whose latest tick took the CPU path for a lasting reason, until the next GPU frame or the end of that gesture's settle;",
+        "- the reasons are grouped into classes, each with one phrase and one tooltip (the design's 'Reasons and wording' table);",
+        "- reasons that pass within a tick or two show nothing (boundary-pending, boundary-uploading, boundary-released, surface-pending), and neither does the preference turned off.",
+        "compiling shows its phrase only once it has lasted half a second. Derive that on each tick from when the drag first saw it; add no timer, poll or subscription (performance rule 8). A drag that holds still keeps the phrase it last had.",
+        "The Stack class names the layer the plan's reason names, by its label in the recipe list.",
+        "Evidence: the snapshot records the notice's phrase and tooltip beside status.render and plan_fallback, so a rendered check can correlate them.",
+        "Rendered check: extend the gpu-preview-zoom scenario (xtask/src/gpu_preview_zoom_smoke.rs) with a drag at a zoom below 100%, whose ticks take the CPU path naming not-fit. Check the notice in the captured state against the reason recorded in the same frame, and inspect the capture as an image. Build the release app first, since smoke launches target/release/luxforge.",
+        "Docs: move the notice into docs/design/gpu-preview.md's 'Labels and overlays during motion' as shipped behaviour, keeping a pointer in docs/design/gpu-shared-scratch.md. Describe it in docs/user-guide.md's status bar and GPU preview paragraphs, and in docs/features.md's GPU previews row."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "The notice's design",
+          "target": "docs/design/gpu-shared-scratch.md",
+          "locator": "The CPU fallback notice; Reasons and wording",
+          "relevance": "The recorded defaults: place, timing, classes, phrases and tooltips."
+        },
+        {
+          "kind": "file",
+          "label": "Status bar model",
+          "target": "crates/luxforge-app/src/state/status.rs",
+          "locator": "StatusBarModel, derive, gpu_text, RenderTime::text",
+          "relevance": "Where the render slot's text is derived and where the notice joins it."
+        },
+        {
+          "kind": "file",
+          "label": "The fallback reason",
+          "target": "crates/luxforge-app/src/app/gpu_preview.rs",
+          "locator": "Editor::gpu_plan_fallback, Drag::reason, Editor::gpu_tick",
+          "relevance": "The reason each CPU tick records, and the gesture it belongs to."
+        },
+        {
+          "kind": "file",
+          "label": "Fallback codes",
+          "target": "docs/design/gpu-preview.md",
+          "locator": "A tick (the CPU path's reasons); Where the code lives (reasons for no plan); Fallback",
+          "relevance": "Every code a tick can name, which the notice groups into classes."
+        },
+        {
+          "kind": "file",
+          "label": "Zoom scenario",
+          "target": "xtask/src/gpu_preview_zoom_smoke.rs",
+          "relevance": "The rendered scenario the notice's check joins."
+        }
+      ],
+      "acceptance_criteria": [
+        "Each class of reason in the design's table shows its phrase and tooltip while a gesture's latest tick took the CPU path for it, and clears at the next GPU frame or when the gesture's settle ends. The Stack class names the layer.",
+        "Passing reasons and the preference off show nothing. compiling shows its phrase only from a tick at least half a second after the drag first saw it.",
+        "The snapshot records the notice beside plan_fallback, and desktop tests hold each class's text against the reason recorded with it. The cases include a slot over a test budget, a zoom below 100%, a first tick that waits for its boundary, and the preference off.",
+        "The gpu-preview-zoom scenario captures the notice at a zoom below 100% with not-fit recorded in the same frame, and the capture shows it.",
+        "No timer, poll or subscription is added; an idle editor stays asleep.",
+        "docs/design/gpu-preview.md, docs/user-guide.md and docs/features.md describe the notice as shipped."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Status model unit tests: each class's phrase and tooltip, passing reasons, the preference off and the compile delay.",
+          "Desktop tests: drags through Editor with editor.gpu.budget and a percentage zoom below 100%, reading workspace.status and the snapshot.",
+          "Rendered check: the extended gpu-preview-zoom scenario over a release build, its capture inspected as an image."
+        ],
+        "commands": [
+          "cargo test -p luxforge-app --bin luxforge -- status gpu_preview gpu_settle gpu_window",
+          "cargo build --release --locked -p luxforge-app",
+          "cargo xtask smoke --scenario gpu-preview-zoom --output NEW_DIR",
+          "cargo xtask lint",
+          "cargo xtask fmt"
+        ],
+        "expected_results": [
+          "A person whose drag is drawn on the CPU sees why in the status bar, the evidence records the same reason, and nothing flickers for reasons that pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Let a recipe hold 16 masked spatial layers (owner, 2026-10-03), with a compile cache that holds every link sequence the largest plan needs, so 16 masked layers draw on the GPU once compiled.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003",
+        "TASK-005"
+      ],
+      "extra_context": [
+        "The limit: MAX_MASKED_SPATIAL_LAYERS (crates/luxforge-core/src/modules/spatial.rs) becomes 16. Its refusal in registry/compile.rs keeps its form, and registry/compile_tests.rs holds that 16 compile and a seventeenth is refused (its message still says 'four masked spatial layers'). Masked Presence and Detail layers count together, as now.",
+        "The compile cache must not thrash. The surface compiles one program sequence per link, and links of one shape share it; a shape is a mask's component programs, the units and the colour steps after it.",
+        "- Sixteen masked layers of mixed mask kinds, unit sets and following colour steps can need more sequences than PIPELINE_CACHE (16, gpu_preview/compile.rs) holds, warm lists included.",
+        "- Every tick asks for every link's sequence, so a finished compile would evict one of the plan's own sequences and the drag would never draw on the GPU.",
+        "- Raise the cache, and the queue bound that follows it, so the largest plan's sequences plus its warm list fit. The suggestion is 64; compiled pipelines are small, and pass modules are shared through PASS_CACHE.",
+        "- A widget-crate test draws a plan whose chain needs more distinct sequences than 16. Once compiled, it draws on the GPU every tick with no compile after the first.",
+        "Warm list: WARM_SPATIAL_PLANS (crates/luxforge-core/src/render/gpu/preview.rs) warms the drags of at most four spatial layers. Check whether a drag of a later masked layer of another shape begins with compiling. If one does, warm one plan per distinct drafted shape instead of the first four layers, within the cache.",
+        "The timing test's loop: render::spatial::tests::masked_spatial_timing loops over every count up to the cap. Give it the counts 1, 2, 4, 8 and 16 so it stays a bounded run; the measurement task runs it.",
+        "The harness: editor-latency (xtask/src/editor_latency.rs) keeps its own MASKED_SPATIAL_LAYERS, which --mask-presence reads, and limits --masks to 1 to 10. Make both 16, the masks a recipe holds counting the brushed one, and keep the script within its deadline.",
+        "Docs:",
+        "- docs/design/masking.md: the limits table says 16, and the decided paragraph becomes current behaviour.",
+        "- docs/design/detail.md: the shared cap is 16.",
+        "- docs/engineering/development.md: editor-latency's flags.",
+        "- docs/user-guide.md and docs/features.md, wherever they state the limit."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Sixteen layers' design",
+          "target": "docs/design/gpu-shared-scratch.md",
+          "locator": "Sixteen masked spatial layers",
+          "relevance": "The limit, its CPU cost, the compile cache and the warm list."
+        },
+        {
+          "kind": "file",
+          "label": "The cap",
+          "target": "crates/luxforge-core/src/modules/spatial.rs",
+          "locator": "MAX_MASKED_SPATIAL_LAYERS",
+          "relevance": "The constant and why it exists."
+        },
+        {
+          "kind": "file",
+          "label": "The refusal",
+          "target": "crates/luxforge-core/src/modules/registry/compile.rs",
+          "locator": "masked_spatial",
+          "relevance": "Where a recipe past the cap is refused with resource-limit."
+        },
+        {
+          "kind": "file",
+          "label": "Compile cache",
+          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview/compile.rs",
+          "locator": "PIPELINE_CACHE, Shared::queue, Shared::finish",
+          "relevance": "The bound on compiled sequences and the eviction a large plan would thrash."
+        },
+        {
+          "kind": "file",
+          "label": "Warm list",
+          "target": "crates/luxforge-core/src/render/gpu/preview.rs",
+          "locator": "WARM_SPATIAL_PLANS",
+          "relevance": "Which spatial layers' drags compile before a gesture."
+        },
+        {
+          "kind": "file",
+          "label": "Paint harness",
+          "target": "xtask/src/editor_latency.rs",
+          "locator": "MASKED_SPATIAL_LAYERS, masked_adjustments, the --masks bound",
+          "relevance": "The harness's own copy of the cap and its mask count bound."
+        },
+        {
+          "kind": "file",
+          "label": "Masking limits",
+          "target": "docs/design/masking.md",
+          "locator": "Resource and responsiveness constraints",
+          "relevance": "The limits table and the decided paragraph this task makes current."
+        }
+      ],
+      "acceptance_criteria": [
+        "A recipe holds 16 masked spatial layers, Presence and Detail together, and a seventeenth is refused with resource-limit naming the limit.",
+        "A plan whose chain needs more distinct sequences than the old cache held compiles once, then draws on the GPU every tick with no further compile. The cache stays bounded and documented.",
+        "A drag of any of 16 masked layers, of the shapes the warm list covers, begins on the GPU on a warm shader cache. Any shape it does not cover is named in the docs.",
+        "editor-latency paints with up to 16 masks, Presence on each with --mask-presence.",
+        "Masking, Detail, development, user guide and feature docs state 16."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Core compile tests at the new limit.",
+          "A widget-crate test of a plan needing more sequences than 16.",
+          "Desktop and qualifier tests over 16 masked layers of mixed shapes."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib -- masked_spatial compile",
+          "cargo test -p luxforge-ui --lib gpu_preview",
+          "cargo test -p luxforge-app --bin luxforge -- gpu_presence gpu_mask gpu_preview",
+          "cargo xtask lint",
+          "cargo xtask fmt"
+        ],
+        "expected_results": [
+          "Sixteen masked spatial layers compile, compile their GPU sequences once and draw on the GPU, and the limit is stated everywhere it appears."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Measure on the M4 what the shared pool, the one-channel band and 16 masked layers cost and save, re-qualify the GPU preview, and bring the docs to the shipped behaviour.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004",
+        "TASK-006"
+      ],
+      "extra_context": [
+        "Memory, deterministic: add an ignored luxforge-app measurement test (suggested name gpu_shared_scratch_measured) that reports Qualifier::charged_bytes for 1, 2, 4, 8 and 16 masked Presence layers.",
+        "- Layers of Texture and Clarity, and layers of all three fields.",
+        "- At the full-screen Fit stage of a 24 MP photograph (2292 x 1528) and over the 100% window of 3778 x 2578, on JPEG and on RAW boundaries.",
+        "- Report each layer's increment and how many layers fit 2 GiB, against the design's table.",
+        "Pass counts: drags of each Presence field over two and four masked links (the Dehaze figure), and painted ticks, as the tests pin them.",
+        "The settled render: masked_spatial_timing at 1, 2, 4, 8 and 16 masked layers, whole-frame and band masks, at 24 MP and 60 MP. An export runs the same render and then encodes.",
+        "Native painting runs on a quiet host, before and after back to back and then in reverse order, noting the load (docs/specs/performance.md, Painting over masked spatial layers).",
+        "- editor-latency --mode paint for the rows of 'A stroke's latency': Fit and 100% with three masks, Presence on each.",
+        "- The new rows: 10 and 16 masks with --mask-presence at Fit and 100%, and the X100VI with Detail through the private manifest where it is available.",
+        "- Before is a release build of the base commit, passed with --binary PATH. After is the current release build; build it first.",
+        "- The three-mask rows compare like for like. At 10 masks the base build gives Presence to four, so the 10- and 16-mask rows are new workloads, reported as such.",
+        "- Report p50 and p95, each frame's path and the notice it showed, and the GPU-preview peak. Latency at three masks should be unchanged within noise, and the peak lower wherever two or more spatial layers are held.",
+        "- Run gpu_mask_a_painted_stroke_costs_where_it_changes before and after as well.",
+        "Corpora, run once in the release profile with the RAW manifest: Presence and Detail at Fit, and every family at 100%. Every cell must be within its limits. Record the heaviest slot: Detail then all three Presence fields, 1,174.1 MB before; sharing leaves it, and Texture's band lowers it.",
+        "Docs:",
+        "- Fold the pool, the charges, the band and the cap into docs/design/gpu-preview.md: the tick's plane paragraph, Plane sharing and precision, Bounds and typical sizes, Verification, and the Later entry.",
+        "- Then delete docs/design/gpu-shared-scratch.md. Repoint every link to it, including docs/decisions.md's link to the notice's recorded defaults, tasks/README.md, docs/plan.md and this plan's context links.",
+        "- Record the figures and the performance-rules checklist answers in docs/specs/performance.md.",
+        "- Update docs/features.md and docs/plan.md.",
+        "Verification: the quick tier once at hand-off, and the rendered tier at the integration point. The gpu-preview and gpu-preview-zoom scenarios' pass-count and budget checks stand unchanged, because a single Presence layer shares nothing."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Shared scratch design",
+          "target": "docs/design/gpu-shared-scratch.md",
+          "locator": "Why; Verification and acceptance",
+          "relevance": "The figures to re-measure and the acceptance the measurement closes."
+        },
+        {
+          "kind": "file",
+          "label": "Painting performance",
+          "target": "docs/specs/performance.md",
+          "locator": "Painting over masked spatial layers",
+          "relevance": "The paint rows, the tick cost and the corpus summary to re-run and update."
+        },
+        {
+          "kind": "file",
+          "label": "GPU preview design",
+          "target": "docs/design/gpu-preview.md",
+          "locator": "A tick; Plane sharing and precision; Bounds; Verification; Later",
+          "relevance": "Where the shipped behaviour is documented."
+        },
+        {
+          "kind": "file",
+          "label": "When to verify and commands",
+          "target": "docs/engineering/development.md",
+          "locator": "When to verify; Commands",
+          "relevance": "The editor-latency flags, the corpus commands and the verification tiers."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "locator": "Review checklist",
+          "relevance": "The questions a change under crates/ answers once it is finished."
+        },
+        {
+          "kind": "file",
+          "label": "Masked layer cap proposal",
+          "target": "docs/design/masking.md",
+          "locator": "Resource and responsiveness constraints",
+          "relevance": "Its per-layer GPU figure becomes the measured one."
+        }
+      ],
+      "acceptance_criteria": [
+        "docs/specs/performance.md records, with host, build, scope and counts, the measured figures for the shared pool and the one-channel band: per-layer increments, and how many masked Presence layers fit 2 GiB at Fit and at 100% on JPEG and RAW.",
+        "The three-mask paint rows show latency within noise of the before figures measured back to back, and a lower GPU-preview peak. The 10- and 16-mask rows are recorded with each frame's path and notice. The GPU's cost per tick is unchanged within noise.",
+        "The settled render's cost at 16 masked layers is recorded at 24 MP and 60 MP.",
+        "Every corpus cell at Fit and at 100% is within its limits, and the heaviest slot is recorded.",
+        "docs/design/gpu-preview.md describes the pool, the charges, the band and the cap as shipped. The planned design is folded in and deleted, with every link to it repointed. The performance-rules checklist is answered.",
+        "verify --tier quick and verify --tier rendered pass."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the deterministic measurement test and record the table.",
+          "Run the settled-render timing at up to 16 masked layers.",
+          "Run the paint rows and the tick-cost test before and after, back to back and reversed, on a quiet host.",
+          "Run the corpora once.",
+          "Update the docs, then run the quick and rendered tiers."
+        ],
+        "commands": [
+          "cargo test --release -p luxforge-app --bin luxforge gpu_shared_scratch_measured -- --ignored --nocapture",
+          "cargo test --release --locked --package luxforge-core --lib -- --ignored masked_spatial_timing --nocapture",
+          "cargo test --release -p luxforge-app --bin luxforge gpu_mask_a_painted_stroke_costs_where_it_changes -- --ignored --nocapture",
+          "cargo build --release --locked -p luxforge-app",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/24mp.jpg --output NEW_DIR --binary PATH --mode paint --samples 120 --window 1728x1080 --masks 3 --mask-presence",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/24mp.jpg --output NEW_DIR --mode paint --samples 120 --window 1728x1080 --masks 3 --mask-presence",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/24mp.jpg --output NEW_DIR --mode paint --samples 120 --window 1728x1080 --zoom 100 --masks 3 --mask-presence",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/24mp.jpg --output NEW_DIR --mode paint --samples 120 --window 1728x1080 --masks 16 --mask-presence",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/24mp.jpg --output NEW_DIR --mode paint --samples 120 --window 1728x1080 --zoom 100 --masks 16 --mask-presence",
+          "LUXFORGE_GPU_CORPUS_OUTPUT=NEW_DIR LUXFORGE_GENERATED_FIXTURES=DIR LUXFORGE_RAW_MANIFEST=FILE cargo test --release -p luxforge-app gpu_presence_corpus -- --ignored --nocapture",
+          "LUXFORGE_GPU_CORPUS_OUTPUT=NEW_DIR LUXFORGE_GENERATED_FIXTURES=DIR LUXFORGE_RAW_MANIFEST=FILE cargo test --release -p luxforge-app gpu_detail_corpus -- --ignored --nocapture",
+          "LUXFORGE_GPU_CORPUS_OUTPUT=NEW_DIR LUXFORGE_GENERATED_FIXTURES=DIR LUXFORGE_RAW_MANIFEST=FILE cargo test --release -p luxforge-app gpu_preview_corpus_at_100_percent -- --ignored --nocapture",
+          "cargo xtask check-repository",
+          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Memory per further masked spatial layer falls by its scratch and half of Texture's kept plane. Painting keeps its latency, 16 masked layers are measured, every corpus cell stays within its limits, and the docs describe what shipped."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-004",
+        "TASK-005"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-002"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-003"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-006"
+      ]
+    },
+    {
+      "wave": 5,
+      "task_ids": [
+        "TASK-007"
+      ]
+    }
+  ]
+}

@@ -326,6 +326,9 @@ pub(crate) struct Editor {
     /// identity and content map, which the view model may not name, so it is not in the panel's
     /// view-model state.
     pub(crate) armed: Option<masks::ArmedBrush>,
+    /// The selected gradient's handles, drawn while nothing is held so a committed gradient can be
+    /// dragged again. Local view state holding no core draft: a press on a handle opens one.
+    pub(crate) resting: Option<masks::RestingHandles>,
     /// One active and one replaceable pending job filling every mask's coverage thumbnail, and the
     /// settled stack it describes.
     pub(crate) thumbnailer: thumbnails::Thumbnailer,
@@ -501,6 +504,7 @@ impl Editor {
             crop_section: Default::default(),
             mask_panel: Default::default(),
             armed: None,
+            resting: None,
             thumbnailer: Default::default(),
             coverage_worker: Default::default(),
             palette: Default::default(),
@@ -822,8 +826,8 @@ impl Editor {
                     let fit = matches!(self.session.preview.view.zoom, luxforge_core::Zoom::Fit);
                     (after.drawn(fit), comparison.position)
                 }),
-            mask_draft: self.mask_shape(),
-            mask_map: self.held_mask().and_then(|mask| mask.map.as_ref()),
+            mask_draft: self.drawn_mask().map(|mask| &mask.shape),
+            mask_map: self.drawn_mask().and_then(|mask| mask.map.as_ref()),
             draft: self.crop(),
             ..self.presentation.surfaces(self.overlays.request.as_ref())
         };
@@ -841,6 +845,7 @@ impl Editor {
         {
             surfaces.gpu_hold = self.gpu_held();
             surfaces.gpu_tag = Some(revision);
+            surfaces.gpu_change = self.gpu.surface_change();
         }
         surfaces.gpu_warm = self.gpu.warm();
         surfaces.dissolve = self.gpu_settle.dissolve();
