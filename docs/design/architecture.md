@@ -51,7 +51,7 @@ Paths are under `crates/luxforge-core/src`.
 | --- | --- |
 | `lib.rs` | The public surface, listed by name: what the desktop, `luxforge-json`, `luxforge-net`, the test kit, xtask and the core's integration tests use through the crate root, every type a public item's signature carries so a consumer can name whatever it receives, and the modules consumers name items through (`activity`, `analysis`, `capabilities`, `colour`, `jobs`, `latest`, `mask`, `path` and `resources`). Every other item is `pub(crate)` or narrower, so the compiler reports what nothing uses |
 | `editor.rs` | The editor service: the `EditorService` struct, opening a catalog, and the types its API speaks |
-| `editor/catalog.rs` | The schema, the format marker, row mapping, and the entry, stroke and request rows |
+| `editor/catalog.rs` | The lock and the journal, the schema, the format marker, row mapping, and the entry, stroke and request rows |
 | `editor/entries.rs` | The cache of hydrated history entries and each asset's head, and the one `mutate` every write that moves a head goes through |
 | `editor/history.rs` | Admission, commits, undo, redo, restore, versions, lineage and request deduplication |
 | `editor/source.rs` | Source preparation and cache, import, file identity and RAW settings |
@@ -137,13 +137,14 @@ A mask is a host object beside the layers — an ordered list of components with
 ## Persistence
 
 - Local SQLite holds current state, history entries with their snapshots, a monotonic revision, redo navigation and each request's whole answer (the [current catalog format](versions-and-lineage.md#storage-catalog-format-11)). The catalog owner is its only writer, in short atomic transactions; a failed write preserves the prior durable state. Originals and disposable pixel caches stay outside the database.
+- The catalog runs in WAL mode under an exclusive lock, so no `-shm` file exists and no other process reads it while it is open. Each commit appends to `<catalog>-wal` and is flushed in full (`synchronous=FULL`, `fullfsync` and `checkpoint_fullfsync`: `F_FULLFSYNC` on macOS). The `-wal` file lies beside an open or crashed catalog, and the next open recovers from it; a clean close checkpoints it and removes it ([storage](versions-and-lineage.md#storage-catalog-format-11)).
 - Only the current catalog and payload shapes are supported: an unsupported format fails explicitly without rewriting data, and unknown payloads and missing providers are retained and reported, never dropped.
 - Entry records are the only stored copy of a stack. Each entry's history row (sequence, action, label, actor, timestamp, undo parent and restore target) has its own columns, so a history page decodes no entry.
 - Every entry is retained: undo and redo navigate without inverse rows, Restore copies a snapshot into a new action, and versions are named references to entries ([versions and lineage](versions-and-lineage.md)).
 - Beside the entries the catalog holds the preset library ([presets](presets.md#library)), a content-addressed store of painted paths ([masking](masking.md#stroke-storage)) and each entry's references to derived artifacts, immutable content-addressed files in a `<catalog stem>.artifacts` directory that moves with the catalog ([derived artifacts](module-capabilities.md#derived-artifacts)).
 - Module settings, grants, secrets and installed resources are user-level and never part of a catalog.
 - The owner keeps the last 8 entries it read, with their strokes resolved and shared between clones, and the last 16 assets' heads, each updated where a write commits: a history move, or a relocation that rewrites where an asset's original is (an internal write the Locate command will make; no method exposes it yet), announced as an event naming the asset. Reopening starts that cache empty and recovers the same IDs, current snapshot and navigation state.
-- Backups need a consistent SQLite snapshot, not a copy of a live file.
+- A catalog is copied or moved closed, or with its `-wal` file; a copy of the catalog file alone can lack recent commits. Backup is an [open product question](../decisions.md#open-product-questions).
 
 ## Rendering and limits
 

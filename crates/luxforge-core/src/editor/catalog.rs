@@ -91,18 +91,65 @@ pub(crate) fn now_ms() -> i64 {
         .min(i64::MAX as u128) as i64
 }
 
+/// Take the catalog for `connection` alone and answer its format marker, before anything is
+/// written. The exclusive locking mode comes before any read, so in WAL SQLite keeps the log's
+/// index in this process's memory and never creates a `<catalog>-shm` file, and the empty
+/// transaction takes the lock now, so a second owner is refused here rather than at its first
+/// write.
+pub(super) fn lock(connection: &Connection) -> Result<i64, Error> {
+    connection.execute_batch(
+        "PRAGMA foreign_keys=ON;
+         PRAGMA locking_mode=EXCLUSIVE;
+         BEGIN IMMEDIATE;
+         COMMIT;",
+    )?;
+    Ok(connection.pragma_query_value(None, "user_version", |row| row.get(0))?)
+}
+
+/// Refuse an unmarked database that holds anything: only an empty one becomes a catalog.
+pub(super) fn require_empty(connection: &Connection) -> Result<(), Error> {
+    let occupied: bool =
+        connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema)", [], |row| {
+            row.get(0)
+        })?;
+    if occupied {
+        return Err(Error::incompatible(
+            "unmarked catalog is not empty; choose a new catalog path",
+        ));
+    }
+    Ok(())
+}
+
+/// Set the journal of a catalog [`lock`] has taken and this build opens: a write-ahead log, which
+/// a commit appends to once, flushed in full at every commit and checkpoint when `durable` —
+/// `F_FULLFSYNC` on macOS, as [`crate::atomic_file::flush`] makes every other durable write.
+/// `durable` is [`crate::atomic_file::FLUSHES`]: a test build keeps the same log, its file and its
+/// recovery, and skips only the flush. The flush settings come first, so the one write that moves
+/// a catalog from a rollback journal is flushed too. A catalog SQLite cannot keep a log for is
+/// refused, never opened on a weaker journal.
+pub(super) fn configure(connection: &Connection, durable: bool) -> Result<(), Error> {
+    connection.execute_batch(if durable {
+        "PRAGMA synchronous=FULL;
+         PRAGMA fullfsync=ON;
+         PRAGMA checkpoint_fullfsync=ON;"
+    } else {
+        "PRAGMA synchronous=OFF;"
+    })?;
+    let journal: String =
+        connection.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))?;
+    if journal != "wal" {
+        return Err(Error::catalog(format!(
+            "catalog cannot keep a write-ahead log (SQLite kept its {journal} journal); \
+             choose a catalog file on a local disk"
+        )));
+    }
+    Ok(())
+}
+
 impl EditorService {
+    /// Create the current schema in an empty catalog, [`require_empty`] having checked it is.
     pub(super) fn create_schema(connection: &mut Connection) -> Result<(), Error> {
         write(connection, |tx| {
-            let occupied: bool =
-                tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema)", [], |row| {
-                    row.get(0)
-                })?;
-            if occupied {
-                return Err(Error::incompatible(
-                    "unmarked catalog is not empty; choose a new catalog path",
-                ));
-            }
             Ok(tx.execute_batch(&format!(
                 "CREATE TABLE assets (
                     id TEXT PRIMARY KEY,
@@ -605,6 +652,220 @@ mod tests {
             );
             std::fs::remove_file(catalog).unwrap();
         }
+    }
+
+    /// A connection's journal: its mode, `synchronous`, `fullfsync`, `checkpoint_fullfsync` and
+    /// locking mode.
+    fn journal(connection: &Connection) -> (String, i64, i64, i64, String) {
+        let text = |name| {
+            connection
+                .pragma_query_value(None, name, |row| row.get::<_, String>(0))
+                .unwrap()
+        };
+        let number = |name| {
+            connection
+                .pragma_query_value(None, name, |row| row.get::<_, i64>(0))
+                .unwrap()
+        };
+        (
+            text("journal_mode"),
+            number("synchronous"),
+            number("fullfsync"),
+            number("checkpoint_fullfsync"),
+            text("locking_mode"),
+        )
+    }
+
+    /// A durable catalog — every build's but a test build's — opens in a write-ahead log flushed in
+    /// full at every commit and checkpoint, under the exclusive lock that keeps the log's index in
+    /// memory, so only the log is beside it. Every test build skips the flush, so the durable
+    /// settings are read through the function that sets them, on a catalog the test build made in
+    /// the same log without them.
+    #[test]
+    fn a_durable_catalog_opens_in_wal_with_full_flushes() {
+        let catalog = temp("durable.sqlite");
+        let service = EditorService::open(&catalog).unwrap();
+        assert_eq!(
+            journal(&service.connection),
+            ("wal".into(), 0, 0, 0, "exclusive".into()),
+            "a test build keeps the same log and skips only the flush"
+        );
+        assert!(luxforge_testbase::paths::wal(&catalog).exists());
+        assert!(!luxforge_testbase::paths::shm(&catalog).exists());
+        drop(service);
+        let connection = Connection::open(&catalog).unwrap();
+        assert_eq!(lock(&connection).unwrap(), CATALOG_FORMAT);
+        configure(&connection, true).unwrap();
+        assert_eq!(
+            journal(&connection),
+            ("wal".into(), 2, 1, 1, "exclusive".into())
+        );
+        assert!(
+            luxforge_testbase::paths::wal(&catalog).exists(),
+            "the log is beside the open catalog"
+        );
+        assert!(
+            !luxforge_testbase::paths::shm(&catalog).exists(),
+            "and no shared-memory file is"
+        );
+        drop(connection);
+        assert!(!luxforge_testbase::paths::wal(&catalog).exists());
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A catalog SQLite cannot keep a write-ahead log for, such as one in memory, is refused rather
+    /// than opened on a weaker journal.
+    #[test]
+    fn a_catalog_without_a_write_ahead_log_is_refused() {
+        let error = EditorService::open(Path::new(":memory:")).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Catalog);
+        assert_eq!(
+            error.detail,
+            "catalog cannot keep a write-ahead log (SQLite kept its memory journal); \
+             choose a catalog file on a local disk"
+        );
+    }
+
+    /// A file refused at open keeps every byte, its journal mode included: a file on a rollback
+    /// journal — an unsupported catalog, or a database that is not one — is refused before the
+    /// journal is set, so it is not moved to the log.
+    #[test]
+    fn a_refused_file_keeps_its_rollback_journal_and_every_byte() {
+        for marker in [0, CATALOG_FORMAT + 1] {
+            let catalog = temp("refused-rollback.sqlite");
+            let mut service = EditorService::open(&catalog).unwrap();
+            service.import(&fixture()).unwrap();
+            drop(service);
+            let connection = Connection::open(&catalog).unwrap();
+            let journal: String = connection
+                .pragma_update_and_check(None, "journal_mode", "DELETE", |row| row.get(0))
+                .unwrap();
+            assert_eq!(journal, "delete");
+            connection
+                .pragma_update(None, "user_version", marker)
+                .unwrap();
+            drop(connection);
+            let before = std::fs::read(&catalog).unwrap();
+            let error = EditorService::open(&catalog).unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Incompatible);
+            assert_eq!(
+                std::fs::read(&catalog).unwrap(),
+                before,
+                "the refused file keeps every byte"
+            );
+            assert!(!luxforge_testbase::paths::wal(&catalog).exists());
+            assert_eq!(
+                Connection::open(&catalog)
+                    .unwrap()
+                    .pragma_query_value(None, "journal_mode", |row| row.get::<_, String>(0))
+                    .unwrap(),
+                "delete"
+            );
+            std::fs::remove_file(catalog).unwrap();
+        }
+    }
+
+    /// Commits enough to read back: an import, three edits, an undo and a version.
+    fn committed(service: &mut EditorService) -> AssetId {
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        for (revision, rgb) in [[1, 2, 3], [4, 5, 6], [7, 8, 9]].into_iter().enumerate() {
+            let revision = revision as u64;
+            service
+                .apply_pixel(
+                    &asset,
+                    mutation(revision, &format!("edit-{revision}")),
+                    0,
+                    0,
+                    rgb,
+                )
+                .unwrap();
+        }
+        service.undo(&asset, mutation(3, "undo")).unwrap();
+        service
+            .create_version(&asset, "Kept", None, "test")
+            .unwrap();
+        asset
+    }
+
+    /// What a reopen must read again: the head, the history rows and the versions.
+    fn read_back(
+        service: &EditorService,
+        asset: &AssetId,
+    ) -> (crate::EditorState, crate::HistoryPage, Vec<crate::Version>) {
+        let read = (
+            service.state(asset).unwrap(),
+            service.history(asset, None, 10).unwrap(),
+            service.versions(asset).unwrap(),
+        );
+        assert_eq!(read.1.entries.len(), 4, "the import and three edits");
+        assert_eq!(read.2.len(), 1);
+        read
+    }
+
+    /// A crash leaves the log beside the catalog, holding commits the catalog file does not yet
+    /// have. What a process that never closed its catalog leaves — the catalog file and its log,
+    /// copied while the owner still holds them — reopens with every committed entry, the head and
+    /// every history row and version.
+    #[test]
+    fn a_catalog_reopened_after_a_crash_recovers_every_commit_from_its_log() {
+        let original = luxforge_testbase::paths::temp_dir("crashed-from");
+        let catalog = original.join("catalog.sqlite");
+        let developer = || std::sync::Arc::new(ModuleRegistry::developer());
+        let mut service = EditorService::open_with(&catalog, developer()).unwrap();
+        let asset = committed(&mut service);
+        let before = read_back(&service, &asset);
+        let wal = luxforge_testbase::paths::wal(&catalog);
+        assert!(
+            wal.metadata().unwrap().len() > 32,
+            "the commits are in the log, past its header"
+        );
+        assert!(!luxforge_testbase::paths::shm(&catalog).exists());
+        // Read and written rather than copied, so no platform's copy call refuses a file another
+        // handle has open for writing.
+        let (file, log) = (
+            std::fs::read(&catalog).unwrap(),
+            std::fs::read(&wal).unwrap(),
+        );
+        let crashed = luxforge_testbase::paths::temp_dir("crashed-to");
+        let alone = crashed.join("alone.sqlite");
+        std::fs::write(&alone, &file).unwrap();
+        let tables: i64 = Connection::open(&alone)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM sqlite_schema", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(tables, 0, "the catalog file alone holds none of it");
+        let copy = crashed.join("catalog.sqlite");
+        std::fs::write(&copy, &file).unwrap();
+        std::fs::write(luxforge_testbase::paths::wal(&copy), &log).unwrap();
+        let recovered = EditorService::open_with(&copy, developer()).unwrap();
+        assert_eq!(read_back(&recovered, &asset), before);
+        drop(recovered);
+        assert!(
+            !luxforge_testbase::paths::wal(&copy).exists(),
+            "the recovered catalog closes clean"
+        );
+        drop(service);
+        std::fs::remove_dir_all(original).unwrap();
+        std::fs::remove_dir_all(crashed).unwrap();
+    }
+
+    /// A clean close checkpoints the log into the catalog and removes it, so a closed catalog is the
+    /// one file, and a reopen reads every commit from it.
+    #[test]
+    fn a_clean_close_leaves_the_catalog_one_file_holding_every_commit() {
+        let directory = luxforge_testbase::paths::temp_dir("closed");
+        let catalog = directory.join("catalog.sqlite");
+        let developer = || std::sync::Arc::new(ModuleRegistry::developer());
+        let mut service = EditorService::open_with(&catalog, developer()).unwrap();
+        let asset = committed(&mut service);
+        let before = read_back(&service, &asset);
+        drop(service);
+        assert!(!luxforge_testbase::paths::wal(&catalog).exists());
+        assert!(!luxforge_testbase::paths::shm(&catalog).exists());
+        let reopened = EditorService::open_with(&catalog, developer()).unwrap();
+        assert_eq!(read_back(&reopened, &asset), before);
+        drop(reopened);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     fn stored_strokes(catalog: &Path) -> i64 {
