@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Lay out a chain's planes as each link's kept textures plus one pool of scratch textures for the slot, and compute the chain's whole charge from that layout without a device.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "What happens today:",
@@ -90,7 +90,7 @@
     {
       "id": "TASK-002",
       "description": "Hold the pool in each GPU-preview slot and run every link's scratch planes from it, with a schedule that trusts a pool texture only when the link itself wrote it last, keeping every frame bit for bit what today's evaluation draws.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-001"
       ],

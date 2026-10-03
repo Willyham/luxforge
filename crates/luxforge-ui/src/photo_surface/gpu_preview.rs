@@ -1340,6 +1340,17 @@ fn intermediate_format(format: BoundaryFormat) -> wgpu::TextureFormat {
     format.texture()
 }
 
+/// The bytes one of a chain's intermediates takes over a boundary of `size` texels in `format`.
+fn intermediate_bytes((width, height): (u32, u32), format: BoundaryFormat) -> u64 {
+    u64::from(width)
+        * u64::from(height)
+        * u64::from(
+            intermediate_format(format)
+                .block_copy_size(None)
+                .unwrap_or(16),
+        )
+}
+
 /// Each link of `steps`' chain with the format its last pass writes: an intermediate for every
 /// link but the last, and the output's codes for the last.
 fn link_sequences(
@@ -2797,9 +2808,7 @@ impl PhotoPipeline {
         }
         let (width, height) = slot.shape.boundary;
         let format = intermediate_format(slot.shape.format);
-        let texture_bytes = u64::from(width)
-            * u64::from(height)
-            * u64::from(format.block_copy_size(None).unwrap_or(16));
+        let texture_bytes = intermediate_bytes(slot.shape.boundary, slot.shape.format);
         while slot.chain.len() < count {
             let (words, blocks) = (
                 buffer_capacity(device, MIN_BUFFER)?,
@@ -3026,13 +3035,7 @@ pub(super) fn slot_charge(device: &wgpu::Device, plan: &GpuPlan) -> Result<u64, 
         + buffer_capacity(device, (words.len() * 4) as u64)?
         + buffer_capacity(device, (blocks.len() * 4) as u64)?
         + planes(chain.last);
-    let texels = u64::from(shape.boundary.0) * u64::from(shape.boundary.1);
-    let intermediate = texels
-        * u64::from(
-            intermediate_format(shape.format)
-                .block_copy_size(None)
-                .unwrap_or(16),
-        );
+    let intermediate = intermediate_bytes(shape.boundary, shape.format);
     for link in &chain.links {
         chain::pack_steps(plan.texels, (0, 0), link, &mut words, &mut blocks);
         total += intermediate
@@ -3041,6 +3044,59 @@ pub(super) fn slot_charge(device: &wgpu::Device, plan: &GpuPlan) -> Result<u64, 
             + planes(link);
     }
     Ok(total)
+}
+
+/// What a chain's planes and intermediates take of the GPU-preview budget with its links' scratch
+/// planes in one pool ([`chain_charge`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChainCharge {
+    /// Each link's intermediate, every link's but the last's, in chain order.
+    pub intermediates: Vec<u64>,
+    /// Each link's kept planes and its passes' parameter slices, in chain order, the last link's
+    /// last: zero for a link without a spatial step.
+    pub kept: Vec<u64>,
+    /// The pool of scratch planes every link's spatial step takes in turn, counted once.
+    pub pool: u64,
+}
+
+impl ChainCharge {
+    /// Everything it counts.
+    pub fn total(&self) -> u64 {
+        self.intermediates.iter().sum::<u64>() + self.kept.iter().sum::<u64>() + self.pool
+    }
+}
+
+/// What the chain of `steps` takes of the GPU-preview budget over a boundary of `size` texels in
+/// `format` whose texel `(0, 0)` is stage pixel `origin`, its links' scratch planes laid out in one
+/// pool ([`spatial::PoolKey`]): each link's intermediate before the last, the boundary's texels in
+/// the format a chain's intermediates take; each link's kept planes and its passes' parameter
+/// slices ([`spatial::PlanesKey`]); and the pool, once. A link without a spatial step, such as the
+/// colour steps before the first one, adds only its intermediate. The boundary, the output with its
+/// placement uniform, and the words and blocks buffers, which need the device's limits, are the
+/// slot's beside it ([`texture_charge`]). It creates nothing.
+pub fn chain_charge(
+    steps: &[GpuStep],
+    size: (u32, u32),
+    origin: (u32, u32),
+    format: BoundaryFormat,
+) -> ChainCharge {
+    let chain = chain::chain(steps);
+    let links = || {
+        chain
+            .links
+            .iter()
+            .copied()
+            .chain(std::iter::once(chain.last))
+    };
+    ChainCharge {
+        intermediates: vec![intermediate_bytes(size, format); chain.links.len()],
+        kept: links()
+            .map(|link| {
+                spatial::PlanesKey::of(link, size, origin).map_or(0, |key| key.kept_bytes())
+            })
+            .collect(),
+        pool: spatial::PoolKey::of(links(), size, origin).bytes(),
+    }
 }
 
 /// `words` as the little-endian bytes the GPU reads.

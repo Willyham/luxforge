@@ -1,6 +1,8 @@
 //! The spatial step's own tests: the spatial convention checked on a program alone, the modules the
 //! surface assembles for its passes and frame, and, on a headless device, passes that fill planes
-//! before the frame's pass reads them, charged to the budget and released with the slot.
+//! before the frame's pass reads them, charged to the budget and released with the slot. Last, a
+//! chain's planes laid out as each link's kept textures and one pool of scratch textures, and the
+//! chain's charge, without a device.
 use super::super::spatial::{Slots, fragment_declarations, pass_module};
 use super::*;
 
@@ -865,39 +867,389 @@ fn a_change_to_an_apply_alone_runs_no_pass() {
     }
 }
 
-/// Chained spatial steps share scratch textures: a later step's plane no apply reads takes an
-/// earlier step's scratch texture of the same format and extent, while every plane an apply reads
-/// keeps its own, and the charge is the textures'.
-#[test]
-fn chained_spatial_steps_share_their_scratch_textures() {
-    let steps = vec![
-        GpuStep::Spatial(Box::new(test_spatial())),
-        GpuStep::colour(scale(0.5)),
-        GpuStep::Spatial(Box::new(test_spatial())),
-    ];
-    let key = super::super::spatial::PlanesKey::of(&steps, (SIDE, SIDE), (0, 0)).expect("planes");
-    // Plane 0 is the copy only the passes read; planes 1 and 2 the apply reads.
-    assert_eq!(
-        key.texture(2, 0),
-        key.texture(0, 0),
-        "the scratch copy is shared"
-    );
-    let applied = [
-        key.texture(0, 1),
-        key.texture(0, 2),
-        key.texture(2, 1),
-        key.texture(2, 2),
-    ];
-    for (index, texture) in applied.iter().enumerate() {
-        assert!(
-            !applied[..index].contains(texture),
-            "an apply's plane keeps its own"
-        );
-        assert_ne!(*texture, key.texture(0, 0));
+// ---- The pool's layout, without a device ------------------------------------------------------
+
+/// The boundary the layout tests cover, and the stage pixel of its first texel: a window whose
+/// 4× blocks the boundary cuts on every side.
+const LAID: (u32, u32) = (37, 21);
+const LAID_AT: (u32, u32) = (5, 3);
+/// Its texels, and the 4× blocks it reaches, blocks 1 to 10 across and 0 to 5 down.
+const FULL: u64 = 37 * 21;
+const QUARTER: u64 = 10 * 6;
+
+fn plane(format: PlaneFormat, size: PlaneSize) -> GpuPlane {
+    GpuPlane { format, size }
+}
+
+const R1: PlaneSize = PlaneSize::Reduced(1);
+const R4: PlaneSize = PlaneSize::Reduced(4);
+const ONE: PlaneSize = PlaneSize::Fixed {
+    width: 1,
+    height: 1,
+};
+
+/// A spatial step for the layout alone: `planes`, each with whether an apply reads it, a pass
+/// writing each, and one apply reading every plane marked. Nothing runs it.
+fn laid_out(planes: &[(PlaneFormat, PlaneSize, bool)]) -> GpuStep {
+    let mut spatial = test_spatial();
+    let pass = spatial.passes[1].clone();
+    spatial.planes = planes
+        .iter()
+        .map(|&(format, size, _)| plane(format, size))
+        .collect();
+    spatial.passes = (0..planes.len() as u32)
+        .map(|output| GpuPass {
+            output,
+            inputs: vec![(output + 1) % planes.len() as u32],
+            ..pass.clone()
+        })
+        .collect();
+    spatial.applies[0].planes = (0..planes.len() as u32)
+        .filter(|&number| planes[number as usize].2)
+        .collect();
+    GpuStep::Spatial(Box::new(spatial))
+}
+
+/// A link of Presence's kind: a full-size colour, two full-size scalars, one held at half
+/// precision, a 4× quad and a fixed estimate as scratch, and a half-precision scalar and a 4× pair
+/// its apply reads.
+fn shape_a() -> GpuStep {
+    laid_out(&[
+        (PlaneFormat::Colour, R1, false),
+        (PlaneFormat::HalfScalar, R1, true),
+        (PlaneFormat::Scalar, R1, false),
+        (PlaneFormat::HalfScalar, R1, false),
+        (PlaneFormat::Quad, R4, false),
+        (PlaneFormat::Pair, R4, true),
+        (PlaneFormat::Quad, ONE, false),
+    ])
+}
+
+/// Another shape: two full-size colours, a pair and a half-precision pair, which a colour texture
+/// would hold, and the fixed estimate as scratch; a full-size scalar and a 4× half-precision
+/// scalar its apply reads.
+fn shape_b() -> GpuStep {
+    laid_out(&[
+        (PlaneFormat::HalfPair, R1, false),
+        (PlaneFormat::Colour, R1, false),
+        (PlaneFormat::Colour, R1, false),
+        (PlaneFormat::Scalar, R1, true),
+        (PlaneFormat::Pair, R1, false),
+        (PlaneFormat::Quad, ONE, false),
+        (PlaneFormat::HalfScalar, R4, true),
+    ])
+}
+
+fn class(format: PlaneFormat, size: PlaneSize) -> super::super::spatial::Class {
+    super::super::spatial::Class { format, size }
+}
+
+/// Each shape's kept textures and parameter slices: seven passes each.
+const KEPT_A: u64 = 4 * FULL + 8 * QUARTER + 7 * 256;
+const KEPT_B: u64 = 4 * FULL + 4 * QUARTER + 7 * 256;
+/// Each shape's scratch, each plane in a texture of its own.
+const SCRATCH_A: u64 = 8 * FULL + 2 * 4 * FULL + 16 * QUARTER + 16;
+const SCRATCH_B: u64 = 2 * 8 * FULL + 2 * 8 * FULL + 16;
+
+/// Every link of `steps`' chain lays out its planes by the pool's rules, and the pool serves each
+/// of them: a plane an apply reads is the link's own kept texture and never a pool texture, every
+/// other plane is a pool texture of its own class, distinct scratch planes of one link take
+/// distinct pool textures numbered from zero in plane order, and the pool holds, for each class,
+/// exactly the most any one link needs. Answers the pool.
+fn assert_served(steps: &[GpuStep]) -> super::super::spatial::PoolKey {
+    use super::super::spatial::{Class, PlaneTexture, PlanesKey, PoolKey};
+    let chain = super::super::chain::chain(steps);
+    let links: Vec<&[GpuStep]> = chain
+        .links
+        .iter()
+        .copied()
+        .chain(std::iter::once(chain.last))
+        .collect();
+    let pool = PoolKey::of(links.iter().copied(), LAID, LAID_AT);
+    let mut most: Vec<(Class, usize)> = Vec::new();
+    for link in &links {
+        let Some(key) = PlanesKey::of(link, LAID, LAID_AT) else {
+            continue;
+        };
+        let mut kept = 0;
+        let mut taken: Vec<(Class, usize)> = Vec::new();
+        for (index, step) in link.iter().enumerate() {
+            let GpuStep::Spatial(spatial) = step else {
+                continue;
+            };
+            for (number, declared) in spatial.planes.iter().enumerate() {
+                let read = spatial
+                    .applies
+                    .iter()
+                    .any(|apply| apply.planes.contains(&(number as u32)));
+                match key.location(index, number as u32).expect("a location") {
+                    PlaneTexture::Kept(at) => {
+                        assert!(read, "plane {number}: only a plane an apply reads is kept");
+                        assert_eq!(at, kept, "plane {number}: kept textures in plane order");
+                        kept += 1;
+                    }
+                    PlaneTexture::Pool(held, at) => {
+                        assert!(!read, "plane {number}: no plane an apply reads is pooled");
+                        assert_eq!(held, Class::of(*declared), "plane {number}: its own class");
+                        let before = taken.iter().filter(|(other, _)| *other == held).count();
+                        assert_eq!(at, before, "plane {number}: numbered in plane order");
+                        assert!(!taken.contains(&(held, at)), "plane {number}: distinct");
+                        let count = pool
+                            .textures()
+                            .iter()
+                            .find(|(other, _)| *other == held)
+                            .map_or(0, |(_, count)| *count);
+                        assert!(at < count, "plane {number}: the pool holds its texture");
+                        taken.push((held, at));
+                    }
+                }
+            }
+        }
+        for &(held, count) in key.scratch() {
+            match most.iter_mut().find(|(other, _)| *other == held) {
+                Some((_, most)) => *most = (*most).max(count),
+                None => most.push((held, count)),
+            }
+        }
     }
-    let single =
-        super::super::spatial::PlanesKey::of(&steps[..1], (SIDE, SIDE), (0, 0)).expect("planes");
-    let copy = 64 * 64 * 8;
-    // Two steps' planes, less the copy they share; each step's three passes' parameters.
-    assert_eq!(key.bytes(), 2 * single.bytes() - copy);
+    most.sort();
+    assert_eq!(
+        pool.textures(),
+        most,
+        "the most any one link holds, per class"
+    );
+    pool
+}
+
+/// A link keeps in textures of its own exactly the planes its applies read, in plane order, and
+/// numbers its scratch planes by class in plane order, reduced and fixed-size ones included:
+/// `HalfScalar` with `Scalar`, in `r32float`, and a 4× or fixed plane in a class of its own size.
+#[test]
+fn a_link_keeps_the_planes_its_applies_read_and_numbers_its_scratch_by_class() {
+    use super::super::spatial::{PlaneTexture, PlanesKey};
+    let steps = [shape_a()];
+    let key = PlanesKey::of(&steps, LAID, LAID_AT).expect("planes");
+    let locations: Vec<PlaneTexture> = (0..7)
+        .map(|number| key.location(0, number).expect("a location"))
+        .collect();
+    assert_eq!(
+        locations,
+        [
+            PlaneTexture::Pool(class(PlaneFormat::Colour, R1), 0),
+            PlaneTexture::Kept(0),
+            PlaneTexture::Pool(class(PlaneFormat::Scalar, R1), 0),
+            PlaneTexture::Pool(class(PlaneFormat::Scalar, R1), 1),
+            PlaneTexture::Pool(class(PlaneFormat::Quad, R4), 0),
+            PlaneTexture::Kept(1),
+            PlaneTexture::Pool(class(PlaneFormat::Quad, ONE), 0),
+        ]
+    );
+    assert_eq!(
+        key.scratch(),
+        [
+            (class(PlaneFormat::Colour, R1), 1),
+            (class(PlaneFormat::Scalar, R1), 2),
+            (class(PlaneFormat::Quad, R4), 1),
+            (class(PlaneFormat::Quad, ONE), 1),
+        ]
+    );
+    assert_eq!(key.location(0, 7), None);
+    assert_eq!(key.location(1, 0), None);
+    assert_eq!(key.kept_bytes(), KEPT_A);
+    assert_eq!(key.bytes(), KEPT_A + SCRATCH_A);
+    // Alone, the link's pool is its own scratch.
+    assert_eq!(assert_served(&steps).bytes(), SCRATCH_A);
+}
+
+/// A plan of one link lays out the textures its slot holds, a texture for every plane at its own
+/// format and extent, which its passes write in, and its chain's charge is its planes' figure with
+/// no intermediate. The test plan's spatial step after a colour step adds that link's intermediate
+/// alone, and charges what the slot charges its planes and intermediate.
+#[test]
+fn a_single_link_lays_out_the_textures_it_held_and_charges_them() {
+    use super::super::spatial::{PlanesKey, texture_formats, written_format};
+    for (name, step) in [
+        ("the test step", GpuStep::Spatial(Box::new(test_spatial()))),
+        ("shape a", shape_a()),
+        ("shape b", shape_b()),
+    ] {
+        let steps = [step, GpuStep::colour(scale(0.5))];
+        let GpuStep::Spatial(spatial) = &steps[0] else {
+            unreachable!()
+        };
+        let key = PlanesKey::of(&steps, LAID, LAID_AT).expect("planes");
+        let textures: Vec<GpuPlane> = key.textures().collect();
+        assert_eq!(textures.len(), spatial.planes.len(), "{name}");
+        let mut seen = Vec::new();
+        for (number, declared) in spatial.planes.iter().enumerate() {
+            let texture = key.texture(0, number as u32);
+            assert!(!seen.contains(&texture), "{name}: plane {number} alone");
+            seen.push(texture);
+            let held = textures[texture];
+            assert_eq!(
+                (held.format.texture(), held.extent(LAID_AT, LAID)),
+                (declared.format.texture(), declared.extent(LAID_AT, LAID)),
+                "{name}: plane {number}"
+            );
+            assert_eq!(
+                written_format(&steps, 0, number as u32),
+                Some(declared.format),
+                "{name}: plane {number} is written in its own format"
+            );
+        }
+        let own: Vec<PlaneFormat> = spatial.planes.iter().map(|plane| plane.format).collect();
+        assert_eq!(texture_formats(&steps), [(0, own)], "{name}");
+        assert_served(&steps);
+        for format in [BoundaryFormat::Half, BoundaryFormat::Float] {
+            let charge = chain_charge(&steps, LAID, LAID_AT, format);
+            assert!(charge.intermediates.is_empty(), "{name}");
+            assert_eq!(charge.kept, [key.kept_bytes()], "{name}");
+            assert_eq!(charge.total(), key.bytes(), "{name}");
+        }
+    }
+    // The test plan, as the slot test charges it: the colour link's intermediate, eight bytes a
+    // texel of the half-float boundary, then the three planes and three passes' parameters.
+    let (boundary, _) = boundary_values();
+    let plan = spatial_plan(&boundary);
+    let planes = 64 * 64 * 8 + 64 * 64 * 16 + 16 + 3 * 256;
+    let charge = chain_charge(&plan.steps, (SIDE, SIDE), (0, 0), BoundaryFormat::Half);
+    assert_eq!(charge.intermediates, [64 * 64 * 8]);
+    assert_eq!(charge.kept, [0, 64 * 64 * 16 + 16 + 3 * 256]);
+    assert_eq!(charge.pool, 64 * 64 * 8);
+    assert_eq!(charge.total(), 64 * 64 * 8 + planes);
+    let last = PlanesKey::of(&plan.steps[1..], (SIDE, SIDE), (0, 0)).expect("planes");
+    assert_eq!(last.bytes(), planes);
+}
+
+/// Links of one shape share one set of scratch textures: two, and three with colour steps between
+/// them, charge each link's kept planes and each intermediate before the last, and the pool once,
+/// one link's scratch. Over a RAW's boundary an intermediate is sixteen bytes a texel.
+#[test]
+fn links_of_one_shape_share_one_links_scratch() {
+    let half = 8 * FULL;
+    for (name, steps, links) in [
+        ("two links", vec![shape_a(), shape_a()], 2),
+        (
+            "three links with colour steps between",
+            vec![
+                shape_a(),
+                GpuStep::colour(scale(0.5)),
+                shape_a(),
+                GpuStep::colour(scale(0.25)),
+                shape_a(),
+            ],
+            3,
+        ),
+    ] {
+        let pool = assert_served(&steps);
+        assert_eq!(pool.bytes(), SCRATCH_A, "{name}");
+        let charge = chain_charge(&steps, LAID, LAID_AT, BoundaryFormat::Half);
+        assert_eq!(charge.intermediates, vec![half; links - 1], "{name}");
+        assert_eq!(charge.kept, vec![KEPT_A; links], "{name}");
+        assert_eq!(charge.pool, SCRATCH_A, "{name}");
+        let total = (links as u64 - 1) * half + links as u64 * KEPT_A + SCRATCH_A;
+        assert_eq!(charge.total(), total, "{name}");
+        // Each link holding its own scratch, as the slot does, holds the rest again.
+        let own = (links as u64 - 1) * half + links as u64 * (KEPT_A + SCRATCH_A);
+        assert_eq!(
+            own - charge.total(),
+            (links as u64 - 1) * SCRATCH_A,
+            "{name}"
+        );
+        let raw = chain_charge(&steps, LAID, LAID_AT, BoundaryFormat::Float);
+        assert_eq!(raw.intermediates, vec![16 * FULL; links - 1], "{name}");
+        assert_eq!(raw.total(), total + (links as u64 - 1) * 8 * FULL, "{name}");
+    }
+}
+
+/// Links of different shapes take, for each class, as many pool textures as the link that needs
+/// most, whatever order the links run in: a half-precision pair a colour texture would hold takes a
+/// pair's texture all the same, beside the colours. A link's layout is its own steps' alone, so it
+/// is the same in any chain; and the colour steps before the first spatial step are a link that
+/// adds only its intermediate.
+#[test]
+fn the_pool_holds_for_each_class_the_most_any_one_link_holds() {
+    use super::super::spatial::{PlanesKey, PoolKey};
+    let pool = [
+        (class(PlaneFormat::Colour, R1), 2),
+        (class(PlaneFormat::Scalar, R1), 2),
+        (class(PlaneFormat::Pair, R1), 2),
+        (class(PlaneFormat::Quad, R4), 1),
+        (class(PlaneFormat::Quad, ONE), 1),
+    ];
+    let pooled = 2 * 8 * FULL + 2 * 4 * FULL + 2 * 8 * FULL + 16 * QUARTER + 16;
+    let half = 8 * FULL;
+    for (name, steps, intermediates, kept) in [
+        (
+            "a then b",
+            vec![shape_a(), shape_b()],
+            1,
+            vec![KEPT_A, KEPT_B],
+        ),
+        (
+            "b then a",
+            vec![shape_b(), shape_a()],
+            1,
+            vec![KEPT_B, KEPT_A],
+        ),
+        (
+            "colour steps first, then a, a colour step and b",
+            vec![
+                GpuStep::colour(scale(0.5)),
+                GpuStep::colour(identity()),
+                shape_a(),
+                GpuStep::colour(scale(0.25)),
+                shape_b(),
+            ],
+            2,
+            vec![0, KEPT_A, KEPT_B],
+        ),
+        (
+            "a, b, then a again",
+            vec![shape_a(), shape_b(), shape_a()],
+            2,
+            vec![KEPT_A, KEPT_B, KEPT_A],
+        ),
+    ] {
+        let held = assert_served(&steps);
+        assert_eq!(held.textures(), pool, "{name}");
+        assert_eq!(held.bytes(), pooled, "{name}");
+        let charge = chain_charge(&steps, LAID, LAID_AT, BoundaryFormat::Half);
+        assert_eq!(charge.intermediates, vec![half; intermediates], "{name}");
+        assert_eq!(charge.kept, kept, "{name}");
+        assert_eq!(charge.pool, pooled, "{name}");
+        assert_eq!(
+            charge.total(),
+            intermediates as u64 * half + kept.iter().sum::<u64>() + pooled,
+            "{name}"
+        );
+    }
+    // Each class's textures cover the window's blocks of their size.
+    let held = PoolKey::of([&[shape_a()][..], &[shape_b()][..]], LAID, LAID_AT);
+    assert_eq!(held.extent(class(PlaneFormat::Colour, R1)), (37, 21));
+    assert_eq!(held.extent(class(PlaneFormat::Quad, R4)), (10, 6));
+    assert_eq!(held.extent(class(PlaneFormat::Quad, ONE)), (1, 1));
+    // Shape a's link lays out the same planes in either chain, alone or after another link.
+    let alone = PlanesKey::of(&[shape_a()], LAID, LAID_AT);
+    let after = [shape_b(), GpuStep::colour(scale(0.5)), shape_a()];
+    let chain = super::super::chain::chain(&after);
+    assert_eq!(PlanesKey::of(chain.last, LAID, LAID_AT), alone);
+    let before = [shape_a(), GpuStep::colour(scale(0.5)), shape_b()];
+    let chain = super::super::chain::chain(&before);
+    assert_eq!(
+        PlanesKey::of(&chain.links[0][..1], LAID, LAID_AT),
+        alone,
+        "the colour step after it adds no plane"
+    );
+}
+
+/// The desktop's figure for a plan's spatial steps before its boundary exists holds every step's
+/// planes in textures of their own, as each step's link does, with every pass's parameters.
+#[test]
+fn plane_bytes_holds_each_steps_planes_as_its_link_does() {
+    let steps = [shape_a(), shape_b(), shape_a()];
+    assert_eq!(
+        super::super::spatial::plane_bytes(&steps, LAID, LAID_AT),
+        2 * (KEPT_A + SCRATCH_A) + KEPT_B + SCRATCH_B
+    );
 }
