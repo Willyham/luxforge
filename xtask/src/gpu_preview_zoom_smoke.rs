@@ -19,9 +19,9 @@
 //! shows it running or follows its end, which a capture after 150 ms allows.
 use crate::{
     gpu_preview_smoke::{
-        BASIC, CLARITY, CLARITY_DRAG, DEHAZE, EXPOSURE, PRESENCE, PRESENCE_QUIET_MS, TEXTURE_DRAG,
-        UNDER_DRAG, dissolve_from, drag_steps, gpu_drawn, named, presence_drag_checks, quiet,
-        quiet_for, same_pixels, step_events, ticks,
+        BASIC, CLARITY, CLARITY_DRAG, DEHAZE, EXPOSURE, PRESENCE, PRESENCE_QUIET_MS, Settled,
+        TEXTURE_DRAG, UNDER_DRAG, dissolve_from, drag_steps, gpu_drawn, named,
+        presence_drag_checks, quiet, quiet_for, same_pixels, step_events, ticks,
     },
     scenario::{Checked, Checks, Frame, Plan, Run, Step, plan::only},
     *,
@@ -137,6 +137,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         "texture",
         TEXTURE_DRAG,
         PRESENCE_QUIET_MS,
+        Settled::Quiet,
     ));
     steps.extend(drag_steps(
         "clarity-100",
@@ -144,6 +145,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         "clarity",
         CLARITY_DRAG,
         PRESENCE_QUIET_MS,
+        Settled::Quiet,
     ));
     steps.extend([
         Step::new(
@@ -165,6 +167,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         EXPOSURE,
         UNDER_DRAG,
         PRESENCE_QUIET_MS,
+        Settled::Quiet,
     ));
     // 39-43: at 800%, a drag panned past its region as it ticks, then ticked over the new region,
     // then released.
