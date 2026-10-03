@@ -202,6 +202,10 @@ impl SurfaceFigures {
             overall.gpu_preview_compile_max_us,
             overall.gpu_preview_compile_last_us,
         ) = self.preview.compile_us();
+        (
+            overall.gpu_preview_compile_pending,
+            overall.gpu_preview_warmed,
+        ) = self.preview.compile_pending();
         overall
     }
 }
@@ -404,6 +408,11 @@ pub struct SurfaceDiagnostics {
     /// The longest and the last compile's wall-clock time on the compile thread, in microseconds.
     pub gpu_preview_compile_max_us: u64,
     pub gpu_preview_compile_last_us: u64,
+    /// Sequences queued for the compile thread or compiling, warmed or asked for by a frame: zero
+    /// once everything handed to it has compiled.
+    pub gpu_preview_compile_pending: u64,
+    /// The newest warm list's version the GPU stage has queued ([`PhotoSurface::gpu_warm`]).
+    pub gpu_preview_warmed: Option<u64>,
 }
 
 /// Aggregate resource counters with the requested surface's own last draw identity.

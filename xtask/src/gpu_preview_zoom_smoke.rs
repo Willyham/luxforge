@@ -24,9 +24,9 @@
 //! after 150 ms allows.
 use crate::{
     gpu_preview_smoke::{
-        BASIC, CLARITY, CLARITY_DRAG, DEHAZE, EXPOSURE, PRESENCE, PRESENCE_QUIET_MS, TEXTURE_DRAG,
-        UNDER_DRAG, dissolve_from, drag_steps, gpu_drawn, named, presence_drag_checks, quiet,
-        quiet_for, same_pixels, step_events, ticks,
+        BASIC, CLARITY, CLARITY_DRAG, DEHAZE, EXPOSURE, Held, PRESENCE, PRESENCE_QUIET_MS, Settled,
+        TEXTURE_DRAG, UNDER_DRAG, dissolve_from, drag_steps, gpu_drawn, named,
+        presence_drag_checks, quiet, quiet_for, same_pixels, step_events, ticks,
     },
     scenario::{Checked, Checks, Frame, Plan, Run, Step, plan::only},
     *,
@@ -148,14 +148,16 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         PRESENCE,
         "texture",
         TEXTURE_DRAG,
-        PRESENCE_QUIET_MS,
+        Held::Compiled(PRESENCE_QUIET_MS),
+        Settled::Quiet,
     ));
     steps.extend(drag_steps(
         "clarity-100",
         PRESENCE,
         "clarity",
         CLARITY_DRAG,
-        PRESENCE_QUIET_MS,
+        Held::Compiled(PRESENCE_QUIET_MS),
+        Settled::Quiet,
     ));
     steps.extend([
         Step::new(
@@ -176,7 +178,8 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         BASIC,
         EXPOSURE,
         UNDER_DRAG,
-        PRESENCE_QUIET_MS,
+        Held::Compiled(PRESENCE_QUIET_MS),
+        Settled::Quiet,
     ));
     // Still at 100%, Detail committed under Presence and Dehaze committed again, so Dehaze's light
     // sits behind Detail and the CPU cannot cut the view's region: a Presence drag reads the light
@@ -200,14 +203,16 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         PRESENCE,
         "texture",
         BEHIND_TEXTURE,
-        PRESENCE_QUIET_MS,
+        Held::Compiled(PRESENCE_QUIET_MS),
+        Settled::Quiet,
     ));
     steps.extend(drag_steps(
         "behind-sharpen-100",
         DETAIL,
         SHARPENING,
         BEHIND_SHARPEN,
-        PRESENCE_QUIET_MS,
+        Held::Compiled(PRESENCE_QUIET_MS),
+        Settled::Quiet,
     ));
     steps.push(release("behind-dehaze-off-100", "dehaze", 0.0));
     // Then at 800%, a drag panned past its region as it ticks, then ticked over the new region,
