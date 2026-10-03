@@ -1,9 +1,9 @@
 //! The byte domain: a JPEG's decoded 8-bit sRGB, its rows and its driver.
 
 use super::{
-    ColorRun, Compiled, PixelDomain, Raster, RenderContext, RowScratch, Segment, SegmentRows,
-    SpatialEntry, apply_units, bilinear, frame_mut, segment_pass, spatial, spatial::fill_planes,
-    spatial_entry, zeroed_frame,
+    ColorRun, Compiled, MaskedInput, PixelDomain, Raster, RenderContext, RowScratch, Segment,
+    SegmentRows, SpatialEntry, apply_units, bilinear, frame_mut, segment_pass, spatial,
+    spatial::fill_planes, spatial_entry, zeroed_frame,
 };
 use crate::{
     Cancel, Error, SnapshotId, SourceImage,
@@ -167,7 +167,7 @@ impl PixelDomain for Byte<'_> {
         y: u32,
         wide: bool,
     ) -> Result<Self::Pixel, Error> {
-        let mut snapshot = [[0.0; 3]; 1];
+        let mut snapshot = [MaskedInput::default(); 1];
         for run in runs {
             let mut rgb = [decoded(pixel)];
             apply_units(&run, y, x, &mut rgb, &mut snapshot)?;
@@ -184,7 +184,7 @@ impl PixelDomain for Byte<'_> {
         wide: bool,
     ) -> Result<(), Error> {
         let RowScratch { linear, snapshot } = scratch;
-        snapshot.resize(pixels.len().max(1), [0.0; 3]);
+        snapshot.resize(pixels.len().max(1), MaskedInput::default());
         for run in runs {
             linear.clear();
             linear.extend(pixels.iter().copied().map(decoded));
@@ -401,7 +401,7 @@ impl SegmentRows for ByteRows<'_> {
         run: &ColorRun<'_>,
         y0: u32,
         rows: std::ops::Range<usize>,
-        snapshot: &mut [[f32; 3]],
+        snapshot: &mut [MaskedInput],
     ) -> Result<(), Error> {
         let row_bytes = self.width * 4;
         colour_byte_rows(
@@ -425,7 +425,7 @@ impl SegmentRows for ByteRows<'_> {
 /// every row handed to the run's units at its own coordinates, and quantized back in place, alpha
 /// untouched. It is the byte domain's one row arithmetic, which a rendered chunk
 /// ([`ByteRows::run`]) and a pulled row ([`Byte::colour_row`]) share; `snapshot` is a masked
-/// operation's scratch for its own input.
+/// operation's scratch for its own input and its coverage.
 fn colour_byte_rows(
     run: &ColorRun<'_>,
     bytes: &mut [u8],
@@ -433,7 +433,7 @@ fn colour_byte_rows(
     y0: u32,
     x0: u32,
     linear: &mut Vec<[f32; 3]>,
-    snapshot: &mut [[f32; 3]],
+    snapshot: &mut [MaskedInput],
 ) -> Result<(), Error> {
     // The tables are taken once for the rows, not once per pixel.
     let (table, quantizer) = (decode_table(), quantizer());
@@ -722,7 +722,7 @@ impl<S: SampleStore> SegmentRows for FloatRows<'_, S> {
         run: &ColorRun<'_>,
         y0: u32,
         rows: std::ops::Range<usize>,
-        snapshot: &mut [[f32; 3]],
+        snapshot: &mut [MaskedInput],
     ) -> Result<(), Error> {
         let width = self.segment.width as usize;
         for row in rows {

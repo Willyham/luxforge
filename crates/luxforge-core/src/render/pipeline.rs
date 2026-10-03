@@ -34,8 +34,8 @@
 //! those, as a render always has.
 
 use super::{
-    ColorRun, Compiled, RenderContext, ResampleEntry, ScratchBudget, Segment, color_chunk_rows,
-    color_runs, mapped_replacements,
+    ColorRun, Compiled, MaskedInput, RenderContext, ResampleEntry, ScratchBudget, Segment,
+    color_chunk_rows, color_runs, mapped_replacements,
     spatial::{
         PointTiles, SpatialPlan, Tiling, build_reduction_cancellable, fill_planes, resolve_globals,
         run_batches, run_tile,
@@ -52,7 +52,7 @@ pub(super) fn colour_input<'r, D: PixelDomain>(
     wide: bool,
 ) -> Result<[f64; 3], Error> {
     let mut linear = [D::spatial_input(pixel)];
-    let mut snapshot = [[0.0; 3]; 1];
+    let mut snapshot = [MaskedInput::default(); 1];
     for run in runs {
         if run.followed_by_replace() {
             pixel = D::colour(pixel, std::iter::once(run), x, y, wide)?;
@@ -890,8 +890,8 @@ type PlaneRow<'p> = (usize, ((&'p mut [f32], &'p mut [f32]), &'p mut [f32]));
 pub(crate) struct RowScratch {
     /// The row itself, in `f32`.
     pub(super) linear: Vec<[f32; 3]>,
-    /// One row of a masked operation's own input.
-    pub(super) snapshot: Vec<[f32; 3]>,
+    /// One row of a masked operation's own input and its coverage.
+    pub(super) snapshot: Vec<MaskedInput>,
 }
 
 /// The four pixels a bilinear sample at one continuous input coordinate reads, with indices clamped
@@ -1144,7 +1144,7 @@ pub(super) trait SegmentRows: Sync {
     ) -> Result<(), Error>;
 
     /// Apply one colour run to the chunk's rows `rows`, which start at row `y0 + rows.start` of the
-    /// stage. `snapshot` is one row of a masked operation's own input.
+    /// stage. `snapshot` is one row of a masked operation's own input and its coverage.
     fn run(
         &self,
         scratch: &mut Self::Scratch,
@@ -1152,7 +1152,7 @@ pub(super) trait SegmentRows: Sync {
         run: &ColorRun<'_>,
         y0: u32,
         rows: Range<usize>,
-        snapshot: &mut [[f32; 3]],
+        snapshot: &mut [MaskedInput],
     ) -> Result<(), Error>;
 
     /// Write the chunk's finished values as its bytes.
@@ -1221,7 +1221,7 @@ pub(super) fn segment_pass<R: SegmentRows>(
     };
     let chunk_rows = color_chunk_rows(segment.width);
     let chunk_bytes = chunk_rows * width * rows.samples_per_pixel();
-    let process = |scratch: &mut (R::Scratch, Vec<[f32; 3]>),
+    let process = |scratch: &mut (R::Scratch, Vec<MaskedInput>),
                    index: usize,
                    chunk: &mut [R::Sample]|
      -> Result<(), Error> {
@@ -1234,17 +1234,18 @@ pub(super) fn segment_pass<R: SegmentRows>(
         let colours = !runs.is_empty() && !coloured.is_empty();
         let bytes = rows.scratch_bytes(width, count, coloured.len());
         let _reservation = (bytes > 0).then(|| budget.reserve(bytes));
-        // One row of snapshot scratch for a masked operation's own input, reserved before it is
-        // used and released with the chunk. It is a row and not a chunk because a unit is handed
-        // one row at a time, and an unmasked segment takes none of it.
+        // One row of snapshot scratch for a masked operation's own input and its coverage, 16
+        // bytes a pixel, reserved before it is used and released with the chunk. It is a row and
+        // not a chunk because a unit is handed one row at a time, and an unmasked segment takes
+        // none of it.
         let _snapshot_reservation =
-            (masked && colours).then(|| budget.reserve(width * std::mem::size_of::<[f32; 3]>()));
+            (masked && colours).then(|| budget.reserve(width * std::mem::size_of::<MaskedInput>()));
         let (scratch, snapshot) = scratch;
-        let mut unused = [[0.0f32; 3]; 1];
-        let snapshot: &mut [[f32; 3]] = if masked {
+        let mut unused = [MaskedInput::default(); 1];
+        let snapshot: &mut [MaskedInput] = if masked {
             // Allocated by the worker's first chunk and exactly one row long from then on; a
             // masked operation overwrites what it reads, so an earlier chunk's values never show.
-            snapshot.resize(width, [0.0; 3]);
+            snapshot.resize(width, MaskedInput::default());
             snapshot
         } else {
             &mut unused
