@@ -539,6 +539,15 @@ pub(crate) trait SpatialUnit: Send + Sync {
         None
     }
 
+    /// Whether a GPU preview may draw this unit with the estimate prepared from its input before
+    /// a restoration layer changed it, held for a drag (`docs/design/gpu-preview.md`, "At 100%
+    /// and above"): the unit's own judgement of how far its output follows such an estimate, which
+    /// the qualification corpus measures. The default is no, so a unit with an estimate keeps the
+    /// CPU path for such a drag unless it says otherwise. Answered while planning.
+    fn holds_restored_estimate(&self) -> bool {
+        false
+    }
+
     /// Run one tile under the render's cancellation token. Units with several passes override
     /// this to check between levels or bounded row chunks; simple units use the default.
     #[allow(clippy::too_many_arguments)]

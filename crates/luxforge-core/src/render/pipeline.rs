@@ -465,6 +465,23 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         }
     }
 
+    /// [`Self::globals_of`] from the estimate store alone, under the key a frame of this
+    /// compilation asks with: `None` when the store does not hold every one, which nothing here
+    /// reduces. `O(units)`, and reads no pixel.
+    pub(crate) fn held_globals_of(&self, index: usize) -> Option<Vec<Option<Global>>> {
+        match &self.compiled.segments[index].entry {
+            Some(super::Entry::Spatial(entry)) => entry
+                .globals(
+                    &self.domain,
+                    self.context,
+                    self.spatial_stage(index),
+                    || Err(Error::internal("a held estimate is never reduced")),
+                )
+                .ok(),
+            _ => Some(Vec::new()),
+        }
+    }
+
     /// The final spatial prefix on one output rectangle, through the render's own tile function.
     /// Input grids use a whole tile for dense cells and a one-pixel window for sparse cells.
     pub(crate) fn restoration_region(&self, region: Region) -> Result<Vec<D::Pixel>, Error> {
