@@ -49,7 +49,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             "linear-black",
             WorkspaceStep::default().mask_overlay("mask-on-black"),
         ),
-        commit("linear-committed", MaskStep::Apply).masks(1),
+        commit("linear-committed", MaskStep::Release).masks(1),
         rename("name-a", "A"),
         quiet("radial-unplaced", MaskStep::New("radial".into()))
             .no_draft()
@@ -61,7 +61,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
                 to: [0.75, 0.95],
             },
         ),
-        commit("radial-committed", MaskStep::Apply).masks(2),
+        commit("radial-committed", MaskStep::Release).masks(2),
         rename("name-b", "B"),
         quiet("select-a", MaskStep::Select(named("A"))).open_mask(Some("A")),
         quiet("select-b", MaskStep::Select(named("B"))).open_mask(Some("B")),
@@ -160,7 +160,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             },
         )
         .percent(100.0),
-        commit("rotated-100-radial-apply", MaskStep::Apply)
+        commit("rotated-100-radial-apply", MaskStep::Release)
             .masks(4)
             .percent(100.0),
     ])
@@ -190,8 +190,8 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             format!("{name} placed initial geometry: {}", state["mask_draft"]),
         )?;
         ensure(
-            state["draft_bar"]["can_apply"] == json!(false),
-            format!("{name} can apply before placement"),
+            state["draft_bar"]["done"] == json!(true),
+            format!("{name} offers something other than Done before placement"),
         )?;
     }
     let disarmed = launch.at("switch-a-disarms")?;
@@ -209,7 +209,9 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
                 frame.state()["mask_overlay"]
             ),
         )?;
-        for (at, covered) in [([0.5, 0.06], upper), ([0.5, 0.75], lower)] {
+        // Opening a mask selects its gradient, whose handles rest on the canvas: the lower probe
+        // sits inside B's ellipse but off its centre, where B's anchor grip is drawn.
+        for (at, covered) in [([0.5, 0.06], upper), ([0.56, 0.78], lower)] {
             let read = frame.luminance_at(at, 5)?;
             ensure(
                 if covered { read > 240.0 } else { read < 15.0 },

@@ -3384,23 +3384,23 @@ Mean ΔE00, worst 16 × 16 block, p99, signed mean ΔL\* and largest ΔE00 of th
 | Basic, 60 MP JPEG | 1716 × 1030 | 0.000 | 0.00 | 0.00 | +0.000 | 0.12 | 30.9 MB |
 | Basic, zone plate | 1716 × 1144 | 0.006 | 0.06 | 0.00 | +0.000 | 0.84 | 32.5 MB |
 | Basic, Presence fixture | 1440 × 960, exact | 0.010 | 0.16 | 0.68 | −0.002 | 0.84 | 27.8 MB |
-| Basic (RAW), Z6 | 1003 × 1508 | 0.020 | 0.08 | 0.63 | −0.000 | 1.76 | 53.1 MB |
+| Basic (RAW), Z6 | 1003 × 1508 | 0.015 | 0.07 | 0.59 | −0.000 | 1.76 | 65.2 MB |
 | Basic (RAW), X100VI | 1716 × 1144 | 0.000 | 0.00 | 0.00 | +0.000 | 0.89 | 48.2 MB |
-| Basic (RAW), Air 2S | 1716 × 1143 | 0.019 | 0.11 | 0.60 | −0.000 | 1.63 | 64.0 MB |
+| Basic (RAW), Air 2S | 1716 × 1143 | 0.017 | 0.10 | 0.58 | −0.000 | 1.63 | 79.7 MB |
 | Tone curve, 24 MP JPEG | 1716 × 1144 | 0.000 | 0.00 | 0.00 | −0.000 | 0.34 | 32.5 MB |
 | Tone curve, 60 MP JPEG | 1716 × 1030 | 0.000 | 0.01 | 0.00 | −0.000 | 0.30 | 30.9 MB |
 | Tone curve, zone plate | 1716 × 1144 | 0.001 | 0.03 | 0.00 | −0.002 | 0.39 | 32.5 MB |
 | Tone curve, Presence fixture | 1440 × 960, exact | 0.001 | 0.07 | 0.00 | −0.001 | 0.39 | 27.8 MB |
-| Tone curve, Z6 | 1003 × 1508 | 0.020 | 0.09 | 0.71 | +0.000 | 1.57 | 53.1 MB |
+| Tone curve, Z6 | 1003 × 1508 | 0.016 | 0.09 | 0.68 | −0.000 | 1.45 | 65.2 MB |
 | Tone curve, X100VI | 1716 × 1144 | 0.000 | 0.00 | 0.00 | +0.000 | 1.04 | 48.2 MB |
-| Tone curve, Air 2S | 1716 × 1143 | 0.021 | 0.14 | 0.71 | −0.000 | 1.52 | 64.0 MB |
+| Tone curve, Air 2S | 1716 × 1143 | 0.019 | 0.13 | 0.69 | −0.000 | 1.71 | 79.7 MB |
 | Mixer, 24 MP JPEG | 1716 × 1144 | 0.000 | 0.02 | 0.00 | +0.000 | 0.34 | 32.5 MB |
 | Mixer, 60 MP JPEG | 1716 × 1030 | 0.000 | 0.00 | 0.00 | −0.000 | 0.09 | 30.9 MB |
 | Mixer, zone plate | 1716 × 1144 | 0.000 | 0.00 | 0.00 | +0.000 | 0.00 | 32.5 MB |
 | Mixer, Presence fixture | 1440 × 960, exact | 0.000 | 0.00 | 0.00 | +0.000 | 0.00 | 27.8 MB |
-| Mixer, Z6 | 1003 × 1508 | 0.022 | 0.10 | 0.76 | −0.000 | 1.68 | 53.1 MB |
+| Mixer, Z6 | 1003 × 1508 | 0.019 | 0.09 | 0.69 | −0.000 | 1.47 | 65.2 MB |
 | Mixer, X100VI | 1716 × 1144 | 0.000 | 0.01 | 0.00 | +0.000 | 1.03 | 48.2 MB |
-| Mixer, Air 2S | 1716 × 1143 | 0.022 | 0.12 | 0.69 | +0.000 | 1.68 | 64.0 MB |
+| Mixer, Air 2S | 1716 × 1143 | 0.019 | 0.12 | 0.67 | −0.000 | 1.66 | 79.7 MB |
 | Vignette, 24 MP JPEG | 1716 × 1144 | 0.004 | 0.04 | 0.21 | +0.001 | 0.77 | 32.5 MB |
 | Vignette, 60 MP JPEG | 1716 × 1030 | 0.004 | 0.03 | 0.21 | +0.001 | 0.66 | 30.9 MB |
 | Vignette, zone plate | 1716 × 1144 | 0.003 | 0.02 | 0.00 | +0.001 | 0.40 | 32.5 MB |
@@ -3410,40 +3410,40 @@ Mean ΔE00, worst 16 × 16 block, p99, signed mean ΔL\* and largest ΔE00 of th
 | Colour stack, 60 MP JPEG | 1716 × 1030 | 0.004 | 0.03 | 0.21 | +0.001 | 0.62 | 30.9 MB |
 | Colour stack, zone plate | 1716 × 1144 | 0.015 | 0.07 | 0.57 | +0.001 | 1.10 | 32.5 MB |
 | Colour stack, Presence fixture | 1440 × 960, exact | 0.013 | 0.25 | 0.57 | −0.000 | 1.16 | 27.8 MB |
-| Colour stack (RAW), Z6 | 1003 × 1508 | 0.021 | 0.08 | 0.71 | +0.000 | 1.83 | 53.1 MB |
+| Colour stack (RAW), Z6 | 1003 × 1508 | 0.018 | 0.09 | 0.68 | −0.000 | 1.83 | 65.2 MB |
 | Colour stack (RAW), X100VI | 1716 × 1144 | 0.000 | 0.01 | 0.00 | +0.000 | 1.07 | 48.2 MB |
-| Colour stack (RAW), Air 2S | 1716 × 1143 | 0.019 | 0.12 | 0.65 | +0.000 | 1.71 | 64.0 MB |
+| Colour stack (RAW), Air 2S | 1716 × 1143 | 0.017 | 0.12 | 0.63 | +0.000 | 1.71 | 79.7 MB |
 | Straightened crop, 24 MP JPEG | 1715 × 964 | 0.000 | 0.00 | 0.00 | −0.000 | 0.80 | 42.4 MB |
 | Straightened crop, 60 MP JPEG | 1715 × 964 | 0.000 | 0.00 | 0.00 | +0.000 | 0.49 | 42.3 MB |
 | Straightened crop, zone plate | 1715 × 964 | 0.002 | 0.02 | 0.00 | −0.002 | 0.40 | 42.4 MB |
 | Straightened crop, Presence fixture | 1356 × 762, exact | 0.000 | 0.06 | 0.00 | −0.000 | 0.39 | 32.8 MB |
-| Straightened crop, Z6 | 1715 × 964 | 0.023 | 0.12 | 0.69 | −0.000 | 1.56 | 65.7 MB |
-| Straightened crop, X100VI | 1715 × 964 | 0.007 | 0.03 | 0.38 | −0.000 | 1.44 | 68.0 MB |
-| Straightened crop, Air 2S | 1715 × 964 | 0.033 | 0.16 | 0.78 | −0.000 | 1.63 | 68.0 MB |
+| Straightened crop, Z6 | 1715 × 964 | 0.019 | 0.11 | 0.65 | −0.000 | 1.59 | 82.0 MB |
+| Straightened crop, X100VI | 1715 × 964 | 0.000 | 0.00 | 0.00 | +0.000 | 0.95 | 85.0 MB |
+| Straightened crop, Air 2S | 1715 × 964 | 0.031 | 0.16 | 0.76 | −0.000 | 1.55 | 85.0 MB |
 | Crop at 45°, 24 MP JPEG | 1716 × 965 | 0.000 | 0.00 | 0.00 | +0.000 | 0.00 | 60.0 MB |
 | Crop at 45°, 60 MP JPEG | 1715 × 964 | 0.000 | 0.00 | 0.00 | +0.000 | 0.00 | 60.0 MB |
 | Crop at 45°, zone plate | 1716 × 965 | 0.003 | 0.02 | 0.00 | −0.002 | 0.40 | 60.0 MB |
 | Crop at 45°, Presence fixture | 867 × 487, exact | 0.000 | 0.04 | 0.00 | −0.000 | 0.35 | 15.3 MB |
-| Crop at 45°, Z6 | 1715 × 964 | 0.023 | 0.12 | 0.71 | +0.000 | 1.60 | 100.6 MB |
-| Crop at 45°, X100VI | 1715 × 964 | 0.006 | 0.03 | 0.35 | +0.000 | 1.29 | 103.2 MB |
-| Crop at 45°, Air 2S | 1715 × 964 | 0.052 | 0.20 | 0.87 | +0.000 | 1.69 | 103.2 MB |
+| Crop at 45°, Z6 | 1715 × 964 | 0.019 | 0.12 | 0.65 | +0.000 | 1.64 | 128.6 MB |
+| Crop at 45°, X100VI | 1715 × 964 | 0.000 | 0.01 | 0.00 | +0.000 | 1.06 | 132.0 MB |
+| Crop at 45°, Air 2S | 1715 × 964 | 0.051 | 0.20 | 0.87 | +0.000 | 1.69 | 132.0 MB |
 | Tight straightened crop, 24 MP JPEG | 1160 × 940, exact | 0.000 | 0.00 | 0.00 | +0.000 | 0.79 | 33.2 MB |
 | Tight straightened crop, 60 MP JPEG | 1716 × 1284 | 0.000 | 0.01 | 0.00 | −0.000 | 0.77 | 50.1 MB |
 | Tight straightened crop, zone plate | 1160 × 940, exact | 0.001 | 0.01 | 0.00 | −0.001 | 0.40 | 33.2 MB |
 | Tight straightened crop, Presence fixture | 278 × 226, exact | 0.000 | 0.00 | 0.00 | +0.000 | 0.32 | 2.0 MB |
-| Tight straightened crop, Z6 | 852 × 1299, exact | 0.019 | 0.15 | 0.67 | +0.000 | 1.62 | 48.0 MB |
-| Tight straightened crop, X100VI | 1494 × 1211, exact | 0.002 | 0.02 | 0.00 | +0.000 | 1.25 | 71.3 MB |
-| Tight straightened crop, Air 2S | 1056 × 856, exact | 0.043 | 0.15 | 0.86 | −0.000 | 1.61 | 44.9 MB |
+| Tight straightened crop, Z6 | 852 × 1299, exact | 0.015 | 0.14 | 0.63 | +0.000 | 1.53 | 58.4 MB |
+| Tight straightened crop, X100VI | 1494 × 1211, exact | 0.000 | 0.01 | 0.00 | +0.000 | 1.13 | 89.5 MB |
+| Tight straightened crop, Air 2S | 1056 × 856, exact | 0.042 | 0.15 | 0.85 | −0.000 | 1.61 | 54.2 MB |
 | Perspective warp, 24 MP JPEG | 1716 × 1144 | 0.000 | 0.01 | 0.00 | +0.000 | 0.41 | 39.0 MB |
 | Perspective warp, 60 MP JPEG | 1716 × 1030 | 0.000 | 0.01 | 0.00 | −0.000 | 0.37 | 36.8 MB |
 | Perspective warp, zone plate | 1716 × 1144 | 0.002 | 0.04 | 0.00 | −0.002 | 0.40 | 39.0 MB |
 | Perspective warp, Presence fixture | 1440 × 960, exact | 0.000 | 0.07 | 0.00 | −0.001 | 0.39 | 32.4 MB |
-| Lens and perspective warp, Z6 | 1003 × 1508 | 0.017 | 0.09 | 0.64 | −0.000 | 1.68 | 51.3 MB |
-| Lens and perspective warp, X100VI | 1716 × 1144 | 0.007 | 0.04 | 0.41 | +0.000 | 1.37 | 61.2 MB |
-| Lens and perspective warp, Air 2S | 1716 × 1143 | 0.026 | 0.12 | 0.71 | −0.000 | 1.77 | 61.2 MB |
+| Lens and perspective warp, Z6 | 1003 × 1508 | 0.011 | 0.10 | 0.58 | −0.000 | 1.52 | 62.8 MB |
+| Lens and perspective warp, X100VI | 1716 × 1144 | 0.000 | 0.01 | 0.00 | +0.000 | 1.05 | 76.0 MB |
+| Lens and perspective warp, Air 2S | 1716 × 1143 | 0.024 | 0.11 | 0.69 | −0.000 | 1.64 | 75.9 MB |
 | Lens and perspective warp, zone plate with a lens identity | 1716 × 1142 | 0.023 | 0.17 | 0.34 | −0.002 | 1.11 | 38.5 MB |
 
-Every measured cell is within the pointwise limits (mean 0.5, worst block 1.0, p99 2.0, ΔL\* ±0.25): the largest figures are a mean of 0.052, a worst block of 0.25, a p99 of 0.87 and a ΔL\* of −0.002. Without a lens warp the GPU frame is the CPU's to within a fraction of a code: the JPEGs, whose boundary is each 8-bit code's linear value held as a half float, and the X100VI, whose `f32` boundary holds what the CPU reads. A perspective warp's tail is its homography, evaluated at every pixel, so it keeps that: over the zone plate, whose chirp reaches half a cycle a pixel, its worst block is 0.04. The Z6 and Air 2S cells and the zone plate with a lens identity carry a lens profile's warp, which the tail samples through its coordinate grid, within 0.025 px of the exact map the CPU samples through; their means are 0.02 to 0.05 and their worst blocks 0.08 to 0.20, the largest the Air 2S's crop at 45°. The RAW cells' tail reads an `rgba16float` intermediate the content pass writes rounded to the nearest half; written by the M4's own conversion toward zero, they carried a signed ΔL\* of −0.004 to −0.010 ([plane precision](#plane-precision)). A windowed boundary changes nothing the tail draws: on the device, the frame over the window a crop reads is the whole boundary's, bit for bit, through an affine, a projective and a lens tail, and with Texture and Clarity before the tail over the window grown by their margin (`cargo test -p luxforge-app gpu_window`).
+Every measured cell is within the pointwise limits (mean 0.5, worst block 1.0, p99 2.0, ΔL\* ±0.25): the largest figures are a mean of 0.051, a worst block of 0.25, a p99 of 0.87 and a ΔL\* of −0.002. Without a lens warp the GPU frame is the CPU's to within a fraction of a code: the JPEGs, whose boundary is each 8-bit code's linear value held as a half float, and the X100VI, whose `f32` boundary holds what the CPU reads. A perspective warp's tail is its homography, evaluated at every pixel, so it keeps that: over the zone plate, whose chirp reaches half a cycle a pixel, its worst block is 0.04. The Z6 and Air 2S cells and the zone plate with a lens identity carry a lens profile's warp, which the tail samples through its coordinate grid, within 0.025 px of the exact map the CPU samples through; their means are 0.01 to 0.05 and their worst blocks 0.07 to 0.20, the largest the Air 2S's crop at 45°. The RAW tail's `rgba32float` intermediate keeps the linear values unquantized, and the RAW cells carry a signed ΔL\* within ±0.0001, where an `rgba16float` one written by the M4's own conversion toward zero carried −0.004 to −0.010 ([plane precision](#plane-precision)). A windowed boundary changes nothing the tail draws: on the device, the frame over the window a crop reads is the whole boundary's, bit for bit, through an affine, a projective and a lens tail, and with Texture and Clarity before the tail over the window grown by their margin (`cargo test -p luxforge-app gpu_window`).
 
 ### Reproducing it
 
@@ -3477,41 +3477,41 @@ Mean ΔE00, worst 16 × 16 block, p99, signed mean ΔL\* and largest ΔE00 of th
 | Linear, 24 MP JPEG | 1716 × 1144 | 0.003 | 0.02 | 0.12 | +0.001 | 0.41 | 32.5 MB |
 | Linear, 60 MP JPEG | 1716 × 1030 | 0.003 | 0.03 | 0.22 | +0.001 | 0.34 | 30.9 MB |
 | Linear, Presence fixture | 1440 × 960, exact | 0.004 | 0.03 | 0.28 | +0.004 | 1.00 | 27.8 MB |
-| Linear, Z6 | 1003 × 1508 | 0.023 | 0.11 | 0.74 | +0.000 | 1.67 | 53.1 MB |
+| Linear, Z6 | 1003 × 1508 | 0.018 | 0.11 | 0.64 | −0.000 | 1.67 | 65.2 MB |
 | Linear, X100VI | 1716 × 1144 | 0.000 | 0.00 | 0.00 | +0.000 | 0.96 | 48.2 MB |
-| Linear, Air 2S | 1716 × 1143 | 0.022 | 0.12 | 0.67 | +0.000 | 1.63 | 64.0 MB |
+| Linear, Air 2S | 1716 × 1143 | 0.020 | 0.11 | 0.64 | +0.000 | 1.63 | 79.7 MB |
 | Radial, 24 MP JPEG | 1716 × 1144 | 0.001 | 0.04 | 0.00 | +0.000 | 0.63 | 32.5 MB |
 | Radial, 60 MP JPEG | 1716 × 1030 | 0.000 | 0.03 | 0.00 | +0.000 | 0.38 | 30.9 MB |
 | Radial, Presence fixture | 1440 × 960, exact | 0.000 | 0.03 | 0.00 | +0.000 | 0.93 | 27.8 MB |
-| Radial, Z6 | 1003 × 1508 | 0.021 | 0.09 | 0.69 | +0.000 | 1.67 | 53.1 MB |
+| Radial, Z6 | 1003 × 1508 | 0.016 | 0.09 | 0.65 | −0.000 | 1.47 | 65.2 MB |
 | Radial, X100VI | 1716 × 1144 | 0.000 | 0.00 | 0.00 | +0.000 | 0.87 | 48.2 MB |
-| Radial, Air 2S | 1716 × 1143 | 0.021 | 0.12 | 0.68 | +0.000 | 1.76 | 64.0 MB |
+| Radial, Air 2S | 1716 × 1143 | 0.018 | 0.11 | 0.66 | +0.000 | 1.71 | 79.7 MB |
 | Brush, 24 MP JPEG | 1716 × 1144 | 0.000 | 0.02 | 0.00 | +0.000 | 0.42 | 32.5 MB |
 | Brush, 60 MP JPEG | 1716 × 1030 | 0.000 | 0.03 | 0.00 | +0.000 | 0.36 | 30.9 MB |
 | Brush, Presence fixture | 1440 × 960, exact | 0.001 | 0.07 | 0.00 | +0.001 | 0.91 | 27.8 MB |
-| Brush, Z6 | 1003 × 1508 | 0.021 | 0.09 | 0.70 | +0.000 | 1.67 | 53.1 MB |
+| Brush, Z6 | 1003 × 1508 | 0.016 | 0.09 | 0.65 | −0.000 | 1.46 | 65.2 MB |
 | Brush, X100VI | 1716 × 1144 | 0.000 | 0.00 | 0.00 | +0.000 | 0.52 | 48.2 MB |
-| Brush, Air 2S | 1716 × 1143 | 0.021 | 0.12 | 0.68 | +0.000 | 1.76 | 64.0 MB |
+| Brush, Air 2S | 1716 × 1143 | 0.019 | 0.11 | 0.66 | +0.000 | 1.71 | 79.7 MB |
 | Luminance range, 24 MP JPEG | 1716 × 1144 | 0.000 | 0.02 | 0.00 | +0.000 | 0.28 | 32.5 MB |
 | Luminance range, 60 MP JPEG | 1716 × 1030 | 0.000 | 0.00 | 0.00 | −0.000 | 0.13 | 30.9 MB |
 | Luminance range, Presence fixture | 1440 × 960, exact | 0.008 | 0.10 | 0.28 | +0.009 | 0.39 | 27.8 MB |
-| Luminance range, Z6 | 1003 × 1508 | 0.025 | 0.11 | 0.84 | +0.000 | 1.67 | 53.1 MB |
+| Luminance range, Z6 | 1003 × 1508 | 0.020 | 0.11 | 0.66 | +0.000 | 1.52 | 65.2 MB |
 | Luminance range, X100VI | 1716 × 1144 | 0.000 | 0.00 | 0.00 | +0.000 | 0.96 | 48.2 MB |
-| Luminance range, Air 2S | 1716 × 1143 | 0.024 | 0.12 | 0.66 | +0.000 | 1.54 | 64.0 MB |
+| Luminance range, Air 2S | 1716 × 1143 | 0.021 | 0.12 | 0.64 | +0.000 | 1.53 | 79.7 MB |
 | Colour range, 24 MP JPEG | 1716 × 1144 | 0.000 | 0.00 | 0.00 | +0.000 | 0.00 | 32.5 MB |
 | Colour range, 60 MP JPEG | 1716 × 1030 | 0.000 | 0.00 | 0.00 | +0.000 | 0.00 | 30.9 MB |
 | Colour range, Presence fixture | 1440 × 960, exact | 0.008 | 0.10 | 0.28 | +0.009 | 0.39 | 27.8 MB |
-| Colour range, Z6 | 1003 × 1508 | 0.024 | 0.11 | 0.82 | −0.000 | 1.67 | 53.1 MB |
+| Colour range, Z6 | 1003 × 1508 | 0.018 | 0.11 | 0.64 | −0.000 | 1.67 | 65.2 MB |
 | Colour range, X100VI | 1716 × 1144 | 0.000 | 0.00 | 0.00 | +0.000 | 1.09 | 48.2 MB |
-| Colour range, Air 2S | 1716 × 1143 | 0.024 | 0.12 | 0.68 | +0.000 | 1.61 | 64.0 MB |
+| Colour range, Air 2S | 1716 × 1143 | 0.021 | 0.12 | 0.65 | +0.000 | 1.61 | 79.7 MB |
 | Linear less radial, 24 MP JPEG | 1716 × 1144 | 0.003 | 0.02 | 0.07 | +0.001 | 0.43 | 32.5 MB |
 | Linear less radial, 60 MP JPEG | 1716 × 1030 | 0.003 | 0.03 | 0.22 | +0.001 | 0.43 | 30.9 MB |
 | Linear less radial, Presence fixture | 1440 × 960, exact | 0.004 | 0.03 | 0.28 | +0.004 | 1.00 | 27.8 MB |
-| Linear less radial, Z6 | 1003 × 1508 | 0.023 | 0.11 | 0.73 | +0.000 | 1.67 | 53.1 MB |
+| Linear less radial, Z6 | 1003 × 1508 | 0.018 | 0.11 | 0.64 | +0.000 | 1.67 | 65.2 MB |
 | Linear less radial, X100VI | 1716 × 1144 | 0.000 | 0.00 | 0.00 | +0.000 | 0.96 | 48.2 MB |
-| Linear less radial, Air 2S | 1716 × 1143 | 0.022 | 0.12 | 0.67 | +0.000 | 1.63 | 64.0 MB |
+| Linear less radial, Air 2S | 1716 × 1143 | 0.020 | 0.11 | 0.64 | +0.000 | 1.63 | 79.7 MB |
 
-Every measured cell is within the pointwise limits (mean 0.5, worst block 1.0, p99 2.0, ΔL\* ±0.25): the largest figures are a mean of 0.025, a worst block of 0.12, a p99 of 0.84 and a ΔL\* of +0.009. They are the colour programs' own figures for the same Basic layer: on the JPEGs and the X100VI the GPU frame is the CPU's to within a fraction of a code, and on the Z6 and Air 2S the lens profile's warp dominates as it does there. The RAW cells' tail reads an `rgba16float` intermediate the content pass writes rounded to the nearest half; written by the M4's own conversion toward zero, they carried a signed ΔL\* of −0.004 to −0.010 ([plane precision](#plane-precision)). The masks' coverage itself is held to the CPU's by the contour rule in the readback tests (`cargo test -p luxforge-app gpu_mask`), within 0.004 px on every case.
+Every measured cell is within the pointwise limits (mean 0.5, worst block 1.0, p99 2.0, ΔL\* ±0.25): the largest figures are a mean of 0.021, a worst block of 0.12, a p99 of 0.66 and a ΔL\* of +0.009. They are the colour programs' own figures for the same Basic layer: on the JPEGs and the X100VI the GPU frame is the CPU's to within a fraction of a code, and on the Z6 and Air 2S the lens profile's warp dominates as it does there, the RAW tail's `rgba32float` intermediate holding their signed ΔL\* within ±0.0001 ([plane precision](#plane-precision)). The masks' coverage itself is held to the CPU's by the contour rule in the readback tests (`cargo test -p luxforge-app gpu_mask`), within 0.004 px on every case.
 
 ### Reproducing it
 
@@ -3573,27 +3573,27 @@ No output is non-finite. The light taken on the GPU gives the same frame as the 
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Texture, 24 MP / 60 MP JPEG | 0.0001 / 0.0001 | 0.01 / 0.01 | 0.00 / 0.00 | +0.000 / +0.000 | 0.29 / 0.35 | 87.5 / 80.4 MB |
 | Texture, Presence fixture (exact) | 0.0000 | 0.01 | 0.00 | +0.000 | 0.40 | 66.5 MB |
-| Texture, Z6 / X100VI / Air 2S | 0.026 / 0.0001 / 0.024 | 0.10 / 0.00 / 0.12 | 0.91 / 0.00 / 0.72 | +0.000 / +0.000 / +0.000 | 1.64 / 1.14 / 1.65 | 95.5 / 103.2 / 118.9 MB |
+| Texture, Z6 / X100VI / Air 2S | 0.026 / 0.0001 / 0.024 | 0.10 / 0.00 / 0.12 | 0.91 / 0.00 / 0.72 | +0.000 / +0.000 / +0.000 | 1.64 / 1.14 / 1.65 | 107.6 / 103.2 / 134.6 MB |
 | Clarity, 24 MP / 60 MP JPEG | 0.0011 / 0.0014 | 0.05 / 0.04 | 0.00 / 0.00 | +0.000 / +0.000 | 0.35 / 0.55 | 35.4 / 33.6 MB |
 | Clarity, Presence fixture (exact) | 0.0085 | 0.04 | 0.33 | +0.008 | 0.40 | 29.9 MB |
-| Clarity, Z6 / X100VI / Air 2S | 0.032 / 0.0000 / 0.034 | 0.16 / 0.00 / 0.16 | 0.96 / 0.00 / 0.83 | −0.000 / −0.000 / −0.000 | 1.79 / 1.09 / 1.60 | 55.4 / 51.1 / 66.9 MB |
+| Clarity, Z6 / X100VI / Air 2S | 0.032 / 0.0000 / 0.034 | 0.16 / 0.00 / 0.16 | 0.96 / 0.00 / 0.83 | −0.000 / −0.000 / −0.000 | 1.79 / 1.09 / 1.60 | 67.5 / 51.1 / 82.6 MB |
 | Dehaze, 24 MP / 60 MP JPEG | 0.0000 / 0.0002 | 0.01 / 0.02 | 0.00 / 0.00 | +0.000 / +0.000 | 0.46 / 0.34 | 40.5 / 38.1 MB |
 | Dehaze, Presence fixture (exact) | 0.011 | 0.19 | 0.32 | −0.001 | 0.69 | 33.5 MB |
-| Dehaze, Z6 / X100VI / Air 2S | 0.026 / 0.0006 / 0.030 | 0.13 / 0.01 / 0.19 | 0.73 / 0.00 / 0.73 | −0.000 / +0.000 / −0.000 | 1.80 / 1.18 / 2.8 | 59.3 / 56.2 / 72.0 MB |
+| Dehaze, Z6 / X100VI / Air 2S | 0.026 / 0.0006 / 0.030 | 0.13 / 0.01 / 0.19 | 0.73 / 0.00 / 0.73 | −0.000 / +0.000 / −0.000 | 1.80 / 1.18 / 2.8 | 71.4 / 56.2 / 87.7 MB |
 | Texture and Clarity, 24 MP / 60 MP JPEG | 0.0010 / 0.0009 | 0.03 / 0.04 | 0.00 / 0.00 | +0.000 / +0.000 | 0.55 / 0.55 | 90.4 / 83.1 MB |
 | Texture and Clarity, Presence fixture (exact) | 0.0035 | 0.03 | 0.25 | +0.002 | 0.40 | 68.6 MB |
-| Texture and Clarity, Z6 / X100VI / Air 2S | 0.040 / 0.0001 / 0.038 | 0.16 / 0.01 / 0.15 | 0.98 / 0.00 / 0.86 | +0.000 / +0.000 / +0.000 | 1.76 / 1.05 / 1.64 | 97.8 / 106.1 / 121.8 MB |
+| Texture and Clarity, Z6 / X100VI / Air 2S | 0.040 / 0.0001 / 0.038 | 0.16 / 0.01 / 0.15 | 0.98 / 0.00 / 0.86 | +0.000 / +0.000 / +0.000 | 1.76 / 1.05 / 1.64 | 109.9 / 106.1 / 137.5 MB |
 | All three, 24 MP / 60 MP JPEG | 0.0013 / 0.0009 | 0.04 / 0.04 | 0.00 / 0.00 | +0.000 / +0.000 | 0.54 / 0.36 | 96.4 / 88.5 MB |
 | All three, Presence fixture (exact) | 0.035 | 0.49 | 0.64 | +0.002 | 1.31 | 72.9 MB |
-| All three, Z6 / X100VI / Air 2S | 0.042 / 0.0010 / 0.042 | 0.17 / 0.02 / 0.22 | 0.91 / 0.00 / 0.80 | +0.000 / +0.000 / +0.000 | 6.00 / 1.22 / 14.6 | 102.4 / 112.1 / 127.9 MB |
+| All three, Z6 / X100VI / Air 2S | 0.042 / 0.0010 / 0.042 | 0.17 / 0.02 / 0.22 | 0.91 / 0.00 / 0.80 | +0.000 / +0.000 / +0.000 | 6.00 / 1.22 / 14.6 | 114.5 / 112.1 / 143.6 MB |
 | All three at −100, 24 MP / 60 MP JPEG | 0.0011 / 0.0015 | 0.05 / 0.08 | 0.00 / 0.00 | +0.000 / +0.000 | 0.77 / 0.81 | 96.4 / 88.5 MB |
 | All three at −100, Presence fixture (exact) | 0.0009 | 0.02 | 0.00 | +0.001 | 0.26 | 72.9 MB |
-| All three at −100, Z6 / X100VI / Air 2S | 0.012 / 0.0001 / 0.016 | 0.08 / 0.00 / 0.18 | 0.52 / 0.00 / 0.56 | +0.000 / +0.000 / −0.000 | 1.41 / 0.74 / 1.36 | 102.4 / 112.1 / 127.9 MB |
+| All three at −100, Z6 / X100VI / Air 2S | 0.012 / 0.0001 / 0.016 | 0.08 / 0.00 / 0.18 | 0.52 / 0.00 / 0.56 | +0.000 / +0.000 / −0.000 | 1.41 / 0.74 / 1.36 | 114.5 / 112.1 / 143.6 MB |
 | All three masked by a radial, 24 MP / 60 MP JPEG | 0.0007 / 0.0006 | 0.07 / 0.05 | 0.00 / 0.00 | +0.000 / +0.000 | 1.02 / 0.55 | 96.4 / 88.5 MB |
 | All three masked, Presence fixture (exact) | 0.0038 | 0.48 | 0.00 | −0.000 | 1.31 | 72.9 MB |
-| All three masked, Z6 / X100VI / Air 2S | 0.024 / 0.0000 / 0.022 | 0.12 / 0.01 / 0.12 | 0.75 / 0.00 / 0.69 | +0.000 / +0.000 / +0.000 | 1.67 / 0.99 / 14.6 | 102.4 / 112.1 / 127.9 MB |
+| All three masked, Z6 / X100VI / Air 2S | 0.024 / 0.0000 / 0.022 | 0.12 / 0.01 / 0.12 | 0.75 / 0.00 / 0.69 | +0.000 / +0.000 / +0.000 | 1.67 / 0.99 / 14.6 | 114.5 / 112.1 / 143.6 MB |
 
-The Z6 and Air 2S cells carry the lens profile their first open commits, which the geometry tail draws after the spatial step, and their means are mostly the tail's, as for the colour programs, its intermediate written rounded to the nearest half (signed ΔL\* within ±0.0002, where the M4's own conversion toward zero held them at −0.004 to −0.010); the X100VI commits none, and its `f32` boundary leaves the GPU frame within a fraction of a code of the CPU's. The masked recipe's radial selects part of each frame: its masked CPU frame equals the unmasked one on 5 to 10% of the pixels, where coverage is whole. [the qualification](#the-corpus-error-report) measures the zone plate. The largest maxima are the Air 2S's near-black pixels ([below](#isolated-near-black-pixels)).
+The Z6 and Air 2S cells carry the lens profile their first open commits, which the geometry tail draws after the spatial step, and their means are mostly the tail's, as for the colour programs. Its `rgba32float` intermediate holds their signed ΔL\* within ±0.0001, where an `rgba16float` one written by the M4's own conversion toward zero held them at −0.004 to −0.010; the X100VI commits none, and its `f32` boundary leaves the GPU frame within a fraction of a code of the CPU's. The masked recipe's radial selects part of each frame: its masked CPU frame equals the unmasked one on 5 to 10% of the pixels, where coverage is whole. [the qualification](#the-corpus-error-report) measures the zone plate. The largest maxima are the Air 2S's near-black pixels ([below](#isolated-near-black-pixels)).
 
 **Memory.** "Charged" is what the photo surface's slot drawing the plan charges the GPU-preview budget, the figure its `gpu_preview_in_use_bytes` reports (a surface test holds the two equal): the boundary, the output in the photograph's size bucket and its uniform, the words and blocks buffers, and the planes. With all three fields on the 60 MP JPEG at Fit (a 1716 × 1030 proxy), the slot holds 88.5 MB (84.4 MiB) of the 2 GiB budget, of which the planes are 57.6 MB: about 32.6 bytes a pixel, Texture's full-resolution planes 28 of them, its apply reading a plane of its own ([design](../design/gpu-preview.md#plane-sharing-and-precision)). One slot is held at a time, so this is its peak; a replacement overlaps the slot it replaces until that retires. The 100% figures are in [GPU previews at 100%](#gpu-previews-at-100).
 
@@ -3613,7 +3613,7 @@ Over a half-float boundary, the largest maxima, 108.8 on the Air 2S and 11.2 on 
 | `rgba16float`, additive below 2⁻⁸ of \|r\| + \|g\| + \|b\| | 686 / 781 / 834 | 96.5 / 82.5 |
 | `rgba32float`, additive below 2⁻⁸ of \|r\| + \|g\| + \|b\| | 665 / 796 / 827 | 96.5 / 82.5 |
 
-The four statistics barely move: over the 21 cells an `rgba32float` boundary leaves the worst mean, p99 and signed ΔL\* within 0.01 of the half-float boundary's at both scales, and lowers the Air 2S's worst block with all three fields at Fit from 0.50 to 0.25. Of its remaining pixels, the Z6's leaves Dehaze with luminance 1.2 × 10⁻⁶, beside the CPU's own 10⁻⁶ threshold, where the filters' `f32` arithmetic decides which side of it a frame falls. It holds eight bytes a texel more: all three fields charge 77.8 rather than 65.7 MB on the Z6 at Fit and 95.9 rather than 80.2 MB on the X100VI and Air 2S, and 137.0 rather than 113.1 MB over a 1796 × 1660 region at 100%, before any margin the region adds, of the GPU-preview budget. A wider near-black rule in the GPU apply cannot follow the CPU, which keeps the ratio down to 10⁻⁶ (the GPU already holds the CPU's rule and its constant): every rule measured adds outliers. On this evidence the boundary's format is decided by path: a plan of the linear path, a RAW's, holds its boundary as `rgba32float`, and a JPEG's stays `rgba16float`. `GpuBoundary` carries its format, chosen from the plan's linear flag (`BoundaryFormat::of`) where the draft's boundary is requested, and the preview worker writes the texels in it ([GPU previews](../design/gpu-preview.md#the-held-input-boundary)). Over it, with the lens profile drawn, the corpus's largest maxima with all three fields are 14.1 on the Air 2S and 6.0 on the Z6.
+The four statistics barely move: over the 21 cells an `rgba32float` boundary leaves the worst mean, p99 and signed ΔL\* within 0.01 of the half-float boundary's at both scales, and lowers the Air 2S's worst block with all three fields at Fit from 0.50 to 0.25. Of its remaining pixels, the Z6's leaves Dehaze with luminance 1.2 × 10⁻⁶, beside the CPU's own 10⁻⁶ threshold, where the filters' `f32` arithmetic decides which side of it a frame falls. It holds eight bytes a texel more: all three fields charge 77.8 rather than 65.7 MB on the Z6 at Fit and 95.9 rather than 80.2 MB on the X100VI and Air 2S, and 137.0 rather than 113.1 MB over a 1796 × 1660 region at 100%, before any margin the region adds, of the GPU-preview budget. A wider near-black rule in the GPU apply cannot follow the CPU, which keeps the ratio down to 10⁻⁶ (the GPU already holds the CPU's rule and its constant): every rule measured adds outliers. On this evidence the boundary's format is decided by path: a plan of the linear path, a RAW's, holds its boundary as `rgba32float`, and a JPEG's stays `rgba16float`. The geometry pass also preserves the RAW linear range in an `rgba32float` intermediate; a JPEG uses `rgba8unorm` when its segment boundary quantizes. `GpuBoundary` carries its format, chosen from the plan's linear flag (`BoundaryFormat::of`) where the draft's boundary is requested, and the preview worker writes the texels in it ([GPU previews](../design/gpu-preview.md#the-held-input-boundary)). Over it, with the lens profile drawn, the corpus's largest maxima with all three fields are 14.1 on the Air 2S and 6.0 on the Z6.
 
 ### Reproducing it
 
@@ -3710,6 +3710,8 @@ The figures are the half-precision planes' ([plane precision](#plane-precision))
 
 ### Plane precision
 
+The former RAW geometry-tail candidate used an `rgba16float` intermediate and lost extended linear range. The current tail uses `rgba32float`; a synthetic native GPU identity-tail regression verifies bit-for-bit `f32` preservation, and the native RAW geometry test matches CPU output codes exactly. Over the corpus on the three RAWs, the colour, mask, Presence and Detail harnesses at Fit and every family at 100%, the `rgba32float` tail draws every RAW cell within the limits, its geometry cells within a signed ΔL\* of ±0.0001, and its intermediate charges each such slot its `f32` bytes ([GPU previews at 100%](#gpu-previews-at-100)); an in-editor memory measurement of a photo-sized RAW drag remains outstanding.
+
 Which spatial planes are held at half precision ([design](../design/gpu-preview.md#plane-sharing-and-precision)), plane by plane: `gpu_detail_plane_precision_is_measured` draws each stack in the GPU shape a drag draws over the synthetic photograph at 1536 × 1024 on the linear path, with every plane at full precision, as shipped, and with each full-resolution plane alone at half precision (`rgba16float`), against the CPU's exact frame; the largest linear difference is against the full-precision program. One run on the M4, at `bbfbe213`.
 
 | Stack, planes at half precision | Mean ΔE00 | Worst block | p99 | Signed ΔL\* | Largest linear Δ |
@@ -3728,7 +3730,7 @@ Which spatial planes are held at half precision ([design](../design/gpu-preview.
 
 - **Shipped.** Detail's planes at half precision, holding sharpening's scratch, each unit's apply reading a plane of its own; Texture's planes, Clarity's and Dehaze's on their 4× grids and every accumulator at `f32`, Presence running in a link of its own after Detail's, so Texture's planes take none of Detail's ([design](../design/gpu-preview.md#plane-sharing-and-precision)). Every case is far inside the spatial limits and none is biased.
 - **The offsets.** Detail holds lightness less one half, and Texture its fine smoother less one half, where a half's step is finer. Without them all four Detail planes at half precision gave a mean of 0.078 (worst block 0.53, p99 0.97) on the moderate stack and the chain with all three fields 0.152.
-- **Rounding.** Before each write to a half-precision texture the surface rounds to the nearest half, ties to even. Without it the M4 converts both a storage write and a render target's value toward zero: of 49,152 values in every binade a frame holds, of both signs, 24,614 were held toward zero by each and the rest at the nearest, which every one is with the rounding (`a_half_planes_texels_are_the_nearest_half`, `a_linear_tails_intermediate_holds_the_nearest_half`). Through noise reduction's four chained smoothings that drew the moderate stack darker by a signed ΔL\* of −0.12 to −0.13 (mean 0.26). The RAW tail's `rgba16float` intermediate is such a render target: over the corpus at Fit, every RAW cell through a lens warp, a straightened crop or a perspective warp was drawn darker by a signed ΔL\* of −0.004 to −0.010, and with the rounding by at most 0.0002 either way ([the corpus error report](#the-corpus-error-report)).
+- **Rounding.** Before each write to a half-precision spatial plane the surface rounds to the nearest half, ties to even. Without it the M4 converts a storage write toward zero: of 49,152 values in every binade a frame holds, of both signs, 24,614 were held toward zero and the rest at the nearest, which every one is with the rounding (`a_half_planes_texels_are_the_nearest_half`). Through noise reduction's four chained smoothings that drew the moderate stack darker by a signed ΔL\* of −0.12 to −0.13 (mean 0.26). The former RAW-tail `rgba16float` candidate also narrowed its intermediate and drew RAW geometry darker; the current `rgba32float` path preserves the linear values without half rounding. The older corpus report below records the failed candidate and does not qualify current RAW geometry accuracy or memory use.
 
 ### The corpus at Fit
 
@@ -3740,28 +3742,28 @@ Mean, worst 16 × 16 block, p99 and signed mean ΔL\* of the drawn frame against
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Moderate, 24 MP / 60 MP JPEG | 0.000 / 0.000 | 0.02 / 0.01 | 0.00 / 0.00 | +0.000 / −0.000 | 0.00 / 0.00 | 1.18 / 0.58 | 0.07 / 0.00 | 126.7 / 115.8 MB |
 | Moderate, Presence fixture (exact) | 0.006 | 0.02 | 0.36 | +0.000 | – | – | – | 94.2 MB |
-| Moderate, Z6 / X100VI / Air 2S | 0.023 / 0.011 / 0.025 | 0.09 / 0.08 / 0.12 | 0.73 / 0.52 / 0.74 | −0.000 / +0.000 / −0.000 | 0.21 / 0.07 / 0.70 | 1.50 / 0.44 / 4.90 | 1.54 / 0.90 / 5.22 | 125.7 / 142.4 / 158.1 MB |
+| Moderate, Z6 / X100VI / Air 2S | 0.023 / 0.011 / 0.025 | 0.09 / 0.08 / 0.12 | 0.73 / 0.52 / 0.74 | −0.000 / +0.000 / −0.000 | 0.21 / 0.07 / 0.70 | 1.50 / 0.44 / 4.90 | 1.54 / 0.90 / 5.22 | 137.9 / 142.4 / 173.8 MB |
 | Noise stress, 24 MP / 60 MP JPEG | 0.000 / 0.000 | 0.03 / 0.01 | 0.00 / 0.00 | −0.000 / −0.000 | 0.02 / 0.01 | 4.40 / 2.32 | 0.26 / 0.11 | 111.0 / 101.6 MB |
 | Noise stress, Presence fixture (exact) | 0.001 | 0.02 | 0.00 | +0.000 | – | – | – | 83.1 MB |
-| Noise stress, Z6 / X100VI / Air 2S | 0.022 / 0.011 / 0.022 | 0.09 / 0.07 / 0.12 | 0.71 / 0.52 / 0.70 | +0.000 / +0.000 / −0.000 | 0.17 / 0.06 / 0.44 | 1.00 / 0.56 / 2.62 | 1.15 / 0.90 / 2.78 | 113.6 / 126.7 / 142.4 MB |
+| Noise stress, Z6 / X100VI / Air 2S | 0.022 / 0.011 / 0.022 | 0.09 / 0.07 / 0.12 | 0.71 / 0.52 / 0.70 | +0.000 / +0.000 / −0.000 | 0.17 / 0.06 / 0.44 | 1.00 / 0.56 / 2.62 | 1.15 / 0.90 / 2.78 | 125.7 / 126.7 / 158.1 MB |
 | Sharpen stress, 24 MP / 60 MP JPEG | 0.000 / 0.000 | 0.00 / 0.01 | 0.00 / 0.00 | +0.000 / +0.000 | 0.00 / 0.00 | 1.32 / 0.65 | 0.00 / 0.00 | 87.5 / 80.4 MB |
 | Sharpen stress, Presence fixture (exact) | 0.000 | 0.00 | 0.00 | +0.000 | – | – | – | 66.5 MB |
-| Sharpen stress, Z6 / X100VI / Air 2S | 0.023 / 0.000 / 0.027 | 0.10 / 0.01 / 0.14 | 0.74 / 0.00 / 0.76 | +0.000 / +0.000 / +0.000 | 0.47 / 0.20 / 1.37 | 2.25 / 1.08 / 6.36 | 2.43 / 0.97 / 7.49 | 95.5 / 103.2 / 118.9 MB |
+| Sharpen stress, Z6 / X100VI / Air 2S | 0.023 / 0.000 / 0.027 | 0.10 / 0.01 / 0.14 | 0.74 / 0.00 / 0.76 | +0.000 / +0.000 / +0.000 | 0.47 / 0.20 / 1.37 | 2.25 / 1.08 / 6.36 | 2.43 / 0.97 / 7.49 | 107.6 / 103.2 / 134.6 MB |
 | Moderate, masked, 24 MP / 60 MP JPEG | 0.000 / 0.000 | 0.02 / 0.01 | 0.00 / 0.00 | +0.000 / +0.000 | 0.00 / 0.00 | 0.23 / 0.15 | 0.00 / 0.00 | 126.7 / 115.8 MB |
 | Moderate, masked, Presence fixture (exact) | 0.000 | 0.02 | 0.00 | +0.000 | – | – | – | 94.2 MB |
-| Moderate, masked, Z6 / X100VI / Air 2S | 0.022 / 0.001 / 0.021 | 0.10 / 0.05 / 0.12 | 0.71 / 0.00 / 0.69 | −0.000 / +0.000 / +0.000 | 0.37 / 0.09 / 1.08 | 1.59 / 0.38 / 5.22 | 1.82 / 0.93 / 5.55 | 125.7 / 142.4 / 158.1 MB |
+| Moderate, masked, Z6 / X100VI / Air 2S | 0.022 / 0.001 / 0.021 | 0.10 / 0.05 / 0.12 | 0.71 / 0.00 / 0.69 | −0.000 / +0.000 / +0.000 | 0.37 / 0.09 / 1.08 | 1.59 / 0.38 / 5.22 | 1.82 / 0.93 / 5.55 | 137.9 / 142.4 / 173.8 MB |
 | Noise stress, masked, 24 MP / 60 MP JPEG | 0.000 / 0.000 | 0.03 / 0.01 | 0.00 / 0.00 | −0.000 / +0.000 | 0.00 / 0.00 | 1.08 / 0.81 | 0.00 / 0.00 | 111.0 / 101.6 MB |
 | Noise stress, masked, Presence fixture (exact) | 0.000 | 0.01 | 0.00 | +0.000 | – | – | – | 83.1 MB |
-| Noise stress, masked, Z6 / X100VI / Air 2S | 0.021 / 0.002 / 0.021 | 0.09 / 0.05 / 0.12 | 0.70 / 0.00 / 0.68 | −0.000 / +0.000 / +0.000 | 0.35 / 0.08 / 1.06 | 1.58 / 0.31 / 5.22 | 1.65 / 0.92 / 5.51 | 113.6 / 126.7 / 142.4 MB |
+| Noise stress, masked, Z6 / X100VI / Air 2S | 0.021 / 0.002 / 0.021 | 0.09 / 0.05 / 0.12 | 0.70 / 0.00 / 0.68 | −0.000 / +0.000 / +0.000 | 0.35 / 0.08 / 1.06 | 1.58 / 0.31 / 5.22 | 1.65 / 0.92 / 5.51 | 125.7 / 126.7 / 158.1 MB |
 | Sharpen stress, masked, 24 MP / 60 MP JPEG | 0.000 / 0.000 | 0.01 / 0.01 | 0.00 / 0.00 | +0.000 / +0.000 | 0.00 / 0.00 | 0.33 / 0.24 | 0.00 / 0.00 | 87.5 / 80.4 MB |
 | Sharpen stress, masked, Presence fixture (exact) | 0.000 | 0.01 | 0.00 | +0.000 | – | – | – | 66.5 MB |
-| Sharpen stress, masked, Z6 / X100VI / Air 2S | 0.022 / 0.000 / 0.021 | 0.09 / 0.00 / 0.12 | 0.71 / 0.00 / 0.69 | +0.000 / +0.000 / +0.000 | 0.43 / 0.09 / 1.13 | 2.18 / 0.48 / 5.22 | 2.34 / 0.93 / 5.62 | 95.5 / 103.2 / 118.9 MB |
+| Sharpen stress, masked, Z6 / X100VI / Air 2S | 0.022 / 0.000 / 0.021 | 0.09 / 0.00 / 0.12 | 0.71 / 0.00 / 0.69 | +0.000 / +0.000 / +0.000 | 0.43 / 0.09 / 1.13 | 2.18 / 0.48 / 5.22 | 2.34 / 0.93 / 5.62 | 107.6 / 103.2 / 134.6 MB |
 
 Every cell is within the spatial limits: at worst a mean of 0.027, a worst block of 0.14 and a p99 of 0.76, on the Z6 and Air 2S, where the geometry tail's coordinate grid places the lens warp's samples, and no signed ΔL\* past ±0.001; on the X100VI the half-precision planes leave a mean of 0.011 and a worst block of 0.08, and on the JPEGs the GPU frame is within a worst block of 0.03 of the proxy. The Presence fixture fits the bounds at its own size, so its Fit frame is the exact render itself, with no proxy and no settle jump, and its GPU frame runs the full-resolution B3 levels. [the qualification](#the-corpus-error-report) measures the zone plate.
 
 **The settle jump is the CPU path's.** The moving proxy runs Detail's filters, which the design defines at full resolution, over averaged proxy pixels, so it moves when the exact-derived frame replaces it: by up to a mean of 1.37, a worst block of 6.36 and a p99 of 7.49 (sharpen stress on the Air 2S, whose sunlit glints on the sea the proxy's sharpening gives more contrast than the full-resolution sharpening keeps once reduced), and on the 24 MP JPEG by a worst block of 4.40 with noise stress (a row of small dark marks on the edge between two quadrants, darker and firmer once reduced from full resolution). The GPU frame, against the same settled frame, moves by the proxy's figures within 0.01: it leaves that jump as it is.
 
-**Memory.** "Charged" is what the photo surface's slot drawing the plan charges the GPU-preview budget, as for Presence. Both units hold 48 bytes a pixel of half-precision planes, noise reduction 40 alone and sharpening 28 alone, each unit's apply reading a plane of its own that one pass writes ([design](../design/gpu-preview.md#plane-sharing-and-precision)). With the moderate settings on the 60 MP JPEG at Fit (a 1716 × 1030 proxy), the slot holds 115.8 MB (110.4 MiB) of the 2 GiB budget, of which the planes are 84.8 MB; over the evidence window's whole 1716 × 1508 bounds it would hold 161.7 MB (154.2 MiB). The RAWs charge more, their boundary held as `f32` and the Z6's and Air 2S's lens grid beside it: 158.1 MB at most, the Air 2S with moderate settings. One slot is held at a time, so this is its peak. A JPEG stage of 7000 × 4667 charges 2,035.0 MB (1,940.7 MiB) and fits; one past about 33 MP passes the budget (7200 × 4800 would charge 2,070.7 MiB) and takes the CPU path, naming it (`gpu_detail_planes_are_charged_to_the_budget`). At 100% a Detail slot charges 352.1 to 468.0 MB, and Detail then all three Presence fields 1,061.3 to 1,149.9 MB ([GPU previews at 100%](#gpu-previews-at-100), [after Detail, Presence](#after-detail-presence)).
+**Memory.** "Charged" is what the photo surface's slot drawing the plan charges the GPU-preview budget, as for Presence. Both units hold 48 bytes a pixel of half-precision planes, noise reduction 40 alone and sharpening 28 alone, each unit's apply reading a plane of its own that one pass writes ([design](../design/gpu-preview.md#plane-sharing-and-precision)). With the moderate settings on the 60 MP JPEG at Fit (a 1716 × 1030 proxy), the slot holds 115.8 MB (110.4 MiB) of the 2 GiB budget, of which the planes are 84.8 MB; over the evidence window's whole 1716 × 1508 bounds it would hold 161.7 MB (154.2 MiB). The RAWs charge more, their boundary held as `f32` and the Z6's and Air 2S's lens grid beside it: 173.8 MB at most, the Air 2S with moderate settings. One slot is held at a time, so this is its peak. A JPEG stage of 7000 × 4667 charges 2,035.0 MB (1,940.7 MiB) and fits; one past about 33 MP passes the budget (7200 × 4800 would charge 2,070.7 MiB) and takes the CPU path, naming it (`gpu_detail_planes_are_charged_to_the_budget`). At 100% a Detail slot charges 352.1 to 515.8 MB, and Detail then all three Presence fields 1,114.0 to 1,174.1 MB ([GPU previews at 100%](#gpu-previews-at-100), [after Detail, Presence](#after-detail-presence)).
 
 ### After Detail, Presence
 
@@ -3771,15 +3773,15 @@ A plan chains every spatial and restoration layer after its boundary in recipe o
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | All three fields, 24 MP / 60 MP JPEG | 0.001 / 0.054 | 0.04 / 0.26 | 0.00 / 0.26 | +0.000 / −0.019 | 0.36 / 0.42 | 0.36 / 0.37 | 206.4 / 187.5 MB |
 | All three fields, Presence fixture (exact) | 0.004 | 0.06 | 0.25 | −0.000 | – | – | 150.3 MB |
-| All three fields, Z6 / X100VI / Air 2S | 0.036 / 0.020 / 0.040 | 0.14 / 0.13 / 0.16 | 0.97 / 0.61 / 0.88 | +0.000 / +0.000 / +0.000 | 0.95 / 0.47 / 1.63 | 0.95 / 0.48 / 1.63 | 199.2 / 237.8 / 253.4 MB |
+| All three fields, Z6 / X100VI / Air 2S | 0.032 / 0.020 / 0.039 | 0.14 / 0.13 / 0.15 | 0.96 / 0.61 / 0.87 | +0.000 / +0.000 / +0.000 | 0.95 / 0.47 / 1.63 | 0.95 / 0.48 / 1.63 | 211.3 / 237.8 / 269.1 MB |
 | Texture and Clarity, 24 MP / 60 MP JPEG | 0.001 / 0.001 | 0.06 / 0.05 | 0.00 / 0.00 | +0.000 / +0.000 | 0.04 / 0.04 | 0.04 / 0.04 | 200.3 / 182.1 MB |
 | Texture and Clarity, Presence fixture (exact) | 0.003 | 0.05 | 0.20 | −0.000 | – | – | 146.0 MB |
-| Texture and Clarity, Z6 / X100VI / Air 2S | 0.034 / 0.018 / 0.037 | 0.14 / 0.11 / 0.14 | 0.97 / 0.59 / 0.86 | +0.000 / +0.000 / −0.000 | 0.58 / 0.33 / 1.44 | 0.58 / 0.33 / 1.44 | 194.6 / 231.7 / 247.4 MB |
+| Texture and Clarity, Z6 / X100VI / Air 2S | 0.029 / 0.018 / 0.036 | 0.13 / 0.11 / 0.14 | 0.96 / 0.59 / 0.85 | −0.000 / +0.000 / −0.000 | 0.58 / 0.33 / 1.44 | 0.58 / 0.33 / 1.44 | 206.7 / 231.7 / 263.1 MB |
 | All three fields, masked, 24 MP / 60 MP JPEG | 0.001 / 0.001 | 0.08 / 0.26 | 0.00 / 0.00 | +0.000 / −0.000 | 0.03 / 0.03 | 0.03 / 0.03 | 206.4 / 187.5 MB |
 | All three fields, masked, Presence fixture (exact) | 0.004 | 0.04 | 0.25 | −0.002 | – | – | 150.3 MB |
-| All three fields, masked, Z6 / X100VI / Air 2S | 0.025 / 0.012 / 0.026 | 0.13 / 0.08 / 0.12 | 0.84 / 0.53 / 0.75 | +0.000 / +0.000 / −0.000 | 0.39 / 0.10 / 0.78 | 0.39 / 0.10 / 0.78 | 199.2 / 237.8 / 253.4 MB |
+| All three fields, masked, Z6 / X100VI / Air 2S | 0.020 / 0.012 / 0.024 | 0.13 / 0.08 / 0.13 | 0.70 / 0.53 / 0.73 | −0.000 / +0.000 / −0.000 | 0.39 / 0.10 / 0.78 | 0.39 / 0.10 / 0.78 | 211.3 / 237.8 / 269.1 MB |
 
-The figures are Detail's and Presence's own, Detail's half-precision planes included ([plane precision](#plane-precision)): at worst a mean of 0.054 and a signed ΔL\* of −0.019 on the 60 MP JPEG, where Dehaze's light is the stage's, a worst block of 0.26 there too, and a p99 of 0.97 on the Z6, where the lens warp's grid places the samples (all within the spatial limits of 1.0, 2.5, 5.0 and ±0.5). Against the frame the stack settles to, the GPU frame moves by the CPU proxy's figures within 0.06. Each operation is a link of its own with its own planes, so the slots charge 146.0 to 253.4 MB at Fit.
+The figures are Detail's and Presence's own, Detail's half-precision planes included ([plane precision](#plane-precision)): at worst a mean of 0.054 and a signed ΔL\* of −0.019 on the 60 MP JPEG, where Dehaze's light is the stage's, a worst block of 0.26 there too, and a p99 of 0.96 on the Z6, where the lens warp's grid places the samples (all within the spatial limits of 1.0, 2.5, 5.0 and ±0.5). Against the frame the stack settles to, the GPU frame moves by the CPU proxy's figures within 0.06. Each operation is a link of its own with its own planes, so the slots charge 146.0 to 269.1 MB at Fit.
 
 **At 100%.** In the largest window the owner's display holds, a 3026 × 1826 region ([GPU previews at 100%](#gpu-previews-at-100)), Detail then Texture and Clarity draws on the GPU on every source, and so does Detail then all three fields. Its region the worker declines and renders whole, Dehaze's estimate sitting behind Detail; a drag's region plan holds it all the same, reading the light that whole frame stored or, for a Detail drag, the light its starting stack stored ([Dehaze behind Detail at 100%](#dehaze-behind-detail-at-100)), and its cells are measured against the exact whole frame's region, the frame the view draws. Each slot is in the GPU's shape, every unit held, and the window is the region grown by the halos after the boundary alone, with no tile grid ([design](../design/gpu-preview.md#the-held-input-boundary)); Detail's link holds its half-precision planes and Presence's link its own, Texture's at full precision, with the intermediate Detail's link writes between them ([plane precision](#plane-precision)). Charged, against the 2,147.5 MB (2 GiB) budget, and the headroom it leaves:
 
@@ -3787,17 +3789,17 @@ The figures are Detail's and Presence's own, Detail's half-precision planes incl
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Texture and Clarity, 24 MP JPEG | 3510 × 2310 | 795.9 MB | 1,351.6 MB | 0.002 | 0.08 | 0.04 | +0.001 |
 | Texture and Clarity, 60 MP JPEG | 3778 × 2578 | 948.5 MB | 1,199.0 MB | 0.003 | 0.09 | 0.12 | +0.001 |
-| Texture and Clarity, Z6 | 3418 × 2256 | 943.9 MB | 1,203.6 MB | 0.029 | 0.17 | 0.90 | +0.000 |
+| Texture and Clarity, Z6 | 3418 × 2256 | 1,005.5 MB | 1,141.9 MB | 0.026 | 0.15 | 0.78 | +0.000 |
 | Texture and Clarity, X100VI | 3626 × 2426 | 1,001.1 MB | 1,146.4 MB | 0.025 | 0.11 | 0.64 | +0.000 |
-| Texture and Clarity, Air 2S | 3494 × 2302 | 982.9 MB | 1,164.6 MB | 0.050 | 0.25 | 0.90 | +0.000 |
+| Texture and Clarity, Air 2S | 3494 × 2302 | 1,047.2 MB | 1,100.3 MB | 0.049 | 0.25 | 0.90 | +0.000 |
 | All three fields, 24 MP JPEG | 3644 × 2444 | 897.9 MB | 1,249.6 MB | 0.002 | 0.07 | 0.03 | +0.001 |
 | All three fields, 60 MP JPEG | 3992 × 2792 | 1,114.0 MB | 1,033.5 MB | 0.004 | 0.08 | 0.22 | +0.001 |
-| All three fields, Z6 | 3552 × 2390 | 1,061.3 MB | 1,086.2 MB | 0.030 | 0.22 | 0.91 | +0.000 |
+| All three fields, Z6 | 3552 × 2390 | 1,129.2 MB | 1,018.2 MB | 0.028 | 0.15 | 0.83 | +0.000 |
 | All three fields, X100VI | 3800 × 2600 | 1,149.9 MB | 997.6 MB | 0.025 | 0.12 | 0.64 | +0.000 |
-| All three fields, Air 2S | 3628 × 2436 | 1,103.4 MB | 1,044.1 MB | 0.053 | 0.26 | 0.90 | +0.000 |
+| All three fields, Air 2S | 3628 × 2436 | 1,174.1 MB | 973.4 MB | 0.052 | 0.26 | 0.90 | +0.000 |
 
-- **The figures** are within the spatial limits by far, none past half of any, and no signed ΔL\* past ±0.001. The masked all-three cells charge the same and draw within a worst block of 0.21 and a p99 of 0.87 (Z6); the zone plate's draw within a worst block of 0.02 and a p99 of 0.23, and the Presence fixture's, which fit the window whole, charge 146.0 and 150.3 MB.
-- **A larger window**, such as an external display's, draws a larger region. The charge grows with the window's area, and from the measured charges the all-three chain stops fitting at a region about 37% wider and taller on the X100VI (about 4130 × 2500), 39% on the 60 MP JPEG and the Air 2S and 42% on the Z6, and Texture and Clarity about 47% on the X100VI; such a region's drag takes the CPU path naming `budget-exceeded` (an estimate from the charges above, not a measurement). The [design](../design/gpu-preview.md#later) records the proposals that would widen the headroom: scratch planes shared by a chain's links, and evaluating the ring only Clarity's and Dehaze's reductions read in strips.
+- **The figures** are within the spatial limits by far, none past half of any, and no signed ΔL\* past ±0.001. The masked all-three cells charge the same and draw within a worst block of 0.22 and a p99 of 0.80 (Air 2S); the zone plate's draw within a worst block of 0.02 and a p99 of 0.23, and the Presence fixture's, which fit the window whole, charge 146.0 and 150.3 MB.
+- **A larger window**, such as an external display's, draws a larger region. The charge grows with the window's area, and from the measured charges the all-three chain stops fitting at a region about 35% wider and taller on the Air 2S (about 4090 × 2470), 37% on the X100VI, 38% on the Z6 and 39% on the 60 MP JPEG, and Texture and Clarity about 43% on the Air 2S; such a region's drag takes the CPU path naming `budget-exceeded` (an estimate from the charges above, not a measurement). The [design](../design/gpu-preview.md#later) records the proposals that would widen the headroom: scratch planes shared by a chain's links, and evaluating the ring only Clarity's and Dehaze's reductions read in strips.
 - **A slot that replaces another** is charged only once the one it replaces has retired, when the GPU is done with it: a tick whose slot the budget holds only without the old one draws the CPU's frame, naming `budget-exceeded`, keeps its boundary and plan and asks for nothing again, and the next frame after the retirement draws on the GPU; nothing is allocated or released twice (`a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own`, `gpu_preview_a_tick_the_budget_refuses_while_a_slot_retires_keeps_its_boundary`).
 
 **Ticks.** Over Detail then Presence (Texture and Clarity), 27 passes, a tick runs only the passes its words change: a Clarity drag none, a Texture drag 5, a drag of the colour layer between the two Presence's 13, and a Detail drag 17, each frame equal to the bit to a run of every pass, each operation a link of its own (`gpu_presence_after_detail_reruns_only_the_passes_a_tick_changes`). Against the CPU frame of the same stacks on a synthetic photograph at two sizes, Detail's sharpening and noise reduction then three Presence settings, plain and masked, with Dehaze's light stored and taken on the GPU, the worst of 40 cases is a mean of 0.068, a worst block of 0.38 and a p99 of 0.80, its signed ΔL\* −0.001 (`gpu_presence_after_detail_meets_the_spatial_limits`): Detail's half-precision planes, and Detail's output held in the link's `rgba16float` intermediate between the two, each written rounded to the nearest half.
@@ -3847,7 +3849,7 @@ The GPU frame of a drag at 100% ([GPU previews](../design/gpu-preview.md#at-100-
 - **The frames.** The CPU frame is the preview worker's exact region of that view, from the job the quiet policy asks for (`viewport` set, `Settle`), or, for a stack whose region the worker declines and renders whole (an estimate behind an earlier spatial layer), that region of the exact whole frame the view draws it from. The GPU frame is the plan from the recipe's first pixel layer at the exact stage over the boundary the worker renders for a region job (`qualification::region_boundary`, `Render::region_boundary`: the window of the layer's received stage the region reads on the GPU, each spatial operation after the layer by its halo alone, with the exact region's whole-stage estimates), converted with the region (`surface_plan_over`), a lens warp's grid over the region at 100%, and drawn by the photo surface's own shader, read back headlessly. Both are compared at the region's size. A Detail or Presence layer is planned as a drag of it draws: in its GPU shape, every unit, while that slot fits the budget, and in the CPU's shape, the units its values need, when only that one does.
 - **What a Detail frame is judged against.** The exact visible region, the frame that replaces the GPU frame at a percentage zoom. The owner's decision to judge a Detail drag against the CPU's moving proxy applies to Fit, where the frame that settles comes from the exact render (`FitSettle::Exact`) and the moving frame the GPU stands in for is a proxy; at 100% the CPU's own frame is the exact region, so there is nothing between them.
 - **Gaps.** A slot the surface would charge past the GPU-preview budget, or a boundary past the 256 MiB bound on one, is the CPU path and named `budget-exceeded`, as the desktop names it. A stack whose region the worker declines and renders whole, Dehaze behind Detail, is measured against that whole exact frame's region, the frame the view draws; its region plan reads the light that frame stored ([Dehaze behind Detail at 100%](#dehaze-behind-detail-at-100)). The region plan reads the estimate store the exact visible region's render filled, as a drag's plan does once its view has settled; a plan whose Dehaze light the store does not hold, which the GPU would take from the region alone, is named `region-estimate`, measured all the same. A mask that selects nothing inside the region is a gap, as at Fit.
-- **Host and build.** Apple M4 Pro, macOS 26.5.2, the `Apple M4 Pro` adapter on Metal; the release build of `ce3b7b57` with the chain of links (`fc3eb65e`) merged, `gpu_preview_corpus_at_100_percent`, under the 2 GiB budget and the 256 MiB bound on a boundary, reading the store, with Detail's half-precision planes ([plane precision](#plane-precision)), each spatial operation a link of its own. One run; the pixels are deterministic.
+- **Host and build.** Apple M4 Pro, macOS 26.5.2, the `Apple M4 Pro` adapter on Metal; the release build of `313faec4` with the chain of links (`fc3eb65e`) merged, `gpu_preview_corpus_at_100_percent`, under the 2 GiB budget and the 256 MiB bound on a boundary, reading the store, with Detail's half-precision planes ([plane precision](#plane-precision)), each spatial operation a link of its own. One run; the pixels are deterministic.
 - **Sources.** As [at Fit](#gpu-colour-programs-at-fit): the generated 24 MP and 60 MP JPEGs, the zone plate, the zone plate with a lens identity and the Presence fixture, and the Z6, X100VI and Air 2S RAWs through the private RAW manifest.
 
 ### Results
@@ -3857,50 +3859,50 @@ Worst of each statistic over a recipe's measured cells, what their slots charge,
 | Recipe | Measured | Mean | Worst block | p99 | \|ΔL\*\| | Max | Charged | Gaps |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
 | basic-full-jpeg | 4 | 0.010 | 0.16 | 0.68 | 0.002 | 0.84 | 27.8–82.0 MB | — |
-| basic-full-raw | 3 | 0.036 | 0.21 | 0.67 | 0.000 | 1.96 | 126.2–172.8 MB | — |
-| tone-curve | 7 | 0.039 | 0.21 | 0.82 | 0.002 | 1.84 | 27.8–172.8 MB | — |
-| mixer | 7 | 0.039 | 0.21 | 0.80 | 0.000 | 1.79 | 27.8–172.8 MB | — |
+| basic-full-raw | 3 | 0.035 | 0.21 | 0.66 | 0.000 | 1.96 | 126.2–217.9 MB | — |
+| tone-curve | 7 | 0.038 | 0.21 | 0.81 | 0.002 | 1.84 | 27.8–217.9 MB | — |
+| mixer | 7 | 0.038 | 0.20 | 0.80 | 0.000 | 1.82 | 27.8–217.9 MB | — |
 | vignette | 7 | 0.005 | 0.15 | 0.22 | 0.001 | 1.13 | 27.8–126.2 MB | — |
 | colour-stack-jpeg | 4 | 0.014 | 0.25 | 0.59 | 0.001 | 1.17 | 27.8–82.0 MB | — |
-| colour-stack-raw | 3 | 0.040 | 0.22 | 0.74 | 0.000 | 1.91 | 126.2–172.8 MB | — |
-| mask-linear | 7 | 0.039 | 0.20 | 0.77 | 0.004 | 1.76 | 27.8–172.8 MB | — |
-| mask-radial | 6 | 0.039 | 0.22 | 0.79 | 0.001 | 1.74 | 27.8–172.8 MB | 1 the mask selects nothing on this source |
-| mask-brush | 5 | 0.039 | 0.22 | 0.78 | 0.001 | 1.74 | 27.8–172.8 MB | 2 the mask selects nothing on this source |
-| mask-luminance-range | 7 | 0.043 | 0.21 | 0.77 | 0.009 | 1.74 | 27.8–172.8 MB | — |
-| mask-colour-range | 7 | 0.048 | 0.26 | 0.78 | 0.009 | 1.78 | 27.8–172.8 MB | — |
-| mask-composed | 7 | 0.039 | 0.20 | 0.77 | 0.004 | 1.76 | 27.8–172.8 MB | — |
-| crop-straightened | 7 | 0.043 | 0.23 | 0.81 | 0.001 | 2.22 | 32.8–209.3 MB | — |
-| crop-rotated | 7 | 0.044 | 0.22 | 0.82 | 0.001 | 1.88 | 15.3–321.7 MB | — |
-| crop-straightened-tight | 7 | 0.043 | 0.15 | 0.86 | 0.001 | 1.62 | 2.0–71.3 MB | — |
+| colour-stack-raw | 3 | 0.039 | 0.21 | 0.73 | 0.000 | 1.91 | 126.2–217.9 MB | — |
+| mask-linear | 7 | 0.038 | 0.20 | 0.76 | 0.004 | 1.76 | 27.8–217.9 MB | — |
+| mask-radial | 6 | 0.037 | 0.22 | 0.78 | 0.001 | 1.72 | 27.8–217.9 MB | 1 the mask selects nothing on this source |
+| mask-brush | 5 | 0.038 | 0.22 | 0.78 | 0.001 | 1.79 | 27.8–217.9 MB | 2 the mask selects nothing on this source |
+| mask-luminance-range | 7 | 0.042 | 0.22 | 0.76 | 0.009 | 1.76 | 27.8–217.9 MB | — |
+| mask-colour-range | 7 | 0.047 | 0.25 | 0.78 | 0.009 | 1.78 | 27.8–217.9 MB | — |
+| mask-composed | 7 | 0.038 | 0.20 | 0.77 | 0.004 | 1.76 | 27.8–217.9 MB | — |
+| crop-straightened | 7 | 0.041 | 0.23 | 0.80 | 0.001 | 1.85 | 32.8–266.5 MB | — |
+| crop-rotated | 7 | 0.043 | 0.22 | 0.82 | 0.001 | 1.75 | 15.3–416.3 MB | — |
+| crop-straightened-tight | 7 | 0.042 | 0.15 | 0.85 | 0.001 | 1.61 | 2.0–89.5 MB | — |
 | perspective-warp | 4 | 0.003 | 0.07 | 0.16 | 0.001 | 0.40 | 32.4–98.2 MB | — |
-| lens-perspective-warp | 3 | 0.034 | 0.19 | 0.73 | 0.000 | 1.73 | 152.8–161.0 MB | — |
+| lens-perspective-warp | 3 | 0.032 | 0.19 | 0.72 | 0.000 | 1.73 | 191.1–202.0 MB | — |
 | lens-perspective-warp-jpeg | 1 | 0.051 | 0.23 | 0.39 | 0.001 | 1.76 | 100.5–100.5 MB | — |
-| crop-dehaze | 8 | 0.052 | 0.30 | 0.82 | 0.002 | 2.19 | 78.4–492.3 MB | — |
-| crop-dehaze-negative | 8 | 0.018 | 0.12 | 0.57 | 0.001 | 1.65 | 78.4–492.3 MB | — |
-| crop-presence-all | 8 | 0.084 | 0.51 | 0.90 | 0.004 | 3.70 | 78.4–681.1 MB | — |
-| crop-basic-under-dehaze | 8 | 0.058 | 0.40 | 0.82 | 0.049 | 2.25 | 50.0–391.9 MB | — |
-| presence-texture | 7 | 0.050 | 0.20 | 0.88 | 0.001 | 1.89 | 72.9–360.7 MB | — |
-| presence-clarity | 7 | 0.060 | 0.28 | 0.91 | 0.008 | 1.78 | 72.9–465.0 MB | — |
-| presence-dehaze | 7 | 0.050 | 0.30 | 0.81 | 0.002 | 1.96 | 72.9–394.2 MB | — |
-| presence-texture-clarity | 7 | 0.078 | 0.26 | 0.95 | 0.002 | 1.75 | 72.9–470.1 MB | — |
-| presence-all | 7 | 0.080 | 0.49 | 0.90 | 0.003 | 8.14 | 72.9–514.0 MB | — |
-| presence-negative | 7 | 0.016 | 0.15 | 0.56 | 0.000 | 1.64 | 72.9–514.0 MB | — |
-| presence-all-masked | 7 | 0.048 | 0.49 | 0.84 | 0.002 | 6.49 | 72.9–514.0 MB | — |
-| detail-moderate | 7 | 0.031 | 0.26 | 0.76 | 0.000 | 1.69 | 94.2–468.0 MB | — |
-| detail-noise-stress | 7 | 0.022 | 0.26 | 0.70 | 0.001 | 1.67 | 94.2–465.1 MB | — |
-| detail-sharpen-stress | 7 | 0.050 | 0.24 | 0.87 | 0.001 | 1.78 | 94.2–449.3 MB | — |
-| detail-moderate-masked | 7 | 0.035 | 0.22 | 0.78 | 0.000 | 1.74 | 94.2–468.0 MB | — |
-| detail-noise-stress-masked | 7 | 0.033 | 0.22 | 0.76 | 0.000 | 1.74 | 94.2–465.1 MB | — |
-| detail-sharpen-stress-masked | 7 | 0.040 | 0.22 | 0.82 | 0.000 | 1.81 | 94.2–449.3 MB | — |
-| detail-presence | 7 | 0.053 | 0.26 | 0.91 | 0.001 | 1.54 | 150.3–1149.9 MB | — |
-| detail-presence-local | 7 | 0.050 | 0.25 | 0.90 | 0.001 | 1.65 | 146.0–1001.1 MB | — |
-| detail-presence-masked | 7 | 0.036 | 0.21 | 0.87 | 0.002 | 1.63 | 150.3–1149.9 MB | — |
+| crop-dehaze | 8 | 0.051 | 0.30 | 0.82 | 0.002 | 2.19 | 78.4–556.6 MB | — |
+| crop-dehaze-negative | 8 | 0.008 | 0.11 | 0.48 | 0.000 | 1.34 | 78.4–556.6 MB | — |
+| crop-presence-all | 8 | 0.084 | 0.51 | 0.90 | 0.004 | 3.70 | 78.4–772.1 MB | — |
+| crop-basic-under-dehaze | 8 | 0.058 | 0.40 | 0.82 | 0.049 | 2.25 | 50.0–456.1 MB | — |
+| presence-texture | 7 | 0.049 | 0.20 | 0.88 | 0.001 | 1.89 | 72.9–406.3 MB | — |
+| presence-clarity | 7 | 0.059 | 0.29 | 0.91 | 0.008 | 1.78 | 72.9–525.4 MB | — |
+| presence-dehaze | 7 | 0.049 | 0.29 | 0.81 | 0.002 | 1.96 | 72.9–444.6 MB | — |
+| presence-texture-clarity | 7 | 0.078 | 0.26 | 0.95 | 0.002 | 1.86 | 72.9–531.2 MB | — |
+| presence-all | 7 | 0.080 | 0.49 | 0.90 | 0.003 | 8.14 | 72.9–581.3 MB | — |
+| presence-negative | 7 | 0.004 | 0.07 | 0.00 | 0.000 | 1.36 | 72.9–581.3 MB | — |
+| presence-all-masked | 7 | 0.047 | 0.49 | 0.83 | 0.002 | 6.49 | 72.9–581.3 MB | — |
+| detail-moderate | 7 | 0.030 | 0.22 | 0.76 | 0.000 | 1.60 | 94.2–515.8 MB | — |
+| detail-noise-stress | 7 | 0.020 | 0.16 | 0.68 | 0.001 | 1.46 | 94.2–512.6 MB | — |
+| detail-sharpen-stress | 7 | 0.049 | 0.24 | 0.86 | 0.001 | 1.79 | 94.2–495.1 MB | — |
+| detail-moderate-masked | 7 | 0.034 | 0.22 | 0.78 | 0.000 | 1.69 | 94.2–515.8 MB | — |
+| detail-noise-stress-masked | 7 | 0.031 | 0.22 | 0.75 | 0.000 | 1.73 | 94.2–512.6 MB | — |
+| detail-sharpen-stress-masked | 7 | 0.039 | 0.22 | 0.81 | 0.000 | 1.81 | 94.2–495.1 MB | — |
+| detail-presence | 7 | 0.052 | 0.26 | 0.90 | 0.001 | 1.41 | 150.3–1174.1 MB | — |
+| detail-presence-local | 7 | 0.049 | 0.25 | 0.90 | 0.001 | 1.65 | 146.0–1047.2 MB | — |
+| detail-presence-masked | 7 | 0.035 | 0.22 | 0.80 | 0.002 | 1.60 | 150.3–1174.1 MB | — |
 
-- **Pointwise and geometry.** The largest figures are a mean of 0.051 (a lens warp over the zone plate with a lens identity), a worst block of 0.26 (the Air 2S's colour range), a p99 of 0.86 (the Air 2S's tight straightened crop) and a |ΔL\*| of 0.009 (the range masks), against limits of 0.5, 1.0, 2.0 and 0.25. The RAW cells through a lens warp, a straightened crop or a perspective warp are drawn by the tail from an `rgba16float` intermediate written rounded to the nearest half; written by the M4's own conversion toward zero, they carried a signed ΔL\* of −0.004 to −0.007 and a p99 up to 0.96, and now carry ±0.0002 and 0.86 ([plane precision](#plane-precision)). A perspective warp's homography leaves a worst block of 0.07 at most, 0.02 on the zone plate, and a lens warp's grid 0.23 at most, on the zone plate with a lens identity. Without a warp the JPEGs' frames are the CPU's to within a fraction of a code, as at Fit. A RAW's vignette, a finishing layer after its lens warp, is measured here: the worker's region boundary holds the warped frame it receives.
+- **Pointwise and geometry.** The largest figures are a mean of 0.051 (a lens warp over the zone plate with a lens identity), a worst block of 0.25 (the Air 2S's colour range), a p99 of 0.85 (the Air 2S's tight straightened crop) and a |ΔL\*| of 0.009 (the range masks), against limits of 0.5, 1.0, 2.0 and 0.25. The RAW cells through a lens warp, a straightened crop or a perspective warp are drawn by the tail from an `rgba32float` intermediate that keeps their linear values unquantized: their 12 cells carry a signed ΔL\* within ±0.0001 and a p99 of 0.85 at most, where an `rgba16float` intermediate written by the M4's own conversion toward zero carried −0.004 to −0.007 and up to 0.96 ([plane precision](#plane-precision)). A perspective warp's homography leaves a worst block of 0.07 at most, 0.02 on the zone plate, and a lens warp's grid 0.23 at most, on the zone plate with a lens identity. Without a warp the JPEGs' frames are the CPU's to within a fraction of a code, as at Fit. A RAW's vignette, a finishing layer after its lens warp, is measured here: the worker's region boundary holds the warped frame it receives.
 - **The 60 MP JPEG in the largest window.** Its slots charge 82.0 MB for a colour or masked stack, 97.6 MB through a perspective warp, 122.5 MB through the straightened crop, and for Presence, every unit held whichever fields are moved, 267.5 MB for Texture, 305.9 MB for Dehaze, 407.9 MB for Clarity, 415.1 MB for Texture and Clarity and 471.0 MB for all three fields, masked or not: each window is the region grown by the halos alone, with no tile grid. Detail's slots, every unit, charge 352.1 to 366.5 MB; Detail then Texture and Clarity 948.5 MB and Detail then all three fields 1,114.0 MB, each operation a link of its own with its own planes and the intermediate Detail's link writes between them ([after Detail, Presence](#after-detail-presence)).
-- **The RAWs.** A colour, masked or warp slot charges 126.2 to 209.3 MB, a rotated crop's up to 321.7 MB, and Presence's, every unit held, 310.9 to 360.7 MB for Texture, 348.6 to 394.2 MB for Dehaze, 438.9 to 465.0 MB for Clarity, 444.7 to 470.1 MB for Texture and Clarity and 494.8 to 514.0 MB for all three fields, masked or not, all measured in the GPU's shape. Detail's slots charge 397.0 to 468.0 MB, every unit, Detail then Texture and Clarity 943.9 to 1,001.1 MB and Detail then all three fields 1,061.3 to 1,149.9 MB, the peak of the measured cells.
-- **Detail.** Every measured cell is within a fraction of the spatial limits, its half-precision planes included: a worst block of 0.26 on the Z6 (moderate), a p99 of 0.91 on the Z6 and a mean of 0.053 on the Air 2S, each Detail then all three fields, against 2.5, 5.0 and 1.0, and on the JPEGs and the zone plate a worst block of 0.12 at most. The exact visible region it is judged against is the frame that replaces it, so these are the jump a person sees at settle too.
-- **Dehaze.** With its light taken on the GPU from the region alone, the Z6's frame missed the spatial limits (worst block 13.14, p99 2.87, mean 0.76) and the X100VI's (worst block 3.20): the region's brightest blocks are not the whole stage's, and the exact region reads the whole stage's light. A region plan therefore reads the light from the estimate store, which the exact visible region's render fills with the whole stage's, and is the CPU path (`region-estimate`) while the store holds none. Reading the store, every Dehaze cell meets the spatial limits (worst block 0.30 and p99 0.81 on the Air 2S) and no Presence cell is a `region-estimate` gap. Behind Detail, where the light is the whole exact frame's, [Dehaze behind Detail at 100%](#dehaze-behind-detail-at-100) measures which light each drag can hold.
+- **The RAWs.** A colour, masked or warp slot charges 126.2 to 266.5 MB, a rotated crop's up to 416.3 MB, a geometry tail's `rgba32float` intermediate among them, and Presence's, every unit held, 310.9 to 406.3 MB for Texture, 348.6 to 444.6 MB for Dehaze, 438.9 to 525.4 MB for Clarity, 444.7 to 531.2 MB for Texture and Clarity and 496.2 to 581.3 MB for all three fields, masked or not, all measured in the GPU's shape. Detail's slots charge 397.0 to 515.8 MB, every unit, Detail then Texture and Clarity 1,001.1 to 1,047.2 MB and Detail then all three fields 1,129.2 to 1,174.1 MB, the peak of the measured cells.
+- **Detail.** Every measured cell is within a fraction of the spatial limits, its half-precision planes included: a worst block of 0.26, a p99 of 0.90 and a mean of 0.052, each on the Air 2S, Detail then all three fields, against 2.5, 5.0 and 1.0, and on the JPEGs and the zone plate a worst block of 0.12 at most. The exact visible region it is judged against is the frame that replaces it, so these are the jump a person sees at settle too.
+- **Dehaze.** With its light taken on the GPU from the region alone, the Z6's frame missed the spatial limits (worst block 13.14, p99 2.87, mean 0.76) and the X100VI's (worst block 3.20): the region's brightest blocks are not the whole stage's, and the exact region reads the whole stage's light. A region plan therefore reads the light from the estimate store, which the exact visible region's render fills with the whole stage's, and is the CPU path (`region-estimate`) while the store holds none. Reading the store, every Dehaze cell meets the spatial limits (worst block 0.29 and p99 0.81 on the Air 2S) and no Presence cell is a `region-estimate` gap. Behind Detail, where the light is the whole exact frame's, [Dehaze behind Detail at 100%](#dehaze-behind-detail-at-100) measures which light each drag can hold.
 - **Presence drags at 100%.** In the `gpu-preview-zoom` scenario, over a committed Dehaze and Clarity at 100%, each GPU tick of a Texture drag runs 5 compute passes and of a Clarity drag none (`gpu_preview_spatial_passes`), the first draw over a new boundary running all 22; a Basic drag under that Presence is the CPU path, `region-estimate`, since every tick changes the light's input, and with Dehaze at neutral it is drawn on the GPU, running all 13 passes a tick. With Detail then committed under Presence and Dehaze again, so the worker draws the whole exact frame, a Texture drag over the light that frame stored runs 5 passes a tick and a Detail drag over the light held for it 26, its plan approximate; each frame equals the one its release commits at the four flat patches.
 
 ### Reproducing it
@@ -4036,13 +4038,13 @@ The five corpus harnesses over the current code, release profile, with every sou
 
 | Harness | Within the limits | Pointwise | Spatial | Gaps |
 | --- | ---: | ---: | ---: | --- |
-| Colour at Fit | 62 of 62 | 0.052 / 0.25 / 0.87 / 0.002 | — | 2: a vignette after a RAW's lens warp |
-| Masks at Fit | 42 of 42 | 0.025 / 0.12 / 0.84 / 0.009 | — | none |
-| Presence at Fit | 81 of 81 | — | 0.062 / 0.51 / 0.98 / 0.049 | none |
-| Detail at Fit | 63 of 63 | — | 0.054 / 0.26 / 0.97 / 0.019 | none |
-| Every family at 100% | 247 of 247 | 0.051 / 0.26 / 0.86 / 0.009 | 0.084 / 0.51 / 0.95 / 0.049 | 3: masks that select nothing in the region |
+| Colour at Fit | 62 of 62 | 0.051 / 0.25 / 0.87 / 0.002 | — | 2: a vignette after a RAW's lens warp |
+| Masks at Fit | 42 of 42 | 0.021 / 0.12 / 0.66 / 0.009 | — | none |
+| Presence at Fit | 81 of 81 | — | 0.061 / 0.51 / 0.97 / 0.049 | none |
+| Detail at Fit | 63 of 63 | — | 0.054 / 0.26 / 0.96 / 0.019 | none |
+| Every family at 100% | 247 of 247 | 0.051 / 0.25 / 0.85 / 0.009 | 0.084 / 0.51 / 0.95 / 0.049 | 3: masks that select nothing in the region |
 
-Under the 2 GiB budget every 100% slot draws on the GPU, the heaviest, Detail then all three Presence fields on the X100VI, charging 1,149.9 MB. Every cell's statistics are the run's over the release build of `ce3b7b57` with this chain (`fc3eb65e`) merged.
+Under the 2 GiB budget every 100% slot draws on the GPU, the heaviest, Detail then all three Presence fields on the Air 2S, charging 1,174.1 MB. Every cell's statistics are the run's over the release build of `313faec4` with this chain (`fc3eb65e`) merged.
 
 ### The performance-rules checklist
 
@@ -4064,7 +4066,7 @@ The native qualification of GPU previews ([design](../design/gpu-preview.md)): t
 
 ### The corpus error report
 
-Every program and stack class of the [corpus](../../fixtures/preview/corpus.json) against the CPU frame it stands in for, over every source this host has, from the code at `61592997`: at Fit, the frame settlement presents, which the dissolve ends on ([colour programs](#gpu-colour-programs-at-fit) set out the frames); at 100%, the exact visible region the quiet policy settles to, in the largest window the owner's display holds ([at 100%](#gpu-previews-at-100)). The five harnesses (`gpu_colour_corpus_at_fit`, `gpu_mask_corpus_at_fit`, `gpu_presence_corpus_at_fit`, `gpu_detail_corpus_at_fit`, `gpu_preview_corpus_at_100_percent`) ran once each in the `test` profile; the pixels are deterministic, so the host's load, 27 to 70 while they ran, does not bear on them. The sources are the generated 24 MP and 60 MP JPEGs, the zone plate, the zone plate with a lens identity and the Presence fixture, and the Z6 NEF, X100VI RAF and Air 2S DNG through the private RAW manifest, all eight verified against the corpus's SHA-256 by `cargo xtask preview-corpus`. The family sections record their own runs at earlier builds, whose Z6 and Air 2S cells were drawn through a sparser lens grid and, as every RAW cell through a lens warp, crop or perspective was until the tail's intermediate was written rounded to the nearest half, a signed ΔL\* of −0.004 to −0.010 darker; this report is the current code's.
+Every program and stack class of the [corpus](../../fixtures/preview/corpus.json) against the CPU frame it stands in for, over every source this host has, from the code at `61592997`: at Fit, the frame settlement presents, which the dissolve ends on ([colour programs](#gpu-colour-programs-at-fit) set out the frames); at 100%, the exact visible region the quiet policy settles to, in the largest window the owner's display holds ([at 100%](#gpu-previews-at-100)). The five harnesses (`gpu_colour_corpus_at_fit`, `gpu_mask_corpus_at_fit`, `gpu_presence_corpus_at_fit`, `gpu_detail_corpus_at_fit`, `gpu_preview_corpus_at_100_percent`) ran once each in the `test` profile; the pixels are deterministic, so the host's load, 27 to 70 while they ran, does not bear on them. The sources are the generated 24 MP and 60 MP JPEGs, the zone plate, the zone plate with a lens identity and the Presence fixture, and the Z6 NEF, X100VI RAF and Air 2S DNG through the private RAW manifest, all eight verified against the corpus's SHA-256 by `cargo xtask preview-corpus`. The family sections record their own runs at earlier builds, whose Z6 and Air 2S cells were drawn through a sparser lens grid and, as every RAW cell through a lens warp, crop or perspective was until the tail's intermediate was written rounded to the nearest half, a signed ΔL\* of −0.004 to −0.010 darker; this report predates the current `rgba32float` RAW geometry tail; those RAW geometry cells describe the former half-float path and do not qualify its current accuracy or memory use ([plane precision](#plane-precision)).
 
 Worst of each statistic over a family's measured cells — mean ΔE00, worst 16 × 16 block, p99 and \|signed mean ΔL\*\| — against the pointwise limits (0.5, 1.0, 2.0, 0.25) or the spatial ones (1.0, 2.5, 5.0, 0.5). The chain is the colour stack, the four colour programs in one pass.
 
@@ -4144,7 +4146,7 @@ The GPU preview stage's high-water over each run (`gpu_preview_peak_bytes`), and
 | X100VI, Basic under Presence | on | 95.9 MB | 2658 MiB | 2080 MiB |
 | 24 MP brush stroke | on | 32.5 MB | 1053 MiB | 665 MiB |
 
-- **The GPU preview's own share** is 10 to 41 MB at Fit, 100% and 200% on the JPEGs and 96 MB over the X100VI's `f32` boundary with Presence, within the 2 GiB budget, which bounds the heaviest 100% slots the corpus measures (up to 1,149.9 MB, Detail then all three Presence fields; [above](#gpu-previews-at-100)) and the slots of a mask painted over masked Presence layers (0.56 to 1.47 GB, [painting](#painting-over-masked-spatial-layers)). A boundary arriving at 100% holds up to 2.2 times its bytes during its upload, and the system allocator keeps the freed copy's pages in the footprint afterwards ([a boundary's arrival](#a-boundarys-arrival)).
+- **The GPU preview's own share** is 10 to 41 MB at Fit, 100% and 200% on the JPEGs and 96 MB over the X100VI's `f32` boundary with Presence, within the 2 GiB budget, which bounds the heaviest 100% slots the corpus measures (up to 1,174.1 MB, Detail then all three Presence fields; [above](#gpu-previews-at-100)) and the slots of a mask painted over masked Presence layers (0.56 to 1.47 GB, [painting](#painting-over-masked-spatial-layers)). A boundary arriving at 100% holds up to 2.2 times its bytes during its upload, and the system allocator keeps the freed copy's pages in the footprint afterwards ([a boundary's arrival](#a-boundarys-arrival)).
 - **Against the provisional 1 GiB target for one 60 MP photograph**, which `measure` takes over one open: these gesture runs exceed it, with the GPU preview on and off alike — 1.69 and 1.99 GiB peak footprint for the 60 MP drags, 1.54 and 1.56 GiB sampled RSS — so the GPU preview is not what takes them past it. The peaks vary between runs by more than the GPU preview's share.
 
 ### Idle after a dissolve

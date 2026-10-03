@@ -833,17 +833,13 @@ pub(crate) fn component_menu(
         typing(TypingEdit::Begin(TypingTarget::RenameComponent(id.clone()))),
         refusal.clone(),
     )];
-    if component.can_edit_shape {
-        // A painted component has no shape to reopen: what it offers is the next stroke on it,
-        // which is one more history entry and not a patch, so the item says that instead.
-        entries.push(if component.painted {
-            item(
-                "Paint more",
-                Some(mask(MaskMessage::Paint(PaintTarget::Component(id.clone())))),
-            )
-        } else {
-            item("Edit shape", Some(mask(MaskMessage::EditShape(id.clone()))))
-        });
+    // A brush's next stroke is one more history entry and not a patch, so the item says that. A
+    // gradient needs no item: selecting it rests its handles on the canvas.
+    if component.can_paint_more {
+        entries.push(item(
+            "Paint more",
+            Some(mask(MaskMessage::Paint(PaintTarget::Component(id.clone())))),
+        ));
     }
     entries.push(refusable(
         "Move up",

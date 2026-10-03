@@ -1551,8 +1551,9 @@ fn optional_reference(reference: Option<&Reference>) -> Result<(), String> {
 pub enum MaskStep {
     /// Open one mask, as clicking its row does.
     Select(Reference),
-    /// Select one component of the open mask, which shows its handles and its number fields, or
-    /// clear the selection with `null`.
+    /// Select one component of the open mask, which shows its number fields and, for a gradient,
+    /// rests its handles on the canvas for a `drag`, or clear the selection with `null`. A
+    /// gradient's step waits for the content map its handles are drawn and placed by.
     SelectComponent(Option<Reference>),
     /// Put the pointer on that component's row, or take it off the list with `null`. While a row
     /// is hovered the overlay shows that component's own contribution instead of the composed mask.
@@ -1563,8 +1564,6 @@ pub enum MaskStep {
     /// Open the New mask or the Add component kind menu, as its button does. An `Escape` key step
     /// puts it away again; a kind from it is the `new`, `add` or `paint` step the choice starts.
     Menu(KindMenuStep),
-    /// Reopen one component's geometry as a canvas gesture, so its handles are drawn.
-    EditShape(Reference),
     /// The mode the next Add gesture will use, chosen before the gesture as the Add row does.
     Mode(String),
     /// Begin a gesture that creates a mask whose first component is of this kind.
@@ -1596,17 +1595,26 @@ pub enum MaskStep {
         settle_between: bool,
     },
     /// A whole shape drawn in one stroke: the press at `from`, the pointer at `to`. The pointer is
-    /// still down afterwards, exactly as it is mid-drag, so the release is a step of its own.
+    /// still down afterwards, exactly as it is mid-drag, so the release that commits it is a step of
+    /// its own.
     Sweep { from: [f64; 2], to: [f64; 2] },
-    /// The pointer lifted. The shape it drew stays; committing it is a separate decision.
+    /// The pointer lifted, which commits a gradient's drag as one history entry. A release that
+    /// placed nothing sends nothing.
     #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
     Release,
-    /// A press on one drawn handle, the points it is dragged through, and its release.
+    /// A press on one drawn handle, the points it is dragged through, and its release: the open
+    /// gesture's handle, or the selected gradient's resting one, whose release commits the drag
+    /// as one history entry.
     Drag {
         handle: DragHandle,
         points: Vec<[f64; 2]>,
+        /// Leave the pointer down after the last point, so the drag's drafted frames are captured
+        /// while it is held; an `apply` commits it, or a later drag continues it.
+        #[serde(default = "yes", skip_serializing_if = "is_true")]
+        release: bool,
     },
-    /// Commit the open gesture: one history entry.
+    /// The draft bar's Done: commit a drag still held down as one history entry, or put the tool in
+    /// hand down.
     #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
     Apply,
     /// Discard the open gesture.
@@ -1638,9 +1646,7 @@ impl MaskStep {
 
     fn validate(&self) -> Result<(), String> {
         match self {
-            Self::Select(reference) | Self::EditShape(reference) | Self::Eye(reference) => {
-                reference.validate()
-            }
+            Self::Select(reference) | Self::Eye(reference) => reference.validate(),
             Self::Menu(_) => Ok(()),
             Self::SelectComponent(reference) | Self::Hover(reference) => {
                 optional_reference(reference.as_ref())

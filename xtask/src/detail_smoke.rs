@@ -215,8 +215,9 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             },
         )
         .commits(0),
-        Step::new("mask-release", MaskStep::Release).commits(0),
-        Step::new("mask-apply", MaskStep::Apply).commits(1).masks(1),
+        Step::new("mask-apply", MaskStep::Release)
+            .commits(1)
+            .masks(1),
         release("masked-detail", "sharpening", 30.0),
         Step::new("overlay", WorkspaceStep::default().mask_overlay("tint")).commits(0),
         Step::new("overlay-off", WorkspaceStep::default().mask_overlay("off")).commits(0),

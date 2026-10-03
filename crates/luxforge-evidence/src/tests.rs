@@ -672,7 +672,6 @@ fn every_mask_verb_round_trips_its_script() {
         {"mask":{"select_component":null}},
         {"mask":{"hover":{"name":"Linear 1"}}},
         {"mask":{"hover":null}},
-        {"mask":{"edit_shape":0}},
         {"mask":{"mode":"subtract"}},
         {"mask":{"new":"linear"}},
         {"mask":{"add":"radial"}},
@@ -688,6 +687,7 @@ fn every_mask_verb_round_trips_its_script() {
         {"mask":{"sweep":{"from":[0.5,0.2],"to":[0.5,0.8]}}},
         {"mask":{"release":true}},
         {"mask":{"drag":{"handle":"radius+x","points":[[0.4,0.4],[0.45,0.4]]}}},
+        {"mask":{"drag":{"handle":"middle","points":[[0.5,0.5]],"release":false}}},
         {"mask":{"apply":true}},
         {"mask":{"cancel":true}},
         {"mask":{"pick":true}},
@@ -710,13 +710,13 @@ fn every_mask_verb_round_trips_its_script() {
     );
     assert_eq!(steps[4], MaskStep::SelectComponent(None).into());
     assert_eq!(steps[6], MaskStep::Hover(None).into());
-    assert_eq!(steps[11], MaskStep::Paint(PaintStep::NewMask).into());
+    assert_eq!(steps[10], MaskStep::Paint(PaintStep::NewMask).into());
     assert_eq!(
-        steps[13],
+        steps[12],
         MaskStep::Paint(PaintStep::Component(Reference::name("Brush 1"))).into()
     );
     assert_eq!(
-        steps[14],
+        steps[13],
         MaskStep::Brush(BrushStep {
             size: Some(0.08),
             feather: Some(50.0),
@@ -726,11 +726,11 @@ fn every_mask_verb_round_trips_its_script() {
         .into()
     );
     assert_eq!(
-        steps[17],
+        steps[16],
         MaskStep::stroke([[0.3, 0.3], [0.4, 0.35]], true).into()
     );
     assert_eq!(
-        steps[19],
+        steps[18],
         MaskStep::Stroke {
             points: vec![[0.5, 0.5]],
             release: true,
@@ -740,10 +740,20 @@ fn every_mask_verb_round_trips_its_script() {
         .into()
     );
     assert_eq!(
-        steps[22],
+        steps[21],
         MaskStep::Drag {
             handle: DragHandle::RadiusPlusX,
-            points: vec![[0.4, 0.4], [0.45, 0.4]]
+            points: vec![[0.4, 0.4], [0.45, 0.4]],
+            release: true,
+        }
+        .into()
+    );
+    assert_eq!(
+        steps[22],
+        MaskStep::Drag {
+            handle: DragHandle::Middle,
+            points: vec![[0.5, 0.5]],
+            release: false,
         }
         .into()
     );
@@ -779,7 +789,7 @@ fn every_mask_verb_round_trips_its_script() {
         ),
         (json!({"mask":{"select":{"name":" "}}}), "non-empty string"),
         (json!({"mask":{"select":""}}), "non-empty string"),
-        (json!({"mask":{"edit_shape":null}}), "position in the list"),
+        (json!({"mask":{"select":null}}), "position in the list"),
         (json!({"mask":{"apply":false}}), "takes true"),
         (json!({"mask":{"new":""}}), "component kind"),
         (

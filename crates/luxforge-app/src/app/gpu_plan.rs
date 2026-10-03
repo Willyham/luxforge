@@ -400,7 +400,7 @@ pub(crate) fn geometry_steps(
         reads.x0 + reads.width,
         reads.y0 + reads.height,
     ];
-    let tail = match (geometry.affine(), geometry.projective(), grid) {
+    let mut tail = match (geometry.affine(), geometry.projective(), grid) {
         (Some(matrix), _, _) => GpuTail::affine(
             output,
             reads,
@@ -436,6 +436,9 @@ pub(crate) fn geometry_steps(
             std::sync::Arc::from([0u32; 8]),
         ),
     };
+    if plan.linear {
+        tail = tail.preserve_f32();
+    }
     steps.push(GpuStep::Geometry(tail));
     for operation in &plan.output {
         operation_steps(operation, steps)?;

@@ -274,8 +274,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
                 },
             )
             .commits(0),
-            mask("sweep-release", MaskStep::Release).commits(0),
-            mask("apply-linear", MaskStep::Apply).commits(1).masks(1),
+            mask("apply-linear", MaskStep::Release).commits(1).masks(1),
             // 11: a masked exposure through it, as the panel's own drag.
             Step::new(
                 "masked",
@@ -291,14 +290,20 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             )
             .commits(0)
             .workspace("mask_overlay", json!("tint")),
-            // 13-17: the gradient reopened and moved by its middle handle twice, the reopening's
-            // tick and the moves' drawn on the GPU over the resident boundary; then applied.
-            mask("edit-shape", MaskStep::EditShape(Reference::Index(0))).commits(0),
+            // 13-17: the gradient selected, its handles resting, and its middle handle pressed and
+            // moved twice without letting go, the press's tick and the moves' drawn on the GPU over
+            // the resident boundary; then Apply commits the held drag.
+            mask(
+                "select-linear",
+                MaskStep::SelectComponent(Some(Reference::Index(0))),
+            )
+            .commits(0),
             mask(
                 "move-first",
                 MaskStep::Drag {
                     handle: DragHandle::Middle,
                     points: FIRST_MOVE.to_vec(),
+                    release: false,
                 },
             )
             .commits(0),
@@ -308,10 +313,11 @@ pub fn plan(_: &[PathBuf]) -> Plan {
                 MaskStep::Drag {
                     handle: DragHandle::Middle,
                     points: SECOND_MOVE.to_vec(),
+                    release: false,
                 },
             )
             .commits(0),
-            mask("move-apply", MaskStep::Apply).commits(1),
+            mask("move-apply", MaskStep::Release).commits(1),
             // The applied gradient once its dissolve has ended: the frame that replaced the GPU one.
             quiet("apply-settled"),
             // 17-18: a brush on the same mask, and one stroke painted a position per tick, each
