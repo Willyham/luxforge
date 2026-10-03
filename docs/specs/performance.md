@@ -3645,6 +3645,32 @@ What compiling one program sequence costs the photo surface's compile thread ([G
 cargo test -p luxforge-app gpu_preview_compile_cost_per_sequence -- --ignored --nocapture
 ```
 
+### Presence and Detail sequences in the editor
+
+What each program sequence the `gpu-preview` scenario compiles costs the editor's compile thread, from the queue to a kept pipeline, on the release editor of main before the GPU preview follow-ups (`40c3cca5`) and of the follow-ups with half-precision planes (`0462e063`), each with one line printed per compile and nothing else changed. Runs alternate the two builds, each on a cold Metal shader cache (a background bundle identifier of its own, whose cache starts empty) and then warm (the same identifier again), three rounds. Apple M4 Pro, one-minute load 2.6 to 15.2 while they ran. Medians, milliseconds; "new" is the spatial pass pipelines the sequence created, the others found in the passes' cache.
+
+| Sequence | Main, cold | Follow-ups, cold | Main, warm | Follow-ups, warm |
+| --- | ---: | ---: | ---: | ---: |
+| A Presence drag: Presence in its GPU shape, 22 passes | 1,119 (13 new) | 1,161 (14 new) | 25 | 30 |
+| Basic under Presence, Dehaze alone (9 passes) | 1,075 | 1,096 | 36 | 42 |
+| Basic under Presence, Dehaze and Clarity (14) | 217 | 231 | 9 | 20 |
+| Basic under Presence, all three (22) | 734 | 758 | 22 | 25 |
+| The Tone curve under Presence, 9 / 14 / 22 passes | 767 / 158 / 512 | 793 / 172 / 528 | 22 / 9 / 13 | 22 / 20 / 19 |
+| The Mixer under Presence, 9 / 14 / 22 | 820 / 172 / 550 | 817 / 197 / 641 | 25 / 12 / 18 | 39 / 29 / 29 |
+| The masked Basic under Presence, 9 / 14 / 22 | 990 / 217 / 731 | 996 / 236 / 760 | 34 / 12 / 20 | 56 / 24 / 22 |
+| A Detail drag, the colour layers and Presence after it, 9 / 14 / 22 | 1,128 / 231 / 789 | 1,150 / 254 / 997 | 37 / 14 / 31 | 48 / 106 / 51 |
+| A Detail drag before Presence was committed | 463 | 482 | 11 | 12 |
+| A colour sequence (Basic, the curve, the mixer, the vignette) | 45 to 79 | 46 to 73 | 1 to 4 | 1 to 4 |
+| Everything a run compiles | 11,738 | 12,657 | 410 | 675 |
+
+- **Compile time barely moved.** A Presence drag's own sequence costs 4% more cold, and every sequence before Presence 0 to 4%, but for two that now create more pass pipelines: the Mixer before all three Presence fields (+17%) and a Detail drag with all three after it (+26%, 14 new against 8), whose Presence passes store into Detail's free half-precision planes, so they share fewer modules with the other sequences. A run's whole compile work is 8% more cold and 265 ms more warm.
+- **What the scenario waited for.** A drag of a Presence layer, and a drag of every colour layer under it, each compiles its own Presence passes, since a pass's module carries the programs of the steps before it: about a second a sequence on a cold cache. The Dehaze commit warms six, the Presence drag's own last, and on both builds that one was ready 5.9 to 6.4 s after the commit (main 5.87 to 5.95 s, the follow-ups 5.94 to 6.39 s, 7.3 s in one run on a host at load 30 to 60). The scenario's fixed 4 s quiet after the Clarity commit, and the 1.5 s while the drag's boundary arrived, covered that only on an idle host, so a cold cache under load failed the Texture drag's first GPU tick (`compiling`) on either build. The scenario now waits for the warm list to compile ([design](../design/gpu-preview.md#where-the-code-lives)).
+- **Warm**, every sequence compiles in 1 to 106 ms, the Presence drag's in 25 to 30.
+- **With the wait.** On the follow-ups with the scenario's `gpu_warmed` steps, five runs on a cold cache passed: the wait after the Presence commits took 6.3 to 6.6 s, and 8.5 to 8.6 s with twelve busy loops beside the editor, each longer than the fixed quiet that preceded it; the waits after the Texture and Clarity drags' releases took 3.1 to 4.5 s and 1.5 to 1.7 s. Eight consecutive runs on the shared warm cache, the first two on a freshly built editor, passed at loads 3.4 to 9.7.
+- **At 100%** (`gpu-preview-zoom`) a percentage view's plans are not warmed, and each drag compiles its own when its boundary is first drawn: cold, a Presence drag's region sequence in 1.09 to 1.12 s, a Basic drag under Presence's in 0.57 s and a Detail drag with Presence after it (Dehaze behind Detail) in 1.85 to 1.90 s, warm in 23 to 52 ms. Each of those drags is now held after its first tick until that compile has ended, at least 4 s and at most 60 s: two cold runs, one beside twelve busy loops, and one warm passed, every held step ending at 4.0 to 4.2 s.
+
+
+
 ## GPU Detail program
 
 The Detail program ([GPU previews](../design/gpu-preview.md#spatial-programs)) on the M4, against the CPU per kernel, per unit and on the [corpus](../../fixtures/preview/corpus.json)'s Detail recipes at Fit. These are the figures the program was enabled on: a Detail stack settles from the exact render, and its GPU frame is judged against the CPU's moving proxy it stands in for (owner, 2026-10-02, [decisions](../decisions.md#gpu-previews)). Pixel and arithmetic measurements, not timings.
