@@ -2317,7 +2317,7 @@ mod tests {
             None => Err(Error::protocol(format!("unknown method {method}"))),
         };
         match result {
-            Ok(result) => ApiResponse::success(method.into(), 0, result),
+            Ok(result) => ApiResponse::value(method.into(), 0, result),
             Err(error) => ApiResponse::failure(method.into(), 0, error),
         }
     }
