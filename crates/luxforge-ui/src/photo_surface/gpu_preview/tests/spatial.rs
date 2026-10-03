@@ -102,6 +102,7 @@ fn test_spatial() -> GpuSpatial {
             function: Cow::Borrowed("lf_test_show"),
             planes: vec![1, 2],
             words: 1,
+            identity: false,
         }],
         clamps: true,
         mask: None,
@@ -296,6 +297,86 @@ fn a_reduced_plane_holds_the_stage_blocks_its_boundary_reaches() {
         ((1, 1), 16)
     );
     assert_eq!(plane(1).bytes((0, 0), (10, 10)), 400);
+}
+
+/// An identity apply's planes need not be current, and they are in no key of what reads through
+/// it: a tick runs none of the passes only they need, even as their words move, while the pass
+/// writing a plane both units' applies read, and a later unit's passes, run as they would. Once
+/// the apply is not the identity, every pass its planes need runs, and the later unit's again,
+/// whose input is then the apply's output. A return to the identity reruns only the later unit's
+/// passes, and a return from it, its planes still holding what they did, only those again.
+#[test]
+fn an_identity_applys_planes_are_written_only_once_it_is_not() {
+    use super::super::spatial::{PlanesKey, Schedule};
+    let (boundary, _) = boundary_values();
+    // Unit A copies its input and takes its mean, and both units' applies read the lanes; unit B
+    // copies its input through A's apply and takes its mean. Each pass has words of its own.
+    let ticks = |radius: u32, identity: bool| {
+        let mut spatial = test_spatial();
+        spatial.program.words = vec![radius, SCALE.to_bits(), RADIUS, 0, 0];
+        spatial
+            .planes
+            .extend([spatial.planes[0], spatial.planes[1]]);
+        let [copy, mean, lanes] = [0, 1, 2].map(|pass| spatial.passes[pass].clone());
+        let pass = |kernel: &GpuPass, inputs, output, words, source| GpuPass {
+            inputs,
+            output,
+            words,
+            source,
+            ..kernel.clone()
+        };
+        spatial.passes = vec![
+            pass(&copy, vec![], 0, 0, 0),
+            pass(&mean, vec![0], 1, 0, 0),
+            pass(&lanes, vec![], 2, 3, 0),
+            pass(&copy, vec![], 3, 4, 1),
+            pass(&mean, vec![3], 4, 2, 0),
+        ];
+        let apply = |planes: Vec<u32>, identity| GpuApply {
+            function: Cow::Borrowed("lf_test_show"),
+            planes,
+            words: 1,
+            identity,
+        };
+        spatial.applies = vec![apply(vec![1, 2], identity), apply(vec![4, 2], false)];
+        validate_step(&GpuStep::Spatial(Box::new(spatial.clone()))).unwrap();
+        GpuPlan {
+            boundary: boundary.clone(),
+            texels: TexelMap::IDENTITY,
+            steps: vec![GpuStep::Spatial(Box::new(spatial))],
+            region: None,
+        }
+    };
+    let key = PlanesKey::of(&ticks(RADIUS, true).steps, (SIDE, SIDE), (0, 0)).expect("planes");
+    let mut schedule = Schedule::default();
+    let (mut words, mut blocks) = (Vec::new(), Vec::new());
+    for (tick, plan, runs) in [
+        (
+            "A the identity",
+            ticks(RADIUS, true),
+            [false, false, true, true, true],
+        ),
+        ("A's words move", ticks(1, true), [false; 5]),
+        (
+            "A not the identity",
+            ticks(1, false),
+            [true, true, false, true, true],
+        ),
+        (
+            "A the identity again",
+            ticks(1, true),
+            [false, false, false, true, true],
+        ),
+        (
+            "A back, its planes current",
+            ticks(1, false),
+            [false, false, false, true, true],
+        ),
+    ] {
+        super::super::pack(&plan, &mut words, &mut blocks);
+        let ran = schedule.run(&plan.steps, &words, &blocks, plan.boundary.version(), &key);
+        assert_eq!(ran, runs, "{tick}");
+    }
 }
 
 // ---- On a headless device ---------------------------------------------------------------------

@@ -322,6 +322,7 @@ pub(crate) fn spatial_step(spatial: &GpuSpatial) -> Result<GpuStep, Unrunnable> 
                 function: Cow::Borrowed(apply.function),
                 planes: apply.planes.iter().map(|&plane| index(plane)).collect(),
                 words: index(apply.words),
+                identity: apply.identity,
             })
             .collect(),
         clamps: spatial.clamps,

@@ -183,7 +183,7 @@ fn sequence(plan: &GpuPlan) -> Vec<&'static str> {
 
 /// What decides a plan's pipelines, as the surface keys its program sequence: its colour units'
 /// programs, then its spatial operation's clamp, mask, planes, passes and applies, but for every
-/// word, which is what a drag changes.
+/// word and whether an apply is the identity, which is what a drag changes.
 fn pipelines(plan: &GpuPlan) -> Vec<String> {
     let mut keys: Vec<String> = plan
         .operations()
@@ -204,7 +204,12 @@ fn pipelines(plan: &GpuPlan) -> Vec<String> {
                 pass.kernel, pass.inputs, pass.output, pass.source, pass.shape
             )
         }));
-        keys.extend(spatial.applies.iter().map(|apply| format!("{apply:?}")));
+        keys.extend(spatial.applies.iter().map(|apply| {
+            format!(
+                "{} {:?}, words {}",
+                apply.function, apply.planes, apply.words
+            )
+        }));
     }
     keys
 }

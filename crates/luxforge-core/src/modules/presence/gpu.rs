@@ -205,6 +205,8 @@ pub(super) fn texture(unit: &texture::Texture) -> GpuSpatialUnit {
             function: "lf_presence_texture",
             planes: vec![band],
             words: apply,
+            // A zero gain returns the input before the band is read.
+            identity: unit.gain() == 0.0,
         },
         estimated: false,
     }
@@ -248,6 +250,8 @@ pub(super) fn clarity(unit: &clarity::Clarity) -> GpuSpatialUnit {
             function: "lf_presence_clarity",
             planes: vec![base],
             words: apply,
+            // A zero gain returns the input before the base is read.
+            identity: unit.gain() == 0.0,
         },
         estimated: false,
     }
@@ -406,6 +410,8 @@ pub(super) fn dehaze(unit: &dehaze::Dehaze, global: Option<&Global>) -> GpuSpati
             function: "lf_presence_dehaze",
             planes: vec![refined, light],
             words: apply,
+            // An amount of 0 returns the input before the transmission or the light is read.
+            identity: neutral,
         },
         estimated: stored.is_none(),
     }
@@ -553,6 +559,7 @@ mod tests {
                 .map(|unit| unit.gpu(global).expect("a description"))
                 .collect::<Vec<_>>()
         };
+        // Whether an apply is the identity is the tick's, as its words are: no part of the shape.
         let structure = |units: &[GpuSpatialUnit]| {
             units
                 .iter()
@@ -562,24 +569,35 @@ mod tests {
                         .iter()
                         .map(|pass| (pass.kernel, pass.inputs.clone(), pass.output, pass.shape))
                         .collect();
-                    (unit.planes.clone(), passes, unit.apply.clone())
+                    let apply = &unit.apply;
+                    let applied = (apply.function, apply.planes.clone(), apply.words);
+                    (unit.planes.clone(), passes, applied)
                 })
                 .collect::<Vec<_>>()
         };
+        let identities = |units: &[GpuSpatialUnit]| -> Vec<bool> {
+            units.iter().map(|unit| unit.apply.identity).collect()
+        };
         let neutral = described(&compile(json!({}), true), None);
         assert_eq!(neutral.len(), 3, "dehaze, texture and clarity");
-        for payload in [
-            json!({"dehaze": 40}),
-            json!({"clarity": 5}),
-            json!({"texture": -100, "clarity": 100, "dehaze": -100}),
+        for (payload, identity) in [
+            (json!({"dehaze": 40}), [false, true, true]),
+            (json!({"clarity": 5}), [true, true, false]),
+            (
+                json!({"texture": -100, "clarity": 100, "dehaze": -100}),
+                [false, false, false],
+            ),
         ] {
             for global in [None, Some(&light)] {
                 let shaped = described(&compile(payload.clone(), true), global);
                 assert_eq!(structure(&shaped), structure(&neutral), "{payload}");
+                assert_eq!(identities(&shaped), identity.to_vec(), "{payload}");
             }
         }
-        // Each amount-0 unit is the identity through its words: Dehaze's apply mode, with a light
-        // given so nothing is reduced or estimated, and Texture's and Clarity's zero gain.
+        // Each amount-0 unit is the identity through its words, which its apply says it is:
+        // Dehaze's apply mode, with a light given so nothing is reduced or estimated, and
+        // Texture's and Clarity's zero gain.
+        assert_eq!(identities(&neutral), vec![true; 3]);
         let [dehaze, texture, clarity] = [0, 1, 2].map(|unit| &neutral[unit]);
         assert_eq!(dehaze.words[dehaze.apply.words], DEHAZE_NONE);
         assert_eq!(dehaze.words[dehaze.passes[0].words], REDUCE_NONE);

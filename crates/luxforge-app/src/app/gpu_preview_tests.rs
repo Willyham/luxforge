@@ -892,8 +892,12 @@ fn gpu_preview_a_region_over_the_budget_keeps_the_cpu_path_and_names_it() {
     let (mut editor, _, _) = real_photo(&catalog);
     let wanted = zoomed(&mut editor);
     // A Basic layer's boundary is the region itself, with no tail and no plane: on a JPEG eight
-    // bytes a texel, and four an output pixel.
-    let needed = u64::from(wanted.width) * u64::from(wanted.height) * 12;
+    // bytes a texel. The frame takes four a texel of the bucket the CPU's region picture of it
+    // reserves, the region and two more each way in steps of 64, and its 96-byte uniform.
+    let bucket = |side: u32| u64::from((side + 2).next_multiple_of(64));
+    let needed = u64::from(wanted.width) * u64::from(wanted.height) * 8
+        + bucket(wanted.width) * bucket(wanted.height) * 4
+        + 96;
     editor.gpu.budget = Some(needed - 1);
     let log = attach_log(&mut editor);
     let _ = slide(&mut editor, ACTION, FIELD, 0.1);
