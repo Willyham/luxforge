@@ -270,8 +270,9 @@ fn a_drag_from_neutral_keeps_one_program_sequence_and_one_boundary() {
     assert_eq!(units, [1]);
 }
 
-/// The boundary's key names the layers before it: a drag of the Tone curve after a Basic layer
-/// keeps its key while only the curve moves, and another Basic value is another key.
+/// Every gesture is planned from the stack's first layer past its source layers, so its boundary
+/// is the source itself: a drag of the Tone curve after a Basic layer starts from the Basic layer's
+/// input, and its key is one whatever the curve or the Basic layer holds.
 #[test]
 fn the_boundary_key_follows_the_layers_before_it() {
     // One stack's layers keep their identities while a value changes, as a stored stack's do.
@@ -288,12 +289,21 @@ fn the_boundary_key_follows_the_layers_before_it() {
         };
         let (job, draft) = draft_job("set-curve", vec![before.clone()], vec![before, curve(y)], 1);
         let preview = plan_preview(&job.evaluation, &draft, crate::GpuView::Fit(bounds())).unwrap();
-        assert_eq!(planned(&preview).boundary.layer, 1, "the curve's input");
-        assert!(planned(&preview).boundary.continues_run);
+        assert_eq!(
+            planned(&preview).boundary.layer,
+            0,
+            "the stack's first layer's input"
+        );
+        assert!(!planned(&preview).boundary.continues_run);
+        assert_eq!(
+            planned(&preview).content.len(),
+            2,
+            "the Basic layer and the curve"
+        );
         preview.boundary.expect("a boundary").key
     };
     assert_eq!(key(0.5, 0.6), key(0.5, 0.4));
-    assert_ne!(key(0.5, 0.6), key(0.7, 0.6));
+    assert_eq!(key(0.5, 0.6), key(0.7, 0.6));
 }
 
 /// A draft that changes nothing yet and drafts no layer of its own has no plan, and says so.
@@ -444,7 +454,8 @@ fn a_raw_boundary_holds_its_values_as_f32() {
 fn the_warmed_plans_hold_every_first_drags_sequence() {
     let crop = crop();
     let (job, _) = draft_job("set-basic", vec![crop.clone()], vec![crop.clone()], 0);
-    let plans = crate::render::gpu::plan_warm(&job.evaluation, bounds()).unwrap();
+    let plans =
+        crate::render::gpu::plan_warm(&job.evaluation, crate::GpuView::Fit(bounds())).unwrap();
     let warmed: Vec<Vec<&'static str>> = plans.iter().map(sequence).collect();
     let keys: Vec<Vec<String>> = plans.iter().map(pipelines).collect();
     for (index, one) in keys.iter().enumerate() {
@@ -504,10 +515,16 @@ fn the_warmed_plans_tell_a_masked_layer_from_an_unmasked_one() {
             stack(masked),
             0,
         );
-        let plans = crate::render::gpu::plan_warm(&job.evaluation, bounds()).unwrap();
+        let plans =
+            crate::render::gpu::plan_warm(&job.evaluation, crate::GpuView::Fit(bounds())).unwrap();
+        // The Presence layer's own drag is the last plan: the committed stack and the first
+        // drags of the colour and finish modules come before it.
         plans
             .into_iter()
-            .find(|plan| plan.content.is_empty() && !plan.spatial.is_empty())
+            .rev()
+            .find(|plan| {
+                plan.content.is_empty() && !plan.spatial.is_empty() && plan.output.is_empty()
+            })
             .expect("the Presence layer's drag")
     };
     let (unmasked, masked) = (warm(false), warm(true));
@@ -554,8 +571,9 @@ fn a_boundary_of_another_stage_is_answered_with_its_reason() {
 }
 
 /// At a percentage zoom the boundary is the exact stage's window the visible region reads, at full
-/// scale: keyed by that region, rendered after the job's region frame, and its texels the layer's
-/// input there exactly. Behind a straightened crop the window is the crop's read of the source.
+/// scale: keyed by that region, rendered before the job's region frame, which it does not depend
+/// on, and its texels the layer's input there exactly. Behind a straightened crop the window is the
+/// crop's read of the source.
 #[test]
 fn a_region_boundary_holds_the_window_its_region_reads_at_full_scale() {
     let rect = crate::modules::Region {
@@ -599,16 +617,16 @@ fn a_region_boundary_holds_the_window_its_region_reads_at_full_scale() {
         job.boundary = Some(request.clone());
         let mut queue = PreviewQueue::default();
         let generation = queue.request(job);
-        let region = wait_for("the region frame", || queue.poll());
-        assert_eq!(
-            (region.generation, region.phase()),
-            (generation, PreviewPhase::Region),
-            "{what}"
-        );
         let boundary = wait_for("the boundary", || queue.poll());
         assert_eq!(
             (boundary.generation, boundary.phase()),
             (generation, PreviewPhase::Boundary),
+            "{what}"
+        );
+        let region = wait_for("the region frame", || queue.poll());
+        assert_eq!(
+            (region.generation, region.phase()),
+            (generation, PreviewPhase::Region),
             "{what}"
         );
         let outcome = boundary.boundary().unwrap();
@@ -839,11 +857,15 @@ fn the_warmed_plans_hold_a_spatial_layers_drags() {
             )
         };
         let (job, _) = job_of(entry.clone(), 0);
-        let plans = crate::render::gpu::plan_warm(&job.evaluation, bounds()).unwrap();
-        // The plans that start at the layer itself; the colour candidates before it hold it too.
+        let plans =
+            crate::render::gpu::plan_warm(&job.evaluation, crate::GpuView::Fit(bounds())).unwrap();
+        // The plans that draft the layer itself; the colour candidates before it, and the
+        // vignette's first drag after it, hold it too.
         let own: Vec<&GpuPlan> = plans
             .iter()
-            .filter(|plan| !plan.spatial.is_empty() && plan.content.is_empty())
+            .filter(|plan| {
+                !plan.spatial.is_empty() && plan.content.is_empty() && plan.output.is_empty()
+            })
             .collect();
         assert_eq!(
             own.len(),
@@ -1103,11 +1125,12 @@ fn the_warmed_plans_hold_a_drag_of_each_of_two_spatial_layers() {
     let presence = Layer::new(crate::PRESENCE_EFFECT, json!({"clarity": 30, "dehaze": 20}));
     let entry = vec![detail.clone(), presence.clone()];
     let (job, _) = draft_job("set-detail", entry.clone(), entry.clone(), 0);
-    let warmed: Vec<Vec<&'static str>> = crate::render::gpu::plan_warm(&job.evaluation, bounds())
-        .unwrap()
-        .iter()
-        .map(sequence)
-        .collect();
+    let warmed: Vec<Vec<&'static str>> =
+        crate::render::gpu::plan_warm(&job.evaluation, crate::GpuView::Fit(bounds()))
+            .unwrap()
+            .iter()
+            .map(sequence)
+            .collect();
     let drags = [
         (
             "set-detail",
@@ -1129,7 +1152,7 @@ fn the_warmed_plans_hold_a_drag_of_each_of_two_spatial_layers() {
                     ..presence
                 },
             ],
-            1,
+            2,
         ),
     ];
     for (action, drafted, chained) in drags {

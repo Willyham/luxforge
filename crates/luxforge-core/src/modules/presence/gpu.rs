@@ -83,6 +83,7 @@ fn pass(
         source: 0,
         shape,
         reads_source: reads,
+        unit: 0,
     }
 }
 

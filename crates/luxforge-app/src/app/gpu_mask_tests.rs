@@ -1112,3 +1112,538 @@ fn gpu_mask_corpus_at_fit() {
         ],
     );
 }
+
+/// A painted stroke's ticks evaluated incrementally, as one slot draws a gesture's: each tick's
+/// plan changes only near the segments it adds, removes or moves (`GpuPlan::changes_since`), so
+/// the surface evaluates each link of the chain only where that change reaches and its mask can
+/// cover anything, and keeps the rest of what its intermediates and planes hold from the ticks
+/// before — through a masked Basic layer, a masked Presence layer of the same mask, whose bounds
+/// grow with the stroke, Presence layers masked by radials the stroke passes near and far from,
+/// a global Presence layer after them and a masked Basic layer after that, which the plan draws
+/// through an identity tail, at a Fit stage's thin-feature scale. The stroke is painted to its
+/// end, taken back over half of it and painted to its end again, so the brushed mask grows,
+/// shrinks and grows again. Every tick's frame is the frame a whole evaluation of the same plan
+/// draws, bit for bit, and the rectangles are a small part of the stage.
+#[test]
+fn gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it() {
+    let test = "gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it";
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
+        return;
+    };
+    let (width, height) = (960u32, 640u32);
+    let (_, pixels) = photograph(width, height);
+    let held_boundary = boundary(width, height, 1, &pixels).expect("a boundary");
+    let committed = Stroke::capture(
+        &[[0.1, 0.8], [0.5, 0.75], [0.9, 0.85]],
+        0.05,
+        40.0,
+        100.0,
+        false,
+    )
+    .unwrap();
+    let path: Vec<[f64; 2]> = (0..=40)
+        .map(|tick| {
+            let t = f64::from(tick) / 40.0;
+            [
+                0.15 + 0.7 * t,
+                0.45 + 0.2 * (t * 5.0).sin() + 0.01 * (t * 61.0).sin(),
+            ]
+        })
+        .collect();
+    // The same stroke whose second half takes another route a little lower, inside the first's
+    // bounds.
+    let rerouted: Vec<[f64; 2]> = path
+        .iter()
+        .enumerate()
+        .map(|(tick, [x, y])| if tick > 20 { [*x, y + 0.03] } else { [*x, *y] })
+        .collect();
+    let presence = |payload: Value| Layer::new(luxforge_core::PRESENCE_EFFECT, payload);
+    // Radials the stroke passes near and far from, each with a Presence layer of its own.
+    let radials: Vec<Mask> = [(0.55, 0.35), (0.12, 0.15)]
+        .iter()
+        .enumerate()
+        .map(|(index, (x, y))| {
+            let mut mask = mask_of(
+                &[(
+                    "radial",
+                    ComponentMode::Add,
+                    false,
+                    json!({"x": x, "y": y, "radius_x": 0.08, "radius_y": 0.06, "angle": 0.0,
+                           "feather": 40.0}),
+                )],
+                false,
+                100.0,
+            );
+            mask.name = format!("Radial {index}");
+            mask
+        })
+        .collect();
+    let stack = |(path, tick): (&[[f64; 2]], usize)| {
+        let painted = Stroke::capture(&path[..=tick], 0.04, 50.0, 80.0, false).unwrap();
+        let (mask, strokes) = brush(vec![committed.clone(), painted]);
+        let mut recipe = masked_recipe(&mask, &strokes);
+        recipe.layers.push(Layer {
+            mask: Some(mask.id.clone()),
+            ..presence(json!({"clarity": 50.0, "texture": 40.0}))
+        });
+        for radial in &radials {
+            recipe.layers.push(Layer {
+                mask: Some(radial.id.clone()),
+                ..presence(json!({"clarity": -40.0, "texture": 30.0}))
+            });
+            recipe.masks.push(radial.clone());
+        }
+        recipe
+            .layers
+            .push(presence(json!({"clarity": 20.0, "texture": 25.0})));
+        // A colour layer after the last spatial one, which the plan runs after its geometry: an
+        // identity tail, which quantizes on a JPEG.
+        recipe.layers.push(Layer {
+            mask: Some(radials[0].id.clone()),
+            ..basic()
+        });
+        recipe
+    };
+    let full = stage(width * 4, height * 4);
+    let request = GpuPlanRequest::fit(0, stage(width, height), full).qualifying();
+    // The stroke painted to its end, taken back over half of it, as an erase shrinks a mask, and
+    // painted to its end again: one slot's ticks, each from the one before. Then from a slot that
+    // first drew the whole stroke, whose brushed layer holds its planes only where its mask needs
+    // them while the stroke is taken back and painted again by another route within its bounds.
+    let mut areas = Vec::new();
+    let forward = |path, ticks: &mut dyn Iterator<Item = usize>| -> Vec<(&[[f64; 2]], usize)> {
+        ticks.map(|tick| (path, tick)).collect()
+    };
+    for order in [
+        [
+            forward(&path, &mut (1..=40)),
+            forward(&path, &mut (20..40).rev()),
+            forward(&path, &mut (21..=40)),
+        ]
+        .concat(),
+        [
+            forward(&path, &mut (20..=40).rev()),
+            forward(&rerouted, &mut (21..=40)),
+        ]
+        .concat(),
+    ] {
+        let plans: Vec<_> = order
+            .iter()
+            .map(|&tick| planned(&stack(tick), request))
+            .collect();
+        let ticks: Vec<_> = plans
+            .iter()
+            .enumerate()
+            .map(|(number, plan)| {
+                let inside = (number > 0).then(|| match plan.changes_since(&plans[number - 1]) {
+                    luxforge_core::GpuChange::Inside(rect) => {
+                        areas.push(f64::from(rect.width * rect.height) / f64::from(width * height));
+                        [
+                            rect.x0,
+                            rect.y0,
+                            rect.x0 + rect.width,
+                            rect.y0 + rect.height,
+                        ]
+                    }
+                    luxforge_core::GpuChange::Nothing => [0; 4],
+                    luxforge_core::GpuChange::Anywhere => {
+                        panic!("tick {number}: a change anywhere")
+                    }
+                });
+                let converted = surface_plan(plan, held_boundary.clone()).expect("a runnable plan");
+                assert!(
+                    converted.steps.iter().any(|step| matches!(
+                        step,
+                        luxforge_ui::photo_surface::GpuStep::Geometry(_)
+                    )),
+                    "the plan draws through its tail"
+                );
+                (converted, inside)
+            })
+            .collect();
+        let incremental = qualifier
+            .evaluate_sequence(&ticks)
+            .expect("a readback of every tick");
+        for (number, ((plan, inside), drawn)) in ticks.iter().zip(&incremental).enumerate() {
+            let whole = qualifier.evaluate(plan).expect("a readback");
+            let largest = drawn
+                .iter()
+                .zip(&whole)
+                .flat_map(|(a, b)| (0..3).map(move |channel| (a[channel] - b[channel]).abs()))
+                .fold(0.0_f32, f32::max);
+            assert!(
+                largest == 0.0,
+                "tick {number} (stroke position {}): {largest} over {inside:?}",
+                order[number].1
+            );
+        }
+    }
+    let mean = areas.iter().sum::<f64>() / areas.len() as f64;
+    eprintln!(
+        "{test}: {} ticks, each changing on average {:.1}% of the stage (largest {:.1}%)",
+        areas.len(),
+        100.0 * mean,
+        100.0 * areas.iter().copied().fold(0.0, f64::max)
+    );
+    assert!(mean < 0.25, "the change stays near the stroke's end");
+}
+
+/// A radial mask moved, as dragging its handle moves it, changes coverage only inside its bounds
+/// before and after the move (`GpuPlan::changes_since`): its ticks are evaluated incrementally,
+/// as one slot draws them, through a masked Basic and a masked Presence layer of the radial and a
+/// global Presence layer after them, at a Fit stage's thin-feature scale, and its amount and an
+/// inversion changed by the same rule, the inverted mask's bounds the whole stage. Every tick's
+/// frame is the frame a whole evaluation of the same plan draws, bit for bit, and a moved
+/// radial's change is the part of the stage the two positions cover.
+#[test]
+fn gpu_mask_a_moved_radial_is_evaluated_where_its_bounds_were_and_are() {
+    let test = "gpu_mask_a_moved_radial_is_evaluated_where_its_bounds_were_and_are";
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
+        return;
+    };
+    let (width, height) = (960u32, 640u32);
+    let (_, pixels) = photograph(width, height);
+    let held_boundary = boundary(width, height, 1, &pixels).expect("a boundary");
+    let presence = |payload: Value| Layer::new(luxforge_core::PRESENCE_EFFECT, payload);
+    let stack = |x: f64, amount: f64, invert: bool| {
+        let mask = mask_of(
+            &[(
+                "radial",
+                ComponentMode::Add,
+                false,
+                json!({"x": x, "y": 0.45, "radius_x": 0.12, "radius_y": 0.1, "angle": 20.0,
+                       "feather": 50.0}),
+            )],
+            invert,
+            amount,
+        );
+        let mut recipe = masked_recipe(&mask, &StrokeTable::default());
+        recipe.layers.push(Layer {
+            mask: Some(mask.id.clone()),
+            ..presence(json!({"clarity": 50.0, "texture": 40.0}))
+        });
+        recipe
+            .layers
+            .push(presence(json!({"clarity": 20.0, "texture": 25.0})));
+        recipe
+    };
+    let full = stage(width * 4, height * 4);
+    let request = GpuPlanRequest::fit(0, stage(width, height), full).qualifying();
+    let order: Vec<(f64, f64, bool)> = (0..24)
+        .map(|tick| (0.3 + 0.01 * f64::from(tick), 100.0, false))
+        .chain([(0.53, 60.0, false), (0.53, 60.0, true), (0.55, 60.0, true)])
+        .collect();
+    let plans: Vec<_> = order
+        .iter()
+        .map(|&(x, amount, invert)| planned(&stack(x, amount, invert), request))
+        .collect();
+    let mut moved = Vec::new();
+    let ticks: Vec<_> = plans
+        .iter()
+        .enumerate()
+        .map(|(number, plan)| {
+            let inside = (number > 0).then(|| match plan.changes_since(&plans[number - 1]) {
+                luxforge_core::GpuChange::Inside(rect) => {
+                    if number < 24 {
+                        moved.push(f64::from(rect.width * rect.height) / f64::from(width * height));
+                    }
+                    [
+                        rect.x0,
+                        rect.y0,
+                        rect.x0 + rect.width,
+                        rect.y0 + rect.height,
+                    ]
+                }
+                luxforge_core::GpuChange::Nothing => [0; 4],
+                luxforge_core::GpuChange::Anywhere => panic!("tick {number}: a change anywhere"),
+            });
+            let converted = surface_plan(plan, held_boundary.clone()).expect("a runnable plan");
+            (converted, inside)
+        })
+        .collect();
+    let incremental = qualifier
+        .evaluate_sequence(&ticks)
+        .expect("a readback of every tick");
+    for (number, ((plan, inside), drawn)) in ticks.iter().zip(&incremental).enumerate() {
+        let whole = qualifier.evaluate(plan).expect("a readback");
+        let largest = drawn
+            .iter()
+            .zip(&whole)
+            .flat_map(|(a, b)| (0..3).map(move |channel| (a[channel] - b[channel]).abs()))
+            .fold(0.0_f32, f32::max);
+        assert!(
+            largest == 0.0,
+            "tick {number} {:?}: {largest} over {inside:?}",
+            order[number]
+        );
+    }
+    let mean = moved.iter().sum::<f64>() / moved.len() as f64;
+    eprintln!(
+        "{test}: {} moves, each changing on average {:.1}% of the stage",
+        moved.len(),
+        100.0 * mean
+    );
+    assert!(mean < 0.25, "a move changes about the radial's own area");
+}
+
+/// A masked Presence layer whose mask lies nearer the boundary's left edge than its passes reach,
+/// so its pass rectangle runs out to that edge, after a masked Basic layer painted along that edge:
+/// the Basic stroke changes the Presence layer's input between its mask and the edge, then the
+/// Presence layer's own mask is painted toward the edge, inside the rectangle it already had, as
+/// one slot draws the ticks. Every tick's frame is the frame a whole evaluation of the same plan
+/// draws, bit for bit: where the mask grew, its apply reads the Presence values of the input the
+/// Basic stroke left, not of the one before it.
+#[test]
+fn gpu_mask_a_mask_grown_toward_the_edge_reads_its_inputs_latest_values() {
+    let test = "gpu_mask_a_mask_grown_toward_the_edge_reads_its_inputs_latest_values";
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
+        return;
+    };
+    let (width, height) = (960u32, 640u32);
+    let (_, pixels) = photograph(width, height);
+    let held_boundary = boundary(width, height, 1, &pixels).expect("a boundary");
+    let presence = |payload: Value| Layer::new(luxforge_core::PRESENCE_EFFECT, payload);
+    // The Presence mask's committed stroke and the stroke that paints it toward the left edge, and
+    // the Basic mask's stroke down that edge.
+    let committed = Stroke::capture(&[[0.14, 0.5], [0.4, 0.55]], 0.04, 50.0, 100.0, false).unwrap();
+    let down: Vec<[f64; 2]> = (0..=10)
+        .map(|tick| [0.015, 0.3 + 0.04 * f64::from(tick)])
+        .collect();
+    let toward: Vec<[f64; 2]> = (0..=10)
+        .map(|tick| [0.14 - 0.012 * f64::from(tick), 0.52])
+        .collect();
+    let stack = |edge: usize, grown: usize| {
+        let mut strokes = StrokeTable::new(test);
+        let mut brushed = |painted: Vec<Stroke>| {
+            let addresses: Vec<String> = painted
+                .into_iter()
+                .map(|stroke| strokes.insert(stroke).to_string())
+                .collect();
+            one("brush", json!({ "strokes": addresses }))
+        };
+        let along = brushed(vec![
+            Stroke::capture(&down[..=edge], 0.03, 30.0, 100.0, false).unwrap(),
+        ]);
+        let mut presence_strokes = vec![committed.clone()];
+        if grown > 0 {
+            presence_strokes
+                .push(Stroke::capture(&toward[..=grown], 0.04, 50.0, 100.0, false).unwrap());
+        }
+        let grown_mask = brushed(presence_strokes);
+        Recipe {
+            layers: vec![
+                Layer {
+                    mask: Some(along.id.clone()),
+                    ..basic()
+                },
+                Layer {
+                    mask: Some(grown_mask.id.clone()),
+                    ..presence(json!({"clarity": 60.0, "texture": 40.0}))
+                },
+            ],
+            masks: vec![along, grown_mask],
+            strokes,
+            ..Recipe::default()
+        }
+    };
+    let full = stage(width * 4, height * 4);
+    let request = GpuPlanRequest::fit(0, stage(width, height), full).qualifying();
+    // The Basic stroke painted down the edge, then the Presence stroke toward it.
+    let order: Vec<(usize, usize)> = (1..=10)
+        .map(|edge| (edge, 0))
+        .chain((1..=10).map(|grown| (10, grown)))
+        .collect();
+    let plans: Vec<_> = order
+        .iter()
+        .map(|&(edge, grown)| planned(&stack(edge, grown), request))
+        .collect();
+    let ticks: Vec<_> = plans
+        .iter()
+        .enumerate()
+        .map(|(number, plan)| {
+            let inside = (number > 0).then(|| match plan.changes_since(&plans[number - 1]) {
+                luxforge_core::GpuChange::Inside(rect) => [
+                    rect.x0,
+                    rect.y0,
+                    rect.x0 + rect.width,
+                    rect.y0 + rect.height,
+                ],
+                luxforge_core::GpuChange::Nothing => [0; 4],
+                luxforge_core::GpuChange::Anywhere => panic!("tick {number}: a change anywhere"),
+            });
+            let converted = surface_plan(plan, held_boundary.clone()).expect("a runnable plan");
+            (converted, inside)
+        })
+        .collect();
+    // The case this holds: a pass rectangle out to the left edge around a mask that does not reach
+    // it, and that mask grown toward it inside the rectangle.
+    let masked = |plan: &GpuPlan| {
+        let spatial = plan
+            .steps
+            .iter()
+            .find_map(|step| match step {
+                GpuStep::Spatial(spatial) if spatial.mask.is_some() => Some(spatial),
+                _ => None,
+            })
+            .expect("a masked Presence step");
+        let size = plan.boundary.size();
+        (
+            spatial.pass_rect(plan.texels, size),
+            spatial.mask_rect(plan.texels, size, 0),
+        )
+    };
+    let (first_rect, first_bounds) = masked(&ticks[0].0);
+    let (last_rect, last_bounds) = masked(&ticks[ticks.len() - 1].0);
+    assert!(
+        first_rect.x0 == 0 && first_bounds.x0 > 0 && last_rect.x0 == 0,
+        "the pass rectangle {first_rect:?} reaches the edge around the mask's {first_bounds:?}"
+    );
+    assert!(
+        last_bounds.x0 < first_bounds.x0,
+        "the mask grew toward the edge: {first_bounds:?} to {last_bounds:?}"
+    );
+    let incremental = qualifier
+        .evaluate_sequence(&ticks)
+        .expect("a readback of every tick");
+    for (number, ((plan, inside), drawn)) in ticks.iter().zip(&incremental).enumerate() {
+        let whole = qualifier.evaluate(plan).expect("a readback");
+        let largest = drawn
+            .iter()
+            .zip(&whole)
+            .flat_map(|(a, b)| (0..3).map(move |channel| (a[channel] - b[channel]).abs()))
+            .fold(0.0_f32, f32::max);
+        assert!(
+            largest == 0.0,
+            "tick {number} {:?}: {largest} over {inside:?}",
+            order[number]
+        );
+    }
+}
+
+/// What a painted stroke's ticks cost the GPU, evaluated incrementally and whole: the stroke the
+/// editor-latency paint mode paints, on a brushed mask and two radials, each mask holding a masked
+/// Basic exposure and a masked Presence layer, at a Fit proxy's stage and at a 100% region's,
+/// over this host's adapter. Every tick after the first is submitted without waiting, as a slot's
+/// are, so the figure is the GPU's throughput a tick and the CPU's encoding beside it, after the
+/// time the chain's first two ticks took to compile and draw. A functional measurement for
+/// `docs/design/gpu-preview.md`'s incremental ticks, not a timing gate: run it on purpose, with
+/// `--ignored --nocapture`, and record the build profile and host beside its figures.
+#[test]
+#[ignore = "a measurement, run on purpose"]
+fn gpu_mask_a_painted_stroke_costs_where_it_changes() {
+    let test = "gpu_mask_a_painted_stroke_costs_where_it_changes";
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
+        return;
+    };
+    eprintln!("{test}: adapter {}", qualifier.adapter());
+    let path: Vec<[f64; 2]> = (0..120)
+        .map(|index| {
+            let t = f64::from(index) / 119.0;
+            [
+                0.2 + 0.8 * t,
+                0.5 + 0.2 * (5.0 * std::f64::consts::PI * t).sin(),
+            ]
+        })
+        .collect();
+    let radials: Vec<Mask> = [0.35, 0.7]
+        .iter()
+        .enumerate()
+        .map(|(index, x)| {
+            let mut mask = mask_of(
+                &[(
+                    "radial",
+                    ComponentMode::Add,
+                    false,
+                    json!({"x": x, "y": 0.3, "radius_x": 0.2, "radius_y": 0.16, "angle": 0.0,
+                           "feather": 50.0}),
+                )],
+                false,
+                100.0,
+            );
+            mask.name = format!("Radial {index}");
+            mask
+        })
+        .collect();
+    let stack = |tick: usize| {
+        let painted = Stroke::capture(&path[..=tick], 0.06, 50.0, 100.0, false).unwrap();
+        let (brushed, strokes) = brush(vec![painted]);
+        let mut recipe = Recipe {
+            strokes,
+            ..Recipe::default()
+        };
+        for mask in std::iter::once(&brushed).chain(&radials) {
+            recipe.layers.push(Layer {
+                mask: Some(mask.id.clone()),
+                ..basic()
+            });
+            recipe.layers.push(Layer {
+                mask: Some(mask.id.clone()),
+                ..Layer::new(
+                    luxforge_core::PRESENCE_EFFECT,
+                    json!({"clarity": 50.0, "texture": 40.0}),
+                )
+            });
+            recipe.masks.push(mask.clone());
+        }
+        recipe
+    };
+    let full = stage(6000, 4000);
+    for (width, height) in [(2292, 1528), (2994, 2642)] {
+        let pixels: Vec<[f32; 3]> = (0..width * height)
+            .map(|index| {
+                let (x, y) = (index % width, index / width);
+                let v = ((x * 7 + y * 13) % 255) as f32 / 255.0;
+                [v * 0.8, 0.3 + v * 0.4, 0.5 - v * 0.3]
+            })
+            .collect();
+        let held_boundary = boundary(width, height, 1, &pixels).expect("a boundary");
+        let request = GpuPlanRequest::fit(0, stage(width, height), full);
+        let plans: Vec<_> = (1..path.len())
+            .map(|tick| planned(&stack(tick), request))
+            .collect();
+        let mut shares = Vec::new();
+        let ticks: Vec<_> = plans
+            .iter()
+            .enumerate()
+            .map(|(tick, plan)| {
+                let inside = (tick > 0).then(|| match plan.changes_since(&plans[tick - 1]) {
+                    luxforge_core::GpuChange::Inside(rect) => {
+                        shares
+                            .push(f64::from(rect.width * rect.height) / f64::from(width * height));
+                        [
+                            rect.x0,
+                            rect.y0,
+                            rect.x0 + rect.width,
+                            rect.y0 + rect.height,
+                        ]
+                    }
+                    luxforge_core::GpuChange::Nothing => [0; 4],
+                    luxforge_core::GpuChange::Anywhere => panic!("tick {tick}: a change anywhere"),
+                });
+                let converted = surface_plan(plan, held_boundary.clone()).expect("a runnable plan");
+                (converted, inside)
+            })
+            .collect();
+        let whole: Vec<_> = ticks.iter().map(|(plan, _)| (plan.clone(), None)).collect();
+        // Once to compile the chain's pipelines, then measured.
+        let compiled = std::time::Instant::now();
+        qualifier
+            .time_throughput(&ticks[..2])
+            .expect("a compiled chain");
+        let compiled = compiled.elapsed();
+        let (encoding, incremental) = qualifier.time_throughput(&ticks).expect("a timing");
+        let (whole_encoding, wholly) = qualifier.time_throughput(&whole).expect("a timing");
+        let mean = shares.iter().sum::<f64>() / shares.len() as f64;
+        eprintln!(
+            "{test}: {width}x{height}: the chain compiled and drew its first ticks in {:.0} ms; \
+             each tick changes {:.1}% of the stage on average; incremental {:.2} ms a tick \
+             (encoding {:.2} ms), whole {:.2} ms (encoding {:.2} ms)",
+            compiled.as_secs_f64() * 1e3,
+            100.0 * mean,
+            incremental.as_secs_f64() * 1e3,
+            encoding.as_secs_f64() * 1e3,
+            wholly.as_secs_f64() * 1e3,
+            whole_encoding.as_secs_f64() * 1e3,
+        );
+    }
+}

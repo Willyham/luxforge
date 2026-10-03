@@ -295,7 +295,21 @@ impl CoverageQueue {
     pub(crate) fn poll(&mut self) -> Option<Completion> {
         self.worker.poll().map(|(_, done)| done)
     }
+    /// Hold the paint slot as an undelivered result does: a job taken meanwhile waits to paint
+    /// until the hold drops, so its completion cannot arrive inside the message that asked for it.
+    #[cfg(test)]
+    pub(crate) fn hold_painting(&self) -> PaintingHeld {
+        PaintingHeld(
+            self.paint_slot
+                .reserve(&luxforge_core::Cancel::never())
+                .expect("a reservation nothing cancels"),
+        )
+    }
 }
+
+/// A test's hold on the coverage worker's paint slot ([`CoverageQueue::hold_painting`]).
+#[cfg(test)]
+pub(crate) struct PaintingHeld(#[allow(dead_code)] Arc<PaintLease>);
 
 impl Drop for CoverageQueue {
     fn drop(&mut self) {

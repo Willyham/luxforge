@@ -3727,8 +3727,8 @@ The figures are Detail's and Presence's own: at worst a mean of 0.106, a worst b
 
 A Detail drag at Fit drawn on the GPU is proven functionally, not timed:
 
-- `cargo test -p luxforge-app gpu_detail_tests::drags` against a real owner and preview worker. In the first test, a Detail Amount drag over a photograph drawn as a proxy asks for its boundary, the Detail layer's input at the proxy's size, with its first CPU tick. Its later ticks are Detail's spatial step drawn on the GPU with no preview job. The release then presents the CPU's moving proxy and the exact-derived Fit frame before the boundary is let go. In the second, a Basic drag after a committed Detail layer starts from Basic's input, read from the restoration-prefix proxy cache, and its ticks are drawn on the GPU with no preview job.
-- `cargo run --release --locked --package xtask -- smoke --scenario gpu-preview --output NEW_DIR` at `2a2be14e` with the Detail steps: one CPU tick asking for the boundary at layer 0, then 2 GPU ticks with no preview job. The GPU frame equals the frame the release commits at four flat patches and two across the white cross, to the code. The slot held 11.5 MB over the 480 × 320 photograph, which fits the window at its own size, so its Fit frame is the exact render. Once settled, nothing is held.
+- `cargo test -p luxforge-app gpu_detail_tests::drags` against a real owner and preview worker. In the first test, a Detail Amount drag over a photograph drawn as a proxy asks for its boundary, the Detail layer's input at the proxy's size, with its first CPU tick. Its later ticks are Detail's spatial step drawn on the GPU with no preview job. The release then presents the CPU's moving proxy and the exact-derived Fit frame, and the boundary stays resident for the next draft. In the second, a Basic drag after a committed Detail layer starts from that resident boundary, the stack's first layer's input, asking for none, and its ticks run Detail's spatial step, which the surface keeps by content, then Basic's colour, drawn on the GPU with no preview job.
+- `cargo run --release --locked --package xtask -- smoke --scenario gpu-preview --output NEW_DIR` over the working tree on `5dccacc6`, 2026-10-03, with the Detail steps: every tick drawn on the GPU, the first included, over the resident boundary at layer 0 that the Basic drags before it left, with no boundary request and no preview job. The GPU frame equals the frame the release commits at four flat patches and two across the white cross, to the code. The slot held 16.4 MB over the 480 × 320 photograph, which fits the window at its own size, so its Fit frame is the exact render, and holds it once settled, the boundary resident for the next gesture.
 
 ### Reproducing it
 
@@ -3841,6 +3841,69 @@ The footprint is above the process's before the boundary, which holding the copy
 cargo test -p luxforge-ui --lib a_boundary_arrival_measured -- --ignored --nocapture
 LUXFORGE_ARRIVAL=whole cargo test -p luxforge-ui --lib a_boundary_arrival_measured -- --ignored --nocapture
 ```
+
+## Painting over masked spatial layers
+
+Brush strokes over masks that hold Clarity and Texture, drawn through the GPU preview's chain of links, its masked passes and its incremental ticks ([design](../design/gpu-preview.md#where-the-code-lives)). Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal; the release editor built from the working tree over `5dccacc6` (binary SHA-256 `3a5b89c8…`), 2026-10-03, on a host shared with other sessions: the load column is the one-minute load at each run's start, and a run above the 8.0 threshold is marked.
+
+### A stroke's latency
+
+`editor-latency --mode paint --samples 120 --window 1728x1080`: a full-screen window on the 3456 × 2160 display at 2×, whose Fit stage of the generated 24 MP JPEG is 2292 × 1528. 120 positions of the curved stroke, one every 24 ms, on the brushed mask (size 0.06, feather 50), which holds a masked exposure of +0.6 EV and, with `--mask-presence`, Clarity 50 and Texture 40; `--masks N` adds radial masks across the frame holding the same, Presence on the first four, as many masked spatial layers as the host evaluates. `--presence` adds a global Presence layer (Texture 25, Clarity 20) under them, and `--detail` a global Detail layer. Milliseconds, nearest rank, from each position's input to the frame that shows it; *early* and *late* are the stroke's first and last 30 positions, and the GPU-preview peak is `gpu_preview_peak_bytes` over the run.
+
+| Case | Load | Frames | Input to frame p50 / p95 / max | Early p95 | Late p95 | Press to first frame | GPU-preview peak |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| Fit, 3 masks | 2.68 | 120 GPU | 7.9 / 9.0 / 9.5 | 9.0 | 8.4 | 1.7 | 561 MB |
+| Fit, 3 masks, preview off | 1.56 | 21 CPU shown, 99 superseded | 145.1 / 157.5 / 157.7 | 248.3 | 277.0 | 127.4 | — |
+| Fit, 3 masks over a global Presence layer | 4.74 | 120 GPU | 7.8 / 9.0 / 9.3 | 9.1 | 8.8 | 1.7 | 693 MB |
+| Fit, 10 masks | 6.86 | 120 GPU | 7.8 / 8.8 / 11.5 | 9.5 | 8.8 | 11.0 | 693 MB |
+| X100VI at Fit, Detail and 3 masks | 6.35 | 120 GPU | 7.8 / 9.0 / 9.4 | 9.2 | 9.1 | 1.7 | 968 MB |
+| 100%, 3 masks | 3.90 | 118 GPU, 2 CPU (`boundary-pending`, `boundary-uploading`) | 7.9 / 9.8 / 201.3 | 53.1 | 9.0 | 80.0 | 980 MB |
+| 100%, 3 masks, overlay shown | 8.82 (above 8.0) | 118 GPU, 2 CPU (the same) | 7.9 / 8.9 / 231.1 | 52.4 | 8.6 | 78.1 | 980 MB |
+| 100%, 10 masks | 7.11 | 116 GPU, 4 CPU (`boundary-pending` twice, `boundary-uploading`, `compiling`) | 7.9 / 22.0 / 447.5 | 75.0 | 8.7 | 112.7 | 1467 MB |
+| 100%, 3 masks, preview off | 7.37 | 25 CPU shown, 95 superseded | 127.4 / 166.3 / 185.1 | 207.9 | 208.9 | 120.2 | — |
+
+- **Within a frame.** With the preview on, every position at Fit is drawn on the GPU at the redraw after its input, p95 8.8 to 9.0 ms over three or ten masks, a global Presence layer, or Detail on a RAW, the press 1.7 ms from its input to its frame where the stack's resident boundary is held ([the held input boundary](../design/gpu-preview.md#the-held-input-boundary)). With the preview off the CPU path shows 21 of the 120 positions; counting each position by the frame that carried it, 197.4 / 255.3 / 277.0 ms at Fit and 174.8 / 240.9 / 301.5 at 100%.
+- **The first stroke after a zoom.** At 100% the first two ticks are the CPU's while the region's boundary renders and uploads, and with ten masks while the region's plan compiles: the press reaches the screen in 78 to 113 ms and the early positions' p95 is 52 to 75 ms. Once the boundary is held every tick is the GPU's, late p95 8.6 to 9.0 ms, the mask overlay shown included, its region coverage laid over the GPU region frame. The harness zooms over a retained exact frame just before it paints, so no view job asks for the region's resident boundary first ([later](../design/gpu-preview.md#later)).
+- **Memory.** The GPU preview holds an intermediate for each link of its chain and each masked Presence layer's planes over the boundary: 0.56 GB at Fit over three masks, 0.69 GB with ten or with a global Presence layer, 0.97 GB on the X100VI's `f32` boundary with Detail, and at 100% 0.98 and 1.47 GB, within the 2 GiB budget ([decisions](../decisions.md#gpu-previews)).
+
+### What a tick costs the GPU
+
+`gpu_mask_a_painted_stroke_costs_where_it_changes` (release, `--ignored --nocapture`, the qualifier's headless device on the same adapter, load 2.8): the same stroke's 119 ticks over a brushed mask and two radials, each holding a masked Basic and a masked Presence layer, every tick after the first submitted without waiting, so the figure is the GPU's throughput a tick. The host's decimation moves some of the stroke's kept positions at each tick, so a tick's change covers 6.3% of the Fit stage and 7.1% of the region on average.
+
+| Stage | Incremental, a tick | Whole, a tick | Encoding, a tick | Compile and first two ticks |
+| --- | ---: | ---: | ---: | ---: |
+| Fit, 2292 × 1528 | 2.32 ms | 6.37 ms | 0.06 to 0.10 ms | 71 ms |
+| 100% region, 2994 × 2642 | 4.25 ms | 14.22 ms | 0.06 ms | 80 ms |
+
+The incremental ticks take 2.7 to 3.3 times less GPU time, and draw what whole ones do bit for bit (`gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it`). The compile figure is with the driver's shader cache warm from earlier runs.
+
+### The corpus
+
+The five corpus harnesses over the current code, release profile, with every source the corpus names, the zone plates and the three RAWs through the private manifest among them; the pixels are deterministic. Worst of each statistic over the measured cells — mean ΔE00, worst 16 × 16 block, p99 and \|signed mean ΔL\*\| — against the pointwise limits (0.5, 1.0, 2.0, 0.25) or the spatial ones (1.0, 2.5, 5.0, 0.5):
+
+| Harness | Within the limits | Pointwise | Spatial | Gaps |
+| --- | ---: | ---: | ---: | --- |
+| Colour at Fit | 48 of 48 | 0.036 / 0.25 / 0.97 / 0.007 | — | 2: a vignette after a RAW's lens warp |
+| Masks at Fit | 42 of 42 | 0.042 / 0.13 / 0.96 / 0.009 | — | none |
+| Presence at Fit | 49 of 49 | — | 0.053 / 0.50 / 0.99 / 0.010 | none |
+| Detail at Fit | 63 of 63 | — | 0.055 / 0.26 / 0.98 / 0.020 | none |
+| Every family at 100% | 186 of 186 | 0.054 / 0.25 / 0.96 / 0.009 | 0.082 / 0.49 / 0.96 / 0.009 | 18: 14 `region-declined` (Detail beside Presence), 3 masks that select nothing in the region, and Detail beside a local Presence layer on the 60 MP JPEG past the budget even in the CPU's shape (2.16 GB) |
+
+Under the 2 GiB budget every other 100% slot draws on the GPU, the heaviest charging 2.12 GB.
+
+### The performance-rules checklist
+
+For the chain, the masked passes, the incremental ticks and the resident boundary ([rules](../engineering/performance-rules.md#review-checklist)):
+
+- **The original** is read, hashed and decoded only as before: a boundary is rendered by the preview worker from the verified prepared source.
+- **Full-frame allocations.** On the GPU, each link's intermediate (the boundary's size and format), each masked spatial layer's planes and a plane of its own for each unit's result, and the resident boundary held between gestures, all within the 2 GiB GPU-preview budget, which refuses a slot past it and names the CPU path; the desktop lets its copy of a boundary's texels go once the surface holds them. Nothing is cloned that is shared.
+- **Point queries, validation and no-op checks** render no frame; samples, analysis and export stay on the CPU, byte for byte.
+- **The owner thread** plans a committed stack's own plan and its warm list at its view, a settled 100% view's among them, from the compiled stack's descriptions in `O(layers × modules)`: no frame work. The interface thread compares each tick's plan with the plans it handed (`GpuPlan::changes_since`) in `O(units + components + segments)`, reading no pixel.
+- **Desktop messages.** A tick drawn on the GPU sends no preview job and uploads no frame; the shared quiet policy settles a draft only the GPU has drawn with one job once input pauses, as after a CPU tick. A committed job asks for the resident boundary only when no held boundary has its key, and a view job asks for the region's plans only when it settles.
+- **Timers, polls and subscriptions.** None added.
+- **Repeated work.** A link whose input and words did not change is not run (keyed by content: its input's key, words, blocks and pipeline); a tick runs each changed link only where its change reaches; a masked spatial layer runs its passes only over its mask; the resident boundary is rendered once per stack and view rather than once per gesture.
+- **`editor-performance`.** The CPU's renders are unchanged; not run for this change.
+- **Exactness.** Partial and incremental evaluation are held to whole evaluation bit for bit (`gpu_presence_a_masked_layer_runs_its_passes_over_its_mask_alone`, `gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it`, `gpu_mask_a_moved_radial_is_evaluated_where_its_bounds_were_and_are`, `gpu_mask_a_mask_grown_toward_the_edge_reads_its_inputs_latest_values`); a plan over another boundary or with other clipping marks is evaluated whole (`a_change_measured_over_another_boundary_is_evaluated_whole`, `a_change_is_measured_only_over_the_same_boundary_and_marks`); and every GPU frame is still settled by the CPU's.
 
 ## GPU previews qualified on the M4
 

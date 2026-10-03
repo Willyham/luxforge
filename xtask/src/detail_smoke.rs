@@ -624,9 +624,17 @@ pub fn verify_fit(_: &mut Run, launches: &[Checked]) -> Result {
         Tolerance::Beyond(0.001),
     )?;
     let moving_proxy = &moving.state()["proxy"];
-    let captured_moving_proxy =
-        moving_proxy["presented"] == true && moving_proxy["settled_from_exact"] != true;
-    if captured_moving_proxy {
+    let drawn_on_gpu = moving.drawn_on_gpu();
+    let captured_moving_proxy = !drawn_on_gpu
+        && moving_proxy["presented"] == true
+        && moving_proxy["settled_from_exact"] != true;
+    if drawn_on_gpu {
+        checks.note(
+            moving,
+            "the GPU preview drew the downstream draft over Detail from the held boundary; the CPU's moving approximation and reuse remain unproven at capture",
+            moving.state()["surface"]["gpu"]["gpu_preview"].clone(),
+        );
+    } else if captured_moving_proxy {
         ensure(
             moving_proxy["approximate"] == true
                 && moving_proxy["approximate_reason"]
@@ -669,7 +677,7 @@ pub fn verify_fit(_: &mut Run, launches: &[Checked]) -> Result {
         0.0,
         Tolerance::Within(0.0),
     )?;
-    checks.write(&launch.evidence,"detail-fit",json!({"moving_proxy_captured":captured_moving_proxy,"scope":"Downstream draft pixels, approximation and prefix reuse when captured in motion, whole-stack settlement and view-bound changes; reducer and stale adoption are exact unit proofs."}))
+    checks.write(&launch.evidence,"detail-fit",json!({"moving_proxy_captured":captured_moving_proxy,"moving_drawn_on_gpu":drawn_on_gpu,"scope":"Downstream draft pixels, approximation and prefix reuse when captured in motion, whole-stack settlement and view-bound changes; reducer and stale adoption are exact unit proofs."}))
 }
 pub fn verify_zoom(_: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;

@@ -36,10 +36,21 @@ fn with_options(mut drawn: PhotoPrimitive, options: GpuOptions) -> PhotoPrimitiv
     drawn
 }
 
+/// `sequences` warmed over a half-float boundary.
+fn half(sequences: &[Vec<GpuStep>]) -> Vec<(Vec<GpuStep>, super::BoundaryFormat)> {
+    sequences
+        .iter()
+        .map(|steps| (steps.clone(), super::BoundaryFormat::Half))
+        .collect()
+}
+
 /// Wait until the compile thread has finished `steps`, drawing no frame.
 fn compiled(pipeline: &mut PhotoPipeline, steps: &[GpuStep]) {
     wait_until("the compile thread", || {
-        !pipeline.gpu.pipelines.compiling(steps)
+        !pipeline
+            .gpu
+            .pipelines
+            .compiling(steps, super::OUTPUT_FORMAT)
     });
 }
 
@@ -94,7 +105,10 @@ fn a_warmed_sequence_draws_on_its_first_frame() {
     let mut pipeline = own_pipeline(&device, &queue);
     let (boundary, codes) = boundary_with_codes(4);
     let gesture = plan_of(&boundary, named("warmed"));
-    let warm = GpuWarm::new(1, vec![gesture.steps.clone()]);
+    let warm = GpuWarm::new(
+        1,
+        vec![(gesture.steps.clone(), super::BoundaryFormat::Half)],
+    );
     let idle = with_options(
         primitive(ID, None),
         GpuOptions {
@@ -138,7 +152,7 @@ fn a_held_plan_draws_the_cpu_frame_and_keeps_its_slot() {
     let mut pipeline = own_pipeline(&device, &queue);
     let (boundary, codes) = boundary_with_codes(5);
     let gesture = plan_of(&boundary, named("held"));
-    pipeline.compile_now(&device, &gesture.steps);
+    pipeline.compile_now(&device, &gesture);
     let drawn = |hold: bool, tag: u64| {
         with_options(
             primitive(ID, Some(gesture.clone())),
@@ -146,6 +160,7 @@ fn a_held_plan_draws_the_cpu_frame_and_keeps_its_slot() {
                 hold,
                 tag: Some(tag),
                 warm: None,
+                change: None,
             },
         )
     };
@@ -198,7 +213,7 @@ fn the_pipeline_cache_stays_bounded() {
         .collect();
     let figures = Arc::clone(&pipeline.figures);
     for (version, chunk) in sequences.chunks(4).enumerate() {
-        pipeline.warm_gpu(&device, Some(&GpuWarm::new(version as u64, chunk.to_vec())));
+        pipeline.warm_gpu(&device, Some(&GpuWarm::new(version as u64, half(chunk))));
         for steps in chunk {
             compiled(&mut pipeline, steps);
         }
@@ -232,7 +247,7 @@ fn the_compile_queue_drains_with_no_frame_drawn() {
     let figures = Arc::clone(&pipeline.figures);
     for (version, list) in sequences.chunks(PIPELINE_CACHE).enumerate() {
         let before = figures.preview.compile_us().0;
-        pipeline.warm_gpu(&device, Some(&GpuWarm::new(version as u64, list.to_vec())));
+        pipeline.warm_gpu(&device, Some(&GpuWarm::new(version as u64, half(list))));
         let wanted = before + list.len() as u64;
         assert_eq!(
             figures.preview.compiles(),
@@ -242,14 +257,22 @@ fn the_compile_queue_drains_with_no_frame_drawn() {
         wait_until("every sequence to compile", || {
             figures.preview.compile_us().0 == wanted
         });
-        assert!(
-            list.iter()
-                .all(|steps| !pipeline.gpu.pipelines.compiling(steps))
-        );
+        assert!(list.iter().all(|steps| {
+            !pipeline
+                .gpu
+                .pipelines
+                .compiling(steps, super::OUTPUT_FORMAT)
+        }));
     }
     assert_eq!(pipeline.gpu.pipelines.len(), PIPELINE_CACHE);
     for steps in &sequences[PIPELINE_CACHE..] {
-        assert!(pipeline.gpu.pipelines.failure(steps).is_none());
+        assert!(
+            pipeline
+                .gpu
+                .pipelines
+                .failure(steps, super::OUTPUT_FORMAT)
+                .is_none()
+        );
     }
     eprintln!(
         "{test}: {} sequences compiled with no frame drawn, the longest in {} µs",

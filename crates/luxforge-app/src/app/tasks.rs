@@ -1281,7 +1281,11 @@ pub(crate) fn thumbnail_source(
 }
 
 /// Plan one view-only frame without reading or changing the session. The app re-reads its local
-/// pan before admission, so a coalesced scroll remains the newest rectangle.
+/// pan before admission, so a coalesced scroll remains the newest rectangle. A committed stack's
+/// frame at a percentage zoom of 100% or more also carries the plans a gesture there draws and
+/// the boundary it starts from, over the region `gpu` names ([`super::gpu_preview`]), so the
+/// first stroke after a zoom or a pan draws on the GPU from its first tick.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn view_preview_task(
     owner: OwnerHandle,
     client: ClientId,
@@ -1290,14 +1294,19 @@ pub(crate) fn view_preview_task(
     draft: Option<DraftId>,
     epoch: u64,
     intent: luxforge_core::PreviewIntent,
+    gpu: super::gpu_preview::GpuAsk,
 ) -> Task<Message> {
     owner_task(
         move || {
             let mut request = PreviewRequest::new(client, asset_id)
                 .entry(entry_id)
                 .analyse();
-            if let Some(draft) = draft {
-                request = request.draft(draft);
+            match (draft, gpu) {
+                (Some(draft), _) => request = request.draft(draft),
+                (None, super::gpu_preview::GpuAsk::Region(rect, magnification)) => {
+                    request = request.gpu_region(rect, magnification);
+                }
+                (None, _) => {}
             }
             ready_preview_job(&owner, request)
         },

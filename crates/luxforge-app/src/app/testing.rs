@@ -603,13 +603,15 @@ pub(crate) fn run_commit(editor: &mut Editor) -> bool {
         .expect("an open gesture")
         .asset
         .clone();
+    // The display bounds the desktop's own commit sends, so the committed stack's job is planned
+    // as it is in the editor.
     let result = crate::app::tasks::draft_commit_now(
         &editor.owner,
         editor.client,
         &draft.draft_id,
         asset,
         crate::app::tasks::mutation(draft.base_revision),
-        None,
+        editor.proxy_bounds(),
     );
     answer_commit(editor, result);
     true

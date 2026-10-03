@@ -10,6 +10,7 @@
 //!
 //! The core names no GPU crate: a program is WGSL text, a plan plain data the desktop hands the
 //! photo surface. The CPU stays the only reference, and nothing here changes a CPU byte.
+mod changes;
 mod grid;
 mod plan;
 mod preview;
@@ -25,6 +26,7 @@ mod plan_tests;
 #[cfg(test)]
 mod wgsl_tests;
 
+pub use changes::GpuChange;
 pub use grid::{CoordinateGrid, GRID_MAX_NODES, GRID_SAMPLE_TOLERANCE_PX, GRID_TOLERANCE_PX};
 pub use plan::{
     EstimateSource, GpuAnswer, GpuBoundary, GpuClipping, GpuComponent, GpuEstimates, GpuFallback,
@@ -36,7 +38,7 @@ pub(crate) use preview::position;
 #[cfg(test)]
 pub(crate) use preview::warm_sequence;
 pub use preview::{BoundaryKey, BoundaryRequest, GpuPreview, GpuView};
-pub(crate) use preview::{plan_preview, plan_warm};
+pub(crate) use preview::{plan_preview, plan_resident, plan_warm};
 #[cfg(test)]
 pub(crate) use program::testing;
 pub use program::{GpuDescription, GpuProgram, GpuProgramKind};
