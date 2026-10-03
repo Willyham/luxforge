@@ -333,11 +333,7 @@ pub(super) fn resample_frame(
         Ok(())
     };
     if parallel::pooled(
-        if resample.map.has_warp() {
-            parallel::RenderPass::Warp
-        } else {
-            parallel::RenderPass::Resample
-        },
+        parallel::resample_pass(resample),
         u64::from(width) * u64::from(height),
     ) {
         output

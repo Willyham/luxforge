@@ -755,7 +755,13 @@ pub(crate) fn warm_sequence(plan: &GpuPlan) -> Vec<String> {
                 pass.kernel, pass.inputs, pass.output, pass.source, pass.shape
             )
         }));
-        keys.extend(spatial.applies.iter().map(|apply| format!("{apply:?}")));
+        // Whether an apply is the identity is the tick's, as its words are: no part of the key.
+        keys.extend(spatial.applies.iter().map(|apply| {
+            format!(
+                "{} {:?}, words {}",
+                apply.function, apply.planes, apply.words
+            )
+        }));
         keys.extend(colour(&spatial.after));
     }
     keys.push(format!(

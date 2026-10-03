@@ -191,6 +191,13 @@ pub struct GpuApply {
     pub function: &'static str,
     pub planes: Vec<usize>,
     pub words: usize,
+    /// The unit is exactly the identity at its words, and its apply returns its input before it
+    /// reads any plane: an amount-0 unit of a drafted layer's GPU shape. Like the words, it is the
+    /// tick's and no part of the sequence, so a drag across zero keeps one sequence; a tick runs
+    /// none of the passes only its planes need, and they run again once it is not. A unit that is
+    /// the identity through its passes, a change of zero they write, as Detail's units are, never
+    /// says so: skipping them would leave the change an earlier value wrote.
+    pub identity: bool,
 }
 
 /// What one spatial unit answers for the GPU ([`crate::modules::SpatialUnit::gpu`]): its program,
@@ -366,6 +373,7 @@ pub(crate) fn compose(
                 .map(|&plane| place(plane))
                 .collect::<Result<_, _>>()?,
             words: base + unit.apply.words,
+            identity: unit.apply.identity,
         };
         free.extend(single_writer(&mut composed, &mut apply));
         composed.applies.push(apply);

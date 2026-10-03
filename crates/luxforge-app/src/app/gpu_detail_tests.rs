@@ -190,6 +190,8 @@ fn full(format: PlaneFormat) -> GpuPlane {
 
 const EACH: PassShape = PassShape::Texels { span: [1, 1] };
 
+/// A pass of `kernel`: the loaders and the Oklab pass read the unit's input, and every other kernel
+/// these tests run reads planes alone.
 fn pass(kernel: &'static str, inputs: &[u32], output: u32, words: u32) -> GpuPass {
     GpuPass {
         kernel: Cow::Borrowed(kernel),
@@ -197,6 +199,7 @@ fn pass(kernel: &'static str, inputs: &[u32], output: u32, words: u32) -> GpuPas
         output,
         words,
         source: 0,
+        reads_source: kernel.starts_with("lf_detail_test_load") || kernel == "lf_detail_lab",
         shape: EACH,
         unit: 0,
     }
@@ -207,6 +210,7 @@ fn show(plane: u32) -> GpuApply {
         function: Cow::Borrowed("lf_detail_test_show"),
         planes: vec![plane],
         words: 0,
+        identity: false,
     }
 }
 
@@ -700,6 +704,7 @@ fn gpu_detail_reconstruction_matches_the_cpu() {
                     function: Cow::Borrowed(apply),
                     planes: vec![0],
                     words: 0,
+                    identity: false,
                 },
             );
             let (mut difference, mut non_finite, mut changed_input, mut grey) = (0.0_f64, 0, 0, 0);
@@ -1653,7 +1658,7 @@ mod drags {
     }
 
     /// What the surface keys the spatial step's pipelines by: its clamp and mask, its planes, its
-    /// passes and its applies, but for every word's value.
+    /// passes and its applies, but for every word's value and whether an apply is the identity.
     fn spatial_shape(editor: &Editor) -> Option<String> {
         editor.surfaces().gpu.and_then(|plan| {
             plan.steps.iter().find_map(|step| match step {
@@ -1669,12 +1674,19 @@ mod drags {
                             )
                         })
                         .collect();
+                    let applies: Vec<_> = spatial
+                        .applies
+                        .iter()
+                        .map(|apply| {
+                            let (function, planes) = (&apply.function, &apply.planes);
+                            format!("{function} {planes:?} {}", apply.words)
+                        })
+                        .collect();
                     Some(format!(
-                        "clamps {} masked {}: {:?} {passes:?} {:?}",
+                        "clamps {} masked {}: {:?} {passes:?} {applies:?}",
                         spatial.clamps,
                         spatial.mask.is_some(),
                         spatial.planes,
-                        spatial.applies
                     ))
                 }
                 _ => None,

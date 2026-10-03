@@ -1346,6 +1346,153 @@ fn a_percentage_view_draws_a_region_plans_frame_at_its_rectangle() {
     settle(&pipeline);
 }
 
+/// A region plan's output takes the bucket the CPU's region picture of its rectangle reserves —
+/// its footprint and a small margin, where the photograph's square bucket would hold its longer
+/// side on both axes — and is charged that. Magnified across its far corner, its frame draws what
+/// that picture of the same codes draws, pixel for pixel: the same placement and filter weights,
+/// and its edge texels repeated past it. A dissolve from it draws it at its rectangle the same way.
+#[test]
+fn a_region_plans_output_takes_the_cpu_regions_bucket_and_draws_as_it_does() {
+    let test = "a_region_plans_output_takes_the_cpu_regions_bucket_and_draws_as_it_does";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    // A 150 × 90 region of a 400 × 300 stage, whose boundary is the region alone, so the frame's
+    // pass repeats its edge texels past it as a picture's upload does.
+    let (width, height, stage) = (150, 90, (400, 300));
+    let rect = [100, 80, 100 + width, 80 + height];
+    let code = |index: u32, a: u32, b: u32| ((index * a + b) % 256) as u8;
+    let values: Vec<[f32; 3]> = (0..width * height)
+        .map(|index| [code(index, 1, 0), code(index, 7, 3), code(index, 13, 5)].map(held))
+        .collect();
+    let boundary = GpuBoundary::from_linear(
+        crate::photo_surface::BoundaryFormat::Half,
+        width,
+        height,
+        3,
+        values.iter().map(|[r, g, b]| [*r, *g, *b, 1.0]),
+    )
+    .expect("a boundary");
+    // The CPU's region picture of the codes the GPU frame's pass computes.
+    let pixels: Vec<u8> = values
+        .iter()
+        .flat_map(|rgb| {
+            let [r, g, b] = rgb.map(|value| srgb::code(f64::from(value)));
+            [r, g, b, 255]
+        })
+        .collect();
+    let picture = crate::photo_surface::RegionFrame {
+        frame: Frame::new(Arc::new(pixels), width, height, 7).expect("a region frame"),
+        rect,
+        stage,
+        full_stage: stage,
+        scale: 1.0,
+        quality: crate::RegionQuality::Exact,
+        content_id: 1,
+        generation: 1,
+    };
+    let mut region = plan(&boundary, vec![identity()]);
+    region.texels.origin = [rect[0] as f32, rect[1] as f32];
+    region.region = Some(GpuRegion { rect, stage });
+    // At 250%, the region's far corner 100 pixels into a 128 × 128 target: the last texels'
+    // outer halves are drawn, blending in the column and row past them.
+    let target = (2 * SIDE, 2 * SIDE);
+    let zoom = 2.5;
+    let viewed = |surface, plan: Option<GpuPlan>, dissolve: Option<f32>| {
+        let mut primitive = primitive(surface, plan);
+        primitive.layers = Vec::new();
+        primitive.viewport = Some(super::super::ViewportFrames {
+            full: None,
+            region: Some(picture.clone()),
+            current_content: 1,
+            full_stage: stage,
+        });
+        primitive.size = Size::new(stage.0 as f32 * zoom, stage.1 as f32 * zoom);
+        primitive.offset =
+            Vector::new(100.0 - rect[2] as f32 * zoom, 100.0 - rect[3] as f32 * zoom);
+        primitive.clip_size = Size::new(target.0 as f32, target.1 as f32);
+        primitive.dissolve = dissolve.map(|share| DissolveFrame {
+            dissolve: Dissolve::start(42, 7),
+            share,
+        });
+        primitive
+    };
+    let cpu = paint_into(
+        &device,
+        &queue,
+        &mut pipeline,
+        &viewed(SurfaceId::new(20), None, None),
+        target,
+    );
+    let gpu = paint_into(
+        &device,
+        &queue,
+        &mut pipeline,
+        &viewed(ID, Some(region.clone()), None),
+        target,
+    );
+    let seen = diagnostics(&pipeline, ID);
+    assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
+    // The two textures: the picture's bucket, the region and two more each way in steps of 64.
+    let surfaces = &pipeline.surfaces;
+    let output = surfaces[&ID]
+        .gpu
+        .as_ref()
+        .expect("the slot")
+        .output()
+        .capacity;
+    let held_picture = surfaces[&SurfaceId::new(20)].regions.iter().flatten();
+    let capacities: Vec<(u32, u32)> = held_picture.map(|picture| picture.capacity).collect();
+    assert_eq!((output, capacities), ((192, 128), vec![(192, 128)]));
+    assert_eq!(
+        seen.gpu_preview_in_use_bytes,
+        u64::from(width * height) * 8 + 192 * 128 * 4 + UNIFORM_SIZE as u64 + 2 * MIN_BUFFER,
+        "the region's bucket, where the photograph's would be 256 × 256"
+    );
+    assert_eq!(
+        texture_charge(
+            (width, height),
+            BoundaryFormat::Half,
+            (width, height),
+            None,
+            true,
+            8192
+        ),
+        seen.gpu_preview_in_use_bytes - 2 * MIN_BUFFER,
+        "what the desktop holds the slot to"
+    );
+    // The far corner is drawn, through texels of many values, then the clear colour past it.
+    let distinct: std::collections::HashSet<&[u8]> = gpu.chunks_exact(4).collect();
+    assert!(distinct.len() > 1000, "{} colours", distinct.len());
+    assert_eq!(
+        gpu[(110 * target.0 as usize + 110) * 4..][..4],
+        [255, 0, 0, 255]
+    );
+    let differing = gpu
+        .chunks_exact(4)
+        .zip(cpu.chunks_exact(4))
+        .filter(|(gpu, cpu)| gpu != cpu)
+        .count();
+    assert_eq!(differing, 0, "pixels the GPU frame draws otherwise");
+    // A dissolve from the frame into the picture of the same codes, each drawn at the rectangle.
+    let dissolved = paint_into(
+        &device,
+        &queue,
+        &mut pipeline,
+        &viewed(ID, None, Some(0.5)),
+        target,
+    );
+    assert!(diagnostics(&pipeline, ID).drawn_dissolve.is_some());
+    let differing = dissolved
+        .chunks_exact(4)
+        .zip(cpu.chunks_exact(4))
+        .filter(|(dissolved, cpu)| dissolved != cpu)
+        .count();
+    assert_eq!(differing, 0, "pixels the dissolve draws otherwise");
+    settle(&pipeline);
+}
+
 /// A boundary whose texels its caller let go once the slot held them draws from that slot, a tick
 /// changing only its words, and a plan of another output or tail over it refits the slot around
 /// the boundary it holds; a slot that no longer holds it — released by a frame with no plan —

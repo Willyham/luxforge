@@ -13,6 +13,8 @@ pub(crate) use gpu::DETAIL_PROGRAM;
 pub(crate) use gpu::functions as gpu_functions;
 
 #[cfg(test)]
+mod exactness;
+#[cfg(test)]
 mod oracle;
 
 use super::{

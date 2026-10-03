@@ -6,10 +6,11 @@
 //! uploads the boundary when its version changes, writes the tick's words with one
 //! `queue.write_buffer`, encodes one pass that runs the programs into the surface's GPU-preview
 //! output texture and submits it. `draw` samples that texture exactly as it samples the photograph,
-//! through the same placement, snapping and filter; the output is held in the photograph's own
-//! size bucket with its edge texels repeated past the frame, so a GPU frame and the CPU frame of the
-//! same codes draw identically. The UI thread only encodes commands: it never waits on the GPU,
-//! reads a pixel back or touches one on the CPU.
+//! through the same placement, snapping and filter; the output is held in the size bucket of the
+//! CPU frame it stands in for, the photograph's own or a region picture's, with its edge texels
+//! repeated past the frame, so a GPU frame and the CPU frame of the same codes draw identically.
+//! The UI thread only encodes commands: it never waits on the GPU, reads a pixel back or touches
+//! one on the CPU.
 //!
 //! # The calling convention
 //!
@@ -78,7 +79,9 @@
 //! Shader compilation is checked without waiting: the assembled WGSL is validated with the `naga`
 //! that `wgpu` itself uses before a module is created, and pipeline creation runs inside error
 //! scopes whose answers wgpu's native backends give immediately; they are polled once and never
-//! awaited. All of it runs on the compile thread.
+//! awaited. A spatial pass's module is handed over as the validated `naga` module, compacted to its
+//! entry point, so the driver compiles only what the pass runs ([`spatial`]). All of it runs on the
+//! compile thread.
 
 use super::{
     PhotoPipeline, Picture, SurfaceFigures, SurfaceSlots, Tile, TileLayout, UNIFORM_SIZE,
@@ -1063,10 +1066,13 @@ struct Shape {
     output: (u32, u32),
     /// The tail's intermediate format, when the plan has a tail.
     intermediate: Option<wgpu::TextureFormat>,
+    /// The output is a region of its stage, drawn at its rectangle of the photograph.
+    region: bool,
 }
 
 impl Shape {
-    /// The slot `plan` draws into: its boundary's size, and its tail's output and intermediate.
+    /// The slot `plan` draws into: its boundary's size, its tail's output and intermediate, and
+    /// whether it draws a region.
     fn of(plan: &GpuPlan) -> Self {
         let boundary = plan.boundary.size();
         let tail = plan.steps.iter().find_map(|step| match step {
@@ -1081,14 +1087,21 @@ impl Shape {
                 GpuTail::output,
             ),
             intermediate: tail.map(GpuTail::intermediate),
+            region: plan.region.is_some(),
         }
     }
 
-    /// The output's texture: the photograph's own size bucket on a device whose largest texture
-    /// is `limit`, so the draw samples it over the same extent, and with the same filter weights,
-    /// as the CPU frame it stands in for.
+    /// The output's texture on a device whose largest texture is `limit`: the size bucket of the
+    /// CPU frame it stands in for, so the draw samples it over the same extent, and with the same
+    /// filter weights. A whole frame's is the photograph's own; a region's is the one the CPU's
+    /// region picture of the same rectangle reserves, its footprint and a small margin, where the
+    /// photograph's square bucket would hold the region's longer side on both axes.
     fn capacity(&self, limit: u32) -> (u32, u32) {
-        super::full_capacity(self.output, limit)
+        if self.region {
+            super::exact_region_capacity(self.output, limit)
+        } else {
+            super::full_capacity(self.output, limit)
+        }
     }
 
     /// The boundary, a tail's intermediate, the output and its placement uniform. The boundary is
@@ -1104,6 +1117,34 @@ impl Shape {
             + u64::from(capacity.0) * u64::from(capacity.1) * 4
             + UNIFORM_SIZE as u64
     }
+}
+
+/// What a slot's textures take of the GPU-preview budget on a device whose largest texture is
+/// `limit`, as it is charged them when allocated: a boundary of `boundary` texels in `format`, a
+/// geometry tail's intermediate of the same size when there is a tail, `tail` saying whether it
+/// quantizes and whether it keeps `f32` values ([`GpuTail::preserve_f32`]), and the output of
+/// `output` pixels in its size bucket, a region's when `region`, with its placement uniform. What
+/// the desktop holds a plan to before its boundary exists, beside its spatial planes
+/// ([`spatial::plane_bytes`]): for a plan of one link the slot adds only its words and blocks
+/// buffers, and a chain adds each earlier link's intermediate and planes once the slot holds it.
+/// It creates nothing.
+pub fn texture_charge(
+    boundary: (u32, u32),
+    format: BoundaryFormat,
+    output: (u32, u32),
+    tail: Option<(bool, bool)>,
+    region: bool,
+    limit: u32,
+) -> u64 {
+    Shape {
+        boundary,
+        format,
+        output,
+        intermediate: tail
+            .map(|(quantize, preserve_f32)| tail::intermediate(quantize, preserve_f32)),
+        region,
+    }
+    .texture_bytes(limit)
 }
 
 /// A geometry tail's intermediate texture, the boundary's size, with the view the content pass
@@ -2549,8 +2590,8 @@ impl PhotoPipeline {
         let limit = device.limits().max_texture_dimension_2d;
         let (width, height) = shape.boundary;
         let (output_width, output_height) = shape.output;
-        // The output is reserved in the photograph's own size bucket; the last pass writes its
-        // edge column and row into the border as an upload copies them.
+        // The output is reserved in the size bucket of the CPU frame it stands in for; the last
+        // pass writes its edge column and row into the border as an upload copies them.
         let capacity = shape.capacity(limit);
         let output_bytes = u64::from(capacity.0) * u64::from(capacity.1) * 4;
         let texture_bytes = shape.texture_bytes(limit);
@@ -2957,10 +2998,10 @@ impl PhotoPipeline {
 }
 
 /// What a slot holding `plan` charges the budget on `device`, as `allocate`, `fit_chain`,
-/// `fit_link` and `fit_spatial` charge it: the boundary, the output in the photograph's size bucket
-/// and its placement uniform, the last link's words and blocks buffers at their capacities and its
-/// spatial step's planes, and each earlier link's intermediate, buffers and planes. For a report and
-/// the tests that hold it to the slot's own figure.
+/// `fit_link` and `fit_spatial` charge it: the boundary, the output in its size bucket and its
+/// placement uniform, the last link's words and blocks buffers at their capacities and its spatial
+/// step's planes, and each earlier link's intermediate, buffers and planes. For a report and the
+/// tests that hold it to the slot's own figure.
 #[cfg(any(test, feature = "qualification"))]
 pub(super) fn slot_charge(device: &wgpu::Device, plan: &GpuPlan) -> Result<u64, GpuFallback> {
     let shape = Shape::of(plan);

@@ -17,6 +17,9 @@ pub(super) struct Sharpen {
     mask_squared: f32,
     kernels: [Kernel; 2],
     guide: [Kernel; 2],
+    /// Whether the blur's kernels are the guide's, as at Radius 1: the guide's smoothing, over the
+    /// output grown by one, is then the blur as well, the same values at every pixel of the output.
+    blur_is_guide: bool,
     halo: u32,
 }
 impl Sharpen {
@@ -40,6 +43,7 @@ impl Sharpen {
             gain: (amount / 100.0) as f32,
             theta_squared: (0.01 * (1.0 - detail / 100.0).powi(2)).powi(2) as f32,
             mask_squared: (masking / 100.0 * 0.05).powi(2) as f32,
+            blur_is_guide: kernels[0].same(&guide[0]) && kernels[1].same(&guide[1]),
             kernels,
             guide,
             halo,
@@ -101,6 +105,13 @@ impl Sharpen {
     pub(super) fn coefficients(&self) -> [f32; 3] {
         [self.gain, self.theta_squared, self.mask_squared]
     }
+
+    /// The blur's and the guide's kernels the unit holds: what the frozen reference in
+    /// `exactness.rs` runs.
+    #[cfg(test)]
+    pub(super) fn kernels(&self) -> (&[Kernel; 2], &[Kernel; 2]) {
+        (&self.kernels, &self.guide)
+    }
 }
 impl SpatialUnit for Sharpen {
     fn halo(&self, _: Stage) -> u32 {
@@ -146,16 +157,6 @@ impl SpatialUnit for Sharpen {
         let l = &lab[..len];
         filters::smooth(
             l,
-            blurred,
-            temporary,
-            geometry,
-            out,
-            &self.kernels,
-            parallelism,
-            cancel,
-        )?;
-        filters::smooth(
-            l,
             guide,
             temporary,
             geometry,
@@ -164,6 +165,22 @@ impl SpatialUnit for Sharpen {
             parallelism,
             cancel,
         )?;
+        let guide = &*guide;
+        let blurred = if self.blur_is_guide {
+            guide
+        } else {
+            filters::smooth(
+                l,
+                blurred,
+                temporary,
+                geometry,
+                out,
+                &self.kernels,
+                parallelism,
+                cancel,
+            )?;
+            &*blurred
+        };
         output.for_rows(parallelism, |y, red, green, blue| {
             if cancel.is_cancelled() {
                 return;
