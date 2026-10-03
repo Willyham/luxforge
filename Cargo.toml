@@ -64,8 +64,11 @@ zeroize = "=1.9.0"
 # The exact `wgpu` Iced 0.14 resolves to, for the photo surface's own shader primitive. Iced 0.14
 # does not re-export it (`iced::widget::renderer` is hidden), so it is named here and pinned to the
 # version already in the lockfile; Cargo unifies it with Iced's own, so there is one `wgpu` in the
-# build and no second GPU stack. Only `wgsl` is asked for, which is the shader language used.
-wgpu = { version = "=27.0.1", default-features = false, features = ["wgsl"] }
+# build and no second GPU stack. `wgsl` is the shader language used; `naga-ir` lets the photo surface
+# hand a spatial pass's module over as the `naga` module it validated, compacted to its entry point,
+# so the driver compiles only what the pass runs. It names the `naga` already in the build and adds
+# no package.
+wgpu = { version = "=27.0.1", default-features = false, features = ["wgsl", "naga-ir"] }
 # The WGSL front end and validator `wgpu` 27.0.1 resolves to, pinned to the version already in the
 # lockfile so it adds no package. Only `luxforge-core`'s tests name it, as a dev-dependency, to
 # validate the GPU programs the core ships as WGSL text; the core itself names no GPU crate.

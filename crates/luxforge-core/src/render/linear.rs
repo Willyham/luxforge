@@ -7,8 +7,8 @@
 //! exactly as it evaluates a JPEG's bytes, and only what a linear pixel is lives here.
 
 use super::{
-    ColorRun, Compiled, Entry, Evaluation, PixelDomain, Raster, RenderContext, ResampleEntry,
-    RowScratch, Segment, SegmentRows, Taps, apply_units, segment_pass,
+    ColorRun, Compiled, Entry, Evaluation, MaskedInput, PixelDomain, Raster, RenderContext,
+    ResampleEntry, RowScratch, Segment, SegmentRows, Taps, apply_units, segment_pass,
 };
 #[cfg(test)]
 use crate::ErrorKind;
@@ -303,8 +303,9 @@ impl PixelDomain for Linear<'_> {
     ) -> Result<[f64; 3], Error> {
         let mut linear = [pixel.map(|value| value as f32)];
         // One pixel of snapshot scratch on the stack: a masked operation blends against its own
-        // input, and a point pulls single pixels, so nothing is allocated per pixel.
-        let mut scratch = [[0.0f32; 3]; 1];
+        // input and decides its coverage from it, and a point pulls single pixels, so nothing is
+        // allocated per pixel.
+        let mut scratch = [MaskedInput::default(); 1];
         for run in runs {
             apply_units(&run, y, x, &mut linear, &mut scratch)?;
         }
@@ -324,7 +325,7 @@ impl PixelDomain for Linear<'_> {
         let RowScratch { linear, snapshot } = scratch;
         linear.clear();
         linear.extend(pixels.iter().map(|pixel| pixel.map(|value| value as f32)));
-        snapshot.resize(pixels.len().max(1), [0.0; 3]);
+        snapshot.resize(pixels.len().max(1), MaskedInput::default());
         for run in runs {
             apply_units(&run, y, x0, linear, snapshot)?;
         }
@@ -807,7 +808,7 @@ impl SegmentRows for LinearRows<'_, '_, '_> {
         run: &ColorRun<'_>,
         y0: u32,
         rows: std::ops::Range<usize>,
-        snapshot: &mut [[f32; 3]],
+        snapshot: &mut [MaskedInput],
     ) -> Result<(), Error> {
         let width = self.segment.width as usize;
         // The same coordinates the byte path hands its units, so a position-dependent unit makes
@@ -819,6 +820,17 @@ impl SegmentRows for LinearRows<'_, '_, '_> {
             apply_units(run, y0 + (rows.start + offset) as u32, 0, row, snapshot)?;
         }
         Ok(())
+    }
+
+    /// A resample entry, whose taps [`Self::load_resampled`] pulls block by block through the
+    /// segment before it; a spatial entry is read from its frame.
+    fn pulled(&self) -> Option<(&ResampleEntry, &Segment)> {
+        match &self.segment.entry {
+            Some(Entry::Resample(entry)) => {
+                Some((entry, &self.evaluation.compiled.segments[self.index - 1]))
+            }
+            _ => None,
+        }
     }
 
     fn store(&self, scratch: &mut Self::Scratch, chunk: &mut [u8]) -> Result<(), Error> {

@@ -76,6 +76,7 @@ fn test_spatial() -> GpuSpatial {
                 output: 0,
                 words: 0,
                 source: 0,
+                reads_source: true,
                 shape: PassShape::Texels { span: [1, 1] },
                 unit: 0,
             },
@@ -85,6 +86,7 @@ fn test_spatial() -> GpuSpatial {
                 output: 1,
                 words: 0,
                 source: 0,
+                reads_source: false,
                 shape: PassShape::Texels { span: [1, 1] },
                 unit: 0,
             },
@@ -94,6 +96,7 @@ fn test_spatial() -> GpuSpatial {
                 output: 2,
                 words: 0,
                 source: 0,
+                reads_source: false,
                 shape: PassShape::Workgroup,
                 unit: 0,
             },
@@ -102,6 +105,7 @@ fn test_spatial() -> GpuSpatial {
             function: Cow::Borrowed("lf_test_show"),
             planes: vec![1, 2],
             words: 1,
+            identity: false,
         }],
         clamps: true,
         mask: None,
@@ -176,6 +180,11 @@ fn a_spatial_step_is_checked_against_the_spatial_convention() {
         "does not hold",
     );
     refused(
+        "an apply run by a pass that reads only planes",
+        &|spatial| spatial.passes[1].source = 1,
+        "reads only planes",
+    );
+    refused(
         "an empty span",
         &|spatial| spatial.passes[0].shape = PassShape::Texels { span: [0, 1] },
         "empty span",
@@ -202,8 +211,10 @@ fn a_spatial_step_is_checked_against_the_spatial_convention() {
 
 /// The frame's module binds every apply's planes from slot 0 and declares stubs for what only a
 /// pass uses; each pass's module binds its inputs, then the planes of the applies its source runs,
-/// then its output, and runs the colour steps before the spatial one in its source. Every module
-/// validates with the naga wgpu uses.
+/// then its output. A pass that reads its unit's input runs the colour steps before the spatial one
+/// in its source; one that reads only planes holds neither their statements nor their programs, so
+/// its module is the same whatever steps come before its own. Every module validates with the naga
+/// wgpu uses.
 #[test]
 fn the_frame_and_every_pass_assemble_into_modules_that_validate() {
     let boundary = GpuBoundary::from_linear(
@@ -221,22 +232,44 @@ fn the_frame_and_every_pass_assemble_into_modules_that_validate() {
     assert!(frame.contains("rgb = lf_test_show(rgb, vec2<i32>(texel)"));
     let (_, slots) = fragment_declarations(&plan.steps);
     assert_eq!(slots.planes(), &[(1, 1), (1, 2)]);
-    for pass in 0..3 {
-        let GpuStep::Spatial(spatial) = &plan.steps[1] else {
-            unreachable!()
-        };
+    let GpuStep::Spatial(spatial) = &plan.steps[1] else {
+        unreachable!()
+    };
+    // The same step after other colour steps, and after none.
+    let others = [
+        vec![
+            GpuStep::colour(identity()),
+            GpuStep::colour(scale(0.5)),
+            plan.steps[1].clone(),
+        ],
+        vec![plan.steps[1].clone()],
+    ];
+    for (pass, described) in spatial.passes.iter().enumerate() {
         let (module, slots): (String, Slots) =
-            pass_module(&plan.steps, 1, &spatial.passes[pass]).expect("a pass's module");
+            pass_module(&plan.steps, 1, described).expect("a pass's module");
         validate(&module).unwrap_or_else(|error| panic!("pass {pass}: {error}"));
-        assert!(
+        let reads = described.reads_source;
+        assert_eq!(
             module.contains("rgb = scale(rgb"),
+            reads,
             "pass {pass} runs the colour step"
         );
-        assert!(
+        assert_eq!(
             module.contains("rgb = clamp(rgb"),
+            reads,
             "pass {pass} clamps its input"
         );
-        assert_eq!(slots.len(), spatial.passes[pass].inputs.len());
+        assert_eq!(
+            module.contains("fn scale("),
+            reads,
+            "pass {pass} holds the colour step's program"
+        );
+        assert_eq!(slots.len(), described.inputs.len());
+        for steps in &others {
+            let (other, _) =
+                pass_module(steps, steps.len() - 1, described).expect("a pass's module");
+            assert_eq!(other == module, !reads, "pass {pass} after other steps");
+        }
     }
 }
 
@@ -268,6 +301,86 @@ fn a_reduced_plane_holds_the_stage_blocks_its_boundary_reaches() {
         ((1, 1), 16)
     );
     assert_eq!(plane(1).bytes((0, 0), (10, 10)), 400);
+}
+
+/// An identity apply's planes need not be current, and they are in no key of what reads through
+/// it: a tick runs none of the passes only they need, even as their words move, while the pass
+/// writing a plane both units' applies read, and a later unit's passes, run as they would. Once
+/// the apply is not the identity, every pass its planes need runs, and the later unit's again,
+/// whose input is then the apply's output. A return to the identity reruns only the later unit's
+/// passes, and a return from it, its planes still holding what they did, only those again.
+#[test]
+fn an_identity_applys_planes_are_written_only_once_it_is_not() {
+    use super::super::spatial::{PlanesKey, Schedule};
+    let (boundary, _) = boundary_values();
+    // Unit A copies its input and takes its mean, and both units' applies read the lanes; unit B
+    // copies its input through A's apply and takes its mean. Each pass has words of its own.
+    let ticks = |radius: u32, identity: bool| {
+        let mut spatial = test_spatial();
+        spatial.program.words = vec![radius, SCALE.to_bits(), RADIUS, 0, 0];
+        spatial
+            .planes
+            .extend([spatial.planes[0], spatial.planes[1]]);
+        let [copy, mean, lanes] = [0, 1, 2].map(|pass| spatial.passes[pass].clone());
+        let pass = |kernel: &GpuPass, inputs, output, words, source| GpuPass {
+            inputs,
+            output,
+            words,
+            source,
+            ..kernel.clone()
+        };
+        spatial.passes = vec![
+            pass(&copy, vec![], 0, 0, 0),
+            pass(&mean, vec![0], 1, 0, 0),
+            pass(&lanes, vec![], 2, 3, 0),
+            pass(&copy, vec![], 3, 4, 1),
+            pass(&mean, vec![3], 4, 2, 0),
+        ];
+        let apply = |planes: Vec<u32>, identity| GpuApply {
+            function: Cow::Borrowed("lf_test_show"),
+            planes,
+            words: 1,
+            identity,
+        };
+        spatial.applies = vec![apply(vec![1, 2], identity), apply(vec![4, 2], false)];
+        validate_step(&GpuStep::Spatial(Box::new(spatial.clone()))).unwrap();
+        GpuPlan {
+            boundary: boundary.clone(),
+            texels: TexelMap::IDENTITY,
+            steps: vec![GpuStep::Spatial(Box::new(spatial))],
+            region: None,
+        }
+    };
+    let key = PlanesKey::of(&ticks(RADIUS, true).steps, (SIDE, SIDE), (0, 0)).expect("planes");
+    let mut schedule = Schedule::default();
+    let (mut words, mut blocks) = (Vec::new(), Vec::new());
+    for (tick, plan, runs) in [
+        (
+            "A the identity",
+            ticks(RADIUS, true),
+            [false, false, true, true, true],
+        ),
+        ("A's words move", ticks(1, true), [false; 5]),
+        (
+            "A not the identity",
+            ticks(1, false),
+            [true, true, false, true, true],
+        ),
+        (
+            "A the identity again",
+            ticks(1, true),
+            [false, false, false, true, true],
+        ),
+        (
+            "A back, its planes current",
+            ticks(1, false),
+            [false, false, false, true, true],
+        ),
+    ] {
+        super::super::pack(&plan, &mut words, &mut blocks);
+        let ran = schedule.run(&plan.steps, &words, &blocks, plan.boundary.version(), &key);
+        assert_eq!(ran, runs, "{tick}");
+    }
 }
 
 // ---- On a headless device ---------------------------------------------------------------------
@@ -528,7 +641,8 @@ fn a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own() {
 
 /// A pass's pipeline is its kernel and its shape: two passes of one kernel at different word
 /// offsets share one, and a second plan whose words sit at other offsets compiles none, yet draws
-/// what its own words ask.
+/// what its own words ask. A plan whose colour steps before the spatial step differ compiles none
+/// either, its spatial step's link reading what the link before wrote, and draws what it asks too.
 #[test]
 fn pass_pipelines_depend_on_their_kernel_and_shape_alone() {
     let test = "pass_pipelines_depend_on_their_kernel_and_shape_alone";
@@ -538,7 +652,7 @@ fn pass_pipelines_depend_on_their_kernel_and_shape_alone() {
     let mut pipeline = own_pipeline(&device, &queue);
     let (boundary, values) = boundary_values();
     // Two means of plane 0, each at its own words, then the lanes; the apply shows the first.
-    let shaped = |lead: usize| {
+    let shaped = |lead: usize, before: &[GpuProgram]| {
         let mut spatial = test_spatial();
         let mut words = vec![0u32; lead];
         words.extend([RADIUS, RADIUS + 2, SCALE.to_bits()]);
@@ -558,6 +672,7 @@ fn pass_pipelines_depend_on_their_kernel_and_shape_alone() {
                 output: 0,
                 words: lead,
                 source: 0,
+                reads_source: true,
                 shape: PassShape::Texels { span: [1, 1] },
                 unit: 0,
             },
@@ -567,6 +682,7 @@ fn pass_pipelines_depend_on_their_kernel_and_shape_alone() {
                 output: 1,
                 words: lead,
                 source: 0,
+                reads_source: false,
                 shape: PassShape::Texels { span: [1, 1] },
                 unit: 0,
             },
@@ -576,6 +692,7 @@ fn pass_pipelines_depend_on_their_kernel_and_shape_alone() {
                 output: 2,
                 words: lead + 1,
                 source: 0,
+                reads_source: false,
                 shape: PassShape::Texels { span: [1, 1] },
                 unit: 0,
             },
@@ -585,19 +702,19 @@ fn pass_pipelines_depend_on_their_kernel_and_shape_alone() {
                 output: 3,
                 words: lead,
                 source: 0,
+                reads_source: false,
                 shape: PassShape::Workgroup,
                 unit: 0,
             },
         ];
         spatial.applies[0].planes = vec![1, 3];
         spatial.applies[0].words = lead + 2;
+        let mut steps: Vec<GpuStep> = before.iter().cloned().map(GpuStep::colour).collect();
+        steps.push(GpuStep::Spatial(Box::new(spatial)));
         GpuPlan {
             boundary: boundary.clone(),
             texels: TexelMap::IDENTITY,
-            steps: vec![
-                GpuStep::colour(scale(0.5)),
-                GpuStep::Spatial(Box::new(spatial)),
-            ],
+            steps,
             region: None,
         }
     };
@@ -611,29 +728,38 @@ fn pass_pipelines_depend_on_their_kernel_and_shape_alone() {
             .created()
     };
     let expected = expected_codes(&values);
-    for (lead, wanted) in [(0, 3), (5, 3)] {
+    // Each plan: what it changes, where its words start, the colour steps before its spatial
+    // step, each halving as the first plan's does, and the pass pipelines created so far.
+    let plans = [
+        ("the first", 0, vec![scale(0.5)], 3),
+        ("words from 5", 5, vec![scale(0.5)], 3),
+        ("a step before", 0, vec![identity(), scale(0.5)], 3),
+        ("another step before", 5, vec![swap(false), scale(0.5)], 3),
+    ];
+    for (change, lead, before, wanted) in &plans {
         let drawn = paint(
             &device,
             &queue,
             &mut pipeline,
-            &primitive(ID, Some(shaped(lead))),
+            &primitive(ID, Some(shaped(*lead, before))),
         );
         assert_eq!(
             diagnostics(&pipeline, ID).drawn_path,
             Some(DrawingPath::Gpu),
-            "words from {lead}"
+            "{change}"
         );
-        // Four passes, three modules: the copy, the mean and the lanes.
-        assert_eq!(created(&pipeline), wanted, "words from {lead}");
+        // Four passes, three modules: the copy, the mean and the lanes, none holding the steps
+        // before, which their link reads as its boundary.
+        assert_eq!(created(&pipeline), *wanted, "{change}");
         for (pixel, [r, g, b]) in drawn.chunks_exact(4).zip(&expected) {
             for (drawn, wanted) in [(pixel[2], *r), (pixel[1], *g), (pixel[0], *b)] {
-                assert!(drawn.abs_diff(wanted) <= 1, "words from {lead}");
+                assert!(drawn.abs_diff(wanted) <= 1, "{change}");
             }
         }
     }
-    // Each plan is a chain of two links: the colour step's, which the two share, and the spatial
-    // step's, each its own frame pipeline over the shared passes.
-    assert_eq!(pipeline.figures.preview.compiles.load(Ordering::Relaxed), 3);
+    // Each plan is a chain of two links: the colour steps', one sequence for each list of them, and
+    // the spatial step's, one frame pipeline for each offset of its words over the shared passes.
+    assert_eq!(pipeline.figures.preview.compiles.load(Ordering::Relaxed), 5);
     assert_eq!(
         pipeline.gpu.support.as_ref().unwrap().passes.len(),
         3,

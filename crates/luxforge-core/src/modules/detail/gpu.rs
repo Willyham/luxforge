@@ -162,10 +162,13 @@ pub(super) fn denoise(
         words: words.into_inner(),
         planes,
         passes,
+        // A zero threshold is the identity through the change its passes write, not through its
+        // apply, so a tick never skips them.
         apply: GpuApply {
             function: "lf_detail_denoise",
             planes: vec![last],
             words: first,
+            identity: false,
         },
         estimated: false,
     })
@@ -209,10 +212,13 @@ pub(super) fn sharpen(
         words: words.into_inner(),
         planes,
         passes,
+        // A zero gain is the identity through the change its passes write, not through its apply,
+        // so a tick never skips them.
         apply: GpuApply {
             function: "lf_detail_sharpen",
             planes: vec![change],
             words: first,
+            identity: false,
         },
         estimated: false,
     })
@@ -513,6 +519,9 @@ mod tests {
                 assert_eq!(denoise.words[pass.words + 1..pass.words + 3], [0, 0]);
             }
             assert_eq!(sharpen.words[sharpen.apply.words], 0.0_f32.to_bits());
+            // Each is the identity through the change its passes write, which a tick must run,
+            // never through its apply.
+            assert!(neutral.iter().all(|unit| !unit.apply.identity));
             // The CPU's shape: nothing at zero, one unit for one strength, and three levels
             // without Colour.
             assert!(compile(json!({}), false, at).is_empty());

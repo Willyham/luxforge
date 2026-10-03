@@ -301,13 +301,15 @@ pub(crate) enum GpuAsk {
     Region(Region, f64),
 }
 
-/// Before a region's boundary is rendered, what the boundary alone takes and the least the slot
-/// drawing it takes on the GPU: the boundary over the window its request names, at its format's
-/// bytes a texel; a geometry tail's intermediate of the same size, at eight at least; the frame,
-/// at four bytes a pixel of the region; and a spatial step's planes over the window. The surface
-/// charges the rest — the frame's size bucket, its uniform and its buffers — once it is held. At
-/// Fit at the exact stage the frame is the whole output stage and the boundary the window it
-/// reads, or the whole boundary stage. `None` at a Fit proxy, which the display bounds bound.
+/// Before a region's boundary is rendered, what the boundary alone takes and what the slot drawing
+/// it takes on the GPU, as the surface charges them: the boundary over the window its request
+/// names, at its format's bytes a texel; a geometry tail's intermediate of the same size; the frame
+/// in its size bucket, a region's or a whole frame's, with its placement uniform
+/// ([`surface::gpu_preview::texture_charge`]); and a spatial step's planes over the window. For a
+/// plan of one link the surface adds only its words and blocks buffers once it is held; a chain of
+/// several adds each earlier link's intermediate and planes then. At Fit at the exact stage the
+/// frame is the whole output stage and the boundary the window it reads, or the whole boundary
+/// stage. `None` at a Fit proxy, which the display bounds bound.
 pub(crate) fn region_charge(plan: &CorePlan, request: &BoundaryRequest) -> Option<(u64, u64)> {
     let whole = |width, height| Region {
         x0: 0,
@@ -315,12 +317,12 @@ pub(crate) fn region_charge(plan: &CorePlan, request: &BoundaryRequest) -> Optio
         width,
         height,
     };
-    let (rect, window) = match (request.key.region(), request.key.plan()) {
-        (Some(rect), _) => (rect, request.window?),
+    let (rect, window, region) = match (request.key.region(), request.key.plan()) {
+        (Some(rect), _) => (rect, request.window?, true),
         (None, None) => {
             let (output, stage) = (plan.geometry.output(), plan.boundary.stage);
             let window = request.window.unwrap_or(whole(stage.width, stage.height));
-            (whole(output.width, output.height), window)
+            (whole(output.width, output.height), window, false)
         }
         (None, Some(_)) => return None,
     };
@@ -330,12 +332,16 @@ pub(crate) fn region_charge(plan: &CorePlan, request: &BoundaryRequest) -> Optio
             luxforge_core::BoundaryFormat::Half => 8,
             luxforge_core::BoundaryFormat::Float => 16,
         };
-    let intermediate = if gpu_plan::has_tail(plan) {
-        texels * 8
-    } else {
-        0
-    };
-    let frame = u64::from(rect.width) * u64::from(rect.height) * 4;
+    // A tail quantizes where the CPU clamps before its resample, and keeps `f32` values on the
+    // RAW linear path, as `gpu_plan` builds it.
+    let textures = surface::gpu_preview::texture_charge(
+        (window.width, window.height),
+        gpu_plan::boundary_format(request.format),
+        (rect.width, rect.height),
+        gpu_plan::has_tail(plan).then_some((plan.geometry.clamps, plan.linear)),
+        region,
+        super::compare_after::DEVICE_TEXTURE_LIMIT,
+    );
     // The spatial steps' planes as the surface's slot holds them, chained steps sharing textures;
     // each operation's own planes summed where a step cannot be converted.
     let (origin, size) = ((window.x0, window.y0), (window.width, window.height));
@@ -352,7 +358,7 @@ pub(crate) fn region_charge(plan: &CorePlan, request: &BoundaryRequest) -> Optio
             .map(|spatial| spatial.plane_bytes(origin, size))
             .sum(),
     };
-    Some((boundary, boundary + intermediate + frame + planes))
+    Some((boundary, textures + planes))
 }
 
 /// A surface region's rectangle of its stage, as the core's.

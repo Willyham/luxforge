@@ -193,6 +193,37 @@ impl<'a> MaskPlacement<'a> {
     }
 }
 
+/// One pixel of a masked operation's scratch: the value the operation receives there, which its
+/// blend is taken against, and the mask's coverage of it. Coverage reads the pixel's position and
+/// that value alone, so both are known before any unit runs, and together they decide whether the
+/// units run at that pixel at all ([`MaskedInput::keeps_input`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct MaskedInput {
+    input: [f32; 3],
+    coverage: f32,
+}
+
+impl MaskedInput {
+    /// Whether the blend hands this pixel back its input bit for bit whatever finite value the
+    /// units produce there, so they need not run.
+    ///
+    /// At coverage `M = ±0.0` the blend computes `(1 − M)·in + M·u`. `1 − M` is exactly `1.0`, and
+    /// `1.0·in` is exactly `in`; `M·u` is a zero for any finite `u`, and adding a zero to `in`
+    /// returns `in` exactly — except where `in` is `−0.0`, since `−0.0 + +0.0` is `+0.0` and which
+    /// zero `M·u` is depends on the sign of the `u` a skipped pixel never computes. So a pixel keeps
+    /// its input when its coverage is a zero of either sign and every channel of its input is
+    /// finite and not `−0.0`, the condition a masked spatial tile is copied on. Every other pixel,
+    /// one whose coverage is not a number included, runs the units and is blended as it always was.
+    #[inline]
+    fn keeps_input(&self) -> bool {
+        self.coverage == 0.0
+            && self
+                .input
+                .iter()
+                .all(|value| value.is_finite() && value.to_bits() != (-0.0_f32).to_bits())
+    }
+}
+
 /// Apply one run to one contiguous run of already decoded linear pixels of row `y` starting at
 /// column `x0`, in the coordinates of the stage its segment produces. Nothing is clamped or
 /// quantized between operations or between units, so an inverse pair returns its input exactly and a
@@ -206,17 +237,19 @@ impl<'a> MaskPlacement<'a> {
 /// unmasked operations into one stream, which is what this used to do, produces the same arithmetic
 /// in the same order.
 ///
-/// `scratch` is the snapshot buffer a masked operation blends against. Its length is free: the units
-/// are pointwise, so a masked span is processed in blocks of at most `scratch.len()` pixels and the
-/// result does not depend on the block size. The rasterizing pass hands it one row of float scratch
-/// reserved from the budget; a point query hands it one pixel on the stack and allocates nothing.
+/// `scratch` is the snapshot a masked operation takes of the pixels it is handed, one
+/// [`MaskedInput`] each: the pixel's input, which the blend is against, and its coverage. Its length
+/// is free: the units are pointwise, so a masked span is processed in blocks of at most
+/// `scratch.len()` pixels and the result does not depend on the block size. The rasterizing pass
+/// hands it one row of float scratch reserved from the budget; a point query hands it one pixel on
+/// the stack and allocates nothing.
 #[inline]
 pub(super) fn apply_units(
     run: &ColorRun<'_>,
     y: u32,
     x0: u32,
     pixels: &mut [[f32; 3]],
-    scratch: &mut [[f32; 3]],
+    scratch: &mut [MaskedInput],
 ) -> Result<(), Error> {
     for (index, operation) in run.colour_operations() {
         match operation.mask() {
@@ -257,7 +290,7 @@ fn apply_operation(
 /// One masked operation over one contiguous row span: `out = (1 − M)·in + M·units(in)` per channel,
 /// in linear float, inside the run.
 ///
-/// Three properties are load-bearing and are what the tests assert:
+/// Four properties are load-bearing and are what the tests assert:
 ///
 /// - **The blend is against the operation's own input**, so an unmasked operation before or after it
 ///   in the same run is unaffected and nothing is clamped or quantized in between. That is why the
@@ -268,6 +301,19 @@ fn apply_operation(
 ///   quantizes to the same code.
 /// - **Outside the bounds rectangle nothing is evaluated at all**, not merely blended away, so a
 ///   small mask on a large frame costs the units of its own rectangle and no more.
+/// - **Inside it, no unit runs where the coverage is zero.** A block's coverage is evaluated first,
+///   on its snapshot, and the units then run over each maximal stretch of pixels that does not keep
+///   its input ([`MaskedInput::keeps_input`]), each stretch handed its own first column, so a
+///   position-dependent unit is handed the coordinates it always was. A pixel that keeps its input
+///   is left as it is, which is the bit the blend would have written there. So a mask whose
+///   rectangle is the whole stage — a range, or any inverted component — costs a coverage
+///   evaluation per pixel and the units of the pixels it selects.
+///
+/// What skipping changes is a value no output shows: a unit that would have produced a non-finite
+/// value at a pixel whose coverage is zero is never run there, so it cannot fail the render, as was
+/// already true outside the bounds rectangle. A point sample takes the same decision for its one
+/// pixel through this function, so a sampled byte still equals the rendered byte, and a sample of a
+/// pixel whose units fail the render fails as the render does.
 fn apply_masked_operation(
     operation: &ColorOperation,
     placement: &MaskPlacement<'_>,
@@ -275,27 +321,88 @@ fn apply_masked_operation(
     x0: u32,
     origin: (u32, u32),
     pixels: &mut [[f32; 3]],
-    scratch: &mut [[f32; 3]],
+    scratch: &mut [MaskedInput],
 ) -> Result<(), Error> {
     let Some((from, to)) = placement.span(y, x0, pixels.len()) else {
         return Ok(());
     };
     debug_assert!(!scratch.is_empty(), "a masked run needs snapshot scratch");
+    let rule = unit_skip();
     let block = scratch.len().max(1);
     let mut at = from;
     while at < to {
         let end = (at + block).min(to);
         let span = &mut pixels[at..end];
-        let (snapshot, _) = scratch.split_at_mut(span.len());
-        snapshot.copy_from_slice(span);
-        apply_operation(operation, y, x0 + at as u32, origin, span)?;
-        for (offset, (output, input)) in span.iter_mut().zip(snapshot.iter()).enumerate() {
+        let snapshot = &mut scratch[..span.len()];
+        let mut uncovered = false;
+        for (offset, (held, input)) in snapshot.iter_mut().zip(span.iter()).enumerate() {
             let coverage = placement.coverage(x0 + (at + offset) as u32, y, *input);
-            for channel in 0..3 {
-                output[channel] = (1.0 - coverage) * input[channel] + coverage * output[channel];
+            uncovered |= coverage == 0.0;
+            *held = MaskedInput {
+                input: *input,
+                coverage,
+            };
+        }
+        // A block the mask covers throughout is one stretch, with nothing to look for in it.
+        let skips = uncovered && rule == UnitSkip::Proved;
+        let evaluated = |pixel: &MaskedInput| !(skips && pixel.keeps_input());
+        let mut start = 0;
+        while let Some(skipped) = snapshot[start..].iter().position(evaluated) {
+            let first = start + skipped;
+            let last = snapshot[first..]
+                .iter()
+                .position(|pixel| !evaluated(pixel))
+                .map_or(span.len(), |length| first + length);
+            let stretch = &mut span[first..last];
+            apply_operation(operation, y, x0 + (at + first) as u32, origin, stretch)?;
+            for (output, held) in stretch.iter_mut().zip(&snapshot[first..last]) {
+                for (value, input) in output.iter_mut().zip(held.input) {
+                    *value = (1.0 - held.coverage) * input + held.coverage * *value;
+                }
             }
+            start = last;
         }
         at = end;
     }
     Ok(())
+}
+
+/// Which pixels inside a masked operation's bounds run its units. Production runs them only at the
+/// pixels that do not keep their input ([`MaskedInput::keeps_input`]). A test chooses
+/// [`UnitSkip::Never`] to run them at every pixel inside the bounds, which is what the skip is
+/// compared against bit for bit, and a measurement chooses it for the rule before the skip existed.
+/// Choosing it changes no value a render produces, only how many pixels the units run over, and so
+/// whether a non-finite value they produce at a pixel whose coverage is zero fails the render.
+///
+/// The choice belongs to the thread that runs the row, as a masked spatial tile's copy rule does
+/// (`spatial::TileCopy`): a pass below the parallel threshold, or one forced serial, runs every row
+/// on the thread that asked for the frame, and a measurement at photo size sets the rule on every
+/// pool thread as well.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) enum UnitSkip {
+    Never,
+    Proved,
+}
+
+#[cfg(not(test))]
+const fn unit_skip() -> UnitSkip {
+    UnitSkip::Proved
+}
+
+#[cfg(test)]
+fn unit_skip() -> UnitSkip {
+    UNIT_SKIP.get()
+}
+
+#[cfg(test)]
+thread_local! {
+    static UNIT_SKIP: std::cell::Cell<UnitSkip> = const { std::cell::Cell::new(UnitSkip::Proved) };
+}
+
+/// Set which pixels this thread's masked colour operations skip, for a test; returns the previous
+/// rule.
+#[cfg(test)]
+pub(super) fn set_unit_skip(skip: UnitSkip) -> UnitSkip {
+    UNIT_SKIP.replace(skip)
 }

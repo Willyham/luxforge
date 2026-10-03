@@ -248,13 +248,20 @@ impl GpuTail {
 
     /// The format of the content pass's result, which the tail reads.
     pub(super) fn intermediate(&self) -> wgpu::TextureFormat {
-        if self.quantize {
-            wgpu::TextureFormat::Rgba8Unorm
-        } else if self.preserve_f32 {
-            wgpu::TextureFormat::Rgba32Float
-        } else {
-            wgpu::TextureFormat::Rgba16Float
-        }
+        intermediate(self.quantize, self.preserve_f32)
+    }
+}
+
+/// The format of the content pass's result a tail reads: 8-bit codes for one that `quantize`s, as
+/// the CPU quantizes a JPEG's segments, `f32` for one that keeps the RAW linear path's values
+/// whole, else half floats.
+pub(super) fn intermediate(quantize: bool, preserve_f32: bool) -> wgpu::TextureFormat {
+    if quantize {
+        wgpu::TextureFormat::Rgba8Unorm
+    } else if preserve_f32 {
+        wgpu::TextureFormat::Rgba32Float
+    } else {
+        wgpu::TextureFormat::Rgba16Float
     }
 }
 

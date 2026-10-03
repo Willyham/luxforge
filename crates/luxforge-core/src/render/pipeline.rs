@@ -34,8 +34,8 @@
 //! those, as a render always has.
 
 use super::{
-    ColorRun, Compiled, RenderContext, ResampleEntry, ScratchBudget, Segment, color_chunk_rows,
-    color_runs, mapped_replacements,
+    ColorRun, Compiled, MaskedInput, RenderContext, ResampleEntry, ScratchBudget, Segment,
+    color_chunk_rows, color_runs, mapped_replacements,
     spatial::{
         PointTiles, SpatialPlan, Tiling, build_reduction_cancellable, fill_planes, resolve_globals,
         run_batches, run_tile,
@@ -52,7 +52,7 @@ pub(super) fn colour_input<'r, D: PixelDomain>(
     wide: bool,
 ) -> Result<[f64; 3], Error> {
     let mut linear = [D::spatial_input(pixel)];
-    let mut snapshot = [[0.0; 3]; 1];
+    let mut snapshot = [MaskedInput::default(); 1];
     for run in runs {
         if run.followed_by_replace() {
             pixel = D::colour(pixel, std::iter::once(run), x, y, wide)?;
@@ -890,8 +890,8 @@ type PlaneRow<'p> = (usize, ((&'p mut [f32], &'p mut [f32]), &'p mut [f32]));
 pub(crate) struct RowScratch {
     /// The row itself, in `f32`.
     pub(super) linear: Vec<[f32; 3]>,
-    /// One row of a masked operation's own input.
-    pub(super) snapshot: Vec<[f32; 3]>,
+    /// One row of a masked operation's own input and its coverage.
+    pub(super) snapshot: Vec<MaskedInput>,
 }
 
 /// The four pixels a bilinear sample at one continuous input coordinate reads, with indices clamped
@@ -1144,7 +1144,7 @@ pub(super) trait SegmentRows: Sync {
     ) -> Result<(), Error>;
 
     /// Apply one colour run to the chunk's rows `rows`, which start at row `y0 + rows.start` of the
-    /// stage. `snapshot` is one row of a masked operation's own input.
+    /// stage. `snapshot` is one row of a masked operation's own input and its coverage.
     fn run(
         &self,
         scratch: &mut Self::Scratch,
@@ -1152,11 +1152,34 @@ pub(super) trait SegmentRows: Sync {
         run: &ColorRun<'_>,
         y0: u32,
         rows: Range<usize>,
-        snapshot: &mut [[f32; 3]],
+        snapshot: &mut [MaskedInput],
     ) -> Result<(), Error>;
 
     /// Write the chunk's finished values as its bytes.
     fn store(&self, scratch: &mut Self::Scratch, chunk: &mut [Self::Sample]) -> Result<(), Error>;
+
+    /// The resample [`Self::load`] evaluates inside the pass's own chunks, and the segment before
+    /// it, whose pixels and colour its taps pull: the linear rows' entry
+    /// ([`super::linear::LinearRows::load_resampled`]). `None` for rows that read a frame a
+    /// boundary already wrote, as every byte pass does.
+    fn pulled(&self) -> Option<(&ResampleEntry, &Segment)> {
+        None
+    }
+}
+
+/// The colour units of `runs`, and whether any of them is masked: which of the two colour
+/// thresholds a pass that runs them asks.
+fn colour_load<'a>(runs: impl Iterator<Item = ColorRun<'a>>) -> (usize, bool) {
+    runs.fold((0, false), |(units, masked), run| {
+        (
+            units
+                + run
+                    .colour_operations()
+                    .map(|(_, operation)| operation.len())
+                    .sum::<usize>(),
+            masked || run.has_mask(),
+        )
+    })
 }
 
 /// One segment's output, `frame`, written in bounded row chunks: each chunk is loaded, then the
@@ -1165,8 +1188,9 @@ pub(super) trait SegmentRows: Sync {
 /// at the same coordinate exactly as a later layer does — and stored. Colour runs reach only the
 /// rows in `band`; a resample that follows reads no other.
 ///
-/// The chunks run on the shared Rayon pool when the segment's geometry, its colour runs or its
-/// heavy colour runs reach their own threshold (`super::parallel`); smaller passes stay serial.
+/// The chunks run on the shared Rayon pool when the segment's geometry, a resample its rows
+/// evaluate, its colour runs or its heavy colour runs reach their own threshold
+/// (`super::parallel`); smaller passes stay serial.
 /// No full-frame float buffer exists at any point: each chunk reserves its float scratch from
 /// `budget` before it uses it, in a buffer allocated once per Rayon split and reused by that
 /// split's chunks. `cancel` is read once per chunk, before the reservation.
@@ -1193,35 +1217,36 @@ pub(super) fn segment_pass<R: SegmentRows>(
     // segment reserves and allocates exactly what it would without masks.
     let masked = runs.iter().any(|run| run.has_mask());
     // The segment's geometry runs on the pool from the transform threshold, counted over the whole
-    // segment; its colour runs from the colour threshold, or the lower heavy-colour one with
-    // several colour units or a mask, counted over the rows they reach.
+    // segment; a resample its rows evaluate from the resample's or a warp's, counted over the
+    // output it writes; its colour runs from the colour threshold, or the lower heavy-colour one
+    // with several colour units or a mask, counted over the rows they reach. The taps of a pulled
+    // resample run the colour of the segment before it inside this pass, for about one pixel of
+    // that segment per output pixel, so those units count with the segment's own, over every row.
     let parallel = {
-        use super::parallel::{RenderPass, pooled};
-        let units: usize = runs
-            .iter()
-            .flat_map(|run| run.colour_operations())
-            .map(|(_, operation)| operation.len())
-            .sum();
+        use super::parallel::{RenderPass, pooled, resample_pass};
+        let whole = segment.width as u64 * segment.height as u64;
+        let pulled = rows.pulled();
+        let (own, _) = colour_load(runs.iter().copied());
+        let (before, before_masked) =
+            pulled.map_or((0, false), |(_, before)| colour_load(color_runs(before)));
+        let units = own + before;
         let colour = match units {
-            _ if masked || units >= 3 => Some(RenderPass::HeavyColour),
+            _ if masked || before_masked || units >= 3 => Some(RenderPass::HeavyColour),
             0 => None,
             _ => Some(RenderPass::Colour),
         };
-        let coloured = segment.width as u64 * (band.end - band.start) as u64;
-        pooled(
-            RenderPass::Transform,
-            segment.width as u64 * segment.height as u64,
-        ) || segment.entry.as_ref().is_some_and(|entry| {
-            entry.has_warp()
-                && pooled(
-                    RenderPass::Warp,
-                    segment.width as u64 * segment.height as u64,
-                )
-        }) || colour.is_some_and(|pass| pooled(pass, coloured))
+        let coloured = if before > 0 {
+            whole
+        } else {
+            segment.width as u64 * (band.end - band.start) as u64
+        };
+        pooled(RenderPass::Transform, whole)
+            || pulled.is_some_and(|(entry, _)| pooled(resample_pass(&entry.resample), whole))
+            || colour.is_some_and(|pass| pooled(pass, coloured))
     };
     let chunk_rows = color_chunk_rows(segment.width);
     let chunk_bytes = chunk_rows * width * rows.samples_per_pixel();
-    let process = |scratch: &mut (R::Scratch, Vec<[f32; 3]>),
+    let process = |scratch: &mut (R::Scratch, Vec<MaskedInput>),
                    index: usize,
                    chunk: &mut [R::Sample]|
      -> Result<(), Error> {
@@ -1234,17 +1259,18 @@ pub(super) fn segment_pass<R: SegmentRows>(
         let colours = !runs.is_empty() && !coloured.is_empty();
         let bytes = rows.scratch_bytes(width, count, coloured.len());
         let _reservation = (bytes > 0).then(|| budget.reserve(bytes));
-        // One row of snapshot scratch for a masked operation's own input, reserved before it is
-        // used and released with the chunk. It is a row and not a chunk because a unit is handed
-        // one row at a time, and an unmasked segment takes none of it.
+        // One row of snapshot scratch for a masked operation's own input and its coverage, 16
+        // bytes a pixel, reserved before it is used and released with the chunk. It is a row and
+        // not a chunk because a unit is handed one row at a time, and an unmasked segment takes
+        // none of it.
         let _snapshot_reservation =
-            (masked && colours).then(|| budget.reserve(width * std::mem::size_of::<[f32; 3]>()));
+            (masked && colours).then(|| budget.reserve(width * std::mem::size_of::<MaskedInput>()));
         let (scratch, snapshot) = scratch;
-        let mut unused = [[0.0f32; 3]; 1];
-        let snapshot: &mut [[f32; 3]] = if masked {
+        let mut unused = [MaskedInput::default(); 1];
+        let snapshot: &mut [MaskedInput] = if masked {
             // Allocated by the worker's first chunk and exactly one row long from then on; a
             // masked operation overwrites what it reads, so an earlier chunk's values never show.
-            snapshot.resize(width, [0.0; 3]);
+            snapshot.resize(width, MaskedInput::default());
             snapshot
         } else {
             &mut unused
