@@ -676,6 +676,7 @@ fn gpu_window_a_raw_straightened_crop_drag_at_fit_draws_on_the_gpu() {
                 ready_boundary: Some(version),
                 fallback: None,
                 drawn: None,
+                evaluated: None,
             });
             let log = attach_log(&mut editor);
             let _ = slide(&mut editor, "set-basic", "exposure", 0.3);

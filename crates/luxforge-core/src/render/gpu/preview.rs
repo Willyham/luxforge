@@ -60,11 +60,11 @@ pub struct BoundaryKey {
     /// The proxy the boundary is rendered at, with the window it holds; `None` at the exact stage,
     /// where a photograph that fits the display is drawn, and at a percentage zoom.
     plan: Option<ProxyPlan>,
-    /// At the exact stage at Fit, the window of the boundary layer's received stage the whole
-    /// output reads, when that is less than all of it; `None` otherwise.
-    window: Option<Region>,
     /// At a percentage zoom, the rectangle of the output stage the boundary is held for.
     region: Option<Region>,
+    /// The rectangle of the boundary stage whose texels it holds, including spatial support
+    /// margins. The output region alone does not identify a spatial input window.
+    window: Option<Region>,
 }
 
 impl BoundaryKey {
@@ -150,6 +150,23 @@ struct Drafted {
     held: bool,
     effect: String,
     mask: Option<MaskId>,
+}
+
+/// The first layer of `recipe` a GPU plan can start from: past its source layers, whose
+/// development the boundary already holds, and past any geometry layer before the first layer of
+/// another stage, which only a stack holding nothing but geometry has; the stack's length when
+/// there is none. Every gesture over the layers from it on is planned from it ([`plan_preview`]).
+fn first_content_layer(registry: &ModuleRegistry, recipe: &Recipe) -> usize {
+    recipe
+        .layers
+        .iter()
+        .position(|layer| {
+            !matches!(
+                registry.effect_stage(&layer.effect_id),
+                Some(EffectStage::Source | EffectStage::Geometry)
+            )
+        })
+        .unwrap_or(recipe.layers.len())
 }
 
 /// The layer `draft`'s action drafts in `recipe`: the one layer of its field-patch module's colour,
@@ -480,7 +497,7 @@ pub(crate) fn plan_preview(
                 .position(|layer| layer.mask.as_ref() == Some(&mask))
         });
     let changed = first_change(&evaluation.entry().snapshot.recipe, recipe);
-    let Some(boundary) = [
+    let Some(earliest) = [
         changed,
         drafted_layer.as_ref().map(|drafted| drafted.index),
         modulated,
@@ -494,28 +511,90 @@ pub(crate) fn plan_preview(
             cpu_shape: None,
         });
     };
+    // Every gesture is planned from the stack's first layer past its source layers, whatever it
+    // changes: the boundary is then the (proxy) source itself, one key for every gesture over the
+    // same source and view, which the desktop holds across drafts, and the surface keeps each
+    // spatial operation's output by content, so what a gesture leaves unchanged runs once. A
+    // gesture that changes a source layer keeps its own boundary, which names `boundary-stage`.
+    let editable = first_content_layer(registry, recipe);
+    let boundary = if earliest < editable {
+        earliest
+    } else {
+        editable
+    };
     let fit = FitStage::of_view(evaluation, view)?;
     // The drafted layer in its GPU shape, inserted as the neutral layer its first commit would
     // add when the stack does not hold it yet.
     let request = fit.request(boundary);
     let (planned, request) = match &drafted_layer {
-        Some(drafted) if !drafted.held && drafted.index == boundary => (
+        Some(drafted) if !drafted.held => (
             with_neutral(recipe, drafted.index, &drafted.effect, drafted.mask.clone()),
             request.drafted(drafted.index),
         ),
-        Some(drafted) if drafted.held => (recipe.clone(), request.drafted(drafted.index)),
-        _ => (recipe.clone(), request),
+        Some(drafted) => (recipe.clone(), request.drafted(drafted.index)),
+        None => (recipe.clone(), request),
     };
+    let spatial_drafted = drafted_layer.as_ref().and_then(|drafted| {
+        matches!(
+            registry.effect_stage(&drafted.effect),
+            Some(EffectStage::Restoration | EffectStage::Spatial)
+        )
+        .then_some(drafted.index)
+    });
+    planned_preview(
+        evaluation,
+        &fit,
+        &planned,
+        boundary,
+        request,
+        spatial_drafted,
+    )
+}
+
+/// The GPU preview of a committed stack, `evaluation` a job of no draft, drawn as `view` says: the
+/// plan of the stack itself from its first content layer, every layer in the CPU's shape, and the
+/// boundary it starts from — the one every gesture over the same source and view starts from. The
+/// desktop holds that boundary before any gesture begins, so a gesture's first tick is drawn on
+/// the GPU, and holds this plan behind the CPU frame, so the surface keeps the stack's spatial
+/// outputs by content. `None` for a stack with no content layer.
+pub(crate) fn plan_resident(
+    evaluation: &Evaluation,
+    view: GpuView,
+) -> Result<Option<GpuPreview>, Error> {
+    let registry = evaluation.registry();
+    let recipe = evaluation.recipe();
+    let boundary = first_content_layer(registry, recipe);
+    if boundary >= recipe.layers.len() {
+        return Ok(None);
+    }
+    let fit = FitStage::of_view(evaluation, view)?;
+    let request = fit.request(boundary);
+    planned_preview(evaluation, &fit, recipe, boundary, request, None).map(Some)
+}
+
+/// The plan of `planned` from layer `boundary` at `fit`'s stage, with `request`, and the boundary
+/// it starts from; at a percentage zoom also the window the boundary will hold and, for a drafted
+/// restoration or spatial layer at `spatial_drafted`, the plan of its CPU shape.
+fn planned_preview(
+    evaluation: &Evaluation,
+    fit: &FitStage,
+    planned: &Recipe,
+    boundary: usize,
+    request: GpuPlanRequest,
+    spatial_drafted: Option<usize>,
+) -> Result<GpuPreview, Error> {
+    let registry = evaluation.registry();
+    let recipe = evaluation.recipe();
     // At a percentage zoom, a spatial layer's estimates the store holds for the stack the draft was
     // opened over, held for the drag where it holds none for the drafted stack. A windowed Fit
     // proxy never holds a restoration layer before an estimate: the CPU's planner keeps such a
     // proxy whole, since no window can prepare the estimate behind it.
     let held = match fit.region {
-        Some(_) => held_prefixes(registry, evaluation.entry(), &planned, fit.sampling())?,
+        Some(_) => held_prefixes(registry, evaluation.entry(), planned, fit.sampling())?,
         None => Vec::new(),
     };
     let estimates = fit.estimates(evaluation);
-    let mut answer = gpu_plan_holding(registry, &planned, request, Some(estimates), &held)?;
+    let mut answer = gpu_plan_holding(registry, planned, request, Some(estimates), &held)?;
     let position = position(&fit.compiled, boundary).ok_or_else(|| {
         Error::internal(format!(
             "the GPU preview's boundary layer {boundary} is past the stack"
@@ -577,16 +656,9 @@ pub(crate) fn plan_preview(
     // At a percentage zoom a drafted restoration or spatial layer's GPU shape charges the planes
     // of its units at zero over the window too: the plan of its CPU shape rides beside it, from
     // the same boundary, when it holds less.
-    let spatial = |effect: &str| {
-        matches!(
-            registry.effect_stage(effect),
-            Some(EffectStage::Restoration | EffectStage::Spatial)
-        )
-    };
     let mut cpu_shape = None;
-    if let (GpuAnswer::Plan(plan), Some(_), Some(drafted)) = (&answer, fit.region, &drafted_layer)
+    if let (GpuAnswer::Plan(plan), Some(_), Some(_)) = (&answer, fit.region, spatial_drafted)
         && request.drafted.is_some()
-        && spatial(&drafted.effect)
     {
         let unshaped = GpuPlanRequest {
             drafted: None,
@@ -599,7 +671,7 @@ pub(crate) fn plan_preview(
                 .collect()
         };
         if let GpuAnswer::Plan(smaller) =
-            gpu_plan_holding(registry, &planned, unshaped, Some(estimates), &held)?
+            gpu_plan_holding(registry, planned, unshaped, Some(estimates), &held)?
             && extent(&smaller) != extent(plan)
             && !smaller.spatial.iter().any(|spatial| spatial.estimated)
         {
@@ -614,8 +686,8 @@ pub(crate) fn plan_preview(
                 prefix: prefix_hash(&recipe.layers[..boundary], &recipe.masks, fit.sampling())?,
                 layer: boundary,
                 plan: fit.plan,
-                window: window.filter(|_| fit.region.is_none()),
                 region: fit.region.map(|(rect, _)| rect),
+                window,
             },
             position,
             format: crate::BoundaryFormat::of(fit.linear),
@@ -696,7 +768,7 @@ pub(crate) fn warm_sequence(plan: &GpuPlan) -> Vec<String> {
     keys
 }
 
-/// The plans a gesture on `evaluation`'s stack is likely to draw at `bounds`, for the desktop to
+/// The plans a gesture on `evaluation`'s stack is likely to draw at `view`, for the desktop to
 /// warm their program sequences before a drag begins: a drag of each colour or finish layer the
 /// stack holds, and the first drag of each field-patch colour or finish module it does not hold
 /// yet; then a drag of each restoration or spatial layer the stack holds, at most
@@ -704,13 +776,10 @@ pub(crate) fn warm_sequence(plan: &GpuPlan) -> Vec<String> {
 /// layer before them never does. Each is planned from that layer with the layer in its GPU shape,
 /// as a draft of it is planned ([`plan_preview`]). One plan per program sequence. `O(layers ×
 /// modules)` compiles on the catalog owner, with no pixel read.
-pub(crate) fn plan_warm(
-    evaluation: &Evaluation,
-    bounds: ProxyBounds,
-) -> Result<Vec<GpuPlan>, Error> {
+pub(crate) fn plan_warm(evaluation: &Evaluation, view: GpuView) -> Result<Vec<GpuPlan>, Error> {
     let registry = evaluation.registry();
     let recipe = evaluation.recipe();
-    let fit = FitStage::of(evaluation, bounds)?;
+    let fit = FitStage::of_view(evaluation, view)?;
     let colour = |effect: &str| {
         matches!(
             registry.effect_stage(effect),
@@ -760,6 +829,21 @@ pub(crate) fn plan_warm(
     );
     let mut plans: Vec<GpuPlan> = Vec::new();
     let mut seen: Vec<Vec<String>> = Vec::new();
+    // Every drag is planned from the stack's first layer past its source layers
+    // ([`plan_preview`]), and so is a gesture of a mask the stack's layers already read: a stroke,
+    // or a shape moved, draws the committed stack itself, every layer in the CPU's shape.
+    let editable = |recipe: &Recipe| first_content_layer(registry, recipe);
+    if recipe.layers.iter().any(|layer| layer.mask.is_some())
+        && let GpuAnswer::Plan(plan) = gpu_plan_with(
+            registry,
+            recipe,
+            fit.request(editable(recipe)),
+            Some(fit.estimates(evaluation)),
+        )?
+    {
+        seen.push(warm_sequence(&plan));
+        plans.push(*plan);
+    }
     let mut spatial = 0;
     for (planned, index, own) in candidates {
         if own && spatial == WARM_SPATIAL_PLANS {
@@ -769,7 +853,7 @@ pub(crate) fn plan_warm(
         // ticks take their estimates on the GPU; a spatial layer's own drag leaves the layers
         // before it alone, so its ticks read the store, as the warmed plan does.
         let estimates = own.then(|| fit.estimates(evaluation));
-        let request = fit.request(index).drafted(index);
+        let request = fit.request(editable(&planned).min(index)).drafted(index);
         if let GpuAnswer::Plan(plan) = gpu_plan_with(registry, &planned, request, estimates)? {
             spatial += usize::from(own);
             let sequence = warm_sequence(&plan);

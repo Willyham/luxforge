@@ -539,8 +539,8 @@ fn sampled(root: &Path, name: &str) -> Watcher {
 }
 
 /// A scripted gesture launch, the viewport journey's included: its evidence in `<out>/app`, its
-/// console in `<name>.log` and its script kept as `file`. The proof curve's adds the developer
-/// flag.
+/// console in `<name>.log` and its script kept as `file`, in a window of `window` logical points
+/// when one is given. The proof curve's adds the developer flag.
 fn gesture_launch(
     out: &Path,
     name: &str,
@@ -548,12 +548,19 @@ fn gesture_launch(
     steps: &[script::Step],
     source: &Path,
     developer: bool,
+    window: Option<[u32; 2]>,
 ) -> Launch {
     let launch = Launch::named(name)
         .evidence_dir(&out.join("app"))
         .script(file, script::write(steps))
         .open_all(&[source.into()])
         .order(ORDER);
+    let launch = match window {
+        Some([width, height]) => {
+            launch.window([width.to_string().as_str(), height.to_string().as_str()])
+        }
+        None => launch,
+    };
     if developer {
         launch.developer()
     } else {
@@ -1214,6 +1221,16 @@ pub struct Options<'a> {
     /// Drag and commit modes only: turn the GPU preview off from the palette before anything else,
     /// as a person does, so every tick takes the CPU path: the same build's baseline for a GPU run.
     pub gpu_preview_off: bool,
+    /// Paint mode only: how many masks the recipe holds when the stroke is painted. The first is
+    /// the brushed mask the stroke paints into; each further one is a radial mask holding the same
+    /// masked adjustments, so a stroke on the first changes the input of every later masked layer.
+    pub masks: usize,
+    /// Paint mode only: each mask also holds a masked Presence layer (Clarity and Texture), the
+    /// neighbourhood operation a local adjustment most often carries beside its exposure.
+    pub mask_presence: bool,
+    /// The editor's window, `[width, height]` logical points, in place of its default: what a
+    /// person's own window draws the photograph at, such as a full-screen Fit stage.
+    pub window: Option<[u32; 2]>,
 }
 
 fn zoom_step(options: &Options) -> Option<script::Step> {
@@ -1313,15 +1330,69 @@ fn paint_precondition(options: &Options) -> Vec<script::Step> {
     if options.detail {
         steps.push(crate::scenario::recipe::moderate_detail());
     }
+    if options.presence {
+        steps.push(moderate_presence());
+    }
     steps.extend(brushed_mask(options));
-    steps.push(script::Step::Slider(
-        SliderStep::new(SET_BASIC, EXPOSURE, [PAINT_EV]).release(),
-    ));
+    steps.extend(masked_adjustments(options, 1));
+    // Every further mask is a radial one with the same masked adjustments, placed across the frame
+    // so the masks overlap the stroke's path as a real edit's do.
+    for index in 2..=options.masks {
+        let t = (index - 2) as f64 / (options.masks.max(3) - 2) as f64;
+        steps.push(script::Step::call(
+            "mask.create-radial",
+            json!({"x": 0.15 + 0.7 * t, "y": 0.35 + 0.3 * (t * 7.0).sin().abs(), "radius_x": 0.18,
+                "radius_y": 0.14, "angle": 0.0, "feather": 50.0}),
+        ));
+        steps.push(script::Step::Mask(MaskStep::Select(Reference::name(
+            format!("Mask {index}"),
+        ))));
+        steps.extend(masked_adjustments(options, index));
+    }
+    if options.masks > 1 {
+        steps.push(script::Step::Mask(MaskStep::Select(Reference::name(
+            "Mask 1",
+        ))));
+    }
     steps.push(script::Step::Mask(MaskStep::Paint(PaintStep::Component(
         Reference::Index(0),
     ))));
     steps
 }
+
+/// A moderate global Presence layer: Clarity and Texture, the neighbourhood operations a photograph
+/// most often carries, without Dehaze's whole-stage estimate.
+fn moderate_presence() -> script::Step {
+    script::Step::call(
+        "edit.set-presence",
+        json!({"texture": 25.0, "clarity": 20.0}),
+    )
+}
+
+/// The adjustments of mask `number`, counted from 1: its exposure and, with `--mask-presence`,
+/// Clarity and Texture on as many masks as the host evaluates masked spatial layers.
+fn masked_adjustments(options: &Options, number: usize) -> Vec<script::Step> {
+    let mut steps = vec![script::Step::Slider(
+        SliderStep::new(SET_BASIC, EXPOSURE, [PAINT_EV]).release(),
+    )];
+    if options.mask_presence && number <= MASKED_SPATIAL_LAYERS {
+        steps.push(script::Step::Slider(
+            SliderStep::new("set-presence", "clarity", [MASK_CLARITY]).release(),
+        ));
+        steps.push(script::Step::Slider(
+            SliderStep::new("set-presence", "texture", [MASK_TEXTURE]).release(),
+        ));
+    }
+    steps
+}
+
+/// The Clarity and Texture each mask holds with `--mask-presence`.
+const MASK_CLARITY: f64 = 50.0;
+const MASK_TEXTURE: f64 = 40.0;
+
+/// How many masked spatial layers the host evaluates (`docs/design/masking.md`, "Limits"); a
+/// mask past them holds its exposure alone.
+const MASKED_SPATIAL_LAYERS: usize = 4;
 
 /// Mask mode with the paint brush's settings and one committed brush mask. With
 /// `--mask-overlay`, the selected mask's tint is on, so every accepted draft also asks for its
@@ -1400,7 +1471,12 @@ fn report_geometry(result: &mut Value, options: &Options) {
 
 /// The paint run's script: its preconditions, then the one paced stroke along `path`.
 fn paint_script(options: &Options, path: Vec<[f64; 2]>) -> Vec<script::Step> {
-    let mut steps = geometry_preconditions(options);
+    let mut steps: Vec<script::Step> = options
+        .gpu_preview_off
+        .then(|| script::Step::Palette(PaletteStep::Run("gpu preview".into())))
+        .into_iter()
+        .collect();
+    steps.extend(geometry_preconditions(options));
     if options.basic {
         steps.push(basic_precondition(options));
     }
@@ -1825,9 +1901,17 @@ fn viewport(
     let out = &run.out().to_path_buf();
     let name = format!("viewport-{journey:03}");
     let load_start = launch::load_average(run.root());
-    let viewport = gesture_launch(out, &name, "viewport-script.json", steps, source, false)
-        .evidence_dir(&out.join(&name))
-        .watch(sampled(run.root(), "viewport"));
+    let viewport = gesture_launch(
+        out,
+        &name,
+        "viewport-script.json",
+        steps,
+        source,
+        false,
+        options.window,
+    )
+    .evidence_dir(&out.join(&name))
+    .watch(sampled(run.root(), "viewport"));
     let Launched {
         dir: evidence,
         watched: usage,
@@ -2490,12 +2574,21 @@ pub struct StrokeFeedback {
     pub coverage_ms: Vec<f64>,
 }
 
+/// One accepted stroke input: when it was sent, the preview job it queued (none for a tick drawn
+/// on the GPU), and the draft and revision its feedback is stamped with.
+struct StrokeInput {
+    sent: f64,
+    generation: Option<u64>,
+    draft_id: Option<String>,
+    revision: Option<u64>,
+}
+
 /// Keep photograph adoption and authoritative coverage feedback separate. Unbound mask changes
 /// can reuse the photograph; their accepted draft identity/revision pairs only with coverage,
 /// and never acquires an invented photograph rendering or presentation time.
 pub fn paced_stroke_latencies(events: &[Value]) -> Result<StrokeFeedback> {
     let mut pending: Option<(f64, Option<String>)> = None;
-    let mut inputs: Vec<(f64, u64, Option<String>, Option<u64>)> = Vec::new();
+    let mut inputs: Vec<StrokeInput> = Vec::new();
     for event in events {
         match event["event"].as_str() {
             Some("mask_draft_set") => {
@@ -2511,12 +2604,23 @@ pub fn paced_stroke_latencies(events: &[Value]) -> Result<StrokeFeedback> {
                 let generation = event["detail"]["generation"]
                     .as_u64()
                     .ok_or("A mask draft preview named no generation")?;
-                inputs.push((
+                inputs.push(StrokeInput {
                     sent,
-                    generation,
+                    generation: Some(generation),
                     draft_id,
-                    event["detail"]["draft_revision"].as_u64(),
-                ));
+                    revision: event["detail"]["draft_revision"].as_u64(),
+                });
+            }
+            // A tick drawn on the GPU queues no preview job; its coverage still follows it.
+            Some("gpu_preview_tick") if event["detail"]["path"] == "gpu" => {
+                if let Some((sent, draft_id)) = pending.take() {
+                    inputs.push(StrokeInput {
+                        sent,
+                        generation: None,
+                        draft_id,
+                        revision: event["detail"]["draft_revision"].as_u64(),
+                    });
+                }
             }
             _ => {}
         }
@@ -2525,7 +2629,13 @@ pub fn paced_stroke_latencies(events: &[Value]) -> Result<StrokeFeedback> {
         inputs: inputs.len(),
         ..StrokeFeedback::default()
     };
-    for (sent, generation, draft_id, revision) in &inputs {
+    for StrokeInput {
+        sent,
+        generation,
+        draft_id,
+        revision,
+    } in &inputs
+    {
         let identity_matches = |event: &Value| {
             let stamp = &event["detail"]["identity"]["draft"];
             draft_id
@@ -2545,6 +2655,7 @@ pub fn paced_stroke_latencies(events: &[Value]) -> Result<StrokeFeedback> {
             feedback.coverage_ms.push(elapsed(covered)? - *sent);
         }
         if !reused
+            && let Some(generation) = generation
             && let Some(displayed) = events.iter().find(|event| {
                 event["event"] == "preview_displayed"
                     && event["detail"]["generation"].as_u64() == Some(*generation)
@@ -2650,7 +2761,7 @@ fn run_hover(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
         let source_hash = hash(&source)?;
         let (steps, hovers) = hover_script(options)?;
         let load_start = launch::load_average(root);
-        let launched = gesture_launch(out, "hover", "hover-script.json", &steps, &source, false)
+        let launched = gesture_launch(out, "hover", "hover-script.json", &steps, &source, false, options.window)
             .watch(sampled(root, "hover"));
         let Launched { dir: evidence, watched: usage } = run.launch(launched)?;
         let app = read_json(&evidence.join("result.json"))?;
@@ -2743,6 +2854,7 @@ fn paint(run: &mut Run, options: &Options) -> Result {
         &steps,
         &source,
         false,
+        options.window,
     )
     .watch(sampled(root, "gesture"));
     let Launched {
@@ -2774,9 +2886,10 @@ fn paint(run: &mut Run, options: &Options) -> Result {
         .as_array()
         .ok_or("The run captured no mask list")?;
     ensure(
-        masks.len() == 1,
+        masks.len() == options.masks,
         format!(
-            "A bare paint run must hold exactly one mask, not {}",
+            "The paint run must hold exactly {} masks, not {}",
+            options.masks,
             masks.len()
         ),
     )?;
@@ -2795,10 +2908,11 @@ fn paint(run: &mut Run, options: &Options) -> Result {
     let bound = masks[0]["layers"]
         .as_array()
         .ok_or("The mask names no bound layers")?;
+    let per_mask = 1 + usize::from(options.mask_presence);
     ensure(
-        bound.len() == 1,
+        bound.len() == per_mask,
         format!(
-            "A bare paint run must hold one masked layer, not {:?}",
+            "The painted mask must hold {per_mask} masked layers, not {:?}",
             bound
         ),
     )?;
@@ -2907,6 +3021,22 @@ fn paint(run: &mut Run, options: &Options) -> Result {
             ));
         }
     }
+    // Why each of the stroke's ticks took the CPU path, from its own `gpu_preview_tick`.
+    let mut cpu_reasons: BTreeMap<String, usize> = BTreeMap::new();
+    let mut gpu_tick_count = 0usize;
+    for event in paced_stroke_events(&events, options.samples)? {
+        if event["event"] == "gpu_preview_tick" {
+            if event["detail"]["path"] == "cpu" {
+                let reason = event["detail"]["reason"]
+                    .as_str()
+                    .unwrap_or("none")
+                    .to_owned();
+                *cpu_reasons.entry(reason).or_default() += 1;
+            } else {
+                gpu_tick_count += 1;
+            }
+        }
+    }
     let overlay_lag = overlay_lags(&events, &phase_samples)?;
     if options.mask_overlay {
         ensure(
@@ -2949,6 +3079,7 @@ fn paint(run: &mut Run, options: &Options) -> Result {
         "brush":{"size":PAINT_SIZE,"feather":PAINT_FEATHER,"flow":100.0,"erase":false,
             "exposure_ev":PAINT_EV,
             "note":"Feathered, so the proxy phase point samples the mask field; a hard edge would force its 2 × 2 supersample."},
+        "tick_paths":{"gpu":gpu_tick_count,"cpu_reasons":cpu_reasons},
         "stroke":{
             "interval_ms":PAINT_INTERVAL_MS,
             "positions":options.samples,
@@ -3090,6 +3221,7 @@ fn crop_start(run: &mut Run, options: &Options) -> Result {
         &steps,
         &source,
         false,
+        options.window,
     )
     .watch(sampled(root, "crop-start"));
     let Launched {
@@ -3237,8 +3369,16 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         "--control curve measures a drag or a commit; pass --mode drag or --mode commit",
     )?;
     ensure(
-        !options.gpu_preview_off || matches!(options.mode, Mode::Drag | Mode::Commit),
-        "--no-gpu-preview measures a drag or a commit; pass --mode drag or --mode commit",
+        (options.masks == 1 && !options.mask_presence) || options.mode == Mode::Paint,
+        "--masks and --mask-presence measure a paint stroke; pass --mode paint",
+    )?;
+    ensure(
+        (1..=10).contains(&options.masks),
+        "--masks is 1 to 10: each further mask takes four script steps",
+    )?;
+    ensure(
+        !options.gpu_preview_off || matches!(options.mode, Mode::Drag | Mode::Commit | Mode::Paint),
+        "--no-gpu-preview measures a drag, a commit or a stroke; pass --mode drag, commit or paint",
     )?;
     if let Some(ms) = options.warm_ms {
         ensure(
@@ -3335,6 +3475,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         &steps,
         &source,
         field.curve == Some(CurveOwner::Proof),
+        options.window,
     )
     .watch(sampled(root, "gesture"));
     let Launched {
@@ -4198,6 +4339,7 @@ fn burst(run: &mut Run, options: &Options) -> Result {
         &steps,
         &source,
         false,
+        options.window,
     )
     .watch(sampled(root, "gesture"));
     let Launched {
@@ -4558,6 +4700,9 @@ mod tests {
             contend: None,
             warm_ms: None,
             gpu_preview_off: false,
+            masks: 1,
+            mask_presence: false,
+            window: None,
         };
         let geometry = geometry_preconditions(&options);
         // A JPEG's Lens precondition is the section and its Apply.
@@ -4697,6 +4842,9 @@ mod tests {
                             contend: None,
                             warm_ms: None,
                             gpu_preview_off: false,
+                            masks: 1,
+                            mask_presence: false,
+                            window: None,
                         };
                         let mut tag = format!("crop{}-mask{mask}-basic{basic}", crop.is_some());
                         if let Some(zoom) = zoom {
@@ -4780,6 +4928,9 @@ mod tests {
                             contend: None,
                             warm_ms: None,
                             gpu_preview_off: false,
+                            masks: 1,
+                            mask_presence: false,
+                            window: None,
                         };
                         let tag =
                             format!("crop{}-mask{mask}-basic{basic}-zoom{zoom}", crop.is_some());
@@ -4802,7 +4953,7 @@ mod tests {
             ("curve", "gesture", "gesture-script.json", true),
             ("viewport", "viewport", "viewport-script.json", false),
         ] {
-            let launch = gesture_launch(out, log, file, &[], &source, developer);
+            let launch = gesture_launch(out, log, file, &[], &source, developer, None);
             put(format!("{name}-arguments"), json!(launch.command(out)));
         }
         let catalog = out.join("app/catalog.sqlite");
@@ -4840,6 +4991,9 @@ mod tests {
             contend: None,
             warm_ms: None,
             gpu_preview_off: false,
+            masks: 1,
+            mask_presence: false,
+            window: None,
             zoom: None,
             moving_pan: false,
         };
@@ -4883,6 +5037,9 @@ mod tests {
             contend: None,
             warm_ms: None,
             gpu_preview_off: false,
+            masks: 1,
+            mask_presence: false,
+            window: None,
             zoom: Some(100.0),
             moving_pan: true,
         };
@@ -4952,6 +5109,9 @@ mod tests {
             contend: None,
             warm_ms: None,
             gpu_preview_off: false,
+            masks: 1,
+            mask_presence: false,
+            window: None,
         };
         let field = FieldTarget::basic_exposure();
         let (steps, positions) = viewport_script(&options, &field);
@@ -5009,6 +5169,9 @@ mod tests {
             contend: None,
             warm_ms: None,
             gpu_preview_off: false,
+            masks: 1,
+            mask_presence: false,
+            window: None,
         };
         let field = FieldTarget::lookup("set-perspective", "horizontal").unwrap();
         let values = field.gesture_values(30);
@@ -5079,6 +5242,9 @@ mod tests {
             contend: None,
             warm_ms: None,
             gpu_preview_off: false,
+            masks: 1,
+            mask_presence: false,
+            window: None,
         }
     }
 
@@ -5451,6 +5617,9 @@ mod tests {
             contend: None,
             warm_ms: None,
             gpu_preview_off: false,
+            masks: 1,
+            mask_presence: false,
+            window: None,
             zoom: None,
             moving_pan: false,
         };
@@ -6028,6 +6197,9 @@ mod tests {
             contend: None,
             warm_ms: None,
             gpu_preview_off: false,
+            masks: 1,
+            mask_presence: false,
+            window: None,
         };
         let values = gesture_values(4, Control::Slider, &field);
         let plain = gesture_script(&options, &field, SourceTag::Jpeg, &values, true);
@@ -6072,6 +6244,9 @@ mod tests {
         // `--no-gpu-preview` turns the preference off from the palette before anything else.
         let off = Options {
             gpu_preview_off: true,
+            masks: 1,
+            mask_presence: false,
+            window: None,
             ..options
         };
         let steps = measured_script(&off, &field, SourceTag::Jpeg, &values, true, &dir);

@@ -33,7 +33,7 @@
 //! content pass writes codes into an 8-bit intermediate, the tail decodes them through the same
 //! table the CPU decodes with, and its blend is quantized and decoded again. A developed RAW keeps
 //! its values unquantized and unclamped between segments, so its tail does neither, and the
-//! intermediate is `rgba16float`.
+//! intermediate is `rgba32float` to preserve the full linear range.
 //!
 //! # The output encoding
 //!
@@ -125,6 +125,7 @@ fn lf_tail_grid(pixel: vec2<f32>, words: u32, block: u32) -> vec2<f32> {
 pub struct GpuTail {
     output: (u32, u32),
     quantize: bool,
+    preserve_f32: bool,
     program: GpuProgram,
 }
 
@@ -138,6 +139,7 @@ impl GpuTail {
         Self {
             output,
             quantize,
+            preserve_f32: false,
             program: GpuProgram {
                 words,
                 ..GpuProgram::new(AFFINE_ENTRY, AFFINE_SOURCE)
@@ -159,6 +161,7 @@ impl GpuTail {
         Self {
             output,
             quantize,
+            preserve_f32: false,
             program: GpuProgram {
                 words,
                 ..GpuProgram::new(PROJECTIVE_ENTRY, PROJECTIVE_SOURCE)
@@ -190,6 +193,7 @@ impl GpuTail {
         Self {
             output,
             quantize,
+            preserve_f32: false,
             program: GpuProgram {
                 words,
                 block: nodes,
@@ -208,14 +212,46 @@ impl GpuTail {
         self.quantize
     }
 
+    /// Keep the geometry pass's scene-linear values in `rgba32float`, including values outside
+    /// half-float's range. Used for boundaries rendered from the RAW linear path.
+    pub fn preserve_f32(mut self) -> Self {
+        self.preserve_f32 = true;
+        self
+    }
+
+    pub(super) fn preserves_f32(&self) -> bool {
+        self.preserve_f32
+    }
+
     pub(super) fn program(&self) -> &GpuProgram {
         &self.program
+    }
+
+    /// Whether the tail takes each output pixel from the intermediate's texel at the same stage
+    /// pixel: an affine tail of the identity matrix, which resamples nothing — a stage boundary
+    /// before the output stage's operations, quantized as the CPU's is on a JPEG. Its output
+    /// changes only where the intermediate does.
+    pub(super) fn identity(&self) -> bool {
+        // By value: a matrix of the identity may carry negative zeros.
+        self.program.entry == AFFINE_ENTRY
+            && self
+                .program
+                .words
+                .get(HEADER_WORDS..HEADER_WORDS + 6)
+                .is_some_and(|matrix| {
+                    matrix
+                        .iter()
+                        .map(|word| f32::from_bits(*word))
+                        .eq([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+                })
     }
 
     /// The format of the content pass's result, which the tail reads.
     pub(super) fn intermediate(&self) -> wgpu::TextureFormat {
         if self.quantize {
             wgpu::TextureFormat::Rgba8Unorm
+        } else if self.preserve_f32 {
+            wgpu::TextureFormat::Rgba32Float
         } else {
             wgpu::TextureFormat::Rgba16Float
         }

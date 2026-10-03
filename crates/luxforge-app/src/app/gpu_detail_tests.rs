@@ -198,6 +198,7 @@ fn pass(kernel: &'static str, inputs: &[u32], output: u32, words: u32) -> GpuPas
         words,
         source: 0,
         shape: EACH,
+        unit: 0,
     }
 }
 
@@ -257,6 +258,7 @@ fn run_step(
         applies: vec![apply],
         clamps: false,
         mask: None,
+        halos: Vec::new(),
     };
     let plan = GpuPlan {
         boundary: boundary(width, height, 1, values).expect("a boundary"),
@@ -1171,10 +1173,12 @@ fn gpu_detail_pass_pipelines_are_shared() {
 }
 
 /// What the photo surface's slot drawing both Detail units charges the GPU-preview budget at Fit:
-/// four half-precision planes, 32 bytes a pixel, sharpening's in the ones noise reduction leaves
-/// free. The 60 MP JPEG's Fit stage, the evidence window's whole Fit bounds and a 3026 × 1826
-/// region (the largest 100% window measured) fit it; a stage past about 14 MP does not, so the
-/// surface refuses it before creating anything and draws the CPU's frame, naming the budget
+/// six half-precision planes, 48 bytes a pixel, sharpening's scratch in the ones noise reduction
+/// leaves free and each unit's apply reading a plane of its own that one pass writes, which an
+/// incremental tick keeps. The 60 MP JPEG's Fit stage, the evidence window's whole Fit bounds, a
+/// 3026 × 1826 region (the largest 100% window measured) and a 7000 × 4667 stage fit it; a stage
+/// past about 33 MP does not, so the surface refuses it before creating anything and draws the
+/// CPU's frame, naming the budget
 /// (`spatial_planes_are_charged_released_and_refused_past_the_budget`).
 #[test]
 fn gpu_detail_planes_are_charged_to_the_budget() {
@@ -1191,8 +1195,9 @@ fn gpu_detail_planes_are_charged_to_the_budget() {
         ((3026, 1826), (10000, 6000), true),
         ((3464, 2309), (10000, 6667), true),
         ((4000, 2667), (10000, 6667), true),
-        ((4400, 2933), (10000, 6667), true),
-        ((5000, 3334), (10000, 6667), false),
+        ((6400, 4267), (10000, 6667), true),
+        ((7000, 4667), (10000, 6667), true),
+        ((7200, 4800), (10000, 6667), false),
     ] {
         let plan = planned(
             gpu_plan(
@@ -1217,7 +1222,7 @@ fn gpu_detail_planes_are_charged_to_the_budget() {
             charged as f64 / 1048576.0,
             budget / 1048576
         );
-        assert_eq!(planes, 32 * u64::from(width * height));
+        assert_eq!(planes, 48 * u64::from(width * height));
         assert_eq!(charged <= budget, fits, "{width}x{height}");
     }
 }
@@ -1503,6 +1508,7 @@ mod drags {
             ready_boundary: Some(version),
             fallback: None,
             drawn: None,
+            evaluated: None,
         });
     }
 
@@ -1525,7 +1531,7 @@ mod drags {
     /// source itself. Once the boundary is held and the surface has evaluated it, every tick is
     /// Detail's spatial step drawn on the GPU with no preview job. The release commits, and the
     /// CPU's frames replace the GPU's: the moving proxy, then the reduction of the exact render
-    /// the stack settles to; the boundary goes once that is presented.
+    /// the stack settles to; the boundary then stays resident for the next draft.
     #[test]
     fn gpu_detail_a_fit_drag_is_drawn_on_the_gpu_and_settles_from_exact() {
         let catalog = catalog("drag");
@@ -1573,7 +1579,7 @@ mod drags {
         assert_eq!(ticks.len(), 3);
         assert!(ticks.iter().all(|tick| tick["path"] == "gpu"));
         // The release commits. The CPU's frames take over: the moving proxy, then the reduction
-        // of the exact render, after which the boundary is let go.
+        // of the exact render, after which the boundary stays resident behind them.
         let log = attach_log(&mut editor);
         let _ = let_go(&mut editor, "set-detail", "sharpening");
         assert!(run_commit(&mut editor));
@@ -1593,17 +1599,17 @@ mod drags {
             "the moving proxy before it: {shown:?}"
         );
         assert_eq!(
-            events(&records, "gpu_boundary_released")[0]["why"],
+            events(&records, "gpu_boundary_resident")[0]["why"],
             "draft-ended"
         );
-        assert!(editor.surfaces().gpu.is_none());
+        assert!(editor.surfaces().gpu.is_some() && editor.surfaces().gpu_hold);
         finish(editor, catalog);
     }
 
-    /// A drag of a layer after a committed Detail layer: its boundary is the restoration prefix's
-    /// output, which the worker reads from the restoration-prefix proxy cache its first tick's
-    /// frame just held, and its ticks are drawn on the GPU with no preview job, while the CPU
-    /// frame before them reports the cache's use.
+    /// A drag of a layer after a committed Detail layer starts from the same boundary as the
+    /// Detail drag, the stack's first layer's input, which stays resident between the two: no
+    /// boundary is asked for again, and its plan runs Detail's spatial step, which the surface
+    /// keeps by content, then Basic's colour, every tick drawn on the GPU with no preview job.
     #[test]
     fn gpu_detail_a_drag_after_detail_starts_from_the_restoration_prefix() {
         let catalog = catalog("suffix");
@@ -1615,17 +1621,20 @@ mod drags {
         deliver_until(&mut editor, "the committed Detail frame", |editor| {
             !editor.gpu.has_drag() && editor.presentation.presented_settled
         });
-        editor.gpu.surface = Some(SurfaceReport::default());
-        let _ = slide(&mut editor, "set-basic", "exposure", 0.2);
-        deliver_until(&mut editor, "the boundary", |editor| {
-            editor.gpu.holds_boundary() && editor.presentation.restoration_prefix.is_some()
-        });
-        assert_eq!(editor.gpu.summary()["drag"]["boundary"]["layer"], 1);
-        assert!(editor.presentation.restoration_prefix.is_some());
-        // The plan runs from Basic's input: colour, no spatial step.
-        assert!(editor.surfaces().gpu.is_some());
-        assert_eq!(spatial_program(&editor), None);
+        assert!(
+            editor.gpu.holds_boundary(),
+            "the Detail drag's boundary is resident"
+        );
         surface_ready(&mut editor);
+        let log = attach_log(&mut editor);
+        let _ = slide(&mut editor, "set-basic", "exposure", 0.2);
+        let records = logged(&mut editor, &log);
+        assert_eq!(editor.gpu.summary()["drag"]["boundary"]["layer"], 0);
+        assert_eq!(editor.gpu.ticks().2, 0, "no boundary is asked for");
+        assert_eq!(jobs(&records), 0, "its first tick is drawn on the GPU");
+        // The plan runs from Detail's input: Detail's spatial step, then Basic's colour.
+        assert!(editor.surfaces().gpu.is_some());
+        assert_eq!(spatial_program(&editor).as_deref(), Some("lf_detail"));
         let log = attach_log(&mut editor);
         for exposure in [0.4, 0.6] {
             let _ = slide(&mut editor, "set-basic", "exposure", exposure);

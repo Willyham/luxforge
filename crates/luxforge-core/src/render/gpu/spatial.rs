@@ -42,12 +42,12 @@ use crate::Error;
 /// How many inputs one pass may read: planes `0..4` of `lf_plane`.
 pub const GPU_PASS_INPUTS: usize = 4;
 
-/// The most planes the applies of a plan's chained spatial operations may read. A pass binds its
-/// own inputs, at most [`GPU_PASS_INPUTS`], and the planes of every apply its input runs through,
-/// beside the boundary, within the 16 sampled textures a shader stage has on every adapter the
-/// surface runs spatial steps on: `16 - 1 - 4`. Detail's three apply planes and Presence's four
-/// fit, with a second Presence, through a mask, beside them; a stack past it names
-/// `spatial-chain`.
+/// The most planes the applies of one spatial operation may read. The surface runs each spatial
+/// operation as a link of its own over the texture the link before wrote, so a pass binds only its
+/// own inputs, at most [`GPU_PASS_INPUTS`], and its own operation's apply planes, beside that
+/// input, within the 16 sampled textures a shader stage has on every adapter the surface runs
+/// spatial steps on: `16 - 1 - 4`. Detail's three apply planes and Presence's four fit with room
+/// to spare, and a chain of any length holds; an operation past it names `spatial-chain`.
 pub const GPU_CHAIN_APPLY_PLANES: usize = 11;
 
 /// The lanes of a [`GpuPassShape::Workgroup`] pass, and how many values `lf_shared` holds.
@@ -181,6 +181,8 @@ pub struct GpuPass {
     /// Whether its kernel reads its unit's input through `lf_source`. A description sets it; the
     /// composition sets `source` from it.
     pub reads_source: bool,
+    /// The index of its unit in the operation, which the composition sets.
+    pub unit: usize,
 }
 
 /// One unit's apply: its function, the planes it reads and its first word.
@@ -233,6 +235,11 @@ pub struct GpuSpatial {
     /// operation of the plan enters: empty for the last, whose segment's colour operations are the
     /// plan's output operations.
     pub after: Vec<super::GpuOperation>,
+    /// How far beyond an output pixel, in pixels of its stage, each unit's apply depends on the
+    /// unit's input, as the CPU's tiles read it; the operation's output depends on its input as far
+    /// as their sum. A masked operation's passes need run only over its mask's bounds grown by the
+    /// sum, and a tick that changes part of the input only over that part grown unit by unit.
+    pub halos: Vec<u32>,
 }
 
 impl GpuSpatial {
@@ -250,8 +257,9 @@ impl GpuSpatial {
 
 /// The units of one operation as one [`GpuSpatial`]: each unit's words after the last's, its planes
 /// placed, a scratch plane of one unit given to a later unit's plane of the same size whose format
-/// it [holds](GpuPlaneFormat::holds), and every pass's `source` set to its unit's index. Every unit
-/// must carry the same program, one each of the operation's applies.
+/// it [holds](GpuPlaneFormat::holds), every plane an apply reads given one writer, and every pass's
+/// `source` set to its unit's index. Every unit must carry the same program, one each of the
+/// operation's applies.
 pub(crate) fn compose(
     layer: usize,
     units: Vec<GpuSpatialUnit>,
@@ -276,6 +284,7 @@ pub(crate) fn compose(
         estimated: false,
         held: false,
         after: Vec::new(),
+        halos: Vec::new(),
     };
     // Scratch planes the units before this one wrote, free for this one.
     let mut free: Vec<usize> = Vec::new();
@@ -295,7 +304,8 @@ pub(crate) fn compose(
             .map(|plane| {
                 // The smallest free plane that holds it. Every pass of the units before has run
                 // before this unit's first, so an apply's plane may take one as well as a scratch
-                // plane, and then no later unit may.
+                // plane, and then no later unit may; the apply then reads a plane of its own that
+                // only its last writer writes ([`single_writer`]).
                 let reused = free
                     .iter()
                     .enumerate()
@@ -344,9 +354,10 @@ pub(crate) fn compose(
                 source: if pass.reads_source { index } else { 0 },
                 shape: pass.shape,
                 reads_source: pass.reads_source,
+                unit: index,
             });
         }
-        composed.applies.push(GpuApply {
+        let mut apply = GpuApply {
             function: unit.apply.function,
             planes: unit
                 .apply
@@ -355,7 +366,9 @@ pub(crate) fn compose(
                 .map(|&plane| place(plane))
                 .collect::<Result<_, _>>()?,
             words: base + unit.apply.words,
-        });
+        };
+        free.extend(single_writer(&mut composed, &mut apply));
+        composed.applies.push(apply);
         composed.estimated |= unit.estimated;
         for (plane, &at) in unit.planes.iter().zip(&placed) {
             if plane.scratch {
@@ -364,6 +377,50 @@ pub(crate) fn compose(
         }
     }
     Ok(composed)
+}
+
+/// Give each plane `apply` reads that more than one of the operation's passes write — a unit that
+/// holds its smoother's coefficients where its last pass then writes the result, or a plane the
+/// unit took from an earlier unit's scratch — a plane of its own, which the last of them writes and
+/// the apply reads, and answer the planes it leaves as scratch. The apply's unit is the last
+/// composed, so its passes are the last ones.
+///
+/// So every plane an apply reads has one writer. A tick that changes part of the operation's
+/// input runs that writer only where its output changes and every other pass around it
+/// (`docs/design/gpu-preview.md`, "Incremental ticks"): a plane the apply reads must keep its
+/// values everywhere else, which an earlier pass writing it over the larger rectangle would not.
+fn single_writer(composed: &mut GpuSpatial, apply: &mut GpuApply) -> Vec<usize> {
+    let mut freed: Vec<(usize, usize)> = Vec::new();
+    for read in apply.planes.iter_mut() {
+        if let Some(&(_, own)) = freed.iter().find(|(plane, _)| plane == read) {
+            *read = own;
+            continue;
+        }
+        let writers: Vec<usize> = (0..composed.passes.len())
+            .filter(|&number| composed.passes[number].output == *read)
+            .collect();
+        let Some((&last, earlier)) = writers.split_last() else {
+            continue;
+        };
+        if earlier.is_empty() {
+            continue;
+        }
+        let own = composed.planes.len();
+        composed.planes.push(composed.planes[*read]);
+        composed.planes[*read].scratch = true;
+        composed.passes[last].output = own;
+        // A later pass of the unit reads the value the last writer leaves.
+        for pass in &mut composed.passes[last + 1..] {
+            for input in &mut pass.inputs {
+                if *input == *read {
+                    *input = own;
+                }
+            }
+        }
+        freed.push((*read, own));
+        *read = own;
+    }
+    freed.into_iter().map(|(plane, _)| plane).collect()
 }
 
 /// A spatial operation's units that have no description, or a description whose program does not

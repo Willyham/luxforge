@@ -500,6 +500,22 @@ fn main_result() -> Result {
                 .map(|value| value.to_string_lossy().parse::<u64>())
                 .transpose()?;
             let gpu_preview_off = a.flag("--no-gpu-preview");
+            let masks = a
+                .value("--masks")?
+                .map(|value| value.to_string_lossy().parse::<usize>())
+                .transpose()?
+                .unwrap_or(1);
+            let mask_presence = a.flag("--mask-presence");
+            let window = a
+                .value("--window")?
+                .map(|value| -> Result<[u32; 2]> {
+                    let value = value.to_string_lossy().into_owned();
+                    let (width, height) = value
+                        .split_once('x')
+                        .ok_or("--window is WIDTHxHEIGHT logical points")?;
+                    Ok([width.parse()?, height.parse()?])
+                })
+                .transpose()?;
             let control = match a.value("--control")?.as_deref().and_then(OsStr::to_str) {
                 None | Some("slider") => editor_latency::Control::Slider,
                 Some("curve") => editor_latency::Control::Curve,
@@ -573,6 +589,9 @@ fn main_result() -> Result {
                     contend,
                     warm_ms,
                     gpu_preview_off,
+                    masks,
+                    mask_presence,
+                    window,
                 },
             )?;
         }

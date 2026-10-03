@@ -103,6 +103,93 @@ pub const GPU_BLOCK_WORDS_MAX: usize = GPU_SEGMENT_WORDS * crate::model::POINTS_
     + (GRID_SIDE_MAX + 1) * (GRID_SIDE_MAX + 1) * SEGMENTS_PER_PIXEL
     + GPU_RECORD_WORDS * STROKES_PER_COMPONENT;
 
+/// A brush description's segments and stroke records, word for word.
+type GpuParts = (Vec<[u32; GPU_SEGMENT_WORDS]>, Vec<[u32; GPU_RECORD_WORDS]>);
+
+/// The rectangle of the program's `pos` pixels, `[x0, y0, x1, y1]`, outside which the coverage the
+/// brush field described by `new` gives is the coverage the one described by `old` gives, both
+/// described by this program ([`Compiled::gpu`]): what a painted tick changes. Coverage depends
+/// only on the segments and the strokes' records — the grid index only says which segments a pixel
+/// tests — so the rectangle holds every segment the two blocks hold differently, at its old and its
+/// new place, grown by the largest stroke radius either holds, past which a segment covers nothing.
+/// `Some(None)` when the coverage is the same everywhere, and `None` when a stroke's record or the
+/// stage changed, which can change it anywhere.
+pub(crate) fn gpu_changed(old: &GpuDescription, new: &GpuDescription) -> Option<Option<[f64; 4]>> {
+    // The stage's height, which takes mask space to pixels: `u = (x + 0.5) / H`.
+    let height = match (old.words.first(), new.words.first()) {
+        (Some(old), Some(new)) if old == new => f64::from(f32::from_bits(*new)),
+        _ => return None,
+    };
+    let parts = |description: &GpuDescription| -> Option<GpuParts> {
+        let words = &description.words;
+        let block = description.block.as_deref().unwrap_or(&[]);
+        if words.len() < 9 || words[4] == 0 || words[5] == 0 {
+            return Some((Vec::new(), Vec::new()));
+        }
+        let segments_end = words[6] as usize;
+        let records_at = words[8] as usize;
+        if !segments_end.is_multiple_of(GPU_SEGMENT_WORDS)
+            || segments_end > block.len()
+            || records_at > block.len()
+            || !(block.len() - records_at).is_multiple_of(GPU_RECORD_WORDS)
+        {
+            return None;
+        }
+        let segments = block[..segments_end]
+            .chunks_exact(GPU_SEGMENT_WORDS)
+            .map(|segment| std::array::from_fn(|i| segment[i]))
+            .collect();
+        let records = block[records_at..]
+            .chunks_exact(GPU_RECORD_WORDS)
+            .map(|record| std::array::from_fn(|i| record[i]))
+            .collect();
+        Some((segments, records))
+    };
+    let (old_segments, old_records) = parts(old)?;
+    let (new_segments, new_records) = parts(new)?;
+    // A stroke's record holds its radius, falloff, flags, flow and colour limit: one that changed
+    // changes coverage wherever the stroke reaches. Strokes added or removed come and go with
+    // their segments.
+    if old_records
+        .iter()
+        .zip(&new_records)
+        .any(|(old, new)| old != new)
+    {
+        return None;
+    }
+    let radius = old_records
+        .iter()
+        .chain(&new_records)
+        .map(|record| f64::from(f32::from_bits(record[0])))
+        .fold(0.0_f64, f64::max);
+    let mut rect: Option<[f64; 4]> = None;
+    let mut include = |segment: &[u32; GPU_SEGMENT_WORDS]| {
+        let [ax, ay, ex, ey] = [0, 1, 2, 3].map(|i| f64::from(f32::from_bits(segment[i])));
+        let (u0, u1) = (ax.min(ax + ex), ax.max(ax + ex));
+        let (v0, v1) = (ay.min(ay + ey), ay.max(ay + ey));
+        rect = Some(match rect {
+            None => [u0, v0, u1, v1],
+            Some([a, b, c, d]) => [a.min(u0), b.min(v0), c.max(u1), d.max(v1)],
+        });
+    };
+    let common = old_segments.len().min(new_segments.len());
+    for (old, new) in old_segments[..common].iter().zip(&new_segments[..common]) {
+        if old != new {
+            include(old);
+            include(new);
+        }
+    }
+    for segment in old_segments[common..].iter().chain(&new_segments[common..]) {
+        include(segment);
+    }
+    if rect.is_some_and(|[u0, v0, u1, v1]| ![u0, v0, u1, v1].iter().all(|v| v.is_finite())) {
+        return None;
+    }
+    Some(rect.map(|[u0, v0, u1, v1]| {
+        [u0 - radius, v0 - radius, u1 + radius, v1 + radius].map(|value| value * height - 0.5)
+    }))
+}
+
 /// A record's flags.
 const GPU_HARD: u32 = 1;
 const GPU_ERASE: u32 = 2;

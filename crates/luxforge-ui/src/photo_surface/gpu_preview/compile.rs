@@ -22,13 +22,15 @@
 //!   together, the least recently asked for evicted first when a compile ends, and at most as many
 //!   wait in the queue; a warmed sequence that finds the queue full is not queued, and one a frame
 //!   asks for takes the place of the newest warmed one waiting.
+//!   If a full queue contains only sequences already asked for by frames, a new sequence retries
+//!   admission on a later prepare while its frame uses the CPU.
 //!
 //! The compile thread takes wgpu's error scopes around the pipeline it creates. wgpu 27's scopes
 //! belong to the device, not to a thread, and the UI thread pushes none of its own, so the stack
 //! stays balanced; an error the UI thread raised while a compile's scope is open would be counted
 //! as that compile's failure, which takes the CPU path for that sequence and nothing worse.
 use super::{
-    CompileFigures, Compiled, Figures, GpuFallback, GpuStep, OUTPUT_FORMAT, StepKind, Support,
+    BoundaryFormat, CompileFigures, Compiled, Figures, GpuFallback, GpuStep, StepKind, Support,
     compile,
 };
 use crate::photo_surface::wake_surface;
@@ -48,16 +50,17 @@ pub const PIPELINE_CACHE: usize = 16;
 
 /// The program sequences a gesture is likely to need, which the desktop names when the stack
 /// changes so they compile before a drag begins ([`super::super::PhotoSurface::gpu_warm`]). Each
-/// sequence is a plan's steps; only their kinds and programs matter, never their words. A new
-/// `version` is warmed once, so handing the same one to every frame costs nothing.
+/// sequence is a plan's steps and the format its boundary will be held in, which its chain's
+/// intermediates take ([`super::chain`]); only the steps' kinds and programs matter, never their
+/// words. A new `version` is warmed once, so handing the same one to every frame costs nothing.
 #[derive(Clone, Debug)]
 pub struct GpuWarm {
     version: u64,
-    sequences: Arc<[Vec<GpuStep>]>,
+    sequences: Arc<[(Vec<GpuStep>, BoundaryFormat)]>,
 }
 
 impl GpuWarm {
-    pub fn new(version: u64, sequences: Vec<Vec<GpuStep>>) -> Self {
+    pub fn new(version: u64, sequences: Vec<(Vec<GpuStep>, BoundaryFormat)>) -> Self {
         Self {
             version,
             sequences: sequences.into(),
@@ -68,7 +71,7 @@ impl GpuWarm {
         self.version
     }
 
-    pub fn sequences(&self) -> &[Vec<GpuStep>] {
+    pub fn sequences(&self) -> &[(Vec<GpuStep>, BoundaryFormat)] {
         &self.sequences
     }
 }
@@ -81,6 +84,9 @@ pub(in crate::photo_surface) struct GpuOptions {
     pub(in crate::photo_surface) hold: bool,
     pub(in crate::photo_surface) tag: Option<u64>,
     pub(in crate::photo_surface) warm: Option<GpuWarm>,
+    /// Where the plan draws other values than the one the caller last handed under another tag
+    /// ([`super::GpuChange`]).
+    pub(in crate::photo_surface) change: Option<super::GpuChange>,
 }
 
 /// What a cached sequence is keyed by: each step's signature in order, the shape of a masked
@@ -101,6 +107,10 @@ fn matches(signature: &Signature, steps: &[GpuStep]) -> bool {
         .map(|(kind, entry, source)| (*kind, entry.as_str(), source.as_str()))
         .eq(steps.iter().flat_map(GpuStep::signature))
 }
+
+/// One sequence to compile: a link's steps and the format its last pass writes, the output's codes
+/// or a chain's intermediate.
+pub(super) type Sequence = (Vec<GpuStep>, wgpu::TextureFormat);
 
 /// Where one known sequence is.
 enum State {
@@ -123,6 +133,8 @@ impl State {
 
 struct Entry {
     signature: Signature,
+    /// The format the sequence's last pass writes.
+    format: wgpu::TextureFormat,
     state: State,
     /// The identity of this sequence's compile.
     id: u64,
@@ -147,15 +159,16 @@ struct Shared {
 }
 
 impl Shared {
-    fn find(&mut self, steps: &[GpuStep]) -> Option<&mut Entry> {
+    fn find(&mut self, steps: &[GpuStep], format: wgpu::TextureFormat) -> Option<&mut Entry> {
         self.entries
             .iter_mut()
-            .find(|entry| matches(&entry.signature, steps))
+            .find(|entry| entry.format == format && matches(&entry.signature, steps))
     }
 
-    /// Queue `steps` under a new identity, first when a frame `asked` for them and last when they
-    /// are warmed. `false` when the queue has no room for a warmed sequence.
-    fn queue(&mut self, steps: &[GpuStep], asked: bool) -> bool {
+    /// Queue `steps` writing `format` under a new identity, first when a frame `asked` for them
+    /// and last when they are warmed. `false` when the bounded queue has no room, including when
+    /// it holds only asked sequences and none can be displaced by a new request.
+    fn queue(&mut self, steps: &[GpuStep], format: wgpu::TextureFormat, asked: bool) -> bool {
         if self.queue.len() >= PIPELINE_CACHE {
             if !asked {
                 return false;
@@ -171,12 +184,15 @@ impl Shared {
             {
                 self.entries.retain(|entry| entry.id != id);
                 self.dropped += 1;
+            } else {
+                return false;
             }
         }
         self.clock += 1;
         let id = self.clock;
         self.entries.push(Entry {
             signature: signature(steps),
+            format,
             state: State::Queued(steps.to_vec()),
             id,
             used: id,
@@ -190,14 +206,14 @@ impl Shared {
         true
     }
 
-    /// The next queued sequence, now compiling, with its identity and steps.
-    fn next(&mut self) -> Option<(u64, Vec<GpuStep>)> {
+    /// The next queued sequence, now compiling, with its identity, steps and format.
+    fn next(&mut self) -> Option<(u64, Vec<GpuStep>, wgpu::TextureFormat)> {
         while let Some(id) = self.queue.pop_front() {
             let entry = self.entries.iter_mut().find(|entry| entry.id == id);
             if let Some(entry) = entry
                 && let State::Queued(steps) = std::mem::replace(&mut entry.state, State::Compiling)
             {
-                return Some((id, steps));
+                return Some((id, steps, entry.format));
             }
         }
         None
@@ -262,7 +278,7 @@ impl Worker {
                         }
                         shared.next()
                     };
-                    let Some((id, steps)) = next else {
+                    let Some((id, steps, format)) = next else {
                         // Asleep until a sequence is queued, or the pipeline is gone.
                         if wakes.recv().is_err() {
                             return;
@@ -270,7 +286,7 @@ impl Worker {
                         continue;
                     };
                     let started = Instant::now();
-                    let state = match compile(&device, &support, &steps, OUTPUT_FORMAT) {
+                    let state = match compile(&device, &support, &steps, format) {
                         Ok(pipeline) => State::Ready(pipeline),
                         Err(error) => State::Failed(Arc::from(error)),
                     };
@@ -327,15 +343,16 @@ impl Pipelines {
             .get_or_insert_with(|| Worker::spawn(device, support, &figures.compile))
     }
 
-    /// The ready pipeline for `steps` and its identity, or why there is none to draw with yet: a
-    /// sequence still waiting or compiling, or first seen now and queued first for the compile
-    /// thread, answers [`GpuFallback::Compiling`]; a failed one [`GpuFallback::PipelineFailed`].
-    /// Never compiles.
+    /// The ready pipeline for `steps` writing `format` and its identity, or why there is none to
+    /// draw with yet: a sequence still waiting or compiling, or first seen now and queued first for
+    /// the compile thread, answers [`GpuFallback::Compiling`]; a failed one
+    /// [`GpuFallback::PipelineFailed`]. Never compiles.
     pub(super) fn get(
         &mut self,
         device: &wgpu::Device,
         support: &Arc<Support>,
         steps: &[GpuStep],
+        format: wgpu::TextureFormat,
         figures: &Figures,
     ) -> Result<(Compiled, u64), GpuFallback> {
         let worker = self.worker(device, support, figures);
@@ -345,7 +362,7 @@ impl Pipelines {
         let known = shared
             .entries
             .iter()
-            .position(|entry| matches(&entry.signature, steps));
+            .position(|entry| entry.format == format && matches(&entry.signature, steps));
         if let Some(at) = known {
             let entry = &mut shared.entries[at];
             entry.used = clock;
@@ -364,7 +381,9 @@ impl Pipelines {
             return Err(GpuFallback::Compiling);
         }
         let dropped = shared.dropped;
-        shared.queue(steps, true);
+        if !shared.queue(steps, format, true) {
+            return Err(GpuFallback::Compiling);
+        }
         // Counted under the lock, before the thread can take it and count its end.
         figures.compile.queued(1);
         figures.compile.leave(shared.dropped - dropped);
@@ -380,17 +399,17 @@ impl Pipelines {
         &mut self,
         device: &wgpu::Device,
         support: &Arc<Support>,
-        sequences: &[Vec<GpuStep>],
+        sequences: &[Sequence],
         figures: &Figures,
     ) {
         let worker = self.worker(device, support, figures);
         let mut shared = worker.lock();
         let mut queued = 0;
-        for steps in sequences {
-            if steps.is_empty() || shared.find(steps).is_some() {
+        for (steps, format) in sequences {
+            if steps.is_empty() || shared.find(steps, *format).is_some() {
                 continue;
             }
-            if !shared.queue(steps, false) {
+            if !shared.queue(steps, *format, false) {
                 break;
             }
             queued += 1;
@@ -404,23 +423,33 @@ impl Pipelines {
         }
     }
 
-    /// The known entry for `steps`, read under the lock.
+    /// The known entry for `steps` writing `format`, read under the lock.
     #[cfg(test)]
-    fn read<T>(&self, steps: &[GpuStep], read: impl FnOnce(&State) -> T) -> Option<T> {
+    fn read<T>(
+        &self,
+        steps: &[GpuStep],
+        format: wgpu::TextureFormat,
+        read: impl FnOnce(&State) -> T,
+    ) -> Option<T> {
         let mut shared = self.worker.as_ref()?.lock();
-        shared.find(steps).map(|entry| read(&entry.state))
+        shared.find(steps, format).map(|entry| read(&entry.state))
     }
 
-    /// Whether `steps` is waiting for the compile thread or compiling.
+    /// Whether `steps` writing `format` is waiting for the compile thread or compiling.
     #[cfg(test)]
-    pub(super) fn compiling(&self, steps: &[GpuStep]) -> bool {
-        self.read(steps, |state| !state.compiled()).unwrap_or(false)
+    pub(super) fn compiling(&self, steps: &[GpuStep], format: wgpu::TextureFormat) -> bool {
+        self.read(steps, format, |state| !state.compiled())
+            .unwrap_or(false)
     }
 
-    /// Why `steps` failed, when it did.
+    /// Why `steps` writing `format` failed, when it did.
     #[cfg(test)]
-    pub(super) fn failure(&self, steps: &[GpuStep]) -> Option<Arc<str>> {
-        self.read(steps, |state| match state {
+    pub(super) fn failure(
+        &self,
+        steps: &[GpuStep],
+        format: wgpu::TextureFormat,
+    ) -> Option<Arc<str>> {
+        self.read(steps, format, |state| match state {
             State::Failed(error) => Some(error.clone()),
             _ => None,
         })
@@ -470,18 +499,19 @@ mod tests {
         let warmed: Vec<&'static str> = (0..PIPELINE_CACHE - 1)
             .map(|index| &*Box::leak(format!("warmed_{index}").into_boxed_str()))
             .collect();
+        let format = super::super::OUTPUT_FORMAT;
         for entry in &warmed {
-            assert!(shared.queue(&steps(entry), false));
+            assert!(shared.queue(&steps(entry), format, false));
         }
-        assert!(shared.queue(&steps("asked"), true));
+        assert!(shared.queue(&steps("asked"), format, true));
         assert_eq!(order(&shared)[0], "asked");
         assert_eq!(shared.queue.len(), PIPELINE_CACHE);
         assert!(
-            !shared.queue(&steps("refused"), false),
+            !shared.queue(&steps("refused"), format, false),
             "a full queue warms no more"
         );
         assert_eq!(shared.dropped, 0);
-        assert!(shared.queue(&steps("asked_again"), true));
+        assert!(shared.queue(&steps("asked_again"), format, true));
         assert_eq!(shared.dropped, 1, "counted, so no wait counts on it");
         let order = order(&shared);
         assert_eq!(order[..2], ["asked_again", "asked"]);
@@ -503,5 +533,22 @@ mod tests {
         assert_eq!(figures.pending.load(Ordering::Acquire), 1);
         figures.leave(5);
         assert_eq!(figures.pending.load(Ordering::Acquire), 0);
+    }
+
+    /// A full queue of requested sequences rejects another request and keeps both bounds intact.
+    #[test]
+    fn requested_sequences_cannot_grow_the_full_queue() {
+        let mut shared = Shared::default();
+        let format = super::super::OUTPUT_FORMAT;
+        for index in 0..PIPELINE_CACHE {
+            let entry = Box::leak(format!("asked_{index}").into_boxed_str());
+            assert!(shared.queue(&steps(entry), format, true));
+        }
+        assert_eq!(shared.queue.len(), PIPELINE_CACHE);
+        assert_eq!(shared.entries.len(), PIPELINE_CACHE);
+        assert!(!shared.queue(&steps("deferred"), format, true));
+        assert_eq!(shared.queue.len(), PIPELINE_CACHE);
+        assert_eq!(shared.entries.len(), PIPELINE_CACHE);
+        assert!(shared.entries.iter().all(|entry| entry.asked));
     }
 }
