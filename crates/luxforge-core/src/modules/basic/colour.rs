@@ -96,6 +96,49 @@ fn vibrance_weight(chroma: f32, hue_deg: f32) -> f32 {
     chroma_weight(chroma) * hue_weight(hue_deg)
 }
 
+/// `tan 19°` and `tan 1°`: the ratios that bound the hues [`outside_skin_band`] answers for, a
+/// degree beyond each edge of the skin-like band, `55° ∓ 35°`. A test holds them to the band's
+/// constants.
+const SKIN_SKIP_TAN_LOW_F64: f64 = 0.344_327_613_289_665_3;
+const SKIN_SKIP_TAN_HIGH_F64: f64 = 0.017_455_064_928_217_59;
+
+const SKIN_SKIP_TAN_LOW: f32 = SKIN_SKIP_TAN_LOW_F64 as f32;
+const SKIN_SKIP_TAN_HIGH: f32 = SKIN_SKIP_TAN_HIGH_F64 as f32;
+
+/// Whether the Oklab hue of `(a, b)` lies certainly outside the skin-like band, where
+/// `skin_hue_response` is exactly `0` and `hue_weight` exactly `1`, so `vibrance_weight` is
+/// `chroma_weight` itself and the hue need not be computed: `b` at or below zero (a hue in
+/// `[-180°, 0°]` or `180°`), or a hue under 19° or past 91°, by the sign of `a` and the ratio of the
+/// two against `tan 19°` and `tan 1°`. Anywhere else, and wherever `b` or a needed `a` is NaN, it
+/// answers `false` and the hue is computed as before.
+///
+/// The degree of margin is orders of magnitude past every rounding involved. A strict comparison
+/// with a correctly rounded product holds only where it holds exactly (`b < fl(a · t)` puts `b` at
+/// or below the float before `fl(a · t)`, which `a · t` exceeds), so the tested edges move only by
+/// the constants' own rounding, under `10⁻⁶` degrees. `atan2` (within a few units in the last
+/// place) and `to_degrees` and the centre's subtraction (one rounding each) move a hue by under
+/// `10⁻⁴` degrees. A hue tested under 19° or past 91° is therefore computed under 19.001° or past
+/// 90.999°, at least 35.999° from the centre, where the response is exactly zero; `b` at or below
+/// zero computes one at least 55° below it or 125° above it.
+#[inline]
+fn outside_skin_band(a: f32, b: f32) -> bool {
+    b <= 0.0 || (a > 0.0 && b < a * SKIN_SKIP_TAN_LOW) || (a < 0.0 && -a > b * SKIN_SKIP_TAN_HIGH)
+}
+
+/// Vibrance's weight `w(C, h)` for a pixel of chroma `c` past `CHROMA_EPSILON`: [`vibrance_weight`]
+/// bit for bit, without the hue (`atan2` and its conversion to degrees) wherever
+/// [`outside_skin_band`] says it cannot change the result. There `chroma_weight` is finite, its
+/// normalized chroma being clamped first, so multiplying it by the band's exact `1` would leave it
+/// as it is.
+#[inline]
+fn vibrance_weight_of(lab: Oklab, c: f32) -> f32 {
+    if outside_skin_band(lab.a, lab.b) {
+        chroma_weight(c)
+    } else {
+        vibrance_weight(c, hue_degrees(lab))
+    }
+}
+
 /// The fused Vibrance/Saturation unit. Converts one pixel to Oklab once; computes vibrance's
 /// chroma- and hue-dependent gain `k_v = 1 + (vibrance / 100) * w(C, h)` from that one conversion,
 /// computes saturation's uniform gain `k_s = 1 + saturation / 100` (precomputed once for the whole
@@ -150,7 +193,9 @@ impl PointwiseColor for ColourAdjust {
         // Vibrance's weight needs a chroma (`hypot`) and, past the epsilon, a hue (`atan2` and a
         // `cos`) per pixel. Skip all of it whenever it cannot change the result: when vibrance is
         // neutral, its gain multiplies the weight by exactly zero regardless of the weight's own
-        // value, so `k_v` is `1.0` unconditionally and neither chroma nor hue needs computing.
+        // value, so `k_v` is `1.0` unconditionally and neither chroma nor hue needs computing; and
+        // the hue alone wherever it lies certainly outside the skin-like band
+        // (`vibrance_weight_of`).
         let vibrance_neutral = self.vibrance_gain == 0.0;
         for pixel in rgb {
             let lab = to_oklab(*pixel);
@@ -164,7 +209,7 @@ impl PointwiseColor for ColourAdjust {
                 let weight = if c < CHROMA_EPSILON {
                     1.0
                 } else {
-                    vibrance_weight(c, hue_degrees(lab))
+                    vibrance_weight_of(lab, c)
                 };
                 1.0 + self.vibrance_gain * weight
             };
@@ -250,6 +295,195 @@ mod tests {
         }
         for step in 0..=1_000_000 {
             check(-180.0 + 360.0 * (step as f32 / 1_000_000.0));
+        }
+    }
+
+    /// The hue skip's ratios are `tan 19°` and `tan 1°`, a degree beyond the band's edges at
+    /// `centre ∓ half-width`, narrowed as the other constants are; the upper edge is the `b` axis,
+    /// which the test past it measures from.
+    #[test]
+    fn the_hue_skip_ratios_are_a_degree_beyond_the_band() {
+        let low = SKIN_HUE_CENTER_DEG_F64 - SKIN_HUE_HALF_WIDTH_DEG_F64 - 1.0;
+        let high = SKIN_HUE_CENTER_DEG_F64 + SKIN_HUE_HALF_WIDTH_DEG_F64 + 1.0;
+        assert_eq!(high, 91.0);
+        assert_eq!(SKIN_SKIP_TAN_LOW, low.to_radians().tan() as f32);
+        assert_eq!(SKIN_SKIP_TAN_HIGH, (high - 90.0).to_radians().tan() as f32);
+    }
+
+    /// The vibrance weight with the hue skipped outside the skin-like band is the weight with it
+    /// computed, bit for bit: over every angle in thousandths of a degree at magnitudes from the
+    /// smallest subnormal to `f32::MAX`, densely beside both band edges and both edges of the skip,
+    /// at the `f32` values either side of where each ratio test changes its answer, on both axes
+    /// with either sign of zero, and at infinities and NaN.
+    #[test]
+    fn skipping_the_hue_outside_the_skin_band_leaves_every_weight_bit_identical() {
+        let mut skipped = 0_usize;
+        let mut computed = 0_usize;
+        let mut check = |a: f32, b: f32| {
+            let lab = Oklab { l: 0.5, a, b };
+            let c = chroma(lab);
+            let expected = vibrance_weight(c, hue_degrees(lab));
+            assert_eq!(
+                vibrance_weight_of(lab, c).to_bits(),
+                expected.to_bits(),
+                "a = {a:?}, b = {b:?}"
+            );
+            if outside_skin_band(a, b) {
+                skipped += 1;
+            } else {
+                computed += 1;
+            }
+        };
+        let polar = |magnitude: f32, degrees: f64| {
+            let (sin, cos) = degrees.to_radians().sin_cos();
+            (
+                (f64::from(magnitude) * cos) as f32,
+                (f64::from(magnitude) * sin) as f32,
+            )
+        };
+        let magnitudes = [
+            f32::from_bits(1),
+            f32::MIN_POSITIVE,
+            1e-30,
+            1e-6,
+            CHROMA_EPSILON,
+            0.01,
+            0.1,
+            CHROMA_REFERENCE,
+            1.0,
+            1e6,
+            1e30,
+            f32::MAX,
+        ];
+        for magnitude in magnitudes {
+            for step in -180_000..=180_000 {
+                let (a, b) = polar(magnitude, f64::from(step) / 1000.0);
+                check(a, b);
+            }
+            // Beside both band edges and both edges of the skip, in millionths of a degree.
+            for edge in [19.0, 20.0, 90.0, 91.0] {
+                for step in -2000..=2000 {
+                    let (a, b) = polar(magnitude, edge + f64::from(step) * 1e-6);
+                    check(a, b);
+                }
+            }
+        }
+        // Where each ratio test changes its answer: `b` beside `a · tan 19°`, and `a` beside
+        // `-b · tan 1°`, three floats either side.
+        let mut bits = 0x9e37_79b9_u32;
+        for _ in 0..20_000 {
+            bits ^= bits << 13;
+            bits ^= bits >> 17;
+            bits ^= bits << 5;
+            let magnitude = f32::from_bits(0x2000_0000 + bits % 0x3f00_0000);
+            for (a, b) in [
+                (magnitude, magnitude * SKIN_SKIP_TAN_LOW),
+                (-(magnitude * SKIN_SKIP_TAN_HIGH), magnitude),
+            ] {
+                let (mut a_low, mut b_low) = (a, b);
+                for _ in 0..3 {
+                    a_low = a_low.next_down();
+                    b_low = b_low.next_down();
+                }
+                let (mut a_side, mut b_side) = (a_low, b_low);
+                for _ in 0..7 {
+                    check(a, b_side);
+                    check(a_side, b);
+                    a_side = a_side.next_up();
+                    b_side = b_side.next_up();
+                }
+            }
+        }
+        for magnitude in magnitudes {
+            for zero in [0.0_f32, -0.0] {
+                for value in [magnitude, -magnitude] {
+                    check(zero, value);
+                    check(value, zero);
+                }
+                check(zero, zero);
+                check(zero, -zero);
+            }
+        }
+        let special = [
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+        ];
+        for a in special {
+            for b in special {
+                check(a, b);
+            }
+        }
+        assert!(skipped > 0 && computed > 0, "{skipped} skipped, {computed}");
+        // The skip covers every hue a degree or more outside the band, and none inside it.
+        for degrees in [-179.0, -90.0, -1.0, 0.0, 10.0, 18.9, 91.1, 120.0, 180.0] {
+            let (a, b) = polar(1.0, degrees);
+            assert!(outside_skin_band(a, b), "{degrees}");
+        }
+        for degrees in [19.1, 20.0, 55.0, 89.0, 90.0, 90.9] {
+            let (a, b) = polar(1.0, degrees);
+            assert!(!outside_skin_band(a, b), "{degrees}");
+        }
+    }
+
+    /// The unit before the hue skip: every pixel past the epsilon computes its hue.
+    fn apply_row_computing_every_hue(unit: &ColourAdjust, rgb: &mut [[f32; 3]]) {
+        for pixel in rgb {
+            let lab = to_oklab(*pixel);
+            let vibrance_k = if unit.vibrance_gain == 0.0 {
+                1.0
+            } else {
+                let c = chroma(lab);
+                let weight = if c < CHROMA_EPSILON {
+                    1.0
+                } else {
+                    vibrance_weight(c, hue_degrees(lab))
+                };
+                1.0 + unit.vibrance_gain * weight
+            };
+            let k = vibrance_k * unit.saturation_k;
+            *pixel = from_oklab(Oklab {
+                l: lab.l,
+                a: lab.a * k,
+                b: lab.b * k,
+            });
+        }
+    }
+
+    /// Whole rows through the unit equal the rows through the unit that computes every hue, bit
+    /// for bit, over every 8-bit colour on a 4-code lattice and extended linear values, at both
+    /// extremes and between them.
+    #[test]
+    fn the_unit_with_the_hue_skip_writes_the_same_rows() {
+        let mut row: Vec<[f32; 3]> = Vec::new();
+        for r in (0..=255u16).step_by(4) {
+            for g in (0..=255u16).step_by(4) {
+                for b in (0..=255u16).step_by(4) {
+                    row.push([r as u8, g as u8, b as u8].map(code_to_linear));
+                }
+            }
+        }
+        for step in 0..=20 {
+            let value = -0.2 + 1.7 * step as f32 / 20.0;
+            row.extend([[value, 0.3, 0.1], [0.4, value, 0.9], [1.2, 0.05, value]]);
+        }
+        for (vibrance, saturation) in [(100.0, 0.0), (-100.0, 0.0), (35.0, -20.0), (-60.0, 50.0)] {
+            let unit = ColourAdjust::new(vibrance, saturation);
+            let mut skipped = row.clone();
+            let mut every = row.clone();
+            unit.apply_row(0, 0, &mut skipped);
+            apply_row_computing_every_hue(&unit, &mut every);
+            let bits = |rows: &[[f32; 3]]| -> Vec<[u32; 3]> {
+                rows.iter().map(|pixel| pixel.map(f32::to_bits)).collect()
+            };
+            assert!(
+                bits(&skipped) == bits(&every),
+                "vibrance {vibrance}, saturation {saturation}: the rows differ"
+            );
         }
     }
 

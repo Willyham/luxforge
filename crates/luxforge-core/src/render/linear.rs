@@ -822,6 +822,17 @@ impl SegmentRows for LinearRows<'_, '_, '_> {
         Ok(())
     }
 
+    /// A resample entry, whose taps [`Self::load_resampled`] pulls block by block through the
+    /// segment before it; a spatial entry is read from its frame.
+    fn pulled(&self) -> Option<(&ResampleEntry, &Segment)> {
+        match &self.segment.entry {
+            Some(Entry::Resample(entry)) => {
+                Some((entry, &self.evaluation.compiled.segments[self.index - 1]))
+            }
+            _ => None,
+        }
+    }
+
     fn store(&self, scratch: &mut Self::Scratch, chunk: &mut [u8]) -> Result<(), Error> {
         if self.segment.has_color {
             match self.output {

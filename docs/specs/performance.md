@@ -99,6 +99,52 @@ cargo run --release --locked --package xtask -- detail-performance --source fixt
 cargo test -p luxforge-core --lib detail::exactness
 ```
 
+### The 16-bit hand-off's quantizer and Vibrance's hue
+
+The JPEG path's 16-bit hand-offs, a colour segment feeding a spatial layer and every spatial tile's
+output, quantize each channel through an exact index (`Quantizer16`): 65,536 bins over the value's
+square root, where the code thresholds lie at least 1.055 × 10⁻⁵ apart against a 1.526 × 10⁻⁵ bin,
+so a value is compared with at most two thresholds, where it searched all 65,535. The index is 128
+KiB, built once ([limits](../design/architecture.md#limits)), and gives the search's code for every
+`f32` in [0, 1], NaN, the infinities and the signed zeros
+(`slow_byte_quantize16_is_the_threshold_search_at_every_f32_in_the_unit_interval`). Vibrance skips
+the hue's `atan2` where Oklab's (a, b) lies more than a degree outside the skin-tone band, where the
+hue's weight is exactly one, so every weight is the same to the bit
+(`skipping_the_hue_outside_the_skin_band_leaves_every_weight_bit_identical`). Release, one thread,
+both kernels in one process alternating, 11 samples, 3 October 2026, a one-minute load of about 6:
+
+| Kernel, source | Before | After |
+| --- | ---: | ---: |
+| 16-bit quantizer, gradient (ns a value) | 11.71 | 1.34 |
+| 16-bit quantizer, `24mp.jpg` | 10.10 | 0.66 |
+| 16-bit quantizer, `detail.jpg` | 10.03 | 0.85 |
+| ColourAdjust at Vibrance 50 and Saturation 20, gradient, 85% skipped (ns a pixel) | 24.43 | 22.48 |
+| The same, `24mp.jpg`, 50% skipped | 24.51 | 23.72 |
+| The same, `detail.jpg`, 12% skipped | 19.54 | 19.16 |
+
+A 24 MP JPEG render of Basic, then Presence's Texture, then the Mixer, whose two hand-offs are
+16-bit, took 334 and 405 ms against 512 and 526 ms (p50, base, new, new, base, at a load of 5.5 to
+11, the same SHA-256 each way).
+
+### The integrated before and after, 3 October 2026
+
+The Detail tile kernels, the 16-bit quantizer, Vibrance's hue, the masked colour skip and the
+linear resample's gate ([Detail tile kernels](#detail-tile-kernels),
+[the quantizer](#the-16-bit-hand-offs-quantizer-and-vibrances-hue),
+[masked colour](#units-only-where-the-coverage-is-not-zero),
+[per-pass thresholds](#per-pass-parallel-thresholds)) together: release `xtask` built from
+`ce3b7b57` (before) and from the working tree holding them (after), run before, after, after,
+before on the native Apple M4 Pro, each run holding the host-wide timing lock, at a one-minute
+load of 6.9 to 13.4. That is past the 8.0 a quotable baseline needs, so these are paired
+comparisons, not baselines.
+
+- **`detail-performance --case render`, 24 MP, 30 samples.** A full render took 1,225 and 1,224 ms
+  p50 before and 321 and 321 ms after (p95 1,370 and 1,266 against 340 and 391), about 15.8 s of CPU
+  a render before and 4.0 s after; `frame_sha256` was `e64d4d51…` in all four runs.
+- **`editor-performance`, 30 samples, 24 MP and 60 MP.** No row moved past the runs' own spread but
+  the Vibrance and Saturation layer: 42.9 and 44.3 ms against 44.6 and 46.5 at 24 MP, and 95.9 and
+  98.5 against 99.5 and 101.7 at 60 MP (p50), the hue's skip. Its stacks hold no mask, Detail layer or
+  RAW, which the other changes speed.
 
 ### Detail RAW residency diagnostic
 
@@ -801,6 +847,8 @@ Each rendering pass kind runs on the shared Rayon pool from its own threshold (`
 Each threshold is the smallest size at which every case of its kind won in every run: the transform 0.5 MP (1.24 to 1.26 at 0.25 MP in all three runs that measured it); one or two colour units 0.1 MP (bytes 0.89 to 0.93 at 0.05 MP); three or more units or a mask 25,000 pixels, the smallest size measured (a mask stays in this group, as before, and was not measured on its own); the resample 0.1 MP of output (1.14 at 0.03 MP; its fastest runs 0.46 at 0.07 MP); a spatial operation 0.25 MP of stage (at 0.1 MP Texture's fastest runs lost in the fourth run, 1.67, and Dehaze's broke even, 0.97 to 0.98); and the proxy 0.5 MP of source read, where up to 0.25 MP the downscale is one band and pooling changes nothing. A serial run at 0.025 MP often reports several hundred percent of one core: that is the pool still spinning down from the pooled run before it, which the CPU sampler charges to the process. RAW development, a spatial operation's global-estimate reduction, the analysis reducer and the overlays keep the one-megapixel threshold and were not measured here. Serial and pooled write the same bytes at a size between the old and the new threshold for every kind on both pixel domains (`slow_a_pass_between_the_shared_and_its_own_threshold_pools_to_the_serial_bytes`).
 
 The Lens/Perspective `Warp` pass currently uses `PARALLEL_WARP_PIXELS = 100,000` output pixels, provisionally equal to the resample threshold. Its kernel has no measured break-even yet. `LUXFORGE_BREAK_EVEN_CASE=warp` selects the six serial/pool cases (Lens, Perspective and the fused Lens/Perspective/straightened crop, each in byte and linear domains) for the 0.025–2 MP study. Native Lens timing, memory and GPU residency remain incomplete; no existing resample ratio is evidence for this new pass.
+
+On the RAW linear path the last segment's pass pulls a resample's taps through the segment before it (`load_resampled`), so its gate asks the resample's own threshold over the output, as the byte path's `resample_frame` does, and counts the pulled segment's colour units and masks with the segment's own: before, such a pass pooled only from the transform's 0.5 MP, and a straightened crop of 0.1 to 0.5 MP rendered serially. A byte segment pass after a warp, which resamples nothing itself, asks the transform's threshold for its geometry. `parallel_break_even_per_pass` gains the case `resample: 10 degree crop, linear`: at a one-minute load of about 5 on 3 October 2026 its pooled/serial p50 was 0.26 at 0.034 MP, 0.20 at 0.069, 0.14 at 0.139, 0.12 at 0.347, 0.11 at 0.694 and 0.10 from 1.04 MP, the byte crop in the same run 0.42 at 0.034 MP down to 0.11 at 2.78 MP, so pooling wins at every size and the 0.1 MP threshold stands. A 10° crop of a RAW-linear stage with a 0.44 MP output took 2.3 and 3.5 ms against 17.9 and 18.7 ms, and under a full Basic layer 6.2 and 7.5 ms against 52.0 and 54.7 ms (p50, base, new, new, base, at a load of 5.5 to 11, the same SHA-256 each way). Serial and pooled write the same bytes, and the test now asserts that each case pooled through its own gate (`slow_a_pass_between_the_shared_and_its_own_threshold_pools_to_the_serial_bytes`).
 
 `editor-performance --samples 30` measures proxy renders at a 1280 × 800 display bound, where a 3:2 photograph's whole proxy is 1200 × 800 (0.96 MP) and the crop stack's proxy is 2078 × 1386 rendering a 1280 × 719 output: a full Basic layer and a full-strength Presence layer (texture, clarity and dehaze at 100) on each. Release `--locked`, the base `eda010a3` with these rows added (before) against this change (after), in-process on the native Apple M4 Pro, 28 September 2026, holding the host-wide timing lock, in the order before, after, after, before. Each cell is the p50 of each run in that order, then the p95s.
 
