@@ -310,6 +310,18 @@ Decided by the owner on 2026-10-01, after a review of where the CPU spends its t
 
 The specific limits (CIEDE2000, in a pointwise and a spatial class), the 150 ms settle dissolve, the "GPU preview" label, and the `workspace.set` preference are proposals with recorded defaults in the [design](design/gpu-preview.md#proposals-with-recorded-defaults); the editor runs on them until the owner revises them.
 
+## CPU and memory efficiency
+
+Decided by the owner on 2026-10-03, after a read-only audit of the workspace ([design](design/efficiency.md)):
+
+- Every byte-identical finding the plan lists is accepted: kernels, source preparation, owner and desktop copying, and build features.
+- The RAW colour layers before a spatial layer stay recomputed for every tile's halo, about 2.7 times the stage under Clarity. Neither a materialized frame nor a row-band cache is added for now ([known remaining costs](engineering/performance-rules.md#known-remaining-costs)).
+- Clarity's and Dehaze's stage-anchored reductions get a disposable cache under rule 14, at about 15 to 45 MB per entry at 60 MP within 64 MiB in total ([the reduced-grid cache](design/efficiency.md#the-reduced-grid-cache)).
+- The normalized float mosaic is removed from RAW development's peak through a checked-in librtprocess patch that the build applies reproducibly; vendored sources are never edited.
+- The catalog uses WAL with `synchronous=FULL`, `fullfsync` and `checkpoint_fullfsync` on, so a commit reaches the drive with one full flush ([catalog durability](design/efficiency.md#catalog-durability)).
+- Packaging and timing build with a separate `dist` profile with LTO and one codegen unit; the daily release build is unchanged.
+- Not adopted: DCT-scaled JPEG decode for proxies, parallel restart-marker JPEG export, cropping masked sensor margins, `target-cpu=apple-m4` and `panic = "abort"`.
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/product-decisions.json).

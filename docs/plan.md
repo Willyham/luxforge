@@ -15,6 +15,8 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - Proposal, not built: evaluate the ring of a 100% region that only Clarity's and Dehaze's 4× reductions read in strips, reducing as each strip is evaluated, so Detail's and Texture's full-resolution planes are held over the region alone. Estimated at about −39% of the slot on the worst cell (all three Presence fields after Detail on the 60 MP JPEG, about 618 to 375 MB) and about 200 MB on the RAWs, at the cost of a strip schedule and about 38% more Detail and Texture work in the ring. It matters for the all-three chain's 32 to 55 MB of headroom, for larger windows and for region padding ([design](design/gpu-preview.md#later))
 - Later work in the [design](design/gpu-preview.md#later): view changes without a draft, the RAW white-balance draft on the GPU, region padding
 
+**CPU and memory efficiency** ([design](design/efficiency.md), [plan](../tasks/efficiency.json)). Planned, scope and decisions accepted 2026-10-03. Byte-identical reductions in the pixel kernels, source preparation, owner and painting copies and build configuration, plus a reduced-grid cache for Clarity and Dehaze, a float-mosaic-free RAW development and a WAL catalog with full flushes; measured once the work is merged.
+
 **GPU memory accounting** ([plan](../tasks/rendering.json)). Measure and bound the GPU resources outside the provisional 1088 MiB photo-texture ceiling (crop textures, overlays and backend staging) before any total-memory guarantee.
 
 ## Output
