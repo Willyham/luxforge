@@ -58,8 +58,47 @@ it contains no new timing, native residency or total-memory qualification.
 | Which desktop messages request state, history, previews or uploads? | Existing mutations keep their normal state/history refresh and one preview request. Fit resize, panel/display-scale changes and zoom-back request reduction alone when matching exact pixels exist; no additional `asset.state` or `history.list` call is introduced. The matching exact-derived display is uploaded once; it names displayed content without claiming full-resolution texture residency through `full_content`. Value-mask overlays rebuild only when their input/grid key changes. |
 | Which timers, polls or subscriptions were added? | None. The existing event-driven workers, bounded latest-job queues and shared 25 ms quiet timer/120 ms settlement policy remain. Detail checks cancellation between levels and bounded row chunks, including within the first tile. Disconnect drops queued/parked point reads and cancels active work; obsolete reductions supersede on the preview worker. |
 | Which unchanged work is cached, with which keys, limits and measurements? | The restoration prefix avoids repeated denoise/sharpen work during downstream drags; overlay and thumbnail input grids avoid repeated prefix evaluation when only mask coverage changes. Keys include source/development identity, canonical prefix and referenced masks, geometry, window, sampling dimensions, byte width and mask-input domain as applicable. Each worker keeps one disposable derived-pixel entry: at most 128 MiB for the restoration prefix or 8 million cells for an input grid. Neither cache retains an evaluation or source. Exact recomputation, key invalidation and reuse are tested; photo-sized hit rates, rebuild costs and retained-byte measurements remain unqualified in TASK-014. |
-| What did 24 MP before/after performance report? | Pending finished-build measurements. No speedup, latency-budget pass, Presence JPEG regression verdict or total-memory claim follows from the focused functional tests. Native measurements must record build/source identity, host load, sample counts, warm/cold prefix use, source-proxy construction and the extra exact-derived display reduction. |
+| What did 24 MP before/after performance report? | Pending a quiet-host distribution. The tile kernels' before and after, at a one-minute load of 22 to 57, are in [Detail tile kernels](#detail-tile-kernels): a full 24 MP render's CPU time fell from about 19 to 6.3 s with the frame's bytes unchanged. No latency-budget pass, Presence JPEG regression verdict or total-memory claim follows from the focused functional tests. Native measurements must record build/source identity, host load, sample counts, warm/cold prefix use, source-proxy construction and the extra exact-derived display reduction. |
 | Which tests prove exactness and sharing? | Detail's independent reference and deterministic production oracle cover coefficients, extended/constant pixels, tile sizes, sampled kernels and serial/pool parity. RGB16 tests cover every threshold, original 8-bit decode identity, the dark smoothing ramp through Basic, full/sample/region/window equality and buffer limits. Restoration-cache tests compare cached suffix bytes with uncached JPEG/RAW output, whole and cut-window stages, masks, boundary-width changes, downstream reuse and key invalidation. Worker/app tests check exact-derived Fit reduction, generation/content adoption, retained-raster sharing and the distinction between displayed and full-resolution content. Deferred-read and input-grid tests check exact prefix values, owner responsiveness, revision fences, dense/sparse equality and cache invalidation. Native rendered/photo qualification and measurement-only tests remain separate evidence. |
+
+### Detail tile kernels
+
+Detail's smoothing runs over whole rows, one tap at a time across the row, the interior through
+slices of it and only the columns within a kernel's radius of the stage's edge through the clamped
+read, with the halo checked once a pass. A level of noise reduction shrinks all three channels in one
+pass, taking each pixel's chroma energy and factor once; it smooths only the channels whose threshold
+there or at a later level is not zero, so Luminance alone smooths no chroma and the fourth level no
+lightness; it takes the band in the vertical pass and swaps its planes rather than copying them back.
+Sharpening whose blur is its guide, as at Radius 1, smooths once ([Detail](../design/detail.md)).
+Each pixel's operations are the ones before, in the same order, so the output is the same to the bit:
+the tap-by-tap references frozen in `modules/detail/exactness.rs` and every earlier Detail test hold
+it, and `detail-performance`'s `frame_sha256` did not change.
+
+`detail-performance`, release, 30 samples a run, its fixed recipe (Detail at Luminance 25, Colour 25
+and sharpening 40 under a +0.5 EV exposure), the builds before and after interleaved, Apple M4 Pro,
+2026-10-03, at a one-minute load of 22 to 57: well past the 8.0 a quotable distribution needs, so the
+wall-clock figures are not quotable, and the CPU time each render took is the figure that holds. The
+textured source is `detail.jpg` tiled to 6000 × 4000, since the generated 24 MP JPEG is flat
+quadrants.
+
+| Source | Full render, CPU s p50, before | After | A point through Detail, first request / first colour-limited tick, ms p50, before | After |
+| --- | ---: | ---: | ---: | ---: |
+| `24mp.jpg` | 19.1, 19.8 | 6.39, 6.33 | 129 to 137 / 130 to 146 | 27.4 to 27.5 / 27.4 |
+| Tiled `detail.jpg` | 19.6, 18.1 | 6.21, 6.23 | 137 to 139 / 144 to 175 | 28.4 to 35.5 / 28.5 to 36.6 |
+
+One 512 px tile, serial, in one release binary holding the frozen references, at a load of about 28,
+ms p50: noise reduction at Luminance and Colour 25 took 14.2 against 118, Luminance 40 alone 7.8
+against 60, Colour 40 alone 11.8 against 105 and the first recipe at a proxy's scale 17.9 against 164;
+sharpening at Radius 1 took 14.7 against 23.6, and at Radius 2.3 14.1 against 24.6. The largest cost
+left is the sharpening limiter's 3 × 3 extrema and gradient, read through the clamped per-pixel index,
+about half of sharpening, and the same index in the Oklab conversion and the reconstruction.
+
+```sh
+cargo run --release --locked --package xtask -- detail-performance --source fixtures/generated/24mp.jpg --output NEW_DIR --samples 30 --case render
+cargo run --release --locked --package xtask -- detail-performance --source fixtures/generated/24mp.jpg --output NEW_DIR --samples 30 --case points
+cargo test -p luxforge-core --lib detail::exactness
+```
+
 
 ### Detail RAW residency diagnostic
 
