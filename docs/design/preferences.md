@@ -64,17 +64,28 @@ An open Settings sheet reads them again. The desktop applies the canvas backgrou
   - `black`, `#000000`;
   - `grey`, an 18% grey (L\* 50, `#777777`), for judging tone the way a print is judged.
 
-  It fills the canvas region, the photo surface outside the photograph and the compare canvas. The panels, the title bar and the mask overlay's on-black modes keep their own colours.
-- **Interface size.** It scales everything Iced draws, through the application's scale factor. Every physical-pixel computation uses the system's factor multiplied by it, so 100% zoom stays one source pixel per display pixel. The Settings sheet shrinks to fit a window too small for it at the chosen size. The window's remembered frame stays in the system's points, so changing the size never resizes the window.
+  It fills the canvas region, the photo surface outside the photograph and both sides of the compare canvas, which draws no fill of its own. The panels, the histogram and readout, the title bar, the compare canvas's Before and After labels and the mask overlay's on-black modes keep their own colours.
+- **Interface size.** It scales everything Iced draws, through the application's scale factor.
+  - **Pixels.** The view state's scale factor is the system's factor multiplied by the interface size, so every physical-pixel computation, and 100% zoom, stays one source pixel per display pixel. Values that arrive in the system's points, such as the system's own factor and the trackpad's pinch position, are converted where they arrive.
+  - **Changing it.** Iced keeps the window's physical size and sends no resize, so the desktop rescales its logical window size itself and Fit, the clipping grid and region requests follow through the ordinary view-geometry path. The window never resizes.
+  - **The rest.** The Settings sheet shrinks to fit a window too small for it. The status bar's `2×` names the display's own factor. A window moved to a display of another scale is not followed, as before.
 - **Catalog.** The row shows the catalog this launch uses, with **Choose Folder…**, and **Use Default** when a location is stored.
-  - **Choosing.** Choose Folder… stores `<folder>/catalog.sqlite`. At the next launch the desktop opens that catalog, creating it if the folder holds none, as it creates the default today. The open catalog stays where it is, and the row says so.
-  - **Notes.** While the stored location differs from this launch's, the row says "Relaunch to use `<path>`". `--catalog` and evidence runs take precedence, and the row says "This launch uses `--catalog`".
-  - **Missing folder.** If the stored catalog's folder does not exist at launch, as with an unplugged drive, the desktop opens the default catalog instead. The status bar says "Catalog folder not found: `<folder>`; using the default catalog", and the row repeats it. The stored location is kept, so the next launch with the drive present opens it.
+  - **Choosing.** Choose Folder… opens a native folder dialog in the open catalog's folder and stores `<folder>/catalog.sqlite`. At the next launch the desktop opens that catalog, creating it if the folder holds none, as it creates the default today. The open catalog stays where it is, and the row says so.
+  - **Notes.** While the stored location differs from this launch's, the row says "Relaunch to use `<path>`". `--catalog` and evidence runs take precedence, and the row says "This launch uses `--catalog`" or "This launch uses the evidence run's catalog".
+  - **Missing folder.** If the stored catalog's folder does not exist at launch, as with an unplugged drive, the desktop opens the default catalog instead. The status bar says "Catalog folder not found: `<folder>`; using the default catalog", and the row repeats it. The stored location is kept, so the next launch with the drive present opens it. The event log records `catalog_folder_missing`.
   - **Other failures.** A catalog that cannot be opened for any other reason (another instance owns it, or its format is unsupported) is refused as the default catalog is today.
   - **The command line.** `luxforge-json` keeps requiring `--catalog`.
-- **Remembered workspace.** At launch the desktop starts its session from the stored `workspace` and `mask_overlay_colour` through one `workspace.set`. After it adopts a `workspace.set` answer that changed any of the five remembered fields, it stores them. The canvas mode, the mask overlay mode, zoom and the GPU preview are not remembered.
-- **Remembered brush.** The Masks panel's brush starts from the stored `brush`, or the neutral brush. A change of size, feather or flow by key, nudge, typed value or reset is stored. Erase, Limit to colour and the colour refine belong to the stroke and are not remembered.
-- **Remembered window.** At close the desktop stores the window's frame, converting Iced's logical size back to the system's points by the interface size. A close in fullscreen keeps the frame stored before. At launch, `--window-size` overrides the stored size. If the stored frame does not lie within the display the window opens on, the window opens centred there at the stored size, shrunk to fit.
+- **Remembered workspace.** As the editor is built, before its first frame, the desktop starts its session from the stored `workspace` and `mask_overlay_colour` through one `workspace.set`, sent only when they differ from the defaults, so a launch with nothing stored sends nothing.
+  - **Storing.** After the desktop adopts a `workspace.set` answer that changed any of the five remembered fields, it stores them. This covers the panel toggles, `O`, `J`, the histogram's triangles, the palette and an evidence run's own workspace steps, which store into the evidence directory.
+  - **Not remembered.** The canvas mode, the mask overlay mode, zoom and the GPU preview.
+  - **Unreadable preferences.** When the preferences could not be read at launch, nothing remembered is stored that session, so the status bar is not filled with refusals.
+- **Remembered brush.** The Masks panel's brush starts from the stored `brush`, or the neutral brush. A change of size, feather or flow by key, nudge, slider, typed value or reset is stored; a reset stores the neutral numbers. Erase, Limit to colour and the colour refine belong to the stroke and are not remembered.
+- **Remembered window.**
+  - **At close.** The desktop asks Iced once for the window's size, position, display and mode, and stores the frame, converting Iced's logical size back to the system's points by the interface size. A close in fullscreen, or with no position reported, keeps the frame stored before, and an unchanged frame is not written again.
+  - **At launch.** The window opens at the stored size, which the launch divides by the interface size for Iced, at the stored position. `--window-size` ignores the stored frame and lets the system place the window, though that launch's close still stores its frame. A hidden or evidence launch neither opens at a frame nor stores one.
+  - **Off-display check.** Iced reports a display's size but not where it sits among the others. After opening, a frame no display holds is moved to the main display and checked again. A frame on the main display, taken to be the one whose bounds hold its top-left corner, that does not lie wholly within it is centred there at its size, shrunk to fit. A frame on another display is kept if it fits that display's size, and otherwise moved to the main one.
+  - **Limit.** A secondary display larger than the main one, to its right or below it, can be taken for the main one, so a frame running past its edge can be moved to the main display. Exact placement needs the native screen frames.
+  - **Events.** The event log records `window_fitted` and `window_moved_to_main_display`.
 - **Remembered export folder.** After an export whose destination the person chose in the save dialog succeeds, the desktop stores the destination's folder. When `export_folder` is stored and is an existing folder, `export.plan` suggests `<export_folder>/<stem>-edited.jpg`, counting up within that folder. Otherwise it suggests the original's folder as today. An export with a destination given by an evidence step or an API client stores nothing.
 
 ## Desktop writes
@@ -83,7 +94,7 @@ All of the desktop's `preferences.set` calls go through one writer:
 
 - **One at a time.** One call is in flight. A later change waits, merged with any change already waiting, with the newer value of a field replacing the older.
 - **Shown at once.** A change shows immediately, and the answer that lands confirms it or puts the stored value back.
-- **Refusals.** A refused write says why in the status bar.
+- **Refusals.** A refused write says "Could not save preferences: `<reason>`" in the status bar, logs `preference_set_failed` with its fields, and reads back what is stored.
 - **Closing.** Closing the window waits for the last write, as the Performance preference does today.
 - **Existing writes.** The Performance disclosure and Auto collapse history writes move onto this writer.
 
@@ -101,14 +112,15 @@ A held `[` key that resizes the brush therefore writes at most one call in fligh
   - Remembered state is seeded and stored.
   - A frame records the combined scale factor at each interface size, and 100% maps one source pixel to one physical pixel at 125%.
   - The canvas colour is checked for each choice.
-- **Evidence steps.** `{"preference": {<field>: <value>}}` drives the General rows' own messages. Each frame's state records the preferences the desktop applies.
+- **Evidence steps.** `{"preference": {<field>: <value>}}` drives the General rows' own messages, sending only values the rows do not already show and waiting for the writer to go idle. The Catalog row takes the catalog file's path, as its dialog's answer, or `null` for Use Default.
+- **Frame state.** Each frame's state records `preferences`: `display` (canvas background, interface size, and the system's and combined scale factor), `applied`, `stored`, `writing`, `waiting` and `error`.
 - **The `settings` smoke scenario** gains:
   - the canvas background set to grey, with the canvas pixel checked beside the photograph;
   - the interface size set to 125%, with the title bar's drawn height checked against 100%;
   - the mask overlay colour set to white;
   - the lens switch turned off before importing a RAW, checking that no lens entry is committed;
   - a catalog folder chosen inside the evidence directory, with the row's relaunch note checked.
-- **Across launches.** The integrator relaunches `cargo xtask develop --background` twice over one isolated `--data-root`, and checks that the panels, overlays, brush, window frame and catalog location carry over.
+- **Across launches.** The integrator launches `cargo xtask develop --background --hidden-window` over one isolated `--data-root`. One launch stores a catalog location through `preferences.set`; the next opens it, shown by where its live-session file appears; a location whose folder is missing opens the default catalog and logs `catalog_folder_missing`. The desktop's own session is not readable by another client, and a hidden launch never opens at or stores a window frame, so the remembered workspace, brush and window are proven by the unit tests that build the editor over stored preferences.
 
 ## Performance rules checklist
 
