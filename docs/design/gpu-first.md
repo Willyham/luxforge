@@ -32,7 +32,7 @@ Owner, 2026-10-04:
 
 **Reference.** `luxforge_core::render` reduced to a whole-frame renderer: compile, one pass per segment, spatial operations over the whole stage in tiles for memory alone, no proxies, no windows, no point tiles, no caches beyond the prepared source. It renders slowly and plainly, and every test compares the GPU to it.
 
-**Tolerance by output kind.** Measured on the corpus by `cargo xtask gpu-qualification` on 2026-10-04 for the kind the GPU renders, the picture, on the M4 Pro's Metal adapter with the harness built from `07551e85` ([performance](../specs/performance.md#gpu-qualification-against-the-reference)). The other kinds keep their proposed limits until the stage that renders them lands and the gate measures them. Figures are mean ΔE00 / worst 16 × 16 block / p99 ΔE00 / \|signed mean ΔL\*\|, the largest over the cells named:
+**Tolerance by output kind.** Measured on the corpus by `cargo xtask gpu-qualification` on 2026-10-04 for the kind the GPU renders, the picture, on the M4 Pro's Metal adapter with the harness built from `7d0c80be` ([performance](../specs/performance.md#gpu-qualification-against-the-reference)). The other kinds keep their proposed limits until the stage that renders them lands and the gate measures them. Figures are mean ΔE00 / worst 16 × 16 block / p99 ΔE00 / \|signed mean ΔL\*\|, the largest over the cells named:
 
 | Output | Reference | Limit | Measured |
 | --- | --- | --- | --- |
