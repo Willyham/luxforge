@@ -361,7 +361,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: gpu_preview_zoom::SCENARIO,
-        about: "Basic drags at 100% and 200% drawn on the GPU over the visible region at full scale with no preview job per tick, correlated with the CPU frame of their settings, a drag at 800% panned past its region, Presence drags and Basic drags under Presence at 100%, and a drag at 50% drawn on the CPU with the status bar's notice saying why",
+        about: "Basic drags at 100% and 200% drawn on the GPU over the visible region at full scale with no preview job per tick, correlated with the CPU frame of their settings, a drag at 800% panned past its region, Presence drags and Basic drags under Presence at 100%, and drags at 50% and 33% drawn on the GPU from the displayed-size proxy",
         launches: &[
             LaunchSpec {
                 plan: gpu_preview_zoom::plan,
@@ -369,8 +369,8 @@ pub static SCENARIOS: &[Scenario] = &[
                 deadline: Some(Duration::from_secs(150)),
                 ..APP
             },
-            // The first launch's script holds the evidence's 64 steps, so the drag below 100% is
-            // its own short launch.
+            // The first launch's script holds the evidence's 64 steps, so the drags below 100%
+            // are their own short launch.
             LaunchSpec {
                 name: "below",
                 script: "script-below.json",
@@ -382,12 +382,13 @@ pub static SCENARIOS: &[Scenario] = &[
         source: Source::Fixtures(&[gpu_preview_zoom::FIXTURE]),
         window: Some(PANELLED),
         note: Some(
-            "Each drag opens with a CPU tick whose region job carries the one boundary request, for \
-             the region the view shows; a scripted wait lets the boundary arrive and the sequence \
-             compile, and the drag's later ticks are drawn on the GPU with no preview job of any \
-             kind. The checks read each step's tick and job events, the visible region and the \
-             plan's region recorded with each frame, and compare each GPU frame with the CPU frame \
-             its release commits.",
+            "Each drag opens with a CPU tick whose job carries the one boundary request, for the \
+             region the view shows at 100% and above and for the displayed-size proxy below 100%; \
+             a scripted wait lets the boundary arrive and the sequence compile, and the drag's \
+             later ticks are drawn on the GPU with no preview job of any kind. The checks read \
+             each step's tick and job events, the visible region and the plan's region recorded \
+             with each frame, or below 100% the proxy the boundary holds against the view's bounds \
+             and the CPU frame, and compare each GPU frame with the CPU frame its release commits.",
         ),
         own: None,
     },
