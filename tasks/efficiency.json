@@ -427,7 +427,7 @@
     {
       "id": "TASK-008",
       "description": "Read Sharpening's limiter and Detail's reconstruction over row slices in the interior, without per-pixel clamps and assertions.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Already done: smoothing, noise reduction's shrinkage (each pixel's chroma energy and factor computed once for a and b) and its level planes run over whole rows, the interior through slices and only the stage-edge columns through the clamped read, with the halo checked once a pass (modules/detail/filters.rs, denoise.rs). modules/detail/exactness.rs holds frozen tap-by-tap references for them.",
