@@ -174,7 +174,16 @@ pub fn run(root: &Path, options: &Options) -> Result {
 
     let log = out.join("harness.log");
     let harness = build(root, &log)?;
-    let binary_sha256 = hash(&harness.executable)?;
+    // What the harness was built from, read as it is built: the tree may change while it runs.
+    let built = json!({
+        "revision": output(root, "git", &["rev-parse", "HEAD"]).map(|text| text.trim().to_owned()).ok(),
+        "working_tree_dirty": output(root, "git", &["status", "--porcelain"]).map(|text| !text.trim().is_empty()).ok(),
+        "target": host(root).ok(),
+        "profile": "release",
+        "harness_binary": harness.executable,
+        "harness_binary_sha256": hash(&harness.executable)?,
+        "lock_sha256": hash(&root.join("Cargo.lock"))?,
+    });
     let run_dir = out.join("run");
     let mut command = Command::new(&harness.executable);
     command
@@ -219,15 +228,7 @@ pub fn run(root: &Path, options: &Options) -> Result {
         "log": "harness.log",
         "cells": "run/cells.json",
     });
-    report["build"] = json!({
-        "revision": output(root, "git", &["rev-parse", "HEAD"]).map(|text| text.trim().to_owned()).ok(),
-        "working_tree_dirty": output(root, "git", &["status", "--porcelain"]).map(|text| !text.trim().is_empty()).ok(),
-        "target": host(root).ok(),
-        "profile": "release",
-        "harness_binary": harness.executable,
-        "harness_binary_sha256": binary_sha256,
-        "lock_sha256": hash(&root.join("Cargo.lock"))?,
-    });
+    report["build"] = built;
     report["date"] = json!(time::OffsetDateTime::now_utc().date().to_string());
     report["corpus"] = json!({
         "file": corpus::FILE,
