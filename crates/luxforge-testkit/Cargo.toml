@@ -17,6 +17,10 @@ luxforge-testbase = { path = "../luxforge-testbase" }
 serde_json.workspace = true
 sha2.workspace = true
 
+# Hardware SHA-256 on aarch64; the reason is in `crates/luxforge-raw/Cargo.toml`.
+[target.'cfg(all(target_arch = "aarch64", not(target_os = "windows")))'.dependencies]
+sha2 = { workspace = true, features = ["asm"] }
+
 [dev-dependencies]
 # The core with the disk flush skipped, for this crate's tests only (luxforge-core's
 # `test-skip-disk-flush`).

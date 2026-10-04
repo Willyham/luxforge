@@ -85,7 +85,7 @@ impl RenderPhase {
 #[derive(Clone, Debug)]
 pub struct RenderOptions {
     pub(crate) phase: RenderPhase,
-    /// Read once per row or chunk by every rasterizing pass and once per batch of spatial tiles. A
+    /// Read once per row or chunk by every rasterizing pass and once per spatial tile. A
     /// token already cancelled when a frame is asked for costs no frame.
     pub cancel: Cancel,
     /// How each spatial operation is cut into tiles: [`Tiling::Halo`] everywhere but in the tests

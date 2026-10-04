@@ -625,6 +625,7 @@ mod tests {
             budgets: BudgetsReport {
                 colour_scratch: budget,
                 spatial: budget,
+                reduced_planes: None,
             },
         }
     }

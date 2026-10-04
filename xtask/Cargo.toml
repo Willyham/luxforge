@@ -20,7 +20,7 @@ luxforge-raw = { path = "../crates/luxforge-raw" }
 luxforge-reference = { path = "../crates/luxforge-reference" }
 luxforge-testbase = { path = "../crates/luxforge-testbase" }
 luxforge-testkit = { path = "../crates/luxforge-testkit" }
-sha2 = "=0.10.9"
+sha2.workspace = true
 regex = "=1.12.3"
 percent-encoding = "=2.3.2"
 tempfile = "=3.27.0"
@@ -28,6 +28,10 @@ flate2 = "=1.1.10"
 tar = "=0.4.46"
 zip = { version = "=8.2.0", default-features = false, features = ["deflate-flate2"] }
 time = { version = "=0.3.55", features = ["parsing"] }
+
+# Hardware SHA-256 on aarch64; the reason is in `crates/luxforge-raw/Cargo.toml`.
+[target.'cfg(all(target_arch = "aarch64", not(target_os = "windows")))'.dependencies]
+sha2 = { workspace = true, features = ["asm"] }
 
 [dev-dependencies]
 # The core with the disk flush skipped, for this crate's tests only (luxforge-core's

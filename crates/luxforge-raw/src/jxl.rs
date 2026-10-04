@@ -1,7 +1,7 @@
 //! Bounded JPEG XL unpacking for a catalogued integer linear DNG.
 //! LibRaw supplies identify-time metadata only; no pixel colour transform is requested.
 use crate::{MAX_SOURCE_BYTES, NativeMetadata, RawError};
-use jxl_oxide::{AllocTracker, InitializeResult, JxlImage};
+use jxl_oxide::{AllocTracker, InitializeResult, JxlImage, JxlThreadPool};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(super) fn decode_into(
@@ -14,7 +14,11 @@ pub(super) fn decode_into(
     let error = |error: Box<dyn std::error::Error + Send + Sync>| {
         RawError::Native(format!("JPEG XL: {error}"))
     };
+    // The process's one global Rayon pool, never a pool of the decoder's own (performance rule 9).
+    // Named here rather than left to the builder's default, so that a build without jxl-oxide's
+    // `rayon` feature, which would decode serially, does not compile.
     let mut uninit = JxlImage::builder()
+        .pool(JxlThreadPool::rayon_global())
         .alloc_tracker(AllocTracker::with_limit(MAX_SOURCE_BYTES))
         .build_uninit();
     let mut offset = 0;
