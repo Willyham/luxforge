@@ -363,7 +363,7 @@ impl Entry {
     }
 
     /// The bytes one worker of the linear rows reserves to load this boundary: a resample's block
-    /// of taps, and nothing for a boundary whose pixels are pulled one at a time.
+    /// of taps, and nothing for a spatial frame, whose values go straight into the chunk.
     pub(super) fn linear_scratch(&self) -> usize {
         match self {
             Self::Resample(_) => TAP_BLOCK_PIXELS as usize * std::mem::size_of::<[f64; 3]>(),
@@ -372,8 +372,9 @@ impl Entry {
     }
 
     /// Load one chunk of the linear rows of a segment that enters through this boundary: a
-    /// resample's taps block by block ([`LinearRows::load_resampled`]), or each pixel pulled
-    /// through [`Self::pixel`] ([`LinearRows::load_pulled`]).
+    /// resample's taps block by block ([`LinearRows::load_resampled`]), or a spatial frame's rows
+    /// walked through the segment's geometry, each pixel pulled through [`Self::pixel`] where the
+    /// evaluation holds no frame ([`LinearRows::load_pulled`]).
     pub(super) fn load_linear(
         &self,
         rows: &LinearRows<'_, '_, '_>,

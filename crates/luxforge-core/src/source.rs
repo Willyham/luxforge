@@ -8,7 +8,7 @@ mod optics;
 pub use linear::LinearImage;
 #[cfg(test)]
 pub(crate) use linear::finiteness_scans_during;
-pub(crate) use linear::{ViewReader, layout};
+pub(crate) use linear::{ViewReader, Walk, layout};
 pub use optics::{OpticalIdentity, SourceOptics};
 
 use crate::{

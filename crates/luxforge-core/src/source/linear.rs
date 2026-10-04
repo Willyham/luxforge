@@ -84,6 +84,23 @@ impl View {
         };
         Some((self.x + source_x, self.y + source_y))
     }
+
+    /// The base-plane step that a step of `(dx, dy)` in view coordinates takes: the linear part of
+    /// [`Self::map`], a signed permutation for each orientation.
+    #[inline]
+    fn step(self, (dx, dy): (i64, i64)) -> Option<(i64, i64)> {
+        Some(match self.orientation {
+            1 => (dx, dy),
+            2 => (-dx, dy),
+            3 => (-dx, -dy),
+            4 => (dx, -dy),
+            5 => (dy, dx),
+            6 => (dy, -dx),
+            7 => (-dy, -dx),
+            8 => (-dy, dx),
+            _ => return None,
+        })
+    }
 }
 
 /// Immutable planar f32 RGB prepared in linear sRGB/D65.
@@ -402,14 +419,50 @@ pub(crate) struct ViewReader<'a> {
     height: u32,
 }
 
+/// A rectangle of viewed pixels as the base planes hold it: the base-plane index of its first
+/// pixel and the signed index step that one column and one row of it take. A view and the exact
+/// geometry that reads through it are each a signed permutation with a translation, and so is
+/// their composition, so every pixel of the rectangle lies a fixed step from the one before it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Walk {
+    first: usize,
+    across: isize,
+    down: isize,
+    columns: usize,
+    rows: usize,
+}
+
+impl<'a> ViewReader<'a> {
+    /// Three planes laid out as a source's, `width` × `height` each, read through the identity
+    /// view: a spatial operation's output frame, which the linear path holds that way.
+    pub(crate) fn over(planes: &'a [f32], width: u32, height: u32) -> Self {
+        let plane_len = width as usize * height as usize;
+        debug_assert_eq!(planes.len(), 3 * plane_len, "three planes of the stage");
+        Self {
+            planes,
+            base_width: width,
+            plane_len,
+            view: View {
+                x: 0,
+                y: 0,
+                width,
+                height,
+                orientation: 1,
+            },
+            width,
+            height,
+        }
+    }
+}
+
 impl ViewReader<'_> {
     pub(crate) fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
     }
 
     /// One viewed pixel, or `None` outside the view. [`LinearImage::pixel`] and the linear
-    /// domain's point path read through this, and [`Self::row`] walks the same mapping, which is
-    /// what makes a bulk read agree with a point read.
+    /// domain's point path read through this, and it is the reference every [`Walk`] is held to:
+    /// a bulk read agrees with a point read because each lands where this says.
     #[inline]
     pub(crate) fn pixel(&self, x: u32, y: u32) -> Option<[f32; 3]> {
         if x >= self.width || y >= self.height {
@@ -424,9 +477,82 @@ impl ViewReader<'_> {
         ])
     }
 
-    /// A viewed row with its mapping resolved once. Construction validated the crop, orientation
-    /// and plane lengths, so its pixels advance by one column or one base-plane row, in either
-    /// direction. No pixel data is copied or allocated to make this iterator.
+    /// The `columns` × `rows` rectangle of viewed pixels whose first pixel is `at` and whose
+    /// columns and rows step `across` and `down` in view coordinates: what an output rectangle
+    /// reads through an exact geometry, whose unmap gives its first pixel and its two unit steps.
+    /// `None` when it is empty or a corner lies outside the view: the view is a rectangle and the
+    /// walk is affine, so a rectangle whose corners are inside lies inside.
+    pub(crate) fn walk(
+        &self,
+        at: (u32, u32),
+        across: (i64, i64),
+        down: (i64, i64),
+        columns: u32,
+        rows: u32,
+    ) -> Option<Walk> {
+        if columns == 0 || rows == 0 {
+            return None;
+        }
+        let (last_column, last_row) = (i64::from(columns - 1), i64::from(rows - 1));
+        let corner = |column: i64, row: i64| {
+            (
+                i64::from(at.0) + column * across.0 + row * down.0,
+                i64::from(at.1) + column * across.1 + row * down.1,
+            )
+        };
+        let inside = |(x, y): (i64, i64)| {
+            (0..i64::from(self.width)).contains(&x) && (0..i64::from(self.height)).contains(&y)
+        };
+        let corners = [
+            corner(0, 0),
+            corner(last_column, 0),
+            corner(0, last_row),
+            corner(last_column, last_row),
+        ];
+        if !corners.into_iter().all(inside) {
+            return None;
+        }
+        let (base_x, base_y) = self.view.map(at.0, at.1)?;
+        let index_step = |step| {
+            let (x, y) = self.view.step(step)?;
+            isize::try_from(x + y * i64::from(self.base_width)).ok()
+        };
+        Some(Walk {
+            first: base_y as usize * self.base_width as usize + base_x as usize,
+            across: index_step(across)?,
+            down: index_step(down)?,
+            columns: columns as usize,
+            rows: rows as usize,
+        })
+    }
+
+    /// Every pixel of `walk`, handed to `visit` with its row-major offset in the rectangle and the
+    /// values [`Self::pixel`] reads there, row by row. A row whose pixels are adjacent in the
+    /// planes is read as three slices. The first error `visit` returns stops the walk.
+    pub(crate) fn visit<E>(
+        &self,
+        walk: Walk,
+        mut visit: impl FnMut(usize, [f32; 3]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let (red, rest) = self.planes.split_at(self.plane_len);
+        let (green, blue) = rest.split_at(self.plane_len);
+        for row in 0..walk.rows {
+            let start = walk.first.wrapping_add_signed(row as isize * walk.down);
+            let offset = row * walk.columns;
+            line(
+                [red, green, blue],
+                start,
+                walk.across,
+                walk.columns,
+                |column, rgb| visit(offset + column, rgb),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// A viewed row with its stride taken from the orientation alone: the row walk the linear
+    /// rows used before [`Walk`], kept as a second reference beside [`Self::pixel`].
+    #[cfg(test)]
     pub(crate) fn row(&self, y: u32) -> Option<impl ExactSizeIterator<Item = [f32; 3]> + '_> {
         if y >= self.height {
             return None;
@@ -450,5 +576,176 @@ impl ViewReader<'_> {
                 self.planes[2 * self.plane_len + index],
             ]
         }))
+    }
+}
+
+/// `count` pixels of three planes from base-plane index `start`, `step` apart, handed to `visit`
+/// in order with their position along the line. A step of one in either direction reads three
+/// slices, so the line costs no index check per pixel; any other step indexes each pixel. Every
+/// index lies inside a [`Walk`] its reader checked.
+#[inline(always)]
+fn line<E>(
+    [red, green, blue]: [&[f32]; 3],
+    start: usize,
+    step: isize,
+    count: usize,
+    mut visit: impl FnMut(usize, [f32; 3]) -> Result<(), E>,
+) -> Result<(), E> {
+    match step {
+        1 => {
+            let span = start..start + count;
+            let values = red[span.clone()].iter().zip(&green[span.clone()]);
+            for (position, ((r, g), b)) in values.zip(&blue[span]).enumerate() {
+                visit(position, [*r, *g, *b])?;
+            }
+        }
+        -1 => {
+            let span = start + 1 - count..start + 1;
+            let values = red[span.clone()].iter().zip(&green[span.clone()]);
+            for (position, ((r, g), b)) in values.zip(&blue[span]).rev().enumerate() {
+                visit(position, [*r, *g, *b])?;
+            }
+        }
+        _ => {
+            for position in 0..count {
+                let index = start.wrapping_add_signed(position as isize * step);
+                visit(position, [red[index], green[index], blue[index]])?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `width` × `height` image whose every value is distinct and names its own place: base
+    /// index `i` holds `i`, `i + 0.25` and `i + 0.5` in its three planes.
+    fn indexed(width: u32, height: u32) -> LinearImage {
+        let n = (width * height) as usize;
+        let planes: Vec<f32> = (0..3)
+            .flat_map(|channel| (0..n).map(move |index| index as f32 + channel as f32 * 0.25))
+            .collect();
+        LinearImage::new(width, height, planes).unwrap()
+    }
+
+    /// The eight unit steps a signed permutation can take one column or one row.
+    const STEPS: [((i64, i64), (i64, i64)); 8] = [
+        ((1, 0), (0, 1)),
+        ((-1, 0), (0, 1)),
+        ((1, 0), (0, -1)),
+        ((-1, 0), (0, -1)),
+        ((0, 1), (1, 0)),
+        ((0, -1), (1, 0)),
+        ((0, 1), (-1, 0)),
+        ((0, -1), (-1, 0)),
+    ];
+
+    /// Every walk over every view, under each of the eight orientations and through crops touching
+    /// each edge, visits each pixel of its rectangle exactly once, at its row-major offset, with
+    /// the values [`ViewReader::pixel`] reads at the viewed pixel the steps reach; a walk with a
+    /// corner outside the view is refused. Each value names its base index, so a pixel read one
+    /// place over shows.
+    #[test]
+    fn every_walk_lands_where_pixel_says() {
+        let source = indexed(7, 5);
+        for orientation in 1..=8 {
+            for crop in [
+                [0, 0, 7, 5],
+                [1, 1, 5, 3],
+                [0, 0, 6, 4],
+                [1, 1, 6, 4],
+                [6, 4, 1, 1],
+            ] {
+                let view = source.with_view(crop, orientation).unwrap();
+                let reader = view.reader();
+                let (width, height) = reader.dimensions();
+                for (across, down) in STEPS {
+                    for y in 0..height {
+                        for x in 0..width {
+                            for columns in 1..=width.max(height) + 1 {
+                                for rows in 1..=width.max(height) + 1 {
+                                    let at_pixel = |column: u32, row: u32| {
+                                        let x = i64::from(x)
+                                            + i64::from(column) * across.0
+                                            + i64::from(row) * down.0;
+                                        let y = i64::from(y)
+                                            + i64::from(column) * across.1
+                                            + i64::from(row) * down.1;
+                                        let x = u32::try_from(x).ok()?;
+                                        let y = u32::try_from(y).ok()?;
+                                        reader.pixel(x, y)
+                                    };
+                                    let inside = (0..rows).all(|row| {
+                                        (0..columns).all(|column| at_pixel(column, row).is_some())
+                                    });
+                                    let what = || {
+                                        format!(
+                                            "orientation {orientation}, crop {crop:?}, steps \
+                                             {across:?} {down:?}, at ({x}, {y}), \
+                                             {columns}x{rows}"
+                                        )
+                                    };
+                                    let walk = reader.walk((x, y), across, down, columns, rows);
+                                    assert_eq!(walk.is_some(), inside, "{}", what());
+                                    let Some(walk) = walk else {
+                                        continue;
+                                    };
+                                    let mut seen = vec![None; (columns * rows) as usize];
+                                    reader
+                                        .visit(walk, |offset, rgb| {
+                                            assert!(seen[offset].is_none(), "{}: {offset}", what());
+                                            seen[offset] = Some(rgb.map(f32::to_bits));
+                                            Ok::<(), ()>(())
+                                        })
+                                        .unwrap();
+                                    for row in 0..rows {
+                                        for column in 0..columns {
+                                            let offset = (row * columns + column) as usize;
+                                            assert_eq!(
+                                                seen[offset],
+                                                at_pixel(column, row).map(|p| p.map(f32::to_bits)),
+                                                "{}: ({column}, {row})",
+                                                what()
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                assert!(reader.walk((0, 0), (1, 0), (0, 1), 0, 1).is_none());
+                assert!(reader.walk((0, 0), (1, 0), (0, 1), 1, 0).is_none());
+            }
+        }
+    }
+
+    /// A visit stops at the first error its visitor returns and hands that error back.
+    #[test]
+    fn a_walk_stops_at_the_first_error() {
+        let source = indexed(5, 3);
+        let reader = source.reader();
+        let walk = reader.walk((0, 0), (1, 0), (0, 1), 5, 3).unwrap();
+        let mut visited = 0;
+        let error = reader.visit(walk, |offset, _| {
+            visited += 1;
+            if offset == 6 { Err(offset) } else { Ok(()) }
+        });
+        assert_eq!((error, visited), (Err(6), 7));
+    }
+
+    /// A frame's planes read through [`ViewReader::over`] are the frame's pixels where they lie.
+    #[test]
+    fn a_frame_reads_through_the_identity_view() {
+        let source = indexed(6, 4);
+        let frame = ViewReader::over(source.planes(), 6, 4);
+        for y in 0..4 {
+            for x in 0..6 {
+                assert_eq!(frame.pixel(x, y), source.pixel(x, y));
+            }
+        }
+        assert_eq!(frame.dimensions(), (6, 4));
     }
 }
