@@ -1,7 +1,8 @@
 //! The status bar: a plain sentence of what last happened and the one control that makes it usable
 //! elsewhere, then the pointer readout, then the run's own facts at the trailing edge — who else is
-//! connected, what kind of frame the renderer put on screen and how long it took, and what the
-//! current zoom comes to on this display.
+//! connected, what kind of frame the renderer put on screen and how long it took, why a gesture is
+//! drawn on the slower CPU path while a reason for it lasts, and what the current zoom comes to on
+//! this display.
 use crate::{
     app::message::{Message, view::ViewMessage},
     state::status::StatusBarModel,
@@ -9,7 +10,7 @@ use crate::{
 use iced::{
     Alignment, Element, Length, Theme,
     alignment::Horizontal,
-    widget::{Space, container, row, text},
+    widget::{Space, container, row, text, tooltip},
 };
 use luxforge_ui::{Icon, IconButtonModel, caption, header_icon_button, theme, truncated_text};
 
@@ -21,6 +22,9 @@ const DOT: &str = "\u{00b7}";
 /// trailing facts. Wide enough for the longest readout there can be — three codes of 255 at
 /// coordinates of five digits, the 16384 px side limit — with its separator.
 pub(crate) const READOUT_WIDTH: f32 = 240.0;
+
+/// The widest the notice's tooltip grows before its sentence wraps.
+const NOTICE_TOOLTIP_WIDTH: f32 = 320.0;
 
 pub(crate) fn status_bar(model: &StatusBarModel) -> Element<'_, Message> {
     // The sentence hugs its text, so Copy follows it, and ends in an ellipsis before it would push
@@ -83,13 +87,34 @@ pub(crate) fn status_bar(model: &StatusBarModel) -> Element<'_, Message> {
             .color(theme::TEXT_TERTIARY)
             .wrapping(text::Wrapping::None)
     };
+    // Why the gesture is drawn on the CPU, a muted phrase right after the render slot with its
+    // sentence on hover; nothing is drawn on the photograph.
+    let notice: Option<Element<'_, Message>> = model.fallback.as_ref().map(|notice| {
+        tooltip(
+            text(notice.phrase.clone())
+                .size(theme::SIZE_CAPTION)
+                .color(theme::TEXT_SECONDARY)
+                .wrapping(text::Wrapping::None),
+            container(
+                text(notice.tooltip.clone())
+                    .size(theme::SIZE_CAPTION)
+                    .color(theme::TEXT_PRIMARY),
+            )
+            .max_width(NOTICE_TOOLTIP_WIDTH)
+            .padding(theme::TOOLTIP_PADDING)
+            .style(theme::bar_surface),
+            tooltip::Position::Top,
+        )
+        .into()
+    });
     let facts = row![
         row![dot, fact(&model.clients)]
             .spacing(theme::STATUS_DOT_SIZE)
             .align_y(Alignment::Center),
         fact(&model.render),
-        fact(&model.view),
     ]
+    .extend(notice)
+    .push(fact(&model.view))
     .spacing(theme::STATUS_FACT_SPACING)
     .align_y(Alignment::Center);
     // A shrinking container lays the sentence out at its own width, where a filling one would give

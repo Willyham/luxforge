@@ -48,6 +48,7 @@
 //!   asks for no boundary and keeps the CPU path, naming the budget; so does one the surface finds
 //!   over it once held. The mask overlay's region coverage is laid over the GPU region frame.
 use super::{Editor, gpu_plan};
+use crate::state::status::CpuReason;
 use luxforge_core::{
     BoundaryKey, BoundaryRequest, CoordinateGrid, Draft, DraftId, GpuAnswer, GpuPreview, Region,
 };
@@ -55,7 +56,10 @@ use luxforge_ui::photo_surface::{
     self as surface, DrawingPath, GpuBoundary, GpuStep, GpuWarm, SurfaceDiagnostics,
 };
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 /// The core's plan, beside the surface's plain data of the same name.
 type CorePlan = luxforge_core::GpuPlan;
@@ -195,6 +199,15 @@ impl Stamps {
     }
 }
 
+/// A run of ticks that each named `compiling`: when the first did, and how long that had lasted at
+/// the latest. The status bar's notice reads the latter, so a tick decides it and the clock never
+/// does: a drag that holds still keeps what it last said, and nothing wakes to change it.
+#[derive(Clone, Copy, Debug)]
+struct Compiling {
+    since: Instant,
+    lasted: Duration,
+}
+
 /// The open draft's GPU preview.
 struct Drag {
     draft: DraftId,
@@ -216,6 +229,10 @@ struct Drag {
     standby: Option<Handed>,
     /// Why the latest tick took the CPU path.
     reason: Option<String>,
+    /// The label the recipe list gives the layer that reason names, when it names one.
+    layer: Option<String>,
+    /// The run of ticks that have named `compiling`, while the latest does.
+    compiling: Option<Compiling>,
     /// The percentage zoom the latest tick's region was asked at; `None` at Fit.
     zoom: Option<f32>,
     /// What a region's boundary or slot would take, and the bound on a boundary or the budget it
@@ -246,6 +263,8 @@ impl Drag {
             surface: None,
             standby: None,
             reason: None,
+            layer: None,
+            compiling: None,
             zoom: None,
             over_budget: None,
             shape: None,
@@ -254,6 +273,27 @@ impl Drag {
             cpu_ticks: 0,
             boundary_requests: 0,
         }
+    }
+
+    /// The tick at `now` took the CPU path for `reason`, which names the layer the recipe list
+    /// labels `layer`, if any. A run of `compiling` keeps when it began; any other reason ends it.
+    fn stopped(&mut self, reason: &str, layer: Option<String>, now: Instant) {
+        self.compiling = (reason == SurfaceFallback::Compiling.as_str()).then(|| {
+            let since = self.compiling.map_or(now, |run| run.since);
+            Compiling {
+                since,
+                lasted: now.saturating_duration_since(since),
+            }
+        });
+        self.reason = Some(reason.into());
+        self.layer = layer;
+    }
+
+    /// The tick is drawn on the GPU.
+    fn drew(&mut self) {
+        self.reason = None;
+        self.layer = None;
+        self.compiling = None;
     }
 }
 
@@ -489,6 +529,15 @@ impl GpuPreviews {
         })
     }
 
+    /// Make the open drag's run of `compiling` ticks have begun `by` earlier, so a test need not
+    /// wait out [`crate::state::status::COMPILING_AFTER`].
+    #[cfg(test)]
+    pub(crate) fn backdate_compiling(&mut self, by: Duration) {
+        if let Some(run) = self.drag.as_mut().and_then(|drag| drag.compiling.as_mut()) {
+            run.since -= by;
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn holds_boundary(&self) -> bool {
         self.held_version().is_some()
@@ -539,6 +588,7 @@ impl Editor {
         preview: Option<Box<GpuPreview>>,
     ) -> (Tick, Option<BoundaryRequest>) {
         let mut boundary_request = None;
+        let now = Instant::now();
         // With the preference off the plan is never handed over, so nothing is asked for it.
         let allowed = self.gpu_preview_allowed();
         // The clipping overlay is derived from the CPU's frames, so over a GPU frame the plan marks
@@ -584,39 +634,43 @@ impl Editor {
         // A tick with no plan draws nothing of its own; the boundary stays held, behind the CPU
         // frame, for the next tick or draft that plans from it. Only the preference turned off,
         // which hands the surface no plan at all, lets it go.
-        let unplanned = |drag: &mut Drag, reason: &str, released: &mut Option<u64>| {
-            if let Some(handed) = drag.surface.take() {
-                drag.standby = Some(handed);
-            }
-            drag.plan = None;
-            drag.wanted = None;
-            if reason == super::gpu_settle::PREFERENCE_OFF
-                && let Some(held) = drag.held.take()
-            {
-                *released = Some(held.boundary.version());
-                drag.standby = None;
-            }
-            drag.reason = Some(reason.into());
-            Tick::Cpu
-        };
+        let unplanned =
+            |drag: &mut Drag, reason: &str, layer: Option<String>, released: &mut Option<u64>| {
+                if let Some(handed) = drag.surface.take() {
+                    drag.standby = Some(handed);
+                }
+                drag.plan = None;
+                drag.wanted = None;
+                if reason == super::gpu_settle::PREFERENCE_OFF
+                    && let Some(held) = drag.held.take()
+                {
+                    *released = Some(held.boundary.version());
+                    drag.standby = None;
+                }
+                drag.stopped(reason, layer, now);
+                Tick::Cpu
+            };
         let tick = match preview.map(|preview| *preview) {
             _ if allowed.is_err() => unplanned(
                 drag,
                 allowed.err().unwrap_or(super::gpu_settle::PREFERENCE_OFF),
+                None,
                 &mut released,
             ),
-            None => unplanned(drag, "not-fit", &mut released),
+            None => unplanned(drag, "not-fit", None, &mut released),
             Some(luxforge_core::GpuPreview {
                 answer: GpuAnswer::Fallback(reason),
+                layer,
                 ..
-            }) => unplanned(drag, reason.code(), &mut released),
+            }) => unplanned(drag, reason.code(), layer, &mut released),
             Some(luxforge_core::GpuPreview {
                 answer: GpuAnswer::Plan(plan),
                 boundary,
                 cpu_shape,
+                ..
             }) => {
                 let Some(request) = boundary else {
-                    drag.reason = Some("unplannable".into());
+                    drag.stopped("unplannable", None, now);
                     drag.cpu_ticks += 1;
                     return (Tick::Cpu, None);
                 };
@@ -658,15 +712,15 @@ impl Editor {
                     None if over_budget.is_some() => {
                         drag.surface = None;
                         // The surface's own name for a plan over the budget.
-                        drag.reason = Some("budget-exceeded".into());
+                        drag.stopped("budget-exceeded", None, now);
                         Tick::Cpu
                     }
                     None => {
                         drag.surface = None;
                         if drag.failed.as_ref() == Some(&request.key) {
-                            drag.reason = Some("boundary-failed".into());
+                            drag.stopped("boundary-failed", None, now);
                         } else {
-                            drag.reason = Some("boundary-pending".into());
+                            drag.stopped("boundary-pending", None, now);
                             let pending = self.presentation.queue.pending_generation();
                             if drag.requested.is_none() || drag.requested == pending {
                                 boundary_request = Some(request);
@@ -688,7 +742,7 @@ impl Editor {
                         {
                             Err(unrunnable) => {
                                 drag.surface = None;
-                                drag.reason = Some(unrunnable.code().into());
+                                drag.stopped(unrunnable.code(), None, now);
                                 Tick::Cpu
                             }
                             Ok(converted) => {
@@ -698,14 +752,15 @@ impl Editor {
                                 if report.ready_boundary == Some(version)
                                     && report.fallback.is_none()
                                 {
-                                    drag.reason = None;
+                                    drag.drew();
                                     Tick::Gpu
                                 } else {
-                                    drag.reason = Some(
+                                    drag.stopped(
                                         report
                                             .fallback
-                                            .map_or("surface-pending", SurfaceFallback::as_str)
-                                            .into(),
+                                            .map_or("surface-pending", SurfaceFallback::as_str),
+                                        None,
+                                        now,
                                     );
                                     Tick::Cpu
                                 }
@@ -1236,10 +1291,28 @@ impl Editor {
     /// tick took the CPU path: the preference, the plan's reason, a boundary not yet held, the
     /// converter's reason or the surface's fallback.
     pub(crate) fn gpu_plan_fallback(&self) -> Option<String> {
-        if let Err(reason) = self.gpu_preview_allowed() {
-            return Some(reason.into());
+        self.gpu_cpu_reason().map(|reason| reason.code.to_owned())
+    }
+
+    /// [`Self::gpu_plan_fallback`] with what the status bar's notice is derived from
+    /// ([`CpuReason::notice`]): the layer the reason names, and how long the ticks that named
+    /// `compiling` have done so. The open gesture's, kept until its drag is released, which is when
+    /// its settle ends: the frame replacing the drafted one is presented, or nothing more is coming
+    /// (`after_message`).
+    pub(crate) fn gpu_cpu_reason(&self) -> Option<CpuReason<'_>> {
+        if let Err(code) = self.gpu_preview_allowed() {
+            return Some(CpuReason {
+                code,
+                layer: None,
+                compiling_for: None,
+            });
         }
-        self.gpu.drag.as_ref().and_then(|drag| drag.reason.clone())
+        let drag = self.gpu.drag.as_ref()?;
+        Some(CpuReason {
+            code: drag.reason.as_deref()?,
+            layer: drag.layer.as_deref(),
+            compiling_for: drag.compiling.map(|run| run.lasted),
+        })
     }
 
     /// Whether the surface holds the drawn plan behind the CPU frame: the CPU frame of the drawn
