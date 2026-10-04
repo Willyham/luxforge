@@ -1,6 +1,7 @@
-//! The GPU preview qualification corpus: `fixtures/preview/corpus.json`, the sources and recipes
-//! the preview error limits are judged on, each at Fit and at 100%. This module reads it and holds
-//! it to its own rules; it measures nothing.
+//! The GPU qualification corpus: `fixtures/preview/corpus.json`, the sources and recipes the
+//! tolerance of the GPU against the reference renderer is judged on, each at Fit, 33%, 50% and
+//! 100%. This module reads it and holds it to its own rules; it measures nothing.
+//! `cargo xtask gpu-qualification` measures it ([`crate::gpu_qualification`]).
 //!
 //! A source is a generated JPEG, a RAW photograph or an explicit gap. A generated JPEG names its
 //! file under `fixtures/generated/` and the SHA-256 `cargo xtask generate-fixtures` writes it with.
@@ -22,12 +23,16 @@ use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 
 pub const FILE: &str = "fixtures/preview/corpus.json";
+/// Where `cargo xtask generate-fixtures` writes the generated JPEGs by default, relative to the
+/// checkout: the directory every generated source's `path` names.
+pub const GENERATED: &str = "fixtures/generated";
 /// The committed snapshot of every method's declared parameters, which a recipe's calls are
 /// checked against.
 const DESCRIPTORS: &str = "fixtures/modules/builtin-descriptors.json";
 
-/// The views every recipe is measured at.
-const VIEWS: [&str; 2] = ["fit", "100%"];
+/// The views every recipe is measured at: Fit, the two percentages below 100% the desktop draws
+/// from a displayed-size proxy, and 100%.
+pub const VIEWS: [&str; 4] = ["fit", "33%", "50%", "100%"];
 
 /// The sources the design names; the corpus must hold each.
 const REQUIRED_SOURCES: [&str; 7] = [
@@ -165,13 +170,38 @@ impl Corpus {
             * self.views.len()
     }
 
+    /// Every stack the corpus lists, as `(recipe, family, source)`, in the corpus's order.
+    pub fn pairs(&self) -> impl Iterator<Item = (&str, &str, &str)> {
+        self.recipes.iter().flat_map(|recipe| {
+            recipe
+                .sources
+                .iter()
+                .map(move |source| (recipe.id.as_str(), recipe.family.as_str(), source.as_str()))
+        })
+    }
+
+    /// The recipes' ids.
+    pub fn recipe_ids(&self) -> impl Iterator<Item = &str> {
+        self.recipes.iter().map(|recipe| recipe.id.as_str())
+    }
+
+    /// The recipe families the corpus holds.
+    pub fn families(&self) -> impl Iterator<Item = &str> {
+        self.recipes.iter().map(|recipe| recipe.family.as_str())
+    }
+
+    /// The sources' ids.
+    pub fn source_ids(&self) -> impl Iterator<Item = &str> {
+        self.sources.iter().map(|source| source.id.as_str())
+    }
+
     /// The corpus's own consistency, against `descriptors` (the `fixtures/modules` snapshot).
     pub fn check(&self, descriptors: &Value) -> Result {
         ensure(self.format == 1, "The corpus's format is 1")?;
         ensure(!self.scope.trim().is_empty(), "The corpus states no scope")?;
         ensure(
             self.views.iter().map(|view| view.id.as_str()).eq(VIEWS),
-            format!("The corpus's views are {VIEWS:?}, each at Fit and at 100%"),
+            format!("The corpus's views are {VIEWS:?}, in that order"),
         )?;
         for view in &self.views {
             let steps = luxforge_evidence::parse(&json!([view.step]).to_string())?;
@@ -317,10 +347,12 @@ impl Corpus {
         Ok(())
     }
 
-    /// Each source as this host can resolve it. `root` is the checkout; `manifest` the private RAW
-    /// manifest, when given. A source whose hash disagrees with what is found is an error; one
-    /// that cannot be checked here is `unresolved` with the reason.
-    pub fn resolve(&self, root: &Path, manifest: Option<&Path>) -> Result<Value> {
+    /// Each source as this host can resolve it. `generated` is the directory of generated JPEGs
+    /// (`fixtures/generated` in the checkout, or another a caller names), where each generated
+    /// source is found by its file name; `manifest` the private RAW manifest, when given. A source
+    /// whose hash disagrees with what is found is an error; one that cannot be checked here is
+    /// `unresolved` with the reason.
+    pub fn resolve(&self, generated: &Path, manifest: Option<&Path>) -> Result<Value> {
         let manifest = manifest
             .map(raw::manifest::<raw::EditorSource>)
             .transpose()?;
@@ -333,7 +365,10 @@ impl Corpus {
                 (Some(hash), _) => {
                     let found = match source.kind {
                         Kind::GeneratedJpeg => {
-                            let path = root.join(source.path.as_deref().unwrap_or_default());
+                            let name = Path::new(source.path.as_deref().unwrap_or_default())
+                                .file_name()
+                                .unwrap_or_default();
+                            let path = generated.join(name);
                             if path.is_file() {
                                 Ok(path)
                             } else {
@@ -468,7 +503,7 @@ pub fn run(root: &Path, mut a: Args) -> Result {
     }
     a.done()?;
     let corpus = Corpus::load(root)?;
-    let report = corpus.resolve(root, manifest.as_deref())?;
+    let report = corpus.resolve(&root.join(GENERATED), manifest.as_deref())?;
     let text = format!("{}\n", serde_json::to_string_pretty(&report)?);
     if let Some(output) = &output {
         fs::write(output, &text)?;
@@ -584,7 +619,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .map(|recipe| recipe["sources"].as_array().unwrap().len() * 2)
+            .map(|recipe| recipe["sources"].as_array().unwrap().len() * VIEWS.len())
             .sum();
         assert_eq!(corpus.cells(), expected);
         assert_eq!(
@@ -797,7 +832,7 @@ mod tests {
             })
             .contains("Duplicate recipe")
         );
-        // Both views, in order, as steps the driver reads.
+        // Every view, in order, as steps the driver reads.
         assert!(
             refused(|c| {
                 c["views"].as_array_mut().unwrap().pop();
@@ -892,7 +927,8 @@ mod tests {
 
         // Without a manifest the RAW is unresolved, never verified, and a file not generated here
         // is too. A gap is a recorded gap.
-        let report = corpus.resolve(root, None).unwrap();
+        let generated = root.join(GENERATED);
+        let report = corpus.resolve(&generated, None).unwrap();
         assert_eq!(
             [
                 status(&report, "gen"),
@@ -915,12 +951,12 @@ mod tests {
 
         // Through the manifest the RAW resolves: the entry's hash, then the file's.
         let manifest = write_manifest(&root.join("photo.NEF"), &raw_hash, "nikon-z6");
-        let report = corpus.resolve(root, Some(&manifest)).unwrap();
+        let report = corpus.resolve(&generated, Some(&manifest)).unwrap();
         assert_eq!(status(&report, "raw"), "verified");
         // A RAW whose file is not on this host is unresolved, not an error.
         let manifest = write_manifest(&root.join("absent.NEF"), &raw_hash, "nikon-z6");
         assert_eq!(
-            status(&corpus.resolve(root, Some(&manifest)).unwrap(), "raw"),
+            status(&corpus.resolve(&generated, Some(&manifest)).unwrap(), "raw"),
             "unresolved"
         );
         // A manifest that has moved on, an entry that is not listed and a file that changed are
@@ -928,7 +964,7 @@ mod tests {
         let manifest = write_manifest(&root.join("photo.NEF"), &"c".repeat(64), "nikon-z6");
         assert!(
             corpus
-                .resolve(root, Some(&manifest))
+                .resolve(&generated, Some(&manifest))
                 .unwrap_err()
                 .to_string()
                 .contains("manifest's nikon-z6 has SHA-256")
@@ -936,7 +972,7 @@ mod tests {
         let manifest = write_manifest(&root.join("photo.NEF"), &raw_hash, "other");
         assert!(
             corpus
-                .resolve(root, Some(&manifest))
+                .resolve(&generated, Some(&manifest))
                 .unwrap_err()
                 .to_string()
                 .contains("lists no source nikon-z6")
@@ -948,11 +984,18 @@ mod tests {
         .unwrap();
         assert!(
             corpus
-                .resolve(root, None)
+                .resolve(&generated, None)
                 .unwrap_err()
                 .to_string()
                 .contains("has SHA-256")
         );
+        // Another directory of generated JPEGs is read by file name, as the harness reads one it
+        // is given.
+        let elsewhere = root.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::write(elsewhere.join("a.jpg"), b"generated").unwrap();
+        let report = corpus.resolve(&elsewhere, None).unwrap();
+        assert_eq!(status(&report, "gen"), "verified");
     }
 
     #[test]
@@ -966,7 +1009,7 @@ mod tests {
             fs::copy(real.join(file), root.join(file)).unwrap();
         }
         let corpus = Corpus::load(root).unwrap();
-        let report = corpus.resolve(root, None).unwrap();
+        let report = corpus.resolve(&root.join(GENERATED), None).unwrap();
         assert_eq!(
             report["counts"],
             json!({"verified": 0, "gap": 0, "unresolved": 8}),
