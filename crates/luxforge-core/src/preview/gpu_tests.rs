@@ -452,6 +452,84 @@ fn a_job_that_asks_renders_its_boundary_after_its_fit_frame() {
     assert!(queue.poll().is_none(), "no boundary was asked for");
 }
 
+/// Below 100% the desktop's job carries the displayed size of the whole stage as its bounds, and a
+/// draft's boundary planned at them is rendered as Fit's is: after the job's proxy frame, the frame
+/// the view draws at that zoom, as one more result of its generation, holding that proxy's whole
+/// stage, decoded, so the GPU frame drawn from it is the CPU frame's size.
+#[test]
+fn below_100_percent_a_job_renders_its_boundary_after_its_proxy_frame() {
+    // 50% and 33% of the 600 × 400 source, as the desktop rounds a displayed size.
+    for bounds in [
+        ProxyBounds {
+            width: 300,
+            height: 200,
+        },
+        ProxyBounds {
+            width: 198,
+            height: 132,
+        },
+    ] {
+        let (mut job, draft) = draft_job(
+            "set-basic",
+            Vec::new(),
+            vec![basic(json!({"exposure": 0.3}))],
+            2,
+        );
+        let preview = plan_preview(&job.evaluation, &draft, crate::GpuView::Fit(bounds)).unwrap();
+        let request = preview.boundary.clone().expect("a boundary");
+        let plan = request.key.plan().expect("a proxy");
+        assert_eq!((plan.width, plan.height), (bounds.width, bounds.height));
+        let proxied = job.evaluation.source().proxy(plan).unwrap();
+        job.proxy = Some(bounds);
+        job.intent = PreviewIntent::Interactive;
+        job.boundary = Some(request.clone());
+        let mut queue = PreviewQueue::default();
+        let generation = queue.request(job);
+        let proxy = wait_for("the proxy frame", || queue.poll());
+        assert_eq!(
+            (proxy.generation, proxy.phase()),
+            (generation, PreviewPhase::Proxy)
+        );
+        let raster = &proxy.proxy().expect("the proxy phase").raster;
+        assert_eq!(
+            (raster.width, raster.height),
+            (bounds.width, bounds.height),
+            "the frame the view draws: the whole stage at its displayed size"
+        );
+        let boundary = wait_for("the boundary", || queue.poll());
+        assert_eq!(
+            (boundary.generation, boundary.phase()),
+            (generation, PreviewPhase::Boundary)
+        );
+        let outcome = boundary.boundary().unwrap();
+        assert_eq!(outcome.key, request.key);
+        let frame = outcome.result.as_ref().unwrap();
+        assert_eq!(frame.origin, (0, 0), "the whole proxy stage");
+        assert_eq!((frame.width, frame.height), (raster.width, raster.height));
+        assert_eq!(
+            frame.stage,
+            Stage {
+                width: plan.width,
+                height: plan.height
+            }
+        );
+        let PreviewSource::Jpeg(image) = &proxied else {
+            panic!("a JPEG proxy")
+        };
+        let table = decode_table();
+        let held = |value: f32| half::f16::from_f32(value).to_f32();
+        for (index, pixel) in image.rgba.chunks_exact(4).enumerate() {
+            let (x, y) = (index as u32 % image.width, index as u32 / image.width);
+            assert_eq!(
+                frame.texel(x, y).unwrap(),
+                [0, 1, 2].map(|channel| held(table[usize::from(pixel[channel])])),
+                "texel ({x}, {y}) at {bounds:?}"
+            );
+        }
+        luxforge_testbase::wait_until("the job to end", || !queue.is_busy());
+    }
+}
+
 /// A developed RAW's boundary, on the linear path, holds `f32` texels: every value of the proxy the
 /// Fit frame was rendered from, exactly, as the plan of the linear path reads it.
 #[test]

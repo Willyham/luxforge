@@ -3,8 +3,8 @@
 //! the boundary it starts from, which the preview worker renders once per draft.
 //!
 //! Planning reads the job's own evaluation — the draft's effective recipe beside the entry it was
-//! planned over, and the stack's one compilation — and compiles at the stage the Fit frame is
-//! drawn at: `O(layers)`, no pixel read, nothing that scales with the image.
+//! planned over, and the stack's one compilation — and compiles at the stage the job's proxy phase
+//! draws at: `O(layers)`, no pixel read, nothing that scales with the image.
 //!
 //! - **The boundary layer** is the earliest layer the draft changes: the first that differs from
 //!   the entry's own stack or reads a mask the draft changes, the layer a module action drafts
@@ -17,23 +17,25 @@
 //!   A drag that leaves or returns to neutral therefore keeps one program sequence. The CPU
 //!   compile is untouched: only this plan asks for the shape.
 //! - **Stored estimates.** A spatial operation's global estimate, Dehaze's atmospheric light, is
-//!   read from the estimate store the job's CPU frames fill, under the key a Fit frame of the same
-//!   content asks with: the proxy is named by its source and plan, never built. A plan whose key
+//!   read from the estimate store the job's CPU frames fill, under the key a CPU frame of the same
+//!   content at the same stage asks with: the proxy is named by its source and plan, never built. A plan whose key
 //!   the store does not hold yet takes the estimate on the GPU and says it is approximate.
 //! - **The boundary key** names everything the boundary's texels depend on: the source's identity
 //!   (fingerprint, development and view), the layers before the boundary and the masks they read,
-//!   the boundary's index, and the proxy plan with its window, or at the exact stage at Fit the
-//!   window the output reads, or at a percentage zoom the region of the output stage the boundary
-//!   is held for. Equal keys hold equal texels.
-//! - **Where it is drawn** ([`GpuView`]): at Fit, the stage the job's Fit frame is drawn at; at a
-//!   percentage zoom of 100% or more, the exact stage, over the visible region at full scale, whose
-//!   boundary is the window of the boundary layer's received stage that region reads.
+//!   the boundary's index, and the proxy plan with its bounds and window, or at the exact stage at
+//!   Fit the window the output reads, or at a percentage zoom of 100% or more the region of the
+//!   output stage the boundary is held for. Equal keys hold equal texels.
+//! - **Where it is drawn** ([`GpuView`]): at Fit, and at a percentage zoom below 100%, the stage
+//!   the job's proxy phase draws at its display bounds: Fit's, or below 100% the displayed size of
+//!   the whole stage, the same proxy the CPU path draws there; at a percentage zoom of 100% or
+//!   more, the exact stage, over the visible region at full scale, whose boundary is the window of
+//!   the boundary layer's received stage that region reads.
 //! - **What it holds.** Only the part of the boundary layer's received stage the drawn output
-//!   reads: a windowed proxy's window at a Fit proxy; at the exact stage at Fit, which a
-//!   photograph that fits the display bounds is drawn at, the window the whole output stage reads
-//!   through the windowed planner ([`crate::render::window::WindowPlan::of_rect`]) — what a crop,
-//!   a straightening and a warp read, with their resample's taps and margin, clamped to the stage;
-//!   at a percentage zoom, the window the visible region reads.
+//!   reads: a windowed proxy's window at a proxy; at the exact stage at Fit, which a photograph
+//!   that fits the display bounds is drawn at, the window the whole output stage reads through the
+//!   windowed planner ([`crate::render::window::WindowPlan::of_rect`]) — what a crop, a
+//!   straightening and a warp read, with their resample's taps and margin, clamped to the stage;
+//!   at a percentage zoom of 100% or more, the window the visible region reads.
 use super::{
     EstimateSource, GpuAnswer, GpuEstimates, GpuFallback, GpuPlan, GpuPlanRequest, gpu_plan_with,
     plan::{HeldPrefix, gpu_plan_holding},
@@ -57,10 +59,12 @@ pub struct BoundaryKey {
     prefix: String,
     /// The boundary layer's index in the drafted stack.
     layer: usize,
-    /// The proxy the boundary is rendered at, with the window it holds; `None` at the exact stage,
-    /// where a photograph that fits the display is drawn, and at a percentage zoom.
+    /// The proxy the boundary is rendered at, with the bounds it was fitted to and the window it
+    /// holds; `None` at the exact stage, where a photograph that fits the display is drawn, and at
+    /// a percentage zoom of 100% or more.
     plan: Option<ProxyPlan>,
-    /// At a percentage zoom, the rectangle of the output stage the boundary is held for.
+    /// At a percentage zoom of 100% or more, the rectangle of the output stage the boundary is
+    /// held for.
     region: Option<Region>,
     /// The rectangle of the boundary stage whose texels it holds, including spatial support
     /// margins. The output region alone does not identify a spatial input window.
@@ -78,8 +82,8 @@ impl BoundaryKey {
         self.layer
     }
 
-    /// At a percentage zoom, the rectangle of the output stage the boundary is held for, which the
-    /// plan's frame covers; `None` at Fit.
+    /// At a percentage zoom of 100% or more, the rectangle of the output stage the boundary is held
+    /// for, which the plan's frame covers; `None` for a whole frame, at Fit and below 100%.
     pub fn region(&self) -> Option<Region> {
         self.region
     }
@@ -88,7 +92,10 @@ impl BoundaryKey {
 /// Where a draft's GPU preview is drawn.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GpuView {
-    /// At Fit, in these display bounds: the stage the job's Fit frame is drawn at.
+    /// A whole frame in these display bounds: the stage the job's proxy phase draws at. At Fit the
+    /// bounds are the photo area's; at a percentage zoom below 100% they are the displayed size of
+    /// the whole stage, so the plan addresses the proxy the CPU path draws at that zoom, and differs
+    /// from Fit's only in its size.
     Fit(ProxyBounds),
     /// At a percentage zoom of 100% or more: `rect` of the output stage at full scale, the visible
     /// region, drawn at `magnification` physical pixels an output pixel.
@@ -96,7 +103,7 @@ pub enum GpuView {
 }
 
 /// The boundary a draft's GPU preview starts from: its key, and where its layer begins in the
-/// compilation the preview worker renders the job's Fit frame from.
+/// compilation the preview worker renders the job's frame from.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BoundaryRequest {
     pub key: BoundaryKey,
@@ -111,13 +118,15 @@ pub struct BoundaryRequest {
     /// otherwise.
     pub format: crate::BoundaryFormat,
     /// Physical pixels an output pixel is drawn at, which a warp's coordinate grid is made dense
-    /// enough for: one at Fit, the zoom at a percentage.
+    /// enough for: one for a whole frame, whose proxy is drawn at about its own size, the zoom
+    /// over a region at 100% or more.
     pub(crate) magnification: f64,
     /// The window of the boundary layer's received stage the boundary holds, so what the boundary
-    /// and a slot drawing over it take is known before it is rendered: at a percentage zoom, the
-    /// one the region reads, the region and every margin after it; at the exact stage at Fit, the
-    /// one the whole output stage reads, when that is less than all of it. `None` at a Fit proxy,
-    /// whose plan names its window, and for a boundary of the whole exact stage.
+    /// and a slot drawing over it take is known before it is rendered: at a percentage zoom of 100%
+    /// or more, the one the region reads, the region and every margin after it; at the exact stage
+    /// at Fit, the one the whole output stage reads, when that is less than all of it. `None` at a
+    /// proxy, at Fit or below 100%, whose plan names its window, and for a boundary of the whole
+    /// exact stage.
     pub window: Option<Region>,
 }
 
@@ -128,10 +137,10 @@ pub struct GpuPreview {
     pub answer: GpuAnswer,
     /// The boundary of [`Self::answer`]'s plan; `None` when there is no plan.
     pub boundary: Option<BoundaryRequest>,
-    /// At a percentage zoom, when [`Self::answer`]'s plan holds a drafted restoration or spatial
-    /// layer in its GPU shape: the plan of that layer in the CPU's shape, the units its values
-    /// need, from the same boundary. Over the region's window the GPU shape charges the planes of
-    /// its units at zero too, so the desktop draws this one when only it fits the budget.
+    /// Over a region at 100% or more, when [`Self::answer`]'s plan holds a drafted restoration or
+    /// spatial layer in its GPU shape: the plan of that layer in the CPU's shape, the units its
+    /// values need, from the same boundary. Over the region's window the GPU shape charges the
+    /// planes of its units at zero too, so the desktop draws this one when only it fits the budget.
     pub cpu_shape: Option<Box<GpuPlan>>,
     /// The label the recipe list gives the layer [`Self::answer`]'s fallback names, when it names
     /// one ([`ModuleRegistry::layer_label`]). The reason's index is into the stack the plan was
@@ -243,9 +252,10 @@ pub(crate) fn position(compiled: &Compiled, layer: usize) -> Option<(usize, usiz
     }
 }
 
-/// The stage a job's Fit frame is drawn at, planned exactly as the preview worker plans the job's
-/// proxy phase: from the output stage of the stack's one compilation, with the window of the proxy
-/// stage a crop reads. A stack that fits the bounds, or has no proxy, is drawn at its exact stage.
+/// The stage a job's whole frame is drawn at, at Fit or at a percentage zoom below 100%, planned
+/// exactly as the preview worker plans the job's proxy phase at the job's bounds: from the output
+/// stage of the stack's one compilation, with the window of the proxy stage a crop reads. A stack
+/// that fits the bounds, or has no proxy, is drawn at its exact stage.
 struct FitStage {
     /// The proxy plan, with its window; `None` at the exact stage.
     plan: Option<ProxyPlan>,
@@ -256,13 +266,14 @@ struct FitStage {
     full: Stage,
     /// The source is a developed RAW, whose frames take the linear path.
     linear: bool,
-    /// At a percentage zoom, the region of the output stage drawn, at this magnification.
+    /// At a percentage zoom of 100% or more, the region of the output stage drawn, at this
+    /// magnification.
     region: Option<(Region, f64)>,
 }
 
 impl FitStage {
-    /// The stage `view` is drawn at: the Fit frame's for [`GpuView::Fit`], the exact stage over
-    /// the visible region for [`GpuView::Region`].
+    /// The stage `view` is drawn at: the proxy phase's at the view's bounds for [`GpuView::Fit`],
+    /// the exact stage over the visible region for [`GpuView::Region`].
     fn of_view(evaluation: &Evaluation, view: GpuView) -> Result<Self, Error> {
         match view {
             GpuView::Fit(bounds) => Self::of(evaluation, bounds),
@@ -479,10 +490,11 @@ pub(crate) fn output_window(compiled: &Compiled, full: Stage, segment: usize) ->
 }
 
 /// The GPU preview of `evaluation`, an open draft's preview job's evaluation, drawn as `view`
-/// says: the plan from the earliest layer the draft changes, at the stage the job's Fit frame is
-/// drawn at or the exact stage at a percentage zoom, and the boundary it starts from. `O(layers)`
-/// on the catalog owner: one compile at the proxy stage for the window, one for the plan, a lookup
-/// in the estimate store for each global estimate, and no pixel read.
+/// says: the plan from the earliest layer the draft changes, at the stage the job's proxy phase
+/// draws at — at Fit, and at a percentage zoom below 100% — or the exact stage over the visible
+/// region at 100% or more, and the boundary it starts from. `O(layers)` on the catalog owner: one
+/// compile at the proxy stage for the window, one for the plan, a lookup in the estimate store for
+/// each global estimate, and no pixel read.
 pub(crate) fn plan_preview(
     evaluation: &Evaluation,
     draft: &Draft,
@@ -579,8 +591,8 @@ pub(crate) fn plan_resident(
 }
 
 /// The plan of `planned` from layer `boundary` at `fit`'s stage, with `request`, and the boundary
-/// it starts from; at a percentage zoom also the window the boundary will hold and, for a drafted
-/// restoration or spatial layer at `spatial_drafted`, the plan of its CPU shape.
+/// it starts from; over a region at 100% or more also the window the boundary will hold and, for
+/// a drafted restoration or spatial layer at `spatial_drafted`, the plan of its CPU shape.
 fn planned_preview(
     evaluation: &Evaluation,
     fit: &FitStage,
@@ -591,10 +603,10 @@ fn planned_preview(
 ) -> Result<GpuPreview, Error> {
     let registry = evaluation.registry();
     let recipe = evaluation.recipe();
-    // At a percentage zoom, a spatial layer's estimates the store holds for the stack the draft was
-    // opened over, held for the drag where it holds none for the drafted stack. A windowed Fit
-    // proxy never holds a restoration layer before an estimate: the CPU's planner keeps such a
-    // proxy whole, since no window can prepare the estimate behind it.
+    // Over a region at 100% or more, a spatial layer's estimates the store holds for the stack the
+    // draft was opened over, held for the drag where it holds none for the drafted stack. A
+    // windowed proxy never holds a restoration layer before an estimate: the CPU's planner keeps
+    // such a proxy whole, since no window can prepare the estimate behind it.
     let held = match fit.region {
         Some(_) => held_prefixes(registry, evaluation.entry(), planned, fit.sampling())?,
         None => Vec::new(),
@@ -606,8 +618,8 @@ fn planned_preview(
             "the GPU preview's boundary layer {boundary} is past the stack"
         ))
     })?;
-    // At a percentage zoom, the window of the received stage the boundary will hold, planned now
-    // so what it takes is known before it is rendered. Every global estimate is held rather than
+    // Over a region at 100% or more, the window of the received stage the boundary will hold,
+    // planned now so what it takes is known before it is rendered. Every global estimate is held rather than
     // reduced over that window: the plan's own, read from the store, and one the boundary's render
     // reads behind an earlier spatial layer, which the store must hold. One the GPU would take
     // from the region alone, where the exact frame reads the whole stage's, or one the store does
@@ -659,9 +671,9 @@ fn planned_preview(
             },
         };
     }
-    // At a percentage zoom a drafted restoration or spatial layer's GPU shape charges the planes
-    // of its units at zero over the window too: the plan of its CPU shape rides beside it, from
-    // the same boundary, when it holds less.
+    // Over a region at 100% or more a drafted restoration or spatial layer's GPU shape charges the
+    // planes of its units at zero over the window too: the plan of its CPU shape rides beside it,
+    // from the same boundary, when it holds less.
     let mut cpu_shape = None;
     if let (GpuAnswer::Plan(plan), Some(_), Some(_)) = (&answer, fit.region, spatial_drafted)
         && request.drafted.is_some()

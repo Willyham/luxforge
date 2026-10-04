@@ -24,6 +24,8 @@ mod interpret;
 #[cfg(test)]
 mod plan_tests;
 #[cfg(test)]
+mod preview_tests;
+#[cfg(test)]
 mod wgsl_tests;
 
 pub use changes::GpuChange;
