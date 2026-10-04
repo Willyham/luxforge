@@ -85,7 +85,7 @@
     {
       "id": "TASK-002",
       "description": "Desktop preference writer and the General tab: one coalescing writer for every preferences.set, the Auto collapse, lens and mask overlay colour rows, the preference evidence step and live application of another client's change.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
@@ -145,7 +145,7 @@
     {
       "id": "TASK-003",
       "description": "Remembered workspace, brush and export folder: seed the desktop's session and Masks panel from the stored values at launch and store them as they change.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-002"
       ],
@@ -205,7 +205,7 @@
     {
       "id": "TASK-004",
       "description": "Canvas background and interface size: the two General rows and their effects on the canvas colour and the application's scale factor.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-002"
       ],
@@ -264,7 +264,7 @@
     {
       "id": "TASK-005",
       "description": "Launch preferences: the Catalog row and the catalog location at launch with its missing-folder fallback, and the remembered window frame.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-002"
       ],

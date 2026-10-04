@@ -157,7 +157,7 @@ fn a_refused_preference_write_says_why_and_puts_the_stored_value_back() {
         editor
             .status
             .text
-            .starts_with("Could not change interface_size: "),
+            .starts_with("Could not save preferences: "),
         "{}",
         editor.status.text
     );
