@@ -21,7 +21,10 @@
 //! an entry is added that would pass it, an entry larger than it refused. Entries are shared as
 //! `Arc`s, never part of history, an artifact or a source; losing one costs only time.
 
-use crate::modules::{Cells, Global, GridPlanes, REDUCED_STORE_BYTES, ReducedGrid, Region, Stage};
+use crate::{
+    modules::{Cells, Global, GridPlanes, REDUCED_STORE_BYTES, ReducedGrid, Region, Stage},
+    resources::ReducedPlanesReport,
+};
 use std::{
     borrow::Cow,
     collections::VecDeque,
@@ -335,34 +338,6 @@ impl PixelsUsize for Stage {
     }
 }
 
-/// What the store has done since its context was created: every figure only ever grows, but
-/// `retained_bytes` and `entries`, which are levels.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ReducedCounts {
-    pub(crate) limit_bytes: u64,
-    pub(crate) retained_bytes: u64,
-    pub(crate) entries: u64,
-    /// Frame renders of a cacheable unit that found an entry for their key and estimate.
-    pub(crate) render_hits: u64,
-    /// Frame renders of a cacheable unit that found none.
-    pub(crate) render_misses: u64,
-    /// Tiles of those renders that read held planes.
-    pub(crate) tile_hits: u64,
-    /// Tiles of those renders that computed the planes, because nothing held covered their reach.
-    pub(crate) tile_misses: u64,
-    /// Tiles point queries evaluated that read held planes.
-    pub(crate) point_hits: u64,
-    /// Tiles point queries evaluated that computed the planes.
-    pub(crate) point_misses: u64,
-    /// Cells tiles handed back to their render's pending planes.
-    pub(crate) cells_handed_back: u64,
-    pub(crate) publishes: u64,
-    pub(crate) evictions: u64,
-    /// Entries the store would not hold because they alone pass the limit, and renders that did
-    /// not collect planes because the whole grid's would.
-    pub(crate) refusals: u64,
-}
-
 #[derive(Default)]
 struct Counters {
     render_hits: AtomicU64,
@@ -549,15 +524,15 @@ impl ReducedStore {
         Counters::add(counter, 1);
     }
 
-    /// Every figure, read now.
-    pub(crate) fn counts(&self) -> ReducedCounts {
+    /// Every figure, read now, as `resources.read` reports it.
+    pub(crate) fn counts(&self) -> ReducedPlanesReport {
         let (retained_bytes, entries) = {
             let entries = self.lock();
             (entries.bytes, entries.held.len() as u64)
         };
         let read = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
         let counters = &self.counters;
-        ReducedCounts {
+        ReducedPlanesReport {
             limit_bytes: self.limit,
             retained_bytes,
             entries,
