@@ -7,7 +7,7 @@
   "tasks": [
     {
       "id": "TASK-001",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "description": "Build the reference comparison harness, measure the tolerance per output kind on the corpus, and rewrite the rules and testing guidance for reference-buffer correctness.",
       "extra_context": [
@@ -78,7 +78,7 @@
     },
     {
       "id": "TASK-002",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "description": "Draw a drag on the GPU at percentage zooms below 100%, planned at the displayed-size proxy exactly as Fit is (stage 1).",
       "extra_context": [
