@@ -114,6 +114,23 @@ pub struct LinearImage {
 /// planes for another's, whichever render context evaluates them.
 static NEXT_DEVELOPMENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+#[cfg(test)]
+thread_local! {
+    /// How many constructions on this thread scanned their planes for a non-finite value: a test's
+    /// view of whether a path took the validated constructor.
+    static FINITENESS_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// `work`'s result and how many [`LinearImage`] constructions on this thread scanned their planes
+/// for a non-finite value meanwhile. The scan is the public constructors' guard on untrusted input;
+/// a path that already knows its values are finite skips it, which this lets a test see.
+#[cfg(test)]
+pub(crate) fn finiteness_scans_during<T>(work: impl FnOnce() -> T) -> (T, usize) {
+    let before = FINITENESS_SCANS.get();
+    let result = work();
+    (result, FINITENESS_SCANS.get() - before)
+}
+
 impl LinearImage {
     /// Construct an identity-view image from contiguous planar R, G and B values.
     pub fn new(width: u32, height: u32, planes: impl Into<Arc<Vec<f32>>>) -> Result<Self, Error> {
@@ -130,9 +147,10 @@ impl LinearImage {
         Self::construct(width, height, planes.into(), fingerprint.into(), false)
     }
 
-    /// Adopt planes whose producer has already checked every output value after its final math.
-    /// The RAW camera conversion is the only caller. This remains private to the core: public
-    /// constructors must scan untrusted input and reject non-finite values.
+    /// Adopt planes whose producer guarantees every value is finite, without scanning them again:
+    /// the RAW camera conversion, which checks every output value after its final math, and a
+    /// proxy's area average, whose weighted mean of finite values is finite. This remains private
+    /// to the core: public constructors must scan untrusted input and reject non-finite values.
     pub(crate) fn from_validated_planes(
         width: u32,
         height: u32,
@@ -164,10 +182,14 @@ impl LinearImage {
                 "linear RGB source capacity exceeds 1.5 GiB",
             ));
         }
-        if !already_finite && planes.iter().any(|value| !value.is_finite()) {
-            return Err(Error::validation(
-                "linear source contains a non-finite value",
-            ));
+        if !already_finite {
+            #[cfg(test)]
+            FINITENESS_SCANS.set(FINITENESS_SCANS.get() + 1);
+            if planes.iter().any(|value| !value.is_finite()) {
+                return Err(Error::validation(
+                    "linear source contains a non-finite value",
+                ));
+            }
         }
         Ok(Self {
             base_width: width,

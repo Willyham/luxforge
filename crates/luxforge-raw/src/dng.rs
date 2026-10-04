@@ -12,6 +12,7 @@ use crate::{
     format::{DngOpcode, Endian, f64_at, u32_at},
     native_tiles,
     opcodes::Opcode,
+    zeroed::zeroed_vec,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1308,10 +1309,7 @@ impl DngCorrection {
                             let len = area_w
                                 .checked_mul(area_h)
                                 .ok_or(RawError::ResourceLimit("DNG warp plane overflow"))?;
-                            scratch.try_reserve_exact(len).map_err(|_| {
-                                RawError::ResourceLimit("DNG warp scratch allocation")
-                            })?;
-                            scratch.resize(len, 0.0_f32);
+                            scratch = zeroed_vec::<f32>(len, "DNG warp scratch allocation")?;
                         }
                         correction_rows(&mut scratch, area_w, lanes, cancel, |yy, row| {
                             for (xx, pixel) in row.iter_mut().enumerate() {

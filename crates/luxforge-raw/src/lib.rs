@@ -30,6 +30,7 @@ mod optics;
 mod profiles;
 mod rawspeed;
 mod unpacker;
+mod zeroed;
 pub use dng::{DngCalibrationMetadata, DngCorrectionMetadata, DngOpcodeProvenance};
 use format::{classify_mode, raf_default_crop};
 pub use limits::{
@@ -803,11 +804,7 @@ impl RawSource {
             bytes,
             &opcodes,
         )?;
-        let mut samples = Vec::new();
-        samples
-            .try_reserve_exact(n)
-            .map_err(|_| RawError::ResourceLimit("sensor mosaic allocation"))?;
-        samples.resize(n, 0);
+        let mut samples = zeroed::zeroed_vec::<u16>(n, "sensor mosaic allocation")?;
         if unpacker == NativeUnpacker::JxlOxide {
             jxl::decode_into(bytes, &native, &mut samples, cancel)?;
         } else {
