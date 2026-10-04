@@ -4,10 +4,13 @@
 //! reference: every smoothing tap clamped and checked through [`Geometry::sample`], every level
 //! smoothing all three channels, subtracting in a pass of its own and copying the next level's
 //! input back, the shrinkage once per channel with chroma's factor computed for a and again for b,
-//! and sharpening smoothing its blur and its guide separately. The tests hold the production passes
-//! to them with `to_bits` over random planes, tiny and odd stages, stage-edge and interior tiles,
-//! stages narrower than a kernel, every B3 spacing, sampled kernels, each noise-reduction strength
-//! alone and both, sharpening at Radius 1 and other radii, and both parallelisms.
+//! sharpening smoothing its blur and its guide separately, its limiter reading all fourteen values
+//! of a pixel through [`Geometry::index`] and [`Geometry::sample`], both units' last passes reading
+//! each pixel's Oklab, change and input through `Geometry::index` and [`Planes::sample`], and the
+//! Oklab conversion reading its input through `Planes::sample`. The tests hold the production
+//! passes to them with `to_bits` over random planes, tiny and odd stages, stage-edge and interior
+//! tiles, stages narrower than a kernel, every B3 spacing, sampled kernels, each noise-reduction
+//! strength alone and both, sharpening at every Radius, Detail and Masking, and both parallelisms.
 use super::{
     denoise::{self, Denoise},
     filters::{self, Geometry, Kernel},
@@ -15,6 +18,7 @@ use super::{
 };
 use crate::{
     Cancel, Error,
+    colour::oklab,
     modules::{Parallelism, Planes, PlanesMut, Region, SamplingScale, SpatialUnit, Stage},
 };
 use luxforge_reference::SplitMix64;
@@ -295,13 +299,156 @@ fn sharpen(
             let x = i64::from(out.x0) + column as i64;
             let y = i64::from(y);
             let i = geometry.index(x, y);
-            let limited = unit.limited(l, blurred, guide, geometry, x, y);
+            let limited = limited(unit, l, blurred, guide, geometry, x, y);
             let value = filters::reconstruct(
                 input.sample(x, y),
                 [l[i], lab[len + i], lab[2 * len + i]],
                 [limited - l[i], 0.0, 0.0],
             );
             [red[column], green[column], blue[column]] = value;
+        }
+    });
+    cancel.check()
+}
+
+/// `Sharpen::limited` as it was before its interior read row slices: every pixel, the input's
+/// lightness `l` and its blur at the pixel, the guide's four neighbours and `l`'s 3 x 3 extrema
+/// through [`Geometry::index`] and [`Geometry::sample`], clamped to the stage and checked against
+/// the held rectangle.
+fn limited(
+    unit: &Sharpen,
+    l: &[f32],
+    blurred: &[f32],
+    guide: &[f32],
+    geometry: Geometry,
+    x: i64,
+    y: i64,
+) -> f32 {
+    let [gain, theta_squared, mask_squared] = unit.coefficients();
+    let i = geometry.index(x, y);
+    let residual = l[i] - blurred[i];
+    let squared = residual * residual;
+    let cored = if residual == 0.0 {
+        0.0
+    } else {
+        residual * squared / (squared + theta_squared)
+    };
+    let dx = 0.5 * (geometry.sample(guide, x + 1, y) - geometry.sample(guide, x - 1, y));
+    let dy = 0.5 * (geometry.sample(guide, x, y + 1) - geometry.sample(guide, x, y - 1));
+    let energy = dx * dx + dy * dy;
+    let mask = if mask_squared == 0.0 {
+        1.0
+    } else {
+        energy / (energy + mask_squared)
+    };
+    let proposed = l[i] + gain * cored * mask;
+    let (mut lo, mut hi) = (l[i], l[i]);
+    for dy in -1..=1 {
+        for dx in -1..=1 {
+            let value = geometry.sample(l, x + dx, y + dy);
+            lo = lo.min(value);
+            hi = hi.max(value);
+        }
+    }
+    let limit = 0.04 * (hi - lo);
+    if limit == 0.0 {
+        l[i]
+    } else if proposed > hi {
+        hi + limit * ((proposed - hi) / limit).tanh()
+    } else if proposed < lo {
+        lo + limit * ((proposed - lo) / limit).tanh()
+    } else {
+        proposed
+    }
+}
+
+/// Sharpening's last pass as it was: each pixel's limiter through [`limited`], and its lightness,
+/// a, b and input read through [`Geometry::index`] and [`Planes::sample`].
+#[allow(clippy::too_many_arguments)]
+fn finish_sharpening(
+    unit: &Sharpen,
+    input: &Planes<'_>,
+    output: &mut PlanesMut<'_>,
+    lab: &[f32],
+    blurred: &[f32],
+    guide: &[f32],
+    geometry: Geometry,
+    parallelism: Parallelism,
+    cancel: &Cancel,
+) -> Result<(), Error> {
+    let out = output.region();
+    let len = geometry.held.pixels() as usize;
+    let l = &lab[..len];
+    output.for_rows(parallelism, |y, red, green, blue| {
+        if cancel.is_cancelled() {
+            return;
+        }
+        for column in 0..out.width as usize {
+            let x = i64::from(out.x0) + column as i64;
+            let y = i64::from(y);
+            let i = geometry.index(x, y);
+            let limited = limited(unit, l, blurred, guide, geometry, x, y);
+            let value = filters::reconstruct(
+                input.sample(x, y),
+                [l[i], lab[len + i], lab[2 * len + i]],
+                [limited - l[i], 0.0, 0.0],
+            );
+            [red[column], green[column], blue[column]] = value;
+        }
+    });
+    cancel.check()
+}
+
+/// Noise reduction's last pass as it was: each pixel's Oklab, change and input read through
+/// [`Geometry::index`] and [`Planes::sample`].
+fn finish_noise_reduction(
+    input: &Planes<'_>,
+    output: &mut PlanesMut<'_>,
+    lab: &[f32],
+    delta: &[f32],
+    geometry: Geometry,
+    parallelism: Parallelism,
+    cancel: &Cancel,
+) -> Result<(), Error> {
+    let out = output.region();
+    let len = geometry.held.pixels() as usize;
+    output.for_rows(parallelism, |y, red, green, blue| {
+        if cancel.is_cancelled() {
+            return;
+        }
+        for column in 0..out.width as usize {
+            let x = i64::from(out.x0) + column as i64;
+            let y = i64::from(y);
+            let i = geometry.index(x, y);
+            let value = filters::reconstruct(
+                input.sample(x, y),
+                [lab[i], lab[len + i], lab[2 * len + i]],
+                [delta[i], delta[len + i], delta[2 * len + i]],
+            );
+            [red[column], green[column], blue[column]] = value;
+        }
+    });
+    cancel.check()
+}
+
+/// `filters::lab` as it was: each held pixel's input read through [`Planes::sample`].
+fn to_lab(
+    input: &Planes<'_>,
+    buffer: &mut [f32],
+    geometry: Geometry,
+    parallelism: Parallelism,
+    cancel: &Cancel,
+) -> Result<(), Error> {
+    cancel.check()?;
+    let mut planes = PlanesMut::new(geometry.stage, geometry.held, buffer)?;
+    planes.for_rows(parallelism, |y, lightness, a, b| {
+        if cancel.is_cancelled() {
+            return;
+        }
+        for column in 0..geometry.held.width as usize {
+            let x = geometry.held.x0 + column as u32;
+            let lab = oklab::to_oklab(input.sample(i64::from(x), i64::from(y)));
+            [lightness[column], a[column], b[column]] = [lab.l, lab.a, lab.b];
         }
     });
     cancel.check()
@@ -721,6 +868,445 @@ fn detail_sharpening_smooths_once_at_radius_one() {
                 shared,
                 "radius {radius} at scale {x} x {y}"
             );
+        }
+    }
+}
+
+/// Stages for the last passes: single pixels, rows and columns, stages with no pixel or one pixel
+/// clear of every edge, odd sizes, and one wide enough for tiles clear of every edge.
+const LAST_PASS_STAGES: [(u32, u32); 11] = [
+    (1, 1),
+    (2, 2),
+    (3, 3),
+    (1, 7),
+    (7, 1),
+    (2, 9),
+    (9, 2),
+    (5, 4),
+    (17, 9),
+    (23, 17),
+    (41, 33),
+];
+
+/// Sharpening at every Radius the field takes, 0.5 to 3.0 by 0.1 (at 1 its blur is its guide), each
+/// with Detail at 0, 50 and 100 and Masking at 0, 40 and 100 (0 is no mask, so its scale squared is
+/// zero), and Amount at 60 or 150.
+fn sharpenings(scale: SamplingScale) -> Vec<(String, Sharpen)> {
+    let mut units = Vec::new();
+    for tenths in 5..=30 {
+        let radius = f64::from(tenths) / 10.0;
+        for (k, (detail, masking)) in [0.0, 50.0, 100.0]
+            .into_iter()
+            .flat_map(|detail| [0.0, 40.0, 100.0].map(|masking| (detail, masking)))
+            .enumerate()
+        {
+            let amount = if (tenths as usize + k).is_multiple_of(2) {
+                60.0
+            } else {
+                150.0
+            };
+            units.push((
+                format!("sharpen {amount} radius {radius} detail {detail} masking {masking}"),
+                Sharpen::new(amount, radius, detail, masking, scale),
+            ));
+        }
+    }
+    units
+}
+
+/// Whether `unit`'s blur is its guide, as the unit then passes the guide's plane as its blur.
+fn blur_is_guide(unit: &Sharpen) -> bool {
+    let (blur, guide) = unit.kernels();
+    blur[0].same(&guide[0]) && blur[1].same(&guide[1])
+}
+
+/// Output rectangles of `stage` for the last passes: those of [`regions`], one on each stage edge
+/// alone, a 2 x 2 at each corner, and, where the stage has them, every pixel one in from each edge
+/// and a rectangle two in from each edge.
+fn edge_regions(rng: &mut SplitMix64, stage: Stage) -> Vec<Region> {
+    let (w, h) = (stage.width, stage.height);
+    let (across, down) = (w.min(2), h.min(2));
+    let mut regions = regions(rng, stage);
+    regions.extend([
+        Region {
+            x0: 0,
+            y0: h / 3,
+            width: across,
+            height: (h / 3).max(1),
+        },
+        Region {
+            x0: w - across,
+            y0: h / 3,
+            width: across,
+            height: (h / 3).max(1),
+        },
+        Region {
+            x0: w / 3,
+            y0: 0,
+            width: (w / 3).max(1),
+            height: down,
+        },
+        Region {
+            x0: w / 3,
+            y0: h - down,
+            width: (w / 3).max(1),
+            height: down,
+        },
+    ]);
+    for (x0, y0) in [
+        (0, 0),
+        (w - across, 0),
+        (0, h - down),
+        (w - across, h - down),
+    ] {
+        regions.push(Region {
+            x0,
+            y0,
+            width: across,
+            height: down,
+        });
+    }
+    for inset in [1, 2] {
+        if w > 2 * inset && h > 2 * inset {
+            regions.push(Region {
+                x0: inset,
+                y0: inset,
+                width: w - 2 * inset,
+                height: h - 2 * inset,
+            });
+        }
+    }
+    regions
+}
+
+/// Sharpening's planes over `stage`: the input's lightness `l`, its blur and its guide. `l` holds
+/// distinct values, the special values of [`value`] among them, and 4 x 4 blocks of one value, where
+/// the limit is zero. The blur equals `l` at some pixels (a zero residual), lies within a coring
+/// threshold of it at others and far from it elsewhere, and the guide's gradient energy straddles
+/// the masking scales.
+fn lightness_planes(rng: &mut SplitMix64, stage: Stage) -> [Vec<f32>; 3] {
+    let columns = stage.width.div_ceil(4);
+    let blocks: Vec<Option<f32>> = (0..columns * stage.height.div_ceil(4))
+        .map(|_| (rng.next_u32(4) == 0).then(|| rng.next_range(0.0, 1.0) as f32))
+        .collect();
+    let len = Region::whole(stage).pixels() as usize;
+    let mut l = Vec::with_capacity(len);
+    for y in 0..stage.height {
+        for x in 0..stage.width {
+            l.push(blocks[((y / 4) * columns + x / 4) as usize].unwrap_or_else(|| value(rng, 1.0)));
+        }
+    }
+    let blurred = l
+        .iter()
+        .map(|&l| match rng.next_u32(8) {
+            0 => l,
+            1 => l + rng.next_range(-1e-3, 1e-3) as f32,
+            _ => l + value(rng, 0.3),
+        })
+        .collect();
+    let guide = plane(rng, len, 0.08);
+    [l, blurred, guide]
+}
+
+/// Oklab a or b over `len` pixels: mostly within ±0.2, sometimes within the neutral snap.
+fn chroma_plane(rng: &mut SplitMix64, len: usize) -> Vec<f32> {
+    (0..len)
+        .map(|_| match rng.next_u32(6) {
+            0 => rng.next_range(-1e-6, 1e-6) as f32,
+            _ => value(rng, 0.2),
+        })
+        .collect()
+}
+
+/// A rectangle holding `held` that the host may give a unit as its input: `held` or more.
+fn input_region(rng: &mut SplitMix64, held: Region, stage: Stage) -> Region {
+    held.grown(rng.next_u32(3), stage)
+}
+
+#[test]
+fn detail_limiter_matches_the_frozen_limiter_bit_for_bit() {
+    let mut rng = SplitMix64(0x0011_D17E);
+    let units = sharpenings(SamplingScale { x: 1.0, y: 1.0 });
+    // How many pixels' windows are flat, how many the limiter takes over the window's high and
+    // low by tanh, how many it leaves inside, and how many have a zero residual: every branch.
+    let mut seen = [0usize; 5];
+    for (width, height) in LAST_PASS_STAGES {
+        let stage = Stage { width, height };
+        let planes = lightness_planes(&mut rng, stage);
+        for out in edge_regions(&mut rng, stage) {
+            for (name, unit) in &units {
+                let held = out.grown(unit.halo(stage) + rng.next_u32(2), stage);
+                let geometry = Geometry { stage, held };
+                let [l, blurred, guide] = planes.each_ref().map(|plane| cut(plane, stage, held, 1));
+                let blurred = if blur_is_guide(unit) {
+                    &guide
+                } else {
+                    &blurred
+                };
+                let limiter = unit.limiter(&l, blurred, &guide, geometry, out);
+                for y in out.y0..out.y1() {
+                    let mut actual = vec![f32::NAN; out.width as usize];
+                    limiter.row(y, &mut actual);
+                    let expected: Vec<f32> = (out.x0..out.x1())
+                        .map(|x| limited(unit, &l, blurred, &guide, geometry, x.into(), y.into()))
+                        .collect();
+                    assert_eq!(
+                        bits(&actual),
+                        bits(&expected),
+                        "{name}, {stage:?} {out:?} held {held:?}, row {y}"
+                    );
+                    for (x, limited) in (out.x0..out.x1()).zip(expected) {
+                        let (x, y) = (i64::from(x), i64::from(y));
+                        let window = (-1..=1)
+                            .flat_map(|dy| (-1..=1).map(move |dx| (x + dx, y + dy)))
+                            .map(|(x, y)| geometry.sample(&l, x, y));
+                        let lo = window.clone().fold(f32::INFINITY, f32::min);
+                        let hi = window.fold(f32::NEG_INFINITY, f32::max);
+                        let i = geometry.index(x, y);
+                        seen[if hi == lo {
+                            0
+                        } else if limited > hi {
+                            1
+                        } else if limited < lo {
+                            2
+                        } else {
+                            3
+                        }] += 1;
+                        seen[4] += usize::from(l[i] == blurred[i]);
+                    }
+                }
+            }
+        }
+    }
+    assert!(seen.iter().all(|&n| n > 0), "{seen:?}");
+}
+
+#[test]
+fn detail_sharpening_last_pass_matches_the_frozen_pass_bit_for_bit() {
+    let mut rng = SplitMix64(0x5A4E_F115);
+    let units = sharpenings(SamplingScale { x: 1.0, y: 1.0 });
+    for (width, height) in LAST_PASS_STAGES {
+        let stage = Stage { width, height };
+        let len = Region::whole(stage).pixels() as usize;
+        let input = frame(&mut rng, stage);
+        let [l, blurred, guide] = lightness_planes(&mut rng, stage);
+        let lab: Vec<f32> = [l, chroma_plane(&mut rng, len), chroma_plane(&mut rng, len)].concat();
+        for (k, out) in edge_regions(&mut rng, stage).into_iter().enumerate() {
+            // Every Detail and Masking at Radius 1 (the fifth Radius), where the blur is the guide,
+            // and at one other Radius, the next one for each rectangle.
+            let other = k % 25 + usize::from(k % 25 >= 5);
+            let chosen = units[45..54].iter().chain(&units[9 * other..9 * other + 9]);
+            for (name, unit) in chosen {
+                let held = out.grown(unit.halo(stage) + rng.next_u32(2), stage);
+                let geometry = Geometry { stage, held };
+                let given = input_region(&mut rng, held, stage);
+                let tile = cut(&input, stage, given, 3);
+                let tile = Planes::new(stage, given, &tile).unwrap();
+                let lab = cut(&lab, stage, held, 3);
+                let [blurred, guide] = [&blurred, &guide].map(|plane| cut(plane, stage, held, 1));
+                let blurred = if blur_is_guide(unit) {
+                    &guide
+                } else {
+                    &blurred
+                };
+                for parallelism in PARALLELISMS {
+                    let mut expected = vec![f32::NAN; 3 * out.pixels() as usize];
+                    finish_sharpening(
+                        unit,
+                        &tile,
+                        &mut PlanesMut::new(stage, out, &mut expected).unwrap(),
+                        &lab,
+                        blurred,
+                        &guide,
+                        geometry,
+                        parallelism,
+                        &Cancel::never(),
+                    )
+                    .unwrap();
+                    let mut actual = vec![f32::NAN; 3 * out.pixels() as usize];
+                    unit.finish(
+                        &tile,
+                        &mut PlanesMut::new(stage, out, &mut actual).unwrap(),
+                        &lab,
+                        blurred,
+                        &guide,
+                        geometry,
+                        parallelism,
+                        &Cancel::never(),
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        bits(&actual),
+                        bits(&expected),
+                        "{name}, {stage:?} {out:?} held {held:?} input {given:?} {parallelism:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn detail_noise_reduction_last_pass_matches_the_frozen_pass_bit_for_bit() {
+    let mut rng = SplitMix64(0xDE_F115);
+    for (width, height) in LAST_PASS_STAGES {
+        let stage = Stage { width, height };
+        let len = Region::whole(stage).pixels() as usize;
+        let input = frame(&mut rng, stage);
+        let lab: Vec<f32> = [
+            plane(&mut rng, len, 1.0),
+            chroma_plane(&mut rng, len),
+            chroma_plane(&mut rng, len),
+        ]
+        .concat();
+        // A change of zero in every channel (the input returned), signed zeros, lightness alone,
+        // and changes in every channel, some of which bring a and b inside the neutral snap.
+        let changes: Vec<[f32; 3]> = (0..len)
+            .map(|_| match rng.next_u32(6) {
+                0 => [0.0; 3],
+                1 => [-0.0, 0.0, -0.0],
+                2 => [value(&mut rng, 0.05), 0.0, 0.0],
+                _ => [0; 3].map(|_| value(&mut rng, 0.05)),
+            })
+            .collect();
+        let delta: Vec<f32> = (0..3)
+            .flat_map(|c| changes.iter().map(move |change| change[c]))
+            .collect();
+        for out in edge_regions(&mut rng, stage) {
+            for halo in [15, 31] {
+                let held = out.grown(halo + rng.next_u32(2), stage);
+                let geometry = Geometry { stage, held };
+                let given = input_region(&mut rng, held, stage);
+                let tile = cut(&input, stage, given, 3);
+                let tile = Planes::new(stage, given, &tile).unwrap();
+                let [lab, delta] = [&lab, &delta].map(|planes| cut(planes, stage, held, 3));
+                for parallelism in PARALLELISMS {
+                    let mut expected = vec![f32::NAN; 3 * out.pixels() as usize];
+                    finish_noise_reduction(
+                        &tile,
+                        &mut PlanesMut::new(stage, out, &mut expected).unwrap(),
+                        &lab,
+                        &delta,
+                        geometry,
+                        parallelism,
+                        &Cancel::never(),
+                    )
+                    .unwrap();
+                    let mut actual = vec![f32::NAN; 3 * out.pixels() as usize];
+                    denoise::finish(
+                        &tile,
+                        &mut PlanesMut::new(stage, out, &mut actual).unwrap(),
+                        &lab,
+                        &delta,
+                        geometry,
+                        parallelism,
+                        &Cancel::never(),
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        bits(&actual),
+                        bits(&expected),
+                        "{stage:?} {out:?} held {held:?} input {given:?} {parallelism:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn detail_oklab_planes_match_the_frozen_conversion_bit_for_bit() {
+    let mut rng = SplitMix64(0x0C1A_B000);
+    for (width, height) in LAST_PASS_STAGES {
+        let stage = Stage { width, height };
+        let input = frame(&mut rng, stage);
+        for out in edge_regions(&mut rng, stage) {
+            let held = out.grown(rng.next_u32(33), stage);
+            let geometry = Geometry { stage, held };
+            let given = input_region(&mut rng, held, stage);
+            let tile = cut(&input, stage, given, 3);
+            let tile = Planes::new(stage, given, &tile).unwrap();
+            for parallelism in PARALLELISMS {
+                let mut expected = vec![f32::NAN; 3 * held.pixels() as usize];
+                to_lab(
+                    &tile,
+                    &mut expected,
+                    geometry,
+                    parallelism,
+                    &Cancel::never(),
+                )
+                .unwrap();
+                let mut actual = vec![f32::NAN; 3 * held.pixels() as usize];
+                filters::lab(&tile, &mut actual, geometry, parallelism, &Cancel::never()).unwrap();
+                assert_eq!(
+                    bits(&actual),
+                    bits(&expected),
+                    "{stage:?} held {held:?} input {given:?} {parallelism:?}"
+                );
+            }
+        }
+    }
+}
+
+/// The whole unit at every Radius, Detail and Masking against the frozen reference, whose limiter
+/// and last pass are the frozen ones: real blurs and guides, with the guide passed as the blur at
+/// Radius 1, over tiles on every edge, at every corner and clear of them.
+#[test]
+fn detail_sharpening_at_every_radius_matches_the_reference_bit_for_bit() {
+    let mut rng = SplitMix64(0x0A11_4AD1);
+    for scale in [[1.0, 1.0], [0.51, 0.37]] {
+        let scale = SamplingScale {
+            x: scale[0],
+            y: scale[1],
+        };
+        for (width, height) in [(3, 2), (29, 23)] {
+            let stage = Stage { width, height };
+            let input = frame(&mut rng, stage);
+            let whole = Region::whole(stage);
+            let outs = edge_regions(&mut rng, stage);
+            for (name, unit) in sharpenings(scale) {
+                let mut reference = vec![f32::NAN; input.len()];
+                sharpen(
+                    &unit,
+                    &Planes::new(stage, whole, &input).unwrap(),
+                    &mut PlanesMut::new(stage, whole, &mut reference).unwrap(),
+                    &mut vec![f32::NAN; (unit.scratch_bytes(stage) / 4) as usize],
+                    Parallelism::Serial,
+                    &Cancel::never(),
+                )
+                .unwrap();
+                for &out in &outs {
+                    let held = out.grown(unit.halo(stage), stage);
+                    let tile = cut(&input, stage, held, 3);
+                    let tile = Planes::new(stage, held, &tile).unwrap();
+                    let size = Stage {
+                        width: held.width,
+                        height: held.height,
+                    };
+                    let expected = cut(&reference, stage, out, 3);
+                    let parallelisms: &[Parallelism] = if out == whole {
+                        &PARALLELISMS
+                    } else {
+                        &[Parallelism::Serial]
+                    };
+                    for &parallelism in parallelisms {
+                        let mut actual = vec![f32::NAN; 3 * out.pixels() as usize];
+                        unit.apply(
+                            &tile,
+                            &mut PlanesMut::new(stage, out, &mut actual).unwrap(),
+                            None,
+                            &mut vec![f32::NAN; (unit.scratch_bytes(size) / 4) as usize],
+                            parallelism,
+                        )
+                        .unwrap();
+                        assert_eq!(
+                            bits(&actual),
+                            bits(&expected),
+                            "{name} at scale {scale:?}, {stage:?} {out:?} {parallelism:?}"
+                        );
+                    }
+                }
+            }
         }
     }
 }
