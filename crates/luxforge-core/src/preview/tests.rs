@@ -2144,8 +2144,8 @@ fn the_cost_of_a_coverage_grid() {
 }
 
 /// A straightened crop over a RAW source with a Presence layer, previewed while another
-/// evaluation holds the whole spatial target: the pointer readout sampling through the same
-/// layer on the owner thread, which is how a committed RAW crop was once refused with "spatial
+/// evaluation holds the whole spatial target: a `render.sample` through the same layer on the
+/// owner thread, which is how a committed RAW crop was once refused with "spatial
 /// processing needs … bytes, and … of the … byte spatial budget is in use" and left unshown.
 /// Both phases deliver the cropped frame, each byte for byte the frame the same stack renders
 /// with the target free, and every batch releases what it reserved.
