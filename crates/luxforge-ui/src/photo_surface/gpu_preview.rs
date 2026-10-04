@@ -535,13 +535,13 @@ pub struct GpuPlan {
     pub boundary: GpuBoundary,
     pub texels: TexelMap,
     pub steps: Vec<GpuStep>,
-    /// At a percentage zoom, the rectangle of the output stage the plan's frame holds, drawn as a
-    /// region of the photograph; `None` for a whole frame, at Fit.
+    /// At a percentage zoom of 100% or more, the rectangle of the output stage the plan's frame
+    /// holds, drawn as a region of the photograph; `None` for a whole frame, at Fit and below 100%.
     pub region: Option<GpuRegion>,
 }
 
-/// The rectangle of a plan's output stage its frame holds at a percentage zoom: the visible region
-/// at full scale. The last pass draws only these pixels, and the draw places them at the rectangle
+/// The rectangle of a plan's output stage its frame holds at a percentage zoom of 100% or more:
+/// the visible region at full scale. The last pass draws only these pixels, and the draw places them at the rectangle
 /// in the whole stage, as a region of the photograph is placed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GpuRegion {
@@ -2799,8 +2799,8 @@ impl PhotoPipeline {
             content_id: None,
             region_key: None,
             allocated_bytes: output_bytes,
-            // Evaluated at the boundary's own size, about the display's at Fit: never minified
-            // far enough to need a chain.
+            // Evaluated at the boundary's own size, about the displayed size at Fit and below 100%:
+            // never minified far enough to need a chain.
             mip_levels: 1,
             mip_bytes: 0,
             mips_current: false,
