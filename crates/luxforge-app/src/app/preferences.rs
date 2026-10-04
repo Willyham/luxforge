@@ -86,7 +86,7 @@ impl Editor {
                 // like another client's.
                 self.resync();
                 let fields = change.fields();
-                self.status.text = format!("Could not change {}: {reason}", fields.join(", "));
+                self.status.text = format!("Could not save preferences: {reason}");
                 self.event(
                     "preference_set_failed",
                     || json!({"fields": fields, "reason": reason}),
