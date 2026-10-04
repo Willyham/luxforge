@@ -305,7 +305,8 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             frame: None,
             #[cfg(test)]
             built: Vec::new(),
-            tiles: (mode == SpatialMode::Point).then(|| PointTiles::new(tiling, context.spatial())),
+            tiles: (mode == SpatialMode::Point)
+                .then(|| PointTiles::new(tiling, context.spatial(), context.reduced())),
             tiling,
             cancel: cancel.clone(),
             context,
@@ -477,7 +478,11 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     /// pixel depends on that pixel's neighbourhood only, so this changes nothing but the schedule.
     pub(crate) fn with_tile(mut self, tile: u32) -> Self {
         self.tiling = Tiling::Fixed(tile);
-        self.tiles = Some(PointTiles::new(self.tiling, self.context.spatial()));
+        self.tiles = Some(PointTiles::new(
+            self.tiling,
+            self.context.spatial(),
+            self.context.reduced(),
+        ));
         self
     }
 
@@ -943,14 +948,20 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             .tiles
             .as_ref()
             .expect("a pull meets only the latest frame or a point query's tiles");
+        let stage = self.spatial_stage(index);
         let rgb = tiles.pixel(
             index,
             &entry.operation,
-            self.spatial_stage(index),
+            stage,
             x,
             y,
             &self.cancel,
             || self.spatial_globals(index, entry),
+            |globals| {
+                let (key, _) = entry.reduced_key(&self.domain, stage)?;
+                let global = globals.first().and_then(Option::as_ref);
+                Some(self.context.reduced().lookup(&key, global))
+            },
             |region, planes| self.fill_rows(index - 1, region, planes, Parallelism::Serial),
         )?;
         D::spatial_output(rgb, self.widths[index].input)
