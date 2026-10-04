@@ -98,10 +98,13 @@ use wgpu::naga;
 
 /// The GPU-preview budget: every GPU-preview texture and buffer, resident or retiring, of every
 /// surface together. A plan runs as a chain of links, each spatial operation's output kept by
-/// content in an intermediate the boundary's size beside its planes, so a full-screen Fit slot of a
-/// RAW's `f32` boundary with Detail and three masked Presence layers holds 0.86 GB, and a 100%
-/// region of ten masks, four with Presence, 1.47 GB; 2 GiB holds them and a slot overlapping the
-/// one it replaces (owner, 2026-10-03: interactive speed comes before memory).
+/// content in an intermediate the boundary's size beside its kept planes, its scratch planes in the
+/// slot's one pool, so a full-screen Fit slot of a RAW's `f32` boundary with Detail and three
+/// masked Presence layers holds 0.56 GB, a 100% region of three masked Presence layers 0.54 GB,
+/// and a Fit slot of sixteen 0.82 GB; 2 GiB holds them and a slot overlapping the one it replaces
+/// (owner, 2026-10-03: interactive speed comes before memory). A 100% window grows with every
+/// chained spatial layer, so a region of more than eight masked Presence layers in the paint
+/// harness's view passes it.
 pub const GPU_PREVIEW_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
 
 /// The words before any step's: the texel map's origin and step, then the offset of the output's

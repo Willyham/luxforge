@@ -1,7 +1,8 @@
 //! Masked Presence layers chained in one plan, each a link that takes its scratch planes from the
-//! slot's one pool (`docs/design/gpu-shared-scratch.md`): drags of different links in turn, each
-//! tick's passes counted link by link and its frame held bit for bit to the whole evaluation, with
-//! the poison on too; and the one pass count sharing moves, a Dehaze drag after another link ran.
+//! slot's one pool (`docs/design/gpu-preview.md`, "Plane sharing and precision"): drags of
+//! different links in turn, each tick's passes counted link by link and its frame held bit for bit
+//! to the whole evaluation, with the poison on too; and the one pass count sharing moves, a Dehaze
+//! drag after another link ran.
 use super::{photograph, stage};
 use crate::app::gpu_plan::surface_plan;
 use crate::app::gpu_qualification::{headless, held_to_whole};

@@ -1807,7 +1807,7 @@ mod pool;
 // As many masked spatial layers as a recipe may hold, of mixed shapes.
 mod sixteen;
 
-// What a masked Presence layer costs the GPU-preview budget, measured for the shared scratch plan.
+// What a masked Presence layer costs the GPU-preview budget, its scratch in the slot's one pool.
 mod measured;
 
 /// A masked Presence layer's passes run only over its mask's bounds grown by every unit's reach

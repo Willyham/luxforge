@@ -329,78 +329,49 @@ cargo test --release --package luxforge-core --lib render::mask_tests::masked_co
 LUXFORGE_MASKED_COLOUR_SOURCE=fixtures/generated/24mp.jpg cargo test --release --package luxforge-core --lib render::mask_tests::masked_colour_cost_on_a_24_megapixel_frame -- --ignored --nocapture
 ```
 
-### The masked spatial primitive, one to four layers
+### The masked spatial primitive, one to sixteen layers
 
 A masked spatial layer costs what it would have cost unmasked, plus one coverage evaluation and one
 blend per pixel of the tiles the mask's bounds rectangle reaches, minus the whole unit chain of every
 tile it does not. Each spatial layer, masked or not, is a stage boundary and therefore a **sequential
-full frame**: the design caps masked ones at four for that reason, and the host now refuses a fifth
-with a `resource-limit` error naming the limit.
+full frame** in the settled render and in export. A recipe holds at most 16 masked Presence and
+Detail layers between them (owner, 2026-10-03, [decisions](../decisions.md#gpu-previews)), and the
+host refuses a seventeenth with a `resource-limit` error naming the limit.
 
 `cargo test --release --locked --package luxforge-core --lib -- --ignored masked_spatial_timing
---nocapture` (`render::spatial::tests::masked_spatial_timing`), on the host recorded above, on
-in-memory synthetic frames rendered by the core alone, warm source and warm estimate store, p50 and
-the slowest of 5 runs, one `luxforge.presence` clarity `+100` layer per mask. "Whole frame" is a
-gradient whose bounds rectangle is the entire stage; "right-edge band" is one confined to about a
-tenth of the columns. The tile counts are exact counters read from the host
-(`masked_tile_counts`), not estimates. The load average rises during the run, because the render
-drives the whole Rayon pool; the figure quoted is the one before it starts, which is the other
-sessions' load and the only part of it a measurement can be spoiled by.
+--nocapture` (`render::spatial::tests::masked_spatial_timing`), on in-memory synthetic frames
+rendered by the core alone, warm source and warm estimate store, one `luxforge.presence` Clarity
+`+100` layer per mask: the CPU's exact render, which an export runs before it encodes. "Whole frame"
+is a gradient whose bounds rectangle is the entire stage; "right-edge band" is one confined to about
+a tenth of the columns. Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2; the release build of local
+main at `946751cc`, which holds the [efficiency](../design/efficiency.md) work beside the GPU
+preview's scratch pool and the cap of 16, 2026-10-04. The one-minute load was 2.5 at the start and
+rose to 12 during the run, because the render drives the whole Rayon pool; the figure before it
+starts is the other sessions' load. p50 / p95 of 5 runs, milliseconds:
 
-**These rows replace the contended first measurement.** The whole test was run twice back to back
-on a quiesced host, one-minute load average 3.32 before the first pass and 5.12 and 6.81 before the
-two halves of the second, against the 87.9 the first measurement was taken under. Both passes are
-given, because the spread between two identical measurements is the only honest statement about how
-quotable a millisecond from this machine is.
+| Stage | Mask | 1 | 2 | 4 | 8 | 16 masked layers |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 6000 × 4000 | whole frame | 130 / 136 | 270 / 278 | 559 / 562 | 1,148 / 1,162 | 2,351 / 2,378 |
+| 6000 × 4000 | right-edge band | 58 / 67 | 124 / 128 | 242 / 252 | 508 / 514 | 1,034 / 1,042 |
+| 10000 × 6000 | whole frame | 378 / 398 | 839 / 859 | 1,664 / 1,708 | 3,419 / 3,583 | 6,745 / 6,850 |
+| 10000 × 6000 | right-edge band | 153 / 172 | 312 / 318 | 647 / 681 | 1,338 / 1,350 | 2,687 / 2,732 |
 
-| Stage | Layers | Mask | p50 / slowest ms, pass 1 | p50 / slowest ms, pass 2 | Tiles copied / evaluated per render | Budget peak |
-| --- | --- | --- | --- | --- | --- | --- |
-| 6000 × 4000 | 1 | none | 181 / 187 | 217 / 221 | 0 / 0 | 242.5 MiB |
-| 6000 × 4000 | 1 | whole frame | 204 / 206 | 243 / 261 | 0 / 96 | 255.3 MiB |
-| 6000 × 4000 | 2 | whole frame | 408 / 424 | 449 / 458 | 0 / 192 | 255.3 MiB |
-| 6000 × 4000 | 3 | whole frame | 693 / 746 | 736 / 756 | 0 / 288 | 255.3 MiB |
-| 6000 × 4000 | 4 | whole frame | 1088 / 1991 | 905 / 919 | 0 / 384 | 255.3 MiB |
-| 6000 × 4000 | 1 | none | 365 / 460 | 200 / 201 | 0 / 0 | 242.5 MiB |
-| 6000 × 4000 | 1 | right-edge band | 166 / 168 | 153 / 162 | 80 / 16 | 255.3 MiB |
-| 6000 × 4000 | 2 | right-edge band | 306 / 323 | 304 / 318 | 160 / 32 | 255.3 MiB |
-| 6000 × 4000 | 3 | right-edge band | 462 / 467 | 468 / 472 | 240 / 48 | 255.3 MiB |
-| 6000 × 4000 | 4 | right-edge band | 616 / 622 | 642 / 741 | 320 / 64 | 255.3 MiB |
-| 10000 × 6000 | 1 | none | 654 / 663 | 863 / 884 | 0 / 0 | 249.9 MiB |
-| 10000 × 6000 | 1 | whole frame | 809 / 816 | 831 / 852 | 0 / 240 | 239.7 MiB |
-| 10000 × 6000 | 2 | whole frame | 1648 / 1651 | 1654 / 1699 | 0 / 480 | 239.7 MiB |
-| 10000 × 6000 | 3 | whole frame | 2545 / 2800 | 2550 / 2743 | 0 / 720 | 239.7 MiB |
-| 10000 × 6000 | 4 | whole frame | 3354 / 3480 | 3263 / 3269 | 0 / 960 | 239.7 MiB |
-| 10000 × 6000 | 1 | none | 680 / 684 | 687 / 693 | 0 / 0 | 249.9 MiB |
-| 10000 × 6000 | 1 | right-edge band | 407 / 416 | 394 / 413 | 204 / 36 | 239.7 MiB |
-| 10000 × 6000 | 2 | right-edge band | 807 / 810 | 783 / 786 | 408 / 72 | 239.7 MiB |
-| 10000 × 6000 | 3 | right-edge band | 1196 / 1208 | 1179 / 1198 | 612 / 108 | 239.7 MiB |
-| 10000 × 6000 | 4 | right-edge band | 1592 / 1613 | 1593 / 1694 | 816 / 144 | 239.7 MiB |
+An unmasked single layer takes 94 / 97 ms at 24 MP and 299 / 307 ms at 60 MP.
 
-**Scope.** The quiesced figures are in the same place as the delivered unmasked quiesced figure for
-the same operation (191 / 202 ms at 24 MP), which is what says the host was quiet: three of the four
-measurements of the identical unmasked 24 MP work read 181, 200 and 217 ms, against 353 and 543 ms
-when the same rows were taken at load 87.9. **One of the four read 365 ms and is an outlier**, and
-the 24 MP four-layer pass-1 slowest of 1991 ms against a pass-2 slowest of 919 ms is another; this
-machine is shared and a stray minute still lands in a five-sample window. The masked rows themselves
-are steady — every masked pair above agrees to within 10% except the 24 MP four-layer row — so these
-are quotable as the cost of a masked Presence layer, with that spread stated.
-
-- **Cost grows with the layer count, linearly.** At 60 MP whole frame the four masked rows are 809,
-  1648, 2545, 3354 ms: 809 ms per layer, flat. At 24 MP they are 204, 408, 693, 1088. That is what a
-  sequential full frame per layer predicts, and it is why four is the cap: a fourth masked spatial
-  layer at 60 MP costs the person three and a third seconds of exact render, and it is the *exact*
-  phase, behind the proxy, so it is not what the hand feels.
-- **A tile outside the bounds rectangle costs no unit evaluation**, exactly: 204 of 240 tiles copied
-  at 60 MP and 80 of 96 at 24 MP, so a small mask is *cheaper* than the unmasked layer — 394–407 ms
-  against 654–863 at 60 MP, 153–166 against 181–217 at 24 MP, a saving of about 40% and 20%. That is
-  a counter rather than an inference.
-- **A whole-frame mask costs 12–13% over no mask at one layer at 24 MP** (204 against 181 in pass 1,
-  243 against 217 in pass 2). At 60 MP the two passes disagree — 809 against 654 is +24%, 831
-  against 863 is −4% — so at 60 MP the honest statement is that the whole-frame mask costs
-  **somewhere between nothing and a quarter** of the unmasked layer at one layer, and the 24 MP
-  figure is the quotable one. The structural part of it is the working set: a masked tile holds one
-  extra tile-sized plane, the snapshot the blend is against, which at 60 MP moves the plan's
-  concurrency from 8 tiles to 7.
+- **Cost grows with the layer count, linearly**: about 147 ms a whole-frame masked layer at 24 MP
+  and 420 ms at 60 MP, so 16 such layers are 2.4 s and 6.7 s of exact render. It is the *exact*
+  phase, behind the proxy, so it is not what the hand feels: a gesture over these layers is drawn
+  on the GPU ([painting](#painting-over-masked-spatial-layers)), and a render expected to take more
+  than a second shows its progress on the photograph.
+- **A tile outside the bounds rectangle costs no unit evaluation**, so a small mask is cheaper than
+  the unmasked layer: a right-edge band's layer takes 58 ms at 24 MP and 153 ms at 60 MP, against
+  94 and 299 unmasked. The band copies 80 of 96 tiles at 24 MP and 204 of 240 at 60 MP, exact
+  counters read from the host (`masked_tile_counts`) on the build before the efficiency work.
+- **A whole-frame mask** adds a coverage evaluation and a blend at every pixel: 130 against 94 ms at
+  24 MP and 378 against 299 ms at 60 MP at one layer. A masked tile holds one extra tile-sized plane,
+  the snapshot the blend is against, which on the build before the efficiency work put the spatial
+  budget's peak at 255.3 MiB at 24 MP and 239.7 MiB at 60 MP and moved the 60 MP plan's concurrency
+  from 8 tiles to 7.
 - The blend is **in place** in the last unit's planes. An earlier spelling that copied the tile out
   and blended into a second buffer measured 4464 ms against 1873 at 60 MP — a 2.4× overhead from two
   fresh tile-sized allocations per tile, not from arithmetic. That spelling is not what shipped, and
@@ -3944,7 +3915,7 @@ The figures are Detail's and Presence's own, Detail's half-precision planes incl
 | All three fields, Air 2S | 3628 × 2436 | 1,159.2 MB | 988.3 MB | 0.052 | 0.26 | 0.90 | +0.000 |
 
 - **The figures** are within the spatial limits by far, none past half of any, and no signed ΔL\* past ±0.001. The masked all-three cells charge the same and draw within a worst block of 0.22 and a p99 of 0.80 (Air 2S); the zone plate's draw within a worst block of 0.02 and a p99 of 0.23, and the Presence fixture's, which fit the window whole, charge 135.3 and 139.5 MB.
-- **A larger window**, such as an external display's, draws a larger region. The charge grows with the window's area, and from the measured charges the all-three chain stops fitting at a region about 36% wider and taller on the Air 2S (about 4120 × 2485), 38% on the X100VI, 39% on the Z6 and 40% on the 60 MP JPEG, and Texture and Clarity about 44% on the Air 2S; such a region's drag takes the CPU path naming `budget-exceeded` (an estimate from the charges above, not a measurement). The [design](../design/gpu-preview.md#later) records the proposals that would widen the headroom: scratch planes shared by a chain's links, and evaluating the ring only Clarity's and Dehaze's reductions read in strips.
+- **A larger window**, such as an external display's, draws a larger region. The charge grows with the window's area, and from the measured charges the all-three chain stops fitting at a region about 36% wider and taller on the Air 2S (about 4120 × 2485), 38% on the X100VI, 39% on the Z6 and 40% on the 60 MP JPEG, and Texture and Clarity about 44% on the Air 2S; such a region's drag takes the CPU path naming `budget-exceeded` (an estimate from the charges above, not a measurement). The slot's scratch pool leaves this chain as it is, since Detail's planes with noise reduction share no texture class with Presence's; the [design](../design/gpu-preview.md#later) records the proposal that would widen the headroom, evaluating the ring only Clarity's and Dehaze's reductions read in strips. With Texture's band in one channel the corpus's heaviest slot, all three fields on the Air 2S, charges 1,123.8 MB ([the corpus](#the-corpus)).
 - **A slot that replaces another** is charged only once the one it replaces has retired, when the GPU is done with it: a tick whose slot the budget holds only without the old one draws the CPU's frame, naming `budget-exceeded`, keeps its boundary and plan and asks for nothing again, and the next frame after the retirement draws on the GPU; nothing is allocated or released twice (`a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own`, `gpu_preview_a_tick_the_budget_refuses_while_a_slot_retires_keeps_its_boundary`).
 
 **Ticks.** Over Detail then Presence (Texture and Clarity), 27 passes, a tick runs only the passes its words change: a Clarity drag none, a Texture drag 5, a drag of the colour layer between the two Presence's 13, and a Detail drag 17, each frame equal to the bit to a run of every pass, each operation a link of its own (`gpu_presence_after_detail_reruns_only_the_passes_a_tick_changes`). Against the CPU frame of the same stacks on a synthetic photograph at two sizes, Detail's sharpening and noise reduction then three Presence settings, plain and masked, with Dehaze's light stored and taken on the GPU, the worst of 40 cases is a mean of 0.068, a worst block of 0.38 and a p99 of 0.80, its signed ΔL\* −0.001 (`gpu_presence_after_detail_meets_the_spatial_limits`): Detail's half-precision planes, and Detail's output held in the link's `rgba16float` intermediate between the two, each written rounded to the nearest half.
@@ -4144,52 +4115,160 @@ LUXFORGE_ARRIVAL=whole cargo test -p luxforge-ui --lib a_boundary_arrival_measur
 
 ## Painting over masked spatial layers
 
-Brush strokes over masks that hold Clarity and Texture, drawn through the GPU preview's chain of links, its masked passes and its incremental ticks ([design](../design/gpu-preview.md#where-the-code-lives)). Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal; the release editor built from the working tree over `5dccacc6` (binary SHA-256 `3a5b89c8…`), 2026-10-03, on a host shared with other sessions: the load column is the one-minute load at each run's start, and a run above the 8.0 threshold is marked.
+Brush strokes over masks that hold Clarity and Texture, drawn through the GPU preview's chain of links, its scratch pool, its masked passes and its incremental ticks ([design](../design/gpu-preview.md#where-the-code-lives)). Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2 (25F84), the `Apple M4 Pro` adapter on Metal, 2026-10-04 unless a row says otherwise, on a host shared with other sessions, with background applications running: the load column is the one-minute load at each run's start, and a run above the 8.0 threshold is marked. Megabytes are 10⁶ bytes. The builds:
+
+- **Before**: the release build of `61bca5ac` (binary SHA-256 `a4fc2df6…`), where each link holds its own scratch planes, Texture's band takes a two-channel plane and a recipe holds four masked spatial layers.
+- **After**: the release build of `fdfd267d` (binary SHA-256 `2990e3ec…`), that base with the scratch pool, the one charge, the one-channel band, the cap of 16 with its compile cache and warm list, and the fallback notice, without the efficiency work merged beside them.
+- **Main**: local main at `946751cc`, the same changes with the [efficiency](../design/efficiency.md) work, for the memory, the 100% window, the harness layout's tick cost and the corpus.
 
 ### A stroke's latency
 
-`editor-latency --mode paint --samples 120 --window 1728x1080`: a full-screen window on the 3456 × 2160 display at 2×, whose Fit stage of the generated 24 MP JPEG is 2292 × 1528. 120 positions of the curved stroke, one every 24 ms, on the brushed mask (size 0.06, feather 50), which holds a masked exposure of +0.6 EV and, with `--mask-presence`, Clarity 50 and Texture 40; `--masks N` adds radial masks across the frame holding the same. These rows were measured when a recipe held at most four masked spatial layers, so the 10-mask row holds Presence on the first four only. `--presence` adds a global Presence layer (Texture 25, Clarity 20) under them, and `--detail` a global Detail layer. Milliseconds, nearest rank, from each position's input to the frame that shows it; *early* and *late* are the stroke's first and last 30 positions, and the GPU-preview peak is `gpu_preview_peak_bytes` over the run.
+`editor-latency --mode paint --samples 120 --window 1728x1080`: a full-screen window on the 3456 × 2160 display at 2×, whose Fit stage of the generated 24 MP JPEG is 2292 × 1528. 120 positions of the curved stroke, one every 24 ms, on the brushed mask (size 0.06, feather 50), which holds a masked exposure of +0.6 EV and, with `--mask-presence`, a masked Presence layer of Clarity 50 and Texture 40; `--masks N` adds N − 1 radial masks across the frame holding the same, and the recipe holds every masked Basic layer first, then every masked Presence layer. `--zoom 100` paints at 100%, and the X100VI runs, through the private RAW manifest, add a global Detail layer (`--detail`). Milliseconds, nearest rank, from each position's input to the frame that shows it (`position_to_presented_frame`); *early* and *late* are the stroke's first and last 30 positions; the GPU-preview peak is `gpu_preview_peak_bytes` over the run and the scratch pool `last_gpu_preview_scratch_bytes`. The three-mask rows ran before and after back to back, then in reverse order. The before build gives Presence to four masks at most, so the 10- and 16-mask rows are new workloads, measured after only.
+
+| Run | Binary | Load | Frames | Position to frame p50 / p95 / max | Early p95 | Late p95 | Press to first frame | GPU-preview peak | Scratch pool |
+| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Fit, 3 masks, before 1 | `a4fc2df6` | 2.00 | 120 GPU | 7.9 / 8.9 / 9.2 | 8.8 | 9.0 | 1.5 | 448 MB | — |
+| Fit, 3 masks, after 1 | `2990e3ec` | 3.03 | 120 GPU | 7.8 / 8.5 / 8.9 | 8.5 | 8.7 | 1.5 | 257 MB | 74 MB |
+| Fit, 3 masks, after 2 | `2990e3ec` | 4.39 | 120 GPU | 7.9 / 8.9 / 9.3 | 8.8 | 9.0 | 1.3 | 257 MB | 74 MB |
+| Fit, 3 masks, before 2 | `a4fc2df6` | 4.64 | 120 GPU | 7.9 / 8.8 / 9.2 | 8.8 | 8.9 | 1.4 | 448 MB | — |
+| 100%, 3 masks, before 1 | `a4fc2df6` | 5.27 | 118 GPU, 2 CPU (`boundary-pending`, `boundary-uploading`) | 7.6 / 9.0 / 77.9 | 51.8 | 9.0 | 77.9 | 973 MB | — |
+| 100%, 3 masks, after 1 | `2990e3ec` | 5.01 | 118 GPU, 2 CPU (the same) | 7.8 / 8.9 / 73.6 | 49.9 | 8.2 | 73.6 | 542 MB | 168 MB |
+| 100%, 3 masks, after 2 | `2990e3ec` | 4.88 | 119 GPU, 1 CPU (`boundary-pending`) | 7.6 / 9.3 / 60.9 | 24.6 | 9.0 | 60.9 | 542 MB | 168 MB |
+| 100%, 3 masks, before 2 | `a4fc2df6` | 5.84 | 118 GPU, 2 CPU (`boundary-pending`, `boundary-uploading`) | 7.7 / 9.6 / 83.8 | 59.1 | 8.9 | 83.8 | 973 MB | — |
+| X100VI at Fit, Detail and 3 masks, before 1 | `a4fc2df6` | 5.09 | 120 GPU | 7.8 / 8.7 / 21.5 | 8.7 | 9.0 | 1.6 | 728 MB | — |
+| X100VI at Fit, Detail and 3 masks, after 1 | `2990e3ec` | 6.40 | 120 GPU | 7.9 / 8.9 / 10.4 | 8.9 | 9.0 | 10.4 | 557 MB | 186 MB |
+| X100VI at Fit, Detail and 3 masks, after 2 | `2990e3ec` | 6.52 | 120 GPU | 7.7 / 8.8 / 10.8 | 8.5 | 8.8 | 1.7 | 557 MB | 186 MB |
+| X100VI at Fit, Detail and 3 masks, before 2 | `a4fc2df6` | 6.78 | 120 GPU | 7.8 / 8.9 / 9.8 | 8.9 | 8.4 | 3.7 | 728 MB | — |
+| Fit, 10 masks, after 1 (new workload) | `2990e3ec` | 7.61 | 120 GPU | 8.3 / 23.4 / 25.2 | 23.9 | 9.3 | 11.8 | 558 MB | 74 MB |
+| Fit, 10 masks, after 2 (new workload) | `2990e3ec` | 8.44 (above 8.0) | 120 GPU | 8.3 / 22.8 / 23.7 | 22.8 | 10.9 | 2.6 | 558 MB | 74 MB |
+| Fit, 16 masks, after 1 (new workload) | `2990e3ec` | 10.61 (above 8.0) | 120 GPU | 9.2 / 24.4 / 36.5 | 24.0 | 24.2 | 4.0 | 815 MB | 74 MB |
+| Fit, 16 masks, after 2 (new workload) | `2990e3ec` | 13.99 (above 8.0) | 120 GPU | 8.8 / 24.3 / 34.4 | 9.6 | 11.4 | 4.2 | 815 MB | 74 MB |
+| 100%, 10 masks, after 1 (new workload) | `2990e3ec` | 8.29 (above 8.0) | 120 CPU (`budget-exceeded`) | 548.5 / 733.5 / 821.2 | 800.7 | 498.6 | 478.2 | the Fit slot's 558 MB | — |
+| 100%, 10 masks, after 2 (new workload) | `2990e3ec` | 8.01 (above 8.0) | 120 CPU (`budget-exceeded`) | 548.7 / 750.7 / 849.8 | 823.3 | 482.8 | 495.6 | the Fit slot's 558 MB | — |
+| 100%, 16 masks, after 1 (new workload) | `2990e3ec` | 12.22 (above 8.0) | 120 CPU (`budget-exceeded`), 89 positions shown | 1013.8 / 1339.1 / 1424.7 | 1399.8 | — | 818.3 | the Fit slot's 815 MB | — |
+| 100%, 16 masks, after 2 (new workload) | `2990e3ec` | 12.28 (above 8.0) | 120 CPU (`budget-exceeded`), 92 positions shown | 1002.5 / 1479.2 / 1571.1 | 1549.4 | 667.1 | 877.6 | the Fit slot's 815 MB | — |
+
+Earlier rows, on the release editor built from the working tree over `5dccacc6` (binary SHA-256 `3a5b89c8…`), 2026-10-03, where each link held its own scratch planes, so their GPU-preview peaks are of that layout. `--presence` adds a global Presence layer (Texture 25, Clarity 20) under the masks:
 
 | Case | Load | Frames | Input to frame p50 / p95 / max | Early p95 | Late p95 | Press to first frame | GPU-preview peak |
 | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
-| Fit, 3 masks | 2.68 | 120 GPU | 7.9 / 9.0 / 9.5 | 9.0 | 8.4 | 1.7 | 561 MB |
 | Fit, 3 masks, preview off | 1.56 | 21 CPU shown, 99 superseded | 145.1 / 157.5 / 157.7 | 248.3 | 277.0 | 127.4 | — |
 | Fit, 3 masks over a global Presence layer | 4.74 | 120 GPU | 7.8 / 9.0 / 9.3 | 9.1 | 8.8 | 1.7 | 693 MB |
-| Fit, 10 masks | 6.86 | 120 GPU | 7.8 / 8.8 / 11.5 | 9.5 | 8.8 | 11.0 | 693 MB |
-| X100VI at Fit, Detail and 3 masks | 6.35 | 120 GPU | 7.8 / 9.0 / 9.4 | 9.2 | 9.1 | 1.7 | 968 MB |
-| 100%, 3 masks | 3.90 | 118 GPU, 2 CPU (`boundary-pending`, `boundary-uploading`) | 7.9 / 9.8 / 201.3 | 53.1 | 9.0 | 80.0 | 980 MB |
-| 100%, 3 masks, overlay shown | 8.82 (above 8.0) | 118 GPU, 2 CPU (the same) | 7.9 / 8.9 / 231.1 | 52.4 | 8.6 | 78.1 | 980 MB |
-| 100%, 10 masks | 7.11 | 116 GPU, 4 CPU (`boundary-pending` twice, `boundary-uploading`, `compiling`) | 7.9 / 22.0 / 447.5 | 75.0 | 8.7 | 112.7 | 1467 MB |
+| 100%, 3 masks, overlay shown | 8.82 (above 8.0) | 118 GPU, 2 CPU (`boundary-pending`, `boundary-uploading`) | 7.9 / 8.9 / 231.1 | 52.4 | 8.6 | 78.1 | 980 MB |
 | 100%, 3 masks, preview off | 7.37 | 25 CPU shown, 95 superseded | 127.4 / 166.3 / 185.1 | 207.9 | 208.9 | 120.2 | — |
 
-- **Within a frame.** With the preview on, every position at Fit is drawn on the GPU at the redraw after its input, p95 8.8 to 9.0 ms over three or ten masks, a global Presence layer, or Detail on a RAW, the press 1.7 ms from its input to its frame where the stack's resident boundary is held ([the held input boundary](../design/gpu-preview.md#the-held-input-boundary)). With the preview off the CPU path shows 21 of the 120 positions; counting each position by the frame that carried it, 197.4 / 255.3 / 277.0 ms at Fit and 174.8 / 240.9 / 301.5 at 100%.
-- **The first stroke after a zoom.** At 100% the first two ticks are the CPU's while the region's boundary renders and uploads, and with ten masks while the region's plan compiles: the press reaches the screen in 78 to 113 ms and the early positions' p95 is 52 to 75 ms. Once the boundary is held every tick is the GPU's, late p95 8.6 to 9.0 ms, the mask overlay shown included, its region coverage laid over the GPU region frame. The harness zooms over a retained exact frame just before it paints, so no view job asks for the region's resident boundary first ([later](../design/gpu-preview.md#later)).
-- **Memory.** The GPU preview holds an intermediate for each link of its chain and each masked Presence layer's planes over the boundary: 0.56 GB at Fit over three masks, 0.69 GB with ten or with a global Presence layer, 0.97 GB on the X100VI's `f32` boundary with Detail, and at 100% 0.98 and 1.47 GB, within the 2 GiB budget ([decisions](../decisions.md#gpu-previews)).
+- **Three masks, within a frame.** Before and after compare like for like, and the latency is unchanged within noise in both orders: p95 8.5 to 8.9 ms after against 8.8 to 8.9 before at Fit, 8.9 to 9.3 against 9.0 to 9.6 at 100%, and 8.8 to 8.9 against 8.7 to 8.9 on the X100VI with Detail. Every position at Fit is drawn on the GPU at the redraw after its input, the press 1.3 to 10.4 ms from its input to its frame where the stack's resident boundary is held ([the held input boundary](../design/gpu-preview.md#the-held-input-boundary)).
+- **The GPU-preview peak falls** wherever two or more spatial layers are held: from 448 to 257 MB at Fit (−43%), from 973 to 542 MB at 100% (−44%), and from 728 to 557 MB on the X100VI with Detail (−23%), where Detail's half-precision planes share no texture class with Presence's, so the pool holds both links' scratch, 186 MB.
+- **10 and 16 masks at Fit**, new workloads: every position is drawn on the GPU, but p95 is 22.8 to 24.4 ms, **missing the 16 ms target**, because a tick's GPU work passes the 120 Hz frame ([what a tick costs](#what-a-tick-costs-the-gpu)). The loads above 8.0 on most of these runs came largely from the runs' own settled CPU renders of 10 to 16 masked layers ([the settled render](#the-masked-spatial-primitive-one-to-sixteen-layers)). The pool stays 74 MB, one link's scratch, at every count.
+- **10 and 16 masks at 100%**, new workloads: every tick takes the CPU path naming `budget-exceeded`, the desktop's estimate refusing the slot before any boundary is asked for, correctly, since the window grows with every chained link ([the window](#the-100-window-grows-with-the-chain)). The status bar's notice for that reason is `GPU memory full`. The harness records no notice per tick; the notice for each CPU reason is the status model's, `GPU memory full` for `budget-exceeded` and none for `boundary-pending` or `boundary-uploading`. The peak column is the Fit slot the run opened with.
+- **The first stroke after a zoom.** At 100% with three masks the first one or two ticks are the CPU's while the region's boundary renders and uploads: the press reaches the screen in 61 to 84 ms and the early positions' p95 is 25 to 59 ms. Once the boundary is held every tick is the GPU's, late p95 8.2 to 9.0 ms, and 8.6 ms with the mask overlay shown, its region coverage laid over the GPU region frame. The harness zooms over a retained exact frame just before it paints, so no view job asks for the region's resident boundary first ([later](../design/gpu-preview.md#later)).
+- **With the preview off** the CPU path shows 21 of the 120 positions at Fit and 25 at 100%; counting each position by the frame that carried it, 197.4 / 255.3 / 277.0 ms at Fit and 174.8 / 240.9 / 301.5 at 100%.
 
 ### What a tick costs the GPU
 
-`gpu_mask_a_painted_stroke_costs_where_it_changes` (release, `--ignored --nocapture`, the qualifier's headless device on the same adapter, load 2.8): the same stroke's 119 ticks over a brushed mask and two radials, each holding a masked Basic and a masked Presence layer, every tick after the first submitted without waiting, so the figure is the GPU's throughput a tick. The host's decimation moves some of the stroke's kept positions at each tick, so a tick's change covers 6.3% of the Fit stage and 7.1% of the region on average.
+`gpu_mask_a_painted_stroke_costs_where_it_changes` (release, `--ignored --nocapture`, the qualifier's headless device on the same adapter): the same stroke's 119 ticks over a brushed mask and two radials, each holding a masked Basic and a masked Presence layer, every tick after the first submitted without waiting, so the figure is the GPU's throughput a tick. The host's decimation moves some of the stroke's kept positions at each tick, so a tick's change covers 6.3% of the Fit stage and 7.1% of the region on average. Before (the base tree's test over its build) and after, back to back then reversed, at loads of 2.2 to 2.5:
 
-| Stage | Incremental, a tick | Whole, a tick | Encoding, a tick | Compile and first two ticks |
-| --- | ---: | ---: | ---: | ---: |
-| Fit, 2292 × 1528 | 2.32 ms | 6.37 ms | 0.06 to 0.10 ms | 71 ms |
-| 100% region, 2994 × 2642 | 4.25 ms | 14.22 ms | 0.06 ms | 80 ms |
+| Run | Fit, 2292 × 1528: incremental / whole, a tick | 100% region, 2994 × 2642: incremental / whole, a tick |
+| --- | ---: | ---: |
+| before 1 | 2.44 / 6.70 ms | 4.46 / 14.91 ms |
+| after 1 | 2.37 / 6.55 ms | 4.31 / 14.66 ms |
+| after 2 | 2.34 / 6.57 ms | 4.33 / 14.61 ms |
+| before 2 | 2.44 / 6.73 ms | 4.46 / 14.99 ms |
 
-The incremental ticks take 2.7 to 3.3 times less GPU time, and draw what whole ones do bit for bit (`gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it`). The compile figure is with the driver's shader cache warm from earlier runs.
+Encoding takes 0.06 to 0.10 ms a tick in every run. The pool leaves a tick's GPU cost unchanged within noise, after about 3% lower in both orders. The incremental ticks take 2.7 to 3.4 times less GPU time than whole ones and draw what whole ones do, bit for bit (`gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it`). On the earlier `5dccacc6` build, with the driver's shader cache warm from earlier runs, the compile and first two ticks took 71 ms at Fit and 80 ms over the region.
+
+**The paint harness's layout at Fit** (`gpu_mask_the_paint_harness_layout_costs_a_tick_at_fit`, release, on main with the test, load about 4.6 to 4.9): the 2292 × 1528 Fit stage of a 6000 × 4000 photograph, the masked Basic layers then the masked Presence layers, the stroke on the first mask, so every Presence link after it is evaluated incrementally. The slot charges 257.4, 557.7 and 815.2 MB, the paint runs' peaks to the MB.
+
+| Masks | Incremental, a tick (encoding) | Whole, a tick (encoding) | One tick alone p50 / p95 / largest |
+| ---: | ---: | ---: | ---: |
+| 3 | 2.04 ms (0.10) | 6.88 ms (0.06) | 2.77 / 5.30 / 6.64 ms |
+| 10 | 8.80 ms (0.21) | 17.25 ms (0.13) | 10.80 / 14.49 / 15.75 ms |
+| 16 | 14.46 ms (0.25) | 26.40 ms (0.20) | 17.32 / 21.06 / 23.76 ms |
+
+At 10 and 16 masks a tick's GPU work passes the 8.33 ms frame, which is the paint runs' 23 to 24 ms p95. The pool does not add to it (above): it is the work of 10 to 16 chained Presence links, each evaluated incrementally around a change that grows link by link with each link's reach ([later](../design/gpu-preview.md#later)).
+
+### The scratch pool's memory
+
+What a masked Presence layer costs the GPU-preview budget with every link's scratch planes in the slot's one pool and Texture's band in one channel ([design](../design/gpu-preview.md#plane-sharing-and-precision)). Deterministic, one run: `cargo test --release -p luxforge-app --bin luxforge gpu_shared_scratch_measured -- --ignored --nocapture` on main, the slot's charge (`Qualifier::charged_bytes`, which the live slot's `gpu_preview_in_use_bytes` equals) for 1, 2, 4, 8 and 16 masked Presence layers, each through a radial of its own. At Fit, a 2292 × 1528 boundary against a 6000 × 4000 stage; at 100%, a fixed 3778 × 2578 window at (1111, 711) of the 6000 × 4000 exact stage, the region drawn being the window itself. A JPEG's boundary is `rgba16float` (the byte path); a RAW's is `rgba32float` (the linear path), as are its intermediates. Megabytes, against the 2 GiB budget of 2,147.5 MB:
+
+| Layers of | Stage | Boundary | 1 layer | 2 | 4 | 8 | 16 | Each layer after the first | Layers within 2 GiB |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Texture and Clarity | Fit | JPEG | 143.5 | 186.4 | 272.3 | 443.9 | 787.1 | 42.9 | 47 |
+| Texture and Clarity | Fit | RAW | 171.6 | 242.5 | 384.3 | 668.0 | 1,235.4 | 70.9 | 28 |
+| Texture and Clarity | 100% window | JPEG | 365.3 | 484.6 | 723.3 | 1,200.6 | 2,155.2 | 119.3 | 15 |
+| Texture and Clarity | 100% window | RAW | 443.2 | 640.5 | 1,034.9 | 1,823.9 | 3,401.9 | 197.2 | 9 |
+| Texture, Clarity and Dehaze | Fit | JPEG | 154.3 | 198.9 | 288.3 | 466.9 | 824.2 | 44.7 | 45 |
+| Texture, Clarity and Dehaze | Fit | RAW | 182.3 | 255.0 | 400.3 | 691.0 | 1,272.5 | 72.7 | 28 |
+| Texture, Clarity and Dehaze | 100% window | JPEG | 395.3 | 519.5 | 767.9 | 1,264.8 | 2,258.5 | 124.2 | 15 |
+| Texture, Clarity and Dehaze | 100% window | RAW | 473.2 | 675.3 | 1,079.6 | 1,888.1 | 3,505.2 | 202.1 | 9 |
+
+Each layer after the first adds its intermediate, its kept planes and parameters and 2,048 bytes of buffers; the pool holds exactly one link's scratch:
+
+| Layers of | Stage | Boundary | Boundary texture | Output and uniform | Intermediate | Kept planes and parameters | Pool, one link's scratch |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Texture and Clarity | Fit | JPEG | 28.0 | 26.2 | 28.0 | 14.9 | 74.4 |
+| Texture and Clarity | Fit | RAW | 56.0 | 26.2 | 56.0 | 14.9 | 74.4 |
+| Texture and Clarity | 100% window | JPEG | 77.9 | 39.0 | 77.9 | 41.4 | 207.0 |
+| Texture and Clarity | 100% window | RAW | 155.8 | 39.0 | 155.8 | 41.4 | 207.0 |
+| Texture, Clarity and Dehaze | Fit | JPEG | 28.0 | 26.2 | 28.0 | 16.6 | 83.4 |
+| Texture, Clarity and Dehaze | Fit | RAW | 56.0 | 26.2 | 56.0 | 16.6 | 83.4 |
+| Texture, Clarity and Dehaze | 100% window | JPEG | 77.9 | 39.0 | 77.9 | 46.3 | 232.1 |
+| Texture, Clarity and Dehaze | 100% window | RAW | 155.8 | 39.0 | 155.8 | 46.3 | 232.1 |
+
+The same plans with each link holding its own scratch, the layout without the pool, with the band in one channel:
+
+| Layers of | Stage | Boundary | Each layer after the first | Layers within 2 GiB | The pool saves at 16 layers |
+| --- | --- | --- | ---: | ---: | ---: |
+| Texture and Clarity | Fit | JPEG | 117.3 | 18 | 1,116.3 |
+| Texture and Clarity | Fit | RAW | 145.3 | 14 | 1,116.3 |
+| Texture and Clarity | 100% window | JPEG | 326.3 | 6 | 3,105.2 |
+| Texture and Clarity | 100% window | RAW | 404.3 | 5 | 3,105.2 |
+| Texture, Clarity and Dehaze | Fit | JPEG | 128.1 | 16 | 1,251.0 |
+| Texture, Clarity and Dehaze | Fit | RAW | 156.1 | 13 | 1,251.0 |
+| Texture, Clarity and Dehaze | 100% window | JPEG | 356.3 | 5 | 3,481.1 |
+| Texture, Clarity and Dehaze | 100% window | RAW | 434.2 | 4 | 3,481.1 |
+
+- **What the pool saves** is every layer's scratch after the first: 74.4 MB a layer at Fit and 207.0 MB over the window for Texture and Clarity. A further layer costs about a third of what it costs with each link's scratch its own at Fit on a JPEG, and about half on a RAW; the budget holds 47 layers of Texture and Clarity at Fit on a JPEG against 18, and 15 over the window against 6.
+- **The one-channel band** keeps 4 bytes a pixel less of every Texture layer than its two-channel plane did: 14.0 MB at Fit and 39.0 MB over the window, in the first layer's charge and in every increment.
+- **The fixed window understates a real chain at 100%**, since the window grows with every chained spatial layer, below.
+
+#### The 100% window grows with the chain
+
+`gpu_window_the_paint_harness_masks_at_100_grow_the_window_by_every_links_halo` and `gpu_window_the_paint_harness_masks_at_100_fit_the_budget_up_to_a_count` (release, ignored, on main with the tests), through the real planning path: the editor opens the generated 24 MP JPEG (6000 × 4000), another client commits the paint harness's layout, and a drag in Mask mode at 100% asks for its plan. At a percentage zoom the boundary is the view's region grown by the halo of every spatial layer chained after it (the CPU's windowed planner), so each masked Presence link adds 207 px on every side (Texture 8 and Clarity 199), and every link's intermediate and kept planes and the pool are sized to that window. `plan_steps` converted every plan, and `region_charge` equals the surface's own `slot_charge` but for the links' buffers (6 to 40 KB). Budget 2,147,483,648 bytes. In the harness's view, 1728 × 1080 at 2× with the panels open, scrolled to the top left (the region 2373 × 2021 at (0, 0)):
+
+| Masks | Window | Slot | Fits |
+| ---: | --- | ---: | --- |
+| 1 | 2580 × 2228 | 258.5 MB | yes |
+| 2 | 2787 × 2435 | 384.7 MB | yes |
+| 3 | 2994 × 2642 | 542.0 MB | yes |
+| 4 | 3201 × 2849 | 733.6 MB | yes |
+| 5 | 3408 × 3056 | 962.5 MB | yes |
+| 6 | 3615 × 3263 | 1,232.0 MB | yes |
+| 7 | 3822 × 3470 | 1,545.2 MB | yes |
+| 8 | 4029 × 3677 | 1,905.2 MB | yes |
+| 9 | 4236 × 3884 | 2,315.1 MB | no |
+| 10 | 4443 × 4000 | 2,716.9 MB | no |
+| 12 | 4857 × 4000 | 3,444.2 MB | no |
+| 16 | 5685 × 4000 | 5,142.2 MB | no |
+
+- **The corpus's view**, the region 3026 × 1826 at (1487, 1087), fits up to 5 masks, 1,819.6 MB, where 6 charge 2,287.5 MB; the window reaches the whole stage at 8 masks (3,076.8 MB), and 16 charge 5,428.9 MB. Centred with the panels open (2374 × 2022 at (1813, 989)) the slot charges 301.8, 798.9, 3,662.0 and 5,426.0 MB at 1, 3, 10 and 16 masks; centred with the panels closed (3458 × 2022), 420.3, 1,041.4, 3,670.9 and 5,434.9 MB.
+- **At Fit** the plan is the proxy's at every count, a 2292 × 1528 boundary with no window, which does not grow.
+- **With Dehaze on the masks** a drag at 100% has no plan at any count: every tick names `region-estimate`, since the drag changes every Dehaze layer's input and at 100% the light must come from the exact stage's store.
+- **No defect.** For one window shared by every link and blind to masks, this growth is what an exact region frame needs. It over-estimates in two ways, each a proposal that is not built, with its estimated effect in the [design](../design/gpu-preview.md#later): growth bounded by each link's mask, and each link's intermediate and kept planes sized to its own output's need.
 
 ### The corpus
 
-The five corpus harnesses over the current code, release profile, with every source the corpus names, the zone plates and the three RAWs through the private manifest among them; the pixels are deterministic. Worst of each statistic over the measured cells — mean ΔE00, worst 16 × 16 block, p99 and \|signed mean ΔL\*\| — against the pointwise limits (0.5, 1.0, 2.0, 0.25) or the spatial ones (1.0, 2.5, 5.0, 0.5):
+The five corpus harnesses, release profile, with every source the corpus names, the zone plates and the three RAWs through the private manifest among them; the pixels are deterministic. Presence and Detail at Fit and every family at 100% ran on main (`946751cc`), with the scratch pool and the one-channel band, and every statistic equals the run before them; colour and masks at Fit are that earlier run's, over the release build of `313faec4` with the chain (`fc3eb65e`) merged. Worst of each statistic over the measured cells — mean ΔE00, worst 16 × 16 block, p99 and \|signed mean ΔL\*\| — against the pointwise limits (0.5, 1.0, 2.0, 0.25) or the spatial ones (1.0, 2.5, 5.0, 0.5):
 
-| Harness | Within the limits | Pointwise | Spatial | Gaps |
-| --- | ---: | ---: | ---: | --- |
-| Colour at Fit | 62 of 62 | 0.051 / 0.25 / 0.87 / 0.002 | — | 2: a vignette after a RAW's lens warp |
-| Masks at Fit | 42 of 42 | 0.021 / 0.12 / 0.66 / 0.009 | — | none |
-| Presence at Fit | 81 of 81 | — | 0.061 / 0.51 / 0.97 / 0.049 | none |
-| Detail at Fit | 63 of 63 | — | 0.054 / 0.26 / 0.96 / 0.019 | none |
-| Every family at 100% | 247 of 247 | 0.051 / 0.25 / 0.85 / 0.009 | 0.084 / 0.51 / 0.95 / 0.049 | 3: masks that select nothing in the region |
+| Harness | Within the limits | Pointwise | Spatial | Gaps | Heaviest slot |
+| --- | ---: | ---: | ---: | --- | --- |
+| Colour at Fit | 62 of 62 | 0.051 / 0.25 / 0.87 / 0.002 | — | 2: a vignette after a RAW's lens warp | — |
+| Masks at Fit | 42 of 42 | 0.021 / 0.12 / 0.66 / 0.009 | — | none | — |
+| Presence at Fit | 81 of 81 | — | 0.061 / 0.51 / 0.97 / 0.049 | none | `crop-presence-all` on the Z6, 245.6 MB |
+| Detail at Fit | 63 of 63 | — | 0.054 / 0.26 / 0.96 / 0.019 | none | Detail then Presence on the Air 2S, 261.2 MB |
+| Every family at 100% | 247 of 247 | 0.051 / 0.25 / 0.85 / 0.009 | 0.084 / 0.51 / 0.95 / 0.049 | 3: masks that select nothing in the region (`mask-radial` and `mask-brush` on the 60 MP JPEG, `mask-brush` on the Z6) | Detail then all three Presence fields on the Air 2S, 1,123.8 MB |
 
-Under the 2 GiB budget every 100% slot draws on the GPU, the heaviest, Detail then all three Presence fields on the Air 2S, charging 1,174.1 MB. Every cell's statistics are the run's over the release build of `313faec4` with this chain (`fc3eb65e`) merged.
+Under the 2 GiB budget every 100% slot draws on the GPU. The heaviest charged 1,174.1 MB in the run before: the pool leaves Detail beside Presence as it was, since their planes share no texture class, and the one-channel band lowers it.
 
 ### The performance-rules checklist
 
@@ -4204,6 +4283,20 @@ For the chain, the masked passes, the incremental ticks and the resident boundar
 - **Repeated work.** A link whose input and words did not change is not run (keyed by content: its input's key, words, blocks and pipeline); a tick runs each changed link only where its change reaches; a masked spatial layer runs its passes only over its mask; the resident boundary is rendered once per stack and view rather than once per gesture.
 - **`editor-performance`.** The CPU's renders are unchanged; not run for this change.
 - **Exactness.** Partial and incremental evaluation are held to whole evaluation bit for bit (`gpu_presence_a_masked_layer_runs_its_passes_over_its_mask_alone`, `gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it`, `gpu_mask_a_moved_radial_is_evaluated_where_its_bounds_were_and_are`, `gpu_mask_a_mask_grown_toward_the_edge_reads_its_inputs_latest_values`); a plan over another boundary or with other clipping marks is evaluated whole (`a_change_measured_over_another_boundary_is_evaluated_whole`, `a_change_is_measured_only_over_the_same_boundary_and_marks`); and every GPU frame is still settled by the CPU's.
+
+### The performance-rules checklist for the scratch pool and sixteen layers
+
+For the slot's scratch pool, the one charge, Texture's band in one channel, the fallback notice, and the cap of 16 masked spatial layers with its compile cache and warm list ([rules](../engineering/performance-rules.md#review-checklist)):
+
+- **The original** is read, hashed and decoded only as before; none of these changes reads a source.
+- **Full-frame allocations.** On the GPU, one pool of scratch textures a slot, each the boundary's size, its blocks or a fixed size, which every link takes in turn rather than holding a set of its own; a link's kept planes and intermediate as before; and Texture's band in a one-channel `r32float` plane, 4 bytes a pixel less than its `rg32float` one. The pool is charged once to the 2 GiB GPU-preview budget, refused before anything is created past it, and retired through the surface's retirement worker, charged until the GPU is done with it. At three masks the GPU-preview peak falls by 23 to 44%, and 16 masked Presence layers charge 815 MB at Fit ([memory](#the-scratch-pools-memory)). Nothing is added on the CPU: the notice holds one phrase and tooltip, and the warm list plan descriptions.
+- **Point queries, validation and no-op checks** render no frame. The cap is checked when the stack compiles, `region_charge` is arithmetic over the plan's steps converted with no boundary and no device, and the notice reads the reason the evidence already records.
+- **The owner thread** plans the warm list, one drag for each distinct drafted shape within 45 link sequences, from the compiled stack's descriptions: no frame work. The interface thread fits the pool once a tick from every link's steps, in `O(links × planes)` as fitting the planes is, and encodes a tick in 0.06 to 0.25 ms on the qualifier's device over 3 to 16 masks ([what a tick costs](#what-a-tick-costs-the-gpu)); the editor's own preparation figure (`gpu_preview_frame_us`) was not recorded for these runs.
+- **Desktop messages.** None added: a tick drawn on the GPU sends no preview job and uploads no frame, a slot the desktop's estimate refuses asks for no boundary, and the notice is derived in the update each tick already runs, a change of drawing path waking the desktop once as before. `asset.state` and `history.list` are unchanged.
+- **Timers, polls and subscriptions.** None added. The half second before `compiling` is said is measured at ticks, so a drag that holds still keeps what it last said and the idle editor stays asleep.
+- **Repeated work.** A pool texture's key is trusted only by the schedule that wrote it, so a link runs a pass again only where another link wrote its scratch since it last ran: the one count that moves is a Dehaze drag's 20 of 22 passes after another masked Presence link has run, against 19 alone. Every single-link count stands, and a painted tick's GPU cost is unchanged within noise, 2.34 to 2.37 ms against 2.44 at Fit and 4.31 to 4.33 against 4.46 over a 100% region. The compile cache keys a link's program sequence by its steps and the format it writes, bounded at 64 sequences (`PIPELINE_CACHE`), which hold the largest plan's 19 links beside a whole warm list of at most 45. Its hit rate is held by tests rather than measured: a plan of 16 masked layers of mixed shapes compiles each sequence once, then draws every tick on the GPU, and a drag of each of the 16 finds every link it draws warmed. A rebuild is a Presence link's compile, about a second on a cold shader cache ([compile cost](#gpu-preview-compile-cost)); the cache's retained bytes were not measured.
+- **`editor-performance`.** The CPU's renders are unchanged; not run for these changes. The settled render the cap allows is measured: 16 whole-frame masked layers take 2.4 s at 24 MP and 6.7 s at 60 MP on main ([the masked spatial primitive](#the-masked-spatial-primitive-one-to-sixteen-layers)), and a render expected to take more than a second shows its progress.
+- **Exactness.** Every frame is held bit for bit to a fresh evaluation through the slot and through the qualifier, over chained links whose ticks alternate and over 16 masked layers of mixed shapes, with the pool poisoned as well (`chained_links_take_their_scratch_from_one_pool_and_draw_what_a_fresh_slot_draws`, `gpu_presence_chained_masked_layers_dragged_in_turn_draw_what_a_whole_evaluation_does`, `gpu_presence_sixteen_masked_layers_of_mixed_shapes_draw_what_a_whole_evaluation_does`), and so is every test of partial and incremental evaluation; the one-channel band draws what two channels did, bit for bit (`gpu_presence_texture_band_in_one_channel_draws_what_two_did`); the three charges agree (`gpu_window_a_chained_masked_plan_is_held_to_the_slots_own_charge`); and every corpus cell at Fit and at 100% stays within its limits with every statistic unchanged ([the corpus](#the-corpus)).
 
 ## GPU previews qualified on the M4
 
@@ -4291,7 +4384,7 @@ The GPU preview stage's high-water over each run (`gpu_preview_peak_bytes`), and
 | X100VI, Basic under Presence | on | 95.9 MB | 2658 MiB | 2080 MiB |
 | 24 MP brush stroke | on | 32.5 MB | 1053 MiB | 665 MiB |
 
-- **The GPU preview's own share** is 10 to 41 MB at Fit, 100% and 200% on the JPEGs and 96 MB over the X100VI's `f32` boundary with Presence, within the 2 GiB budget, which bounds the heaviest 100% slots the corpus measures (up to 1,159.2 MB, Detail then all three Presence fields; [above](#gpu-previews-at-100)) and the slots of a mask painted over masked Presence layers (0.56 to 1.47 GB, [painting](#painting-over-masked-spatial-layers)). A boundary arriving at 100% holds up to 2.2 times its bytes during its upload, and the system allocator keeps the freed copy's pages in the footprint afterwards ([a boundary's arrival](#a-boundarys-arrival)).
+- **The GPU preview's own share** is 10 to 41 MB at Fit, 100% and 200% on the JPEGs and 96 MB over the X100VI's `f32` boundary with Presence, within the 2 GiB budget, which bounds the heaviest 100% slots the corpus measures (Detail then all three Presence fields, 1,123.8 MB with Texture's band in one channel; [the corpus](#the-corpus)) and the slots of a mask painted over masked Presence layers (0.26 to 0.82 GB at Fit over 3 to 16 masks and 0.54 GB at 100% over three, [painting](#painting-over-masked-spatial-layers)). A boundary arriving at 100% holds up to 2.2 times its bytes during its upload, and the system allocator keeps the freed copy's pages in the footprint afterwards ([a boundary's arrival](#a-boundarys-arrival)).
 - **Against the provisional 1 GiB target for one 60 MP photograph**, which `measure` takes over one open: these gesture runs exceed it, with the GPU preview on and off alike — 1.69 and 1.99 GiB peak footprint for the 60 MP drags, 1.54 and 1.56 GiB sampled RSS — so the GPU preview is not what takes them past it. The peaks vary between runs by more than the GPU preview's share.
 
 ### Idle after a dissolve
