@@ -361,7 +361,7 @@
     {
       "id": "TASK-005",
       "description": "Say in the status bar why a gesture is drawn on the slower CPU path when the GPU preview is on and the reason lasts, in the place, timing and wording the design records as defaults.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Today the status bar's render slot (StatusBarModel in crates/luxforge-app/src/state/status.rs) names the frame on screen. It reads gpu_text while a GPU frame is drawn, then Rendering… or the CPU frame's RenderTime::text. Why a gesture took the CPU path reaches only the evidence: Editor::gpu_plan_fallback (crates/luxforge-app/src/app/gpu_preview.rs) answers the preference or the drag's reason, which the snapshot records as state.surface.gpu.plan_fallback (crates/luxforge-app/src/app/snapshot.rs). The drag's reason holds the plan's code, the desktop's own reasons and the surface's fallback.",

@@ -54,6 +54,8 @@ pub(crate) mod gpu_identity;
 #[cfg(test)]
 mod gpu_mask_tests;
 #[cfg(test)]
+mod gpu_notice_tests;
+#[cfg(test)]
 mod gpu_presence_tests;
 pub(crate) mod gpu_preview;
 #[cfg(test)]
@@ -727,6 +729,7 @@ impl Editor {
             rendering: self.presentation.queue.is_busy() || self.surface_photo_updating(),
             render: self.activity.render,
             gpu_frame_us: self.gpu_frame_us(),
+            cpu_reason: self.gpu_cpu_reason(),
             render_bar: self.activity.render_bar,
             render_error: self.presentation.render_error.as_ref(),
             analysis: self.presentation.analysis.as_ref(),

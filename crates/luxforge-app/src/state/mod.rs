@@ -312,6 +312,9 @@ pub(crate) struct Inputs<'a> {
     /// While the photograph on screen is the GPU stage's output, the interface thread's time to
     /// prepare that frame, in microseconds; `None` while it is a CPU frame.
     pub(crate) gpu_frame_us: Option<u64>,
+    /// While the GPU preview is on and the open gesture's latest tick took the CPU path, why: what
+    /// the status bar's notice is derived from ([`status::CpuReason::notice`]).
+    pub(crate) cpu_reason: Option<status::CpuReason<'a>>,
     /// A long render's progress, while it earns the bar over the photograph
     /// ([`canvas::render_bar`]).
     pub(crate) render_bar: Option<canvas::RenderBar>,
@@ -692,6 +695,7 @@ mod tests {
                     approximate: false,
                 }),
                 gpu_frame_us: None,
+                cpu_reason: None,
                 render_error: self.render_error.as_ref(),
                 analysis: self.analysis.as_ref(),
                 analysis_updating: self.analysis_updating,
@@ -2586,6 +2590,47 @@ mod tests {
             workspace.canvas.render_bar,
             Some(0.427),
             "the bar over the photograph is the CPU render's own"
+        );
+
+        // A gesture drawn on the CPU for a reason that lasts says why beside the render slot, and
+        // the next GPU frame on screen clears it.
+        let mut inputs = scene.inputs();
+        inputs.cpu_reason = Some(status::CpuReason {
+            code: "not-fit",
+            layer: None,
+            compiling_for: None,
+        });
+        workspace.derive(&inputs);
+        assert_eq!(
+            workspace
+                .status
+                .fallback
+                .as_ref()
+                .map(|n| n.phrase.as_str()),
+            Some("GPU preview at Fit and 100%+")
+        );
+        assert_eq!(
+            workspace.status.render, "Exact render \u{b7} 41 ms",
+            "the render slot is its own"
+        );
+        inputs.gpu_frame_us = Some(1600);
+        workspace.derive(&inputs);
+        assert_eq!(workspace.status.fallback, None, "a GPU frame clears it");
+        inputs.gpu_frame_us = None;
+        inputs.cpu_reason = Some(status::CpuReason {
+            code: "boundary-pending",
+            layer: None,
+            compiling_for: None,
+        });
+        workspace.derive(&inputs);
+        assert_eq!(
+            workspace.status.fallback, None,
+            "a passing reason says nothing"
+        );
+        workspace.derive(&scene.inputs());
+        assert_eq!(
+            workspace.status.fallback, None,
+            "and neither does no reason"
         );
 
         // Nobody else connected is a count of none, with the dot unlit.

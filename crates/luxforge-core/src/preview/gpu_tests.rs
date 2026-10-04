@@ -122,6 +122,27 @@ fn draft_job_of(
     drafted: Recipe,
     revision: u64,
 ) -> (PreviewJob, Draft) {
+    draft_job_with(
+        ModuleRegistry::builtin(),
+        context,
+        source,
+        action,
+        entry,
+        drafted,
+        revision,
+    )
+}
+
+/// [`draft_job_of`] over `registry`.
+fn draft_job_with(
+    registry: ModuleRegistry,
+    context: RenderContext,
+    source: PreviewSource,
+    action: &str,
+    entry: Recipe,
+    drafted: Recipe,
+    revision: u64,
+) -> (PreviewJob, Draft) {
     let asset = AssetId::new();
     let entry = HistoryEntry {
         id: EntryId::new(),
@@ -146,7 +167,7 @@ fn draft_job_of(
     let mut draft = Draft::new(action, asset, 1);
     draft.draft_revision = revision;
     let evaluation = Evaluation::new(
-        Arc::new(ModuleRegistry::builtin()),
+        Arc::new(registry),
         context,
         source,
         entry,
@@ -322,6 +343,39 @@ fn a_draft_that_changes_nothing_names_it() {
         GpuAnswer::Fallback(crate::GpuFallback::Unchanged)
     );
     assert!(preview.boundary.is_none());
+    assert_eq!(preview.layer, None, "it names no layer");
+}
+
+/// A fallback that names a layer carries the label the recipe list gives it, read from the stack
+/// the plan was made from, which holds the neutral layer a drafted layer's first commit would add.
+/// A plan, and a reason that names no layer, carry none.
+#[test]
+fn a_fallback_carries_its_layers_label_from_the_stack_it_was_planned_over() {
+    let pixel = Layer::pixel(0, 0, [9, 9, 9]);
+    let (job, draft) = draft_job_with(
+        ModuleRegistry::developer(),
+        RenderContext::new(),
+        source(),
+        "set-basic",
+        recipe(vec![pixel.clone()]),
+        recipe(vec![pixel]),
+        1,
+    );
+    let preview = plan_preview(&job.evaluation, &draft, crate::GpuView::Fit(bounds())).unwrap();
+    let Some(crate::GpuFallback::PixelStage { layer }) = preview.answer.fallback() else {
+        panic!("a pixel-stage reason, not {:?}", preview.answer);
+    };
+    assert_eq!(*layer, 0, "the neutral Basic layer is inserted after it");
+    assert_eq!(preview.layer.as_deref(), Some("Pixel"));
+    let (job, draft) = draft_job(
+        "set-basic",
+        vec![basic(json!({}))],
+        vec![basic(json!({"exposure": 0.3}))],
+        1,
+    );
+    let preview = plan_preview(&job.evaluation, &draft, crate::GpuView::Fit(bounds())).unwrap();
+    assert!(preview.answer.plan().is_some());
+    assert_eq!(preview.layer, None, "a plan names no layer");
 }
 
 /// A job that asks for the boundary delivers it after its Fit frame, as one more result of its

@@ -24,13 +24,18 @@
 //! for the drags after. Each Basic release's committed frame dissolves in from the drag's last GPU
 //! frame: the dissolve's start and its identities are checked, and the release's capture either
 //! shows it running or follows its end, which a capture after 150 ms allows.
+//!
+//! A second, short launch drags Basic's exposure at 50%, below the zoom the GPU preview draws at:
+//! every tick takes the CPU path naming `not-fit`, and the status bar's notice reads the zoom's
+//! phrase in the same frame that records the reason, then clears once the release's settle ends.
+//! (The first launch's script holds the evidence's 64 steps.)
 use crate::{
     gpu_preview_smoke::{
         BASIC, CLARITY, CLARITY_DRAG, DEHAZE, EXPOSURE, Held, PRESENCE, PRESENCE_QUIET_MS, Settled,
         TEXTURE_DRAG, UNDER_DRAG, dissolve_from, drag_steps, gpu_drawn, named,
         presence_drag_checks, quiet, quiet_for, same_pixels, step_events, ticks,
     },
-    scenario::{Checked, Checks, Frame, Plan, Run, Step, plan::only},
+    scenario::{Checked, Checks, Frame, Plan, Run, Step},
     *,
 };
 use luxforge_evidence::{SliderStep, ViewStep};
@@ -108,7 +113,38 @@ const BEHIND_DETAIL: f64 = 40.0;
 const BEHIND_TEXTURE: [f64; 3] = [30.0, 40.0, 60.0];
 const BEHIND_SHARPEN: [f64; 3] = [55.0, 70.0, 85.0];
 
-/// Every frame, in order: the open, then one per step.
+/// The zoom the second launch's drag is drawn at, below the 100% the GPU preview draws from.
+const BELOW_ZOOM: f32 = 50.0;
+/// Its first tick's value, then the tick after it.
+const BELOW_DRAG: [f64; 2] = [0.5, 0.25];
+/// The notice's phrase and tooltip for `not-fit`, as the status bar gives them
+/// (`docs/design/gpu-preview.md`, "Labels and overlays during motion").
+const ZOOM_PHRASE: &str = "GPU preview at Fit and 100%+";
+const ZOOM_TOOLTIP: &str = "The GPU preview draws at Fit and at 100% or more; at this zoom the \
+                            preview is drawn on the CPU.";
+
+/// The second launch's frames, in order: the open, the zoom, the drag's ticks, its release and the
+/// settle after it.
+pub fn below_plan(_: &[PathBuf]) -> Plan {
+    Plan::new(vec![
+        Step::opened("opened-50").no_draft().masks(0),
+        Step::new("zoom-50", ViewStep::Percent(BELOW_ZOOM))
+            .commits(0)
+            .no_draft(),
+        Step::new("drag-50", SliderStep::new(BASIC, EXPOSURE, BELOW_DRAG))
+            .commits(0)
+            .draft(BASIC, json!({ EXPOSURE: BELOW_DRAG[1] })),
+        Step::new(
+            "release-50",
+            SliderStep::new(BASIC, EXPOSURE, [BELOW_DRAG[1]]).release(),
+        )
+        .commits(1)
+        .no_draft(),
+        quiet("settled-50").no_draft(),
+    ])
+}
+
+/// Every frame of the first launch, in order: the open, then one per step.
 pub fn plan(_: &[PathBuf]) -> Plan {
     let mut steps = vec![Step::opened("opened").no_draft().masks(0)];
     // 1-12: at 100% and at 200%, the drag's first tick asks for the region's boundary at 100% and
@@ -369,8 +405,81 @@ fn never_mixed(frame: &Frame) -> Result<Value> {
     )
 }
 
+/// The drag at 50%: no GPU preview is planned below 100%, so every tick takes the CPU path naming
+/// `not-fit`, and the frame that records the reason shows the status bar's notice for it, beside a
+/// CPU frame's render slot and in the evidence's two places for it. Once the release's settle has
+/// ended the notice is gone with the reason.
+fn drawn_on_the_cpu_below_100(launch: &Checked, checks: &mut Checks) -> Result {
+    let dragged = launch.at("drag-50")?;
+    let events = step_events(launch, "drag-50")?;
+    let (gpu_ticks, cpu_ticks, _) = ticks(events);
+    let reasons: Vec<&Value> = named(events, "gpu_preview_tick")
+        .iter()
+        .map(|tick| &tick["detail"]["reason"])
+        .collect();
+    ensure(
+        gpu_ticks == 0
+            && cpu_ticks >= 1
+            && reasons.iter().all(|reason| **reason == json!("not-fit")),
+        format!(
+            "The drag at {BELOW_ZOOM}% was {gpu_ticks} GPU and {cpu_ticks} CPU ticks for {reasons:?}"
+        ),
+    )?;
+    let state = dragged.state();
+    let gpu = &state["surface"]["gpu"];
+    let (bar, notice) = (&state["status_bar"], &state["status_bar"]["fallback"]);
+    ensure(
+        gpu["plan_fallback"] == json!({"reason": "not-fit"}) && gpu["drawing_path"] == json!("cpu"),
+        format!(
+            "{} drew {} with the reason {}, not the CPU frame's `not-fit`",
+            dragged["file"], gpu["drawing_path"], gpu["plan_fallback"]
+        ),
+    )?;
+    ensure(
+        notice["phrase"] == json!(ZOOM_PHRASE)
+            && notice["tooltip"] == json!(ZOOM_TOOLTIP)
+            && *notice == gpu["fallback_notice"],
+        format!(
+            "{} recorded `not-fit` but its status bar said {notice} and its evidence {}",
+            dragged["file"], gpu["fallback_notice"]
+        ),
+    )?;
+    ensure(
+        bar["render"]
+            .as_str()
+            .is_some_and(|render| render.contains("render") && bar["gpu_ms"].is_null()),
+        format!(
+            "{} named a CPU frame's render slot {} beside the notice",
+            dragged["file"], bar["render"]
+        ),
+    )?;
+    // The release commits on the CPU, and once its settle has ended the notice goes with the reason.
+    let settled = launch.at("settled-50")?;
+    let state = settled.state();
+    ensure(
+        state["surface"]["gpu"]["plan_fallback"].is_null()
+            && state["status_bar"]["fallback"].is_null()
+            && state["surface"]["gpu"]["fallback_notice"].is_null(),
+        format!(
+            "{} still named {} and said {} after the settle",
+            settled["file"],
+            state["surface"]["gpu"]["plan_fallback"],
+            state["status_bar"]["fallback"]
+        ),
+    )?;
+    checks.note(
+        dragged,
+        &format!("the drag at {BELOW_ZOOM}% is drawn on the CPU and the status bar says why"),
+        json!({"cpu_ticks": cpu_ticks, "reasons": reasons, "plan_fallback": gpu["plan_fallback"],
+            "notice": notice, "render": bar["render"], "settled": settled["file"]}),
+    );
+    Ok(())
+}
+
 pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
-    let launch = only(launches)?;
+    let [launch, below] = launches else {
+        return Err(format!("Expected two launches, found {}", launches.len()).into());
+    };
     let mut checks = Checks::new();
 
     // At 100% the region's boundary from one request, and at 200% the resident boundary the 100%
@@ -572,6 +681,9 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         json!({"cpu_ticks": cpu_ticks, "jobs": jobs, "reasons": reasons,
             "plan_fallback": refused.state()["surface"]["gpu"]["plan_fallback"]}),
     );
+
+    // Below 100%: no plan, the CPU path for `not-fit`, and the notice that says so.
+    drawn_on_the_cpu_below_100(below, &mut checks)?;
 
     checks.write(&launch.evidence, run.scenario(), json!({}))
 }
