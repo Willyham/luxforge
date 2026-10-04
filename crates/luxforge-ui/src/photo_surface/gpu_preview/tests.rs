@@ -838,6 +838,132 @@ fn a_magnified_gpu_frame_draws_exactly_as_the_cpu_frame_of_its_codes() {
     );
 }
 
+/// Below 100% the view draws its display proxy as a whole-frame photograph filling the view's box,
+/// which may be far larger than the window, and a whole frame's plan stands in for that frame
+/// through the widget's own placement: over the visible part of a box panned across the window, and
+/// magnified where the proxy is smaller than the box, as one held to its pixel bound is, the GPU
+/// frame draws what the CPU proxy frame of the same codes draws, pixel for pixel. A region's plan
+/// is no frame of a whole-frame photograph, and a percentage view of retained full and region
+/// frames runs no whole frame's plan: each draws the CPU's.
+#[test]
+fn below_100_percent_a_whole_frames_plan_draws_where_the_cpu_proxy_frame_draws() {
+    let test = "below_100_percent_a_whole_frames_plan_draws_where_the_cpu_proxy_frame_draws";
+    // The proxy, drawn in the box of its stage's displayed size, of which a 128 × 128 window
+    // panned to (60, 30) is on screen.
+    let (width, height) = (200u32, 134u32);
+    let (box_width, box_height) = (275.0, 184.0);
+    let target = (2 * SIDE, 2 * SIDE);
+    let bounds = Rectangle::new(iced::Point::ORIGIN, Size::new(box_width, box_height));
+    let viewport = Rectangle::new(
+        iced::Point::new(60.0, 30.0),
+        Size::new(target.0 as f32, target.1 as f32),
+    );
+    let code = |index: u32, a: u32, b: u32| ((index * a + b) % 256) as u8;
+    let values: Vec<[f32; 3]> = (0..width * height)
+        .map(|index| [code(index, 7, 0), code(index, 13, 5), code(index, 29, 11)].map(held))
+        .collect();
+    let boundary = GpuBoundary::from_linear(
+        crate::photo_surface::BoundaryFormat::Half,
+        width,
+        height,
+        1,
+        values.iter().map(|[r, g, b]| [*r, *g, *b, 1.0]),
+    )
+    .expect("a boundary");
+    let codes: Vec<u8> = values
+        .iter()
+        .flat_map(|rgb| {
+            let [r, g, b] = rgb.map(|value| srgb::code(f64::from(value)));
+            [r, g, b, 255]
+        })
+        .collect();
+    let frame = Frame::new(Arc::new(codes), width, height, 1).expect("the codes as a frame");
+    // The primitive the widget hands the renderer for the visible part of the view's box.
+    let drawn = |surface, plan: Option<&GpuPlan>| {
+        let widget = super::super::photo_surface(
+            surface,
+            &frame,
+            super::super::Placement::Fill,
+            iced::Length::Fixed(box_width),
+            iced::Length::Fixed(box_height),
+        )
+        .gpu_preview(plan);
+        let visible = widget.visible(bounds, viewport).expect("a visible part");
+        assert_eq!(
+            visible.clip.size(),
+            viewport.size(),
+            "the window shows the box"
+        );
+        assert_eq!(visible.offset, Vector::new(-60.0, -30.0), "panned");
+        widget.primitive(visible)
+    };
+    let whole = plan(&boundary, vec![identity()]);
+    let mut region = whole.clone();
+    region.region = Some(GpuRegion {
+        rect: [0, 0, width, height],
+        stage: (width, height),
+    });
+    assert!(
+        drawn(ID, Some(&whole)).gpu.is_some(),
+        "a whole frame's plan runs"
+    );
+    assert!(
+        drawn(ID, Some(&region)).gpu.is_none(),
+        "a region's does not"
+    );
+    let retained = super::super::viewport_surface(
+        ID,
+        Some((&frame, 1)),
+        None,
+        1,
+        (width, height),
+        super::super::Placement::Fill,
+        iced::Length::Fixed(box_width),
+        iced::Length::Fixed(box_height),
+    )
+    .gpu_preview(Some(&whole));
+    let visible = retained.visible(bounds, viewport).expect("a visible part");
+    assert!(
+        retained.primitive(visible).gpu.is_none(),
+        "a view of retained frames runs no whole frame's plan"
+    );
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let cpu = paint_into(
+        &device,
+        &queue,
+        &mut pipeline,
+        &drawn(SurfaceId::new(1), None),
+        target,
+    );
+    let gpu = paint_into(
+        &device,
+        &queue,
+        &mut pipeline,
+        &drawn(SurfaceId::new(2), Some(&whole)),
+        target,
+    );
+    let seen = diagnostics(&pipeline, SurfaceId::new(2));
+    assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
+    assert_eq!(seen.drawn_gpu_boundary, Some(1));
+    assert_eq!(seen.drawn_full_version, None, "the CPU frame was not drawn");
+    let seen = diagnostics(&pipeline, SurfaceId::new(1));
+    assert_eq!(seen.drawn_path, Some(DrawingPath::Cpu));
+    assert_eq!(seen.drawn_full_version, Some(1), "the CPU proxy frame");
+    let differing = cpu
+        .chunks_exact(4)
+        .zip(gpu.chunks_exact(4))
+        .filter(|(cpu, gpu)| cpu != gpu)
+        .count();
+    assert_eq!(
+        differing, 0,
+        "pixels the GPU frame draws unlike the CPU proxy frame"
+    );
+    settle(&pipeline);
+}
+
 /// The calling convention end to end: two layers of one unit sharing its function with their own
 /// words, a program reading its words, one reading its block and the stage position through the
 /// texel map and its own position map, chained in order.
@@ -1379,9 +1505,12 @@ mod blocks;
 mod masked;
 mod spatial;
 
-/// At a percentage zoom a region plan's frame is the photograph: drawn alone at its rectangle of
-/// the whole stage, one texel to one pixel, with no CPU frame of other content composited with
-/// it. A whole frame's plan is no frame of a percentage view, so that view draws the CPU's.
+/// At a percentage zoom of 100% or more a region plan's frame is the photograph: drawn alone at its
+/// rectangle of the whole stage, one texel to one pixel, with no CPU frame of other content
+/// composited with it. A whole frame's plan is no frame of a percentage view of retained full and
+/// region frames, so that view draws the CPU's; below 100% the view draws its proxy as a
+/// whole-frame photograph, which runs it
+/// (`below_100_percent_a_whole_frames_plan_draws_where_the_cpu_proxy_frame_draws`).
 #[test]
 fn a_percentage_view_draws_a_region_plans_frame_at_its_rectangle() {
     let test = "a_percentage_view_draws_a_region_plans_frame_at_its_rectangle";
@@ -1418,7 +1547,8 @@ fn a_percentage_view_draws_a_region_plans_frame_at_its_rectangle() {
     assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
     assert_eq!(seen.drawn_gpu_boundary, Some(9));
     assert_eq!(seen.drawn_full_version, None, "no CPU frame was drawn");
-    // A whole frame's plan at a percentage view, and a region plan of another stage, run nothing.
+    // A whole frame's plan at a percentage view of retained frames, and a region plan of another
+    // stage, run nothing.
     let mut elsewhere = plan(&boundary, vec![identity()]);
     elsewhere.region = Some(GpuRegion {
         rect: [0, 0, SIDE, SIDE],

@@ -316,6 +316,60 @@ fn gpu_settle_at_a_percentage_zoom_a_commit_dissolves_into_the_views_frame_and_a
     finish(editor, catalog);
 }
 
+/// Below 100% the view draws the displayed-size proxy of the whole stage, a whole frame as at Fit:
+/// the release's committed proxy frame replaces the drag's GPU frame through a dissolve from the
+/// drawn tick's revision into that frame, and a pan while it runs is a view input that cancels it.
+#[test]
+fn gpu_settle_below_100_percent_a_commit_dissolves_into_the_proxy_and_a_pan_cancels_it() {
+    for value in [50.0, 33.0] {
+        let catalog = catalog(&format!("below-{value}"));
+        let (mut editor, _, _) = real_photo(&catalog);
+        super::gpu_preview_tests::zoomed_out(&mut editor, value);
+        gpu_drag(&mut editor, &[0.2, 0.35]);
+        assert!(
+            editor
+                .surfaces()
+                .gpu
+                .is_some_and(|plan| plan.region.is_none()),
+            "{value}%: a whole frame's plan"
+        );
+        let (drawn, boundary) = (revision(&editor), editor.gpu.held_version().unwrap());
+        let behind = photo(&editor);
+        let log = attach_log(&mut editor);
+        let _ = let_go(&mut editor, ACTION, FIELD);
+        assert!(run_commit(&mut editor));
+        deliver_until(&mut editor, "the committed proxy frame", |editor| {
+            editor.gpu_settle.dissolve().is_some()
+        });
+        let dissolve = editor.gpu_settle.dissolve().expect("a dissolve");
+        assert_eq!(dissolve.from, drawn, "{value}%");
+        assert_ne!(Some(dissolve.to), behind, "{value}%: to a newer frame");
+        assert_eq!(
+            Some(dissolve.to),
+            photo(&editor),
+            "{value}%: to the proxy the view draws"
+        );
+        assert!(
+            editor.presentation.presented_proxy,
+            "{value}%: the committed frame is the view's proxy"
+        );
+        assert_eq!(editor.surfaces().dissolve, Some(dissolve));
+        // A pan while it runs cancels it.
+        let (x, y) = editor.view_state.local_pan;
+        let _ = editor.update(Message::View(ViewMessage::Panned(x + 40.0, y + 40.0)));
+        assert!(editor.gpu_settle.dissolve().is_none(), "{value}%");
+        let records = logged(&mut editor, &log);
+        let started = events(&records, "gpu_dissolve_started");
+        assert_eq!(started.len(), 1, "{records:?}");
+        assert_eq!(started[0]["case"], "committed");
+        assert_eq!(started[0]["gpu_boundary"], json!(boundary));
+        let cancelled = events(&records, "gpu_dissolve_cancelled");
+        assert_eq!(cancelled.len(), 1, "{records:?}");
+        assert_eq!(cancelled[0]["why"], "view");
+        finish(editor, catalog);
+    }
+}
+
 /// At a percentage zoom a tick the surface cannot draw sends its region job to the worker, and
 /// that region of the newer revision replaces the GPU region frame through a dissolve with the
 /// plan held behind it; a change of zoom cancels it, and a dissolve that runs to its end is let go

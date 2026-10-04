@@ -154,14 +154,16 @@ impl Content {
 /// The clipping overlays shown, and how the photograph is drawn.
 type SettleView = (Option<[bool; 2]>, SettleZoom);
 
-/// How the photograph is drawn, as far as a dissolve is concerned: at Fit or at a percentage zoom
-/// of 100% or more, where a gesture's GPU frame settles into the CPU's, or any other way, a
-/// comparison included, where none dissolves.
+/// How the photograph is drawn, as far as a dissolve is concerned: at Fit or at a percentage zoom,
+/// where a gesture's GPU frame settles into the CPU's, or with a comparison on screen, where none
+/// dissolves.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum SettleZoom {
     Fit,
-    /// A percentage zoom of 100% or more, its value.
+    /// A percentage zoom, its value: below 100% a whole frame, the displayed-size proxy, as at Fit;
+    /// at 100% or more the view's whole frame or region.
     Percent(f32),
+    /// A comparison.
     Other,
 }
 
@@ -269,18 +271,17 @@ impl Editor {
         }
         match self.session.preview.view.zoom {
             luxforge_core::Zoom::Fit => SettleZoom::Fit,
-            luxforge_core::Zoom::Percent { value } if value >= 100.0 => SettleZoom::Percent(value),
-            luxforge_core::Zoom::Percent { .. } => SettleZoom::Other,
+            luxforge_core::Zoom::Percent { value } => SettleZoom::Percent(value),
         }
     }
 
-    /// The version of the CPU frame the photograph is drawn from now: at Fit its frame; at a
-    /// percentage zoom the view's whole frame of the current content, or else its region of it,
-    /// as the canvas hands them to the percentage view.
+    /// The version of the CPU frame the photograph is drawn from now: at Fit and below 100% its
+    /// frame, the displayed-size proxy below 100%; at 100% or more the view's whole frame of the
+    /// current content, or else its region of it, as the canvas hands them to the percentage view.
     fn settle_frame(&self, zoom: SettleZoom) -> Option<u64> {
         let surfaces = self.surfaces();
         match zoom {
-            SettleZoom::Percent(_) => {
+            SettleZoom::Percent(value) if value >= 100.0 => {
                 if surfaces.photo_content == Some(surfaces.current_content) {
                     surfaces.photo.map(Frame::version)
                 } else {
@@ -290,13 +291,15 @@ impl Editor {
                         .map(|region| region.frame.version())
                 }
             }
-            SettleZoom::Fit | SettleZoom::Other => surfaces.photo.map(Frame::version),
+            SettleZoom::Fit | SettleZoom::Percent(_) | SettleZoom::Other => {
+                surfaces.photo.map(Frame::version)
+            }
         }
     }
 
     /// After every message: follow the GPU frame on screen, and when the CPU frame of its content
-    /// replaces it at Fit or at a percentage zoom of 100% or more — the drafted settings settled on
-    /// the CPU, or the entry the draft committed — dissolve from one to the other. A cancel or any
+    /// replaces it — the drafted settings settled on the CPU, or the entry the draft committed —
+    /// dissolve from one to the other, at every zoom with no comparison on screen. A cancel or any
     /// older content is a plain swap. The running dissolve ends after its 150 ms, follows a newer
     /// frame of the same content, and is cancelled by any input: a newer tick of the draft, another
     /// gesture, or a change of what is drawn over the photograph or of the view, a pan included.
@@ -308,7 +311,7 @@ impl Editor {
             .draft
             .as_ref()
             .map(|draft| (draft.draft_id.clone(), draft.draft_revision));
-        let fit = zoom.dissolves();
+        let dissolves = zoom.dissolves();
         let pan = matches!(zoom, SettleZoom::Percent(_)).then_some(self.view_state.local_pan);
         let view = (clip_flags(&self.session.workspace), zoom);
         if self.gpu_settle.view.replace(view) != Some(view) {
@@ -372,7 +375,7 @@ impl Editor {
             && photo != shown.photo
         {
             self.gpu_settle.shown = None;
-            let content = self.shown_content(&shown).filter(|_| fit);
+            let content = self.shown_content(&shown).filter(|_| dissolves);
             let decision = match (&content, photo) {
                 (Some(content), Some(to)) => {
                     let dissolve = Dissolve::start(shown.revision, to);
@@ -389,7 +392,7 @@ impl Editor {
                         "to": to, "gpu_boundary": shown.boundary})
                 }
                 _ => json!({"dissolve": false, "from": shown.revision, "to": photo,
-                    "why": if fit { "older content" } else { "not fit" }}),
+                    "why": if dissolves { "older content" } else { "comparison" }}),
             };
             self.event(
                 if content.is_some() && photo.is_some() {

@@ -132,12 +132,12 @@ pub struct PreviewJob {
     /// job when its request asked (`PreviewRequest::gpu`), so the desktop can compile their
     /// program sequences before a drag begins. Preview state, never an API result.
     pub gpu_warm: Option<std::sync::Arc<[crate::GpuPlan]>>,
-    /// A committed stack's GPU preview at Fit, planned with its job when its request asked
-    /// (`PreviewRequest::gpu`): the plan of the stack itself from its first content layer, and the
-    /// boundary every gesture over the same source and view starts from, which the desktop holds
-    /// before a gesture begins. Preview state, never an API result.
+    /// A committed stack's GPU preview at its view's bounds or region, planned with its job when
+    /// its request asked (`PreviewRequest::gpu`): the plan of the stack itself from its first
+    /// content layer, and the boundary every gesture over the same source and view starts from,
+    /// which the desktop holds before a gesture begins. Preview state, never an API result.
     pub gpu_resident: Option<Box<crate::GpuPreview>>,
-    /// Render this GPU preview boundary after the job's Fit frame, as one more result of the job
+    /// Render this GPU preview boundary after the job's whole frame, as one more result of the job
     /// ([`super::BoundaryOutcome`]). The desktop asks for it on a draft's job until the draft holds
     /// one, and on a committed stack's job when it holds none of that key.
     pub boundary: Option<crate::BoundaryRequest>,

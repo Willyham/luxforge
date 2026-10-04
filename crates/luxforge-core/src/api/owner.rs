@@ -258,7 +258,9 @@ pub struct PreviewRequest {
     pub gpu: bool,
     /// At a percentage zoom of 100% or more, the region of the output stage a draft's GPU preview
     /// is drawn over at full scale, and the physical pixels an output pixel takes there
-    /// ([`crate::GpuView::Region`]); `None` at Fit, where the bounds decide.
+    /// ([`crate::GpuView::Region`]); `None` for a whole frame, where the bounds decide: at Fit, and
+    /// at a percentage zoom below 100%, whose bounds are the displayed size of the whole stage
+    /// ([`crate::GpuView::Fit`]).
     pub gpu_region: Option<(crate::modules::Region, f64)>,
 }
 
