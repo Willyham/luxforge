@@ -91,18 +91,65 @@ pub(crate) fn now_ms() -> i64 {
         .min(i64::MAX as u128) as i64
 }
 
+/// Take the catalog for `connection` alone and answer its format marker, before anything is
+/// written. The exclusive locking mode comes before any read, so in WAL SQLite keeps the log's
+/// index in this process's memory and never creates a `<catalog>-shm` file, and the empty
+/// transaction takes the lock now, so a second owner is refused here rather than at its first
+/// write.
+pub(super) fn lock(connection: &Connection) -> Result<i64, Error> {
+    connection.execute_batch(
+        "PRAGMA foreign_keys=ON;
+         PRAGMA locking_mode=EXCLUSIVE;
+         BEGIN IMMEDIATE;
+         COMMIT;",
+    )?;
+    Ok(connection.pragma_query_value(None, "user_version", |row| row.get(0))?)
+}
+
+/// Refuse an unmarked database that holds anything: only an empty one becomes a catalog.
+pub(super) fn require_empty(connection: &Connection) -> Result<(), Error> {
+    let occupied: bool =
+        connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema)", [], |row| {
+            row.get(0)
+        })?;
+    if occupied {
+        return Err(Error::incompatible(
+            "unmarked catalog is not empty; choose a new catalog path",
+        ));
+    }
+    Ok(())
+}
+
+/// Set the journal of a catalog [`lock`] has taken and this build opens: a write-ahead log, which
+/// a commit appends to once, flushed in full at every commit and checkpoint when `durable` —
+/// `F_FULLFSYNC` on macOS, as [`crate::atomic_file::flush`] makes every other durable write.
+/// `durable` is [`crate::atomic_file::FLUSHES`]: a test build keeps the same log, its file and its
+/// recovery, and skips only the flush. The flush settings come first, so the one write that moves
+/// a catalog from a rollback journal is flushed too. A catalog SQLite cannot keep a log for is
+/// refused, never opened on a weaker journal.
+pub(super) fn configure(connection: &Connection, durable: bool) -> Result<(), Error> {
+    connection.execute_batch(if durable {
+        "PRAGMA synchronous=FULL;
+         PRAGMA fullfsync=ON;
+         PRAGMA checkpoint_fullfsync=ON;"
+    } else {
+        "PRAGMA synchronous=OFF;"
+    })?;
+    let journal: String =
+        connection.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))?;
+    if journal != "wal" {
+        return Err(Error::catalog(format!(
+            "catalog cannot keep a write-ahead log (SQLite kept its {journal} journal); \
+             choose a catalog file on a local disk"
+        )));
+    }
+    Ok(())
+}
+
 impl EditorService {
+    /// Create the current schema in an empty catalog, [`require_empty`] having checked it is.
     pub(super) fn create_schema(connection: &mut Connection) -> Result<(), Error> {
         write(connection, |tx| {
-            let occupied: bool =
-                tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema)", [], |row| {
-                    row.get(0)
-                })?;
-            if occupied {
-                return Err(Error::incompatible(
-                    "unmarked catalog is not empty; choose a new catalog path",
-                ));
-            }
             Ok(tx.execute_batch(&format!(
                 "CREATE TABLE assets (
                     id TEXT PRIMARY KEY,
@@ -346,7 +393,8 @@ fn write_fresh_strokes(
     Ok(())
 }
 
-/// Resolve this recipe's stroke references against the store, one lookup and one hash each.
+/// Resolve this recipe's stroke references against the store, one lookup and one hash each, except
+/// the strokes `shared` already holds.
 ///
 /// Nothing is replayed and no earlier entry is read: an entry is a complete snapshot, and this is
 /// the lookup that turns its addresses back into the strokes they name. A reference the store does
@@ -364,28 +412,41 @@ fn hydrate_strokes(
     connection: &Connection,
     recipe: &mut Recipe,
     origin: &str,
+    shared: &[crate::path::StrokeTable],
 ) -> Result<(), Error> {
     let references = recipe.stroke_references()?;
     if references.is_empty() {
         return Ok(());
     }
-    recipe.strokes = read_strokes(connection, references, origin)?;
+    recipe.strokes = read_strokes(connection, references, origin, shared)?;
     Ok(())
 }
 
 /// [`hydrate_strokes`] over a list of references, whichever consumer's strokes they are: each
-/// address is read once and decoded as the type its reference declares.
+/// address is resolved once and decoded as the type its reference declares.
+///
+/// A reference one of the `shared` tables holds as that type is resolved by sharing that stroke,
+/// with no lookup, parse or hash ([`crate::path::StrokeTable::load_shared`]); every other reference
+/// is read from the store. The statement is prepared only when a reference needs it.
 fn read_strokes(
     connection: &Connection,
     references: Vec<crate::path::StrokeReference>,
     origin: &str,
+    shared: &[crate::path::StrokeTable],
 ) -> Result<crate::path::StrokeTable, Error> {
     let mut table = crate::path::StrokeTable::new(origin);
-    let mut statement = connection.prepare("SELECT stroke_json FROM strokes WHERE id=?1")?;
+    let mut prepared = None;
     for reference in references {
-        if table.knows(&reference.id) {
+        if table.knows(&reference.id) || table.load_shared(&reference, shared) {
             continue;
         }
+        let statement = match &mut prepared {
+            Some(statement) => statement,
+            unprepared => unprepared
+                .insert(connection.prepare("SELECT stroke_json FROM strokes WHERE id=?1")?),
+        };
+        #[cfg(test)]
+        super::read_counts::queried();
         let stored: Option<String> = statement
             .query_row(params![reference.id.as_str()], |row| row.get(0))
             .optional()?;
@@ -493,10 +554,25 @@ pub(super) fn stored_revision(connection: &Connection, asset_id: &AssetId) -> Re
         .ok_or_else(|| Error::validation("unknown asset"))
 }
 
+/// One entry as the rows hold it, every stroke it references read from the store: what the tests
+/// compare the owner's cache against. The owner itself reads through [`entry_from_sharing`].
+#[cfg(test)]
 pub(super) fn entry_from(
     connection: &Connection,
     asset_id: &AssetId,
     entry_id: &EntryId,
+) -> Result<HistoryEntry, Error> {
+    entry_from_sharing(connection, asset_id, entry_id, &[])
+}
+
+/// [`entry_from`], resolving the strokes `shared` holds without reading them: the tables of cached
+/// entries of this same asset, which came out of this catalog. The entry is the same either way;
+/// only the lookups differ.
+pub(super) fn entry_from_sharing(
+    connection: &Connection,
+    asset_id: &AssetId,
+    entry_id: &EntryId,
+    shared: &[crate::path::StrokeTable],
 ) -> Result<HistoryEntry, Error> {
     let json: String = connection
         .query_row(
@@ -507,12 +583,12 @@ pub(super) fn entry_from(
         .optional()?
         .ok_or_else(|| Error::validation("history entry does not belong to this asset"))?;
     let mut entry: HistoryEntry = decode("invalid history entry", json)?;
-    // One lookup per referenced stroke, here and nowhere else: every path that evaluates an entry —
-    // state, preview, undo, redo, Restore, export — reads it through this function, once, and then
-    // from the owner's entry cache; a listing, which never draws anything, keeps the stored
-    // addresses and pays nothing.
+    // One lookup per referenced stroke the caller does not already hold, here and nowhere else:
+    // every path that evaluates an entry — state, preview, undo, redo, Restore, export — reads it
+    // through this function, once, and then from the owner's entry cache; a listing, which never
+    // draws anything, keeps the stored addresses and pays nothing.
     let origin = format!("entry {}", entry.id);
-    hydrate_strokes(connection, &mut entry.snapshot.recipe, &origin)?;
+    hydrate_strokes(connection, &mut entry.snapshot.recipe, &origin, shared)?;
     Ok(entry)
 }
 
@@ -605,6 +681,220 @@ mod tests {
             );
             std::fs::remove_file(catalog).unwrap();
         }
+    }
+
+    /// A connection's journal: its mode, `synchronous`, `fullfsync`, `checkpoint_fullfsync` and
+    /// locking mode.
+    fn journal(connection: &Connection) -> (String, i64, i64, i64, String) {
+        let text = |name| {
+            connection
+                .pragma_query_value(None, name, |row| row.get::<_, String>(0))
+                .unwrap()
+        };
+        let number = |name| {
+            connection
+                .pragma_query_value(None, name, |row| row.get::<_, i64>(0))
+                .unwrap()
+        };
+        (
+            text("journal_mode"),
+            number("synchronous"),
+            number("fullfsync"),
+            number("checkpoint_fullfsync"),
+            text("locking_mode"),
+        )
+    }
+
+    /// A durable catalog — every build's but a test build's — opens in a write-ahead log flushed in
+    /// full at every commit and checkpoint, under the exclusive lock that keeps the log's index in
+    /// memory, so only the log is beside it. Every test build skips the flush, so the durable
+    /// settings are read through the function that sets them, on a catalog the test build made in
+    /// the same log without them.
+    #[test]
+    fn a_durable_catalog_opens_in_wal_with_full_flushes() {
+        let catalog = temp("durable.sqlite");
+        let service = EditorService::open(&catalog).unwrap();
+        assert_eq!(
+            journal(&service.connection),
+            ("wal".into(), 0, 0, 0, "exclusive".into()),
+            "a test build keeps the same log and skips only the flush"
+        );
+        assert!(luxforge_testbase::paths::wal(&catalog).exists());
+        assert!(!luxforge_testbase::paths::shm(&catalog).exists());
+        drop(service);
+        let connection = Connection::open(&catalog).unwrap();
+        assert_eq!(lock(&connection).unwrap(), CATALOG_FORMAT);
+        configure(&connection, true).unwrap();
+        assert_eq!(
+            journal(&connection),
+            ("wal".into(), 2, 1, 1, "exclusive".into())
+        );
+        assert!(
+            luxforge_testbase::paths::wal(&catalog).exists(),
+            "the log is beside the open catalog"
+        );
+        assert!(
+            !luxforge_testbase::paths::shm(&catalog).exists(),
+            "and no shared-memory file is"
+        );
+        drop(connection);
+        assert!(!luxforge_testbase::paths::wal(&catalog).exists());
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A catalog SQLite cannot keep a write-ahead log for, such as one in memory, is refused rather
+    /// than opened on a weaker journal.
+    #[test]
+    fn a_catalog_without_a_write_ahead_log_is_refused() {
+        let error = EditorService::open(Path::new(":memory:")).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Catalog);
+        assert_eq!(
+            error.detail,
+            "catalog cannot keep a write-ahead log (SQLite kept its memory journal); \
+             choose a catalog file on a local disk"
+        );
+    }
+
+    /// A file refused at open keeps every byte, its journal mode included: a file on a rollback
+    /// journal — an unsupported catalog, or a database that is not one — is refused before the
+    /// journal is set, so it is not moved to the log.
+    #[test]
+    fn a_refused_file_keeps_its_rollback_journal_and_every_byte() {
+        for marker in [0, CATALOG_FORMAT + 1] {
+            let catalog = temp("refused-rollback.sqlite");
+            let mut service = EditorService::open(&catalog).unwrap();
+            service.import(&fixture()).unwrap();
+            drop(service);
+            let connection = Connection::open(&catalog).unwrap();
+            let journal: String = connection
+                .pragma_update_and_check(None, "journal_mode", "DELETE", |row| row.get(0))
+                .unwrap();
+            assert_eq!(journal, "delete");
+            connection
+                .pragma_update(None, "user_version", marker)
+                .unwrap();
+            drop(connection);
+            let before = std::fs::read(&catalog).unwrap();
+            let error = EditorService::open(&catalog).unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Incompatible);
+            assert_eq!(
+                std::fs::read(&catalog).unwrap(),
+                before,
+                "the refused file keeps every byte"
+            );
+            assert!(!luxforge_testbase::paths::wal(&catalog).exists());
+            assert_eq!(
+                Connection::open(&catalog)
+                    .unwrap()
+                    .pragma_query_value(None, "journal_mode", |row| row.get::<_, String>(0))
+                    .unwrap(),
+                "delete"
+            );
+            std::fs::remove_file(catalog).unwrap();
+        }
+    }
+
+    /// Commits enough to read back: an import, three edits, an undo and a version.
+    fn committed(service: &mut EditorService) -> AssetId {
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        for (revision, rgb) in [[1, 2, 3], [4, 5, 6], [7, 8, 9]].into_iter().enumerate() {
+            let revision = revision as u64;
+            service
+                .apply_pixel(
+                    &asset,
+                    mutation(revision, &format!("edit-{revision}")),
+                    0,
+                    0,
+                    rgb,
+                )
+                .unwrap();
+        }
+        service.undo(&asset, mutation(3, "undo")).unwrap();
+        service
+            .create_version(&asset, "Kept", None, "test")
+            .unwrap();
+        asset
+    }
+
+    /// What a reopen must read again: the head, the history rows and the versions.
+    fn read_back(
+        service: &EditorService,
+        asset: &AssetId,
+    ) -> (crate::EditorState, crate::HistoryPage, Vec<crate::Version>) {
+        let read = (
+            service.state(asset).unwrap(),
+            service.history(asset, None, 10).unwrap(),
+            service.versions(asset).unwrap(),
+        );
+        assert_eq!(read.1.entries.len(), 4, "the import and three edits");
+        assert_eq!(read.2.len(), 1);
+        read
+    }
+
+    /// A crash leaves the log beside the catalog, holding commits the catalog file does not yet
+    /// have. What a process that never closed its catalog leaves — the catalog file and its log,
+    /// copied while the owner still holds them — reopens with every committed entry, the head and
+    /// every history row and version.
+    #[test]
+    fn a_catalog_reopened_after_a_crash_recovers_every_commit_from_its_log() {
+        let original = luxforge_testbase::paths::temp_dir("crashed-from");
+        let catalog = original.join("catalog.sqlite");
+        let developer = || std::sync::Arc::new(ModuleRegistry::developer());
+        let mut service = EditorService::open_with(&catalog, developer()).unwrap();
+        let asset = committed(&mut service);
+        let before = read_back(&service, &asset);
+        let wal = luxforge_testbase::paths::wal(&catalog);
+        assert!(
+            wal.metadata().unwrap().len() > 32,
+            "the commits are in the log, past its header"
+        );
+        assert!(!luxforge_testbase::paths::shm(&catalog).exists());
+        // Read and written rather than copied, so no platform's copy call refuses a file another
+        // handle has open for writing.
+        let (file, log) = (
+            std::fs::read(&catalog).unwrap(),
+            std::fs::read(&wal).unwrap(),
+        );
+        let crashed = luxforge_testbase::paths::temp_dir("crashed-to");
+        let alone = crashed.join("alone.sqlite");
+        std::fs::write(&alone, &file).unwrap();
+        let tables: i64 = Connection::open(&alone)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM sqlite_schema", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(tables, 0, "the catalog file alone holds none of it");
+        let copy = crashed.join("catalog.sqlite");
+        std::fs::write(&copy, &file).unwrap();
+        std::fs::write(luxforge_testbase::paths::wal(&copy), &log).unwrap();
+        let recovered = EditorService::open_with(&copy, developer()).unwrap();
+        assert_eq!(read_back(&recovered, &asset), before);
+        drop(recovered);
+        assert!(
+            !luxforge_testbase::paths::wal(&copy).exists(),
+            "the recovered catalog closes clean"
+        );
+        drop(service);
+        std::fs::remove_dir_all(original).unwrap();
+        std::fs::remove_dir_all(crashed).unwrap();
+    }
+
+    /// A clean close checkpoints the log into the catalog and removes it, so a closed catalog is the
+    /// one file, and a reopen reads every commit from it.
+    #[test]
+    fn a_clean_close_leaves_the_catalog_one_file_holding_every_commit() {
+        let directory = luxforge_testbase::paths::temp_dir("closed");
+        let catalog = directory.join("catalog.sqlite");
+        let developer = || std::sync::Arc::new(ModuleRegistry::developer());
+        let mut service = EditorService::open_with(&catalog, developer()).unwrap();
+        let asset = committed(&mut service);
+        let before = read_back(&service, &asset);
+        drop(service);
+        assert!(!luxforge_testbase::paths::wal(&catalog).exists());
+        assert!(!luxforge_testbase::paths::shm(&catalog).exists());
+        let reopened = EditorService::open_with(&catalog, developer()).unwrap();
+        assert_eq!(read_back(&reopened, &asset), before);
+        drop(reopened);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     fn stored_strokes(catalog: &Path) -> i64 {
@@ -930,7 +1220,8 @@ mod tests {
         assert_eq!(stored_strokes(&catalog), 3);
 
         let connection = Connection::open(&catalog).unwrap();
-        let read = super::read_strokes(&connection, references.clone(), "the read back").unwrap();
+        let read =
+            super::read_strokes(&connection, references.clone(), "the read back", &[]).unwrap();
         assert_eq!(read.get::<crate::mask::Stroke>(&brush_id), Some(&brush));
         assert_eq!(read.get::<RepairStroke>(&first.id()), Some(&first));
         assert_eq!(read.get::<RepairStroke>(&second.id()), Some(&second));
@@ -964,6 +1255,124 @@ mod tests {
             "only the stroke captured after the read"
         );
         assert_eq!(stored_strokes(&catalog), 4);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A read queries the store only for the strokes it is not given. A stroke a given table holds
+    /// as the declared type, known stored, is shared with no lookup, parse or hash and is known
+    /// stored in the new table; a stroke not in the store still faults as missing; and a stroke the
+    /// table holds as another type is not shared, so the store reads its bytes as the declared type
+    /// and finds them corrupt, exactly as with nothing given.
+    #[test]
+    fn a_read_queries_only_the_strokes_it_is_not_given() {
+        use crate::editor::read_counts::take_queried;
+        use crate::path::{
+            StrokeKind, StrokeReference, StrokeTable, StrokeType, tests::RepairStroke,
+        };
+        let catalog = temp("shared-stroke-reads.sqlite");
+        drop(EditorService::open(&catalog).unwrap());
+        let held = RepairStroke::capture(&[[0.2, 0.2], [0.5, 0.3]], 0.05, [0.1, 0.0]).unwrap();
+        let fresh = RepairStroke::capture(&[[0.6, 0.6], [0.7, 0.8]], 0.02, [0.0, -0.1]).unwrap();
+        let gone = RepairStroke::capture(&[[0.3, 0.9]], 0.3, [0.0, 0.0]).unwrap();
+        let mut written = StrokeTable::new("the written");
+        written.insert(held.clone());
+        written.insert(fresh.clone());
+        let mut connection = Connection::open(&catalog).unwrap();
+        let tx = connection.transaction().unwrap();
+        super::write_fresh_strokes(
+            &tx,
+            &[held.reference("repair 1"), fresh.reference("repair 2")],
+            &written,
+        )
+        .unwrap();
+        tx.commit().unwrap();
+
+        // What a cached entry holds: read from the store, so known stored.
+        take_queried();
+        let source = super::read_strokes(
+            &connection,
+            vec![held.reference("repair 1")],
+            "the source",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(take_queried(), 1);
+
+        let references = vec![
+            held.reference("repair 1"),
+            fresh.reference("repair 2"),
+            gone.reference("repair 3"),
+            held.reference("repair 4"),
+        ];
+        crate::editor::read_counts::take();
+        let read = super::read_strokes(
+            &connection,
+            references.clone(),
+            "the read",
+            std::slice::from_ref(&source),
+        )
+        .unwrap();
+        assert_eq!(
+            take_queried(),
+            2,
+            "the fresh stroke and the missing one; the held stroke is shared and its repeat is known"
+        );
+        assert_eq!(
+            crate::editor::read_counts::take(),
+            (1, 1),
+            "the fresh stroke parsed and hashed once; the held stroke neither"
+        );
+        assert!(std::ptr::eq(
+            read.get::<RepairStroke>(&held.id()).unwrap(),
+            source.get::<RepairStroke>(&held.id()).unwrap()
+        ));
+        assert!(read.is_known_stored(&held.id()));
+        assert_eq!(read.get::<RepairStroke>(&fresh.id()), Some(&fresh));
+        assert!(read.is_known_stored(&fresh.id()));
+        assert!(read.has_missing());
+        assert!(!read.is_known_stored(&gone.id()));
+
+        // With nothing given, every distinct stroke is queried and the outcome is the same.
+        let alone = super::read_strokes(&connection, references.clone(), "the read", &[]).unwrap();
+        assert_eq!(take_queried(), 3);
+        for reference in &references {
+            assert_eq!(
+                read.check_reference(reference)
+                    .map_err(|error| error.detail),
+                alone
+                    .check_reference(reference)
+                    .map_err(|error| error.detail),
+            );
+            assert_eq!(
+                read.is_known_stored(&reference.id),
+                alone.is_known_stored(&reference.id)
+            );
+        }
+
+        // The held stroke's address declared as the brush's type is not the held stroke: it is read
+        // from the store, whose bytes are not a brush stroke, and is corrupt.
+        let as_brush = StrokeReference {
+            what: "component Brush 1 of mask Mask 1".to_owned(),
+            id: held.id(),
+            kind: StrokeType::of::<crate::mask::Stroke>(),
+        };
+        let mismatched = super::read_strokes(
+            &connection,
+            vec![as_brush.clone()],
+            "the read",
+            std::slice::from_ref(&source),
+        )
+        .unwrap();
+        assert_eq!(take_queried(), 1, "a stroke of another type is not shared");
+        assert_eq!(
+            mismatched.check_reference(&as_brush).unwrap_err().detail,
+            format!(
+                "stroke {} of the read does not match its stored content address",
+                held.id()
+            )
+        );
+        assert!(!mismatched.is_known_stored(&held.id()));
+        drop(connection);
         std::fs::remove_file(catalog).unwrap();
     }
 

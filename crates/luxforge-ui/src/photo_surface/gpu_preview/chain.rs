@@ -17,9 +17,12 @@
 //!   the same module wherever its spatial step sits in a chain, and two masked layers of one shape
 //!   share every pipeline: a chain compiles each kind of link once.
 //! - **A link whose input and words did not change is not run.** Each intermediate keeps the
-//!   content key of what it holds — the key of its input and the link's packed words, blocks and
-//!   pipeline — so a tick runs only the links from the first one it changes, and inside a link only
-//!   the passes the tick changes ([`spatial::Schedule`]).
+//!   content key of what it holds — the key of its input and the link's packed words, its blocks'
+//!   contents and pipeline — so a tick runs only the links from the first one it changes, and inside
+//!   a link only the passes the tick changes ([`spatial::Schedule`]).
+//! - **A block handed again is not copied.** Each link keeps the blocks it last wrote by the shared
+//!   block each came from ([`WrittenBlocks`]): a tick compares, copies and writes only the blocks
+//!   that are not the same allocation at the same place, and its key hashes only those.
 //! - **Scratch is the slot's.** A link holds the planes its applies read; its scratch planes are
 //!   the slot's pool's, which every link writes in turn ([`spatial::Pool`]), so a link trusts what a
 //!   pool texture holds only when it wrote it last.
@@ -27,7 +30,9 @@
 //!   GPU-preview budget with the slot, beside each link's words, blocks and kept planes and the
 //!   pool, once ([`super::chain_charge`]).
 use super::{
-    Charged, Compiled, GpuStep, MAP_WORDS, STEP_WORDS, TexelMap, encode_pass_over,
+    Charged, Compiled, GpuStep, MAP_WORDS, STEP_WORDS, TexelMap,
+    blocks::{Update, WrittenBlocks},
+    encode_pass_over,
     spatial::{Pool, Rect},
 };
 
@@ -55,8 +60,10 @@ pub(super) fn chain(steps: &[GpuStep]) -> Chain<'_> {
 }
 
 /// The words and blocks of `steps` over a boundary whose texels `texels` maps to the stage, with
-/// the output's first pixel at `offset`: the header — the texel map, the offset, each step's base
-/// indices and position map — then every step's words, and every step's blocks, at least one word.
+/// the output's first pixel at `offset`: their words ([`pack_words`]), and every step's blocks in
+/// order ([`GpuStep::each_block`]), at least one word. A slot writes its blocks through
+/// [`WrittenBlocks`], which keeps this packing and copies only the blocks a tick changes.
+#[cfg(any(test, feature = "qualification"))]
 pub(super) fn pack_steps(
     texels: TexelMap,
     offset: (u32, u32),
@@ -64,8 +71,26 @@ pub(super) fn pack_steps(
     words: &mut Vec<u32>,
     blocks: &mut Vec<u32>,
 ) {
-    words.clear();
+    pack_words(texels, offset, steps, words);
     blocks.clear();
+    for step in steps {
+        step.each_block(&mut |block| blocks.extend_from_slice(block));
+    }
+    if blocks.is_empty() {
+        blocks.push(0);
+    }
+}
+
+/// The words of `steps` over a boundary whose texels `texels` maps to the stage, with the output's
+/// first pixel at `offset`: the header — the texel map, the offset, each step's base indices and
+/// position map — then every step's words. The bases index the blocks packed in step order.
+pub(super) fn pack_words(
+    texels: TexelMap,
+    offset: (u32, u32),
+    steps: &[GpuStep],
+    words: &mut Vec<u32>,
+) {
+    words.clear();
     words.extend(
         [
             texels.origin[0],
@@ -84,29 +109,32 @@ pub(super) fn pack_steps(
         word += step.word_count();
         block += step.block_count();
     }
+    let mut block = 0;
     for step in steps {
         match step {
-            GpuStep::Colour { program, .. } => {
-                words.extend_from_slice(&program.words);
-                blocks.extend_from_slice(&program.block);
-            }
-            GpuStep::Masked(masked) => masked.pack(words, blocks),
-            GpuStep::Geometry(tail) => {
-                words.extend_from_slice(&tail.program().words);
-                blocks.extend_from_slice(&tail.program().block);
-            }
-            GpuStep::Spatial(spatial) => spatial.pack(words, blocks),
+            GpuStep::Colour { program, .. } => words.extend_from_slice(&program.words),
+            GpuStep::Masked(masked) => masked.pack_words(words, block),
+            GpuStep::Geometry(tail) => words.extend_from_slice(&tail.program().words),
+            GpuStep::Spatial(spatial) => spatial.pack_words(words, block),
             GpuStep::Clipping(marks) => words.extend(marks.words()),
         }
-    }
-    if blocks.is_empty() {
-        blocks.push(0);
+        block += step.block_count();
     }
 }
 
 /// The content key of a link's output: the key of its input, its packed words and blocks and the
 /// pipeline that ran it.
 pub(super) fn link_key(input: u64, words: &[u32], blocks: &[u32], pipeline: u64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    (input, words, blocks, pipeline).hash(&mut hasher);
+    hasher.finish()
+}
+
+/// [`link_key`] with the link's blocks named by the key of their contents
+/// ([`WrittenBlocks::key`]), which the link keeps with the blocks it wrote, so a tick that hands it
+/// the same blocks hashes none of their words. Blocks of other contents give another key.
+pub(super) fn written_key(input: u64, words: &[u32], blocks: u64, pipeline: u64) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::hash::DefaultHasher::new();
     (input, words, blocks, pipeline).hash(&mut hasher);
@@ -129,7 +157,8 @@ pub(super) struct LinkSlot {
     /// Group 0: the link's words and blocks, and the texture it reads.
     pub(super) bindings: wgpu::BindGroup,
     written_words: Vec<u32>,
-    written_blocks: Vec<u32>,
+    /// The blocks last written, by the shared block each came from.
+    written_blocks: WrittenBlocks,
     pub(super) spatial: Option<Box<super::SpatialSlot>>,
     /// The content key of what `texture` holds; `None` before it is first written.
     key: Option<u64>,
@@ -154,7 +183,7 @@ impl LinkSlot {
             blocks,
             bindings,
             written_words: Vec::new(),
-            written_blocks: Vec::new(),
+            written_blocks: WrittenBlocks::default(),
             spatial: None,
             key: None,
             pipeline: None,
@@ -177,45 +206,45 @@ impl LinkSlot {
     /// planes' schedule takes a new holder from `pool`.
     pub(super) fn forget(&mut self, pool: &mut Pool) {
         self.written_words.clear();
-        self.written_blocks.clear();
+        self.written_blocks.forget();
         self.key = None;
         if let Some(spatial) = self.spatial.as_mut() {
             spatial.forget(pool);
         }
     }
 
-    /// Write the tick's `words` and the chunks of `blocks` that changed; answers how many block
-    /// words it wrote.
-    pub(super) fn write(&mut self, queue: &wgpu::Queue, words: &[u32], blocks: &[u32]) -> u64 {
+    /// Write the tick's `words` and the chunks of `steps`' blocks that changed, comparing only the
+    /// blocks it does not already hold at the same place ([`WrittenBlocks::write`]); answers what
+    /// the blocks' update wrote.
+    pub(super) fn write(
+        &mut self,
+        queue: &wgpu::Queue,
+        words: &[u32],
+        steps: &[GpuStep],
+    ) -> Update {
         if self.written_words != words {
             queue.write_buffer(&self.words.buffer, 0, &super::le_bytes(words));
             self.written_words.clear();
             self.written_words.extend_from_slice(words);
         }
-        let ranges = super::mask::changed_ranges(&self.written_blocks, blocks, super::BLOCK_CHUNK);
-        let mut written = 0;
-        for range in &ranges {
-            written += range.len() as u64;
-            queue.write_buffer(
-                &self.blocks.buffer,
-                (range.start * 4) as u64,
-                &super::le_bytes(&blocks[range.clone()]),
-            );
-        }
-        if !ranges.is_empty() || self.written_blocks.len() != blocks.len() {
-            self.written_blocks.clear();
-            self.written_blocks.extend_from_slice(blocks);
-        }
-        written
+        self.written_blocks
+            .write(queue, &self.blocks.buffer, steps, super::BLOCK_CHUNK)
     }
 
-    /// Run the link into its intermediate when what it holds is not `key`: its spatial step's
-    /// passes this tick changes, then its frame's pass over the boundary's `size`. On an
-    /// incremental tick (`dirty`, the rectangle its input and its own steps changed in since it
-    /// last ran, when it last ran the same pipeline) only over the rectangle that change reaches,
-    /// keeping the rest of what the intermediate holds. Its scratch planes are `pool`'s. Answers
-    /// whether it encoded anything, how many passes it dispatched, and on an incremental tick the
-    /// rectangle its output changed in.
+    /// The blocks the link last wrote.
+    #[cfg(test)]
+    pub(super) fn written_blocks(&self) -> &WrittenBlocks {
+        &self.written_blocks
+    }
+
+    /// Run the link into its intermediate when what it holds is not the key of `input`, its tick's
+    /// `words`, the blocks it last wrote and `pipeline`: its spatial step's passes this tick
+    /// changes, then its frame's pass over the boundary's `size`. On an incremental tick (`dirty`,
+    /// the rectangle its input and its own steps changed in since it last ran, when it last ran the
+    /// same pipeline) only over the rectangle that change reaches, keeping the rest of what the
+    /// intermediate holds. Its scratch planes are `pool`'s. Answers whether it encoded anything,
+    /// how many passes it dispatched, and on an incremental tick the rectangle its output changed
+    /// in.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn encode(
         &mut self,
@@ -225,12 +254,12 @@ impl LinkSlot {
         (compiled, pipeline): (&Compiled, u64),
         pool: &mut Pool,
         steps: &[GpuStep],
-        (words, blocks): (&[u32], &[u32]),
+        words: &[u32],
         input: u64,
         (texels, size): (TexelMap, (u32, u32)),
         dirty: Option<Rect>,
     ) -> (bool, u64, Option<Rect>) {
-        let key = link_key(input, words, blocks, pipeline);
+        let key = written_key(input, words, self.written_blocks.key(), pipeline);
         if self.key == Some(key) {
             return (false, 0, dirty.map(|_| Rect::whole((0, 0))));
         }
@@ -247,7 +276,7 @@ impl LinkSlot {
                 &self.bindings,
                 pool,
                 steps,
-                (words, blocks),
+                (words, self.written_blocks.words()),
                 input,
                 (texels, size),
                 dirty,

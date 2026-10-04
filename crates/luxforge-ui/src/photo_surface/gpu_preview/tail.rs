@@ -227,6 +227,13 @@ impl GpuTail {
         &self.program
     }
 
+    /// The tail's storage block, shared: a coordinate grid's nodes, empty for an affine or a
+    /// projective tail.
+    #[cfg(any(test, feature = "qualification"))]
+    pub fn block(&self) -> &Arc<[u32]> {
+        &self.program.block
+    }
+
     /// Whether the tail takes each output pixel from the intermediate's texel at the same stage
     /// pixel: an affine tail of the identity matrix, which resamples nothing — a stage boundary
     /// before the output stage's operations, quantized as the CPU's is on a JPEG. Its output

@@ -318,6 +318,27 @@ impl GpuStep {
             Self::Clipping(_) => 0,
         }
     }
+
+    /// Each storage block the step packs, shared, in packing order: a colour step's or the tail's
+    /// program's, a masked step's components' then its units', a spatial step's program's then its
+    /// mask's components'. The marks hold none.
+    fn each_block<'a>(&'a self, visit: &mut impl FnMut(&'a Arc<[u32]>)) {
+        match self {
+            Self::Colour { program, .. } => visit(&program.block),
+            Self::Masked(masked) => {
+                for (_, program) in masked.programs() {
+                    visit(&program.block);
+                }
+            }
+            Self::Geometry(tail) => visit(&tail.program().block),
+            Self::Spatial(spatial) => {
+                for (_, program) in spatial.programs() {
+                    visit(&program.block);
+                }
+            }
+            Self::Clipping(_) => {}
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -681,6 +702,12 @@ pub(super) struct Figures {
     compile: Arc<CompileFigures>,
     /// Words written to the blocks buffers, for the tests of what a tick writes.
     block_words: AtomicU64,
+    /// Tests only: words of the tick's blocks compared with what a buffer held, and copied into
+    /// what it holds ([`blocks::WrittenBlocks::update`]).
+    #[cfg(test)]
+    block_compared: AtomicU64,
+    #[cfg(test)]
+    block_copied: AtomicU64,
     /// Bytes of boundary texels written into wgpu's staging, over every frame.
     staged: AtomicU64,
     /// The most of a new boundary one frame uploads: [`UPLOAD_PER_FRAME`], or a test's.
@@ -769,6 +796,19 @@ impl Figures {
         }
     }
 
+    /// Count what one buffer's blocks update wrote, and in tests what it compared and copied.
+    fn blocks_updated(&self, update: &blocks::Update) {
+        self.block_words
+            .fetch_add(update.written(), Ordering::Relaxed);
+        #[cfg(test)]
+        {
+            self.block_compared
+                .fetch_add(update.compared, Ordering::Relaxed);
+            self.block_copied
+                .fetch_add(update.copied, Ordering::Relaxed);
+        }
+    }
+
     fn discharge(&self, bytes: u64) {
         self.in_use.fetch_sub(bytes, Ordering::AcqRel);
     }
@@ -839,8 +879,9 @@ pub(super) struct GpuSlot {
     texture_bytes: u64,
     /// The words last written, compared with each tick's so an unchanged plan writes nothing.
     written_words: Vec<u32>,
-    /// The blocks last written, compared likewise.
-    written_blocks: Vec<u32>,
+    /// The blocks last written, by the shared block each came from: a tick compares and writes only
+    /// the blocks it does not hold at the same place ([`blocks`]).
+    written_blocks: blocks::WrittenBlocks,
     /// The cached pipeline last run into `output`.
     evaluated: Option<u64>,
     /// The interface thread's time, in microseconds, to prepare what `output` holds: fitting the
@@ -1367,7 +1408,7 @@ impl Support {
 }
 
 /// The stage's state for one pipeline: whether the device can run it, its lost flag, its compiled
-/// sequences and the tick's scratch words.
+/// sequences and the tick's scratch words, the last link's and each earlier link's in turn.
 pub(super) struct GpuStage {
     /// Shared with the compile thread, which compiles through it.
     support: Option<Arc<Support>>,
@@ -1377,7 +1418,7 @@ pub(super) struct GpuStage {
     /// The version of the warm list last handed to the compile thread.
     warmed: Option<u64>,
     words: Vec<u32>,
-    blocks: Vec<u32>,
+    link_words: Vec<u32>,
 }
 
 /// Whether a device with `limits`, drawing to a target of `format`, can run the stage.
@@ -1448,7 +1489,7 @@ impl GpuStage {
             pipelines: compile::Pipelines::default(),
             warmed: None,
             words: Vec::new(),
-            blocks: Vec::new(),
+            link_words: Vec::new(),
         }
     }
 
@@ -2211,7 +2252,7 @@ impl PhotoPipeline {
             &self.figures.preview,
         )?;
         let mut words = std::mem::take(&mut self.gpu.words);
-        let mut blocks = std::mem::take(&mut self.gpu.blocks);
+        let mut link_words = std::mem::take(&mut self.gpu.link_words);
         let shape = Shape::of(plan);
         let result = self.run(
             surface,
@@ -2220,11 +2261,11 @@ impl PhotoPipeline {
             plan,
             shape,
             &pipelines,
-            (&mut words, &mut blocks),
+            (&mut words, &mut link_words),
             change,
         );
         self.gpu.words = words;
-        self.gpu.blocks = blocks;
+        self.gpu.link_words = link_words;
         result
     }
 
@@ -2240,7 +2281,7 @@ impl PhotoPipeline {
         plan: &GpuPlan,
         shape: Shape,
         pipelines: &[(Compiled, u64)],
-        (words, blocks): (&mut Vec<u32>, &mut Vec<u32>),
+        (words, link_words): (&mut Vec<u32>, &mut Vec<u32>),
         change: Option<GpuChange>,
     ) -> Result<u64, GpuFallback> {
         let started = std::time::Instant::now();
@@ -2252,12 +2293,12 @@ impl PhotoPipeline {
         if pipelines.len() != chain.links.len() + 1 {
             return Err(GpuFallback::PipelineFailed);
         }
-        // The last link's words: over the boundary's texels, with the output's offset.
-        chain::pack_steps(plan.texels, output_offset(plan), chain.last, words, blocks);
+        // The last link's words: over the boundary's texels, with the output's offset. Its blocks
+        // are written from the steps' own below, only those that changed copied ([`blocks`]).
+        chain::pack_words(plan.texels, output_offset(plan), chain.last, words);
         let words: &[u32] = words;
-        let blocks: &[u32] = blocks;
         let word_bytes = (words.len() * 4) as u64;
-        let block_bytes = (blocks.len() * 4) as u64;
+        let block_bytes = (blocks::block_len(chain.last) * 4) as u64;
         // A boundary whose texels were let go is drawn only from the slot that holds them.
         if !plan.boundary.holds_texels()
             && surface
@@ -2339,7 +2380,7 @@ impl PhotoPipeline {
                 );
             }
             slot.written_words.clear();
-            slot.written_blocks.clear();
+            slot.written_blocks.forget();
             slot.evaluated = None;
         }
         if self.fit_spatial(
@@ -2417,23 +2458,19 @@ impl PhotoPipeline {
         let mut input = chain::boundary_key(plan.boundary.version);
         let mut encoded = false;
         let mut dirty = incremental;
-        let (mut link_words, mut link_blocks) = (Vec::new(), Vec::new());
         for (index, steps) in chain.links.iter().enumerate() {
             let (compiled, id) = &pipelines[index];
-            chain::pack_steps(
-                plan.texels,
-                (0, 0),
-                steps,
-                &mut link_words,
-                &mut link_blocks,
-            );
-            self.fit_link(slot, device, index, &link_words, &link_blocks)?;
+            chain::pack_words(plan.texels, (0, 0), steps, link_words);
+            self.fit_link(
+                slot,
+                device,
+                index,
+                link_words.len(),
+                blocks::block_len(steps),
+            )?;
             let link = &mut slot.chain[index];
-            let block_words = link.write(queue, &link_words, &link_blocks);
-            self.figures
-                .preview
-                .block_words
-                .fetch_add(block_words, Ordering::Relaxed);
+            let update = link.write(queue, link_words, steps);
+            self.figures.preview.blocks_updated(&update);
             if self.fit_spatial(
                 &mut link.spatial,
                 &mut slot.pool,
@@ -2451,7 +2488,7 @@ impl PhotoPipeline {
                 (compiled, *id),
                 &mut slot.pool,
                 steps,
-                (&link_words, &link_blocks),
+                link_words,
                 input,
                 (plan.texels, shape.boundary),
                 dirty,
@@ -2477,24 +2514,14 @@ impl PhotoPipeline {
             changed = true;
         }
         // Only the chunks of the blocks that changed: a painted stroke's tick writes its new
-        // segments and the index after them, not the segments its block already holds.
-        let ranges = mask::changed_ranges(&slot.written_blocks, blocks, BLOCK_CHUNK);
-        for range in &ranges {
-            self.figures
-                .preview
-                .block_words
-                .fetch_add(range.len() as u64, Ordering::Relaxed);
-            queue.write_buffer(
-                &slot.blocks.buffer,
-                (range.start * 4) as u64,
-                &le_bytes(&blocks[range.clone()]),
-            );
-        }
-        if !ranges.is_empty() || slot.written_blocks.len() != blocks.len() {
-            slot.written_blocks.clear();
-            slot.written_blocks.extend_from_slice(blocks);
-            changed = true;
-        }
+        // segments and the index after them, not the segments its block already holds, and a block
+        // handed again at the same place — a warp's grid — is not even compared.
+        let update = slot
+            .written_blocks
+            .write(queue, &slot.blocks.buffer, chain.last, BLOCK_CHUNK);
+        self.figures.preview.blocks_updated(&update);
+        changed |= update.changed;
+        let blocks = slot.written_blocks.words();
         if changed {
             // The last link's spatial step's compute passes fill its planes first, from its
             // input: only the passes this tick changes, over what its mask needs.
@@ -2813,7 +2840,7 @@ impl PhotoPipeline {
             bindings,
             texture_bytes,
             written_words: Vec::new(),
-            written_blocks: Vec::new(),
+            written_blocks: blocks::WrittenBlocks::default(),
             evaluated: None,
             spatial: None,
             chain: Vec::new(),
@@ -2964,15 +2991,15 @@ impl PhotoPipeline {
         Ok(())
     }
 
-    /// Make link `index` of `slot`'s chain hold buffers large enough for `words` and `blocks`,
+    /// Make link `index` of `slot`'s chain hold buffers large enough for `words` and `blocks` words,
     /// rebinding it to what it reads when they grow.
     fn fit_link(
         &self,
         slot: &mut GpuSlot,
         device: &wgpu::Device,
         index: usize,
-        words: &[u32],
-        blocks: &[u32],
+        words: usize,
+        blocks: usize,
     ) -> Result<(), GpuFallback> {
         let (before, rest) = slot.chain.split_at_mut(index);
         let input = before.last().map_or(&slot.boundary, |link| &link.texture);
@@ -2981,12 +3008,12 @@ impl PhotoPipeline {
         for (charged, bytes, label) in [
             (
                 &mut link.words,
-                (words.len() * 4) as u64,
+                (words * 4) as u64,
                 "luxforge.gpu_preview.link_words",
             ),
             (
                 &mut link.blocks,
-                (blocks.len() * 4) as u64,
+                (blocks * 4) as u64,
                 "luxforge.gpu_preview.link_blocks",
             ),
         ] {
@@ -3263,6 +3290,7 @@ fn upload_rows(
     (row, written)
 }
 
+mod blocks;
 mod chain;
 mod compile;
 pub(super) use compile::GpuOptions;

@@ -5,21 +5,24 @@
 //! comparison), the native save dialog in the original's folder, and `export.jpeg` for that entry
 //! with the chosen destination, asked again once the source is prepared when the owner answers
 //! `preparation-required`. The job then runs on the core's export
-//! lane, and the desktop reads it with `job.read` until it ends, on a timer that exists only
-//! while this window's export is queued or running (performance rule 8). The status bar says what
-//! happened; the Performance section lists the running job from `activity.list` like any other.
+//! lane, and the desktop reads it with `job.read` until it ends, through a reader that exists only
+//! while this window's export is queued or running (performance rule 8) and sends the desktop a
+//! message only when the job's record changes or the job ends ([`job_reads`]). The status bar says
+//! what happened; the Performance section lists the running job from `activity.list` like any
+//! other.
 //!
 //! An evidence run bypasses only the dialog: its `export` step names the file, written into the
 //! run's evidence directory, and the rest of the chain is the same.
 use crate::app::{
     Editor,
     gesture::Starting,
+    job_reads::{self, Pass, Reader, Watch},
     message::{Message, export::ExportMessage},
     outcome::Outcome,
     tasks::{CallError, call, call_detailed, owner_task, owner_work, request, wait_source_job},
 };
 use crate::state::MenuTarget;
-use iced::{Subscription, Task};
+use iced::{Subscription, Task, futures::stream::BoxStream};
 use luxforge_core::{AssetId, ClientId, EntryId, ErrorKind, OwnerHandle, jobs::JOB_READ};
 use serde_json::{Value, json};
 use std::{
@@ -28,10 +31,12 @@ use std::{
 };
 
 /// How often the running export is read. The core pushes no client anything, so a client that
-/// wants to know when its export ended reads it. The timer exists only while this window's export
+/// wants to know when its export ended reads it. The reader exists only while this window's export
 /// is queued or running; an idle desktop has none. An export of a photograph takes a few hundred
 /// milliseconds to seconds, so a read every 100 ms ends the status line within a tenth of a second
-/// of the file appearing, at one owner lookup per read, and matches the capability job poll.
+/// of the file appearing, at one owner lookup per read, and matches the capability job poll. An
+/// export reports no progress, so nearly every read answers what the one before it did, and none
+/// of those reaches the update loop.
 pub(crate) const EXPORT_POLL: Duration = Duration::from_millis(100);
 
 /// How many times `export.jpeg` is asked again after its source was prepared.
@@ -52,8 +57,6 @@ pub(crate) struct ExportChoice {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Exporting {
     pub(crate) run: Option<ExportRun>,
-    /// An `job.read` is in flight, so the next tick waits for it.
-    pub(crate) reading: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -91,7 +94,6 @@ impl Editor {
             }
             ExportMessage::Chosen(result) => self.export_chosen(result),
             ExportMessage::Queued(result) => self.export_queued(result),
-            ExportMessage::Poll => self.export_poll(),
             ExportMessage::Read { job_id, result } => self.export_read(job_id, result),
         }
     }
@@ -224,13 +226,12 @@ impl Editor {
                     return Task::none();
                 };
                 if let Some(run) = &mut self.export.run {
-                    run.job_id = Some(job_id.clone());
+                    run.job_id = Some(job_id);
                     self.outcome(Outcome::ExportQueued(&answer));
                 }
-                // Read it at once: a small photograph may already be written, and the poll's
-                // timer starts with the next subscription rebuild either way.
-                self.export.reading = true;
-                read_task(self.owner.clone(), self.client, job_id)
+                // The reader starts with the next subscription rebuild and reads at once, so a
+                // small photograph that is already written is found without waiting a tick.
+                Task::none()
             }
             Err(error) => {
                 let reason = error.to_string();
@@ -245,22 +246,10 @@ impl Editor {
         }
     }
 
-    fn export_poll(&mut self) -> Task<Message> {
-        if self.export.reading {
-            return Task::none();
-        }
-        let Some(job_id) = self.export.live().map(str::to_owned) else {
-            return Task::none();
-        };
-        self.export.reading = true;
-        read_task(self.owner.clone(), self.client, job_id)
-    }
-
     fn export_read(&mut self, job_id: String, result: Result<Value, String>) -> Task<Message> {
         if self.export.live() != Some(job_id.as_str()) {
             return Task::none();
         }
-        self.export.reading = false;
         let file = self
             .export
             .run
@@ -275,6 +264,8 @@ impl Editor {
             }
         };
         match record["status"].as_str() {
+            // Still going: the reader sends a record again only when it changes, and nothing the
+            // desktop shows follows an export's record before it ends.
             Some("queued" | "running") => {}
             Some("ready") => {
                 let result = &record["result"];
@@ -314,7 +305,6 @@ impl Editor {
     /// record. `failure` marks an export that was refused or failed.
     fn export_finished(&mut self, status: String, failure: Option<&str>, record: Option<Value>) {
         self.status.text = status;
-        self.export.reading = false;
         self.export.run = None;
         self.event(
             "export_finished",
@@ -326,11 +316,20 @@ impl Editor {
         });
     }
 
-    /// The running export's read timer, which exists only while its job is queued or running.
-    pub(crate) fn export_poll_subscription(&self) -> Option<Subscription<Message>> {
-        self.export
-            .live()
-            .map(|_| iced::time::every(EXPORT_POLL).map(|_| Message::Export(ExportMessage::Poll)))
+    /// The running export's reader, which exists only while its job is queued or running. It is
+    /// identified by the job alone, so rebuilding the subscription after every message keeps the
+    /// one reader and its memory of what it has sent.
+    pub(crate) fn export_reader_subscription(&self) -> Option<Subscription<Message>> {
+        self.export.live().map(|job_id| {
+            Subscription::run_with(
+                Reader {
+                    identity: job_id.to_owned(),
+                    owner: self.owner.clone(),
+                    client: self.client,
+                },
+                export_reads,
+            )
+        })
     }
 
     /// The export as a captured frame records it: the menu, whether one can start, and the one
@@ -523,24 +522,44 @@ pub(crate) fn read_now(
     call(owner, client, JOB_READ, json!({"job_id": job_id})).map(|(read, _)| read)
 }
 
-fn read_task(owner: OwnerHandle, client: ClientId, job_id: String) -> Task<Message> {
-    let answered = job_id.clone();
-    owner_task(
-        move || read_now(&owner, client, &job_id),
-        move |result| {
-            Message::Export(ExportMessage::Read {
-                job_id: answered,
-                result,
-            })
-        },
+/// The reader of one export job, as the subscription starts it: a `job.read` through the owner at
+/// once and every [`EXPORT_POLL`] after, inside the subscription's stream ([`job_reads`]).
+pub(crate) fn export_reads(reader: &Reader<String>) -> BoxStream<'static, Message> {
+    let (owner, client, job_id) = (reader.owner.clone(), reader.client, reader.identity.clone());
+    job_reads::reads(
+        EXPORT_POLL,
+        export_pass(job_id.clone(), move || read_now(&owner, client, &job_id)),
     )
 }
 
-/// The running export is read on its own timer, which exists only while its job is queued or
-/// running ([`Editor::export_poll_subscription`]).
+/// One pass of an export's reader: read the job, and send the read only when it is news. A queued
+/// or running record is news when it is the first or differs from the one sent before it; any
+/// other status is the job's end, and a failed read ends the export too. Each of those is sent
+/// once, and the reader reads no more.
+pub(crate) fn export_pass(
+    job_id: String,
+    mut read: impl FnMut() -> Result<Value, String>,
+) -> impl FnMut() -> Pass<Message> {
+    let mut watch = Watch::default();
+    move || {
+        let result = read();
+        let verdict = watch.observe(&result, |record| {
+            !matches!(record["status"].as_str(), Some("queued" | "running"))
+        });
+        Pass::of(verdict, || {
+            Message::Export(ExportMessage::Read {
+                job_id: job_id.clone(),
+                result,
+            })
+        })
+    }
+}
+
+/// The running export is read by a reader that exists only while its job is queued or running
+/// ([`Editor::export_reader_subscription`]).
 pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
     editor
-        .export_poll_subscription()
+        .export_reader_subscription()
         .unwrap_or_else(Subscription::none)
 }
 

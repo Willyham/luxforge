@@ -412,11 +412,12 @@ impl GpuSpatial {
         self.program.block.len() + self.coverage().map_or(0, |coverage| coverage.block_count())
     }
 
-    /// Append the step's words and blocks at the bases the header recorded for it.
-    pub(super) fn pack(&self, words: &mut Vec<u32>, blocks: &mut Vec<u32>) {
-        blocks.extend_from_slice(&self.program.block);
+    /// Append the step's words at the base the header recorded for it, its mask's blocks counted
+    /// from `block`, the step's own blocks base, after the program's. Its blocks are its programs',
+    /// in [`Self::programs`]' order.
+    pub(super) fn pack_words(&self, words: &mut Vec<u32>, block: usize) {
         if let Some(coverage) = self.coverage() {
-            coverage.pack(words, blocks);
+            coverage.pack_words(words, block + self.program.block.len());
         }
         words.extend_from_slice(&self.program.words);
     }

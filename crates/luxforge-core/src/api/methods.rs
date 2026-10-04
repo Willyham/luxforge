@@ -38,9 +38,12 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 /// A method the editor service answers with the caller's session that changes nothing the owner
-/// announces: a read, or a change to the caller's own session.
+/// announces: a read, or a change to the caller's own session. It is handed its request's
+/// parameters, which it may take what it keeps out of rather than copy, as `draft.set` takes a
+/// brush tick's path; whatever it does not keep it puts back, because a call that parks a pixel
+/// read runs again from the same request.
 pub(super) type ServiceHandler =
-    fn(&mut EditorService, &mut ClientSession, &Value) -> Result<Value, Error>;
+    fn(&mut EditorService, &mut ClientSession, &mut Value) -> Result<Value, Error>;
 
 /// A mutating method the editor service answers with the caller's session. It reports what it
 /// changed beside its answer ([`Mutated`]), so nothing reads that back out of the answer.
@@ -730,12 +733,15 @@ pub(super) const METHODS: &[MethodSpec] = &[
         draft_begin,
         "opens this client's one draft of that action, bound to the asset's current revision; refused while a draft is open or a historical entry is previewed, and, in its commit's words, for an action whose module does not apply to the asset's source kind"
     ),
-    service!(
-        "draft.set",
-        DraftSet,
-        draft_set,
-        "validates the named fields against the action's parameters and merges them into the draft; an invalid field, or one superseded on the draft's target (refused in its commit's words), changes nothing"
-    ),
+    // Written out rather than through `service!`, whose parse would copy the posted fields: this
+    // handler takes them out of its request instead ([`draft_set`]).
+    MethodSpec {
+        name: "draft.set",
+        params: &<DraftSet as HostParams>::SCHEMA,
+        notes: "validates the named fields against the action's parameters and merges them into the draft; an invalid field, or one superseded on the draft's target (refused in its commit's words), changes nothing",
+        handler: Handler::Service(draft_set),
+        retries: Retries::None,
+    },
     service!(
         "draft.read",
         DraftParams,
@@ -917,14 +923,28 @@ impl Method {
         self.plan(service, session, params)?.0.answer()
     }
 
-    /// Plan a method the editor service answers: its value, or a sample for the caller to
-    /// evaluate where it chooses, and what its handler reports it changed. The catalog owner calls
-    /// this, so a sample through a spatial layer never runs on its thread.
+    /// [`Self::plan_taking`] of a copy of `params`, for the tests that plan a method against a
+    /// service and a session directly.
+    #[cfg(test)]
     pub(super) fn plan(
         &self,
         service: &mut EditorService,
         session: &mut ClientSession,
         params: &Value,
+    ) -> Result<(Planned, Changed), Error> {
+        self.plan_taking(service, session, &mut params.clone())
+    }
+
+    /// Plan a method the editor service answers: its value, or a sample for the caller to
+    /// evaluate where it chooses, and what its handler reports it changed. The catalog owner calls
+    /// this, so a sample through a spatial layer never runs on its thread. `params` are the
+    /// request's own: a service handler may take values out of them rather than copy them, and
+    /// puts back whatever it does not keep ([`ServiceHandler`]).
+    pub(super) fn plan_taking(
+        &self,
+        service: &mut EditorService,
+        session: &mut ClientSession,
+        params: &mut Value,
     ) -> Result<(Planned, Changed), Error> {
         let read = |value: Value| (Planned::Value(value), Changed::Nothing);
         let mutated = |mutated: Mutated| (Planned::Value(mutated.value), mutated.changed);
@@ -2054,15 +2074,89 @@ fn draft_begin(
     value(session.draft.as_ref().expect("the draft just opened"))
 }
 
+/// `draft.set`. A brush tick posts its stroke's whole path, so the posted fields are taken out of
+/// the request rather than copied: the request is parsed with them set aside, and the merged draft
+/// takes them. Whatever the draft does not take goes back into the request — after a refusal, and
+/// after a planning read the owner parks, whose call runs again from the same request.
 fn draft_set(
     service: &mut EditorService,
     session: &mut ClientSession,
-    p: DraftSet,
+    params: &mut Value,
 ) -> Result<Value, Error> {
-    let draft = session.held_draft(&p.draft_id)?;
+    let Some(Value::Object(posted)) = params.get_mut("fields") else {
+        // Nothing to set aside: the parse answers as it does for any request, which is a refusal.
+        let p = parse::<DraftSet>(params)?;
+        return set_draft(service, session, &p.draft_id, p.fields).0;
+    };
+    let fields = std::mem::take(posted);
+    let (answer, unused) = match parse::<DraftSet>(params) {
+        Ok(p) => set_draft(service, session, &p.draft_id, fields),
+        Err(error) => (Err(error), Some(fields)),
+    };
+    if let Some(fields) = unused {
+        params["fields"] = Value::Object(fields);
+    }
+    answer
+}
+
+/// Merge `fields` into the held draft: the answer, and the fields themselves when the draft did not
+/// take them.
+fn set_draft(
+    service: &EditorService,
+    session: &mut ClientSession,
+    draft_id: &DraftId,
+    fields: Map<String, Value>,
+) -> (Result<Value, Error>, Option<Map<String, Value>>) {
+    let complete = match checked_set(service, session, draft_id, &fields) {
+        Ok(complete) => complete,
+        Err(error) => return (Err(error), Some(fields)),
+    };
+    let posted: Vec<String> = fields.keys().cloned().collect();
+    let next = session
+        .held_draft(draft_id)
+        .expect("the draft was just checked")
+        .merged(fields);
+    // A partial gesture may still lack a required field. Once complete, a stack containing
+    // spatial operations seeds any planning reads before acceptance; pointwise drafts keep
+    // their existing field-only set path. This metadata check neither compiles nor reads pixels.
+    let planned = if complete {
+        service
+            .draft_has_spatial_inputs(&next.asset_id)
+            .and_then(|spatial| match spatial {
+                true => service.draft_recipe(&next.asset_id, &next).map(drop),
+                false => Ok(()),
+            })
+    } else {
+        Ok(())
+    };
+    // A call that parks a read is discarded whatever it answers, even when a planner swallowed the
+    // deferral, and runs again from its request, which therefore gets its fields back.
+    let deferred = service.pixel_reads.borrow().deferred.is_some();
+    if planned.is_err() || deferred {
+        let mut next = next;
+        let unused = posted
+            .iter()
+            .filter_map(|name| next.fields.remove_entry(name))
+            .collect();
+        return (planned.map(|()| Value::Null), Some(unused));
+    }
+    session.draft = Some(next);
+    session.touch();
+    (draft_value(service, session), None)
+}
+
+/// Every check `draft.set` makes before it merges anything, so a rejected request leaves the draft
+/// as it was: whether the merged request will hold every required field.
+fn checked_set(
+    service: &EditorService,
+    session: &ClientSession,
+    draft_id: &DraftId,
+    fields: &Map<String, Value>,
+) -> Result<bool, Error> {
+    let draft = session.held_draft(draft_id)?;
     // Validate every field before merging any, so a rejected request leaves the draft as it was.
     let action = draft_action(service, &draft.action)?;
-    draft.checked_fields(&action.descriptor().parameters, &p.fields)?;
+    draft.checked_fields(&action.descriptor().parameters, fields)?;
     // So is a field its commit would refuse on this photo's target: Basic's Temperature on a RAW
     // photo's global target, whose one path is the source development's.
     let mask = draft
@@ -2070,29 +2164,15 @@ fn draft_set(
         .get(crate::MASK_FIELD)
         .map(|mask| MaskId::parse(mask.as_str()))
         .transpose()?;
-    service.check_draft(&draft.asset_id, &draft.action, mask.as_ref(), &p.fields)?;
-    let mut next = session
-        .draft
-        .as_ref()
-        .expect("the draft was just found")
-        .clone();
-    next.merge(p.fields);
-    // A partial gesture may still lack a required field. Once complete, a stack containing
-    // spatial operations seeds any planning reads before acceptance; pointwise drafts keep
-    // their existing field-only set path. This metadata check neither compiles nor reads pixels.
-    let request = next.request();
-    if action
-        .descriptor()
-        .parameters
-        .iter()
-        .all(|field| !field.required || request.contains_key(&field.name))
-        && service.draft_has_spatial_inputs(&next.asset_id)?
-    {
-        service.draft_recipe(&next.asset_id, &next)?;
-    }
-    session.draft = Some(next);
-    session.touch();
-    draft_value(service, session)
+    service.check_draft(&draft.asset_id, &draft.action, mask.as_ref(), fields)?;
+    // The merged request is the drafted fields, these, and the target's over them
+    // ([`crate::Draft::request`]), read here without building it.
+    Ok(action.descriptor().parameters.iter().all(|field| {
+        !field.required
+            || fields.contains_key(&field.name)
+            || draft.fields.contains_key(&field.name)
+            || draft.target.contains_key(&field.name)
+    }))
 }
 
 fn draft_read(
@@ -2317,7 +2397,7 @@ mod tests {
             None => Err(Error::protocol(format!("unknown method {method}"))),
         };
         match result {
-            Ok(result) => ApiResponse::success(method.into(), 0, result),
+            Ok(result) => ApiResponse::value(method.into(), 0, result),
             Err(error) => ApiResponse::failure(method.into(), 0, error),
         }
     }

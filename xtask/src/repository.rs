@@ -1262,6 +1262,20 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         reason: "only a [dev-dependencies] table may turn on luxforge-core's qualification \
                  feature, so no build of a binary exposes its qualification filters",
     },
+    // Counting allocations is for tests: only a `[dev-dependencies]` table turns the process
+    // crate's `allocation-counter` feature on, so no binary can install the counting allocator.
+    DependencyRule {
+        name: "allocation-counter-only-in-tests",
+        refuses: Depends::Feature {
+            dependency: "luxforge-process",
+            feature: "allocation-counter",
+        },
+        manifests: &["", "crates/*", "xtask"],
+        tables: &[Table::Normal, Table::Build, Table::Workspace],
+        allowed: &[],
+        reason: "only a [dev-dependencies] table may turn on luxforge-process's \
+                 allocation-counter feature, so no binary counts its allocations",
+    },
 ];
 
 /// A rule that every variant of one message enum has a sender in product code: a production line,
@@ -3323,6 +3337,50 @@ mod tests {
                 "Cargo.toml",
                 "[workspace.dependencies]\nluxforge-ui = { path = \"crates/luxforge-ui\", \
                  features = [\"qualification\"] }\n",
+            ),
+        ] {
+            write_all(root, &[(path, text)]);
+            let error = refusal(root, &rules, path);
+            assert!(
+                error.contains(path) && error.contains("[dev-dependencies] table"),
+                "{path}: {error}"
+            );
+            fs::remove_file(root.join(path)).unwrap();
+        }
+    }
+
+    #[test]
+    fn only_tests_turn_on_the_allocation_counter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // A dev-dependency may turn it on; a dependency without it is the core's own.
+        write_all(
+            root,
+            &[(
+                "crates/luxforge-core/Cargo.toml",
+                "[dependencies]\nluxforge-process = { path = \"../luxforge-process\" }\n\n\
+                 [dev-dependencies]\nluxforge-process = { path = \"../luxforge-process\", \
+                 features = [\"allocation-counter\"] }\n",
+            )],
+        );
+        let rules = ["allocation-counter-only-in-tests"];
+        assert!(read(root, &rules).is_ok());
+        // A normal, build or workspace dependency that turns it on is refused.
+        for (path, text) in [
+            (
+                "crates/luxforge-app/Cargo.toml",
+                "[dependencies]\nluxforge-process = { path = \"../luxforge-process\", \
+                 features = [\"allocation-counter\"] }\n",
+            ),
+            (
+                "xtask/Cargo.toml",
+                "[build-dependencies.luxforge-process]\npath = \"../crates/luxforge-process\"\n\
+                 features = [\"allocation-counter\"]\n",
+            ),
+            (
+                "Cargo.toml",
+                "[workspace.dependencies]\nluxforge-process = { path = \"crates/luxforge-process\", \
+                 features = [\"allocation-counter\"] }\n",
             ),
         ] {
             write_all(root, &[(path, text)]);
