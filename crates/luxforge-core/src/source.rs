@@ -703,6 +703,23 @@ mod tests {
     use serde_json::{Value, json};
     use sha2::{Digest, Sha256};
 
+    /// Hashing an original on Apple silicon runs the SHA-2 instructions. `sha2` 0.10.9 compiles its
+    /// aarch64 backend only with the `asm` feature, which every crate's aarch64 target table turns
+    /// on, and that backend runs when the CPU has the instructions, which every Apple CPU does. The
+    /// test names what the backend needs; it does not see the feature itself, so it is the recorded
+    /// `cargo tree -e features -i sha2` and the disassembly check in docs/design/efficiency.md that
+    /// show `asm` is on. The digest is the published one for "abc" (FIPS 180-4), so the
+    /// instructions compute the same bytes.
+    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+    #[test]
+    fn fingerprint_hashing_has_the_sha2_instructions_on_apple_silicon() {
+        assert!(std::arch::is_aarch64_feature_detected!("sha2"));
+        assert_eq!(
+            format!("{:x}", Sha256::digest(b"abc")),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
     /// Each RAW failure maps to one API error kind, and a refused compression, such as Nikon High
     /// Efficiency, is unsupported input that keeps the RAW crate's message.
     #[test]

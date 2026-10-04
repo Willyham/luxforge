@@ -64,10 +64,12 @@ budget. No other decoder or source/pixel/development limit is enlarged.
 
 ## Rust JPEG XL dependencies
 
-`jxl-oxide` 0.12.6 (default features disabled) and `jxl-image` 0.13.0 are pinned
-in Cargo.toml; Cargo.lock pins their transitive `jxl-*` crates. They come from
+`jxl-oxide` 0.12.6 (default features disabled, `rayon` enabled) and `jxl-image` 0.13.0
+are pinned in Cargo.toml; Cargo.lock pins their transitive `jxl-*` crates. They come from
 [tirr-c/jxl-oxide](https://github.com/tirr-c/jxl-oxide), licensed MIT OR Apache-2.0;
-preserve the packaged license/copyright notices. No system libjxl is loaded,
-and no separate decoder thread pool is enabled. Libjxl 0.11.2 is used only as
+preserve the packaged license/copyright notices. No system libjxl is loaded.
+The `rayon` feature adds no package: `jxl-threadpool` uses the `rayon` and `rayon-core`
+already in the build, and the decoder runs on the process's global Rayon pool, never a
+pool of its own. Libjxl 0.11.2 is used only as
 an independent developer reference for the sampled S22 DNG. Manual dependency
 license and native security review remains deferred.

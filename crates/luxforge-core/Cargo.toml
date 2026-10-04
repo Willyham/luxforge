@@ -8,7 +8,11 @@ publish.workspace = true
 
 [dependencies]
 # The GPU preview's held boundary is rgba16float for JPEGs and rgba32float for RAW linear renders.
-half = { version = "=2.7.1", default-features = false }
+# `std` lets x86_64 detect F16C at run time (the baseline x86_64 target has none at compile time),
+# so a boundary texel converts in hardware there. A build with Iced already has it, through
+# `iced_graphics`; a core-only build (the CLI, the core's tests) did not. aarch64 converts in
+# hardware either way, and the bits are the same. It adds no package.
+half = { version = "=2.7.1", default-features = false, features = ["std"] }
 idna_adapter.workspace = true
 luxforge-jpeg = { path = "../luxforge-jpeg" }
 luxforge-process = { path = "../luxforge-process" }
@@ -39,6 +43,10 @@ qualification = []
 
 [target.'cfg(windows)'.dependencies]
 winapi-util = "=0.1.11"
+
+# Hardware SHA-256 on aarch64; the reason is in `crates/luxforge-raw/Cargo.toml`.
+[target.'cfg(all(target_arch = "aarch64", not(target_os = "windows")))'.dependencies]
+sha2 = { workspace = true, features = ["asm"] }
 
 [dev-dependencies]
 # An independent JPEG decoder and encoder for the tests, and PNG for their diagnostic images.
