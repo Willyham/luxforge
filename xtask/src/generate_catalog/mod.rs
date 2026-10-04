@@ -8,7 +8,7 @@
 //!
 //! - `--images N` writes real JPEG files with EXIF and embedded thumbnails under `images/`, with
 //!   their ground truth in `images/manifest.json` ([images]).
-//! - `--files N` writes `catalog.sqlite`, a format-12 catalog, and its index
+//! - `--files N` writes `catalog.sqlite`, a format-13 catalog, and its index
 //!   `catalog.index/index.sqlite` of N files on a fictional disk ([disk], [files]), some of them
 //!   picked and some developed into the catalog already.
 //! - `--assets M` writes M developed photographs into `catalog.sqlite` ([assets]): those developed

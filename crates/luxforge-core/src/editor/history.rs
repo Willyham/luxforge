@@ -21,14 +21,28 @@ pub(crate) const MAX_HISTORY_PAGE: usize = 100;
 pub(crate) const MAX_VERSION_NAME: usize = 64;
 
 impl EditorService {
-    /// One page of the asset's history rows, newest first, before `before_sequence`. Each row is
-    /// read from its entry's columns: no entry JSON is decoded and no stack is read, so a page costs
-    /// `O(limit)` whatever the stacks hold. `history.inspect` reads one whole entry.
+    /// One page of the asset's history rows, newest first, before `before_sequence`, without the
+    /// entries auto-collapse hid ([`Self::history_rows`]).
     pub fn history(
         &self,
         asset_id: &AssetId,
         before_sequence: Option<u64>,
         limit: usize,
+    ) -> Result<HistoryPage, Error> {
+        self.history_rows(asset_id, before_sequence, limit, false)
+    }
+
+    /// One page of the asset's history rows, newest first, before `before_sequence`, and the
+    /// entries auto-collapse hid among them when `collapsed` asks for them, each marked. Each row
+    /// is read from its entry's columns and the collapsed table's key: no entry JSON is decoded and
+    /// no stack is read, so a page costs `O(limit · log entries)` whatever the stacks hold, and a
+    /// hidden entry costs one skipped row. `history.inspect` reads one whole entry.
+    pub fn history_rows(
+        &self,
+        asset_id: &AssetId,
+        before_sequence: Option<u64>,
+        limit: usize,
+        collapsed: bool,
     ) -> Result<HistoryPage, Error> {
         if limit == 0 || limit > MAX_HISTORY_PAGE {
             return Err(Error::validation(format!(
@@ -38,9 +52,12 @@ impl EditorService {
         let before = before_sequence
             .unwrap_or(i64::MAX as u64)
             .min(i64::MAX as u64) as i64;
-        let mut statement = self.connection.prepare(
-            "SELECT id,sequence,action_id,label,actor,timestamp_ms,undo_parent_id,restore_target_id
-             FROM entries WHERE asset_id=?1 AND sequence<?2 ORDER BY sequence DESC LIMIT ?3",
+        let mut statement = self.connection.prepare_cached(
+            "SELECT e.id,e.sequence,e.action_id,e.label,e.actor,e.timestamp_ms,e.undo_parent_id,
+                    e.restore_target_id,c.entry_id IS NOT NULL
+             FROM entries e LEFT JOIN collapsed_entries c ON c.entry_id=e.id
+             WHERE e.asset_id=?1 AND e.sequence<?2 AND (?4 OR c.entry_id IS NULL)
+             ORDER BY e.sequence DESC LIMIT ?3",
         )?;
         type Columns = (
             String,
@@ -51,9 +68,11 @@ impl EditorService {
             i64,
             Option<String>,
             Option<String>,
+            bool,
         );
-        let rows =
-            statement.query_map(params![asset_id.as_str(), before, limit as i64], |row| {
+        let rows = statement.query_map(
+            params![asset_id.as_str(), before, limit as i64, collapsed],
+            |row| {
                 Ok::<Columns, _>((
                     row.get(0)?,
                     row.get(1)?,
@@ -63,11 +82,14 @@ impl EditorService {
                     row.get(5)?,
                     row.get(6)?,
                     row.get(7)?,
+                    row.get(8)?,
                 ))
-            })?;
+            },
+        )?;
         let mut entries: Vec<HistoryRow> = Vec::new();
         for row in rows {
-            let (id, sequence, action_id, label, actor, timestamp_ms, parent, target) = row?;
+            let (id, sequence, action_id, label, actor, timestamp_ms, parent, target, hidden) =
+                row?;
             entries.push(HistoryRow {
                 id: EntryId::parse(id)?,
                 sequence: u64::try_from(sequence)
@@ -78,6 +100,7 @@ impl EditorService {
                 timestamp_ms,
                 undo_parent: parent.map(EntryId::parse).transpose()?,
                 restore_target: target.map(EntryId::parse).transpose()?,
+                collapsed: hidden,
             });
         }
         let next_before_sequence =
@@ -168,6 +191,13 @@ impl EditorService {
                     Some(created),
                 )
             }
+            // An edit that returned its control to where the chain began applied, and moved the head
+            // back to the chain's base rather than writing an entry.
+            Change::Navigate {
+                target,
+                collapsed: Some(_),
+                ..
+            } => (MutationOutcome::Applied, next, target.clone(), None),
             Change::Navigate { target, .. } => {
                 (MutationOutcome::Navigated, next, target.clone(), None)
             }
@@ -184,6 +214,11 @@ impl EditorService {
             current_entry_id,
             created_entry_id,
             deduplicated: false,
+            collapsed_entry_id: match &change {
+                Change::Append { collapse, .. } => collapse.as_ref().map(|c| c.entry.clone()),
+                Change::Navigate { collapsed, .. } => collapsed.clone(),
+                Change::NoOp { .. } => None,
+            },
         });
         if let Change::Append {
             action:
@@ -213,6 +248,7 @@ impl EditorService {
                     recipe,
                     action,
                     restore_target,
+                    collapse,
                 } => {
                     let entry = HistoryEntry {
                         id: result.mutation.current_entry_id.clone(),
@@ -231,7 +267,12 @@ impl EditorService {
                             asset_id: asset_id.clone(),
                             recipe,
                         },
-                        undo_parent: Some(state.current_entry.id.clone()),
+                        // A collapsing entry continues from the chain's base, so undo steps over the
+                        // entries it hid.
+                        undo_parent: Some(match collapse {
+                            Some(Collapse { base, .. }) => base,
+                            None => state.current_entry.id.clone(),
+                        }),
                         restore_target,
                     };
                     insert_entry(tx, artifact_root, &entry)?;
@@ -241,6 +282,12 @@ impl EditorService {
                 Change::Navigate { redo, .. } => Some(redo),
                 Change::NoOp { .. } => None,
             };
+            if let Some(collapsed) = &result.mutation.collapsed_entry_id {
+                tx.execute(
+                    "INSERT INTO collapsed_entries VALUES (?1,?2)",
+                    params![collapsed.as_str(), asset_id.as_str()],
+                )?;
+            }
             if let Some(redo) = &redo {
                 tx.execute(
                     "UPDATE asset_state SET current_entry_id=?2,revision=?3,redo_json=?4 WHERE asset_id=?1",
@@ -330,7 +377,11 @@ impl EditorService {
             };
             // The target must be one of this asset's entries.
             service.shared_entry(asset_id, &target)?;
-            Ok(Change::Navigate { target, redo })
+            Ok(Change::Navigate {
+                target,
+                redo,
+                collapsed: None,
+            })
         })
         .map(|result| result.mutation)
     }
@@ -365,6 +416,7 @@ impl EditorService {
                     skipped: Vec::new(),
                 },
                 restore_target: Some(target_id.clone()),
+                collapse: None,
             })
         })
         .map(|result| result.mutation)
@@ -602,27 +654,36 @@ enum Navigation {
 #[allow(clippy::large_enum_variant)]
 pub(super) enum Change {
     /// Write a new entry holding this stack and make it current, one revision on, with nothing left
-    /// to redo. `restore_target` names the entry a Restore copied.
+    /// to redo. `restore_target` names the entry a Restore copied, and `collapse` the entry an edit
+    /// of the same control supersedes, which is hidden, and the base the new entry continues from.
     Append {
         recipe: Recipe,
         action: CommittedAction,
         restore_target: Option<EntryId>,
+        collapse: Option<Collapse>,
     },
     /// Make an entry already written current, one revision on, leaving `redo` to redo. No entry is
-    /// written.
-    Navigate { target: EntryId, redo: Vec<EntryId> },
+    /// written. `collapsed` names the entry an edit hid when it returned its control to `target`,
+    /// the chain's base.
+    Navigate {
+        target: EntryId,
+        redo: Vec<EntryId>,
+        collapsed: Option<EntryId>,
+    },
     /// Change nothing. Only the request's result is recorded, so a retry is answered the same way,
     /// with the settings a composite skipped.
     NoOp { skipped: Vec<crate::SkippedSetting> },
 }
 
 impl Change {
-    /// A new entry an action or a command commits: everything but a Restore.
+    /// A new entry a test commits directly, collapsing nothing.
+    #[cfg(test)]
     pub(super) fn append(recipe: Recipe, action: CommittedAction) -> Self {
         Self::Append {
             recipe,
             action,
             restore_target: None,
+            collapse: None,
         }
     }
 
@@ -632,6 +693,13 @@ impl Change {
             skipped: Vec::new(),
         }
     }
+}
+
+/// An edit of the same control superseding the current entry ([`EditorService::collapse`]): the
+/// entry it hides and the base the chain began from, which the new entry continues from.
+pub(super) struct Collapse {
+    pub(super) entry: EntryId,
+    pub(super) base: EntryId,
 }
 
 /// What one action records on the entry it commits: the durable identity and stored parameters the

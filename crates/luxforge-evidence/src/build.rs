@@ -104,10 +104,6 @@ impl Step {
         Self::Gallery { page }
     }
 
-    pub fn hover(x: u32, y: u32) -> Self {
-        Self::Hover { x, y }
-    }
-
     pub fn canvas_hover(x: f32, y: f32) -> Self {
         Self::CanvasHover { x, y }
     }
@@ -123,6 +119,18 @@ impl Step {
 
     pub fn performance(expanded: bool) -> Self {
         Self::Performance { expanded }
+    }
+
+    pub fn settings(open: bool) -> Self {
+        Self::Settings { open }
+    }
+
+    /// Change one flag through its row, or Reset it for `None`.
+    pub fn flag(id: impl Into<String>, value: Option<Value>) -> Self {
+        Self::Flag {
+            id: id.into(),
+            value,
+        }
     }
 
     pub fn preset(name: impl Into<String>) -> Self {

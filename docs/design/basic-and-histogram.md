@@ -10,7 +10,7 @@ Decided: start with the supported SDR sRGB/greyscale JPEG subset. Linearizing a 
 
 | Slice | User-visible result | Main dependency |
 | --- | --- | --- |
-| A — inspect and expose | RGB histogram, output clipping indicators/overlays, pixel readout, Exposure slider with live preview and one undo step per gesture | Histogram can use today's raster; exposure needs decimal controls, shared drafts and pointwise float processing |
+| A — inspect and expose | RGB histogram, output clipping indicators/overlays, Exposure slider with live preview and one undo step per gesture | Histogram can use today's raster; exposure needs decimal controls, shared drafts and pointwise float processing |
 | B — complete the core Basic controls | Contrast, Highlights, Shadows, Whites, Blacks; Temperature, Tint and neutral picker; Vibrance and Saturation | Selected numerical contracts and the Slice A processing/editing foundation |
 | C — candidate next modules | Tone Curve, then Detail and local presence tools | Separate designs and owner priority; not implementation tasks in this plan |
 
@@ -184,7 +184,7 @@ The inspector describes the **rendered SDR sRGB output of the full current compo
 - Plot filled RGB channels with a shared linear vertical scale and visible overlap. Counts returned by the API stay raw; presentation normalization must not change their meaning. Empty, queued, running, unavailable, superseded and failed are explicit states. A stale result may remain only with a visible stale label: the plot is dimmed while a newer frame renders. A state with no report is written inside the plot's own area — "No analysis yet", or "Unavailable:" with the reason — never in a row of its own. The inspector is the plot and the triangle row and nothing else, so its height never depends on the pointer, the analysis status or the counts, and nothing below it moves during a gesture.
 - Shadow/highlight counters report per-channel endpoints (`code == 0`, `code == 255`) plus any-channel and all-channel pixel counts. Endpoints include values quantized to those codes; these are output clipping warnings, not an inference about the original capture. A colored indicator identifies channels with endpoint pixels; the counts are also stated in words, in the triangles' tooltips: the shadow triangle's gives the code-0 line, the highlight triangle's the code-255 line and the both-endpoints count. With no report behind them each shows a dash, never zeros.
 - Clicking a triangle toggles its overlay; hover may preview it. Default mask rule: any-channel endpoint, blue for shadow, red for highlight; a pixel matching both uses magenta. Tooltips state this rule, above the counts. Masks never alter the raster, saved recipe, histogram population or future export. UI and API share the predicate.
-- RGB hover readout uses the compiled sample at final image coordinates, reports 0–255 codes, and includes the selected render identity. The desktop shows it in the status bar, in a slot that is laid out whether or not the pointer is over the photograph, so it moves nothing in the tools panel or the bar. The histogram computation itself is a full-image worker operation, not a repeated owner-thread point query.
+- `render.sample` is the API's exact point query at final image coordinates: 0–255 codes with the selected render identity. The desktop's RGB hover readout, which asked it on every pointer move and showed the answer in the status bar, was removed on 2026-10-04 (owner): through a stack with Detail, Presence and masks one exact sample cost the point worker minutes, and the desktop ran that wait on the update loop, so the window froze with it. Nothing is read under the pointer now. The histogram computation itself is a full-image worker operation, not a repeated owner-thread point query.
 - Key each result to asset/source fingerprint, entry/snapshot, effective recipe identity, client draft ID/revision when present, output dimensions and color contract. Carry render generation with delivery. Counts and overlays must match the image currently presented, including drafts and history preview, not simply the newest catalog revision.
 
 First implementation uses exact full-resolution counts. Reuse the final raster allocation, reduce during its production where practical, or scan it on a worker without a second render/copy. Exposure or view-only changes must not cause duplicate source decoding. During active gestures the previous histogram can be marked updating while an exact replacement is pending; do not secretly switch to thumbnail counts that miss single-pixel clipping. Approximate draft analysis is a later measured proposal, not the default contract.
@@ -203,7 +203,7 @@ The following are the required capabilities; the [integration contract](#integra
 | Reset field/group/Basic | Neutral parameters applied by the same transaction path; unrelated effects unchanged |
 | Neutral sample | Image-space point/patch and explicit source stage; returns validated settings or a structured error |
 | Request/read/cancel histogram | Frozen current, history or caller-owned draft target; job/result identity, readiness, exactness, domain, counts and structured errors |
-| Overlay settings/readout | Per-client view state and semantic sampling; no history mutation |
+| Overlay settings | Per-client view state; no history mutation |
 
 All capabilities appear in discovery and work from an independent JSON client; MCP later inherits them. Read-only analysis must work without a GUI and cannot require switching the GUI selection. Requests return promptly; full-frame work never runs on the catalog owner. Reuse shared preview evaluation where targets coincide. Bound analysis to one active plus one replaceable pending job globally; report superseded requests explicitly and avoid a pending queue per slider event. Shared work is reference-counted so one client's cancel/disconnect does not invalidate another's result. Cap completed small reports/handles to the eight live clients; retain no per-result raster. Test competing clients and document scheduling fairness.
 
@@ -223,7 +223,7 @@ Every implementation handoff answers the [performance checklist](../engineering/
 2. Independent f64 reference color evaluation and lossless expected buffers: identity, ±EV, inverse non-clipped exposure, gradients, step wedges, saturated and portrait-like colors, order around pixel replacement and exact/interpolated geometry. Frozen tolerances precede production implementation.
 3. Complete history journey: gesture commit/cancel/reset, repeated values, retry/deduplication, undo/redo, preview/restore, reopen, failed write, unavailable provider, source missing/changed and current-format fixtures. Originals remain byte-identical.
 4. Two-client races: conflict during drag/picker, explicit field-preserving Reapply, selected historical entry during external edits, analysis cancellation/reconnect and superseded results. No frame/histogram identity mismatch and no unexpected history entries.
-5. Native M4 rendered inspection at Fit, 100% and available display scales: sliders, keyboard/numeric editing, focus, reset, clipping overlays, histogram overlap/readout, crop and photo changes. Correlate captures with snapshot/revision/draft/render generation and logs. Inspect smooth gradients, saturated colors, backlit portraits and noisy shadows. Record calibrated-color and screen-reader limitations honestly.
+5. Native M4 rendered inspection at Fit, 100% and available display scales: sliders, keyboard/numeric editing, focus, reset, clipping overlays, histogram overlap, crop and photo changes. Correlate captures with snapshot/revision/draft/render generation and logs. Inspect smooth gradients, saturated colors, backlit portraits and noisy shadows. Record calibrated-color and screen-reader limitations honestly.
 6. Extend existing acceptance/performance harnesses for these paths; run `cargo xtask check` on each implementation handoff and release diagnostics on the final editor. Headless/VM results are distinct from native rendered evidence. No performance claim follows from small fixtures alone.
 7. Update current module/color contracts, feature status and user guide only for demonstrated behavior. If export is implemented concurrently, validate it uses the same evaluator/output contract; this plan does not own export encoding or metadata.
 
@@ -257,9 +257,9 @@ one entry. The original file's SHA-256 is unchanged throughout.
 Item 5 is demonstrated natively on the owner's M4 by the rendered scenarios `basic`, `basic-panel`,
 `basic-crop`, `basic-restart`, `histogram`, `workspace`, `crop`, `crop-draft`, `unavailable`,
 `large24` and `large60`, each correlating its captures with the recorded revision, entry, draft,
-render generation and state. The `histogram` scenario's hover frame shows the readout in the status
-bar with the tools panel pixel for pixel the frame before it and the status bar changed only inside
-the readout's slot; every frame's triangle tooltips carry the independent reduction's counts, and
+render generation and state. The `histogram` scenario reads the pixel it set back through
+`render.sample` and records the answer with the step; every frame's triangle tooltips carry the
+independent reduction's counts, and
 `unavailable` shows the reason inside the plot. Tooltips are checked through the recorded state,
 not in a capture: the harness cannot hover a widget. Calibrated colour and screen-reader behaviour
 are not claimed: every pixel measurement is renderer readback of displayed brightness or channel

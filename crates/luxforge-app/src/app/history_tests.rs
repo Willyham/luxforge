@@ -470,3 +470,78 @@ fn history_navigation_is_refused_while_a_crop_draft_is_open() {
     );
     finish(editor, catalog);
 }
+
+/// An edit of the control the last edit set collapses that entry, and the desktop shows it: the
+/// collapsed row leaves the loaded page and the lineage, and an edit back to where the chain began
+/// leaves no row of it and says so rather than reading as an undo.
+#[test]
+fn a_collapsing_edit_removes_its_row_and_a_return_to_the_start_says_so() {
+    let catalog = std::env::temp_dir().join(format!(
+        "luxforge-collapse-ui-{}-{}.sqlite",
+        std::process::id(),
+        tasks::REQUEST_NUMBER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let (mut editor, asset, _) = testing::real_photo(&catalog);
+    let set = |editor: &mut Editor, contrast: f64| {
+        let revision = editor.document.state.as_ref().unwrap().revision;
+        let refreshed = tasks::command_now(
+            &editor.owner,
+            editor.client,
+            asset.clone(),
+            "edit.set-basic",
+            json!({"asset_id": asset, "contrast": contrast, "mutation": tasks::mutation(revision)}),
+            None,
+        )
+        .unwrap();
+        let collapsed = refreshed.collapsed.clone();
+        let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+            refreshed,
+        )))));
+        collapsed
+    };
+    let labels = |editor: &Editor| -> Vec<String> {
+        editor
+            .document
+            .history
+            .entries
+            .iter()
+            .map(|row| row.label.clone())
+            .collect()
+    };
+    assert_eq!(set(&mut editor, 15.0), None);
+    let first = editor
+        .document
+        .state
+        .as_ref()
+        .unwrap()
+        .current_entry
+        .id
+        .clone();
+    assert_eq!(set(&mut editor, -30.0), Some(first.clone()));
+    assert_eq!(labels(&editor), ["Contrast -30", "Original"]);
+    assert!(!editor.document.lineage.contains(&first));
+    assert!(matches!(
+        editor.status.happened,
+        Some(crate::state::status::Happened::Applied { .. })
+    ));
+
+    let second = editor
+        .document
+        .state
+        .as_ref()
+        .unwrap()
+        .current_entry
+        .id
+        .clone();
+    assert_eq!(set(&mut editor, 0.0), Some(second));
+    assert_eq!(labels(&editor), ["Original"]);
+    assert_eq!(
+        editor
+            .status
+            .happened
+            .as_ref()
+            .map(|happened| happened.sentence()),
+        Some("Back to entry 0 \u{b7} collapsed Contrast -30".to_owned())
+    );
+    finish(editor, catalog);
+}

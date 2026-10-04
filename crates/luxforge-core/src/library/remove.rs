@@ -82,18 +82,22 @@ pub(crate) struct Emptied {
 }
 
 /// The triggers that stand in the way of deleting a photograph's records, which [`empty`] lifts
-/// inside its own transaction only. Only the artifact references' permanence does: an entry's and
-/// a stroke's immutability refuse an update, not a deletion, and the journal, whose rows are the
-/// other permanent ones, is left as it is.
-pub(crate) const LIFTED_TRIGGERS: &[&str] = &["artifact_refs_are_permanent"];
+/// inside its own transaction only: the artifact references' permanence and the collapsed
+/// entries' — an entry auto-collapse hid is part of its photograph's record and goes with it. An
+/// entry's and a stroke's immutability refuse an update, not a deletion, and the journal, whose
+/// rows are the other permanent ones, is left as it is.
+pub(crate) const LIFTED_TRIGGERS: &[&str] = &[
+    "artifact_refs_are_permanent",
+    "collapsed_entries_are_permanent",
+];
 
 /// Empty Removed in the caller's transaction, at most `limit` photographs, earliest removed first:
-/// delete each one's catalog record, then every stroke its entries named that no remaining entry
-/// names, then every artifact row its entries referenced that no remaining entry references and no
-/// task of this process published (`live`). The artifact references' permanence trigger is lifted
-/// for the deletion and created again, from the SQL the catalog stored for it, before this answers;
-/// a failure anywhere rolls the whole transaction back, the trigger with it. Nothing on disk is
-/// touched and the journal is left as it is.
+/// delete each one's catalog record, the entries auto-collapse hid with it, then every stroke its
+/// entries named that no remaining entry names, then every artifact row its entries referenced
+/// that no remaining entry references and no task of this process published (`live`). The
+/// [`LIFTED_TRIGGERS`] are lifted for the deletion and created again, from the SQL the catalog
+/// stored for them, before this answers; a failure anywhere rolls the whole transaction back, the
+/// triggers with it. Nothing on disk is touched and the journal is left as it is.
 ///
 /// Its cost is SQL on the owner: one indexed delete per table for the photographs together, one
 /// read of their entries' text, and, only when those entries named a stroke the store holds, one

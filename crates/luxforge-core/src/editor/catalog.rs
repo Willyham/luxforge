@@ -11,15 +11,18 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// Format 12 is the catalog of developed picks (`docs/design/catalog.md`): the volumes picks and
-/// photographs live on, picks, indexed folders, catalog folders, each asset's catalog folder, source
-/// folder, volume, file name, develop time, removal and availability with its capture row,
-/// collections and their members, and the append-only journal of library changes. An asset's
-/// `row_id` is an `INTEGER PRIMARY KEY`, the stable 8-byte key views hold ([`crate::AssetRowId`]).
-/// Format 11 stored each asset's source kind tag in a column of its own beside the interpretation,
-/// so a list of photographs reads columns only and decodes no interpretation. Format 10 stored each
-/// asset request's whole answer in the request table — for a `mask.*` command
-/// the label it committed and the mask and component it addressed or minted beside the mutation
+/// Format 13 is the union of two changes made side by side as format 12. The catalog of developed
+/// picks (`docs/design/catalog.md`): the volumes picks and photographs live on, picks, indexed
+/// folders, catalog folders, each asset's catalog folder, source folder, volume, file name, develop
+/// time, removal and availability with its capture row, collections and their members, and the
+/// append-only journal of library changes. An asset's `row_id` is an `INTEGER PRIMARY KEY`, the
+/// stable 8-byte key views hold ([`crate::AssetRowId`]). And the entries auto-collapse hid, in a
+/// table of their own beside the entries that stay as they were written, so a history page leaves
+/// them out without changing any entry. Neither format 12 holds the other's tables, so both are
+/// refused. Format 11 stored each asset's source kind tag in a column of its own beside the
+/// interpretation, so a list of photographs reads columns only and decodes no interpretation.
+/// Format 10 stored each asset request's whole answer in the request table — for a `mask.*`
+/// command the label it committed and the mask and component it addressed or minted beside the mutation
 /// result — so a retry answers with the identities the first attempt created. Format 9 kept each
 /// entry's history row — its label, actor, timestamp and restore target, beside the sequence, action
 /// and undo parent format 7 already held — in the entry's own columns, so a page of history rows
@@ -29,7 +32,7 @@ use std::{
 /// catalog's own identity with the derived-artifact tables. Format 4 made entry records the only
 /// stored copy of a stack and format 3 stored each entry's rendered label. Every other marker,
 /// earlier or later, is refused by name and left as it is; choose a new catalog path.
-pub(crate) const CATALOG_FORMAT: i64 = 12;
+pub(crate) const CATALOG_FORMAT: i64 = 13;
 pub(super) const ASSET_COLUMNS: &str =
     "id,source_root,locator,fingerprint,file_identity,byte_len,width,height,source_json";
 
@@ -184,6 +187,13 @@ impl EditorService {
                     result_json TEXT NOT NULL,
                     PRIMARY KEY(asset_id, request_id)
                  );
+                 CREATE TABLE collapsed_entries (
+                    entry_id TEXT PRIMARY KEY REFERENCES entries(id),
+                    asset_id TEXT NOT NULL REFERENCES assets(id)
+                 );
+                 CREATE TRIGGER collapsed_entries_are_permanent BEFORE DELETE ON collapsed_entries BEGIN
+                    SELECT RAISE(ABORT, 'collapsed entries stay collapsed');
+                 END;
                  CREATE TABLE versions (
                     asset_id TEXT NOT NULL REFERENCES assets(id),
                     name TEXT NOT NULL COLLATE NOCASE,
@@ -245,9 +255,9 @@ impl EditorService {
     }
 }
 
-/// The format-12 tables beside history: volumes, catalog folders, the assets themselves with their
+/// The format-13 tables beside history: volumes, catalog folders, the assets themselves with their
 /// catalog columns and capture rows, collections, picks, indexed folders and the library journal
-/// (`docs/design/versions-and-lineage.md#storage-catalog-format-12`).
+/// (`docs/design/versions-and-lineage.md#storage-catalog-format-13`).
 ///
 /// - An asset's `row_id` is its `INTEGER PRIMARY KEY`: stable for the catalog's life, the 8-byte key
 ///   a view holds, and what `capture` and `collection_members` key on, so a view over a million
@@ -810,7 +820,7 @@ pub(super) fn entry_from_sharing(
 }
 
 // Library changes to the asset rows and the history they read and write, and the journal's latest
-// change. The format-12 tables' own rows are written in `catalog_rows.rs`.
+// change. The format-13 tables' own rows are written in `catalog_rows.rs`.
 impl EditorService {
     /// One library change in one catalog transaction ([`write`]): `change` reads and writes
     /// through the library journal (`crate::library::journal`), and once it commits, each cached
@@ -970,18 +980,19 @@ mod tests {
             .collect()
     }
 
-    /// An empty database initializes as format 12 with every table, index and trigger of the
-    /// design's storage, and makes no index directory until the index is first used.
+    /// An empty database initializes as format 13 with every table, index and trigger of the
+    /// design's storage, the catalog's and auto-collapse's both, and makes no index directory until
+    /// the index is first used.
     #[test]
     fn catalog_format_an_empty_database_initializes_every_table_index_and_trigger() {
-        let catalog = temp("format-12.sqlite");
+        let catalog = temp("format-13.sqlite");
         let service = EditorService::open(&catalog).unwrap();
         let connection = &service.connection;
         let format: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(format, 12);
-        assert_eq!(CATALOG_FORMAT, 12);
+        assert_eq!(format, 13);
+        assert_eq!(CATALOG_FORMAT, 13);
         assert_eq!(
             schema_names(connection, "table"),
             [
@@ -992,6 +1003,7 @@ mod tests {
                 "capture",
                 "catalog_folders",
                 "catalog_meta",
+                "collapsed_entries",
                 "collection_members",
                 "collections",
                 "entries",
@@ -1042,6 +1054,7 @@ mod tests {
             schema_names(connection, "trigger"),
             [
                 "artifact_refs_are_permanent",
+                "collapsed_entries_are_permanent",
                 "collections_keep_their_kind",
                 "collections_move_into_groups",
                 "collections_nest_in_groups",
@@ -1069,11 +1082,13 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
-    /// Format 11, every earlier marker and a future one are refused by name and left exactly as
-    /// they are, with no artifact or index directory made for them.
+    /// Format 12 — the catalog of developed picks without the collapsed-entry table, or the
+    /// collapsed-entry table without the catalog's tables — format 11, every earlier marker and a
+    /// future one are refused by name and left exactly as they are, with no artifact or index
+    /// directory made for them.
     #[test]
-    fn catalog_format_eleven_and_any_other_marker_are_refused_by_name_unchanged() {
-        for marker in [0, 11, CATALOG_FORMAT - 1, 1, CATALOG_FORMAT + 1] {
+    fn catalog_format_twelve_eleven_and_any_other_marker_are_refused_by_name_unchanged() {
+        for marker in [0, 11, 12, CATALOG_FORMAT - 1, 1, CATALOG_FORMAT + 1] {
             let catalog = temp("unsupported-format.sqlite");
             let mut service = EditorService::open(&catalog).unwrap();
             service.import(&fixture()).unwrap();

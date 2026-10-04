@@ -39,7 +39,7 @@ struct Input {
     requested: Instant,
     dispatched: Option<Instant>,
     update_ms: f64,
-    readout_position: Option<(u32, u32)>,
+    pointer_position: Option<(u32, u32)>,
     message_count: usize,
     pointer_at_ms: Option<f64>,
     pointer_ms: Option<f64>,
@@ -55,7 +55,7 @@ impl Input {
             requested,
             dispatched: None,
             update_ms: 0.0,
-            readout_position: None,
+            pointer_position: None,
             message_count: 0,
             pointer_at_ms: None,
             pointer_ms: None,
@@ -65,10 +65,10 @@ impl Input {
     }
 
     /// Nothing more will be recorded for this input: its editor loop was observed, or it was
-    /// routed with no readout position, so no pointer update and no loop will follow and the
+    /// routed with no pointer position, so no pointer update and no loop will follow and the
     /// trace records their absence rather than waiting for the step's deadline.
     fn settled(&self) -> bool {
-        self.loop_ms.is_some() || (self.dispatched.is_some() && self.readout_position.is_none())
+        self.loop_ms.is_some() || (self.dispatched.is_some() && self.pointer_position.is_none())
     }
 }
 
@@ -203,8 +203,8 @@ impl Probe {
             .as_ref()
             .filter(|input| {
                 input.dispatched.is_some()
-                    && input.readout_position.is_some()
-                    && input.readout_position == position
+                    && input.pointer_position.is_some()
+                    && input.pointer_position == position
                     && input.pointer_at_ms.is_none()
             })
             .map(|_| Instant::now())
@@ -213,7 +213,7 @@ impl Probe {
     pub(crate) fn pointer_updated(&self, position: Option<(u32, u32)>, elapsed_ms: f64) {
         let mut state = self.0.lock().expect("cursor probe lock");
         if let Some(input) = &mut state.input
-            && input.readout_position == position
+            && input.pointer_position == position
             && position.is_some()
             && input.pointer_at_ms.is_none()
         {
@@ -241,7 +241,7 @@ impl Probe {
         at: Instant,
         elapsed_ms: f64,
         message_count: usize,
-        readout_position: Option<(u32, u32)>,
+        pointer_position: Option<(u32, u32)>,
     ) {
         let mut state = self.0.lock().expect("cursor probe lock");
         if let Some(input) = &mut state.input
@@ -250,7 +250,7 @@ impl Probe {
             input.dispatched = Some(at);
             input.update_ms = elapsed_ms;
             input.message_count = message_count;
-            input.readout_position = readout_position;
+            input.pointer_position = pointer_position;
         }
     }
 
@@ -272,7 +272,7 @@ impl Probe {
             "window_position":[input.point.x,input.point.y],
             "canvas_position":[centre.x,centre.y],
             "canvas_bounds":{"x":bounds.x,"y":bounds.y,"width":bounds.width,"height":bounds.height},
-            "readout_position":input.readout_position.map(|(x,y)| [x,y]),
+            "pointer_position":input.pointer_position.map(|(x,y)| [x,y]),
             "widget_messages":input.message_count,
             "dispatch_delay_ms":dispatched.duration_since(input.requested).as_secs_f64()*1000.0,
             "widget_update_ms":input.update_ms,
@@ -497,7 +497,7 @@ mod tests {
         probe.editor_loop_observed(100.0, 100.0);
         let trace = probe.trace().unwrap();
         assert_eq!(trace["epoch"], json!(epoch));
-        assert_eq!(trace["readout_position"], json!([3, 4]));
+        assert_eq!(trace["pointer_position"], json!([3, 4]));
         assert_eq!(trace["editor_update_ms"], json!(0.04));
         assert_eq!(trace["editor_rederive_ms"], json!(0.02));
         assert!(!probe.waiting());
@@ -510,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn an_input_routed_without_a_readout_position_settles_without_its_loop() {
+    fn an_input_routed_without_a_pointer_position_settles_without_its_loop() {
         let probe = Probe::default();
         let epoch = probe.arm(Point::new(10.0, 20.0));
         probe.routed(epoch, Instant::now(), 0.01, 1, None);

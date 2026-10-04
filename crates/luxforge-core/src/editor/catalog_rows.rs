@@ -1,4 +1,4 @@
-//! The format-12 row writers and readers every path that touches these tables shares: volumes,
+//! The format-13 row writers and readers every path that touches these tables shares: volumes,
 //! catalog folders, an asset's catalog columns and its capture row, collections and their members,
 //! picks and indexed folders. The import, the seeder (`crate::seed`), the index lane and the
 //! library write through these, so each table's SQL has one home.
@@ -619,10 +619,10 @@ pub(crate) mod library_rows {
     }
 
     /// Delete the whole catalog record of each of `assets` — its entries' artifact references,
-    /// versions, state row, request log, collection memberships, capture row, entries and asset
-    /// row — one statement per table for them all, answering how many asset rows went. Only
-    /// emptying Removed calls it, with the artifact references' permanence lifted for it
-    /// (`crate::library::remove::empty`); nothing on disk is touched, and the journal keeps what it
+    /// versions, state row, request log, collapsed entries, collection memberships, capture row,
+    /// entries and asset row — one statement per table for them all, answering how many asset rows
+    /// went. Only emptying Removed calls it, with the artifact references' and collapsed entries'
+    /// permanence lifted for it (`crate::library::remove::empty`); nothing on disk is touched, and the journal keeps what it
     /// recorded of them.
     pub(crate) fn delete_photographs(
         tx: &Transaction<'_>,
@@ -631,11 +631,14 @@ pub(crate) mod library_rows {
         let ids = serde_json::to_string(assets)
             .map_err(|error| Error::internal(format!("cannot encode photographs: {error}")))?;
         const THESE: &str = "(SELECT value FROM json_each(?1))";
-        tx.prepare_cached(&format!(
-            "DELETE FROM artifact_refs
-             WHERE entry_id IN (SELECT id FROM entries WHERE asset_id IN {THESE})"
-        ))?
-        .execute([&ids])?;
+        // The entries' references and their collapsed marks, both keyed by entry.
+        for table in ["artifact_refs", "collapsed_entries"] {
+            tx.prepare_cached(&format!(
+                "DELETE FROM {table}
+                 WHERE entry_id IN (SELECT id FROM entries WHERE asset_id IN {THESE})"
+            ))?
+            .execute([&ids])?;
+        }
         for table in ["versions", "asset_state", "requests"] {
             tx.prepare_cached(&format!("DELETE FROM {table} WHERE asset_id IN {THESE}"))?
                 .execute([&ids])?;

@@ -31,6 +31,13 @@ pub(crate) const EXPORT_TOOLTIP: &str = if cfg!(target_os = "macos") {
     "Export JPEG (Ctrl+E)"
 };
 
+/// Settings' tooltip, with the shortcut the keymap gives it on this platform.
+pub(crate) const SETTINGS_TOOLTIP: &str = if cfg!(target_os = "macos") {
+    "Settings (\u{2318},)"
+} else {
+    "Settings (Ctrl+,)"
+};
+
 /// The Export menu's two items, in order: what each is labelled and whether it keeps metadata.
 /// The palette offers the same two, under the same labels.
 pub(crate) const EXPORT_ITEMS: [(&str, bool); 2] = [
@@ -76,6 +83,8 @@ pub(crate) struct TitleBarModel {
     pub(crate) can_redo: bool,
     pub(crate) state_panel_open: bool,
     pub(crate) tools_panel_open: bool,
+    /// The Settings sheet is open, so its button reads as selected.
+    pub(crate) settings_open: bool,
     /// Compare is holding the Original entry's preview.
     pub(crate) compare_held: bool,
     /// Both clipping overlays are on, so the bar's Clipping toggle reads as selected. `J` and this
@@ -237,6 +246,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
                 .is_some_and(|state| !state.redo.is_empty()),
         state_panel_open: inputs.session.workspace.state_panel,
         tools_panel_open: inputs.session.workspace.tools_panel,
+        settings_open: inputs.settings.open.is_some(),
         compare_held: inputs.compare_held,
         clipping_on: inputs.session.workspace.clip_shadows
             && inputs.session.workspace.clip_highlights,

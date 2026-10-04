@@ -19,6 +19,7 @@ mod editor;
 mod error;
 /// JPEG export: capture metadata, the encoder and a publish that never replaces a file.
 mod export;
+pub mod flags;
 /// The index of the files Luxforge browses, beside the catalog.
 mod index;
 pub mod jobs;

@@ -421,7 +421,6 @@ fn a_report_is_adopted_with_the_pixels_of_its_own_generation() {
     );
     assert_eq!(snapshot["workspace"]["clip_shadows"], json!(false));
     assert_eq!(snapshot["workspace"]["clip_highlights"], json!(false));
-    assert_eq!(snapshot["readout"], Value::Null);
     // The desktop hands its report to the owner, so an API client's request for the same
     // identity is a cache hit rather than a second render.
     let records = logged(&mut editor, &log);

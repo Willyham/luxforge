@@ -1,7 +1,8 @@
 //! Emptying Removed against a seeded catalog, without the owner: the earliest removed first within
-//! its bound, what is left counted; the one trigger it lifts created again exactly as the catalog
-//! stored it, and a failure inside the transaction leaving every row and trigger as it was; and the
-//! stroke addresses an entry's text is searched for.
+//! its bound, what is left counted; the triggers it lifts created again exactly as the catalog
+//! stored them, and a failure inside the transaction leaving every row and trigger as it was; the
+//! entries auto-collapse hid deleted with their photograph; and the stroke addresses an entry's
+//! text is searched for.
 use super::remove::{LIFTED_TRIGGERS, stroke_addresses};
 use crate::{
     AssetId, EditorService, ErrorKind,
@@ -292,4 +293,77 @@ fn remove_finds_every_stroke_address_in_an_entry() {
             .all(|address| *address == first || *address == second),
         "{found:?}"
     );
+}
+
+/// An entry auto-collapse hid is history its photograph keeps: sending the photograph back is
+/// refused, as for any history beyond its Original, though the visible history shows only the
+/// Original, and emptying Removed deletes the hidden entry with the rest of the record, lifting the
+/// collapsed entries' permanence for its own transaction only.
+#[test]
+fn remove_emptying_deletes_the_entries_auto_collapse_hid() {
+    let path = temp_path("remove-collapsed.sqlite");
+    let _ = std::fs::remove_file(&path);
+    let mut service = EditorService::open(&path).unwrap();
+    service.set_auto_collapse(true);
+    let asset = service
+        .import(&luxforge_testbase::paths::jpeg())
+        .unwrap()
+        .asset
+        .id;
+    // Contrast +15, then back to where it began: the head returns to the Original and the
+    // +15 entry is hidden.
+    for (request, contrast) in [("up", 15.0), ("back", 0.0)] {
+        let revision = service.state(&asset).unwrap().revision;
+        service
+            .apply_action(
+                &asset,
+                crate::editor::mutation(revision, request),
+                "set-basic",
+                serde_json::json!({"contrast": contrast}),
+            )
+            .unwrap();
+    }
+    assert_eq!(service.history(&asset, None, 10).unwrap().entries.len(), 1);
+    let collapsed = |service: &EditorService| -> i64 {
+        service
+            .connection
+            .query_row(
+                "SELECT count(*) FROM collapsed_entries WHERE asset_id = ?1",
+                [asset.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(collapsed(&service), 1);
+    assert_eq!(
+        crate::editor::library_rows::kept_by(&service.connection, &asset).unwrap(),
+        Some("has been edited since it was developed"),
+        "a hidden entry is history sending back would erase"
+    );
+    let refused = service
+        .connection
+        .execute("DELETE FROM collapsed_entries", [])
+        .unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("collapsed entries stay collapsed"),
+        "{refused}"
+    );
+
+    let before = triggers(&service);
+    service
+        .connection
+        .execute(
+            "UPDATE assets SET removed_ms = 1 WHERE id = ?1",
+            [asset.as_str()],
+        )
+        .unwrap();
+    let (emptied, _) = service.empty_removed(10).unwrap();
+    assert_eq!(emptied.assets, std::slice::from_ref(&asset));
+    assert_eq!(records(&service, &asset), [0; 6]);
+    assert_eq!(collapsed(&service), 0);
+    assert_eq!(triggers(&service), before, "both lifted triggers are back");
+    drop(service);
+    let _ = std::fs::remove_file(path);
 }

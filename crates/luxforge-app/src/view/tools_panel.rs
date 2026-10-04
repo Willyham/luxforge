@@ -113,8 +113,8 @@ pub(crate) fn tools_panel<'a>(
 /// this block, so anything in it that grew, wrapped or came and went with the pointer, the analysis
 /// status or the counts would make the whole tools panel jump while a slider is dragged. What
 /// varies is placed where it cannot move anything: a status with no report is drawn inside the
-/// plot's own area, the endpoint counts are the triangles' tooltips, and the pointer readout is in
-/// the status bar. The plot states no caption at all.
+/// plot's own area and the endpoint counts are the triangles' tooltips. The plot states no caption
+/// at all.
 ///
 /// The view decides nothing here. Which channel is which colour, what the counts say, which
 /// triangle is tinted and what each tooltip and notice states are all in the model; this turns them

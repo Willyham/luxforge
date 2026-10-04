@@ -478,7 +478,7 @@ masked-colour row above uses, so the difference between the rows is the mask and
   at one stroke and 0.0385 ms at sixty-four, on both stage sizes: it rasterizes nothing
   ([rule 4](../engineering/performance-rules.md#rules)), and the cost it does have is the segments
   the index leaves near that pixel. Even at the stroke limit it is a four-hundredth of a display
-  frame, so the pointer readout and the eyedropper are unaffected by how much has been painted.
+  frame, so the eyedropper and `render.sample` are unaffected by how much has been painted.
 
 **Scope.** These are exact-phase renders of the whole frame on the calling thread, which is what the
 histogram, the overlays and the 100% view take; what a hand feels during a stroke is the proxy phase,
@@ -2004,7 +2004,7 @@ The catalog owner now only plans a sample through a spatial layer, in `O(layers)
 
 Samples in the contended window: 101 to 238 per run before, 63 to 189 after (fewer, because the other client's calls no longer lengthen the window). The sample itself costs what it cost on the owner: timed alone, 30 samples in the steadiest runs, 19.7 before against 19.9 ms after on the X100VI with Clarity and 34.7 against 34.8 ms with Dehaze added; the wider ranges above are the host's load, which moved between runs. An `asset.state` before occasionally answered in under a millisecond because it arrived between two samples. An earlier pass with a shorter window (5 to 17 ms apart, load 11 to 16) gave the same picture: `draft.set` p50 10.6 to 31.1 ms before against 0.23 to 0.33 after.
 
-Exactness through the owner is the ignored owner test, run in release with `LUXFORGE_RAW_FIXTURE` set to each private source (`cargo test --release --locked -p luxforge-core --lib a_raw_sample_through_presence_off_the_owner -- --ignored --nocapture`): on the Z6, X100VI and Air 2S, 21 samples per stack including the far corner, answered by the point worker, each equal to the pixel an exact render of the current entry writes there. A background evidence run over the Z6 with the after build (`--evidence-script` with Clarity +60, then Clarity +60 with Dehaze +30 through `api` steps, and five `hover` steps including the far corner) showed every readout in the status bar with no render error, each hover step captured 46 to 69 ms after it was sent.
+Exactness through the owner is the ignored owner test, run in release with `LUXFORGE_RAW_FIXTURE` set to each private source (`cargo test --release --locked -p luxforge-core --lib a_raw_sample_through_presence_off_the_owner -- --ignored --nocapture`): on the Z6, X100VI and Air 2S, 21 samples per stack including the far corner, answered by the point worker, each equal to the pixel an exact render of the current entry writes there. A background evidence run over the Z6 with the after build (`--evidence-script` with Clarity +60, then Clarity +60 with Dehaze +30 through `api` steps, and five `hover` steps including the far corner — the status-bar readout those steps drove was removed on 2026-10-04) showed every readout with no render error, each hover step captured 46 to 69 ms after it was sent.
 
 To repeat on a quiet host, build each commit's release app and copy `target/release/luxforge` aside, then run each copy from a background-only bundle (the plist `develop --background` writes) with `--hidden-window --catalog NEW.sqlite`, and drive it with two loopback clients read from `NEW.live-session.json`: import the RAW with `catalog.import` and `job.adopt`, commit `edit.set-presence` with `{"clarity": 60}` and then `{"clarity": 60, "dehaze": 30}`, and for each stack open a `set-basic` draft, warm three samples, time 30 samples alone, time 60 `draft.set` and 60 `asset.state` idle, then again while the other client samples random points in a loop. Run the builds before, after, after, before for each camera and record `uptime` around every run.
 
@@ -2017,7 +2017,7 @@ Exactness on the real files is the ignored core test, run in release with `LUXFO
 
 The tile's input region is pulled serially. On the shared pool its rows halved an idle sample (Z6 Clarity, 10 against 19 ms) but waited behind a render that held the pool: p50 116 ms against 21 ms serially (15 samples, two alternations each, load 6 to 9), time the catalog owner would spend blocked. The first sample of a stack whose estimates are not yet in the store also reduced the whole stage once, which added 23 to 113 ms across the three files. That reduction is paid only for a unit that declares an estimate key: Clarity and Texture never pay it, and a new Dehaze amount prepares from the stored atmospheric light.
 
-A background evidence run over the Z6 (`--evidence-script` with Clarity +60, then Clarity +60 with Dehaze +30 through `api` steps, and five `hover` steps including the far corner pixel) showed every readout in the status bar with no render error, each hover step settling within 75 ms of the one before it.
+A background evidence run over the Z6 (`--evidence-script` with Clarity +60, then Clarity +60 with Dehaze +30 through `api` steps, and five `hover` steps including the far corner pixel — the status-bar readout those steps drove was removed on 2026-10-04) showed every readout with no render error, each hover step settling within 75 ms of the one before it.
 
 #### In tiles sized by the summed halo
 
@@ -3208,7 +3208,7 @@ CPU geometry may precede the queued editor update.
 | Clarity +50, Off, Fit | 3.75 / 8.14 / 8.41 | 4.04 / 10.34 / 11.99 |
 
 A separate pair of sequential cursor runs checks 30 native renderer readbacks per source. Every
-input epoch, coordinate and readout matches its captured state; both cursor rings pass independent
+input epoch and coordinate match its captured state; both cursor rings pass independent
 PNG probes (at least 64/64 outer probes and 45/64 inner probes). These 60 frames prove rendered
 correspondence with capture overhead. They do not turn the paced CPU figures into GPU completion
 or display-scanout latency.

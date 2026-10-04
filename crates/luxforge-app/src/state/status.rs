@@ -1,9 +1,9 @@
-//! The status bar model: the last message, the pointer readout, who else is connected and what the
+//! The status bar model: the last message, who else is connected and what the
 //! renderer is doing, and the wording of the sentence that says what last happened.
 //!
 //! The message is a plain sentence. It names an entry by the sequence number its history row
 //! carries and never by its identity, its snapshot or its source hash: those stay with the API.
-use crate::state::{ACTOR, Inputs, histogram, title};
+use crate::state::{ACTOR, Inputs, title};
 use luxforge_core::{EditorState, Zoom};
 use std::time::Duration;
 
@@ -221,6 +221,9 @@ pub(crate) enum Happened {
     },
     /// Undo moved the current state back past the entry labelled `label`.
     Undid { label: String },
+    /// An edit returned its control to where a chain of edits of it began, so auto-collapse hid
+    /// the chain's entry, labelled `label`, and the entry at `sequence` is current again.
+    Collapsed { label: String, sequence: u64 },
     /// Redo moved the current state forward to an entry that already existed.
     Redid { label: String, sequence: u64 },
     /// A historical preview returned to the current entry.
@@ -232,11 +235,14 @@ pub(crate) enum Happened {
 impl Happened {
     /// What a new state says happened, from the state this desktop held before it. `known` is
     /// whether the new current entry was already among the loaded history rows, which is what
-    /// tells a redo from a new entry. `None` when the current entry did not move.
+    /// tells a redo from a new entry, and `collapsed` whether this desktop's own edit collapsed the
+    /// entry that was current, which tells an edit back to the chain's start from an undo. `None`
+    /// when the current entry did not move.
     pub(crate) fn between(
         before: Option<&EditorState>,
         after: &EditorState,
         known: bool,
+        collapsed: bool,
     ) -> Option<Self> {
         let entry = &after.current_entry;
         let Some(before) = before.filter(|before| before.asset.id == after.asset.id) else {
@@ -246,7 +252,12 @@ impl Happened {
         if previous.id == entry.id {
             return None;
         }
-        Some(if entry.sequence < previous.sequence {
+        Some(if entry.sequence < previous.sequence && collapsed {
+            Self::Collapsed {
+                label: previous.label.clone(),
+                sequence: entry.sequence,
+            }
+        } else if entry.sequence < previous.sequence {
             Self::Undid {
                 label: previous.label.clone(),
             }
@@ -291,6 +302,9 @@ impl Happened {
                 agent: Some(agent),
             } => format!("Agent {agent} applied {label} \u{b7} entry {sequence}"),
             Self::Undid { label } => format!("Undid {label}"),
+            Self::Collapsed { label, sequence } => {
+                format!("Back to entry {sequence} \u{b7} collapsed {label}")
+            }
             Self::Redid { label, sequence } => format!("Redid {label} \u{b7} entry {sequence}"),
             Self::Returned { label, sequence } => {
                 format!("Returned to entry {sequence} \u{b7} {label}")
@@ -352,10 +366,6 @@ pub(crate) fn mask_gesture(
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct StatusBarModel {
     pub(crate) message: String,
-    /// The three output codes under the pointer and their pixel, while the pointer is over the
-    /// photograph; `None` otherwise. The view keeps a fixed slot for it either way, so nothing else
-    /// in the bar moves as it comes and goes.
-    pub(crate) readout: Option<String>,
     /// How many other clients are connected, or why the count is unknown.
     pub(crate) clients: String,
     /// Another client is connected, so the dot beside the count is lit.
@@ -413,7 +423,6 @@ pub(crate) fn view_text(zoom: &Zoom, effective: Option<f32>, scale: f32) -> Stri
 pub(crate) fn derive(inputs: &Inputs<'_>) -> StatusBarModel {
     StatusBarModel {
         message: inputs.status.to_owned(),
-        readout: inputs.hover.readout.as_ref().map(histogram::readout_text),
         clients: clients_text(inputs.clients),
         agents_connected: inputs.clients.is_some_and(|count| count > 0),
         // A cached preview drawn while its photograph's original prepares says so first, even
@@ -726,7 +735,7 @@ mod tests {
         let opened = open_at(&asset, original.clone());
         let file = "photo.jpg".to_owned();
         assert_eq!(
-            Happened::between(None, &opened, false),
+            Happened::between(None, &opened, false, false),
             Some(Happened::Opened { file: file.clone() })
         );
         assert_eq!(
@@ -734,19 +743,19 @@ mod tests {
             format!("Opened {file}")
         );
         // The same current entry read again is not news.
-        assert_eq!(Happened::between(Some(&opened), &opened, true), None);
+        assert_eq!(Happened::between(Some(&opened), &opened, true, false), None);
 
         let mut clarity = entry(&asset, 7, Some(&original.id));
         clarity.label = "Clarity +18".into();
         clarity.actor = ACTOR.into();
         let applied = open_at(&asset, clarity);
-        let mine = Happened::between(Some(&opened), &applied, false).expect("a change");
+        let mine = Happened::between(Some(&opened), &applied, false, false).expect("a change");
         assert_eq!(mine.sentence(), "Applied Clarity +18 \u{b7} entry 7");
 
         let mut theirs = applied.clone();
         theirs.current_entry.actor = "lw-assist".into();
         assert_eq!(
-            Happened::between(Some(&opened), &theirs, false)
+            Happened::between(Some(&opened), &theirs, false, false)
                 .expect("a change")
                 .sentence(),
             format!(
@@ -758,19 +767,27 @@ mod tests {
         // Back to the older entry is an undo of the newer one's label; forward to one already
         // loaded is a redo.
         assert_eq!(
-            Happened::between(Some(&applied), &opened, true)
+            Happened::between(Some(&applied), &opened, true, false)
                 .expect("a change")
                 .sentence(),
             "Undid Clarity +18"
         );
         assert_eq!(
-            Happened::between(Some(&opened), &applied, true)
+            Happened::between(Some(&opened), &applied, true, false)
                 .expect("a change")
                 .sentence(),
             format!(
                 "Redid Clarity +18 \u{b7} entry {}",
                 applied.current_entry.sequence
             )
+        );
+        // Back to the older entry because this desktop's edit returned a control to where its
+        // chain began is a collapse, not an undo.
+        assert_eq!(
+            Happened::between(Some(&applied), &opened, true, true)
+                .expect("a change")
+                .sentence(),
+            "Back to entry 0 \u{b7} collapsed Clarity +18"
         );
         assert_eq!(
             Happened::Returned {
@@ -790,7 +807,7 @@ mod tests {
         let mut other = applied.clone();
         other.asset.id = luxforge_core::AssetId::new();
         assert!(matches!(
-            Happened::between(Some(&opened), &other, false),
+            Happened::between(Some(&opened), &other, false, false),
             Some(Happened::Opened { .. })
         ));
     }

@@ -69,6 +69,13 @@ impl<'r> QueryRef<'r> {
 }
 
 impl ModuleRegistry {
+    /// Whether this registry serves the test modules, which only a developer run registers.
+    pub(crate) fn serves_test_modules(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.provider().descriptor().developer)
+    }
+
     /// Every registered module's descriptor, as the registry publishes it: with the availability
     /// each was registered with.
     pub fn descriptors(&self) -> Vec<&ModuleDescriptor> {
