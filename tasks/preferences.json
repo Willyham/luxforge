@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Core preferences: the new typed fields, their checks, preferences.read and preferences.set, the General-field events, the launch read, the lens first-open switch and export.plan's remembered folder.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Preferences (crates/luxforge-core/src/preferences.rs) gain auto_lens_profile, mask_overlay_colour, canvas_background, interface_size, catalog, workspace, brush, window and export_folder, each stored only when chosen (absent follows the default) and removed by null. The two existing booleans keep their behaviour and also accept null.",
@@ -85,7 +85,7 @@
     {
       "id": "TASK-002",
       "description": "Desktop preference writer and the General tab: one coalescing writer for every preferences.set, the Auto collapse, lens and mask overlay colour rows, the preference evidence step and live application of another client's change.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-001"
       ],
