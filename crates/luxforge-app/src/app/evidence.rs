@@ -779,8 +779,26 @@ impl Editor {
                 }
             }
             EvidenceMessage::Info(info) => {
-                self.activity.backend =
-                    Some(json!({"backend":info.graphics_backend,"adapter":info.graphics_adapter}));
+                // Iced names the adapter and its backend; the rest of the adapter's identity — its
+                // device type above all, which tells a software rasterizer from a GPU — comes from
+                // an enumeration of that backend, which creates a graphics instance, so it runs on
+                // the blocking pool and the capture waits for it.
+                let (backend, name) =
+                    (info.graphics_backend.clone(), info.graphics_adapter.clone());
+                return super::tasks::owner_task(
+                    move || super::renderer::identify(&backend, &name),
+                    move |adapter| {
+                        Message::Evidence(EvidenceMessage::Adapter(Box::new((info, adapter))))
+                    },
+                );
+            }
+            EvidenceMessage::Adapter(identified) => {
+                let (info, adapter) = *identified;
+                self.activity.backend = Some(super::renderer::adapter_record(
+                    &info.graphics_backend,
+                    &info.graphics_adapter,
+                    adapter.as_ref(),
+                ));
                 self.event("backend", || {
                     self.activity.backend.clone().unwrap_or(Value::Null)
                 });
@@ -822,8 +840,10 @@ impl Editor {
                 let Some(evidence) = &mut self.evidence else {
                     return Task::none();
                 };
-                // Wait for the backend, for tool discovery and for the preset library, so a frame
-                // always shows real controls and the library rather than their loading lines.
+                // Wait for the backend and the adapter's identity, for the owner to hold the
+                // renderer the desktop reported, for tool discovery and for the preset library, so
+                // a frame always shows real controls and the library rather than their loading
+                // lines, and its session names the renderer that drew it.
                 let overlay_wanted = evidence.capture_overlay;
                 // The screenshot reads back the frame drawn last, so it waits for a frame built
                 // after every update so far; the next frame tick tries again.
@@ -832,6 +852,7 @@ impl Editor {
                     || !evidence.sync.current()
                     || evidence.sync.cursor.waiting()
                     || self.activity.backend.is_none()
+                    || self.renderer.in_flight()
                     || !self.modules_ready
                     || !self.presets.library.ready()
                     || !self.curve_sampling.slot.idle()
