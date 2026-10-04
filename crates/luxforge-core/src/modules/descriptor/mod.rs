@@ -38,6 +38,6 @@ pub(crate) use validate::{
 };
 pub(crate) use values::{
     MAX_SETTINGS_ACTIONS, MAX_SETTINGS_FIELDS, check_declared_values, check_settings, check_target,
-    decode_parameters,
+    decode_parameters, take_parameters,
 };
 pub use values::{check_parameters, check_value};

@@ -51,6 +51,8 @@ luxforge-testbase = { path = "../luxforge-testbase" }
 naga = { workspace = true, features = ["wgsl-in"] }
 # The core's own tests with the disk flush skipped (the feature above).
 luxforge-core = { path = ".", features = ["test-skip-disk-flush"] }
+# The counting allocator the `draft_tick` binary installs to hold a brush tick to its copies.
+luxforge-process = { path = "../luxforge-process", features = ["allocation-counter"] }
 
 [lints]
 workspace = true
