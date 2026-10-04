@@ -325,6 +325,9 @@ impl Editor {
                 // plan's own reason, a boundary not held yet, the converter's reason or the
                 // surface's fallback.
                 "plan_fallback":self.gpu_plan_fallback().map(|reason| json!({"reason":reason})),
+                // What the status bar says of that reason beside its render slot, when it lasts:
+                // the phrase and tooltip of the same frame, `null` when it says nothing.
+                "fallback_notice":state::status::Fallback::evidence(self.workspace.status.fallback.as_ref()),
                 "drawn_gpu_boundary":gpu.drawn_gpu_boundary,
                 // The draft revision of the plan whose output was drawn, and the boundary a plan
                 // last evaluated, drawn or held behind the CPU frame.
@@ -350,6 +353,8 @@ impl Editor {
                     "progress":dissolve.progress()})),
                 "gpu_preview_budget_bytes":gpu.gpu_preview_budget_bytes,
                 "gpu_preview_in_use_bytes":gpu.gpu_preview_in_use_bytes,
+                // Of the figure in use, the slots' pools of scratch textures, each counted once.
+                "gpu_preview_scratch_bytes":gpu.gpu_preview_scratch_bytes,
                 "gpu_preview_peak_bytes":gpu.gpu_preview_peak_bytes,
                 "gpu_preview_passes":gpu.gpu_preview_passes,
                 "gpu_preview_spatial_passes":gpu.gpu_preview_spatial_passes,
@@ -419,7 +424,7 @@ impl Editor {
     /// and the renderer's figure for the picture on screen.
     pub(super) fn status_bar_summary(&self) -> Value {
         let model = &self.workspace.status;
-        json!({"message":model.message,"readout":model.readout,"render":model.render,"gpu_ms":model.gpu_us.map(|us| us as f64 / 1000.0),"render_ms":self.activity.render.map(|time| time.ms),"render_proxy":self.activity.render.map(|time| time.proxy),"render_approximate":self.activity.render.map(|time| time.approximate)})
+        json!({"message":model.message,"readout":model.readout,"render":model.render,"fallback":state::status::Fallback::evidence(model.fallback.as_ref()),"gpu_ms":model.gpu_us.map(|us| us as f64 / 1000.0),"render_ms":self.activity.render.map(|time| time.ms),"render_proxy":self.activity.render.map(|time| time.proxy),"render_approximate":self.activity.render.map(|time| time.approximate)})
     }
 
     /// The notices the captured frame drew, by title, so a frame's chrome is observable.
