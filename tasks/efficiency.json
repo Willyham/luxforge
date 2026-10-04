@@ -806,7 +806,7 @@
     {
       "id": "TASK-014",
       "description": "Convert the lens warp grid once per held boundary, and copy and compare only the GPU preview blocks whose shared buffer changed.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "crates/luxforge-app/src/app/gpu_plan.rs (grid.nodes, about line 425) converts the warp grid's nodes (up to 262k, 2 MiB; about 880 KiB at Fit) through a temporary Vec into a new Arc<[u32]> on every tick, reached from gpu_preview.rs:498, although the grid is fixed for the draft. Convert it once when the boundary is held and pass the Arc each tick.",
