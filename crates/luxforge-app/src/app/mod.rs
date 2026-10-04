@@ -81,6 +81,9 @@ mod gpu_settle_tests;
 mod history;
 #[cfg(test)]
 mod history_tests;
+pub(crate) mod job_reads;
+#[cfg(test)]
+mod job_reads_tests;
 pub(crate) mod keymap;
 mod lifecycle;
 #[cfg(test)]
@@ -147,8 +150,8 @@ use luxforge_core::{
     POINTER_MODE,
 };
 use message::{
-    Message, evidence::EvidenceMessage, performance::PerformanceMessage, preview::PreviewMessage,
-    view::ViewMessage,
+    Message, capability::CapabilityMessage, evidence::EvidenceMessage,
+    performance::PerformanceMessage, preview::PreviewMessage, view::ViewMessage,
 };
 use serde_json::{Value, json};
 use std::{sync::Arc, thread::JoinHandle, time::Instant};
@@ -350,6 +353,10 @@ pub(crate) struct Editor {
     /// exactly those through the owner and hand the answers back.
     #[cfg(test)]
     pub(crate) capability_started: Vec<(String, state::capabilities::Operation)>,
+    /// How many updates ran the whole route, hooks, derive and all, rather than a fast path, so a
+    /// test can tell that a message skipped it.
+    #[cfg(test)]
+    pub(crate) full_updates: u64,
     /// The state panel's Performance section: its flag, what it has read and its one read in
     /// flight. It samples only while expanded with the state panel shown.
     pub(crate) performance: performance::Sampler,
@@ -447,6 +454,19 @@ const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 9] = [
     export::subscription,
 ];
 
+/// The graphics backend and adapter, asked of the renderer only by an evidence run, which is the
+/// only thing that reads them: its frames' `state.backend`, its capture gate and its `backend`
+/// event. A normal launch asks for nothing, because iced answers the request with
+/// `System::new_all()` and `refresh_all()` on a spawned thread, a walk of every process on the
+/// host that returns two strings no one in a normal launch reads. The workspace keeps iced's
+/// `sysinfo` feature for this call; without it the request never answers.
+fn system_information(evidence: bool) -> Task<Message> {
+    if !evidence {
+        return Task::none();
+    }
+    iced::system::information().map(|value| Message::Evidence(EvidenceMessage::Info(value)))
+}
+
 impl Editor {
     pub(crate) fn new(boot: Boot) -> (Self, Task<Message>) {
         let Boot {
@@ -515,6 +535,8 @@ impl Editor {
             capabilities: Default::default(),
             #[cfg(test)]
             capability_started: Vec::new(),
+            #[cfg(test)]
+            full_updates: 0,
             performance: performance::Sampler::new(expanded),
             export: Default::default(),
             gpu: Default::default(),
@@ -557,8 +579,7 @@ impl Editor {
             .and_then(iced::window::scale_factor)
             .map(|value| Message::View(ViewMessage::ScaleFactor(value)));
         let trackpad = view_state::install_trackpad();
-        let backend = iced::system::information()
-            .map(|value| Message::Evidence(EvidenceMessage::Info(value)));
+        let backend = system_information(editor.evidence.is_some());
         // Tool controls are discovered once, through the same API every other client uses, and the
         // preset library is listed the same way; the event sync keeps it current afterwards.
         let modules = modules_task(editor.owner.clone(), editor.client);
@@ -619,32 +640,43 @@ impl Editor {
     /// Route the message to its seam, then run every seam's hook in [`AFTER_MESSAGE`], derive the
     /// screen again, run the hooks that read it in [`AFTER_DERIVE`], and wake the workers' poll.
     fn update_inner(&mut self, message: Message) -> Task<Message> {
-        // An idle resource sample changes only this section. Keep the same sampling resolution,
-        // but avoid rebuilding all tool controls, masks, history and histogram for its redraw.
-        if self.evidence.is_none()
-            && !self.busy
-            && self.gesture.is_none()
-            && !self.workers_busy()
-            && !self.view_plan.dirty
-            && !self.view_plan.in_flight
-            && self.view_plan.quiet_since.is_none()
-            && self.sync.poll.idle()
-            && self.performance.cancelling.is_empty()
-            && matches!(
-                &message,
-                Message::Performance(PerformanceMessage::Tick | PerformanceMessage::Sampled { .. })
-            )
+        if self.update_is_quiet() {
+            // An idle resource sample changes only this section. Keep the same sampling
+            // resolution, but avoid rebuilding all tool controls, masks, history and histogram for
+            // its redraw.
+            if self.performance.cancelling.is_empty()
+                && matches!(
+                    &message,
+                    Message::Performance(
+                        PerformanceMessage::Tick | PerformanceMessage::Sampled { .. }
+                    )
+                )
+            {
+                let task = self.dispatch(message);
+                let transition = self.performance_transition();
+                let rederive_started = Instant::now();
+                self.workspace
+                    .performance
+                    .refresh_sample(self.performance.expanded, &self.performance.history);
+                let mut timing = self.log.loop_timing.get();
+                timing.last_rederive_ms = rederive_started.elapsed().as_secs_f64() * 1000.0;
+                self.log.loop_timing.set(timing);
+                return Task::batch([task, transition]);
+            }
+            // A capability reader's first read of a job can answer the record the round trip that
+            // started it already tracked, which changes no state the hooks or the derive read.
+            // Dispatch it and stop. (Every later read the reader sends is a change.)
+            if self.job_read_changes_nothing(&message) {
+                let task = self.dispatch(message);
+                let mut timing = self.log.loop_timing.get();
+                timing.last_rederive_ms = 0.0;
+                self.log.loop_timing.set(timing);
+                return task;
+            }
+        }
+        #[cfg(test)]
         {
-            let task = self.dispatch(message);
-            let transition = self.performance_transition();
-            let rederive_started = Instant::now();
-            self.workspace
-                .performance
-                .refresh_sample(self.performance.expanded, &self.performance.history);
-            let mut timing = self.log.loop_timing.get();
-            timing.last_rederive_ms = rederive_started.elapsed().as_secs_f64() * 1000.0;
-            self.log.loop_timing.set(timing);
-            return Task::batch([task, transition]);
+            self.full_updates += 1;
         }
         let before = Before::of(self);
         let mut tasks = vec![self.dispatch(message)];
@@ -664,6 +696,38 @@ impl Editor {
         Task::batch(tasks)
     }
 
+    /// Nothing else is going on: no evidence run to keep in step, no request in flight, no open
+    /// gesture, idle workers, a settled view and no event read outstanding. The only state in
+    /// which a message that changes nothing can skip the hooks and the derive, because each hook
+    /// answers a change a message made, and in this state the one before it already did.
+    fn update_is_quiet(&self) -> bool {
+        self.evidence.is_none()
+            && !self.busy
+            && self.gesture.is_none()
+            && !self.workers_busy()
+            && !self.view_plan.dirty
+            && !self.view_plan.in_flight
+            && self.view_plan.quiet_since.is_none()
+            && self.sync.poll.idle()
+    }
+
+    /// Whether this message is a capability reader's send that leaves everything the screen and
+    /// the hooks read as it is: every record in it is of a job still queued or running that
+    /// answers exactly the record the desktop already tracks. The comparison is made against the
+    /// held state, before the message is applied; anything that differs, and every ended or failed
+    /// job, takes the full update. An export reader's first read is never one, since the desktop
+    /// holds no record of the job until a read arrives.
+    fn job_read_changes_nothing(&self, message: &Message) -> bool {
+        let Message::Capability(CapabilityMessage::Polled(polled)) = message else {
+            return false;
+        };
+        polled.iter().all(|(module, _, result)| {
+            result
+                .as_ref()
+                .is_ok_and(|record| self.capabilities.tracks_exactly(module, record))
+        })
+    }
+
     /// One of the bounded preview or overlay workers has a job.
     fn workers_busy(&self) -> bool {
         self.presentation.queue.is_busy()
@@ -680,7 +744,22 @@ impl Editor {
         self.activity.render_bar =
             state::canvas::render_bar(self.presentation.queue.progress(), self.activity.render_bar);
         let mut workspace = std::mem::take(&mut self.workspace);
-        let inputs = state::Inputs {
+        let inputs = self.inputs();
+        workspace.derive(&inputs);
+        for job in &mut workspace.performance.jobs {
+            job.cancelling = job
+                .job_id
+                .as_ref()
+                .is_some_and(|id| self.performance.cancelling.contains(id));
+        }
+        self.workspace = workspace;
+    }
+
+    /// What every region derives from, read off the desktop's state as it stands. The derive reads
+    /// it after every message; a report that needs a section's controls without its panel drawing
+    /// them builds them from it on demand ([`state::tools::controls_of`]).
+    pub(crate) fn inputs(&self) -> state::Inputs<'_> {
+        state::Inputs {
             document: &self.document,
             modules: &self.modules,
             modules_ready: self.modules_ready,
@@ -739,15 +818,7 @@ impl Editor {
             preset_form: &self.presets.form,
             performance_expanded: self.performance.expanded,
             performance: &self.performance.history,
-        };
-        workspace.derive(&inputs);
-        for job in &mut workspace.performance.jobs {
-            job.cancelling = job
-                .job_id
-                .as_ref()
-                .is_some_and(|id| self.performance.cancelling.contains(id));
         }
-        self.workspace = workspace;
     }
 
     /// Hand one message to the seam that owns it. Routing only: each seam's own update function

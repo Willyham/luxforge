@@ -50,9 +50,7 @@
 //!   held. The mask overlay's region coverage is laid over the GPU region frame.
 use super::{Editor, gpu_plan};
 use crate::state::status::CpuReason;
-use luxforge_core::{
-    BoundaryKey, BoundaryRequest, CoordinateGrid, Draft, DraftId, GpuAnswer, GpuPreview, Region,
-};
+use luxforge_core::{BoundaryKey, BoundaryRequest, Draft, DraftId, GpuAnswer, GpuPreview, Region};
 use luxforge_ui::photo_surface::{
     self as surface, DrawingPath, GpuBoundary, GpuStep, GpuWarm, SurfaceDiagnostics,
 };
@@ -102,9 +100,10 @@ struct Held {
     key: BoundaryKey,
     boundary: GpuBoundary,
     origin: (u32, u32),
-    /// A warp tail's coordinate grid, computed with the boundary; `None` for an affine tail, or a
+    /// A warp tail's coordinate grid, computed with the boundary and converted to its tail's words
+    /// once, as it is held, for every tick drawn from it to share; `None` for an affine tail, or a
     /// warp whose grid could not be built, which then keeps the CPU path.
-    grid: Option<Arc<CoordinateGrid>>,
+    grid: Option<gpu_plan::WarpGrid>,
 }
 
 /// A plan handed to the surface: converted, the draft revision it is tagged with, and its serial
@@ -782,7 +781,7 @@ impl Editor {
                             plan,
                             held.boundary.clone(),
                             held.origin,
-                            held.grid.as_deref(),
+                            held.grid.as_ref(),
                             held.key.region(),
                         )
                         .map(|converted| super::gpu_settle::marked(converted, plan, clip))
@@ -979,14 +978,17 @@ impl Editor {
                                 key,
                                 boundary,
                                 origin: frame.origin,
-                                grid: outcome.grid.and_then(Result::ok),
+                                grid: outcome
+                                    .grid
+                                    .and_then(Result::ok)
+                                    .map(|grid| gpu_plan::WarpGrid::new(&grid)),
                             };
                             let over = |plan: &CorePlan, held: &Held| {
                                 gpu_plan::surface_plan_over(
                                     plan,
                                     held.boundary.clone(),
                                     held.origin,
-                                    held.grid.as_deref(),
+                                    held.grid.as_ref(),
                                     held.key.region(),
                                 )
                                 .ok()
@@ -1079,7 +1081,10 @@ impl Editor {
                             key: outcome.key,
                             boundary,
                             origin,
-                            grid: outcome.grid.and_then(Result::ok),
+                            grid: outcome
+                                .grid
+                                .and_then(Result::ok)
+                                .map(|grid| gpu_plan::WarpGrid::new(&grid)),
                         });
                         drag.failed = None;
                         // The latest tick's plan is drawn now, before the next input.
@@ -1091,7 +1096,7 @@ impl Editor {
                                 plan,
                                 held.boundary.clone(),
                                 held.origin,
-                                held.grid.as_deref(),
+                                held.grid.as_ref(),
                                 held.key.region(),
                             )
                             .ok()
@@ -1182,7 +1187,7 @@ impl Editor {
                 &plan,
                 held.boundary.clone(),
                 held.origin,
-                held.grid.as_deref(),
+                held.grid.as_ref(),
                 held.key.region(),
             )
             .ok()

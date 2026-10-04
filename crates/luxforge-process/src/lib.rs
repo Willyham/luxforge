@@ -11,6 +11,8 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+#[cfg(feature = "allocation-counter")]
+pub mod allocations;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]

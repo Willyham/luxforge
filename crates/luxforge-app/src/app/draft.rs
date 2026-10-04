@@ -11,6 +11,8 @@
 //!   sends them, so `draft.commit` is the one round trip that outlives an update, and nothing else is
 //!   sent while it is in flight;
 //! - the newest offered fields win, and fields equal to the ones already accepted are not re-sent;
+//! - a gesture whose fields are costly to build — a brush stroke's decimated path — only says it
+//!   changed ([`Event::Changed`]), and its fields are built when they can be sent, once per send;
 //! - a release commits exactly once, after every offered field has reached the core draft;
 //! - a conflicted draft is never committed: release is refused until Discard or Reapply;
 //! - Discard during a commit lets the commit decide and cancels only if the commit is refused;
@@ -45,6 +47,11 @@ pub(crate) enum Finish {
 pub(crate) enum Event {
     /// The gesture's fields now, as one JSON object: what the next `draft.set` carries.
     Offer(Value),
+    /// The gesture's fields may have changed. They are built, through the builder the driver hands
+    /// [`CoreDraft::handle_with`], only when they can be sent: at once when nothing is in flight,
+    /// otherwise once the round trip in flight has answered. A brush stroke's path is decimated and
+    /// serialized once per `draft.set`, however many moves changed it meanwhile.
+    Changed,
     /// The synchronous `draft.set` answered: the draft it accepted, or why no frame follows.
     Set(Result<Draft, String>),
     /// The pointer was released, a key came up or Apply was pressed: commit once.
@@ -97,10 +104,18 @@ pub(crate) struct CoreDraft {
     in_flight: Option<Round>,
     /// The newest fields the gesture offered that no `draft.set` has carried yet.
     pending: Option<Value>,
+    /// The gesture changed while a round trip was in flight, and its fields are still to be built
+    /// ([`Event::Changed`]). Never set between updates, since `draft.set` answers in the update
+    /// that sends it.
+    changed: bool,
     /// The fields the last accepted `draft.set` carried.
     sent: Option<Value>,
     finish: Option<Finish>,
 }
+
+/// The driver's builder of the gesture's fields, run when [`Event::Changed`] fields can be sent:
+/// `None` when the gesture has no fields to offer, a failed capture's.
+pub(crate) type Build<'a> = dyn FnMut() -> Option<Value> + 'a;
 
 impl CoreDraft {
     /// A Discard was pressed while the commit was in flight. The commit decided publication; the
@@ -120,10 +135,11 @@ impl CoreDraft {
             conflicted: opened.conflicted,
             in_flight: None,
             pending: fields,
+            changed: false,
             sent: None,
             finish: None,
         };
-        let step = match draft.advance() {
+        let step = match draft.advance(&mut || None) {
             Step::None if draft.conflicted => Step::Conflicted,
             step => step,
         };
@@ -140,9 +156,10 @@ impl CoreDraft {
         self.sent.as_ref()
     }
 
-    /// Fields are waiting to be sent: offered, and not the ones already accepted.
+    /// Fields are waiting to be sent: offered, and not the ones already accepted, or changed and not
+    /// yet built.
     fn outstanding(&self) -> bool {
-        self.pending.is_some() && self.pending != self.sent
+        self.changed || (self.pending.is_some() && self.pending != self.sent)
     }
 
     /// Nothing is in flight, nothing is waiting and nothing is due: the frame the last `draft.set`
@@ -189,13 +206,26 @@ impl CoreDraft {
         })
     }
 
-    /// Take one event and answer the step it calls for.
+    /// [`Self::handle_with`] for a gesture that offers its fields ([`Event::Offer`]) and has none
+    /// to build, as the tests of the lifecycle drive one.
+    #[cfg(test)]
     pub(crate) fn handle(&mut self, event: Event) -> Step {
+        self.handle_with(event, &mut || None)
+    }
+
+    /// Take one event and answer the step it calls for, building the gesture's fields with `build`
+    /// when it changed ([`Event::Changed`]) and they can be sent.
+    pub(crate) fn handle_with(&mut self, event: Event, build: &mut Build<'_>) -> Step {
         match event {
-            Event::Offer(_) | Event::Release if self.settled() => Step::None,
+            Event::Offer(_) | Event::Changed | Event::Release if self.settled() => Step::None,
             Event::Offer(fields) => {
                 self.pending = Some(fields);
-                self.advance()
+                self.changed = false;
+                self.advance(build)
+            }
+            Event::Changed => {
+                self.changed = true;
+                self.advance(build)
             }
             Event::Set(answer) => {
                 if self.in_flight != Some(Round::Set) {
@@ -206,7 +236,7 @@ impl CoreDraft {
                     self.draft_revision = set.draft_revision;
                     self.conflicted = set.conflicted;
                 }
-                self.advance()
+                self.advance(build)
             }
             Event::Release => {
                 if self.conflicted {
@@ -214,14 +244,15 @@ impl CoreDraft {
                     return Step::Refused;
                 }
                 self.finish = Some(Finish::Commit);
-                self.advance()
+                self.advance(build)
             }
             Event::Cancel => {
                 // During a commit the commit decides: an entry ends the gesture, a refusal cancels
                 // it. Otherwise the draft is cancelled now.
                 self.pending = None;
+                self.changed = false;
                 self.finish = Some(Finish::Cancel);
-                self.advance()
+                self.advance(build)
             }
             Event::Reapply => {
                 if self.in_flight.is_some() || self.finish.is_some() {
@@ -239,7 +270,7 @@ impl CoreDraft {
                     self.pending = self.pending.take().or_else(|| self.sent.clone());
                     self.sent = None;
                 }
-                self.advance()
+                self.advance(build)
             }
             Event::Committed(answer) => {
                 if self.in_flight != Some(Round::Commit) {
@@ -258,7 +289,7 @@ impl CoreDraft {
                             self.conflicted = true;
                         }
                         if self.finish == Some(Finish::Cancel) {
-                            return self.advance();
+                            return self.advance(build);
                         }
                         self.finish = None;
                         Step::None
@@ -282,14 +313,20 @@ impl CoreDraft {
 
     /// Nothing is in flight: send what the gesture asked for meanwhile. Discard first, then the
     /// newest fields, then the commit — a commit sends the core draft's fields, not the desktop's,
-    /// so every offered field must be there before it goes.
-    fn advance(&mut self) -> Step {
+    /// so every offered field must be there before it goes. Fields the gesture changed are built
+    /// here, once; a gesture that cannot build them leaves what it offered before.
+    fn advance(&mut self, build: &mut Build<'_>) -> Step {
         if self.in_flight.is_some() {
             return Step::None;
         }
         let draft_id = self.draft_id.clone();
         if self.finish == Some(Finish::Cancel) {
             return Step::Cancel(draft_id);
+        }
+        if std::mem::take(&mut self.changed)
+            && let Some(fields) = build()
+        {
+            self.pending = Some(fields);
         }
         if self.outstanding() && !self.conflicted {
             let fields = self.pending.take().expect("outstanding fields");
@@ -610,5 +647,182 @@ mod tests {
             Step::None
         );
         assert!(draft.drained() && !draft.drafted());
+    }
+
+    use crate::{
+        app::gesture::{Kind, MaskGesture},
+        mask_draft::{BRUSH, MaskDraft, NEUTRAL_BRUSH, brush_counts},
+    };
+
+    /// A brush stroke's gesture, pressed at the start of a long horizontal wave, with the production
+    /// builder of its fields ([`Kind::build`]).
+    fn stroke() -> Kind {
+        let mut shape = MaskDraft::creating(BRUSH, NEUTRAL_BRUSH).expect("a painted kind");
+        shape.paint_begin(wave(0));
+        Kind::Mask(MaskGesture {
+            shape,
+            map: None,
+            map_draft: None,
+        })
+    }
+
+    fn wave(step: usize) -> (f64, f64) {
+        let along = step as f64 / 2000.0;
+        (0.05 + 0.9 * along, 0.5 + 0.3 * (along * 40.0).sin())
+    }
+
+    /// Extend the stroke by one position; it must grow the path.
+    fn paint(kind: &mut Kind, step: usize) {
+        let Kind::Mask(mask) = kind else {
+            unreachable!("a stroke");
+        };
+        assert!(
+            mask.shape.paint_to(wave(step)),
+            "move {step} grows the path"
+        );
+    }
+
+    /// One event, with the fields built as the driver builds them.
+    fn drive(draft: &mut CoreDraft, kind: &Kind, event: Event) -> Step {
+        draft.handle_with(event, &mut || kind.build(&mut None))
+    }
+
+    fn built(kind: &Kind) -> Value {
+        kind.build(&mut None).expect("an accepted capture")
+    }
+
+    #[test]
+    fn moves_while_a_set_is_in_flight_build_nothing_and_its_answer_builds_once() {
+        let (mut draft, id) = begun();
+        let mut kind = stroke();
+        brush_counts::take();
+        // Nothing is in flight: the change is built and sent at once, decimated and serialized
+        // once.
+        let Step::Set { fields, .. } = drive(&mut draft, &kind, Event::Changed) else {
+            panic!("the first change is sent");
+        };
+        assert_eq!(brush_counts::take(), (1, 1));
+        assert_eq!(fields, built(&kind));
+        brush_counts::take();
+        // While that set is in flight, a long run of moves grows the path and builds nothing.
+        for step in 1..=1500 {
+            paint(&mut kind, step);
+            assert_eq!(drive(&mut draft, &kind, Event::Changed), Step::None);
+            assert!(draft.frame_pending() && !draft.drained());
+        }
+        assert_eq!(
+            brush_counts::take(),
+            (0, 0),
+            "no move decimated or serialized the path while the set was in flight"
+        );
+        // Its answer sends the newest fields, built once.
+        let set = accepted(&draft, 1);
+        let Step::Set { draft_id, fields } = drive(&mut draft, &kind, Event::Set(Ok(set))) else {
+            panic!("the answer sends what the moves changed");
+        };
+        assert_eq!(
+            brush_counts::take(),
+            (1, 1),
+            "the send decimated and serialized the path once"
+        );
+        assert_eq!(draft_id, id);
+        assert_eq!(fields, built(&kind), "the newest path goes");
+        assert_eq!(draft.sent(), Some(&fields));
+        let set = accepted(&draft, 2);
+        assert_eq!(drive(&mut draft, &kind, Event::Set(Ok(set))), Step::None);
+        assert!(draft.drained() && !draft.frame_pending());
+    }
+
+    #[test]
+    fn a_long_stroke_reads_drained_between_moves_and_reports_what_it_sent() {
+        let (mut draft, id) = begun();
+        let mut kind = stroke();
+        let summary = |draft: &CoreDraft| draft.summary("mask.add-stroke");
+        for step in 1..=300 {
+            paint(&mut kind, step);
+            brush_counts::take();
+            // As the driver does: the change is built and sent in the update of the move, and the
+            // synchronous answer is taken up before the update ends.
+            let Step::Set { draft_id, fields } = drive(&mut draft, &kind, Event::Changed) else {
+                panic!("move {step} is sent");
+            };
+            assert_eq!(brush_counts::take(), (1, 1), "move {step} built once");
+            assert_eq!(draft_id, id);
+            assert!(draft.frame_pending() && !draft.drained());
+            let set = accepted(&draft, step as u64);
+            assert_eq!(drive(&mut draft, &kind, Event::Set(Ok(set))), Step::None);
+            assert!(
+                draft.drained() && !draft.frame_pending(),
+                "move {step}: nothing is left in flight or waiting"
+            );
+            assert_eq!(draft.sent(), Some(&fields));
+            assert_eq!(summary(&draft)["fields"], fields);
+            assert_eq!(summary(&draft)["draft_revision"], step as u64);
+        }
+    }
+
+    #[test]
+    fn a_change_that_builds_the_sent_fields_sends_nothing() {
+        let (mut draft, _) = begun();
+        let mut kind = stroke();
+        paint(&mut kind, 1);
+        drive(&mut draft, &kind, Event::Changed);
+        let set = accepted(&draft, 1);
+        drive(&mut draft, &kind, Event::Set(Ok(set)));
+        brush_counts::take();
+        // Built again from the same path: equal to what was sent, so nothing goes.
+        assert_eq!(drive(&mut draft, &kind, Event::Changed), Step::None);
+        assert!(draft.drained());
+        assert_eq!(
+            brush_counts::take(),
+            (0, 1),
+            "the held decimation was serialized again and compared, not sent"
+        );
+        // A move into the cell before it holds no new position: the path, its decimation and the
+        // fields are the ones sent.
+        let Kind::Mask(mask) = &mut kind else {
+            unreachable!("a stroke");
+        };
+        let (x, y) = wave(1);
+        let cell = 1.0 / luxforge_core::path::COORDINATE_STEPS_PER_UNIT;
+        assert!(mask.shape.paint_to((x + 0.1 * cell, y)));
+        assert_eq!(drive(&mut draft, &kind, Event::Changed), Step::None);
+        assert!(draft.drained());
+        assert_eq!(brush_counts::take(), (0, 1), "nothing was decimated again");
+        // The same holds for an offer.
+        let sent = draft.sent().cloned().expect("sent fields");
+        assert_eq!(draft.handle(Event::Offer(sent)), Step::None);
+        assert!(draft.drained());
+    }
+
+    #[test]
+    fn a_changed_gesture_that_cannot_build_keeps_what_it_offered() {
+        let (mut draft, id) = begun();
+        draft.handle(Event::Offer(fields(0.4)));
+        // While the offer is in flight the gesture changes into something it cannot build.
+        assert_eq!(draft.handle(Event::Changed), Step::None);
+        let set = accepted(&draft, 1);
+        assert_eq!(
+            draft.handle(Event::Set(Ok(set))),
+            Step::None,
+            "a failed build sends nothing new"
+        );
+        assert!(draft.drained());
+        assert_eq!(draft.sent(), Some(&fields(0.4)));
+        // Held back while conflicted, a change is built at once and re-sent by Reapply.
+        draft.handle(Event::Revision(5));
+        let mut built = || Some(fields(0.7));
+        assert_eq!(draft.handle_with(Event::Changed, &mut built), Step::None);
+        assert!(!draft.frame_pending() && !draft.drained());
+        draft.handle(Event::Reapply);
+        let mut rebased = answer(5);
+        rebased.draft_id = id.clone();
+        assert_eq!(
+            draft.handle(Event::Reapplied(Ok(rebased))),
+            Step::Set {
+                draft_id: id,
+                fields: fields(0.7)
+            }
+        );
     }
 }

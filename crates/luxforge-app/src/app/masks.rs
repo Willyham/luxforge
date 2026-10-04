@@ -1665,20 +1665,17 @@ impl Editor {
         discarded
     }
 
-    /// Offer the gesture's current geometry to its core draft. The shared driver sends it with its
-    /// one preview job the moment nothing is in flight — synchronously, on this thread, in the
-    /// update that produced it, as a slider's value is — and keeps only the newest while a round
-    /// trip is in flight. That job's evaluation also supplies the live coverage grid
-    /// ([`Editor::request_mask_coverage`]).
+    /// Tell the gesture's core draft its geometry changed. The shared driver builds the fields —
+    /// a stroke's path decimated once, its capture checked first ([`Kind::build`]) — and sends
+    /// them with its one preview job the moment nothing is in flight, synchronously, on this
+    /// thread, in the update that produced them, as a slider's value is; a change while a round
+    /// trip is in flight is built once that trip has answered. That job's evaluation also supplies
+    /// the live coverage grid ([`Editor::request_mask_coverage`]).
     pub(crate) fn offer_mask(&mut self) -> Task<Message> {
-        if let Some(error) = self.mask_shape().and_then(MaskDraft::capture_error) {
-            self.status.text = error.to_string();
+        if self.mask_gesture().is_none() {
             return Task::none();
         }
-        match self.mask_gesture().map(MaskGesture::fields) {
-            Some(fields) => self.drive(Event::Offer(fields)),
-            None => Task::none(),
-        }
+        self.drive(Event::Changed)
     }
 
     /// A mask gesture's commit landed: merge it, open what it created and put the brush back in the

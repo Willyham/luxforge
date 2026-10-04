@@ -154,6 +154,21 @@ fn live_capture_stops_at_its_bound_and_never_returns_a_truncated_success() {
 }
 
 #[test]
+fn a_push_into_the_held_cell_changes_nothing_the_capture_answers() {
+    let mut capture = PathCapture::default();
+    capture.push([0.25, 0.25]);
+    let held = capture.held();
+    let decimated = capture.decimated(0.1).unwrap();
+    // A position that snaps into the cell before it is not held, so the answer stays.
+    capture.push([0.25 + 0.2 / COORDINATE_STEPS_PER_UNIT, 0.25]);
+    assert_eq!(capture.held(), held);
+    assert_eq!(capture.decimated(0.1).unwrap(), decimated);
+    capture.push([0.5, 0.25]);
+    assert_eq!(capture.held(), held + 1);
+    assert_ne!(capture.decimated(0.1).unwrap(), decimated);
+}
+
+#[test]
 fn live_capture_keeps_the_first_invalid_coordinate_reason() {
     for value in [f64::NAN, f64::INFINITY, -1.01, 2.01] {
         let mut capture = PathCapture::default();
@@ -776,4 +791,45 @@ fn a_reference_loads_as_the_type_it_declares() {
     table.load(gone.clone(), reference.kind, None);
     assert!(table.has_missing());
     assert!(!table.is_known_stored(&gone));
+}
+
+/// A stroke is shared out of another table only when that table holds it as the type the reference
+/// declares and knows it is stored: one it captured fresh, or one held as another consumer's type,
+/// is left for the store to read, and a shared stroke is the same allocation, marked known stored.
+#[test]
+fn a_table_shares_only_a_stored_stroke_of_the_declared_type() {
+    let repair = RepairStroke::capture(&[[0.1, 0.1], [0.3, 0.2]], 0.05, [0.0, 0.1]).unwrap();
+    let reference = repair.reference("repair 1");
+    let as_brush = StrokeReference {
+        what: "component Brush 1 of mask Mask 1".to_owned(),
+        id: reference.id.clone(),
+        kind: StrokeType::of::<crate::mask::Stroke>(),
+    };
+
+    let mut source = StrokeTable::new("entry entry-5");
+    source.insert(repair.clone());
+    let mut reader = StrokeTable::new("entry entry-6");
+    assert!(
+        !reader.load_shared(&reference, std::slice::from_ref(&source)),
+        "a stroke not known stored is not shared"
+    );
+    assert!(!reader.knows(&reference.id));
+
+    source.mark_stored(reference.id.clone());
+    assert!(
+        !reader.load_shared(&as_brush, std::slice::from_ref(&source)),
+        "a stroke held as another type is not shared"
+    );
+    assert!(!reader.knows(&reference.id));
+    assert!(!reader.load_shared(&reference, &[]), "no source, no stroke");
+
+    assert!(reader.load_shared(&reference, &[StrokeTable::default(), source.clone()]));
+    assert!(reader.knows(&reference.id));
+    assert!(reader.is_known_stored(&reference.id));
+    assert!(std::ptr::eq(
+        reader.get::<RepairStroke>(&reference.id).unwrap(),
+        source.get::<RepairStroke>(&reference.id).unwrap()
+    ));
+    reader.check_reference(&reference).unwrap();
+    assert!(!reader.shares(&source), "the table is the reader's own");
 }
