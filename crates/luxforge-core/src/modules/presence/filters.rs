@@ -38,9 +38,10 @@
 use crate::{
     Error,
     colour::{luma, srgb},
-    modules::{Parallelism, Stage},
+    modules::{Parallelism, Planes, Stage},
 };
 use rayon::prelude::*;
+use std::ops::Range;
 
 // ---------------------------------------------------------------------------------------------
 // Frozen constants shared by more than one unit.
@@ -461,6 +462,20 @@ pub(super) fn for_rows_of<const N: usize>(
             .enumerate()
             .for_each(|(row, values)| body(rect.y0 + row as i64, values)),
     }
+}
+
+/// Where stage columns `x0..x1` sit in a row of the unit's input ([`Planes::row`]), found once for
+/// a pass that reads those columns of many rows, in place of one [`Planes::sample`] per pixel.
+/// Every such pass reads columns inside the stage, where `sample`'s clamp changes nothing, which
+/// this checks once; a column outside the input's rectangle fails the slice bounds, as `sample`
+/// panics.
+pub(super) fn input_columns(input: &Planes<'_>, x0: i64, x1: i64) -> Range<usize> {
+    assert!(
+        0 <= x0 && x0 <= x1 && x1 <= i64::from(input.stage().width),
+        "a presence unit reads its input's columns {x0}..{x1} inside the stage"
+    );
+    let first = i64::from(input.region().x0);
+    (x0 - first) as usize..(x1 - first) as usize
 }
 
 // ---------------------------------------------------------------------------------------------
