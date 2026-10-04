@@ -101,6 +101,35 @@ mod tests {
     }
 
     #[test]
+    fn information_inspection_uses_prepared_capture_and_reopen_requires_preparation() {
+        let catalog = std::env::temp_dir().join(format!(
+            "luxforge-information-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let source = fixture_path();
+        let before = std::fs::read(&source).unwrap();
+        let mut service = crate::EditorService::open(&catalog).unwrap();
+        let asset = service.import(&source).unwrap().asset.id;
+        let information = service.inspect_source(&asset, None).unwrap()["capture"].clone();
+        assert_eq!(information["model"], "NIKON Z 6");
+        assert_eq!(information["lens_model"], "NIKKOR Z 24-70mm f/4 S");
+        assert_eq!(information["focal_mm"], 35.0);
+        assert!(information["aperture"].is_null());
+        drop(service);
+        let mut reopened = crate::EditorService::open(&catalog).unwrap();
+        assert!(reopened.inspect_source(&asset, None).unwrap()["capture"].is_null());
+        let needs = reopened.entry_needs(&asset, None).unwrap();
+        reopened.prepare(&needs).unwrap();
+        assert_eq!(
+            reopened.inspect_source(&asset, None).unwrap()["capture"],
+            information
+        );
+        assert_eq!(std::fs::read(&source).unwrap(), before);
+        drop(reopened);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
     fn jpeg_optics_report_unknown_distortion() {
         let source = crate::open_source(&fixture_path()).unwrap();
         let optics = super::super::PreparedSource::Jpeg(source).optics();

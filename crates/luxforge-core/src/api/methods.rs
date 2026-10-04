@@ -359,7 +359,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "source.inspect",
         SourceInspect,
         |service, _, p| service.inspect_source(&p.asset_id, p.entry_id.as_ref()),
-        "persisted source identity, RAW interpretation, crop, backend and preparation readiness without decoding"
+        "persisted source identity, RAW interpretation, dimensions and preparation readiness without decoding; capture is null until the verified source is prepared, then {make, model, lens_make, lens_model, aperture, exposure_seconds, iso, focal_mm, focal_35mm, captured_at}, with null for missing or invalid EXIF fields; recipe.describe supplies the selected entry's output dimensions"
     ),
     service!(
         "history.list",
@@ -1470,6 +1470,7 @@ host_params! {
         tools_panel: Option<bool> = boolean(),
         mode: Option<String> = name().notes("pointer or an available module id that declares a canvas interaction"),
         thirds: Option<bool> = boolean(),
+        information: Option<bool> = boolean().notes("show the image-information overlay; off by default; changes no history or frame"),
         clip_shadows: Option<bool> = boolean().notes("show the shadow clipping overlay"),
         clip_highlights: Option<bool> = boolean().notes("show the highlight clipping overlay"),
         // Each spelling is declared as an option, so a client reads the vocabulary from the schema
@@ -1965,6 +1966,9 @@ fn workspace_set(
     }
     if let Some(thirds) = p.thirds {
         session.workspace.thirds = thirds;
+    }
+    if let Some(information) = p.information {
+        session.workspace.information = information;
     }
     // Overlay settings are per-client view state: they change no raster, recipe or histogram.
     if let Some(clip_shadows) = p.clip_shadows {
@@ -4162,6 +4166,7 @@ mod tests {
                 "tools_panel": true,
                 "mode": "pointer",
                 "thirds": false,
+                "information": false,
                 "clip_shadows": false,
                 "clip_highlights": false,
                 "mask_overlay": "off",
@@ -4174,7 +4179,7 @@ mod tests {
             &mut service,
             &mut session,
             "workspace.set",
-            json!({"state_panel": false, "mode": "luxforge.crop", "thirds": true}),
+            json!({"state_panel": false, "mode": "luxforge.crop", "thirds": true, "information": true}),
         );
         assert_eq!(
             set["workspace"],
@@ -4183,6 +4188,7 @@ mod tests {
                 "tools_panel": true,
                 "mode": "luxforge.crop",
                 "thirds": true,
+                "information": true,
                 "clip_shadows": false,
                 "clip_highlights": false,
                 "mask_overlay": "off",
@@ -4216,6 +4222,11 @@ mod tests {
                 "the wrong type",
                 json!({"thirds": "yes"}),
                 "parameter thirds must be a boolean",
+            ),
+            (
+                "information wrong type",
+                json!({"information": "yes"}),
+                "parameter information must be a boolean",
             ),
         ] {
             let error = call(&mut service, &mut session, "workspace.set", params)

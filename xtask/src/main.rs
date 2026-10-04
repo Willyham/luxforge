@@ -23,6 +23,7 @@ mod gallery_smoke;
 mod gpu_preview_smoke;
 mod gpu_preview_zoom_smoke;
 mod histogram_smoke;
+mod information_smoke;
 mod inspect_dng;
 mod launch;
 mod lens_performance;
