@@ -1162,7 +1162,7 @@
     {
       "id": "TASK-019",
       "description": "Measure the finished efficiency work against its base on the M4 and record what each change saved, reverting any change that does not pay for itself.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-003",
@@ -1186,7 +1186,8 @@
         "Timing waits for every feature task (rule 13). Build the base commit and the integrated branch, both in the release profile (the dist profile is deferred), back to back; run each workload alternately base/branch and reversed, on a quiet host, recording load, host, profile and cache state.",
         "Workloads: editor-performance on the generated 24 MP and 60 MP JPEGs (Basic then Presence, Detail, Presence after Detail, masked stacks); cold open and committed white balance for each RAW-manifest source with peak RSS and the development's peak; editor-latency drag, paint (long stroke) and settle at 24 and 60 MP, and --presence and --detail drags; a Clarity amount drag for the reduced-grid cache's hit rate, rebuild cost and retained bytes; measure for launch and idle; commit latency with the WAL catalog.",
         "Where the desktop and owner tasks' savings show: the launch scan is skipped only in a normal launch, so measure's empty, 24mp and 60mp workloads (evidence launches) still ask for system information and only its idle row is a normal launch; a brush tick's owner copies are counted by tests/draft_tick (one copy of the path on an unplanned tick, three over a spatial stack) and its latency by editor-latency --mode paint; a collapsed section's saving is per message, largest with a large preset library; the WAL catalog's is commit latency (an import, a slider commit and a stroke commit).",
-        "Record results in docs/specs/performance.md under a section of their own, update docs/engineering/performance-rules.md (anti-patterns removed: the serial zero-fills and per-tile planes), docs/features.md and the design's status. A change whose measured saving is nil or negative on its own workload is reverted and recorded as tried."
+        "Record results in docs/specs/performance.md under a section of their own, update docs/engineering/performance-rules.md (anti-patterns removed: the serial zero-fills and per-tile planes), docs/features.md and the design's status. A change whose measured saving is nil or negative on its own workload is reverted and recorded as tried.",
+        "Run on 2026-10-04 within the three hours the owner allotted, as two A/B pairs: 946751cc against 135e720e for the core and RAW tasks, e7a65286 against 7a890372 for the owner, catalog and desktop tasks. Every change paid for itself where measured and none was reverted; the workloads not measured within the cap, and full's one failing scenario (raw-panel's crop-started step, failing identically before either body of this work), are recorded in docs/specs/performance.md."
       ],
       "context_links": [
         {
