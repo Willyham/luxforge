@@ -392,10 +392,9 @@ fn a_preference_step_drives_the_general_rows_and_waits_for_the_writer() {
 fn the_canvas_background_row_fills_the_canvas_in_each_choice_and_follows_another_client() {
     let (mut editor, root) = launch();
     let drawn = |editor: &Editor| {
-        let background = editor.workspace.canvas.background;
         (
-            background,
-            crate::view::canvas::background_colour(background),
+            editor.view_state.canvas_background,
+            crate::view::canvas::background_colour(editor.workspace.canvas.background),
         )
     };
     assert_eq!(drawn(&editor), (CanvasBackground::Dark, theme::CANVAS));

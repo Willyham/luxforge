@@ -210,6 +210,26 @@ pub(crate) struct Notice {
     pub(crate) actions: Vec<(String, NoticeAction)>,
 }
 
+/// The canvas background the person chose, as the view draws it: each names one of the theme's
+/// canvas tokens.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum CanvasFill {
+    #[default]
+    Dark,
+    Black,
+    Grey,
+}
+
+impl From<CanvasBackground> for CanvasFill {
+    fn from(background: CanvasBackground) -> Self {
+        match background {
+            CanvasBackground::Dark => Self::Dark,
+            CanvasBackground::Black => Self::Black,
+            CanvasBackground::Grey => Self::Grey,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct CanvasModel {
     pub(crate) photo: PhotoView,
@@ -217,7 +237,7 @@ pub(crate) struct CanvasModel {
     pub(crate) scale_factor: f32,
     /// The colour around the photograph, which fills the canvas region, the photo surface outside
     /// the photograph and the compare canvas.
-    pub(crate) background: CanvasBackground,
+    pub(crate) background: CanvasFill,
     pub(crate) dimensions: Option<(u32, u32)>,
     pub(crate) modes: Vec<ModeEntry>,
     pub(crate) thirds: bool,
@@ -313,7 +333,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
             Zoom::Percent { value } => ZoomView::Percent(value),
         },
         scale_factor: inputs.view_state.scale_factor,
-        background: inputs.view_state.canvas_background,
+        background: inputs.view_state.canvas_background.into(),
         dimensions: inputs.dimensions,
         modes,
         thirds: inputs.session.workspace.thirds,
