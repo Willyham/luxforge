@@ -1,6 +1,7 @@
-//! The `gpu-preview-zoom` smoke scenario: drags at 100% and above drawn on the GPU over the visible
-//! region at full scale, with no preview job per tick, on the real editor
-//! (`docs/design/gpu-preview.md`, "At 100% and above").
+//! The `gpu-preview-zoom` smoke scenario: drags at percentage zooms drawn on the GPU with no
+//! preview job per tick, on the real editor: at 100% and above over the visible region at full
+//! scale, and below 100% over the displayed-size proxy of the whole stage
+//! (`docs/design/gpu-preview.md`, "At 100% and above" and "Below 100%").
 //!
 //! One launch over the quadrant fixture the `gpu-preview` scenario uses. A Basic exposure drag at
 //! 100% opens with a CPU tick whose region job carries the one boundary request, for the region the
@@ -25,15 +26,20 @@
 //! frame: the dissolve's start and its identities are checked, and the release's capture either
 //! shows it running or follows its end, which a capture after 150 ms allows.
 //!
-//! A second, short launch drags Basic's exposure at 50%, below the zoom the GPU preview draws at:
-//! every tick takes the CPU path naming `not-fit`, and the status bar's notice reads the zoom's
-//! phrase in the same frame that records the reason, then clears once the release's settle ends.
-//! (The first launch's script holds the evidence's 64 steps.)
+//! A second, short launch drags Basic's exposure at 50% and then at 33%, where the view draws the
+//! displayed-size proxy of the whole stage, as Fit draws the display-bounded one. Each drag's first
+//! tick takes the CPU path and its job carries the one boundary request, for that proxy; once the
+//! boundary is held its ticks are drawn on the GPU from a whole frame's plan with no preview job,
+//! each GPU frame's boundary, draft revision, budget figures and label checked against its state,
+//! the same settings drawn twice to the same bytes, and the status bar saying nothing of the zoom.
+//! The release's committed proxy frame dissolves in from the drag's last GPU frame, whose pixels
+//! are the CPU frame's of the same settings, within the pointwise limits, and the boundary stays
+//! resident. (The first launch's script holds the evidence's 64 steps.)
 use crate::{
     gpu_preview_smoke::{
         BASIC, CLARITY, CLARITY_DRAG, DEHAZE, EXPOSURE, Held, PRESENCE, PRESENCE_QUIET_MS, Settled,
-        TEXTURE_DRAG, UNDER_DRAG, dissolve_from, drag_steps, gpu_drawn, named,
-        presence_drag_checks, quiet, quiet_for, same_pixels, step_events, ticks,
+        TEXTURE_DRAG, UNDER_DRAG, dissolve_from, drag_steps, gpu_drawn, jump, named,
+        presence_drag_checks, quiet, quiet_for, resident_kept, same_pixels, step_events, ticks,
     },
     scenario::{Checked, Checks, Frame, Plan, Run, Step},
     *,
@@ -113,35 +119,94 @@ const BEHIND_DETAIL: f64 = 40.0;
 const BEHIND_TEXTURE: [f64; 3] = [30.0, 40.0, 60.0];
 const BEHIND_SHARPEN: [f64; 3] = [55.0, 70.0, 85.0];
 
-/// The zoom the second launch's drag is drawn at, below the 100% the GPU preview draws from.
-const BELOW_ZOOM: f32 = 50.0;
-/// Its first tick's value, then the tick after it.
-const BELOW_DRAG: [f64; 2] = [0.5, 0.25];
-/// The notice's phrase and tooltip for `not-fit`, as the status bar gives them
-/// (`docs/design/gpu-preview.md`, "Labels and overlays during motion").
-const ZOOM_PHRASE: &str = "GPU preview at Fit and 100%+";
-const ZOOM_TOOLTIP: &str = "The GPU preview draws at Fit and at 100% or more; at this zoom the \
-                            preview is drawn on the CPU.";
+/// A drag in the second launch, below 100%, over the displayed-size proxy of the whole stage.
+struct Below {
+    zoom: f32,
+    /// The first tick's value, then the GPU ticks' values, which a second step draws again.
+    first: f64,
+    dragged: [f64; 2],
+    /// The steps' names: the zoom, the first tick, the wait, the GPU ticks, the same ticks again,
+    /// the release and the wait after it.
+    names: [&'static str; 7],
+}
 
-/// The second launch's frames, in order: the open, the zoom, the drag's ticks, its release and the
-/// settle after it.
-pub fn below_plan(_: &[PathBuf]) -> Plan {
-    Plan::new(vec![
-        Step::opened("opened-50").no_draft().masks(0),
-        Step::new("zoom-50", ViewStep::Percent(BELOW_ZOOM))
-            .commits(0)
-            .no_draft(),
-        Step::new("drag-50", SliderStep::new(BASIC, EXPOSURE, BELOW_DRAG))
-            .commits(0)
-            .draft(BASIC, json!({ EXPOSURE: BELOW_DRAG[1] })),
-        Step::new(
+/// At 50%, then at 33%, whose proxy is another and whose first tick lets the one at 50% go.
+const BELOW: [Below; 2] = [
+    Below {
+        zoom: 50.0,
+        first: 0.5,
+        dragged: [0.25, 0.1],
+        names: [
+            "zoom-50",
+            "drag-50-first",
+            "boundary-50",
+            "drag-50-gpu",
+            "drag-50-again",
             "release-50",
-            SliderStep::new(BASIC, EXPOSURE, [BELOW_DRAG[1]]).release(),
-        )
-        .commits(1)
-        .no_draft(),
-        quiet("settled-50").no_draft(),
-    ])
+            "settled-50",
+        ],
+    },
+    Below {
+        zoom: 33.0,
+        first: 0.3,
+        dragged: [0.45, 0.6],
+        names: [
+            "zoom-33",
+            "drag-33-first",
+            "boundary-33",
+            "drag-33-gpu",
+            "drag-33-again",
+            "release-33",
+            "settled-33",
+        ],
+    },
+];
+
+/// The second launch's frames, in order: the open, then for each zoom below 100% the zoom, the
+/// drag's first tick, the wait while its boundary arrives, its GPU ticks, the same ticks again, its
+/// release and the settle after it.
+pub fn below_plan(_: &[PathBuf]) -> Plan {
+    let mut steps = vec![Step::opened("opened-below").no_draft().masks(0)];
+    for Below {
+        zoom,
+        first,
+        dragged,
+        names,
+    } in BELOW
+    {
+        let [
+            zoom_name,
+            first_name,
+            held_name,
+            gpu_name,
+            again_name,
+            release_name,
+            settled_name,
+        ] = names;
+        steps.extend([
+            Step::new(zoom_name, ViewStep::Percent(zoom))
+                .commits(0)
+                .no_draft(),
+            Step::new(first_name, SliderStep::new(BASIC, EXPOSURE, [first]))
+                .commits(0)
+                .draft(BASIC, json!({ EXPOSURE: first })),
+            quiet(held_name).draft(BASIC, json!({ EXPOSURE: first })),
+            Step::new(gpu_name, SliderStep::new(BASIC, EXPOSURE, dragged))
+                .commits(0)
+                .draft(BASIC, json!({ EXPOSURE: dragged[1] })),
+            Step::new(again_name, SliderStep::new(BASIC, EXPOSURE, dragged))
+                .commits(0)
+                .draft(BASIC, json!({ EXPOSURE: dragged[1] })),
+            Step::new(
+                release_name,
+                SliderStep::new(BASIC, EXPOSURE, [dragged[1]]).release(),
+            )
+            .commits(1)
+            .no_draft(),
+            quiet(settled_name).no_draft(),
+        ]);
+    }
+    Plan::new(steps)
 }
 
 /// Every frame of the first launch, in order: the open, then one per step.
@@ -405,74 +470,154 @@ fn never_mixed(frame: &Frame) -> Result<Value> {
     )
 }
 
-/// The drag at 50%: no GPU preview is planned below 100%, so every tick takes the CPU path naming
-/// `not-fit`, and the frame that records the reason shows the status bar's notice for it, beside a
-/// CPU frame's render slot and in the evidence's two places for it. Once the release's settle has
-/// ended the notice is gone with the reason.
-fn drawn_on_the_cpu_below_100(launch: &Checked, checks: &mut Checks) -> Result {
-    let dragged = launch.at("drag-50")?;
-    let events = step_events(launch, "drag-50")?;
-    let (gpu_ticks, cpu_ticks, _) = ticks(events);
-    let reasons: Vec<&Value> = named(events, "gpu_preview_tick")
-        .iter()
-        .map(|tick| &tick["detail"]["reason"])
-        .collect();
+/// The photograph's pixels in two frames of the same settings, byte for byte: on one machine the
+/// GPU draws the same stack to the same bytes frame to frame.
+fn same_bytes(first: &Frame, second: &Frame) -> Result<Value> {
+    let rect = first.visible_photo()?;
     ensure(
-        gpu_ticks == 0
-            && cpu_ticks >= 1
-            && reasons.iter().all(|reason| **reason == json!("not-fit")),
+        second.visible_photo()? == rect,
         format!(
-            "The drag at {BELOW_ZOOM}% was {gpu_ticks} GPU and {cpu_ticks} CPU ticks for {reasons:?}"
+            "{} and {} show different rectangles",
+            first["file"], second["file"]
         ),
     )?;
-    let state = dragged.state();
-    let gpu = &state["surface"]["gpu"];
-    let (bar, notice) = (&state["status_bar"], &state["status_bar"]["fallback"]);
+    let (one, other) = (first.image()?, second.image()?);
+    let [left, top, right, bottom] = rect;
+    let differing = (top..bottom)
+        .flat_map(|y| (left..right).map(move |x| (x, y)))
+        .filter(|&(x, y)| one.get_pixel(x, y) != other.get_pixel(x, y))
+        .count();
     ensure(
-        gpu["plan_fallback"] == json!({"reason": "not-fit"}) && gpu["drawing_path"] == json!("cpu"),
+        differing == 0,
         format!(
-            "{} drew {} with the reason {}, not the CPU frame's `not-fit`",
-            dragged["file"], gpu["drawing_path"], gpu["plan_fallback"]
+            "{} and {} draw the same settings {differing} pixels apart",
+            first["file"], second["file"]
         ),
     )?;
-    ensure(
-        notice["phrase"] == json!(ZOOM_PHRASE)
-            && notice["tooltip"] == json!(ZOOM_TOOLTIP)
-            && *notice == gpu["fallback_notice"],
-        format!(
-            "{} recorded `not-fit` but its status bar said {notice} and its evidence {}",
-            dragged["file"], gpu["fallback_notice"]
-        ),
-    )?;
-    ensure(
-        bar["render"]
-            .as_str()
-            .is_some_and(|render| render.contains("render") && bar["gpu_ms"].is_null()),
-        format!(
-            "{} named a CPU frame's render slot {} beside the notice",
-            dragged["file"], bar["render"]
-        ),
-    )?;
-    // The release commits on the CPU, and once its settle has ended the notice goes with the reason.
-    let settled = launch.at("settled-50")?;
-    let state = settled.state();
-    ensure(
-        state["surface"]["gpu"]["plan_fallback"].is_null()
-            && state["status_bar"]["fallback"].is_null()
-            && state["surface"]["gpu"]["fallback_notice"].is_null(),
-        format!(
-            "{} still named {} and said {} after the settle",
-            settled["file"],
-            state["surface"]["gpu"]["plan_fallback"],
-            state["status_bar"]["fallback"]
-        ),
-    )?;
-    checks.note(
-        dragged,
-        &format!("the drag at {BELOW_ZOOM}% is drawn on the CPU and the status bar says why"),
-        json!({"cpu_ticks": cpu_ticks, "reasons": reasons, "plan_fallback": gpu["plan_fallback"],
-            "notice": notice, "render": bar["render"], "settled": settled["file"]}),
-    );
+    Ok(
+        json!({"first": first["file"], "second": second["file"], "rect": rect,
+        "pixels": (right - left) * (bottom - top), "differing": differing}),
+    )
+}
+
+/// The drags below 100%, each over the displayed-size proxy of the whole stage, planned as Fit's
+/// is at the view's bounds: the first tick a CPU frame whose job asks for that proxy's one
+/// boundary, with nothing said of the zoom; the boundary held the whole proxy stage at the view's
+/// bounds, the size of the CPU frame the view draws; the later ticks drawn on the GPU from a whole
+/// frame's plan with no preview job, each frame's boundary, revision, budget figures and label its
+/// state's, the same settings drawn twice to the same bytes; the release's committed proxy frame
+/// dissolving in from the last GPU frame, whose pixels are the CPU frame's of the same settings
+/// within the pointwise limits; and the boundary kept as the resident one, the view's.
+fn drawn_on_the_gpu_below_100(launch: &Checked, checks: &mut Checks) -> Result {
+    for Below { zoom, names, .. } in BELOW {
+        let [
+            _,
+            first_name,
+            held_name,
+            gpu_name,
+            again_name,
+            release_name,
+            settled_name,
+        ] = names;
+        let first = launch.at(first_name)?;
+        let events = step_events(launch, first_name)?;
+        let (gpu_ticks, cpu_ticks, _) = ticks(events);
+        let first_ticks = named(events, "gpu_preview_tick");
+        let asked = first_ticks
+            .iter()
+            .filter(|tick| tick["detail"]["boundary_requested"] == json!(true))
+            .count();
+        let reasons: Vec<&Value> = first_ticks
+            .iter()
+            .map(|tick| &tick["detail"]["reason"])
+            .collect();
+        let state = first.state();
+        ensure(
+            state["surface"]["gpu"]["drawing_path"] == json!("cpu")
+                && gpu_ticks == 0
+                && cpu_ticks >= 1
+                && asked == 1
+                && reasons
+                    .iter()
+                    .all(|reason| **reason == json!("boundary-pending"))
+                && state["status_bar"]["fallback"].is_null(),
+            format!(
+                "At {zoom}% the first tick was not a CPU frame asking for the proxy's boundary and \
+                 saying nothing: {gpu_ticks} GPU and {cpu_ticks} CPU ticks, {asked} asking, for \
+                 {reasons:?}, the status bar saying {}",
+                state["status_bar"]["fallback"]
+            ),
+        )?;
+        let held = launch.at(held_name)?;
+        let state = held.state();
+        let summary = &state["surface"]["gpu"]["gpu_preview"]["drag"];
+        let boundary = &summary["boundary"];
+        let (bounds, raster) = (&state["proxy"]["bounds"], &state["surface"]["raster"]);
+        ensure(
+            summary["boundary_requests"] == json!(1)
+                && summary["zoom"] == json!(zoom)
+                && boundary["region"].is_null()
+                && boundary["proxy"]["bounds"] == json!([bounds["width"], bounds["height"]])
+                && json!([boundary["width"], boundary["height"]]) == *raster
+                && json!([boundary["proxy"]["width"], boundary["proxy"]["height"]]) == *raster,
+            format!(
+                "At {zoom}% the boundary held is not the view's proxy from one request: {summary}, \
+                 the view's bounds {bounds}, the CPU frame {raster}"
+            ),
+        )?;
+        let (dragged, again) = (launch.at(gpu_name)?, launch.at(again_name)?);
+        let mut drawn = Vec::new();
+        for (name, frame) in [(gpu_name, dragged), (again_name, again)] {
+            let figures = gpu_drawn(frame)?;
+            let (gpu_ticks, cpu_ticks, jobs) = ticks(step_events(launch, name)?);
+            let state = frame.state();
+            let gpu = &state["surface"]["gpu"];
+            ensure(
+                gpu_ticks >= 1
+                    && cpu_ticks == 0
+                    && jobs == 0
+                    && gpu["gpu_preview"]["drag"]["boundary_requests"] == json!(1)
+                    && gpu["gpu_preview"]["drag"]["boundary"]["version"] == boundary["version"]
+                    && gpu["plan_region"].is_null()
+                    && gpu["visible_region"].is_null()
+                    && state["status_bar"]["fallback"].is_null()
+                    && gpu["fallback_notice"].is_null(),
+                format!(
+                    "At {zoom}% {} was {gpu_ticks} GPU and {cpu_ticks} CPU ticks with {jobs} \
+                     preview jobs, drawn over {} by the plan of region {}, saying {}",
+                    frame["file"],
+                    gpu["gpu_preview"]["drag"]["boundary"],
+                    gpu["plan_region"],
+                    state["status_bar"]["fallback"]
+                ),
+            )?;
+            drawn.push(json!({"drawn": figures, "gpu_ticks": gpu_ticks, "jobs": jobs}));
+        }
+        let repeated = same_bytes(dragged, again)?;
+        let settled = launch.at(settled_name)?;
+        let dissolved = settled_through_a_dissolve(launch, release_name, again)?;
+        let compared = same_pixels(again, launch.at(release_name)?)?;
+        let jumped = jump(again, settled)?;
+        let version =
+            &again.state()["surface"]["gpu"]["gpu_preview"]["drag"]["boundary"]["version"];
+        let kept = resident_kept(launch, release_name, settled_name, version)?;
+        let resident = &settled.state()["surface"]["gpu"]["gpu_preview"]["resident"];
+        ensure(
+            resident["proxy"] == boundary["proxy"],
+            format!(
+                "At {zoom}% the resident boundary {resident} is not the view's proxy {}",
+                boundary["proxy"]
+            ),
+        )?;
+        checks.note(
+            again,
+            &format!("the drag at {zoom}% drawn on the GPU from the displayed-size proxy"),
+            json!({"first": {"asked": asked, "reasons": reasons}, "boundary": boundary,
+                "view_bounds": bounds, "cpu_frame": raster, "drawn": drawn,
+                "same_bytes": repeated, "settled": dissolved, "against_release": compared,
+                "jump": jumped, "resident": kept}),
+        );
+    }
     Ok(())
 }
 
@@ -682,8 +827,8 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             "plan_fallback": refused.state()["surface"]["gpu"]["plan_fallback"]}),
     );
 
-    // Below 100%: no plan, the CPU path for `not-fit`, and the notice that says so.
-    drawn_on_the_cpu_below_100(below, &mut checks)?;
+    // Below 100%: drawn on the GPU from the displayed-size proxy, as at Fit.
+    drawn_on_the_gpu_below_100(below, &mut checks)?;
 
     checks.write(&launch.evidence, run.scenario(), json!({}))
 }
