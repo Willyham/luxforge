@@ -51,6 +51,7 @@ mod raw_editor;
 mod raw_panel_smoke;
 mod repository;
 mod scenario;
+mod settings_smoke;
 mod smoke;
 mod stats;
 mod verify;

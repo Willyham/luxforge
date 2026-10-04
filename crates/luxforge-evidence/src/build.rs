@@ -117,6 +117,18 @@ impl Step {
         Self::Performance { expanded }
     }
 
+    pub fn settings(open: bool) -> Self {
+        Self::Settings { open }
+    }
+
+    /// Change one flag through its row, or Reset it for `None`.
+    pub fn flag(id: impl Into<String>, value: Option<Value>) -> Self {
+        Self::Flag {
+            id: id.into(),
+            value,
+        }
+    }
+
     pub fn preset(name: impl Into<String>) -> Self {
         Self::Preset(PresetPick {
             name: name.into(),

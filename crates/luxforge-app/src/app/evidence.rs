@@ -14,7 +14,8 @@ use crate::{
             crop::CropPointer, draft::DraftMessage, evidence::EvidenceMessage,
             history::HistoryMessage, mask::BrushEdit, mask::MaskMessage, mask::PaintTarget,
             mask::RowEdit, palette::PaletteMessage, performance::PerformanceMessage,
-            pointer::PointerMessage, preset::PresetMessage, view::ViewMessage,
+            pointer::PointerMessage, preset::PresetMessage, settings::SettingsMessage,
+            view::ViewMessage,
         },
         performance,
         tasks::{
@@ -469,6 +470,8 @@ pub(crate) enum Settle {
     /// shows its figures rather than the dashes before them.
     Performance,
     PerformanceCancel,
+    /// The Settings sheet's `flags.list` answered, or its last outstanding `flags.set` did.
+    Flags,
     /// A capability step's round trips have answered and, unless it said otherwise, the jobs it
     /// started have finished.
     Capability,
@@ -498,6 +501,7 @@ impl Settle {
             Self::Quiet => "quiet",
             Self::Performance => "performance",
             Self::PerformanceCancel => "performance_cancel",
+            Self::Flags => "flags",
             Self::Capability => "capability",
             Self::Export => "export",
             Self::Agent => "agent",
@@ -1150,6 +1154,8 @@ impl Editor {
                 self.await_step(Settle::PerformanceCancel);
                 self.update(Message::Performance(PerformanceMessage::Cancel(job_id)))
             }
+            Step::Settings { open } => self.settings_step(open),
+            Step::Flag { id, value } => self.flag_step(id, value),
             Step::Wait { ms } => self.wait_step(ms),
             Step::GpuWarmed { quiet_ms, ms } => self.warm_wait_step(quiet_ms, ms),
             Step::Key { key } => self.key_step(key),
@@ -3797,6 +3803,7 @@ impl Editor {
             | PaletteAction::Fit
             | PaletteAction::HundredPercent => self.await_step(Settle::Session),
             PaletteAction::TogglePerformance => self.arm_performance_settle(),
+            PaletteAction::Settings(_) => self.arm_settings_settle(),
             // An evidence run opens no save dialog, so the entry only closes the palette.
             PaletteAction::Export { .. } => self.capture_next_frame(),
         }
@@ -3827,6 +3834,93 @@ impl Editor {
         }
         self.arm_performance_settle();
         self.update(Message::Performance(PerformanceMessage::Toggle))
+    }
+
+    /// What opening the Settings sheet settles on: the flags it reads, unless it is already open,
+    /// which reads nothing.
+    fn arm_settings_settle(&mut self) {
+        if self.settings.open.is_some() {
+            self.capture_next_frame();
+        } else {
+            self.await_step(Settle::Flags);
+        }
+    }
+
+    /// Open the Settings sheet at Experiments, as its title bar button does, and wait for the
+    /// flags; or close it, captured on the next frame. A sheet already as asked sends nothing.
+    fn settings_step(&mut self, open: bool) -> Task<Message> {
+        if self.settings.open.is_some() == open {
+            self.capture_next_frame();
+            return Task::none();
+        }
+        if !open {
+            self.capture_next_frame();
+            return self.update(Message::Settings(SettingsMessage::Close));
+        }
+        self.arm_settings_settle();
+        self.update(Message::Settings(SettingsMessage::Open(
+            crate::state::settings::SettingsTab::Experiments,
+        )))
+    }
+
+    /// Change one flag through its row, as a person does: the switch or a segment, Reset for
+    /// `null`, or for a number its field typed and Enter pressed. A change the row sends waits for
+    /// `flags.set`; a number the field refuses sends nothing and is captured with the refusal in
+    /// the status bar.
+    fn flag_step(&mut self, id: String, value: Option<Value>) -> Task<Message> {
+        use crate::state::settings::FlagControl;
+        let Some(row) = self.workspace.settings.rows.iter().find(|row| row.id == id) else {
+            return self.fail_step(format!("the Settings sheet shows no flag {id}"));
+        };
+        let Some(value) = value else {
+            if !row.can_reset {
+                return self.fail_step(format!("flag {id} has no Reset: nothing is stored"));
+            }
+            self.await_step(Settle::Flags);
+            return self.update(Message::Settings(SettingsMessage::Set {
+                flag: id,
+                value: None,
+            }));
+        };
+        match &row.control {
+            FlagControl::Toggle(_) if value.is_boolean() => {}
+            FlagControl::Choice { values, .. }
+                if value
+                    .as_str()
+                    .is_some_and(|chosen| values.iter().any(|v| v == chosen)) => {}
+            FlagControl::Number { .. } => {
+                let text = match &value {
+                    Value::String(text) => text.clone(),
+                    other => other.to_string(),
+                };
+                let valid = self
+                    .settings
+                    .flags
+                    .as_ref()
+                    .and_then(|flags| flags.flag(&id))
+                    .and_then(|flag| crate::state::settings::parse_number(flag, &text))
+                    .is_some();
+                if valid {
+                    self.await_step(Settle::Flags);
+                } else {
+                    self.capture_next_frame();
+                }
+                let typed = self.update(Message::Settings(SettingsMessage::NumberText {
+                    flag: id.clone(),
+                    text,
+                }));
+                let submitted = self.update(Message::Settings(SettingsMessage::NumberSubmit(id)));
+                return Task::batch([typed, submitted]);
+            }
+            _ => {
+                return self.fail_step(format!("flag {id}'s control does not offer {value}"));
+            }
+        }
+        self.await_step(Settle::Flags);
+        self.update(Message::Settings(SettingsMessage::Set {
+            flag: id,
+            value: Some(value),
+        }))
     }
 
     /// Click one row, exactly as the section does: the section's own action with that preset's
@@ -4267,6 +4361,7 @@ impl Editor {
                     self.settle_step(Settle::PerformanceCancel, by);
                 }
             }
+            Outcome::FlagsRead | Outcome::FlagsWritten => self.settle_step(Settle::Flags, by),
             Outcome::ExportPlanned(plan) => {
                 if let Some(evidence) = &mut self.evidence {
                     evidence.recorded.export_plan = Some(plan.clone());

@@ -1162,6 +1162,14 @@ fn owner_loop(
         let _ = completions.send(OwnerMessage::AnalysisReady);
     }));
     queue.set_activity(activity.clone());
+    // History collapses as the person chose, or by default when the preferences cannot be read:
+    // the desktop reports that failure when it reads them itself.
+    let mut service = service;
+    service.set_auto_collapse(
+        host.preferences
+            .read()
+            .map_or(true, |preferences| preferences.auto_collapse_history),
+    );
     let mut owner = Owner {
         service,
         host,
@@ -2329,6 +2337,74 @@ pub(super) fn artifact_collect(
     )?;
     announce_once(&mut owner.announced, &call.origin);
     Ok(json!({"job_id": id, "status": JobStatus::Queued}))
+}
+
+/// `flags.list`: the flags this host lists, read from the preferences file now.
+pub(super) fn flags_list(owner: &mut Owner, _: &Call<'_>, _: NoParams) -> Result<Value, Error> {
+    let developer = owner.service.registry().serves_test_modules();
+    let host = &owner.host;
+    methods::value(crate::flags::list(
+        &host.preferences,
+        host.launch_flags(),
+        developer,
+    )?)
+}
+
+host_params! {
+    pub(super) struct FlagsSet {
+        flag: String = string(64).notes("a listed flag's id"),
+        value: Option<Value> = json("the flag's new value, which must fit its kind: true or false, an option's value, or a number in range on its step; null or absent removes the stored value"),
+    }
+}
+
+/// `flags.set`: one checked write, announced when it changed the stored value, answered as
+/// `flags.list` is.
+pub(super) fn flags_set(
+    owner: &mut Owner,
+    call: &Call<'_>,
+    params: FlagsSet,
+) -> Result<Value, Error> {
+    let developer = owner.service.registry().serves_test_modules();
+    if crate::flags::set(
+        &owner.host.preferences,
+        &params.flag,
+        params.value,
+        developer,
+    )? {
+        announce_once(&mut owner.announced, &call.origin);
+    }
+    flags_list(owner, call, NoParams {})
+}
+
+host_params! {
+    pub(super) struct PreferencesSet {
+        performance_expanded: Option<bool> = boolean(),
+        auto_collapse_history: Option<bool> = boolean(),
+    }
+}
+
+/// `preferences.set`: one write of the preferences named. A change to auto-collapse reaches the
+/// catalog writer at once, for the next edit, and is announced, so a client showing it reads it
+/// again.
+pub(super) fn preferences_set(
+    owner: &mut Owner,
+    call: &Call<'_>,
+    params: PreferencesSet,
+) -> Result<Value, Error> {
+    let stored = owner
+        .host
+        .preferences
+        .set(crate::preferences::PreferenceChange {
+            performance_expanded: params.performance_expanded,
+            auto_collapse_history: params.auto_collapse_history,
+        })?;
+    if stored.auto_collapse_history != owner.service.auto_collapse() {
+        owner
+            .service
+            .set_auto_collapse(stored.auto_collapse_history);
+        announce_once(&mut owner.announced, &call.origin);
+    }
+    Ok(methods::preference_values(&stored))
 }
 
 /// `activity.list`: one lock and a copy of at most 80 small entries.

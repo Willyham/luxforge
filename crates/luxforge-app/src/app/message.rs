@@ -21,6 +21,7 @@ pub(crate) mod performance;
 pub(crate) mod pointer;
 pub(crate) mod preset;
 pub(crate) mod preview;
+pub(crate) mod settings;
 pub(crate) mod sync;
 pub(crate) mod view;
 
@@ -51,6 +52,8 @@ pub(crate) enum Message {
     /// A module capability gesture or answer.
     Capability(capability::CapabilityMessage),
     Performance(performance::PerformanceMessage),
+    /// One Settings sheet gesture or answer.
+    Settings(settings::SettingsMessage),
     /// One export gesture or answer.
     Export(export::ExportMessage),
     Evidence(evidence::EvidenceMessage),

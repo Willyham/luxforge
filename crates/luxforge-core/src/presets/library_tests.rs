@@ -90,9 +90,9 @@ fn a_fresh_catalog_is_marked_with_the_current_format_and_starts_with_an_empty_li
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("a marker");
     // The mask table and stroke store, the preset library, the catalog identity with the artifact
-    // tables, each entry's history row in its own columns, each request's whole answer, and each
-    // asset's source kind in its own column.
-    assert_eq!(marker, 11);
+    // tables, each entry's history row in its own columns, each request's whole answer, each
+    // asset's source kind in its own column, and the entries auto-collapse hid.
+    assert_eq!(marker, 12);
     assert!(service.presets().expect("a listing").is_empty());
     drop(service);
     let reopened = EditorService::open(&path).expect("a current-format catalog reopens");
