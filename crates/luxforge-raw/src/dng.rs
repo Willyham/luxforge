@@ -1469,6 +1469,130 @@ mod tests {
         ));
     }
 
+    /// A sensor-stage correction, a stage-two gain map or a stage-one radial vignette, rewrites
+    /// the normalized mosaic, so its developments keep the float mosaic and apply it there. A
+    /// correction only after the demosaic leaves the sensor stage alone: its developments read
+    /// the sensor sites, to the float mosaic's bits.
+    #[test]
+    fn only_sensor_stage_corrections_keep_the_float_mosaic() {
+        use crate::develop::{DemosaicInput, DevelopDiagnostics, DevelopOptions, develop_with};
+        let (width, height) = (64_u32, 48_u32);
+        let samples = (0..width * height)
+            .map(|index| (200 + index * 37 % 800) as u16)
+            .collect();
+        let mut raw = crate::layout_tests::source(crate::RawLayout::Mosaic, samples, width, height);
+        raw.metadata.cfa_width = 2;
+        raw.metadata.cfa_height = 2;
+        raw.metadata.cfa = vec![0, 1, 1, 2];
+        raw.metadata.black_cfa = vec![0, 1, 3, 2];
+        raw.shape.width = width;
+        raw.shape.height = height;
+        raw.shape.cfa_width = 2;
+        raw.shape.cfa_height = 2;
+        raw.shape.cfa[..4].copy_from_slice(&[0, 1, 1, 2]);
+        let active = raw.metadata.active_area;
+        let map = GainMap {
+            area: active,
+            plane: 0,
+            planes: 1,
+            row_pitch: 1,
+            col_pitch: 1,
+            rows: 1,
+            cols: 1,
+            spacing: [1.0; 2],
+            origin: [0.0; 2],
+            map_planes: 1,
+            values: vec![1.25],
+        };
+        let radial = VignetteRadial {
+            coefficients: [0.5, 0.0, 0.0, 0.0, 0.0],
+            center: [0.5, 0.5],
+        };
+        let correction = |stages, sensor_gains, sensor_vignette| DngCorrection {
+            active,
+            stages,
+            sensor_repair: None,
+            repair_active_only: true,
+            sensor_gains,
+            sensor_vignette,
+            metadata: DngCorrectionMetadata {
+                interpretation: "test".into(),
+                applied: vec![],
+                skipped_optional: vec![],
+                calibration: DngCalibrationMetadata {
+                    illuminants: [17, 21],
+                    color_matrix1_sha256: String::new(),
+                    color_matrix2_sha256: String::new(),
+                    selected: "test".into(),
+                },
+            },
+        };
+        let cancel = AtomicBool::new(false);
+        let gains = [1.5, 1.0, 1.2];
+        let plain = develop_with(&raw, gains, &cancel, DevelopOptions::default())
+            .unwrap()
+            .data;
+        for (case, correction, input) in [
+            ("no correction", None, DemosaicInput::SensorSites),
+            (
+                "a stage-three gain map",
+                Some(correction(vec![Stage3::Gain(map.clone())], vec![], None)),
+                DemosaicInput::SensorSites,
+            ),
+            (
+                "a stage-two gain map",
+                Some(correction(vec![], vec![map.clone()], None)),
+                DemosaicInput::FloatMosaic,
+            ),
+            (
+                "a stage-one vignette",
+                Some(correction(vec![], vec![], Some(radial.clone()))),
+                DemosaicInput::FloatMosaic,
+            ),
+        ] {
+            raw.dng_correction = correction;
+            assert_eq!(DemosaicInput::of(&raw), input, "{case}");
+            let mut read = DevelopDiagnostics::default();
+            let chosen = develop_with(
+                &raw,
+                gains,
+                &cancel,
+                DevelopOptions {
+                    diagnostics: Some(&mut read),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .data;
+            assert_eq!(read.input, Some(input), "{case}");
+            let float = develop_with(
+                &raw,
+                gains,
+                &cancel,
+                DevelopOptions {
+                    float_mosaic: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .data;
+            assert!(
+                chosen
+                    .iter()
+                    .zip(&float)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "{case}"
+            );
+            // The sensor stage changed the developed planes exactly when it keeps the float
+            // mosaic.
+            let unchanged = chosen
+                .iter()
+                .zip(&plain)
+                .all(|(a, b)| a.to_bits() == b.to_bits());
+            assert_eq!(unchanged, input == DemosaicInput::SensorSites, "{case}");
+        }
+    }
+
     #[test]
     fn stage_one_vignette_precedes_black_subtraction_at_a_point() {
         let radial = VignetteRadial {

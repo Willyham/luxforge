@@ -1,5 +1,8 @@
-//! The development of a retained mosaic: the Rust normalization, the one native demosaic call and
-//! the output scale, through [`develop_with`]. Its items are crate-private.
+//! The development of a retained mosaic: the per-site normalization, the one native demosaic call
+//! and the output scale, through [`develop_with`]. The demosaic reads each site either from the
+//! retained u16 mosaic through the per-site tables, with no float mosaic, or, when the sensor
+//! stage rewrites the normalized values, from a float mosaic the Rust normalization writes
+//! ([`DemosaicInput`]). Its items are crate-private.
 
 use crate::{
     CancelCallback, MAX_GAIN, MAX_RGB_BYTES, NativeMetadata, PARALLEL_PIXELS, PlanarRgb, RawError,
@@ -20,9 +23,13 @@ pub(crate) struct DevelopOptions<'a> {
     /// Whether the native tile jobs and the Rust passes run on the development executor; `false`
     /// runs every pass in order on the caller.
     pub executor: bool,
-    /// Where to record the normalization's and the demosaic's wall time, for the ignored release
-    /// profiles.
+    /// Where to record the development's input, its bytes and the normalization's and the
+    /// demosaic's wall time, for tests and the ignored release profiles.
     pub diagnostics: Option<&'a mut DevelopDiagnostics>,
+    /// Normalize into a float mosaic even when the sensor sites would do: the reference the
+    /// sensor-site input's exactness tests compare with.
+    #[cfg(test)]
+    pub float_mosaic: bool,
 }
 
 impl Default for DevelopOptions<'_> {
@@ -31,14 +38,56 @@ impl Default for DevelopOptions<'_> {
             worker_limit: 0,
             executor: true,
             diagnostics: None,
+            #[cfg(test)]
+            float_mosaic: false,
         }
     }
 }
 
-/// The wall time of a development's normalization and of its native demosaic call, for the
-/// ignored release profiles.
+/// What the native demosaic of one development reads, chosen once per development.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DemosaicInput {
+    /// The retained u16 mosaic, each site read through its black level, white scale and gain
+    /// ([`normalize::Sites`]) in the same `f32` operations the float mosaic is written with. No
+    /// float mosaic is allocated.
+    SensorSites,
+    /// The normalized float mosaic, for a development whose sensor stage rewrites the
+    /// normalized values: a DNG sensor-stage correction (a stage-one radial vignette or stage-two
+    /// gain maps) or sparse sensor repairs.
+    FloatMosaic,
+}
+
+impl DemosaicInput {
+    /// The input `raw`'s developments take.
+    pub(crate) fn of(raw: &RawSource) -> Self {
+        let rewrites_sensor = !raw.mosaic_corrections.is_empty()
+            || raw
+                .dng_correction
+                .as_ref()
+                .is_some_and(|correction| correction.changes_normalization());
+        if rewrites_sensor {
+            Self::FloatMosaic
+        } else {
+            Self::SensorSites
+        }
+    }
+}
+
+/// What one development read and held, and the wall time of its normalization and its native
+/// demosaic call, for tests and the ignored release profiles.
 #[derive(Debug, Default)]
 pub(crate) struct DevelopDiagnostics {
+    /// `None` until a development of a sensor mosaic records its input.
+    pub input: Option<DemosaicInput>,
+    /// The float mosaic's bytes, zero when none was allocated.
+    pub float_mosaic_bytes: usize,
+    /// The bytes of the development's own allocations held through its native demosaic: the
+    /// float mosaic or the per-site tables, and the RGB planes. The retained u16 mosaic is the
+    /// source's, held either way, and is not counted, nor are the native row tables and tile
+    /// scratch.
+    pub demosaic_bytes: usize,
+    /// Building the per-site tables and, for a float mosaic, writing it and any sensor-stage
+    /// correction.
     pub normalization_ns: u64,
     pub demosaic_ns: u64,
 }
@@ -75,6 +124,23 @@ impl DemosaicShape {
     }
 }
 
+/// The sensor-site input of one native demosaic: the retained mosaic and the three per-site
+/// tables of one period ([`normalize::Sites`]), `period_width * period_height` values each. The
+/// C++ adapter declares the same layout as `LfSensorSites`.
+#[repr(C)]
+struct SensorSites {
+    samples: *const u16,
+    black: *const f32,
+    scale: *const f32,
+    gain: *const f32,
+    period_width: u32,
+    period_height: u32,
+}
+
+// The adapter asserts the same size, so a field changed on one side fails the build.
+const _: () =
+    assert!(std::mem::size_of::<SensorSites>() == 4 * std::mem::size_of::<*const u8>() + 8);
+
 unsafe extern "C" {
     fn lf_raw_develop(
         mosaic: *const f32,
@@ -90,20 +156,46 @@ unsafe extern "C" {
         err: *mut c_char,
         err_len: usize,
     ) -> c_int;
+    fn lf_raw_develop_sites(
+        sites: *const SensorSites,
+        count: usize,
+        shape: *const DemosaicShape,
+        red: *mut f32,
+        green: *mut f32,
+        blue: *mut f32,
+        executor: Option<native_tiles::TileExecutor>,
+        executor_context: *mut c_void,
+        cancel: CancelCallback,
+        cancel_context: *mut c_void,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
+}
+
+/// A development's prepared demosaic input.
+enum Prepared {
+    Sites(normalize::Sites),
+    Float(Vec<f32>),
 }
 
 /// Normalize `raw`'s retained mosaic with `gains`, demosaic it natively and divide the planes by
-/// the sensor scale, as `options` say. The DNG corrections are the caller's.
+/// the sensor scale, as `options` say. The demosaic reads the input [`DemosaicInput::of`] chooses
+/// for `raw`. The DNG corrections after the demosaic are the caller's.
 pub(crate) fn develop_with(
     raw: &RawSource,
     gains: [f32; 3],
     cancel: &AtomicBool,
     options: DevelopOptions<'_>,
 ) -> Result<PlanarRgb, RawError> {
+    #[cfg(test)]
+    let force_float_mosaic = options.float_mosaic;
+    #[cfg(not(test))]
+    let force_float_mosaic = false;
     let DevelopOptions {
         worker_limit,
         executor,
         mut diagnostics,
+        ..
     } = options;
     if cancel.load(Ordering::Relaxed) {
         return Err(RawError::Cancelled);
@@ -129,35 +221,74 @@ pub(crate) fn develop_with(
         return Err(RawError::ResourceLimit("RGB planes exceed 1.5 GiB"));
     }
     let lanes = development_lanes(n, worker_limit, executor);
+    let input = if force_float_mosaic {
+        DemosaicInput::FloatMosaic
+    } else {
+        DemosaicInput::of(raw)
+    };
     let clock = diagnostics.is_some().then(std::time::Instant::now);
-    let mut mosaic = raw.normalization(gains).run(lanes, cancel)?;
-    if let Some(correction) = &raw.dng_correction {
-        correction.apply_sensor(&mut mosaic, raw, gains, cancel, lanes)?;
-    }
+    let prepared = match input {
+        DemosaicInput::SensorSites => {
+            Prepared::Sites(raw.normalization(gains).sensor_sites(cancel)?)
+        }
+        DemosaicInput::FloatMosaic => {
+            let mut mosaic = raw.normalization(gains).run(lanes, cancel)?;
+            if let Some(correction) = &raw.dng_correction {
+                correction.apply_sensor(&mut mosaic, raw, gains, cancel, lanes)?;
+            }
+            Prepared::Float(mosaic)
+        }
+    };
     if let (Some(diagnostics), Some(clock)) = (diagnostics.as_deref_mut(), clock) {
         diagnostics.normalization_ns = clock.elapsed().as_nanos() as u64;
     }
     let mut data = zeroed_vec::<f32>(n * 3, "RGB plane allocation")?;
+    if let Some(diagnostics) = diagnostics.as_deref_mut() {
+        let f32_bytes = std::mem::size_of::<f32>();
+        let (float_mosaic_bytes, input_bytes) = match &prepared {
+            Prepared::Sites(sites) => (0, sites.bytes()),
+            Prepared::Float(mosaic) => {
+                let bytes = mosaic.capacity() * f32_bytes;
+                (bytes, bytes)
+            }
+        };
+        diagnostics.input = Some(input);
+        diagnostics.float_mosaic_bytes = float_mosaic_bytes;
+        diagnostics.demosaic_bytes = input_bytes + data.capacity() * f32_bytes;
+    }
     let mut executor_context = native_tiles::ExecutorContext {
         cancel,
         worker_limit,
     };
+    let executor = executor.then_some((
+        native_tiles::execute as native_tiles::TileExecutor,
+        (&mut executor_context as *mut native_tiles::ExecutorContext<'_>).cast(),
+    ));
+    let cancel_context = (cancel as *const AtomicBool).cast_mut().cast();
     let clock = diagnostics.is_some().then(std::time::Instant::now);
-    native_demosaic(
-        &mosaic,
-        &raw.shape,
-        &mut data,
-        executor.then_some((
-            native_tiles::execute as native_tiles::TileExecutor,
-            (&mut executor_context as *mut native_tiles::ExecutorContext<'_>).cast(),
-        )),
-        cancelled,
-        (cancel as *const AtomicBool).cast_mut().cast(),
-    )?;
+    match &prepared {
+        Prepared::Sites(sites) => native_demosaic_sites(
+            &raw.mosaic,
+            sites,
+            &raw.shape,
+            &mut data,
+            executor,
+            cancelled,
+            cancel_context,
+        )?,
+        Prepared::Float(mosaic) => native_demosaic(
+            mosaic,
+            &raw.shape,
+            &mut data,
+            executor,
+            cancelled,
+            cancel_context,
+        )?,
+    }
     if let (Some(diagnostics), Some(clock)) = (diagnostics, clock) {
         diagnostics.demosaic_ns = clock.elapsed().as_nanos() as u64;
     }
-    drop(mosaic);
+    drop(prepared);
     normalize::scale_planes(&mut data, raw.metadata.sensor_width as usize, lanes, cancel)?;
     Ok(PlanarRgb {
         width: raw.metadata.sensor_width,
@@ -196,6 +327,82 @@ pub(crate) fn native_demosaic(
     let code = unsafe {
         lf_raw_develop(
             mosaic.as_ptr(),
+            n,
+            shape,
+            red.as_mut_ptr(),
+            green.as_mut_ptr(),
+            blue.as_mut_ptr(),
+            executor,
+            executor_context,
+            cancel,
+            cancel_context,
+            error.as_mut_ptr(),
+            error.len(),
+        )
+    };
+    native_result(code, &error)
+}
+
+/// The native demosaic of the retained mosaic `samples` of `shape`, each site read as its
+/// normalized value through `sites` (black level, white scale and gain), with no float mosaic.
+/// Otherwise as [`native_demosaic`], whose planes it gives for the mosaic
+/// [`normalize::Normalization::run`] writes with the same tables. This is the crate's one
+/// `lf_raw_develop_sites` call.
+pub(crate) fn native_demosaic_sites(
+    samples: &[u16],
+    sites: &normalize::Sites,
+    shape: &DemosaicShape,
+    planes: &mut [f32],
+    executor: Option<(native_tiles::TileExecutor, *mut c_void)>,
+    cancel: CancelCallback,
+    cancel_context: *mut c_void,
+) -> Result<(), RawError> {
+    let n = samples.len();
+    if Some(planes.len()) != n.checked_mul(3) {
+        return Err(RawError::InvalidInput("RGB planes differ from the mosaic"));
+    }
+    let period = sites.width.checked_mul(sites.height);
+    let (Ok(period_width), Ok(period_height)) =
+        (u32::try_from(sites.width), u32::try_from(sites.height))
+    else {
+        return Err(RawError::InvalidInput(
+            "per-site tables differ from their period",
+        ));
+    };
+    if period.is_none_or(|period| {
+        period == 0
+            || [&sites.black, &sites.scale, &sites.gain]
+                .iter()
+                .any(|table| table.len() != period)
+    }) {
+        return Err(RawError::InvalidInput(
+            "per-site tables differ from their period",
+        ));
+    }
+    let input = SensorSites {
+        samples: samples.as_ptr(),
+        black: sites.black.as_ptr(),
+        scale: sites.scale.as_ptr(),
+        gain: sites.gain.as_ptr(),
+        period_width,
+        period_height,
+    };
+    let (red, rest) = planes.split_at_mut(n);
+    let (green, blue) = rest.split_at_mut(n);
+    let (executor, executor_context) = executor
+        .map_or((None, std::ptr::null_mut()), |(run, context)| {
+            (Some(run), context)
+        });
+    let mut error = [0 as c_char; 256];
+    // SAFETY: the immutable samples, the three tables of `period_width * period_height` values
+    // and the shape, and the three disjoint planes of `n` values each, stay alive for the
+    // synchronous call. The executor and cancel contexts are the caller's live state for that
+    // call. C++ validates the count and the period against the CFA, reads each table only at
+    // `(row % period_height) * period_width + col % period_width`, catches exceptions, joins every
+    // tile job before it returns and stores none of these pointers.
+    let code = unsafe {
+        lf_raw_develop_sites(
+            &input,
             n,
             shape,
             red.as_mut_ptr(),

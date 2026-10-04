@@ -1,0 +1,361 @@
+--- a/src/demosaic/border.cc
++++ b/src/demosaic/border.cc
+@@ -25,7 +25,10 @@
+ 
+ using namespace librtprocess;
+ 
+-rpError bayerborder_demosaic(int winw, int winh, int lborders, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2])
++// Luxforge: both border passes read their input only as rawData[row][col],
++// so each is a template over the input, the float rows or the sensor sites.
++template <typename Input>
++static rpError bayerborder_impl(int winw, int winh, int lborders, Input rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2])
+ {
+     BENCHFUN
+     if (!validateBayerCfa(3, cfarray)) {
+@@ -186,8 +189,19 @@
+     return RP_NO_ERROR;
+ }
+ 
+-void xtransborder_demosaic(int winw, int winh, int border, const float * const *rawData, float **red, float **green, float **blue, const unsigned xtrans[6][6])
++rpError bayerborder_demosaic(int winw, int winh, int lborders, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2])
+ {
++    return bayerborder_impl(winw, winh, lborders, rawData, red, green, blue, cfarray);
++}
++
++rpError bayerborder_demosaic(int winw, int winh, int lborders, const rpMosaicSites &rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2])
++{
++    return bayerborder_impl(winw, winh, lborders, rawData, red, green, blue, cfarray);
++}
++
++template <typename Input>
++static void xtransborder_impl(int winw, int winh, int border, Input rawData, float **red, float **green, float **blue, const unsigned xtrans[6][6])
++{
+     BENCHFUN
+     const int height = winh, width = winw;
+ 
+@@ -238,3 +252,13 @@
+         }
+     }
+ }
++
++void xtransborder_demosaic(int winw, int winh, int border, const float * const *rawData, float **red, float **green, float **blue, const unsigned xtrans[6][6])
++{
++    xtransborder_impl(winw, winh, border, rawData, red, green, blue, xtrans);
++}
++
++void xtransborder_demosaic(int winw, int winh, int border, const rpMosaicSites &rawData, float **red, float **green, float **blue, const unsigned xtrans[6][6])
++{
++    xtransborder_impl(winw, winh, border, rawData, red, green, blue, xtrans);
++}
+--- a/src/demosaic/markesteijn.cc
++++ b/src/demosaic/markesteijn.cc
+@@ -131,6 +131,55 @@
+     std::atomic<rpError> *error;
+ };
+ 
++// Luxforge: where a tile reads its input sites. The float rows are read in
++// place, at the frame's row stride. The sensor sites are first written,
++// through rpNormalizedSite, into a tile of the sites within three of the
++// tile's own, which the hexagon offsets then address at the tile's stride: no
++// read below goes further from the site it interpolates (the offsets are
++// checked against that reach once they are built). Tiles start three sites
++// inside the frame and end at least three before its far edges, so the input
++// tile holds only sensor sites. It borrows the start of the derivative
++// scratch, which a tile writes only after its last input read and reads only
++// where it has written it, so no tile reads another's input or derivatives.
++template <typename Input> struct MarkInput;
++
++template <> struct MarkInput<const float * const *> {
++    const float * const *rows;
++    MarkInput(const float * const *rows, float *) : rows(rows) {}
++    static int stride(int width) { return width; }
++    static bool covers(int) { return true; }
++    void load(int, int, int, int) {}
++    const float *at(int row, int col) const { return &rows[row][col]; }
++};
++
++template <> struct MarkInput<rpMosaicSites> {
++    static constexpr int reach = 3;
++    static constexpr int side = ts + 2 * reach;
++    const rpMosaicSites &sites;
++    float *tile;
++    int top = 0, left = 0;
++    MarkInput(const rpMosaicSites &sites, float *tile) : sites(sites), tile(tile) {}
++    static int stride(int) { return side; }
++    static bool covers(int distance) { return distance <= reach; }
++    // The sites from `reach` before the tile's first row and column to `reach`
++    // past its last, `bottom` and `right` exclusive.
++    void load(int tileTop, int tileLeft, int bottom, int right)
++    {
++        top = tileTop - reach;
++        left = tileLeft - reach;
++        for (int row = top; row < bottom + reach; row++) {
++            const rpMosaicSites::Row in = sites[row];
++            float *out = tile + (row - top) * side;
++            unsigned site = unsigned(left) % in.periodWidth;
++            for (int col = left; col < right + reach; col++) {
++                out[col - left] = rpNormalizedSite(in.samples[col], in.black[site], in.scale[site], in.gain[site]);
++                site = site + 1 == in.periodWidth ? 0 : site + 1;
++            }
++        }
++    }
++    const float *at(int row, int col) const { return tile + (row - top) * side + (col - left); }
++};
++
+ extern "C" void run_mark_worker(void *context, size_t slot) noexcept
+ {
+     auto *call = static_cast<MarkWorkerCall *>(context);
+@@ -153,7 +202,10 @@
+ */
+ 
+ using namespace librtprocess;
+-rpError markesteijn_demosaic (int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned xtrans[6][6], const float rgb_cam[3][4], const std::function<bool(double)> &setProgCancel, const int passes, const bool useCieLab, std::size_t chunkSize, bool measure, rpTileExecutor executor, void *executorContext, rpShouldCancel shouldCancel, void *cancelContext)
++// Luxforge: a template over the input, the float rows or the sensor sites
++// (librtprocess.h), which a tile reads through MarkInput.
++template <typename Input>
++static rpError markesteijn_impl(int width, int height, Input rawData, float **red, float **green, float **blue, const unsigned xtrans[6][6], const float rgb_cam[3][4], const std::function<bool(double)> &setProgCancel, const int passes, const bool useCieLab, std::size_t chunkSize, bool measure, rpTileExecutor executor, void *executorContext, rpShouldCancel shouldCancel, void *cancelContext)
+ {
+     BENCHFUN
+     std::unique_ptr<StopWatch> stop;
+@@ -194,6 +246,8 @@
+ 
+     /* Map a green hexagon around each non-green pixel and vice versa:  */
+     short allhex[2][3][3][8];
++    // Luxforge: the furthest a tile's input read goes from its non-green site.
++    int inputReach = 0;
+     {
+         int gint, d, h, v, ng, row, col;
+ 
+@@ -219,14 +273,23 @@
+                         for (int c = 0; c < 8; c++) {
+                             v = orth[d] * patt[gint][c * 2] + orth[d + 1] * patt[gint][c * 2 + 1];
+                             h = orth[d + 2] * patt[gint][c * 2] + orth[d + 3] * patt[gint][c * 2 + 1];
+-                            allhex[0][row][col][c ^ (gint * 2 & d)] = h + v * width;
++                            allhex[0][row][col][c ^ (gint * 2 & d)] = h + v * MarkInput<Input>::stride(width);
+                             allhex[1][row][col][c ^ (gint * 2 & d)] = h + v * ts;
++                            if (!gint) {
++                                // The green estimates read offsets 0 and 1
++                                // twice as far, and 4 and 5 three times.
++                                constexpr int times[8] = {2, 2, 1, 1, 3, 3, 0, 0};
++                                inputReach = std::max(inputReach, times[c] * std::max(v < 0 ? -v : v, h < 0 ? -h : h));
++                            }
+                         }
+                     }
+                 }
+             }
+ 
+     }
++    if (!MarkInput<Input>::covers(inputReach)) {
++        return RP_WRONG_CFA;
++    }
+ 
+     progress += 0.05;
+     setProgCancel(progress);
+@@ -290,6 +353,7 @@
+             s_minmaxgreen  (*greenminmaxtile)[tsh] = (s_minmaxgreen(*)[tsh]) (lab); // we can reuse the lab-buffer because they are not used together
+             uint8_t (*homosum)[ts][ts] = (uint8_t (*)[ts][ts]) (drv); // we can reuse the drv-buffer because they are not used together
+             uint8_t (*homosummax)[ts] = (uint8_t (*)[ts]) homo[ndir - 1]; // we can reuse the homo-buffer because they are not used together
++            MarkInput<Input> input(rawData, &drv[0][0][0]);
+ 
+             // The serial fallback keeps the original complete raster order.
+             // Ordinary jobs contain only full-height tiles, and their final
+@@ -323,6 +387,7 @@
+                 {
+                     int mrow = std::min(top + ts, height - 3);
+                     int mcol = std::min(left + ts, width - 3);
++                    input.load(top, left, mrow, mcol);
+ 
+                     /* Set greenmin and greenmax to the minimum and maximum allowed values: */
+                     for (int row = top; row < mrow; row++) {
+@@ -342,7 +407,7 @@
+                             for (int col = leftstart; col < mcol; col += coloffset) {
+                                 float minval = FLT_MAX;
+                                 float maxval = 0.f;
+-                                const float *pix = &rawData[row][col];
++                                const float *pix = input.at(row, col);
+ 
+                                 for(int c = 0; c < 6; c++) {
+                                     float val = pix[hex[c]];
+@@ -362,7 +427,7 @@
+                             if(coloffset == 2) {
+                                 minval = FLT_MAX;
+                                 maxval = 0.f;
+-                                const float *pix = &rawData[row][col];
++                                const float *pix = input.at(row, col);
+                                 short *hex = allhex[0][row % 3][col % 3];
+ 
+                                 for(int c = 0; c < 6; c++) {
+@@ -382,7 +447,7 @@
+                             for (; col < mcol - 1; col += 3) {
+                                 minval = FLT_MAX;
+                                 maxval = 0.f;
+-                                const float *pix = &rawData[row][col];
++                                const float *pix = input.at(row, col);
+ 
+                                 for(int c = 0; c < 6; c++) {
+                                     float val = pix[hex[c]];
+@@ -400,7 +465,7 @@
+                             if(col < mcol) {
+                                 minval = FLT_MAX;
+                                 maxval = 0.f;
+-                                const float *pix = &rawData[row][col];
++                                const float *pix = input.at(row, col);
+ 
+                                 for(int c = 0; c < 6; c++) {
+                                     float val = pix[hex[c]];
+@@ -419,7 +484,7 @@
+ 
+                     for (int row = top; row < mrow; row++)
+                         for (int col = left; col < mcol; col++) {
+-                            rgb[0][row - top][col - left][fc(xtrans, row, col)] = rawData[row][col];
++                            rgb[0][row - top][col - left][fc(xtrans, row, col)] = *input.at(row, col);
+                         }
+ 
+                     for(int c = 0; c < 3; c++) {
+@@ -442,7 +507,7 @@
+                             short *hex = allhex[0][row % 3][leftstart % 3];
+ 
+                             for (int col = leftstart; col < mcol; col += coloffset) {
+-                                const float *pix = &rawData[row][col];
++                                const float *pix = input.at(row, col);
+                                 float color[4];
+                                 color[0] = 0.6796875f * (pix[hex[1]] + pix[hex[0]]) -
+                                            0.1796875f * (pix[2 * hex[1]] + pix[2 * hex[0]]);
+@@ -463,7 +528,7 @@
+                             hexmod[1] = allhex[0][row % 3][(leftstart + coloffset) % 3];
+ 
+                             for (int col = leftstart, hexindex = 0; col < mcol; col += coloffset, coloffset ^= 3, hexindex ^= 1) {
+-                                const float *pix = &rawData[row][col];
++                                const float *pix = input.at(row, col);
+                                 short *hex = hexmod[hexindex];
+                                 float color[4];
+                                 color[0] = 0.6796875f * (pix[hex[1]] + pix[hex[0]]) -
+@@ -978,4 +1043,14 @@
+     if (shouldCancel && shouldCancel(cancelContext)) return RP_CANCELLED;
+     xtransborder_demosaic(width, height, 8, rawData, red, green, blue, xtrans);
+     return rc;
++}
++
++rpError markesteijn_demosaic(int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned xtrans[6][6], const float rgb_cam[3][4], const std::function<bool(double)> &setProgCancel, const int passes, const bool useCieLab, std::size_t chunkSize, bool measure, rpTileExecutor executor, void *executorContext, rpShouldCancel shouldCancel, void *cancelContext)
++{
++    return markesteijn_impl(width, height, rawData, red, green, blue, xtrans, rgb_cam, setProgCancel, passes, useCieLab, chunkSize, measure, executor, executorContext, shouldCancel, cancelContext);
++}
++
++rpError markesteijn_demosaic(int width, int height, const rpMosaicSites &rawData, float **red, float **green, float **blue, const unsigned xtrans[6][6], const float rgb_cam[3][4], const std::function<bool(double)> &setProgCancel, const int passes, const bool useCieLab, std::size_t chunkSize, bool measure, rpTileExecutor executor, void *executorContext, rpShouldCancel shouldCancel, void *cancelContext)
++{
++    return markesteijn_impl(width, height, rawData, red, green, blue, xtrans, rgb_cam, setProgCancel, passes, useCieLab, chunkSize, measure, executor, executorContext, shouldCancel, cancelContext);
+ }
+--- a/src/demosaic/rcd.cc
++++ b/src/demosaic/rcd.cc
+@@ -78,7 +78,11 @@
+ // coefficients in an exact, shorter and more performant formula.
+ // In cooperation with Hanno Schwalm (hanno@schwalm-bremen.de) and Luis Sanz Rodriguez this has been tuned for performance.
+ 
+-rpError rcd_demosaic(int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel, std::size_t chunkSize, bool measure, bool multiThread, rpTileExecutor executor, void *executorContext, rpShouldCancel shouldCancel, void *cancelContext)
++// Luxforge: RCD reads its input only as rawData[row][col], once a site in
++// each tile's fill and in the border pass, so it is a template over the input,
++// the float rows or the sensor sites (librtprocess.h).
++template <typename Input>
++static rpError rcd_impl(int width, int height, Input rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel, std::size_t chunkSize, bool measure, bool multiThread, rpTileExecutor executor, void *executorContext, rpShouldCancel shouldCancel, void *cancelContext)
+ {
+     BENCHFUN
+ 
+@@ -382,4 +386,14 @@
+     setProgCancel(1.0);
+ 
+     return rc;
++}
++
++rpError rcd_demosaic(int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel, std::size_t chunkSize, bool measure, bool multiThread, rpTileExecutor executor, void *executorContext, rpShouldCancel shouldCancel, void *cancelContext)
++{
++    return rcd_impl(width, height, rawData, red, green, blue, cfarray, setProgCancel, chunkSize, measure, multiThread, executor, executorContext, shouldCancel, cancelContext);
+ }
++
++rpError rcd_demosaic(int width, int height, const rpMosaicSites &rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel, std::size_t chunkSize, bool measure, bool multiThread, rpTileExecutor executor, void *executorContext, rpShouldCancel shouldCancel, void *cancelContext)
++{
++    return rcd_impl(width, height, rawData, red, green, blue, cfarray, setProgCancel, chunkSize, measure, multiThread, executor, executorContext, shouldCancel, cancelContext);
++}
+--- a/src/include/librtprocess.h
++++ b/src/include/librtprocess.h
+@@ -21,6 +21,7 @@
+ #define _LIBRTPROCESS_
+ 
+ #include <stddef.h>
++#include <stdint.h>
+ 
+ #include <functional>
+ #include <cstddef>
+@@ -53,15 +54,73 @@
+ typedef int (*rpTileExecutor)(void *, size_t, rpTileWorker, void *) noexcept;
+ typedef bool (*rpShouldCancel)(void *) noexcept;
+ }
++// Luxforge's sensor-site input. RCD, Markesteijn and the border passes take
++// either the normalized float rows or the retained u16 mosaic with the
++// per-site tables the float rows were normalized with, and read every site
++// through rpNormalizedSite, the float rows' own expression, so each value they
++// interpolate is the same float.
++inline float rpNormalizedSite(uint16_t sample, float black, float scale, float gain)
++{
++    // `((sample - black) * scale) * gain` in float, in that order, as
++    // crates/luxforge-raw/src/normalize.rs writes the float rows.
++    float value = ((float(sample) - black) * scale) * gain;
++#if defined(__GNUC__) && !defined(__clang__)
++    // GCC contracts across statements and inlined calls by default
++    // (-ffp-contract=fast), so it could fuse this multiply into a caller's
++    // add, where the float rows' value was rounded and stored first. The empty
++    // asm, which emits no instruction, hands the caller the rounded value.
++    // Clang contracts only within one expression, so it needs none.
++#   if defined(__aarch64__)
++    __asm__("" : "+w"(value));
++#   elif defined(__SSE_MATH__)
++    __asm__("" : "+x"(value));
++#   else
++    __asm__("" : "+m"(value));
++#   endif
++#endif
++    return value;
++}
++// The u16 mosaic, `width` sites a row, and the black level, white scale and
++// gain of every site of one period of the CFA and black patterns, anchored at
++// sensor (0, 0): site (row, col) uses entry (row % periodHeight) * periodWidth
++// + col % periodWidth. `rawData[row][col]` is that site's normalized value.
++struct rpMosaicSites {
++    const uint16_t *samples;
++    size_t width;
++    const float *black, *scale, *gain;
++    unsigned periodWidth, periodHeight;
++
++    struct Row {
++        const uint16_t *samples;
++        const float *black, *scale, *gain;
++        unsigned periodWidth;
++
++        float operator[](int col) const
++        {
++            const unsigned site = unsigned(col) % periodWidth;
++            return rpNormalizedSite(samples[col], black[site], scale[site], gain[site]);
++        }
++    };
++
++    Row operator[](int row) const
++    {
++        const size_t period = size_t(unsigned(row) % periodHeight) * periodWidth;
++        return {samples + size_t(row) * width, black + period, scale + period, gain + period, periodWidth};
++    }
++};
+ RTPROCESS_API rpError bayerborder_demosaic(int winw, int winh, int lborders, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2]);
++RTPROCESS_API rpError bayerborder_demosaic(int winw, int winh, int lborders, const rpMosaicSites &rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2]);
+ RTPROCESS_API void xtransborder_demosaic(int winw, int winh, int border, const float * const *rawData, float **red, float **green, float **blue, const unsigned xtrans[6][6]);
++RTPROCESS_API void xtransborder_demosaic(int winw, int winh, int border, const rpMosaicSites &rawData, float **red, float **green, float **blue, const unsigned xtrans[6][6]);
+ RTPROCESS_API rpError ahd_demosaic (int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const float rgb_cam[3][4], const std::function<bool(double)> &setProgCancel);
+ RTPROCESS_API rpError amaze_demosaic(int raw_width, int raw_height, int winx, int winy, int winw, int winh, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel, double initGain, int border, float inputScale, float outputScale, std::size_t chunkSize = 2, bool measure = false);
+ RTPROCESS_API rpError bayerfast_demosaic(int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel, double initGain);
+ RTPROCESS_API rpError dcb_demosaic(int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel, int iterations, bool dcb_enhance);
+ RTPROCESS_API rpError hphd_demosaic(int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel);
+ RTPROCESS_API rpError rcd_demosaic(int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel, std::size_t chunkSize = 2, bool measure = false, bool multiThread = true, rpTileExecutor executor = nullptr, void *executorContext = nullptr, rpShouldCancel shouldCancel = nullptr, void *cancelContext = nullptr);
++RTPROCESS_API rpError rcd_demosaic(int width, int height, const rpMosaicSites &rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel, std::size_t chunkSize, bool measure, bool multiThread, rpTileExecutor executor, void *executorContext, rpShouldCancel shouldCancel, void *cancelContext);
+ RTPROCESS_API rpError markesteijn_demosaic(int width, int height, const float * const *rawdata, float **red, float **green, float **blue, const unsigned xtrans[6][6], const float rgb_cam[3][4], const std::function<bool(double)> &setProgCancel, const int passes, const bool useCieLab, std::size_t chunkSize = 2, bool measure = false, rpTileExecutor executor = nullptr, void *executorContext = nullptr, rpShouldCancel shouldCancel = nullptr, void *cancelContext = nullptr);
++RTPROCESS_API rpError markesteijn_demosaic(int width, int height, const rpMosaicSites &rawData, float **red, float **green, float **blue, const unsigned xtrans[6][6], const float rgb_cam[3][4], const std::function<bool(double)> &setProgCancel, const int passes, const bool useCieLab, std::size_t chunkSize, bool measure, rpTileExecutor executor, void *executorContext, rpShouldCancel shouldCancel, void *cancelContext);
+ RTPROCESS_API rpError xtransfast_demosaic(int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned xtrans[6][6], const std::function<bool(double)> &setProgCancel);
+ RTPROCESS_API rpError vng4_demosaic (int width, int height, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel);
+ RTPROCESS_API rpError igv_demosaic(int winw, int winh, const float * const *rawData, float **red, float **green, float **blue, const unsigned cfarray[2][2], const std::function<bool(double)> &setProgCancel);

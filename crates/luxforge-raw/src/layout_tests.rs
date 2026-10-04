@@ -50,6 +50,28 @@ pub(super) fn source(layout: RawLayout, pixels: Vec<u16>, width: u32, height: u3
     }
 }
 
+/// A CFA mosaic source of `pixels`, its frame, CFA, black model, white and camera matrix those of
+/// the synthetic native metadata `native`.
+pub(super) fn mosaic_source(pixels: Vec<u16>, native: &NativeMetadata) -> RawSource {
+    let mut raw = source(RawLayout::Mosaic, pixels, native.width, native.height);
+    let cfa = (native.cfa_width * native.cfa_height) as usize;
+    let repeat = (native.black_repeat_width * native.black_repeat_height) as usize;
+    let m = &mut raw.metadata;
+    m.cfa_width = native.cfa_width as u8;
+    m.cfa_height = native.cfa_height as u8;
+    m.cfa = native.cfa[..cfa].to_vec();
+    m.black_cfa = native.black_cfa[..cfa].to_vec();
+    m.black_base = native.black_base;
+    m.black_channels = native.black_channels;
+    m.black_repeat_width = native.black_repeat_width as u8;
+    m.black_repeat_height = native.black_repeat_height as u8;
+    m.black_repeat = native.black_repeat[..repeat].to_vec();
+    m.sensor_white = native.white;
+    m.rgb_cam = std::array::from_fn(|row| std::array::from_fn(|col| native.rgb_cam[row * 4 + col]));
+    raw.shape = develop::DemosaicShape::of(native);
+    raw
+}
+
 #[test]
 fn linear_rgb_preserves_signed_headroom_and_channel_order_without_demosaic() {
     let raw = source(
