@@ -22,7 +22,7 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - The first stroke after a zoom to 100% or a pan over a frame already in hand waits 78 to 113 ms for its region's boundary; a boundary rendered alone when such a view settles is proposed
 - Later work in the [design](design/gpu-preview.md#later): view changes without a draft, the RAW white-balance draft on the GPU, region padding
 
-**CPU and memory efficiency** ([design](design/efficiency.md), [plan](../tasks/efficiency.json)). Planned, scope and decisions accepted 2026-10-03. Byte-identical reductions in the pixel kernels, source preparation, owner and painting copies and build configuration, plus a reduced-grid cache for Clarity and Dehaze, a float-mosaic-free RAW development and a WAL catalog with full flushes; measured once the work is merged.
+**CPU and memory efficiency** ([design](design/efficiency.md), [plan](../tasks/efficiency.json)). In progress, scope and decisions accepted 2026-10-03. Byte-identical reductions in the pixel kernels, source preparation, owner and painting copies and build configuration, plus a reduced-grid cache for Clarity and Dehaze, a float-mosaic-free RAW development and a WAL catalog with full flushes; measured once the work is merged.
 
 **GPU memory accounting** ([plan](../tasks/rendering.json)). Measure and bound the GPU resources outside the provisional 1088 MiB photo-texture ceiling (crop textures, overlays and backend staging) before any total-memory guarantee.
 
