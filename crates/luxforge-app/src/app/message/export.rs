@@ -12,9 +12,9 @@ pub(crate) enum ExportMessage {
     Chosen(Result<Option<Box<ExportChoice>>, String>),
     /// `export.jpeg` answered: the queued job, or the refusal with its code.
     Queued(Result<Value, CallError>),
-    /// Read the running job again; produced only while one is queued or running.
-    Poll,
-    /// `job.read` answered for the job it names.
+    /// What the export's reader read of the job it names: its first record, a record that differs
+    /// from the one sent before it, the job's end, or a read that failed. The reader sends
+    /// nothing for a read that finds the job as the one before it did.
     Read {
         job_id: String,
         result: Result<Value, String>,

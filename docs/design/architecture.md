@@ -15,6 +15,7 @@ A Rust 1.94 workspace. Exact versions are pinned in `Cargo.lock`. Add boundaries
 | libjpeg-turbo through `mozjpeg` (its bundled source built with `cc`) | Reading and writing JPEG, behind the private `luxforge-jpeg` crate, the only code that names it (`cargo xtask check-repository` enforces this) |
 | `moxcms` | Conservative sRGB profile recognition |
 | `rfd` | Native and portal dialogs |
+| `tokio`, its `time` feature only (the executor Iced already runs on) | The desktop's job readers' interval, in `luxforge-app` |
 | Pinned, bundled LibRaw and librtprocess | RAW, behind the private `luxforge-raw` adapter |
 | Bundled SQLite through `rusqlite` | The catalog |
 | Rayon | The parallel raster pass |
