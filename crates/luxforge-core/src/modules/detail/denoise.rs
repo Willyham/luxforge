@@ -252,7 +252,9 @@ impl SpatialUnit for Denoise {
 }
 
 /// The unit's last pass: each pixel of `output` reconstructed from its input, its Oklab `lab` and
-/// the levels' change `delta`, both planar L, a and b over `geometry.held`.
+/// the levels' change `delta`, both planar L, a and b over `geometry.held`. A pixel's
+/// reconstruction reads its own place alone, which lies inside the stage, so it reads row slices
+/// of the planes and the input with no clamp, the columns checked once.
 pub(super) fn finish(
     input: &Planes<'_>,
     output: &mut PlanesMut<'_>,
@@ -263,19 +265,33 @@ pub(super) fn finish(
     cancel: &Cancel,
 ) -> Result<(), Error> {
     let out = output.region();
+    if out.is_empty() {
+        return cancel.check();
+    }
+    filters::guard(geometry.held, out);
+    let first = (out.x0 - geometry.held.x0) as usize;
+    let columns = filters::input_columns(input, out.x0, out.x1());
     let len = geometry.held.pixels() as usize;
+    let lab: [&[f32]; 3] = std::array::from_fn(|c| &lab[c * len..(c + 1) * len]);
+    let delta: [&[f32]; 3] = std::array::from_fn(|c| &delta[c * len..(c + 1) * len]);
     output.for_rows(parallelism, |y, red, green, blue| {
         if cancel.is_cancelled() {
             return;
         }
-        for column in 0..out.width as usize {
-            let x = i64::from(out.x0) + column as i64;
-            let y = i64::from(y);
-            let i = geometry.index(x, y);
+        let (n, y) = (red.len(), i64::from(y));
+        let l = geometry.span(lab[0], y, first, n);
+        let a = geometry.span(lab[1], y, first, n);
+        let b = geometry.span(lab[2], y, first, n);
+        let dl = geometry.span(delta[0], y, first, n);
+        let da = geometry.span(delta[1], y, first, n);
+        let db = geometry.span(delta[2], y, first, n);
+        let rgb = filters::input_row(input, y, &columns, n);
+        let (green, blue) = (&mut green[..n], &mut blue[..n]);
+        for column in 0..n {
             let value = filters::reconstruct(
-                input.sample(x, y),
-                [lab[i], lab[len + i], lab[2 * len + i]],
-                [delta[i], delta[len + i], delta[2 * len + i]],
+                [rgb[0][column], rgb[1][column], rgb[2][column]],
+                [l[column], a[column], b[column]],
+                [dl[column], da[column], db[column]],
             );
             [red[column], green[column], blue[column]] = value;
         }
