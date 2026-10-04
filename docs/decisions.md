@@ -341,6 +341,17 @@ Settings gained a **General** tab for the person's preferences, which are not ex
 
 The gear button and Cmd+,, launch flags applying at the next launch, storing only explicit choices, `luxforge-json` reading no flag at launch and the two developer-only proof flags are proposals with recorded defaults in the [design](design/settings-and-flags.md#decisions).
 
+## Preferences
+
+Decided by the owner on 2026-10-04, choosing from a list of proposed settings ([design](design/preferences.md)):
+
+- **Remembered across launches, with no Settings row:** panel visibility, the thirds and clipping overlays, the brush's size, feather and flow, the window's frame and the last export folder.
+- **Settings › General gains** the mask overlay colour, the canvas background, a switch for automatic lens correction of new RAW photos, an interface size and the catalog location.
+- **The GPU preview stays a per-session switch**, not a preference.
+- **Export defaults** (JPEG quality, Keep metadata) wait for the export work.
+
+The field shapes, the three canvas colours, the four interface sizes, the catalog as a folder holding `catalog.sqlite` applied at the next launch with a fallback to the default catalog when its folder is missing, and the other details are proposals with recorded defaults in the [design](design/preferences.md#decisions).
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/product-decisions.json).
