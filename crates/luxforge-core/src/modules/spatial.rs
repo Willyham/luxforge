@@ -500,6 +500,13 @@ impl<'a> Planes<'a> {
     /// rectangle wide enough that a read within the unit's declared halo of its output rectangle,
     /// clamped to the stage this way, lies inside the rectangle; a read further than that panics
     /// rather than quietly returning a neighbour.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the per-pixel read the unit contract offers; every unit reads rows, tests sample"
+        )
+    )]
     pub(crate) fn sample(&self, x: i64, y: i64) -> [f32; 3] {
         let x = x.clamp(0, i64::from(self.stage.width.saturating_sub(1))) as u32;
         let y = y.clamp(0, i64::from(self.stage.height.saturating_sub(1))) as u32;
