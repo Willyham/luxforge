@@ -877,7 +877,7 @@
     {
       "id": "TASK-015",
       "description": "Build control models only for tool sections that show them, and let export and capability job polls skip the full update when their read changed nothing.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "section (crates/luxforge-app/src/state/tools.rs:814) builds every section's controls on every message, collapsed or not; the view skips collapsed bodies (view/tools_panel.rs:226) but the derive does not. Control::Presets calls presets_model (state/presets.rs:451), which per preset clones its settings into apply_fields, four to five strings and two lowercase strings, and presettable_groups re-walks every module's control tree: roughly 1 ms per message with a large library, on every drag tick.",
