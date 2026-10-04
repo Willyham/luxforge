@@ -723,6 +723,7 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
                         "statistics": measured["statistics"],
                         "limits": limits_value(class),
                         "cpu_against_reference": measured["cpu_against_reference"],
+                        "process_first": measured["process_first"]["statistics"],
                         "frames": measured["frames"],
                     }));
                 }
@@ -1111,11 +1112,14 @@ pub fn markdown(report: &Value) -> String {
     let missed = report["missed"].as_array().cloned().unwrap_or_default();
     if !missed.is_empty() {
         text.push_str(&format!(
-            "\n## Past a limit ({})\n\nEach cell's figures against the reference, then the CPU frame of the same view against the reference.\n\n| Cell | View | Class | Past | Mean / block / p99 / ΔL\\* | CPU: mean / block / p99 / ΔL\\* |\n| --- | --- | --- | --- | --- | --- |\n",
+            "\n## Past a limit ({})\n\nEach cell's figures against the reference: the frame a drag draws, which the gate judges, the process-first candidate beside it where the view has one, and the CPU frame of the same view.\n\n| Cell | View | Class | Past | Mean / block / p99 / ΔL\\* | Process-first | CPU frame |\n| --- | --- | --- | --- | --- | --- | --- |\n",
             missed.len()
         ));
         for miss in &missed {
             let row = |value: &Value| {
+                if value.is_null() {
+                    return "—".to_owned();
+                }
                 STATISTICS
                     .iter()
                     .map(|name| number(&value[name]))
@@ -1123,7 +1127,7 @@ pub fn markdown(report: &Value) -> String {
                     .join(" / ")
             };
             text.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} | {} | {} |\n",
                 miss["cell"].as_str().unwrap_or("?"),
                 miss["view"].as_str().unwrap_or("whole stage"),
                 miss["class"].as_str().unwrap_or("?"),
@@ -1136,6 +1140,7 @@ pub fn markdown(report: &Value) -> String {
                         .join(", "))
                     .unwrap_or_else(|| miss["kind"].as_str().unwrap_or("?").to_owned()),
                 row(&miss["statistics"]),
+                row(&miss["process_first"]),
                 row(&miss["cpu_against_reference"]),
             ));
         }
@@ -1271,11 +1276,15 @@ mod tests {
 
     #[test]
     fn a_cell_past_any_limit_fails_the_gate_and_is_listed_with_what_it_passed() {
-        // The spatial worst block just past 2.5.
+        // The spatial worst block just past 2.5, with the process-first candidate beside it at Fit.
+        let mut past = pair("c--d", "spatial", stats(0.9, 2.6, 4.0, 0.0));
+        past["views"]["fit"]["process_first"] = json!({"status": "measured",
+            "statistics": stats(0.01, 0.05, 0.1, 0.0),
+            "jump_from_motion": stats(0.9, 2.6, 4.0, 0.0)});
         let report = judge(
             Some(&cells(vec![
                 pair("a--b", "pointwise", stats(0.1, 0.5, 1.0, 0.0)),
-                pair("c--d", "spatial", stats(0.9, 2.6, 4.0, 0.0)),
+                past,
             ])),
             2,
             &options(),
@@ -1284,6 +1293,9 @@ mod tests {
         let missed = report["missed"].as_array().unwrap();
         assert_eq!(missed.len(), VIEWS.len(), "one miss per view");
         assert_eq!(missed[0]["exceeded"], json!(["worst_block"]));
+        assert_eq!(missed[0]["process_first"]["worst_block"], 0.05);
+        assert!(missed[1]["process_first"].is_null(), "none at 33% here");
+        assert!(markdown(&report).contains("| c--d | fit | spatial | worst_block | 0.900 / 2.60 / 4.00 / 0.000 | 0.010 / 0.050 / 0.100 / 0.000 |"));
         assert!(
             report["error"].as_str().unwrap().contains("c--d"),
             "{}",
