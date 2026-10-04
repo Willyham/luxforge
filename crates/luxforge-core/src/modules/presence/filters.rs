@@ -791,11 +791,13 @@ pub(super) fn guided_self(
     let coefficient_buffer = scratch.take(out.pixels())?;
     let temp_buffer = scratch.take(inner.expand_y(r).clip(frame).pixels())?;
 
+    // Every pointwise loop here runs over a rectangle inside the frame (`source` and `inner` are
+    // clipped to it, and the box mean into `dst` asserts `out` lies in it), where no read clamps,
+    // so each reads its planes' rows as slices.
     let mut squared = PlaneMut::over(squared_buffer, geometry, source)?;
     squared.for_rows(parallelism, |y, row| {
-        for x in source.x0..source.x1 {
-            let value = src.get(x, y);
-            row[(x - source.x0) as usize] = value * value;
+        for (squared, value) in row.iter_mut().zip(src.span(y, source.x0, source.x1)) {
+            *squared = value * value;
         }
     });
 
@@ -835,9 +837,9 @@ pub(super) fn guided_self(
     )?;
     let mean_a = mean_a.as_plane();
     dst.for_rows(parallelism, |y, row| {
-        for x in out.x0..out.x1 {
-            let column = (x - out.x0) as usize;
-            row[column] += mean_a.get(x, y) * src.get(x, y);
+        let (mean_a, src) = (mean_a.span(y, out.x0, out.x1), src.span(y, out.x0, out.x1));
+        for ((value, a), i) in row.iter_mut().zip(mean_a).zip(src) {
+            *value += a * i;
         }
     });
     Ok(())
@@ -884,6 +886,8 @@ pub(super) fn guided_filter(
     let coefficient_buffer = scratch.take(out.pixels())?;
     let temp_buffer = scratch.take(inner.expand_y(r).clip(frame).pixels())?;
 
+    // As in `guided_self`, every pointwise loop runs over a rectangle inside the frame and reads its
+    // planes' rows as slices.
     let mut guide_squared = PlaneMut::over(guide_squared_buffer, geometry, source)?;
     let mut guide_input = PlaneMut::over(guide_input_buffer, geometry, source)?;
     for_rows_of(
@@ -891,11 +895,16 @@ pub(super) fn guided_filter(
         [&mut guide_squared, &mut guide_input],
         |y, rows| {
             let [guide_squared, guide_input] = rows;
-            for x in source.x0..source.x1 {
-                let column = (x - source.x0) as usize;
-                let g = guide.get(x, y);
-                guide_squared[column] = g * g;
-                guide_input[column] = g * input.get(x, y);
+            let guide = guide.span(y, source.x0, source.x1);
+            let input = input.span(y, source.x0, source.x1);
+            for (((squared, product), g), i) in guide_squared
+                .iter_mut()
+                .zip(guide_input.iter_mut())
+                .zip(guide)
+                .zip(input)
+            {
+                *squared = g * g;
+                *product = g * i;
             }
         },
     );
@@ -928,15 +937,20 @@ pub(super) fn guided_filter(
         [&mut mean_guide_input, &mut mean_input],
         |y, rows| {
             let [mean_guide_input, mean_input] = rows;
-            for x in inner.x0..inner.x1 {
-                let column = (x - inner.x0) as usize;
-                let mg = mean_guide.get(x, y);
-                let mi = mean_input[column];
-                let variance = (mean_guide_squared.get(x, y) - mg * mg).max(0.0);
-                let covariance = mean_guide_input[column] - mg * mi;
+            let mean_guide = mean_guide.span(y, inner.x0, inner.x1);
+            let mean_guide_squared = mean_guide_squared.span(y, inner.x0, inner.x1);
+            for (((mean_guide_input, mean_input), &mg), &mean_guide_squared) in mean_guide_input
+                .iter_mut()
+                .zip(mean_input.iter_mut())
+                .zip(mean_guide)
+                .zip(mean_guide_squared)
+            {
+                let mi = *mean_input;
+                let variance = (mean_guide_squared - mg * mg).max(0.0);
+                let covariance = *mean_guide_input - mg * mi;
                 let a = covariance / (variance + eps);
-                mean_guide_input[column] = a;
-                mean_input[column] = mi - a * mg;
+                *mean_guide_input = a;
+                *mean_input = mi - a * mg;
             }
         },
     );
@@ -952,9 +966,12 @@ pub(super) fn guided_filter(
     )?;
     let mean_a = mean_a.as_plane();
     dst.for_rows(parallelism, |y, row| {
-        for x in out.x0..out.x1 {
-            let column = (x - out.x0) as usize;
-            row[column] += mean_a.get(x, y) * guide.get(x, y);
+        let (mean_a, guide) = (
+            mean_a.span(y, out.x0, out.x1),
+            guide.span(y, out.x0, out.x1),
+        );
+        for ((value, a), g) in row.iter_mut().zip(mean_a).zip(guide) {
+            *value += a * g;
         }
     });
     Ok(())
