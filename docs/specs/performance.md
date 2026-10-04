@@ -4453,6 +4453,192 @@ For GPU previews as a whole ([rules](../engineering/performance-rules.md#review-
 
 p50 / p95 over five launches (ten opens of the 24 MP JPEG). The launch figure is an upper bound: it runs from the spawn of a fresh background bundle with its copied 35 MB executable to the first captured frame, of which the editor's own startup to that frame is 0.2 s; the open figure runs from the request to the decoded raster. Neither changed with GPU previews beyond the run-to-run spread. The idle window includes the open Performance section's sampler and moved between 0.5% and 1.6% of one core across runs of either build.
 
+## CPU and memory efficiency, measured on the M4
+
+The [efficiency](../design/efficiency.md) work against the code before it, in two pairs that each
+differ by one body of that work:
+
+- **The core and RAW tasks.** `946751cc` against `135e720e`: tile slots and the rolling window,
+  the Detail and Presence rows, RAW row reads, the u16 demosaic input, the reduced-grid cache and
+  hardware SHA-256.
+- **The owner, catalog and desktop tasks.** `e7a65286` against `7a890372`: the WAL catalog,
+  shared strokes, a brush tick's copies, collapsed sections, job reads and GPU preview blocks.
+
+**Host and build.** Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal. Everything was built
+`release` with `--locked`; the `dist` profile is deferred. Files and the source cache were warm.
+Measured 4 October 2026.
+
+**Order and load.** Each workload ran base, branch, branch, base, and most then ran again in the
+reverse order (branch, base, base, branch). A difference is quoted only where it held in both
+orders. The one-minute load was 2.9 to 8.0 at the start of every run; the host was otherwise
+quiet.
+
+**Statistics.** Every p50 and p95 is nearest-rank. Each output's bytes and plane digests are the
+same on both sides.
+
+### Presence
+
+`presence_timing` (`cargo test --release --locked -p luxforge-core --lib presence_timing -- --ignored --nocapture`).
+Each stack is at +100 over a synthetic textured frame, with a warm source and warm estimates in one
+render context, and 10 renders a run. On the branch, Clarity alone and every stack holding Dehaze
+read their reduced planes from the store after the first render. Texture has no reduced grid, so
+its rows show the kernels and tiling alone. The cells are p50 over four runs a side, with each
+render's CPU time (p50 × CPU %).
+
+| Stage | Stack | Before | After | CPU time a render, before → after |
+| --- | --- | ---: | ---: | ---: |
+| 6000 × 4000 | Texture | 145–159 ms | 67–69 ms | 1.4 → 0.85 s |
+| 6000 × 4000 | Clarity | 98–110 ms | 53–56 ms | 1.2 → 0.70 s |
+| 6000 × 4000 | Dehaze | 60–68 ms | 25–27 ms | 0.58 → 0.26 s |
+| 6000 × 4000 | All three | 519–542 ms | 395–425 ms | 6.2 → 3.7 s |
+| 10000 × 6000 | Texture | 371–436 ms | 172–180 ms | 3.5 → 2.1 s |
+| 10000 × 6000 | Clarity | 310–338 ms | 154–159 ms | 3.8 → 1.9 s |
+| 10000 × 6000 | Dehaze | 179–200 ms | 66–77 ms | 1.65 → 0.77 s |
+| 10000 × 6000 | All three | 1663–1801 ms | 1253–1312 ms | 20.0 → 11.6 s |
+
+- **Kernels.** Texture alone renders 55–56% faster and uses 40% less CPU time. That is the tile
+  slots, the rolling window and the row-slice passes together, which these runs do not separate.
+- **The budget.** The spatial budget's high-water mark, every working set and every concurrency are
+  unchanged: for example 208.5 MiB, one tile at a time, for all three fields at 60 MP.
+- **All three fields.** These run one 1024 px tile at a time with pooled passes. They gain 23–26%,
+  at about 40% less CPU time.
+
+### Detail
+
+`detail-performance --case render --samples 30`: Detail (luminance 25, colour 25, sharpening 40)
+after Basic +0.5 EV, at full resolution with a warm context. The cells are p50 over four runs a
+side.
+
+| Source | Before p50 | After p50 | Before p95 | After p95 |
+| --- | ---: | ---: | ---: | ---: |
+| 24 MP JPEG | 283–324 ms | 208–227 ms | 299–345 ms | 258–326 ms |
+| 60 MP JPEG | 729–804 ms | 530–545 ms | 789–962 ms | 572–609 ms |
+
+The render is 27% faster at 24 MP and 31% faster at 60 MP. One 60 MP run after the change, whose
+first half ran beside other work, is left out (765 ms p50). The frames are `e64d4d51…` and
+`2d084fec…` both before and after.
+
+### RAW preparation and development
+
+**Cold open.** Measured with `cold_saved_white_balance_preparation_timing`, run with
+`/usr/bin/time -l` and 15 observations a run. The clock runs from `catalog.import` to a strict
+exact-source preview job, with a new owner each time:
+
+- read, hash, decode and develop at a saved red gain of 1.1 × as-shot, then adopt;
+- nothing is rendered.
+
+Peak RSS is the whole process: its catalog setup and 15 cold opens in turn, not one open's peak.
+
+| Source | Before p50 / p95 | After p50 / p95 | Peak RSS before → after |
+| --- | ---: | ---: | ---: |
+| Nikon Z6 (30.6 MB NEF) | 162.6–164.8 / 164.1–172.7 ms | 119.7–121.1 / 122.8–128.5 ms | 973–976 → 443–445 MiB |
+| Fujifilm X100VI (85.1 MB RAF) | 364.8–367.8 / 373.7–404.6 ms | 245.0–250.7 / 246.7–265.7 ms | 2019–2115 → 741–742 MiB |
+| DJI Air 2S (41.0 MB DNG) | 204.6–207.6 / 209.1–213.5 ms | 149.1–149.6 / 152.4–176.3 ms | 1051–1056 → 464–466 MiB |
+
+- **Time.** A cold open is 26–33% faster. Hardware SHA-256 of the original, the sized read, the
+  writer-faulted development buffers and the u16 demosaic input all act on it; they are not
+  measured apart.
+- **Peak RSS.** The process peak falls by far more than the float mosaic and the read buffer.
+  Developments of the same sizes in turn no longer accumulate retained memory in the process.
+
+**Development.** Measured with `owner_development_timing`: 30 warm developments of the retained
+mosaic at as-shot gains, after one warm-up, with `/usr/bin/time -l`.
+
+| Source | Before p50 | After p50 | Process peak before → after |
+| --- | ---: | ---: | ---: |
+| Nikon Z6 | 35.8–35.9 ms | 36.2–36.3 ms | 551–553 → 458–461 MiB |
+| Fujifilm X100VI | 179.2–184.1 ms | 183.3–192.8 ms | 886–888 → 730–731 MiB |
+| DJI Air 2S | 30.2–30.3 ms | 30.7–30.8 ms | 452–455 → 453–455 MiB |
+
+- **Time.** A warm development with the sensor sites takes 1–3% longer than with the float
+  mosaic. This loop reuses freed regions, so it cannot show the saving of leaving zeroing to the
+  writers.
+- **Peak.** One development's peak falls by the float mosaic: 4 bytes a site, 90 and 156 MiB. The
+  Air 2S's peak is in its DNG corrections and does not move.
+
+The development diagnostics (`sensor_sites_match_the_float_mosaic_on_every_local_sample`) give the
+bytes a development holds through its demosaic:
+
+| Source | Sensor sites | Float mosaic | Saving |
+| --- | ---: | ---: | ---: |
+| Nikon Z6, Bayer RCD | 293,984,256 B | 391,976,960 B | 97,994,240 B (25%) |
+| Fujifilm X100VI, X-Trans Markesteijn | 490,839,696 B | 654,446,592 B | 163,611,648 B (25%) |
+
+**Rows through geometry.** `editor-latency --mode commit --crop 7 --samples 20` on the X100VI:
+Basic exposure commits under a 16:9 crop straightened by 7°.
+
+- **The settle** (the exact whole-stage render through the resample, plus the histogram) takes
+  93–101 ms p50 against 120–132 ms, 24% less.
+- **The committed Fit frame** is unchanged at about 19 ms.
+- **The desktop's cold open** of the RAF stays about 1 s, bound by platform start-up.
+
+### The reduced-grid cache
+
+Measured with `editor-latency --action set-presence --parameter clarity` on the 24 MP JPEG. The
+layer holds Clarity alone, so an amount change keeps the cache key. The counters are
+`budgets.reduced_planes`, read from the evidence's `resources.read` answers.
+
+- **Hit rate.**
+  - Across 30 commits, only the first render at each stage misses: one at the Fit proxy and one at
+    the full stage. Every later settle and Fit render reads held planes.
+  - Across a 30-input drag with the GPU preview off, every tick but the first hits: 348–360 tiles
+    read, 12 computed.
+  - With the GPU preview on, the drag's ticks render nothing on the CPU, so only the settles use
+    the store.
+- **Time.**
+  - Commit to the settled histogram is 59.0–60.1 ms p50 against 98.9–102.6 ms, 41% less, which
+    holds the faster Clarity kernel as well as the hits.
+  - A drag's final settle is 57–61 ms against 105–108 ms.
+  - A drag tick with the GPU preview off stays one frame at p50 (8.8–9.0 ms); its p95 falls from
+    17.9–25.8 to 9.5–10.0 ms.
+- **Rebuild cost.** The settle that misses and fills takes 84–88 ms, about 26 ms more than a hit.
+  That is an upper bound: before the change the first settle was also the slowest, for reasons
+  common to both builds. Even so, it is faster than any settle before the change.
+- **Retained bytes.** 6,490,812 B in two entries: the Fit proxy's Clarity plane, 490,788 B, and the
+  24 MP stage's, 6,000,024 B. There were no evictions or refusals within the 64 MiB budget.
+- **Outstanding.** Stacks of several masked Clarity and Dehaze layers at 60 MP are not yet measured.
+
+### The owner, catalog and desktop work
+
+All on the 24 MP JPEG at Fit; the cells are p50 over four runs a side.
+
+| Workload | Before | After |
+| --- | ---: | ---: |
+| Basic exposure commit to the committed frame, 30 commits (the WAL catalog with full flushes) | 17.7–18.0 ms | 18.0–18.5 ms |
+| The same commits to the settled histogram | 26.5–26.7 ms | 26.4–26.7 ms |
+| A 400-position stroke, GPU preview on, position to frame | 7.4–7.5 ms (p95 8.7–8.8) | 7.5–7.6 ms (p95 8.7–8.8) |
+| A 400-position stroke, GPU preview off, position to frame | 8.3–8.4 ms (p95 11.2–16.6) | 8.2–8.4 ms (p95 9.5–9.8) |
+| The same stroke's `draft.set` on the owner, a tick | 0.038–0.042 ms | 0.031–0.032 ms |
+
+- **Commits.** A commit with the WAL catalog's single full flush reaches the screen within 0.4 ms
+  of before. A durable commit on its own is not measured.
+- **A brush tick's owner work.** It no longer grows along the stroke: before, `draft.set`'s p50
+  rose 14–26% from the stroke's first 100 positions to its last 100; now it is flat. With the
+  preview off, the stroke's p95 falls from 11.2–16.6 to 9.5–9.8 ms.
+- **The GPU stroke.** It is one frame a position on both builds.
+- **Recording limit.** `editor-latency` records at most 400 positions, because a 1000-position
+  stroke passes the evidence log's 4,096 events.
+
+### Verification
+
+`verify --tier full --manifest` on the merged work passed 61 of its 64 components, rendered, timing, hardening, `raw-authentic` and `raw-editor` on the three manifest sources among them. `raw-panel` failed on all three sources at its `crop-started` step, where the Basic section reads collapsed once the crop starts and the scenario expects it expanded. The same step fails on `946751cc` and on `e7a65286`, before either body of this work, so the failure is not this work's and stays open.
+
+### Outstanding
+
+These are not yet measured:
+
+- launch and idle (`measure`);
+- the desktop work at 60 MP and under contention;
+- the histogram reducer's own row (`editor-performance`);
+- the lens warp drag;
+- the history lineage and the live-session writer;
+- shared strokes over a long painting session;
+- collapsed sections with a large preset library;
+- masked spatial stacks.
+
+Skipping the process scan at launch is shown by the code, not by a measurement: only an evidence
+launch asks for system information.
+
 ## Method
 
 Optimized builds only, with commit, lockfile, OS, CPU/GPU, RAM, display and storage recorded. Report cold and warm runs separately and say which cold is meant. Keep at least 30 samples and never drop failures or tails silently. Measure user event to presented frame, not shader time, and account CPU RSS, cache bytes, GPU allocations and transient copies without double-counting unified memory. Capture idle after all background work stops. No timing gates in CI; CI enforces exactness, deterministic bounds and coverage. VM checks record hypervisor, guest graphics path and software versus accelerated rendering, and never stand in for native timings.
