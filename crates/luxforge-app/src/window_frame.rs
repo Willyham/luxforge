@@ -72,18 +72,17 @@ pub(crate) fn interface_scale(interface_size: u16) -> f32 {
 pub(crate) struct Opening {
     /// The frame as stored, in the system's points.
     pub(crate) frame: WindowFrame,
-    /// Iced's logical size for it at the launch's interface size, so the window opens at the
-    /// stored size in the system's points whatever the interface size.
-    pub(crate) size: (f32, f32),
 }
 
 impl Opening {
-    pub(crate) fn new(frame: WindowFrame, interface_size: u16) -> Self {
-        let scale = interface_scale(interface_size);
-        Self {
-            frame,
-            size: (frame.width / scale, frame.height / scale),
-        }
+    pub(crate) fn new(frame: WindowFrame) -> Self {
+        Self { frame }
+    }
+
+    /// The window's size, in the system's points: the launch divides it by the interface size
+    /// for Iced, which opens a window at its settings' size times the application's scale factor.
+    pub(crate) fn size(&self) -> (f32, f32) {
+        (self.frame.width, self.frame.height)
     }
 
     /// Where the window opens, in the system's points.
@@ -281,18 +280,22 @@ mod tests {
 
     #[test]
     fn a_remembered_window_opens_at_its_frame_in_the_systems_points() {
-        let opening = Opening::new(frame(1250.0, 750.0, -1200.5, 40.0), 125);
-        assert_eq!(opening.size, (1000.0, 600.0));
+        let opening = Opening::new(frame(1250.0, 750.0, -1200.5, 40.0));
+        assert_eq!(opening.size(), (1250.0, 750.0));
         assert_eq!(opening.position(), (-1200.5, 40.0));
-        let settings = settings(opening.size, Some(opening.position()), true);
+        // At 125% Iced is handed the size divided by the interface scale.
+        let scale = interface_scale(125);
+        let size = opening.size();
+        let settings = settings(
+            (size.0 / scale, size.1 / scale),
+            Some(opening.position()),
+            true,
+        );
+        assert_eq!(settings.size, iced::Size::new(1000.0, 600.0));
         assert!(matches!(
             settings.position,
             iced::window::Position::Specific(point) if point == iced::Point::new(-1200.5, 40.0)
         ));
-        assert_eq!(
-            Opening::new(frame(1440.0, 900.0, 0.0, 0.0), 100).size,
-            (1440.0, 900.0)
-        );
     }
 
     #[test]

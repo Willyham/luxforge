@@ -24,7 +24,10 @@ pub(crate) mod tools;
 
 use crate::{coalesce::Coalesce, crop_draft::CropDraft, mask_draft::MaskDraft};
 use fields::Fields;
-use luxforge_core::{ClientSession, EditorState, HistorySelection, MaskId, ModuleDescriptor};
+use luxforge_core::{
+    ClientSession, EditorState, HistorySelection, MaskId, ModuleDescriptor,
+    preferences::{CanvasBackground, DEFAULT_INTERFACE_SIZE, INTERFACE_SIZES},
+};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
@@ -177,14 +180,26 @@ pub(crate) struct VersionForm {
 /// but the zoom and the pan, which the owner's session holds and this follows.
 #[derive(Clone, Debug)]
 pub(crate) struct ViewState {
-    /// The window's logical size, from the launch size and every resize event since, which with
-    /// the panels and the display scale decides what Fit comes to as a percentage.
+    /// The window's logical size, from the launch size, every resize event and every interface
+    /// size change since, which with the panels and the display scale decides what Fit comes to as
+    /// a percentage.
     pub(crate) window: (f32, f32),
     /// The window fills the screen, so the title bar holds no traffic lights to leave room for.
     pub(crate) fullscreen: bool,
     /// Whether this launch remembers the window's frame, and whether the close has asked for it.
     pub(crate) memory: crate::window_frame::WindowMemory,
+    /// Physical pixels per logical pixel: the system's factor times the interface size. Every
+    /// physical-pixel computation reads this one, so 100% zoom stays one source pixel per display
+    /// pixel at any interface size. Written through [`Self::set_system_scale_factor`] and
+    /// [`Self::set_interface_size`].
     pub(crate) scale_factor: f32,
+    /// The system's own scale factor for the window, as `iced::window::scale_factor` reports it.
+    pub(crate) system_scale_factor: f32,
+    /// The interface size the layout is drawn at, in percent of the system's scale: Iced's
+    /// application scale factor ([`Self::interface_scale`]).
+    pub(crate) interface_size: u16,
+    /// The colour around the photograph.
+    pub(crate) canvas_background: CanvasBackground,
     /// The zoom field's text.
     pub(crate) zoom: String,
     /// The title bar's percentage segment has been opened for typing a zoom.
@@ -214,6 +229,9 @@ impl ViewState {
             fullscreen: false,
             memory: Default::default(),
             scale_factor: 1.0,
+            system_scale_factor: 1.0,
+            interface_size: DEFAULT_INTERFACE_SIZE,
+            canvas_background: CanvasBackground::default(),
             zoom: "100".into(),
             zoom_editing: false,
             zoom_reveal: 0,
@@ -223,6 +241,38 @@ impl ViewState {
             local_pan: (0.0, 0.0),
             pan: Coalesce::default(),
         }
+    }
+
+    /// The interface size as Iced's application scale factor: logical pixels are this many of the
+    /// system's points.
+    pub(crate) fn interface_scale(&self) -> f32 {
+        f32::from(self.interface_size) / 100.0
+    }
+
+    /// Take up the system's scale factor for the window.
+    pub(crate) fn set_system_scale_factor(&mut self, scale: f32) {
+        if scale.is_finite() && scale > 0.0 {
+            self.system_scale_factor = scale;
+            self.scale_factor = scale * self.interface_scale();
+        }
+    }
+
+    /// Draw the interface at `size` percent, or at the system's own scale for a size this build
+    /// does not offer. The window keeps its size in the system's points, so its logical size, which
+    /// Iced reports no resize for, shrinks or grows by the change, and the physical factor follows.
+    pub(crate) fn set_interface_size(&mut self, size: u16) {
+        let size = if INTERFACE_SIZES.contains(&size) {
+            size
+        } else {
+            DEFAULT_INTERFACE_SIZE
+        };
+        if size == self.interface_size {
+            return;
+        }
+        let ratio = f32::from(self.interface_size) / f32::from(size);
+        self.window = (self.window.0 * ratio, self.window.1 * ratio);
+        self.interface_size = size;
+        self.scale_factor = self.system_scale_factor * self.interface_scale();
     }
 }
 
@@ -600,6 +650,7 @@ mod tests {
                 analysis_updating: false,
                 view_state: ViewState {
                     scale_factor: 2.0,
+                    system_scale_factor: 2.0,
                     ..ViewState::new((1440.0, 900.0))
                 },
                 hover: Hover::default(),

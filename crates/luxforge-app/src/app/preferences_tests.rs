@@ -1,14 +1,16 @@
 //! The desktop's one preference writer against a real owner: every control's change goes through
 //! it one call at a time with later changes merged, a refusal says why and puts the stored value
 //! back, closing waits for the last write, the mask overlay colour is both this session's and a
-//! stored preference, another client's change is read again and applied, and the `preference`
-//! evidence step drives the General rows' own messages.
+//! stored preference, another client's change is read again and applied, the canvas background
+//! and the interface size are drawn at once, and the `preference` evidence step drives the General
+//! rows' own messages.
 use super::{
     Editor,
     evidence::Settle,
     message::{
         Message, mask::MaskMessage, performance::PerformanceMessage,
         preferences::PreferenceMessage, settings::SettingsMessage, sync::SyncMessage,
+        view::ViewMessage,
     },
     settings_tests::{answer_preference, answer_read, finish, launch},
     tasks::{call, sync_now},
@@ -17,7 +19,12 @@ use crate::state::{
     preferences::{GeneralControl, GeneralPreference, GeneralValue, PreferenceChange, parse},
     settings::SettingsTab,
 };
-use luxforge_core::{AssetId, MaskOverlayColour};
+use crate::view::canvas_view::CanvasView;
+use luxforge_core::{
+    AssetId, MaskOverlayColour, Zoom,
+    preferences::{CanvasBackground, INTERFACE_SIZES},
+};
+use luxforge_ui::theme;
 use serde_json::json;
 
 fn general(editor: &mut Editor, row: GeneralPreference, value: GeneralValue) {
@@ -376,5 +383,148 @@ fn a_preference_step_drives_the_general_rows_and_waits_for_the_writer() {
         assert!(evidence(&editor).1, "a failed step is still captured");
         assert!(editor.preferences.idle(), "nothing is sent");
     }
+    finish(editor, root);
+}
+
+/// The Canvas background row fills the canvas in each choice at once, the frame records the
+/// background the desktop draws, and another client's choice is drawn as soon as it is read.
+#[test]
+fn the_canvas_background_row_fills_the_canvas_in_each_choice_and_follows_another_client() {
+    let (mut editor, root) = launch();
+    let drawn = |editor: &Editor| {
+        let background = editor.workspace.canvas.background;
+        (
+            background,
+            crate::view::canvas::background_colour(background),
+        )
+    };
+    assert_eq!(drawn(&editor), (CanvasBackground::Dark, theme::CANVAS));
+    for (index, background, colour) in [
+        (2, CanvasBackground::Grey, theme::CANVAS_GREY),
+        (1, CanvasBackground::Black, theme::CANVAS_BLACK),
+        (0, CanvasBackground::Dark, theme::CANVAS),
+    ] {
+        general(
+            &mut editor,
+            GeneralPreference::CanvasBackground,
+            GeneralValue::Choice(index),
+        );
+        assert_eq!(drawn(&editor), (background, colour), "shown at once");
+        assert_eq!(
+            editor.snapshot()["preferences"]["display"]["canvas_background"],
+            json!(background.as_str())
+        );
+        answer_preference(&mut editor);
+        assert_eq!(read(&editor)["canvas_background"], background.as_str());
+        assert_eq!(drawn(&editor), (background, colour), "confirmed");
+    }
+
+    let agent = editor.owner.register();
+    call(
+        &editor.owner,
+        agent,
+        "preferences.set",
+        json!({"canvas_background": "grey"}),
+    )
+    .unwrap();
+    assert!(poll(&mut editor).preferences);
+    answer_preferences_read(&mut editor);
+    assert_eq!(
+        drawn(&editor),
+        (CanvasBackground::Grey, theme::CANVAS_GREY),
+        "the agent's background is drawn"
+    );
+    finish(editor, root);
+}
+
+/// The Interface size row sets Iced's application scale factor, and every frame records the
+/// combined factor every physical-pixel computation reads: the system's times the interface's.
+/// The window keeps its size in the system's points, so its logical size follows the inverse, and
+/// another client's size is drawn as soon as it is read.
+#[test]
+fn a_frame_records_the_combined_scale_factor_at_each_interface_size() {
+    let (mut editor, root) = launch();
+    let _ = editor.update(Message::View(ViewMessage::ScaleFactor(2.0)));
+    let display = |editor: &Editor| editor.snapshot()["preferences"]["display"].clone();
+    assert_eq!(
+        display(&editor),
+        json!({"canvas_background": "dark", "interface_size": 100,
+               "system_scale_factor": 2.0, "scale_factor": 2.0})
+    );
+    for (index, size) in INTERFACE_SIZES.into_iter().enumerate().rev() {
+        general(
+            &mut editor,
+            GeneralPreference::InterfaceSize,
+            GeneralValue::Choice(index),
+        );
+        let interface = f32::from(size) / 100.0;
+        assert_eq!(editor.interface_scale(), interface, "{size}");
+        let combined = 2.0 * interface;
+        assert_eq!(editor.view_state.scale_factor, combined);
+        assert_eq!(
+            display(&editor),
+            json!({"canvas_background": "dark", "interface_size": size,
+                   "system_scale_factor": 2.0, "scale_factor": combined}),
+            "{size}"
+        );
+        let (width, height) = editor.view_state.window;
+        assert!(
+            (width * interface - 1440.0).abs() < 0.01 && (height * interface - 900.0).abs() < 0.01,
+            "the window stays 1440 × 900 points at {size}%: {width} × {height}"
+        );
+        answer_preference(&mut editor);
+        assert_eq!(read(&editor)["interface_size"], size);
+        assert_eq!(editor.interface_scale(), interface, "confirmed at {size}");
+    }
+
+    // Another client's size is drawn once read, and a new system factor keeps the interface's.
+    let agent = editor.owner.register();
+    call(
+        &editor.owner,
+        agent,
+        "preferences.set",
+        json!({"interface_size": 125}),
+    )
+    .unwrap();
+    assert!(poll(&mut editor).preferences);
+    answer_preferences_read(&mut editor);
+    assert_eq!(editor.interface_scale(), 1.25);
+    assert_eq!(editor.view_state.scale_factor, 2.5);
+    let _ = editor.update(Message::View(ViewMessage::ScaleFactor(1.0)));
+    assert_eq!(editor.view_state.scale_factor, 1.25);
+    assert_eq!(display(&editor)["system_scale_factor"], json!(1.0));
+    finish(editor, root);
+}
+
+/// At an interface scale of 125% on a 2× display, 100% zoom still draws one source pixel per
+/// physical pixel: the drawn size, the proxy rule and the canvas view all read the combined factor.
+#[test]
+fn at_an_interface_scale_of_125_percent_100_percent_zoom_is_one_source_pixel_per_physical_pixel() {
+    let (mut editor, root) = launch();
+    let _ = editor.update(Message::View(ViewMessage::ScaleFactor(2.0)));
+    general(
+        &mut editor,
+        GeneralPreference::InterfaceSize,
+        GeneralValue::Choice(2),
+    );
+    assert_eq!(editor.interface_scale(), 1.25);
+    let stage = (6000, 4000);
+    editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
+    assert_eq!(editor.displayed_size(stage), Some((6000.0, 4000.0)));
+    assert_eq!(
+        editor.proxy_bounds_for(Some(stage)),
+        None,
+        "100% renders the exact stage, not a proxy"
+    );
+    let view = CanvasView::percent(100.0, editor.view_state.scale_factor).unwrap();
+    assert_eq!(
+        view.scale * editor.view_state.scale_factor,
+        1.0,
+        "one source pixel is one physical pixel"
+    );
+    // A smaller zoom is bounded by the physical size it draws, at the combined factor too.
+    editor.session.preview.view.zoom = Zoom::Percent { value: 50.0 };
+    assert_eq!(editor.displayed_size(stage), Some((3000.0, 2000.0)));
+    answer_preference(&mut editor);
     finish(editor, root);
 }

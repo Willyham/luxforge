@@ -13,13 +13,6 @@ use iced::{Point, Size, Task, window};
 use serde_json::json;
 
 impl Editor {
-    /// The interface size as a scale over the system's, as the desktop applies it.
-    pub(crate) fn interface_scale(&self) -> f32 {
-        self.preferences.applied().map_or(1.0, |preferences| {
-            window_frame::interface_scale(preferences.interface_size)
-        })
-    }
-
     /// Iced reported where a window opened at its remembered frame is. A frame that does not lie
     /// within its display is centred on the main display at its size shrunk to fit; one no display
     /// holds is first moved to the main display and checked again there.

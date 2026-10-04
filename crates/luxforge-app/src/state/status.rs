@@ -451,10 +451,11 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatusBarModel {
         } else {
             inputs.cpu_reason.as_ref().and_then(CpuReason::notice)
         },
+        // The display's own scale: the interface size is a choice of its own, not the display's.
         view: view_text(
             &inputs.session.preview.view.zoom,
             title::effective_percent(inputs),
-            inputs.view_state.scale_factor,
+            inputs.view_state.system_scale_factor,
         ),
     }
 }

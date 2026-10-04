@@ -79,9 +79,13 @@ pub(crate) fn settings(model: &SettingsModel) -> Option<Element<'_, Message>> {
         vertical_rule(),
         scrollable(container(content).padding(theme::SPACING * 2.0)).height(Length::Fill),
     ];
+    // At its size where the window has room for it, and shrunk to fit one that has not, as a large
+    // interface size leaves a small window: the content scrolls.
     let sheet = container(column![header, horizontal_rule(), body])
-        .width(Length::Fixed(WIDTH))
-        .height(Length::Fixed(HEIGHT))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .max_width(WIDTH)
+        .max_height(HEIGHT)
         .style(theme::bar_surface);
 
     let backdrop = mouse_area(
@@ -102,6 +106,7 @@ pub(crate) fn settings(model: &SettingsModel) -> Option<Element<'_, Message>> {
             container(sheet)
                 .width(Length::Fill)
                 .height(Length::Fill)
+                .padding(theme::SPACING * 2.0)
                 .align_x(Alignment::Center)
                 .align_y(Alignment::Center)
                 .into(),

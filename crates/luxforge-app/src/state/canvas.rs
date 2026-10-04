@@ -10,6 +10,7 @@ use crate::{
 use luxforge_core::{
     Availability, CanvasInteraction, ComponentMode, ErrorKind, MASK_MODE, ModuleDescriptor,
     POINTER_MODE, PREVIEW_PROGRESS_QUIET, PreviewProgress, Zoom, mask::commands::MaskListing,
+    preferences::CanvasBackground,
 };
 use std::time::Duration;
 
@@ -214,6 +215,9 @@ pub(crate) struct CanvasModel {
     pub(crate) photo: PhotoView,
     pub(crate) zoom: ZoomView,
     pub(crate) scale_factor: f32,
+    /// The colour around the photograph, which fills the canvas region, the photo surface outside
+    /// the photograph and the compare canvas.
+    pub(crate) background: CanvasBackground,
     pub(crate) dimensions: Option<(u32, u32)>,
     pub(crate) modes: Vec<ModeEntry>,
     pub(crate) thirds: bool,
@@ -309,6 +313,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
             Zoom::Percent { value } => ZoomView::Percent(value),
         },
         scale_factor: inputs.view_state.scale_factor,
+        background: inputs.view_state.canvas_background,
         dimensions: inputs.dimensions,
         modes,
         thirds: inputs.session.workspace.thirds,

@@ -603,6 +603,9 @@ impl Editor {
         if let Some(reason) = failed {
             editor.status.text = format!("Could not read preferences; using defaults: {reason}");
         }
+        // The first frame is drawn at the stored interface size and canvas background: Iced reads
+        // the application's scale factor from this state before it opens the window.
+        editor.apply_display_preferences();
         editor.event(
             "startup",
             || json!({"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"version":env!("CARGO_PKG_VERSION"),"debug_assertions":cfg!(debug_assertions),"mode":if editor.evidence.is_some() {"evidence"} else {"editor"}}),
