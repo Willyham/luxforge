@@ -25,6 +25,11 @@ mozjpeg = { version = "=0.10.13", default-features = false, features = ["with_si
 # classifies so that a warning standing for lost data stops a decode.
 mozjpeg-sys = { version = "=2.2.3", default-features = false }
 iced = { version = "=0.14.0", default-features = false, features = ["advanced", "wgpu", "canvas", "image-without-codecs", "sysinfo", "tokio", "x11", "wayland"] }
+# The exact `tokio` Iced's executor runs on, for the desktop's job readers: a stream that waits for
+# its interval's next tick creates that timer on the runtime the subscription runs on, where Iced's
+# own `time::every` can only send a message for each tick. It is the version already in the
+# lockfile with the `time` feature Iced's `tokio` feature already turns on, so it adds no package.
+tokio = { version = "=1.53.1", default-features = false, features = ["time"] }
 rfd = { version = "=0.15.4", default-features = false, features = ["xdg-portal", "async-std"] }
 rayon = "=1.12.0"
 # An independent EXIF reader and writer for the export metadata tests only. Already in the lockfile

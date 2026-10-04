@@ -361,13 +361,23 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: gpu_preview_zoom::SCENARIO,
-        about: "Basic drags at 100% and 200% drawn on the GPU over the visible region at full scale with no preview job per tick, correlated with the CPU frame of their settings, a drag at 800% panned past its region, and Presence drags and Basic drags under Presence at 100%",
-        launches: &[LaunchSpec {
-            plan: gpu_preview_zoom::plan,
-            // Its Presence drags at 100% wait for their boundaries and sequences.
-            deadline: Some(Duration::from_secs(150)),
-            ..APP
-        }],
+        about: "Basic drags at 100% and 200% drawn on the GPU over the visible region at full scale with no preview job per tick, correlated with the CPU frame of their settings, a drag at 800% panned past its region, Presence drags and Basic drags under Presence at 100%, and a drag at 50% drawn on the CPU with the status bar's notice saying why",
+        launches: &[
+            LaunchSpec {
+                plan: gpu_preview_zoom::plan,
+                // Its Presence drags at 100% wait for their boundaries and sequences.
+                deadline: Some(Duration::from_secs(150)),
+                ..APP
+            },
+            // The first launch's script holds the evidence's 64 steps, so the drag below 100% is
+            // its own short launch.
+            LaunchSpec {
+                name: "below",
+                script: "script-below.json",
+                plan: gpu_preview_zoom::below_plan,
+                ..APP
+            },
+        ],
         verify: gpu_preview_zoom::verify,
         source: Source::Fixtures(&[gpu_preview_zoom::FIXTURE]),
         window: Some(PANELLED),
@@ -1395,6 +1405,7 @@ fn gpu_identity(run: &mut Run, launches: &[Checked]) -> Result {
                 "gpu_preview_passes": gpu["gpu_preview_passes"],
                 "gpu_preview_budget_bytes": gpu["gpu_preview_budget_bytes"],
                 "gpu_preview_in_use_bytes": gpu["gpu_preview_in_use_bytes"],
+                "gpu_preview_scratch_bytes": gpu["gpu_preview_scratch_bytes"],
                 "gpu_preview_peak_bytes": gpu["gpu_preview_peak_bytes"],
                 "gpu_preview_frame_us": gpu["gpu_preview_frame_us"],
                 "gpu_preview_done_us": gpu["gpu_preview_done_us"],
@@ -1437,15 +1448,18 @@ fn gpu_identity(run: &mut Run, launches: &[Checked]) -> Result {
             figure("gpu_preview_in_use_bytes"),
             figure("gpu_preview_peak_bytes"),
         );
+        // The slots' shared scratch pools are part of what is in use.
+        let scratch = gpu["gpu_preview_scratch_bytes"].as_u64();
         ensure(
             budget == GPU_PREVIEW_BUDGET
                 && in_use > 0
                 && in_use <= peak
                 && peak <= budget
+                && scratch.is_some_and(|scratch| scratch <= in_use)
                 && figure("gpu_preview_passes") > 0,
             format!(
-                "GPU-preview figures out of bounds: {in_use} in use, {peak} peak, {budget} budget, \
-                 {} passes",
+                "GPU-preview figures out of bounds: {in_use} in use, {scratch:?} scratch, {peak} \
+                 peak, {budget} budget, {} passes",
                 gpu["gpu_preview_passes"]
             ),
         )?;

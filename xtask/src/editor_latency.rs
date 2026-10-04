@@ -442,7 +442,8 @@ fn resource_rows(usage: &Value, last: &Value) -> Vec<Value> {
             .map(|bytes| bytes / (1024.0 * 1024.0)),
     ));
     // The GPU preview stage's own budget, charged outside the photo slots: the most it has held
-    // over the run, what it holds at the last frame, and its budget.
+    // over the run, what it holds at the last frame and how much of that is the scratch pool its
+    // links share, and its budget.
     let preview = &last["state"]["surface"]["gpu"];
     rows.push(counter(
         "gpu_preview_peak_bytes",
@@ -453,6 +454,11 @@ fn resource_rows(usage: &Value, last: &Value) -> Vec<Value> {
         "last_gpu_preview_in_use_bytes",
         "bytes",
         preview["gpu_preview_in_use_bytes"].as_u64(),
+    ));
+    rows.push(counter(
+        "last_gpu_preview_scratch_bytes",
+        "bytes",
+        preview["gpu_preview_scratch_bytes"].as_u64(),
     ));
     rows.push(counter(
         "gpu_preview_budget_bytes",
@@ -1292,7 +1298,8 @@ const PAINT_EV: f64 = 0.6;
 /// positions.
 pub const PAINT_POSITIONS: usize = 400;
 /// The most positions one paint run takes: the stroke's real time, `PAINT_POSITIONS_MAX ×
-/// PAINT_INTERVAL_MS`, stays well inside the editor's 60 s scripted-evidence deadline.
+/// PAINT_INTERVAL_MS` (24 s), stays well inside the editor's 300 s scripted-evidence deadline
+/// beside the run's setup ([`paint_deadline`]).
 const PAINT_POSITIONS_MAX: usize = 1000;
 
 /// The measured stroke's path: a sine across the frame, in normalized content coordinates, one
@@ -1336,7 +1343,9 @@ fn paint_precondition(options: &Options) -> Vec<script::Step> {
     steps.extend(brushed_mask(options));
     steps.extend(masked_adjustments(options, 1));
     // Every further mask is a radial one with the same masked adjustments, placed across the frame
-    // so the masks overlap the stroke's path as a real edit's do.
+    // so the masks overlap the stroke's path as a real edit's do. Each is made and adjusted through
+    // the host's own commands, naming the mask, so it takes two script steps, three with Presence,
+    // and a recipe of `MAX_MASKS` masks fits the script's step bound.
     for index in 2..=options.masks {
         let t = (index - 2) as f64 / (options.masks.max(3) - 2) as f64;
         steps.push(script::Step::call(
@@ -1344,10 +1353,7 @@ fn paint_precondition(options: &Options) -> Vec<script::Step> {
             json!({"x": 0.15 + 0.7 * t, "y": 0.35 + 0.3 * (t * 7.0).sin().abs(), "radius_x": 0.18,
                 "radius_y": 0.14, "angle": 0.0, "feather": 50.0}),
         ));
-        steps.push(script::Step::Mask(MaskStep::Select(Reference::name(
-            format!("Mask {index}"),
-        ))));
-        steps.extend(masked_adjustments(options, index));
+        steps.extend(named_adjustments(options, index));
     }
     if options.masks > 1 {
         steps.push(script::Step::Mask(MaskStep::Select(Reference::name(
@@ -1386,13 +1392,37 @@ fn masked_adjustments(options: &Options, number: usize) -> Vec<script::Step> {
     steps
 }
 
+/// [`masked_adjustments`] of mask `number`, counted from 1, committed through the actions
+/// themselves with the mask named, as an agent sets them: the same layers, one step each.
+fn named_adjustments(options: &Options, number: usize) -> Vec<script::Step> {
+    let mask = json!(Reference::name(format!("Mask {number}")));
+    let mut steps = vec![script::Step::call(
+        "edit.set-basic",
+        json!({"mask": mask, "exposure": PAINT_EV}),
+    )];
+    if options.mask_presence && number <= MASKED_SPATIAL_LAYERS {
+        steps.push(script::Step::call(
+            "edit.set-presence",
+            json!({"mask": mask, "clarity": MASK_CLARITY, "texture": MASK_TEXTURE}),
+        ));
+    }
+    steps
+}
+
 /// The Clarity and Texture each mask holds with `--mask-presence`.
 const MASK_CLARITY: f64 = 50.0;
 const MASK_TEXTURE: f64 = 40.0;
 
-/// How many masked spatial layers the host evaluates (`docs/design/masking.md`, "Limits"); a
-/// mask past them holds its exposure alone.
-const MASKED_SPATIAL_LAYERS: usize = 4;
+/// How many masked spatial layers the host evaluates (`docs/design/masking.md`, "Limits"), read
+/// from the core it builds; a mask past them would hold its exposure alone.
+const MASKED_SPATIAL_LAYERS: usize = luxforge_core::MAX_MASKED_SPATIAL_LAYERS;
+
+/// The most masks `--masks` asks for, the brushed one among them: as many as a recipe holds.
+const MAX_MASKS: usize = luxforge_core::MASKS_PER_RECIPE;
+
+/// What each mask after the first adds to a paint run's deadline: its two or three commits, each
+/// rendering the stack of up to [`MASKED_SPATIAL_LAYERS`] masked spatial layers it then holds.
+const MASK_SETUP: Duration = Duration::from_secs(5);
 
 /// Mask mode with the paint brush's settings and one committed brush mask. With
 /// `--mask-overlay`, the selected mask's tint is on, so every accepted draft also asks for its
@@ -2685,11 +2715,18 @@ fn run_paint(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
             "Paint samples must be 2..{PAINT_POSITIONS_MAX} positions; a stroke of one position has no path, and the stroke's real time must stay inside the editor's scripted-evidence deadline"
         ),
     )?;
-    // The paced stroke itself takes samples × interval of real time on top of the launch and the
-    // setup steps; allow generously for both plus the launch wrapper.
-    let stroke = Duration::from_millis(PAINT_INTERVAL_MS * options.samples as u64);
-    let run = Run::tool(root, out, TOOL, bin, Duration::from_secs(90) + stroke)?;
+    let run = Run::tool(root, out, TOOL, bin, paint_deadline(options))?;
     run.check(|run| paint(run, options))
+}
+
+/// How long a paint run may take: 90 s for the launch, the setup steps and the launch wrapper,
+/// [`MASK_SETUP`] for each mask after the first, and the paced stroke's own real time, samples ×
+/// interval. At its largest, 16 masks and 1000 positions, that is 90 + 75 + 24 = 189 s, inside the
+/// editor's own 300 s deadline for a scripted run, so the harness names a stuck run first.
+fn paint_deadline(options: &Options) -> Duration {
+    let stroke = Duration::from_millis(PAINT_INTERVAL_MS * options.samples as u64);
+    let masks = MASK_SETUP * options.masks.saturating_sub(1) as u32;
+    Duration::from_secs(90) + masks + stroke
 }
 
 fn hover_script(options: &Options) -> Result<(Vec<script::Step>, Vec<usize>)> {
@@ -2846,6 +2883,15 @@ fn paint(run: &mut Run, options: &Options) -> Result {
     let path = paint_path(options.samples);
 
     let steps = paint_script(options, path);
+    ensure(
+        steps.len() <= script::MAX_SCRIPT_STEPS,
+        format!(
+            "The paint script holds {} steps, more than the {} one run accepts: pass fewer masks \
+             or preconditions",
+            steps.len(),
+            script::MAX_SCRIPT_STEPS
+        ),
+    )?;
     let load_start = launch::load_average(root);
     let gesture = gesture_launch(
         out,
@@ -2915,6 +2961,15 @@ fn paint(run: &mut Run, options: &Options) -> Result {
             "The painted mask must hold {per_mask} masked layers, not {:?}",
             bound
         ),
+    )?;
+    // Every further mask holds the same, Presence on each with `--mask-presence`.
+    ensure(
+        masks.iter().all(|mask| {
+            mask["layers"]
+                .as_array()
+                .is_some_and(|layers| layers.len() == per_mask)
+        }),
+        format!("Every mask must hold {per_mask} masked layers: {masks:?}"),
     )?;
     let masked_layers = bound.len();
     let components = components.len();
@@ -3373,8 +3428,10 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         "--masks and --mask-presence measure a paint stroke; pass --mode paint",
     )?;
     ensure(
-        (1..=10).contains(&options.masks),
-        "--masks is 1 to 10: each further mask takes four script steps",
+        (1..=MAX_MASKS).contains(&options.masks),
+        format!(
+            "--masks is 1 to {MAX_MASKS}, the masks a recipe holds, the brushed one among them"
+        ),
     )?;
     ensure(
         !options.gpu_preview_off || matches!(options.mode, Mode::Drag | Mode::Commit | Mode::Paint),
@@ -5012,6 +5069,77 @@ mod tests {
         );
         options.detail = false;
         assert!(!paint_precondition(&options).contains(&detail));
+    }
+
+    /// `--masks` reaches as many masks as a recipe holds, the brushed one among them, and with
+    /// `--mask-presence` each holds a masked Presence layer beside its exposure: the brushed mask
+    /// through its sliders, every further one through the actions with the mask named. The script
+    /// stays inside its step bound with a precondition of every kind but geometry, and the run's
+    /// deadline inside the editor's own for a scripted run.
+    #[test]
+    fn paint_reaches_sixteen_masks_with_presence_on_each() {
+        assert_eq!(MAX_MASKS, 16);
+        assert_eq!(MASKED_SPATIAL_LAYERS, MAX_MASKS);
+        let source = PathBuf::from("unused.jpg");
+        let options = Options {
+            source: &source,
+            samples: PAINT_POSITIONS_MAX,
+            mode: Mode::Paint,
+            control: Control::Slider,
+            action: None,
+            parameter: None,
+            crop: None,
+            idle: false,
+            basic: true,
+            presence: true,
+            curve_layer: true,
+            detail: true,
+            lens: false,
+            perspective: false,
+            mask: false,
+            mask_overlay: true,
+            contend: None,
+            warm_ms: None,
+            gpu_preview_off: true,
+            masks: MAX_MASKS,
+            mask_presence: true,
+            window: None,
+            zoom: Some(100.0),
+            moving_pan: false,
+        };
+        let steps = paint_script(&options, paint_path(options.samples));
+        assert!(steps.len() <= script::MAX_SCRIPT_STEPS, "{}", steps.len());
+        assert_eq!(
+            script::parse(&script::write(&steps).to_string()).unwrap(),
+            steps
+        );
+        let radials = steps
+            .iter()
+            .filter(|step| matches!(step, script::Step::Api { method, .. } if method == "mask.create-radial"))
+            .count();
+        assert_eq!(radials, MAX_MASKS - 1);
+        for number in 2..=MAX_MASKS {
+            let named = |method: &str| {
+                steps.iter().any(|step| {
+                    matches!(step, script::Step::Api { method: called, params }
+                        if called == method
+                            && params.get("mask") == Some(&json!({"name": format!("Mask {number}")})))
+                })
+            };
+            assert!(
+                named("edit.set-basic") && named("edit.set-presence"),
+                "Mask {number}"
+            );
+        }
+        let sliders = |parameter: &str| {
+            steps
+                .iter()
+                .filter(|step| matches!(step, script::Step::Slider(slider) if slider.parameter == parameter))
+                .count()
+        };
+        assert_eq!((sliders("clarity"), sliders("texture")), (1, 1));
+        assert_eq!(paint_deadline(&options), Duration::from_secs(189));
+        assert!(paint_deadline(&options) < Duration::from_secs(300));
     }
 
     #[test]

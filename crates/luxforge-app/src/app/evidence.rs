@@ -2838,9 +2838,8 @@ impl Editor {
                     parameter: step.parameter.clone(),
                     event: CurveEditorEvent::Channel(index),
                 }));
-                if selected_curve_channel(&self.workspace.tools, &step.action, &step.parameter)
-                    != Some(index)
-                {
+                let sections = self.workspace.tools.with_controls(&self.inputs());
+                if selected_curve_channel(&sections, &step.action, &step.parameter) != Some(index) {
                     return self.fail_step("the declared curve channel was not selected");
                 }
                 self.capture_next_frame();
@@ -2854,9 +2853,8 @@ impl Editor {
                     parameter: step.parameter.clone(),
                     event: CurveEditorEvent::Points(open),
                 }));
-                if curve_points_open(&self.workspace.tools, &step.action, &step.parameter)
-                    != Some(open)
-                {
+                let sections = self.workspace.tools.with_controls(&self.inputs());
+                if curve_points_open(&sections, &step.action, &step.parameter) != Some(open) {
                     return self.fail_step(if open {
                         "the curve's Points list did not open"
                     } else {
@@ -2870,9 +2868,8 @@ impl Editor {
             // closed one and neither can a script. The text is typed as the field publishes it and
             // Enter commits that one coordinate.
             CurveStepEvent::Type { index, axis, text } => {
-                if curve_points_open(&self.workspace.tools, &step.action, &step.parameter)
-                    != Some(true)
-                {
+                let sections = self.workspace.tools.with_controls(&self.inputs());
+                if curve_points_open(&sections, &step.action, &step.parameter) != Some(true) {
                     return self.fail_step("the curve's Points list is not open");
                 }
                 self.begin_request();
@@ -3871,13 +3868,7 @@ impl Editor {
             Ok(row) => row,
             Err(reason) => return self.fail_step(reason),
         };
-        let presets = self
-            .workspace
-            .tools
-            .all()
-            .find_map(|section| section.presets())
-            .cloned()
-            .unwrap_or_default();
+        let presets = self.presets_model_now().unwrap_or_default();
         let Some(preset) = row.apply.clone().filter(|_| row.enabled) else {
             let reason = row
                 .unavailable
@@ -3955,10 +3946,7 @@ impl Editor {
     /// The one row a step names: the exact name, and the group when the step gives one.
     fn preset_row(&self, pick: &PresetPick) -> Result<PresetRow, String> {
         let presets = self
-            .workspace
-            .tools
-            .all()
-            .find_map(|section| section.presets())
+            .presets_model_now()
             .ok_or("no module declares a presets control")?;
         let matches: Vec<&PresetRow> = presets
             .rows()
@@ -4526,13 +4514,16 @@ fn group_path(controls: &[luxforge_core::Control], label: &str) -> Option<Vec<us
     None
 }
 
+/// The channel the curve drawing `action`'s `parameter` has selected, as the tools panel derives
+/// it; `None` when no such curve exists. `sections` carry every section's controls, a collapsed
+/// section's built on demand, so a curve in one is found as it always was.
 fn selected_curve_channel(
-    tools: &crate::state::tools::ToolsModel,
+    sections: &[crate::state::tools::SectionControls<'_>],
     action: &str,
     parameter: &str,
 ) -> Option<usize> {
-    tools.all().find_map(|section| {
-        walk(&section.controls).find_map(|control| match control {
+    sections.iter().find_map(|reported| {
+        walk(&reported.controls).find_map(|control| match control {
             crate::state::tools::ControlModel::Curve(curve)
                 if curve.action == action
                     && curve
@@ -4548,14 +4539,15 @@ fn selected_curve_channel(
 }
 
 /// Whether the curve drawing `action`'s `parameter` shows its Points list, as the tools panel
-/// derives it; `None` when no such curve is drawn.
+/// derives it; `None` when no such curve exists. `sections` are as for
+/// [`selected_curve_channel`].
 fn curve_points_open(
-    tools: &crate::state::tools::ToolsModel,
+    sections: &[crate::state::tools::SectionControls<'_>],
     action: &str,
     parameter: &str,
 ) -> Option<bool> {
-    tools.all().find_map(|section| {
-        walk(&section.controls).find_map(|control| match control {
+    sections.iter().find_map(|reported| {
+        walk(&reported.controls).find_map(|control| match control {
             crate::state::tools::ControlModel::Curve(curve)
                 if curve.action == action
                     && curve
@@ -4743,6 +4735,84 @@ mod tests {
     use super::*;
     use crate::app::message::sync::SyncMessage;
     use crate::app::testing::{evidence, finish, scripted};
+
+    /// A step that names a preset row or a curve reads the sections whether or not the panel draws
+    /// them: the derive builds no controls for a collapsed one, so the step builds them on demand.
+    #[test]
+    fn a_step_finds_a_preset_row_and_a_curve_in_collapsed_sections() {
+        let (mut editor, catalog) =
+            crate::app::testing::opened_with_modules(crate::app::testing::descriptors(), 1);
+        editor.presets.library.adopt(
+            vec![
+                crate::state::testing::listed("Warm", "User presets", None),
+                crate::state::testing::listed("Cool", "User presets", None),
+            ],
+            1,
+        );
+        editor.rederive();
+        let presets = crate::state::presets::presets_control(&editor.modules)
+            .map(|(module, _)| module.id.clone())
+            .expect("the presets control");
+        let curve = editor
+            .modules
+            .iter()
+            .flat_map(|module| walk(&module.controls))
+            .find_map(|control| match control {
+                luxforge_core::Control::Curve(curve) => Some(curve.clone()),
+                _ => None,
+            })
+            .expect("a declared curve");
+        let section = |editor: &Editor, module: &str| {
+            editor
+                .workspace
+                .tools
+                .all()
+                .find(|section| section.module_id == module)
+                .map(|section| (section.expanded, section.controls.is_empty()))
+        };
+        let curve_module = editor
+            .modules
+            .iter()
+            .find(|module| {
+                walk(&module.controls)
+                    .any(|control| matches!(control, luxforge_core::Control::Curve(_)))
+            })
+            .expect("the curve's module")
+            .id
+            .clone();
+        // Both sections start collapsed, and hold no models.
+        assert_eq!(section(&editor, &presets), Some((false, true)));
+        assert_eq!(section(&editor, &curve_module), Some((false, true)));
+
+        let pick = |name: &str| luxforge_evidence::PresetPick {
+            name: name.into(),
+            group: None,
+        };
+        let row = editor
+            .preset_row(&pick("Warm"))
+            .expect("the collapsed library's row");
+        assert_eq!(
+            (row.name.as_str(), row.group.as_str()),
+            ("Warm", "User presets")
+        );
+        assert!(row.enabled && row.apply.is_some());
+        assert_eq!(
+            editor.preset_row(&pick("Missing")),
+            Err("no preset is named Missing".to_owned())
+        );
+
+        let parameter = &curve.channels[0].parameter;
+        let sections = editor.workspace.tools.with_controls(&editor.inputs());
+        assert_eq!(
+            selected_curve_channel(&sections, &curve.action, parameter),
+            Some(0)
+        );
+        assert_eq!(
+            curve_points_open(&sections, &curve.action, parameter),
+            Some(false)
+        );
+        finish(editor, catalog);
+    }
 
     #[test]
     fn query_choice_retry_step_uses_the_button_message_and_waits_for_its_answer() {

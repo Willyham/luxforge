@@ -6,14 +6,16 @@
 //! settings itself, so it needs no second read; one that meets a newer revision reads them again
 //! and says so on the block's one status line.
 //!
-//! Jobs are followed by a poll that exists only while a job the desktop tracks is queued or running
-//! (see [`Editor::capability_poll_subscription`]). A `consent-required` answer opens the consent
+//! Jobs are followed by a reader that exists only while a job the desktop tracks is queued or
+//! running, and that sends the desktop a message only when a job's record changes or the job ends
+//! (see [`Editor::capability_reader_subscription`]). A `consent-required` answer opens the consent
 //! notice; Allow grants exactly the scope the core named, with this client's permission authority,
 //! and retries the refused operation once. Every request the desktop records is redacted first.
 use crate::{
     app::{
         Editor,
         evidence::{CapabilityAction, CapabilityStep, Reference},
+        job_reads::{self, Pass, Reader, Verdict, Watch},
         message::{Message, action::ActionMessage, capability::CapabilityMessage},
         tasks::{self, mutation, owner_task, request},
     },
@@ -25,7 +27,7 @@ use crate::{
         fields, tools,
     },
 };
-use iced::{Subscription, Task};
+use iced::{Subscription, Task, futures::stream::BoxStream};
 use luxforge_core::{
     AssetId, ClientId, ModuleDescriptor, OwnerHandle, ParameterKind,
     capabilities::{
@@ -45,9 +47,10 @@ pub(crate) use tasks::CallError;
 /// How often the tracked live jobs are read. The worker posts its completions into the owner's
 /// channel, but no client is pushed anything: a client that wants a job's progress reads it. So
 /// the desktop reads its live jobs every 100 ms, and only while one is queued or running — with no
-/// live job there is no timer at all, which keeps an idle desktop asleep (performance rule 8). A
+/// live job there is no reader at all, which keeps an idle desktop asleep (performance rule 8). A
 /// read is one owner lookup per job, and a progress bar that moves ten times a second is as smooth
-/// as a job's own reports, which a worker makes between chunks of real work.
+/// as a job's own reports, which a worker makes between chunks of real work. A read that finds a
+/// job as the one before it did never reaches the update loop.
 pub(crate) const JOB_POLL: Duration = Duration::from_millis(100);
 
 /// How many times a task retries after its source or artifacts were prepared.
@@ -346,21 +349,66 @@ pub(crate) fn run(
     }
 }
 
-/// Read each live job once.
-pub(crate) fn poll(
+/// `job.read` for one tracked job.
+pub(crate) fn read_job(
     owner: &OwnerHandle,
     client: ClientId,
+    job: &str,
+) -> Result<JobRecord, String> {
+    tasks::call_detailed(owner, client, JOB_READ, json!({"job_id": job}))
+        .map_err(|error| error.to_string())
+        .and_then(parse::<JobRecord>)
+}
+
+/// What a reader of capability jobs sends: each read that is news, by module and job.
+pub(crate) type Polled = Vec<(String, String, Result<JobRecord, String>)>;
+
+/// The reader of the tracked live jobs, as the subscription starts it: one `job.read` per job
+/// through the owner at once and every [`JOB_POLL`] after, inside the subscription's stream
+/// ([`job_reads`]).
+pub(crate) fn capability_reads(
+    reader: &Reader<Vec<(String, String)>>,
+) -> BoxStream<'static, Message> {
+    let (owner, client) = (reader.owner.clone(), reader.client);
+    job_reads::reads(
+        JOB_POLL,
+        capability_pass(reader.identity.clone(), move |job| {
+            read_job(&owner, client, job)
+        }),
+    )
+}
+
+/// One pass of the reader of capability jobs: read each job it still follows and send, in one
+/// message, only the reads that are news. A live record is news when it is the job's first or
+/// differs from the one sent before it (progress included); a job that ended, or whose read
+/// failed, is sent once and read no more, and the reader ends with its last job. The message is
+/// the one the desktop applies entry by entry, so it needs only the entries that changed.
+pub(crate) fn capability_pass(
     jobs: Vec<(String, String)>,
-) -> Vec<(String, String, Result<JobRecord, String>)> {
-    let mut sent = Vec::new();
-    jobs.into_iter()
-        .map(|(module, job)| {
-            let record = call(owner, client, JOB_READ, json!({"job_id": job}), &mut sent)
-                .map_err(|error| error.to_string())
-                .and_then(parse::<JobRecord>);
-            (module, job, record)
-        })
-        .collect()
+    mut read: impl FnMut(&str) -> Result<JobRecord, String>,
+) -> impl FnMut() -> Pass<Message> {
+    let mut watches: Vec<_> = jobs
+        .into_iter()
+        .map(|(module, job)| (module, job, Watch::default()))
+        .collect();
+    move || {
+        let mut news: Polled = Vec::new();
+        for (module, job, watch) in watches.iter_mut().filter(|(_, _, watch)| !watch.finished()) {
+            let result = read(job);
+            if watch.observe(&result, |record| record.status.is_finished()) != Verdict::Skip {
+                news.push((module.clone(), job.clone(), result));
+            }
+        }
+        if news.is_empty() {
+            return Pass::Quiet;
+        }
+        let message = Message::Capability(CapabilityMessage::Polled(news));
+        if watches.iter().all(|(_, _, watch)| watch.finished()) {
+            Pass::Last(message)
+        } else {
+            Pass::Send(message)
+        }
+    }
 }
 
 impl Editor {
@@ -425,10 +473,19 @@ impl Editor {
         )
     }
 
-    /// The job poll's timer, which exists only while a tracked job is queued or running.
-    pub(crate) fn capability_poll_subscription(&self) -> Option<Subscription<Message>> {
+    /// The reader of the tracked live jobs, which exists only while one is queued or running. It
+    /// is identified by the set of live jobs, module and job id, so a changed set is a new reader
+    /// and the same set, rebuilt after every message, keeps its one.
+    pub(crate) fn capability_reader_subscription(&self) -> Option<Subscription<Message>> {
         self.capabilities.live().then(|| {
-            iced::time::every(JOB_POLL).map(|_| Message::Capability(CapabilityMessage::Poll))
+            Subscription::run_with(
+                Reader {
+                    identity: self.capabilities.live_jobs(),
+                    owner: self.owner.clone(),
+                    client: self.client,
+                },
+                capability_reads,
+            )
         })
     }
 
@@ -627,22 +684,6 @@ impl Editor {
                 );
             }
             CapabilityMessage::Answered(answer) => self.capability_answered(*answer),
-            CapabilityMessage::Poll => {
-                if self.capabilities.polling {
-                    return Task::none();
-                }
-                let jobs = self.capabilities.live_jobs();
-                if jobs.is_empty() {
-                    return Task::none();
-                }
-                self.capabilities.polling = true;
-                let owner = self.owner.clone();
-                let client = self.client;
-                return owner_task(
-                    move || poll(&owner, client, jobs),
-                    |polled| Message::Capability(CapabilityMessage::Polled(polled)),
-                );
-            }
             CapabilityMessage::Polled(polled) => return self.capability_polled(polled),
         }
         Task::none()
@@ -737,7 +778,7 @@ impl Editor {
             state.settings = Some(settings);
         }
         // The jobs this status reports ended. A run waiting on one takes its result here: once a
-        // read has tracked the job as ended the job poll stops, so a read made for any other
+        // read has tracked the job as ended the job reader stops, so a read made for any other
         // reason — another client's change, or the owner's wake when this desktop's own task
         // ended — is the last the desktop hears of it.
         let mut ended = Vec::new();
@@ -860,11 +901,7 @@ impl Editor {
         }
     }
 
-    fn capability_polled(
-        &mut self,
-        polled: Vec<(String, String, Result<JobRecord, String>)>,
-    ) -> Task<Message> {
-        self.capabilities.polling = false;
+    fn capability_polled(&mut self, polled: Polled) -> Task<Message> {
         let mut refresh = Vec::new();
         for (module, job, result) in polled {
             match result {
@@ -1063,9 +1100,9 @@ pub(super) fn after_derive(editor: &mut Editor) -> Task<Message> {
 }
 
 /// Capability jobs are read while one the desktop follows is queued or running, and never
-/// otherwise ([`Editor::capability_poll_subscription`]).
+/// otherwise ([`Editor::capability_reader_subscription`]).
 pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
     editor
-        .capability_poll_subscription()
+        .capability_reader_subscription()
         .unwrap_or_else(Subscription::none)
 }

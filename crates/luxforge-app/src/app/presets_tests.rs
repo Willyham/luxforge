@@ -5,8 +5,8 @@
 use super::{
     Boot, Editor,
     message::{
-        Message, action::ActionMessage, palette::PaletteMessage, preset::PresetMessage,
-        sync::SyncMessage, view::ViewMessage,
+        Message, action::ActionMessage, control::ControlMessage, palette::PaletteMessage,
+        preset::PresetMessage, sync::SyncMessage, view::ViewMessage,
     },
     tasks::{self, call},
 };
@@ -66,6 +66,10 @@ impl Library {
             window: (1440.0, 900.0),
         });
         let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(descriptors()))));
+        // The section starts collapsed and builds its rows only while open: a person opens it.
+        let _ = editor.update(Message::Control(ControlMessage::ToggleSection(
+            "luxforge.presets".into(),
+        )));
         let mut library = Self {
             editor,
             catalog,

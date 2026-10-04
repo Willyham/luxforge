@@ -54,15 +54,15 @@ pub struct ApiResponse {
 }
 
 impl ApiResponse {
-    pub(super) fn success(id: String, sequence: u64, result: impl Serialize) -> Self {
-        match serde_json::to_value(result) {
-            Ok(result) => Self {
-                id,
-                sequence,
-                result: Some(result),
-                error: None,
-            },
-            Err(error) => Self::failure(id, sequence, Error::internal(error.to_string())),
+    /// An answer that is already a JSON value, moved in as it is. Every method's answer reaches
+    /// the owner as a `Value`, so converting it again would rebuild the whole tree (the largest
+    /// are `asset.state` and a brush `draft.set`) on the owner thread for no change.
+    pub(super) fn value(id: String, sequence: u64, result: Value) -> Self {
+        Self {
+            id,
+            sequence,
+            result: Some(result),
+            error: None,
         }
     }
     pub(super) fn failure(id: String, sequence: u64, error: Error) -> Self {

@@ -318,6 +318,27 @@ impl GpuStep {
             Self::Clipping(_) => 0,
         }
     }
+
+    /// Each storage block the step packs, shared, in packing order: a colour step's or the tail's
+    /// program's, a masked step's components' then its units', a spatial step's program's then its
+    /// mask's components'. The marks hold none.
+    fn each_block<'a>(&'a self, visit: &mut impl FnMut(&'a Arc<[u32]>)) {
+        match self {
+            Self::Colour { program, .. } => visit(&program.block),
+            Self::Masked(masked) => {
+                for (_, program) in masked.programs() {
+                    visit(&program.block);
+                }
+            }
+            Self::Geometry(tail) => visit(&tail.program().block),
+            Self::Spatial(spatial) => {
+                for (_, program) in spatial.programs() {
+                    visit(&program.block);
+                }
+            }
+            Self::Clipping(_) => {}
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -670,6 +691,8 @@ pub(super) struct Figures {
     budget: AtomicU64,
     in_use: AtomicU64,
     peak: AtomicU64,
+    /// Of `in_use`, every slot's pool of scratch textures, resident or retiring.
+    scratch: AtomicU64,
     passes: AtomicU64,
     /// Compute passes the spatial steps have dispatched.
     spatial_passes: AtomicU64,
@@ -679,10 +702,20 @@ pub(super) struct Figures {
     compile: Arc<CompileFigures>,
     /// Words written to the blocks buffers, for the tests of what a tick writes.
     block_words: AtomicU64,
+    /// Tests only: words of the tick's blocks compared with what a buffer held, and copied into
+    /// what it holds ([`blocks::WrittenBlocks::update`]).
+    #[cfg(test)]
+    block_compared: AtomicU64,
+    #[cfg(test)]
+    block_copied: AtomicU64,
     /// Bytes of boundary texels written into wgpu's staging, over every frame.
     staged: AtomicU64,
     /// The most of a new boundary one frame uploads: [`UPLOAD_PER_FRAME`], or a test's.
     upload_per_frame: AtomicU64,
+    /// Tests only: each link's passes start from a sentinel in every pool texture
+    /// ([`spatial::Pool::poison`]).
+    #[cfg(test)]
+    poison: AtomicBool,
 }
 
 impl Figures {
@@ -696,6 +729,10 @@ impl Figures {
 
     pub(super) fn peak(&self) -> u64 {
         self.peak.load(Ordering::Acquire)
+    }
+
+    pub(super) fn scratch(&self) -> u64 {
+        self.scratch.load(Ordering::Acquire)
     }
 
     pub(super) fn passes(&self) -> u64 {
@@ -759,6 +796,19 @@ impl Figures {
         }
     }
 
+    /// Count what one buffer's blocks update wrote, and in tests what it compared and copied.
+    fn blocks_updated(&self, update: &blocks::Update) {
+        self.block_words
+            .fetch_add(update.written(), Ordering::Relaxed);
+        #[cfg(test)]
+        {
+            self.block_compared
+                .fetch_add(update.compared, Ordering::Relaxed);
+            self.block_copied
+                .fetch_add(update.copied, Ordering::Relaxed);
+        }
+    }
+
     fn discharge(&self, bytes: u64) {
         self.in_use.fetch_sub(bytes, Ordering::AcqRel);
     }
@@ -770,27 +820,36 @@ struct Charged {
     bytes: u64,
 }
 
-/// What retires through the surface's retirement worker: a whole slot, or a buffer a slot outgrew.
-/// Never read: it is held until the GPU is done with it, then dropped.
+/// What retires through the surface's retirement worker: a whole slot, a buffer a slot outgrew, a
+/// link's planes or a link, or textures its pool no longer holds. Never read: it is held until the
+/// GPU is done with it, then dropped.
 #[allow(dead_code)]
 enum Held {
     Slot(Box<GpuSlot>),
     Buffer(wgpu::Buffer),
     Planes(Box<SpatialSlot>),
     Link(Box<chain::LinkSlot>),
+    Pool(Vec<spatial::PoolTexture>),
 }
 
-/// A GPU-preview resource on its way out, with its charge, which ends when the GPU is done with it.
+/// A GPU-preview resource on its way out, with its charge, which ends when the GPU is done with it,
+/// and how much of it is scratch textures.
 pub(super) struct RetiredPreview {
     held: Held,
     bytes: u64,
+    scratch: u64,
 }
 
 /// Ends one retirement: the resources go and their charge with them.
 pub(super) fn finish_retirement(figures: &SurfaceFigures, retired: RetiredPreview, failed: bool) {
-    let RetiredPreview { held, bytes } = retired;
+    let RetiredPreview {
+        held,
+        bytes,
+        scratch,
+    } = retired;
     drop(held);
     figures.preview.discharge(bytes);
+    figures.preview.scratch.fetch_sub(scratch, Ordering::AcqRel);
     figures.retirement_pending.fetch_sub(1, Ordering::AcqRel);
     if failed {
         figures.diagnostics().gpu_retirement_failures += 1;
@@ -820,8 +879,9 @@ pub(super) struct GpuSlot {
     texture_bytes: u64,
     /// The words last written, compared with each tick's so an unchanged plan writes nothing.
     written_words: Vec<u32>,
-    /// The blocks last written, compared likewise.
-    written_blocks: Vec<u32>,
+    /// The blocks last written, by the shared block each came from: a tick compares and writes only
+    /// the blocks it does not hold at the same place ([`blocks`]).
+    written_blocks: blocks::WrittenBlocks,
     /// The cached pipeline last run into `output`.
     evaluated: Option<u64>,
     /// The interface thread's time, in microseconds, to prepare what `output` holds: fitting the
@@ -837,6 +897,10 @@ pub(super) struct GpuSlot {
     /// The links of the plan's chain before its last, each with the intermediate it writes
     /// ([`chain`]); the last link reads the last of them as its boundary.
     chain: Vec<chain::LinkSlot>,
+    /// The scratch textures every link's spatial step takes its scratch planes from in turn, with
+    /// the records of who wrote each and the counter that hands each link's schedule its holder
+    /// ([`spatial::Pool`]): held for the slot's life and refitted to each plan.
+    pool: spatial::Pool,
     /// The content key of what the last link's input held when the output was last evaluated.
     input_key: Option<u64>,
     /// The serial of the plan whose values every link and the output hold, when the caller gave
@@ -845,11 +909,13 @@ pub(super) struct GpuSlot {
     evaluated_serial: Option<(u64, u64)>,
 }
 
-/// A slot's spatial planes and, for one compiled sequence, the groups that bind them, with which
-/// passes a tick still needs to run and over which rectangle of the boundary the planes hold it.
+/// A link's spatial planes and, for one compiled sequence and one generation of the slot's pool,
+/// the groups that bind them, with which passes a tick still needs to run and over which rectangle
+/// of the boundary the planes hold it.
 pub(super) struct SpatialSlot {
     planes: spatial::Planes,
-    groups: Option<(u64, spatial::Groups)>,
+    /// The groups, with the pipeline they were made for and the pool generation they bind.
+    groups: Option<(u64, u64, spatial::Groups)>,
     schedule: spatial::Schedule,
     /// How many passes the slot has dispatched.
     dispatched: u64,
@@ -860,19 +926,32 @@ pub(super) struct SpatialSlot {
 }
 
 impl SpatialSlot {
-    fn new(planes: spatial::Planes) -> Self {
+    /// New planes, which hold nothing yet, their schedule's holder drawn from `pool`.
+    fn new(planes: spatial::Planes, pool: &mut spatial::Pool) -> Self {
         Self {
             planes,
             groups: None,
-            schedule: spatial::Schedule::default(),
+            schedule: spatial::Schedule::new(pool),
             dispatched: 0,
             valid: None,
         }
     }
 
+    /// The groups that bind the planes, when they have been built.
+    fn groups(&self) -> Option<&spatial::Groups> {
+        self.groups.as_ref().map(|(_, _, groups)| groups)
+    }
+
+    /// Whether the groups were built for `pipeline` over `pool`'s current generation.
+    fn bound(&self, pipeline: u64, pool: &spatial::Pool) -> bool {
+        self.groups
+            .as_ref()
+            .is_some_and(|(id, generation, _)| (*id, *generation) == (pipeline, pool.generation()))
+    }
+
     /// Forget what the planes hold: every pass the applies need runs again.
-    fn forget(&mut self) {
-        self.schedule.reset();
+    fn forget(&mut self, pool: &mut spatial::Pool) {
+        self.schedule.reset(pool);
         self.valid = None;
     }
 
@@ -895,6 +974,12 @@ impl SpatialSlot {
     /// what that pass reads there is this tick's. Answers how many passes ran, and on an
     /// incremental tick the rectangle the step's output can have changed in: its input's change
     /// and, where its mask covers anything, its last unit's.
+    ///
+    /// The scratch planes are `pool`'s, which every link of the chain writes in turn: the schedule
+    /// trusts what a pool texture holds only when this link wrote it last ([`spatial::Schedule`]),
+    /// and a pool of another generation than the groups were built under rebuilds them. Where a
+    /// pass runs is the same either way: a pass's output is read only within the cone its unit's
+    /// reach bounds, which the tick writes itself.
     #[allow(clippy::too_many_arguments)]
     fn tick(
         &mut self,
@@ -903,21 +988,25 @@ impl SpatialSlot {
         encoder: &mut wgpu::CommandEncoder,
         (compiled, pipeline): (&spatial::CompiledSpatial, u64),
         programs: &wgpu::BindGroup,
+        pool: &mut spatial::Pool,
         steps: &[GpuStep],
         (words, blocks): (&[u32], &[u32]),
         input: u64,
         (texels, size): (TexelMap, (u32, u32)),
         dirty: Option<spatial::Rect>,
     ) -> (u64, Option<spatial::Rect>) {
-        if self.groups.as_ref().map(|(id, _)| *id) != Some(pipeline) {
+        #[cfg(any(test, feature = "qualification"))]
+        pool.poison(device, encoder);
+        if !self.bound(pipeline, pool) {
             self.groups = Some((
                 pipeline,
-                spatial::Groups::new(device, compiled, &self.planes),
+                pool.generation(),
+                spatial::Groups::new(device, compiled, &self.planes, pool),
             ));
-            self.forget();
+            self.forget(pool);
         }
         if self.planes.moved(steps) {
-            self.forget();
+            self.forget(pool);
         }
         let whole = spatial::Rect::whole(size);
         let spatial_steps = steps
@@ -931,7 +1020,7 @@ impl SpatialSlot {
         let rect = single.map_or(whole, |spatial| spatial.pass_rect(texels, size));
         let mut run = self
             .schedule
-            .run(steps, words, blocks, input, &self.planes.key);
+            .run(steps, words, blocks, input, &self.planes.key, pool);
         let changed = run.iter().any(|run| *run);
         // A step whose output can change only near its input's changes.
         let local = single.filter(|spatial| !spatial.global() && spatial.reaches() != u32::MAX);
@@ -959,10 +1048,10 @@ impl SpatialSlot {
                 // painted one does at nearly every tick: every pass over the whole boundary once,
                 // after which they hold the step's values everywhere and a tick runs only around
                 // its change.
-                self.schedule.reset();
+                self.schedule.reset(pool);
                 run = self
                     .schedule
-                    .run(steps, words, blocks, input, &self.planes.key);
+                    .run(steps, words, blocks, input, &self.planes.key, pool);
                 self.valid = Some(whole);
                 vec![whole; run.len()]
             } else if !changed {
@@ -970,10 +1059,10 @@ impl SpatialSlot {
             } else {
                 // Every pass the applies need, since a scratch plane holds what an earlier
                 // incremental tick wrote only where it ran.
-                self.schedule.reset();
+                self.schedule.reset(pool);
                 run = self
                     .schedule
-                    .run(steps, words, blocks, input, &self.planes.key);
+                    .run(steps, words, blocks, input, &self.planes.key, pool);
                 // Planes that hold the step's values only where its mask needs them are kept so:
                 // each unit's apply plane where the mask covers anything, grown by what reads it
                 // there ([`spatial::GpuSpatial::needed`]), and on a side where the pass rectangle
@@ -1015,21 +1104,25 @@ impl SpatialSlot {
                 }
                 rects
             };
-            let Some((_, groups)) = &self.groups else {
+            let Some((_, _, groups)) = &self.groups else {
                 return (0, Some(output));
             };
             let places = groups.places_each(&rects);
             self.planes.write_parameters(queue, steps, &places);
             let dispatched = groups.encode(encoder, compiled, programs, &run, &places);
             self.dispatched += dispatched;
-            // Only the planes the applies read hold their values past this tick's rectangles.
+            // Only the planes the applies read hold their values past this tick's rectangles: the
+            // link's kept textures, never the pool's.
             let applied: Vec<usize> = spatial
                 .applies
                 .iter()
                 .flat_map(|apply| &apply.planes)
-                .map(|plane| self.planes.key.texture(0, *plane))
+                .filter_map(|plane| match self.planes.key.location(0, *plane) {
+                    Some(spatial::PlaneTexture::Kept(index)) => Some(index),
+                    _ => None,
+                })
                 .collect();
-            self.schedule.keep_only(&applied);
+            self.schedule.keep_only(&applied, pool);
             return (dispatched, Some(output));
         }
         let over = if self.valid.is_some_and(|valid| valid.contains(&rect)) {
@@ -1038,15 +1131,15 @@ impl SpatialSlot {
             }
             rect
         } else {
-            self.schedule.reset();
+            self.schedule.reset(pool);
             run = self
                 .schedule
-                .run(steps, words, blocks, input, &self.planes.key);
+                .run(steps, words, blocks, input, &self.planes.key, pool);
             let over = if changed { rect } else { whole };
             self.valid = Some(over);
             over
         };
-        let Some((_, groups)) = &self.groups else {
+        let Some((_, _, groups)) = &self.groups else {
             return (0, None);
         };
         let places = groups.places(over);
@@ -1124,9 +1217,8 @@ impl Shape {
 /// geometry tail's intermediate of the same size when there is a tail, `tail` saying whether it
 /// quantizes and whether it keeps `f32` values ([`GpuTail::preserve_f32`]), and the output of
 /// `output` pixels in its size bucket, a region's when `region`, with its placement uniform. What
-/// the desktop holds a plan to before its boundary exists, beside its spatial planes
-/// ([`spatial::plane_bytes`]): for a plan of one link the slot adds only its words and blocks
-/// buffers, and a chain adds each earlier link's intermediate and planes once the slot holds it.
+/// the desktop holds a plan to before its boundary exists, beside its chain's charge
+/// ([`chain_charge`]): the slot adds only every link's words and blocks buffers once it holds it.
 /// It creates nothing.
 pub fn texture_charge(
     boundary: (u32, u32),
@@ -1201,6 +1293,8 @@ fn encode_pass_over(
 }
 
 impl GpuSlot {
+    /// Everything the slot holds, as charged: its textures and buffers, the last link's kept
+    /// planes, each earlier link and the pool, once.
     fn bytes(&self) -> u64 {
         self.texture_bytes
             + self.words.bytes
@@ -1210,6 +1304,7 @@ impl GpuSlot {
                 .as_ref()
                 .map_or(0, |spatial| spatial.planes.bytes)
             + self.chain.iter().map(chain::LinkSlot::bytes).sum::<u64>()
+            + self.pool.bytes()
     }
 
     /// Whether the slot holds boundary `version` whole in a texture a slot of `shape` would hold
@@ -1313,7 +1408,7 @@ impl Support {
 }
 
 /// The stage's state for one pipeline: whether the device can run it, its lost flag, its compiled
-/// sequences and the tick's scratch words.
+/// sequences and the tick's scratch words, the last link's and each earlier link's in turn.
 pub(super) struct GpuStage {
     /// Shared with the compile thread, which compiles through it.
     support: Option<Arc<Support>>,
@@ -1323,7 +1418,7 @@ pub(super) struct GpuStage {
     /// The version of the warm list last handed to the compile thread.
     warmed: Option<u64>,
     words: Vec<u32>,
-    blocks: Vec<u32>,
+    link_words: Vec<u32>,
 }
 
 /// Whether a device with `limits`, drawing to a target of `format`, can run the stage.
@@ -1338,6 +1433,17 @@ fn supported(limits: &wgpu::Limits, format: wgpu::TextureFormat) -> bool {
 /// link's output holds its values as the boundary held its input.
 fn intermediate_format(format: BoundaryFormat) -> wgpu::TextureFormat {
     format.texture()
+}
+
+/// The bytes one of a chain's intermediates takes over a boundary of `size` texels in `format`.
+fn intermediate_bytes((width, height): (u32, u32), format: BoundaryFormat) -> u64 {
+    u64::from(width)
+        * u64::from(height)
+        * u64::from(
+            intermediate_format(format)
+                .block_copy_size(None)
+                .unwrap_or(16),
+        )
 }
 
 /// Each link of `steps`' chain with the format its last pass writes: an intermediate for every
@@ -1383,7 +1489,7 @@ impl GpuStage {
             pipelines: compile::Pipelines::default(),
             warmed: None,
             words: Vec::new(),
-            blocks: Vec::new(),
+            link_words: Vec::new(),
         }
     }
 
@@ -2146,7 +2252,7 @@ impl PhotoPipeline {
             &self.figures.preview,
         )?;
         let mut words = std::mem::take(&mut self.gpu.words);
-        let mut blocks = std::mem::take(&mut self.gpu.blocks);
+        let mut link_words = std::mem::take(&mut self.gpu.link_words);
         let shape = Shape::of(plan);
         let result = self.run(
             surface,
@@ -2155,11 +2261,11 @@ impl PhotoPipeline {
             plan,
             shape,
             &pipelines,
-            (&mut words, &mut blocks),
+            (&mut words, &mut link_words),
             change,
         );
         self.gpu.words = words;
-        self.gpu.blocks = blocks;
+        self.gpu.link_words = link_words;
         result
     }
 
@@ -2175,7 +2281,7 @@ impl PhotoPipeline {
         plan: &GpuPlan,
         shape: Shape,
         pipelines: &[(Compiled, u64)],
-        (words, blocks): (&mut Vec<u32>, &mut Vec<u32>),
+        (words, link_words): (&mut Vec<u32>, &mut Vec<u32>),
         change: Option<GpuChange>,
     ) -> Result<u64, GpuFallback> {
         let started = std::time::Instant::now();
@@ -2187,12 +2293,12 @@ impl PhotoPipeline {
         if pipelines.len() != chain.links.len() + 1 {
             return Err(GpuFallback::PipelineFailed);
         }
-        // The last link's words: over the boundary's texels, with the output's offset.
-        chain::pack_steps(plan.texels, output_offset(plan), chain.last, words, blocks);
+        // The last link's words: over the boundary's texels, with the output's offset. Its blocks
+        // are written from the steps' own below, only those that changed copied ([`blocks`]).
+        chain::pack_words(plan.texels, output_offset(plan), chain.last, words);
         let words: &[u32] = words;
-        let blocks: &[u32] = blocks;
         let word_bytes = (words.len() * 4) as u64;
-        let block_bytes = (blocks.len() * 4) as u64;
+        let block_bytes = (blocks::block_len(chain.last) * 4) as u64;
         // A boundary whose texels were let go is drawn only from the slot that holds them.
         if !plan.boundary.holds_texels()
             && surface
@@ -2230,6 +2336,15 @@ impl PhotoPipeline {
         });
         // The chain's intermediates, before the last link's bindings, which read the last of them.
         self.fit_chain(slot, device, chain.links.len())?;
+        let origin = (
+            plan.texels.origin[0].max(0.0) as u32,
+            plan.texels.origin[1].max(0.0) as u32,
+        );
+        // The pool every link's scratch planes are taken from, before any link's planes.
+        self.fit_pool(slot, device, &chain, shape.boundary, origin)?;
+        #[cfg(test)]
+        slot.pool
+            .set_poisoned(self.figures.preview.poison.load(Ordering::Acquire));
         let mut rebind = false;
         for (charged, bytes, label) in [
             (&mut slot.words, word_bytes, "luxforge.gpu_preview.words"),
@@ -2265,15 +2380,12 @@ impl PhotoPipeline {
                 );
             }
             slot.written_words.clear();
-            slot.written_blocks.clear();
+            slot.written_blocks.forget();
             slot.evaluated = None;
         }
-        let origin = (
-            plan.texels.origin[0].max(0.0) as u32,
-            plan.texels.origin[1].max(0.0) as u32,
-        );
         if self.fit_spatial(
             &mut slot.spatial,
+            &mut slot.pool,
             device,
             chain.last,
             shape.boundary,
@@ -2283,7 +2395,7 @@ impl PhotoPipeline {
         }
         let mut changed = slot.evaluated != Some(pipeline_id);
         if let Some(spatial) = slot.spatial.as_ref()
-            && spatial.groups.as_ref().map(|(id, _)| *id) != Some(pipeline_id)
+            && !spatial.bound(pipeline_id, &slot.pool)
         {
             changed = true;
         }
@@ -2346,33 +2458,37 @@ impl PhotoPipeline {
         let mut input = chain::boundary_key(plan.boundary.version);
         let mut encoded = false;
         let mut dirty = incremental;
-        let (mut link_words, mut link_blocks) = (Vec::new(), Vec::new());
         for (index, steps) in chain.links.iter().enumerate() {
             let (compiled, id) = &pipelines[index];
-            chain::pack_steps(
-                plan.texels,
-                (0, 0),
-                steps,
-                &mut link_words,
-                &mut link_blocks,
-            );
-            self.fit_link(slot, device, index, &link_words, &link_blocks)?;
+            chain::pack_words(plan.texels, (0, 0), steps, link_words);
+            self.fit_link(
+                slot,
+                device,
+                index,
+                link_words.len(),
+                blocks::block_len(steps),
+            )?;
             let link = &mut slot.chain[index];
-            let block_words = link.write(queue, &link_words, &link_blocks);
-            self.figures
-                .preview
-                .block_words
-                .fetch_add(block_words, Ordering::Relaxed);
-            if self.fit_spatial(&mut link.spatial, device, steps, shape.boundary, origin)? {
-                link.forget();
+            let update = link.write(queue, link_words, steps);
+            self.figures.preview.blocks_updated(&update);
+            if self.fit_spatial(
+                &mut link.spatial,
+                &mut slot.pool,
+                device,
+                steps,
+                shape.boundary,
+                origin,
+            )? {
+                link.forget(&mut slot.pool);
             }
             let (ran, dispatched, reached) = link.encode(
                 device,
                 queue,
                 &mut encoder,
                 (compiled, *id),
+                &mut slot.pool,
                 steps,
-                (&link_words, &link_blocks),
+                link_words,
                 input,
                 (plan.texels, shape.boundary),
                 dirty,
@@ -2398,24 +2514,14 @@ impl PhotoPipeline {
             changed = true;
         }
         // Only the chunks of the blocks that changed: a painted stroke's tick writes its new
-        // segments and the index after them, not the segments its block already holds.
-        let ranges = mask::changed_ranges(&slot.written_blocks, blocks, BLOCK_CHUNK);
-        for range in &ranges {
-            self.figures
-                .preview
-                .block_words
-                .fetch_add(range.len() as u64, Ordering::Relaxed);
-            queue.write_buffer(
-                &slot.blocks.buffer,
-                (range.start * 4) as u64,
-                &le_bytes(&blocks[range.clone()]),
-            );
-        }
-        if !ranges.is_empty() || slot.written_blocks.len() != blocks.len() {
-            slot.written_blocks.clear();
-            slot.written_blocks.extend_from_slice(blocks);
-            changed = true;
-        }
+        // segments and the index after them, not the segments its block already holds, and a block
+        // handed again at the same place — a warp's grid — is not even compared.
+        let update = slot
+            .written_blocks
+            .write(queue, &slot.blocks.buffer, chain.last, BLOCK_CHUNK);
+        self.figures.preview.blocks_updated(&update);
+        changed |= update.changed;
+        let blocks = slot.written_blocks.words();
         if changed {
             // The last link's spatial step's compute passes fill its planes first, from its
             // input: only the passes this tick changes, over what its mask needs.
@@ -2427,6 +2533,7 @@ impl PhotoPipeline {
                     &mut encoder,
                     (&pipeline.spatial, pipeline_id),
                     &slot.bindings,
+                    &mut slot.pool,
                     chain.last,
                     (words, blocks),
                     input,
@@ -2439,11 +2546,7 @@ impl PhotoPipeline {
                     .spatial_passes
                     .fetch_add(dispatched, Ordering::Relaxed);
             }
-            let groups = slot
-                .spatial
-                .as_ref()
-                .and_then(|spatial| spatial.groups.as_ref())
-                .map(|(_, groups)| groups);
+            let groups = slot.spatial.as_ref().and_then(|spatial| spatial.groups());
             let planes = groups.and_then(|groups| groups.fragment.as_ref());
             // The frame and, where the bucket has room, one more column and row: the edge
             // texels again, which the linear filter reads across the frame's edge as it reads the
@@ -2737,10 +2840,11 @@ impl PhotoPipeline {
             bindings,
             texture_bytes,
             written_words: Vec::new(),
-            written_blocks: Vec::new(),
+            written_blocks: blocks::WrittenBlocks::default(),
             evaluated: None,
             spatial: None,
             chain: Vec::new(),
+            pool: spatial::Pool::default(),
             input_key: None,
             evaluated_serial: None,
             frame_us: 0,
@@ -2751,11 +2855,14 @@ impl PhotoPipeline {
 
     /// Make `held` hold the planes `steps`' spatial steps write over a boundary of `size` at stage
     /// `origin`, charged before anything is created: none for steps without one, and new ones when
-    /// the planes or the boundary they cover change, the old ones retiring with their charge.
-    /// Answers whether the planes changed, so what they held is no longer known.
+    /// the planes or the boundary they cover change, the old ones retiring with their charge. A
+    /// link holds its kept textures and its passes' parameters; its scratch planes are `pool`'s,
+    /// which the slot has fitted to every link already, and its schedule's holder is drawn from
+    /// it. Answers whether the planes changed, so what they held is no longer known.
     fn fit_spatial(
         &self,
         held: &mut Option<Box<SpatialSlot>>,
+        pool: &mut spatial::Pool,
         device: &wgpu::Device,
         steps: &[GpuStep],
         size: (u32, u32),
@@ -2770,12 +2877,46 @@ impl PhotoPipeline {
             self.retire_preview(Held::Planes(old), bytes);
         }
         if let Some(key) = key {
-            self.figures.preview.charge(key.bytes())?;
-            *held = Some(Box::new(SpatialSlot::new(spatial::Planes::create(
-                device, key,
-            ))));
+            self.figures.preview.charge(key.kept_bytes())?;
+            *held = Some(Box::new(SpatialSlot::new(
+                spatial::Planes::create(device, key),
+                pool,
+            )));
         }
         Ok(true)
+    }
+
+    /// Make `slot`'s pool hold the scratch textures every link of `chain` takes in turn over a
+    /// boundary of `size` at stage `origin` ([`spatial::PoolKey`]), before any link's planes: what
+    /// the plan needs beyond what the pool holds is charged before it is created; what it no
+    /// longer needs, or all of it for another boundary size or origin, retires with its charge
+    /// and bumps the pool's generation. A refusal leaves what was fitted before it held, for the
+    /// slot's release to retire.
+    fn fit_pool(
+        &self,
+        slot: &mut GpuSlot,
+        device: &wgpu::Device,
+        chain: &chain::Chain<'_>,
+        size: (u32, u32),
+        origin: (u32, u32),
+    ) -> Result<(), GpuFallback> {
+        let links = chain
+            .links
+            .iter()
+            .copied()
+            .chain(std::iter::once(chain.last));
+        let key = spatial::PoolKey::of(links, size, origin);
+        let preview = &self.figures.preview;
+        slot.pool.fit(
+            device,
+            &key,
+            &mut |bytes| {
+                preview.charge(bytes)?;
+                preview.scratch.fetch_add(bytes, Ordering::AcqRel);
+                Ok(())
+            },
+            &mut |textures, bytes| self.retire_preview(Held::Pool(textures), bytes),
+        )
     }
 
     /// Make `slot` hold `count` links before its last, each with an intermediate of the boundary's
@@ -2797,9 +2938,7 @@ impl PhotoPipeline {
         }
         let (width, height) = slot.shape.boundary;
         let format = intermediate_format(slot.shape.format);
-        let texture_bytes = u64::from(width)
-            * u64::from(height)
-            * u64::from(format.block_copy_size(None).unwrap_or(16));
+        let texture_bytes = intermediate_bytes(slot.shape.boundary, slot.shape.format);
         while slot.chain.len() < count {
             let (words, blocks) = (
                 buffer_capacity(device, MIN_BUFFER)?,
@@ -2852,15 +2991,15 @@ impl PhotoPipeline {
         Ok(())
     }
 
-    /// Make link `index` of `slot`'s chain hold buffers large enough for `words` and `blocks`,
+    /// Make link `index` of `slot`'s chain hold buffers large enough for `words` and `blocks` words,
     /// rebinding it to what it reads when they grow.
     fn fit_link(
         &self,
         slot: &mut GpuSlot,
         device: &wgpu::Device,
         index: usize,
-        words: &[u32],
-        blocks: &[u32],
+        words: usize,
+        blocks: usize,
     ) -> Result<(), GpuFallback> {
         let (before, rest) = slot.chain.split_at_mut(index);
         let input = before.last().map_or(&slot.boundary, |link| &link.texture);
@@ -2869,12 +3008,12 @@ impl PhotoPipeline {
         for (charged, bytes, label) in [
             (
                 &mut link.words,
-                (words.len() * 4) as u64,
+                (words * 4) as u64,
                 "luxforge.gpu_preview.link_words",
             ),
             (
                 &mut link.blocks,
-                (blocks.len() * 4) as u64,
+                (blocks * 4) as u64,
                 "luxforge.gpu_preview.link_blocks",
             ),
         ] {
@@ -2895,7 +3034,7 @@ impl PhotoPipeline {
         if rebind {
             link.bindings =
                 self.program_bindings(device, input, &link.words.buffer, &link.blocks.buffer);
-            link.forget();
+            link.forget(&mut slot.pool);
         }
         Ok(())
     }
@@ -2934,14 +3073,24 @@ impl PhotoPipeline {
         self.retire_preview(Held::Slot(Box::new(slot)), bytes);
     }
 
-    /// Hand `held` to the retirement worker, still charged, as a photograph texture is handed.
+    /// Hand `held` to the retirement worker, still charged, as a photograph texture is handed; its
+    /// scratch textures stay counted as scratch until then too.
     fn retire_preview(&self, held: Held, bytes: u64) {
         self.figures
             .retirement_pending
             .fetch_add(1, Ordering::AcqRel);
+        let scratch = match &held {
+            Held::Slot(slot) => slot.pool.bytes(),
+            Held::Pool(_) => bytes,
+            Held::Buffer(_) | Held::Planes(_) | Held::Link(_) => 0,
+        };
         if let Err(error) = self
             .retirement_sender
-            .send(super::Retired::Preview(RetiredPreview { held, bytes }))
+            .send(super::Retired::Preview(RetiredPreview {
+                held,
+                bytes,
+                scratch,
+            }))
             && let super::Retired::Preview(retired) = error.0
         {
             // The worker has ended with the device: its resources are gone with it.
@@ -2980,6 +3129,17 @@ impl PhotoPipeline {
         self.figures.preview.budget.store(budget, Ordering::Release);
     }
 
+    /// Start each link's passes from NaN in every texture of its slot's pool, every record
+    /// forgotten, while `poisoned` ([`spatial::Pool::poison`]): a frame still equal to a fresh
+    /// evaluation shows that no pass read scratch it did not write in that tick.
+    #[cfg(test)]
+    pub(super) fn set_scratch_poison(&self, poisoned: bool) {
+        self.figures
+            .preview
+            .poison
+            .store(poisoned, Ordering::Release);
+    }
+
     /// Upload at most `bytes` of a new boundary a frame instead of [`UPLOAD_PER_FRAME`].
     #[cfg(test)]
     pub(super) fn set_upload_per_frame(&self, bytes: u64) {
@@ -2998,9 +3158,10 @@ impl PhotoPipeline {
 }
 
 /// What a slot holding `plan` charges the budget on `device`, as `allocate`, `fit_chain`,
-/// `fit_link` and `fit_spatial` charge it: the boundary, the output in its size bucket and its
-/// placement uniform, the last link's words and blocks buffers at their capacities and its spatial
-/// step's planes, and each earlier link's intermediate, buffers and planes. For a report and the
+/// `fit_pool`, `fit_link` and `fit_spatial` charge it: the chain's charge ([`chain_charge`]) —
+/// each earlier link's intermediate, every link's kept planes and parameters and the pool once —
+/// beside what needs the device: the boundary, the output in its size bucket and its placement
+/// uniform, and every link's words and blocks buffers at their capacities. For a report and the
 /// tests that hold it to the slot's own figure.
 #[cfg(any(test, feature = "qualification"))]
 pub(super) fn slot_charge(device: &wgpu::Device, plan: &GpuPlan) -> Result<u64, GpuFallback> {
@@ -3011,36 +3172,74 @@ pub(super) fn slot_charge(device: &wgpu::Device, plan: &GpuPlan) -> Result<u64, 
         plan.texels.origin[0].max(0.0) as u32,
         plan.texels.origin[1].max(0.0) as u32,
     );
-    let planes = |steps: &[GpuStep]| {
-        spatial::PlanesKey::of(steps, shape.boundary, origin).map_or(0, |key| key.bytes())
+    let buffers = |steps: &[GpuStep], offset: (u32, u32)| {
+        let (mut words, mut blocks) = (Vec::new(), Vec::new());
+        chain::pack_steps(plan.texels, offset, steps, &mut words, &mut blocks);
+        Ok::<u64, GpuFallback>(
+            buffer_capacity(device, (words.len() * 4) as u64)?
+                + buffer_capacity(device, (blocks.len() * 4) as u64)?,
+        )
     };
-    let (mut words, mut blocks) = (Vec::new(), Vec::new());
-    chain::pack_steps(
-        plan.texels,
-        output_offset(plan),
-        chain.last,
-        &mut words,
-        &mut blocks,
-    );
     let mut total = shape.texture_bytes(limit)
-        + buffer_capacity(device, (words.len() * 4) as u64)?
-        + buffer_capacity(device, (blocks.len() * 4) as u64)?
-        + planes(chain.last);
-    let texels = u64::from(shape.boundary.0) * u64::from(shape.boundary.1);
-    let intermediate = texels
-        * u64::from(
-            intermediate_format(shape.format)
-                .block_copy_size(None)
-                .unwrap_or(16),
-        );
+        + buffers(chain.last, output_offset(plan))?
+        + chain_charge(&plan.steps, shape.boundary, origin, shape.format).total();
     for link in &chain.links {
-        chain::pack_steps(plan.texels, (0, 0), link, &mut words, &mut blocks);
-        total += intermediate
-            + buffer_capacity(device, (words.len() * 4) as u64)?
-            + buffer_capacity(device, (blocks.len() * 4) as u64)?
-            + planes(link);
+        total += buffers(link, (0, 0))?;
     }
     Ok(total)
+}
+
+/// What a chain's planes and intermediates take of the GPU-preview budget with its links' scratch
+/// planes in one pool ([`chain_charge`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChainCharge {
+    /// Each link's intermediate, every link's but the last's, in chain order.
+    pub intermediates: Vec<u64>,
+    /// Each link's kept planes and its passes' parameter slices, in chain order, the last link's
+    /// last: zero for a link without a spatial step.
+    pub kept: Vec<u64>,
+    /// The pool of scratch planes every link's spatial step takes in turn, counted once.
+    pub pool: u64,
+}
+
+impl ChainCharge {
+    /// Everything it counts.
+    pub fn total(&self) -> u64 {
+        self.intermediates.iter().sum::<u64>() + self.kept.iter().sum::<u64>() + self.pool
+    }
+}
+
+/// What the chain of `steps` takes of the GPU-preview budget over a boundary of `size` texels in
+/// `format` whose texel `(0, 0)` is stage pixel `origin`, its links' scratch planes laid out in one
+/// pool ([`spatial::PoolKey`]): each link's intermediate before the last, the boundary's texels in
+/// the format a chain's intermediates take; each link's kept planes and its passes' parameter
+/// slices ([`spatial::PlanesKey`]); and the pool, once. A link without a spatial step, such as the
+/// colour steps before the first one, adds only its intermediate. The boundary, the output with its
+/// placement uniform, and the words and blocks buffers, which need the device's limits, are the
+/// slot's beside it ([`texture_charge`]). It creates nothing.
+pub fn chain_charge(
+    steps: &[GpuStep],
+    size: (u32, u32),
+    origin: (u32, u32),
+    format: BoundaryFormat,
+) -> ChainCharge {
+    let chain = chain::chain(steps);
+    let links = || {
+        chain
+            .links
+            .iter()
+            .copied()
+            .chain(std::iter::once(chain.last))
+    };
+    ChainCharge {
+        intermediates: vec![intermediate_bytes(size, format); chain.links.len()],
+        kept: links()
+            .map(|link| {
+                spatial::PlanesKey::of(link, size, origin).map_or(0, |key| key.kept_bytes())
+            })
+            .collect(),
+        pool: spatial::PoolKey::of(links(), size, origin).bytes(),
+    }
 }
 
 /// `words` as the little-endian bytes the GPU reads.
@@ -3091,6 +3290,7 @@ fn upload_rows(
     (row, written)
 }
 
+mod blocks;
 mod chain;
 mod compile;
 pub(super) use compile::GpuOptions;

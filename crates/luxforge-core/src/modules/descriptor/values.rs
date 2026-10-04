@@ -335,61 +335,114 @@ pub(crate) fn check_declared_values(
     patch: bool,
     input: &Value,
 ) -> Result<Map<String, Value>, Error> {
-    let declared = |name: &str| parameters.iter().find(|parameter| parameter.name == name);
-    let empty = Map::new();
+    let object = checked_object(what, id, parameters, patch, input)?;
+    Ok(declared_values(
+        parameters,
+        patch,
+        object.cloned().unwrap_or_default(),
+    ))
+}
+
+/// [`check_parameters`] of a request the caller gives up, as a commit and a draft's plan prepare
+/// theirs: the same checks, refusing exactly as it refuses, with each value moved into the answer
+/// rather than copied, so a brush stroke's path is not copied again.
+pub(crate) fn take_parameters(
+    action: &ActionDescriptor,
+    input: Value,
+) -> Result<Map<String, Value>, Error> {
+    checked_object(
+        "action",
+        &action.id,
+        &action.parameters,
+        action.patch,
+        &input,
+    )?;
     let object = match input {
         Value::Object(object) => object,
-        Value::Null => &empty,
+        _ => Map::new(),
+    };
+    Ok(declared_values(&action.parameters, action.patch, object))
+}
+
+/// Every check [`check_declared_values`] makes, in its order, copying nothing: the object the
+/// values come from, `None` for `null`.
+fn checked_object<'a>(
+    what: &str,
+    id: &str,
+    parameters: &[ParameterDescriptor],
+    patch: bool,
+    input: &'a Value,
+) -> Result<Option<&'a Map<String, Value>>, Error> {
+    let declared = |name: &str| parameters.iter().find(|parameter| parameter.name == name);
+    let object = match input {
+        Value::Object(object) => Some(object),
+        Value::Null => None,
         _ => {
             return Err(Error::validation(format!(
                 "parameters of {what} {id} must be a JSON object"
             )));
         }
     };
-    for name in object.keys() {
+    let named = || object.into_iter().flatten();
+    let named_key = |name: &str| object.is_some_and(|object| object.contains_key(name));
+    for (name, _) in named() {
         if declared(name).is_none() {
             return Err(Error::validation(format!(
                 "unknown parameter {name} for {what} {id}"
             )));
         }
     }
-    let mut checked = Map::new();
     if patch {
-        for (name, value) in object {
+        for (name, value) in named() {
             let parameter =
                 declared(name).expect("every key was matched to a declared parameter above");
             check_value(parameter, value)?;
-            checked.insert(name.clone(), value.clone());
         }
         if let Some(missing) = parameters.iter().find(|parameter| {
-            parameter.required
-                && parameter.kind.is_identity()
-                && !object.contains_key(&parameter.name)
+            parameter.required && parameter.kind.is_identity() && !named_key(&parameter.name)
         }) {
             return Err(Error::validation(format!(
                 "missing required parameter {} for {what} {id}",
                 missing.name
             )));
         }
-        return Ok(checked);
+        return Ok(object);
     }
     for parameter in parameters {
-        match (object.get(&parameter.name), &parameter.default) {
-            (Some(value), _) => {
-                check_value(parameter, value)?;
-                checked.insert(parameter.name.clone(), value.clone());
-            }
-            (None, Some(default)) => {
-                checked.insert(parameter.name.clone(), default.clone());
-            }
+        match (
+            object.and_then(|object| object.get(&parameter.name)),
+            &parameter.default,
+        ) {
+            (Some(value), _) => check_value(parameter, value)?,
             (None, None) if parameter.required => {
                 return Err(Error::validation(format!(
                     "missing required parameter {} for {what} {id}",
                     parameter.name
                 )));
             }
-            (None, None) => {}
+            (None, _) => {}
         }
     }
-    Ok(checked)
+    Ok(object)
+}
+
+/// The checked values of an object [`checked_object`] accepted: a patch's fields as sent, otherwise
+/// every declared parameter sent or defaulted.
+fn declared_values(
+    parameters: &[ParameterDescriptor],
+    patch: bool,
+    mut object: Map<String, Value>,
+) -> Map<String, Value> {
+    if patch {
+        return object;
+    }
+    parameters
+        .iter()
+        .filter_map(|parameter| {
+            object
+                .remove(&parameter.name)
+                .or_else(|| parameter.default.clone())
+                .map(|value| (parameter.name.clone(), value))
+        })
+        .collect()
 }

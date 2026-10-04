@@ -15,6 +15,7 @@ A Rust 1.94 workspace. Exact versions are pinned in `Cargo.lock`. Add boundaries
 | libjpeg-turbo through `mozjpeg` (its bundled source built with `cc`) | Reading and writing JPEG, behind the private `luxforge-jpeg` crate, the only code that names it (`cargo xtask check-repository` enforces this) |
 | `moxcms` | Conservative sRGB profile recognition |
 | `rfd` | Native and portal dialogs |
+| `tokio`, its `time` feature only (the executor Iced already runs on) | The desktop's job readers' interval, in `luxforge-app` |
 | Pinned, bundled LibRaw and librtprocess | RAW, behind the private `luxforge-raw` adapter |
 | Bundled SQLite through `rusqlite` | The catalog |
 | Rayon | The parallel raster pass |
@@ -51,7 +52,7 @@ Paths are under `crates/luxforge-core/src`.
 | --- | --- |
 | `lib.rs` | The public surface, listed by name: what the desktop, `luxforge-json`, `luxforge-net`, the test kit, xtask and the core's integration tests use through the crate root, every type a public item's signature carries so a consumer can name whatever it receives, and the modules consumers name items through (`activity`, `analysis`, `capabilities`, `colour`, `jobs`, `latest`, `mask`, `path` and `resources`). Every other item is `pub(crate)` or narrower, so the compiler reports what nothing uses |
 | `editor.rs` | The editor service: the `EditorService` struct, opening a catalog, and the types its API speaks |
-| `editor/catalog.rs` | The schema, the format marker, row mapping, and the entry, stroke and request rows |
+| `editor/catalog.rs` | The lock and the journal, the schema, the format marker, row mapping, and the entry, stroke and request rows |
 | `editor/entries.rs` | The cache of hydrated history entries and each asset's head, and the one `mutate` every write that moves a head goes through |
 | `editor/history.rs` | Admission, commits, undo, redo, restore, versions, lineage and request deduplication |
 | `editor/source.rs` | Source preparation and cache, import, file identity and RAW settings |
@@ -137,13 +138,14 @@ A mask is a host object beside the layers — an ordered list of components with
 ## Persistence
 
 - Local SQLite holds current state, history entries with their snapshots, a monotonic revision, redo navigation and each request's whole answer (the [current catalog format](versions-and-lineage.md#storage-catalog-format-11)). The catalog owner is its only writer, in short atomic transactions; a failed write preserves the prior durable state. Originals and disposable pixel caches stay outside the database.
+- The catalog runs in WAL mode under an exclusive lock, so no `-shm` file exists and no other process reads it while it is open. Each commit appends to `<catalog>-wal` and is flushed in full (`synchronous=FULL`, `fullfsync` and `checkpoint_fullfsync`: `F_FULLFSYNC` on macOS). The `-wal` file lies beside an open or crashed catalog, and the next open recovers from it; a clean close checkpoints it and removes it ([storage](versions-and-lineage.md#storage-catalog-format-11)).
 - Only the current catalog and payload shapes are supported: an unsupported format fails explicitly without rewriting data, and unknown payloads and missing providers are retained and reported, never dropped.
 - Entry records are the only stored copy of a stack. Each entry's history row (sequence, action, label, actor, timestamp, undo parent and restore target) has its own columns, so a history page decodes no entry.
 - Every entry is retained: undo and redo navigate without inverse rows, Restore copies a snapshot into a new action, and versions are named references to entries ([versions and lineage](versions-and-lineage.md)).
 - Beside the entries the catalog holds the preset library ([presets](presets.md#library)), a content-addressed store of painted paths ([masking](masking.md#stroke-storage)) and each entry's references to derived artifacts, immutable content-addressed files in a `<catalog stem>.artifacts` directory that moves with the catalog ([derived artifacts](module-capabilities.md#derived-artifacts)).
 - Module settings, grants, secrets and installed resources are user-level and never part of a catalog.
-- The owner keeps the last 8 entries it read, with their strokes resolved and shared between clones, and the last 16 assets' heads, each updated where a write commits: a history move, or a relocation that rewrites where an asset's original is (an internal write the Locate command will make; no method exposes it yet), announced as an event naming the asset. Reopening starts that cache empty and recovers the same IDs, current snapshot and navigation state.
-- Backups need a consistent SQLite snapshot, not a copy of a live file.
+- The owner keeps the last 8 entries it read, with their strokes resolved and shared between clones (an entry read next takes the strokes the same asset's cached entries hold rather than reading them from the store again), and the last 16 assets' heads, each updated where a write commits: a history move, or a relocation that rewrites where an asset's original is (an internal write the Locate command will make; no method exposes it yet), announced as an event naming the asset. Reopening starts that cache empty and recovers the same IDs, current snapshot and navigation state.
+- A catalog is copied or moved closed, or with its `-wal` file; a copy of the catalog file alone can lack recent commits. Backup is an [open product question](../decisions.md#open-product-questions).
 
 ## Rendering and limits
 
@@ -269,7 +271,8 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | A held GPU-preview boundary | 256 MiB, its CPU copy let go once the photo surface holds it | `BOUNDARY_MAX_BYTES`, `crates/luxforge-core/src/render/boundary.rs` |
 | A boundary's upload a frame | 32 MiB, so its arrival stages at most two frames' chunks | `UPLOAD_PER_FRAME`, `crates/luxforge-ui/src/photo_surface/gpu_preview.rs` |
 | GPU-preview textures and buffers, every photo surface's together, resident or retiring | 2 GiB, one slot per surface | `GPU_PREVIEW_BUDGET`, `crates/luxforge-ui/src/photo_surface/gpu_preview.rs` |
-| Compiled GPU-preview program sequences per photo pipeline, failed ones included | 8 | `PIPELINE_CACHE`, as above |
+| Compiled GPU-preview program sequences per photo pipeline, failed ones included | 64, every link of the largest plan beside a whole warm list, and as many waiting to compile | `PIPELINE_CACHE`, `crates/luxforge-ui/src/photo_surface/gpu_preview/compile.rs` |
+| Link sequences one GPU-preview warm list holds | 45, the compile cache less the largest plan's 19 links | `GPU_WARM_LINKS` and `GPU_PLAN_LINKS`, `crates/luxforge-core/src/render/gpu/preview.rs` |
 
 **Catalog and API**
 
@@ -293,6 +296,7 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | --- | --- | --- |
 | Masks per recipe | 16 | `MASKS_PER_RECIPE`, `crates/luxforge-core/src/model.rs` |
 | Components per mask | 32 | `COMPONENTS_PER_MASK`, `crates/luxforge-core/src/model.rs` |
+| Masked spatial layers per recipe | 16, masked Presence and Detail layers together | `MAX_MASKED_SPATIAL_LAYERS`, `crates/luxforge-core/src/modules/spatial.rs` |
 | Serialized mask bytes per recipe | 256 KiB | `MASK_BYTES_PER_RECIPE`, `crates/luxforge-core/src/model.rs` |
 
 **Export**

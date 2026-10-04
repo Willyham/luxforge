@@ -162,9 +162,10 @@ impl MaskedColour {
             .sum()
     }
 
-    /// Append this step's words and block, at the bases `words.len()` and `blocks.len()` the
-    /// header recorded for it: exactly [`Self::word_count`] and [`Self::block_count`] of them.
-    pub(super) fn pack(&self, words: &mut Vec<u32>, blocks: &mut Vec<u32>) {
+    /// Append this step's words at the base `words.len()` the header recorded for it, its programs'
+    /// blocks counted from `block`, the step's own blocks base: exactly [`Self::word_count`] of
+    /// them. Its blocks are its programs', in [`Self::programs`]' order.
+    pub(super) fn pack_words(&self, words: &mut Vec<u32>, mut block: usize) {
         let mask = &self.mask;
         let base = words.len();
         words.extend(mask.position.words());
@@ -178,7 +179,6 @@ impl MaskedColour {
             + HEADER_WORDS
             + COMPONENT_WORDS * mask.components.len()
             + UNIT_WORDS * self.units.len();
-        let mut block = blocks.len();
         for component in &mask.components {
             words.extend([
                 component.mode.word(),
@@ -196,7 +196,6 @@ impl MaskedColour {
         }
         for (_, program) in self.programs() {
             words.extend_from_slice(&program.words);
-            blocks.extend_from_slice(&program.block);
         }
         debug_assert_eq!(words.len(), base + self.word_count());
     }
@@ -322,10 +321,13 @@ fn lf_surface_compose(lf_surface_m: f32, lf_surface_c: f32, lf_surface_mode: u32
 ";
 
 /// The word ranges of `new` that differ from `old`, in chunks of `chunk` words merged where they
-/// touch: what a tick writes of the blocks. A brush stroke being painted appends its new segments
-/// to its block and rewrites the index after them, so a tick writes those and not the strokes'
-/// segments it already holds; an unchanged block writes nothing. Words of `old` past the end of
-/// `new` are not written: nothing reads past a block's own length.
+/// touch: what a tick writes of the blocks. A buffer's blocks (`blocks::WrittenBlocks`) answer the
+/// same ranges without comparing the blocks a tick hands again at the same place. A brush stroke
+/// being painted appends its new segments to its block and rewrites the index after them, so a
+/// tick writes those and not the strokes' segments it already holds; an unchanged block writes
+/// nothing. Words of `old` past the end of `new` are not written: nothing reads past a block's own
+/// length.
+#[cfg(test)]
 pub(super) fn changed_ranges(
     old: &[u32],
     new: &[u32],
