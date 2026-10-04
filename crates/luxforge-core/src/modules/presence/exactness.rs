@@ -298,6 +298,26 @@ fn guided_filter(
     Ok(())
 }
 
+fn upsample(reduced: &Plane<'_>, reduction: i64, dst: &mut PlaneMut<'_>, parallelism: Parallelism) {
+    let out = dst.rect();
+    let s = reduction as f32;
+    dst.for_rows(parallelism, |y, row| {
+        let v = ((y as f32) + 0.5) / s - 0.5;
+        let j0 = v.floor();
+        let fy = v - j0;
+        let j0 = j0 as i64;
+        for x in out.x0..out.x1 {
+            let u = ((x as f32) + 0.5) / s - 0.5;
+            let i0 = u.floor();
+            let fx = u - i0;
+            let i0 = i0 as i64;
+            let top = reduced.get(i0, j0) * (1.0 - fx) + reduced.get(i0 + 1, j0) * fx;
+            let bottom = reduced.get(i0, j0 + 1) * (1.0 - fx) + reduced.get(i0 + 1, j0 + 1) * fx;
+            row[(x - out.x0) as usize] = top * (1.0 - fy) + bottom * fy;
+        }
+    });
+}
+
 // ---------------------------------------------------------------------------------------------
 // Planes and rectangles to compare them over.
 // ---------------------------------------------------------------------------------------------
@@ -573,4 +593,55 @@ fn the_guided_filters_match_the_tap_by_tap_reference_bit_for_bit() {
         }
     }
     assert!(compared > 2000, "{compared} comparisons");
+}
+
+// ---------------------------------------------------------------------------------------------
+// The upsample.
+// ---------------------------------------------------------------------------------------------
+
+/// Every reduction from 1 to 5, the units' own 4 among them, two that do not divide the frames,
+/// and the host's estimate reduction of 16, which leaves most frames here a reduced grid one or two
+/// pixels wide, all interior lost to the edges.
+const REDUCTIONS: [i64; 7] = [1, 2, 3, 4, 5, 7, 16];
+
+#[test]
+fn the_upsample_matches_the_tap_by_tap_reference_bit_for_bit() {
+    let mut rng = SplitMix64(0x0B5A_3B1E);
+    let mut compared = 0;
+    for (width, height) in FRAMES {
+        let frame = Rect::frame(width, height);
+        let geometry = Geometry::new(width, height, frame);
+        for reduction in REDUCTIONS {
+            let (reduced_width, reduced_height) = filters::reduced_frame(width, height, reduction);
+            let reduced_frame = Rect::frame(reduced_width, reduced_height);
+            let reduced_geometry = Geometry::new(reduced_width, reduced_height, reduced_frame);
+            for out in rects(&mut rng, width, height) {
+                // What the units hold: the output's reduced rectangle and one more reduced index
+                // on each side, here sometimes more.
+                let extra = [0, 0, 1, 2][rng.next_usize(4)];
+                let held = filters::reduced_rect(out, reduction)
+                    .expand(1 + extra)
+                    .clip(reduced_frame);
+                let mut reduced = values(&mut rng, held.pixels());
+                let reduced = PlaneMut::over(&mut reduced, reduced_geometry, held)
+                    .expect("the reduced plane");
+                let reduced = reduced.as_plane();
+                let before = values(&mut rng, out.pixels());
+                let expected = written(geometry, out, &before, |dst| {
+                    upsample(&reduced, reduction, dst, Parallelism::Serial)
+                });
+                for parallelism in PARALLELISMS {
+                    let actual = written(geometry, out, &before, |dst| {
+                        filters::upsample(&reduced, reduction, dst, parallelism)
+                    });
+                    assert_eq!(
+                        actual, expected,
+                        "{width}x{height} by {reduction}: {out:?} from {held:?} {parallelism:?}"
+                    );
+                    compared += 1;
+                }
+            }
+        }
+    }
+    assert!(compared > 1000, "{compared} comparisons");
 }
