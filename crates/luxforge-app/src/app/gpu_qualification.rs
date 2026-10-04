@@ -178,7 +178,9 @@ pub(crate) fn corpus_sources(
     found
 }
 
-/// What one cell measured, or why it has no figures.
+/// What one cell measured, or why it has no figures. A cell is built once and read at once, so its
+/// figures are not boxed to make a gap smaller.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Cell {
     Measured {
         /// The stage the Fit frame was rendered at, and whether it was a proxy; at a percentage
