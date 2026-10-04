@@ -31,7 +31,6 @@ struct Shared {
     scratch: ScratchBudget,
     spatial: SpatialBudget,
     estimates: EstimateStore,
-    #[allow(dead_code)]
     reduced: ReducedStore,
     /// How many stacks [`super::render`] compiled in this context, for the tests that prove a
     /// preview job compiles once per stage it renders at.
@@ -101,7 +100,6 @@ impl RenderContext {
     }
 
     /// The reduced planes of spatial units that run first in their operations.
-    #[allow(dead_code)]
     pub(crate) fn reduced(&self) -> &ReducedStore {
         &self.0.reduced
     }
