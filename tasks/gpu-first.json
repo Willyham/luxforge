@@ -191,7 +191,7 @@
         {
           "kind": "file",
           "label": "Restoration prefix cache",
-          "target": "crates/luxforge-core/src/preview/restoration.rs",
+          "target": "crates/luxforge-core/src/render/restoration.rs",
           "relevance": "The cache this stage removes from the preview path."
         },
         {
@@ -492,7 +492,7 @@
         {
           "kind": "file",
           "label": "Export",
-          "target": "crates/luxforge-core/src/export.rs",
+          "target": "crates/luxforge-core/src/export/mod.rs",
           "relevance": "The CPU exporter."
         },
         {
