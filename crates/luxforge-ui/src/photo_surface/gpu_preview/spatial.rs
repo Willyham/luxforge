@@ -39,18 +39,21 @@
 //! steps before its own only for a pass that reads its unit's input: passes and plans that differ
 //! only in those numbers share one pipeline, and a pass that reads only planes shares it with plans
 //! whose colour steps before its step differ, which the stage keeps across sequences
-//! ([`PassCache`]). Its planes
-//! are textures: `rgba16float`, `r32float`, `rg32float` or `rgba32float` by the plane's
-//! [`PlaneFormat`], each sized to the boundary or to the stage's blocks it reaches
-//! ([`GpuPlane::extent`]), or a texture an earlier step left free that holds the plane
-//! ([`PlanesKey`]), whose format a pass writing the plane then stores in. A half-float texture is
-//! written rounded to the nearest half, ties to even ([`HALF_ROUNDING`]): the M4's own conversion of
-//! a storage write, and of a render target's, rounds toward zero. A pass or an apply reads the step's words from its offset up to the next
-//! offset any pass or apply of its step names; a tick runs only the passes whose words, upstream or
-//! inputs changed since the planes the applies read were last written, and none that only an
-//! identity apply's planes need ([`Schedule`]). The passes run in order before the frame's pass, which binds the
-//! applies' planes as a second bind group, so the operation holds no colour plane of its own: its
-//! memory is its planes, charged to the GPU-preview budget with the slot. Nothing is read back.
+//! ([`PassCache`]). Its planes are textures: `rgba16float`, `r32float`, `rg32float` or
+//! `rgba32float` by the plane's [`PlaneFormat`], each sized to the boundary or to the stage's blocks
+//! it reaches ([`GpuPlane::extent`]). A plane an apply reads is kept, in a texture of the link's
+//! own; every other is scratch, read only by its step's own passes within a tick, and held in the
+//! slot's pool, which every link of a chain takes its scratch planes from in turn and the budget
+//! charges once ([`PlanesKey`], [`Pool`], [`super::chain_charge`]). A half-float texture is written
+//! rounded to the nearest half, ties to even ([`HALF_ROUNDING`]): the M4's own conversion of a
+//! storage write, and of a render target's, rounds toward zero. A pass or an apply reads the step's
+//! words from its offset up to the next offset any pass or apply of its step names; a tick runs only
+//! the passes whose words, upstream or inputs changed since the planes the applies read were last
+//! written, trusting a pool texture only when the link itself wrote it last, and none that only an
+//! identity apply's planes need ([`Schedule`]). The passes run in order before the frame's pass,
+//! which binds the applies' planes as a second bind group, so the operation holds no colour plane of
+//! its own: its memory is its planes, charged to the GPU-preview budget with the slot. Nothing is
+//! read back.
 use super::{
     GpuProgram, GpuStep, MAP_WORDS, PositionMap, STEP_WORDS, StepKind, Support, entry_name,
     mask::{self, Coverage, MaskedColour, Role},
@@ -101,9 +104,8 @@ const UNLIMITED: u32 = i32::MAX as u32;
 pub(super) const PASS_CACHE: usize = 64;
 
 /// What a plane's texels hold — how many channels, and whether half precision holds them — and so
-/// the texture format it is kept in when it has a texture of its own. A plane may instead share a
-/// texture whose format [holds](Self::holds) it ([`PlanesKey`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// the texture format it is kept in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PlaneFormat {
     /// `rgba16float`: four channels at half precision.
     Colour,
@@ -148,24 +150,19 @@ impl PlaneFormat {
         }
     }
 
-    fn channels(self) -> u32 {
+    /// The format that names its texture's: `Scalar` for `HalfScalar`, `Pair` for `HalfPair`, and
+    /// every other its own, so two formats kept in one texture format answer one.
+    fn kept_as(self) -> Self {
         match self {
-            Self::Scalar | Self::HalfScalar => 1,
-            Self::Pair | Self::HalfPair => 2,
-            Self::Colour | Self::Quad => 4,
+            Self::HalfScalar => Self::Scalar,
+            Self::HalfPair => Self::Pair,
+            other => other,
         }
-    }
-
-    /// Whether a texture of this format holds a plane of `plane`'s: as many channels or more, and
-    /// full precision unless half precision holds the plane.
-    pub fn holds(self, plane: Self) -> bool {
-        let half = matches!(plane, Self::Colour | Self::HalfScalar | Self::HalfPair);
-        self.channels() >= plane.channels() && (self != Self::Colour || half)
     }
 }
 
 /// A plane's size against the boundary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PlaneSize {
     /// The stage's `s × s` blocks, anchored at the stage origin, the boundary reaches: `s = 1` is
     /// the boundary.
@@ -225,8 +222,8 @@ pub struct GpuPass {
     /// How many of the step's applies its `lf_source` runs.
     pub source: u32,
     /// Whether its kernel reads its unit's input through `lf_source`. A pass that reads only
-    /// planes runs no apply (`source` is 0), and its module holds its own step's program alone:
-    /// the steps before its step change it only through the texture its output takes
+    /// planes runs no apply (`source` is 0), and its module holds its own step's program alone,
+    /// whatever steps come before its step: its output's texture takes its plane's own format
     /// ([`PlanesKey`]).
     pub reads_source: bool,
     pub shape: PassShape,
@@ -1080,8 +1077,8 @@ const SOURCE_STUB: &str = "fn lf_source(at: vec2<i32>) -> vec3<f32> {\n    \
 /// inputs, then, for a pass that reads its unit's input, the applies' planes its `lf_source` runs;
 /// its output at [`OUTPUT_BINDING`]. Only such a pass holds the programs of the steps before its
 /// own and their statements: a pass that reads only planes holds its step's spatial program alone,
-/// beside [`SOURCE_STUB`], so the steps before its step decide its module, its layout and its
-/// pipeline only through the format of the texture its output takes ([`PlanesKey`]).
+/// beside [`SOURCE_STUB`], so the steps before its step decide neither its module, nor its layout,
+/// nor its pipeline: its output's texture takes its plane's own format ([`PlanesKey`]).
 pub(super) fn pass_module(
     steps: &[GpuStep],
     index: usize,
@@ -1090,7 +1087,7 @@ pub(super) fn pass_module(
     let GpuStep::Spatial(spatial) = &steps[index] else {
         return Err("a pass belongs to a spatial step".into());
     };
-    // The format of the texture that holds its output, which may be one an earlier step left free.
+    // The format of the texture that holds its output: its plane's own.
     spatial
         .planes
         .get(pass.output as usize)
@@ -1242,14 +1239,6 @@ pub(super) fn parameters(steps: &[GpuStep], places: &[Place]) -> Vec<u32> {
         }
     }
     words
-}
-
-/// What the planes of `steps`' spatial steps take of the GPU-preview budget over a boundary of
-/// `size` texels whose texel `(0, 0)` is stage pixel `origin`: their textures, chained steps
-/// sharing them as a slot shares them ([`PlanesKey`]), and the passes' parameters. What the
-/// desktop holds a region's plan to before its boundary exists; it creates nothing.
-pub fn plane_bytes(steps: &[GpuStep], size: (u32, u32), origin: (u32, u32)) -> u64 {
-    PlanesKey::of(steps, size, origin).map_or(0, |key| key.bytes())
 }
 
 /// `value` rounded to the nearest half float, ties to even, within the finite halves, as `f32`:
@@ -1530,112 +1519,96 @@ pub(super) fn compile_passes(
     Ok((compiled, modules))
 }
 
-/// What a spatial plan's planes are keyed by: each spatial step's planes, the boundary's size and
-/// its stage origin, and which texture holds each plane.
+/// A texture's class: the texture format a plane's own format gives it, and the plane's size.
+/// `Scalar` and `HalfScalar` planes are of one class format, `r32float`, and `Pair` and `HalfPair`
+/// of another, `rg32float`. Every link of a slot covers the boundary's size and origin, so a class
+/// has one extent there. Classes are ordered, so a layout compares by what it holds, not by the
+/// order its planes were seen in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(super) struct Class {
+    /// The plane format that names the class's texture format ([`PlaneFormat::kept_as`]).
+    pub(super) format: PlaneFormat,
+    pub(super) size: PlaneSize,
+}
+
+impl Class {
+    pub(super) fn of(plane: GpuPlane) -> Self {
+        Self {
+            format: plane.format.kept_as(),
+            size: plane.size,
+        }
+    }
+
+    /// A plane of the class, whose texture format, extent and bytes are the class's.
+    pub(super) fn plane(self) -> GpuPlane {
+        GpuPlane {
+            format: self.format,
+            size: self.size,
+        }
+    }
+}
+
+/// Where one plane of a link's spatial step is held.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum PlaneTexture {
+    /// The link's kept texture at this index: a plane an apply of its step reads.
+    Kept(usize),
+    /// The pool's `k`-th texture of the class ([`PoolKey`]): a scratch plane, the link's `k`-th of
+    /// its class in its own plane order.
+    Pool(Class, usize),
+}
+
+/// How a link lays out its planes, and what decides whether the planes it holds serve another
+/// plan: each spatial step's planes, where each is held, the link's kept textures, how many scratch
+/// planes of each class it holds, its passes, and the boundary's size and stage origin.
 ///
-/// A plane no apply reads is scratch: only its own step's passes use it, and they have all run
-/// before a later step's first pass. A later step's plane therefore takes an earlier step's scratch
-/// texture of the same size whose format [holds](PlaneFormat::holds) it, the smallest such, so
-/// chained spatial steps hold one texture for both: a scratch plane, which leaves the texture free
-/// for a step after it, or a plane an apply reads, which keeps it, since the frame and every later
-/// step's input read it. Which texture each plane takes, and so the format a pass writes, depends
-/// on the steps alone ([`texture_formats`]), never on the boundary's size, so the pipelines a
-/// sequence compiles serve every boundary.
+/// A plane any apply of its step reads ([`GpuApply::planes`]) is **kept** in a texture of the
+/// link's own: the frame's pass reads it, and so does every later tick that changes only an apply's
+/// word or rewrites the plane only around a change. Every other plane is **scratch**, reduced and
+/// fixed-size ones included: only its own step's passes read it, within the tick that writes it. A
+/// link's `k`-th scratch plane of a [`Class`], in its own plane order, is texture `k` of that class
+/// ([`PlaneTexture::Pool`]), so where a plane is held depends on the link's own steps alone, and one
+/// pool holding, for each class, the most any link of a chain holds can serve every link in turn
+/// ([`PoolKey`]).
+///
+/// No two planes of a link share a texture. A link holds at most one spatial step
+/// ([`super::chain::chain`]), whose composition already gave every plane alive at once its own
+/// (`compose` in the core), and a scratch plane takes a texture of its own class alone, never one of
+/// another format that would hold it. Each pass therefore writes the format its plane's own
+/// [`PlaneFormat`] gives it ([`texture_formats`]), whatever the boundary, so the pipelines a sequence
+/// compiles serve every boundary. [`Planes`] creates the link's kept textures; its scratch planes
+/// are the slot's pool's ([`Pool`]).
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct PlanesKey {
+    /// Each spatial step's index among the steps, and its planes.
     planes: Vec<(usize, Vec<GpuPlane>)>,
-    /// Each step's planes' textures, indices into `textures`.
-    aliases: Vec<(usize, Vec<usize>)>,
-    /// The textures, each the plane that first took it.
-    textures: Vec<GpuPlane>,
+    /// Where each spatial step's planes are held, indexed as `planes`.
+    locations: Vec<(usize, Vec<PlaneTexture>)>,
+    /// The kept textures, each the plane it holds, in plane order.
+    kept: Vec<GpuPlane>,
+    /// How many scratch planes of each class the link holds, in class order.
+    scratch: Vec<(Class, usize)>,
     /// How many passes the parameter buffer holds a slice for.
     passes: usize,
     size: (u32, u32),
     origin: (u32, u32),
 }
 
-/// Each spatial step's planes, which texture holds each, and the textures, each the plane that
-/// first took it.
-type Assignment = (
-    Vec<(usize, Vec<GpuPlane>)>,
-    Vec<(usize, Vec<usize>)>,
-    Vec<GpuPlane>,
-);
-
-/// Which texture holds each plane of `steps`' spatial steps ([`PlanesKey`]).
-fn assign(steps: &[GpuStep]) -> Assignment {
-    let planes: Vec<(usize, Vec<GpuPlane>)> = steps
+/// The format of the texture that holds each plane of each spatial step of `steps`, indexed as
+/// the steps and their planes are: the plane's own, which a pass writing the plane stores in.
+pub(super) fn texture_formats(steps: &[GpuStep]) -> Vec<(usize, Vec<PlaneFormat>)> {
+    steps
         .iter()
         .enumerate()
         .filter_map(|(index, step)| match step {
-            GpuStep::Spatial(spatial) => Some((index, spatial.planes.clone())),
+            GpuStep::Spatial(spatial) => Some((
+                index,
+                spatial.planes.iter().map(|plane| plane.format).collect(),
+            )),
             GpuStep::Colour { .. }
             | GpuStep::Masked(_)
             | GpuStep::Geometry(_)
             | GpuStep::Clipping(_) => None,
-        })
-        .collect();
-    // Earlier steps' scratch textures, free for a later step's planes.
-    let mut textures: Vec<GpuPlane> = Vec::new();
-    let mut scratch: Vec<usize> = Vec::new();
-    let mut aliases = Vec::with_capacity(planes.len());
-    for (index, step_planes) in &planes {
-        let GpuStep::Spatial(spatial) = &steps[*index] else {
-            continue;
-        };
-        let read = |plane: usize| {
-            spatial
-                .applies
-                .iter()
-                .any(|apply| apply.planes.contains(&(plane as u32)))
-        };
-        let mut taken: Vec<usize> = Vec::new();
-        let mut made_scratch: Vec<usize> = Vec::new();
-        let step_aliases = step_planes
-            .iter()
-            .enumerate()
-            .map(|(number, plane)| {
-                let shared = scratch
-                    .iter()
-                    .copied()
-                    .filter(|texture| {
-                        !taken.contains(texture)
-                            && textures[*texture].size == plane.size
-                            && textures[*texture].format.holds(plane.format)
-                    })
-                    .min_by_key(|texture| textures[*texture].format.texel_bytes());
-                if let Some(texture) = shared
-                    && read(number)
-                {
-                    // An apply reads it from here on: no later step may take it.
-                    scratch.retain(|free| *free != texture);
-                }
-                let texture = shared.unwrap_or_else(|| {
-                    textures.push(*plane);
-                    if !read(number) {
-                        made_scratch.push(textures.len() - 1);
-                    }
-                    textures.len() - 1
-                });
-                taken.push(texture);
-                texture
-            })
-            .collect();
-        scratch.extend(made_scratch);
-        aliases.push((*index, step_aliases));
-    }
-    (planes, aliases, textures)
-}
-
-/// The format of the texture that holds each plane of each spatial step of `steps`, indexed as
-/// the steps and their planes are: the format a pass writing the plane stores in.
-pub(super) fn texture_formats(steps: &[GpuStep]) -> Vec<(usize, Vec<PlaneFormat>)> {
-    let (_, aliases, textures) = assign(steps);
-    aliases
-        .into_iter()
-        .map(|(index, aliases)| {
-            let formats = aliases.iter().map(|&texture| textures[texture].format);
-            (index, formats.collect())
         })
         .collect()
 }
@@ -1649,36 +1622,96 @@ pub(super) fn written_format(steps: &[GpuStep], index: usize, plane: u32) -> Opt
 }
 
 impl PlanesKey {
+    /// The layout of `steps`' spatial steps over a boundary of `size` texels whose texel `(0, 0)`
+    /// is stage pixel `origin`, or `None` for steps without one.
     pub(super) fn of(steps: &[GpuStep], size: (u32, u32), origin: (u32, u32)) -> Option<Self> {
-        let (planes, aliases, textures) = assign(steps);
+        let mut planes = Vec::new();
+        let mut locations = Vec::new();
+        let mut kept = Vec::new();
+        let mut scratch = std::collections::BTreeMap::<Class, usize>::new();
+        for (index, step) in steps.iter().enumerate() {
+            let GpuStep::Spatial(spatial) = step else {
+                continue;
+            };
+            let read = |plane: usize| {
+                spatial
+                    .applies
+                    .iter()
+                    .any(|apply| apply.planes.contains(&(plane as u32)))
+            };
+            let held = spatial
+                .planes
+                .iter()
+                .enumerate()
+                .map(|(number, plane)| {
+                    if read(number) {
+                        kept.push(*plane);
+                        PlaneTexture::Kept(kept.len() - 1)
+                    } else {
+                        let class = Class::of(*plane);
+                        let count = scratch.entry(class).or_default();
+                        *count += 1;
+                        PlaneTexture::Pool(class, *count - 1)
+                    }
+                })
+                .collect();
+            planes.push((index, spatial.planes.clone()));
+            locations.push((index, held));
+        }
         if planes.is_empty() {
             return None;
         }
         Some(Self {
             planes,
-            aliases,
-            textures,
+            locations,
+            kept,
+            scratch: scratch.into_iter().collect(),
             passes: pass_count(steps),
             size,
             origin,
         })
     }
 
-    /// The texture that holds plane `plane` of step `step`.
-    pub(super) fn texture(&self, step: usize, plane: u32) -> usize {
-        self.aliases
+    /// Where plane `plane` of step `step` is held.
+    pub(super) fn location(&self, step: usize, plane: u32) -> Option<PlaneTexture> {
+        self.locations
             .iter()
             .find(|(index, _)| *index == step)
-            .map_or(usize::MAX, |(_, aliases)| aliases[plane as usize])
+            .and_then(|(_, held)| held.get(plane as usize).copied())
     }
 
-    /// The bytes every texture takes, and the passes' parameter buffer.
-    pub(super) fn bytes(&self) -> u64 {
-        self.textures
+    /// How many scratch planes of each class the link holds, in class order.
+    pub(super) fn scratch(&self) -> &[(Class, usize)] {
+        &self.scratch
+    }
+
+    /// Each kept texture's plane, in plane order ([`PlaneTexture::Kept`]).
+    #[cfg(test)]
+    pub(super) fn kept(&self) -> &[GpuPlane] {
+        &self.kept
+    }
+
+    /// The bytes the kept textures take, and the passes' parameter buffer: what the link holds
+    /// beside the pool.
+    pub(super) fn kept_bytes(&self) -> u64 {
+        self.kept
             .iter()
             .map(|plane| plane.bytes(self.origin, self.size))
             .sum::<u64>()
             + self.parameter_bytes()
+    }
+
+    /// The bytes its kept textures and the passes' parameter buffer take, with a texture of its own
+    /// for each scratch plane as well: for a link alone, whose pool is its own scratch, its chain's
+    /// whole charge ([`super::chain_charge`]).
+    #[cfg(test)]
+    pub(super) fn bytes(&self) -> u64 {
+        self.kept_bytes()
+            + self
+                .scratch
+                .iter()
+                .map(|&(class, count)| count as u64 * class.plane().bytes(self.origin, self.size))
+                .sum::<u64>()
     }
 
     fn parameter_bytes(&self) -> u64 {
@@ -1686,10 +1719,401 @@ impl PlanesKey {
     }
 }
 
-/// A plan's planes, created at their extents, with their views.
+/// The pool of scratch textures the links of a chain can take their scratch planes from in turn:
+/// for each class, as many textures as the most scratch planes of that class any one link holds,
+/// over the boundary's size and stage origin every link shares. A link's scratch plane
+/// `(class, k)` ([`PlaneTexture::Pool`]) is the pool's texture `k` of that class, so distinct
+/// scratch planes of one link, alive together within its tick, take distinct textures, and no plane
+/// an apply reads is one of them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PoolKey {
+    /// How many textures of each class it holds, in class order.
+    textures: Vec<(Class, usize)>,
+    size: (u32, u32),
+    origin: (u32, u32),
+}
+
+impl PoolKey {
+    /// The pool the spatial steps of `links` take their scratch planes from over a boundary of
+    /// `size` texels whose texel `(0, 0)` is stage pixel `origin`: every link of a chain, the last
+    /// one included ([`super::chain::Chain`]).
+    pub(super) fn of<'a>(
+        links: impl IntoIterator<Item = &'a [GpuStep]>,
+        size: (u32, u32),
+        origin: (u32, u32),
+    ) -> Self {
+        let mut most = std::collections::BTreeMap::<Class, usize>::new();
+        for key in links
+            .into_iter()
+            .filter_map(|steps| PlanesKey::of(steps, size, origin))
+        {
+            for &(class, count) in key.scratch() {
+                let held = most.entry(class).or_default();
+                *held = (*held).max(count);
+            }
+        }
+        Self {
+            textures: most.into_iter().collect(),
+            size,
+            origin,
+        }
+    }
+
+    /// How many textures of each class it holds, in class order.
+    pub(super) fn textures(&self) -> &[(Class, usize)] {
+        &self.textures
+    }
+
+    /// How many textures of `class` it holds.
+    fn count(&self, class: Class) -> usize {
+        self.textures
+            .iter()
+            .find(|(held, _)| *held == class)
+            .map_or(0, |(_, count)| *count)
+    }
+
+    /// The bytes one of its textures of `class` takes.
+    fn texture_bytes(&self, class: Class) -> u64 {
+        let (width, height) = self.extent(class);
+        u64::from(width) * u64::from(height) * class.format.texel_bytes()
+    }
+
+    /// The extent of each of its textures of `class`.
+    pub(super) fn extent(&self, class: Class) -> (u32, u32) {
+        class.plane().extent(self.origin, self.size)
+    }
+
+    /// The bytes its textures take.
+    pub(super) fn bytes(&self) -> u64 {
+        self.textures()
+            .iter()
+            .map(|&(class, count)| count as u64 * self.texture_bytes(class))
+            .sum()
+    }
+}
+
+/// One texture of a [`Pool`], with its view.
+pub(super) struct PoolTexture {
+    /// Held with its view; only the poison writes it directly.
+    #[cfg_attr(not(any(test, feature = "qualification")), allow(dead_code))]
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
+/// The scratch textures a slot's links take their scratch planes from in turn, laid out as a
+/// [`PoolKey`] says, with a record of what each holds. The slot holds one for its whole life, and
+/// so does a qualification session, each fitting it through [`Pool::fit`], so the two never lay
+/// out differently.
+///
+/// - **Fitting.** Before any link's planes, the pool is fitted to every link of the plan: a texture
+///   the plan needs beyond what it holds is charged, then created, and changes no binding; one
+///   past the need is handed back to retire; a new boundary size or origin replaces them all.
+/// - **Generation.** Removing or replacing a texture bumps it. A link whose groups were built
+///   under another generation rebuilds them and forgets what its planes hold ([`Groups`]).
+/// - **Records.** Each texture's record is who last wrote it and what: the holder of the
+///   [`Schedule`] whose pass wrote it, and that pass's content key. A schedule reads a texture's
+///   key only from a record of its own, so a link whose scratch another link wrote since runs the
+///   passes that write it as for planes never written.
+/// - **Holders.** A counter, never restarted, hands each schedule its holder when its link's
+///   planes are created and again at every reset, so a reset makes every record it wrote foreign
+///   and no two schedules ever hold one.
+#[derive(Default)]
+pub(super) struct Pool {
+    /// The boundary's size and stage origin its textures cover.
+    size: (u32, u32),
+    origin: (u32, u32),
+    /// Each class's textures, in class order: a link's scratch plane `(class, k)` is the `k`-th.
+    textures: Vec<(Class, Vec<PoolTexture>)>,
+    /// Each written texture's record, by its class and number: its writer's holder and key.
+    records: Vec<((Class, usize), (u64, u64))>,
+    generation: u64,
+    /// The last holder handed out.
+    holders: u64,
+    bytes: u64,
+    /// Tests only: write a sentinel into every texture, and forget every record, before each
+    /// link's passes ([`Pool::poison`]).
+    #[cfg(any(test, feature = "qualification"))]
+    poisoned: bool,
+    /// The sentinel's sources, `f32` and half-float NaN bits, each at least as large as a texture
+    /// it is copied into.
+    #[cfg(any(test, feature = "qualification"))]
+    sentinels: [Option<wgpu::Buffer>; 2],
+}
+
+/// What a pool texture is created with: what a plane is, and in a build with the poison a copy's
+/// destination, which the sentinel is written as.
+#[cfg(not(any(test, feature = "qualification")))]
+const POOL_USAGE: wgpu::TextureUsages =
+    wgpu::TextureUsages::TEXTURE_BINDING.union(wgpu::TextureUsages::STORAGE_BINDING);
+#[cfg(any(test, feature = "qualification"))]
+const POOL_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
+    .union(wgpu::TextureUsages::STORAGE_BINDING)
+    .union(wgpu::TextureUsages::COPY_DST);
+
+impl Pool {
+    /// Make the pool hold what `key` lays out, before any link's planes are fitted: when `key`
+    /// covers another boundary size or origin, every texture is handed to `retire` with its bytes;
+    /// so is each texture of a class past what `key` needs, the last of the class first; and for
+    /// each class `key` needs more of, the missing textures' bytes are passed to `charge` before
+    /// they are created. Removing or replacing a texture bumps the generation; adding one leaves
+    /// every texture where it was. A refused charge is answered at once, what was created before it
+    /// held and charged, and nothing is created twice: the next fit adds only what is still
+    /// missing.
+    pub(super) fn fit<E>(
+        &mut self,
+        device: &wgpu::Device,
+        key: &PoolKey,
+        charge: &mut dyn FnMut(u64) -> Result<(), E>,
+        retire: &mut dyn FnMut(Vec<PoolTexture>, u64),
+    ) -> Result<(), E> {
+        // Another boundary: every texture takes another extent.
+        if (self.size, self.origin) != (key.size, key.origin) {
+            let replaced: Vec<PoolTexture> = self
+                .textures
+                .drain(..)
+                .flat_map(|(_, textures)| textures)
+                .collect();
+            if !replaced.is_empty() {
+                retire(replaced, std::mem::take(&mut self.bytes));
+                self.generation += 1;
+            }
+            self.records.clear();
+            (self.size, self.origin) = (key.size, key.origin);
+        }
+        // The textures past the plan's need.
+        let mut removed = Vec::new();
+        let mut removed_bytes = 0;
+        for (class, textures) in &mut self.textures {
+            let need = key.count(*class);
+            if textures.len() > need {
+                removed_bytes += (textures.len() - need) as u64 * key.texture_bytes(*class);
+                removed.extend(textures.drain(need..));
+                self.records
+                    .retain(|((held, number), _)| *held != *class || *number < need);
+            }
+        }
+        self.textures.retain(|(_, textures)| !textures.is_empty());
+        if !removed.is_empty() {
+            self.bytes -= removed_bytes;
+            self.generation += 1;
+            retire(removed, removed_bytes);
+        }
+        // The textures the plan needs beyond what the pool holds, class by class.
+        for &(class, need) in key.textures() {
+            let at = match self.textures.binary_search_by(|(held, _)| held.cmp(&class)) {
+                Ok(at) => at,
+                Err(at) => {
+                    self.textures.insert(at, (class, Vec::new()));
+                    at
+                }
+            };
+            let held = self.textures[at].1.len();
+            if held >= need {
+                continue;
+            }
+            let each = key.texture_bytes(class);
+            charge((need - held) as u64 * each)?;
+            let (width, height) = key.extent(class);
+            for _ in held..need {
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("luxforge.gpu_preview.scratch"),
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: class.format.texture(),
+                    usage: POOL_USAGE,
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                self.textures[at].1.push(PoolTexture { texture, view });
+                self.bytes += each;
+            }
+        }
+        Ok(())
+    }
+
+    /// What the pool holds, as a layout, which a qualification session holds a later plan's to.
+    #[cfg(any(test, feature = "qualification"))]
+    pub(super) fn key(&self) -> PoolKey {
+        PoolKey {
+            textures: self
+                .textures
+                .iter()
+                .map(|(class, textures)| (*class, textures.len()))
+                .collect(),
+            size: self.size,
+            origin: self.origin,
+        }
+    }
+
+    /// The bytes its textures take.
+    pub(super) fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    /// Bumped whenever a texture is removed or replaced.
+    pub(super) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// The `number`-th texture of `class`'s view. Fitting the pool to every link of a plan before
+    /// any link binds it makes every scratch plane of theirs one it holds.
+    fn view(&self, class: Class, number: usize) -> &wgpu::TextureView {
+        &self
+            .textures
+            .iter()
+            .find(|(held, _)| *held == class)
+            .and_then(|(_, textures)| textures.get(number))
+            .expect("the pool holds every scratch plane of the plan's links")
+            .view
+    }
+
+    /// A new schedule's holder.
+    fn holder(&mut self) -> u64 {
+        self.holders += 1;
+        self.holders
+    }
+
+    /// The key of what texture `number` of `class` holds, when `holder` wrote it last.
+    fn held(&self, (class, number): (Class, usize), holder: u64) -> Option<u64> {
+        self.records
+            .iter()
+            .find(|(at, (by, _))| *at == (class, number) && *by == holder)
+            .map(|(_, (_, key))| *key)
+    }
+
+    /// Record that `holder`'s pass wrote `key` into texture `number` of `class`.
+    fn record(&mut self, at: (Class, usize), holder: u64, key: u64) {
+        match self.records.iter_mut().find(|(held, _)| *held == at) {
+            Some((_, record)) => *record = (holder, key),
+            None => self.records.push((at, (holder, key))),
+        }
+    }
+
+    /// Forget every record `holder` wrote.
+    fn release(&mut self, holder: u64) {
+        self.records.retain(|(_, (by, _))| *by != holder);
+    }
+
+    /// Each texture's class and number with the holder of its record, for the tests that hold a
+    /// texture to one holder.
+    #[cfg(test)]
+    pub(super) fn holders(&self) -> Vec<((Class, usize), u64)> {
+        self.records
+            .iter()
+            .map(|(at, (holder, _))| (*at, *holder))
+            .collect()
+    }
+
+    /// Every texture, with its class and number, for the tests that measure what the slot holds.
+    #[cfg(test)]
+    pub(super) fn textures(&self) -> Vec<((Class, usize), &wgpu::Texture)> {
+        self.textures
+            .iter()
+            .flat_map(|(class, textures)| {
+                textures
+                    .iter()
+                    .enumerate()
+                    .map(move |(number, held)| ((*class, number), &held.texture))
+            })
+            .collect()
+    }
+
+    /// Tests only: whether each link's passes start from the sentinel ([`Pool::poison`]).
+    #[cfg(any(test, feature = "qualification"))]
+    pub(super) fn set_poisoned(&mut self, poisoned: bool) {
+        self.poisoned = poisoned;
+    }
+
+    /// Tests only, and only when [`Pool::set_poisoned`] switched it on: write NaN bits into every
+    /// texel of every texture, `0x7fc00000` in each channel of an `f32` format and `0x7e00` in each
+    /// of `rgba16float`, and forget every record, so the link whose passes `encoder` encodes next
+    /// reads nothing it did not write itself in this tick. A pass that reads scratch beyond the
+    /// cone [`GpuSpatial::reach`] bounds then carries NaN into its plane, and a frame that differs
+    /// from a whole evaluation fails its comparison. Copied from a source buffer in `encoder`, not
+    /// with `queue.write_texture`, whose writes land before the whole submission: the poison must
+    /// fall between one link's passes and the next's.
+    #[cfg(any(test, feature = "qualification"))]
+    pub(super) fn poison(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder) {
+        if !self.poisoned {
+            return;
+        }
+        self.records.clear();
+        // Each class's copy: whether its format is half-float, its extent and its padded row.
+        let copies: Vec<(bool, (u32, u32), u32)> = self
+            .textures
+            .iter()
+            .map(|(class, _)| {
+                let format = class.format.texture();
+                let (width, height) = class.plane().extent(self.origin, self.size);
+                let texel = format.block_copy_size(None).unwrap_or(16);
+                let row = (width * texel).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+                    * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+                (class.format == PlaneFormat::Colour, (width, height), row)
+            })
+            .collect();
+        for &(half, (_, height), row) in &copies {
+            let bytes = u64::from(row) * u64::from(height);
+            let source = &mut self.sentinels[usize::from(half)];
+            if source.as_ref().is_none_or(|buffer| buffer.size() < bytes) {
+                let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("luxforge.gpu_preview.sentinel"),
+                    size: bytes,
+                    usage: wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: true,
+                });
+                {
+                    let pattern: &[u8] = if half {
+                        &0x7e00u16.to_le_bytes()
+                    } else {
+                        &0x7fc0_0000u32.to_le_bytes()
+                    };
+                    let mut mapped = buffer.slice(..).get_mapped_range_mut();
+                    for chunk in mapped.chunks_exact_mut(pattern.len()) {
+                        chunk.copy_from_slice(pattern);
+                    }
+                }
+                buffer.unmap();
+                *source = Some(buffer);
+            }
+        }
+        for ((_, textures), &(half, (width, height), row)) in self.textures.iter().zip(&copies) {
+            let source = self.sentinels[usize::from(half)]
+                .as_ref()
+                .expect("a sentinel for every class");
+            for held in textures {
+                encoder.copy_buffer_to_texture(
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: source,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(row),
+                            rows_per_image: Some(height),
+                        },
+                    },
+                    held.texture.as_image_copy(),
+                    wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+        }
+    }
+}
+
+/// A link's planes: its kept textures, created at their extents with their views, its passes'
+/// parameters, and where each plane is held ([`PlanesKey`]); its scratch planes are the slot's
+/// pool's ([`Pool`]).
 pub(super) struct Planes {
     pub(super) key: PlanesKey,
-    /// Each texture of [`PlanesKey`], which one or more planes share.
+    /// Each kept texture ([`PlaneTexture::Kept`]), in plane order.
     textures: Vec<(wgpu::Texture, wgpu::TextureView)>,
     /// Every pass's parameters, a [`PARAMS_STRIDE`] slice each, in plan order.
     parameters: wgpu::Buffer,
@@ -1702,10 +2126,11 @@ pub(super) struct Planes {
 }
 
 impl Planes {
-    /// Every plane of `key`, created. The caller has charged [`PlanesKey::bytes`].
+    /// The link's kept textures and parameters of `key`, created. The caller has charged
+    /// [`PlanesKey::kept_bytes`].
     pub(super) fn create(device: &wgpu::Device, key: PlanesKey) -> Self {
         let textures = key
-            .textures
+            .kept
             .iter()
             .map(|plane| {
                 let (width, height) = plane.extent(key.origin, key.size);
@@ -1734,7 +2159,7 @@ impl Planes {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let bytes = key.bytes();
+        let bytes = key.kept_bytes();
         Self {
             key,
             textures,
@@ -1743,6 +2168,16 @@ impl Planes {
             placed: Vec::new(),
             bytes,
         }
+    }
+
+    /// The kept textures, in plane order, and the parameter buffer, for the tests that measure what
+    /// the slot holds.
+    #[cfg(test)]
+    pub(super) fn resources(&self) -> (Vec<&wgpu::Texture>, &wgpu::Buffer) {
+        (
+            self.textures.iter().map(|(texture, _)| texture).collect(),
+            &self.parameters,
+        )
     }
 
     /// Whether the passes of `steps` take other places in their plan than the last ones did,
@@ -1769,8 +2204,14 @@ impl Planes {
         }
     }
 
-    fn view(&self, step: usize, plane: u32) -> &wgpu::TextureView {
-        &self.textures[self.key.texture(step, plane)].1
+    /// The view of the texture plane `plane` of step `step` is held in: a kept texture of the
+    /// link's, or a texture of `pool`.
+    fn view<'a>(&'a self, step: usize, plane: u32, pool: &'a Pool) -> &'a wgpu::TextureView {
+        match self.key.location(step, plane) {
+            Some(PlaneTexture::Kept(index)) => &self.textures[index].1,
+            Some(PlaneTexture::Pool(class, number)) => pool.view(class, number),
+            None => panic!("plane {plane} of step {step} is one of the link's"),
+        }
     }
 
     fn extent(&self, step: usize, plane: u32) -> (u32, u32) {
@@ -1789,13 +2230,14 @@ impl Planes {
     }
 
     /// A second group binding `slots` and, for a pass, its output and its slice `number` of the
-    /// parameters.
+    /// parameters, each plane's view from the link's kept textures or from `pool`.
     fn group(
         &self,
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
         slots: &Slots,
         output: Option<(usize, u32, usize)>,
+        pool: &Pool,
     ) -> wgpu::BindGroup {
         let mut entries: Vec<wgpu::BindGroupEntry<'_>> = slots
             .planes()
@@ -1803,13 +2245,13 @@ impl Planes {
             .enumerate()
             .map(|(binding, (step, plane))| wgpu::BindGroupEntry {
                 binding: binding as u32,
-                resource: wgpu::BindingResource::TextureView(self.view(*step, *plane)),
+                resource: wgpu::BindingResource::TextureView(self.view(*step, *plane, pool)),
             })
             .collect();
         if let Some((step, plane, number)) = output {
             entries.push(wgpu::BindGroupEntry {
                 binding: OUTPUT_BINDING,
-                resource: wgpu::BindingResource::TextureView(self.view(step, plane)),
+                resource: wgpu::BindingResource::TextureView(self.view(step, plane, pool)),
             });
             entries.push(wgpu::BindGroupEntry {
                 binding: PARAMS_BINDING,
@@ -1845,7 +2287,9 @@ struct BoundPass {
     shape: PassShape,
 }
 
-/// The second groups of one compiled plan over its planes: each pass's, and the frame's.
+/// The second groups of one compiled plan over its planes: each pass's, and the frame's. They bind
+/// the link's kept textures and the pool's, so they hold for the pool's generation they were built
+/// under ([`Pool::generation`]).
 pub(super) struct Groups {
     passes: Vec<BoundPass>,
     /// The stage pixel of the boundary's first texel, which the reduced planes' blocks are
@@ -1855,7 +2299,14 @@ pub(super) struct Groups {
 }
 
 impl Groups {
-    pub(super) fn new(device: &wgpu::Device, compiled: &CompiledSpatial, planes: &Planes) -> Self {
+    /// `compiled`'s groups over `planes`, each plane's view from the link's kept textures or from
+    /// `pool` ([`PlanesKey::location`]).
+    pub(super) fn new(
+        device: &wgpu::Device,
+        compiled: &CompiledSpatial,
+        planes: &Planes,
+        pool: &Pool,
+    ) -> Self {
         let passes = compiled
             .passes
             .iter()
@@ -1866,6 +2317,7 @@ impl Groups {
                     &pass.layout,
                     &pass.slots,
                     Some((pass.step, pass.output, number)),
+                    pool,
                 ),
                 plane: planes.plane(pass.step, pass.output),
                 extent: planes.extent(pass.step, pass.output),
@@ -1875,7 +2327,7 @@ impl Groups {
         let fragment = compiled
             .fragment
             .as_ref()
-            .map(|(layout, slots)| planes.group(device, layout, slots, None));
+            .map(|(layout, slots)| planes.group(device, layout, slots, None, pool));
         Self {
             passes,
             origin: planes.key.origin,
@@ -1983,18 +2435,23 @@ impl Groups {
 /// what that writer would write. A pass that writes an apply's plane on the way to its last writer
 /// runs that last writer too, so an apply never reads a plane a scratch use left behind. A new
 /// sequence or new planes start from nothing kept, which runs every pass the applies need. The key
-/// is kept by texture, so a scratch texture chained steps share holds the key of the step that
-/// wrote it last.
+/// is kept by texture ([`PlanesKey::location`]): a kept texture's here, a pool texture's in the
+/// pool's record of it, which this schedule reads only when it wrote that record itself, under its
+/// current holder ([`Pool`]). Another link's pass, or this one's before a reset, leaves the texture
+/// unknown, and the passes that write it run as for planes never written.
 ///
 /// An identity apply ([`GpuApply::identity`]) reads no plane, in the frame or in a later unit's
 /// source: its planes need not be current, and they are in no key of what reads through it. A pass
-/// only they need does not run and keeps no key, so the planes keep the key of what they last held,
-/// and once the unit is not the identity, within a drag too, they are stale against what its
-/// passes would write and run with every input they need.
-#[derive(Default)]
+/// only they need does not run and keeps no key, writing no record, so the planes keep the key of
+/// what they last held, and once the unit is not the identity, within a drag too, they are stale
+/// against what its passes would write, or unknown when another link wrote them since, and run
+/// with every input they need.
 pub(super) struct Schedule {
-    /// The key of what each texture holds ([`PlanesKey::texture`]).
+    /// The key of what each of the link's kept textures holds, by its index.
     kept: Vec<(usize, u64)>,
+    /// Its holder in the pool's records, drawn when the link's planes are created and again at
+    /// every reset.
+    holder: u64,
 }
 
 fn hash_of(parts: impl std::hash::Hash) -> u64 {
@@ -2005,34 +2462,61 @@ fn hash_of(parts: impl std::hash::Hash) -> u64 {
 }
 
 impl Schedule {
-    /// Forget every plane's content: a new sequence's groups or new planes.
-    pub(super) fn reset(&mut self) {
+    /// A schedule of new planes, which hold nothing yet, with a holder drawn from `pool`.
+    pub(super) fn new(pool: &mut Pool) -> Self {
+        Self {
+            kept: Vec::new(),
+            holder: pool.holder(),
+        }
+    }
+
+    /// Forget every plane's content — a new sequence's groups, new planes or another pool
+    /// generation — under a new holder, so every pool record this schedule wrote is foreign.
+    pub(super) fn reset(&mut self, pool: &mut Pool) {
+        pool.release(self.holder);
         self.kept.clear();
+        self.holder = pool.holder();
     }
 
-    /// Forget what every texture but `textures` holds: an incremental tick's passes wrote the rest
-    /// only where they ran.
-    pub(super) fn keep_only(&mut self, textures: &[usize]) {
+    /// Forget what every kept texture but `textures` holds, and every pool texture this schedule
+    /// wrote: an incremental tick's passes wrote them only where they ran.
+    pub(super) fn keep_only(&mut self, textures: &[usize], pool: &mut Pool) {
         self.kept.retain(|(texture, _)| textures.contains(texture));
+        pool.release(self.holder);
     }
 
-    fn kept(&self, texture: usize) -> Option<u64> {
-        self.kept
-            .iter()
-            .find(|(at, _)| *at == texture)
-            .map(|(_, key)| *key)
+    /// Its holder in the pool's records.
+    #[cfg(test)]
+    pub(super) fn holder(&self) -> u64 {
+        self.holder
     }
 
-    fn keep(&mut self, texture: usize, key: u64) {
-        match self.kept.iter_mut().find(|(at, _)| *at == texture) {
-            Some((_, kept)) => *kept = key,
-            None => self.kept.push((texture, key)),
+    /// The key of what `texture` holds, as far as this schedule knows.
+    fn kept(&self, texture: PlaneTexture, pool: &Pool) -> Option<u64> {
+        match texture {
+            PlaneTexture::Kept(index) => self
+                .kept
+                .iter()
+                .find(|(at, _)| *at == index)
+                .map(|(_, key)| *key),
+            PlaneTexture::Pool(class, number) => pool.held((class, number), self.holder),
+        }
+    }
+
+    fn keep(&mut self, texture: PlaneTexture, key: u64, pool: &mut Pool) {
+        match texture {
+            PlaneTexture::Kept(index) => match self.kept.iter_mut().find(|(at, _)| *at == index) {
+                Some((_, kept)) => *kept = key,
+                None => self.kept.push((index, key)),
+            },
+            PlaneTexture::Pool(class, number) => pool.record((class, number), self.holder, key),
         }
     }
 
     /// The passes of `steps` this tick runs, in [`CompiledSpatial`]'s order, given the tick's
-    /// packed `words` and `blocks`, the boundary's `version` and the `textures` that hold the
-    /// planes; the planes they write are then taken as written.
+    /// packed `words` and `blocks`, the boundary's `version`, the `textures` that hold the planes
+    /// and the `pool` that holds their scratch; the planes they write are then taken as written,
+    /// the pool's recorded as this schedule's.
     pub(super) fn run(
         &mut self,
         steps: &[GpuStep],
@@ -2040,6 +2524,7 @@ impl Schedule {
         blocks: &[u32],
         version: u64,
         textures: &PlanesKey,
+        pool: &mut Pool,
     ) -> Vec<bool> {
         let mut run = Vec::new();
         // The upstream of each step: the boundary, the texel map, every step before it, by
@@ -2057,8 +2542,12 @@ impl Schedule {
                 let program = own.get(spatial.mask_words()..).unwrap_or(&[]);
                 let program_blocks = own_blocks.get(..spatial.program.block.len()).unwrap_or(&[]);
                 let inward = hash_of((upstream, position, program_blocks));
-                let texture = |plane: u32| textures.texture(index, plane);
-                let keys = self.step(&texture, spatial, program, inward, &mut run);
+                let texture = |plane: u32| {
+                    textures
+                        .location(index, plane)
+                        .expect("a plane of the link's own step")
+                };
+                let keys = self.step(&texture, pool, spatial, program, inward, &mut run);
                 // A later step's source runs this one's applies over the planes they read.
                 let identities: Vec<bool> =
                     spatial.applies.iter().map(|apply| apply.identity).collect();
@@ -2074,7 +2563,8 @@ impl Schedule {
     /// read, an identity apply none.
     fn step(
         &mut self,
-        texture: &dyn Fn(u32) -> usize,
+        texture: &dyn Fn(u32) -> PlaneTexture,
+        pool: &mut Pool,
         spatial: &GpuSpatial,
         program: &[u32],
         upstream: u64,
@@ -2148,13 +2638,14 @@ impl Schedule {
         };
         // An input `plane` of the pass `reader` needs its writer run, unless that writer is the
         // plane's first and the plane already holds what it writes.
+        let known = &*pool;
         let needs = |plane: u32, reader: usize| {
             let mut before = writers(plane).filter(|writer| *writer < reader);
             match before.next_back() {
                 None => false,
                 Some(writer) => {
                     writers(plane).next() != Some(writer)
-                        || self.kept(texture(plane)) != Some(keys[writer])
+                        || self.kept(texture(plane), known) != Some(keys[writer])
                 }
             }
         };
@@ -2163,13 +2654,13 @@ impl Schedule {
             writers(plane)
                 .rfind(|writer| runs[*writer])
                 .map(|writer| keys[writer])
-                .or(self.kept(texture(plane)))
+                .or(self.kept(texture(plane), known))
         };
         let mut stale: Vec<u32> = read
             .iter()
             .copied()
             .filter(|&plane| writers(plane).next().is_some())
-            .filter(|&plane| self.kept(texture(plane)) != Some(holds(&held, &plane)))
+            .filter(|&plane| self.kept(texture(plane), known) != Some(holds(&held, &plane)))
             .collect();
         // Backward from the stale apply planes, until no apply plane is left half written.
         let runs = loop {
@@ -2206,7 +2697,7 @@ impl Schedule {
             })
             .collect();
         for (plane, key) in written {
-            self.keep(texture(plane), key);
+            self.keep(texture(plane), key, pool);
         }
         run.extend_from_slice(&runs);
         read.iter().map(|plane| holds(&held, plane)).collect()

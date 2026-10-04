@@ -13,11 +13,11 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - On a cold Metal shader cache, as after an update, a Presence drag's sequences can take several seconds to compile after a Presence commit, and its drags take the CPU path naming `compiling` until then ([performance](specs/performance.md#presence-and-detail-sequences-in-the-editor)). Proposal, not built: warm the spatial layer's own drag first (about 1 s)
 - At 100%, Detail beside all three Presence fields charges up to 1.16 GB in the largest window the owner's display holds, each operation a link of the chain with planes of its own; a window of about 1.8 times its pixels, such as an external display's, would pass the 2 GiB budget and take the CPU path naming `budget-exceeded`. Sharing scratch planes across a chain's links, which is planned, leaves this figure as it is: Detail's noise-reduction planes and Presence's are of other formats
 - Planned ([design](design/gpu-shared-scratch.md), [plan](../tasks/gpu-shared-scratch.json)):
-  - scratch planes shared by a chain's links, one charge figure for a plan in the surface and the desktop, and Texture's band in a plane of one channel;
+  - scratch planes shared by a chain's links, and one charge figure for a plan in the surface and the desktop;
   - sixteen masked spatial layers (owner, 2026-10-03);
   - a status-bar notice saying why a gesture is drawn on the slower CPU path.
 
-  A further masked Texture and Clarity layer would then cost about 43 MB at Fit and 119 MB at 100% on a JPEG, where it costs 131.3 and 365.3 MB now. Every frame stays bit for bit as it is
+  A further masked Texture and Clarity layer would then cost about 43 MB at Fit and 119 MB at 100% on a JPEG, where it costs about 117 and 326 MB now, its band in a plane of one channel. Every frame stays bit for bit as it is
 - Proposal, not built: evaluate the ring of a 100% region that only Clarity's and Dehaze's 4× reductions read in strips, reducing as each strip is evaluated, so Detail's and Texture's full-resolution planes are held over the region alone, at the cost of a strip schedule and about 38% more Detail and Texture work in the ring ([design](design/gpu-preview.md#later))
 - The first stroke after a zoom to 100% or a pan over a frame already in hand waits 78 to 113 ms for its region's boundary; a boundary rendered alone when such a view settles is proposed
 - Later work in the [design](design/gpu-preview.md#later): view changes without a draft, the RAW white-balance draft on the GPU, region padding
