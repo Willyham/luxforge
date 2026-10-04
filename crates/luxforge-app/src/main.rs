@@ -51,6 +51,10 @@ struct Config {
     /// Draw the photograph at Fit through the photo surface's GPU stage with the identity program,
     /// for a rendered check of the stage. Evidence runs only; see `app/gpu_identity.rs`.
     gpu_identity: bool,
+    /// `--no-gpu-render`: refuse the photo surface's GPU stage for this launch, so the editor runs
+    /// as on a machine whose adapter cannot run it and every frame is the reference renderer's.
+    /// Read once at launch; neither a preference nor a session field. See `app/renderer.rs`.
+    no_gpu_render: bool,
 }
 
 impl Config {
@@ -134,6 +138,23 @@ fn arguments() -> Result<Config, String> {
             }
             Some("--hidden-window") => config.hidden = true,
             Some("--evidence-gpu-identity") => config.gpu_identity = true,
+            Some("--no-gpu-render") => config.no_gpu_render = true,
+            Some("--gpu-adapters") => {
+                // A diagnostic, before any window, catalog or log: the adapters wgpu offers the
+                // backends the renderer chooses among, one JSON object a line.
+                let backends = luxforge_ui::adapters::renderer_backends();
+                for adapter in luxforge_ui::adapters::enumerate(backends) {
+                    println!(
+                        "{}",
+                        app::renderer::adapter_record(
+                            &adapter.backend,
+                            &adapter.name,
+                            Some(&adapter)
+                        )
+                    );
+                }
+                std::process::exit(0)
+            }
             Some("--disable-module") => {
                 let id = args
                     .next()
@@ -153,7 +174,7 @@ fn arguments() -> Result<Config, String> {
             }
             Some("--help") => {
                 println!(
-                    "Luxforge: [--open IMAGE]... [--catalog CATALOG] [--data-root DIRECTORY] [--developer] [--proof-endpoint URL] [--disable-module MODULE_ID]... [--evidence-dir NEW_DIRECTORY] [--evidence-script FILE] [--evidence-gpu-identity] [--window-size WIDTH HEIGHT] [--hidden-window]\n--developer serves the test modules (the pixel and controls proofs) and shows the components gallery for this launch, whatever the Developer mode flag in Settings says (that flag is on by default in debug builds); --proof-endpoint registers the capability proof module against a proof endpoint a test harness started, and only in developer mode; --disable-module registers a built-in as unavailable, so a stack that uses it reports the unavailable effect instead of rendering without it.\n--hidden-window creates the window invisible: it renders and captures as usual but is never placed on screen, which is what automated launches use.\nEvidence mode imports each --open in order into an isolated catalog, captures a frame after each, runs any evidence script with a frame per step and exits. --evidence-gpu-identity, in evidence mode only, draws the photograph at Fit through the GPU preview stage with the identity program, for a rendered check of that stage."
+                    "Luxforge: [--open IMAGE]... [--catalog CATALOG] [--data-root DIRECTORY] [--developer] [--proof-endpoint URL] [--disable-module MODULE_ID]... [--evidence-dir NEW_DIRECTORY] [--evidence-script FILE] [--evidence-gpu-identity] [--no-gpu-render] [--window-size WIDTH HEIGHT] [--hidden-window]\n       Luxforge --gpu-adapters\n--no-gpu-render refuses the GPU stage for this launch, as on a machine whose graphics adapter cannot run it: every frame is drawn by the reference renderer, and the session and the status bar say so. --gpu-adapters prints the graphics adapters wgpu offers the renderer, one JSON object a line, and exits.\n--developer serves the test modules (the pixel and controls proofs) and shows the components gallery for this launch, whatever the Developer mode flag in Settings says (that flag is on by default in debug builds); --proof-endpoint registers the capability proof module against a proof endpoint a test harness started, and only in developer mode; --disable-module registers a built-in as unavailable, so a stack that uses it reports the unavailable effect instead of rendering without it.\n--hidden-window creates the window invisible: it renders and captures as usual but is never placed on screen, which is what automated launches use.\nEvidence mode imports each --open in order into an isolated catalog, captures a frame after each, runs any evidence script with a frame per step and exits. --evidence-gpu-identity, in evidence mode only, draws the photograph at Fit through the GPU preview stage with the identity program, for a rendered check of that stage."
                 );
                 std::process::exit(0)
             }

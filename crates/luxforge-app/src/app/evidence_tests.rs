@@ -378,7 +378,9 @@ fn an_evidence_launch_still_asks_for_the_graphics_backend() {
 }
 
 /// With nothing asking, the backend stays unknown and every state reads it as `null`; the answer to
-/// an evidence run's request records it, with the adapter, and the state carries it.
+/// an evidence run's request starts an enumeration of its backend off the update loop, whose answer
+/// records the backend and the adapter, with what the enumeration found of it, and the state
+/// carries it.
 #[test]
 fn the_graphics_backend_stays_unknown_until_an_evidence_run_reads_it() {
     let (mut editor, catalog) = boot();
@@ -396,8 +398,23 @@ fn the_graphics_backend_stays_unknown_until_an_evidence_run_reads_it() {
         graphics_backend: "Metal".into(),
         graphics_adapter: "Test adapter".into(),
     };
-    let _ = editor.update(Message::Evidence(EvidenceMessage::Info(information)));
-    let named = json!({"backend": "Metal", "adapter": "Test adapter"});
+    let _ = editor.update(Message::Evidence(EvidenceMessage::Info(
+        information.clone(),
+    )));
+    assert!(
+        editor.activity.backend.is_none(),
+        "the capture waits for the adapter's identity"
+    );
+    // The enumeration the task runs, handed back as the runtime does: this host has no adapter of
+    // that name, so only Iced's names are recorded.
+    let adapter = crate::app::renderer::identify("Metal", "Test adapter");
+    assert_eq!(adapter, None);
+    let _ = editor.update(Message::Evidence(EvidenceMessage::Adapter(Box::new((
+        information,
+        adapter,
+    )))));
+    let named = json!({"backend": "Metal", "adapter": "Test adapter", "device_type": null,
+        "vendor": null, "device": null, "driver": null, "driver_info": null});
     assert_eq!(editor.activity.backend, Some(named.clone()));
     assert_eq!(editor.snapshot()["backend"], named);
     finish(editor, catalog);

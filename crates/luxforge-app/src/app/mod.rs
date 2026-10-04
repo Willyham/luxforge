@@ -11,8 +11,9 @@
 //! controls (`controls.rs`), declared actions (`actions.rs`), the pointer and canvas picks
 //! (`pointer.rs`), crop (`crop.rs`), masks (`masks.rs`), the core-draft lifecycle (`gesture.rs`),
 //! presets (`presets.rs`), capabilities (`capabilities.rs`), the Performance section
-//! (`performance.rs`), export (`export.rs`) and evidence mode (`evidence.rs`). Routing is one match
-//! on the calling thread: it adds no task and no runtime hop.
+//! (`performance.rs`), export (`export.rs`), the renderer the picture is drawn with
+//! (`renderer.rs`) and evidence mode (`evidence.rs`). Routing is one match on the calling thread:
+//! it adds no task and no runtime hop.
 //!
 //! Each seam holds its own state in one [`Editor`] field, most of them the seam's own struct; the
 //! parts the view model reads are declared in the view-model layer and borrowed whole by
@@ -117,6 +118,9 @@ mod preview_tests;
 #[cfg(test)]
 mod proof_controls_tests;
 mod query_choice;
+pub(crate) mod renderer;
+#[cfg(test)]
+mod renderer_tests;
 mod settings;
 #[cfg(test)]
 mod settings_tests;
@@ -374,6 +378,8 @@ pub(crate) struct Editor {
     pub(crate) gpu_settle: gpu_settle::GpuSettle,
     /// The surface's drawn frames as evidence logs them ([`drawn_frames`]).
     drawn_frames: drawn_frames::DrawnFrames,
+    /// Which renderer draws the picture, as the desktop last told the owner ([`renderer`]).
+    pub(crate) renderer: renderer::RendererReport,
     /// The whole screen as plain data, derived again after every message.
     pub(crate) workspace: Workspace,
 }
@@ -422,7 +428,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 15] = [
+const AFTER_MESSAGE: [AfterMessage; 16] = [
     view_state::after_message,
     performance::after_message,
     slider::after_message,
@@ -431,6 +437,7 @@ const AFTER_MESSAGE: [AfterMessage; 15] = [
     preview::after_message,
     gpu_preview::after_message,
     gpu_settle::after_message,
+    renderer::after_message,
     mask_panel::after_message,
     crop::after_message,
     sync::after_message,
@@ -548,6 +555,7 @@ impl Editor {
             gpu: Default::default(),
             gpu_settle: Default::default(),
             drawn_frames: Default::default(),
+            renderer: renderer::RendererReport::new(config.no_gpu_render),
             workspace: Default::default(),
         };
         // The workers wake the event loop through one channel instead of a poll. The closure is
@@ -868,6 +876,7 @@ impl Editor {
             Message::Settings(message) => self.settings_update(message),
             Message::Export(message) => self.export_update(message),
             Message::Evidence(message) => self.evidence_update(message),
+            Message::Renderer(message) => self.renderer_update(message),
             Message::Close => self.close(),
         }
     }
