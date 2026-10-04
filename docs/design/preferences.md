@@ -1,6 +1,6 @@
 # Preferences
 
-Status: implemented, at the owner's request of 2026-10-04 and on the [decisions](#decisions) below; verified on the M4 by the unit and owner tests, the `settings` smoke scenario, a check across background launches and the `quick` tier. A clean `rendered` tier on a quiet host is outstanding ([feature status](../features.md)). Plan: [tasks/preferences.json](../../tasks/preferences.json).
+Status: implemented, at the owner's request of 2026-10-04 and on the [decisions](#decisions) below; verified on the M4 by the unit and owner tests, the `settings` smoke scenario, a check across background launches, and the `quick` and `rendered` tiers.
 
 The person's preferences live outside every catalog, in the host's `preferences.json` beside the [feature flags](settings-and-flags.md). This design adds two kinds of preference to the one Auto collapse history row the Settings sheet's **General** tab has today:
 
