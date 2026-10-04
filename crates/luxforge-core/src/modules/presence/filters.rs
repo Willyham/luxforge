@@ -30,10 +30,10 @@
 //! Every plane below carries the frame it belongs to and the sub-rectangle it actually holds.
 //! Reads clamp to the frame, exactly as the host's [`Planes::sample`](crate::modules::Planes) does,
 //! and a read whose clamped coordinate is outside the held rectangle is a halo bug that panics in a
-//! debug build and is caught by the slice bounds otherwise. A pass reads the columns where no tap
-//! clamps from row slices ([`Plane::row`], [`Plane::span`]), cutting each row at the frame edges
-//! once, and reads the columns within its reach of a frame edge through the clamped
-//! [`Plane::get`]; both read the same values, so the cut changes no result.
+//! debug build and is caught by the slice bounds otherwise. The box mean, the guided filters and the
+//! upsample read the columns where no tap clamps from row slices ([`Plane::row`], [`Plane::span`]),
+//! cutting each row at the frame edges once, and the columns within their reach of a frame edge
+//! through the clamped [`Plane::get`]; both read the same values, so the cut changes no result.
 
 use crate::{
     Error,
