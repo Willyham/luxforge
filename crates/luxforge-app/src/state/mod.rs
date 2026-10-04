@@ -182,6 +182,8 @@ pub(crate) struct ViewState {
     pub(crate) window: (f32, f32),
     /// The window fills the screen, so the title bar holds no traffic lights to leave room for.
     pub(crate) fullscreen: bool,
+    /// Whether this launch remembers the window's frame, and whether the close has asked for it.
+    pub(crate) memory: crate::window_frame::WindowMemory,
     pub(crate) scale_factor: f32,
     /// The zoom field's text.
     pub(crate) zoom: String,
@@ -210,6 +212,7 @@ impl ViewState {
         Self {
             window,
             fullscreen: false,
+            memory: Default::default(),
             scale_factor: 1.0,
             zoom: "100".into(),
             zoom_editing: false,

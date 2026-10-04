@@ -77,4 +77,12 @@ pub(crate) enum ViewMessage {
     ScaleFactor(f32),
     /// Whether the window fills the screen, asked after every resize.
     Fullscreen(bool),
+    /// Where a window opened at its remembered frame is, checked against its display; `on_main`
+    /// once it has been moved to the main display.
+    Placed {
+        report: Option<crate::window_frame::WindowReport>,
+        on_main: bool,
+    },
+    /// Where the window is as it closes, for the frame the close stores.
+    ClosingFrame(Option<crate::window_frame::WindowReport>),
 }

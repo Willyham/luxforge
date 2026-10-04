@@ -21,6 +21,9 @@ pub(crate) enum SettingsMessage {
     },
     /// One gesture on a General row's control, stored through the desktop's preference writer.
     SetGeneral(GeneralPreference, GeneralValue),
+    /// The Catalog row's folder dialog answered: the folder chosen, or `None` when it was
+    /// cancelled.
+    CatalogFolder(Option<std::path::PathBuf>),
     /// Change a flag to `value`, or reset it to its default for `None`, through `flags.set`.
     Set {
         flag: String,

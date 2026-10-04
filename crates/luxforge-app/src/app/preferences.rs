@@ -10,7 +10,7 @@
 //! follows an agent's change at once.
 use super::{
     Editor,
-    message::{Message, preferences::PreferenceMessage},
+    message::{Message, preferences::PreferenceMessage, settings::SettingsMessage},
     outcome::Outcome,
     tasks::{call, call_own, owner_task},
 };
@@ -20,6 +20,7 @@ use crate::state::preferences::{
 use iced::Task;
 use luxforge_core::MaskOverlayColour;
 use serde_json::json;
+use std::path::{Path, PathBuf};
 
 impl Editor {
     /// Store `change` through the writer. It shows at once wherever the preferences are read from
@@ -176,12 +177,56 @@ impl Editor {
         row: GeneralPreference,
         value: GeneralValue,
     ) -> Task<Message> {
+        if value == GeneralValue::ChooseFolder {
+            return self.choose_catalog_folder();
+        }
         let Some(change) = row.change(value) else {
             return Task::none();
         };
         match change.mask_overlay_colour {
             Some(colour) => self.choose_mask_overlay_colour(colour),
             None => self.store_preferences(change),
+        }
+    }
+
+    /// The Catalog row's Choose Folder…: the native folder dialog, opened off the update loop as
+    /// every file dialog is, starting in the open catalog's folder. An evidence run never opens
+    /// one: its step names the folder, as the dialog's answer would.
+    fn choose_catalog_folder(&mut self) -> Task<Message> {
+        if self.view_state.picker_open || self.evidence.is_some() {
+            return Task::none();
+        }
+        self.view_state.picker_open = true;
+        let start = self
+            .preferences
+            .catalog
+            .path
+            .parent()
+            .map(Path::to_path_buf);
+        Task::perform(
+            async move {
+                let mut dialog = rfd::AsyncFileDialog::new().set_title("Choose Catalog Folder");
+                if let Some(start) = start {
+                    dialog = dialog.set_directory(start);
+                }
+                dialog
+                    .pick_folder()
+                    .await
+                    .map(|folder| folder.path().to_path_buf())
+            },
+            |folder| Message::Settings(SettingsMessage::CatalogFolder(folder)),
+        )
+    }
+
+    /// The folder dialog answered: a chosen folder stores `<folder>/catalog.sqlite` for the next
+    /// launch. Nothing moves the open catalog.
+    pub(crate) fn catalog_folder_chosen(&mut self, folder: Option<PathBuf>) -> Task<Message> {
+        self.view_state.picker_open = false;
+        match folder {
+            Some(folder) => {
+                self.set_general(GeneralPreference::Catalog, GeneralValue::Folder(folder))
+            }
+            None => Task::none(),
         }
     }
 

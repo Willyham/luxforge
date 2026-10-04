@@ -85,6 +85,8 @@ pub(crate) mod job_reads;
 #[cfg(test)]
 mod job_reads_tests;
 pub(crate) mod keymap;
+#[cfg(test)]
+mod launch_tests;
 mod lifecycle;
 #[cfg(test)]
 mod lifecycle_tests;
@@ -142,6 +144,7 @@ mod view_state;
 mod view_state_tests;
 mod view_zoom;
 pub(crate) mod waker;
+mod window;
 
 pub(crate) use lifecycle::{Boot, run};
 
@@ -588,6 +591,13 @@ impl Editor {
         if editor.live_server.is_none() {
             editor.status.text = "Editor ready; live API unavailable on this host".into();
         }
+        // The Catalog row shows the catalog this launch opened, and a stored location whose folder
+        // was missing says so here too.
+        editor.preferences.catalog = config.launch_catalog.take().unwrap_or_default();
+        if let Some(note) = editor.preferences.catalog.missing_note() {
+            editor.status.text = note;
+        }
+        editor.view_state.memory.remember = config.remember_window;
         // The launch flags and the Performance preference share one file, so one sentence covers
         // both: every flag took its default for this launch and the section starts open.
         if let Some(reason) = failed {
@@ -597,10 +607,26 @@ impl Editor {
             "startup",
             || json!({"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"version":env!("CARGO_PKG_VERSION"),"debug_assertions":cfg!(debug_assertions),"mode":if editor.evidence.is_some() {"evidence"} else {"editor"}}),
         );
+        if let Some(stored) = &editor.preferences.catalog.missing {
+            editor.event(
+                "catalog_folder_missing",
+                || json!({"stored": stored, "opened": editor.preferences.catalog.path}),
+            );
+        }
         let scale = iced::window::oldest()
             .and_then(iced::window::scale_factor)
             .map(|value| Message::View(ViewMessage::ScaleFactor(value)));
         let trackpad = view_state::install_trackpad();
+        // A window opened at its remembered frame is checked against the display it opened on.
+        let placed = match config.opening {
+            Some(_) => crate::window_frame::report().map(|report| {
+                Message::View(ViewMessage::Placed {
+                    report,
+                    on_main: false,
+                })
+            }),
+            None => Task::none(),
+        };
         let backend = system_information(editor.evidence.is_some());
         // Tool controls are discovered once, through the same API every other client uses, and the
         // preset library is listed the same way; the event sync keeps it current afterwards.
@@ -621,7 +647,7 @@ impl Editor {
         editor.rederive();
         (
             editor,
-            Task::batch([scale, trackpad, backend, modules, presets, first]),
+            Task::batch([scale, trackpad, placed, backend, modules, presets, first]),
         )
     }
 
