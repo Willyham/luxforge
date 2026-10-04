@@ -6,8 +6,8 @@
 //! ([design](../../../../docs/design/preferences.md#desktop-writes)).
 //!
 //! The preferences are read once at launch and again whenever another client's `preferences.set`
-//! reaches the event sync, so what the desktop applies of them — today the mask overlay colour —
-//! follows an agent's change at once.
+//! reaches the event sync, so what the desktop applies of them — the mask overlay colour, the
+//! canvas background and the interface size — follows an agent's change at once.
 use super::{
     Editor,
     message::{Message, preferences::PreferenceMessage, settings::SettingsMessage},
@@ -28,7 +28,26 @@ impl Editor {
     /// is in flight.
     pub(crate) fn store_preferences(&mut self, change: PreferenceChange) -> Task<Message> {
         self.preferences.offer(change);
+        self.apply_display_preferences();
         self.write_preferences()
+    }
+
+    /// Draw the canvas background and the interface size the preferences now show. Called
+    /// wherever the writer's applied preferences can change: an offered change, an answered write
+    /// and a read. The interface size reaches Iced as the application's scale factor, which it
+    /// reads after this update; the view geometry changes with it, which is view motion.
+    pub(super) fn apply_display_preferences(&mut self) {
+        let Some(preferences) = self.preferences.applied() else {
+            return;
+        };
+        self.view_state.canvas_background = preferences.canvas_background;
+        self.view_state
+            .set_interface_size(preferences.interface_size);
+    }
+
+    /// Iced's application scale factor: the interface size the view state draws at.
+    pub(crate) fn interface_scale(&self) -> f32 {
+        self.view_state.interface_scale()
     }
 
     /// Send the waiting change, once nothing is in flight.
@@ -72,6 +91,7 @@ impl Editor {
         };
         let refused = answer.as_ref().err().cloned();
         let change = self.preferences.answered(answer).unwrap_or_default();
+        self.apply_display_preferences();
         let mut read = Task::none();
         match refused {
             // Only a change the core announces has an event for the sync to skip; a remembered
@@ -141,6 +161,7 @@ impl Editor {
         };
         let before = colour(self);
         self.preferences.read(answer);
+        self.apply_display_preferences();
         if colour(self) == before {
             return Task::none();
         }
@@ -230,11 +251,19 @@ impl Editor {
         }
     }
 
-    /// What a captured frame records of the preferences: what the desktop applies, which is the
-    /// stored answer with the outstanding changes laid over it, what is stored, the changes in
-    /// flight and waiting, and why the last read or write failed.
+    /// What a captured frame records of the preferences: what the desktop draws of them (the
+    /// canvas background, the interface size, and the system's and the combined scale factor),
+    /// what it applies, which is the stored answer with the outstanding changes laid over it, what
+    /// is stored, the changes in flight and waiting, and why the last read or write failed.
     pub(crate) fn preferences_summary(&self) -> serde_json::Value {
+        let view = &self.view_state;
         json!({
+            "display": {
+                "canvas_background": view.canvas_background,
+                "interface_size": view.interface_size,
+                "system_scale_factor": view.system_scale_factor,
+                "scale_factor": view.scale_factor,
+            },
             "applied": self.preferences.applied(),
             "stored": self.preferences.stored(),
             "writing": self.preferences.writing().map(PreferenceChange::params),

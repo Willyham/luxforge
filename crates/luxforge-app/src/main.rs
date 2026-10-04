@@ -42,6 +42,9 @@ struct Config {
     /// The close stores the window's frame: a launch that shows its window, outside an evidence
     /// run.
     remember_window: bool,
+    /// The stored interface size the window opens at, read with the catalog and the frame; the
+    /// default size until [`Config::resolve_launch`] reads it.
+    interface_size: Option<u16>,
     diagnostics: Option<Diagnostics>,
     run_id: String,
     /// Serve the test modules and show the components gallery; the default workspace stays a photo
@@ -113,14 +116,15 @@ impl Config {
         self.opening = stored
             .window
             .filter(|_| self.remember_window && self.size.is_none())
-            .map(|frame| window_frame::Opening::new(frame, stored.interface_size));
+            .map(window_frame::Opening::new);
+        self.interface_size = Some(stored.interface_size);
     }
 
-    /// The window's logical size at launch: `--window-size`, the remembered frame's, or the
-    /// default.
+    /// The window's size at launch in the system's points: `--window-size`, the remembered
+    /// frame's, or the default.
     fn window_size(&self) -> (f32, f32) {
         self.size
-            .or(self.opening.map(|opening| opening.size))
+            .or(self.opening.map(|opening| opening.size()))
             .unwrap_or((1440., 900.))
     }
 
@@ -479,8 +483,9 @@ mod tests {
         let config = resolved(launch());
         let opening = config.opening.expect("the stored frame");
         assert_eq!(opening.position(), (-1200.5, 40.0));
-        // Iced's logical size at 125%, so the window opens at 1250 by 750 of the system's points.
-        assert_eq!(config.window_size(), (1000.0, 600.0));
+        // In the system's points; the launch hands Iced 1000 by 600 at 125%.
+        assert_eq!(config.window_size(), (1250.0, 750.0));
+        assert_eq!(config.interface_size, Some(125));
         assert!(config.remember_window);
 
         // --window-size opens at its own size, placed by the system.

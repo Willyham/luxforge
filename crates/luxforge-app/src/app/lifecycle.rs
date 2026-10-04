@@ -29,8 +29,9 @@ pub(crate) struct Boot {
     /// Unit fixtures leave this unset and register when constructing the editor.
     pub(crate) client: Option<ClientId>,
     pub(crate) initial_import: Option<tasks::StartupImport>,
-    /// The window's logical size at launch, before any resize event. The clipping overlay's cell
-    /// grid is sized against the photo surface, which this and the panel flags give.
+    /// The window's size at launch in the system's points, before any resize event; the view state
+    /// takes it to logical pixels by the interface size. The clipping overlay's cell grid is sized
+    /// against the photo surface, which this and the panel flags give.
     pub(crate) window: (f32, f32),
 }
 
@@ -90,6 +91,13 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
         .map(|path| tasks::start_import(&owner, client, path));
     let hidden = config.hidden;
     let position = config.opening.map(|opening| opening.position());
+    // Iced opens the window at its settings' size times the application's scale factor, the
+    // interface size; `size` is in the system's points whatever the interface size.
+    let points = crate::window_frame::interface_scale(
+        config
+            .interface_size
+            .unwrap_or(luxforge_core::preferences::DEFAULT_INTERFACE_SIZE),
+    );
     let boot = Mutex::new(Some(Boot {
         owner,
         join,
@@ -114,7 +122,14 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
     .title("Luxforge")
     // An invisible window still owns a real surface and renders through it, so a hidden launch
     // captures the same renderer readbacks; it is simply never placed on the desktop.
-    .window(crate::window_frame::settings(size, position, !hidden))
+    .window(crate::window_frame::settings(
+        (size.0 / points, size.1 / points),
+        position,
+        !hidden,
+    ))
+    // The interface size scales everything Iced draws. Every physical-pixel computation reads the
+    // view state's combined factor, so 100% zoom stays one source pixel per display pixel.
+    .scale_factor(Editor::interface_scale)
     .theme(luxforge_ui::theme::theme())
     .subscription(Editor::subscription);
     // The bundled typeface is registered once, before the first frame, from bytes compiled into

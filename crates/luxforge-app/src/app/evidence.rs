@@ -1074,10 +1074,12 @@ impl Editor {
                 );
                 let revision = self.session.revision;
                 self.await_step(Settle::Session);
+                // In the system's points, as AppKit reports a pinch.
+                let points = f64::from(self.view_state.interface_scale());
                 let task = self.update(Message::View(ViewMessage::Pinch(luxforge_input::Pinch {
                     delta: step.delta,
-                    x: f64::from(left) + f64::from(right - left) * step.x,
-                    y: f64::from(top) + f64::from(bottom - top) * step.y,
+                    x: (f64::from(left) + f64::from(right - left) * step.x) * points,
+                    y: (f64::from(top) + f64::from(bottom - top) * step.y) * points,
                 })));
                 if self.session.revision == revision {
                     return self.fail_step("pinch changed no view");

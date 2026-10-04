@@ -175,7 +175,16 @@ impl Editor {
             ViewMessage::FocusNext => return operation::focus_next(),
             ViewMessage::FocusPrevious => return operation::focus_previous(),
             ViewMessage::Zoom(value) => self.view_state.zoom = value,
-            ViewMessage::Pinch(input) => return self.pinch(input),
+            // AppKit reports the pointer in the system's points; the layout is in logical pixels,
+            // which are the interface size's multiple of them.
+            ViewMessage::Pinch(input) => {
+                let scale = f64::from(self.view_state.interface_scale());
+                return self.pinch(luxforge_input::Pinch {
+                    x: input.x / scale,
+                    y: input.y / scale,
+                    ..input
+                });
+            }
             #[cfg(target_os = "macos")]
             ViewMessage::PinchPending => {
                 if let Some(input) = super::waker::take_pinch() {
@@ -239,11 +248,9 @@ impl Editor {
             ViewMessage::DragWindow => {
                 return iced::window::oldest().and_then(iced::window::drag);
             }
-            ViewMessage::ScaleFactor(scale) => {
-                if scale.is_finite() && scale > 0.0 {
-                    self.view_state.scale_factor = scale;
-                }
-            }
+            // The system's factor alone: Iced's answer leaves out the application's scale factor,
+            // which the interface size sets.
+            ViewMessage::ScaleFactor(scale) => self.view_state.set_system_scale_factor(scale),
         }
         Task::none()
     }

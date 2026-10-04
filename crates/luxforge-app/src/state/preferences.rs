@@ -11,7 +11,9 @@
 use crate::coalesce::Coalesce;
 use luxforge_core::{
     MaskOverlayColour,
-    preferences::{BrushPreference, CanvasBackground, WindowFrame, WorkspacePreference},
+    preferences::{
+        BrushPreference, CanvasBackground, INTERFACE_SIZES, WindowFrame, WorkspacePreference,
+    },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -244,6 +246,8 @@ pub(crate) enum GeneralPreference {
     AutoCollapseHistory,
     AutoLensProfile,
     MaskOverlayColour,
+    CanvasBackground,
+    InterfaceSize,
     Catalog,
 }
 
@@ -260,6 +264,17 @@ pub(crate) const AUTO_LENS_DESCRIPTION: &str = "New RAW photos get their detecte
 /// What the mask overlay colour row says under its title.
 pub(crate) const MASK_OVERLAY_COLOUR_DESCRIPTION: &str =
     "The colour the mask overlay's tint is drawn in. The Masks panel's colour control sets it too.";
+
+/// What the canvas background row says under its title.
+pub(crate) const CANVAS_BACKGROUND_DESCRIPTION: &str = "The colour around the photograph. Grey is \
+     an 18% grey, for judging tone the way a print is judged.";
+
+/// What the interface size row says under its title.
+pub(crate) const INTERFACE_SIZE_DESCRIPTION: &str = "Scales the whole interface. The photograph \
+     at 100% stays one pixel per display pixel.";
+
+/// The interface size row's labels, one per size in the core's `INTERFACE_SIZES`, in its order.
+const INTERFACE_SIZE_LABELS: [&str; INTERFACE_SIZES.len()] = ["100%", "110%", "125%", "150%"];
 
 /// What the catalog row says under its title.
 pub(crate) const CATALOG_DESCRIPTION: &str = "Luxforge opens the catalog in this folder, creating \
@@ -373,10 +388,12 @@ impl LaunchCatalog {
 }
 
 impl GeneralPreference {
-    pub(crate) const ALL: [Self; 4] = [
+    pub(crate) const ALL: [Self; 6] = [
         Self::AutoCollapseHistory,
         Self::AutoLensProfile,
         Self::MaskOverlayColour,
+        Self::CanvasBackground,
+        Self::InterfaceSize,
         Self::Catalog,
     ];
 
@@ -387,6 +404,8 @@ impl GeneralPreference {
             Self::AutoCollapseHistory => "auto_collapse_history",
             Self::AutoLensProfile => "auto_lens_profile",
             Self::MaskOverlayColour => "mask_overlay_colour",
+            Self::CanvasBackground => "canvas_background",
+            Self::InterfaceSize => "interface_size",
             Self::Catalog => "catalog",
         }
     }
@@ -401,6 +420,8 @@ impl GeneralPreference {
             Self::AutoCollapseHistory => "Auto collapse history",
             Self::AutoLensProfile => "Correct lens distortion on new RAW photos",
             Self::MaskOverlayColour => "Mask overlay colour",
+            Self::CanvasBackground => "Canvas background",
+            Self::InterfaceSize => "Interface size",
             Self::Catalog => "Catalog",
         }
     }
@@ -410,6 +431,8 @@ impl GeneralPreference {
             Self::AutoCollapseHistory => AUTO_COLLAPSE_DESCRIPTION,
             Self::AutoLensProfile => AUTO_LENS_DESCRIPTION,
             Self::MaskOverlayColour => MASK_OVERLAY_COLOUR_DESCRIPTION,
+            Self::CanvasBackground => CANVAS_BACKGROUND_DESCRIPTION,
+            Self::InterfaceSize => INTERFACE_SIZE_DESCRIPTION,
             Self::Catalog => CATALOG_DESCRIPTION,
         }
     }
@@ -428,6 +451,26 @@ impl GeneralPreference {
                     (Value::from(colour.as_str()), label)
                 }),
                 &Value::from(preferences.mask_overlay_colour.as_str()),
+            ),
+            Self::CanvasBackground => GeneralControl::choice(
+                CanvasBackground::ALL.map(|background| {
+                    let label = match background {
+                        CanvasBackground::Dark => "Dark",
+                        CanvasBackground::Black => "Black",
+                        CanvasBackground::Grey => "Grey",
+                    };
+                    (Value::from(background.as_str()), label)
+                }),
+                &Value::from(preferences.canvas_background.as_str()),
+            ),
+            Self::InterfaceSize => GeneralControl::choice(
+                std::array::from_fn::<_, { INTERFACE_SIZES.len() }, _>(|index| {
+                    (
+                        Value::from(INTERFACE_SIZES[index]),
+                        INTERFACE_SIZE_LABELS[index],
+                    )
+                }),
+                &Value::from(preferences.interface_size),
             ),
             Self::Catalog => GeneralControl::Catalog {
                 path: catalog.path.clone(),
@@ -451,6 +494,14 @@ impl GeneralPreference {
             },
             (Self::MaskOverlayColour, GeneralValue::Choice(index)) => PreferenceChange {
                 mask_overlay_colour: Some(*MaskOverlayColour::ALL.get(index)?),
+                ..PreferenceChange::default()
+            },
+            (Self::CanvasBackground, GeneralValue::Choice(index)) => PreferenceChange {
+                canvas_background: Some(*CanvasBackground::ALL.get(index)?),
+                ..PreferenceChange::default()
+            },
+            (Self::InterfaceSize, GeneralValue::Choice(index)) => PreferenceChange {
+                interface_size: Some(*INTERFACE_SIZES.get(index)?),
                 ..PreferenceChange::default()
             },
             (Self::Catalog, GeneralValue::Folder(folder)) => PreferenceChange {
@@ -726,6 +777,8 @@ mod tests {
                 "auto_collapse_history",
                 "auto_lens_profile",
                 "mask_overlay_colour",
+                "canvas_background",
+                "interface_size",
                 "catalog"
             ]
         );
@@ -763,6 +816,73 @@ mod tests {
         assert_eq!(rows[1].control, GeneralControl::Toggle(false));
         assert_eq!(rows[2].control.value(), json!("white"));
         assert!(!rows[0].saving && rows[1].saving && rows[2].saving);
+    }
+
+    /// The canvas background row offers its three colours by name and the interface size row its
+    /// four sizes as numbers, the values `preferences.set` takes; each gesture sets its field.
+    #[test]
+    fn the_canvas_background_and_interface_scale_rows_offer_their_choices() {
+        let mut writer = PreferenceWriter::new(Ok(defaults()));
+        let rows = general_rows(&writer);
+        assert_eq!(rows[3].preference.title(), "Canvas background");
+        assert_eq!(
+            rows[3].control,
+            GeneralControl::Choice {
+                values: vec![json!("dark"), json!("black"), json!("grey")],
+                labels: vec!["Dark", "Black", "Grey"],
+                selected: Some(0),
+            }
+        );
+        assert_eq!(rows[4].preference.title(), "Interface size");
+        assert_eq!(
+            rows[4].control,
+            GeneralControl::Choice {
+                values: vec![json!(100), json!(110), json!(125), json!(150)],
+                labels: vec!["100%", "110%", "125%", "150%"],
+                selected: Some(0),
+            }
+        );
+        assert_eq!(
+            rows[4].control.gesture(&json!(125)),
+            Some(GeneralValue::Choice(2))
+        );
+        assert_eq!(rows[4].control.gesture(&json!(120)), None);
+        assert_eq!(
+            GeneralPreference::CanvasBackground.change(GeneralValue::Choice(2)),
+            Some(PreferenceChange {
+                canvas_background: Some(CanvasBackground::Grey),
+                ..PreferenceChange::default()
+            })
+        );
+        assert_eq!(
+            GeneralPreference::InterfaceSize.change(GeneralValue::Choice(3)),
+            Some(PreferenceChange {
+                interface_size: Some(150),
+                ..PreferenceChange::default()
+            })
+        );
+        assert_eq!(
+            GeneralPreference::InterfaceSize.change(GeneralValue::Choice(4)),
+            None
+        );
+        assert_eq!(
+            GeneralPreference::CanvasBackground.change(GeneralValue::Toggle(true)),
+            None
+        );
+        for (row, value) in [
+            (GeneralPreference::CanvasBackground, GeneralValue::Choice(1)),
+            (GeneralPreference::InterfaceSize, GeneralValue::Choice(1)),
+        ] {
+            writer.offer(row.change(value).unwrap());
+        }
+        let rows = general_rows(&writer);
+        assert_eq!(rows[3].control.value(), json!("black"));
+        assert_eq!(rows[4].control.value(), json!(110));
+        assert!(rows[3].saving && rows[4].saving);
+        assert_eq!(
+            GeneralPreference::parse("interface_size"),
+            Some(GeneralPreference::InterfaceSize)
+        );
     }
 
     #[test]

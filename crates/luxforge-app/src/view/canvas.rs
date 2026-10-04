@@ -30,6 +30,7 @@ use iced::{
     mouse::{self, Cursor},
     widget::{Column, canvas, container, mouse_area, responsive, scrollable, stack, text},
 };
+use luxforge_core::preferences::CanvasBackground;
 use luxforge_ui::{
     ChipModel, ControlKey, ControlKeyEvent, DraftBarModel, DraftFinish, DraftSubject, Icon,
     ModeEntry, NoticeCardModel, ToggleEntry, Tone, chip, draft_bar_with_controls, focus_control,
@@ -68,6 +69,17 @@ pub(crate) fn fit_rect_in(canvas: [u32; 4], scale: f32) -> [u32; 4] {
         inset(right, FIT_PADDING.right, -1.0).max(inset(left, FIT_PADDING.left, 1.0)),
         inset(bottom, FIT_PADDING.bottom, -1.0).max(inset(top, FIT_PADDING.top, 1.0)),
     ]
+}
+
+/// The colour each canvas background names: a design token in the theme. The photo surface draws
+/// only the photograph, so the canvas region's fill is what shows around it, at Fit, at a
+/// percentage and on either side of the compare divider.
+pub(crate) fn background_colour(background: CanvasBackground) -> iced::Color {
+    match background {
+        CanvasBackground::Dark => theme::CANVAS,
+        CanvasBackground::Black => theme::CANVAS_BLACK,
+        CanvasBackground::Grey => theme::CANVAS_GREY,
+    }
 }
 
 /// The whole canvas region: the photograph, and the floating chrome stacked over it.
