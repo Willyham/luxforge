@@ -106,6 +106,8 @@ impl Editor {
                 }
             }
             ViewMessage::Fullscreen(fullscreen) => self.view_state.fullscreen = fullscreen,
+            ViewMessage::Placed { report, on_main } => return self.window_placed(report, on_main),
+            ViewMessage::ClosingFrame(report) => return self.closing_frame(report),
             ViewMessage::TogglePanel(panel) => {
                 let open = match panel {
                     Panel::State => self.session.workspace.state_panel,

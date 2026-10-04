@@ -53,6 +53,7 @@ impl Editor {
                 return applied;
             }
             SettingsMessage::SetGeneral(row, value) => return self.set_general(row, value),
+            SettingsMessage::CatalogFolder(folder) => return self.catalog_folder_chosen(folder),
             SettingsMessage::Set { flag, value } => {
                 self.settings.number_text.remove(&flag);
                 self.settings.waiting.push_back((flag, value));
@@ -200,6 +201,9 @@ impl Editor {
                 let control = match &row.control {
                     GeneralControl::Toggle(on) => json!({"toggle": on}),
                     GeneralControl::Choice { .. } => json!({"choice": row.control.value()}),
+                    GeneralControl::Catalog { path, notes, .. } => json!({
+                        "catalog": path, "stored": row.control.value(), "notes": notes
+                    }),
                 };
                 json!({"id": row.preference.field(), "control": control, "saving": row.saving})
             })

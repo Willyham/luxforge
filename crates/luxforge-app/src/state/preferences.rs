@@ -15,7 +15,7 @@ use luxforge_core::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Declares every preference once: the answer the desktop holds, the change it sends and the
 /// field-wise merge and overlay between them, so a field cannot be added to one and missed in
@@ -134,6 +134,9 @@ pub(crate) struct PreferenceWriter {
     pub(crate) error: Option<String>,
     /// The window asked to close while a write was outstanding; it closes once the last lands.
     pub(crate) closing: bool,
+    /// The catalog this launch opened and why, which the Catalog row shows beside the stored
+    /// location.
+    pub(crate) catalog: LaunchCatalog,
     /// The one `preferences.read` in flight for another client's change, and one more wanted
     /// behind it when a further change arrived meanwhile.
     pub(crate) reading: Coalesce<()>,
@@ -241,6 +244,7 @@ pub(crate) enum GeneralPreference {
     AutoCollapseHistory,
     AutoLensProfile,
     MaskOverlayColour,
+    Catalog,
 }
 
 /// What a General row's description says under Auto collapse history's title.
@@ -257,11 +261,123 @@ pub(crate) const AUTO_LENS_DESCRIPTION: &str = "New RAW photos get their detecte
 pub(crate) const MASK_OVERLAY_COLOUR_DESCRIPTION: &str =
     "The colour the mask overlay's tint is drawn in. The Masks panel's colour control sets it too.";
 
+/// What the catalog row says under its title.
+pub(crate) const CATALOG_DESCRIPTION: &str = "Luxforge opens the catalog in this folder, creating \
+     one if there is none; the current catalog stays where it is.";
+
+/// The file a chosen catalog folder holds, as the default catalog's folder does.
+pub(crate) const CATALOG_FILE: &str = "catalog.sqlite";
+
+/// What took precedence over the stored catalog location for this launch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CatalogOverride {
+    /// `--catalog` named the catalog.
+    CommandLine,
+    /// An evidence run keeps its catalog inside its evidence directory.
+    Evidence,
+}
+
+/// The catalog this launch opened, decided once before the owner starts
+/// ([design](../../../../docs/design/preferences.md#behaviour)).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct LaunchCatalog {
+    /// The catalog file this launch opened.
+    pub(crate) path: PathBuf,
+    /// The catalog an ordinary launch opens with no location stored: [`CATALOG_FILE`] in the
+    /// configuration directory, or `None` when there is no such directory.
+    pub(crate) default: Option<PathBuf>,
+    /// What took precedence over the stored location, if anything.
+    pub(crate) forced: Option<CatalogOverride>,
+    /// The stored catalog whose folder did not exist at launch, so this launch opened the default
+    /// instead. The stored location is kept for the next launch.
+    pub(crate) missing: Option<PathBuf>,
+}
+
+impl LaunchCatalog {
+    /// The catalog a launch opens: `--catalog`, then an evidence run's own, then the stored
+    /// location when its folder exists, then the default. A stored catalog whose folder is missing,
+    /// as with an unplugged drive, opens the default and is kept as [`Self::missing`]; a folder
+    /// without a catalog gets one, as the default's does. `None` when nothing names a catalog and
+    /// there is no configuration directory to hold the default.
+    pub(crate) fn resolve(
+        command_line: Option<&Path>,
+        evidence: Option<&Path>,
+        default: Option<PathBuf>,
+        stored: Option<PathBuf>,
+    ) -> Option<Self> {
+        let forced = match (command_line, evidence) {
+            (Some(catalog), _) => Some((catalog.to_path_buf(), CatalogOverride::CommandLine)),
+            (None, Some(evidence)) => {
+                Some((evidence.join(CATALOG_FILE), CatalogOverride::Evidence))
+            }
+            (None, None) => None,
+        };
+        if let Some((path, forced)) = forced {
+            return Some(Self {
+                path,
+                default,
+                forced: Some(forced),
+                missing: None,
+            });
+        }
+        let (path, missing) = match stored {
+            Some(stored) if stored.parent().is_some_and(Path::is_dir) => (stored, None),
+            Some(stored) => (default.clone()?, Some(stored)),
+            None => (default.clone()?, None),
+        };
+        Some(Self {
+            path,
+            default,
+            forced: None,
+            missing,
+        })
+    }
+
+    /// What the status bar and the Catalog row say when the stored catalog's folder was missing.
+    pub(crate) fn missing_note(&self) -> Option<String> {
+        let missing = self.missing.as_ref()?;
+        let folder = missing.parent().unwrap_or(missing);
+        Some(format!(
+            "Catalog folder not found: {}; using the default catalog",
+            folder.display()
+        ))
+    }
+
+    /// The Catalog row's notes for `stored`, the location the preferences hold: why this launch
+    /// opened another catalog, and that a relaunch opens the stored one.
+    pub(crate) fn notes(&self, stored: Option<&Path>) -> Vec<String> {
+        let mut notes = Vec::new();
+        notes.extend(self.missing_note());
+        match self.forced {
+            Some(CatalogOverride::CommandLine) => notes.push("This launch uses --catalog".into()),
+            Some(CatalogOverride::Evidence) => {
+                notes.push("This launch uses the evidence run's catalog".into())
+            }
+            None => {}
+        }
+        // The catalog an ordinary launch would open next. A launch that took its catalog from
+        // elsewhere says so above, so with nothing stored there is no chosen location to relaunch
+        // into; and a missing folder's own note covers the location it kept.
+        let next = match stored {
+            Some(stored) => Some(stored),
+            None if self.forced.is_none() => self.default.as_deref(),
+            None => None,
+        };
+        if let Some(next) = next
+            .filter(|next| *next != self.path.as_path() && self.missing.as_deref() != Some(*next))
+        {
+            notes.push(format!("Relaunch to use {}", next.display()));
+        }
+        notes
+    }
+}
+
 impl GeneralPreference {
-    pub(crate) const ALL: [Self; 3] = [
+    pub(crate) const ALL: [Self; 4] = [
         Self::AutoCollapseHistory,
         Self::AutoLensProfile,
         Self::MaskOverlayColour,
+        Self::Catalog,
     ];
 
     /// The `preferences.set` field the row writes, which an evidence step and a frame's state use
@@ -271,6 +387,7 @@ impl GeneralPreference {
             Self::AutoCollapseHistory => "auto_collapse_history",
             Self::AutoLensProfile => "auto_lens_profile",
             Self::MaskOverlayColour => "mask_overlay_colour",
+            Self::Catalog => "catalog",
         }
     }
 
@@ -284,6 +401,7 @@ impl GeneralPreference {
             Self::AutoCollapseHistory => "Auto collapse history",
             Self::AutoLensProfile => "Correct lens distortion on new RAW photos",
             Self::MaskOverlayColour => "Mask overlay colour",
+            Self::Catalog => "Catalog",
         }
     }
 
@@ -292,11 +410,12 @@ impl GeneralPreference {
             Self::AutoCollapseHistory => AUTO_COLLAPSE_DESCRIPTION,
             Self::AutoLensProfile => AUTO_LENS_DESCRIPTION,
             Self::MaskOverlayColour => MASK_OVERLAY_COLOUR_DESCRIPTION,
+            Self::Catalog => CATALOG_DESCRIPTION,
         }
     }
 
-    /// The control the row draws for `preferences`.
-    fn control(self, preferences: &Preferences) -> GeneralControl {
+    /// The control the row draws for `preferences`, with the catalog this launch opened.
+    fn control(self, preferences: &Preferences, catalog: &LaunchCatalog) -> GeneralControl {
         match self {
             Self::AutoCollapseHistory => GeneralControl::Toggle(preferences.auto_collapse_history),
             Self::AutoLensProfile => GeneralControl::Toggle(preferences.auto_lens_profile),
@@ -310,6 +429,11 @@ impl GeneralPreference {
                 }),
                 &Value::from(preferences.mask_overlay_colour.as_str()),
             ),
+            Self::Catalog => GeneralControl::Catalog {
+                path: catalog.path.clone(),
+                stored: preferences.catalog.clone(),
+                notes: catalog.notes(preferences.catalog.as_deref()),
+            },
         }
     }
 
@@ -329,6 +453,14 @@ impl GeneralPreference {
                 mask_overlay_colour: Some(*MaskOverlayColour::ALL.get(index)?),
                 ..PreferenceChange::default()
             },
+            (Self::Catalog, GeneralValue::Folder(folder)) => PreferenceChange {
+                catalog: Some(Some(folder.join(CATALOG_FILE))),
+                ..PreferenceChange::default()
+            },
+            (Self::Catalog, GeneralValue::UseDefault) => PreferenceChange {
+                catalog: Some(None),
+                ..PreferenceChange::default()
+            },
             _ => return None,
         };
         Some(change)
@@ -346,6 +478,13 @@ pub(crate) enum GeneralControl {
         labels: Vec<&'static str>,
         selected: Option<usize>,
     },
+    /// A catalog location: the catalog this launch opened, the location stored for the next
+    /// launch, if any, which offers Use Default, and the notes under the row.
+    Catalog {
+        path: PathBuf,
+        stored: Option<PathBuf>,
+        notes: Vec<String>,
+    },
 }
 
 impl GeneralControl {
@@ -360,7 +499,9 @@ impl GeneralControl {
     }
 
     /// The gesture on this control that sets `value`, or `None` when the control does not offer
-    /// it: a toggle takes a boolean, a choice one of its options' values.
+    /// it: a toggle takes a boolean, a choice one of its options' values, and a catalog location
+    /// `null` for Use Default or an absolute `<folder>/catalog.sqlite` for that folder chosen in
+    /// Choose Folder…'s dialog.
     pub(crate) fn gesture(&self, value: &Value) -> Option<GeneralValue> {
         match self {
             Self::Toggle(_) => value.as_bool().map(GeneralValue::Toggle),
@@ -368,6 +509,16 @@ impl GeneralControl {
                 .iter()
                 .position(|option| option == value)
                 .map(GeneralValue::Choice),
+            Self::Catalog { .. } => match value {
+                Value::Null => Some(GeneralValue::UseDefault),
+                Value::String(path) => {
+                    let path = Path::new(path);
+                    let folder = path.parent()?;
+                    (path.is_absolute() && path.file_name()? == CATALOG_FILE)
+                        .then(|| GeneralValue::Folder(folder.to_path_buf()))
+                }
+                _ => None,
+            },
         }
     }
 
@@ -378,6 +529,10 @@ impl GeneralControl {
             (Self::Choice { selected, .. }, GeneralValue::Choice(index)) => {
                 *selected == Some(index)
             }
+            (Self::Catalog { stored, .. }, GeneralValue::Folder(folder)) => {
+                stored.as_deref() == Some(folder.join(CATALOG_FILE).as_path())
+            }
+            (Self::Catalog { stored, .. }, GeneralValue::UseDefault) => stored.is_none(),
             _ => false,
         }
     }
@@ -391,15 +546,25 @@ impl GeneralControl {
             } => selected
                 .and_then(|index| values.get(index).cloned())
                 .unwrap_or(Value::Null),
+            Self::Catalog { stored, .. } => stored
+                .as_deref()
+                .map_or(Value::Null, |path| Value::from(path.to_string_lossy())),
         }
     }
 }
 
-/// One gesture on a General row's control: a switch turned on or off, or a segment chosen.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// One gesture on a General row's control: a switch turned on or off, a segment chosen, or a
+/// catalog location's button.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum GeneralValue {
     Toggle(bool),
     Choice(usize),
+    /// Choose Folder…: open the native folder dialog, which answers with [`Self::Folder`].
+    ChooseFolder,
+    /// A folder chosen for the catalog, which stores `<folder>/catalog.sqlite`.
+    Folder(PathBuf),
+    /// Use Default: remove the stored location.
+    UseDefault,
 }
 
 /// One General row as the sheet draws it.
@@ -420,7 +585,7 @@ pub(crate) fn general_rows(writer: &PreferenceWriter) -> Vec<GeneralRow> {
         .into_iter()
         .map(|preference| GeneralRow {
             preference,
-            control: preference.control(&preferences),
+            control: preference.control(&preferences, &writer.catalog),
             saving: writer.saving(preference.field()),
         })
         .collect()
@@ -560,7 +725,8 @@ mod tests {
             [
                 "auto_collapse_history",
                 "auto_lens_profile",
-                "mask_overlay_colour"
+                "mask_overlay_colour",
+                "catalog"
             ]
         );
         assert_eq!(rows[0].preference.title(), "Auto collapse history");
@@ -630,5 +796,175 @@ mod tests {
             Some(GeneralPreference::AutoLensProfile)
         );
         assert_eq!(GeneralPreference::parse("performance_expanded"), None);
+    }
+
+    #[test]
+    fn the_launch_catalog_is_the_command_line_evidence_the_stored_location_or_the_default() {
+        let root = luxforge_testbase::paths::temp_path("launch-catalog-resolve");
+        let default = root.join("config").join(CATALOG_FILE);
+        let present = root.join("Photos").join(CATALOG_FILE);
+        std::fs::create_dir_all(present.parent().unwrap()).unwrap();
+        let missing = root.join("Unplugged").join(CATALOG_FILE);
+        let resolve = |command_line: Option<&Path>, evidence: Option<&Path>, stored: &Path| {
+            LaunchCatalog::resolve(
+                command_line,
+                evidence,
+                Some(default.clone()),
+                Some(stored.to_path_buf()),
+            )
+            .unwrap()
+        };
+        let named = root.join("named.sqlite");
+        assert_eq!(resolve(Some(&named), Some(&root), &present).path, named);
+        assert_eq!(
+            resolve(None, Some(&root), &present).path,
+            root.join(CATALOG_FILE)
+        );
+        assert_eq!(resolve(None, None, &present).path, present);
+        let fallback = resolve(None, None, &missing);
+        assert_eq!(
+            (&fallback.path, &fallback.missing),
+            (&default, &Some(missing))
+        );
+        assert_eq!(
+            LaunchCatalog::resolve(None, None, Some(default.clone()), None)
+                .unwrap()
+                .path,
+            default
+        );
+        // Nowhere to keep the default and nothing naming a catalog.
+        assert_eq!(LaunchCatalog::resolve(None, None, None, None), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_catalog_row_notes_say_why_this_launch_differs_from_the_stored_location() {
+        let default = PathBuf::from("/config/catalog.sqlite");
+        let chosen = PathBuf::from("/Volumes/Photos/catalog.sqlite");
+        let launch = |path: &Path| LaunchCatalog {
+            path: path.to_path_buf(),
+            default: Some(default.clone()),
+            forced: None,
+            missing: None,
+        };
+        let relaunch = |path: &Path| format!("Relaunch to use {}", path.display());
+        // This launch opened what is stored: nothing to say.
+        assert!(launch(&default).notes(None).is_empty());
+        assert!(launch(&chosen).notes(Some(&chosen)).is_empty());
+        // A location chosen, or the default chosen back, opens at the next launch.
+        assert_eq!(launch(&default).notes(Some(&chosen)), [relaunch(&chosen)]);
+        assert_eq!(launch(&chosen).notes(None), [relaunch(&default)]);
+        // --catalog and an evidence run say so, and still name a stored location.
+        let forced = |forced| LaunchCatalog {
+            forced: Some(forced),
+            ..launch(Path::new("/elsewhere/catalog.sqlite"))
+        };
+        assert_eq!(
+            forced(CatalogOverride::CommandLine).notes(None),
+            ["This launch uses --catalog"]
+        );
+        assert_eq!(
+            forced(CatalogOverride::Evidence).notes(Some(&chosen)),
+            [
+                "This launch uses the evidence run's catalog".to_owned(),
+                relaunch(&chosen)
+            ]
+        );
+        // A missing folder says so, and the location it kept needs no relaunch note; another
+        // location chosen since does.
+        let fallback = LaunchCatalog {
+            missing: Some(chosen.clone()),
+            ..launch(&default)
+        };
+        let missing = "Catalog folder not found: /Volumes/Photos; using the default catalog";
+        assert_eq!(fallback.missing_note().as_deref(), Some(missing));
+        assert_eq!(fallback.notes(Some(&chosen)), [missing]);
+        let other = PathBuf::from("/Users/someone/Pictures/catalog.sqlite");
+        assert_eq!(
+            fallback.notes(Some(&other)),
+            [missing.to_owned(), relaunch(&other)]
+        );
+    }
+
+    #[test]
+    fn the_catalog_row_takes_a_chosen_folder_or_use_default() {
+        let mut writer = PreferenceWriter::new(Ok(defaults()));
+        writer.catalog = LaunchCatalog {
+            path: PathBuf::from("/config/catalog.sqlite"),
+            default: Some(PathBuf::from("/config/catalog.sqlite")),
+            forced: None,
+            missing: None,
+        };
+        let catalog = |writer: &PreferenceWriter| {
+            general_rows(writer)
+                .into_iter()
+                .find(|row| row.preference == GeneralPreference::Catalog)
+                .unwrap()
+        };
+        let row = catalog(&writer);
+        assert_eq!(row.preference.title(), "Catalog");
+        assert_eq!(row.preference.description(), CATALOG_DESCRIPTION);
+        assert_eq!(
+            row.control,
+            GeneralControl::Catalog {
+                path: PathBuf::from("/config/catalog.sqlite"),
+                stored: None,
+                notes: Vec::new(),
+            }
+        );
+        assert_eq!(row.control.value(), Value::Null);
+
+        // A folder chosen stores the catalog file in it; Use Default stores null.
+        let folder = std::env::temp_dir().join("Photos");
+        let file = folder.join(CATALOG_FILE);
+        let text = json!(file.to_string_lossy());
+        let chosen = GeneralPreference::Catalog
+            .change(GeneralValue::Folder(folder.clone()))
+            .unwrap();
+        assert_eq!(chosen.params(), json!({"catalog": text}));
+        assert_eq!(
+            GeneralPreference::Catalog
+                .change(GeneralValue::UseDefault)
+                .unwrap()
+                .params(),
+            json!({"catalog": null})
+        );
+        // Choose Folder… opens a dialog; it changes nothing by itself.
+        assert_eq!(
+            GeneralPreference::Catalog.change(GeneralValue::ChooseFolder),
+            None
+        );
+        assert_eq!(
+            GeneralPreference::AutoLensProfile.change(GeneralValue::UseDefault),
+            None
+        );
+        writer.offer(chosen);
+        let row = catalog(&writer);
+        assert!(row.saving);
+        assert_eq!(row.control.value(), text);
+        let GeneralControl::Catalog { stored, notes, .. } = &row.control else {
+            panic!("a catalog control")
+        };
+        assert_eq!(stored.as_ref(), Some(&file));
+        assert_eq!(notes, &[format!("Relaunch to use {}", file.display())]);
+
+        // An evidence step names the stored value: a folder's catalog file, or null.
+        let control = &row.control;
+        let gesture = control.gesture(&text).unwrap();
+        assert_eq!(gesture, GeneralValue::Folder(folder.clone()));
+        assert!(control.shows(gesture));
+        assert_eq!(
+            control.gesture(&json!(null)),
+            Some(GeneralValue::UseDefault)
+        );
+        assert!(!control.shows(GeneralValue::UseDefault));
+        for refused in [
+            json!("relative/catalog.sqlite"),
+            json!(folder.join("other.sqlite").to_string_lossy()),
+            json!(true),
+        ] {
+            assert_eq!(control.gesture(&refused), None, "{refused}");
+        }
+        assert!(!control.shows(GeneralValue::ChooseFolder));
     }
 }

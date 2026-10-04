@@ -141,9 +141,16 @@ fn general(model: &SettingsModel) -> Element<'_, Message> {
 /// draws, which sends the row's own message.
 fn general_row(general: &GeneralRow) -> Element<'_, Message> {
     let preference = general.preference;
-    let text = column![label(preference.title()), caption(preference.description())]
+    let mut text = column![label(preference.title()), caption(preference.description())]
         .spacing(theme::ROW_SPACING)
         .width(Length::Fill);
+    // A catalog location shows the catalog this launch opened and its notes under the description.
+    if let GeneralControl::Catalog { path, notes, .. } = &general.control {
+        text = text.push(label(path.display().to_string()));
+        for note in notes {
+            text = text.push(caption(note.clone()));
+        }
+    }
     let set = move |value| Message::Settings(SettingsMessage::SetGeneral(preference, value));
     let control = match &general.control {
         GeneralControl::Toggle(on) => switch(
@@ -165,6 +172,25 @@ fn general_row(general: &GeneralRow) -> Element<'_, Message> {
             },
             move |index| set(GeneralValue::Choice(index)),
         ),
+        GeneralControl::Catalog { stored, .. } => {
+            let mut buttons = row![].spacing(theme::SPACING).align_y(Alignment::Center);
+            if stored.is_some() {
+                buttons = buttons.push(text_button(
+                    "Use Default",
+                    ButtonTone::Quiet,
+                    ButtonSize::Compact,
+                    Some(set(GeneralValue::UseDefault)),
+                ));
+            }
+            buttons
+                .push(text_button(
+                    "Choose Folder\u{2026}",
+                    ButtonTone::Quiet,
+                    ButtonSize::Compact,
+                    Some(set(GeneralValue::ChooseFolder)),
+                ))
+                .into()
+        }
     };
     row![text, control]
         .spacing(theme::SPACING * 2.0)

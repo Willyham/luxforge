@@ -3957,12 +3957,13 @@ impl Editor {
     }
 
     /// Change General rows as a person does, each through its own control's message: a switch
-    /// turned to a boolean, a segment chosen by its value. Every field is checked against the row
-    /// before any is sent, so a field no row shows or a value its control does not offer fails the
-    /// step with nothing changed. The changes go through the desktop's one preference writer, and
-    /// the step waits for its last write to answer; a step whose rows already show every value
-    /// sends nothing and is captured on the next frame. The rows answer whether or not the sheet
-    /// is open, as the Masks panel's colour control does.
+    /// turned to a boolean, a segment chosen by its value, and the catalog's folder as its dialog
+    /// would answer for `<folder>/catalog.sqlite` or Use Default for `null`. Every field is checked
+    /// against the row before any is sent, so a field no row shows or a value its control does not
+    /// offer fails the step with nothing changed. The changes go through the desktop's one
+    /// preference writer, and the step waits for its last write to answer; a step whose rows
+    /// already show every value sends nothing and is captured on the next frame. The rows answer
+    /// whether or not the sheet is open, as the Masks panel's colour control does.
     fn preference_step(&mut self, fields: serde_json::Map<String, Value>) -> Task<Message> {
         use crate::state::preferences::{GeneralPreference, general_rows};
         let rows = general_rows(&self.preferences);
@@ -3976,7 +3977,7 @@ impl Editor {
             let Some(gesture) = row.control.gesture(value) else {
                 return self.fail_step(format!("{field}'s control does not offer {value}"));
             };
-            if !row.control.shows(gesture) {
+            if !row.control.shows(gesture.clone()) {
                 gestures.push((row.preference, gesture));
             }
         }
