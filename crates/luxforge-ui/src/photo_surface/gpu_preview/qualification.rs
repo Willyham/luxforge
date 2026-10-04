@@ -18,7 +18,7 @@
 use super::{
     BoundaryFormat, Compiled, GpuBoundary, GpuFallback, GpuPlan, GpuStep, GpuTail, OUTPUT_FORMAT,
     SpatialSlot, Support, answered, assemble_passes, chain, compile, encode_pass_over, le_bytes,
-    slot_charge, spatial, upload_rows, validate, validate_step,
+    slot_buffers, slot_charge, spatial, upload_rows, validate, validate_step,
 };
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -112,6 +112,14 @@ impl Qualifier {
     /// and the scratch pool they share, once ([`super::chain_charge`]).
     pub fn charged_bytes(&self, plan: &GpuPlan) -> Result<u64, GpuFallback> {
         slot_charge(&self.device, plan)
+    }
+
+    /// The part of [`Qualifier::charged_bytes`] that is each link's words and blocks buffers
+    /// together, at the capacities this device gives them, in chain order, the last link's last:
+    /// what a report adds to the chain's charge and the slot's textures
+    /// ([`super::texture_charge`]) to compose the slot's figure.
+    pub fn buffer_bytes(&self, plan: &GpuPlan) -> Result<Vec<u64>, GpuFallback> {
+        slot_buffers(&self.device, plan)
     }
 
     /// Every texel of `plan`'s output, as the `f32` values its last step returned: row by row, the
