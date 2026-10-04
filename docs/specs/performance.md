@@ -4482,7 +4482,7 @@ cargo run --release --locked --package xtask -- gpu-qualification --output NEW_D
   --manifest /path/to/raw-manifest.json
 ```
 
-The run writes `report.json` (every cell's figures and verdict, the limits, the build and corpus identity and the sources' hashes before and after), `summary.md`, `harness.log`, the harness's own `run/cells.json` and the frames of every cell past a limit under `run/frames/`. Without `--manifest` the RAW stacks are gaps and the run is incomplete; `--zoom`, `--kind`, `--families`, `--recipes` and `--sources` measure a selection, which is incomplete too.
+The run writes `report.json` (every cell's figures and verdict, the limits, the build and corpus identity and the sources' hashes before and after), `summary.md`, `harness.log`, the harness's own `run/cells.json` and the frames of every cell past a limit under `run/frames/`. Without `--manifest` the RAW stacks are gaps, so a run within every limit would still be incomplete; `--zoom`, `--kind`, `--families`, `--recipes` and `--sources` measure a selection, which is incomplete too.
 
 ## CPU and memory efficiency, measured on the M4
 
