@@ -1,9 +1,9 @@
 //! What a masked Presence layer costs the GPU-preview budget with every link's scratch planes in
-//! the slot's one pool and Texture's band in one channel, measured once for the shared scratch
-//! plan (`tasks/gpu-shared-scratch.json`, TASK-007; `docs/design/gpu-shared-scratch.md`, "Why"):
-//! the slot's charge, which the live slot's `gpu_preview_in_use_bytes` equals, its breakdown, how
-//! many layers the budget holds, and what the same plans charged with each link holding its own
-//! scratch planes, the layout before the pool.
+//! the slot's one pool and Texture's band in one channel (`docs/design/gpu-preview.md`, "Bounds";
+//! recorded in `docs/specs/performance.md`, "The scratch pool's memory"): the slot's charge, which
+//! the live slot's `gpu_preview_in_use_bytes` equals, its breakdown, how many layers the budget
+//! holds, and what the same plans charge with each link holding its own scratch planes, the layout
+//! without the pool.
 use super::stage;
 use crate::app::compare_after::DEVICE_TEXTURE_LIMIT;
 use crate::app::gpu_plan::surface_plan_over;
@@ -25,8 +25,10 @@ const COUNTS: [usize; 5] = [1, 2, 4, 8, 16];
 const DIRECT: usize = 64;
 /// The exact stage of a 24 MP photograph.
 const PHOTOGRAPH: (u32, u32) = (6000, 4000);
-/// The 100% window: the largest window the owner's display holds, read through Detail, Texture
-/// and Clarity, so an upper bound for Presence alone.
+/// The 100% window: the largest window the owner's display holds read through Detail, Texture
+/// and Clarity, held fixed at every layer count. A real chain's window at 100% grows by every
+/// chained spatial layer's halo, 207 px on every side for a masked Presence layer of Texture and
+/// Clarity, so past one layer these figures understate what the desktop charges at 100%.
 const WINDOW: (u32, u32) = (3778, 2578);
 
 /// The fields every masked layer holds.
@@ -336,8 +338,8 @@ fn measure(
 ///     --ignored --nocapture
 /// ```
 #[test]
-#[ignore = "the shared scratch plan's memory measurement (tasks/gpu-shared-scratch.json, \
-            TASK-007): run it once in release with --ignored --nocapture and record its table"]
+#[ignore = "the scratch pool's memory measurement (docs/specs/performance.md, The scratch \
+            pool's memory): run it in release with --ignored --nocapture and record its table"]
 fn gpu_shared_scratch_measured() {
     let test = "gpu_shared_scratch_measured";
     let Some(qualifier) = headless(test) else {

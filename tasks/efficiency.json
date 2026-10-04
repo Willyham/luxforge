@@ -812,7 +812,7 @@
         "crates/luxforge-app/src/app/gpu_plan.rs (grid.nodes, about line 425) converts the warp grid's nodes (up to 262k, 2 MiB; about 880 KiB at Fit) through a temporary Vec into a new Arc<[u32]> on every tick, reached from gpu_preview.rs:498, although the grid is fixed for the draft. Convert it once when the boundary is held and pass the Arc each tick.",
         "In crates/luxforge-ui/src/photo_surface/gpu_preview.rs, every prepare calls pack, concatenating every program's block into one Vec<u32>; then the slot and each spatial chain link (gpu_preview/chain.rs, write) compare the whole of it with their written_blocks through mask::changed_ranges and copy it again on any difference: 1 to 6 MiB per frame with a warp grid or a heavy brush mask (a brush block can reach GPU_BLOCK_WORDS_MAX = 316,034 words). Program blocks are already Arc<[u32]>: remember each step's (Arc pointer, offset, length), skip copying and comparing blocks whose pointer and offset are unchanged, and process only the steps that changed.",
         "Uploaded words must be identical; the GPU preview's readback qualification and dissolve behaviour are unchanged.",
-        "The shared scratch pool work (docs/design/gpu-shared-scratch.md) restructures the same chains and slots; rebase onto whichever lands first and keep its per-link schedule."
+        "The slot's shared scratch pool (docs/design/gpu-preview.md, Plane sharing and precision) restructures the same chains and slots; keep each link's own schedule."
       ],
       "context_links": [
         {
@@ -848,9 +848,10 @@
         },
         {
           "kind": "file",
-          "label": "Shared scratch design",
-          "target": "docs/design/gpu-shared-scratch.md",
-          "relevance": "Concurrent restructuring of the same chains."
+          "label": "Shared scratch pool",
+          "target": "docs/design/gpu-preview.md",
+          "locator": "Plane sharing and precision",
+          "relevance": "The slot's one scratch pool, which restructures the same chains."
         }
       ],
       "acceptance_criteria": [
