@@ -15,8 +15,8 @@ use crate::ErrorKind;
 use crate::{
     Cancel, Error, LinearImage, SnapshotId,
     colour::{mat3, srgb},
-    modules::{Parallelism, Region, Stage},
-    source::{ViewReader, layout},
+    modules::{ExactGeometry, Parallelism, Region, Stage},
+    source::{ViewReader, Walk, layout},
 };
 use std::borrow::Cow;
 
@@ -134,6 +134,19 @@ impl WhiteBalanceApproximation {
         mat3::matvec_f64(&self.matrix, pixel)
     }
 
+    /// `W · p` for one source pixel, refused when a product is not finite: the developed planes
+    /// are finite, but a finite matrix may still overflow. The one adjustment a source pixel
+    /// takes, on the point path and on every row, with the same `f64` arithmetic and failure.
+    #[inline(always)]
+    fn adjust(&self, pixel: [f64; 3]) -> Result<[f64; 3], Error> {
+        let output = self.apply(pixel);
+        if output.iter().all(|value| value.is_finite()) {
+            Ok(output)
+        } else {
+            Err(Error::render("linear source produced a non-finite value"))
+        }
+    }
+
     /// A key that tells this approximation's evaluation apart from an exact one of the same
     /// recipe, for a cache keyed by recipe: the matrix's own bits.
     fn key(&self) -> String {
@@ -214,14 +227,17 @@ pub(crate) fn estimate_prefix(
 }
 
 /// The linear domain: a developed RAW's planes in signed unbounded linear sRGB, with any approximate
-/// white balance applied to each source pixel in `f64`. A segment with colour
-/// is `f32` from its entry to its end and one without stays `f64`; nothing is quantized before the
-/// terminal boundary, so a replacement is decoded rather than quantized at, a resample blends in
-/// `f64`, and a spatial operation's `f32` output is read back exactly. There is no alpha.
+/// white balance applied to each source pixel in `f64`. A segment with colour is `f32` from its
+/// entry to its end; one without hands its entry to the terminal as it is, `f32` read from the
+/// planes or a spatial frame and `f64` from a blend, a white-balance product or a replacement.
+/// Nothing is quantized before the terminal boundary, so a replacement is decoded rather than
+/// quantized at, a resample blends in `f64`, and a spatial operation's `f32` output is read back
+/// exactly. There is no alpha.
 #[derive(Clone, Copy)]
 pub(crate) struct Linear<'a> {
     source: &'a LinearImage,
-    /// The source's view resolved once, so a point read does not recompute its layout per pixel.
+    /// The source's view resolved once, so a point read does not recompute its layout per pixel
+    /// and a row walks it ([`Linear::entry_planes`]).
     reader: ViewReader<'a>,
     /// Applied to each source pixel, when the settings carry one.
     white_balance: Option<WhiteBalanceApproximation>,
@@ -237,22 +253,110 @@ impl<'a> Linear<'a> {
         })
     }
 
-    /// The one point where the settings touch a source pixel: the pixel itself, or `W · p` under
-    /// an approximate white balance. Shared by the point evaluation and the rendered rows, so both
-    /// keep the same f64 arithmetic and the same failure. The developed planes are finite by
-    /// construction, so only a product can fail: a finite matrix may still overflow.
+    /// The one point where the settings touch a source pixel on the point path: the pixel itself,
+    /// or `W · p` under an approximate white balance ([`WhiteBalanceApproximation::adjust`], which
+    /// the rows apply to each pixel they read too).
     #[inline(always)]
     fn adjust_source_pixel(&self, pixel: [f64; 3]) -> Result<[f64; 3], Error> {
-        // The developed planes exactly, as every exact evaluation reads them.
-        let Some(balance) = &self.white_balance else {
-            return Ok(pixel);
-        };
-        let output = balance.apply(pixel);
-        if output.iter().all(|value| value.is_finite()) {
-            Ok(output)
-        } else {
-            Err(Error::render("linear source produced a non-finite value"))
+        match &self.white_balance {
+            // The developed planes exactly, as every exact evaluation reads them.
+            None => Ok(pixel),
+            Some(balance) => balance.adjust(pixel),
         }
+    }
+
+    /// The planes segment `index` of `evaluation` reads its entry from by rows: the source's, for
+    /// the first segment, under the evaluation's white balance, or the spatial frame the evaluation
+    /// holds for the segment's spatial entry. `None` for a resample, whose taps blend the segment
+    /// before it, and for a spatial entry a point query answers from its tiles: those are pulled
+    /// one pixel at a time ([`Evaluation::entry_pixel`]).
+    pub(super) fn entry_planes<'e>(
+        evaluation: &'e Evaluation<'_, Self>,
+        index: usize,
+    ) -> Option<EntryPlanes<'e>> {
+        match &evaluation.compiled.segments[index].entry {
+            None => Some(EntryPlanes {
+                reader: evaluation.domain.reader,
+                white_balance: evaluation.domain.white_balance,
+            }),
+            Some(Entry::Spatial(_)) => {
+                let frame = evaluation
+                    .frame
+                    .as_ref()
+                    .filter(|frame| frame.index == index)?;
+                let stage = evaluation.compiled.segments[index - 1].stage();
+                Some(EntryPlanes {
+                    reader: ViewReader::over(&frame.planes, stage.width, stage.height),
+                    white_balance: None,
+                })
+            }
+            Some(Entry::Resample(_)) => None,
+        }
+    }
+
+    /// Every colour run of `runs` over one `f32` row, then the refusal of a non-finite value that
+    /// [`PixelDomain::finish`] makes of each pixel: what [`PixelDomain::colour_row`] does once a
+    /// row is `f32`, and what a row read from planes does without widening it first.
+    fn colour_f32<'r>(
+        row: &mut [[f32; 3]],
+        runs: impl Iterator<Item = ColorRun<'r>>,
+        y: u32,
+        x0: u32,
+        snapshot: &mut Vec<MaskedInput>,
+    ) -> Result<(), Error> {
+        snapshot.resize(row.len().max(1), MaskedInput::default());
+        for run in runs {
+            apply_units(&run, y, x0, row, snapshot)?;
+        }
+        finite_f32(row, NON_FINITE_PIXEL)
+    }
+}
+
+/// What [`Linear::finish`] refuses a non-finite pixel with.
+const NON_FINITE_PIXEL: &str = "linear evaluation produced a non-finite pixel";
+
+/// `Ok` when every value of `row` is finite, else a render error with `detail`. An `f32` is
+/// finite exactly when its `f64` widening is, so this is the check [`Linear::finish`] makes of the
+/// same values widened.
+#[inline]
+fn finite_f32(row: &[[f32; 3]], detail: &str) -> Result<(), Error> {
+    // The conjunction over every value, without the short circuit `all` would take, so it
+    // vectorises; the answer is the same.
+    let finite = row
+        .as_flattened()
+        .iter()
+        .fold(true, |finite, value| finite & value.is_finite());
+    if finite {
+        Ok(())
+    } else {
+        Err(Error::render(detail))
+    }
+}
+
+/// The planes a linear segment's entry is read from by rows ([`Linear::entry_planes`]): the
+/// source through its view, or a spatial frame. Both hold `f32`, so a rectangle of a segment's
+/// output is walked through its exact geometry and the view at once ([`ViewReader::walk`]) and
+/// its values copied, rather than each pulled through [`Evaluation::entry_pixel`] with the
+/// geometry's unmap, the view's orientation and a widening to `f64` per pixel.
+#[derive(Clone, Copy)]
+pub(super) struct EntryPlanes<'a> {
+    reader: ViewReader<'a>,
+    /// Applied to each source pixel read, in `f64`, when the settings carry one; a frame's
+    /// values are read as they are.
+    white_balance: Option<WhiteBalanceApproximation>,
+}
+
+impl EntryPlanes<'_> {
+    /// The pixels `block` of a segment's output reads through its exact `geometry`, or `None`
+    /// when it is empty or would read outside the planes, which the per-pixel pull reports.
+    fn walk(&self, geometry: ExactGeometry, block: Region) -> Option<Walk> {
+        if block.is_empty() {
+            return None;
+        }
+        let (across, down) = geometry.unmap_steps();
+        let at = geometry.unmap(block.x0, block.y0);
+        self.reader
+            .walk(at, across, down, block.width, block.height)
     }
 }
 
@@ -342,12 +446,9 @@ impl PixelDomain for Linear<'_> {
         let RowScratch { linear, snapshot } = scratch;
         linear.clear();
         linear.extend(pixels.iter().map(|pixel| pixel.map(|value| value as f32)));
-        snapshot.resize(pixels.len().max(1), MaskedInput::default());
-        for run in runs {
-            apply_units(&run, y, x0, linear, snapshot)?;
-        }
+        Self::colour_f32(linear, runs, y, x0, snapshot)?;
         for (pixel, value) in pixels.iter_mut().zip(linear.iter()) {
-            *pixel = Self::finish(value.map(f64::from))?;
+            *pixel = value.map(f64::from);
         }
         Ok(())
     }
@@ -357,9 +458,7 @@ impl PixelDomain for Linear<'_> {
         if pixel.iter().all(|value| value.is_finite()) {
             Ok(pixel)
         } else {
-            Err(Error::render(
-                "linear evaluation produced a non-finite pixel",
-            ))
+            Err(Error::render(NON_FINITE_PIXEL))
         }
     }
 
@@ -485,12 +584,11 @@ fn terminal_pixel_in(quantizer: &srgb::Quantizer, pixel: [f64; 3]) -> Result<[u8
 /// of [`super::Render::frame`], for the exact phase and the proxy phase alike.
 ///
 /// This driver materializes only the last segment's output, as terminal bytes, in one
-/// [`segment_pass`] whose rows pull their entry through the evaluation: the source's rows directly
-/// when the stack is one segment read through the identity, and otherwise each pixel through the
-/// geometry from the source, the evaluation's spatial frame or a resample of the segment before.
-/// What lies before a resample is pulled, never materialized, because it is `f64`: its taps are
-/// read one block of output pixels at a time, through the rectangle of the segment before them
-/// that the block reads ([`LinearRows::load_resampled`]).
+/// [`segment_pass`] whose rows read their entry through the segment's exact geometry: the source's
+/// planes or the evaluation's spatial frame by rows ([`LinearRows::load_pulled`]), or a resample
+/// of the segment before. What lies before a resample is pulled, never materialized, because it is
+/// `f64`: its taps are read one block of output pixels at a time, through the rectangle of the
+/// segment before them that the block reads ([`LinearRows::load_resampled`]).
 pub(super) fn rasterize(
     evaluation: &Evaluation<'_, Linear<'_>>,
     snapshot_id: SnapshotId,
@@ -503,17 +601,12 @@ pub(super) fn rasterize(
     let index = evaluation.compiled.segments.len() - 1;
     let segment = &evaluation.compiled.segments[index];
     let source = evaluation.domain.source;
-    let reader = (segment.entry.is_none()
-        && segment
-            .geometry
-            .is_identity(source.width(), source.height()))
-    .then_some(evaluation.domain.reader);
     segment_pass(
         &LinearRows {
             evaluation,
             index,
             segment,
-            reader,
+            planes: Linear::entry_planes(evaluation, index),
             output: LinearOutput::Terminal(srgb::quantizer()),
             #[cfg(test)]
             context,
@@ -550,8 +643,9 @@ pub(super) struct LinearRows<'e, 'x, 's> {
     evaluation: &'e Evaluation<'x, Linear<'s>>,
     index: usize,
     segment: &'e Segment,
-    /// The source's rows, when the segment reads the source through the identity.
-    reader: Option<ViewReader<'e>>,
+    /// The planes the segment's entry is read from by rows, when it is the source or a spatial
+    /// frame the evaluation holds ([`Linear::entry_planes`]).
+    planes: Option<EntryPlanes<'e>>,
     /// What each finished pixel is written as.
     output: LinearOutput,
     #[cfg(test)]
@@ -607,16 +701,6 @@ pub(super) struct LinearScratch {
 }
 
 impl LinearRows<'_, '_, '_> {
-    /// One viewed source row, which the reader resolves once instead of per pixel.
-    fn source_row<'r>(
-        reader: &'r ViewReader<'_>,
-        y: u32,
-    ) -> Result<impl ExactSizeIterator<Item = [f32; 3]> + 'r, Error> {
-        reader
-            .row(y)
-            .ok_or_else(|| Error::render("linear output coordinate was outside stage"))
-    }
-
     /// The segment's entry value under output pixel `(x, y)`, through its exact geometry.
     #[inline]
     fn entry(&self, x: u32, y: u32) -> Result<[f64; 3], Error> {
@@ -644,9 +728,10 @@ impl LinearRows<'_, '_, '_> {
         Ok(())
     }
 
-    /// The rows of a chunk whose entry is pulled one pixel at a time through the evaluation
-    /// ([`Evaluation::entry_pixel`]), or read from the source's rows when the segment reads the
-    /// source through the identity.
+    /// The rows of a chunk whose entry is the source or a spatial frame: walked through the
+    /// segment's exact geometry and the view at once and copied ([`Self::load_walk`]), or, where
+    /// the evaluation holds no planes for the entry, pulled one pixel at a time through it
+    /// ([`Evaluation::entry_pixel`]), which is the reference the rows are held to.
     pub(super) fn load_pulled(
         &self,
         scratch: &mut LinearScratch,
@@ -654,63 +739,86 @@ impl LinearRows<'_, '_, '_> {
         chunk: &mut [u8],
     ) -> Result<(), Error> {
         let width = self.segment.width as usize;
-        let domain = &self.evaluation.domain;
         let pixel_bytes = self.output.bytes();
+        let rows = chunk.len() / (width * pixel_bytes);
+        let block = Region {
+            x0: 0,
+            y0,
+            width: self.segment.width,
+            height: rows as u32,
+        };
+        if let Some(planes) = &self.planes
+            && let Some(walk) = planes.walk(self.segment.geometry, block)
+        {
+            return self.load_walk(planes, walk, &mut scratch.rows, chunk);
+        }
+        let values = &mut scratch.rows;
         for (row, bytes) in chunk.chunks_exact_mut(width * pixel_bytes).enumerate() {
             let y = y0 + row as u32;
-            let values = &mut scratch.rows;
-            // Immutable source planes were checked finite on construction. A source row widens at
-            // the same boundary as the point path's source pixel.
-            match (&self.reader, self.segment.has_color) {
-                (Some(reader), true) => {
-                    for (pixel, value) in Self::source_row(reader, y)?
-                        .zip(values[row * width..(row + 1) * width].iter_mut())
-                    {
-                        let pixel = domain.adjust_source_pixel(pixel.map(f64::from))?;
-                        *value = pixel.map(|value| value as f32);
-                    }
+            if self.segment.has_color {
+                for (x, value) in values[row * width..(row + 1) * width]
+                    .iter_mut()
+                    .enumerate()
+                {
+                    *value = self.entry(x as u32, y)?.map(|value| value as f32);
                 }
-                // The developed planes exactly: `f32` to the terminal, without widening.
-                (Some(reader), false) if domain.white_balance.is_none() => {
-                    let source = Self::source_row(reader, y)?;
-                    match self.output {
-                        LinearOutput::Terminal(quantizer) => {
-                            for (pixel, rgba) in source.zip(bytes.chunks_exact_mut(4)) {
-                                rgba.copy_from_slice(&terminal_f32(quantizer, pixel)?);
-                            }
-                        }
-                        LinearOutput::Boundary => {
-                            let format = super::boundary::BoundaryFormat::Float;
-                            for (pixel, texel) in source.zip(bytes.chunks_exact_mut(pixel_bytes)) {
-                                super::boundary::write_texel(format, texel, pixel);
-                            }
-                        }
-                    }
-                }
-                (Some(reader), false) => {
-                    for (pixel, rgba) in
-                        Self::source_row(reader, y)?.zip(bytes.chunks_exact_mut(pixel_bytes))
-                    {
-                        let pixel = domain.adjust_source_pixel(pixel.map(f64::from))?;
-                        self.output.write(rgba, pixel)?;
-                    }
-                }
-                (None, true) => {
-                    for (x, value) in values[row * width..(row + 1) * width]
-                        .iter_mut()
-                        .enumerate()
-                    {
-                        *value = self.entry(x as u32, y)?.map(|value| value as f32);
-                    }
-                }
-                (None, false) => {
-                    for (x, rgba) in bytes.chunks_exact_mut(pixel_bytes).enumerate() {
-                        self.output.write(rgba, self.entry(x as u32, y)?)?;
-                    }
+            } else {
+                for (x, rgba) in bytes.chunks_exact_mut(pixel_bytes).enumerate() {
+                    self.output.write(rgba, self.entry(x as u32, y)?)?;
                 }
             }
         }
         Ok(())
+    }
+
+    /// A chunk walked from its entry's planes, each value placed at its offset in the chunk.
+    /// Without a white balance the values stay `f32` from the planes to the colour rows, the
+    /// terminal bytes ([`terminal_f32`]) or the boundary texels; with one, each pixel takes its
+    /// `f64` [`WhiteBalanceApproximation::adjust`] and overflow error, as the pull does, before it
+    /// is narrowed or written. The test is made once per chunk, not per pixel. The source planes
+    /// are finite by construction; a frame's values reach the same checks the pull's do.
+    fn load_walk(
+        &self,
+        planes: &EntryPlanes<'_>,
+        walk: Walk,
+        values: &mut [[f32; 3]],
+        chunk: &mut [u8],
+    ) -> Result<(), Error> {
+        let bytes = self.output.bytes();
+        let reader = &planes.reader;
+        match (self.segment.has_color, &planes.white_balance, self.output) {
+            (true, None, _) => reader.visit(walk, |offset, rgb| {
+                values[offset] = rgb;
+                Ok(())
+            }),
+            (true, Some(balance), _) => reader.visit(walk, |offset, rgb| {
+                values[offset] = balance
+                    .adjust(rgb.map(f64::from))?
+                    .map(|value| value as f32);
+                Ok(())
+            }),
+            (false, None, LinearOutput::Terminal(quantizer)) => {
+                reader.visit(walk, |offset, rgb| {
+                    chunk[offset * 4..offset * 4 + 4]
+                        .copy_from_slice(&terminal_f32(quantizer, rgb)?);
+                    Ok(())
+                })
+            }
+            (false, None, LinearOutput::Boundary) => reader.visit(walk, |offset, rgb| {
+                super::boundary::write_texel(
+                    super::boundary::BoundaryFormat::Float,
+                    &mut chunk[offset * bytes..(offset + 1) * bytes],
+                    rgb,
+                );
+                Ok(())
+            }),
+            (false, Some(balance), output) => reader.visit(walk, |offset, rgb| {
+                output.write(
+                    &mut chunk[offset * bytes..(offset + 1) * bytes],
+                    balance.adjust(rgb.map(f64::from))?,
+                )
+            }),
+        }
     }
 
     /// A resampled segment's rows, in blocks of [`TAP_BLOCK_COLUMNS`] columns: each block reads
@@ -895,13 +1003,6 @@ pub(super) fn boundary_pass(
     cancel: &Cancel,
     context: &RenderContext,
 ) -> Result<Vec<u8>, Error> {
-    let source = evaluation.domain.source;
-    let reader = (index == 0
-        && segment.entry.is_none()
-        && segment
-            .geometry
-            .is_identity(source.width(), source.height()))
-    .then_some(evaluation.domain.reader);
     let mut texels = vec![
         0u8;
         super::boundary::frame_len(
@@ -915,7 +1016,7 @@ pub(super) fn boundary_pass(
             evaluation,
             index,
             segment,
-            reader,
+            planes: Linear::entry_planes(evaluation, index),
             output: LinearOutput::Boundary,
             #[cfg(test)]
             context,
@@ -1278,6 +1379,298 @@ mod tests {
             assert_eq!(
                 error.detail,
                 "linear evaluation produced a non-finite value"
+            );
+        }
+    }
+
+    /// A `width` × `height` source whose every value is distinct within its plane, spread over
+    /// `[-0.1, 1.15]` so the terminal clips at both ends and neighbouring bytes differ.
+    fn distinct(width: u32, height: u32) -> LinearImage {
+        const PRIME: usize = 10_007;
+        let pixels = (width * height) as usize;
+        assert!(pixels <= PRIME);
+        let planes: Vec<f32> = (0..3)
+            .flat_map(|channel| {
+                (0..pixels).map(move |index| {
+                    let place = (index * 7_919 + channel * 3_331) % PRIME;
+                    place as f32 / 8_000.0 - 0.1
+                })
+            })
+            .collect();
+        LinearImage::with_fingerprint(width, height, planes, "sha256:linear-distinct").unwrap()
+    }
+
+    /// The approximation every white-balanced case below renders under.
+    fn balance() -> WhiteBalanceApproximation {
+        WhiteBalanceApproximation::from_matrix([
+            [1.3, 0.1, -0.05],
+            [0.02, 0.97, 0.01],
+            [-0.1, 0.05, 0.62],
+        ])
+        .unwrap()
+    }
+
+    /// The exact geometry variants a stack below ends with: none, every orientation, exact crops
+    /// touching the top-left edges, the bottom-right edges and none, and crops between turns.
+    fn geometry_variants() -> Vec<Vec<Layer>> {
+        let crop = |x: f64, y: f64, width: f64, height: f64| {
+            Layer::crop(CropPayload {
+                angle: 0.0,
+                x,
+                y,
+                width,
+                height,
+            })
+        };
+        let orientation =
+            |mirror: bool, turns: u8| Layer::orientation(crate::Orientation { mirror, turns });
+        let mut variants = vec![Vec::new()];
+        for turns in 0..4 {
+            for mirror in [false, true] {
+                variants.push(vec![orientation(mirror, turns)]);
+            }
+        }
+        variants.push(vec![crop(0.0, 0.0, 0.6, 0.7)]);
+        variants.push(vec![crop(0.4, 0.3, 0.6, 0.7)]);
+        variants.push(vec![crop(0.15, 0.2, 0.55, 0.45)]);
+        variants.push(vec![orientation(false, 1), crop(0.0, 0.25, 0.7, 0.75)]);
+        variants.push(vec![crop(0.3, 0.0, 0.7, 0.6), orientation(true, 1)]);
+        variants.push(vec![
+            orientation(true, 3),
+            crop(0.1, 0.1, 0.5, 0.8),
+            orientation(false, 2),
+        ]);
+        variants
+    }
+
+    /// Basic's colour units, so a colour segment runs real units over its rows.
+    fn basic() -> Layer {
+        colour_layer(
+            crate::BASIC_EFFECT,
+            serde_json::json!({"exposure": 0.4, "contrast": 15.0, "vibrance": 20.0}),
+        )
+    }
+
+    /// Every chunk of the last segment of `evaluation`, loaded by the rows that walk the entry's
+    /// planes and by the rows that pull each pixel through [`Evaluation::entry_pixel`]
+    /// (`planes: None`, the per-pixel reference), with and without colour and into terminal bytes
+    /// and boundary texels, in chunks of several heights with a partial last chunk: bit for bit
+    /// the same. The two loads start from different garbage, so a value one of them leaves
+    /// unwritten shows.
+    fn rows_load_as_pulled(evaluation: &Evaluation<'_, Linear<'_>>, what: &str) {
+        let index = evaluation.compiled.segments.len() - 1;
+        let planes = Linear::entry_planes(evaluation, index);
+        assert!(planes.is_some(), "{what}: the entry is read by rows");
+        let context = RenderContext::new();
+        for has_color in [false, true] {
+            let mut segment = evaluation.compiled.segments[index].clone();
+            segment.has_color = has_color;
+            for output in [
+                LinearOutput::Terminal(srgb::quantizer()),
+                LinearOutput::Boundary,
+            ] {
+                let rows = |planes| LinearRows {
+                    evaluation,
+                    index,
+                    segment: &segment,
+                    planes,
+                    output,
+                    context: &context,
+                };
+                let (walked, pulled) = (rows(planes), rows(None));
+                let row_bytes = segment.width as usize * output.bytes();
+                let standard = crate::render::color_chunk_rows(segment.width);
+                for chunk_rows in [standard, 1, 3, 7] {
+                    for y0 in (0..segment.height).step_by(chunk_rows) {
+                        let count = (chunk_rows as u32).min(segment.height - y0) as usize;
+                        let mut scratch = [LinearScratch::default(), LinearScratch::default()];
+                        scratch[0].rows =
+                            vec![[f32::from_bits(0x7fc0_0001); 3]; count * segment.width as usize];
+                        scratch[1].rows =
+                            vec![[f32::from_bits(0x7fc0_0002); 3]; count * segment.width as usize];
+                        let mut chunks =
+                            [vec![0x00; count * row_bytes], vec![0xff; count * row_bytes]];
+                        let [walked_scratch, pulled_scratch] = &mut scratch;
+                        let [walked_chunk, pulled_chunk] = &mut chunks;
+                        walked.load(walked_scratch, y0, walked_chunk).unwrap();
+                        pulled.load(pulled_scratch, y0, pulled_chunk).unwrap();
+                        let what = format!(
+                            "{what}: colour {has_color}, {} output, chunks of {chunk_rows} at row \
+                             {y0}",
+                            output.bytes()
+                        );
+                        if has_color {
+                            let bits = |rows: &[[f32; 3]]| -> Vec<[u32; 3]> {
+                                rows.iter().map(|pixel| pixel.map(f32::to_bits)).collect()
+                            };
+                            assert!(
+                                bits(&walked_scratch.rows) == bits(&pulled_scratch.rows),
+                                "{what}"
+                            );
+                        } else {
+                            assert!(walked_chunk == pulled_chunk, "{what}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The rows read from the developed planes through every source orientation and view crop,
+    /// every recipe orientation, exact crops touching each edge and crops between turns, with and
+    /// without colour and with and without an approximate white balance, are what the per-pixel
+    /// pull reads: the rendered frame is the point evaluator's at every pixel, and each chunk's
+    /// rows are bit for bit the pulled ones.
+    #[test]
+    fn rows_through_every_view_and_exact_geometry_are_the_pulled_pixels() {
+        let registry = ModuleRegistry::developer();
+        let source = distinct(41, 29);
+        for orientation in 1..=8 {
+            for crop in [[0, 0, 41, 29], [3, 2, 35, 25]] {
+                let view = source.with_view(crop, orientation).unwrap();
+                for geometry in geometry_variants() {
+                    for colour in [false, true] {
+                        let mut layers = geometry.clone();
+                        if colour {
+                            layers.insert(layers.len() / 2, basic());
+                        }
+                        let recipe = colour_recipe(layers);
+                        for white_balance in [None, Some(balance())] {
+                            let settings = LinearSettings { white_balance };
+                            let what = format!(
+                                "orientation {orientation}, crop {crop:?}, {:?}, colour \
+                                 {colour}, balance {}",
+                                recipe
+                                    .layers
+                                    .iter()
+                                    .map(|layer| &layer.payload)
+                                    .collect::<Vec<_>>(),
+                                white_balance.is_some()
+                            );
+                            rendered_as_the_point_evaluator(
+                                &registry, &view, &recipe, settings, &what,
+                            );
+                            let context = RenderContext::new();
+                            let evaluation = linear_evaluation(
+                                &context,
+                                &registry,
+                                &view,
+                                &recipe,
+                                settings,
+                                Tiling::Halo,
+                                SpatialMode::Frames,
+                            )
+                            .unwrap();
+                            rows_load_as_pulled(&evaluation, &what);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A spatial frame followed by exact geometry, with and without colour after it, is read by
+    /// rows as the per-pixel pull reads it, under portrait and landscape source views.
+    #[test]
+    fn rows_from_a_spatial_frame_through_exact_geometry_are_the_pulled_pixels() {
+        let registry = ModuleRegistry::developer();
+        let source = distinct(41, 29);
+        for orientation in [1, 3, 6, 7] {
+            let view = source.with_view([2, 1, 37, 27], orientation).unwrap();
+            for geometry in geometry_variants() {
+                for colour in [false, true] {
+                    let mut layers = vec![colour_layer(
+                        crate::PRESENCE_EFFECT,
+                        serde_json::json!({"clarity": 35.0, "texture": -20.0}),
+                    )];
+                    layers.extend(geometry.iter().cloned());
+                    if colour {
+                        layers.push(basic());
+                    }
+                    let recipe = colour_recipe(layers);
+                    let what = format!(
+                        "orientation {orientation}, {:?}, colour {colour}",
+                        recipe
+                            .layers
+                            .iter()
+                            .map(|layer| &layer.payload)
+                            .collect::<Vec<_>>()
+                    );
+                    let settings = LinearSettings::default();
+                    rendered_as_the_point_evaluator(&registry, &view, &recipe, settings, &what);
+                    let context = RenderContext::new();
+                    let evaluation = linear_evaluation(
+                        &context,
+                        &registry,
+                        &view,
+                        &recipe,
+                        settings,
+                        Tiling::Halo,
+                        SpatialMode::Frames,
+                    )
+                    .unwrap();
+                    assert!(
+                        matches!(evaluation.compiled.last().entry, Some(Entry::Spatial(_))),
+                        "{what}"
+                    );
+                    rows_load_as_pulled(&evaluation, &what);
+                }
+            }
+        }
+    }
+
+    /// A white balance whose product overflows fails with the point path's own error on every
+    /// row path: through an orientation and a crop, with and without colour, and in the input a
+    /// spatial operation reads.
+    #[test]
+    fn a_white_balance_overflow_is_the_point_error_on_every_row_path() {
+        let registry = ModuleRegistry::developer();
+        let source = image(9, 7, &[[1.0; 3]; 63]);
+        let overflow = LinearSettings {
+            white_balance: Some(
+                WhiteBalanceApproximation::from_matrix([[f64::MAX; 3]; 3]).unwrap(),
+            ),
+        };
+        let presence = colour_layer(crate::PRESENCE_EFFECT, serde_json::json!({"clarity": 35.0}));
+        for layers in [
+            vec![Layer::orientation(crate::Orientation {
+                mirror: true,
+                turns: 1,
+            })],
+            vec![
+                Layer::crop(CropPayload {
+                    angle: 0.0,
+                    x: 0.2,
+                    y: 0.1,
+                    width: 0.6,
+                    height: 0.8,
+                }),
+                basic(),
+            ],
+            vec![presence.clone()],
+            vec![basic(), presence],
+        ] {
+            let recipe = colour_recipe(layers);
+            let context = RenderContext::new();
+            let expected = linear_evaluation(
+                &context,
+                &registry,
+                &source,
+                &Recipe::default(),
+                overflow,
+                Tiling::Halo,
+                SpatialMode::Point,
+            )
+            .unwrap()
+            .pixel(0, 0)
+            .unwrap_err();
+            let actual = render_linear(&registry, &source, SnapshotId::new(), &recipe, overflow)
+                .unwrap_err();
+            assert_eq!(
+                (actual.kind, actual.detail),
+                (expected.kind, expected.detail),
+                "{:?}",
+                recipe.layers
             );
         }
     }

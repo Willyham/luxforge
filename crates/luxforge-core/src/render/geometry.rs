@@ -131,6 +131,15 @@ impl ExactGeometry {
         (input_x as u32, input_y as u32)
     }
 
+    /// The input-stage steps [`Self::unmap`] takes for one more output column and one more output
+    /// row: `(a, b)` and `(c, d)`, each a unit step along one axis. With the unmap of a rectangle's
+    /// first pixel they are every pixel it reads, which is how the linear rows walk a source view
+    /// or a spatial frame.
+    #[inline]
+    pub(super) fn unmap_steps(self) -> ((i64, i64), (i64, i64)) {
+        ((self.a, self.b), (self.c, self.d))
+    }
+
     /// The input-stage rectangle an output-stage rectangle reads: the exact inverse of
     /// [`Self::map_region`], from the two opposite corners, since the mapping is a signed
     /// permutation with an integer translation. `region` must lie inside the output stage.
