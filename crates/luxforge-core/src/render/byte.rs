@@ -265,7 +265,7 @@ impl PixelDomain for Byte<'_> {
     }
     fn tile_output(
         region: Region,
-        values: Vec<f32>,
+        values: &[f32],
         tile: Region,
         parallelism: Parallelism,
         wide: bool,

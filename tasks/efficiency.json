@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Enable hardware SHA-256 on aarch64, JPEG XL DNG decoding on the shared Rayon pool, and runtime half-float conversion on x86_64.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "sha2 =0.10.9 compiles its aarch64 SHA-2 backend only with the `asm` feature (sha2-0.10.9/src/sha256.rs cfg_if); the workspace enables no feature and Cargo.lock has no sha2-asm, so every hash on the M4 is software. The aarch64 backend detects the CPU feature at run time (cpufeatures) and falls back to software. Enabling `asm` also pulls in sha2-asm, built with cc, which on x86 replaces only the software fallback. Choose between `features = [\"asm\"]` with a pinned sha2-asm and a notice, or a pinned sha2 release whose aarch64 backend needs no feature, if one exists and its API change is contained; record which and why in the design.",
@@ -187,7 +187,7 @@
     {
       "id": "TASK-004",
       "description": "Read originals with their size, let pooled writers fault in RAW development buffers instead of zero-filling them on one thread, and stop rescanning RAW proxies for non-finite values.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "crates/luxforge-core/src/source.rs:112 reads through file.take(limit + 1) into Vec::new(); Take hides File's size hint, so the buffer doubles and can hold up to twice the file through the unpack (64 MiB capacity for a 40 MB NEF). Reserve the metadata length (already checked against the limit) with try_reserve_exact before reading, keeping the over-limit refusal.",
@@ -309,7 +309,7 @@
     {
       "id": "TASK-006",
       "description": "Reuse each batch slot's tile planes instead of allocating fresh zeroed planes for every tile and unit.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "run_tile (crates/luxforge-core/src/render/spatial.rs:327; the allocations at :368, :377 and :406) does vec![0.0; regions[0].pixels() * 3] for the input and a fresh vec for each unit's output; only TileScratch is reused per slot. At 60 MP with all three Presence fields one tile allocates roughly 125 MB, about 8.8 GB of new zero pages per render; Clarity alone about 46 MB per tile.",
@@ -368,13 +368,13 @@
     {
       "id": "TASK-007",
       "description": "Replace the barrier between spatial batches with a rolling window under the same budget reservation.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-006"
       ],
       "extra_context": [
         "run_batches (crates/luxforge-core/src/render/spatial.rs:706) runs a batch of tiles, waits for all of them, then reserves and starts the next. When the spatial target admits a batch as wide as the pool, each tile runs serially on one worker, and on the M4 Pro (10 performance, 4 efficiency cores; the global pool has 14 threads) the batch waits for its slowest tile on an efficiency core. Recorded Presence renders reach about 800 to 1100% of 1400%.",
-        "Start a tile as soon as one finishes, within the same reservation and concurrency limit (RenderContext::concurrency), and write tiles back in order. Keep the cancellation check between tiles and the narrow-batch path where each tile's passes run on the pool. Results and their order of arithmetic per value are unchanged.",
+        "Start a tile as soon as one finishes, within the same reservation and concurrency limit (RenderContext::concurrency). Tiles are written as they finish under one lock: they are disjoint, so the order changes no byte, and no reorder buffer is held. Keep the cancellation check between tiles and the narrow-window path where each tile's passes run on the pool. Results and their order of arithmetic per value are unchanged.",
         "Do not resize the pool or add a private pool (rule 9)."
       ],
       "context_links": [
@@ -427,7 +427,7 @@
     {
       "id": "TASK-008",
       "description": "Read Sharpening's limiter and Detail's reconstruction over row slices in the interior, without per-pixel clamps and assertions.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Already done: smoothing, noise reduction's shrinkage (each pixel's chroma energy and factor computed once for a and b) and its level planes run over whole rows, the interior through slices and only the stage-edge columns through the clamped read, with the halo checked once a pass (modules/detail/filters.rs, denoise.rs). modules/detail/exactness.rs holds frozen tap-by-tap references for them.",
@@ -496,7 +496,7 @@
     {
       "id": "TASK-009",
       "description": "Read Presence's box, guided and upsample passes over row slices in the interior, interleave independent running sums, and hoist upsample's per-column index and weight.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "In crates/luxforge-core/src/modules/presence/filters.rs, horizontal_mean (:425), vertical_strip (:491), the guided combines (:657, :774) and upsample (:823) read every tap through Plane::get or Planes::sample (modules/spatial.rs:344): two clamps, an index multiply and a bounds check, which also keeps vertical_strip's 64 independent accumulators from vectorizing. horizontal_mean's running sum is one dependent f64 add chain per row.",
@@ -553,7 +553,7 @@
     {
       "id": "TASK-010",
       "description": "Read RAW render input by rows instead of per pixel, read portrait planes in blocks, skip per-pixel resolution in segments without replacements, and quantize f32 rows without the f64 guard.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "load_pulled (crates/luxforge-core/src/render/linear.rs:639) takes its (None, _) arms whenever geometry is not the identity (any exact crop or Orientation layer) or the entry is a spatial frame: per pixel geometry.unmap, entry_pixel, reader.pixel with View::map's orientation match and adjust_source_pixel, or frame_pixel with u64 plane arithmetic. region_in (render/pipeline.rs:715) collects a Vec<[f64; 3]> per row and Linear::colour_row (linear.rs:317) converts f64 to f32 to f64 with a per-pixel finish Result. For a signed-permutation geometry with no entry, compose geometry and view into a first index and stride per row (extend ViewReader::row with an x offset) and copy spans; for a spatial frame entry copy the three plane rows; keep f32 end to end where the value is f32; hoist white_balance.is_none() out of the loop. Keep the per-pixel white-balance overflow error that source_rows_keep_validation_fallback... checks.",
@@ -942,7 +942,7 @@
     {
       "id": "TASK-016",
       "description": "Remove the normalized float mosaic from RAW development's peak through a checked-in librtprocess patch that reads each site from the u16 mosaic, without editing vendored sources.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-004"
       ],
@@ -1083,18 +1083,18 @@
     {
       "id": "TASK-018",
       "description": "Add the reduced-grid cache for Clarity's and Dehaze's stage-anchored reductions under rule 14, and read tiles and point samples from it.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-006",
         "TASK-007",
         "TASK-009"
       ],
       "extra_context": [
-        "Clarity's encoded-luminance 4x block grid (crates/luxforge-core/src/modules/presence/clarity.rs:142) and Dehaze's reduced grid (dehaze.rs:262) are anchored at the stage origin and independent of the tile and of the unit's amount, but every tile rebuilds them over its halo: about 2.7x the stage in encodes for Clarity at 60 MP, and again on every amount change. Owner decision 2026-10-03: cache them.",
-        "Contract (rule 14): the value is the f32 reduced plane a unit builds before applying any coefficient; a unit declares that it has one, beside SpatialUnit::estimate_key. The key mirrors EstimateKey (render/context.rs:336): source fingerprint and development identity, the prefix hash of the layers before the operation, stage dimensions and the phase's sampling (exact, proxy or window), and the unit's own reduction key; not its position or amount. One store in RenderContext beside EstimateStore, 64 MiB in total, named in docs/design/architecture.md's limits; evict least recently used before adding past the budget; refuse to hold an entry larger than the budget.",
-        "Fill on the shared pool as its own pass before the operation's tiles in the render that first needs it, never on the owner or interface thread, cancelled with the render. Tiles read sub-rectangles; the guided filter stays per tile; when the plane covers the reach, shrink the tile's fill to what other units' halos still need. A point sample reads the plane when present and otherwise computes its window as today; both give the same byte.",
-        "Tests: a hit returns the bytes a recomputation gives; each key part, changed alone, misses; the budget evicts and refuses; a render with and without the cache is byte-identical in both domains; a sample equals the rendered byte with and without the cached plane. Record hit rate across an amount drag and settle, rebuild cost and retained bytes in the measurement task.",
-        "Each masked Presence layer reads its own input, so each has its own entry, and at 60 MP 64 MiB holds about one Dehaze entry. A recipe may hold 16 masked spatial layers (docs/decisions.md, GPU previews), so include a stack of several masked Clarity and Dehaze layers at 60 MP in the adoption measurement and report its hit rate across an amount drag after a settle."
+        "Clarity's encoded-luminance 4x block grid (crates/luxforge-core/src/modules/presence/clarity.rs) and Dehaze's reduced grid (dehaze.rs) are anchored at the stage origin and independent of the unit's amount, but every tile rebuilds them over its halo: about 2.7x the stage in encodes for Clarity at 60 MP, and again on every amount change. Owner decision 2026-10-03: cache them.",
+        "Only a unit that runs first in its operation is cached (Dehaze whenever present, Clarity when it runs alone): Presence's box filters keep running f64 sums that start at each rectangle's edge, so a later unit's input can differ in its last bits from tile to tile and no shared plane reproduces it byte for byte. Dehaze caches its guide and its dark channel's input, which reads the f64 block mean, with the atmospheric light recorded in the entry.",
+        "Contract (rule 14, docs/design/efficiency.md, The reduced-grid cache): the key mirrors EstimateKey (source fingerprint, the domain's input prefix over the prefix hash, stage dimensions, the unit's reduction key), not the amount or the mask. One store in RenderContext beside EstimateStore, 64 MiB in total, named in docs/design/architecture.md's limits; evict least recently used before adding past the budget; refuse an entry larger than the budget.",
+        "Filled by the render's own tiles: a tile that computes the planes hands back the cells whose first pixel it holds, the render publishes them when it completes, and a cancelled render publishes nothing. A served tile's input is the first unit's output rectangle; later units keep their rectangles. A point sample reads covering planes and never fills; windowed renders neither read nor fill.",
+        "Each masked Presence layer reads its own input, so each has its own entry, and at 60 MP 64 MiB holds about two Dehaze entries. A recipe may hold 16 masked spatial layers (docs/decisions.md, GPU previews), so include a stack of several masked Clarity and Dehaze layers at 60 MP in the adoption measurement and report its hit rate across an amount drag after a settle."
       ],
       "context_links": [
         {
@@ -1138,7 +1138,7 @@
         }
       ],
       "acceptance_criteria": [
-        "Tiles and samples read Clarity's and Dehaze's reduced planes from the cache; an amount-only change hits it.",
+        "Tiles and samples read a first unit's reduced planes (Dehaze's, and Clarity's when it runs alone) from the cache; an amount-only change hits it; Clarity behind another unit runs as before.",
         "Every Presence exactness, sample-equals-render, window and masked test passes unchanged in both domains, with and without a cache hit.",
         "The cache is keyed, budgeted at 64 MiB, evicting and disposable as rule 14 requires, with a test for each key part; architecture.md lists the limit."
       ],

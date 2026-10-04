@@ -36,9 +36,10 @@
 use super::{
     ColorRun, Compiled, MaskedInput, RenderContext, ResampleEntry, ScratchBudget, Segment,
     color_chunk_rows, color_runs, mapped_replacements,
+    reduced::ReducedKey,
     spatial::{
-        PointTiles, SpatialPlan, Tiling, build_reduction_cancellable, fill_planes, resolve_globals,
-        run_batches, run_tile,
+        PlaneUse, PointTiles, SpatialPlan, TilePlanes, Tiling, build_reduction_cancellable,
+        fill_planes, resolve_globals, run_tile, run_tile_planned, run_tiles,
     },
 };
 
@@ -65,7 +66,9 @@ pub(super) fn colour_input<'r, D: PixelDomain>(
 }
 use crate::{
     Cancel, Error,
-    modules::{Global, Parallelism, Reduction, Region, SpatialOperation, Stage},
+    modules::{
+        Cells, Global, Parallelism, ReducedGrid, Reduction, Region, SpatialOperation, Stage,
+    },
 };
 use rayon::prelude::*;
 #[cfg(test)]
@@ -168,10 +171,12 @@ pub(crate) trait PixelDomain: Sync {
     fn spatial_frame(stage: Stage, wide: bool) -> Result<Self::SpatialFrame, Error>;
 
     /// One tile's output, from the rectangle `region` its last unit wrote, with each of the tile's
-    /// rows in the layout the frame holds it in, computed in the parallel phase.
+    /// rows in the layout the frame holds it in, computed in the parallel phase. `values` is
+    /// borrowed from the slot the tile ran in, whose next tile writes over it, so the output
+    /// owns a copy of the tile and of nothing else.
     fn tile_output(
         region: Region,
-        values: Vec<f32>,
+        values: &[f32],
         tile: Region,
         parallelism: Parallelism,
         wide: bool,
@@ -187,6 +192,39 @@ pub(crate) trait PixelDomain: Sync {
 
     /// One pixel of a spatial frame of `stage`.
     fn frame_pixel(frame: &Self::SpatialFrame, stage: Stage, x: u32, y: u32) -> Self::Pixel;
+
+    /// [`Evaluation::region_in`] read by the domain itself, for a segment whose rows it reads
+    /// without pulling each pixel through [`Evaluation::pixel_in`]: exactly the values the pull
+    /// answers, appended to `out`, which the caller has cleared. `None` when it does not read
+    /// segment `index` that way, and the region is pulled; the default.
+    fn region_rows(
+        _evaluation: &Evaluation<'_, Self>,
+        _index: usize,
+        _region: Region,
+        _out: &mut Vec<Self::Pixel>,
+        _scratch: &mut RowScratch,
+    ) -> Option<Result<(), Error>>
+    where
+        Self: Sized,
+    {
+        None
+    }
+
+    /// [`Evaluation::fill_rows`] read by the domain itself, as [`Self::region_rows`] is: exactly
+    /// the planes the pull fills, or `None` when it does not read segment `index` that way, and
+    /// the region is pulled; the default.
+    fn fill_rows(
+        _evaluation: &Evaluation<'_, Self>,
+        _index: usize,
+        _region: Region,
+        _planes: &mut [f32],
+        _parallelism: Parallelism,
+    ) -> Option<Result<(), Error>>
+    where
+        Self: Sized,
+    {
+        None
+    }
 }
 
 /// Identify the pixels of a recipe prefix in this domain. This only builds metadata: it neither
@@ -267,7 +305,8 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             frame: None,
             #[cfg(test)]
             built: Vec::new(),
-            tiles: (mode == SpatialMode::Point).then(|| PointTiles::new(tiling, context.spatial())),
+            tiles: (mode == SpatialMode::Point)
+                .then(|| PointTiles::new(tiling, context.spatial(), context.reduced())),
             tiling,
             cancel: cancel.clone(),
             context,
@@ -439,7 +478,11 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     /// pixel depends on that pixel's neighbourhood only, so this changes nothing but the schedule.
     pub(crate) fn with_tile(mut self, tile: u32) -> Self {
         self.tiling = Tiling::Fixed(tile);
-        self.tiles = Some(PointTiles::new(self.tiling, self.context.spatial()));
+        self.tiles = Some(PointTiles::new(
+            self.tiling,
+            self.context.spatial(),
+            self.context.reduced(),
+        ));
         self
     }
 
@@ -541,13 +584,16 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         } else {
             crate::modules::Parallelism::Serial
         };
+        // One region, in a slot of its own whose buffers fit what this region's chain asks: a
+        // one-pixel window allocates its own small rectangles, not a whole tile's.
+        let mut slot = super::spatial::TileScratch::default();
         let (written, values) = run_tile(
             &plan,
             &entry.operation,
             &globals,
             region,
             parallelism,
-            &mut super::spatial::TileScratch::default(),
+            &mut slot,
             &self.cancel,
             |input, planes| self.fill_rows(index - 1, input, planes, parallelism),
         )?;
@@ -707,12 +753,29 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     }
 
     /// Segment `index`'s output over `region`, row-major, into `out`: exactly the values
-    /// [`Self::pixel_in`] answers there, for a caller that reads a neighbourhood of them. A
-    /// segment with colour and no replacement pulls each row's entry through its geometry and
-    /// runs its colour over the row at once ([`PixelDomain::colour_row`]), which is the same
-    /// arithmetic as one pixel at a time; any other segment is pulled pixel by pixel. `region`
-    /// must lie inside the segment's output stage.
+    /// [`Self::pixel_in`] answers there, for a caller that reads a neighbourhood of them. A domain
+    /// that reads the segment's rows itself does ([`PixelDomain::region_rows`]: the linear
+    /// source or spatial frame of a segment without replacements); otherwise the region is
+    /// pulled ([`Self::region_pulled`]). `region` must lie inside the segment's output stage.
     pub(super) fn region_in(
+        &self,
+        index: usize,
+        region: Region,
+        out: &mut Vec<D::Pixel>,
+        scratch: &mut RowScratch,
+    ) -> Result<(), Error> {
+        out.clear();
+        match D::region_rows(self, index, region, out, scratch) {
+            Some(read) => read,
+            None => self.region_pulled(index, region, out, scratch),
+        }
+    }
+
+    /// [`Self::region_in`] pulled through the evaluation: a segment with colour and no
+    /// replacement pulls each row's entry through its geometry and runs its colour over the row
+    /// at once ([`PixelDomain::colour_row`]), which is the same arithmetic as one pixel at a time;
+    /// any other segment is pulled pixel by pixel.
+    pub(super) fn region_pulled(
         &self,
         index: usize,
         region: Region,
@@ -747,14 +810,31 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         Ok(())
     }
 
-    /// Segment `index`'s output over `region`, as the three planes a spatial operation reads: one
-    /// [`Self::region_in`] per row, on the pool under [`Parallelism::Pool`], for a segment whose
-    /// colour runs over rows. Any other segment is read pixel by pixel straight into the planes,
-    /// since a row buffer would only copy what a pull already answers.
+    /// Segment `index`'s output over `region`, as the three planes a spatial operation reads:
+    /// read row by row by a domain that reads the segment's rows itself
+    /// ([`PixelDomain::fill_rows`]: the linear source or spatial frame of a segment without
+    /// replacements), and otherwise pulled ([`Self::fill_pulled`]).
     ///
     /// This is how the stage a spatial entry reads is read everywhere: a tile's input, in a frame
     /// and in a point query, and the reduction its global estimates are prepared from.
     fn fill_rows(
+        &self,
+        index: usize,
+        region: Region,
+        planes: &mut [f32],
+        parallelism: Parallelism,
+    ) -> Result<(), Error> {
+        match D::fill_rows(self, index, region, planes, parallelism) {
+            Some(filled) => filled,
+            None => self.fill_pulled(index, region, planes, parallelism),
+        }
+    }
+
+    /// [`Self::fill_rows`] pulled through the evaluation: one [`Self::region_pulled`] per row, on
+    /// the pool under [`Parallelism::Pool`], for a segment whose colour runs over rows. Any other
+    /// segment is read pixel by pixel straight into the planes, since a row buffer would only copy
+    /// what a pull already answers.
+    pub(super) fn fill_pulled(
         &self,
         index: usize,
         region: Region,
@@ -787,7 +867,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
                 width: region.width,
                 height: 1,
             };
-            self.region_in(index, line, pixels, scratch)?;
+            self.region_pulled(index, line, pixels, scratch)?;
             for (column, pixel) in pixels.iter().enumerate() {
                 let [r, g, b] = D::spatial_input(*pixel);
                 red[column] = r;
@@ -868,14 +948,20 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             .tiles
             .as_ref()
             .expect("a pull meets only the latest frame or a point query's tiles");
+        let stage = self.spatial_stage(index);
         let rgb = tiles.pixel(
             index,
             &entry.operation,
-            self.spatial_stage(index),
+            stage,
             x,
             y,
             &self.cancel,
             || self.spatial_globals(index, entry),
+            |globals| {
+                let (key, _) = entry.reduced_key(&self.domain, stage)?;
+                let global = globals.first().and_then(Option::as_ref);
+                Some(self.context.reduced().lookup(&key, global))
+            },
             |region, planes| self.fill_rows(index - 1, region, planes, Parallelism::Serial),
         )?;
         D::spatial_output(rgb, self.widths[index].input)
@@ -883,7 +969,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
 }
 
 /// One row of three planes being filled, with its index in the region.
-type PlaneRow<'p> = (usize, ((&'p mut [f32], &'p mut [f32]), &'p mut [f32]));
+pub(super) type PlaneRow<'p> = (usize, ((&'p mut [f32], &'p mut [f32]), &'p mut [f32]));
 
 /// The float rows a domain runs one row's colour through, reused by every row one worker takes.
 #[derive(Default)]
@@ -957,6 +1043,10 @@ pub(crate) struct SpatialEntry {
     /// by a windowed proxy, whose stage is a window that cannot be reduced as a whole
     /// ([`super::window`]). `None` everywhere else.
     pub(super) globals: Option<super::window::Globals>,
+    /// Whether a windowed proxy cut this operation to a window, which it runs over as its own
+    /// stage. A window's edge blocks are not the whole stage's, so it neither reads nor fills the
+    /// store of reduced planes ([`super::reduced`]).
+    pub(super) windowed: bool,
 }
 
 impl SpatialEntry {
@@ -967,7 +1057,32 @@ impl SpatialEntry {
             fit_settle: crate::FitSettle::Proxy,
             prefix_hash,
             globals: None,
+            windowed: false,
         }
+    }
+
+    /// The key of the store's reduced planes of this operation's first unit over `stage` in
+    /// `domain`, mirroring an estimate's ([`resolve_globals`]), with the grid the unit declares;
+    /// `None` when the first unit declares none or a window cut the operation. Only the first unit
+    /// is asked: a later unit's input is the earlier units' output over its tile's own rectangles,
+    /// which no shared plane reproduces. `O(1)`, and reads no pixel.
+    pub(super) fn reduced_key<D: PixelDomain>(
+        &self,
+        domain: &D,
+        stage: Stage,
+    ) -> Option<(ReducedKey, ReducedGrid)> {
+        if self.windowed {
+            return None;
+        }
+        let grid = self.operation.units().first()?.reduced_grid()?;
+        let key = ReducedKey {
+            fingerprint: domain.fingerprint().to_owned(),
+            prefix_hash: input_prefix_key(domain, &self.prefix_hash).into_owned(),
+            width: stage.width,
+            height: stage.height,
+            reduction: grid.key.clone(),
+        };
+        Some((key, grid))
     }
 
     /// The SHA-256 of the layers before this one, which a stored estimate's key names.
@@ -1021,6 +1136,7 @@ impl SpatialEntry {
         whole: Stage,
         globals: impl FnOnce() -> Result<Vec<Option<Global>>, Error>,
     ) -> Result<(), Error> {
+        self.windowed = true;
         if previous != Region::whole(whole)
             && let Some(mask) = self.operation.mask()
         {
@@ -1061,10 +1177,18 @@ impl SpatialEntry {
 /// the one place either driver materializes a spatial operation. `fill` reads one rectangle of the
 /// stage it reads into three planes, for every tile and, on a store miss, for the reduction its
 /// global estimates ([`SpatialEntry::globals`]) are prepared from.
-/// Every tile runs through [`run_tile`], in batches whose concurrency the spatial budget sets,
-/// checking `cancel` between batches. No full-frame float buffer exists beside the output, only
-/// one tile's working set per tile in flight, charged to the spatial budget before each batch of
-/// tiles allocates.
+///
+/// When the operation's first unit declares reduced planes ([`SpatialEntry::reduced_key`]), a tile
+/// whose reach in the grid the store's entry covers reads them and reads its input over the unit's
+/// output rectangle alone; any other tile computes them as it always has and hands back the cells
+/// it owns, which the write lock copies into the render's pending planes. They are published when
+/// every tile is written, and not at all when the render fails or is cancelled.
+/// Every tile runs through [`run_tile`], in a rolling window whose width the spatial budget sets,
+/// checking `cancel` between tiles ([`run_tiles`]). No full-frame float buffer exists beside the
+/// output, only one tile's working set per tile in flight, charged to the spatial budget before
+/// the tiles it runs allocate, and held in the slot of the worker that runs it, which reuses its
+/// planes for every tile it runs. Each tile's output is taken out of its slot in the parallel
+/// phase ([`PixelDomain::tile_output`]) and written as it finishes.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spatial_entry<D: PixelDomain>(
     domain: &D,
@@ -1083,15 +1207,33 @@ pub(super) fn spatial_entry<D: PixelDomain>(
             fill(region, planes, Parallelism::Serial)
         })
     })?;
+    let store = context.reduced();
+    let global = globals.first().and_then(Option::as_ref);
+    let (held, mut pending) = match entry.reduced_key(domain, stage) {
+        Some((key, grid)) => {
+            let held = store.lookup(&key, global);
+            store.note_render(held.is_some());
+            (held, store.pending(key, global, &grid, plan.tile()))
+        }
+        None => (None, None),
+    };
+    let planes = if held.is_some() || pending.is_some() {
+        TilePlanes::Store {
+            held: held.as_deref(),
+            hand: pending.is_some(),
+        }
+    } else {
+        TilePlanes::None
+    };
     let mut frame = D::spatial_frame(stage, wide)?;
     #[cfg(test)]
     context.note_spatial_frame();
-    run_batches(
+    run_tiles(
         &plan,
         context.spatial(),
         cancel,
         |tile, parallelism, scratch| {
-            let (region, values) = run_tile(
+            let (region, values, used) = run_tile_planned(
                 &plan,
                 operation,
                 &globals,
@@ -1099,15 +1241,36 @@ pub(super) fn spatial_entry<D: PixelDomain>(
                 parallelism,
                 scratch,
                 cancel,
+                planes,
                 |region, planes| fill(region, planes, parallelism),
             )?;
-            Ok(D::tile_output(region, values, tile, parallelism, wide))
+            let cells = match used {
+                PlaneUse::Served => {
+                    store.note_tile(true, 0);
+                    None
+                }
+                PlaneUse::Computed(cells) => {
+                    store.note_tile(false, cells.as_ref().map_or(0, Cells::count));
+                    cells
+                }
+                PlaneUse::None => None,
+            };
+            Ok((
+                D::tile_output(region, values, tile, parallelism, wide),
+                cells,
+            ))
         },
-        |tile, output| {
+        |tile, (output, cells)| {
             D::write_tile(&mut frame, stage, tile, output);
+            if let (Some(pending), Some(cells)) = (pending.as_mut(), cells) {
+                pending.write(tile, &cells);
+            }
             Ok(())
         },
     )?;
+    if let Some(pending) = pending {
+        store.publish(pending, held.as_ref());
+    }
     Ok(frame)
 }
 

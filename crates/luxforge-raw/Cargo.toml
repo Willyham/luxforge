@@ -11,8 +11,18 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 rayon.workspace = true
-jxl-oxide = { version = "=0.12.6", default-features = false }
+# `rayon` lets a JPEG XL DNG decode fan out over the process's one global Rayon pool, which
+# `src/jxl.rs` names explicitly (`JxlThreadPool::rayon_global()`). `rayon` and `rayon-core` are
+# already in the build, so it adds no package and no private pool.
+jxl-oxide = { version = "=0.12.6", default-features = false, features = ["rayon"] }
 jxl-image = "=0.13.0"
+
+# Hardware SHA-256 on aarch64 (the M4): `sha2` 0.10.9 compiles its SHA-2 instruction backend, which
+# it picks at run time with a software fallback, only with `asm`. The feature also builds the
+# `sha2-asm` crate, which `sha2` calls on x86 only and which refuses to build for Windows; x86 needs
+# nothing, since it uses SHA-NI without the feature. Every crate that names `sha2` has this table.
+[target.'cfg(all(target_arch = "aarch64", not(target_os = "windows")))'.dependencies]
+sha2 = { workspace = true, features = ["asm"] }
 
 [build-dependencies]
 serde.workspace = true

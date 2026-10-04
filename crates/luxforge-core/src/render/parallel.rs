@@ -65,7 +65,7 @@ pub(crate) fn pooled_during<T>(work: impl FnOnce() -> T) -> (T, Vec<RenderPass>)
 /// return it to the thresholds (`None`), for a test; returns the previous setting. The setting
 /// belongs to the thread, so one test's never reaches a render another test runs beside it; every
 /// gate is asked on the thread that asked for the frame or the proxy, and a spatial tile's own
-/// passes follow the gate its batch was given.
+/// passes follow the gate its render was given.
 #[cfg(test)]
 pub(crate) fn force(pooled: Option<bool>) -> Option<bool> {
     FORCED.replace(pooled)

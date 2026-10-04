@@ -167,12 +167,12 @@ fn a_colour_pass_cancelled_mid_chunk_yields_no_frame_and_releases_every_reservat
 }
 
 /// A whole-frame render plans every spatial tile before its first one runs and advances by each
-/// finished batch, so on both pixel domains what it planned is what it finished, the reading never
-/// moves backwards and it is notified once per batch. Detail and Presence are two spatial segments
+/// finished tile, so on both pixel domains what it planned is what it finished, the reading never
+/// moves backwards and it is notified once per tile. Detail and Presence are two spatial segments
 /// at different stages of the stack, and the crop after them changes the stage the terminal pass
 /// writes, which no tile count reads. A stack without a spatial operation plans nothing.
 #[test]
-fn a_render_finishes_exactly_the_spatial_tiles_it_planned_and_reports_each_batch() {
+fn a_render_finishes_exactly_the_spatial_tiles_it_planned_and_reports_each_tile() {
     use crate::cancel::{ProgressCounts, RenderProgress};
     use std::sync::Mutex;
 
@@ -237,7 +237,7 @@ fn a_render_finishes_exactly_the_spatial_tiles_it_planned_and_reports_each_batch
         );
         assert!(
             readings.windows(2).all(|pair| pair[0].done < pair[1].done),
-            "{domain}: each batch advances the reading: {readings:?}"
+            "{domain}: each tile advances the reading: {readings:?}"
         );
         assert_eq!(readings.last().unwrap().fraction(), Some(1.0));
 

@@ -363,7 +363,7 @@ impl Entry {
     }
 
     /// The bytes one worker of the linear rows reserves to load this boundary: a resample's block
-    /// of taps, and nothing for a boundary whose pixels are pulled one at a time.
+    /// of taps, and nothing for a spatial frame, whose values go straight into the chunk.
     pub(super) fn linear_scratch(&self) -> usize {
         match self {
             Self::Resample(_) => TAP_BLOCK_PIXELS as usize * std::mem::size_of::<[f64; 3]>(),
@@ -372,8 +372,9 @@ impl Entry {
     }
 
     /// Load one chunk of the linear rows of a segment that enters through this boundary: a
-    /// resample's taps block by block ([`LinearRows::load_resampled`]), or each pixel pulled
-    /// through [`Self::pixel`] ([`LinearRows::load_pulled`]).
+    /// resample's taps block by block ([`LinearRows::load_resampled`]), or a spatial frame's rows
+    /// walked through the segment's geometry, each pixel pulled through [`Self::pixel`] where the
+    /// evaluation holds no frame ([`LinearRows::load_pulled`]).
     pub(super) fn load_linear(
         &self,
         rows: &LinearRows<'_, '_, '_>,
@@ -628,11 +629,29 @@ pub(super) struct Resolved {
 }
 
 impl Segment {
+    /// Where output pixel `(x, y)` comes from, or `None` outside the output stage. A segment
+    /// without point replacements has none to find, so it answers straight from the unmap; one
+    /// with them walks its operations backwards, composing the geometry each replacement is
+    /// carried through, as [`mapped_replacements`] does.
     pub(super) fn resolve(&self, x: u32, y: u32) -> Option<Resolved> {
         if x >= self.width || y >= self.height {
             return None;
         }
         let (input_x, input_y) = self.geometry.unmap(x, y);
+        if !self.has_pixels {
+            return Some(Resolved {
+                replacement: None,
+                input_x,
+                input_y,
+            });
+        }
+        self.replacement_at(x, y, input_x, input_y)
+    }
+
+    /// The walk [`Self::resolve`] takes for a segment with replacements: every operation's
+    /// geometry composed backwards from the output, and the last replacement that lands on
+    /// `(x, y)`, if any.
+    fn replacement_at(&self, x: u32, y: u32, input_x: u32, input_y: u32) -> Option<Resolved> {
         let mut suffix = ExactGeometry::identity(self.width, self.height);
         for (index, operation) in self.operations.iter().enumerate().rev() {
             match operation {
@@ -664,6 +683,17 @@ impl Segment {
             input_x,
             input_y,
         })
+    }
+
+    /// [`Self::resolve`] by the full composition whatever the segment holds: the reference the
+    /// shortcut for a segment without replacements is held to.
+    #[cfg(test)]
+    pub(super) fn resolve_composed(&self, x: u32, y: u32) -> Option<Resolved> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        let (input_x, input_y) = self.geometry.unmap(x, y);
+        self.replacement_at(x, y, input_x, input_y)
     }
 }
 

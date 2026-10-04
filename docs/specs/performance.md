@@ -2850,10 +2850,13 @@ is one 65,536-pixel chunk and a correction job 16 rows.
 
 ### Mosaic normalization
 
-The development normalizes the retained mosaic in Rust before the native call, which only
-demosaics, and divides the demosaiced planes by the 65535 sensor scale in Rust after it
+A development whose sensor stage rewrites the normalized values (a DNG stage-one vignette or
+stage-two gain maps, or sparse repairs) normalizes the retained mosaic in Rust before the native
+call, which only demosaics; every other development hands the native demosaic the per-site tables
+below and allocates no normalized mosaic ([the RAW float mosaic](../design/efficiency.md#the-raw-float-mosaic)).
+Either divides the demosaiced planes by the 65535 sensor scale in Rust after it
 ([native demosaic parallelism](../design/native-demosaic-parallelism.md#execution-boundary)). Both
-passes run in 16-row jobs on the development executor at the pool's width above one megapixel, for
+Rust passes run in 16-row jobs on the development executor at the pool's width above one megapixel, for
 Bayer and X-Trans alike, and in order on the caller below it; cancellation is checked before every
 normalization row and every scale job. Each site's black level, `65535 / (white - black)` and gain
 are computed once per site of the CFA and black-repeat period, checked there, and applied as
