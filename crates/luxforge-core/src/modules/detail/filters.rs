@@ -6,6 +6,7 @@ use crate::{
     modules::{Parallelism, Planes, PlanesMut, Region, SamplingScale, Stage},
 };
 use rayon::prelude::*;
+use std::ops::Range;
 
 pub(super) const NEUTRAL_CHROMA_SNAP: f32 = 1e-6;
 pub(super) const DENOISE_EXACT_HALO_MAX: u32 = 32;
@@ -145,6 +146,53 @@ impl Geometry {
         let start = (y - self.held.y0) as usize * width;
         &plane[start..start + width]
     }
+    /// The `n` values of [`Self::row`] from held column `first`, which no clamp moves: a pass reading
+    /// columns inside the stage checks once with [`guard`] that they lie inside the held rectangle,
+    /// and a column outside it fails the slice bounds. The slice is cut in the caller, so a loop of
+    /// `n` reads it with no bounds check.
+    #[inline(always)]
+    pub fn span(self, plane: &[f32], y: i64, first: usize, n: usize) -> &[f32] {
+        &self.row(plane, y)[first..][..n]
+    }
+}
+
+/// The left, centre and right taps of a run of `n` pixels from `line`, which starts a column left
+/// of the run: its `n` values from its first, second and third. Each is cut in the caller, so a
+/// loop of `n` reads them with no bounds check.
+#[inline(always)]
+pub(super) fn taps(line: &[f32], n: usize) -> [&[f32]; 3] {
+    [&line[..n], &line[1..][..n], &line[2..][..n]]
+}
+
+/// Where stage columns `x0..x1` sit in a row of a unit's input ([`Planes::row`]), found once for a
+/// pass in place of one [`Planes::sample`] per pixel. Detail reads its input only at columns inside
+/// the stage, where `sample`'s clamp changes nothing; this checks once that they lie inside the
+/// input's rectangle, where `sample` would panic.
+pub(super) fn input_columns(input: &Planes<'_>, x0: u32, x1: u32) -> Range<usize> {
+    let given = input.region();
+    assert!(
+        given.x0 <= x0 && x0 <= x1 && x1 <= given.x1(),
+        "Detail read its input's columns {x0}..{x1}, outside the {given:?} it was given"
+    );
+    (x0 - given.x0) as usize..(x1 - given.x0) as usize
+}
+
+/// Row `y` of the input's red, green and blue over `columns`, found by [`input_columns`], the
+/// row clamped as [`Planes::row`] clamps it. Each is cut to `n` values in the caller, so a loop of
+/// `n` reads them with no bounds check.
+#[inline(always)]
+pub(super) fn input_row<'a>(
+    input: &Planes<'a>,
+    y: i64,
+    columns: &Range<usize>,
+    n: usize,
+) -> [&'a [f32]; 3] {
+    let [red, green, blue] = input.row(y);
+    [
+        &red[columns.clone()][..n],
+        &green[columns.clone()][..n],
+        &blue[columns.clone()][..n],
+    ]
 }
 
 /// Panics unless `reads`, every pixel a pass reads clamped to the stage, lies inside `within`, the
@@ -427,6 +475,8 @@ pub(super) fn take<'a>(scratch: &mut &'a mut [f32], len: usize) -> Result<&'a mu
     Ok(front)
 }
 
+/// The Oklab of `input` over the held rectangle into `buffer`, planar L, a and b. The held rectangle
+/// lies inside the stage, so each row of the input is read as slices with no clamp.
 pub(super) fn lab(
     input: &Planes<'_>,
     buffer: &mut [f32],
@@ -435,14 +485,18 @@ pub(super) fn lab(
     cancel: &Cancel,
 ) -> Result<(), Error> {
     cancel.check()?;
-    let mut planes = PlanesMut::new(geometry.stage, geometry.held, buffer)?;
+    let held = geometry.held;
+    let columns = input_columns(input, held.x0, held.x1());
+    let mut planes = PlanesMut::new(geometry.stage, held, buffer)?;
     planes.for_rows(parallelism, |y, lightness, a, b| {
         if cancel.is_cancelled() {
             return;
         }
-        for column in 0..geometry.held.width as usize {
-            let x = geometry.held.x0 + column as u32;
-            let lab = oklab::to_oklab(input.sample(i64::from(x), i64::from(y)));
+        let n = lightness.len();
+        let rgb = input_row(input, i64::from(y), &columns, n);
+        let (a, b) = (&mut a[..n], &mut b[..n]);
+        for column in 0..n {
+            let lab = oklab::to_oklab([rgb[0][column], rgb[1][column], rgb[2][column]]);
             [lightness[column], a[column], b[column]] = [lab.l, lab.a, lab.b];
         }
     });
