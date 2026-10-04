@@ -579,7 +579,8 @@ fn cell(
             let grid = plan
                 .geometry
                 .grid(rect, 1.0)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| error.to_string())?
+                .map(|grid| super::gpu_plan::WarpGrid::new(&grid));
             let converted = super::gpu_plan::surface_plan_over(
                 &plan,
                 boundary,
@@ -1077,7 +1078,8 @@ fn cropped_cell(
                     },
                     1.0,
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| error.to_string())?
+                .map(|grid| super::gpu_plan::WarpGrid::new(&grid));
             let converted =
                 super::gpu_plan::surface_plan_at(&planned, boundary, origin, grid.as_ref())
                     .map_err(|reason| format!("{reason:?}"))?;

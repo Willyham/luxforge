@@ -155,24 +155,84 @@ pub(crate) fn clip_class(rgba: [u8; 4]) -> Option<Clip> {
     }
 }
 
-/// Worker-local accumulator: three 256-bin histograms plus the endpoint counters, sized once per
-/// worker (not per pixel or per image), merged into other workers' bins by addition.
+/// Which endpoints one channel value sits at, as bits: bit 0 for code 0, bit 1 for code 255.
+/// `EXTREME[r] | EXTREME[g] | EXTREME[b]` is then the pixel's any-channel class and `&` its
+/// all-channel class (0 none, 1 shadow, 2 highlight, 3 both), so one lookup per channel and two
+/// counter increments replace the per-channel comparisons and the `clip_class` match. This is the
+/// same predicate [`clip_class`] states, held to it by the exhaustive test below.
+const EXTREME: [u8; 256] = {
+    let mut table = [0u8; 256];
+    let mut value = 0;
+    while value < 256 {
+        table[value] = (value == 0) as u8 | (((value == 255) as u8) << 1);
+        value += 1;
+    }
+    table
+};
+
+/// The pixels one worker chunk of the parallel reduction covers, and the span the serial path
+/// checks the token over. Counting is integer addition, so the split decides nothing about the
+/// result: the same buffer reduces to the same bins whatever the chunking is.
+const REDUCE_CHUNK_PIXELS: usize = 64 * 1024;
+
+// A chunk counts in `u32`. Every counter below rises by at most one per pixel, so none can exceed
+// the chunk's pixel count; this is the bound that makes the plain `u32` addition safe.
+const _: () = assert!(REDUCE_CHUNK_PIXELS as u64 <= u32::MAX as u64);
+
+/// One chunk's counts, in `u32` and on the stack: three 256-bin histograms and the two four-way
+/// class counts. It lives only while one chunk is counted and is then widened into [`Bins`].
+struct ChunkCounts {
+    r: [u32; 256],
+    g: [u32; 256],
+    b: [u32; 256],
+    /// Pixels by `EXTREME[r] | EXTREME[g] | EXTREME[b]`.
+    any: [u32; 4],
+    /// Pixels by `EXTREME[r] & EXTREME[g] & EXTREME[b]`.
+    all: [u32; 4],
+}
+
+impl ChunkCounts {
+    /// Count the pixels of `chunk`: tightly packed RGBA, at most [`REDUCE_CHUNK_PIXELS`] of them.
+    /// Alpha is never consulted. The caller has already checked the buffer length, so no partial
+    /// trailing pixel exists.
+    #[inline]
+    fn count(chunk: &[u8]) -> Self {
+        debug_assert!(chunk.len() <= REDUCE_CHUNK_PIXELS * 4);
+        let mut counts = Self {
+            r: [0; 256],
+            g: [0; 256],
+            b: [0; 256],
+            any: [0; 4],
+            all: [0; 4],
+        };
+        for pixel in chunk.chunks_exact(4) {
+            let (r, g, b) = (
+                usize::from(pixel[0]),
+                usize::from(pixel[1]),
+                usize::from(pixel[2]),
+            );
+            counts.r[r] += 1;
+            counts.g[g] += 1;
+            counts.b[b] += 1;
+            let (er, eg, eb) = (EXTREME[r], EXTREME[g], EXTREME[b]);
+            counts.any[usize::from(er | eg | eb) & 3] += 1;
+            counts.all[usize::from(er & eg & eb) & 3] += 1;
+        }
+        counts
+    }
+}
+
+/// Worker-local accumulator: three 256-bin histograms plus the two four-way class counts, sized
+/// once per worker (not per pixel or per image), widened in from each chunk's [`ChunkCounts`] and
+/// merged into other workers' bins by addition. The per-channel endpoint counters and the any, all
+/// and both counters of the [`Report`] are derived from these in `into_report`.
 #[derive(Clone)]
 struct Bins {
     r: [u64; 256],
     g: [u64; 256],
     b: [u64; 256],
-    r0: u64,
-    g0: u64,
-    b0: u64,
-    r255: u64,
-    g255: u64,
-    b255: u64,
-    any_shadow: u64,
-    any_highlight: u64,
-    all_shadow: u64,
-    all_highlight: u64,
-    both: u64,
+    any: [u64; 4],
+    all: [u64; 4],
 }
 
 impl Bins {
@@ -181,48 +241,25 @@ impl Bins {
             r: [0; 256],
             g: [0; 256],
             b: [0; 256],
-            r0: 0,
-            g0: 0,
-            b0: 0,
-            r255: 0,
-            g255: 0,
-            b255: 0,
-            any_shadow: 0,
-            any_highlight: 0,
-            all_shadow: 0,
-            all_highlight: 0,
-            both: 0,
+            any: [0; 4],
+            all: [0; 4],
         }
     }
 
-    /// Fold one pixel into these bins. 128 MP (the largest source-size limit) is comfortably below
-    /// `u64::MAX`, so every counter here accumulates with plain addition and never needs checked or
-    /// saturating arithmetic; see `counts_cannot_overflow_within_the_raw_pixel_limit` below.
-    #[inline]
-    fn add_pixel(&mut self, pixel: [u8; 4]) {
-        let [r, g, b, _alpha] = pixel;
-        self.r[r as usize] += 1;
-        self.g[g as usize] += 1;
-        self.b[b as usize] += 1;
-        let (r0, g0, b0) = (r == 0, g == 0, b == 0);
-        let (r255, g255, b255) = (r == 255, g == 255, b == 255);
-        self.r0 += u64::from(r0);
-        self.g0 += u64::from(g0);
-        self.b0 += u64::from(b0);
-        self.r255 += u64::from(r255);
-        self.g255 += u64::from(g255);
-        self.b255 += u64::from(b255);
-        self.all_shadow += u64::from(r0 && g0 && b0);
-        self.all_highlight += u64::from(r255 && g255 && b255);
-        match clip_class(pixel) {
-            Some(Clip::Shadow) => self.any_shadow += 1,
-            Some(Clip::Highlight) => self.any_highlight += 1,
-            Some(Clip::Both) => {
-                self.any_shadow += 1;
-                self.any_highlight += 1;
-                self.both += 1;
-            }
-            None => {}
+    /// Count one chunk and widen its counts into these bins. 128 MP (the largest source-size
+    /// limit) is comfortably below `u64::MAX`, so the accumulator adds with plain addition and
+    /// never needs checked or saturating arithmetic; see
+    /// `counts_cannot_overflow_within_the_raw_pixel_limit` below.
+    fn add_chunk(&mut self, chunk: &[u8]) {
+        let counts = ChunkCounts::count(chunk);
+        for i in 0..256 {
+            self.r[i] += u64::from(counts.r[i]);
+            self.g[i] += u64::from(counts.g[i]);
+            self.b[i] += u64::from(counts.b[i]);
+        }
+        for i in 0..4 {
+            self.any[i] += u64::from(counts.any[i]);
+            self.all[i] += u64::from(counts.all[i]);
         }
     }
 
@@ -239,35 +276,35 @@ impl Bins {
             self.g[i] += other.g[i];
             self.b[i] += other.b[i];
         }
-        self.r0 += other.r0;
-        self.g0 += other.g0;
-        self.b0 += other.b0;
-        self.r255 += other.r255;
-        self.g255 += other.g255;
-        self.b255 += other.b255;
-        self.any_shadow += other.any_shadow;
-        self.any_highlight += other.any_highlight;
-        self.all_shadow += other.all_shadow;
-        self.all_highlight += other.all_highlight;
-        self.both += other.both;
+        for i in 0..4 {
+            self.any[i] += other.any[i];
+            self.all[i] += other.all[i];
+        }
     }
 
+    /// The report's counters from the bins. A channel's code-0 and code-255 pixels are exactly its
+    /// first and last bin. In a class count bit 0 is a shadow endpoint and bit 1 a highlight
+    /// endpoint, so a shadow (highlight) pixel is one in class 1 or 3 (2 or 3) and class 3 holds
+    /// the pixels with both. A pixel cannot have all three channels at both endpoints, so
+    /// `all[3]` is always zero; it is added all the same to keep the two counts symmetric.
     fn into_report(self, width: u32, height: u32) -> Report {
+        let [_, any_shadow_only, any_highlight_only, both] = self.any;
+        let [_, all_shadow_only, all_highlight_only, all_both] = self.all;
         Report {
+            r0: self.r[0],
+            g0: self.g[0],
+            b0: self.b[0],
+            r255: self.r[255],
+            g255: self.g[255],
+            b255: self.b[255],
+            any_shadow: any_shadow_only + both,
+            any_highlight: any_highlight_only + both,
+            all_shadow: all_shadow_only + all_both,
+            all_highlight: all_highlight_only + all_both,
+            both,
             r: self.r,
             g: self.g,
             b: self.b,
-            r0: self.r0,
-            g0: self.g0,
-            b0: self.b0,
-            r255: self.r255,
-            g255: self.g255,
-            b255: self.b255,
-            any_shadow: self.any_shadow,
-            any_highlight: self.any_highlight,
-            all_shadow: self.all_shadow,
-            all_highlight: self.all_highlight,
-            both: self.both,
             width,
             height,
             domain: DOMAIN,
@@ -275,19 +312,12 @@ impl Bins {
     }
 }
 
-/// The pixels one worker chunk of the parallel reduction covers, and the span the serial path
-/// checks the token over. Counting is integer addition, so the split decides nothing about the
-/// result: the same buffer reduces to the same bins whatever the chunking is.
-const REDUCE_CHUNK_PIXELS: usize = 64 * 1024;
-
 fn reduce_serial(rgba: &[u8], cancel: &Cancel) -> Result<Bins, Error> {
     let mut bins = Bins::zero();
-    // One relaxed load per chunk, not per pixel; the counting loop below is unchanged.
+    // One relaxed load per chunk, not per pixel; the counting loop is the chunk's own.
     for chunk in rgba.chunks(REDUCE_CHUNK_PIXELS * 4) {
         cancel.check()?;
-        for pixel in chunk.chunks_exact(4) {
-            bins.add_pixel([pixel[0], pixel[1], pixel[2], pixel[3]]);
-        }
+        bins.add_chunk(chunk);
     }
     Ok(bins)
 }
@@ -302,9 +332,7 @@ fn reduce_parallel(rgba: &[u8], cancel: &Cancel) -> Result<Bins, Error> {
             || Box::new(Bins::zero()),
             |mut bins, chunk| {
                 cancel.check()?;
-                for pixel in chunk.chunks_exact(4) {
-                    bins.add_pixel([pixel[0], pixel[1], pixel[2], pixel[3]]);
-                }
+                bins.add_chunk(chunk);
                 Ok::<_, Error>(bins)
             },
         )
@@ -571,6 +599,196 @@ mod tests {
                 "{width}x{height}: serial vs. forced-parallel"
             );
         }
+    }
+
+    /// The counting arithmetic as it was before the class table: one `add_pixel` per pixel into
+    /// `u64` counters, a separate counter for every channel endpoint, and `clip_class` for the any
+    /// and both counters. It is frozen here as the independent reference the production reducer is
+    /// compared with, so it must not be edited to follow the production code.
+    struct ReferenceBins {
+        r: [u64; 256],
+        g: [u64; 256],
+        b: [u64; 256],
+        r0: u64,
+        g0: u64,
+        b0: u64,
+        r255: u64,
+        g255: u64,
+        b255: u64,
+        any_shadow: u64,
+        any_highlight: u64,
+        all_shadow: u64,
+        all_highlight: u64,
+        both: u64,
+    }
+
+    impl ReferenceBins {
+        fn add_pixel(&mut self, pixel: [u8; 4]) {
+            let [r, g, b, _alpha] = pixel;
+            self.r[r as usize] += 1;
+            self.g[g as usize] += 1;
+            self.b[b as usize] += 1;
+            let (r0, g0, b0) = (r == 0, g == 0, b == 0);
+            let (r255, g255, b255) = (r == 255, g == 255, b == 255);
+            self.r0 += u64::from(r0);
+            self.g0 += u64::from(g0);
+            self.b0 += u64::from(b0);
+            self.r255 += u64::from(r255);
+            self.g255 += u64::from(g255);
+            self.b255 += u64::from(b255);
+            self.all_shadow += u64::from(r0 && g0 && b0);
+            self.all_highlight += u64::from(r255 && g255 && b255);
+            match clip_class(pixel) {
+                Some(Clip::Shadow) => self.any_shadow += 1,
+                Some(Clip::Highlight) => self.any_highlight += 1,
+                Some(Clip::Both) => {
+                    self.any_shadow += 1;
+                    self.any_highlight += 1;
+                    self.both += 1;
+                }
+                None => {}
+            }
+        }
+    }
+
+    /// The report the frozen pre-change arithmetic gives for `rgba`, one pixel at a time.
+    fn reference_report(rgba: &[u8], width: u32, height: u32) -> Report {
+        let mut bins = ReferenceBins {
+            r: [0; 256],
+            g: [0; 256],
+            b: [0; 256],
+            r0: 0,
+            g0: 0,
+            b0: 0,
+            r255: 0,
+            g255: 0,
+            b255: 0,
+            any_shadow: 0,
+            any_highlight: 0,
+            all_shadow: 0,
+            all_highlight: 0,
+            both: 0,
+        };
+        for pixel in rgba.chunks_exact(4) {
+            bins.add_pixel([pixel[0], pixel[1], pixel[2], pixel[3]]);
+        }
+        Report {
+            r: bins.r,
+            g: bins.g,
+            b: bins.b,
+            r0: bins.r0,
+            g0: bins.g0,
+            b0: bins.b0,
+            r255: bins.r255,
+            g255: bins.g255,
+            b255: bins.b255,
+            any_shadow: bins.any_shadow,
+            any_highlight: bins.any_highlight,
+            all_shadow: bins.all_shadow,
+            all_highlight: bins.all_highlight,
+            both: bins.both,
+            width,
+            height,
+            domain: DOMAIN,
+        }
+    }
+
+    /// Reduce `rgba` through both the serial and the forced-parallel path and require each whole
+    /// [`Report`] to equal the frozen reference's.
+    fn assert_matches_reference(rgba: &[u8], width: u32, height: u32, label: &str) {
+        let reference = reference_report(rgba, width, height);
+        for (path, threshold) in [("serial", u64::MAX), ("parallel", 0)] {
+            let report = reduce_with_threshold(rgba, width, height, threshold, &Cancel::never())
+                .unwrap_or_else(|error| panic!("{label} {path}: {error}"));
+            assert_eq!(report, reference, "{label}: {path} reduction vs. reference");
+        }
+    }
+
+    #[test]
+    fn every_rgb_triple_reduces_exactly_as_the_frozen_reference() {
+        // The whole 8-bit RGB domain, one pixel per (r, g, b) triple: 2^24 pixels, 4096 x 4096,
+        // 256 worker chunks in the parallel path. Alpha varies and is never consulted. The whole
+        // `Report` is compared, so a one-count difference in any bin or counter fails.
+        let pixels: usize = 1 << 24;
+        let mut rgba = Vec::with_capacity((pixels + 2 * 65536) * 4);
+        for i in 0..pixels as u32 {
+            rgba.extend_from_slice(&[
+                (i >> 16) as u8,
+                (i >> 8) as u8,
+                i as u8,
+                (i ^ (i >> 11)) as u8,
+            ]);
+        }
+        assert_matches_reference(&rgba, 4096, 4096, "every triple");
+
+        // The same counts in closed form, so the reference itself is checked and not only the
+        // production reducer against it.
+        let report = reduce_with_threshold(&rgba, 4096, 4096, 0, &Cancel::never())
+            .expect("parallel reduction of every triple");
+        let total: u64 = 256 * 256 * 256;
+        let without_zero: u64 = 255 * 255 * 255;
+        let without_either: u64 = 254 * 254 * 254;
+        assert_eq!(report.r0, 256 * 256);
+        assert_eq!(report.b255, 256 * 256);
+        assert_eq!(report.any_shadow, total - without_zero);
+        assert_eq!(report.any_highlight, total - without_zero);
+        assert_eq!(report.both, total + without_either - 2 * without_zero);
+        assert_eq!(report.all_shadow, 1);
+        assert_eq!(report.all_highlight, 1);
+
+        // The cube is symmetric: it counts a value 254 at an endpoint exactly as it counts 255,
+        // and shadow exactly as highlight. Repeating every triple with red at 255 and then every
+        // triple with green at 0 breaks that symmetry, so a misplaced endpoint or a swapped class
+        // cannot agree with the reference.
+        for i in 0..65536u32 {
+            rgba.extend_from_slice(&[255, (i >> 8) as u8, i as u8, 0]);
+        }
+        for i in 0..65536u32 {
+            rgba.extend_from_slice(&[(i >> 8) as u8, 0, i as u8, 255]);
+        }
+        assert_eq!(rgba.len(), 4096 * 4128 * 4);
+        assert_matches_reference(&rgba, 4096, 4128, "every triple, skewed");
+    }
+
+    #[test]
+    fn chunk_edges_and_clip_heavy_noise_reduce_exactly_as_the_frozen_reference() {
+        // Buffers whose length straddles the worker chunk (one pixel, one short of a chunk, a
+        // chunk, one over, and two chunks and a remainder), each uniform at an endpoint pair and
+        // then a seeded noise buffer with a quarter of its channel bytes at 0 and a quarter at 255.
+        let chunk = REDUCE_CHUNK_PIXELS;
+        let uniform: [[u8; 4]; 5] = [
+            [0, 0, 0, 255],
+            [255, 255, 255, 0],
+            [0, 255, 0, 7],
+            [255, 128, 255, 9],
+            [1, 254, 128, 255],
+        ];
+        for pixel in uniform {
+            for count in [1, chunk - 1, chunk, chunk + 1, 2 * chunk + 17] {
+                let rgba: Vec<u8> = pixel.iter().copied().cycle().take(count * 4).collect();
+                assert_matches_reference(&rgba, count as u32, 1, &format!("{pixel:?} x {count}"));
+            }
+        }
+
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let count = 3 * chunk + 123;
+        let rgba: Vec<u8> = (0..count * 4)
+            .map(|_| {
+                let value = next();
+                match value & 3 {
+                    0 => 0,
+                    1 => 255,
+                    _ => (value >> 8) as u8,
+                }
+            })
+            .collect();
+        assert_matches_reference(&rgba, count as u32, 1, "seeded clip-heavy noise");
     }
 
     #[test]

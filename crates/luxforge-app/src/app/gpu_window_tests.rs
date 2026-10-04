@@ -231,7 +231,8 @@ fn gpu_window_a_windowed_boundary_draws_the_whole_boundarys_frame() {
                         },
                         1.0,
                     )
-                    .expect("a grid");
+                    .expect("a grid")
+                    .map(|grid| super::gpu_plan::WarpGrid::new(&grid));
                 // The boundary the worker renders for a Fit frame at this exact stage.
                 let context = RenderContext::new();
                 let exact = render(

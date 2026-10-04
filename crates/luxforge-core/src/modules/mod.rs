@@ -78,7 +78,8 @@ pub(crate) use descriptor::{
 };
 pub(crate) use descriptor::{
     PRESET_SETTINGS, check_declaration, check_declared_values, check_parameter_declarations,
-    check_settings, check_target, decode_parameters, label_value, not_applicable, title_case,
+    check_settings, check_target, decode_parameters, label_value, not_applicable, take_parameters,
+    title_case,
 };
 pub use detail::DETAIL_EFFECT;
 use detail::DetailModule;

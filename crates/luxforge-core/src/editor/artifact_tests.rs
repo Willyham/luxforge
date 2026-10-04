@@ -639,6 +639,8 @@ fn copying_only_the_catalog_fails_artifact_layers_while_history_reads() {
         (asset, entry)
     };
     let copy = directory("copied-to");
+    // A closed catalog is the one file: its clean close removed the log a copy would need.
+    assert!(!luxforge_testbase::paths::wal(&original.join("catalog.sqlite")).exists());
     fs::copy(original.join("catalog.sqlite"), copy.join("copy.sqlite")).unwrap();
     let service = open(&copy.join("copy.sqlite"));
     let error = service.render_current(&asset).unwrap_err();
