@@ -274,23 +274,36 @@ impl SpatialUnit for Dehaze {
         ];
         let mut normalized = PlaneMut::over(normalized_buffer, reduced_geometry, dark_source_rect)?;
         let [red, green, blue] = &mut reduced;
+        // The blocks' columns, all inside the stage (the last block stops at its edge), so the
+        // block sums read the input's rows as slices, as do the output's reads below.
+        let blocks_x0 = dark_source_rect.x0 * REDUCTION;
+        let columns = filters::input_columns(
+            input,
+            blocks_x0,
+            (dark_source_rect.x1 * REDUCTION).min(frame.x1),
+        );
         filters::for_rows_of(
             parallelism,
             [red, green, blue, &mut normalized],
             |j, rows| {
                 let y0 = j * REDUCTION;
                 let y1 = ((j + 1) * REDUCTION).min(frame.y1);
+                let lines: [[&[f32]; 3]; REDUCTION as usize] = std::array::from_fn(|line| {
+                    let y = (y0 + line as i64).min(y1 - 1);
+                    input.row(y).map(|plane| &plane[columns.clone()])
+                });
+                let lines = &lines[..(y1 - y0) as usize];
                 for i in dark_source_rect.x0..dark_source_rect.x1 {
-                    let x0 = i * REDUCTION;
-                    let x1 = ((i + 1) * REDUCTION).min(frame.x1);
+                    let x0 = (i * REDUCTION - blocks_x0) as usize;
+                    let x1 = (((i + 1) * REDUCTION).min(frame.x1) - blocks_x0) as usize;
                     let mut sums = [0.0_f64; 3];
                     let mut count = 0.0_f64;
-                    for y in y0..y1 {
-                        for x in x0..x1 {
-                            let pixel = input.sample(x, y);
-                            for (channel, sum) in sums.iter_mut().enumerate() {
-                                *sum += f64::from(pixel[channel]);
-                            }
+                    for line in lines {
+                        let [r, g, b] = line.map(|plane| &plane[x0..x1]);
+                        for ((r, g), b) in r.iter().zip(g).zip(b) {
+                            sums[0] += f64::from(*r);
+                            sums[1] += f64::from(*g);
+                            sums[2] += f64::from(*b);
                             count += 1.0;
                         }
                     }
@@ -363,11 +376,17 @@ impl SpatialUnit for Dehaze {
         let atmosphere: [f32; 3] = std::array::from_fn(|channel| atmosphere[channel] as f32);
         let positive = self.amount > 0.0;
         let transmission = transmission.as_plane();
+        let columns = filters::input_columns(input, out.x0, out.x1);
         output.for_rows(parallelism, |y, red, green, blue| {
             let y = i64::from(y);
-            for x in out.x0..out.x1 {
-                let pixel = input.sample(x, y);
-                let t = transmission.get(x, y).clamp(T_FLOOR, 1.0);
+            // Every row cut to the output's width, so the loop indexes them with no bounds check.
+            let width = red.len();
+            let (green, blue) = (&mut green[..width], &mut blue[..width]);
+            let [r, g, b] = input.row(y).map(|plane| &plane[columns.clone()][..width]);
+            let transmission = &transmission.span(y, out.x0, out.x1)[..width];
+            for column in 0..width {
+                let pixel = [r[column], g[column], b[column]];
+                let t = transmission[column].clamp(T_FLOOR, 1.0);
                 let value: [f32; 3] = std::array::from_fn(|channel| {
                     if positive {
                         (pixel[channel] - atmosphere[channel]) / t + atmosphere[channel]
@@ -376,7 +395,6 @@ impl SpatialUnit for Dehaze {
                         veil * pixel[channel] + (1.0 - veil) * atmosphere[channel]
                     }
                 });
-                let column = (x - out.x0) as usize;
                 [red[column], green[column], blue[column]] = value;
             }
         });

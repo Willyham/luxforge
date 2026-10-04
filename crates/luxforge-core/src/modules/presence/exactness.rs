@@ -1,15 +1,30 @@
 //! The Presence passes against the code they replaced, bit for bit.
 //!
 //! The functions at the top are the passes as they were before they read row slices, frozen as the
-//! reference: every tap of the box passes and every read of the guided filters' pointwise loops
-//! through the clamped, index-checked [`Plane::get`], one row's running sum at a time and the
-//! vertical strip written one value at a time. The tests hold the production passes to them with
-//! `to_bits` over planes of distinct values whose exponents span eighty binary orders, so a sum
-//! taken in another order rounds differently, and of values in the unit interval, on odd and
-//! degenerate frames, radii from 1 to past the frame, output rectangles on every frame edge and on
-//! none, held rectangles larger than a pass needs, and both parallelisms.
-use super::filters::{self, Geometry, Plane, PlaneMut, Rect, Scratch, for_rows_of};
-use crate::{Error, modules::Parallelism};
+//! reference: every tap of the box passes, every read of the guided filters' pointwise loops and
+//! every tap of the upsample through the clamped, index-checked [`Plane::get`], one row's running
+//! sum at a time, the vertical strip written one value at a time, the upsample's column index and
+//! weight computed at every pixel, and the three units reading their input through
+//! [`Planes::sample`]. The tests hold the production passes to them with `to_bits` over planes of
+//! distinct values whose exponents span eighty binary orders, so a sum taken in another order
+//! rounds differently, and of values in the unit interval, on odd and degenerate frames, radii from
+//! 1 to past the frame, output rectangles on every frame edge and on none, held rectangles larger
+//! than a pass needs, and both parallelisms; the units also on tiles at every stage corner, with
+//! input a block-sum order shows in.
+use super::{
+    clarity::Clarity,
+    dehaze::Dehaze,
+    filters::{
+        self, Geometry, Plane, PlaneMut, Rect, Scratch, box_min, downsample, for_rows_of,
+        full_rect, reduced_frame, reduced_rect,
+    },
+    texture::Texture,
+};
+use crate::{
+    Error,
+    colour::{luma, srgb},
+    modules::{Global, Parallelism, Planes, PlanesMut, Region, SpatialUnit, Stage},
+};
 use luxforge_reference::SplitMix64;
 
 // ---------------------------------------------------------------------------------------------
@@ -316,6 +331,316 @@ fn upsample(reduced: &Plane<'_>, reduction: i64, dst: &mut PlaneMut<'_>, paralle
             row[(x - out.x0) as usize] = top * (1.0 - fy) + bottom * fy;
         }
     });
+}
+
+/// Clarity's `apply` as it was, over the frozen filters, reading its input through
+/// [`Planes::sample`] and its planes through [`Plane::get`].
+fn clarity(
+    unit: &Clarity,
+    input: &Planes<'_>,
+    output: &mut PlanesMut<'_>,
+    scratch: &mut [f32],
+    parallelism: Parallelism,
+) -> Result<(), Error> {
+    use super::clarity::{EPS_CLARITY, LIMIT_CLARITY, REDUCTION};
+    let stage = input.stage();
+    let frame = Rect::frame(i64::from(stage.width), i64::from(stage.height));
+    let out = Rect::of(output.region());
+    if out.is_empty() {
+        return Ok(());
+    }
+    let geometry = Geometry::new(frame.x1, frame.y1, out);
+    let (reduced_width, reduced_height) = reduced_frame(frame.x1, frame.y1, REDUCTION);
+    let reduced_geometry = Geometry::new(
+        reduced_width,
+        reduced_height,
+        Rect::frame(reduced_width, reduced_height),
+    );
+    let reduced_frame_rect = Rect::frame(reduced_width, reduced_height);
+
+    let base_rect = reduced_rect(out, REDUCTION)
+        .expand(1)
+        .clip(reduced_frame_rect);
+    let reduced_source = base_rect
+        .expand(2 * unit.reduced_radius())
+        .clip(reduced_frame_rect);
+    let encoded_rect = full_rect(reduced_source, REDUCTION).clip(frame);
+
+    let mut scratch = Scratch::new(scratch);
+    let encoded_buffer = scratch.take(encoded_rect.pixels())?;
+    let base_buffer = scratch.take(out.pixels())?;
+    let reduced_buffer = scratch.take(reduced_source.pixels())?;
+    let base_reduced_buffer = scratch.take(base_rect.pixels())?;
+
+    let mut encoded = PlaneMut::over(encoded_buffer, geometry, encoded_rect)?;
+    encoded.for_rows(parallelism, |y, row| {
+        for x in encoded_rect.x0..encoded_rect.x1 {
+            row[(x - encoded_rect.x0) as usize] = filters::encoded_luminance(input.sample(x, y));
+        }
+    });
+    let encoded: Plane<'_> = encoded.as_plane();
+
+    let mut encoded_reduced = PlaneMut::over(reduced_buffer, reduced_geometry, reduced_source)?;
+    downsample(&encoded, REDUCTION, &mut encoded_reduced, parallelism);
+    let mut base_reduced = PlaneMut::over(base_reduced_buffer, reduced_geometry, base_rect)?;
+    guided_self(
+        &encoded_reduced.as_plane(),
+        unit.reduced_radius(),
+        EPS_CLARITY,
+        &mut base_reduced,
+        &mut scratch,
+        parallelism,
+    )?;
+    let mut base = PlaneMut::over(base_buffer, geometry, out)?;
+    upsample(&base_reduced.as_plane(), REDUCTION, &mut base, parallelism);
+
+    let base = base.as_plane();
+    output.for_rows(parallelism, |y, red, green, blue| {
+        let y = i64::from(y);
+        for x in out.x0..out.x1 {
+            let rgb = input.sample(x, y);
+            let e = encoded.get(x, y);
+            let residual = e - base.get(x, y);
+            let delta = filters::soft_clip(unit.gain() * residual, e, LIMIT_CLARITY);
+            let value = if delta == 0.0 {
+                rgb
+            } else {
+                luma::reconstruct(rgb, luma::rec709(rgb), srgb::decode_f32(e + delta))
+            };
+            let column = (x - out.x0) as usize;
+            [red[column], green[column], blue[column]] = value;
+        }
+    });
+    Ok(())
+}
+
+/// Texture's `apply` as it was.
+fn texture(
+    unit: &Texture,
+    input: &Planes<'_>,
+    output: &mut PlanesMut<'_>,
+    scratch: &mut [f32],
+    parallelism: Parallelism,
+) -> Result<(), Error> {
+    use super::texture::{EPS_TEXTURE, LIMIT_TEXTURE};
+    let stage = input.stage();
+    let frame = Rect::frame(i64::from(stage.width), i64::from(stage.height));
+    let out = Rect::of(output.region());
+    if out.is_empty() {
+        return Ok(());
+    }
+    let geometry = Geometry::new(frame.x1, frame.y1, out);
+    let encoded_rect = out.expand(2 * unit.coarse()).clip(frame);
+
+    let mut scratch = Scratch::new(scratch);
+    let encoded_buffer = scratch.take(encoded_rect.pixels())?;
+    let fine_buffer = scratch.take(out.pixels())?;
+    let coarse_buffer = scratch.take(out.pixels())?;
+
+    let mut encoded = PlaneMut::over(encoded_buffer, geometry, encoded_rect)?;
+    encoded.for_rows(parallelism, |y, row| {
+        for x in encoded_rect.x0..encoded_rect.x1 {
+            row[(x - encoded_rect.x0) as usize] = filters::encoded_luminance(input.sample(x, y));
+        }
+    });
+    let encoded: Plane<'_> = encoded.as_plane();
+
+    let mut fine = PlaneMut::over(fine_buffer, geometry, out)?;
+    guided_self(
+        &encoded,
+        unit.fine(),
+        EPS_TEXTURE,
+        &mut fine,
+        &mut scratch,
+        parallelism,
+    )?;
+    let mut coarse = PlaneMut::over(coarse_buffer, geometry, out)?;
+    guided_self(
+        &encoded,
+        unit.coarse(),
+        EPS_TEXTURE,
+        &mut coarse,
+        &mut scratch,
+        parallelism,
+    )?;
+
+    let (fine, coarse) = (fine.as_plane(), coarse.as_plane());
+    output.for_rows(parallelism, |y, red, green, blue| {
+        let y = i64::from(y);
+        for x in out.x0..out.x1 {
+            let rgb = input.sample(x, y);
+            let e = encoded.get(x, y);
+            let band = fine.get(x, y) - coarse.get(x, y);
+            let delta = filters::soft_clip(unit.gain() * band, e, LIMIT_TEXTURE);
+            let value = if delta == 0.0 {
+                rgb
+            } else {
+                luma::reconstruct(rgb, luma::rec709(rgb), srgb::decode_f32(e + delta))
+            };
+            let column = (x - out.x0) as usize;
+            [red[column], green[column], blue[column]] = value;
+        }
+    });
+    Ok(())
+}
+
+/// Dehaze's `apply` as it was, given its atmospheric light.
+fn dehaze(
+    unit: &Dehaze,
+    input: &Planes<'_>,
+    output: &mut PlanesMut<'_>,
+    atmosphere: [f64; 3],
+    scratch: &mut [f32],
+    parallelism: Parallelism,
+) -> Result<(), Error> {
+    use super::dehaze::{EPS_DEHAZE, REDUCTION, T_FLOOR};
+    let stage = input.stage();
+    let frame = Rect::frame(i64::from(stage.width), i64::from(stage.height));
+    let out = Rect::of(output.region());
+    if out.is_empty() {
+        return Ok(());
+    }
+    let geometry = Geometry::new(frame.x1, frame.y1, out);
+    let (reduced_width, reduced_height) = reduced_frame(frame.x1, frame.y1, REDUCTION);
+    let reduced_geometry = Geometry::new(
+        reduced_width,
+        reduced_height,
+        Rect::frame(reduced_width, reduced_height),
+    );
+    let reduced_frame_rect = Rect::frame(reduced_width, reduced_height);
+
+    let refined_rect = reduced_rect(out, REDUCTION)
+        .expand(1)
+        .clip(reduced_frame_rect);
+    let raw_rect = refined_rect
+        .expand(2 * unit.guide_radius())
+        .clip(reduced_frame_rect);
+    let dark_source_rect = raw_rect.expand(unit.dark_radius()).clip(reduced_frame_rect);
+
+    let mut scratch = Scratch::new(scratch);
+    let transmission_buffer = scratch.take(out.pixels())?;
+    let red_buffer = scratch.take(dark_source_rect.pixels())?;
+    let green_buffer = scratch.take(dark_source_rect.pixels())?;
+    let blue_buffer = scratch.take(dark_source_rect.pixels())?;
+    let normalized_buffer = scratch.take(dark_source_rect.pixels())?;
+    let dark_buffer = scratch.take(raw_rect.pixels())?;
+    let raw_buffer = scratch.take(raw_rect.pixels())?;
+    let guide_buffer = scratch.take(raw_rect.pixels())?;
+    let refined_buffer = scratch.take(refined_rect.pixels())?;
+
+    let mut reduced = [
+        PlaneMut::over(red_buffer, reduced_geometry, dark_source_rect)?,
+        PlaneMut::over(green_buffer, reduced_geometry, dark_source_rect)?,
+        PlaneMut::over(blue_buffer, reduced_geometry, dark_source_rect)?,
+    ];
+    let mut normalized = PlaneMut::over(normalized_buffer, reduced_geometry, dark_source_rect)?;
+    let [red, green, blue] = &mut reduced;
+    for_rows_of(
+        parallelism,
+        [red, green, blue, &mut normalized],
+        |j, rows| {
+            let y0 = j * REDUCTION;
+            let y1 = ((j + 1) * REDUCTION).min(frame.y1);
+            for i in dark_source_rect.x0..dark_source_rect.x1 {
+                let x0 = i * REDUCTION;
+                let x1 = ((i + 1) * REDUCTION).min(frame.x1);
+                let mut sums = [0.0_f64; 3];
+                let mut count = 0.0_f64;
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        let pixel = input.sample(x, y);
+                        for (channel, sum) in sums.iter_mut().enumerate() {
+                            *sum += f64::from(pixel[channel]);
+                        }
+                        count += 1.0;
+                    }
+                }
+                let column = (i - dark_source_rect.x0) as usize;
+                let mut smallest = f32::INFINITY;
+                for (channel, sum) in sums.iter().enumerate() {
+                    let mean = sum / count;
+                    rows[channel][column] = mean as f32;
+                    smallest = smallest.min((mean / atmosphere[channel]).clamp(0.0, 1.0) as f32);
+                }
+                rows[3][column] = smallest;
+            }
+        },
+    );
+
+    let mut dark = PlaneMut::over(dark_buffer, reduced_geometry, raw_rect)?;
+    {
+        let mut temp = scratch.branch();
+        let temp_buffer = temp.take(
+            raw_rect
+                .expand_y(unit.dark_radius())
+                .clip(reduced_frame_rect)
+                .pixels(),
+        )?;
+        box_min(
+            &normalized.as_plane(),
+            unit.dark_radius(),
+            &mut dark,
+            temp_buffer,
+            parallelism,
+        )?;
+    }
+
+    let mut raw = PlaneMut::over(raw_buffer, reduced_geometry, raw_rect)?;
+    let mut guide = PlaneMut::over(guide_buffer, reduced_geometry, raw_rect)?;
+    let dark = dark.as_plane();
+    let reduced = reduced.each_ref().map(|plane| plane.as_plane());
+    for_rows_of(parallelism, [&mut raw, &mut guide], |j, rows| {
+        for i in raw_rect.x0..raw_rect.x1 {
+            let column = (i - raw_rect.x0) as usize;
+            rows[0][column] = 1.0 - unit.omega() * dark.get(i, j);
+            let pixel = [
+                reduced[0].get(i, j),
+                reduced[1].get(i, j),
+                reduced[2].get(i, j),
+            ];
+            rows[1][column] = filters::encoded_luminance(pixel);
+        }
+    });
+
+    let mut refined = PlaneMut::over(refined_buffer, reduced_geometry, refined_rect)?;
+    guided_filter(
+        &guide.as_plane(),
+        &raw.as_plane(),
+        unit.guide_radius(),
+        EPS_DEHAZE,
+        &mut refined,
+        &mut scratch,
+        parallelism,
+    )?;
+    let mut transmission = PlaneMut::over(transmission_buffer, geometry, out)?;
+    upsample(
+        &refined.as_plane(),
+        REDUCTION,
+        &mut transmission,
+        parallelism,
+    );
+
+    let atmosphere: [f32; 3] = std::array::from_fn(|channel| atmosphere[channel] as f32);
+    let positive = unit.positive();
+    let transmission = transmission.as_plane();
+    output.for_rows(parallelism, |y, red, green, blue| {
+        let y = i64::from(y);
+        for x in out.x0..out.x1 {
+            let pixel = input.sample(x, y);
+            let t = transmission.get(x, y).clamp(T_FLOOR, 1.0);
+            let value: [f32; 3] = std::array::from_fn(|channel| {
+                if positive {
+                    (pixel[channel] - atmosphere[channel]) / t + atmosphere[channel]
+                } else {
+                    let veil = t * unit.veil();
+                    veil * pixel[channel] + (1.0 - veil) * atmosphere[channel]
+                }
+            });
+            let column = (x - out.x0) as usize;
+            [red[column], green[column], blue[column]] = value;
+        }
+    });
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -644,4 +969,228 @@ fn the_upsample_matches_the_tap_by_tap_reference_bit_for_bit() {
         }
     }
     assert!(compared > 1000, "{compared} comparisons");
+}
+
+// ---------------------------------------------------------------------------------------------
+// The units.
+// ---------------------------------------------------------------------------------------------
+
+enum Unit {
+    Clarity(Clarity),
+    Texture(Texture),
+    Dehaze(Dehaze),
+}
+
+impl Unit {
+    fn production(&self) -> &dyn SpatialUnit {
+        match self {
+            Self::Clarity(unit) => unit,
+            Self::Texture(unit) => unit,
+            Self::Dehaze(unit) => unit,
+        }
+    }
+
+    /// The frozen unit's output, serially: its serial and pooled outputs are equal, as
+    /// `slow_a_tile_evaluated_on_the_pool_is_bit_identical_to_a_serial_one` held it while it was
+    /// the production code.
+    fn reference(
+        &self,
+        input: &Planes<'_>,
+        output: &mut PlanesMut<'_>,
+        atmosphere: [f64; 3],
+        scratch: &mut [f32],
+    ) {
+        let serial = Parallelism::Serial;
+        match self {
+            Self::Clarity(unit) => clarity(unit, input, output, scratch, serial),
+            Self::Texture(unit) => texture(unit, input, output, scratch, serial),
+            Self::Dehaze(unit) => dehaze(unit, input, output, atmosphere, scratch, serial),
+        }
+        .expect("the frozen unit");
+    }
+}
+
+/// Each unit the module compiles at `long_side`, at both extremes and a value between: Dehaze's
+/// inverse and forward branches, and both signs of Clarity's and Texture's gains.
+fn units(long_side: u32) -> Vec<(String, Unit)> {
+    let mut units = Vec::new();
+    for amount in [100.0, 37.0, -100.0] {
+        units.push((
+            format!("clarity {amount:+}"),
+            Unit::Clarity(Clarity::new(amount, long_side)),
+        ));
+        units.push((
+            format!("texture {amount:+}"),
+            Unit::Texture(Texture::new(amount, long_side)),
+        ));
+        units.push((
+            format!("dehaze {amount:+}"),
+            Unit::Dehaze(Dehaze::new(amount, long_side)),
+        ));
+    }
+    units
+}
+
+/// A 4 x 4 block whose `f64` sum taken row by row, as Dehaze's reduction takes it, is `1 + 2^-24`
+/// (each `2^-54` meets the `1` alone and is lost), and taken column by column `1 + 2^-24 + 2^-52`
+/// (the three `2^-54` add up first): its mean rounds to `2^-4` in `f32` one way, a tie broken to
+/// even, and to the next `f32` up the other.
+const ROUNDING_BLOCK: [[f32; 4]; 4] = {
+    let tiny = 1.0 / (1u64 << 54) as f32;
+    let half_ulp = 1.0 / (1u64 << 24) as f32;
+    [
+        [0.0, 1.0, 0.0, 0.0],
+        [tiny, half_ulp, 0.0, 0.0],
+        [tiny, 0.0, 0.0, 0.0],
+        [tiny, 0.0, 0.0, 0.0],
+    ]
+};
+
+/// Planar linear RGB over `region` of a stage: distinct values mostly in the unit interval, some
+/// past either end of it and some exact zeros; or one flat colour, whose residual and band are
+/// zero, so Clarity and Texture pass it through; or [`value`]'s, which span eighty binary orders;
+/// or [`ROUNDING_BLOCK`] on Dehaze's block grid, scaled by a power of two per block, whose
+/// reduction taken column by column instead of row by row changes the reduced means.
+fn rgb(rng: &mut SplitMix64, region: Region) -> Vec<f32> {
+    let pixels = region.pixels() as usize;
+    match rng.next_u32(6) {
+        0 => {
+            let flat = [0; 3].map(|_| rng.next_range(0.0, 1.0) as f32);
+            return flat
+                .iter()
+                .flat_map(|value| std::iter::repeat_n(*value, pixels))
+                .collect();
+        }
+        1 => return (0..3 * pixels).map(|_| value(rng)).collect(),
+        2 => {
+            let shift = [0; 3].map(|_| rng.next_u32(4));
+            return (0..3)
+                .flat_map(|channel| {
+                    (region.y0..region.y1()).flat_map(move |y| {
+                        (region.x0..region.x1()).map(move |x| {
+                            let block = (x / 4 + 3 * (y / 4) + shift[channel]) % 4;
+                            ROUNDING_BLOCK[(y % 4) as usize][(x % 4) as usize]
+                                / (1u32 << block) as f32
+                        })
+                    })
+                })
+                .collect();
+        }
+        _ => {}
+    }
+    (0..3 * pixels)
+        .map(|_| match rng.next_u32(16) {
+            0 => 0.0,
+            1 => rng.next_range(-0.05, 0.0) as f32,
+            2 => rng.next_range(1.0, 1.3) as f32,
+            _ => rng.next_range(0.0, 1.0) as f32,
+        })
+        .collect()
+}
+
+/// Output tiles of a stage: the whole stage, a tile at each corner, one in the middle and two at
+/// random.
+fn tiles(rng: &mut SplitMix64, stage: Stage) -> Vec<Region> {
+    let (w, h) = (stage.width, stage.height);
+    let (tw, th) = (w.min(16), h.min(16));
+    let (mw, mh) = (w.min(8), h.min(8));
+    let tile = |x0, y0, width, height| Region {
+        x0,
+        y0,
+        width,
+        height,
+    };
+    let mut tiles = vec![
+        Region::whole(stage),
+        tile(0, 0, tw, th),
+        tile(w - tw, 0, tw, th),
+        tile(0, h - th, tw, th),
+        tile(w - tw, h - th, tw, th),
+        tile((w - mw) / 2, (h - mh) / 2, mw, mh),
+    ];
+    for _ in 0..2 {
+        let (x0, y0) = (rng.next_u32(w), rng.next_u32(h));
+        let width = 1 + rng.next_u32((w - x0).min(24));
+        let height = 1 + rng.next_u32((h - y0).min(24));
+        tiles.push(tile(x0, y0, width, height));
+    }
+    tiles
+}
+
+/// Odd stages, from one pixel to one large enough that a middle tile's input reaches no edge at
+/// the smaller long sides.
+const STAGES: [(u32, u32); 7] = [
+    (1, 1),
+    (3, 2),
+    (9, 7),
+    (40, 33),
+    (97, 61),
+    (131, 70),
+    (203, 157),
+];
+
+/// Each unit at its stage's own long side, at 480 and at 6000 (where Clarity's halo of 199 passes
+/// every stage here), over every tile with the input the host would give it (the tile grown by
+/// the unit's halo, sometimes more), scratch and output holding stale values, and both
+/// parallelisms against the serial reference.
+#[test]
+fn the_units_match_their_frozen_passes_bit_for_bit() {
+    let mut rng = SplitMix64(0x9E5E_4CE0);
+    let mut compared = 0;
+    for (width, height) in STAGES {
+        let stage = Stage { width, height };
+        for long_side in [width.max(height), 480, 6000] {
+            for (name, unit) in units(long_side) {
+                let production = unit.production();
+                let halo = production.halo(stage);
+                for tile in tiles(&mut rng, stage) {
+                    let input_region = tile.grown(halo + rng.next_u32(3), stage);
+                    let output_region = input_region.shrunk(halo, stage);
+                    let values = rgb(&mut rng, input_region);
+                    let input = Planes::new(stage, input_region, &values).expect("the input");
+                    let atmosphere = [0; 3].map(|_| rng.next_range(0.3, 1.0));
+                    let global = Global::new(atmosphere.to_vec()).expect("an atmospheric light");
+                    let scratch_values = production.scratch_bytes(Stage {
+                        width: input_region.width,
+                        height: input_region.height,
+                    }) / 4;
+                    let scratch: Vec<f32> = (0..scratch_values)
+                        .map(|_| rng.next_range(-2.0, 2.0) as f32)
+                        .collect();
+                    let before: Vec<f32> = (0..3 * output_region.pixels())
+                        .map(|_| rng.next_range(-1.0, 1.0) as f32)
+                        .collect();
+                    let expected = {
+                        let mut values = before.clone();
+                        let mut output =
+                            PlanesMut::new(stage, output_region, &mut values).expect("the output");
+                        unit.reference(&input, &mut output, atmosphere, &mut scratch.clone());
+                        bits(&values)
+                    };
+                    for parallelism in PARALLELISMS {
+                        let mut values = before.clone();
+                        let mut output =
+                            PlanesMut::new(stage, output_region, &mut values).expect("the output");
+                        production
+                            .apply(
+                                &input,
+                                &mut output,
+                                Some(&global),
+                                &mut scratch.clone(),
+                                parallelism,
+                            )
+                            .expect("the unit");
+                        assert_eq!(
+                            bits(&values),
+                            expected,
+                            "{name} at long side {long_side}: {stage:?} tile {tile:?} input \
+                             {input_region:?} {parallelism:?}"
+                        );
+                        compared += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(compared > 2000, "{compared} comparisons");
 }

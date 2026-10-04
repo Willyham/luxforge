@@ -353,13 +353,6 @@ impl<'a> Planes<'a> {
     }
 
     /// The rectangle these values cover.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read by the Detail and Presence row passes once they land"
-        )
-    )]
     pub(crate) fn region(&self) -> Region {
         self.region
     }
@@ -370,13 +363,6 @@ impl<'a> Planes<'a> {
     /// `row[(x - region.x0)]` for `x` inside the rectangle, and the pass clamps and checks its
     /// columns once rather than per read. A row outside the rectangle after clamping panics, as
     /// `sample` does.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read by the Detail and Presence row passes once they land"
-        )
-    )]
     pub(crate) fn row(&self, y: i64) -> [&'a [f32]; 3] {
         let y = y.clamp(0, i64::from(self.stage.height.saturating_sub(1))) as u32;
         assert!(
