@@ -47,6 +47,7 @@ pub(super) fn host_config(config: &Config) -> HostConfig {
         resource_dir: paths.map(Paths::module_resources),
         secrets,
         transport: Arc::new(HttpTransport::system()),
+        launch_flags: config.launch_flags.clone(),
         ..HostConfig::unconfigured()
     }
 }
@@ -130,6 +131,11 @@ impl Editor {
     pub(super) fn close(&mut self) -> Task<Message> {
         if !self.performance.saving.idle() {
             self.performance.closing = true;
+            return Task::none();
+        }
+        // So does a flag change: closing waits for the last one to be stored.
+        if !self.settings.idle() {
+            self.settings.closing = true;
             return Task::none();
         }
         self.event(

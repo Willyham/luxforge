@@ -30,6 +30,7 @@ mod artifact_store;
 mod artifact_tests;
 mod catalog;
 mod catalog_rows;
+mod collapse;
 mod describe;
 mod entries;
 mod evaluate;
@@ -247,6 +248,11 @@ pub struct MutationResult {
     pub current_entry_id: EntryId,
     pub created_entry_id: Option<EntryId>,
     pub deduplicated: bool,
+    /// The entry an edit of the same control superseded, which auto-collapse hid from history: the
+    /// new entry continues from that entry's undo parent, or, when the edit returned the control to
+    /// where the chain began, no entry was written and the head moved back to that parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collapsed_entry_id: Option<EntryId>,
 }
 
 /// What one module's first-open action came to when a photograph was first opened
@@ -634,6 +640,9 @@ pub struct EditorService {
     /// The index database, opened on first use ([`Self::index`]) rather than with the catalog, so
     /// a catalog that never browses a file gets no index directory.
     index: RefCell<Option<crate::index::IndexDb>>,
+    /// Whether an edit that sets the same control as the entry before it collapses that entry
+    /// ([`Self::set_auto_collapse`]). Off until the host sets it from the person's preference.
+    auto_collapse: bool,
 }
 
 impl EditorService {
@@ -701,7 +710,20 @@ impl EditorService {
             live_artifacts: LiveArtifacts::default(),
             index_dir,
             index: RefCell::new(None),
+            auto_collapse: false,
         })
+    }
+
+    /// Collapse history from now on, or stop: the person's "Auto collapse history" preference,
+    /// which the catalog owner sets when it starts and whenever the preference changes. An edit
+    /// already written stays as it was either way.
+    pub fn set_auto_collapse(&mut self, enabled: bool) {
+        self.auto_collapse = enabled;
+    }
+
+    /// Whether edits collapse history now ([`Self::set_auto_collapse`]).
+    pub fn auto_collapse(&self) -> bool {
+        self.auto_collapse
     }
 
     /// The providers this service validates, plans and renders with.

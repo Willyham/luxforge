@@ -16,8 +16,8 @@ use crate::{
     presets_smoke as presets, raw_panel_smoke as raw_panel,
     resolve_missing_smoke as resolve_missing,
     scenario::{Checked, Checks, Fixture, Launch, Plan, Run, Step, launch::Guard},
-    select_smoke as select, viewport_smoke as viewport, vignette_smoke as vignette,
-    workspace_smoke as workspace, zoom_smoke as zoom, *,
+    select_smoke as select, settings_smoke as settings, viewport_smoke as viewport,
+    vignette_smoke as vignette, workspace_smoke as workspace, zoom_smoke as zoom, *,
 };
 use std::{
     borrow::Borrow,
@@ -574,7 +574,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "histogram",
-        about: "The histogram, its clipping overlays, the pointer readout and a drafted frame",
+        about: "The histogram, its clipping overlays, a render.sample of the edited pixel and a drafted frame",
         launches: &[LaunchSpec {
             plan: histogram::plan,
             // The scenario commits an `edit.set-pixel`, and the pixel proof is a test module.
@@ -819,6 +819,22 @@ pub static SCENARIOS: &[Scenario] = &[
         }],
         verify: performance::verify,
         source: Source::Default(&[performance::FIXTURE]),
+        window: Some(PANELLED),
+        note: None,
+        own: None,
+    },
+    Scenario {
+        name: "settings",
+        about: "The Settings sheet's Experiments tab: every flag kind changed, refused, reset and read back",
+        launches: &[LaunchSpec {
+            plan: settings::plan,
+            // The proof flags, which the choice and number controls are checked on, are listed
+            // only by a host that serves the test modules.
+            developer: true,
+            ..APP
+        }],
+        verify: settings::verify,
+        source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(PANELLED),
         note: None,
         own: None,

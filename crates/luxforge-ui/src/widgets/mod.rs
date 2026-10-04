@@ -134,7 +134,7 @@ pub use sub_group_header::{
 pub use swatch_slots::{SwatchSlotsModel, swatch_slots};
 pub use tab_row::{Tab, TabRowModel, tab_row};
 pub use text::{caption, error_caption, label, section_label, title};
-pub use toggle::{ToggleModel, compact_toggle, toggle};
+pub use toggle::{ToggleModel, compact_toggle, switch, toggle};
 pub use truncated_text::truncated_text;
 
 // -- Select: the thumbnail grid's exports.

@@ -4,7 +4,7 @@ Status: implemented. This note records what the history graph is, the named vers
 
 ## The graph that already existed
 
-Every history entry stores its complete immutable stack and an `undo_parent`. Undo and redo move the current pointer; a new edit after undo appends with the undone-to entry as its parent; nothing is ever deleted. That is a commit graph: an entry is a commit, its stack is the tree, `undo_parent` is the parent pointer, the asset's current entry is HEAD and the per-asset `sequence` is the reflog. Restore is a forward-moving revert that copies an old stack into a new entry.
+Every history entry stores its complete immutable stack and an `undo_parent`. Undo and redo move the current pointer; a new edit after undo appends with the undone-to entry as its parent; nothing is ever deleted. [Auto-collapse](#auto-collapse) hides entries from history pages without deleting them. That is a commit graph: an entry is a commit, its stack is the tree, `undo_parent` is the parent pointer, the asset's current entry is HEAD and the per-asset `sequence` is the reflog. Restore is a forward-moving revert that copies an old stack into a new entry.
 
 Lightroom truncates later history when you edit from an earlier state, and its snapshots exist to survive that truncation. Luxforge never truncates, so every state a Lightroom snapshot could bring back is already reachable through `history.list` and `history.restore`. What was missing was a way to name one entry among hundreds, and a way to see the chain rather than the chronological list.
 
@@ -26,15 +26,34 @@ Restoring a version is the existing `history.restore` on the version's entry. Th
 
 `history.lineage` walks `undo_parent` from an entry (default current) newest first, returning entry id, sequence, action and parent per step, at most one hundred steps per call with `next_entry_id` to continue. It reads the `undo_parent_id` column rather than parsing entry JSON. The desktop reads it when an asset opens, after its own undo, redo and restore, and when another client changed the asset; after its own commit it adds the new entry to the loaded lineage itself, because that entry's undo parent is the entry that was current, which the lineage already holds. It marks loaded entries that are not on the current lineage as branches; when the chain was truncated it marks nothing at or below the oldest returned step, because it cannot know.
 
+## Auto-collapse
+
+**Auto collapse history** is a person's preference, on by default, in Settings › General and `preferences.set {auto_collapse_history}`. A control's action stores the value it sets, not a change to the value before it, so a run of edits of one control, such as Contrast +15, −30, +30 and +10, leaves exactly the stack its last edit would have left on the entry before the run. With the preference on, such an edit **collapses** the entry it follows: its new entry takes the run's base, the entry before the run, as its undo parent, and the entry it followed is recorded as collapsed. A run that ends where it began writes no entry at all: the head moves back to the base and the last entry of the run is collapsed. Either way the answer names the collapsed entry in `collapsed_entry_id`; when no entry was written its `outcome` is `applied` with no `created_entry_id`, and its `current_entry_id` is the base.
+
+Nothing is deleted. A collapsed entry keeps its stack, its row and its references; `history.inspect`, preview and Restore still reach it by id, and `history.list {collapsed: true}` lists it with `collapsed: true`. Undo from the collapsing entry goes straight to the base, so the lineage never names a collapsed entry.
+
+The core decides "the same control" from the stacks, so no module declares it. An edit collapses the current entry only when all of these hold:
+
+- the preference is on, and the edit is a module action, not a `mask.*` command or a Restore;
+- the current entry is where its own commit left the head: no undo, redo or other navigation has moved it since;
+- the current entry is the same action, sent with the same set of fields, by the same actor, and it is not a Restore and no version names it;
+- planning the edit on the base produces the stack planning it on the current entry produces, with layer identities and neutral layers left out of the comparison.
+
+The last condition is what makes a collapse safe: the superseded entry changed nothing the new edit does not overwrite. A relative action never passes it, so four quarter-turns stay four entries; the same field on another mask, or on a mask and then everywhere, does not either. A field patch keeps one layer per target, so a run from an entry without that module's layer ends on a neutral layer, which the comparison leaves out, and a return to the start leaves no row.
+
+The preference reaches the catalog owner when it starts and whenever `preferences.set` changes it, and applies to edits from then on. Turning it off or on rewrites no history.
+
+Performance review of the change: it reads, hashes and decodes no original and allocates no frame. On the owner thread, a commit whose current entry is the same action and field set by the same actor plans the action a second time, on the base's stack, and compares two stacks, `O(layers)`; a field patch's plan reads no pixel, and the base is read from the entry cache. Every other commit adds a handful of field comparisons. A history page adds one indexed lookup per row. The desktop adds no request: a collapsing edit reads the lineage instead of adding its entry to the loaded one, as an undo does, and reads no page. No timer, poll, subscription or cache is added. No timing run was taken, because no interactive path changes: a slider drag still commits once, on release.
+
 ## History rows
 
-`history.list` answers pages of **rows**, newest first: each entry's `id`, `sequence`, `action_id`, `label`, `actor`, `timestamp_ms`, `undo_parent` and `restore_target`, and no stack or parameters. The rows are read from the entry's own columns without decoding its JSON, so a page costs the same whatever the stacks hold, masks included. `history.inspect` answers one whole entry with its complete stack. The desktop's history panel reads only rows: an open or a change made elsewhere reads the newest page, and its own commit, undo, redo or restore merges the current entry's row into the loaded page instead.
+`history.list` answers pages of **rows**, newest first: each entry's `id`, `sequence`, `action_id`, `label`, `actor`, `timestamp_ms`, `undo_parent` and `restore_target`, and no stack or parameters. A page leaves out [collapsed](#auto-collapse) entries unless `collapsed: true` asks for them, when each is marked `collapsed: true`; the page's `limit` counts the rows it answers. The rows are read from the entry's own columns without decoding its JSON, so a page costs the same whatever the stacks hold, masks included. `history.inspect` answers one whole entry with its complete stack. The desktop's history panel reads only rows: an open or a change made elsewhere reads the newest page, and its own commit, undo, redo or restore merges the current entry's row into the loaded page instead. When its own edit collapsed an entry, it removes that entry's row from the loaded page and reads the lineage, as after an undo.
 
-## Storage: catalog format 12
+## Storage: catalog format 13
 
-Entry JSON is the authoritative stored recipe snapshot. Beside it each entry's row fields have their own columns — `sequence`, `action_id`, `label`, `actor`, `timestamp_ms`, `undo_parent_id` and `restore_target_id` — written from the same entry by the one insert every commit and every import takes, so a history page and a lineage walk read columns only. Both are immutable. The `versions` table holds named references to entries. The catalog also holds the [preset library](presets.md#library), the [mask](masking.md) table and content-addressed stroke store, and the catalog's identity with the [derived-artifact](module-capabilities.md#derived-artifacts) tables, whose per-entry references keep every artifact a version or branch reaches alive. In the request table it holds each asset request's whole answer, so a retried `mask.*` command answers with the identities its first attempt minted. Each asset's source kind tag (`jpeg` or `raw`) has a column of its own beside its interpretation, so a list of photographs reads columns only and decodes no interpretation. History inserts name their columns explicitly.
+Entry JSON is the authoritative stored recipe snapshot. Beside it each entry's row fields have their own columns — `sequence`, `action_id`, `label`, `actor`, `timestamp_ms`, `undo_parent_id` and `restore_target_id` — written from the same entry by the one insert every commit and every import takes, so a history page and a lineage walk read columns only. Both are immutable. The `versions` table holds named references to entries, and `collapsed_entries` the entries [auto-collapse](#auto-collapse) hid, keyed by entry; a trigger refuses deleting a row there, as entries refuse updates. The catalog also holds the [preset library](presets.md#library), the [mask](masking.md) table and content-addressed stroke store, and the catalog's identity with the [derived-artifact](module-capabilities.md#derived-artifacts) tables, whose per-entry references keep every artifact a version or branch reaches alive. In the request table it holds each asset request's whole answer, so a retried `mask.*` command answers with the identities its first attempt minted. Each asset's source kind tag (`jpeg` or `raw`) has a column of its own beside its interpretation, so a list of photographs reads columns only and decodes no interpretation. History inserts name their columns explicitly.
 
-The current catalog format is 12, the catalog of developed picks ([catalog](catalog.md#storage)). Beside history it adds these tables:
+The current catalog format is 13: the collapsed-entry table and the catalog of developed picks ([catalog](catalog.md#storage)). Beside history the catalog adds these tables:
 
 | Table | Holds |
 | --- | --- |
@@ -55,11 +74,12 @@ The schema holds the invariants the lanes rely on:
 - Only a group holds collections, only a plain collection has members, each once, and only a smart collection has a query. A collection keeps its kind.
 - The journal is append-only: its rows are never updated or deleted, a change is undone at most once and an undo redone at most once, and each refers only to earlier changes.
 
-A photograph enters the catalog only by being developed (`pick.develop`, [developing picks](catalog.md#developing-picks)), which writes its asset row with its catalog folder, source folder, volume and moment, its capture row, its Original entry and its state row in one transaction.
+A photograph enters the catalog only by being developed (`pick.develop`, [developing picks](catalog.md#developing-picks)), which writes its asset row with its catalog folder, source folder, volume and moment, its capture row, its Original entry and its state row in one transaction. A collapsed entry is part of its photograph's record: [Empty Removed](catalog.md#removing) deletes it with the photograph's other entries, lifting the table's permanence trigger inside its own transaction only, as it does the artifact references'.
 
 Every earlier format is refused by name and left as it is:
 
-- A format 11 catalog has none of the catalog's tables.
+- A format 12 catalog has either the catalog's tables or the collapsed-entry table, never both: the two were made side by side under one marker.
+- A format 11 catalog has none of the catalog's tables and no collapsed-entry table.
 - A format 10 catalog has no kind column.
 - A format 9 catalog stores only the mutation result of a request.
 - A format 7 catalog keeps the row fields only inside the entry JSON.
@@ -86,7 +106,7 @@ A session's history selection is kept per asset, in `session.preview.selections`
 | `version.delete` | Remove a name; the entry remains |
 | `version.list` | Versions in creation order with their entry sequence |
 | `history.lineage` | Undo-parent chain from an entry, paged |
-| `history.list` | History rows newest first, paged, without stacks; `history.inspect` reads one whole entry |
+| `history.list` | History rows newest first, paged, without stacks; collapsed entries only with `collapsed: true`; `history.inspect` reads one whole entry |
 
 The one method table in the core carries each method's declared parameters, notes and handler; the schema and the parser are generated from the same declaration, a method mutates exactly when it carries a mutation envelope, and a generated test sends every listed method its declared fields and one undeclared one. `version.create {asset_id, name, mutation, entry_id?}` and `version.delete {asset_id, name, mutation}` take the `{request_id, actor}` envelope, and a version records its `actor`.
 
@@ -98,4 +118,5 @@ The one method table in the core carries each method's declared parameters, note
 - Lineage skips abandoned branches, pages with a continuation id and rejects unknown assets.
 - An independent JSON client creates a version, undoes, lists versions and reads a one-step lineage in one session.
 - History rows carry no stack, equal their entries' row fields before and after reopen, page without gaps and decode no entry. A format 7 catalog is refused by name and left as it was.
+- Auto-collapse: a run of one control keeps one visible entry whose undo parent is the run's base; a run back to its start writes no entry and leaves no row; another control, another field set, another actor, another mask target, a relative action, a moved head, a named entry or the preference off collapses nothing; collapsed entries survive reopen hidden and are listed on request; a retried collapse answers as it did. The field-patch conformance suite checks the collapse and its undo for every field-patch module.
 - Desktop: stale session responses are not adopted, pan coalesces to one in-flight request, and a refresh replaces or merges history and marks branches. A commit's refresh reads no page, lineage or versions and merges its row and lineage; undo, redo and restore read the lineage; an answer overtaken by a newer selection or revision is dropped; a test counts the owner calls of each. `cargo xtask check` passes.

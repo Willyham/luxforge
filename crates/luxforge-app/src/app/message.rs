@@ -27,6 +27,7 @@ pub(crate) mod preview;
 pub(crate) mod select;
 pub(crate) mod select_catalog;
 pub(crate) mod select_missing;
+pub(crate) mod settings;
 pub(crate) mod sync;
 pub(crate) mod view;
 
@@ -57,6 +58,8 @@ pub(crate) enum Message {
     /// A module capability gesture or answer.
     Capability(capability::CapabilityMessage),
     Performance(performance::PerformanceMessage),
+    /// One Settings sheet gesture or answer.
+    Settings(settings::SettingsMessage),
     /// One export gesture or answer.
     Export(export::ExportMessage),
     Evidence(evidence::EvidenceMessage),

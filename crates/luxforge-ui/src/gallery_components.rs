@@ -287,7 +287,7 @@ pub(crate) fn gallery_components() -> Vec<Element<'static, ()>> {
         },
         |_| (),
     ));
-    // The icons in three columns, so the whole board fits one gallery page beside a curve.
+    // The icons in three columns, so the whole board fits one gallery page under the curves.
     let third = Icon::NAMED.len().div_ceil(3);
     let mut columns = iced::widget::row![].spacing(24.0);
     for chunk in Icon::NAMED.chunks(third) {

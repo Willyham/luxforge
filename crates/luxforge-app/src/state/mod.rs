@@ -20,6 +20,7 @@ pub(crate) mod query_choice;
 pub(crate) mod select;
 pub(crate) mod select_catalog;
 pub(crate) mod select_missing;
+pub(crate) mod settings;
 pub(crate) mod status;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -227,16 +228,12 @@ impl ViewState {
     }
 }
 
-/// The pixel under the pointer: where it is over the photograph and what `render.sample` last
-/// answered there. A pick commits nothing.
+/// The pointer over the photograph: where it is, in image pixels. Nothing is read there; a pick
+/// commits nothing.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Hover {
     /// The last pointer position over the photo in image pixels.
     pub(crate) pointer: Option<(u32, u32)>,
-    /// The pixel `render.sample` last answered for the pointer's position.
-    pub(crate) readout: Option<histogram::Readout>,
-    /// One sample in flight at a time, with only the newest position waiting for it.
-    pub(crate) sample: Coalesce<(u32, u32)>,
 }
 
 /// Everything the models are derived from, borrowed for one derivation.
@@ -299,10 +296,12 @@ pub(crate) struct Inputs<'a> {
     pub(crate) compare_held: bool,
     /// This desktop's own view state: window, zoom, menu.
     pub(crate) view_state: &'a ViewState,
-    /// The pixel under the pointer and what `render.sample` last answered for it.
+    /// The pointer's position over the photograph.
     pub(crate) hover: &'a Hover,
     /// The command palette.
     pub(crate) palette: &'a palette::Palette,
+    /// The Settings sheet.
+    pub(crate) settings: &'a settings::Settings,
     /// The version chip row's naming form.
     pub(crate) version_form: &'a VersionForm,
     pub(crate) dimensions: Option<(u32, u32)>,
@@ -372,6 +371,7 @@ pub(crate) struct Workspace {
     pub(crate) histogram: histogram::HistogramModel,
     pub(crate) status: status::StatusBarModel,
     pub(crate) palette: palette::PaletteModel,
+    pub(crate) settings: settings::SettingsModel,
     /// The state panel's pinned last block. It keeps itself across derivations and is rebuilt only
     /// when a sample lands or the section opens or closes.
     pub(crate) performance: performance::PerformanceModel,
@@ -409,6 +409,7 @@ impl Workspace {
             .and_then(|job| job.entry.progress.as_ref())
             .and_then(|progress| progress.fraction);
         self.develop = develop::derive(inputs.develop, progress);
+        self.settings = settings::derive(inputs.settings);
     }
 
     /// Every picker control the panel derived, by the module whose pick mode it selects, with the
@@ -588,6 +589,7 @@ mod tests {
         performance_expanded: bool,
         performance: performance::PerformanceHistory,
         palette: palette::Palette,
+        settings: settings::Settings,
         version_form: VersionForm,
         select: select::SelectState,
         long_work: long_work::LongWorkState,
@@ -631,6 +633,7 @@ mod tests {
                 performance_expanded: false,
                 performance: performance::PerformanceHistory::default(),
                 palette: palette::Palette::default(),
+                settings: settings::Settings::default(),
                 version_form: VersionForm::default(),
                 select: select::SelectState::default(),
                 long_work: long_work::LongWorkState::default(),
@@ -725,6 +728,7 @@ mod tests {
                 view_state: &self.view_state,
                 hover: &self.hover,
                 palette: &self.palette,
+                settings: &self.settings,
                 version_form: &self.version_form,
                 dimensions: Some((480, 320)),
                 photo: true,
@@ -2832,34 +2836,6 @@ mod tests {
         assert_eq!(
             workspace.title.zoom_percent, "%",
             "nothing gives Fit a size yet"
-        );
-    }
-
-    /// The pointer readout is the status bar's, and only the status bar's: moving the pointer onto
-    /// the photograph changes nothing in the histogram inspector, so no control in the tools panel
-    /// can move, and nothing else in the bar changes either.
-    #[test]
-    fn the_pointer_readout_is_in_the_status_bar_and_leaves_the_inspector_unchanged() {
-        let mut scene = Scene::new(vec![crop_descriptor()]).opened(Vec::new());
-        let without = scene.derive();
-        assert_eq!(without.status.readout, None);
-        scene.hover.readout = Some(histogram::Readout {
-            x: 360,
-            y: 240,
-            rgba: [0, 128, 255, 255],
-        });
-        let with = scene.derive();
-        assert_eq!(
-            with.status.readout.as_deref(),
-            Some("R 0 \u{b7} G 128 \u{b7} B 255 \u{b7} 360, 240")
-        );
-        assert_eq!(with.histogram, without.histogram);
-        assert_eq!(
-            status::StatusBarModel {
-                readout: None,
-                ..with.status.clone()
-            },
-            without.status
         );
     }
 

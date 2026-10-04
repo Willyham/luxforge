@@ -1,6 +1,6 @@
 //! Generated catalogs and indexes, written in bulk, for `cargo xtask generate-catalog` and tests.
 //!
-//! A seeded catalog is an ordinary format-12 catalog: every photograph has its asset row, its
+//! A seeded catalog is an ordinary format-13 catalog: every photograph has its asset row, its
 //! Original entry, its state row and its capture row, written through the same row writers the
 //! import, the index lane and the library use (`editor/catalog_rows.rs`, [`crate::index`]), so the
 //! core opens, lists and reads it exactly as it would a catalog developed by hand. Its originals
@@ -67,7 +67,7 @@ pub struct CatalogSeeder {
 }
 
 impl CatalogSeeder {
-    /// A new, empty format-12 catalog at `path`, identified as `catalog_id`. Refused when anything
+    /// A new, empty format-13 catalog at `path`, identified as `catalog_id`. Refused when anything
     /// is already there.
     pub fn create(path: &Path, catalog_id: &str) -> Result<Self, Error> {
         if path.exists() {

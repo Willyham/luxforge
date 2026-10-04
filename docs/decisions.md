@@ -19,7 +19,7 @@ Accepted owner decisions and the questions still open. Proposals stay proposals 
 
 - Originals are read-only. Import references existing files with a stable asset ID, a verified content fingerprint and a changeable locator. SQLite is the local catalog. Folder relinking, sidecars, portability, backups and sync need their own workflow decisions.
 - A "layer" is an ordered edit operation in a recipe. Each committed action stores a complete immutable recipe snapshot and one attributed history entry. Bitmap compositing, blend modes and arbitrary layer reordering are not selected.
-- History is a graph: entries keep their undo parent and nothing is truncated. A named **version** (the owner's name for the Lightroom-style saved state) is a reference to one retained entry, not a branch. The catalog uses its [current internal format](design/versions-and-lineage.md#storage-catalog-format-12); unsupported formats are refused.
+- History is a graph: entries keep their undo parent and nothing is truncated. **Auto collapse history** (owner, 2026-10-04) is a preference, on by default: an edit that sets the same control as the entry just committed hides that entry, and one that returns the control to where the run began moves back to the run's base without writing an entry. Collapsing hides entries and never deletes them; they stay in the catalog and reachable by id ([auto-collapse](design/versions-and-lineage.md#auto-collapse)). A named **version** (the owner's name for the Lightroom-style saved state) is a reference to one retained entry, not a branch. The catalog uses its [current internal format](design/versions-and-lineage.md#storage-catalog-format-13); unsupported formats are refused.
 - Undo and redo navigate saved entries without appending rows. Preview is read-only. Restore appends an action and keeps all later entries. A new edit clears shortcut redo, but every entry stays available. Committed state survives restart; drafts do not.
 - One workspace: centered photo, collapsible controls, visible history, Fit, numeric zoom and true 100%. No library grid during the editor milestones. Cmd/Ctrl+O imports; Cmd/Ctrl+Z and Shift+Cmd/Ctrl+Z navigate history.
 - Geometry: the visible composition travels with mirror and quarter-turns, and a locked ratio swaps orientation on a quarter-turn. Fine angle is limited to ±45°. Space-drag pans.
@@ -53,7 +53,7 @@ Decided on 2026-09-23:
 
 Decided on 2026-09-26, aligning the shell with the boards:
 
-- The histogram has no caption at all, neither a row under the plot nor a hover tooltip; the pointer readout stays in the status bar.
+- The histogram has no caption at all, neither a row under the plot nor a hover tooltip. The pointer readout the status bar carried was removed on 2026-10-04 (owner): one `render.sample` per pointer move cost the point worker minutes through Detail, Presence and masks, and the window froze with it. Nothing is read under the pointer; `render.sample` stays the API's exact point query.
 - The status bar leads with a plain sentence of what last happened. Entry, snapshot and source identifiers are not shown or copied there; they remain available through the API.
 - On macOS the app's title bar is the window's title bar: a transparent, full-size-content native bar with the traffic lights inside the app's own. Windows and Linux keep their native frames.
 - The state panel has no Recipe section. The layer stack stays readable through `recipe.describe`.
@@ -98,7 +98,7 @@ Decided on 2026-09-23 under the owner's delegation for the [shared module capabi
 - Only the desktop (after Allow) or `luxforge-json --permission-authority` may grant. Live-session clients cannot; anyone may deny or revoke. Revocation cancels dependent jobs and never touches recipes, history or accepted artifacts; an endpoint change revokes the old grants.
 - Remote endpoints require HTTPS and public addresses; plain HTTP is allowed only to loopback, labelled as such. No proxies.
 - No remote provider adapter ships with the framework; the first real adapters arrive with Corrections. `managed-storage` and `local-runtime` wait for their first consumer.
-- Derived artifacts live in a directory beside the catalog and move with it; the [current catalog format](design/versions-and-lineage.md#storage-catalog-format-12) holds their references beside the preset library, the mask table and the stroke store, and earlier formats are refused.
+- Derived artifacts live in a directory beside the catalog and move with it; the [current catalog format](design/versions-and-lineage.md#storage-catalog-format-13) holds their references beside the preset library, the mask table and the stroke store, and earlier formats are refused.
 
 Revised by the owner on 2026-09-24, after the [architecture review](#architecture-review):
 
@@ -125,7 +125,7 @@ The owner edits local files and syncs them to an external drive, so moved-origin
 
 ## Presets
 
-The owner asked on 2026-09-23 for presets, with native presets and Lightroom import through a presets module whose apply is a history entry, and for the work to proceed without blocking on questions. It is delivered on the defaults recorded in the [presets design](design/presets.md#decisions-taken-on-defaults), each a proposal the owner reviews: presets as catalog data (see [versions and lineage](design/versions-and-lineage.md#storage-catalog-format-12)), only field-patch actions presettable, `apply-preset` carrying its settings, Lightroom values transferred for the controls Luxforge has and never clamped with RAW Kelvin and tint refused, the section first in the tools panel, and white balance unchecked when creating a preset.
+The owner asked on 2026-09-23 for presets, with native presets and Lightroom import through a presets module whose apply is a history entry, and for the work to proceed without blocking on questions. It is delivered on the defaults recorded in the [presets design](design/presets.md#decisions-taken-on-defaults), each a proposal the owner reviews: presets as catalog data (see [versions and lineage](design/versions-and-lineage.md#storage-catalog-format-13)), only field-patch actions presettable, `apply-preset` carrying its settings, Lightroom values transferred for the controls Luxforge has and never clamped with RAW Kelvin and tint refused, the section first in the tools panel, and white balance unchecked when creating a preset.
 
 ## Rendering memory
 
@@ -328,13 +328,35 @@ Decided by the owner on 2026-10-03, after a read-only audit of the workspace ([d
 - Packaging and timing build with a separate `dist` profile with LTO and one codegen unit; the daily release build is unchanged. Deferred the same day until the timing runs other plans have outstanding are recorded, since they and every recorded baseline build `release`.
 - Not adopted: DCT-scaled JPEG decode for proxies, parallel restart-marker JPEG export, cropping masked sensor margins, `target-cpu=apple-m4` and `panic = "abort"`.
 
+## Settings and feature flags
+
+Decided by the owner on 2026-10-04, asking for a feature-flag system with a UI ([design](design/settings-and-flags.md)):
+
+- Flags live in a **Settings surface with an Experiments tab**, rather than a beaker popover in the title bar.
+- The Settings entry is **always visible**, in every build.
+- **Developer mode becomes the first flag**; `--developer` stays, forcing it on for a launch.
+- **A flag never changes how a photo renders or exports.** An experiment that changes pixels is a module the recipe records.
+
+Settings gained a **General** tab for the person's preferences, which are not experiments, with Auto collapse history as its first (owner, 2026-10-04).
+
+The gear button and Cmd+,, launch flags applying at the next launch, storing only explicit choices, `luxforge-json` reading no flag at launch and the two developer-only proof flags are proposals with recorded defaults in the [design](design/settings-and-flags.md#decisions).
+
+## GPU-first rendering
+
+Decided by the owner on 2026-10-04 after the hover-readout freeze and the audit that followed it ([design](design/gpu-first.md)):
+
+- The GPU is the renderer of record for the picture at every zoom, the histogram and clipping counts, `render.sample` and the other pixel reads, and export. The CPU kernels stay as the whole-frame reference renderer and as the renderer for a machine without a usable GPU, with a notice.
+- Image correctness is a declared tolerance against the reference render for every output kind, measured on the qualification corpus before each stage lands. Bit identity is not required of the GPU; on one machine and driver the GPU is deterministic, and across machines an export or a histogram may differ in the last digit.
+- The convergence is staged, each stage deleting a cache, a phase or a fallback; the tolerance numbers, the no-GPU fallback, the export device policy and the counts' cadence during motion run on the design's recorded defaults until recorded here.
+- Settled pixels and reports from the reference keep their exactness tests against frozen fixtures; the pillars' exact-buffer wording now reads reference-buffer within a declared tolerance.
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/product-decisions.json).
 
 - How should catalog backup, portability, sidecars, folder relinking and external-drive sync work?
 - Beyond the supplied files, which RAW recording modes/firmware and controlled quality scenes should be prioritized? The implemented decoder/developer and neutral defaults are explicit; broad visual acceptance, the measured resource target and additional DJI modes/scenes remain in [RAW qualification](design/initial-raw.md#remaining-qualification-and-decisions).
-- Masking is authorized (2026-09-23) and is being implemented. Decided the same day: brush strokes are held in a **content-addressed stroke store** keyed by a hash of their contents, because every history entry stores a complete recipe and embedded strokes grow quadratically — about 37.5 MB across history for 200 strokes against 1.08 MB addressed. Entries stay full snapshots and pure deltas are rejected; a missing or corrupt stroke fails explicitly. It lands in phase C before the first brush ships, in the [current catalog format](design/versions-and-lineage.md#storage-catalog-format-12). The `points` kind, the stroke list and the `brush-paint` interaction are host primitives shared with the corrections proposal, not mask-private ones. See [masking](design/masking.md#stroke-storage).
+- Masking is authorized (2026-09-23) and is being implemented. Decided the same day: brush strokes are held in a **content-addressed stroke store** keyed by a hash of their contents, because every history entry stores a complete recipe and embedded strokes grow quadratically — about 37.5 MB across history for 200 strokes against 1.08 MB addressed. Entries stay full snapshots and pure deltas are rejected; a missing or corrupt stroke fails explicitly. It lands in phase C before the first brush ships, in the [current catalog format](design/versions-and-lineage.md#storage-catalog-format-13). The `points` kind, the stroke list and the `brush-paint` interaction are host primitives shared with the corrections proposal, not mask-private ones. See [masking](design/masking.md#stroke-storage).
 - Do masking's remaining recorded defaults stand — masks as a target for the delivered modules rather than a local-adjustment module of their own, the idempotent component algebra, a radial that selects inside, one stroke amount instead of Flow and Density, and the A-to-D phase order with brushes before range selections?
 - Do the [catalog design](design/catalog.md#proposals)'s eighteen recorded defaults stand — browsing files through an automatic event layer and developing only picks into the catalog, no ratings, keywords or flags, the event rules and offline place names, burst and bracket rules (brackets from metadata or previews), the loupe's camera previews with an on-demand development for 100%, moving on after picking a burst frame, cards browsed in place with copied files preferred, sending unedited photographs back, per-workspace undo, per-photograph resolution of missing originals and batch export in the first version, Empty Removed for permission authority only, the design scale, folders replacing import, events becoming catalog folders named at develop time, "On disk" for the filesystem, watching and reconciling the index, and showing every long job with progress — and is its implementation authorized?
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
@@ -343,6 +365,7 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 - For interactive previews, which additional measured quality levels and approximation error bounds are acceptable beyond the authorized viewport baseline? Temporary softness, the updating histogram, and viewport-bounded clipping are accepted above. For GPU previews the owner chose speed first ([above](#gpu-previews)); do the [proposed limits](design/gpu-preview.md#the-preview-error-limit) stand?
 - Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand? RAW white balance import converts values without calibration ([source-kind controls](#source-kind-controls)).
 - Which of the [Tone curve proposals](design/tone-curve.md#proposals-with-recorded-defaults) stand — a luminance composite with the luminance-ratio reconstruction rather than Lightroom's per-channel composite, one channel, order 5 after Basic and before the mixer, free endpoints, the unit-slope tail past white, sixteen points, the Lightroom `ToneCurvePV2012` transfer including an identity curve, a double-click add that snaps to the drawn curve, end points the desktop does not remove, and the delivered point rows? The module is implemented on these defaults.
+- Which of the [GPU-first proposals](design/gpu-first.md#proposals-with-recorded-defaults) stand: the tolerance per output kind once measured, the reference renderer as the no-GPU fallback, the export device policy, the counts' cadence during motion, and owner tasks on the runtime's blocking pool at one frame per answer (adopted 2026-10-04 in place of the update loop, where a wait froze the window)?
 - Which of the [Presence, colour mixer and vignette proposals](design/presence-mixer-vignette.md#proposals-with-recorded-defaults) (section names, stage order, mixer layout, vignette style, spatial gesture latency, sample cost) stand? Implementation was authorized on 2026-09-22 on the recorded defaults and is delivered; the owner refines the defaults after review, including whether spatial sliders should draft at a bounded resolution now that the measured misses are recorded.
 
 The Basic and histogram product choices were decided on 2026-09-21 and implementation was authorized the same day; see [Basic adjustments and histogram](#basic-adjustments-and-histogram).

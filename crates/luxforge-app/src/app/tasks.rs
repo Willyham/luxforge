@@ -1,21 +1,19 @@
 //! The owner tasks. Every desktop request goes through [`send`], which is the same method table the
 //! JSON API dispatches; there is no desktop-only mutation path. Every request made off the update
-//! loop runs inside one [`owner_task`], and a source preparation is waited for by blocking on the
-//! owner's answer ([`wait_source_job`]), never by sleeping and asking again. Each task takes the narrowest completion path the performance rules allow; a
+//! loop runs inside one [`owner_task`], on the runtime's blocking pool, and a source preparation is
+//! waited for by blocking on the owner's answer ([`wait_source_job`]), never by sleeping and asking
+//! again. Each task takes the narrowest completion path the performance rules allow; a
 //! gesture's session-only draft requests — `draft.begin`, `draft.set` with its preview job,
 //! `draft.reapply` and `draft.cancel` — stay synchronous calls on the update loop
 //! ([`draft_set_now`]), and only its `draft.commit` is a task.
-use crate::{
-    app::{
-        crop::StagePlan,
-        draft::GestureId,
-        message::{
-            Message, draft::DraftMessage, evidence::EvidenceMessage, history::HistoryMessage,
-            mask::MaskMessage, performance::PerformanceMessage, pointer::PointerMessage,
-            preset::PresetMessage, preview::PreviewMessage, sync::SyncMessage, view::ViewMessage,
-        },
+use crate::app::{
+    crop::StagePlan,
+    draft::GestureId,
+    message::{
+        Message, draft::DraftMessage, evidence::EvidenceMessage, history::HistoryMessage,
+        mask::MaskMessage, performance::PerformanceMessage, pointer::PointerMessage,
+        preset::PresetMessage, preview::PreviewMessage, sync::SyncMessage, view::ViewMessage,
     },
-    state::histogram::Readout,
 };
 use iced::Task;
 use luxforge_core::{
@@ -78,6 +76,9 @@ pub(crate) struct Refresh {
     /// What the composite action this refresh read back left out because it does not apply to
     /// the photo, as its answer listed it; empty for every other change.
     pub(crate) skipped: Vec<luxforge_core::SkippedSetting>,
+    /// The entry this desktop's own edit collapsed, as its answer named it: its row leaves the
+    /// loaded page. `None` for every other change.
+    pub(crate) collapsed: Option<EntryId>,
 }
 
 /// What a refresh reads back, by what the change before it could have touched. Every scope reads
@@ -100,15 +101,18 @@ pub(crate) enum Scope {
 }
 
 impl Scope {
-    /// The scope of a mutation from what `method` answered. Undo, redo and restore navigate; every
-    /// other command that answers a revision commits. An answer without one says nothing about what
-    /// it touched, so it is read as a change made elsewhere.
+    /// The scope of a mutation from what `method` answered. Undo, redo and restore navigate, and so
+    /// does an edit that collapsed an entry, whose result continues from that entry's undo parent
+    /// rather than from the entry that was current; every other command that answers a revision
+    /// commits. An answer without one says nothing about what it touched, so it is read as a change
+    /// made elsewhere.
     pub(crate) fn after(method: &str, answer: &Value) -> Self {
         let Some(revision) = answer["revision"].as_u64() else {
             return Self::Elsewhere;
         };
         match method {
             "history.undo" | "history.redo" | "history.restore" => Self::Navigate(revision),
+            _ if collapsed(answer).is_some() => Self::Navigate(revision),
             _ => Self::Commit(revision),
         }
     }
@@ -150,6 +154,9 @@ pub(crate) struct SyncResult {
     /// The listing and the event sequence it was read at.
     pub(crate) presets: Option<(Vec<PresetSummary>, u64)>,
     pub(crate) capabilities: bool,
+    /// A `flags.set` or `preferences.set` changed the person's flags or preferences, which an open
+    /// Settings sheet reads again.
+    pub(crate) flags: bool,
     /// This desktop's own requests whose events the poll read and skipped, because the answer to
     /// each had already read its change back.
     pub(crate) own: Vec<String>,
@@ -165,6 +172,7 @@ impl SyncResult {
             refresh: Some(Box::new(refresh)),
             presets: None,
             capabilities: false,
+            flags: false,
             own: Vec::new(),
         }
     }
@@ -237,27 +245,46 @@ pub(crate) fn request() -> MutationRequest {
     }
 }
 
-/// Run `work` — owner requests, and the blocking waits between them — off the update loop, and
-/// hand what it returns back as one message. This is the one way the desktop starts owner work.
+/// Run `work` — owner requests, and the blocking waits between them — off the update loop, on the
+/// runtime's blocking pool, and hand what it returns back as one message. This is the one way the
+/// desktop starts owner work.
 ///
-/// The work runs inside the task's own future on the runtime's executor: an owner request blocks
-/// that executor thread until the owner thread answers, and a source preparation is waited for by
-/// blocking on the owner's answer that the job ended, never by sleeping and asking again. Handing
-/// the work to the runtime's blocking pool instead was measured to cost a displayed frame on every
-/// answer — a slider release's committed frame arrived about 8 ms later at p50 on the M4 — so it
-/// does not. The answer itself costs one runtime hop, which is why the gesture's `draft.set` and
-/// preview job do not come through here at all ([`draft_set_now`]).
+/// It is the pool and not the task's own future because of how iced 0.14 runs a task:
+/// `iced_winit::update` polls every new task once, synchronously, on the update loop before it
+/// hands the stream to the runtime, so a future that never awaits completes in that poll and its
+/// work runs on the update loop. That is what this helper did until 2026-10-04, when a hover
+/// readout's `render.sample` through a spatial stack held the window for minutes, and a RAW
+/// white-balance release held it for the whole redevelopment (0.5 to 1.6 s measured). The pool
+/// costs one runtime hop per answer — a displayed frame while a redraw is in flight, measured at
+/// about 8 ms on a slider release's committed frame — which is why the gesture's `draft.set` and
+/// preview job do not come through here at all ([`draft_set_now`]), and why nothing else may wait
+/// on the update loop ([performance rule 12](../../../../docs/engineering/performance-rules.md)).
 pub(crate) fn owner_task<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
     answer: impl FnOnce(T) -> Message + Send + 'static,
 ) -> Task<Message> {
-    Task::perform(async move { work() }, answer)
+    Task::perform(off_loop(work), answer)
 }
 
 /// [`owner_task`] before its answer becomes a message, for a task that goes on to do something
 /// of its own with the answer — a native dialog — before it has one.
 pub(crate) fn owner_work<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Task<T> {
-    Task::perform(async move { work() }, std::convert::identity)
+    Task::perform(off_loop(work), std::convert::identity)
+}
+
+/// `work` on the runtime's blocking pool when a runtime is current, which it is whenever iced polls
+/// a task; inline otherwise, so a caller polling the future on its own still gets its answer.
+async fn off_loop<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => match handle.spawn_blocking(work).await {
+            Ok(value) => value,
+            Err(error) => match error.try_into_panic() {
+                Ok(payload) => std::panic::resume_unwind(payload),
+                Err(error) => panic!("an owner task was cancelled: {error}"),
+            },
+        },
+        Err(_) => work(),
+    }
 }
 
 /// An owner failure with its structured data kept: a `consent-required` or `not-ready` answer
@@ -666,7 +693,13 @@ pub(crate) fn refresh(
         session,
         request: None,
         skipped: Vec::new(),
+        collapsed: None,
     })
+}
+
+/// The entry an edit's answer says auto-collapse hid, if any.
+fn collapsed(answer: &Value) -> Option<EntryId> {
+    serde_json::from_value(answer.get("collapsed_entry_id")?.clone()).ok()
 }
 
 /// Discovery runs once: the controls on screen are whatever the registered modules declare.
@@ -895,6 +928,7 @@ pub(crate) fn command_now(
     let scope = Scope::after(method, &answer);
     let mut refreshed = refresh(owner, client, asset_id, scope, proxy)?;
     refreshed.request = Some(request);
+    refreshed.collapsed = collapsed(&answer);
     // A composite's skips are part of its answer, not of any state read back afterwards.
     if let Some(skipped) = answer.get("skipped") {
         refreshed.skipped = parse(skipped.clone())?;
@@ -1241,9 +1275,15 @@ pub(crate) fn draft_commit_now(
     if result.mutation.outcome == MutationOutcome::NoOp {
         return Ok(None);
     }
-    let scope = Scope::Commit(result.mutation.revision);
+    // A commit that collapsed an entry continues from that entry's undo parent, so the lineage
+    // is read as a navigation's is.
+    let scope = match &result.mutation.collapsed_entry_id {
+        Some(_) => Scope::Navigate(result.mutation.revision),
+        None => Scope::Commit(result.mutation.revision),
+    };
     let mut refreshed = refresh(owner, client, asset_id, scope, proxy)?;
     refreshed.request = Some(request);
+    refreshed.collapsed = result.mutation.collapsed_entry_id;
     Ok(Some(refreshed))
 }
 
@@ -1578,45 +1618,6 @@ pub(crate) fn query_task(
     )
 }
 
-/// One pixel of the displayed stack for the pointer readout. It is a point query: `render.sample`
-/// evaluates the compiled recipe at one coordinate and rasterizes nothing, so hovering costs the
-/// owner thread O(layers) and never a frame; through a spatial layer the one tile the pixel needs is
-/// evaluated on the owner's point worker. The entry travels back with the answer, so a
-/// response that arrives after the canvas moved to another stack is dropped rather than shown.
-pub(crate) fn sample_task(
-    owner: OwnerHandle,
-    client: ClientId,
-    asset_id: AssetId,
-    entry: EntryId,
-    draft: Option<DraftId>,
-    x: u32,
-    y: u32,
-) -> Task<Message> {
-    let sampled = (entry.clone(), draft.clone());
-    owner_task(
-        move || {
-            let mut params = json!({"asset_id":asset_id,"x":x,"y":y});
-            if let Some(draft) = &draft
-                && let Some(object) = params.as_object_mut()
-            {
-                object.insert("draft_id".into(), json!(draft));
-            }
-            let (sampled, _) = call(&owner, client, "render.sample", params)?;
-            let rgba: Option<[u8; 4]> = parse(sampled["rgba"].clone())?;
-            // Outside the output stage is not an error: the pointer simply has nothing under it.
-            rgba.map(|rgba| Readout { x, y, rgba })
-                .ok_or_else(|| format!("({x}, {y}) is outside the rendered image"))
-        },
-        move |result| {
-            Message::Pointer(PointerMessage::Sampled {
-                entry: sampled.0.clone(),
-                draft: sampled.1.clone(),
-                result,
-            })
-        },
-    )
-}
-
 pub(crate) fn pan_task(owner: OwnerHandle, client: ClientId, x: f32, y: f32) -> Task<Message> {
     owner_task(
         move || {
@@ -1740,6 +1741,12 @@ pub(crate) fn sync_now(
             .events
             .iter()
             .any(|event| capability_event(&event.method));
+    // A flag or preference change touches no asset, so it alone reads only the flags and the
+    // preferences, and only while shown.
+    let flags = events.gap
+        || events.events.iter().any(|event| {
+            event.method.starts_with("flags.") || event.method.starts_with("preferences.")
+        });
     let asset = events.gap
         || events.events.iter().any(|event| {
             event.asset_id.as_ref() == Some(&asset_id)
@@ -1766,6 +1773,7 @@ pub(crate) fn sync_now(
         refresh,
         presets,
         capabilities,
+        flags,
         own: read.into_iter().map(|event| event.request_id).collect(),
     })
 }
@@ -2482,6 +2490,7 @@ mod tests {
             refresh: None,
             presets: None,
             capabilities: false,
+            flags: false,
             own: Vec::new(),
         };
         let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(stale))));

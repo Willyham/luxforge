@@ -296,6 +296,7 @@ pub(crate) fn refresh_for(
         session: ClientSession::default(),
         request: None,
         skipped: Vec::new(),
+        collapsed: None,
     }
 }
 
@@ -829,7 +830,7 @@ pub(crate) fn flatten(
         .collect()
 }
 
-// -- The histogram inspector, its clipping toggles and the pointer readout -------------------
+// -- The histogram inspector and its clipping toggles ----------------------------------------
 /// One analysed frame as the preview worker would hand it over: a report reduced from exactly
 /// these pixels, the identity the owner stores it under, and the raster kept beside it.
 pub(crate) fn analysed(

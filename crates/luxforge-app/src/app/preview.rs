@@ -1991,8 +1991,8 @@ impl Editor {
     }
 
     /// Take the picture of an earlier entry or draft revision off the surface, with everything
-    /// that describes it — the retained rasters, the histogram, the overlay's source, the readout
-    /// and the render time — so nothing on screen claims to show a state it does not.
+    /// that describes it — the retained rasters, the histogram, the overlay's source and the render
+    /// time — so nothing on screen claims to show a state it does not.
     pub(super) fn withdraw_photo(
         &mut self,
         generation: u64,
@@ -2010,8 +2010,6 @@ impl Editor {
                 "error_code": error.kind.code(),
             })
         });
-        self.hover.readout = None;
-        self.hover.sample.drop_pending();
         self.activity.render = None;
     }
 
@@ -2585,14 +2583,8 @@ impl Editor {
         }
     }
 
-    /// Point the canvas at another entry. A readout describes one pixel of one stack, so moving to
-    /// another entry drops it and anything waiting to be sampled rather than leaving codes on screen
-    /// that belong to an image no longer shown.
+    /// Point the canvas at another entry.
     pub(super) fn show_entry(&mut self, entry: luxforge_core::EntryId) {
-        if self.document.display_entry.as_ref() != Some(&entry) {
-            self.hover.readout = None;
-            self.hover.sample.drop_pending();
-        }
         self.document.display_entry = Some(entry);
     }
 

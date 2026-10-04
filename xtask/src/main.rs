@@ -61,6 +61,7 @@ mod resolve_missing_smoke;
 mod scenario;
 mod select_catalog_smoke;
 mod select_smoke;
+mod settings_smoke;
 mod smoke;
 mod stats;
 mod verify;

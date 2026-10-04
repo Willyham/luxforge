@@ -5,8 +5,8 @@ use crate::app::Editor;
 use crate::app::message::{
     Message, crop::CropMessage, draft::DraftMessage, export::ExportMessage,
     history::HistoryMessage, mask::BrushEdit, mask::KindMenu, mask::MaskKey, mask::MaskMessage,
-    mask::TypingEdit, overlay::OverlayMessage, palette::PaletteMessage, sync::SyncMessage,
-    view::ViewMessage,
+    mask::TypingEdit, overlay::OverlayMessage, palette::PaletteMessage, settings::SettingsMessage,
+    sync::SyncMessage, view::ViewMessage,
 };
 use crate::app::message::{
     develop::DevelopMessage,
@@ -120,6 +120,9 @@ pub(crate) struct KeyContext {
     pub(crate) mask_brush: bool,
     /// The command palette is open, so Escape closes it rather than reaching a draft.
     pub(crate) palette_open: bool,
+    /// The Settings sheet is open: it is modal, so the workspace behind it takes no key but the
+    /// ones that close the sheet.
+    pub(crate) settings_open: bool,
     /// The title bar's Export menu is open, so Escape closes it.
     pub(crate) export_menu_open: bool,
     /// A module's canvas mode is active, so Escape leaves it. A mode that owns a draft answers
@@ -193,6 +196,22 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     {
         return Some(Message::History(HistoryMessage::CompareKeyReleased));
     }
+    // The Settings sheet is modal: Escape and its own shortcut close it, and no other key reaches
+    // the workspace behind it, Select's included. Its fields still receive their own typing.
+    if context.settings_open {
+        return match keyboard {
+            Keys::KeyPressed {
+                key: Key::Named(Named::Escape),
+                ..
+            } => Some(Message::Settings(SettingsMessage::Close)),
+            Keys::KeyPressed { key, modifiers, .. }
+                if modifiers.command() && character(key, ",") =>
+            {
+                Some(Message::Settings(SettingsMessage::Close))
+            }
+            _ => None,
+        };
+    }
     // The Select workspace has its own keys (`docs/design/catalog.md#keyboard`). None of Develop's
     // reaches it, so nothing acts on a photograph it does not show.
     if context.select {
@@ -245,6 +264,9 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         }
         if character(key, "k") {
             return Some(Message::Palette(PaletteMessage::Open));
+        }
+        if character(key, ",") {
+            return Some(Message::Settings(SettingsMessage::Toggle));
         }
         // Zoom in and out a stop at a time. `=` is the plus key unshifted; a layout that reports
         // the shifted `+` reaches the same step. Held, they repeat, as stepping a zoom does.
@@ -528,6 +550,10 @@ fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<
         && let Some(message) = crate::app::loupe::loupe_keys(key, modifiers, *repeat)
     {
         return Some(message);
+    }
+    // Settings is the application's, so its shortcut opens it from Select as from Develop.
+    if modifiers.command() && !modifiers.alt() && character(key, ",") {
+        return Some(Message::Settings(SettingsMessage::Toggle));
     }
     if modifiers.command() {
         if modifiers.alt() {
@@ -868,6 +894,7 @@ mod tests {
             slider_drafting: false,
             mask_brush: false,
             palette_open: false,
+            settings_open: false,
             export_menu_open: false,
             mode_active: false,
             leave_to: None,

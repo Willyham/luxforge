@@ -140,14 +140,8 @@ pub enum Step {
     /// Move the comparison divider, or release a backslash hold through the keymap.
     Compare(CompareStep),
     Palette(PaletteStep),
-    /// Move the pointer to one pixel of the displayed raster, exactly as the canvas reports a
-    /// hover, and wait for the readout `render.sample` answers with.
-    Hover {
-        x: u32,
-        y: u32,
-    },
     /// Route a cursor move through the window's actual laid-out widgets, including the mask
-    /// canvas and surrounding readout mouse area. Fractions address the visible photograph;
+    /// canvas and surrounding pointer mouse area. Fractions address the visible photograph;
     /// the captured frame and trace measure cursor geometry submission, never display scanout.
     CanvasHover {
         x: f32,
@@ -177,6 +171,18 @@ pub enum Step {
     /// Press Cancel on one displayed running job row (zero-based, at most four rows).
     PerformanceCancel {
         row: usize,
+    },
+    /// Open the Settings sheet at its Experiments tab, or close it, as its title bar button and
+    /// Escape do. Opening waits for the flags to be read.
+    Settings {
+        open: bool,
+    },
+    /// Change one flag as its row's control does, and wait for `flags.set` to answer: a value the
+    /// flag takes, or `null` for Reset. The sheet must be open.
+    Flag {
+        id: String,
+        #[serde(deserialize_with = "Option::deserialize")]
+        value: Option<Value>,
     },
     /// Ask nothing of the editor for at least this many milliseconds, then capture. The evidence
     /// tick keeps rebuilding the view meanwhile, as the editor's own event sync does while a
@@ -292,9 +298,7 @@ impl Step {
             }
             Self::Tab(step) => text(&step.module, "tab module"),
             Self::Section(step) => text(&step.module, "section module"),
-            Self::Gallery { .. } | Self::Hover { .. } | Self::Pick(_) | Self::SliderDraft(_) => {
-                Ok(())
-            }
+            Self::Gallery { .. } | Self::Pick(_) | Self::SliderDraft(_) => Ok(()),
             Self::CanvasHover { x, y } => {
                 unit(f64::from(*x), "canvas_hover x")?;
                 unit(f64::from(*y), "canvas_hover y")
@@ -329,7 +333,11 @@ impl Step {
             Self::ViewIdle(step) => step.validate(),
             Self::Idle(step) => step.validate(),
             Self::Workspace(step) => step.validate(),
-            Self::Preview(_) | Self::Palette(_) | Self::Performance { .. } => Ok(()),
+            Self::Preview(_)
+            | Self::Palette(_)
+            | Self::Performance { .. }
+            | Self::Settings { .. } => Ok(()),
+            Self::Flag { id, .. } => text(id, "flag id"),
             Self::PerformanceCancel { row } => {
                 if *row < 4 {
                     Ok(())

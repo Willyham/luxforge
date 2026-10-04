@@ -785,6 +785,10 @@ pub struct HistoryRow {
     pub timestamp_ms: i64,
     pub undo_parent: Option<EntryId>,
     pub restore_target: Option<EntryId>,
+    /// Auto-collapse hid this entry: a later edit of the same control replaced its value, so a page
+    /// lists it only when asked for collapsed entries. The entry itself is kept as it was written.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub collapsed: bool,
 }
 
 impl From<&HistoryEntry> for HistoryRow {
@@ -798,6 +802,7 @@ impl From<&HistoryEntry> for HistoryRow {
             timestamp_ms: entry.timestamp_ms,
             undo_parent: entry.undo_parent.clone(),
             restore_target: entry.restore_target.clone(),
+            collapsed: false,
         }
     }
 }

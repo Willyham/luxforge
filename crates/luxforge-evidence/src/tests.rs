@@ -196,8 +196,8 @@ fn an_unknown_kind_or_a_missing_field_fails_naming_the_step() {
         error,
         "evidence script step 1 (slider): missing field `action`"
     );
-    let error = parse(r#"[{"hover":{"x":1}}]"#).unwrap_err();
-    assert_eq!(error, "evidence script step 1 (hover): missing field `y`");
+    let error = parse(r#"[{"pick":{"x":1}}]"#).unwrap_err();
+    assert_eq!(error, "evidence script step 1 (pick): missing field `y`");
     let error =
         parse(r#"[{"field":{"action":"a","parameter":"b","text":"1","nowhere":1}}]"#).unwrap_err();
     assert!(
@@ -207,7 +207,7 @@ fn an_unknown_kind_or_a_missing_field_fails_naming_the_step() {
 }
 
 #[test]
-fn api_draft_view_workspace_preview_palette_and_hover_round_trip() {
+fn api_draft_view_workspace_preview_palette_and_pick_round_trip() {
     let steps = round_trip(json!([
         {"api":{"method":"edit.crop-fit","params":{"aspect":"16:9","angle":0.0}}},
         {"api":{"method":"history.undo"}},
@@ -234,7 +234,6 @@ fn api_draft_view_workspace_preview_palette_and_hover_round_trip() {
         {"preview":"current"},
         {"palette":{"query":"rotate"}},
         {"palette":{"run":"rotate"}},
-        {"hover":{"x":12,"y":34}},
         {"pick":{"x":120,"y":80}},
         {"wait":{"ms":1000}},
         {"pan":{"x":0.5,"y":1.0}},
@@ -244,6 +243,9 @@ fn api_draft_view_workspace_preview_palette_and_hover_round_trip() {
         {"gallery":{"page":null}},
         {"tools_scroll":1.0},
         {"agent":{"method":"edit.transform","params":{"transform":"rotate-right"}}},
+        {"settings":{"open":true}},
+        {"flag":{"id":"proof.number","value":75}},
+        {"flag":{"id":"proof.choice","value":null}},
     ]));
     assert_eq!(steps[1], Step::api("history.undo"));
     assert_eq!(steps[2], Step::Draft(DraftStep::Start));
@@ -262,12 +264,15 @@ fn api_draft_view_workspace_preview_palette_and_hover_round_trip() {
             .into()
     );
     assert_eq!(steps[22], Step::Preview(PreviewStep::Current));
-    assert_eq!(steps[25], Step::hover(12, 34));
-    assert_eq!(steps[32], Step::gallery(None));
+    assert_eq!(steps[25], Step::Pick(PickStep { x: 120, y: 80 }));
+    assert_eq!(steps[31], Step::gallery(None));
     assert_eq!(
-        steps[34],
+        steps[33],
         Step::agent("edit.transform", json!({"transform":"rotate-right"}))
     );
+    assert_eq!(steps[34], Step::settings(true));
+    assert_eq!(steps[35], Step::flag("proof.number", Some(json!(75))));
+    assert_eq!(steps[36], Step::flag("proof.choice", None));
     // An integer where a number is expected is the same number.
     assert_eq!(
         parse(r#"[{"draft":{"rect":[10,20,300,200]}},{"view":{"zoom":100}}]"#).unwrap(),
@@ -353,9 +358,9 @@ fn api_draft_view_workspace_preview_palette_and_hover_round_trip() {
             json!({"palette":{"filter":"x"}}),
             "unknown variant `filter`",
         ),
-        (json!({"hover":{"x":-1,"y":2}}), "expected u32"),
-        (json!({"hover":{"x":1,"y":2,"z":3}}), "unknown field `z`"),
-        (json!({"hover":5}), "invalid type: integer `5`"),
+        (json!({"pick":{"x":-1,"y":2}}), "expected u32"),
+        (json!({"pick":{"x":1,"y":2,"z":3}}), "unknown field `z`"),
+        (json!({"pick":5}), "invalid type: integer `5`"),
         (json!({"pick":{"x":120}}), "missing field `y`"),
         (json!({"pick":{"x":120,"y":-2}}), "expected u32"),
         (
@@ -381,6 +386,15 @@ fn api_draft_view_workspace_preview_palette_and_hover_round_trip() {
             "unknown field `module`",
         ),
         (json!({"performance":true}), "invalid type: boolean"),
+        (json!({"settings":{}}), "missing field `open`"),
+        (
+            json!({"flag":{"id":"proof.number"}}),
+            "missing field `value`",
+        ),
+        (
+            json!({"flag":{"id":" ","value":true}}),
+            "flag id takes a non-empty string",
+        ),
         (json!({"gallery":{}}), "missing field `page`"),
         (json!({"gallery":{"page":-1}}), "expected usize"),
         (json!({"tools_scroll":1.5}), "fraction from 0 to 1"),

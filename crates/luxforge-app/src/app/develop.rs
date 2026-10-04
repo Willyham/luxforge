@@ -739,12 +739,11 @@ impl Editor {
         let generation = self.activity.requested;
         self.open_generation.store(generation, Ordering::Release);
         self.presentation.preview_generation = self.cancel_preview_queue();
-        // The photograph on screen is closed: nothing reads back into it, and no panel, readout or
-        // control describes it while the next one prepares, nor does a Before/After slider's
+        // The photograph on screen is closed: nothing reads back into it, and no panel or control
+        // describes it while the next one prepares, nor does a Before/After slider's
         // After frame; the adopted session ends its comparison.
         self.document = Default::default();
         self.presentation.compare_after = None;
-        self.hover.readout = None;
         self.controls.editing = None;
         self.controls.dragging = None;
         self.busy = true;

@@ -49,8 +49,6 @@ pub(crate) enum Outcome<'a> {
     SessionAnswered,
     /// The percent-zoom surface's scroll offset reached the owner and the owner answered.
     PanAnswered,
-    /// The pointer readout's `render.sample` answered.
-    ReadoutAnswered,
     /// A canvas pick ended without committing anything: its fields were filled, or it was refused
     /// with its reason in the status bar.
     PickEnded,
@@ -77,6 +75,10 @@ pub(crate) enum Outcome<'a> {
     PerformanceRestarted,
     /// The section's `job.cancel` request answered, or was refused.
     PerformanceCancelled { failed: bool },
+    /// The Settings sheet's `flags.list` answered, or was refused.
+    FlagsRead,
+    /// The Settings sheet's last outstanding `flags.set` answered, or was refused.
+    FlagsWritten,
     /// `export.plan` answered for the export in progress.
     ExportPlanned(&'a Value),
     /// `export.jpeg` queued the export in progress.
@@ -140,7 +142,6 @@ impl Outcome<'_> {
             Self::CropStage => "crop_stage",
             Self::SessionAnswered => "session_answered",
             Self::PanAnswered => "pan_answered",
-            Self::ReadoutAnswered => "readout_answered",
             Self::PickEnded => "pick_ended",
             Self::PickCommitting => "pick_committing",
             Self::PresetsAnswered { .. } => "presets_answered",
@@ -152,6 +153,8 @@ impl Outcome<'_> {
             Self::PerformanceRead(_) => "performance_read",
             Self::PerformanceRestarted => "performance_restarted",
             Self::PerformanceCancelled { .. } => "performance_cancelled",
+            Self::FlagsRead => "flags_read",
+            Self::FlagsWritten => "flags_written",
             Self::ExportPlanned(_) => "export_planned",
             Self::ExportQueued(_) => "export_queued",
             Self::ExportEnded { .. } => "export_ended",

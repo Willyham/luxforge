@@ -70,6 +70,9 @@ pub struct HostConfig {
     pub transport: Arc<dyn Transport>,
     /// The storage every module's installed resources may take together.
     pub resource_quota_bytes: u64,
+    /// What the desktop's launch resolved for each launch flag, which `flags.list` reports as
+    /// `active`. Any other host resolves none.
+    pub launch_flags: crate::flags::LaunchFlags,
 }
 
 impl HostConfig {
@@ -85,6 +88,7 @@ impl HostConfig {
                 "no network transport is configured",
             )),
             resource_quota_bytes: DEFAULT_RESOURCE_QUOTA_BYTES,
+            launch_flags: Default::default(),
         }
     }
 }
@@ -98,6 +102,7 @@ impl std::fmt::Debug for HostConfig {
             .field("secrets", &self.secrets.name())
             .field("transport", &self.transport)
             .field("resource_quota_bytes", &self.resource_quota_bytes)
+            .field("launch_flags", &self.launch_flags)
             .finish()
     }
 }
@@ -280,6 +285,11 @@ impl CapabilityHost {
             tasks: HashMap::new(),
             config,
         }
+    }
+
+    /// What the desktop's launch resolved for each launch flag.
+    pub(crate) fn launch_flags(&self) -> &crate::flags::LaunchFlags {
+        &self.config.launch_flags
     }
 
     fn not_configured() -> Error {

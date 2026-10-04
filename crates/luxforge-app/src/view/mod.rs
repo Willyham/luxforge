@@ -24,6 +24,7 @@ pub(crate) mod query_choice;
 pub(crate) mod select;
 pub(crate) mod select_catalog;
 pub(crate) mod select_missing;
+pub(crate) mod settings;
 pub(crate) mod state_panel;
 pub(crate) mod status_bar;
 pub(crate) mod title_bar;
@@ -154,10 +155,14 @@ pub(crate) fn workspace<'a>(
         horizontal_divider(),
         status
     ];
-    match palette::palette(&model.palette) {
-        Some(overlay) => stack![screen, overlay].into(),
-        None => screen.into(),
+    let mut layers = stack![screen];
+    if let Some(overlay) = palette::palette(&model.palette) {
+        layers = layers.push(overlay);
     }
+    if let Some(sheet) = settings::settings(&model.settings) {
+        layers = layers.push(sheet);
+    }
+    layers.into()
 }
 
 /// A 1 px vertical rule between the middle row's regions.

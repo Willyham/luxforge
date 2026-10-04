@@ -120,7 +120,7 @@ armed brushes and held strokes. Both extra black presentations remain UI choices
 mode, `O` toggles thirds. Text capture and repeat/modifier rules remain those of the common keymap;
 Cmd/Ctrl+O is Open when creation allows it. No auxiliary modifier binding is added.
 
-## Capture bounds and exact pointer readout
+## Capture bounds and the pointer
 
 The grid capture retains at most 16,384 distinct positions, the existing posted-input bound;
 consecutive positions in one grid cell cost only a count. A failed capture stops growing, reports
@@ -131,13 +131,12 @@ is still 1,024 positions and the existing 64-segment occupancy limit still appli
 cached per accepted capture/brush size, so summaries do not repeat whole-path work. No live path
 is tessellated to impersonate coverage.
 
-The hover repair preserves exact readout. A settled retained exact raster may answer a sample
-only when its displayed entry, pixel content and dimensions agree, no draft is open and no RAW
-white-balance approximation is active; a percentage view's region frame of the same content still
-reads it. It reads the existing bytes without another frame allocation. Other cases use exact
-`render.sample`, of the displayed draft when one is on screen. Delayed answers must still match
-the newest pointer coordinate, entry and draft. Per-move readout events are logged only for
-evidence runs.
+Nothing is read under the pointer as it moves. The status-bar readout that asked `render.sample`
+on every move was removed on 2026-10-04 (owner): through a stack with Detail, Presence and masks
+the exact point path cost the point worker minutes, and the desktop ran that wait on the update
+loop, so the window froze with it. A pointer move now publishes its position for a pick and for
+the evidence cursor sync and asks the owner for nothing; `render.sample` remains the API's exact
+point query.
 
 A value typed into a generated field but not submitted belongs to the mask and component it was
 typed for: when the fields address another target, the edit is dropped and the fields reseeded.
@@ -169,8 +168,8 @@ tree after a masked Clarity adjustment and a new brush is armed. Input epochs, p
 workspace derivation, drawn cursor geometry and renderer readbacks are correlated. CPU geometry
 submission and image readback do not measure display scanout. The final matrix has 18 paced hover runs, 540 emitted moves and 60 separate corresponding GPU
 readbacks; hover triggers no point queries, photo jobs, mask mutation or photograph uploads. Bound
-and unbound painting also progress on 24/60 MP inputs. No numeric cursor budget or deferred-readout
-policy is implied by this repair.
+and unbound painting also progress on 24/60 MP inputs. No numeric cursor budget is implied by this
+repair.
 
 ## Acceptance matrix
 
@@ -197,7 +196,7 @@ These changes cover `luxforge-core`, the desktop adapter, the shared evidence sc
 small disclosure-widget enablement change. Sources still enter through the verified prepared-source
 cache. Coverage workers receive the existing evaluation and release it after their job; the idle
 cache holds only a bounded grid. No new full-photo allocation, source hash/decode path or persistent
-pixel data is introduced. Retained exact readout borrows one pixel from the existing shared raster.
+pixel data is introduced.
 Capture storage is capped at 16,384 snapped positions and 1,024 posted reduced positions.
 Coverage retains the existing 4,096-cell side limit (at most 16 MiB per byte grid); painted RGBA
 overlays and native backend staging remain outside the provisional photo-texture ceiling.
@@ -209,7 +208,7 @@ history is not listed per move. Point queries and no-op validation allocate no p
 ordinary timer or polling loop is added: the coverage worker blocks while idle and wakes on results;
 the bounded native cursor probe runs only during evidence collection.
 
-Frozen independent reference tests remain the numerical authority. Worker/readout tests verify
+Frozen independent reference tests remain the numerical authority. Worker tests verify
 identity fences and buffer reuse. The masking measurements in the [performance specification](../specs/performance.md#native-masking-interaction-qualification)
 record photo-sized native scope separately from rendered correctness and from display scanout.
 The whole-recipe `editor-performance` before/after matrix was not rerun: no effect equation or
