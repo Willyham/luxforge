@@ -3,7 +3,7 @@
   "plan_id": "product-decisions",
   "title": "Open product decisions",
   "objective": "Resolve the product questions that gate later roadmap phases, recording each answer in docs/decisions.md and the affected specification.",
-  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks are the open questions: storage/backup workflow, RAW recording-mode and quality priorities, the first external module use case, accepted performance workloads and budgets, the Presence, colour mixer and vignette defaults, and interactive-preview quality levels beyond the authorized baseline.",
+  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks are the open questions: storage/backup workflow, RAW recording-mode and quality priorities, the first external module use case, accepted performance workloads and budgets, the Presence, colour mixer and vignette defaults, and interactive-preview quality levels beyond the authorized baseline, and the GPU-first rendering questions left open by the owner's decision of 2026-10-04.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -328,7 +328,8 @@
       "extra_context": [
         "Temporary softness at 100% during motion, full detail restored on pause/release, an updating full-image histogram, and the documented viewport-bounded clipping behavior are accepted and must not be reopened.",
         "The documented implementation baseline uses a viewport window on a half-scale proxy while moving, then exact visible-region refinement and whole-frame exact analysis under the shared quiet policy. Further quality levels, GPU preview arithmetic and numerical error limits need representative measurements before acceptance; the sampled global guide is rejected due to severe periodic aliasing and no approximate-global mode ships.",
-        "Exact settled pixels, full-image reports and export retain their current contracts; product research does not imply an implementation latency result."
+        "Exact settled pixels, full-image reports and export retain their current contracts; product research does not imply an implementation latency result.",
+        "Reframed by the owner's GPU-first decision of 2026-10-04: correctness is a declared tolerance against the CPU reference for every output kind, at rest as well as in motion, so the remaining question is the numeric limit per output kind, which the GPU-first plan measures on the corpus before each stage lands (docs/design/gpu-first.md, The contract)."
       ],
       "context_links": [
         {
@@ -385,6 +386,54 @@
           "No hypothetical error bound becomes a passed check, and unresolved numerical choices do not reopen accepted clipping or the authorized implementation baseline."
         ]
       }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Decide the remaining GPU-first questions: the tolerance per output kind once measured, the fallback for a machine without a usable GPU, the export device policy, the counts' cadence during motion, and the owner-task hop.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "The owner decided GPU-first rendering on 2026-10-04 (docs/decisions.md, GPU-first rendering): the GPU is the renderer of record and correctness is a declared tolerance against the CPU reference. The design records a default for each remaining question so the plan can run; each is a proposal until recorded here.",
+        "Owner tasks moved to the runtime's blocking pool on 2026-10-04 because iced 0.14 otherwise ran them on the update loop, where a wait froze the window; the price is one displayed frame per task answer (about 28 against 20 ms p50 from a slider release to its committed frame when measured in 2026-09). The alternative is a hop-free path for microsecond requests, with its own measurement."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "GPU-first design",
+          "target": "docs/design/gpu-first.md",
+          "locator": "Proposals with recorded defaults",
+          "relevance": "The questions, defaults and alternatives to decide."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "locator": "Known remaining costs",
+          "relevance": "The owner-task hop row recorded as a proposal."
+        },
+        {
+          "kind": "file",
+          "label": "Owner decisions",
+          "target": "docs/decisions.md",
+          "locator": "GPU-first rendering",
+          "relevance": "The decision and where the remaining answers are recorded."
+        }
+      ],
+      "acceptance_criteria": [
+        "Each question is accepted as its default, changed with the design updated to match, or explicitly left as a recorded default the plan runs on.",
+        "The decisions document records each outcome; the known-costs row for the owner-task hop no longer reads as a proposal."
+      ],
+      "test_strategy": {
+        "approach": "manual",
+        "steps": [
+          "Review the proposals table with the owner.",
+          "Record the outcome in the decisions document and adjust the design where a default changed."
+        ],
+        "commands": [],
+        "expected_results": [
+          "No proposal is silently treated as accepted."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -397,7 +446,8 @@
         "TASK-004",
         "TASK-005",
         "TASK-006",
-        "TASK-007"
+        "TASK-007",
+        "TASK-008"
       ]
     }
   ]

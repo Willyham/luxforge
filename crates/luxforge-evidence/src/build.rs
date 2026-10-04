@@ -100,10 +100,6 @@ impl Step {
         Self::Gallery { page }
     }
 
-    pub fn hover(x: u32, y: u32) -> Self {
-        Self::Hover { x, y }
-    }
-
     pub fn canvas_hover(x: f32, y: f32) -> Self {
         Self::CanvasHover { x, y }
     }
