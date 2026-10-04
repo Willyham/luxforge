@@ -56,6 +56,10 @@ pub(super) const MAX_GLOBAL_VALUES: usize = MAX_GLOBAL_BYTES / std::mem::size_of
 /// How many prepared global estimates the host keeps, evicted oldest first.
 pub(crate) const ESTIMATE_STORE_ENTRIES: usize = 8;
 
+/// The bytes the render context's store of reduced planes holds at most, across every entry
+/// (`render::reduced`). The largest entry, Dehaze's two planes over a 60 MP stage, is about 30 MB.
+pub(crate) const REDUCED_STORE_BYTES: u64 = 64 * 1024 * 1024;
+
 /// A rectangle of one stage, in that stage's pixel coordinates. Half-open: it holds the columns
 /// `x0..x0 + width` and the rows `y0..y0 + height`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -290,6 +294,151 @@ impl Global {
 
     pub(crate) fn values(&self) -> &[f64] {
         &self.values
+    }
+}
+
+/// What a unit declares about the planes it computes from a reduced grid of its input before any
+/// coefficient is applied: the grid's per-side factor, how many planes, and their identity.
+///
+/// Cell `(i, j)` of the grid is the block whose first pixel is `(factor · i, factor · j)`, anchored
+/// at the stage origin, so the grid is `ceil(width / factor) × ceil(height / factor)` cells.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReducedGrid {
+    /// Names everything the planes depend on besides the operation's input, its stage and the
+    /// unit's global estimate, which the host keys and checks itself. No coefficient only
+    /// [`SpatialUnit::apply`] reads belongs here.
+    pub(crate) key: Cow<'static, str>,
+    pub(crate) factor: u32,
+    pub(crate) planes: usize,
+}
+
+impl ReducedGrid {
+    /// The grid's dimensions in cells over `stage`.
+    pub(crate) fn cells(&self, stage: Stage) -> Stage {
+        let factor = self.factor.max(1);
+        Stage {
+            width: stage.width.div_ceil(factor),
+            height: stage.height.div_ceil(factor),
+        }
+    }
+
+    /// The cells whose first pixel lies in `tile`: each cell of the grid has exactly one such tile
+    /// whatever the tiles' side, so a render's tiles cover every cell once between them. Empty when
+    /// the tile holds no cell's first pixel, which a tile narrower than the factor can.
+    pub(crate) fn owned(&self, tile: Region) -> Region {
+        let factor = self.factor.max(1);
+        let x0 = tile.x0.div_ceil(factor);
+        let y0 = tile.y0.div_ceil(factor);
+        let x1 = tile.x1().div_ceil(factor);
+        let y1 = tile.y1().div_ceil(factor);
+        Region {
+            x0,
+            y0,
+            width: x1.saturating_sub(x0),
+            height: y1.saturating_sub(y0),
+        }
+    }
+}
+
+/// A rectangle of a reduced grid's cells held as planes: one complete plane of
+/// `rect.width × rect.height` values in row-major order per plane, one after the other.
+// Read by the tile paths from the next commit on.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GridPlanes<'a> {
+    grid: Stage,
+    rect: Region,
+    planes: usize,
+    values: &'a [f32],
+}
+
+#[allow(dead_code)]
+impl<'a> GridPlanes<'a> {
+    pub(crate) fn new(grid: Stage, rect: Region, planes: usize, values: &'a [f32]) -> Self {
+        debug_assert_eq!(values.len() as u64, rect.pixels() * planes as u64);
+        debug_assert!(rect.x1() <= grid.width && rect.y1() <= grid.height);
+        Self {
+            grid,
+            rect,
+            planes,
+            values,
+        }
+    }
+
+    /// The whole grid's dimensions in cells.
+    pub(crate) fn grid(&self) -> Stage {
+        self.grid
+    }
+
+    /// The cells these planes hold.
+    pub(crate) fn rect(&self) -> Region {
+        self.rect
+    }
+
+    /// Plane `index`, row-major over [`Self::rect`].
+    pub(crate) fn plane(&self, index: usize) -> &'a [f32] {
+        assert!(
+            index < self.planes,
+            "a reduced grid has {} planes",
+            self.planes
+        );
+        let len = self.rect.pixels() as usize;
+        &self.values[index * len..(index + 1) * len]
+    }
+}
+
+/// The cells one tile hands back of the planes it computed anyway: those whose first pixel lies in
+/// the tile ([`ReducedGrid::owned`]). The unit writes every value of every plane.
+#[derive(Debug)]
+pub(crate) struct Cells {
+    rect: Region,
+    planes: usize,
+    values: Vec<f32>,
+}
+
+#[allow(dead_code)]
+impl Cells {
+    /// The cells `tile` owns of `grid`'s planes, to be written by the unit that runs on it. Test
+    /// builds fill them with NaN first, so a cell the unit leaves unwritten fails the render that
+    /// reads it back.
+    pub(crate) fn for_tile(grid: &ReducedGrid, tile: Region) -> Self {
+        let rect = grid.owned(tile);
+        let len = (rect.pixels() as usize) * grid.planes;
+        #[cfg(test)]
+        let values = vec![f32::NAN; len];
+        #[cfg(not(test))]
+        let values = vec![0.0; len];
+        Self {
+            rect,
+            planes: grid.planes,
+            values,
+        }
+    }
+
+    /// The cells held, in grid coordinates.
+    pub(crate) fn rect(&self) -> Region {
+        self.rect
+    }
+
+    /// How many cells are held.
+    pub(crate) fn count(&self) -> u64 {
+        self.rect.pixels()
+    }
+
+    /// The cells as planes to read.
+    pub(crate) fn planes(&self, grid: Stage) -> GridPlanes<'_> {
+        GridPlanes::new(grid, self.rect, self.planes, &self.values)
+    }
+
+    /// Plane `index` to write, row-major over [`Self::rect`].
+    pub(crate) fn plane_mut(&mut self, index: usize) -> &mut [f32] {
+        assert!(
+            index < self.planes,
+            "a reduced grid has {} planes",
+            self.planes
+        );
+        let len = self.rect.pixels() as usize;
+        &mut self.values[index * len..(index + 1) * len]
     }
 }
 
