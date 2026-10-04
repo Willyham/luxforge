@@ -6,7 +6,9 @@ use super::{
     gesture,
     message::{export::ExportMessage, view::ViewMessage},
     tasks::CallError,
-    testing::{boot, descriptors, finish, opened_with_modules},
+    testing::{
+        boot, derive_ran, descriptors, finish, idle_workers, mark_no_derive, opened_with_modules,
+    },
     *,
 };
 use crate::state::MenuTarget;
@@ -162,6 +164,175 @@ fn a_queued_job_is_read_on_a_timer_until_it_ends_and_says_what_was_written() {
         editor.export_poll_subscription().is_none(),
         "no timer once the job has ended"
     );
+    finish(editor, catalog);
+}
+
+/// A queued export with its first read already applied: the desktop holds a running record at
+/// `progress`, and the next tick's read is not yet in flight.
+fn running_export(progress: f64) -> (Editor, std::path::PathBuf) {
+    let (mut editor, catalog) = opened_with_modules(descriptors(), 1);
+    idle_workers(&mut editor);
+    start(&mut editor, false);
+    chosen(&mut editor, "photo-edited.jpg");
+    let _ = editor.update(Message::Export(ExportMessage::Queued(Ok(
+        json!({"job_id":"job-1","status":"queued"}),
+    ))));
+    let _ = editor.update(read(
+        "job-1",
+        json!({"status":"running","progress":progress}),
+    ));
+    assert!(!editor.export.reading);
+    (editor, catalog)
+}
+
+fn read(job_id: &str, record: Value) -> Message {
+    let mut record = record;
+    record["job_id"] = json!(job_id);
+    Message::Export(ExportMessage::Read {
+        job_id: job_id.into(),
+        result: Ok(record),
+    })
+}
+
+/// While an export runs, its timer's tick only starts a read, and a read that answers the record
+/// the desktop already holds changes nothing: neither runs the hooks or the derive. A read that
+/// differs, and one that ends the job, take the full update and show it in the status line and
+/// the title bar's Export button.
+#[test]
+fn an_export_poll_that_changes_nothing_skips_the_hooks_and_the_derive() {
+    let (mut editor, catalog) = opened_with_modules(descriptors(), 1);
+    idle_workers(&mut editor);
+    start(&mut editor, false);
+    chosen(&mut editor, "photo-edited.jpg");
+    let _ = editor.update(Message::Export(ExportMessage::Queued(Ok(
+        json!({"job_id":"job-1","status":"queued"}),
+    ))));
+    assert!(editor.export.reading);
+    assert!(!editor.workspace.title.can_export, "an export is running");
+
+    // The first read differs from what is held, which is nothing yet.
+    let updates = editor.full_updates;
+    mark_no_derive(&editor);
+    let _ = editor.update(read("job-1", json!({"status":"running","progress":0.5})));
+    assert_eq!(editor.full_updates, updates + 1);
+    assert!(derive_ran(&editor));
+
+    // The tick starts a read and nothing else.
+    let updates = editor.full_updates;
+    mark_no_derive(&editor);
+    let _ = editor.update(Message::Export(ExportMessage::Poll));
+    assert!(editor.export.reading, "the read is in flight");
+    assert_eq!(editor.full_updates, updates, "a tick runs no hooks");
+    assert!(!derive_ran(&editor), "and no derive");
+    assert_eq!(editor.log.loop_timing.get().last_rederive_ms, 0.0);
+
+    // The same record again changes nothing.
+    mark_no_derive(&editor);
+    let _ = editor.update(read("job-1", json!({"status":"running","progress":0.5})));
+    assert!(!editor.export.reading, "the read was applied");
+    assert_eq!(
+        editor.full_updates, updates,
+        "an unchanged read runs no hooks"
+    );
+    assert!(!derive_ran(&editor), "and no derive");
+
+    // Progress is a change: the full update runs and the record held moves on.
+    let _ = editor.update(Message::Export(ExportMessage::Poll));
+    assert_eq!(editor.full_updates, updates);
+    mark_no_derive(&editor);
+    let _ = editor.update(read("job-1", json!({"status":"running","progress":0.75})));
+    assert_eq!(
+        editor.full_updates,
+        updates + 1,
+        "a changed read takes the full update"
+    );
+    assert!(derive_ran(&editor));
+    assert_eq!(
+        editor.export.run.as_ref().and_then(|run| run.seen.as_ref()),
+        Some(&json!({"job_id":"job-1","status":"running","progress":0.75}))
+    );
+    let updates = editor.full_updates;
+    let _ = editor.update(Message::Export(ExportMessage::Poll));
+    let _ = editor.update(read("job-1", json!({"status":"running","progress":0.75})));
+    assert_eq!(
+        editor.full_updates, updates,
+        "the new record is the one compared"
+    );
+    assert!(
+        editor.export_poll_subscription().is_some(),
+        "the timer stays while it runs"
+    );
+
+    // The end of the job is a change, and the panel and the status line show it.
+    let _ = editor.update(Message::Export(ExportMessage::Poll));
+    mark_no_derive(&editor);
+    let _ = editor.update(read(
+        "job-1",
+        json!({"status":"ready","progress":1.0,
+            "result":{"path":"/tmp/photo-edited.jpg","bytes":8_412_345,"width":6000,"height":4000,"metadata":[]}}),
+    ));
+    assert_eq!(editor.full_updates, updates + 1);
+    assert!(derive_ran(&editor));
+    assert_eq!(
+        editor.status.text,
+        exported_text("photo-edited.jpg", 6000, 4000, 8_412_345)
+    );
+    assert!(
+        editor.workspace.title.can_export,
+        "the button follows the derive"
+    );
+    assert!(editor.export_poll_subscription().is_none());
+    finish(editor, catalog);
+}
+
+/// A failed or cancelled job and a read that could not be made are changes too: the full update
+/// ends the export and the status line says why, whatever the record held was.
+#[test]
+fn an_export_poll_that_ends_or_fails_takes_the_full_update() {
+    for (record, status) in [
+        (
+            json!({"status":"failed","error":{"code":"export","message":"no space left"}}),
+            "Export failed: no space left",
+        ),
+        (json!({"status":"cancelled"}), "Export cancelled"),
+    ] {
+        let (mut editor, catalog) = running_export(0.5);
+        let _ = editor.update(Message::Export(ExportMessage::Poll));
+        let updates = editor.full_updates;
+        let _ = editor.update(read("job-1", record));
+        assert_eq!(editor.full_updates, updates + 1, "{status}");
+        assert_eq!(editor.status.text, status);
+        assert!(editor.export.run.is_none());
+        assert!(editor.workspace.title.can_export);
+        finish(editor, catalog);
+    }
+
+    let (mut editor, catalog) = running_export(0.5);
+    let _ = editor.update(Message::Export(ExportMessage::Poll));
+    let updates = editor.full_updates;
+    let _ = editor.update(Message::Export(ExportMessage::Read {
+        job_id: "job-1".into(),
+        result: Err("the owner stopped".into()),
+    }));
+    assert_eq!(editor.full_updates, updates + 1);
+    assert_eq!(editor.status.text, "Export failed: the owner stopped");
+    assert!(editor.export.run.is_none());
+    finish(editor, catalog);
+}
+
+/// The skip holds only while nothing else is going on: with a gesture open, the same tick and the
+/// same read take the full update, as every other message does.
+#[test]
+fn an_export_poll_during_a_gesture_takes_the_full_update() {
+    let (mut editor, catalog) = running_export(0.5);
+    let (action, parameter) = crate::app::testing::patch_control(&editor);
+    let _ = crate::app::testing::slide(&mut editor, &action, &parameter, 25.0);
+    assert!(editor.slider_gesture().is_some());
+    let updates = editor.full_updates;
+    let _ = editor.update(Message::Export(ExportMessage::Poll));
+    assert_eq!(editor.full_updates, updates + 1);
+    let _ = editor.update(read("job-1", json!({"status":"running","progress":0.5})));
+    assert_eq!(editor.full_updates, updates + 2);
     finish(editor, catalog);
 }
 

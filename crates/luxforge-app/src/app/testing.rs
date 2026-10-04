@@ -180,6 +180,35 @@ pub(crate) fn real_photo_at(
     (editor, asset, agent)
 }
 
+/// The loop timing's last derive as [`mark_no_derive`] leaves it: a value no derive reports.
+const NO_DERIVE: f64 = 99_000.0;
+
+/// Set the loop timing's last derive to a value neither a derive nor a skipped one reports, so a
+/// later [`derive_ran`] says whether the next update derived.
+pub(crate) fn mark_no_derive(editor: &Editor) {
+    let mut timing = editor.log.loop_timing.get();
+    timing.last_rederive_ms = NO_DERIVE;
+    editor.log.loop_timing.set(timing);
+}
+
+/// The update after [`mark_no_derive`] ran a derive: a skipped one leaves the mark or the zero a
+/// fast path reports.
+pub(crate) fn derive_ran(editor: &Editor) -> bool {
+    let last = editor.log.loop_timing.get().last_rederive_ms;
+    last != NO_DERIVE && last != 0.0
+}
+
+/// The photograph's preview work is answered and nothing else is running, as it is a moment after a
+/// photograph opens: the one state in which a message that changes nothing skips the update.
+pub(crate) fn idle_workers(editor: &mut Editor) {
+    luxforge_testbase::wait_until("the workers going idle", || {
+        let _ = editor.update(Message::Preview(
+            crate::app::message::preview::PreviewMessage::Poll,
+        ));
+        !editor.workers_busy()
+    });
+}
+
 pub(crate) fn finish(mut editor: Editor, catalog: PathBuf) {
     editor.owner.stop();
     editor.owner_join.take().unwrap().join().unwrap();

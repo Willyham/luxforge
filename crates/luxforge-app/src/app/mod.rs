@@ -145,8 +145,8 @@ use luxforge_core::{
     POINTER_MODE,
 };
 use message::{
-    Message, evidence::EvidenceMessage, performance::PerformanceMessage, preview::PreviewMessage,
-    view::ViewMessage,
+    Message, capability::CapabilityMessage, evidence::EvidenceMessage, export::ExportMessage,
+    performance::PerformanceMessage, preview::PreviewMessage, view::ViewMessage,
 };
 use serde_json::{Value, json};
 use std::{sync::Arc, thread::JoinHandle, time::Instant};
@@ -348,6 +348,10 @@ pub(crate) struct Editor {
     /// exactly those through the owner and hand the answers back.
     #[cfg(test)]
     pub(crate) capability_started: Vec<(String, state::capabilities::Operation)>,
+    /// How many updates ran the whole route, hooks, derive and all, rather than a fast path, so a
+    /// test can tell that a message skipped it.
+    #[cfg(test)]
+    pub(crate) full_updates: u64,
     /// The state panel's Performance section: its flag, what it has read and its one read in
     /// flight. It samples only while expanded with the state panel shown.
     pub(crate) performance: performance::Sampler,
@@ -526,6 +530,8 @@ impl Editor {
             capabilities: Default::default(),
             #[cfg(test)]
             capability_started: Vec::new(),
+            #[cfg(test)]
+            full_updates: 0,
             performance: performance::Sampler::new(expanded),
             export: Default::default(),
             gpu: Default::default(),
@@ -629,32 +635,44 @@ impl Editor {
     /// Route the message to its seam, then run every seam's hook in [`AFTER_MESSAGE`], derive the
     /// screen again, run the hooks that read it in [`AFTER_DERIVE`], and wake the workers' poll.
     fn update_inner(&mut self, message: Message) -> Task<Message> {
-        // An idle resource sample changes only this section. Keep the same sampling resolution,
-        // but avoid rebuilding all tool controls, masks, history and histogram for its redraw.
-        if self.evidence.is_none()
-            && !self.busy
-            && self.gesture.is_none()
-            && !self.workers_busy()
-            && !self.view_plan.dirty
-            && !self.view_plan.in_flight
-            && self.view_plan.quiet_since.is_none()
-            && self.sync.poll.idle()
-            && self.performance.cancelling.is_empty()
-            && matches!(
-                &message,
-                Message::Performance(PerformanceMessage::Tick | PerformanceMessage::Sampled { .. })
-            )
+        if self.update_is_quiet() {
+            // An idle resource sample changes only this section. Keep the same sampling
+            // resolution, but avoid rebuilding all tool controls, masks, history and histogram for
+            // its redraw.
+            if self.performance.cancelling.is_empty()
+                && matches!(
+                    &message,
+                    Message::Performance(
+                        PerformanceMessage::Tick | PerformanceMessage::Sampled { .. }
+                    )
+                )
+            {
+                let task = self.dispatch(message);
+                let transition = self.performance_transition();
+                let rederive_started = Instant::now();
+                self.workspace
+                    .performance
+                    .refresh_sample(self.performance.expanded, &self.performance.history);
+                let mut timing = self.log.loop_timing.get();
+                timing.last_rederive_ms = rederive_started.elapsed().as_secs_f64() * 1000.0;
+                self.log.loop_timing.set(timing);
+                return Task::batch([task, transition]);
+            }
+            // A job poll that only starts its read, or whose read answers what the desktop already
+            // holds, changes no state the hooks or the derive read: the poll's own flag is the
+            // whole of it. Dispatch it and stop, so a running export or capability job costs no
+            // derive at its tick. iced rebuilds the view after every message regardless.
+            if self.job_poll_changes_nothing(&message) {
+                let task = self.dispatch(message);
+                let mut timing = self.log.loop_timing.get();
+                timing.last_rederive_ms = 0.0;
+                self.log.loop_timing.set(timing);
+                return task;
+            }
+        }
+        #[cfg(test)]
         {
-            let task = self.dispatch(message);
-            let transition = self.performance_transition();
-            let rederive_started = Instant::now();
-            self.workspace
-                .performance
-                .refresh_sample(self.performance.expanded, &self.performance.history);
-            let mut timing = self.log.loop_timing.get();
-            timing.last_rederive_ms = rederive_started.elapsed().as_secs_f64() * 1000.0;
-            self.log.loop_timing.set(timing);
-            return Task::batch([task, transition]);
+            self.full_updates += 1;
         }
         let before = Before::of(self);
         let mut tasks = vec![self.dispatch(message)];
@@ -672,6 +690,45 @@ impl Editor {
             tasks.push(Task::done(Message::Preview(PreviewMessage::Poll)));
         }
         Task::batch(tasks)
+    }
+
+    /// Nothing else is going on: no evidence run to keep in step, no request in flight, no open
+    /// gesture, idle workers, a settled view and no event read outstanding. The only state in
+    /// which a message that changes nothing can skip the hooks and the derive, because each hook
+    /// answers a change a message made, and in this state the one before it already did.
+    fn update_is_quiet(&self) -> bool {
+        self.evidence.is_none()
+            && !self.busy
+            && self.gesture.is_none()
+            && !self.workers_busy()
+            && !self.view_plan.dirty
+            && !self.view_plan.in_flight
+            && self.view_plan.quiet_since.is_none()
+            && self.sync.poll.idle()
+    }
+
+    /// Whether this message is a job poll that leaves everything the screen and the hooks read as
+    /// it is: a poll's tick, which only starts a read, or the read of a job still queued or
+    /// running that answers exactly the record the desktop already holds. The comparison is made
+    /// against the held state, before the message is applied; anything that differs, and every
+    /// ended or failed job, takes the full update.
+    fn job_poll_changes_nothing(&self, message: &Message) -> bool {
+        match message {
+            Message::Export(ExportMessage::Poll) | Message::Capability(CapabilityMessage::Poll) => {
+                true
+            }
+            Message::Export(ExportMessage::Read { job_id, result }) => {
+                self.export.read_unchanged(job_id, result)
+            }
+            Message::Capability(CapabilityMessage::Polled(polled)) => {
+                polled.iter().all(|(module, _, result)| {
+                    result
+                        .as_ref()
+                        .is_ok_and(|record| self.capabilities.tracks_exactly(module, record))
+                })
+            }
+            _ => false,
+        }
     }
 
     /// One of the bounded preview or overlay workers has a job.
