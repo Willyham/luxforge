@@ -331,7 +331,8 @@
         "TASK-005"
       ],
       "extra_context": [
-        "The smoke additions are listed in the design's evidence section."
+        "The smoke additions are listed in the design's evidence section.",
+        "Done: the settings smoke scenario's additions (run in a8653ddc's scenario, passing in both rendered runs), the check across background launches of the catalog location and its missing-folder fallback, the docs, and quick. Outstanding: one clean rendered tier on a quiet host; two runs at load averages of 60 to 75 failed different timing-sensitive scenarios (gpu-preview and gpu-preview-zoom, then viewport-region), each passing alone."
       ],
       "context_links": [
         {
