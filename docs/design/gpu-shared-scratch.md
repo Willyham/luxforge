@@ -98,7 +98,7 @@ Out of scope:
   - two masked layers of one shape still share every pipeline;
   - no value changes, because nothing is ever stored in a format the link alone would not use.
 - **One link, distinct textures.** Within one link, distinct scratch textures map to distinct pool textures, since a link's scratch planes are alive together.
-- **No sharing within a link.** A link holds at most one spatial step: `chain::chain` splits before each. `spatial::assign`'s sharing between the spatial steps of one link therefore goes. It is only reached today through the public `plane_bytes`, whose sharing of apply planes the slot never does.
+- **No sharing within a link.** A link holds at most one spatial step: `chain::chain` splits before each. `spatial::assign`'s sharing between the spatial steps of one link therefore goes, and with it the public `plane_bytes`.
 
 ### The schedule across links
 
@@ -136,7 +136,7 @@ Nothing about where a pass runs changes: the pass rectangle, the `valid` rectang
   Three figures are built on it:
   - `slot_charge`, which adds the boundary, the output in its size bucket, the uniform and the buffers;
   - the live slot's `bytes`;
-  - the desktop's `region_charge` (`crates/luxforge-app/src/app/gpu_preview.rs`), which today counts no link's intermediate and shares apply planes the slot does not, so it under-counts a chained plan.
+  - the desktop's `region_charge` (`crates/luxforge-app/src/app/gpu_preview.rs`), over the plan's steps converted with no boundary, which adds what `slot_charge` adds but the buffers.
 - **Evidence.** `state.surface.gpu` reports the pool's bytes beside `gpu_preview_in_use_bytes`. The charge is refused before anything is created, and a refusal names `budget-exceeded`, as today.
 
 ### The qualification harness

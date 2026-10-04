@@ -1241,15 +1241,6 @@ pub(super) fn parameters(steps: &[GpuStep], places: &[Place]) -> Vec<u32> {
     words
 }
 
-/// What the planes of `steps`' spatial steps take of the GPU-preview budget over a boundary of
-/// `size` texels whose texel `(0, 0)` is stage pixel `origin`, with a texture of its own for every
-/// plane of every step ([`PlanesKey::bytes`]), and the passes' parameters: at least what the slot
-/// charges them, whose links take their scratch planes from one pool ([`super::chain_charge`]).
-/// What the desktop holds a region's plan to before its boundary exists; it creates nothing.
-pub fn plane_bytes(steps: &[GpuStep], size: (u32, u32), origin: (u32, u32)) -> u64 {
-    PlanesKey::of(steps, size, origin).map_or(0, |key| key.bytes())
-}
-
 /// `value` rounded to the nearest half float, ties to even, within the finite halves, as `f32`:
 /// its mantissa rounded to ten bits by integer arithmetic on its bits, which carries into the
 /// exponent as the rounding does. WGSL's `quantizeToF16` would need a capability the surface's
@@ -1711,8 +1702,9 @@ impl PlanesKey {
     }
 
     /// The bytes its kept textures and the passes' parameter buffer take, with a texture of its own
-    /// for each scratch plane as well: what the desktop's estimate counts for a plan's planes
-    /// ([`plane_bytes`]), at least what the link and its scratch in the pool take.
+    /// for each scratch plane as well: for a link alone, whose pool is its own scratch, its chain's
+    /// whole charge ([`super::chain_charge`]).
+    #[cfg(test)]
     pub(super) fn bytes(&self) -> u64 {
         self.kept_bytes()
             + self

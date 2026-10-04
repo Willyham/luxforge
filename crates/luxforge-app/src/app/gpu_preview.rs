@@ -44,9 +44,10 @@
 //!   photograph. While the frame holds the view it answers it: no region job until the shared
 //!   quiet policy settles the view exactly. A view the region does not hold withdraws the plan, so
 //!   the CPU's frames are drawn, never a mix of the two, until a tick plans the new region and its
-//!   boundary is held. A region whose boundary and frame alone would pass the GPU-preview budget
-//!   asks for no boundary and keeps the CPU path, naming the budget; so does one the surface finds
-//!   over it once held. The mask overlay's region coverage is laid over the GPU region frame.
+//!   boundary is held. A region whose slot — everything the surface charges it but its links' words
+//!   and blocks buffers ([`region_charge`]) — would pass the GPU-preview budget asks for no
+//!   boundary and keeps the CPU path, naming the budget; so does one the surface finds over it once
+//!   held. The mask overlay's region coverage is laid over the GPU region frame.
 use super::{Editor, gpu_plan};
 use crate::state::status::CpuReason;
 use luxforge_core::{
@@ -345,11 +346,12 @@ pub(crate) enum GpuAsk {
 /// it takes on the GPU, as the surface charges them: the boundary over the window its request
 /// names, at its format's bytes a texel; a geometry tail's intermediate of the same size; the frame
 /// in its size bucket, a region's or a whole frame's, with its placement uniform
-/// ([`surface::gpu_preview::texture_charge`]); and a spatial step's planes over the window. For a
-/// plan of one link the surface adds only its words and blocks buffers once it is held; a chain of
-/// several adds each earlier link's intermediate and planes then. At Fit at the exact stage the
-/// frame is the whole output stage and the boundary the window it reads, or the whole boundary
-/// stage. `None` at a Fit proxy, which the display bounds bound.
+/// ([`surface::gpu_preview::texture_charge`]); and the chain's charge over the window
+/// ([`chain_charge`]): each link's intermediate before the last, every link's kept planes and
+/// parameters, and the pool of scratch planes the links take in turn, once. The surface adds only
+/// every link's words and blocks buffers once it is held. At Fit at the exact stage the frame is
+/// the whole output stage and the boundary the window it reads, or the whole boundary stage.
+/// `None` at a Fit proxy, which the display bounds bound.
 pub(crate) fn region_charge(plan: &CorePlan, request: &BoundaryRequest) -> Option<(u64, u64)> {
     let whole = |width, height| Region {
         x0: 0,
@@ -366,12 +368,7 @@ pub(crate) fn region_charge(plan: &CorePlan, request: &BoundaryRequest) -> Optio
         }
         (None, Some(_)) => return None,
     };
-    let texels = u64::from(window.width) * u64::from(window.height);
-    let boundary = texels
-        * match request.format {
-            luxforge_core::BoundaryFormat::Half => 8,
-            luxforge_core::BoundaryFormat::Float => 16,
-        };
+    let boundary = boundary_bytes(window, request.format);
     // A tail quantizes where the CPU clamps before its resample, and keeps `f32` values on the
     // RAW linear path, as `gpu_plan` builds it.
     let textures = surface::gpu_preview::texture_charge(
@@ -382,23 +379,66 @@ pub(crate) fn region_charge(plan: &CorePlan, request: &BoundaryRequest) -> Optio
         region,
         super::compare_after::DEVICE_TEXTURE_LIMIT,
     );
-    // The spatial steps' planes as the surface's slot holds them, each step's in textures of its
-    // own; each operation's own planes summed where a step cannot be converted.
+    Some((
+        boundary,
+        textures + chain_charge(plan, window, request.format),
+    ))
+}
+
+/// The bytes a boundary over `window` in `format` takes, and so does each of a chain's
+/// intermediates over it, which take the boundary's size and format.
+fn boundary_bytes(window: Region, format: luxforge_core::BoundaryFormat) -> u64 {
+    u64::from(window.width) * u64::from(window.height) * format.texel_bytes() as u64
+}
+
+/// What the chain of `plan` takes over a boundary of `window` in `format`, as the surface's slot
+/// charges it ([`surface::gpu_preview::chain_charge`]): the plan's steps converted with no boundary
+/// ([`gpu_plan::plan_steps`]), split into links as the surface splits them, each link's
+/// intermediate before the last, every link's kept planes and its passes' parameters, and the pool
+/// of scratch planes every link takes in turn, once. A plan whose steps cannot be converted is
+/// charged [`unconverted_chain_charge`].
+pub(super) fn chain_charge(
+    plan: &CorePlan,
+    window: Region,
+    format: luxforge_core::BoundaryFormat,
+) -> u64 {
+    match gpu_plan::plan_steps(plan) {
+        Ok(steps) => surface::gpu_preview::chain_charge(
+            &steps,
+            (window.width, window.height),
+            (window.x0, window.y0),
+            gpu_plan::boundary_format(format),
+        )
+        .total(),
+        Err(_) => unconverted_chain_charge(plan, window, format),
+    }
+}
+
+/// The chain charge of a plan whose steps cannot be converted: every plane of every spatial
+/// operation in a texture of its own (the core's [`GpuSpatial::plane_bytes`]), and an intermediate
+/// for each spatial operation. Naming a warp's steps needs no grid, so only a position map past
+/// what an `f32` holds exactly (`position-range`) comes here, and the tick that converts the plan
+/// over its boundary refuses it for the same reason.
+///
+/// It is not an upper bound on the converted figure. It counts every link's scratch planes, where
+/// the pool holds for each class only the most any one link holds, and an intermediate for every
+/// spatial operation, where the first adds none when no step comes before it. But it leaves out
+/// every pass's parameter slice, 256 bytes a pass. So it is above the converted figure wherever
+/// the scratch the pool shares outweighs those slices, as it does by far for masked Presence
+/// layers, and for a plan of one spatial operation after colour steps, which shares nothing, below
+/// it by the slices alone.
+///
+/// [`GpuSpatial::plane_bytes`]: luxforge_core::GpuSpatial::plane_bytes
+pub(super) fn unconverted_chain_charge(
+    plan: &CorePlan,
+    window: Region,
+    format: luxforge_core::BoundaryFormat,
+) -> u64 {
     let (origin, size) = ((window.x0, window.y0), (window.width, window.height));
-    let steps: Option<Vec<surface::GpuStep>> = plan
-        .spatial
+    plan.spatial
         .iter()
-        .map(|spatial| gpu_plan::spatial_step(spatial).ok())
-        .collect();
-    let planes = match steps {
-        Some(steps) => surface::gpu_preview::spatial::plane_bytes(&steps, size, origin),
-        None => plan
-            .spatial
-            .iter()
-            .map(|spatial| spatial.plane_bytes(origin, size))
-            .sum(),
-    };
-    Some((boundary, textures + planes))
+        .map(|spatial| spatial.plane_bytes(origin, size) + boundary_bytes(window, format))
+        .sum()
 }
 
 /// A surface region's rectangle of its stage, as the core's.
@@ -551,8 +591,15 @@ impl GpuPreviews {
     /// What the latest tick's plan takes over its region ([`region_charge`]).
     #[cfg(test)]
     pub(crate) fn region_charge(&self) -> Option<(u64, u64)> {
+        let (plan, request) = self.planned()?;
+        region_charge(plan, request)
+    }
+
+    /// The latest tick's plan, in the shape it is drawn in, and the boundary it asks for.
+    #[cfg(test)]
+    pub(crate) fn planned(&self) -> Option<(&CorePlan, &BoundaryRequest)> {
         let drag = self.drag.as_ref()?;
-        region_charge(&drag.plan.as_ref()?.0, drag.wanted.as_ref()?)
+        Some((&drag.plan.as_ref()?.0, drag.wanted.as_ref()?))
     }
 }
 

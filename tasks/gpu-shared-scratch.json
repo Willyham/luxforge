@@ -214,7 +214,7 @@
     {
       "id": "TASK-003",
       "description": "Hold a plan to the slot's own charge before its boundary exists, by making the desktop's region_charge count every link's intermediate and the shared planes through the chain charge.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-002"
       ],
@@ -442,7 +442,7 @@
     {
       "id": "TASK-006",
       "description": "Let a recipe hold 16 masked spatial layers (owner, 2026-10-03), with a compile cache that holds every link sequence the largest plan needs, so 16 masked layers draw on the GPU once compiled.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-003",
         "TASK-005"
