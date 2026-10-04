@@ -1,6 +1,6 @@
 # CPU and memory efficiency
 
-Status: in progress. The owner accepted the scope and the decisions below on 2026-10-03. Each item below says whether it is done; nothing in this plan is measured until its measurement task, and the `dist` build profile is deferred. The task plan is [efficiency](../../tasks/efficiency.json).
+Status: done, except the `dist` build profile, which the owner deferred. The owner accepted the scope and the decisions below on 2026-10-03. Every change is measured in [performance](../specs/performance.md#cpu-and-memory-efficiency-measured-on-the-m4) against the code before it, on the M4 in `release`, within the three hours the owner allotted on 2026-10-04; each paid for itself where measured, so none was reverted. The workloads that were not measured are listed there. The task plan is [efficiency](../../tasks/efficiency.json).
 
 ## Outcome
 
@@ -119,7 +119,7 @@ Done; adoption waits for the measurement task. Clarity's encoded-luminance block
   - The store evicts and refuses at its limit, and Clarity behind Texture touches nothing.
 
   `render::window` shows a window neither reads nor fills, and `render::reduced` tests the store itself.
-- **Adoption.** Its hit rate across an amount drag and across settle, its rebuild cost and its retained bytes are measured on 24 MP and 60 MP inputs before it is kept. Each masked layer reads its own input and so has its own entry, and at 60 MP the budget holds about two Dehaze entries. With up to 16 masked spatial layers ([masking](masking.md#resource-and-responsiveness-constraints)), the measurement includes a stack of several masked Clarity and Dehaze layers.
+- **Adoption.** Kept: on the 24 MP JPEG with Clarity alone, only each stage's first render misses, a drag with the GPU preview off reads every tick but its first from the store, a settle takes 59 to 60 ms against 99 to 103 ms before, the miss that fills costs at most about 26 ms more than a hit and is still faster than any settle before, and the store held 6.5 MB in two entries ([performance](../specs/performance.md#the-reduced-grid-cache)). Each masked layer reads its own input and so has its own entry, and at 60 MP the budget holds about two Dehaze entries. Stacks of several masked Clarity and Dehaze layers at 60 MP are not yet measured.
 
 ### RAW rendering reads
 
