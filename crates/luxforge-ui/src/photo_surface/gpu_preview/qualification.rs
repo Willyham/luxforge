@@ -3,8 +3,9 @@
 //! stack's GPU frame against the CPU frame it previews (`docs/design/gpu-preview.md`).
 //!
 //! It runs the stage's own shader: each step checked by [`validate_step`], the plan assembled and
-//! its words packed exactly as `prepare` assembles and packs them, a spatial step's planes created
-//! and its passes encoded before the frame's as the slot encodes them, a geometry tail's second
+//! its words packed exactly as `prepare` assembles and packs them, each link's kept planes and the
+//! pool of scratch textures the links share created as the slot creates them, a spatial step's
+//! passes encoded before the frame's as the slot encodes them, a geometry tail's second
 //! pass over the content pass's intermediate, and the boundary uploaded in its own format as the
 //! slot uploads it. Only the target differs. [`Qualifier::evaluate`] writes `rgba32float`, so a
 //! program's `f32` output is read before any encoding, which is where a non-finite value would be
@@ -19,7 +20,10 @@ use super::{
     SpatialSlot, Support, answered, assemble_passes, chain, compile, encode_pass_over, le_bytes,
     slot_charge, spatial, upload_rows, validate, validate_step,
 };
-use std::sync::mpsc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 
 /// A headless device, and the stage's layouts on it.
 pub struct Qualifier {
@@ -27,6 +31,8 @@ pub struct Qualifier {
     queue: wgpu::Queue,
     adapter: wgpu::AdapterInfo,
     support: Support,
+    /// Each link's passes start from a sentinel in every pool texture ([`Qualifier::set_poison`]).
+    poison: AtomicBool,
 }
 
 impl Qualifier {
@@ -54,7 +60,17 @@ impl Qualifier {
             queue,
             adapter: adapter.get_info(),
             support,
+            poison: AtomicBool::new(false),
         })
+    }
+
+    /// While `poisoned`, every later evaluation starts each link's passes from NaN bits in every
+    /// texture of its pool, every record of what they hold forgotten, as a slot does in a test
+    /// that asks for it (`spatial::Pool::poison`): a frame still equal to the whole evaluation's
+    /// shows that no pass read scratch beyond the cone its unit's reach bounds, which it writes
+    /// itself, whoever wrote the rest.
+    pub fn set_poison(&self, poisoned: bool) {
+        self.poison.store(poisoned, Ordering::Release);
     }
 
     /// The adapter, its backend and its driver, for a report.
@@ -91,8 +107,9 @@ impl Qualifier {
     }
 
     /// What the photo surface's slot holding `plan` charges the GPU-preview budget on this device:
-    /// the boundary, the output in its size bucket and its uniform, the words and blocks buffers
-    /// and a spatial step's planes.
+    /// the boundary, the output in its size bucket and its uniform, every link's words and blocks
+    /// buffers and the chain's charge — each earlier link's intermediate, every link's kept planes
+    /// and the scratch pool they share, once ([`super::chain_charge`]).
     pub fn charged_bytes(&self, plan: &GpuPlan) -> Result<u64, GpuFallback> {
         slot_charge(&self.device, plan)
     }
@@ -247,7 +264,10 @@ impl Qualifier {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("luxforge.qualification.encoder"),
         });
-        let ran = session.encode_changed(self, plan, &mut encoder, inside)?;
+        let ran = session
+            .encode_changed(self, plan, &mut encoder, inside)?
+            .iter()
+            .sum();
         let bytes = self.read_target(&session, encoder, texel_bytes)?;
         Ok((bytes, ran))
     }
@@ -315,13 +335,14 @@ impl Qualifier {
     }
 
     /// Each plan of `ticks` drawn as one slot draws a gesture's ticks, one after another over the
-    /// same planes and intermediates, each tick after the first an incremental one that changes
-    /// its rectangle of the boundary's stage when it names one ([`super::GpuChange`]); and every
-    /// tick's output as [`Qualifier::evaluate`] reads it. The plans hold the same planes.
+    /// same planes, pool and intermediates, each tick after the first an incremental one that
+    /// changes its rectangle of the boundary's stage when it names one ([`super::GpuChange`]); and
+    /// every tick's output as [`Qualifier::evaluate`] reads it, with how many spatial passes each
+    /// link ran in it. The plans hold the same planes.
     pub fn evaluate_sequence(
         &self,
         ticks: &[(GpuPlan, Option<[u32; 4]>)],
-    ) -> Result<Vec<Vec<[f32; 4]>>, String> {
+    ) -> Result<Vec<Tick>, String> {
         let (first, _) = ticks.first().ok_or("no plans to evaluate")?;
         let mut session = Session::new(self, first, None, wgpu::TextureFormat::Rgba32Float)?;
         let mut outputs = Vec::with_capacity(ticks.len());
@@ -332,8 +353,12 @@ impl Qualifier {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("luxforge.qualification.sequence"),
                 });
-            session.encode_changed(self, plan, &mut encoder, inside.filter(|_| tick > 0))?;
-            outputs.push(floats(&self.read_target(&session, encoder, 16)?));
+            let passes =
+                session.encode_changed(self, plan, &mut encoder, inside.filter(|_| tick > 0))?;
+            outputs.push(Tick {
+                output: floats(&self.read_target(&session, encoder, 16)?),
+                passes,
+            });
         }
         Ok(outputs)
     }
@@ -387,6 +412,21 @@ impl Qualifier {
     }
 }
 
+/// One tick of [`Qualifier::evaluate_sequence`]: its output, and how many spatial passes each link
+/// of its chain ran, in chain order, a link without a spatial step or that did not run none.
+#[derive(Clone, Debug)]
+pub struct Tick {
+    pub output: Vec<[f32; 4]>,
+    pub passes: Vec<u64>,
+}
+
+impl Tick {
+    /// The passes every link ran.
+    pub fn ran(&self) -> u64 {
+        self.passes.iter().sum()
+    }
+}
+
 /// One link of a [`Session`]'s chain: its steps' pipeline, buffers and group 0, its planes and
 /// schedule, and for every link but the last the intermediate it writes and what that holds.
 struct Link {
@@ -400,14 +440,17 @@ struct Link {
     key: Option<u64>,
 }
 
-/// A plan's chain on the qualifier's device, as a slot holds it: the boundary, every link, a
-/// geometry tail's intermediate and the target, kept across the plans of one sequence it encodes,
-/// so a later one runs only the links and passes that changed.
+/// A plan's chain on the qualifier's device, as a slot holds it: the boundary, every link, the
+/// pool of scratch textures the links take in turn, a geometry tail's intermediate and the target,
+/// kept across the plans of one sequence it encodes, so a later one runs only the links and passes
+/// that changed.
 struct Session {
     /// Held for the bindings that read it.
     _boundary: wgpu::Texture,
     boundary_version: u64,
     links: Vec<Link>,
+    /// Fitted and bound as the slot's is, with a holder counter of its own.
+    pool: spatial::Pool,
     /// A geometry tail's intermediate and the tail's group 0 over it.
     tail: Option<(wgpu::Texture, wgpu::BindGroup)>,
     target: wgpu::Texture,
@@ -521,6 +564,21 @@ impl Session {
         let count = chain.links.len() + 1;
         let mut links: Vec<Link> = Vec::with_capacity(count);
         let (mut words, mut blocks) = (Vec::new(), Vec::new());
+        // The pool, fitted to every link before any link's planes, as the slot fits its own.
+        let mut pool = spatial::Pool::default();
+        let every = chain
+            .links
+            .iter()
+            .copied()
+            .chain(std::iter::once(chain.last));
+        pool.fit(
+            device,
+            &spatial::PoolKey::of(every, (width, height), origin),
+            &mut |_| Ok::<(), GpuFallback>(()),
+            &mut |_, _| {},
+        )
+        .map_err(|fallback| fallback.as_str().to_owned())?;
+        pool.set_poisoned(qualifier.poison.load(Ordering::Acquire));
         for (index, steps) in chain
             .links
             .iter()
@@ -545,7 +603,7 @@ impl Session {
                 .map_or(&boundary, |(texture, _)| texture);
             let bindings = qualifier.bindings(input, &words_held, &blocks_held);
             let spatial = spatial::PlanesKey::of(steps, (width, height), origin)
-                .map(|key| SpatialSlot::new(spatial::Planes::create(device, key)));
+                .map(|key| SpatialSlot::new(spatial::Planes::create(device, key), &mut pool));
             let intermediate = (!last).then(|| {
                 let texture = texture(
                     "luxforge.qualification.link",
@@ -600,6 +658,7 @@ impl Session {
             _boundary: boundary,
             boundary_version: plan.boundary.version(),
             links,
+            pool,
             tail,
             target,
             view,
@@ -608,8 +667,8 @@ impl Session {
         })
     }
 
-    /// Whether `other`'s chain holds the planes this one's does, link for link, as a plan drawn
-    /// after another in one slot must.
+    /// Whether `other`'s chain holds the planes this one's does, link for link, and the same pool,
+    /// as a plan drawn after another in one slot must.
     fn same_planes(&self, other: &GpuPlan) -> Result<(), String> {
         let chain = chain::chain(&other.steps);
         let steps = chain
@@ -621,24 +680,27 @@ impl Session {
         if steps.clone().count() != self.links.len() {
             return Err("a plan drawn after another holds the same planes".into());
         }
-        for (link, steps) in self.links.iter().zip(steps) {
+        for (link, steps) in self.links.iter().zip(steps.clone()) {
             let key = spatial::PlanesKey::of(steps, size, self.origin);
             if link.spatial.as_ref().map(|spatial| &spatial.planes.key) != key.as_ref() {
                 return Err("a plan drawn after another holds the same planes".into());
             }
+        }
+        if spatial::PoolKey::of(steps, size, self.origin) != self.pool.key() {
+            return Err("a plan drawn after another holds the same pool".into());
         }
         Ok(())
     }
 
     /// Encode `plan`, of the sequence the session was made for, as the slot's next tick: each link
     /// whose content changed into its intermediate, then the last into the target. Answers how
-    /// many spatial passes ran.
+    /// many spatial passes each link ran, in chain order.
     fn encode(
         &mut self,
         qualifier: &Qualifier,
         plan: &GpuPlan,
         encoder: &mut wgpu::CommandEncoder,
-    ) -> Result<u64, String> {
+    ) -> Result<Vec<u64>, String> {
         self.encode_changed(qualifier, plan, encoder, None)
     }
 
@@ -651,14 +713,14 @@ impl Session {
         plan: &GpuPlan,
         encoder: &mut wgpu::CommandEncoder,
         inside: Option<[u32; 4]>,
-    ) -> Result<u64, String> {
+    ) -> Result<Vec<u64>, String> {
         if plan.boundary.version() != self.boundary_version {
             return Err("a session draws over the boundary it was made with".into());
         }
         let chain = chain::chain(&plan.steps);
         let count = self.links.len();
         let mut input = chain::boundary_key(self.boundary_version);
-        let mut ran = 0;
+        let mut ran = vec![0; count];
         let (mut words, mut blocks) = (Vec::new(), Vec::new());
         let size = plan.boundary.size();
         let incremental = inside.map(|[x0, y0, x1, y1]| {
@@ -712,13 +774,14 @@ impl Session {
                     encoder,
                     (&link.compiled.spatial, link.id),
                     &link.bindings,
+                    &mut self.pool,
                     steps,
                     (&words, &blocks),
                     input,
                     (plan.texels, size),
                     link_dirty,
                 );
-                ran += passes;
+                ran[index] = passes;
                 reached = link_dirty.zip(over).map(|(dirty, over)| dirty.union(&over));
             }
             dirty = incremental
@@ -727,8 +790,8 @@ impl Session {
             let planes_group = link
                 .spatial
                 .as_ref()
-                .and_then(|spatial| spatial.groups.as_ref())
-                .and_then(|(_, groups)| groups.fragment.as_ref());
+                .and_then(|spatial| spatial.groups())
+                .and_then(|groups| groups.fragment.as_ref());
             let as_size = |(width, height): (u32, u32)| (width as f32, height as f32);
             match (&link.intermediate, &self.tail, &link.compiled.tail) {
                 (Some((_, view)), _, _) => encode_pass_over(

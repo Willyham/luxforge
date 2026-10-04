@@ -518,10 +518,15 @@ pub(crate) fn gpu_drawn(frame: &Frame) -> Result<Value> {
     let figure = |name: &str| gpu[name].as_u64().unwrap_or(0);
     ensure(
         figure("gpu_preview_in_use_bytes") > 0
-            && figure("gpu_preview_in_use_bytes") <= figure("gpu_preview_budget_bytes"),
+            && figure("gpu_preview_in_use_bytes") <= figure("gpu_preview_budget_bytes")
+            && gpu["gpu_preview_scratch_bytes"].is_u64()
+            && figure("gpu_preview_scratch_bytes") <= figure("gpu_preview_in_use_bytes"),
         format!(
-            "{}: {} GPU-preview bytes in use of {}",
-            frame["file"], gpu["gpu_preview_in_use_bytes"], gpu["gpu_preview_budget_bytes"]
+            "{}: {} GPU-preview bytes in use of {}, {} of them scratch",
+            frame["file"],
+            gpu["gpu_preview_in_use_bytes"],
+            gpu["gpu_preview_budget_bytes"],
+            gpu["gpu_preview_scratch_bytes"]
         ),
     )?;
     let ms = bar["gpu_ms"].as_f64().unwrap_or(f64::NAN);
@@ -542,6 +547,7 @@ pub(crate) fn gpu_drawn(frame: &Frame) -> Result<Value> {
         "gpu_ticks": summary["gpu_ticks"],
         "cpu_ticks": summary["cpu_ticks"],
         "in_use_bytes": gpu["gpu_preview_in_use_bytes"],
+        "scratch_bytes": gpu["gpu_preview_scratch_bytes"],
         "frame_us": gpu["gpu_preview_frame_us"],
         "render": bar["render"],
     }))
@@ -606,7 +612,8 @@ fn resident_kept(launch: &Checked, release: &str, name: &str, version: &Value) -
     )?;
     Ok(
         json!({"drawing_path": gpu["drawing_path"], "resident": gpu["gpu_preview"]["resident"],
-            "in_use": gpu["gpu_preview_in_use_bytes"], "handed_over": handed}),
+            "in_use": gpu["gpu_preview_in_use_bytes"], "scratch": gpu["gpu_preview_scratch_bytes"],
+            "handed_over": handed}),
     )
 }
 

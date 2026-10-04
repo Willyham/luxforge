@@ -163,20 +163,23 @@ fn guided_self(
 }
 
 /// Texture: the fine and coarse self-guided smoothers of the encoded input at full resolution, the
-/// apply reading their band. The fine smoother is held; the coarse one's last pass writes the band
-/// itself into the coefficients' plane, which it no longer reads, so the operation holds three
-/// full-resolution planes (20 bytes a pixel) rather than four. The coefficients and band, and the
-/// fine smoother, are planes half precision holds, so behind Detail they take two of the
-/// half-precision planes it leaves free and Texture adds only its running sums, which stay `f32`:
-/// the variance the vertical pass takes from them cancels.
+/// apply reading their band. The fine smoother is held; the coarse one never is, since its last
+/// pass writes the band itself, into a one-channel plane that only that pass writes. The operation
+/// holds four full-resolution planes, 24 bytes a pixel, and keeps only the band's 4: the running
+/// sums, the coefficients and the fine smoother are scratch. All but the running sums are planes
+/// half precision holds, which take `rg32float` and `r32float` of their own since `rgba16float`
+/// saves nothing under three channels; the running sums stay `f32` in any case, since the variance
+/// the vertical pass takes from them cancels.
 pub(super) fn texture(unit: &texture::Texture) -> GpuSpatialUnit {
-    let (sums, band, fine) = (0, 1, 2);
+    let (sums, coefficients, fine, band) = (0, 1, 2, 3);
     let planes = vec![
         // The running sums' horizontal means, which the vertical pass's variance cancels.
         plane(GpuPlaneFormat::Pair, 1, true),
-        // The coefficients of each smoother, then the band the apply reads.
-        plane(GpuPlaneFormat::HalfPair, 1, false),
+        // The coefficients of each smoother, then the fine smoother.
+        plane(GpuPlaneFormat::HalfPair, 1, true),
         plane(GpuPlaneFormat::HalfScalar, 1, true),
+        // The band the apply reads.
+        plane(GpuPlaneFormat::HalfScalar, 1, false),
     ];
     let mut words = Words::default();
     let mut passes = Vec::new();
@@ -191,7 +194,7 @@ pub(super) fn texture(unit: &texture::Texture) -> GpuSpatialUnit {
             radius(r),
             texture::EPS_TEXTURE,
             sums,
-            band,
+            coefficients,
             output,
             last,
         );
@@ -522,6 +525,35 @@ mod tests {
                 }
                 assert!(unit.apply.words < unit.words.len());
             }
+        }
+    }
+
+    /// Texture's planes take 24 bytes a pixel and keep 4: the band its apply reads is a plane of
+    /// one channel that only the coarse smoother's last pass writes, and every other plane is
+    /// scratch.
+    #[test]
+    fn texture_keeps_only_its_one_channel_band() {
+        for amount in [100.0, -100.0] {
+            let unit = texture(&texture::Texture::new(amount, 3000));
+            assert!(
+                unit.planes
+                    .iter()
+                    .all(|plane| plane.size == GpuPlaneSize::Reduced(1))
+            );
+            let bytes = |kept: bool| -> u64 {
+                unit.planes
+                    .iter()
+                    .filter(|plane| !kept || !plane.scratch)
+                    .map(|plane| plane.format.texel_bytes())
+                    .sum()
+            };
+            assert_eq!((bytes(false), bytes(true)), (24, 4), "{amount}");
+            let [band] = unit.apply.planes[..] else {
+                panic!("the apply reads one plane");
+            };
+            assert_eq!(unit.planes[band].format, GpuPlaneFormat::HalfScalar);
+            let writers = unit.passes.iter().filter(|pass| pass.output == band);
+            assert_eq!(writers.count(), 1, "{amount}");
         }
     }
 

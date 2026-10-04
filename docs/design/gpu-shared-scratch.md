@@ -98,7 +98,7 @@ Out of scope:
   - two masked layers of one shape still share every pipeline;
   - no value changes, because nothing is ever stored in a format the link alone would not use.
 - **One link, distinct textures.** Within one link, distinct scratch textures map to distinct pool textures, since a link's scratch planes are alive together.
-- **No sharing within a link.** A link holds at most one spatial step: `chain::chain` splits before each. `spatial::assign`'s sharing between the spatial steps of one link therefore goes. It is only reached today through the public `plane_bytes`, whose sharing of apply planes the slot never does.
+- **No sharing within a link.** A link holds at most one spatial step: `chain::chain` splits before each. `spatial::assign`'s sharing between the spatial steps of one link therefore goes, and with it the public `plane_bytes`.
 
 ### The schedule across links
 
@@ -136,7 +136,7 @@ Nothing about where a pass runs changes: the pass rectangle, the `valid` rectang
   Three figures are built on it:
   - `slot_charge`, which adds the boundary, the output in its size bucket, the uniform and the buffers;
   - the live slot's `bytes`;
-  - the desktop's `region_charge` (`crates/luxforge-app/src/app/gpu_preview.rs`), which today counts no link's intermediate and shares apply planes the slot does not, so it under-counts a chained plan.
+  - the desktop's `region_charge` (`crates/luxforge-app/src/app/gpu_preview.rs`), over the plan's steps converted with no boundary, which adds what `slot_charge` adds but the buffers.
 - **Evidence.** `state.surface.gpu` reports the pool's bytes beside `gpu_preview_in_use_bytes`. The charge is refused before anything is created, and a refusal names `budget-exceeded`, as today.
 
 ### The qualification harness
@@ -171,30 +171,9 @@ The owner's decision of 2026-10-03.
 
 ### The CPU fallback notice
 
-The owner asked on 2026-10-03 that a person can tell why a preview is slower. Today the status bar names the frame on screen, `GPU preview · N ms` or `Approximate render · N ms`. Why a gesture took the CPU path is recorded only in the evidence, as `state.surface.gpu.plan_fallback` (`Editor::gpu_plan_fallback`).
+The owner asked on 2026-10-03 that a person can tell why a preview is slower. Today the status bar names the frame on screen, `GPU preview · N ms` or `Approximate render · N ms`, and why a gesture took the CPU path was recorded only in the evidence, as `state.surface.gpu.plan_fallback` (`Editor::gpu_plan_fallback`).
 
-The plan runs on these recorded defaults; each is a proposal the owner can revise.
-
-| Question | Default | Alternative |
-| --- | --- | --- |
-| Where it shows | The status bar, after the render slot: a short muted phrase, with a tooltip that explains it in a sentence. Nothing is drawn on the photograph | A badge or toast on the canvas |
-| When it shows | From the first tick of a gesture that takes the CPU path for a reason that lasts, until the next GPU frame or the end of that gesture's settle | On every CPU tick, passing reasons included |
-| What it says | One phrase per class of reason ([below](#reasons-and-wording)) | The reason's code |
-| The preference off | Nothing: the person chose the CPU path | A reminder that the GPU preview is off |
-| Evidence and API | Each captured frame records the notice beside `plan_fallback`. The headless API draws no GPU preview, so it has nothing to report | A session-state field |
-
-#### Reasons and wording
-
-| Class | Reasons | Phrase | Tooltip |
-| --- | --- | --- | --- |
-| Memory | `budget-exceeded`, `texture-limit`, `buffer-limit` | GPU memory full | This many layers at this zoom need more than the GPU preview holds, so the preview is drawn on the CPU, which is slower. Fewer masked Presence or Detail layers, or Fit, draw on the GPU. |
-| No GPU | `no-adapter`, `device-lost`, `pipeline-failed` | GPU preview unavailable | The GPU preview cannot run on this graphics device, so previews are drawn on the CPU. |
-| Zoom | `not-fit` | GPU preview at Fit and 100%+ | The GPU preview draws at Fit and at 100% or more; at this zoom the preview is drawn on the CPU. |
-| The stack | `pixel-stage`, `boundary-stage`, `spatial-unit`, `spatial-chain`, `between-resamples`, `no-program`, `disabled-program`, `warp-grid`, `boundary-size`, `position-range`, `region-outside`, `boundary-failed` | Not on the GPU: the layer's name | The GPU preview cannot draw this layer yet, so this drag is drawn on the CPU. |
-| Dehaze | `region-estimate`, `window-estimate` | Dehaze on the CPU | Dehaze needs the haze estimate a settled frame stores for this view; until then this drag is drawn on the CPU. |
-| Compiling | `compiling`, once it has lasted half a second | Preparing GPU preview | The GPU preview is compiling its programs for this stack; drags are drawn on the CPU until it is ready. |
-
-Reasons that pass within a tick or two show nothing: `boundary-pending`, `boundary-uploading`, `boundary-released` and `surface-pending`.
+The notice's place, timing and wording are proposals with recorded defaults, each of which the owner can revise: a short muted phrase after the render slot, with a one-sentence tooltip, one phrase for each class of reason, from the first tick of a gesture that takes the CPU path for a reason that lasts until the next GPU frame or the end of that gesture's settle. It is implemented, and [GPU previews](gpu-preview.md#labels-and-overlays-during-motion) holds its behaviour, its [classes and wording](gpu-preview.md#the-fallback-notices-classes), the recorded defaults' [alternatives](gpu-preview.md#proposals-with-recorded-defaults) and its evidence.
 
 ## Risks
 

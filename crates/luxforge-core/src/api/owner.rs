@@ -1996,6 +1996,7 @@ impl Owner {
                             )),
                             boundary: None,
                             cpu_shape: None,
+                            layer: None,
                         },
                     ),
                 ));

@@ -15,7 +15,7 @@ const ACTION: &str = "set-basic";
 const PRESENCE: &str = "set-presence";
 const FIELD: &str = "exposure";
 
-fn catalog(name: &str) -> std::path::PathBuf {
+pub(super) fn catalog(name: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "luxforge-gpu-preview-{name}-{}.sqlite",
         std::process::id()
@@ -23,7 +23,11 @@ fn catalog(name: &str) -> std::path::PathBuf {
 }
 
 /// Take up the preview worker's results, as the worker's wake does, until `done`.
-fn deliver_until(editor: &mut Editor, what: &str, mut done: impl FnMut(&Editor) -> bool) {
+pub(super) fn deliver_until(
+    editor: &mut Editor,
+    what: &str,
+    mut done: impl FnMut(&Editor) -> bool,
+) {
     wait_until(what, || {
         let _ = editor.update(Message::Preview(PreviewMessage::Poll));
         done(editor)
@@ -32,7 +36,7 @@ fn deliver_until(editor: &mut Editor, what: &str, mut done: impl FnMut(&Editor) 
 
 /// The surface reports, as it does once its pipeline is ready and its slot holds the boundary,
 /// that it evaluated the held boundary's plan with no fallback.
-fn surface_ready(editor: &mut Editor) {
+pub(super) fn surface_ready(editor: &mut Editor) {
     let version = editor.gpu.held_version().expect("a held boundary");
     editor.gpu.surface = Some(SurfaceReport {
         ready_boundary: Some(version),
@@ -382,7 +386,7 @@ fn gpu_preview_a_tick_that_changes_no_pixel_still_asks_for_its_boundary() {
 }
 
 /// Commit `field` at `value` with a released slider, and wait for the committed frame.
-fn commit(editor: &mut Editor, action: &str, field: &str, value: f64) {
+pub(super) fn commit(editor: &mut Editor, action: &str, field: &str, value: f64) {
     let _ = slide(editor, action, field, value);
     let _ = let_go(editor, action, field);
     assert!(run_commit(editor));
@@ -816,7 +820,7 @@ fn gpu_preview_spatial_compile_cost_on_a_cold_cache() {
 }
 
 /// The visible region of the 480 × 320 photograph at 400%, which the window shows only part of.
-fn zoomed(editor: &mut Editor) -> luxforge_core::Region {
+pub(super) fn zoomed(editor: &mut Editor) -> luxforge_core::Region {
     deliver_until(editor, "the first frame", |editor| {
         editor.presentation.dimensions.is_some() && !editor.presentation.queue.is_busy()
     });

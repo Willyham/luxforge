@@ -44,10 +44,12 @@
 //!   photograph. While the frame holds the view it answers it: no region job until the shared
 //!   quiet policy settles the view exactly. A view the region does not hold withdraws the plan, so
 //!   the CPU's frames are drawn, never a mix of the two, until a tick plans the new region and its
-//!   boundary is held. A region whose boundary and frame alone would pass the GPU-preview budget
-//!   asks for no boundary and keeps the CPU path, naming the budget; so does one the surface finds
-//!   over it once held. The mask overlay's region coverage is laid over the GPU region frame.
+//!   boundary is held. A region whose slot — everything the surface charges it but its links' words
+//!   and blocks buffers ([`region_charge`]) — would pass the GPU-preview budget asks for no
+//!   boundary and keeps the CPU path, naming the budget; so does one the surface finds over it once
+//!   held. The mask overlay's region coverage is laid over the GPU region frame.
 use super::{Editor, gpu_plan};
+use crate::state::status::CpuReason;
 use luxforge_core::{
     BoundaryKey, BoundaryRequest, CoordinateGrid, Draft, DraftId, GpuAnswer, GpuPreview, Region,
 };
@@ -55,7 +57,10 @@ use luxforge_ui::photo_surface::{
     self as surface, DrawingPath, GpuBoundary, GpuStep, GpuWarm, SurfaceDiagnostics,
 };
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 /// The core's plan, beside the surface's plain data of the same name.
 type CorePlan = luxforge_core::GpuPlan;
@@ -195,6 +200,15 @@ impl Stamps {
     }
 }
 
+/// A run of ticks that each named `compiling`: when the first did, and how long that had lasted at
+/// the latest. The status bar's notice reads the latter, so a tick decides it and the clock never
+/// does: a drag that holds still keeps what it last said, and nothing wakes to change it.
+#[derive(Clone, Copy, Debug)]
+struct Compiling {
+    since: Instant,
+    lasted: Duration,
+}
+
 /// The open draft's GPU preview.
 struct Drag {
     draft: DraftId,
@@ -216,6 +230,10 @@ struct Drag {
     standby: Option<Handed>,
     /// Why the latest tick took the CPU path.
     reason: Option<String>,
+    /// The label the recipe list gives the layer that reason names, when it names one.
+    layer: Option<String>,
+    /// The run of ticks that have named `compiling`, while the latest does.
+    compiling: Option<Compiling>,
     /// The percentage zoom the latest tick's region was asked at; `None` at Fit.
     zoom: Option<f32>,
     /// What a region's boundary or slot would take, and the bound on a boundary or the budget it
@@ -246,6 +264,8 @@ impl Drag {
             surface: None,
             standby: None,
             reason: None,
+            layer: None,
+            compiling: None,
             zoom: None,
             over_budget: None,
             shape: None,
@@ -254,6 +274,27 @@ impl Drag {
             cpu_ticks: 0,
             boundary_requests: 0,
         }
+    }
+
+    /// The tick at `now` took the CPU path for `reason`, which names the layer the recipe list
+    /// labels `layer`, if any. A run of `compiling` keeps when it began; any other reason ends it.
+    fn stopped(&mut self, reason: &str, layer: Option<String>, now: Instant) {
+        self.compiling = (reason == SurfaceFallback::Compiling.as_str()).then(|| {
+            let since = self.compiling.map_or(now, |run| run.since);
+            Compiling {
+                since,
+                lasted: now.saturating_duration_since(since),
+            }
+        });
+        self.reason = Some(reason.into());
+        self.layer = layer;
+    }
+
+    /// The tick is drawn on the GPU.
+    fn drew(&mut self) {
+        self.reason = None;
+        self.layer = None;
+        self.compiling = None;
     }
 }
 
@@ -305,11 +346,12 @@ pub(crate) enum GpuAsk {
 /// it takes on the GPU, as the surface charges them: the boundary over the window its request
 /// names, at its format's bytes a texel; a geometry tail's intermediate of the same size; the frame
 /// in its size bucket, a region's or a whole frame's, with its placement uniform
-/// ([`surface::gpu_preview::texture_charge`]); and a spatial step's planes over the window. For a
-/// plan of one link the surface adds only its words and blocks buffers once it is held; a chain of
-/// several adds each earlier link's intermediate and planes then. At Fit at the exact stage the
-/// frame is the whole output stage and the boundary the window it reads, or the whole boundary
-/// stage. `None` at a Fit proxy, which the display bounds bound.
+/// ([`surface::gpu_preview::texture_charge`]); and the chain's charge over the window
+/// ([`chain_charge`]): each link's intermediate before the last, every link's kept planes and
+/// parameters, and the pool of scratch planes the links take in turn, once. The surface adds only
+/// every link's words and blocks buffers once it is held. At Fit at the exact stage the frame is
+/// the whole output stage and the boundary the window it reads, or the whole boundary stage.
+/// `None` at a Fit proxy, which the display bounds bound.
 pub(crate) fn region_charge(plan: &CorePlan, request: &BoundaryRequest) -> Option<(u64, u64)> {
     let whole = |width, height| Region {
         x0: 0,
@@ -326,12 +368,7 @@ pub(crate) fn region_charge(plan: &CorePlan, request: &BoundaryRequest) -> Optio
         }
         (None, Some(_)) => return None,
     };
-    let texels = u64::from(window.width) * u64::from(window.height);
-    let boundary = texels
-        * match request.format {
-            luxforge_core::BoundaryFormat::Half => 8,
-            luxforge_core::BoundaryFormat::Float => 16,
-        };
+    let boundary = boundary_bytes(window, request.format);
     // A tail quantizes where the CPU clamps before its resample, and keeps `f32` values on the
     // RAW linear path, as `gpu_plan` builds it.
     let textures = surface::gpu_preview::texture_charge(
@@ -342,23 +379,66 @@ pub(crate) fn region_charge(plan: &CorePlan, request: &BoundaryRequest) -> Optio
         region,
         super::compare_after::DEVICE_TEXTURE_LIMIT,
     );
-    // The spatial steps' planes as the surface's slot holds them, chained steps sharing textures;
-    // each operation's own planes summed where a step cannot be converted.
+    Some((
+        boundary,
+        textures + chain_charge(plan, window, request.format),
+    ))
+}
+
+/// The bytes a boundary over `window` in `format` takes, and so does each of a chain's
+/// intermediates over it, which take the boundary's size and format.
+fn boundary_bytes(window: Region, format: luxforge_core::BoundaryFormat) -> u64 {
+    u64::from(window.width) * u64::from(window.height) * format.texel_bytes() as u64
+}
+
+/// What the chain of `plan` takes over a boundary of `window` in `format`, as the surface's slot
+/// charges it ([`surface::gpu_preview::chain_charge`]): the plan's steps converted with no boundary
+/// ([`gpu_plan::plan_steps`]), split into links as the surface splits them, each link's
+/// intermediate before the last, every link's kept planes and its passes' parameters, and the pool
+/// of scratch planes every link takes in turn, once. A plan whose steps cannot be converted is
+/// charged [`unconverted_chain_charge`].
+pub(super) fn chain_charge(
+    plan: &CorePlan,
+    window: Region,
+    format: luxforge_core::BoundaryFormat,
+) -> u64 {
+    match gpu_plan::plan_steps(plan) {
+        Ok(steps) => surface::gpu_preview::chain_charge(
+            &steps,
+            (window.width, window.height),
+            (window.x0, window.y0),
+            gpu_plan::boundary_format(format),
+        )
+        .total(),
+        Err(_) => unconverted_chain_charge(plan, window, format),
+    }
+}
+
+/// The chain charge of a plan whose steps cannot be converted: every plane of every spatial
+/// operation in a texture of its own (the core's [`GpuSpatial::plane_bytes`]), and an intermediate
+/// for each spatial operation. Naming a warp's steps needs no grid, so only a position map past
+/// what an `f32` holds exactly (`position-range`) comes here, and the tick that converts the plan
+/// over its boundary refuses it for the same reason.
+///
+/// It is not an upper bound on the converted figure. It counts every link's scratch planes, where
+/// the pool holds for each class only the most any one link holds, and an intermediate for every
+/// spatial operation, where the first adds none when no step comes before it. But it leaves out
+/// every pass's parameter slice, 256 bytes a pass. So it is above the converted figure wherever
+/// the scratch the pool shares outweighs those slices, as it does by far for masked Presence
+/// layers, and for a plan of one spatial operation after colour steps, which shares nothing, below
+/// it by the slices alone.
+///
+/// [`GpuSpatial::plane_bytes`]: luxforge_core::GpuSpatial::plane_bytes
+pub(super) fn unconverted_chain_charge(
+    plan: &CorePlan,
+    window: Region,
+    format: luxforge_core::BoundaryFormat,
+) -> u64 {
     let (origin, size) = ((window.x0, window.y0), (window.width, window.height));
-    let steps: Option<Vec<surface::GpuStep>> = plan
-        .spatial
+    plan.spatial
         .iter()
-        .map(|spatial| gpu_plan::spatial_step(spatial).ok())
-        .collect();
-    let planes = match steps {
-        Some(steps) => surface::gpu_preview::spatial::plane_bytes(&steps, size, origin),
-        None => plan
-            .spatial
-            .iter()
-            .map(|spatial| spatial.plane_bytes(origin, size))
-            .sum(),
-    };
-    Some((boundary, textures + planes))
+        .map(|spatial| spatial.plane_bytes(origin, size) + boundary_bytes(window, format))
+        .sum()
 }
 
 /// A surface region's rectangle of its stage, as the core's.
@@ -489,6 +569,15 @@ impl GpuPreviews {
         })
     }
 
+    /// Make the open drag's run of `compiling` ticks have begun `by` earlier, so a test need not
+    /// wait out [`crate::state::status::COMPILING_AFTER`].
+    #[cfg(test)]
+    pub(crate) fn backdate_compiling(&mut self, by: Duration) {
+        if let Some(run) = self.drag.as_mut().and_then(|drag| drag.compiling.as_mut()) {
+            run.since -= by;
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn holds_boundary(&self) -> bool {
         self.held_version().is_some()
@@ -502,8 +591,15 @@ impl GpuPreviews {
     /// What the latest tick's plan takes over its region ([`region_charge`]).
     #[cfg(test)]
     pub(crate) fn region_charge(&self) -> Option<(u64, u64)> {
+        let (plan, request) = self.planned()?;
+        region_charge(plan, request)
+    }
+
+    /// The latest tick's plan, in the shape it is drawn in, and the boundary it asks for.
+    #[cfg(test)]
+    pub(crate) fn planned(&self) -> Option<(&CorePlan, &BoundaryRequest)> {
         let drag = self.drag.as_ref()?;
-        region_charge(&drag.plan.as_ref()?.0, drag.wanted.as_ref()?)
+        Some((&drag.plan.as_ref()?.0, drag.wanted.as_ref()?))
     }
 }
 
@@ -539,6 +635,7 @@ impl Editor {
         preview: Option<Box<GpuPreview>>,
     ) -> (Tick, Option<BoundaryRequest>) {
         let mut boundary_request = None;
+        let now = Instant::now();
         // With the preference off the plan is never handed over, so nothing is asked for it.
         let allowed = self.gpu_preview_allowed();
         // The clipping overlay is derived from the CPU's frames, so over a GPU frame the plan marks
@@ -584,39 +681,43 @@ impl Editor {
         // A tick with no plan draws nothing of its own; the boundary stays held, behind the CPU
         // frame, for the next tick or draft that plans from it. Only the preference turned off,
         // which hands the surface no plan at all, lets it go.
-        let unplanned = |drag: &mut Drag, reason: &str, released: &mut Option<u64>| {
-            if let Some(handed) = drag.surface.take() {
-                drag.standby = Some(handed);
-            }
-            drag.plan = None;
-            drag.wanted = None;
-            if reason == super::gpu_settle::PREFERENCE_OFF
-                && let Some(held) = drag.held.take()
-            {
-                *released = Some(held.boundary.version());
-                drag.standby = None;
-            }
-            drag.reason = Some(reason.into());
-            Tick::Cpu
-        };
+        let unplanned =
+            |drag: &mut Drag, reason: &str, layer: Option<String>, released: &mut Option<u64>| {
+                if let Some(handed) = drag.surface.take() {
+                    drag.standby = Some(handed);
+                }
+                drag.plan = None;
+                drag.wanted = None;
+                if reason == super::gpu_settle::PREFERENCE_OFF
+                    && let Some(held) = drag.held.take()
+                {
+                    *released = Some(held.boundary.version());
+                    drag.standby = None;
+                }
+                drag.stopped(reason, layer, now);
+                Tick::Cpu
+            };
         let tick = match preview.map(|preview| *preview) {
             _ if allowed.is_err() => unplanned(
                 drag,
                 allowed.err().unwrap_or(super::gpu_settle::PREFERENCE_OFF),
+                None,
                 &mut released,
             ),
-            None => unplanned(drag, "not-fit", &mut released),
+            None => unplanned(drag, "not-fit", None, &mut released),
             Some(luxforge_core::GpuPreview {
                 answer: GpuAnswer::Fallback(reason),
+                layer,
                 ..
-            }) => unplanned(drag, reason.code(), &mut released),
+            }) => unplanned(drag, reason.code(), layer, &mut released),
             Some(luxforge_core::GpuPreview {
                 answer: GpuAnswer::Plan(plan),
                 boundary,
                 cpu_shape,
+                ..
             }) => {
                 let Some(request) = boundary else {
-                    drag.reason = Some("unplannable".into());
+                    drag.stopped("unplannable", None, now);
                     drag.cpu_ticks += 1;
                     return (Tick::Cpu, None);
                 };
@@ -658,15 +759,15 @@ impl Editor {
                     None if over_budget.is_some() => {
                         drag.surface = None;
                         // The surface's own name for a plan over the budget.
-                        drag.reason = Some("budget-exceeded".into());
+                        drag.stopped("budget-exceeded", None, now);
                         Tick::Cpu
                     }
                     None => {
                         drag.surface = None;
                         if drag.failed.as_ref() == Some(&request.key) {
-                            drag.reason = Some("boundary-failed".into());
+                            drag.stopped("boundary-failed", None, now);
                         } else {
-                            drag.reason = Some("boundary-pending".into());
+                            drag.stopped("boundary-pending", None, now);
                             let pending = self.presentation.queue.pending_generation();
                             if drag.requested.is_none() || drag.requested == pending {
                                 boundary_request = Some(request);
@@ -688,7 +789,7 @@ impl Editor {
                         {
                             Err(unrunnable) => {
                                 drag.surface = None;
-                                drag.reason = Some(unrunnable.code().into());
+                                drag.stopped(unrunnable.code(), None, now);
                                 Tick::Cpu
                             }
                             Ok(converted) => {
@@ -698,14 +799,15 @@ impl Editor {
                                 if report.ready_boundary == Some(version)
                                     && report.fallback.is_none()
                                 {
-                                    drag.reason = None;
+                                    drag.drew();
                                     Tick::Gpu
                                 } else {
-                                    drag.reason = Some(
+                                    drag.stopped(
                                         report
                                             .fallback
-                                            .map_or("surface-pending", SurfaceFallback::as_str)
-                                            .into(),
+                                            .map_or("surface-pending", SurfaceFallback::as_str),
+                                        None,
+                                        now,
                                     );
                                     Tick::Cpu
                                 }
@@ -1236,10 +1338,28 @@ impl Editor {
     /// tick took the CPU path: the preference, the plan's reason, a boundary not yet held, the
     /// converter's reason or the surface's fallback.
     pub(crate) fn gpu_plan_fallback(&self) -> Option<String> {
-        if let Err(reason) = self.gpu_preview_allowed() {
-            return Some(reason.into());
+        self.gpu_cpu_reason().map(|reason| reason.code.to_owned())
+    }
+
+    /// [`Self::gpu_plan_fallback`] with what the status bar's notice is derived from
+    /// ([`CpuReason::notice`]): the layer the reason names, and how long the ticks that named
+    /// `compiling` have done so. The open gesture's, kept until its drag is released, which is when
+    /// its settle ends: the frame replacing the drafted one is presented, or nothing more is coming
+    /// (`after_message`).
+    pub(crate) fn gpu_cpu_reason(&self) -> Option<CpuReason<'_>> {
+        if let Err(code) = self.gpu_preview_allowed() {
+            return Some(CpuReason {
+                code,
+                layer: None,
+                compiling_for: None,
+            });
         }
-        self.gpu.drag.as_ref().and_then(|drag| drag.reason.clone())
+        let drag = self.gpu.drag.as_ref()?;
+        Some(CpuReason {
+            code: drag.reason.as_deref()?,
+            layer: drag.layer.as_deref(),
+            compiling_for: drag.compiling.map(|run| run.lasted),
+        })
     }
 
     /// Whether the surface holds the drawn plan behind the CPU frame: the CPU frame of the drawn
