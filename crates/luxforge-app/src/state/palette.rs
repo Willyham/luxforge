@@ -1,7 +1,10 @@
-//! The command palette model. Every entry is a declared control action, a module reset, a canvas
-//! mode, a library preset or a host command, so the palette can reach nothing the panels and the
-//! title bar cannot.
-use crate::state::{Inputs, tools::palette_entries};
+//! The command palette model. Every entry reveals a section or control of the tools panel, or is a
+//! declared control action, a module reset, a canvas mode, a library preset or a host command, so
+//! the palette can reach nothing the panels and the title bar cannot.
+use crate::state::{
+    Inputs,
+    tools::{RevealKey, ToolsModel, palette_entries, reveal_entries},
+};
 use luxforge_core::{MASK_MODE, POINTER_MODE};
 use serde_json::{Map, Value};
 
@@ -11,6 +14,29 @@ pub(crate) struct Palette {
     pub(crate) open: bool,
     pub(crate) query: String,
     pub(crate) selected: usize,
+    /// What the last reveal marks in the tools panel, until the mark times out.
+    pub(crate) revealed: Option<Revealed>,
+    /// The last reveal's sequence number, minted per reveal.
+    pub(crate) reveal_sequence: u64,
+}
+
+/// A section or control a palette entry opens in the tools panel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RevealTarget {
+    pub(crate) module_id: String,
+    /// The control's declared path in its module and its key, or `None` for the section itself.
+    pub(crate) control: Option<(Vec<usize>, RevealKey)>,
+}
+
+/// The last reveal: its target, and the sequence its timeout names so an older timeout cannot
+/// clear a newer mark.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Revealed {
+    pub(crate) target: RevealTarget,
+    pub(crate) sequence: u64,
+    /// The tools panel has been scrolled to the target. It scrolls once, after the first derive
+    /// that draws the panel, so a reveal that has to show the panel scrolls when it appears.
+    pub(crate) scrolled: bool,
 }
 
 /// One of the two collapsible side panels, toggled from the title bar.
@@ -34,6 +60,9 @@ impl Panel {
 /// entry can reach nothing the panels and the title bar cannot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PaletteAction {
+    /// Open a section of the tools panel, collapsing the others, and mark it or one of its
+    /// controls. Expansion is this client's view state, as a click on a section header is.
+    Reveal(RevealTarget),
     /// A generated control action, with the control's own preset over the current field values.
     Run {
         action: String,
@@ -80,24 +109,40 @@ pub(crate) struct PaletteModel {
     pub(crate) selected: usize,
 }
 
-/// The palette for these inputs. Closed, it is empty: only the open palette's field, rows and keys
-/// read it, so a closed palette costs a message nothing.
-pub(crate) fn derive(inputs: &Inputs<'_>) -> PaletteModel {
+/// The palette for these inputs and the tools panel just derived from them. Closed, it is empty:
+/// only the open palette's field, rows and keys read it, so a closed palette costs a message
+/// nothing. `sections_shown` is false while Mask mode's panel has no mask open and so draws no
+/// section to reveal.
+pub(crate) fn derive(
+    inputs: &Inputs<'_>,
+    tools: &ToolsModel,
+    sections_shown: bool,
+) -> PaletteModel {
     if !inputs.palette.open {
         return PaletteModel::default();
     }
+    let mut raw = if sections_shown {
+        reveal_entries(
+            tools,
+            inputs.modules,
+            inputs.document.state.as_ref(),
+            inputs.target,
+        )
+    } else {
+        Vec::new()
+    };
     let applicable: Vec<_> = inputs
         .modules
         .iter()
         .filter(|module| crate::state::tools::applies(module, inputs.document.state.as_ref()))
         .cloned()
         .collect();
-    let mut raw = palette_entries(
+    raw.extend(palette_entries(
         &applicable,
         inputs.developer,
         inputs.document.state.as_ref(),
         inputs.target,
-    );
+    ));
     raw.extend(crate::state::presets::palette_entries(inputs));
     raw.extend(host_entries(inputs));
     let entries: Vec<PaletteEntry> = filter(raw, &inputs.palette.query)
@@ -246,19 +291,40 @@ fn toggle_label(shown: bool, subject: &str) -> String {
 }
 
 /// Every word of the query must match, case-insensitively, somewhere in the entry's label or
-/// detail, so a longer query narrows the list rather than widening it. Order is preserved.
+/// detail, so a longer query narrows the list rather than widening it. The matches are ranked so
+/// that opening a section or control comes before running anything: an entry whose whole label is
+/// the query first ("Undo", "Detail"), then sections, then controls, then every other entry whose
+/// label matches, then those that match only by their detail. Order is kept within a rank.
 fn filter(
     entries: Vec<(String, String, PaletteAction)>,
     query: &str,
 ) -> Vec<(String, String, PaletteAction)> {
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
-    entries
+    let whole = words.join(" ");
+    let mut ranked: Vec<_> = entries
         .into_iter()
-        .filter(|(label, detail, _)| {
-            let haystack = format!("{} {}", label.to_lowercase(), detail.to_lowercase());
-            words.iter().all(|word| haystack.contains(word.as_str()))
+        .filter_map(|entry| {
+            let label = entry.0.to_lowercase();
+            let haystack = format!("{label} {}", entry.1.to_lowercase());
+            if !words.iter().all(|word| haystack.contains(word.as_str())) {
+                return None;
+            }
+            let rank = if !whole.is_empty() && label == whole {
+                0
+            } else if !words.iter().all(|word| label.contains(word.as_str())) {
+                4
+            } else {
+                match &entry.2 {
+                    PaletteAction::Reveal(RevealTarget { control: None, .. }) => 1,
+                    PaletteAction::Reveal(_) => 2,
+                    _ => 3,
+                }
+            };
+            Some((rank, entry))
         })
-        .collect()
+        .collect();
+    ranked.sort_by_key(|(rank, _)| *rank);
+    ranked.into_iter().map(|(_, entry)| entry).collect()
 }
 
 #[cfg(test)]
@@ -312,6 +378,52 @@ mod tests {
             "every word must match, so a word from a different entry excludes it"
         );
         assert!(filter(entries, "crop nowhere").is_empty());
+    }
+
+    #[test]
+    fn an_exact_label_then_sections_then_controls_then_commands_then_detail_matches() {
+        let reveal = |module: &str, control: bool| {
+            PaletteAction::Reveal(RevealTarget {
+                module_id: module.to_owned(),
+                control: control.then(|| (vec![0], RevealKey::Group(vec![0]))),
+            })
+        };
+        let entry = |label: &str, detail: &str, action: PaletteAction| {
+            (label.to_owned(), detail.to_owned(), action)
+        };
+        let entries = vec![
+            entry("Basic · Tone", "group", reveal("basic", true)),
+            entry("Detail · Reset", "edit.reset-detail", PaletteAction::Fit),
+            entry("Detail · Amount", "edit.set-detail", reveal("detail", true)),
+            entry("Lens", "section", reveal("lens", false)),
+            entry("Sharpen", "edit.set-detail", PaletteAction::Fit),
+            entry("Detail", "section", reveal("detail", false)),
+            entry("Presence", "section", reveal("presence", false)),
+        ];
+        let labels = |query: &str| -> Vec<String> {
+            filter(entries.clone(), query)
+                .into_iter()
+                .map(|(label, ..)| label)
+                .collect()
+        };
+        assert_eq!(
+            labels("detail"),
+            ["Detail", "Detail · Amount", "Detail · Reset", "Sharpen"],
+            "the whole label first, then a control, a command and a detail-only match"
+        );
+        assert_eq!(
+            labels(""),
+            [
+                "Lens",
+                "Detail",
+                "Presence",
+                "Basic · Tone",
+                "Detail · Amount",
+                "Detail · Reset",
+                "Sharpen"
+            ],
+            "an empty query lists the sections first"
+        );
     }
 
     #[test]
