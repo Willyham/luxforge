@@ -74,7 +74,8 @@ Doctor reports missing tools and the graphics environment without installing any
 | How promptly a cancelled 24 MP render stops, in the transform pass and mid colour chunk, against its 25 ms bound, release only | `cargo test --release --locked -p luxforge-core --test cancellation -- --ignored --nocapture cancelled` |
 | Inspect a capture | `cargo xtask check-capture --image PNG [--orientation N]` |
 | How far one frame is from another over the photograph alone: mean, worst 16 × 16 block, p99 and signed mean ΔL\* in CIEDE2000, with the pointwise and spatial verdicts of the [GPU preview limits](../design/gpu-preview.md#the-preview-error-limit), as JSON. Two PNGs and the photograph's rectangle, or two frames of an evidence run, whose recorded rectangle it reads; `--class` makes a miss a failure. Nothing is launched | `cargo xtask preview-error --candidate PNG --reference PNG --photo-rect LEFT,TOP,RIGHT,BOTTOM [--class pointwise\|spatial] [--output NEW_FILE]`, or `--evidence DIR --candidate-frame N --reference-frame N` in place of the first three |
-| The GPU preview corpus, `fixtures/preview/corpus.json`: every source and recipe, each at Fit and 100%, checked against the committed descriptors, each source re-hashed on this host and each RAW entry resolved through the private RAW manifest. A source it could not check here makes the run incomplete (exit 3), never a pass | `cargo xtask preview-corpus [--manifest FILE] [--output NEW_FILE]` |
+| The GPU qualification corpus, `fixtures/preview/corpus.json`: every source and recipe, each at Fit, 33%, 50% and 100%, checked against the committed descriptors, each source re-hashed on this host and each RAW entry resolved through the private RAW manifest. A source it could not check here makes the run incomplete (exit 3), never a pass | `cargo xtask preview-corpus [--manifest FILE] [--output NEW_FILE]` |
+| The release gate of the GPU-first renderer ([image correctness](#image-correctness-exact-and-reference-buffers)): every stack of the corpus rendered on the reference renderer and on the GPU at Fit, 33%, 50% and 100%, each output kind the GPU renders held to its recorded limit ([GPU-first](../design/gpu-first.md#the-contract)). The picture is the GPU frame a drag draws at each view against the reference frame reduced to its size by an independent linear-light reduction (its visible region at 100%), with the CPU frame of the view, the drag-time comparison and, at Fit and below 100%, the process-first candidate for the picture at rest beside it; the histogram, samples and export are reported as not rendered by the GPU until their stages land. It builds the desktop crate's harness in release, launches no editor, re-hashes every source after the run and writes `report.json`, `summary.md` and the frames of every cell past a limit (`--frames all` for every cell). A cell past a limit fails it; a cell that could not run, a host without an adapter or a selection (`--zoom`, `--kind`, `--families`, `--recipes`, `--sources`) makes it incomplete (exit 3), never a pass | `cargo run --release --locked --package xtask -- gpu-qualification --output NEW_DIR [--manifest FILE] [--fixtures DIR] [--zoom fit\|33\|50\|100\|all] [--kind picture\|histogram\|sample\|export\|all] [--families F,...] [--recipes ID,...] [--sources ID,...] [--frames missed\|all]` |
 | The GPU colour programs on this host's device, each against its CPU unit over a dense synthetic grid by the pointwise limits and the finiteness rule, every shipped program against the photo surface's own prelude, the plan conversion, and the precision of the transcendentals the programs use. Without an adapter each device test prints that it was skipped | `cargo test -p luxforge-app gpu_colour -- --nocapture` |
 | The GPU Presence program on this host's device: every kernel against the CPU filter it transcribes on synthetic planes (box means at several run lengths, minima, both guided filters, the reductions, the upsample, the soft clip and the atmospheric light), every Presence combination against the CPU frame by the spatial limits, and the program against the photo surface's own spatial convention. Without an adapter each device test prints that it was skipped | `cargo test -p luxforge-app gpu_presence -- --nocapture` |
 | The GPU Presence program over the corpus's Presence recipes at Fit, by the spatial limits, with what each slot charges the GPU-preview budget ([performance](../specs/performance.md#gpu-presence-program)) | `LUXFORGE_GPU_CORPUS_OUTPUT=NEW_DIR LUXFORGE_GENERATED_FIXTURES=DIR [LUXFORGE_RAW_MANIFEST=FILE] cargo test -p luxforge-app gpu_presence_corpus -- --ignored --nocapture` |
@@ -172,6 +173,7 @@ timing run elsewhere on the host. Run each check where its answer can change wha
 | Change complete: code, tests and docs | `verify --tier quick`, once, before handing off. After a failure, fix it and rerun only what failed (the named test or the one scenario), then `quick` once more. |
 | Integration point | `rendered` for a change touching rendering or the UI; `timing` for a change under `crates/` that can affect cost. |
 | Milestone claim | `full`, with `--manifest`. |
+| Release | `gpu-qualification` with `--manifest`, the release gate: `rendered` and `full` run it after their scenarios. |
 
 Timing runs wait until feature work is complete: the `timing` tier, `editor-performance`,
 `editor-latency`, `detail-performance`, `detail-grid-performance`, `measure` and every `--samples 30` distribution. A figure taken
@@ -180,8 +182,33 @@ exception is work whose subject is performance (a budget, a regression, an optim
 measurement is the feedback: iterate with the one targeted command at its default sample count, and
 take the claimed distribution and the before/after once, at the end.
 
+While changing what the GPU draws, iterate on `gpu-qualification` with a selection (`--families`,
+`--recipes`, `--sources`, `--zoom`) of the stacks the change touches; a selection is incomplete, never
+the gate's pass, and the gate itself runs once, with `--manifest`, on the integrated branch.
+
 When work is split across agents, each agent runs targeted tests while working and `quick` at
 hand-off; the integrator runs `rendered`, `timing` and `full` once, on the integrated branch.
+
+### Image correctness: exact and reference buffers
+
+The GPU is the renderer of record and the CPU's `luxforge_core::render` is the reference renderer
+([GPU-first](../design/gpu-first.md)), so a claim about pixels rests on one of two kinds of test:
+
+- **Exact-buffer tests** hold the reference renderer, and every CPU path that still supplies an
+  output (the proxy, region and point paths, the histogram, export), to frozen fixtures and to the
+  independent `f64` references in `luxforge-reference`, byte for byte or within the precision that
+  crate declares. They are ordinary tests, so `check` and hosted CI run them.
+- **Reference-buffer tests** hold what the GPU renders to what the reference renderer computes,
+  within a declared tolerance: each program against its CPU unit on synthetic grids and against the
+  CPU frame it stands in for on the corpus (the `gpu_*` tests in the commands above), which is what
+  enables a program, and every corpus stack at every view against the reference frame at the view's
+  size through `gpu-qualification`, the release gate, by its output kind's tolerance
+  (`luxforge_reference::tolerance`). Bit identity is never asked of the GPU: on one machine and
+  driver its frames are identical frame to frame, and across machines the last digit may differ.
+
+A kind the GPU does not render yet is reported as such by the gate, neither a pass nor a failure,
+and the reference renderer's exact-buffer tests stand for it. A host without a GPU adapter proves no
+tolerance: each `gpu_*` test prints that it was skipped and the gate is incomplete.
 
 ### Test and debug builds
 
@@ -312,7 +339,7 @@ it; the tiers above `quick` run the whole `check` in place of its quick subset:
 | Tier | What it runs |
 | --- | --- |
 | `quick` | `check --quick`: every check and test but the [slow tests](#how-check-runs-the-tests) and the doctests. It builds nothing in release and launches no editor |
-| `rendered` | the whole `check`, `editor-acceptance` and every checkout smoke scenario, including `detail`, `detail-fit`, `detail-zoom`, `zoom`, `presets`, `export`, `settings`, `gallery`, `controls`, `capabilities`, `performance`, `curve`, `lens-perspective`, the three viewport scenarios and the six `mask-*` ones, through a bounded pool |
+| `rendered` | the whole `check`, `editor-acceptance` and every checkout smoke scenario, including `detail`, `detail-fit`, `detail-zoom`, `zoom`, `presets`, `export`, `settings`, `gallery`, `controls`, `capabilities`, `performance`, `curve`, `lens-perspective`, the three viewport scenarios and the six `mask-*` ones, through a bounded pool, then `gpu-qualification`, the release gate, alone, given `--manifest` when the run has one |
 | `timing` | the whole `check`, `editor-acceptance`, then `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
 | `full` | rendered plus timing plus `hardening`, plus, with `--manifest FILE`, a `smoke --scenario raw-editor` run per manifest source (`raw-editor-<id>`), the owner-supplied authentic RAW tests via `raw-authentic`, a `smoke --scenario raw-panel` run and a `smoke --scenario raw-detail` run per manifest source and one `smoke --scenario performance` run over the first manifest source |
 
@@ -326,8 +353,9 @@ scenario would refuse is refused before anything runs. `raw-authentic` runs the
 `luxforge-cli`'s `json_cli` (the ones that need only `LUXFORGE_RAW_OWNER_DIR`, not `real_files`'s
 separate CC0-fixture test) with that variable pointed at the directory the manifest's own sources live in.
 
-A skip is never a pass: a tier with any component `skipped` or `not_run`, and nothing failed
-outright, is `incomplete` rather than `passed`, naming which components and why in the headline and
+A skip is never a pass: a tier with any component `skipped`, `incomplete` (it ran and exited with the
+incomplete code, as the release gate does without a source it lists or an adapter) or `not_run`, and
+nothing failed outright, is `incomplete` rather than `passed`, naming which components and why in the headline and
 in `summary.json`'s `incomplete` list, and its process exits with its own code (currently `3`),
 distinct from `0` (passed) and the ordinary-failure exit code a real component failure uses.
 
@@ -337,7 +365,7 @@ and its own evidence in `<out>/<component>/run/`. `--binary PATH` is forwarded t
 that takes one; without it the executable just built is passed explicitly, so every component
 measures the same file. The rendered and timing tiers run `generate-fixtures` first when any
 generated fixture — 24 MP, 60 MP, hue-wheel, presence, range or tone-ramp — is missing. A component that has
-stopped making progress is killed after twenty minutes and recorded as `timed_out`. `quick` builds
+stopped making progress is killed after twenty minutes, the release gate after three hours, and recorded as `timed_out`. `quick` builds
 nothing up front: its one component, `check --quick`, builds what it tests, runs as a child of the
 `xtask` executable running `verify`, and its summary names no editor binary.
 
@@ -1265,7 +1293,7 @@ Rules for any UI or image check:
 1. Read the applicable spec and task, including any owner-decision gates.
 2. Run `doctor` once in a new checkout or worktree.
 3. While implementing, run the tests for the code you are changing and nothing whole-suite or timed, as [when to verify](#when-to-verify) sets out.
-4. When the change is complete, run `verify --tier quick` once. For UI or image changes, also run the smoke scenarios the change touches or the `rendered` tier, and inspect the captures as images.
+4. When the change is complete, run `verify --tier quick` once. For UI or image changes, also run the smoke scenarios the change touches or the `rendered` tier, and inspect the captures as images; for a change to what the GPU draws, run `gpu-qualification` over the stacks it touches.
    On macOS, use the background harness or `develop --background` for every automated GUI launch; use the live API and renderer readbacks to drive and inspect it. Only perform foreground interaction checks when the owner explicitly requests them.
 5. For changes under `crates/`, answer the [performance rules](performance-rules.md) checklist and, once the feature is complete, run `editor-performance` on a generated 24 MP input in release, or the `timing` tier.
 6. Report exact commands, artifact paths, results and unsupported cases. Update task and feature status only when acceptance is met.
@@ -1276,7 +1304,7 @@ Rules for any UI or image check:
 
 ## CI
 
-`.github/workflows/check.yml` runs the whole `cargo xtask check` (slow tests, doctests and the golden-fixture test included) and `editor-acceptance` in release, an optimized build and packaging on macOS arm64 and Ubuntu x64 with seven-day artifact retention, plus a separate dependency-policy job. Windows CI is disabled; Windows support will come later. Linux additionally runs eight smoke scenarios (`empty` through `large60`, the first eight of `smoke --list`) against the packaged binary under Xvfb with software Vulkan and records runtime imports. The list is written out in the workflow because `smoke --list` says which scenarios need a supplied RAW but not which run on software Vulkan; the other scenarios are not run in CI. Hosted results are compilation and functional evidence, never native desktop or GPU acceptance. Inspect actual run results for the tested commit; a configured step is not a passing result. Fresh hosted verification of the current tree and manual Windows/Linux desktop checks are open items on the [roadmap](../plan.md).
+`.github/workflows/check.yml` runs the whole `cargo xtask check` (slow tests, doctests and the golden-fixture test included) and `editor-acceptance` in release, an optimized build and packaging on macOS arm64 and Ubuntu x64 with seven-day artifact retention, plus a separate dependency-policy job. Windows CI is disabled; Windows support will come later. Linux additionally runs eight smoke scenarios (`empty` through `large60`, the first eight of `smoke --list`) against the packaged binary under Xvfb with software Vulkan and records runtime imports. The list is written out in the workflow because `smoke --list` says which scenarios need a supplied RAW but not which run on software Vulkan; the other scenarios are not run in CI. Hosted results are compilation and functional evidence, never native desktop or GPU acceptance: CI runs the reference renderer's own tests through `check`, and the release gate, which needs a native GPU, runs on the owner's machines. Inspect actual run results for the tested commit; a configured step is not a passing result. Fresh hosted verification of the current tree and manual Windows/Linux desktop checks are open items on the [roadmap](../plan.md).
 
 ### Lens edge annotations
 
