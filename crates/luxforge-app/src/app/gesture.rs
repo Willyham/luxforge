@@ -736,8 +736,8 @@ impl Editor {
             return self.draft_set(result);
         }
         let preview = previews.then(|| (asset, self.proxy_bounds()));
-        // The GPU preview is planned with the tick's job at Fit and at 100% or more, where the
-        // surface draws it.
+        // The GPU preview is planned with the tick's job at every zoom: a whole frame at the job's
+        // bounds at Fit and below 100%, the visible region at 100% or more.
         let gpu = self.gpu_ask();
         let result = tasks::draft_set_now(&self.owner, self.client, draft_id, fields, preview, gpu);
         self.draft_set(result)

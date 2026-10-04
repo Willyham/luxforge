@@ -82,7 +82,7 @@ struct Class {
 /// the reasons that pass within a tick or two (`boundary-pending`, `boundary-uploading`,
 /// `boundary-released` and `surface-pending`), the preference turned off (`preference-off`), and
 /// the two the table does not name (`unchanged` and `unplannable`).
-const CLASSES: [Class; 6] = [
+const CLASSES: [Class; 5] = [
     Class {
         codes: &["budget-exceeded", "texture-limit", "buffer-limit"],
         phrase: "GPU memory full",
@@ -96,13 +96,6 @@ const CLASSES: [Class; 6] = [
         phrase: "GPU preview unavailable",
         tooltip: "The GPU preview cannot run on this graphics device, so previews are drawn on \
                   the CPU.",
-        say: Say::Lasting,
-    },
-    Class {
-        codes: &["not-fit"],
-        phrase: "GPU preview at Fit and 100%+",
-        tooltip: "The GPU preview draws at Fit and at 100% or more; at this zoom the preview is \
-                  drawn on the CPU.",
         say: Say::Lasting,
     },
     Class {
@@ -566,7 +559,7 @@ mod tests {
     /// of its codes the drag recorded.
     #[test]
     fn each_class_of_reason_says_its_phrase_and_tooltip() {
-        let classes: [(&[&str], &str, &str); 4] = [
+        let classes: [(&[&str], &str, &str); 3] = [
             (
                 &["budget-exceeded", "texture-limit", "buffer-limit"],
                 "GPU memory full",
@@ -579,12 +572,6 @@ mod tests {
                 "GPU preview unavailable",
                 "The GPU preview cannot run on this graphics device, so previews are drawn on \
                  the CPU.",
-            ),
-            (
-                &["not-fit"],
-                "GPU preview at Fit and 100%+",
-                "The GPU preview draws at Fit and at 100% or more; at this zoom the preview is \
-                 drawn on the CPU.",
             ),
             (
                 &["region-estimate", "window-estimate"],
@@ -696,7 +683,11 @@ mod tests {
             );
         }
         // The delay is `compiling`'s alone: another reason says itself at once.
-        assert!(reason("not-fit", None, Some(ms(0))).notice().is_some());
+        assert!(
+            reason("budget-exceeded", None, Some(ms(0)))
+                .notice()
+                .is_some()
+        );
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //! and the notice clears at the next GPU tick and when the gesture's settle ends.
 use super::{
     gpu_preview::SurfaceReport,
-    gpu_preview_tests::{catalog, commit, deliver_until, surface_ready, zoomed},
+    gpu_preview_tests::{catalog, commit, deliver_until, surface_ready, zoomed, zoomed_out},
     message::{draft::DraftMessage, preview::PreviewMessage, view::ViewMessage},
     testing::{finish, let_go, real_photo, run_commit, slide},
     *,
@@ -22,11 +22,6 @@ const MEMORY: (&str, &str) = (
     "GPU memory full",
     "This many layers at this zoom need more than the GPU preview holds, so the preview is drawn \
      on the CPU, which is slower. Fewer masked Presence or Detail layers, or Fit, draw on the GPU.",
-);
-const ZOOM: (&str, &str) = (
-    "GPU preview at Fit and 100%+",
-    "The GPU preview draws at Fit and at 100% or more; at this zoom the preview is drawn on the \
-     CPU.",
 );
 const STACK: (&str, &str) = (
     "Not on the GPU: Perspective",
@@ -113,28 +108,29 @@ fn gpu_preview_the_notice_says_a_slot_over_the_budget_is_memory() {
     finish(editor, catalog);
 }
 
-/// A percentage zoom below 100% plans no GPU preview and names `not-fit`: the notice says the
-/// zoom, from the first tick, and keeps saying it through the release until the frame that replaces
-/// the drafted one is presented, which is when the drag, and the gesture's settle, end.
+/// A reason that lasts is said from the first tick that names it, and kept through the release
+/// until the frame that replaces the drafted one is presented, which is when the drag, and the
+/// gesture's settle, end: here a Fit drag whose slot, at the exact stage the photograph is drawn
+/// at, a test budget refuses.
 #[test]
-fn gpu_preview_the_notice_says_a_zoom_below_100_and_clears_when_the_settle_ends() {
-    let catalog = catalog("notice-zoom");
+fn gpu_preview_the_notice_says_a_lasting_reason_and_clears_when_the_settle_ends() {
+    let catalog = catalog("notice-settle");
     let (mut editor, _, _) = real_photo(&catalog);
     deliver_until(&mut editor, "the first frame", |editor| {
         editor.presentation.dimensions.is_some() && !editor.presentation.queue.is_busy()
     });
     assert_eq!(editor.gpu_plan_fallback(), None, "no gesture, no notice");
-    editor.session.preview.view.zoom = luxforge_core::Zoom::Percent { value: 50.0 };
+    editor.gpu.budget = Some(1);
     for value in [0.1, 0.2] {
         let _ = slide(&mut editor, ACTION, FIELD, value);
-        assert_says(&editor, "not-fit", Some(ZOOM));
+        assert_says(&editor, "budget-exceeded", Some(MEMORY));
     }
     // The release commits on the CPU; the drag stays until the committed frame is presented, and
     // the notice stays with it.
     let _ = let_go(&mut editor, ACTION, FIELD);
     assert!(run_commit(&mut editor));
     assert!(editor.gpu.has_drag(), "settling");
-    assert_says(&editor, "not-fit", Some(ZOOM));
+    assert_says(&editor, "budget-exceeded", Some(MEMORY));
     deliver_until(&mut editor, "the committed frame", |editor| {
         !editor.gpu.has_drag()
     });
@@ -173,6 +169,46 @@ fn gpu_preview_the_notice_says_nothing_while_a_boundary_comes() {
     finish(editor, catalog);
 }
 
+/// Below 100% a drag is drawn on the GPU from the displayed-size proxy as at Fit, so the zoom has
+/// no reason of its own: the first tick's `boundary-pending` passes, the ticks after it are drawn on
+/// the GPU, and nothing is said through the release until the settle ends.
+#[test]
+fn gpu_preview_the_notice_says_nothing_of_a_zoom_below_100() {
+    for value in [50.0, 33.0] {
+        let catalog = catalog(&format!("notice-below-{value}"));
+        let (mut editor, _, _) = real_photo(&catalog);
+        editor.gpu.surface = Some(SurfaceReport::default());
+        zoomed_out(&mut editor, value);
+        let _ = slide(&mut editor, ACTION, FIELD, 0.1);
+        assert_says(&editor, "boundary-pending", None);
+        deliver_until(&mut editor, "the boundary", |editor| {
+            editor.gpu.holds_boundary()
+        });
+        surface_ready(&mut editor);
+        for tick in [0.2, 0.3] {
+            let _ = slide(&mut editor, ACTION, FIELD, tick);
+            assert_eq!(latest_reason(&editor), Value::Null, "{value}%: on the GPU");
+            assert_eq!(editor.gpu_plan_fallback(), None, "{value}%");
+            assert_eq!(editor.workspace.status.fallback, None, "{value}%");
+            let snapshot = editor.snapshot();
+            assert_eq!(snapshot["status_bar"]["fallback"], Value::Null, "{value}%");
+            assert_eq!(
+                snapshot["surface"]["gpu"]["fallback_notice"],
+                Value::Null,
+                "{value}%"
+            );
+        }
+        let _ = let_go(&mut editor, ACTION, FIELD);
+        assert!(run_commit(&mut editor));
+        assert_eq!(editor.workspace.status.fallback, None, "{value}%: settling");
+        deliver_until(&mut editor, "the committed frame", |editor| {
+            !editor.gpu.has_drag()
+        });
+        assert_eq!(editor.workspace.status.fallback, None, "{value}%");
+        finish(editor, catalog);
+    }
+}
+
 /// With the preference off the desktop hands no plan and the evidence names `preference-off`: the
 /// person chose the CPU path, so nothing is said, mid-gesture or between gestures.
 #[test]
@@ -189,17 +225,18 @@ fn gpu_preview_the_notice_says_nothing_with_the_preference_off() {
         let _ = slide(&mut editor, ACTION, FIELD, value);
         assert_says(&editor, "preference-off", None);
     }
-    // At a zoom that would say its own reason, the preference still says nothing.
-    editor.session.preview.view.zoom = luxforge_core::Zoom::Percent { value: 50.0 };
+    // Where the drag would say its own reason, a slot over the budget, the preference still says
+    // nothing.
+    editor.gpu.budget = Some(1);
     let _ = slide(&mut editor, ACTION, FIELD, 0.3);
     assert_says(&editor, "preference-off", None);
-    // Turned back on, the next tick says the zoom again.
+    // Turned back on, the next tick says the budget.
     let mut session = editor.session.clone();
     session.revision += 1;
     session.workspace.gpu_preview = true;
     let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
     let _ = slide(&mut editor, ACTION, FIELD, 0.4);
-    assert_says(&editor, "not-fit", Some(ZOOM));
+    assert_says(&editor, "budget-exceeded", Some(MEMORY));
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     finish(editor, catalog);
 }
@@ -219,9 +256,9 @@ fn gpu_preview_the_notice_names_the_layer_the_stack_cannot_draw() {
     }
     // Another gesture over the same stack names its own reason, and the layer goes with the last.
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
-    editor.session.preview.view.zoom = luxforge_core::Zoom::Percent { value: 50.0 };
+    editor.gpu.budget = Some(1);
     let _ = slide(&mut editor, ACTION, FIELD, 0.1);
-    assert_says(&editor, "not-fit", Some(ZOOM));
+    assert_says(&editor, "budget-exceeded", Some(MEMORY));
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     finish(editor, catalog);
 }

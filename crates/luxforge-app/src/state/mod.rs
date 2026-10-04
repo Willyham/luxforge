@@ -2617,7 +2617,7 @@ mod tests {
         // the next GPU frame on screen clears it.
         let mut inputs = scene.inputs();
         inputs.cpu_reason = Some(status::CpuReason {
-            code: "not-fit",
+            code: "budget-exceeded",
             layer: None,
             compiling_for: None,
         });
@@ -2628,7 +2628,7 @@ mod tests {
                 .fallback
                 .as_ref()
                 .map(|n| n.phrase.as_str()),
-            Some("GPU preview at Fit and 100%+")
+            Some("GPU memory full")
         );
         assert_eq!(
             workspace.status.render, "Exact render \u{b7} 41 ms",
