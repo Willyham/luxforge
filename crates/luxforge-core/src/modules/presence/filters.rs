@@ -30,7 +30,10 @@
 //! Every plane below carries the frame it belongs to and the sub-rectangle it actually holds.
 //! Reads clamp to the frame, exactly as the host's [`Planes::sample`](crate::modules::Planes) does,
 //! and a read whose clamped coordinate is outside the held rectangle is a halo bug that panics in a
-//! debug build and is caught by the slice bounds otherwise.
+//! debug build and is caught by the slice bounds otherwise. A pass reads the columns where no tap
+//! clamps from row slices ([`Plane::row`], [`Plane::span`]), cutting each row at the frame edges
+//! once, and reads the columns within its reach of a frame edge through the clamped
+//! [`Plane::get`]; both read the same values, so the cut changes no result.
 
 use crate::{
     Error,
@@ -52,6 +55,10 @@ const MAX_SCALE_LONG_SIDE: u32 = 10_000;
 
 /// How many columns one vertical pass carries accumulators for at a time.
 const STRIP: usize = 64;
+
+/// How many rows one horizontal pass runs together. Each row keeps its own running sum, so the
+/// rows' dependent add chains overlap rather than each waiting on its own previous add.
+const ROWS: usize = 4;
 
 /// The frozen radius scaling rule: a radius quoted at [`REFERENCE_LONG_SIDE`] scales with the
 /// stage's long side (capped at [`MAX_SCALE_LONG_SIDE`]), rounded to an integer with a minimum
@@ -288,6 +295,12 @@ impl Geometry {
         );
         ((y - self.rect.y0) * self.rect.width() + (x - self.rect.x0)) as usize
     }
+
+    /// Where frame column `x` sits in a held row. Not clamped: a pass asks only for columns inside
+    /// the frame, and one outside the held rectangle fails the slice bounds.
+    fn column(self, x: i64) -> usize {
+        (x - self.rect.x0) as usize
+    }
 }
 
 /// One scalar plane of a frame, holding only its rectangle of it.
@@ -307,6 +320,31 @@ impl<'a> Plane<'a> {
     pub(super) fn get(&self, x: i64, y: i64) -> f32 {
         let (x, y) = self.geometry.clamp(x, y);
         self.data[self.geometry.index(x, y)]
+    }
+
+    /// The held row at frame row `y`, clamped to the frame as [`Self::get`] clamps it; its first
+    /// value is the rectangle's `x0`, so frame column `x` is at `x - x0`. A row outside the held
+    /// rectangle after clamping is a halo bug, which panics.
+    #[inline]
+    pub(super) fn row(&self, y: i64) -> &'a [f32] {
+        let y = y.clamp(0, self.geometry.height - 1);
+        let rect = self.geometry.rect;
+        debug_assert!(
+            y >= rect.y0 && y < rect.y1,
+            "a presence read of row {y} is outside the {rect:?} the plane holds: the declared halo \
+             is too small"
+        );
+        let width = rect.width() as usize;
+        let start = (y - rect.y0) as usize * width;
+        &self.data[start..start + width]
+    }
+
+    /// Frame columns `x0..x1` of row `y`: the row clamped as [`Self::row`] clamps it, the columns
+    /// not, so they must lie inside the frame, where clamping changes nothing, and inside the held
+    /// rectangle, or the slice bounds panic.
+    #[inline]
+    pub(super) fn span(&self, y: i64, x0: i64, x1: i64) -> &'a [f32] {
+        &self.row(y)[self.geometry.column(x0)..self.geometry.column(x1)]
     }
 }
 
@@ -346,9 +384,18 @@ impl<'a> PlaneMut<'a> {
         self.geometry
     }
 
+    /// Only the frozen reference passes write one value at a time.
+    #[cfg(test)]
     pub(super) fn set(&mut self, x: i64, y: i64, value: f32) {
         let index = self.geometry.index(x, y);
         self.data[index] = value;
+    }
+
+    /// Every value of the rectangle, row-major: the frozen reference's pooled vertical pass cuts
+    /// its strips from them.
+    #[cfg(test)]
+    pub(super) fn values_mut(&mut self) -> &mut [f32] {
+        self.data
     }
 
     pub(super) fn as_plane(&self) -> Plane<'_> {
@@ -421,52 +468,178 @@ pub(super) fn for_rows_of<const N: usize>(
 // ---------------------------------------------------------------------------------------------
 
 /// The horizontal mean over `2r + 1` columns, as a running `f64` sum along each row seeded by a
-/// direct sum at the row's first column.
-fn horizontal_mean(src: &Plane<'_>, r: i64, dst: &mut PlaneMut<'_>, parallelism: Parallelism) {
+/// direct sum at the row's first column. [`ROWS`] rows run together, each with its own sum taking
+/// its own values in the same order, so the rows' add chains overlap and no value changes.
+pub(super) fn horizontal_mean(
+    src: &Plane<'_>,
+    r: i64,
+    dst: &mut PlaneMut<'_>,
+    parallelism: Parallelism,
+) {
     let out = dst.rect();
     if out.is_empty() {
         return;
     }
-    let n = (2 * r + 1) as f64;
-    dst.for_rows(parallelism, |y, row| {
-        let mut sum = 0.0_f64;
-        for dx in -r..=r {
-            sum += f64::from(src.get(out.x0 + dx, y));
+    let pass = Horizontal::new(src, r, out);
+    let width = out.width() as usize;
+    let group = |(index, block): (usize, &mut [f32])| {
+        let y = out.y0 + (index * ROWS) as i64;
+        let mut rows = block.chunks_exact_mut(width);
+        if rows.len() == ROWS {
+            pass.rows::<ROWS>(
+                std::array::from_fn(|k| y + k as i64),
+                std::array::from_fn(|_| rows.next().expect("a row of the group")),
+            );
+        } else {
+            for (k, row) in rows.enumerate() {
+                pass.rows::<1>([y + k as i64], [row]);
+            }
         }
-        row[0] = (sum / n) as f32;
-        for x in (out.x0 + 1)..out.x1 {
-            sum += f64::from(src.get(x + r, y)) - f64::from(src.get(x - 1 - r, y));
-            row[(x - out.x0) as usize] = (sum / n) as f32;
+    };
+    let data = &mut dst.data[..out.pixels()];
+    match parallelism {
+        Parallelism::Pool => data
+            .par_chunks_mut(ROWS * width)
+            .enumerate()
+            .for_each(group),
+        Parallelism::Serial => data.chunks_mut(ROWS * width).enumerate().for_each(group),
+    }
+}
+
+/// One horizontal mean's rows, cut at the frame edges once for every row. Column `x` of the output
+/// is the running sum's step that adds column `x + r` and drops column `x - 1 - r`, after a seed
+/// that sums columns `out.x0 - r ..= out.x0 + r` directly.
+struct Horizontal<'p, 'a> {
+    src: &'p Plane<'a>,
+    r: i64,
+    n: f64,
+    out: Rect,
+    /// The seed's columns left of the frame, inside it and right of it.
+    seed: [std::ops::Range<i64>; 3],
+    /// The steps (output columns after the first) before, between and after the columns where
+    /// both of a step's columns lie inside the frame.
+    steps: [std::ops::Range<i64>; 3],
+}
+
+impl<'p, 'a> Horizontal<'p, 'a> {
+    fn new(src: &'p Plane<'a>, r: i64, out: Rect) -> Self {
+        let width = src.geometry.width;
+        let (seed_start, seed_end) = (out.x0 - r, out.x0 + r + 1);
+        let seed_inside = 0.clamp(seed_start, seed_end);
+        let seed_right = width.clamp(seed_inside, seed_end);
+        let first = out.x0 + 1;
+        let inside = (r + 1).clamp(first, out.x1);
+        let after = (width - r).clamp(inside, out.x1);
+        Self {
+            src,
+            r,
+            n: (2 * r + 1) as f64,
+            out,
+            seed: [
+                seed_start..seed_inside,
+                seed_inside..seed_right,
+                seed_right..seed_end,
+            ],
+            steps: [first..inside, inside..after, after..out.x1],
         }
-    });
+    }
+
+    /// `K` rows at frame rows `ys`, written to `rows`, which start at `out.x0`. Each row's sum is
+    /// `0.0` plus each seed column in order, then `+ (entering - leaving)` per step, exactly as one
+    /// row alone; the columns where a read clamps go through [`Plane::get`], the rest read the row.
+    fn rows<const K: usize>(&self, ys: [i64; K], mut rows: [&mut [f32]; K]) {
+        let (src, r, n, out) = (self.src, self.r, self.n, self.out);
+        let lines = ys.map(|y| src.row(y));
+        let [left, inside, right] = &self.seed;
+        let mut sums = [0.0_f64; K];
+        for k in 0..K {
+            let sum = &mut sums[k];
+            for x in left.clone() {
+                *sum += f64::from(src.get(x, ys[k]));
+            }
+            let columns = src.geometry.column(inside.start)..src.geometry.column(inside.end);
+            for value in &lines[k][columns] {
+                *sum += f64::from(*value);
+            }
+            for x in right.clone() {
+                *sum += f64::from(src.get(x, ys[k]));
+            }
+            rows[k][0] = (*sum / n) as f32;
+        }
+
+        let [before, inside, after] = &self.steps;
+        let edge = |x: i64, sums: &mut [f64; K], rows: &mut [&mut [f32]; K]| {
+            for k in 0..K {
+                sums[k] += f64::from(src.get(x + r, ys[k])) - f64::from(src.get(x - 1 - r, ys[k]));
+                rows[k][(x - out.x0) as usize] = (sums[k] / n) as f32;
+            }
+        };
+        for x in before.clone() {
+            edge(x, &mut sums, &mut rows);
+        }
+        let len = (inside.end - inside.start).max(0) as usize;
+        if len > 0 {
+            let entering = src.geometry.column(inside.start + r);
+            let leaving = src.geometry.column(inside.start - 1 - r);
+            let entering = lines.map(|line| &line[entering..][..len]);
+            let leaving = lines.map(|line| &line[leaving..][..len]);
+            let first = (inside.start - out.x0) as usize;
+            let written = rows.each_mut().map(|row| &mut row[first..][..len]);
+            for i in 0..len {
+                for k in 0..K {
+                    sums[k] += f64::from(entering[k][i]) - f64::from(leaving[k][i]);
+                    written[k][i] = (sums[k] / n) as f32;
+                }
+            }
+        }
+        for x in after.clone() {
+            edge(x, &mut sums, &mut rows);
+        }
+    }
 }
 
 /// The vertical mean over `2r + 1` rows, in strips of [`STRIP`] columns so the reads run along rows
 /// rather than down columns. One `f64` accumulator per column. The strips are independent, so under
 /// [`Parallelism::Pool`] they run on the pool, each writing its own columns of every row.
-fn vertical_mean(src: &Plane<'_>, r: i64, dst: &mut PlaneMut<'_>, parallelism: Parallelism) {
+pub(super) fn vertical_mean(
+    src: &Plane<'_>,
+    r: i64,
+    dst: &mut PlaneMut<'_>,
+    parallelism: Parallelism,
+) {
     let out = dst.rect();
     if out.is_empty() {
         return;
     }
+    // Only the rows clamp: every column read is an output column, which no clamp moves.
+    assert!(
+        out.x0 >= 0 && out.x1 <= src.geometry.width,
+        "a vertical mean's columns {}..{} lie inside the frame",
+        out.x0,
+        out.x1
+    );
+    let n = (2 * r + 1) as f64;
+    let width = out.width() as usize;
+    let data = &mut dst.data[..out.pixels()];
     match parallelism {
         Parallelism::Serial => {
             let mut x0 = out.x0;
             while x0 < out.x1 {
                 let columns = ((out.x1 - x0) as usize).min(STRIP);
-                vertical_strip(src, r, out, x0, columns, |row, column, value| {
-                    dst.set(x0 + column as i64, out.y0 + row as i64, value);
+                let first = (x0 - out.x0) as usize;
+                vertical_strip(src, r, out, x0, columns, |row, sums| {
+                    let start = row * width + first;
+                    store(&mut data[start..start + columns], sums, n);
                 });
                 x0 += columns as i64;
             }
         }
         Parallelism::Pool => {
             // Each strip's own segment of every row, so the strips can be written concurrently.
-            let width = out.width() as usize;
             let mut strips: Vec<Vec<&mut [f32]>> = (0..width.div_ceil(STRIP))
                 .map(|_| Vec::with_capacity(out.height() as usize))
                 .collect();
-            for row in dst.data[..out.pixels()].chunks_mut(width) {
+            for row in data.chunks_mut(width) {
                 for (strip, segment) in row.chunks_mut(STRIP).enumerate() {
                     strips[strip].push(segment);
                 }
@@ -477,8 +650,8 @@ fn vertical_mean(src: &Plane<'_>, r: i64, dst: &mut PlaneMut<'_>, parallelism: P
                 .for_each(|(strip, segments)| {
                     let columns = segments[0].len();
                     let x0 = out.x0 + (strip * STRIP) as i64;
-                    vertical_strip(src, r, out, x0, columns, |row, column, value| {
-                        segments[row][column] = value;
+                    vertical_strip(src, r, out, x0, columns, |row, sums| {
+                        store(segments[row], sums, n);
                     });
                 });
         }
@@ -486,34 +659,41 @@ fn vertical_mean(src: &Plane<'_>, r: i64, dst: &mut PlaneMut<'_>, parallelism: P
 }
 
 /// One strip of the vertical mean: `columns` columns from `x0`, over every row of `out`, each with
-/// its own `f64` running sum seeded by a direct sum at the rectangle's first row. `write` places
-/// the value of a row (counted from `out.y0`) and column (counted from `x0`).
+/// its own `f64` running sum seeded by a direct sum at the rectangle's first row. `emit` receives
+/// each row's sums (the row counted from `out.y0`). Each read is a row clamped to the frame, read
+/// across the strip as one slice, so the independent column sums vectorize; the strip's columns lie
+/// inside `out` and so inside the frame, where clamping changes nothing.
 fn vertical_strip(
     src: &Plane<'_>,
     r: i64,
     out: Rect,
     x0: i64,
     columns: usize,
-    mut write: impl FnMut(usize, usize, f32),
+    mut emit: impl FnMut(usize, &[f64]),
 ) {
-    let n = (2 * r + 1) as f64;
+    let x1 = x0 + columns as i64;
     let mut accumulator = [0.0_f64; STRIP];
+    let sums = &mut accumulator[..columns];
     for dy in -r..=r {
-        for (column, slot) in accumulator.iter_mut().take(columns).enumerate() {
-            *slot += f64::from(src.get(x0 + column as i64, out.y0 + dy));
+        for (sum, value) in sums.iter_mut().zip(src.span(out.y0 + dy, x0, x1)) {
+            *sum += f64::from(*value);
         }
     }
-    for (column, slot) in accumulator.iter().take(columns).enumerate() {
-        write(0, column, (*slot / n) as f32);
-    }
+    emit(0, sums);
     for (row, y) in ((out.y0 + 1)..out.y1).enumerate() {
-        for (column, slot) in accumulator.iter_mut().take(columns).enumerate() {
-            let x = x0 + column as i64;
-            *slot += f64::from(src.get(x, y + r)) - f64::from(src.get(x, y - 1 - r));
+        let entering = src.span(y + r, x0, x1);
+        let leaving = src.span(y - 1 - r, x0, x1);
+        for ((sum, entering), leaving) in sums.iter_mut().zip(entering).zip(leaving) {
+            *sum += f64::from(*entering) - f64::from(*leaving);
         }
-        for (column, slot) in accumulator.iter().take(columns).enumerate() {
-            write(row + 1, column, (*slot / n) as f32);
-        }
+        emit(row + 1, sums);
+    }
+}
+
+/// A row of a mean's sums divided by the window's size into its values.
+fn store(values: &mut [f32], sums: &[f64], n: f64) {
+    for (value, sum) in values.iter_mut().zip(sums) {
+        *value = (*sum / n) as f32;
     }
 }
 
