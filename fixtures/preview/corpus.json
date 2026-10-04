@@ -1,8 +1,10 @@
 {
   "format": 1,
-  "scope": "The qualification corpus the GPU preview error limits are judged on (docs/design/gpu-preview.md, The preview error limit): every source, every recipe over the sources it applies to, each at Fit and at 100%. A source carries its SHA-256, resolved by `cargo xtask preview-corpus`, or an explicit gap. A RAW source is named by its id in the private RAW manifest (`--manifest FILE`), which holds the file's path and the hash this file repeats. A recipe is a list of evidence-script steps, run after the source opens and before the view step; its class says which limits it is held to. This file lists what to measure; it records no measurement.",
+  "scope": "The qualification corpus the tolerance of the GPU against the reference renderer is judged on (docs/design/gpu-first.md, The contract; docs/design/gpu-preview.md, The preview error limit): every source, every recipe over the sources it applies to, each at Fit, 33%, 50% and 100%. A source carries its SHA-256, resolved by `cargo xtask preview-corpus`, or an explicit gap. A RAW source is named by its id in the private RAW manifest (`--manifest FILE`), which holds the file's path and the hash this file repeats. A recipe is a list of evidence-script steps, run after the source opens and before the view step; its class says which limits it is held to. This file lists what to measure; it records no measurement.",
   "views": [
     {"id": "fit", "step": {"view": {"zoom": "fit"}}},
+    {"id": "33%", "step": {"view": {"zoom": 33}}},
+    {"id": "50%", "step": {"view": {"zoom": 50}}},
     {"id": "100%", "step": {"view": {"zoom": 100}}}
   ],
   "sources": [
