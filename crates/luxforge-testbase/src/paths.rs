@@ -47,3 +47,21 @@ pub fn temp_dir(name: &str) -> PathBuf {
 pub fn temp_catalog(label: &str) -> PathBuf {
     temp_path(&format!("{label}.sqlite"))
 }
+
+/// The write-ahead log beside an open or crashed catalog, `<catalog>-wal`, which a clean close
+/// removes.
+pub fn wal(catalog: &Path) -> PathBuf {
+    suffixed(catalog, "-wal")
+}
+
+/// The shared-memory index SQLite would keep beside a catalog, `<catalog>-shm`. The catalog's
+/// exclusive lock means it never does.
+pub fn shm(catalog: &Path) -> PathBuf {
+    suffixed(catalog, "-shm")
+}
+
+fn suffixed(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    name.into()
+}

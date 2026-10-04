@@ -4,7 +4,7 @@
 //! the GPU frame of the same plan through the photo surface's own shader, and judges each pair by
 //! its recipe's class. [`corpus_at_fit`] takes the families to run, so a test of any program class
 //! runs the same corpus with its own.
-use super::gpu_plan::surface_plan_at;
+use super::gpu_plan::{WarpGrid, surface_plan_at};
 use luxforge_core::{CompileStage, GpuAnswer, GpuPlanRequest, Layer, Processing, Stage, gpu_plan};
 use luxforge_reference::{
     preview_error::{self, Class, Rgb8, Statistics},
@@ -607,7 +607,8 @@ pub(crate) fn corpus_cell(
                 },
                 1.0,
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_string())?
+            .map(|grid| WarpGrid::new(&grid));
         let converted = match surface_plan_at(&plan, held, origin, grid.as_ref()) {
             Ok(converted) => converted,
             Err(reason) => {
@@ -988,7 +989,8 @@ pub(crate) fn region_cell(
             let grid = plan
                 .geometry
                 .grid(rect, f64::from(zoom) / 100.0)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| error.to_string())?
+                .map(|grid| WarpGrid::new(&grid));
             let converted = match super::gpu_plan::surface_plan_over(
                 &plan,
                 held,

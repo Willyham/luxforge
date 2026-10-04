@@ -3064,6 +3064,84 @@ fn painting_commits_one_entry_a_stroke_and_the_brush_keys_size_it() {
     );
 }
 
+/// A long stroke through the editor's own messages: every move that grows the path sends one
+/// `draft.set` whose fields it decimated and serialized once, and leaves the gesture drained with no
+/// frame of its own pending, its evidence reporting the fields it sent. A move into the cell before
+/// it decimates nothing and sends nothing. The stroke still commits one entry.
+#[test]
+fn a_long_stroke_builds_its_fields_once_per_move_and_reads_drained_between_moves() {
+    use crate::mask_draft::brush_counts;
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.message(MaskMessage::Paint(PaintTarget::NewMask));
+    masking.open_gesture();
+    let before = masking.labels().len();
+    let wave = |step: usize| {
+        let along = step as f64 / 600.0;
+        (0.1 + 0.8 * along, 0.5 + 0.25 * (along * 30.0).sin())
+    };
+    let (x, y) = wave(0);
+    masking.message(MaskMessage::Handle(MaskPointer::PaintBegin { x, y }));
+    masking.assert_geometry_sent();
+    tasks::owner_calls::take();
+    for step in 1..=400 {
+        brush_counts::take();
+        let (x, y) = wave(step);
+        masking.message(MaskMessage::Handle(MaskPointer::PaintTo { x, y }));
+        assert_eq!(
+            brush_counts::take(),
+            (1, 1),
+            "move {step} decimated and serialized its path once"
+        );
+        assert_eq!(
+            tasks::owner_calls::take()
+                .iter()
+                .filter(|method| *method == "draft.set")
+                .count(),
+            1,
+            "move {step} sent one draft.set"
+        );
+        let gesture = masking.editor.core_gesture().expect("the stroke is open");
+        assert!(
+            gesture.draft.drained() && !masking.editor.mask_frame_pending(),
+            "move {step}: nothing is in flight or waiting"
+        );
+        let held = masking
+            .editor
+            .mask_shape()
+            .map(|shape| Value::Object(shape.fields()))
+            .expect("the stroke's fields");
+        assert_eq!(gesture.draft.sent(), Some(&held), "move {step} sent them");
+        assert_eq!(masking.editor.draft_summary()["fields"], held);
+        let summary = masking.editor.mask_draft_summary();
+        assert_eq!(summary["stroke"]["captured"], step + 1);
+        assert_eq!(
+            summary["stroke"]["posted"],
+            held["points"].as_array().map(Vec::len).unwrap()
+        );
+    }
+    brush_counts::take();
+    let (x, y) = wave(400);
+    let cell = 1.0 / luxforge_core::path::COORDINATE_STEPS_PER_UNIT;
+    masking.message(MaskMessage::Handle(MaskPointer::PaintTo {
+        x: x + 0.1 * cell,
+        y,
+    }));
+    assert_eq!(
+        brush_counts::take(),
+        (0, 1),
+        "a move into the held cell decimates nothing"
+    );
+    assert!(
+        !tasks::owner_calls::take().contains(&"draft.set".to_owned()),
+        "and sends nothing"
+    );
+    masking.assert_geometry_sent();
+    masking.message(MaskMessage::Handle(MaskPointer::PaintEnd));
+    masking.commit_open_draft();
+    assert_eq!(masking.labels().len(), before + 1, "one stroke, one entry");
+}
+
 /// `mask.delete-stroke` is a forward edit and is presented as one: it appends an entry, removes only
 /// the stroke it names, and leaves every entry after that stroke exactly where it is.
 #[test]

@@ -22,8 +22,12 @@ image.workspace = true
 rfd.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
+# A one-thread runtime with a clock, to poll a job reader's stream in a test (`rt` is already on
+# through Iced's `tokio` feature).
+tokio = { workspace = true, features = ["rt"] }
 # An independent JPEG decoder for the export tests.
 image = { workspace = true, features = ["jpeg"] }
 # The independent sRGB reference and preview-difference measure the GPU programs are qualified by.

@@ -9,6 +9,11 @@ publish.workspace = true
 [dependencies]
 serde.workspace = true
 
+[features]
+# Test builds only: `allocations::Counting`, a counting system allocator a test binary installs to
+# hold a code path to an allocation budget. Only `[dev-dependencies]` tables turn it on.
+allocation-counter = []
+
 # Every platform dependency is already in the lockfile, pinned here to the version it resolves to,
 # so reading platform counters and Windows file metadata adds no package.
 [target.'cfg(unix)'.dependencies]

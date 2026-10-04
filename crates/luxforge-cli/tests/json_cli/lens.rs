@@ -79,6 +79,8 @@ fn lens_profile_selection_over_json_matches_service() {
         )
         .unwrap();
     drop(service);
+    // A closed catalog is the one file: its clean close removed the log a copy would need.
+    assert!(!paths::wal(&direct_catalog).exists());
     std::fs::copy(&direct_catalog, &pipe_catalog).unwrap();
 
     let mut client = JsonProcess::start(

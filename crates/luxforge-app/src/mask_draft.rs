@@ -123,7 +123,7 @@ pub(crate) use editor::{
     DrawnShape, Grip, MaskHandle, Pen, drawable, kind_letter, paintable, painted_kind,
 };
 #[cfg(test)]
-pub(crate) use {linear::NEUTRAL, radial::NEUTRAL_RADIAL};
+pub(crate) use {brush::counts as brush_counts, linear::NEUTRAL, radial::NEUTRAL_RADIAL};
 
 /// The drawn kinds' tokens, for the tests that name one. Product code asks the drawn-kind table
 /// instead ([`drawable`], [`paintable`], [`painted_kind`]).
