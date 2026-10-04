@@ -442,7 +442,7 @@
     {
       "id": "TASK-006",
       "description": "Let a recipe hold 16 masked spatial layers (owner, 2026-10-03), with a compile cache that holds every link sequence the largest plan needs, so 16 masked layers draw on the GPU once compiled.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-003",
         "TASK-005"
@@ -543,7 +543,7 @@
     {
       "id": "TASK-007",
       "description": "Measure on the M4 what the shared pool, the one-channel band and 16 masked layers cost and save, re-qualify the GPU preview, and bring the docs to the shipped behaviour.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-004",
         "TASK-006"

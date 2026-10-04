@@ -4568,12 +4568,13 @@ mod tests {
     /// cargo test --release --locked --package luxforge-core -- --ignored masked_spatial_timing --nocapture
     /// ```
     ///
-    /// One to four **masked** Presence layers on in-memory 24 MP and 60 MP frames, against the same
-    /// stacks with no mask at all, at two mask sizes: one whose bounds rectangle covers the whole
-    /// frame (the worst case the cap of four exists for) and one confined to a band at the right
-    /// edge (the case the tile copy exists for). Each masked spatial layer is a stage boundary and
-    /// therefore a sequential full frame, so the row to read is how the cost grows with the layer
-    /// count, and the copied-tile count is what says the small mask's tiles were not evaluated.
+    /// One, two, four, eight and sixteen **masked** Presence layers — every power of two up to the
+    /// cap, so the run stays bounded — on in-memory 24 MP and 60 MP frames, against the same stacks
+    /// with no mask at all, at two mask sizes: one whose bounds rectangle covers the whole frame
+    /// (the worst case the cap exists for) and one confined to a band at the right edge (the case
+    /// the tile copy exists for). Each masked spatial layer is a stage boundary and therefore a
+    /// sequential full frame, so the row to read is how the cost grows with the layer count, and
+    /// the copied-tile count is what says the small mask's tiles were not evaluated.
     #[test]
     #[ignore = "measurement, run explicitly in release"]
     fn masked_spatial_timing() {
@@ -4604,7 +4605,9 @@ mod tests {
                 // columns, so most tiles are copies.
                 ("right-edge band", (0.90, 0.97)),
             ] {
-                for count in 1..=crate::modules::MAX_MASKED_SPATIAL_LAYERS {
+                let counts = std::iter::successors(Some(1), |count| Some(count * 2))
+                    .take_while(|count| *count <= crate::modules::MAX_MASKED_SPATIAL_LAYERS);
+                for count in counts {
                     let masks: Vec<Mask> = (0..count)
                         .map(|index| mask(&format!("Mask {index}"), geometry.0, geometry.1))
                         .collect();

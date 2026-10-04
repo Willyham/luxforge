@@ -1804,6 +1804,9 @@ mod chain;
 // Masked Presence layers chained in one plan, their scratch planes in one pool.
 mod pool;
 
+// As many masked spatial layers as a recipe may hold, of mixed shapes.
+mod sixteen;
+
 /// A masked Presence layer's passes run only over its mask's bounds grown by every unit's reach
 /// (`GpuSpatial::pass_rect`), and its applies only where its coverage is not zero: the frame is the
 /// one its passes give run over the whole boundary, which widening the mask's bounds to the whole

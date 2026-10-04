@@ -1,6 +1,7 @@
 use super::*;
 use luxforge_core::{
-    DETAIL_EFFECT, LinearSettings, ModuleRegistry, PRESENCE_EFFECT, SnapshotId,
+    DETAIL_EFFECT, LinearSettings, MAX_MASKED_SPATIAL_LAYERS, ModuleRegistry, PRESENCE_EFFECT,
+    SnapshotId,
     mask::{CompiledMask, Stroke},
     path::StrokeTable,
 };
@@ -135,14 +136,18 @@ fn detail_masks_blend_with_the_host_rule() {
     }
 }
 
+/// Masked Detail and masked Presence layers count together against the cap: as many masks as it
+/// allows, each holding one or the other, render; one more masked Presence layer, on the first
+/// mask beside its Detail, is refused by name with the stack kept.
 #[test]
-fn a_fifth_masked_detail_or_presence_layer_is_refused() {
+fn a_masked_detail_or_presence_layer_past_the_cap_is_refused() {
     let registry = ModuleRegistry::builtin();
     let source = byte_source();
-    let masks = (0..5)
+    let masks = (0..MAX_MASKED_SPATIAL_LAYERS)
         .map(|_| gradient_mask(0.0, -1.0, 0.0, -0.5, 100.0).0)
         .collect::<Vec<_>>();
-    let layers = masks
+    let presence = || fixtures::layer(PRESENCE_EFFECT, json!({"texture":30}));
+    let mut layers = masks
         .iter()
         .enumerate()
         .map(|(i, m)| {
@@ -150,7 +155,7 @@ fn a_fifth_masked_detail_or_presence_layer_is_refused() {
                 if i % 2 == 0 {
                     detail_layer()
                 } else {
-                    fixtures::layer(PRESENCE_EFFECT, json!({"texture":30}))
+                    presence()
                 },
                 m,
             )
@@ -160,18 +165,23 @@ fn a_fifth_masked_detail_or_presence_layer_is_refused() {
         &registry,
         &source,
         SnapshotId::new(),
-        &recipe(layers[..4].to_vec(), masks.clone()),
+        &recipe(layers.clone(), masks.clone()),
     )
     .unwrap();
+    layers.push(masked(presence(), &masks[0]));
     let stack = recipe(layers, masks);
     let error = fixtures::render(&registry, &source, SnapshotId::new(), &stack).unwrap_err();
     assert_eq!(error.kind, luxforge_core::ErrorKind::ResourceLimit);
     assert!(
-        error.detail.contains("5 masked spatial layers")
-            && error.detail.contains("4 the host evaluates"),
+        error.detail.contains(&format!(
+            "{} masked spatial layers",
+            MAX_MASKED_SPATIAL_LAYERS + 1
+        )) && error
+            .detail
+            .contains(&format!("{MAX_MASKED_SPATIAL_LAYERS} the host evaluates")),
         "{error}"
     );
-    assert_eq!(stack.layers.len(), 5);
+    assert_eq!(stack.layers.len(), MAX_MASKED_SPATIAL_LAYERS + 1);
 }
 
 #[test]
