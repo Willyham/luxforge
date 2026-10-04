@@ -75,28 +75,31 @@ impl Editor {
         let entry = self.displayed_entry();
         let mut curves = Vec::new();
         let mut pickers = Vec::new();
-        for section in self.workspace.tools.all() {
+        // Every section's controls, the drawn ones as derived and a collapsed section's built now
+        // from the same inputs, so a frame reports what an always-built section held.
+        let inputs = self.inputs();
+        let sections = self.workspace.tools.with_controls(&inputs);
+        for reported in &sections {
             summarize_controls(
-                &section.controls,
+                &reported.controls,
                 &mut curves,
                 &mut pickers,
                 &self.controls.ui,
                 entry.as_ref(),
             );
         }
-        json!({"run_id":self.log.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.shown_selection(),"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.presentation.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status.text,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.controls.fields.summary(),"control_ui":{"query_choices":self.controls.ui.query_choices,"group_expanded":self.controls.ui.group_expanded,"selected_tab":self.controls.ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"masks":self.workspace.masks.summary(),"mask_draft":self.mask_draft_summary(),"mask_tool":self.mask_shape().map(|shape| shape.summary()),"mask_handles":self.resting.as_ref().map(|resting| json!({"summary":resting.mask.shape.summary(),"mapped":resting.mask.map.is_some(),"stale":resting.stale()})),"mask_overlay":self.mask_overlay_summary(),"last_mask_request":self.mask_panel.last_request.as_ref().map(|(method, params)| json!({"method":method,"params":params})),"draft":self.draft_summary(),"stack":self.stack_summary(),"geometry":self.document.recipe.as_ref().and_then(|r|r.geometry.clone()),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"section_controls":self.workspace.section_controls(),"notices":self.notice_titles(),"draft_bar":self.draft_bar_summary(),"compare":self.document.compare_return.is_some(),"comparison":self.session.preview.comparison,"compare_after":self.presentation.compare_after.as_ref().map(|after| json!(after.full().size())),"compare_after_reduced_at_fit":self.presentation.compare_after.as_ref().map(super::compare_after::CompareAfter::reduced_at_fit),"compare_hold":self.document.compare_hold,"compare_key_pending":self.compare_key.pending().is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette.open,"query":self.palette.query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"approximate_white_balance":self.presentation.presented_approximate_white_balance,"surface":self.surface_summary(),"active":self.workspace.active(),"scopes":self.workspace.scopes(),"scratch":self.scratch_summary(),"capabilities":state::capabilities::summary(&self.capabilities,&self.modules,self.document.state.as_ref()),"performance":self.performance_summary(),"export":self.export_summary()})
+        json!({"run_id":self.log.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.shown_selection(),"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.presentation.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status.text,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.controls.fields.summary(),"control_ui":{"query_choices":self.controls.ui.query_choices,"group_expanded":self.controls.ui.group_expanded,"selected_tab":self.controls.ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(&sections),"masks":self.workspace.masks.summary(),"mask_draft":self.mask_draft_summary(),"mask_tool":self.mask_shape().map(|shape| shape.summary()),"mask_handles":self.resting.as_ref().map(|resting| json!({"summary":resting.mask.shape.summary(),"mapped":resting.mask.map.is_some(),"stale":resting.stale()})),"mask_overlay":self.mask_overlay_summary(),"last_mask_request":self.mask_panel.last_request.as_ref().map(|(method, params)| json!({"method":method,"params":params})),"draft":self.draft_summary(),"stack":self.stack_summary(),"geometry":self.document.recipe.as_ref().and_then(|r|r.geometry.clone()),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":state::Workspace::pickers(&sections),"section_controls":state::Workspace::section_controls(&sections),"notices":self.notice_titles(),"draft_bar":self.draft_bar_summary(),"compare":self.document.compare_return.is_some(),"comparison":self.session.preview.comparison,"compare_after":self.presentation.compare_after.as_ref().map(|after| json!(after.full().size())),"compare_after_reduced_at_fit":self.presentation.compare_after.as_ref().map(super::compare_after::CompareAfter::reduced_at_fit),"compare_hold":self.document.compare_hold,"compare_key_pending":self.compare_key.pending().is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette.open,"query":self.palette.query},"presets":self.presets_summary(&sections),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"approximate_white_balance":self.presentation.presented_approximate_white_balance,"surface":self.surface_summary(),"active":self.workspace.active(),"scopes":self.workspace.scopes(),"scratch":self.scratch_summary(),"capabilities":state::capabilities::summary(&self.capabilities,&self.modules,self.document.state.as_ref()),"performance":self.performance_summary(),"export":self.export_summary()})
     }
 
     /// The Presets section as the frame drew it: its rows, the create form and whether the section
-    /// is expanded. `null` when no module declares a `presets` control.
-    pub(super) fn presets_summary(&self) -> Value {
-        self.workspace
-            .tools
-            .all()
-            .find_map(|section| {
-                section
-                    .presets()
-                    .map(|presets| presets.summary(section.expanded))
+    /// is expanded. `null` when no module declares a `presets` control. A collapsed section's
+    /// library is read from the models built on demand, so its rows are reported expanded or not.
+    pub(super) fn presets_summary(&self, sections: &[tools::SectionControls<'_>]) -> Value {
+        sections
+            .iter()
+            .find_map(|reported| {
+                tools::presets_in(&reported.controls)
+                    .map(|presets| presets.summary(reported.section.expanded))
             })
             .unwrap_or(Value::Null)
     }
@@ -491,7 +494,7 @@ impl Editor {
 
     /// The crop draft as a captured frame reports it, so a rendered frame correlates with the
     /// rectangle, angle and output size that produced it.
-    pub(super) fn crop_summary(&self) -> Value {
+    pub(super) fn crop_summary(&self, sections: &[tools::SectionControls<'_>]) -> Value {
         match self
             .core_gesture()
             .and_then(|gesture| Some((gesture.crop()?, &gesture.draft)))
@@ -512,12 +515,12 @@ impl Editor {
                     // Which phase of the stage is on screen, and the size of the frame drawn:
                     // the display-size proxy at Fit, the exact stage at a percentage zoom.
                     object.insert("input_stage_frame".into(), self.crop_stage_frame_summary());
-                    object.insert("section".into(), self.crop_section_summary());
+                    object.insert("section".into(), self.crop_section_summary(sections));
                 }
                 summary
             }
             None => {
-                json!({"drafting":false,"section":self.crop_section_summary()})
+                json!({"drafting":false,"section":self.crop_section_summary(sections)})
             }
         }
     }
@@ -525,11 +528,10 @@ impl Editor {
     /// What the crop section shows, exactly as its model derived it for the frame on screen: the
     /// chosen ratio chip, the lock, the angle's box and rail, and whether its controls act. A
     /// capture of the section is checked against these.
-    pub(super) fn crop_section_summary(&self) -> Value {
-        self.workspace
-            .tools
-            .all()
-            .flat_map(|section| section.controls.iter())
+    pub(super) fn crop_section_summary(&self, sections: &[tools::SectionControls<'_>]) -> Value {
+        sections
+            .iter()
+            .flat_map(|reported| reported.controls.iter())
             .find_map(|control| match control {
                 state::tools::ControlModel::CropFrame(model) => Some(model),
                 _ => None,
