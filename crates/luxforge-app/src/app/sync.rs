@@ -430,8 +430,12 @@ impl Editor {
             .entries
             .iter()
             .any(|row| row.id == refresh.state.current_entry.id);
-        let happened =
-            state::status::Happened::between(self.document.state.as_ref(), &refresh.state, known);
+        let happened = state::status::Happened::between(
+            self.document.state.as_ref(),
+            &refresh.state,
+            known,
+            refresh.collapsed.is_some(),
+        );
         // A composite that skipped settings says so beside what it did, and one that applied
         // nothing at all says that, since no entry moved to say anything else.
         self.status.skipped = (!refresh.skipped.is_empty()).then(|| {
@@ -446,6 +450,13 @@ impl Editor {
             self.read_back(request);
         }
         self.adopt(refresh.session);
+        // The entry this desktop's edit collapsed leaves the page; the owner's pages leave it out.
+        if let Some(collapsed) = &refresh.collapsed {
+            self.document
+                .history
+                .entries
+                .retain(|row| &row.id != collapsed);
+        }
         match refresh.history {
             Some(history) => self.document.history = history,
             None => merge_current_entry(

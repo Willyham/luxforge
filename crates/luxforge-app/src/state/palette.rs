@@ -205,7 +205,12 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
             "workspace.set".to_owned(),
             PaletteAction::ToggleGpuPreview,
         ),
-        // One entry per tab, named for both, so "settings" and "experiments" each find it.
+        // One entry per tab, named for both, so "settings" and the tab's name each find it.
+        (
+            "Settings \u{b7} General".to_owned(),
+            "preferences.read \u{b7} preferences.set".to_owned(),
+            PaletteAction::Settings(crate::state::settings::SettingsTab::General),
+        ),
         (
             "Settings \u{b7} Experiments".to_owned(),
             "flags.list \u{b7} flags.set".to_owned(),
