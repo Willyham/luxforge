@@ -29,6 +29,8 @@ pub(crate) use gpu::PRESENCE_PROGRAM;
 pub(crate) use gpu::functions as gpu_functions;
 
 #[cfg(test)]
+mod cache_tests;
+#[cfg(test)]
 mod exactness;
 #[cfg(test)]
 mod oracle;

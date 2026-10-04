@@ -69,6 +69,13 @@ impl RenderContext {
         Self::targeted(DEFAULT_SCRATCH_BYTES, bytes, REDUCED_STORE_BYTES)
     }
 
+    /// A context whose store of reduced planes holds at most `bytes`, for a test that watches it
+    /// evict or refuse at a small stage.
+    #[cfg(test)]
+    pub(crate) fn with_reduced_limit(bytes: u64) -> Self {
+        Self::targeted(DEFAULT_SCRATCH_BYTES, SPATIAL_BUDGET_BYTES, bytes)
+    }
+
     fn targeted(scratch: u64, spatial: u64, reduced: u64) -> Self {
         Self(Arc::new(Shared {
             scratch: ScratchBudget::new(scratch),

@@ -190,6 +190,20 @@ impl ReducedEntry {
         (self.values.len() * std::mem::size_of::<f32>() + self.coverage.tiles.len()) as u64
     }
 
+    /// The key the entry is held under.
+    #[cfg(test)]
+    pub(crate) fn key(&self) -> &ReducedKey {
+        &self.key
+    }
+
+    /// The global estimate the planes were computed with, as values.
+    #[cfg(test)]
+    pub(crate) fn global(&self) -> Option<Vec<f64>> {
+        self.global
+            .as_ref()
+            .map(|bits| bits.iter().map(|bits| f64::from_bits(*bits)).collect())
+    }
+
     fn matches(&self, key: &ReducedKey, global: &Option<Box<[u64]>>) -> bool {
         self.key == *key && self.global == *global
     }
@@ -514,16 +528,6 @@ impl ReducedStore {
         Counters::add(&self.counters.cells_handed_back, cells);
     }
 
-    /// Count one tile a point query evaluated, `served` from held planes or not.
-    pub(crate) fn note_point(&self, served: bool) {
-        let counter = if served {
-            &self.counters.point_hits
-        } else {
-            &self.counters.point_misses
-        };
-        Counters::add(counter, 1);
-    }
-
     /// Every figure, read now, as `resources.read` reports it.
     pub(crate) fn counts(&self) -> ReducedPlanesReport {
         let (retained_bytes, entries) = {
@@ -557,6 +561,12 @@ impl ReducedStore {
             .iter()
             .map(|entry| entry.key.clone())
             .collect()
+    }
+
+    /// The entries held, least recently used first, without touching their order.
+    #[cfg(test)]
+    pub(crate) fn entries(&self) -> Vec<Arc<ReducedEntry>> {
+        self.lock().held.iter().cloned().collect()
     }
 }
 
