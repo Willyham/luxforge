@@ -1,5 +1,6 @@
 use super::{
     ActionResult, AssetRecord, EditorService, EditorState, MutationResult,
+    collapse::Collapsing,
     entries::Head,
     history::{Change, CommittedAction, Touched, request_input},
     masks::{Targeted, recipe_for_target, resolve_mask_target, take_mask_target},
@@ -154,15 +155,31 @@ impl EditorService {
             let Some(planned) = planned else {
                 return Ok(Change::NoOp { skipped });
             };
-            Ok(Change::append(
-                planned.recipe,
-                CommittedAction {
+            let collapsing =
+                service.collapse(state, &prepared, &mutation.actor, &planned.recipe)?;
+            if let Some(Collapsing {
+                collapse,
+                returned: true,
+            }) = collapsing
+            {
+                // Back where the chain began: the base is current again and nothing is written.
+                return Ok(Change::Navigate {
+                    target: collapse.base,
+                    redo: Vec::new(),
+                    collapsed: Some(collapse.entry),
+                });
+            }
+            Ok(Change::Append {
+                recipe: planned.recipe,
+                action: CommittedAction {
                     input: prepared.input,
                     label: planned.label,
                     touched: planned.touched,
                     skipped,
                 },
-            ))
+                restore_target: None,
+                collapse: collapsing.map(|collapsing| collapsing.collapse),
+            })
         })
     }
 

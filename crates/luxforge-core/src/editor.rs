@@ -30,6 +30,7 @@ mod artifact_store;
 #[cfg(test)]
 mod artifact_tests;
 mod catalog;
+mod collapse;
 mod describe;
 mod entries;
 mod evaluate;
@@ -256,6 +257,11 @@ pub struct MutationResult {
     pub current_entry_id: EntryId,
     pub created_entry_id: Option<EntryId>,
     pub deduplicated: bool,
+    /// The entry an edit of the same control superseded, which auto-collapse hid from history: the
+    /// new entry continues from that entry's undo parent, or, when the edit returned the control to
+    /// where the chain began, no entry was written and the head moved back to that parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collapsed_entry_id: Option<EntryId>,
 }
 
 /// What one module's first-open action came to when an import created a new asset
@@ -633,6 +639,9 @@ pub struct EditorService {
     checked_manifest: RefCell<Option<SourceSignature>>,
     /// Artifacts published while this service is open, which no collection removes.
     live_artifacts: LiveArtifacts,
+    /// Whether an edit that sets the same control as the entry before it collapses that entry
+    /// ([`Self::set_auto_collapse`]). Off until the host sets it from the person's preference.
+    auto_collapse: bool,
 }
 
 impl EditorService {
@@ -696,7 +705,20 @@ impl EditorService {
             prepared_artifacts: RefCell::new(PreparedArtifacts::new(PREPARED_ARTIFACT_BYTES)),
             checked_manifest: RefCell::new(None),
             live_artifacts: LiveArtifacts::default(),
+            auto_collapse: false,
         })
+    }
+
+    /// Collapse history from now on, or stop: the person's "Auto collapse history" preference,
+    /// which the catalog owner sets when it starts and whenever the preference changes. An edit
+    /// already written stays as it was either way.
+    pub fn set_auto_collapse(&mut self, enabled: bool) {
+        self.auto_collapse = enabled;
+    }
+
+    /// Whether edits collapse history now ([`Self::set_auto_collapse`]).
+    pub fn auto_collapse(&self) -> bool {
+        self.auto_collapse
     }
 
     /// The providers this service validates, plans and renders with.

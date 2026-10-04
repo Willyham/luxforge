@@ -36,8 +36,12 @@ struct Config {
     diagnostics: Option<Diagnostics>,
     run_id: String,
     /// Serve the test modules and show the components gallery; the default workspace stays a photo
-    /// editor.
+    /// editor. The `developer` flag as this launch resolved it: [`Config::resolve_flags`].
     developer: bool,
+    /// `--developer`: developer mode for this launch, whatever the flag says.
+    developer_forced: bool,
+    /// What this launch resolved for each launch flag, reported by `flags.list` as `active`.
+    launch_flags: luxforge_core::flags::LaunchFlags,
     /// Built-in module identities to register as unavailable, so an unavailable provider can be
     /// rendered and reported without removing it from the catalog's readable effects.
     disabled: Vec<String>,
@@ -65,6 +69,22 @@ impl Config {
         self.evidence.is_some() || self.data_root.is_some()
     }
 
+    /// Read the launch flags once, from this run's preferences, with `--developer` forcing developer
+    /// mode on. Reading creates nothing, and a file that cannot be read leaves the defaults.
+    fn resolve_flags(&mut self) {
+        use luxforge_core::flags::{DEVELOPER, LaunchFlags};
+        let overrides = if self.developer_forced {
+            vec![(DEVELOPER, serde_json::Value::Bool(true), "--developer")]
+        } else {
+            Vec::new()
+        };
+        self.launch_flags = LaunchFlags::resolve(
+            self.paths.as_ref().map(|paths| paths.config.clone()),
+            &overrides,
+        );
+        self.developer = self.launch_flags.toggle(DEVELOPER);
+    }
+
     /// Where this run keeps its files. An evidence run keeps them inside its evidence directory,
     /// so it never touches the person's configuration; any other run keeps them under
     /// `--data-root` or the platform's application directories. Resolving creates nothing.
@@ -77,10 +97,7 @@ impl Config {
 }
 
 fn arguments() -> Result<Config, String> {
-    let mut config = Config {
-        developer: cfg!(debug_assertions),
-        ..Config::default()
-    };
+    let mut config = Config::default();
     let mut args = std::env::args_os().skip(1);
     while let Some(arg) = args.next() {
         match arg.to_str() {
@@ -107,7 +124,7 @@ fn arguments() -> Result<Config, String> {
             Some("--catalog") => {
                 config.catalog = Some(args.next().ok_or("--catalog requires a path")?.into());
             }
-            Some("--developer") => config.developer = true,
+            Some("--developer") => config.developer_forced = true,
             Some("--proof-endpoint") => {
                 config.proof_endpoint = Some(
                     args.next()
@@ -136,13 +153,16 @@ fn arguments() -> Result<Config, String> {
             }
             Some("--help") => {
                 println!(
-                    "Luxforge: [--open IMAGE]... [--catalog CATALOG] [--data-root DIRECTORY] [--developer] [--proof-endpoint URL] [--disable-module MODULE_ID]... [--evidence-dir NEW_DIRECTORY] [--evidence-script FILE] [--evidence-gpu-identity] [--window-size WIDTH HEIGHT] [--hidden-window]\n--developer serves the test modules (the pixel and controls proofs) and shows the components gallery (automatic in debug builds); --proof-endpoint registers the capability proof module against a proof endpoint a test harness started, and only in developer mode; --disable-module registers a built-in as unavailable, so a stack that uses it reports the unavailable effect instead of rendering without it.\n--hidden-window creates the window invisible: it renders and captures as usual but is never placed on screen, which is what automated launches use.\nEvidence mode imports each --open in order into an isolated catalog, captures a frame after each, runs any evidence script with a frame per step and exits. --evidence-gpu-identity, in evidence mode only, draws the photograph at Fit through the GPU preview stage with the identity program, for a rendered check of that stage."
+                    "Luxforge: [--open IMAGE]... [--catalog CATALOG] [--data-root DIRECTORY] [--developer] [--proof-endpoint URL] [--disable-module MODULE_ID]... [--evidence-dir NEW_DIRECTORY] [--evidence-script FILE] [--evidence-gpu-identity] [--window-size WIDTH HEIGHT] [--hidden-window]\n--developer serves the test modules (the pixel and controls proofs) and shows the components gallery for this launch, whatever the Developer mode flag in Settings says (that flag is on by default in debug builds); --proof-endpoint registers the capability proof module against a proof endpoint a test harness started, and only in developer mode; --disable-module registers a built-in as unavailable, so a stack that uses it reports the unavailable effect instead of rendering without it.\n--hidden-window creates the window invisible: it renders and captures as usual but is never placed on screen, which is what automated launches use.\nEvidence mode imports each --open in order into an isolated catalog, captures a frame after each, runs any evidence script with a frame per step and exits. --evidence-gpu-identity, in evidence mode only, draws the photograph at Fit through the GPU preview stage with the identity program, for a rendered check of that stage."
                 );
                 std::process::exit(0)
             }
             _ => return Err("Unknown argument; use --help".into()),
         }
     }
+    // The directories are deliberately not created until they have real work.
+    config.paths = config.resolve_paths();
+    config.resolve_flags();
     // Refused here, before an evidence directory or log exists; the assembly refuses it again.
     config.registry_options().check()?;
     if config.files.len() > 16 {
@@ -174,11 +194,10 @@ fn arguments() -> Result<Config, String> {
             .unwrap_or_default()
             .as_nanos()
     );
-    // The directories are deliberately not created until they have real work. The diagnostics log
-    // is real work on every launch: an ordinary session keeps a bounded `events.jsonl` in the
-    // platform log directory, so a stall or a failure can be read back afterwards, and the launch
-    // before it as `events.previous.jsonl`. An evidence run writes into its own new directory.
-    config.paths = config.resolve_paths();
+    // The diagnostics log is real work on every launch: an ordinary session keeps a bounded
+    // `events.jsonl` in the platform log directory, so a stall or a failure can be read back
+    // afterwards, and the launch before it as `events.previous.jsonl`. An evidence run writes into
+    // its own new directory.
     let evidence_log = config.evidence.is_some();
     let log_dir = config
         .evidence
@@ -251,5 +270,51 @@ mod tests {
             .is_ok()
         );
         assert!(Config::default().registry_options().check().is_ok());
+    }
+
+    #[test]
+    fn developer_mode_follows_the_stored_flag_unless_the_command_line_forces_it() {
+        let root = luxforge_testbase::paths::temp_path("developer-flag");
+        let launch = |forced: bool| {
+            let mut config = Config {
+                data_root: Some(root.clone()),
+                developer_forced: forced,
+                ..Config::default()
+            };
+            config.paths = config.resolve_paths();
+            config.resolve_flags();
+            config
+        };
+        assert_eq!(launch(false).developer, cfg!(debug_assertions));
+        let config = launch(false).paths.unwrap().config;
+        for stored in [true, false] {
+            std::fs::create_dir_all(&config).unwrap();
+            std::fs::write(
+                config.join("preferences.json"),
+                format!(
+                    r#"{{"format":1,"performance_expanded":true,"flags":{{"developer":{stored}}}}}"#
+                ),
+            )
+            .unwrap();
+            assert_eq!(launch(false).developer, stored);
+            assert!(launch(true).developer, "--developer forces it on");
+        }
+        // The proof endpoint is checked against the resolved mode, not the switch alone.
+        let refused = Config {
+            proof_endpoint: Some("http://127.0.0.1:9".into()),
+            ..launch(false)
+        };
+        assert!(refused.registry_options().check().is_err());
+        std::fs::write(
+            config.join("preferences.json"),
+            r#"{"format":1,"performance_expanded":true,"flags":{"developer":true}}"#,
+        )
+        .unwrap();
+        let allowed = Config {
+            proof_endpoint: Some("http://127.0.0.1:9".into()),
+            ..launch(false)
+        };
+        assert!(allowed.registry_options().check().is_ok());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

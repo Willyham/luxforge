@@ -14,8 +14,8 @@ use crate::{
     mixer_smoke as mixer, performance_smoke as performance, presence_smoke as presence,
     presets_smoke as presets, raw_panel_smoke as raw_panel,
     scenario::{Checked, Checks, Fixture, Launch, Plan, Run, Step, launch::Guard},
-    viewport_smoke as viewport, vignette_smoke as vignette, workspace_smoke as workspace,
-    zoom_smoke as zoom, *,
+    settings_smoke as settings, viewport_smoke as viewport, vignette_smoke as vignette,
+    workspace_smoke as workspace, zoom_smoke as zoom, *,
 };
 use std::{
     borrow::Borrow,
@@ -817,6 +817,22 @@ pub static SCENARIOS: &[Scenario] = &[
         }],
         verify: performance::verify,
         source: Source::Default(&[performance::FIXTURE]),
+        window: Some(PANELLED),
+        note: None,
+        own: None,
+    },
+    Scenario {
+        name: "settings",
+        about: "The Settings sheet's Experiments tab: every flag kind changed, refused, reset and read back",
+        launches: &[LaunchSpec {
+            plan: settings::plan,
+            // The proof flags, which the choice and number controls are checked on, are listed
+            // only by a host that serves the test modules.
+            developer: true,
+            ..APP
+        }],
+        verify: settings::verify,
+        source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(PANELLED),
         note: None,
         own: None,

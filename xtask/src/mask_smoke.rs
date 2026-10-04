@@ -107,11 +107,12 @@ pub fn launch1(_: &[PathBuf]) -> Plan {
         .label(DRAGGED_LABEL)
         .no_draft()
         .payload(BASIC_EFFECT, json!({ EXPOSURE: DRAGGED })),
-        // 6: the same layer from JSON, naming the mask by the name the host gave it: updated in
-        // place, not replaced.
+        // 6: the same layer from a second JSON client, naming the mask by the name the host gave
+        // it: updated in place, not replaced. Another actor's edit never collapses the desktop's,
+        // so the drag's entry stays for the undo below.
         Step::new(
             "json-edit",
-            script::Step::call(
+            script::Step::agent(
                 "edit.set-basic",
                 json!({"mask":{"name":"Mask 1"},"exposure":RETYPED}),
             ),

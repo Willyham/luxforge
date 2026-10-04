@@ -280,14 +280,26 @@ pub(super) const METHODS: &[MethodSpec] = &[
     owner!(
         "preferences.read",
         NoParams,
-        |owner, _, _| value(owner.host.preferences.read()?),
-        "user preferences outside the catalog: {performance_expanded}; defaults to expanded on first use; reads no pixels, changes no history and creates no file; malformed or unsupported preferences are refused without rewriting them"
+        |owner, _, _| Ok(preference_values(&owner.host.preferences.read()?)),
+        "user preferences outside the catalog: {performance_expanded, auto_collapse_history}; the Performance section defaults to expanded and history to collapsing; reads no pixels, changes no history and creates no file; malformed or unsupported preferences are refused without rewriting them"
     ),
     owner!(
         "preferences.set",
-        PreferencesSet,
-        |owner, _, p| value(owner.host.preferences.set(p.performance_expanded)?),
-        "persist the Performance section's expanded state through one bounded atomic user-settings write; returns {performance_expanded}; changes no recipe or history; needs a configured application preference directory"
+        owner::PreferencesSet,
+        owner::preferences_set,
+        "persist the preferences named through one bounded atomic user-settings write, leaving the others as they were: performance_expanded, the Performance section's expanded state, and auto_collapse_history, whether an edit that sets the same control as the entry before it, by the same actor, collapses that entry so history keeps one row for the chain, or none when the control returns to where the chain began; collapsed entries are kept and history.list lists them on request; the change applies to edits from now on and rewrites no history; returns every preference as preferences.read does; needs a configured application preference directory"
+    ),
+    owner!(
+        "flags.list",
+        NoParams,
+        owner::flags_list,
+        "the feature flags this host lists and the person's choices: {flags: [{id, title, description, kind (toggle, choice or number), applies (live or launch), options? [{value, label}], min?, max?, step?, default, value, stored, active?, override?, error?}], unrecognized}; value is what a live flag reads now and a launch flag's next desktop launch reads; stored says the person chose it; active and override are a launch flag's value for this launch and what forced it, on a host the desktop started; error says why a stored value that does not fit is not used, and the flag follows its default; unrecognized names stored values no listed flag claims, which are kept; a flag never changes pixels; reads no catalog and creates no file; the proof flags are listed only by a host that serves the test modules"
+    ),
+    owner!(
+        "flags.set",
+        owner::FlagsSet,
+        owner::flags_set,
+        "store one feature flag's value outside the catalog, checked against its kind, or remove the stored value for a null or absent value so the flag follows its default; answers as flags.list does; a changed value is announced in the event log; leaves every other stored value, recognized or not, untouched; a launch flag takes effect at the next desktop launch; changes no recipe, history or render; needs a configured application preference directory"
     ),
     owner!(
         "catalog.import",
@@ -352,12 +364,13 @@ pub(super) const METHODS: &[MethodSpec] = &[
     service!(
         "history.list",
         HistoryList,
-        |service, _, p| value(service.history(
+        |service, _, p| value(service.history_rows(
             &p.asset_id,
             p.before_sequence,
-            p.limit.unwrap_or(DEFAULT_HISTORY_PAGE)
+            p.limit.unwrap_or(DEFAULT_HISTORY_PAGE),
+            p.collapsed.unwrap_or(false)
         )?),
-        "chronological entry rows newest first, including abandoned branches: identity, sequence, action, label, actor, time, undo parent and restore target, without the stack; history.inspect reads one whole entry"
+        "chronological entry rows newest first, including abandoned branches: identity, sequence, action, label, actor, time, undo parent and restore target, without the stack; entries auto-collapse hid are left out unless collapsed is true, when each is listed with collapsed: true; history.inspect reads one whole entry"
     ),
     service!(
         "history.inspect",
@@ -1312,6 +1325,7 @@ host_params! {
         asset_id: AssetId = asset(),
         before_sequence: Option<u64> = sequence().notes("list the entries before this sequence; default the newest"),
         limit: Option<usize> = integer(1, MAX_HISTORY_PAGE as i64).default(DEFAULT_HISTORY_PAGE),
+        collapsed: Option<bool> = boolean().default(false).notes("list the entries auto-collapse hid too, each marked collapsed"),
     }
 }
 
@@ -1433,10 +1447,12 @@ host_params! {
     }
 }
 
-host_params! {
-    pub(super) struct PreferencesSet {
-        performance_expanded: bool = boolean(),
-    }
+/// Every preference as `preferences.read` and `preferences.set` answer them.
+pub(super) fn preference_values(preferences: &crate::preferences::Preferences) -> Value {
+    json!({
+        "performance_expanded": preferences.performance_expanded,
+        "auto_collapse_history": preferences.auto_collapse_history,
+    })
 }
 
 host_params! {
@@ -2426,6 +2442,7 @@ mod tests {
             current_entry_id: EntryId::new(),
             created_entry_id: None,
             deduplicated,
+            collapsed_entry_id: None,
         };
         for (outcome, deduplicated, changed) in [
             (

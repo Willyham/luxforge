@@ -56,7 +56,8 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             .payload(BASIC_EFFECT, json!({ EXPOSURE: 1.0 })),
         // A second drag that returns to where it started: no entry at all.
         slider("return", &[0.5, 1.0], true).no_draft().commits(0),
-        // The value field and Enter, which commits one field without a draft.
+        // The value field and Enter, which commits one field without a draft. It sets the control
+        // the release set, so auto-collapse, on by default, replaces the release's entry.
         Step::new(
             "typed",
             script::Step::field(SET_BASIC, EXPOSURE, "-0.5", true),
@@ -65,10 +66,15 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         .commits(1)
         .label("Exposure -0.50 EV")
         .payload(BASIC_EFFECT, json!({ EXPOSURE: -0.5 })),
-        // Undo: the slider re-seeds from the entry that is current again.
+        // Undo steps over the collapsed run to the Original, and the slider re-seeds from it.
         Step::new("undo", script::Step::api("history.undo"))
             .commits(1)
-            .field(SET_BASIC, EXPOSURE, "1.00"),
+            .field(SET_BASIC, EXPOSURE, "0.00"),
+        // Redo returns to the run's one entry.
+        Step::new("redo", script::Step::api("history.redo"))
+            .commits(1)
+            .label("Exposure -0.50 EV")
+            .field(SET_BASIC, EXPOSURE, "-0.50"),
         // The Tone group's own reset button: the slider at 0, the layer kept with its neutral
         // payload.
         Step::new("reset", script::Step::reset(BASIC_MODULE, Some(TONE_GROUP)))
@@ -151,23 +157,35 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         brighter,
     )?;
 
-    // Undo: the current entry is the +1.00 one again, and the pixels follow.
+    // Undo: the typed entry collapsed the +1.00 EV one, so the current entry is the Original
+    // again, and the pixels follow; redo returns to the typed entry.
     ensure(
-        launch.at("undo")?.entry()? == launch.at("release")?.entry()?,
-        "Undo did not return to the +1.00 EV entry",
+        launch.at("undo")?.entry()? == launch.at("opened")?.entry()?,
+        "Undo did not step over the collapsed +1.00 EV entry to the Original",
     )?;
     claim(
         "undo",
-        "the undone +1.00 EV against -0.50 EV",
+        "the undone neutral against -0.50 EV",
         "undo",
         "typed",
         brighter,
     )?;
     claim(
         "undo",
-        "undo against the committed +1.00 EV render",
+        "undo against the opened render",
         "undo",
-        "release",
+        "opened",
+        same,
+    )?;
+    ensure(
+        launch.at("redo")?.entry()? == launch.at("typed")?.entry()?,
+        "Redo did not return to the typed entry",
+    )?;
+    claim(
+        "redo",
+        "redo against the typed render",
+        "redo",
+        "typed",
         same,
     )?;
 

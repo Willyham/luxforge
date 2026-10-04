@@ -76,6 +76,9 @@ pub(crate) struct Refresh {
     /// What the composite action this refresh read back left out because it does not apply to
     /// the photo, as its answer listed it; empty for every other change.
     pub(crate) skipped: Vec<luxforge_core::SkippedSetting>,
+    /// The entry this desktop's own edit collapsed, as its answer named it: its row leaves the
+    /// loaded page. `None` for every other change.
+    pub(crate) collapsed: Option<EntryId>,
 }
 
 /// What a refresh reads back, by what the change before it could have touched. Every scope reads
@@ -98,15 +101,18 @@ pub(crate) enum Scope {
 }
 
 impl Scope {
-    /// The scope of a mutation from what `method` answered. Undo, redo and restore navigate; every
-    /// other command that answers a revision commits. An answer without one says nothing about what
-    /// it touched, so it is read as a change made elsewhere.
+    /// The scope of a mutation from what `method` answered. Undo, redo and restore navigate, and so
+    /// does an edit that collapsed an entry, whose result continues from that entry's undo parent
+    /// rather than from the entry that was current; every other command that answers a revision
+    /// commits. An answer without one says nothing about what it touched, so it is read as a change
+    /// made elsewhere.
     pub(crate) fn after(method: &str, answer: &Value) -> Self {
         let Some(revision) = answer["revision"].as_u64() else {
             return Self::Elsewhere;
         };
         match method {
             "history.undo" | "history.redo" | "history.restore" => Self::Navigate(revision),
+            _ if collapsed(answer).is_some() => Self::Navigate(revision),
             _ => Self::Commit(revision),
         }
     }
@@ -148,6 +154,9 @@ pub(crate) struct SyncResult {
     /// The listing and the event sequence it was read at.
     pub(crate) presets: Option<(Vec<PresetSummary>, u64)>,
     pub(crate) capabilities: bool,
+    /// A `flags.set` or `preferences.set` changed the person's flags or preferences, which an open
+    /// Settings sheet reads again.
+    pub(crate) flags: bool,
     /// This desktop's own requests whose events the poll read and skipped, because the answer to
     /// each had already read its change back.
     pub(crate) own: Vec<String>,
@@ -163,6 +172,7 @@ impl SyncResult {
             refresh: Some(Box::new(refresh)),
             presets: None,
             capabilities: false,
+            flags: false,
             own: Vec::new(),
         }
     }
@@ -683,7 +693,13 @@ pub(crate) fn refresh(
         session,
         request: None,
         skipped: Vec::new(),
+        collapsed: None,
     })
+}
+
+/// The entry an edit's answer says auto-collapse hid, if any.
+fn collapsed(answer: &Value) -> Option<EntryId> {
+    serde_json::from_value(answer.get("collapsed_entry_id")?.clone()).ok()
 }
 
 /// Discovery runs once: the controls on screen are whatever the registered modules declare.
@@ -815,6 +831,7 @@ pub(crate) fn command_now(
     let scope = Scope::after(method, &answer);
     let mut refreshed = refresh(owner, client, asset_id, scope, proxy)?;
     refreshed.request = Some(request);
+    refreshed.collapsed = collapsed(&answer);
     // A composite's skips are part of its answer, not of any state read back afterwards.
     if let Some(skipped) = answer.get("skipped") {
         refreshed.skipped = parse(skipped.clone())?;
@@ -1161,9 +1178,15 @@ pub(crate) fn draft_commit_now(
     if result.mutation.outcome == MutationOutcome::NoOp {
         return Ok(None);
     }
-    let scope = Scope::Commit(result.mutation.revision);
+    // A commit that collapsed an entry continues from that entry's undo parent, so the lineage
+    // is read as a navigation's is.
+    let scope = match &result.mutation.collapsed_entry_id {
+        Some(_) => Scope::Navigate(result.mutation.revision),
+        None => Scope::Commit(result.mutation.revision),
+    };
     let mut refreshed = refresh(owner, client, asset_id, scope, proxy)?;
     refreshed.request = Some(request);
+    refreshed.collapsed = result.mutation.collapsed_entry_id;
     Ok(Some(refreshed))
 }
 
@@ -1627,6 +1650,12 @@ pub(crate) fn sync_now(
             .events
             .iter()
             .any(|event| capability_event(&event.method));
+    // A flag or preference change touches no asset, so it alone reads only the flags and the
+    // preferences, and only while shown.
+    let flags = events.gap
+        || events.events.iter().any(|event| {
+            event.method.starts_with("flags.") || event.method.starts_with("preferences.")
+        });
     let asset = events.gap
         || events.events.iter().any(|event| {
             event.asset_id.as_ref() == Some(&asset_id)
@@ -1653,6 +1682,7 @@ pub(crate) fn sync_now(
         refresh,
         presets,
         capabilities,
+        flags,
         own: read.into_iter().map(|event| event.request_id).collect(),
     })
 }
@@ -2383,6 +2413,7 @@ mod tests {
             refresh: None,
             presets: None,
             capabilities: false,
+            flags: false,
             own: Vec::new(),
         };
         let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(stale))));

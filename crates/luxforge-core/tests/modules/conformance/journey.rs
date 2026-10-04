@@ -1115,11 +1115,18 @@ pub fn journey(
     })?;
 
     within("undo, redo, preview and restore", || {
+        let recipe_base = owner.recipe(editor, &asset)?;
         let x = edit(&owner, editor, &asset, set, &module.full_high(), None)?;
         applied(&x, "commit X")?;
         let recipe_x = owner.recipe(editor, &asset)?;
+        // Y sets the same fields as X, so auto-collapse, on by default, hides X: Y continues from
+        // the entry before X, and X stays readable by name.
         let y = edit(&owner, editor, &asset, set, &module.full_low(), None)?;
         applied(&y, "commit Y")?;
+        ensure(
+            y["collapsed_entry_id"] == x["created_entry_id"],
+            format!("commit Y did not collapse X: {y}"),
+        )?;
         let recipe_y = owner.recipe(editor, &asset)?;
         let pixels_of = |recipe: &Recipe| -> Checked<Vec<Value>> {
             let raster = pixels::raster(&registry, sources, recipe)?;
@@ -1128,7 +1135,11 @@ pub fn journey(
                 .map(|&(x, y)| json!(raster.pixel(x, y)))
                 .collect())
         };
-        let (pixels_x, pixels_y) = (pixels_of(&recipe_x)?, pixels_of(&recipe_y)?);
+        let (pixels_base, pixels_x, pixels_y) = (
+            pixels_of(&recipe_base)?,
+            pixels_of(&recipe_x)?,
+            pixels_of(&recipe_y)?,
+        );
         ensure(
             pixels_x != pixels_y,
             "the two commits render the same probes, so history could not be told apart",
@@ -1148,8 +1159,8 @@ pub fn journey(
             &owner,
             editor,
             &asset,
-            &recipe_x,
-            &pixels_x,
+            &recipe_base,
+            &pixels_base,
             &source_probes,
             "after undo",
         )?;
@@ -1209,7 +1220,7 @@ pub fn journey(
             "after restoring Y",
         )?;
         evidence.record(
-            "undo, redo, a read-only preview and restore each return exactly the stack of the entry they name, and render.sample answers that stack's rendered pixels",
+            "a second commit of the same fields collapses the first, so undo returns to the stack before both; undo, redo, a read-only preview of the collapsed entry and restore each return exactly the stack of the entry they name, and render.sample answers that stack's rendered pixels",
             json!({"x": x["current_entry_id"], "y": y["current_entry_id"], "pixels_x": pixels_x, "pixels_y": pixels_y}),
         );
         Ok(())
@@ -1347,7 +1358,12 @@ pub fn journey(
             &json!({lead.name.clone(): other_than(&lead, &mine)}),
             None,
         )?;
-        applied(&later, "the agent's commit during a preview")?;
+        // It sets the field the reapplied commit just set, by the same actor, so auto-collapse may
+        // replace that entry or, back at the value before it, write none: either way it applied.
+        ensure(
+            later["outcome"] == json!("applied"),
+            format!("the agent's commit during a preview answered {later}"),
+        )?;
         let session = owner.call(editor, "session.state", json!({}))?;
         let selected = &session["preview"]["selections"][asset.as_str().unwrap_or_default()];
         ensure(
