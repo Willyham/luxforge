@@ -81,6 +81,9 @@ mod gpu_settle_tests;
 mod history;
 #[cfg(test)]
 mod history_tests;
+pub(crate) mod job_reads;
+#[cfg(test)]
+mod job_reads_tests;
 pub(crate) mod keymap;
 mod lifecycle;
 #[cfg(test)]
@@ -147,7 +150,7 @@ use luxforge_core::{
     POINTER_MODE,
 };
 use message::{
-    Message, capability::CapabilityMessage, evidence::EvidenceMessage, export::ExportMessage,
+    Message, capability::CapabilityMessage, evidence::EvidenceMessage,
     performance::PerformanceMessage, preview::PreviewMessage, view::ViewMessage,
 };
 use serde_json::{Value, json};
@@ -660,11 +663,10 @@ impl Editor {
                 self.log.loop_timing.set(timing);
                 return Task::batch([task, transition]);
             }
-            // A job poll that only starts its read, or whose read answers what the desktop already
-            // holds, changes no state the hooks or the derive read: the poll's own flag is the
-            // whole of it. Dispatch it and stop, so a running export or capability job costs no
-            // derive at its tick. iced rebuilds the view after every message regardless.
-            if self.job_poll_changes_nothing(&message) {
+            // A capability reader's first read of a job can answer the record the round trip that
+            // started it already tracked, which changes no state the hooks or the derive read.
+            // Dispatch it and stop. (Every later read the reader sends is a change.)
+            if self.job_read_changes_nothing(&message) {
                 let task = self.dispatch(message);
                 let mut timing = self.log.loop_timing.get();
                 timing.last_rederive_ms = 0.0;
@@ -709,28 +711,21 @@ impl Editor {
             && self.sync.poll.idle()
     }
 
-    /// Whether this message is a job poll that leaves everything the screen and the hooks read as
-    /// it is: a poll's tick, which only starts a read, or the read of a job still queued or
-    /// running that answers exactly the record the desktop already holds. The comparison is made
-    /// against the held state, before the message is applied; anything that differs, and every
-    /// ended or failed job, takes the full update.
-    fn job_poll_changes_nothing(&self, message: &Message) -> bool {
-        match message {
-            Message::Export(ExportMessage::Poll) | Message::Capability(CapabilityMessage::Poll) => {
-                true
-            }
-            Message::Export(ExportMessage::Read { job_id, result }) => {
-                self.export.read_unchanged(job_id, result)
-            }
-            Message::Capability(CapabilityMessage::Polled(polled)) => {
-                polled.iter().all(|(module, _, result)| {
-                    result
-                        .as_ref()
-                        .is_ok_and(|record| self.capabilities.tracks_exactly(module, record))
-                })
-            }
-            _ => false,
-        }
+    /// Whether this message is a capability reader's send that leaves everything the screen and
+    /// the hooks read as it is: every record in it is of a job still queued or running that
+    /// answers exactly the record the desktop already tracks. The comparison is made against the
+    /// held state, before the message is applied; anything that differs, and every ended or failed
+    /// job, takes the full update. An export reader's first read is never one, since the desktop
+    /// holds no record of the job until a read arrives.
+    fn job_read_changes_nothing(&self, message: &Message) -> bool {
+        let Message::Capability(CapabilityMessage::Polled(polled)) = message else {
+            return false;
+        };
+        polled.iter().all(|(module, _, result)| {
+            result
+                .as_ref()
+                .is_ok_and(|record| self.capabilities.tracks_exactly(module, record))
+        })
     }
 
     /// One of the bounded preview or overlay workers has a job.

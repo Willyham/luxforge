@@ -910,3 +910,34 @@ pub(crate) fn incoming(
     let frame = exact(analysis.generation, raster, 0.0);
     Some((analysis, frame))
 }
+
+/// A job reader's stream with the runtime that owns its timer, to follow it in a test. The stream
+/// makes its interval on its first poll, in whichever runtime polls it, so every poll of one
+/// stream goes through the one runtime.
+pub(crate) struct Followed<M> {
+    runtime: tokio::runtime::Runtime,
+    stream: iced::futures::stream::BoxStream<'static, M>,
+}
+
+impl<M> Followed<M> {
+    pub(crate) fn new(stream: iced::futures::stream::BoxStream<'static, M>) -> Self {
+        Self {
+            runtime: tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .expect("a one-thread runtime with a clock"),
+            stream,
+        }
+    }
+
+    /// What the reader sends next, waiting for it as long as the hang bound allows, and `None`
+    /// once the stream has ended. Reads that send nothing are made meanwhile, which is what a
+    /// test counts them for.
+    pub(crate) fn next(&mut self) -> Option<M> {
+        use iced::futures::StreamExt;
+        let stream = &mut self.stream;
+        self.runtime
+            .block_on(async { tokio::time::timeout(luxforge_testbase::HANG, stream.next()).await })
+            .expect("the reader sent or ended within the hang bound")
+    }
+}

@@ -234,13 +234,11 @@ impl ModuleCapabilities {
 pub(crate) struct CapabilityStore {
     pub(crate) modules: BTreeMap<String, ModuleCapabilities>,
     pub(crate) consent: Option<OpenConsent>,
-    /// One `job.read` batch is in flight.
-    pub(crate) polling: bool,
 }
 
 impl CapabilityStore {
-    /// Some tracked job anywhere is still queued or running: the one condition the job poll exists
-    /// under.
+    /// Some tracked job anywhere is still queued or running: the one condition the job reader
+    /// exists under.
     pub(crate) fn live(&self) -> bool {
         self.modules.values().any(ModuleCapabilities::live)
     }
@@ -259,11 +257,12 @@ impl CapabilityStore {
             .collect()
     }
 
-    /// Whether a poll's answer for a tracked live job changes nothing the desktop holds: the job
+    /// Whether a reader's record for a tracked live job changes nothing the desktop holds: the job
     /// is still queued or running and `record` equals the one `module` already tracks, so
-    /// [`ModuleCapabilities::track`] would replace it with itself. Compared before the answer is
-    /// applied. An ended job, a job not tracked and any difference (progress included) answer
-    /// `false`.
+    /// [`ModuleCapabilities::track`] would replace it with itself. A reader's first read of a job
+    /// can be one, since a round trip tracked the job just before the reader started. Compared
+    /// before the record is applied. An ended job, a job not tracked and any difference (progress
+    /// included) answer `false`.
     pub(crate) fn tracks_exactly(&self, module: &str, record: &JobRecord) -> bool {
         !record.status.is_finished()
             && self
