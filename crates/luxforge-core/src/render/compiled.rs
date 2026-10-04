@@ -628,11 +628,29 @@ pub(super) struct Resolved {
 }
 
 impl Segment {
+    /// Where output pixel `(x, y)` comes from, or `None` outside the output stage. A segment
+    /// without point replacements has none to find, so it answers straight from the unmap; one
+    /// with them walks its operations backwards, composing the geometry each replacement is
+    /// carried through, as [`mapped_replacements`] does.
     pub(super) fn resolve(&self, x: u32, y: u32) -> Option<Resolved> {
         if x >= self.width || y >= self.height {
             return None;
         }
         let (input_x, input_y) = self.geometry.unmap(x, y);
+        if !self.has_pixels {
+            return Some(Resolved {
+                replacement: None,
+                input_x,
+                input_y,
+            });
+        }
+        self.replacement_at(x, y, input_x, input_y)
+    }
+
+    /// The walk [`Self::resolve`] takes for a segment with replacements: every operation's
+    /// geometry composed backwards from the output, and the last replacement that lands on
+    /// `(x, y)`, if any.
+    fn replacement_at(&self, x: u32, y: u32, input_x: u32, input_y: u32) -> Option<Resolved> {
         let mut suffix = ExactGeometry::identity(self.width, self.height);
         for (index, operation) in self.operations.iter().enumerate().rev() {
             match operation {
@@ -664,6 +682,17 @@ impl Segment {
             input_x,
             input_y,
         })
+    }
+
+    /// [`Self::resolve`] by the full composition whatever the segment holds: the reference the
+    /// shortcut for a segment without replacements is held to.
+    #[cfg(test)]
+    pub(super) fn resolve_composed(&self, x: u32, y: u32) -> Option<Resolved> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        let (input_x, input_y) = self.geometry.unmap(x, y);
+        self.replacement_at(x, y, input_x, input_y)
     }
 }
 
