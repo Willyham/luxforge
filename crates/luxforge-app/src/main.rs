@@ -174,18 +174,24 @@ fn arguments() -> Result<Config, String> {
             .unwrap_or_default()
             .as_nanos()
     );
-    // The directories are deliberately not created until they have real work.
+    // The directories are deliberately not created until they have real work. The diagnostics log
+    // is real work on every launch: an ordinary session keeps a bounded `events.jsonl` in the
+    // platform log directory, so a stall or a failure can be read back afterwards, and the launch
+    // before it as `events.previous.jsonl`. An evidence run writes into its own new directory.
     config.paths = config.resolve_paths();
-    let log_dir = config.evidence.clone().or_else(|| {
-        config
-            .data_root
-            .as_ref()
-            .and(config.paths.as_ref().map(|p| p.logs.clone()))
-    });
+    let evidence_log = config.evidence.is_some();
+    let log_dir = config
+        .evidence
+        .clone()
+        .or_else(|| config.paths.as_ref().map(|p| p.logs.clone()));
     if let Some(dir) = log_dir {
         let start = || -> std::io::Result<Diagnostics> {
             std::fs::create_dir_all(&dir)?;
-            Diagnostics::start(&dir.join("events.jsonl"))
+            let path = dir.join("events.jsonl");
+            if !evidence_log && path.exists() {
+                std::fs::rename(&path, dir.join("events.previous.jsonl"))?;
+            }
+            Diagnostics::start(&path)
         };
         match start() {
             Ok(log) => {

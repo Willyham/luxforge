@@ -37,7 +37,7 @@ const SET_RAW: &str = "set-raw";
 const TEMPERATURE: &str = "temperature";
 const TINT: &str = "tint";
 
-/// The steps the checks read by name, apart from the drags, double-clicks and readouts, whose
+/// The steps the checks read by name, apart from the drags, double-clicks and samples, whose
 /// tables carry their own. The plan and the checks share each name, so a misspelt one does not
 /// build: no RAW is checked in, so no recorded run would catch it.
 mod names {
@@ -49,7 +49,7 @@ mod names {
     pub const CROP_APPLIED: &str = "crop-applied";
     pub const CROP_AT_100: &str = "crop-at-100";
     pub const CROP_FITTED: &str = "crop-fitted";
-    pub const FITTED_READOUT: &str = "fitted-readout";
+    pub const FITTED_SAMPLE: &str = "fitted-sample";
     pub const FITTED_AT_FIT: &str = "fitted-at-fit";
 }
 
@@ -138,21 +138,22 @@ const DOUBLE_CLICKS: [DoubleClick; 3] = [
 /// The draft's straightening angle, and the angle the API's `crop-fit` then commits.
 const CROP_ANGLE: f64 = 7.0;
 const FIT_ANGLE: f64 = -12.0;
-/// Where the pointer readouts sample the committed crop at 100%, and the steps that hover there:
-/// stage pixels inside the corner of the crop the canvas shows at a zero pan, clear of the scroll
-/// bars and the mode strip, for any supplied RAW (the smallest crop, the Z6's, is over 2000 px each
-/// way). The API's crop is read again at the second.
-const READOUTS: [(&str, (u32, u32)); 2] = [
-    ("crop-readout-near", (300, 200)),
-    ("crop-readout-far", (1100, 700)),
+/// Where `render.sample` reads the committed crop at 100%, and the steps that ask: stage pixels
+/// inside the corner of the crop the canvas shows at a zero pan, clear of the scroll bars and the
+/// mode strip, for any supplied RAW (the smallest crop, the Z6's, is over 2000 px each way). The
+/// API's crop is read again at the second.
+const SAMPLES: [(&str, (u32, u32)); 2] = [
+    ("crop-sample-near", (300, 200)),
+    ("crop-sample-far", (1100, 700)),
 ];
 
-fn hover((x, y): (u32, u32)) -> script::Step {
-    script::Step::hover(x, y)
+/// The public point query of one stage pixel, whose answer the step records.
+fn sample((x, y): (u32, u32)) -> script::Step {
+    script::Step::call("render.sample", json!({"x":x,"y":y}))
 }
 
 /// The crop steps follow the double-clicks: a draft opened on the RAW's whole input stage, given
-/// a 16:9 ratio and straightened, applied at Fit, inspected at 100% through two pointer readouts,
+/// a 16:9 ratio and straightened, applied at Fit, inspected at 100% through two point samples,
 /// replaced by a `crop-fit` through the API at 100% and read again, then Fit. Every frame of a
 /// committed crop shows it with no notice over it.
 fn crop_steps() -> Vec<Step> {
@@ -167,8 +168,8 @@ fn crop_steps() -> Vec<Step> {
             .fit()
             .no_notices(),
         at_100(Step::new(names::CROP_AT_100, ViewStep::Percent(100.0))),
-        at_100(Step::new(READOUTS[0].0, hover(READOUTS[0].1))),
-        at_100(Step::new(READOUTS[1].0, hover(READOUTS[1].1))),
+        at_100(Step::new(SAMPLES[0].0, sample(SAMPLES[0].1))),
+        at_100(Step::new(SAMPLES[1].0, sample(SAMPLES[1].1))),
         // The API's `crop-fit` updates the applied crop's own layer in one entry.
         at_100(
             Step::new(
@@ -178,7 +179,7 @@ fn crop_steps() -> Vec<Step> {
             .commits(1)
             .same_layer(CROP_EFFECT, names::CROP_APPLIED),
         ),
-        at_100(Step::new(names::FITTED_READOUT, hover(READOUTS[1].1))),
+        at_100(Step::new(names::FITTED_SAMPLE, sample(SAMPLES[1].1))),
         Step::new(names::FITTED_AT_FIT, ViewStep::Fit)
             .fit()
             .no_notices(),
@@ -1155,12 +1156,12 @@ fn fit_placement(frame: &Frame, output: [u32; 2]) -> Result<Value> {
     }))
 }
 
-/// A pointer readout over the committed crop at 100%: the codes `render.sample` answered for the
-/// stage pixel under the pointer are the codes the canvas shows at that pixel, one stage pixel per
-/// physical pixel from the corner of the rectangle the editor records drawing the photograph in.
-/// The readout is the owner's own point evaluation of the current stack, so this ties the picture
-/// on screen to the committed recipe.
-fn readout_on_screen(frame: &Frame, point: (u32, u32), output: [u32; 2]) -> Result<Value> {
+/// A point sample of the committed crop at 100%: the codes `render.sample` answered for one stage
+/// pixel are the codes the canvas shows at that pixel, one stage pixel per physical pixel from the
+/// corner of the rectangle the editor records drawing the photograph in. The sample is the owner's
+/// own point evaluation of the current stack, so this ties the picture on screen to the committed
+/// recipe.
+fn sample_on_screen(frame: &Frame, point: (u32, u32), output: [u32; 2]) -> Result<Value> {
     let state = &frame["state"];
     ensure(
         state["surface"]["raster"] == json!(output) && state["proxy"]["presented"] == json!(false),
@@ -1169,13 +1170,9 @@ fn readout_on_screen(frame: &Frame, point: (u32, u32), output: [u32; 2]) -> Resu
             state["surface"]["raster"]
         ),
     )?;
-    let readout = &state["readout"];
-    ensure(
-        readout["x"] == json!(point.0) && readout["y"] == json!(point.1),
-        format!("The readout is {readout}, not at {point:?}"),
-    )?;
-    let codes: [u8; 4] = serde_json::from_value(readout["rgba"].clone())
-        .map_err(|_| format!("The readout carries no codes: {readout}"))?;
+    let answer = &frame["step"]["result"];
+    let codes: [u8; 4] = serde_json::from_value(answer["rgba"].clone())
+        .map_err(|_| format!("render.sample at {point:?} carries no codes: {answer}"))?;
     let image = frame.image()?;
     let [left, top, right, bottom] = frame.photo_rect()?;
     ensure(
@@ -1202,7 +1199,7 @@ fn readout_on_screen(frame: &Frame, point: (u32, u32), output: [u32; 2]) -> Resu
     Ok(json!({
         "point": [point.0, point.1],
         "screen": [screen.0, screen.1],
-        "readout": codes,
+        "sampled": codes,
         "shown": shown,
         "tolerance_codes": 1,
     }))
@@ -1210,7 +1207,7 @@ fn readout_on_screen(frame: &Frame, point: (u32, u32), output: [u32; 2]) -> Resu
 
 /// The straightened crop drafted, applied and inspected on the RAW itself: the draft draws its
 /// whole input stage, Apply commits one entry whose picture is the one on screen at Fit and at
-/// 100%, where the pointer readout's codes are the canvas's own, and a `crop-fit` through the API
+/// 100%, where `render.sample`'s codes are the canvas's own, and a `crop-fit` through the API
 /// at 100% updates the same layer and is shown the same way. The entries each commit makes, and
 /// that the `crop-fit` keeps the applied crop's layer, are the plan's.
 fn raw_crop(launch: &Checked) -> Result<Value> {
@@ -1254,11 +1251,11 @@ fn raw_crop(launch: &Checked) -> Result<Value> {
 
     let exact = launch.at(names::CROP_AT_100)?;
     shows_crop(exact, source, CROP_ANGLE, "The applied crop at 100%")?;
-    let mut readouts = Vec::new();
-    for (step, point) in READOUTS {
+    let mut samples = Vec::new();
+    for (step, point) in SAMPLES {
         let frame = launch.at(step)?;
-        shows_crop(frame, source, CROP_ANGLE, "A readout over the applied crop")?;
-        readouts.push(readout_on_screen(frame, point, output)?);
+        shows_crop(frame, source, CROP_ANGLE, "A sample of the applied crop")?;
+        samples.push(sample_on_screen(frame, point, output)?);
     }
 
     let fitted = launch.at(names::CROP_FITTED)?;
@@ -1271,9 +1268,9 @@ fn raw_crop(launch: &Checked) -> Result<Value> {
             fitted["state"]["surface"]["raster"]
         ),
     )?;
-    let frame = launch.at(names::FITTED_READOUT)?;
-    shows_crop(frame, source, FIT_ANGLE, "A readout over the API's crop")?;
-    readouts.push(readout_on_screen(frame, READOUTS[1].1, refitted)?);
+    let frame = launch.at(names::FITTED_SAMPLE)?;
+    shows_crop(frame, source, FIT_ANGLE, "A sample of the API's crop")?;
+    samples.push(sample_on_screen(frame, SAMPLES[1].1, refitted)?);
     let back = launch.at(names::FITTED_AT_FIT)?;
     shows_crop(back, source, FIT_ANGLE, "The API's crop back at Fit")?;
     let back_placement = fit_placement(back, refitted)?;
@@ -1282,7 +1279,7 @@ fn raw_crop(launch: &Checked) -> Result<Value> {
             "source": source,
             "straightened_draft": whole,
             "applied": {"output": output, "fit": placement},
-            "readouts": readouts,
+            "samples": samples,
             "api_crop_fit": {"angle": FIT_ANGLE, "output": refitted, "fit": back_placement},
         }
     }))
@@ -2036,13 +2033,13 @@ mod tests {
                 names::CROP_AT_100,
                 script::Step::View(ViewStep::Percent(100.0)),
             ),
-            (READOUTS[0].0, hover(READOUTS[0].1)),
-            (READOUTS[1].0, hover(READOUTS[1].1)),
+            (SAMPLES[0].0, sample(SAMPLES[0].1)),
+            (SAMPLES[1].0, sample(SAMPLES[1].1)),
             (
                 names::CROP_FITTED,
                 script::Step::call("edit.crop-fit", json!({"aspect":"3:2","angle":FIT_ANGLE})),
             ),
-            (names::FITTED_READOUT, hover(READOUTS[1].1)),
+            (names::FITTED_SAMPLE, sample(SAMPLES[1].1)),
             (names::FITTED_AT_FIT, script::Step::View(ViewStep::Fit)),
         ] {
             assert_eq!(scripted(&plan, step), request.to_value(), "{step}");

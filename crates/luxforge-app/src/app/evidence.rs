@@ -451,8 +451,6 @@ pub(crate) enum Settle {
     MaskOverlay,
     /// An armed mask tool's content map is available before scripted positions are sent.
     MaskMap,
-    /// The pointer readout must answer: from the retained exact frame, or from `render.sample`.
-    Readout,
     /// A canvas pick has reached an outcome that commits nothing: filled coordinates, or a refusal
     /// with its reason in the status bar. A pick that does commit re-arms [`Settle::Preview`]
     /// instead, so its frame is the committed render.
@@ -493,7 +491,6 @@ impl Settle {
             Self::Overlay => "overlay",
             Self::MaskOverlay => "mask_overlay",
             Self::MaskMap => "mask_map",
-            Self::Readout => "readout",
             Self::Pick => "pick",
             Self::Presets => "presets",
             Self::Host => "host",
@@ -1128,7 +1125,6 @@ impl Editor {
                 Task::batch([press, task])
             }
             Step::Palette(palette) => self.palette_step(palette),
-            Step::Hover { x, y } => self.hover_step(x, y),
             Step::CanvasHover { x, y } => self.canvas_hover_step(x, y),
             Step::CanvasHoverSweep {
                 points,
@@ -3702,31 +3698,6 @@ impl Editor {
         Task::none()
     }
 
-    /// One pointer position over the photograph, published exactly as the canvas publishes a move,
-    /// and captured once the readout has answered with the three output codes under it.
-    fn hover_step(&mut self, x: u32, y: u32) -> Task<Message> {
-        if self.document.state.is_none() {
-            return self.fail_step("no photograph is open");
-        }
-        if self.hover.pointer == Some((x, y)) {
-            // The pointer is already there, so no sample would be asked for and nothing would
-            // settle the step; clearing it first makes the move a real one.
-            let _ = self.update(Message::Pointer(PointerMessage::Moved(None)));
-        }
-        self.await_step(Settle::Readout);
-        let task = self.update(Message::Pointer(PointerMessage::Moved(Some((x, y)))));
-        if !self.hover.sample.in_flight()
-            && self
-                .hover
-                .readout
-                .as_ref()
-                .is_none_or(|readout| (readout.x, readout.y) != (x, y))
-        {
-            return self.fail_step("the pointer readout could not be requested");
-        }
-        task
-    }
-
     /// Open the palette, type the query, and either stop there or run the first match. The query
     /// step is captured on the next frame; a run settles the way its own entry would.
     /// One key pressed with no text field focused, through the same key table the keyboard
@@ -4191,7 +4162,6 @@ impl Editor {
             Outcome::CropStage => self.settle_step(Settle::Draft, by),
             Outcome::SessionAnswered => self.settle_step(Settle::Session, by),
             Outcome::PanAnswered => self.settle_step(Settle::Pan, by),
-            Outcome::ReadoutAnswered => self.settle_step(Settle::Readout, by),
             Outcome::PickEnded => self.settle_step(Settle::Pick, by),
             // This pick commits, so its evidence is the render that follows rather than the status
             // it leaves.

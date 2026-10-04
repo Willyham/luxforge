@@ -1,4 +1,4 @@
-//! The `histogram` smoke scenario: the inspector, the clipping overlays and the pointer readout.
+//! The `histogram` smoke scenario: the inspector, the clipping overlays and a `render.sample`.
 //!
 //! The fixture is the ordinary `orientation-1` pattern, whose clipped pixels are known from the
 //! generator rather than guessed: four quadrant colours with no channel at an endpoint, a white
@@ -13,9 +13,8 @@
 //! reducer rather than against itself — and so are the words the triangles' tooltips state them in.
 //!
 //! The inspector is the plot with the triangles in its bottom corners and nothing else, with no
-//! caption; the pointer readout is in the status bar. The hover frame is compared with the frame
-//! before it pixel for pixel: the tools panel is identical, and the status bar changes only inside
-//! the readout's own slot.
+//! caption. Nothing is read under the pointer; the pixel the scenario sets is read back through the
+//! public `render.sample`, whose answer the step records.
 use crate::{
     scenario::{Checked, Checks, Fixture, Frame, Plan, Run, Step, Tolerance, pixels, plan::only},
     *,
@@ -41,17 +40,6 @@ const BOTH_RGB: [u8; 3] = [0, 128, 255];
 const RULE: &str =
     "Any channel at 0 \u{b7} blue; any at 255 \u{b7} red; both endpoints \u{b7} magenta";
 
-/// The editor's layout in points, which a capture's recorded scale turns into physical rows and
-/// columns: the title bar and the status bar, each with its 1 pt rule, and the width of the status
-/// bar's readout slot.
-const TITLE_BAR_PT: f64 = 43.0;
-const STATUS_BAR_PT: f64 = 25.0;
-const RULE_PT: f64 = 1.0;
-const READOUT_SLOT_PT: f64 = 240.0;
-/// The trailing facts at the status bar's right edge (the zoom and what it means on this display)
-/// fit inside this many points; a hover must change nothing there.
-const TRAILING_PT: f64 = 100.0;
-
 /// Source points the checks sample, each named by what the fixture puts there.
 /// A black dash: every channel 0, so shadow and never highlight.
 const DASH: (u32, u32) = (60, 160);
@@ -61,7 +49,7 @@ const LINE: (u32, u32) = (240, 200);
 const CLEAN: [(u32, u32); 4] = [(120, 60), (400, 60), (120, 270), (420, 285)];
 
 /// Every `histogram` frame, in order: the open, then one per step. The expectations here are what
-/// each step commits and records; `verify` checks the counts, the readout and the overlays.
+/// each step commits and records; `verify` checks the counts, the sample and the overlays.
 pub fn plan(_: &[PathBuf]) -> Plan {
     // A step that changes what is shown and commits nothing.
     let view = |name: &str, script: script::Step| Step::new(name, script).commits(0);
@@ -84,8 +72,11 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             PIXEL_EFFECT,
             json!({"x":BOTH_PIXEL.0,"y":BOTH_PIXEL.1,"rgb":BOTH_RGB}),
         ),
-        // The pointer readout over exactly that pixel.
-        view("hover", script::Step::hover(BOTH_PIXEL.0, BOTH_PIXEL.1)),
+        // The public point query over exactly that pixel; its answer is recorded with the step.
+        view(
+            "sample",
+            script::Step::call("render.sample", json!({"x":BOTH_PIXEL.0,"y":BOTH_PIXEL.1})),
+        ),
         // The shadow overlay alone.
         view(
             "shadows",
@@ -536,65 +527,13 @@ fn radius(rect: [u32; 4]) -> i64 {
 /// The tools panel is the capture right of the photo surface and its 1 pt divider, between the
 /// title bar's rule and the status bar's. The status bar is the bottom 26 pt. Both come from the
 /// capture's own recorded scale and surface columns rather than a guess at the layout.
-fn chrome_changes(before: &Frame, after: &Frame) -> Result<Value> {
-    let frame = after;
-    let before = before.image()?;
-    let after = after.image()?;
-    ensure(
-        before.dimensions() == after.dimensions(),
-        "The two captures are different sizes",
-    )?;
-    let (width, height) = after.dimensions();
-    let scale = frame["scale"]
-        .as_f64()
-        .ok_or("The frame records no scale")?;
-    let [_, surface_right] = frame
-        .columns()?
-        .ok_or("The frame records no surface columns")?;
-    let px = |points: f64| (points * scale).ceil() as u32;
-    let panel = [
-        surface_right + px(RULE_PT),
-        px(TITLE_BAR_PT + RULE_PT),
-        width,
-        height.saturating_sub(px(STATUS_BAR_PT + RULE_PT)),
-    ];
-    ensure(
-        panel[0] < panel[2] && panel[1] < panel[3],
-        "The tools panel is not open in the capture",
-    )?;
-    let mut panel_changed = 0u64;
-    for y in panel[1]..panel[3] {
-        for x in panel[0]..panel[2] {
-            if before.get_pixel(x, y) != after.get_pixel(x, y) {
-                panel_changed += 1;
-            }
-        }
-    }
-    let bar_top = height.saturating_sub((STATUS_BAR_PT * scale).floor() as u32);
-    let changed_columns: Vec<u32> = (0..width)
-        .filter(|&x| (bar_top..height).any(|y| before.get_pixel(x, y) != after.get_pixel(x, y)))
-        .collect();
-    Ok(json!({
-        "tools_panel_rect": panel,
-        "tools_panel_pixels_changed": panel_changed,
-        "status_bar_rows": [bar_top, height],
-        "status_bar_changed_span": match (changed_columns.first(), changed_columns.last()) {
-            (Some(first), Some(last)) => json!([first, last + 1]),
-            _ => Value::Null,
-        },
-        "readout_slot_px": READOUT_SLOT_PT * scale,
-        "trailing_px": TRAILING_PT * scale,
-        "width": width,
-    }))
-}
-
-/// What the histogram, the readout and the overlays show at each step, once the plan has held.
+/// What the histogram, the sample and the overlays show at each step, once the plan has held.
 pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
     let root = run.root();
     let opened = launch.at("opened")?;
     let pixel = launch.at("pixel")?;
-    let hover = launch.at("hover")?;
+    let sample = launch.at("sample")?;
     let shadows = launch.at("shadows")?;
     let both = launch.at("both")?;
     let percent = launch.at("percent")?;
@@ -657,75 +596,27 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         after,
     );
 
-    // The pointer readout of that very pixel, in output codes.
-    let readout = &hover["state"]["readout"];
+    // The public point query of that very pixel, in output codes, recorded with its step.
+    let answer = &sample["step"]["result"];
     ensure(
-        readout["rgba"] == json!([BOTH_RGB[0], BOTH_RGB[1], BOTH_RGB[2], 255]),
-        format!(
-            "The readout reports {}, expected the pixel just set",
-            readout
-        ),
+        answer["rgba"] == json!([BOTH_RGB[0], BOTH_RGB[1], BOTH_RGB[2], 255]),
+        format!("render.sample answered {answer}, expected the pixel just set"),
     )?;
+    // A point query reads one pixel and changes nothing on screen.
     ensure(
-        readout["x"] == json!(BOTH_PIXEL.0) && readout["y"] == json!(BOTH_PIXEL.1),
-        format!("The readout names {}, {}", readout["x"], readout["y"]),
-    )?;
-    ensure(
-        readout["text"] == json!("R 0 \u{b7} G 128 \u{b7} B 255 \u{b7} 360, 240"),
-        format!("The readout line is {}", readout["text"]),
-    )?;
-    // The readout is the status bar's, and it arrived with the hover: the frame before it has none.
-    ensure(
-        hover["state"]["status_bar"]["readout"] == readout["text"],
-        format!(
-            "The status bar shows {} while the readout is {}",
-            hover["state"]["status_bar"]["readout"], readout["text"]
-        ),
-    )?;
-    ensure(
-        pixel["state"]["status_bar"]["readout"] == Value::Null,
-        "The status bar showed a readout before the pointer reached the photograph",
-    )?;
-    // Nothing else moved. The tools panel is pixel for pixel the frame before the hover, and the
-    // status bar changed only inside one readout-slot-wide span that stops short of the trailing
-    // facts: had the readout pushed anything, the zoom at the right edge would have moved too.
-    let chrome = chrome_changes(pixel, hover)?;
-    ensure(
-        chrome["tools_panel_pixels_changed"] == json!(0),
-        format!(
-            "The pointer readout changed {} pixels of the tools panel",
-            chrome["tools_panel_pixels_changed"]
-        ),
-    )?;
-    let span = chrome["status_bar_changed_span"]
-        .as_array()
-        .and_then(|span| Some((span.first()?.as_f64()?, span.get(1)?.as_f64()?)))
-        .ok_or("The readout did not change the status bar at all")?;
-    let slot = chrome["readout_slot_px"].as_f64().unwrap_or(0.0);
-    let bar_width = chrome["width"].as_f64().unwrap_or(0.0);
-    let trailing = chrome["trailing_px"].as_f64().unwrap_or(0.0);
-    ensure(
-        span.1 - span.0 <= slot && span.1 <= bar_width - trailing,
-        format!(
-            "The status bar changed over columns {span:?}, wider than the {slot} px readout slot or into the trailing {trailing} px"
-        ),
-    )?;
-    // The same pixel through the public method, from this process: the readout uses that path, so
-    // this is the same answer read a second way rather than a second implementation of it.
-    ensure(
-        counters(hover) == counters(pixel),
-        "Hovering changed the histogram",
+        counters(sample) == counters(pixel),
+        "Sampling changed the histogram",
     )?;
     checks.note(
-        hover,
-        "the pointer readout over the pixel that was just set, in the status bar; the tools panel is pixel-identical to the frame before and the status bar changed only inside the readout slot",
-        json!({"readout": readout, "status_bar": hover["state"]["status_bar"], "chrome": chrome}),
+        sample,
+        "render.sample of the pixel that was just set answers its three codes; the histogram is unchanged",
+        json!({"sample": answer}),
     );
 
     // The reference the overlay frames are compared against: the same stack, the same zoom, the
     // same panels, both overlays off. Every mask check below is a difference from this, so the
     // fixture's own strongly coloured quadrants cancel out instead of being mistaken for a mask.
-    let (bare_rect, bare) = photo_rect(hover)?;
+    let (bare_rect, bare) = photo_rect(sample)?;
     let bare_radius = radius(bare_rect);
 
     // The shadow overlay alone, which the plan holds to its flags. Blue over the black dashes,
@@ -952,15 +843,6 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         original["state"]["histogram"]["identity"]["entry"]
             != pixel["state"]["histogram"]["identity"]["entry"],
         "The plot still names the entry the edited stack belongs to",
-    )?;
-    // The readout describes one pixel of one stack, so moving to another entry clears it rather
-    // than leaving the edited stack's codes on screen over the Original.
-    ensure(
-        original["state"]["readout"] == Value::Null,
-        format!(
-            "The readout survived the change of displayed entry: {}",
-            original["state"]["readout"]
-        ),
     )?;
     checks.note(
         original,

@@ -572,7 +572,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "histogram",
-        about: "The histogram, its clipping overlays, the pointer readout and a drafted frame",
+        about: "The histogram, its clipping overlays, a render.sample of the edited pixel and a drafted frame",
         launches: &[LaunchSpec {
             plan: histogram::plan,
             // The scenario commits an `edit.set-pixel`, and the pixel proof is a test module.

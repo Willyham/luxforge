@@ -557,9 +557,9 @@ fn plain<'a>(
                     .into(),
                     None => photo,
                 };
-                // The pointer readout needs every move over the photograph, not only the ones a
-                // module's pick would use; a move that maps to the same pixel is dropped in the
-                // update function rather than here.
+                // Every move over the photograph is published, so the pointer's position is known
+                // to a pick and to the evidence cursor sync; a move that maps to the same pixel is
+                // dropped in the update function rather than here.
                 let mut area = mouse_area(layered).on_move(move |point| {
                     Message::Pointer(PointerMessage::Moved(fit_pick(
                         (width, height),
