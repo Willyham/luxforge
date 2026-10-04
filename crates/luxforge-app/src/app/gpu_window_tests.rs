@@ -1023,13 +1023,14 @@ fn gpu_window_an_unconverted_plan_is_charged_every_plane_apart() {
 /// --mask-presence`), committed over `editor`'s photograph by another client: the first mask brushed
 /// along the harness's seeding stroke and its measured stroke's path to the end, each further one a
 /// radial placed as the harness places it, each mask holding a masked Basic exposure of +0.6 and a
-/// masked Presence layer of Clarity 50 and Texture 40. Placement puts every masked Basic layer
-/// before every masked Presence layer. Answers the first mask.
+/// masked Presence layer of `presence`'s fields ([`harness_presence`] in the harness). Placement
+/// puts every masked Basic layer before every masked Presence layer. Answers the first mask.
 fn harness_layout(
     editor: &mut Editor,
     asset: &luxforge_core::AssetId,
     agent: luxforge_core::ClientId,
     masks: usize,
+    presence: &Value,
 ) -> Value {
     let brush = serde_json::json!({"size": 0.06, "feather": 50.0, "flow": 100.0, "erase": false,
                                    "limit_to_colour": false, "colour_refine": 50.0});
@@ -1055,8 +1056,9 @@ fn harness_layout(
     let adjust = |editor: &mut Editor, mask: &Value| {
         let basic = serde_json::json!({"mask": mask, "exposure": 0.6});
         answered(editor, asset, agent, "edit.set-basic", basic);
-        let presence = serde_json::json!({"mask": mask, "clarity": 50.0, "texture": 40.0});
-        answered(editor, asset, agent, "edit.set-presence", presence);
+        let mut fields = presence.clone();
+        fields["mask"] = mask.clone();
+        answered(editor, asset, agent, "edit.set-presence", fields);
     };
     adjust(editor, &first);
     for index in 2..=masks {
@@ -1069,6 +1071,61 @@ fn harness_layout(
         adjust(editor, &mask);
     }
     first
+}
+
+/// The Presence fields each of the paint harness's masks holds with `--mask-presence`.
+fn harness_presence() -> Value {
+    serde_json::json!({"clarity": 50.0, "texture": 40.0})
+}
+
+/// The generated 24 MP JPEG at `photograph` opened in an editor of a catalog named for `name`, the
+/// paint harness's layout of `masks` masks with `presence`'s fields committed over it
+/// ([`harness_layout`]), in Mask mode with the first mask open, so its exposure slider drafts the
+/// first mask's masked Basic layer, as the harness's stroke on it changes that layer first; shown
+/// at Fit in the harness's view once its first frame is in, the surface stood in for.
+fn harness_editor(
+    photograph: &std::path::Path,
+    name: &str,
+    masks: usize,
+    presence: &Value,
+) -> (Editor, std::path::PathBuf) {
+    use super::message::{mask::MaskMessage, view::ViewMessage};
+    let catalog = catalog(name);
+    let (mut editor, asset, agent) = crate::app::testing::real_photo_at(&catalog, photograph);
+    harness_view(&mut editor, VIEWS[0], luxforge_core::Zoom::Fit);
+    let first = harness_layout(&mut editor, &asset, agent, masks, presence);
+    let mode = serde_json::json!({"mode": luxforge_core::MASK_MODE});
+    let _ = editor.update(Message::View(ViewMessage::SetMode(
+        luxforge_core::MASK_MODE.into(),
+    )));
+    crate::app::tasks::call(&editor.owner, editor.client, "workspace.set", mode)
+        .expect("Mask mode");
+    let (session, _) = crate::app::tasks::call(
+        &editor.owner,
+        editor.client,
+        "session.state",
+        serde_json::json!({}),
+    )
+    .expect("the session");
+    let session = serde_json::from_value(session).expect("a session");
+    let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
+    let _ = editor.update(Message::Mask(MaskMessage::Select(
+        first.as_str().expect("a mask").into(),
+    )));
+    harness_view(&mut editor, VIEWS[0], luxforge_core::Zoom::Fit);
+    deliver_until(&mut editor, "the first frame", |editor| {
+        editor.presentation.dimensions.is_some() && !editor.presentation.queue.is_busy()
+    });
+    assert_eq!(editor.presentation.dimensions, Some((6000, 4000)));
+    editor.gpu.surface = Some(SurfaceReport::default());
+    (editor, catalog)
+}
+
+/// Cancel `editor`'s open draft, as the Cancel button does.
+fn cancel_draft(editor: &mut Editor) {
+    let _ = editor.update(Message::Draft(
+        crate::app::message::draft::DraftMessage::Cancel,
+    ));
 }
 
 /// One view of a 100% drag: a window at 2×, its side panels, and where it is scrolled to.
@@ -1250,7 +1307,6 @@ fn needed(
 #[test]
 #[ignore = "the generated 24 MP JPEG: set LUXFORGE_GENERATED_FIXTURES to the generated JPEGs"]
 fn gpu_window_the_paint_harness_masks_at_100_grow_the_window_by_every_links_halo() {
-    use super::message::{mask::MaskMessage, view::ViewMessage};
     use luxforge_ui::photo_surface::{GPU_PREVIEW_BUDGET, GpuBoundary, gpu_preview::chain_charge};
     let test = "gpu_window_the_paint_harness_masks_at_100_grow_the_window_by_every_links_halo";
     let Some(qualifier) = headless(test) else {
@@ -1264,41 +1320,8 @@ fn gpu_window_the_paint_harness_masks_at_100_grow_the_window_by_every_links_halo
         megabytes(GPU_PREVIEW_BUDGET)
     );
     for masks in [1usize, 3, 10, 16] {
-        let catalog = catalog(&format!("harness-{masks}"));
-        let (mut editor, asset, agent) = crate::app::testing::real_photo_at(&catalog, &photograph);
-        harness_view(&mut editor, VIEWS[0], luxforge_core::Zoom::Fit);
-        let first = harness_layout(&mut editor, &asset, agent, masks);
-        // Mask mode with the first mask open, so its exposure slider drafts the first mask's
-        // masked Basic layer, as the harness's stroke on it changes that layer first.
-        let mode = serde_json::json!({"mode": luxforge_core::MASK_MODE});
-        let _ = editor.update(Message::View(ViewMessage::SetMode(
-            luxforge_core::MASK_MODE.into(),
-        )));
-        crate::app::tasks::call(&editor.owner, editor.client, "workspace.set", mode)
-            .expect("Mask mode");
-        let (session, _) = crate::app::tasks::call(
-            &editor.owner,
-            editor.client,
-            "session.state",
-            serde_json::json!({}),
-        )
-        .expect("the session");
-        let session = serde_json::from_value(session).expect("a session");
-        let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
-        let _ = editor.update(Message::Mask(MaskMessage::Select(
-            first.as_str().expect("a mask").into(),
-        )));
-        harness_view(&mut editor, VIEWS[0], luxforge_core::Zoom::Fit);
-        deliver_until(&mut editor, "the first frame", |editor| {
-            editor.presentation.dimensions.is_some() && !editor.presentation.queue.is_busy()
-        });
-        assert_eq!(editor.presentation.dimensions, Some((6000, 4000)));
-        editor.gpu.surface = Some(SurfaceReport::default());
-        let cancel = |editor: &mut Editor| {
-            let _ = editor.update(Message::Draft(
-                crate::app::message::draft::DraftMessage::Cancel,
-            ));
-        };
+        let name = format!("harness-{masks}");
+        let (mut editor, catalog) = harness_editor(&photograph, &name, masks, &harness_presence());
         // At Fit: the proxy's plan, whose boundary is the proxy stage, which no halo grows.
         let _ = slide(&mut editor, "set-basic", "exposure", 0.7);
         {
@@ -1323,7 +1346,7 @@ fn gpu_window_the_paint_harness_masks_at_100_grow_the_window_by_every_links_halo
                 editor.gpu.region_charge()
             );
         }
-        cancel(&mut editor);
+        cancel_draft(&mut editor);
         for (number, view) in VIEWS.into_iter().enumerate() {
             harness_view(
                 &mut editor,
@@ -1448,7 +1471,132 @@ fn gpu_window_the_paint_harness_masks_at_100_grow_the_window_by_every_links_halo
                 (slot as f64 * around.pixels() as f64 / texels) / 1e6,
                 sized(&painted, around),
             );
-            cancel(&mut editor);
+            cancel_draft(&mut editor);
+        }
+        finish(editor, catalog);
+    }
+}
+
+/// How many of the paint harness's masks a 100% drag of the first mask's exposure holds within the
+/// GPU-preview budget, in the harness's view and the corpus's ([`VIEWS`]): for every N from 1 to 16
+/// masks of the harness's layout, the window the drag's boundary request names, the slot the
+/// desktop holds it to and whether that fits, and the largest N that does in each view. It holds
+/// only what does not depend on the figures: the window is the region grown by every link's halo,
+/// the slot never falls as N grows, and a tick asks for no boundary exactly when its slot passes
+/// the budget. With Dehaze beside Clarity and Texture in every masked Presence layer the same drag
+/// has no plan to charge at any N: the drag changes the input of every Dehaze layer, whose estimate
+/// at 100% is the exact stage's, which the store cannot hold for a drafted value, so every tick
+/// names `region-estimate` before the budget is asked.
+///
+/// ```text
+/// LUXFORGE_GENERATED_FIXTURES=fixtures/generated cargo test --release -p luxforge-app \
+///     --bin luxforge gpu_window_the_paint_harness_masks_at_100_fit -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "the generated 24 MP JPEG: set LUXFORGE_GENERATED_FIXTURES to the generated JPEGs"]
+fn gpu_window_the_paint_harness_masks_at_100_fit_the_budget_up_to_a_count() {
+    use luxforge_ui::photo_surface::GPU_PREVIEW_BUDGET;
+    let test = "gpu_window_the_paint_harness_masks_at_100_fit_the_budget_up_to_a_count";
+    let generated = std::env::var("LUXFORGE_GENERATED_FIXTURES").expect("the generated JPEGs");
+    let photograph = std::path::Path::new(&generated).join("24mp.jpg");
+    let views = [VIEWS[0], VIEWS[3]];
+    let at_100 = luxforge_core::Zoom::Percent { value: 100.0 };
+    // Each view's rows: N, the window and the slot.
+    let mut rows: [Vec<(usize, Region, u64)>; 2] = Default::default();
+    for masks in 1..=16 {
+        let name = format!("budget-{masks}");
+        let (mut editor, catalog) = harness_editor(&photograph, &name, masks, &harness_presence());
+        for (number, view) in views.into_iter().enumerate() {
+            harness_view(&mut editor, view, at_100.clone());
+            let _ = slide(
+                &mut editor,
+                "set-basic",
+                "exposure",
+                0.8 + 0.1 * number as f64,
+            );
+            let (plan, request) = editor.gpu.planned().expect("a 100% plan");
+            let rect = request.key.region().expect("a region");
+            let window = request.window.expect("the region's window");
+            let stage = (plan.boundary.stage.width, plan.boundary.stage.height);
+            let halo = plan
+                .spatial
+                .iter()
+                .flat_map(|spatial| spatial.halos.iter())
+                .sum();
+            assert_eq!(
+                window,
+                grown(rect, halo, stage),
+                "{masks} masks, {}",
+                view.name
+            );
+            let (_, slot) = editor.gpu.region_charge().expect("a region's charge");
+            let over = slot > GPU_PREVIEW_BUDGET;
+            assert_eq!(
+                editor.gpu.ticks().2 == 0,
+                over,
+                "{masks} masks, {}: a boundary is asked for exactly when the slot fits",
+                view.name
+            );
+            assert_eq!(
+                editor.gpu.summary()["drag"]["over_budget"].is_null(),
+                !over,
+                "{masks} masks, {}",
+                view.name
+            );
+            if let Some(&(_, _, before)) = rows[number].last() {
+                assert!(
+                    before <= slot,
+                    "{masks} masks, {}: {before} B, then {slot} B",
+                    view.name
+                );
+            }
+            rows[number].push((masks, window, slot));
+            cancel_draft(&mut editor);
+        }
+        finish(editor, catalog);
+    }
+    for (view, rows) in views.iter().zip(&rows) {
+        eprintln!("{test}: {}, the budget {GPU_PREVIEW_BUDGET} B:", view.name);
+        for (masks, window, slot) in rows {
+            eprintln!(
+                "{test}:   {masks:>2} masks: window {}, slot {:.1} MB, fits {}",
+                shown(*window),
+                megabytes(*slot),
+                *slot <= GPU_PREVIEW_BUDGET
+            );
+        }
+        let largest = rows
+            .iter()
+            .take_while(|(_, _, slot)| *slot <= GPU_PREVIEW_BUDGET)
+            .last()
+            .map(|(masks, _, _)| *masks);
+        eprintln!(
+            "{test}: {}: the largest N that fits: {largest:?}",
+            view.name
+        );
+    }
+    // With Dehaze 25 beside them: the drag's first tick at 100% has no plan to charge.
+    let mut dehaze = harness_presence();
+    dehaze["dehaze"] = serde_json::json!(25.0);
+    for masks in [1, 2] {
+        let name = format!("dehaze-{masks}");
+        let (mut editor, catalog) = harness_editor(&photograph, &name, masks, &dehaze);
+        for (number, view) in views.into_iter().enumerate() {
+            harness_view(&mut editor, view, at_100.clone());
+            let _ = slide(
+                &mut editor,
+                "set-basic",
+                "exposure",
+                0.8 + 0.1 * number as f64,
+            );
+            let summary = editor.gpu.summary();
+            assert!(editor.gpu.planned().is_none(), "{summary}");
+            assert_eq!(summary["drag"]["reason"], "region-estimate", "{summary}");
+            eprintln!(
+                "{test}: with Dehaze 25, {masks} masks, {}: the tick names {}",
+                view.name, summary["drag"]["reason"]
+            );
+            cancel_draft(&mut editor);
         }
         finish(editor, catalog);
     }
