@@ -18,6 +18,9 @@
 //! - **A chain's charge.** Before its boundary exists, a chained masked plan is held to the slot's
 //!   own charge, each link's intermediate and the shared scratch pool counted, over a 100% region
 //!   and at Fit's exact stage; the budget reads that pooled figure.
+//! - **The paint harness at 100%.** A measurement on the generated 24 MP JPEG: the window of a
+//!   chain of masked Presence layers is the region grown by every link's halo, and the desktop's
+//!   figure for it is the slot's own.
 //!
 //! A GPU test with no adapter prints that it was skipped and asserts nothing.
 use super::{
@@ -1012,4 +1015,441 @@ fn gpu_window_an_unconverted_plan_is_charged_every_plane_apart() {
         "above by the shared scratch, less the slices"
     );
     assert!(apart > converted.total());
+}
+
+// ---- The paint harness's masked Presence layers at 100% -----------------------------------------
+
+/// The paint harness's layout (`cargo xtask editor-latency --mode paint --masks N
+/// --mask-presence`), committed over `editor`'s photograph by another client: the first mask brushed
+/// along the harness's seeding stroke and its measured stroke's path to the end, each further one a
+/// radial placed as the harness places it, each mask holding a masked Basic exposure of +0.6 and a
+/// masked Presence layer of Clarity 50 and Texture 40. Placement puts every masked Basic layer
+/// before every masked Presence layer. Answers the first mask.
+fn harness_layout(
+    editor: &mut Editor,
+    asset: &luxforge_core::AssetId,
+    agent: luxforge_core::ClientId,
+    masks: usize,
+) -> Value {
+    let brush = serde_json::json!({"size": 0.06, "feather": 50.0, "flow": 100.0, "erase": false,
+                                   "limit_to_colour": false, "colour_refine": 50.0});
+    let mut seed = brush.clone();
+    seed["points"] = serde_json::json!([[0.2, 0.3], [0.8, 0.3]]);
+    let seeded = answered(editor, asset, agent, "mask.add-stroke", seed);
+    let first = seeded["mask"].clone();
+    // The measured stroke, 120 positions of a sine across the frame, painted to its end.
+    let path: Vec<[f64; 2]> = (0..120)
+        .map(|index| {
+            let t = f64::from(index) / 119.0;
+            [
+                0.2 + 0.8 * t,
+                0.5 + 0.2 * (std::f64::consts::TAU * 2.5 * t).sin(),
+            ]
+        })
+        .collect();
+    let mut painted = brush;
+    painted["mask"] = first.clone();
+    painted["component"] = seeded["component"].clone();
+    painted["points"] = serde_json::json!(path);
+    answered(editor, asset, agent, "mask.add-stroke", painted);
+    let adjust = |editor: &mut Editor, mask: &Value| {
+        let basic = serde_json::json!({"mask": mask, "exposure": 0.6});
+        answered(editor, asset, agent, "edit.set-basic", basic);
+        let presence = serde_json::json!({"mask": mask, "clarity": 50.0, "texture": 40.0});
+        answered(editor, asset, agent, "edit.set-presence", presence);
+    };
+    adjust(editor, &first);
+    for index in 2..=masks {
+        let t = (index - 2) as f64 / (masks.max(3) - 2) as f64;
+        let radial = serde_json::json!({"x": 0.15 + 0.7 * t,
+                                        "y": 0.35 + 0.3 * (t * 7.0).sin().abs(),
+                                        "radius_x": 0.18, "radius_y": 0.14, "angle": 0.0,
+                                        "feather": 50.0});
+        let mask = answered(editor, asset, agent, "mask.create-radial", radial)["mask"].clone();
+        adjust(editor, &mask);
+    }
+    first
+}
+
+/// One view of a 100% drag: a window at 2×, its side panels, and where it is scrolled to.
+#[derive(Clone, Copy)]
+struct View {
+    name: &'static str,
+    window: (f32, f32),
+    panels: bool,
+    centred: bool,
+}
+
+/// The views a 100% drag over the paint harness's layout is planned in: the harness's own, its
+/// 1728 × 1080 window with both side panels open, as the harness has them, scrolled to the top
+/// left as a view zoomed to 100% opens; the same window scrolled to the centre; that window with
+/// both panels closed, the largest region it holds; and the corpus's largest window
+/// ([`LARGEST_WINDOW`](super::gpu_qualification::LARGEST_WINDOW)), whose region on a 6000 × 4000
+/// stage is 3026 × 1826 at (1487, 1087).
+const VIEWS: [View; 4] = [
+    View {
+        name: "the harness's (panels open, top left)",
+        window: (1728.0, 1080.0),
+        panels: true,
+        centred: false,
+    },
+    View {
+        name: "panels open, centred",
+        window: (1728.0, 1080.0),
+        panels: true,
+        centred: true,
+    },
+    View {
+        name: "panels closed, centred",
+        window: (1728.0, 1080.0),
+        panels: false,
+        centred: true,
+    },
+    View {
+        name: "the corpus's",
+        window: super::gpu_qualification::LARGEST_WINDOW,
+        panels: false,
+        centred: true,
+    },
+];
+
+/// `editor`'s view as `view` shows it, at `zoom`.
+fn harness_view(editor: &mut Editor, view: View, zoom: luxforge_core::Zoom) {
+    editor.view_state.window = view.window;
+    editor.view_state.scale_factor = 2.0;
+    editor.session.workspace.state_panel = view.panels;
+    editor.session.workspace.tools_panel = view.panels;
+    editor.session.preview.view.zoom = zoom;
+    let surface = crate::layout::photo_surface(view.window, view.panels, view.panels);
+    let (width, height) = editor.presentation.dimensions.unwrap_or((0, 0));
+    // Logical pixels an output pixel takes at 100% at 2×.
+    let scale = 0.5;
+    editor.view_state.local_pan = if view.centred {
+        (
+            ((width as f32 * scale - surface.0) / 2.0).max(0.0),
+            ((height as f32 * scale - surface.1) / 2.0).max(0.0),
+        )
+    } else {
+        (0.0, 0.0)
+    };
+}
+
+/// `rect` grown by `by` on every side, clamped to a stage of `stage`.
+fn grown(rect: Region, by: u32, stage: (u32, u32)) -> Region {
+    let (x0, y0) = (rect.x0.saturating_sub(by), rect.y0.saturating_sub(by));
+    let (x1, y1) = ((rect.x1() + by).min(stage.0), (rect.y1() + by).min(stage.1));
+    Region {
+        x0,
+        y0,
+        width: x1 - x0,
+        height: y1 - y0,
+    }
+}
+
+/// The smallest rectangle holding `a` and `b`.
+fn union(a: Region, b: Region) -> Region {
+    let (x0, y0) = (a.x0.min(b.x0), a.y0.min(b.y0));
+    Region {
+        x0,
+        y0,
+        width: a.x1().max(b.x1()) - x0,
+        height: a.y1().max(b.y1()) - y0,
+    }
+}
+
+/// The part of `a` inside `b`, if any.
+fn intersection(a: Region, b: Region) -> Option<Region> {
+    let (x0, y0) = (a.x0.max(b.x0), a.y0.max(b.y0));
+    let (x1, y1) = (a.x1().min(b.x1()), a.y1().min(b.y1()));
+    (x1 > x0 && y1 > y0).then(|| Region {
+        x0,
+        y0,
+        width: x1 - x0,
+        height: y1 - y0,
+    })
+}
+
+/// A rectangle as `WxH at (x, y), M MP`.
+fn shown(rect: Region) -> String {
+    format!(
+        "{}x{} at ({}, {}), {:.1} MP",
+        rect.width,
+        rect.height,
+        rect.x0,
+        rect.y0,
+        rect.pixels() as f64 / 1e6
+    )
+}
+
+/// A megabyte figure of `bytes`.
+fn megabytes(bytes: u64) -> f64 {
+    bytes as f64 / 1e6
+}
+
+/// How a walk back from a region grows each masked link's needed rectangle.
+#[derive(Clone, Copy, PartialEq)]
+enum Walk {
+    /// By the link's halo everywhere, as the planner grows it.
+    Halo,
+    /// Only where the link's mask's bounds reach it, since outside them its output is its input
+    /// there.
+    Bounded,
+    /// [`Walk::Bounded`], but by the halo everywhere for the first link, whose mask the gesture
+    /// paints, so its bounds change under it.
+    BoundedButFirst,
+}
+
+/// What each link of a chain of spatial links needs exact, walking back from `region` as `walk`
+/// says: the rectangle each link's output must hold, in chain order, and the rectangle the first
+/// link's input must hold.
+fn needed(
+    plan: &luxforge_core::GpuPlan,
+    region: Region,
+    stage: (u32, u32),
+    walk: Walk,
+) -> (Vec<Region>, Region) {
+    let mut outputs = Vec::new();
+    let mut needed = region;
+    for (link, spatial) in plan.spatial.iter().enumerate().rev() {
+        outputs.push(needed);
+        let halo = spatial.halos.iter().sum();
+        let bounded = walk == Walk::Bounded || walk == Walk::BoundedButFirst && link > 0;
+        match spatial.mask.as_ref().filter(|_| bounded) {
+            Some(mask) => {
+                if let Some(inside) = intersection(needed, mask.bounds) {
+                    needed = union(needed, grown(inside, halo, stage));
+                }
+            }
+            None => needed = grown(needed, halo, stage),
+        }
+    }
+    outputs.reverse();
+    (outputs, needed)
+}
+
+/// Why `editor-latency --mode paint --zoom 100 --masks 10` (and 16) with `--mask-presence` takes
+/// the CPU path naming `budget-exceeded` on every tick, through the real planning path: the
+/// generated 24 MP JPEG (6000 × 4000) opened in the editor, the harness's layout of N masks
+/// committed over it, a drag of the first mask's exposure in each of [`VIEWS`], whose plan starts,
+/// as every gesture's does, from the stack's first content layer. At 100% the window the boundary
+/// request names is the region grown by every Presence link's summed halo (Texture's and
+/// Clarity's, 8 + 199 px at this stage), once a link: N links grow it N halos on every side, to
+/// most or all of the stage at 10 and 16 masks. The plan converts, so the desktop charges the
+/// chain as the slot does, each link's intermediate the window's size, and its figure is the
+/// slot's own charge for that plan over that window less the links' words and blocks buffers. For
+/// each N it prints the window, `region_charge`'s `(boundary, slot)`, the chain's breakdown, the
+/// slot's own charge and the budget; and, as estimates for a proposal, what a walk that grows a
+/// masked link's needed rectangle only where its mask's bounds reach would hold, and what each
+/// link's intermediate and kept planes would take sized to what that link's output must hold. At
+/// Fit the plan is the proxy's and no halo grows its boundary.
+///
+/// ```text
+/// LUXFORGE_GENERATED_FIXTURES=fixtures/generated cargo test --release -p luxforge-app \
+///     --bin luxforge gpu_window_the_paint_harness_masks_at_100 -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "the generated 24 MP JPEG: set LUXFORGE_GENERATED_FIXTURES to the generated JPEGs"]
+fn gpu_window_the_paint_harness_masks_at_100_grow_the_window_by_every_links_halo() {
+    use super::message::{mask::MaskMessage, view::ViewMessage};
+    use luxforge_ui::photo_surface::{GPU_PREVIEW_BUDGET, GpuBoundary, gpu_preview::chain_charge};
+    let test = "gpu_window_the_paint_harness_masks_at_100_grow_the_window_by_every_links_halo";
+    let Some(qualifier) = headless(test) else {
+        return;
+    };
+    let generated = std::env::var("LUXFORGE_GENERATED_FIXTURES").expect("the generated JPEGs");
+    let photograph = std::path::Path::new(&generated).join("24mp.jpg");
+    eprintln!(
+        "{test}: the budget {} B ({:.1} MB)",
+        GPU_PREVIEW_BUDGET,
+        megabytes(GPU_PREVIEW_BUDGET)
+    );
+    for masks in [1usize, 3, 10, 16] {
+        let catalog = catalog(&format!("harness-{masks}"));
+        let (mut editor, asset, agent) = crate::app::testing::real_photo_at(&catalog, &photograph);
+        harness_view(&mut editor, VIEWS[0], luxforge_core::Zoom::Fit);
+        let first = harness_layout(&mut editor, &asset, agent, masks);
+        // Mask mode with the first mask open, so its exposure slider drafts the first mask's
+        // masked Basic layer, as the harness's stroke on it changes that layer first.
+        let mode = serde_json::json!({"mode": luxforge_core::MASK_MODE});
+        let _ = editor.update(Message::View(ViewMessage::SetMode(
+            luxforge_core::MASK_MODE.into(),
+        )));
+        crate::app::tasks::call(&editor.owner, editor.client, "workspace.set", mode)
+            .expect("Mask mode");
+        let (session, _) = crate::app::tasks::call(
+            &editor.owner,
+            editor.client,
+            "session.state",
+            serde_json::json!({}),
+        )
+        .expect("the session");
+        let session = serde_json::from_value(session).expect("a session");
+        let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
+        let _ = editor.update(Message::Mask(MaskMessage::Select(
+            first.as_str().expect("a mask").into(),
+        )));
+        harness_view(&mut editor, VIEWS[0], luxforge_core::Zoom::Fit);
+        deliver_until(&mut editor, "the first frame", |editor| {
+            editor.presentation.dimensions.is_some() && !editor.presentation.queue.is_busy()
+        });
+        assert_eq!(editor.presentation.dimensions, Some((6000, 4000)));
+        editor.gpu.surface = Some(SurfaceReport::default());
+        let cancel = |editor: &mut Editor| {
+            let _ = editor.update(Message::Draft(
+                crate::app::message::draft::DraftMessage::Cancel,
+            ));
+        };
+        // At Fit: the proxy's plan, whose boundary is the proxy stage, which no halo grows.
+        let _ = slide(&mut editor, "set-basic", "exposure", 0.7);
+        {
+            let (plan, request) = editor.gpu.planned().expect("a Fit plan");
+            assert_eq!(plan.spatial.len(), masks, "a Presence link a mask");
+            assert!(
+                plan.spatial.iter().all(|spatial| spatial.mask.is_some()),
+                "every Presence layer masked"
+            );
+            assert_eq!(
+                plan.content.len(),
+                masks,
+                "every masked Basic layer before them"
+            );
+            assert_eq!(request.key.region(), None);
+            eprintln!(
+                "{test}: {masks} masks at Fit: the proxy's boundary stage {}x{}, window {:?}, \
+                 region_charge {:?}",
+                plan.boundary.stage.width,
+                plan.boundary.stage.height,
+                request.window,
+                editor.gpu.region_charge()
+            );
+        }
+        cancel(&mut editor);
+        for (number, view) in VIEWS.into_iter().enumerate() {
+            harness_view(
+                &mut editor,
+                view,
+                luxforge_core::Zoom::Percent { value: 100.0 },
+            );
+            let _ = slide(
+                &mut editor,
+                "set-basic",
+                "exposure",
+                0.8 + 0.1 * number as f64,
+            );
+            let (plan, request) = editor.gpu.planned().expect("a 100% plan");
+            let rect = request.key.region().expect("a region");
+            let window = request.window.expect("the region's window");
+            let stage = (plan.boundary.stage.width, plan.boundary.stage.height);
+            assert_eq!(stage, (6000, 4000), "the exact stage");
+            assert_eq!(plan.spatial.len(), masks);
+            // Every Presence link's summed halo, Texture's and Clarity's: the same for each.
+            let halos: Vec<u32> = plan
+                .spatial
+                .iter()
+                .map(|spatial| spatial.halos.iter().sum())
+                .collect();
+            assert!(halos.iter().all(|halo| *halo == halos[0]), "{halos:?}");
+            let total: u32 = halos.iter().sum();
+            assert_eq!(
+                window,
+                grown(rect, total, stage),
+                "{masks} masks: the region grown by every link's halo"
+            );
+            assert_eq!(
+                needed(plan, rect, stage, Walk::Halo).1,
+                window,
+                "the planner's walk"
+            );
+            let (boundary, slot) = editor.gpu.region_charge().expect("a region's charge");
+            let steps = super::gpu_plan::plan_steps(plan);
+            let converted = steps.is_ok();
+            let format = super::gpu_plan::boundary_format(request.format);
+            let size = (window.width, window.height);
+            let origin = (window.x0, window.y0);
+            let chain = chain_charge(&steps.expect("convertible steps"), size, origin, format);
+            assert_eq!(
+                super::gpu_preview::chain_charge(plan, window, request.format),
+                chain.total()
+            );
+            // The slot's own charge for the plan converted over a boundary of that window.
+            let held = GpuBoundary::new(
+                std::sync::Arc::new(vec![0u8; window.pixels() as usize * 8]),
+                window.width,
+                window.height,
+                1,
+                format,
+            )
+            .expect("a boundary")
+            .resident();
+            let surface = super::gpu_plan::surface_plan_over(plan, held, origin, None, Some(rect))
+                .expect("a runnable plan");
+            let charged = qualifier.charged_bytes(&surface).expect("a charge");
+            assert!(slot <= charged, "{slot} B of {charged} B");
+            let summary = editor.gpu.summary();
+            let over = &summary["drag"]["over_budget"];
+            assert_eq!(over.is_null(), slot <= GPU_PREVIEW_BUDGET, "{summary}");
+            // Estimates for a proposal, at the window's own rates a texel: each link's
+            // intermediate and kept planes sized to what its output must hold, the content
+            // link's to the window, and the pool and the rest as they are.
+            let texels = window.pixels() as f64;
+            let rest = slot - chain.total();
+            let kept = chain.kept.iter().copied().max().unwrap_or(0) as f64 / texels;
+            let sized = |outputs: &[Region], input: Region| -> f64 {
+                let pixels = |rect: &Region| rect.pixels() as f64;
+                let scale = input.pixels() as f64 / texels;
+                let intermediates: f64 = outputs[..outputs.len() - 1]
+                    .iter()
+                    .map(|rect| 8.0 * pixels(rect))
+                    .sum::<f64>()
+                    + 8.0 * pixels(&input);
+                let planes: f64 = outputs.iter().map(|rect| kept * pixels(rect)).sum();
+                (rest as f64
+                    + boundary as f64 * (scale - 1.0)
+                    + chain.pool as f64 * scale
+                    + intermediates
+                    + planes)
+                    / 1e6
+            };
+            let (outputs, _) = needed(plan, rect, stage, Walk::Halo);
+            let (bounded, input) = needed(plan, rect, stage, Walk::Bounded);
+            let (painted, around) = needed(plan, rect, stage, Walk::BoundedButFirst);
+            eprintln!(
+                "{test}: {masks} masks at 100%, {}: region {}; each link's halo {} px; window \
+                 {}; region_charge (boundary {:.1} MB, slot {:.1} MB); steps converted \
+                 {converted}; chain {:.1} MB: {} intermediates of {:.1} MB, kept {:.1} MB a \
+                 Presence link, pool {:.1} MB; the slot's own charge {:.1} MB, {:.1} KB more \
+                 (the links' buffers); over the budget: {over}; boundaries asked for: {}",
+                view.name,
+                shown(rect),
+                halos[0],
+                shown(window),
+                megabytes(boundary),
+                megabytes(slot),
+                megabytes(chain.total()),
+                chain.intermediates.len(),
+                chain.intermediates.first().copied().map_or(0.0, megabytes),
+                megabytes(chain.kept.iter().copied().max().unwrap_or(0)),
+                megabytes(chain.pool),
+                megabytes(charged),
+                (charged - slot) as f64 / 1e3,
+                editor.gpu.ticks().2,
+            );
+            eprintln!(
+                "{test}: {masks} masks at 100%, {}: estimates: each link sized to its output \
+                 {:.1} MB; a mask-bounded walk's window {} ({:.1} MB at the window's rates), \
+                 with each link sized to its output {:.1} MB; bounded but for the painted mask's \
+                 link {} ({:.1} MB), with each link sized {:.1} MB",
+                view.name,
+                sized(&outputs, window),
+                shown(input),
+                (slot as f64 * input.pixels() as f64 / texels) / 1e6,
+                sized(&bounded, input),
+                shown(around),
+                (slot as f64 * around.pixels() as f64 / texels) / 1e6,
+                sized(&painted, around),
+            );
+            cancel(&mut editor);
+        }
+        finish(editor, catalog);
+    }
 }
