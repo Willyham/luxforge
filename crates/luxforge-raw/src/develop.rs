@@ -3,7 +3,7 @@
 
 use crate::{
     CancelCallback, MAX_GAIN, MAX_RGB_BYTES, NativeMetadata, PARALLEL_PIXELS, PlanarRgb, RawError,
-    RawSource, cancelled, native_result, native_tiles, normalize,
+    RawSource, cancelled, native_result, native_tiles, normalize, zeroed::zeroed_vec,
 };
 use std::{
     ffi::{c_char, c_int, c_void},
@@ -137,10 +137,7 @@ pub(crate) fn develop_with(
     if let (Some(diagnostics), Some(clock)) = (diagnostics.as_deref_mut(), clock) {
         diagnostics.normalization_ns = clock.elapsed().as_nanos() as u64;
     }
-    let mut data = Vec::new();
-    data.try_reserve_exact(n * 3)
-        .map_err(|_| RawError::ResourceLimit("RGB plane allocation"))?;
-    data.resize(n * 3, 0.0);
+    let mut data = zeroed_vec::<f32>(n * 3, "RGB plane allocation")?;
     let mut executor_context = native_tiles::ExecutorContext {
         cancel,
         worker_limit,
@@ -251,10 +248,7 @@ fn direct_develop(
         return Err(RawError::ResourceLimit("direct RAW layout or RGB planes"));
     }
     let black = normalize::BlackLevels::of(m);
-    let mut data = Vec::new();
-    data.try_reserve_exact(n * 3)
-        .map_err(|_| RawError::ResourceLimit("RGB plane allocation"))?;
-    data.resize(n * 3, 0.0);
+    let mut data = zeroed_vec::<f32>(n * 3, "RGB plane allocation")?;
     let lanes = development_lanes(n, worker_limit, executor);
     for channel in 0..3 {
         let jobs = data[channel * n..(channel + 1) * n]
