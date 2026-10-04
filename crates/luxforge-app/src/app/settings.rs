@@ -1,13 +1,14 @@
-//! The Settings sheet: opening and closing it, reading the flags through `flags.list` and writing
-//! each change through `flags.set`, one at a time in the order made. The sheet changes no recipe,
-//! so it neither needs nor displaces a draft.
+//! The Settings sheet: opening and closing it, reading the preferences and the flags through
+//! `preferences.read` and `flags.list`, and writing each change through `preferences.set` or
+//! `flags.set`, one at a time in the order made. The sheet changes no recipe, so it neither needs
+//! nor displaces a draft.
 use super::{
     Editor,
     message::{Message, settings::SettingsMessage},
     outcome::Outcome,
     tasks::{call, call_own, owner_task},
 };
-use crate::state::settings::{FlagControl, SettingsTab, parse_number};
+use crate::state::settings::{FlagControl, GeneralPreferences, SettingsTab, parse_number};
 use iced::Task;
 use luxforge_core::flags::FlagList;
 use serde_json::{Value, json};
@@ -31,20 +32,60 @@ impl Editor {
             SettingsMessage::Toggle => {
                 let message = match self.settings.open {
                     Some(_) => SettingsMessage::Close,
-                    None => SettingsMessage::Open(SettingsTab::Experiments),
+                    None => SettingsMessage::Open(SettingsTab::General),
                 };
                 return self.settings_update(message);
             }
-            SettingsMessage::Listed(result) => {
+            SettingsMessage::Listed { flags, preferences } => {
                 self.settings.reading = false;
-                match result {
+                match flags {
                     Ok(flags) => {
                         self.settings.flags = Some(flags);
                         self.settings.error = None;
                     }
                     Err(reason) => self.settings.error = Some(reason),
                 }
+                match preferences {
+                    Ok(preferences) => {
+                        self.settings.preferences = Some(preferences);
+                        self.settings.preferences_error = None;
+                    }
+                    Err(reason) => self.settings.preferences_error = Some(reason),
+                }
                 self.outcome(Outcome::FlagsRead);
+            }
+            SettingsMessage::SetAutoCollapse(on) => {
+                self.settings.collapse_waiting = Some(on);
+                return self.write_preferences();
+            }
+            SettingsMessage::PreferencesSaved(result) => {
+                self.settings.collapse_writing = None;
+                let mut read = Task::none();
+                match result {
+                    Ok((preferences, request)) => {
+                        self.settings.preferences = Some(preferences);
+                        self.settings.preferences_error = None;
+                        self.read_back(request);
+                    }
+                    Err(reason) => {
+                        // The write may have landed before its answer was lost: the poll reads
+                        // its event like another client's.
+                        self.resync();
+                        self.status.text =
+                            format!("Could not change Auto collapse history: {reason}");
+                        self.event("preference_set_failed", || json!({"reason": reason}));
+                        self.settings.preferences_error = Some(reason);
+                        // The switch showed the change it asked for; read back what is stored.
+                        read = self.read_flags();
+                    }
+                }
+                if self.settings.closing && self.settings.idle() {
+                    return self.close();
+                }
+                if self.settings.idle() {
+                    self.outcome(Outcome::FlagsWritten);
+                }
+                return Task::batch([read, self.write_preferences()]);
             }
             SettingsMessage::Set { flag, value } => {
                 self.settings.number_text.remove(&flag);
@@ -115,7 +156,8 @@ impl Editor {
         Task::none()
     }
 
-    /// Read the flags, unless a read is already out: it answers for this request too.
+    /// Read the preferences and the flags, unless a read is already out: it answers for this
+    /// request too.
     fn read_flags(&mut self) -> Task<Message> {
         if self.settings.reading {
             return Task::none();
@@ -123,8 +165,40 @@ impl Editor {
         self.settings.reading = true;
         let (owner, client) = (self.owner.clone(), self.client);
         owner_task(
-            move || listed(call(&owner, client, "flags.list", json!({}))),
-            |result| Message::Settings(SettingsMessage::Listed(result)),
+            move || {
+                let preferences = general(call(&owner, client, "preferences.read", json!({})));
+                (
+                    listed(call(&owner, client, "flags.list", json!({}))),
+                    preferences,
+                )
+            },
+            |(flags, preferences)| {
+                Message::Settings(SettingsMessage::Listed { flags, preferences })
+            },
+        )
+    }
+
+    /// Send the newest Auto collapse history value asked for, once nothing is in flight.
+    fn write_preferences(&mut self) -> Task<Message> {
+        if self.settings.collapse_writing.is_some() {
+            return Task::none();
+        }
+        let Some(on) = self.settings.collapse_waiting.take() else {
+            return Task::none();
+        };
+        self.settings.collapse_writing = Some(on);
+        let (owner, client) = (self.owner.clone(), self.client);
+        owner_task(
+            move || {
+                let (answer, request) = call_own(
+                    &owner,
+                    client,
+                    "preferences.set",
+                    json!({"auto_collapse_history": on}),
+                )?;
+                Ok((general(Ok((answer, 0)))?, request))
+            },
+            |result| Message::Settings(SettingsMessage::PreferencesSaved(result)),
         )
     }
 
@@ -174,23 +248,36 @@ impl Editor {
                        "notes": row.notes, "error": row.error, "saving": row.saving})
             })
             .collect();
+        let general = &self.workspace.settings;
         json!({
             "open": self.settings.open.map(SettingsTab::name),
+            "general": {"auto_collapse_history": general.auto_collapse,
+                        "saving": general.auto_collapse_saving,
+                        "error": general.preferences_error},
             "flags": self.settings.flags,
             "rows": rows,
             "unrecognized": self.workspace.settings.unrecognized,
             "error": self.settings.error,
-            "writes_outstanding": usize::from(self.settings.writing.is_some()) + self.settings.waiting.len(),
+            "writes_outstanding": usize::from(self.settings.writing.is_some())
+                + self.settings.waiting.len()
+                + usize::from(self.settings.collapse_writing.is_some())
+                + usize::from(self.settings.collapse_waiting.is_some()),
         })
     }
 
-    /// Another client changed a flag: read the flags again, while the sheet shows them.
+    /// Another client changed a flag or a preference: read them again, while the sheet shows them.
     pub(crate) fn flags_changed_elsewhere(&mut self) -> Task<Message> {
         if self.settings.open.is_none() {
             return Task::none();
         }
         self.read_flags()
     }
+}
+
+/// An owner answer as the preferences the General tab shows.
+fn general(answer: Result<(Value, u64), String>) -> Result<GeneralPreferences, String> {
+    let (value, _) = answer?;
+    serde_json::from_value(value).map_err(|error| format!("unreadable preferences: {error}"))
 }
 
 /// An owner answer as the flags it lists.

@@ -1,4 +1,5 @@
-//! The Settings sheet in a developer launch: opened from the palette, each flag kind changed through
+//! The Settings sheet in a developer launch: opened from the palette at General, which shows Auto
+//! collapse history on by default, then at Experiments, each flag kind changed through
 //! its own control, a number the field refuses, a Reset, developer mode turned off for the next
 //! launch while `--developer` holds this one, the sheet closed with Escape and opened again over
 //! what the host stored. Nothing is committed, and the photograph is untouched throughout.
@@ -14,6 +15,11 @@ const NUMBER_REFUSED: &str = "Proof number takes a number from 0 to 100 in steps
 pub fn plan(_: &[PathBuf]) -> Plan {
     Plan::new(vec![
         Step::opened("opened"),
+        Step::new(
+            "general",
+            script::PaletteStep::Run("settings general".into()),
+        )
+        .commits(0),
         Step::new("sheet", script::PaletteStep::Run("experiments".into())).commits(0),
         Step::new(
             "choice",
@@ -116,6 +122,27 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             ),
         )?;
     }
+
+    let general = launch.at("general")?;
+    ensure(
+        settings(general)["open"] == "general"
+            && settings(general)["general"]
+                == json!({"auto_collapse_history": true, "saving": false, "error": null}),
+        format!(
+            "The palette did not open General with Auto collapse history on: {}",
+            settings(general)
+        ),
+    )?;
+    let drawn = colour_at(general, RAIL_FOOT)?;
+    ensure(
+        near(drawn, BAR),
+        format!("The General tab is not drawn: the rail's foot is {drawn:?}, not the Bar surface"),
+    )?;
+    checks.note(
+        general,
+        "the General tab with Auto collapse history on by default",
+        settings(general)["general"].clone(),
+    );
 
     let sheet = launch.at("sheet")?;
     let ids: Vec<_> = settings(sheet)["rows"]

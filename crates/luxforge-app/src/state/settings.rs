@@ -1,33 +1,44 @@
-//! The Settings sheet: which tab is open, the flags as `flags.list` last answered them, the writes
-//! waiting and the number fields' text, and the model its one tab, Experiments, is drawn from. The
-//! sheet is this desktop's own view state, like the gallery page; the flags are the host's, read
-//! and written through `flags.list` and `flags.set` as any client does
+//! The Settings sheet: which tab is open, the person's preferences as `preferences.read` and the
+//! flags as `flags.list` last answered them, the writes waiting and the number fields' text, and
+//! the model its tabs, General and Experiments, are drawn from. The sheet is this desktop's own
+//! view state, like the gallery page; the preferences and flags are the host's, read and written
+//! through `preferences.read`, `preferences.set`, `flags.list` and `flags.set` as any client does
 //! ([design](../../../../docs/design/settings-and-flags.md)).
 use luxforge_core::flags::{Applies, FlagList, ListedFlag};
+use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, VecDeque};
 
 /// One tab of the sheet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SettingsTab {
+    General,
     Experiments,
 }
 
 impl SettingsTab {
-    pub(crate) const ALL: [Self; 1] = [Self::Experiments];
+    pub(crate) const ALL: [Self; 2] = [Self::General, Self::Experiments];
 
     /// The name an evidence step and a frame's state use.
     pub(crate) fn name(self) -> &'static str {
         match self {
+            Self::General => "general",
             Self::Experiments => "experiments",
         }
     }
 
     pub(crate) fn label(self) -> &'static str {
         match self {
+            Self::General => "General",
             Self::Experiments => "Experiments",
         }
     }
+}
+
+/// The preferences the General tab shows, as `preferences.read` and `preferences.set` answer them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub(crate) struct GeneralPreferences {
+    pub(crate) auto_collapse_history: bool,
 }
 
 /// One flag write: the flag and its new value, or `None` to remove the stored value.
@@ -40,10 +51,18 @@ pub(crate) struct Settings {
     pub(crate) open: Option<SettingsTab>,
     /// The flags as the last `flags.list` or `flags.set` answered them.
     pub(crate) flags: Option<FlagList>,
-    /// A `flags.list` read is in flight.
+    /// The preferences as the last `preferences.read` or `preferences.set` answered them.
+    pub(crate) preferences: Option<GeneralPreferences>,
+    /// A read of the flags and the preferences is in flight.
     pub(crate) reading: bool,
-    /// Why the last read or write failed, until the next one succeeds.
+    /// Why the last read or write of the flags failed, until the next one succeeds.
     pub(crate) error: Option<String>,
+    /// Why the last read or write of the preferences failed, until the next one succeeds.
+    pub(crate) preferences_error: Option<String>,
+    /// The Auto collapse history value in flight, and the newest one asked for since, which
+    /// replaces any older one still waiting.
+    pub(crate) collapse_writing: Option<bool>,
+    pub(crate) collapse_waiting: Option<bool>,
     /// The write in flight. Writes go one at a time, in the order they were made.
     pub(crate) writing: Option<FlagWrite>,
     pub(crate) waiting: VecDeque<FlagWrite>,
@@ -56,7 +75,10 @@ pub(crate) struct Settings {
 impl Settings {
     /// No write is in flight or waiting.
     pub(crate) fn idle(&self) -> bool {
-        self.writing.is_none() && self.waiting.is_empty()
+        self.writing.is_none()
+            && self.waiting.is_empty()
+            && self.collapse_writing.is_none()
+            && self.collapse_waiting.is_none()
     }
 
     /// The newest write made for `flag` that has not been answered yet.
@@ -113,6 +135,11 @@ pub(crate) struct SettingsModel {
     /// The flags have not been read yet.
     pub(crate) loading: bool,
     pub(crate) error: Option<String>,
+    /// The General tab's Auto collapse history switch, or `None` until the preferences are read.
+    pub(crate) auto_collapse: Option<bool>,
+    /// A change to it has not been answered yet.
+    pub(crate) auto_collapse_saving: bool,
+    pub(crate) preferences_error: Option<String>,
 }
 
 /// The sheet for this state. Closed, it is empty, so a closed sheet costs a message nothing.
@@ -136,6 +163,16 @@ pub(crate) fn derive(settings: &Settings) -> SettingsModel {
             .unwrap_or_default(),
         loading: settings.flags.is_none() && settings.error.is_none(),
         error: settings.error.clone(),
+        // A change shows at once; the answer that lands confirms it or puts the truth back.
+        auto_collapse: settings
+            .collapse_waiting
+            .or(settings.collapse_writing)
+            .or(settings
+                .preferences
+                .map(|preferences| preferences.auto_collapse_history)),
+        auto_collapse_saving: settings.collapse_writing.is_some()
+            || settings.collapse_waiting.is_some(),
+        preferences_error: settings.preferences_error.clone(),
     }
 }
 
@@ -271,6 +308,36 @@ mod tests {
             flags: Some(listed()),
             ..Settings::default()
         }
+    }
+
+    #[test]
+    fn the_general_switch_shows_a_change_at_once_and_the_stored_value_otherwise() {
+        let mut settings = Settings {
+            open: Some(SettingsTab::General),
+            ..Settings::default()
+        };
+        assert_eq!(derive(&settings).auto_collapse, None, "unread");
+        settings.preferences = Some(GeneralPreferences {
+            auto_collapse_history: true,
+        });
+        let model = derive(&settings);
+        assert_eq!(
+            (model.auto_collapse, model.auto_collapse_saving),
+            (Some(true), false)
+        );
+        settings.collapse_writing = Some(false);
+        let model = derive(&settings);
+        assert_eq!(
+            (model.auto_collapse, model.auto_collapse_saving),
+            (Some(false), true)
+        );
+        settings.collapse_waiting = Some(true);
+        assert_eq!(
+            derive(&settings).auto_collapse,
+            Some(true),
+            "the newest asked for"
+        );
+        assert!(!settings.idle());
     }
 
     #[test]
