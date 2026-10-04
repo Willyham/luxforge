@@ -227,11 +227,7 @@ impl Editor {
                                 .own_requests
                                 .retain(|request| !sync.own.contains(request));
                         }
-                        let flags = if sync.flags {
-                            self.flags_changed_elsewhere()
-                        } else {
-                            Task::none()
-                        };
+                        let flags = self.settings_changed_elsewhere(sync.flags, sync.preferences);
                         if sync.capabilities {
                             return Task::batch([flags, self.reload_capabilities()]);
                         }

@@ -1066,6 +1066,29 @@ fn a_reference_in_request_parameters_is_read_as_a_step_names_one() {
     assert!(Reference::from_value(json!(true)).is_err());
 }
 
+#[test]
+fn a_preference_step_round_trips_its_fields_and_needs_at_least_one() {
+    let steps = round_trip(json!([
+        {"preference":{"auto_lens_profile":false,"mask_overlay_colour":"white"}}
+    ]));
+    assert_eq!(
+        steps[0],
+        Step::preference([
+            ("auto_lens_profile", json!(false)),
+            ("mask_overlay_colour", json!("white")),
+        ])
+    );
+    refused(
+        json!([{"preference":{}}]),
+        "preference needs at least one field",
+    );
+    refused(
+        json!([{"preference":{" ":true}}]),
+        "preference field takes a non-empty string",
+    );
+    refused(json!([{"preference":true}]), "invalid type: boolean");
+}
+
 impl Step {
     /// The same picker step on another control, for comparing a step whose defaults were left out.
     fn with_action(self, action: &str, parameter: &str) -> Self {

@@ -474,6 +474,8 @@ pub(crate) enum Settle {
     PerformanceCancel,
     /// The Settings sheet's `flags.list` answered, or its last outstanding `flags.set` did.
     Flags,
+    /// The preference writer's last outstanding `preferences.set` answered.
+    Preferences,
     /// A capability step's round trips have answered and, unless it said otherwise, the jobs it
     /// started have finished.
     Capability,
@@ -505,6 +507,7 @@ impl Settle {
             Self::Performance => "performance",
             Self::PerformanceCancel => "performance_cancel",
             Self::Flags => "flags",
+            Self::Preferences => "preferences",
             Self::Capability => "capability",
             Self::Export => "export",
             Self::Agent => "agent",
@@ -1160,6 +1163,7 @@ impl Editor {
             }
             Step::Settings { open } => self.settings_step(open),
             Step::Flag { id, value } => self.flag_step(id, value),
+            Step::Preference(fields) => self.preference_step(fields),
             Step::Wait { ms } => self.wait_step(ms),
             Step::GpuWarmed { quiet_ms, ms } => self.warm_wait_step(quiet_ms, ms),
             Step::Key { key } => self.key_step(key),
@@ -3952,6 +3956,44 @@ impl Editor {
         }))
     }
 
+    /// Change General rows as a person does, each through its own control's message: a switch
+    /// turned to a boolean, a segment chosen by its value. Every field is checked against the row
+    /// before any is sent, so a field no row shows or a value its control does not offer fails the
+    /// step with nothing changed. The changes go through the desktop's one preference writer, and
+    /// the step waits for its last write to answer; a step whose rows already show every value
+    /// sends nothing and is captured on the next frame. The rows answer whether or not the sheet
+    /// is open, as the Masks panel's colour control does.
+    fn preference_step(&mut self, fields: serde_json::Map<String, Value>) -> Task<Message> {
+        use crate::state::preferences::{GeneralPreference, general_rows};
+        let rows = general_rows(&self.preferences);
+        let mut gestures = Vec::new();
+        for (field, value) in &fields {
+            let Some(row) = GeneralPreference::parse(field)
+                .and_then(|preference| rows.iter().find(|row| row.preference == preference))
+            else {
+                return self.fail_step(format!("the General tab shows no preference {field}"));
+            };
+            let Some(gesture) = row.control.gesture(value) else {
+                return self.fail_step(format!("{field}'s control does not offer {value}"));
+            };
+            if !row.control.shows(gesture) {
+                gestures.push((row.preference, gesture));
+            }
+        }
+        if gestures.is_empty() {
+            self.capture_next_frame();
+            return Task::none();
+        }
+        self.await_step(Settle::Preferences);
+        let sent: Vec<_> = gestures
+            .into_iter()
+            .map(|(row, value)| {
+                self.update(Message::Settings(SettingsMessage::SetGeneral(row, value)))
+            })
+            .collect();
+        Task::batch(sent)
+    }
+
     /// Click one row, exactly as the section does: the section's own action with that preset's
     /// fields, through the action path every declared control takes. Captured on the render.
     fn preset_step(&mut self, pick: PresetPick) -> Task<Message> {
@@ -4392,6 +4434,7 @@ impl Editor {
                 }
             }
             Outcome::FlagsRead | Outcome::FlagsWritten => self.settle_step(Settle::Flags, by),
+            Outcome::PreferencesWritten => self.settle_step(Settle::Preferences, by),
             Outcome::ExportPlanned(plan) => {
                 if let Some(evidence) = &mut self.evidence {
                     evidence.recorded.export_plan = Some(plan.clone());

@@ -129,11 +129,12 @@ impl Editor {
     /// The window closed: stop the live server and the owner, finish the log and exit once the
     /// owner thread has joined.
     pub(super) fn close(&mut self) -> Task<Message> {
-        if !self.performance.saving.idle() {
-            self.performance.closing = true;
+        // A preference change is stored before the owner stops: closing waits for the last write.
+        if !self.preferences.idle() {
+            self.preferences.closing = true;
             return Task::none();
         }
-        // So does a flag change: closing waits for the last one to be stored.
+        // So does a flag change.
         if !self.settings.idle() {
             self.settings.closing = true;
             return Task::none();

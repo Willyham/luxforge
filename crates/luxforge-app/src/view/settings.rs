@@ -4,7 +4,10 @@
 //! ([design](../../../../docs/design/settings-and-flags.md#settings-surface)).
 use crate::{
     app::message::{Message, settings::SettingsMessage},
-    state::settings::{FlagControl, FlagRow, SettingsModel, SettingsTab},
+    state::{
+        preferences::{GeneralControl, GeneralRow, GeneralValue},
+        settings::{FlagControl, FlagRow, SettingsModel, SettingsTab},
+    },
 };
 use iced::{
     Alignment, Background, Color, Element, Length,
@@ -22,11 +25,6 @@ const HEIGHT: f32 = 480.0;
 const RAIL_WIDTH: f32 = 160.0;
 /// A number field's box.
 const NUMBER_WIDTH: f32 = 64.0;
-
-/// What General's Auto collapse history row says under its title.
-pub(crate) const AUTO_COLLAPSE_DESCRIPTION: &str = "Successive edits of one control keep one history \
-     entry: Contrast +15, \u{2212}30 and +10 leave Contrast +10, and setting a control back to where \
-     it started leaves none. Collapsed entries are kept and stay readable through the API.";
 
 /// What Experiments says before its rows.
 pub(crate) const EXPERIMENTS_INTRO: &str =
@@ -128,33 +126,49 @@ fn general(model: &SettingsModel) -> Element<'_, Message> {
             "Could not read or change the preferences: {error}"
         )));
     }
-    let Some(on) = model.auto_collapse else {
-        if model.preferences_error.is_none() {
-            content = content.push(caption("Reading the preferences\u{2026}"));
-        }
-        return content.into();
+    if model.general.is_empty() && model.preferences_error.is_none() {
+        content = content.push(caption("Reading the preferences\u{2026}"));
+    }
+    for preference in &model.general {
+        content = content
+            .push(horizontal_rule())
+            .push(general_row(preference));
+    }
+    content.into()
+}
+
+/// One preference: its title and description, and on the trailing side the control its kind
+/// draws, which sends the row's own message.
+fn general_row(general: &GeneralRow) -> Element<'_, Message> {
+    let preference = general.preference;
+    let text = column![label(preference.title()), caption(preference.description())]
+        .spacing(theme::ROW_SPACING)
+        .width(Length::Fill);
+    let set = move |value| Message::Settings(SettingsMessage::SetGeneral(preference, value));
+    let control = match &general.control {
+        GeneralControl::Toggle(on) => switch(
+            &ToggleModel {
+                label: preference.title().into(),
+                on: *on,
+                enabled: true,
+            },
+            move |on| set(GeneralValue::Toggle(on)),
+        ),
+        GeneralControl::Choice {
+            labels, selected, ..
+        } => segmented(
+            &SegmentedModel {
+                options: labels.iter().map(|label| (*label).to_owned()).collect(),
+                // No option reads selected for a value none of them is.
+                selected: selected.unwrap_or(usize::MAX),
+                enabled: true,
+            },
+            move |index| set(GeneralValue::Choice(index)),
+        ),
     };
-    let text = column![
-        label("Auto collapse history"),
-        caption(AUTO_COLLAPSE_DESCRIPTION)
-    ]
-    .spacing(theme::ROW_SPACING)
-    .width(Length::Fill);
-    let switch = switch(
-        &ToggleModel {
-            label: "Auto collapse history".into(),
-            on,
-            enabled: true,
-        },
-        |on| Message::Settings(SettingsMessage::SetAutoCollapse(on)),
-    );
-    content
-        .push(horizontal_rule())
-        .push(
-            row![text, switch]
-                .spacing(theme::SPACING * 2.0)
-                .align_y(Alignment::Start),
-        )
+    row![text, control]
+        .spacing(theme::SPACING * 2.0)
+        .align_y(Alignment::Start)
         .into()
 }
 

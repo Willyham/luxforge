@@ -729,7 +729,8 @@ impl Editor {
                 None => Task::none(),
             },
             MaskMessage::OverlayColour(index) => match MaskOverlayColour::ALL.get(index).copied() {
-                Some(colour) => self.set_mask_overlay(None, Some(colour)),
+                // The colour is a preference as well as this session's choice: it is stored too.
+                Some(colour) => self.choose_mask_overlay_colour(colour),
                 None => Task::none(),
             },
             MaskMessage::ToggleOverlay => {
@@ -1029,7 +1030,7 @@ impl Editor {
 
     /// Per-client overlay view state: what the canvas draws of the selected mask, and in which of
     /// the two tints. It commits nothing and changes no render.
-    fn set_mask_overlay(
+    pub(crate) fn set_mask_overlay(
         &mut self,
         mode: Option<MaskOverlayMode>,
         colour: Option<MaskOverlayColour>,
