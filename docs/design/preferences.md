@@ -1,6 +1,6 @@
 # Preferences
 
-Status: in implementation, at the owner's request of 2026-10-04 and on the [decisions](#decisions) below. Plan: [tasks/preferences.json](../../tasks/preferences.json).
+Status: implemented, at the owner's request of 2026-10-04 and on the [decisions](#decisions) below; verified on the M4 by the unit and owner tests, the `settings` smoke scenario, a check across background launches and the `quick` tier. A clean `rendered` tier on a quiet host is outstanding ([feature status](../features.md)). Plan: [tasks/preferences.json](../../tasks/preferences.json).
 
 The person's preferences live outside every catalog, in the host's `preferences.json` beside the [feature flags](settings-and-flags.md). This design adds two kinds of preference to the one Auto collapse history row the Settings sheet's **General** tab has today:
 
@@ -114,11 +114,11 @@ A held `[` key that resizes the brush therefore writes at most one call in fligh
   - The canvas colour is checked for each choice.
 - **Evidence steps.** `{"preference": {<field>: <value>}}` drives the General rows' own messages, sending only values the rows do not already show and waiting for the writer to go idle. The Catalog row takes the catalog file's path, as its dialog's answer, or `null` for Use Default.
 - **Frame state.** Each frame's state records `preferences`: `display` (canvas background, interface size, and the system's and combined scale factor), `applied`, `stored`, `writing`, `waiting` and `error`.
-- **The `settings` smoke scenario** gains:
-  - the canvas background set to grey, with the canvas pixel checked beside the photograph;
-  - the interface size set to 125%, with the title bar's drawn height checked against 100%;
+- **The `settings` smoke scenario** runs its own launch, so its catalog step can name a folder inside the run's evidence directory, and gains:
+  - the canvas background set to grey, with the canvas pixels beside the photograph exactly `#777777`, and no pixel of the panels or the photograph changed, then back to dark;
+  - the interface size set to 125%, with the combined scale factor recorded and the title bar's drawn height 1.25 times its height at 100%, then back to 100%;
   - the mask overlay colour set to white;
-  - the lens switch turned off before importing a RAW, checking that no lens entry is committed;
+  - the lens switch turned off, checked on the row and in what is applied and stored. No RAW is checked into the repository, so importing one with the switch off is proven by the owner tests instead;
   - a catalog folder chosen inside the evidence directory, with the row's relaunch note checked.
 - **Across launches.** The integrator launches `cargo xtask develop --background --hidden-window` over one isolated `--data-root`. One launch stores a catalog location through `preferences.set`; the next opens it, shown by where its live-session file appears; a location whose folder is missing opens the default catalog and logs `catalog_folder_missing`. The desktop's own session is not readable by another client, and a hidden launch never opens at or stores a window frame, so the remembered workspace, brush and window are proven by the unit tests that build the editor over stored preferences.
 
