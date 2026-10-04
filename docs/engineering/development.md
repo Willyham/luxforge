@@ -1067,7 +1067,7 @@ tick the GPU stage draws ([GPU previews](../design/gpu-preview.md)) is answered 
 and its step settles on that tick rather than on a CPU frame. A tick on the CPU path is answered by
 `slider_draft_preview`, which names the preview generation, after the `gpu_preview_tick` that says
 why it took that path (`boundary-pending` for a gesture's first tick when no resident boundary has its key, which asks for the boundary;
-`compiling`; `not-fit`; ...). A CPU frame is presented by the `preview_displayed` of its generation,
+`compiling`; ...). A CPU frame is presented by the `preview_displayed` of its generation,
 the update in which its raster became the photo surface's source. A GPU frame is presented by the
 surface's first draw of the plan tagged with the input's draft revision: the surface stamps each
 frame it first draws, and the desktop logs the stamp as `surface_frame_drawn` with the draw's own
