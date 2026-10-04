@@ -124,10 +124,17 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     }
 
     let general = launch.at("general")?;
+    let collapse = settings(general)["general"]["rows"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["id"] == "auto_collapse_history"));
     ensure(
         settings(general)["open"] == "general"
-            && settings(general)["general"]
-                == json!({"auto_collapse_history": true, "saving": false, "error": null}),
+            && settings(general)["general"]["error"].is_null()
+            && collapse
+                == Some(
+                    &json!({"id": "auto_collapse_history", "control": {"toggle": true},
+                                "saving": false}),
+                ),
         format!(
             "The palette did not open General with Auto collapse history on: {}",
             settings(general)

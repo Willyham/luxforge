@@ -105,6 +105,9 @@ pub(crate) mod performance;
 mod pointer;
 #[cfg(test)]
 mod pointer_tests;
+mod preferences;
+#[cfg(test)]
+mod preferences_tests;
 pub(crate) mod presenter;
 pub(crate) mod presets;
 #[cfg(test)]
@@ -346,6 +349,9 @@ pub(crate) struct Editor {
     pub(crate) palette: state::palette::Palette,
     /// The Settings sheet: its tab, the flags it last read and the writes waiting.
     pub(crate) settings: state::settings::Settings,
+    /// The person's preferences, read once at launch and held whether or not the sheet is open,
+    /// and the one writer every `preferences.set` the desktop sends goes through.
+    pub(crate) preferences: state::preferences::PreferenceWriter,
     /// The version chip row's naming form.
     pub(crate) version_form: state::VersionForm,
     /// The Presets section: the library and its create form.
@@ -493,12 +499,14 @@ impl Editor {
             evidence
         });
         let initial = config.files.pop_front();
-        let preferences = tasks::call(&owner, client, "preferences.read", json!({}));
+        // The whole answer is held from launch: the Performance section starts from it, and so
+        // does anything else that applies a preference.
+        let preferences = tasks::call(&owner, client, "preferences.read", json!({}))
+            .and_then(|(value, _)| state::preferences::parse(value));
         let expanded = preferences
             .as_ref()
-            .ok()
-            .and_then(|(value, _)| value["performance_expanded"].as_bool())
-            .unwrap_or(true);
+            .map_or(true, |preferences| preferences.performance_expanded);
+        let failed = preferences.as_ref().err().cloned();
         let mut editor = Self {
             owner: owner.clone(),
             owner_join: Some(join),
@@ -536,6 +544,7 @@ impl Editor {
             coverage_worker: Default::default(),
             palette: Default::default(),
             settings: Default::default(),
+            preferences: state::preferences::PreferenceWriter::new(preferences),
             version_form: Default::default(),
             presets: Default::default(),
             capabilities: Default::default(),
@@ -576,7 +585,7 @@ impl Editor {
         }
         // The launch flags and the Performance preference share one file, so one sentence covers
         // both: every flag took its default for this launch and the section starts open.
-        if let Err(reason) = preferences {
+        if let Some(reason) = failed {
             editor.status.text = format!("Could not read preferences; using defaults: {reason}");
         }
         editor.event(
@@ -810,6 +819,7 @@ impl Editor {
             hover: &self.hover,
             palette: &self.palette,
             settings: &self.settings,
+            preferences: &self.preferences,
             version_form: &self.version_form,
             dimensions: self.presentation.dimensions,
             photo: self.presentation.has_picture(),
@@ -866,6 +876,7 @@ impl Editor {
             Message::Capability(message) => self.capability_update(message),
             Message::Performance(message) => self.performance_update(message),
             Message::Settings(message) => self.settings_update(message),
+            Message::Preferences(message) => self.preferences_update(message),
             Message::Export(message) => self.export_update(message),
             Message::Evidence(message) => self.evidence_update(message),
             Message::Close => self.close(),

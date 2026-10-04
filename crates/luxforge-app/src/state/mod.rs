@@ -12,6 +12,7 @@ pub(crate) mod number;
 pub(crate) mod palette;
 pub(crate) mod panel;
 pub(crate) mod performance;
+pub(crate) mod preferences;
 pub(crate) mod presets;
 pub(crate) mod query_choice;
 pub(crate) mod settings;
@@ -300,6 +301,8 @@ pub(crate) struct Inputs<'a> {
     pub(crate) palette: &'a palette::Palette,
     /// The Settings sheet.
     pub(crate) settings: &'a settings::Settings,
+    /// The person's preferences and the writes outstanding.
+    pub(crate) preferences: &'a preferences::PreferenceWriter,
     /// The version chip row's naming form.
     pub(crate) version_form: &'a VersionForm,
     pub(crate) dimensions: Option<(u32, u32)>,
@@ -382,7 +385,7 @@ impl Workspace {
         self.histogram = histogram::derive(inputs, &self.histogram);
         self.status = status::derive(inputs);
         self.palette = palette::derive(inputs);
-        self.settings = settings::derive(inputs.settings);
+        self.settings = settings::derive(inputs.settings, inputs.preferences);
     }
 
     /// Every picker control the panel derived, by the module whose pick mode it selects, with the
@@ -563,6 +566,7 @@ mod tests {
         performance: performance::PerformanceHistory,
         palette: palette::Palette,
         settings: settings::Settings,
+        preferences: preferences::PreferenceWriter,
         version_form: VersionForm,
     }
 
@@ -604,6 +608,7 @@ mod tests {
                 performance: performance::PerformanceHistory::default(),
                 palette: palette::Palette::default(),
                 settings: settings::Settings::default(),
+                preferences: preferences::PreferenceWriter::default(),
                 version_form: VersionForm::default(),
             }
         }
@@ -696,6 +701,7 @@ mod tests {
                 hover: &self.hover,
                 palette: &self.palette,
                 settings: &self.settings,
+                preferences: &self.preferences,
                 version_form: &self.version_form,
                 dimensions: Some((480, 320)),
                 photo: true,
