@@ -14,7 +14,7 @@ use crate::{
     },
     layout::{FIT_INSET_BOTTOM, FIT_INSET_EDGE},
     state::canvas::{
-        CanvasModel, DraftBar, Notice, NoticeAction, NoticeIcon, NoticeTone, PhotoView,
+        CanvasFill, CanvasModel, DraftBar, Notice, NoticeAction, NoticeIcon, NoticeTone, PhotoView,
         SurfaceMode, ZoomView,
     },
     view::{
@@ -30,7 +30,6 @@ use iced::{
     mouse::{self, Cursor},
     widget::{Column, canvas, container, mouse_area, responsive, scrollable, stack, text},
 };
-use luxforge_core::preferences::CanvasBackground;
 use luxforge_ui::{
     ChipModel, ControlKey, ControlKeyEvent, DraftBarModel, DraftFinish, DraftSubject, Icon,
     ModeEntry, NoticeCardModel, ToggleEntry, Tone, chip, draft_bar_with_controls, focus_control,
@@ -74,11 +73,11 @@ pub(crate) fn fit_rect_in(canvas: [u32; 4], scale: f32) -> [u32; 4] {
 /// The colour each canvas background names: a design token in the theme. The photo surface draws
 /// only the photograph, so the canvas region's fill is what shows around it, at Fit, at a
 /// percentage and on either side of the compare divider.
-pub(crate) fn background_colour(background: CanvasBackground) -> iced::Color {
-    match background {
-        CanvasBackground::Dark => theme::CANVAS,
-        CanvasBackground::Black => theme::CANVAS_BLACK,
-        CanvasBackground::Grey => theme::CANVAS_GREY,
+pub(crate) fn background_colour(fill: CanvasFill) -> iced::Color {
+    match fill {
+        CanvasFill::Dark => theme::CANVAS,
+        CanvasFill::Black => theme::CANVAS_BLACK,
+        CanvasFill::Grey => theme::CANVAS_GREY,
     }
 }
 

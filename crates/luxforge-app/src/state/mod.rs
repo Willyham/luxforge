@@ -193,7 +193,7 @@ pub(crate) struct ViewState {
     /// pixel at any interface size. Written through [`Self::set_system_scale_factor`] and
     /// [`Self::set_interface_size`].
     pub(crate) scale_factor: f32,
-    /// The system's own scale factor for the window, as `iced::window::scale_factor` reports it.
+    /// The system's own scale factor for the window, as the window reports it.
     pub(crate) system_scale_factor: f32,
     /// The interface size the layout is drawn at, in percent of the system's scale: Iced's
     /// application scale factor ([`Self::interface_scale`]).
