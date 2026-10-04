@@ -280,18 +280,14 @@ pub(super) const METHODS: &[MethodSpec] = &[
     owner!(
         "preferences.read",
         NoParams,
-        |owner, _, _| Ok(
-            json!({"performance_expanded": owner.host.preferences.read()?.performance_expanded})
-        ),
-        "user preferences outside the catalog: {performance_expanded}; defaults to expanded on first use; reads no pixels, changes no history and creates no file; malformed or unsupported preferences are refused without rewriting them"
+        |owner, _, _| Ok(preference_values(&owner.host.preferences.read()?)),
+        "user preferences outside the catalog: {performance_expanded, auto_collapse_history}; the Performance section defaults to expanded and history to collapsing; reads no pixels, changes no history and creates no file; malformed or unsupported preferences are refused without rewriting them"
     ),
     owner!(
         "preferences.set",
-        PreferencesSet,
-        |owner, _, p| Ok(
-            json!({"performance_expanded": owner.host.preferences.set(p.performance_expanded)?.performance_expanded})
-        ),
-        "persist the Performance section's expanded state through one bounded atomic user-settings write; returns {performance_expanded}; changes no recipe or history; needs a configured application preference directory"
+        owner::PreferencesSet,
+        owner::preferences_set,
+        "persist the preferences named through one bounded atomic user-settings write, leaving the others as they were: performance_expanded, the Performance section's expanded state, and auto_collapse_history, whether an edit that sets the same control as the entry before it, by the same actor, collapses that entry so history keeps one row for the chain, or none when the control returns to where the chain began; collapsed entries are kept and history.list lists them on request; the change applies to edits from now on and rewrites no history; returns every preference as preferences.read does; needs a configured application preference directory"
     ),
     owner!(
         "flags.list",
@@ -368,12 +364,13 @@ pub(super) const METHODS: &[MethodSpec] = &[
     service!(
         "history.list",
         HistoryList,
-        |service, _, p| value(service.history(
+        |service, _, p| value(service.history_rows(
             &p.asset_id,
             p.before_sequence,
-            p.limit.unwrap_or(DEFAULT_HISTORY_PAGE)
+            p.limit.unwrap_or(DEFAULT_HISTORY_PAGE),
+            p.collapsed.unwrap_or(false)
         )?),
-        "chronological entry rows newest first, including abandoned branches: identity, sequence, action, label, actor, time, undo parent and restore target, without the stack; history.inspect reads one whole entry"
+        "chronological entry rows newest first, including abandoned branches: identity, sequence, action, label, actor, time, undo parent and restore target, without the stack; entries auto-collapse hid are left out unless collapsed is true, when each is listed with collapsed: true; history.inspect reads one whole entry"
     ),
     service!(
         "history.inspect",
@@ -1328,6 +1325,7 @@ host_params! {
         asset_id: AssetId = asset(),
         before_sequence: Option<u64> = sequence().notes("list the entries before this sequence; default the newest"),
         limit: Option<usize> = integer(1, MAX_HISTORY_PAGE as i64).default(DEFAULT_HISTORY_PAGE),
+        collapsed: Option<bool> = boolean().default(false).notes("list the entries auto-collapse hid too, each marked collapsed"),
     }
 }
 
@@ -1449,10 +1447,12 @@ host_params! {
     }
 }
 
-host_params! {
-    pub(super) struct PreferencesSet {
-        performance_expanded: bool = boolean(),
-    }
+/// Every preference as `preferences.read` and `preferences.set` answer them.
+pub(super) fn preference_values(preferences: &crate::preferences::Preferences) -> Value {
+    json!({
+        "performance_expanded": preferences.performance_expanded,
+        "auto_collapse_history": preferences.auto_collapse_history,
+    })
 }
 
 host_params! {
@@ -2442,6 +2442,7 @@ mod tests {
             current_entry_id: EntryId::new(),
             created_entry_id: None,
             deduplicated,
+            collapsed_entry_id: None,
         };
         for (outcome, deduplicated, changed) in [
             (

@@ -93,14 +93,26 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         )
         .commits(1)
         .label("Preset: Soft film"),
-        // 6: the XMP's preset over it, by its exact name alone: one more entry.
+        // 6: the XMP's preset over it, by its exact name alone. It sets every field the first
+        // did, so auto-collapse, on by default, replaces the first's entry with its own.
         Step::new("soft-film-xmp", script::Step::preset("Soft Film"))
             .commits(1)
             .label("Preset: Soft Film"),
-        // 7: undo returns to the document's preset.
+        // 7: undo steps over the collapsed run to the Original.
         Step::new("undo", script::Step::api("history.undo"))
             .commits(1)
-            .label("Preset: Soft film"),
+            .label("Original"),
+        // 7b: the document's preset again, from the Original: a new entry, since undo moved the
+        // head.
+        Step::new(
+            "soft-film-again",
+            script::Step::Preset(PresetPick {
+                name: "Soft film".into(),
+                group: Some("Synthetic".into()),
+            }),
+        )
+        .commits(1)
+        .label("Preset: Soft film"),
         // 8: the create form filled, Basic Tone alone, and left open for its frame.
         Step::new(
             "form",
@@ -462,17 +474,30 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         Tolerance::Above(BRIGHTER),
     )?;
 
-    // Undo returns to the document's preset: its entry, its stack and its pixels.
+    // Undo steps over the collapsed run to the Original: its entry, its empty stack, its pixels.
     let undo = at("undo")?;
     ensure(
-        undo.entry()? == soft_frame.entry()?,
-        "Undo did not return to the Soft film entry",
+        undo.entry()? == at("opened")?.entry()?,
+        "Undo did not step over the collapsed Soft film entry to the Original",
     )?;
-    expect_layers(undo, "Undo", &soft)?;
+    ensure(
+        layers(undo)?.is_empty(),
+        "Undo did not return to the Original's empty stack",
+    )?;
     checks.compare(
         undo,
-        "the undone photograph against Soft film's (mean change)",
-        change(&patches_of("undo")?, &soft_patches),
+        "the undone photograph against the document import's (mean change)",
+        change(&patches_of("undo")?, &before_apply),
+        0.0,
+        Tolerance::Under(SAME),
+    )?;
+    // The document's preset again: exactly its stack and its pixels.
+    let again = at("soft-film-again")?;
+    expect_layers(again, "Soft film applied again", &soft)?;
+    checks.compare(
+        again,
+        "Soft film again against its first application (mean change)",
+        change(&patches_of("soft-film-again")?, &soft_patches),
         0.0,
         Tolerance::Under(SAME),
     )?;

@@ -5,7 +5,7 @@ use super::{
     message::{Message, settings::SettingsMessage},
     tasks::{call, call_own},
 };
-use crate::state::settings::{FlagControl, SettingsTab};
+use crate::state::settings::{FlagControl, GeneralPreferences, SettingsTab};
 use iced::{
     Event,
     event::Status,
@@ -52,9 +52,32 @@ fn finish(mut editor: Editor, root: PathBuf) {
 
 /// Answer the sheet's read as its task would.
 fn answer_read(editor: &mut Editor) {
-    let listed = call(&editor.owner, editor.client, "flags.list", json!({}))
+    let flags = call(&editor.owner, editor.client, "flags.list", json!({}))
         .map(|(value, _)| serde_json::from_value::<FlagList>(value).unwrap());
-    let _ = editor.update(Message::Settings(SettingsMessage::Listed(listed)));
+    let preferences = call(&editor.owner, editor.client, "preferences.read", json!({}))
+        .map(|(value, _)| serde_json::from_value::<GeneralPreferences>(value).unwrap());
+    let _ = editor.update(Message::Settings(SettingsMessage::Listed {
+        flags,
+        preferences,
+    }));
+}
+
+/// Answer the Auto collapse history write in flight as its task would.
+fn answer_preference(editor: &mut Editor) {
+    let on = editor.settings.collapse_writing.expect("a write in flight");
+    let answer = call_own(
+        &editor.owner,
+        editor.client,
+        "preferences.set",
+        json!({"auto_collapse_history": on}),
+    )
+    .map(|(value, request)| {
+        (
+            serde_json::from_value::<GeneralPreferences>(value).unwrap(),
+            request,
+        )
+    });
+    let _ = editor.update(Message::Settings(SettingsMessage::PreferencesSaved(answer)));
 }
 
 /// Answer the write in flight as its task would.
@@ -82,8 +105,17 @@ fn opening_reads_the_flags_and_each_change_is_written_in_order() {
     let (mut editor, root) = launch();
     assert!(editor.workspace.settings.open.is_none(), "closed at launch");
     let _ = editor.update(Message::Settings(SettingsMessage::Toggle));
-    assert_eq!(editor.settings.open, Some(SettingsTab::Experiments));
+    assert_eq!(
+        editor.settings.open,
+        Some(SettingsTab::General),
+        "the first tab"
+    );
     assert!(editor.settings.reading && editor.workspace.settings.loading);
+    // The read already out answers for the tab chosen while it is.
+    let _ = editor.update(Message::Settings(SettingsMessage::Open(
+        SettingsTab::Experiments,
+    )));
+    assert_eq!(editor.settings.open, Some(SettingsTab::Experiments));
     assert!(editor.workspace.title.settings_open);
     answer_read(&mut editor);
     let ids: Vec<_> = editor
@@ -331,4 +363,88 @@ fn another_clients_flag_change_reaches_an_open_sheet_through_the_event_sync() {
     )));
     assert!(!editor.settings.reading);
     finish(editor, root);
+}
+
+/// General's Auto collapse history switch starts on, writes the newest value asked for through
+/// `preferences.set`, reaches the catalog writer at once — an edit of the control the last one
+/// set then keeps both entries — and is read back on the next launch.
+#[test]
+fn auto_collapse_history_is_on_by_default_and_turning_it_off_keeps_every_entry() {
+    let (mut editor, root) = launch();
+    let _ = editor.update(Message::Settings(SettingsMessage::Toggle));
+    answer_read(&mut editor);
+    assert_eq!(editor.workspace.settings.auto_collapse, Some(true));
+
+    // Off, on and off again before the first answer: two writes, the first and the newest.
+    for on in [false, true, false] {
+        let _ = editor.update(Message::Settings(SettingsMessage::SetAutoCollapse(on)));
+    }
+    assert_eq!(editor.settings.collapse_writing, Some(false));
+    assert_eq!(editor.settings.collapse_waiting, Some(false));
+    assert!(editor.workspace.settings.auto_collapse_saving);
+    answer_preference(&mut editor);
+    answer_preference(&mut editor);
+    assert!(editor.settings.idle());
+    assert_eq!(editor.workspace.settings.auto_collapse, Some(false));
+    assert_eq!(
+        editor.settings_summary()["general"],
+        json!({"auto_collapse_history": false, "saving": false, "error": null})
+    );
+
+    // The owner applies it to the next edit without a relaunch.
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-2.jpg");
+    let (queued, _) = call(
+        &editor.owner,
+        editor.client,
+        "catalog.import",
+        json!({"path": path, "mutation": super::tasks::request()}),
+    )
+    .unwrap();
+    let job = queued["job_id"].as_str().unwrap().to_owned();
+    let ready = super::tasks::wait_source_job(&editor.owner, editor.client, &job).unwrap();
+    let asset = ready["result"]["asset"]["id"].clone();
+    for (revision, contrast) in [(0, 15.0), (1, 20.0)] {
+        let (answer, _) = call(
+            &editor.owner,
+            editor.client,
+            "edit.set-basic",
+            json!({"asset_id": asset, "contrast": contrast, "mutation": super::tasks::mutation(revision)}),
+        )
+        .unwrap();
+        assert!(answer.get("collapsed_entry_id").is_none(), "{answer}");
+    }
+    let (page, _) = call(
+        &editor.owner,
+        editor.client,
+        "history.list",
+        json!({"asset_id": asset}),
+    )
+    .unwrap();
+    assert_eq!(page["entries"].as_array().unwrap().len(), 3);
+
+    editor.owner.stop();
+    if let Some(join) = editor.owner_join.take() {
+        join.join().unwrap();
+    }
+    drop(editor);
+    let host = luxforge_core::HostConfig {
+        preferences_dir: Some(root.join("config")),
+        ..luxforge_core::HostConfig::unconfigured()
+    };
+    let (owner, join) = luxforge_core::OwnerHandle::start_with_host(
+        &root.join("catalog.sqlite"),
+        Arc::new(luxforge_core::ModuleRegistry::developer()),
+        host,
+    )
+    .unwrap();
+    let (read, _) = call(&owner, owner.register(), "preferences.read", json!({})).unwrap();
+    assert_eq!(
+        read["auto_collapse_history"],
+        json!(false),
+        "kept across launches"
+    );
+    owner.stop();
+    join.join().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
 }
