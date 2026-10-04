@@ -63,6 +63,10 @@ pub(crate) struct ExportRun {
     pub(crate) file_name: Option<String>,
     /// The core's job, once `export.jpeg` has queued it.
     pub(crate) job_id: Option<String>,
+    /// The job's record as the last read applied it while the job was queued or running. A later
+    /// read that answers the same record changes nothing the desktop holds
+    /// ([`Exporting::read_unchanged`]).
+    pub(crate) seen: Option<Value>,
 }
 
 impl Exporting {
@@ -74,6 +78,19 @@ impl Exporting {
     /// The job this window follows is queued or running at the core.
     fn live(&self) -> Option<&str> {
         self.run.as_ref()?.job_id.as_deref()
+    }
+
+    /// Whether this read answers the job this window follows with a queued or running record
+    /// equal to the one it already holds, so applying it changes nothing but the read's own flag.
+    /// Compared before the read is applied; an error, a record for another job, any difference
+    /// (progress included) and every ended status answer `false`, and take the full update.
+    pub(crate) fn read_unchanged(&self, job_id: &str, result: &Result<Value, String>) -> bool {
+        let (Ok(record), Some(run)) = (result, self.run.as_ref()) else {
+            return false;
+        };
+        run.job_id.as_deref() == Some(job_id)
+            && matches!(record["status"].as_str(), Some("queued" | "running"))
+            && run.seen.as_ref() == Some(record)
     }
 }
 
@@ -168,6 +185,7 @@ impl Editor {
             keep_metadata,
             file_name: None,
             job_id: None,
+            seen: None,
         });
         self.event(
             "export_started",
@@ -275,7 +293,11 @@ impl Editor {
             }
         };
         match record["status"].as_str() {
-            Some("queued" | "running") => {}
+            Some("queued" | "running") => {
+                if let Some(run) = &mut self.export.run {
+                    run.seen = Some(record);
+                }
+            }
             Some("ready") => {
                 let result = &record["result"];
                 let written = result["path"]

@@ -259,6 +259,21 @@ impl CapabilityStore {
             .collect()
     }
 
+    /// Whether a poll's answer for a tracked live job changes nothing the desktop holds: the job
+    /// is still queued or running and `record` equals the one `module` already tracks, so
+    /// [`ModuleCapabilities::track`] would replace it with itself. Compared before the answer is
+    /// applied. An ended job, a job not tracked and any difference (progress included) answer
+    /// `false`.
+    pub(crate) fn tracks_exactly(&self, module: &str, record: &JobRecord) -> bool {
+        !record.status.is_finished()
+            && self
+                .module(module)
+                .jobs
+                .iter()
+                .find(|held| held.job_id == record.job_id)
+                == Some(record)
+    }
+
     /// One module's state, or the state of a module nothing has been read for.
     pub(crate) fn module(&self, module: &str) -> &ModuleCapabilities {
         self.modules.get(module).unwrap_or(&UNREAD)

@@ -10,7 +10,7 @@ use super::{
     evidence::Settle,
     message::{Message, capability::CapabilityMessage, control::ControlMessage, sync::SyncMessage},
     tasks::{ACTOR, HostAnswer, REQUEST_NUMBER, Scope, call, refresh, request},
-    testing::{attach_log, import_and_adopt, logged},
+    testing::{attach_log, derive_ran, idle_workers, import_and_adopt, logged, mark_no_derive},
 };
 use crate::{
     Config,
@@ -738,6 +738,141 @@ fn a_cancel_goes_through_the_job_method() {
         &proof.state().tasks[TASK].phase,
         TaskPhase::Failed { code, .. } if code == "cancelled"
     ));
+    proof.stop();
+}
+
+/// While a task runs, the job poll's tick only starts its read, and a read that answers the record
+/// the desktop already tracks changes nothing: neither runs the hooks or the derive. Progress and
+/// the job's end are changes: they take the full update and show in the block.
+#[test]
+fn a_job_poll_that_changes_nothing_skips_the_hooks_and_the_derive() {
+    let mut proof = Proof::start();
+    proof.ready();
+    idle_workers(&mut proof.editor);
+    proof.endpoint.generation().shut();
+    proof.send(CapabilityMessage::RunTask {
+        module_id: MODULE.into(),
+        task: TASK.into(),
+    });
+    proof.answer();
+    proof.send(CapabilityMessage::Consent(true));
+    proof.answer();
+    assert!(matches!(
+        proof.task_control().state,
+        TaskControlState::Running { .. }
+    ));
+    assert!(proof.editor.capabilities.live());
+
+    // The tick starts a read and nothing else.
+    let updates = proof.editor.full_updates;
+    mark_no_derive(&proof.editor);
+    proof.send(CapabilityMessage::Poll);
+    assert!(proof.editor.capabilities.polling, "the read is in flight");
+    assert_eq!(proof.editor.full_updates, updates, "a tick runs no hooks");
+    assert!(!derive_ran(&proof.editor), "and no derive");
+    assert_eq!(proof.editor.log.loop_timing.get().last_rederive_ms, 0.0);
+
+    // The first read settles what is held, whether or not it differed from the answer's own.
+    let polled = poll(
+        &proof.editor.owner,
+        proof.editor.client,
+        proof.editor.capabilities.live_jobs(),
+    );
+    assert_eq!(polled.len(), 1);
+    proof.send(CapabilityMessage::Polled(polled.clone()));
+    proof.answer();
+
+    // The same read again changes nothing.
+    let updates = proof.editor.full_updates;
+    mark_no_derive(&proof.editor);
+    proof.send(CapabilityMessage::Poll);
+    proof.send(CapabilityMessage::Polled(polled.clone()));
+    assert!(!proof.editor.capabilities.polling, "the read was applied");
+    assert_eq!(
+        proof.editor.full_updates, updates,
+        "an unchanged read runs no hooks"
+    );
+    assert!(!derive_ran(&proof.editor), "and no derive");
+
+    // What counts as unchanged, read against what is held: an ended job, a read that failed, a
+    // job not tracked and any difference at all are not.
+    let polled_message = |polled: Vec<(String, String, Result<_, String>)>| {
+        Message::Capability(CapabilityMessage::Polled(polled))
+    };
+    let held = polled[0].2.clone().expect("the job's record");
+    let with = |record: Result<_, String>, module: &str| {
+        polled_message(vec![(module.to_owned(), polled[0].1.clone(), record)])
+    };
+    assert!(
+        proof
+            .editor
+            .job_poll_changes_nothing(&with(Ok(held.clone()), MODULE))
+    );
+    let mut moved = held.clone();
+    moved.progress.fraction = Some(0.5);
+    let mut ended = held.clone();
+    ended.status = JobStatus::Ready;
+    for (case, message) in [
+        ("progress", with(Ok(moved.clone()), MODULE)),
+        ("an ended job", with(Ok(ended), MODULE)),
+        ("a failed read", with(Err("gone".into()), MODULE)),
+        (
+            "an untracked module",
+            with(Ok(held.clone()), "luxforge.other"),
+        ),
+    ] {
+        assert!(!proof.editor.job_poll_changes_nothing(&message), "{case}");
+    }
+
+    // Progress takes the full update, and the block shows it.
+    proof.send(CapabilityMessage::Poll);
+    let updates = proof.editor.full_updates;
+    mark_no_derive(&proof.editor);
+    proof.send(CapabilityMessage::Polled(vec![(
+        MODULE.into(),
+        polled[0].1.clone(),
+        Ok(moved),
+    )]));
+    assert_eq!(proof.editor.full_updates, updates + 1);
+    assert!(derive_ran(&proof.editor));
+    let TaskControlState::Running { text, .. } = proof.task_control().state else {
+        panic!("a running task: {:?}", proof.task_control().state);
+    };
+    assert!(text.contains("50%"), "{text}");
+
+    // The job's end takes the full update too, and the run takes its outcome.
+    proof.endpoint.generation().open();
+    wait_until("the job ending", || {
+        let polled = poll(
+            &proof.editor.owner,
+            proof.editor.client,
+            proof.editor.capabilities.live_jobs(),
+        );
+        let ended = polled.iter().any(|(_, _, record)| {
+            record
+                .as_ref()
+                .is_ok_and(|record| record.status.is_finished())
+        });
+        let updates = proof.editor.full_updates;
+        proof.send(CapabilityMessage::Polled(polled));
+        if ended {
+            assert!(
+                proof.editor.full_updates > updates,
+                "an ended job is a change"
+            );
+        }
+        proof.answer();
+        ended
+    });
+    assert!(!proof.editor.capabilities.live());
+    assert!(
+        matches!(
+            proof.task_control().state,
+            TaskControlState::Succeeded { .. } | TaskControlState::Failed(_)
+        ),
+        "{:?}",
+        proof.task_control().state
+    );
     proof.stop();
 }
 
