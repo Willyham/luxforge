@@ -51,6 +51,10 @@ Answer each item in the commit or plan for any change under `crates/`, once, for
 - What did `editor-performance` report on 24 MP before and after, and where is that recorded with its scope?
 - Which tests prove exactness against a stepwise reference for new effects, and which prove buffer sharing where sharing is claimed?
 
+### Image information review
+
+The information overlay reads only the document's capture projection, selected recipe output stage and live crop geometry. `source.inspect` projects validated EXIF from the signature-verified prepared source; the desktop adds one inspection on open after preparation and keeps its small result per photo. The existing metadata reader bounds ASCII fields to 1024 bytes and each source's retained metadata to one EXIF segment. No new full-frame allocation, pixel query, render, source decode or cache is added. The owner projects small metadata fields only. Toggling makes one `workspace.set` call and a session adoption, with no `asset.state`, history refresh, preview job or upload; no timers or subscriptions are added. Each visible view derives bounded text from the same inputs; no performance improvement is claimed. Native smoke checks raster version, texture writes and preview generation across a toggle, and metadata tests exercise exact values through independent EXIF fixtures. The general 24 MP editor-performance workload does not measure this overlay's text-layout cost.
+
 ### Viewport change review
 
 The original is still opened through the signature-verified source cache. RAW region views share the

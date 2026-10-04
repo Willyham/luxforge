@@ -454,12 +454,15 @@ const AFTER_MESSAGE: [AfterMessage; 15] = [
 
 /// The seams whose work reads the screen just derived: what a capability section or a curve shows
 /// is the derived model's answer, so they run after [`Editor::rederive`], in this order.
-const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 2] =
-    [capabilities::after_derive, controls::after_derive];
+const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 3] = [
+    capabilities::after_derive,
+    controls::after_derive,
+    palette::after_derive,
+];
 
 /// Every seam's subscription, each listed once. A seam with nothing to listen to returns
 /// [`Subscription::none`], so no timer or stream exists that no seam gates.
-const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 9] = [
+const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 10] = [
     keymap::subscription,
     view_state::subscription,
     mask_panel::subscription,
@@ -469,6 +472,7 @@ const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 9] = [
     evidence::subscription,
     capabilities::subscription,
     export::subscription,
+    palette::subscription,
 ];
 
 /// The graphics backend and adapter, asked of the renderer only by an evidence run, which is the

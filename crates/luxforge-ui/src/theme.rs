@@ -1403,6 +1403,21 @@ impl DisabledStyle for button::Style {
     }
 }
 
+/// A control row the command palette has just revealed: an amber step well above
+/// [`MASK_ROW_SELECTED`], since the mark lasts a moment and must be seen at a glance, opaque so it
+/// reads the same on every renderer.
+pub const REVEALED_ROW: Color = Color::from_rgb8(91, 73, 50);
+
+/// A row the command palette has just revealed: [`REVEALED_ROW`], rounded, for the moment the
+/// mark lasts.
+pub fn revealed_surface(_theme: &Theme) -> container::Style {
+    surface(REVEALED_ROW).border(Border {
+        color: Color::TRANSPARENT,
+        width: 0.0,
+        radius: RADIUS.into(),
+    })
+}
+
 /// A group header's hairline rule.
 pub fn rule_surface(_theme: &Theme) -> container::Style {
     surface(RULE)
