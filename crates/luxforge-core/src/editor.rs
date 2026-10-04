@@ -642,6 +642,9 @@ pub struct EditorService {
     /// Whether an edit that sets the same control as the entry before it collapses that entry
     /// ([`Self::set_auto_collapse`]). Off until the host sets it from the person's preference.
     auto_collapse: bool,
+    /// Whether a new asset's first open asks the lens module for its action
+    /// ([`Self::set_auto_lens_profile`]). On until the host sets it from the person's preference.
+    auto_lens_profile: bool,
 }
 
 impl EditorService {
@@ -706,6 +709,7 @@ impl EditorService {
             checked_manifest: RefCell::new(None),
             live_artifacts: LiveArtifacts::default(),
             auto_collapse: false,
+            auto_lens_profile: true,
         })
     }
 
@@ -719,6 +723,20 @@ impl EditorService {
     /// Whether edits collapse history now ([`Self::set_auto_collapse`]).
     pub fn auto_collapse(&self) -> bool {
         self.auto_collapse
+    }
+
+    /// Commit a new RAW photo's detected lens profile when an import first opens it, or stop: the
+    /// person's "Correct lens distortion on new RAW photos" preference, which the catalog owner
+    /// sets when it starts and whenever the preference changes. Off, the lens module is not asked
+    /// for a first-open action, so the Lens section offers the detected profile instead. A photo
+    /// already in the catalog keeps its history either way.
+    pub fn set_auto_lens_profile(&mut self, enabled: bool) {
+        self.auto_lens_profile = enabled;
+    }
+
+    /// Whether a new asset's first open asks the lens module now ([`Self::set_auto_lens_profile`]).
+    pub fn auto_lens_profile(&self) -> bool {
+        self.auto_lens_profile
     }
 
     /// The providers this service validates, plans and renders with.
