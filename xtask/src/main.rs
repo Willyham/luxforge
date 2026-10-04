@@ -370,7 +370,7 @@ fn main_result() -> Result {
                     "Graphics adapters: not listed until the release editor is built (cargo xtask build --release)"
                 ),
                 Some(adapters) if adapters.is_empty() => println!(
-                    "Graphics adapters ({backends}): none; the editor cannot open its window here and the GPU tests run nothing"
+                    "Graphics adapters ({backends}): none; the editor cannot open its window with them"
                 ),
                 Some(adapters) => {
                     for adapter in adapters {
