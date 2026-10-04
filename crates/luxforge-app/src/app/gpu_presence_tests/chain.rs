@@ -118,10 +118,12 @@ fn gpu_presence_after_detail_meets_the_spatial_limits() {
 }
 
 /// A tick of a chained plan runs only the passes its words change, layer by layer, and draws
-/// exactly what a run of every pass draws: a Clarity drag none, a Texture drag Clarity's that read
-/// Texture's output, and a drag of Detail or of the colour layer between the two Presence's passes
-/// that read their input, Detail's own passes only where its words move. Chained steps share their
-/// scratch textures, so the slot charges less than the two steps' planes apart.
+/// exactly what a run of every pass draws: of the chain's 27 passes, a Clarity drag runs none, a
+/// Texture drag the 5 of Clarity's that read Texture's output, a drag of Detail 17, its own passes
+/// only where its words move and Presence's that read their input, and a drag of the colour layer
+/// between them Presence's 13. The two links take their scratch planes from the slot's one pool,
+/// but Detail's half-precision planes and Presence's share no class, so the pool holds each link's
+/// scratch side by side, neither link's is written by the other, and no count moves.
 #[test]
 fn gpu_presence_after_detail_reruns_only_the_passes_a_tick_changes() {
     let test = "gpu_presence_after_detail_reruns_only_the_passes_a_tick_changes";
@@ -174,24 +176,21 @@ fn gpu_presence_after_detail_reruns_only_the_passes_a_tick_changes() {
         (
             "Clarity",
             moved(2, json!({"texture": 40, "clarity": -10})),
-            Some(0),
+            0,
         ),
         (
             "Texture",
             moved(2, json!({"texture": 75, "clarity": 30})),
-            None,
+            5,
         ),
         (
             "Detail",
             moved(0, json!({"sharpening": 70, "luminance": 20})),
-            None,
+            17,
         ),
-        (
-            "the colour between",
-            moved(1, json!({"exposure": 0.6})),
-            None,
-        ),
+        ("the colour between", moved(1, json!({"exposure": 0.6})), 13),
     ];
+    assert_eq!(passes, [14, 13], "Detail's passes, then Presence's");
     for (drag, stack, wanted) in drags {
         let (then, _, _) = plan_of(&stack);
         let (after, ran) = qualifier
@@ -199,10 +198,7 @@ fn gpu_presence_after_detail_reruns_only_the_passes_a_tick_changes() {
             .expect("a readback after the first");
         let whole = qualifier.evaluate(&then).expect("a readback of every pass");
         eprintln!("{test}: {drag}: {ran} of {all} passes");
-        if let Some(wanted) = wanted {
-            assert_eq!(ran, wanted, "{drag}");
-        }
-        assert!(ran < all as u64, "{drag} skips something");
+        assert_eq!(ran, wanted, "{drag}");
         let differing = after
             .iter()
             .zip(&whole)

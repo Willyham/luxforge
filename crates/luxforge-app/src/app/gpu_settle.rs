@@ -485,6 +485,21 @@ mod tests {
         entry
     }
 
+    /// A captured frame reports the GPU-preview budget's figures as the surface counts them, the
+    /// slots' scratch pools among them: part of what is in use, each pool counted once.
+    #[test]
+    fn gpu_preview_a_captured_frame_reports_the_scratch_pools_bytes() {
+        let (editor, _, _, _) = opened(Vec::new(), 4);
+        let gpu = editor.snapshot()["surface"]["gpu"].clone();
+        let figure = |name: &str| {
+            gpu[name]
+                .as_u64()
+                .unwrap_or_else(|| panic!("{name}: {gpu}"))
+        };
+        assert!(figure("gpu_preview_scratch_bytes") <= figure("gpu_preview_in_use_bytes"));
+        assert!(figure("gpu_preview_in_use_bytes") <= figure("gpu_preview_peak_bytes"));
+    }
+
     /// Pillar 2's parity: the palette entry and an agent's `workspace.set {gpu_preview}` produce the
     /// same session state, which `session.state`, the desktop's adopted session and its evidence all
     /// report; with the preference off the desktop names it as the reason it hands no plan.

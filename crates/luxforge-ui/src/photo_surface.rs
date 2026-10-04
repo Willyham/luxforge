@@ -194,6 +194,7 @@ impl SurfaceFigures {
         // Read live: a retirement discharges the budget on the worker, between draws.
         overall.gpu_preview_budget_bytes = self.preview.budget();
         overall.gpu_preview_in_use_bytes = self.preview.in_use();
+        overall.gpu_preview_scratch_bytes = self.preview.scratch();
         overall.gpu_preview_peak_bytes = self.preview.peak();
         overall.gpu_preview_passes = self.preview.passes();
         overall.gpu_preview_spatial_passes = self.preview.spatial_passes();
@@ -397,6 +398,10 @@ pub struct SurfaceDiagnostics {
     pub gpu_preview_budget_bytes: u64,
     /// Every surface's GPU-preview textures and buffers, resident or retiring.
     pub gpu_preview_in_use_bytes: u64,
+    /// Of `gpu_preview_in_use_bytes`, the pools of scratch textures every link of a slot's chain
+    /// takes its scratch planes from in turn, resident or retiring: one pool a slot, charged once
+    /// however many links share it.
+    pub gpu_preview_scratch_bytes: u64,
     /// The most `gpu_preview_in_use_bytes` has been.
     pub gpu_preview_peak_bytes: u64,
     /// How many passes the GPU stage has encoded: a redraw of an unchanged plan encodes none.

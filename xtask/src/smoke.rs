@@ -1405,6 +1405,7 @@ fn gpu_identity(run: &mut Run, launches: &[Checked]) -> Result {
                 "gpu_preview_passes": gpu["gpu_preview_passes"],
                 "gpu_preview_budget_bytes": gpu["gpu_preview_budget_bytes"],
                 "gpu_preview_in_use_bytes": gpu["gpu_preview_in_use_bytes"],
+                "gpu_preview_scratch_bytes": gpu["gpu_preview_scratch_bytes"],
                 "gpu_preview_peak_bytes": gpu["gpu_preview_peak_bytes"],
                 "gpu_preview_frame_us": gpu["gpu_preview_frame_us"],
                 "gpu_preview_done_us": gpu["gpu_preview_done_us"],
@@ -1447,15 +1448,18 @@ fn gpu_identity(run: &mut Run, launches: &[Checked]) -> Result {
             figure("gpu_preview_in_use_bytes"),
             figure("gpu_preview_peak_bytes"),
         );
+        // The slots' shared scratch pools are part of what is in use.
+        let scratch = gpu["gpu_preview_scratch_bytes"].as_u64();
         ensure(
             budget == GPU_PREVIEW_BUDGET
                 && in_use > 0
                 && in_use <= peak
                 && peak <= budget
+                && scratch.is_some_and(|scratch| scratch <= in_use)
                 && figure("gpu_preview_passes") > 0,
             format!(
-                "GPU-preview figures out of bounds: {in_use} in use, {peak} peak, {budget} budget, \
-                 {} passes",
+                "GPU-preview figures out of bounds: {in_use} in use, {scratch:?} scratch, {peak} \
+                 peak, {budget} budget, {} passes",
                 gpu["gpu_preview_passes"]
             ),
         )?;
