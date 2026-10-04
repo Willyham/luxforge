@@ -192,7 +192,7 @@ The JPEG neutral picker (a 5 × 5 patch through `sample_before`), `mask.sample-i
 
 Every control is available on the global target or an existing mask through the host's optional `mask` field. The host blends the completed Detail result against that layer's input in linear light as `(1 − M) · in + M · u`, the spelling that is bit-exact at `M = 1`. Halos read unmasked neighbours; masking limits the write, not the neighbourhood. Zero coverage returns input exactly under the host's finite and signed-zero rules; full coverage equals unmasked processing bit for bit. No full-resolution mask buffer or stored edge-mask artifact exists. Sharpening Masking is a transient local guide multiplied into sharpening only, never a host mask.
 
-Global Detail precedes masked Detail, and masked instances follow the mask list and `mask.reorder`. Each instance denoises then sharpens its own input, so a masked Detail adds to global Detail and overlapping masks process repeatedly. Masked Detail and masked Presence layers count together against the shared `MAX_MASKED_SPATIAL_LAYERS` (4); the fifth is refused with the existing message, and the user guide says the cap is shared.
+Global Detail precedes masked Detail, and masked instances follow the mask list and `mask.reorder`. Each instance denoises then sharpens its own input, so a masked Detail adds to global Detail and overlapping masks process repeatedly. Masked Detail and masked Presence layers count together against the shared `MAX_MASKED_SPATIAL_LAYERS` (16); the seventeenth is refused with the existing `resource-limit` message, and the user guide says the cap is shared.
 
 Range masks read each operation's input and may select differently at Detail than at Basic. A value-based overlay or thumbnail keeps the first-bound-layer input rule. Behind Detail it is answered through the **input-grid cache**:
 
@@ -218,7 +218,7 @@ Detail, Tone curve, Lens and Perspective share these host contracts:
 - **Render passes.** Detail uses `RenderPass::Spatial` (0.25 MP) until measured.
 - **Preview.** Detail's settled Fit and prefix cache and Lens's mapping identity on overlays both edit `app/preview.rs` and `ProxyApproximation`; combined tests cover both contracts.
 - **Measurements.** Timing runs only after all feature work, sequentially on a quiet host, never beside another plan's builds.
-- **Masked spatial cap.** `MAX_MASKED_SPATIAL_LAYERS = 4` is shared by masked Detail and masked Presence.
+- **Masked spatial cap.** `MAX_MASKED_SPATIAL_LAYERS = 16` is shared by masked Detail and masked Presence.
 
 ## Bounded implementation
 

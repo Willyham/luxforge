@@ -1868,3 +1868,6 @@ fn behind_a_windowed_fit_proxy_a_plan_reads_the_exact_stages_light() {
     assert!(!planned(&preview).approximate(), "the exact stage's light");
     window_estimate(&plan_of("set-basic", basic_drag()), "a Basic drag");
 }
+
+// The warm list over as many masked spatial layers as a recipe may hold.
+mod warm;

@@ -268,7 +268,8 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | A held GPU-preview boundary | 256 MiB, its CPU copy let go once the photo surface holds it | `BOUNDARY_MAX_BYTES`, `crates/luxforge-core/src/render/boundary.rs` |
 | A boundary's upload a frame | 32 MiB, so its arrival stages at most two frames' chunks | `UPLOAD_PER_FRAME`, `crates/luxforge-ui/src/photo_surface/gpu_preview.rs` |
 | GPU-preview textures and buffers, every photo surface's together, resident or retiring | 2 GiB, one slot per surface | `GPU_PREVIEW_BUDGET`, `crates/luxforge-ui/src/photo_surface/gpu_preview.rs` |
-| Compiled GPU-preview program sequences per photo pipeline, failed ones included | 8 | `PIPELINE_CACHE`, as above |
+| Compiled GPU-preview program sequences per photo pipeline, failed ones included | 64, every link of the largest plan beside a whole warm list, and as many waiting to compile | `PIPELINE_CACHE`, `crates/luxforge-ui/src/photo_surface/gpu_preview/compile.rs` |
+| Link sequences one GPU-preview warm list holds | 45, the compile cache less the largest plan's 19 links | `GPU_WARM_LINKS` and `GPU_PLAN_LINKS`, `crates/luxforge-core/src/render/gpu/preview.rs` |
 
 **Catalog and API**
 
@@ -292,6 +293,7 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | --- | --- | --- |
 | Masks per recipe | 16 | `MASKS_PER_RECIPE`, `crates/luxforge-core/src/model.rs` |
 | Components per mask | 32 | `COMPONENTS_PER_MASK`, `crates/luxforge-core/src/model.rs` |
+| Masked spatial layers per recipe | 16, masked Presence and Detail layers together | `MAX_MASKED_SPATIAL_LAYERS`, `crates/luxforge-core/src/modules/spatial.rs` |
 | Serialized mask bytes per recipe | 256 KiB | `MASK_BYTES_PER_RECIPE`, `crates/luxforge-core/src/model.rs` |
 
 **Export**

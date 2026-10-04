@@ -19,9 +19,9 @@
 //! - **Warming.** The desktop names the sequences a gesture is likely to need when the stack
 //!   changes ([`super::super::PhotoSurface::gpu_warm`]), so they compile before a drag begins.
 //! - **Bounds.** At most [`PIPELINE_CACHE`] compiled sequences are kept, ready and failed ones
-//!   together, the least recently asked for evicted first when a compile ends, and at most as many
-//!   wait in the queue; a warmed sequence that finds the queue full is not queued, and one a frame
-//!   asks for takes the place of the newest warmed one waiting.
+//!   together, the least recently asked for or warmed evicted first when a compile ends, and at
+//!   most as many wait in the queue; a warmed sequence that finds the queue full is not queued, and
+//!   one a frame asks for takes the place of the newest warmed one waiting.
 //!   If a full queue contains only sequences already asked for by frames, a new sequence retries
 //!   admission on a later prepare while its frame uses the CPU.
 //!
@@ -46,7 +46,17 @@ use std::{
 
 /// How many compiled program sequences, ready or failed, a pipeline keeps, and how many may wait
 /// for the compile thread.
-pub const PIPELINE_CACHE: usize = 16;
+///
+/// Every tick asks for every link's sequence, so the cache holds every link of the plan a drag
+/// draws together, or a compile that ends would evict one of the plan's own and the drag would
+/// never draw on the GPU. The largest plan is a link for the colour steps before its first spatial
+/// step and one for each of up to 18 spatial steps, Detail and Presence globally and 16 masked
+/// layers (the core's `GPU_PLAN_LINKS`); the warm list holds at most the rest (`GPU_WARM_LINKS`),
+/// so both fit at once. A compiled sequence holds its render pipeline and its passes' compute
+/// pipelines, which sequences that run the same pass share through the pass cache
+/// ([`super::spatial::PASS_CACHE`]), so a sequence of a new shape adds little more than its render
+/// pipeline.
+pub const PIPELINE_CACHE: usize = 64;
 
 /// The program sequences a gesture is likely to need, which the desktop names when the stack
 /// changes so they compile before a drag begins ([`super::super::PhotoSurface::gpu_warm`]). Each
@@ -91,9 +101,9 @@ pub(in crate::photo_surface) struct GpuOptions {
 
 /// What a cached sequence is keyed by: each step's signature in order, the shape of a masked
 /// step and each program's role, entry and source ([`GpuStep::signature`]).
-type Signature = Vec<(StepKind, String, String)>;
+pub(super) type Signature = Vec<(StepKind, String, String)>;
 
-fn signature(steps: &[GpuStep]) -> Signature {
+pub(super) fn signature(steps: &[GpuStep]) -> Signature {
     steps
         .iter()
         .flat_map(GpuStep::signature)
@@ -165,6 +175,15 @@ impl Shared {
             .find(|entry| entry.format == format && matches(&entry.signature, steps))
     }
 
+    /// Whether `steps` writing `format` is known, which a warm list naming it again marks used now.
+    fn warmed_again(&mut self, steps: &[GpuStep], format: wgpu::TextureFormat) -> bool {
+        self.clock += 1;
+        let clock = self.clock;
+        self.find(steps, format)
+            .map(|entry| entry.used = clock)
+            .is_some()
+    }
+
     /// Queue `steps` writing `format` under a new identity, first when a frame `asked` for them
     /// and last when they are warmed. `false` when the bounded queue has no room, including when
     /// it holds only asked sequences and none can be displaced by a new request.
@@ -219,8 +238,8 @@ impl Shared {
         None
     }
 
-    /// Keep the compile of `id`, evicting the least recently asked for compiled sequence when the
-    /// cache is full; `true` when a frame waits for it.
+    /// Keep the compile of `id`, evicting the least recently asked for or warmed compiled sequence
+    /// when the cache is full; `true` when a frame waits for it.
     fn finish(&mut self, id: u64, state: State) -> bool {
         let compiled = self
             .entries
@@ -394,7 +413,9 @@ impl Pipelines {
     }
 
     /// Queue every sequence of `sequences` this pipeline does not know, after any a frame asked
-    /// for, while the queue has room, so a gesture that needs one later finds it ready.
+    /// for, while the queue has room, so a gesture that needs one later finds it ready. One it
+    /// knows is wanted again: it counts as used now, so a compile that ends evicts what an older
+    /// warm list named before it.
     pub(super) fn warm(
         &mut self,
         device: &wgpu::Device,
@@ -406,7 +427,7 @@ impl Pipelines {
         let mut shared = worker.lock();
         let mut queued = 0;
         for (steps, format) in sequences {
-            if steps.is_empty() || shared.find(steps, *format).is_some() {
+            if steps.is_empty() || shared.warmed_again(steps, *format) {
                 continue;
             }
             if !shared.queue(steps, *format, false) {
@@ -533,6 +554,39 @@ mod tests {
         assert_eq!(figures.pending.load(Ordering::Acquire), 1);
         figures.leave(5);
         assert_eq!(figures.pending.load(Ordering::Acquire), 0);
+    }
+
+    /// A warm list that names a compiled sequence again keeps it: once the cache is full, the
+    /// compile that ends next evicts the oldest sequence no list named since, not the one named
+    /// again.
+    #[test]
+    fn a_sequence_warmed_again_outlives_one_an_older_list_warmed() {
+        let mut shared = Shared::default();
+        let format = super::super::OUTPUT_FORMAT;
+        let named: Vec<&'static str> = (0..=PIPELINE_CACHE)
+            .map(|index| &*Box::leak(format!("cached_{index}").into_boxed_str()))
+            .collect();
+        let compiled = |shared: &mut Shared, entry: &'static str| {
+            assert!(shared.queue(&steps(entry), format, false));
+            let (id, ..) = shared.next().expect("queued");
+            shared.finish(id, State::Failed(Arc::from("kept")));
+        };
+        for entry in &named[..PIPELINE_CACHE] {
+            compiled(&mut shared, entry);
+        }
+        assert!(shared.warmed_again(&steps(named[0]), format));
+        assert!(!shared.warmed_again(&steps("unknown"), format));
+        compiled(&mut shared, named[PIPELINE_CACHE]);
+        let kept = |entry: &str| {
+            shared
+                .entries
+                .iter()
+                .any(|kept| kept.signature[0].1 == entry)
+        };
+        assert_eq!(shared.entries.len(), PIPELINE_CACHE);
+        assert!(kept(named[0]), "warmed again, so kept");
+        assert!(!kept(named[1]), "the oldest no list named since");
+        assert!(kept(named[PIPELINE_CACHE]));
     }
 
     /// A full queue of requested sequences rejects another request and keeps both bounds intact.

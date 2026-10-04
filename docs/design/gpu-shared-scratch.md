@@ -1,6 +1,6 @@
 # Shared scratch planes and sixteen masked spatial layers
 
-Status: **planned** ([task plan](../../tasks/gpu-shared-scratch.json)). The owner asked for the plan on 2026-10-03, after the investigation recorded here, under the direction that interactive speed comes before memory rules so that painting keeps pace with tens of masks ([decisions](../decisions.md#gpu-previews)). The same day the owner raised the masked spatial layer cap from four to 16 and asked that a preview drawn on the slower CPU path say why. The cap stays four until this work ships. The notice's form is a proposal with recorded defaults ([below](#the-cpu-fallback-notice)).
+Status: **planned** ([task plan](../../tasks/gpu-shared-scratch.json)). The owner asked for the plan on 2026-10-03, after the investigation recorded here, under the direction that interactive speed comes before memory rules so that painting keeps pace with tens of masks ([decisions](../decisions.md#gpu-previews)). The same day the owner raised the masked spatial layer cap from four to 16 and asked that a preview drawn on the slower CPU path say why. The cap is 16 ([below](#sixteen-masked-spatial-layers)). The notice's form is a proposal with recorded defaults ([below](#the-cpu-fallback-notice)).
 
 ## Outcome
 
@@ -162,12 +162,12 @@ The owner's decision of 2026-10-03.
 - **The limit.** `MAX_MASKED_SPATIAL_LAYERS` (`crates/luxforge-core/src/modules/spatial.rs`) becomes 16, the figure for masks and for masked colour layers. Masked Presence and Detail layers still count against it together, and a seventeenth is refused with `resource-limit` naming the limit, in `registry/compile.rs`.
 - **The settled render and export.** Every spatial layer is still a sequential full frame there. A whole-frame masked layer costs 809 ms at 60 MP and 204 ms at 24 MP, and a small mask about half ([the masked spatial primitive](../specs/performance.md#the-masked-spatial-primitive-one-to-four-layers)). Sixteen whole-frame masked layers are therefore about 13 s of exact render at 60 MP. A render expected to take more than a second already shows its progress on the photograph.
 - **The compile cache.** The surface compiles one program sequence per link, and links of one shape share it. A link's shape is its mask's component programs, its units and the colour steps after it.
-  - Sixteen masked layers of mixed mask kinds, unit sets and colour steps can need more sequences than `PIPELINE_CACHE` (16) holds, warm lists included.
+  - Sixteen masked layers of mixed mask kinds, unit sets and colour steps can need more than 16 sequences, warm lists included.
   - Each tick asks for every link's sequence. One of the plan's own would then be evicted to compile another, and the drag would never draw on the GPU.
-  - The cache must hold every sequence the largest plan needs, plus its warm list. The suggestion is 64; compiled pipelines are small, and pass modules are shared through the pass cache.
-  - `WARM_SPATIAL_PLANS` (`crates/luxforge-core/src/render/gpu/preview.rs`) warms the drags of at most four spatial layers. Warming by distinct shape, rather than the first four layers, would cover them all.
+  - The cache holds every sequence the largest plan needs, plus its warm list: 64 (`PIPELINE_CACHE`). Compiled pipelines are small, and pass modules are shared through the pass cache.
+  - The warm list (`crates/luxforge-core/src/render/gpu/preview.rs`) warms one drag for each distinct drafted shape, which covers every masked spatial layer's, within 45 link sequences (`GPU_WARM_LINKS`) that leave the largest plan room in the cache ([GPU previews](gpu-preview.md#where-the-code-lives)).
 - **The GPU budget.** With the pool and the band, 16 masked Presence layers fit the 2 GiB budget at Fit on a JPEG or a RAW. At 100%, about 15 fit on a JPEG and 9 on a RAW ([why](#why)). Past the budget the gesture takes the CPU path, and the notice below says so.
-- **The harness.** `editor-latency` keeps its own copy of the cap, which `--mask-presence` reads, and limits `--masks` to 1 to 10. Both follow the new figure.
+- **The harness.** `editor-latency`'s `--mask-presence` reads the cap from the core, and `--masks` reaches 16, the masks a recipe holds.
 
 ### The CPU fallback notice
 

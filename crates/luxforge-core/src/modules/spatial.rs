@@ -19,17 +19,19 @@ pub(crate) const MAX_SPATIAL_HALO: u32 = 512;
 /// payload into one operation, so this bounds the chain one layer can ask the host to run.
 pub(super) const MAX_SPATIAL_UNITS: usize = 4;
 
-/// The largest number of **masked** spatial layers one recipe may hold
-/// (`docs/design/masking.md`, "Limits").
+/// The largest number of **masked** spatial layers one recipe may hold, masked Presence and Detail
+/// layers counted together (`docs/design/masking.md`, "Limits"): 16, the figure for masks and for
+/// masked colour layers (owner, 2026-10-03).
 ///
 /// Every spatial layer, masked or not, is a stage boundary and therefore a sequential full frame —
 /// the operation reads the finished frame before it and writes the next one, so no two of them
 /// overlap in time. A mask does not change that; what a mask changes is how cheap the frame is,
 /// because a tile the mask cannot reach is copied instead of evaluated. The cap is on the masked
-/// ones because local adjustments are the gesture that invites many of them, and four sequential
-/// full frames is what the measurement in `docs/specs/performance.md` was taken against. Exceeding
-/// it is a `resource-limit` error naming the limit, not a silently dropped layer.
-pub(crate) const MAX_MASKED_SPATIAL_LAYERS: usize = 4;
+/// ones because local adjustments are the gesture that invites many of them. Its cost falls on the
+/// settled render and on export, a sequential full frame for each layer; while a gesture is drawn
+/// on the GPU each layer is a link of the preview's chain, held to the GPU-preview budget.
+/// Exceeding it is a `resource-limit` error naming the limit, not a silently dropped layer.
+pub const MAX_MASKED_SPATIAL_LAYERS: usize = 16;
 
 /// The default target for one render context's spatial working sets: 256 MiB, separate from the
 /// 64 MiB float scratch target the colour run streams through, because one tile of a 60 MP stage

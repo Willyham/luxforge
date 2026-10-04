@@ -100,7 +100,11 @@ const UNLIMITED: u32 = i32::MAX as u32;
 
 /// How many compiled pass modules the stage keeps across sequences, the least recently used
 /// evicted first: every pass of the [`super::PIPELINE_CACHE`] sequences the pipeline keeps holds its
-/// pipeline itself, so this bounds only what an evicted sequence can reuse.
+/// pipeline itself, so this bounds only what a sequence compiled later can reuse. A pass module is
+/// its kernel and shape, whatever mask, place or colour steps after it its link holds, so a
+/// stack's links share most of theirs: the plan and warm list of sixteen masked Detail and Presence
+/// layers of six unit sets run 29, and a link that differs from one compiled before only in those
+/// compiles its render pipeline alone.
 pub(super) const PASS_CACHE: usize = 64;
 
 /// What a plane's texels hold — how many channels, and whether half precision holds them — and so

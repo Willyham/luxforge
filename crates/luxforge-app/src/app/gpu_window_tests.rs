@@ -498,7 +498,11 @@ fn catalog(name: &str) -> std::path::PathBuf {
 }
 
 /// Take up the preview worker's results, as the worker's wake does, until `done`.
-fn deliver_until(editor: &mut Editor, what: &str, mut done: impl FnMut(&Editor) -> bool) {
+pub(super) fn deliver_until(
+    editor: &mut Editor,
+    what: &str,
+    mut done: impl FnMut(&Editor) -> bool,
+) {
     luxforge_testbase::wait_until(what, || {
         let _ = editor.update(Message::Preview(PreviewMessage::Poll));
         done(editor)
@@ -533,7 +537,7 @@ fn committed(
 
 /// Another client commits `method` with `params` over `editor`'s photograph, which then shows it as
 /// the desktop does: the method's answer.
-fn answered(
+pub(super) fn answered(
     editor: &mut Editor,
     asset: &luxforge_core::AssetId,
     agent: luxforge_core::ClientId,
