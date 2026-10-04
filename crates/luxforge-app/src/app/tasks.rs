@@ -1075,8 +1075,9 @@ pub(crate) fn draft_begin_params(asset_id: AssetId, action: &str, target: &Draft
 ///
 /// As `gpu` asks, the owner plans the draft's GPU preview with the job (`PreviewJob::gpu`): the
 /// plan a tick is drawn from, or its reason, and the boundary it starts from, in the same answer,
-/// so a tick drawn on the GPU adds no hop ([`super::gpu_preview`]). At Fit it is planned at the
-/// job's display bounds, and at a percentage zoom of 100% or more over the region it names.
+/// so a tick drawn on the GPU adds no hop ([`super::gpu_preview`]). At Fit and below 100% it is
+/// planned at the job's display bounds, which below 100% are the stage's displayed size, and at a
+/// percentage zoom of 100% or more over the region it names.
 pub(crate) fn draft_set_now(
     owner: &OwnerHandle,
     client: ClientId,

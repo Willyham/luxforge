@@ -590,48 +590,55 @@ fn plain<'a>(
                 // exactly that box, and the overlays with it, whichever texture is on screen. The
                 // box may be far larger than the window; the surface hands the renderer only its
                 // visible part.
-                let photo: Element<'a, Message> =
-                    if surfaces.region.is_none() && surfaces.photo_content.is_none() {
-                        // A whole-output proxy is still a valid percentage frame, including at 50%
-                        // and when a region request named a fallback. It is not an exact full
-                        // texture slot.
-                        match raster {
-                            Some(raster) => luxforge_ui::photo_surface(
-                                DEVELOP_SURFACE,
-                                raster,
-                                luxforge_ui::Placement::Fill,
-                                box_width,
-                                box_height,
-                            )
-                            .overlays(clipping, coverage)
-                            .into(),
-                            None => empty("Rendering photograph…"),
-                        }
-                    } else {
-                        let whole = surfaces.region.is_none();
-                        luxforge_ui::viewport_surface(
+                let photo: Element<'a, Message> = if surfaces.whole_frame() {
+                    // A whole-output proxy is still a valid percentage frame, including at 50%
+                    // and when a region request named a fallback. It is not an exact full
+                    // texture slot. Below 100% a gesture's whole-frame plan, drawn from the
+                    // same proxy, stands in for it through the same placement, and settles
+                    // into the next CPU frame through the dissolve, as at Fit.
+                    match raster {
+                        Some(raster) => luxforge_ui::photo_surface(
                             DEVELOP_SURFACE,
-                            raster.zip(surfaces.photo_content),
-                            surfaces.region,
-                            surfaces.current_content,
-                            (width, height),
+                            raster,
                             luxforge_ui::Placement::Fill,
                             box_width,
                             box_height,
                         )
-                        .overlays(clipping.filter(|_| whole), coverage.filter(|_| whole))
-                        .region_overlays(surfaces.region_clipping, surfaces.region_coverage)
-                        // At 100% and above a gesture's plan draws the visible region at full
-                        // scale, placed at its rectangle of the stage, and settles into the
-                        // view's own frame through the dissolve.
+                        .overlays(clipping, coverage)
                         .gpu_preview(gpu)
                         .gpu_hold(gpu_hold)
                         .gpu_tag(gpu_tag)
                         .gpu_change(gpu_change)
                         .gpu_warm(gpu_warm)
                         .dissolve(dissolve)
-                        .into()
-                    };
+                        .into(),
+                        None => empty("Rendering photograph…"),
+                    }
+                } else {
+                    let whole = surfaces.region.is_none();
+                    luxforge_ui::viewport_surface(
+                        DEVELOP_SURFACE,
+                        raster.zip(surfaces.photo_content),
+                        surfaces.region,
+                        surfaces.current_content,
+                        (width, height),
+                        luxforge_ui::Placement::Fill,
+                        box_width,
+                        box_height,
+                    )
+                    .overlays(clipping.filter(|_| whole), coverage.filter(|_| whole))
+                    .region_overlays(surfaces.region_clipping, surfaces.region_coverage)
+                    // At 100% and above a gesture's plan draws the visible region at full
+                    // scale, placed at its rectangle of the stage, and settles into the
+                    // view's own frame through the dissolve.
+                    .gpu_preview(gpu)
+                    .gpu_hold(gpu_hold)
+                    .gpu_tag(gpu_tag)
+                    .gpu_change(gpu_change)
+                    .gpu_warm(gpu_warm)
+                    .dissolve(dissolve)
+                    .into()
+                };
                 let handles = mask_draft
                     .zip(mask_map)
                     .zip(CanvasView::percent(value, model.scale_factor));
