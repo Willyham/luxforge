@@ -280,14 +280,30 @@ pub(super) const METHODS: &[MethodSpec] = &[
     owner!(
         "preferences.read",
         NoParams,
-        |owner, _, _| value(owner.host.preferences.read()?),
+        |owner, _, _| Ok(
+            json!({"performance_expanded": owner.host.preferences.read()?.performance_expanded})
+        ),
         "user preferences outside the catalog: {performance_expanded}; defaults to expanded on first use; reads no pixels, changes no history and creates no file; malformed or unsupported preferences are refused without rewriting them"
     ),
     owner!(
         "preferences.set",
         PreferencesSet,
-        |owner, _, p| value(owner.host.preferences.set(p.performance_expanded)?),
+        |owner, _, p| Ok(
+            json!({"performance_expanded": owner.host.preferences.set(p.performance_expanded)?.performance_expanded})
+        ),
         "persist the Performance section's expanded state through one bounded atomic user-settings write; returns {performance_expanded}; changes no recipe or history; needs a configured application preference directory"
+    ),
+    owner!(
+        "flags.list",
+        NoParams,
+        owner::flags_list,
+        "the feature flags this host lists and the person's choices: {flags: [{id, title, description, kind (toggle, choice or number), applies (live or launch), options? [{value, label}], min?, max?, step?, default, value, stored, active?, override?, error?}], unrecognized}; value is what a live flag reads now and a launch flag's next desktop launch reads; stored says the person chose it; active and override are a launch flag's value for this launch and what forced it, on a host the desktop started; error says why a stored value that does not fit is not used, and the flag follows its default; unrecognized names stored values no listed flag claims, which are kept; a flag never changes pixels; reads no catalog and creates no file; the proof flags are listed only by a host that serves the test modules"
+    ),
+    owner!(
+        "flags.set",
+        owner::FlagsSet,
+        owner::flags_set,
+        "store one feature flag's value outside the catalog, checked against its kind, or remove the stored value for a null or absent value so the flag follows its default; answers as flags.list does; a changed value is announced in the event log; leaves every other stored value, recognized or not, untouched; a launch flag takes effect at the next desktop launch; changes no recipe, history or render; needs a configured application preference directory"
     ),
     owner!(
         "catalog.import",

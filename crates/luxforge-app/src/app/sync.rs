@@ -227,9 +227,15 @@ impl Editor {
                                 .own_requests
                                 .retain(|request| !sync.own.contains(request));
                         }
+                        let flags = if sync.flags {
+                            self.flags_changed_elsewhere()
+                        } else {
+                            Task::none()
+                        };
                         if sync.capabilities {
-                            return self.reload_capabilities();
+                            return Task::batch([flags, self.reload_capabilities()]);
                         }
+                        return flags;
                     }
                     Err(error) => self.status.text = format!("Live refresh failed: {error}"),
                 }

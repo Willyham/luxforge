@@ -62,11 +62,14 @@ pub enum Icon {
     OverlayTint,
     OverlayMask,
     OverlayImage,
+    // The Settings sheet: its title bar button and the Experiments tab.
+    Settings,
+    Beaker,
 }
 
 impl Icon {
     /// Every icon with its name, in the order the gallery's icon board lists them.
-    pub const NAMED: [(&'static str, Icon); 51] = [
+    pub const NAMED: [(&'static str, Icon); 53] = [
         ("rotate-left", Self::RotateLeft),
         ("rotate-right", Self::RotateRight),
         ("flip", Self::Flip),
@@ -121,6 +124,8 @@ impl Icon {
         ("overlay-tint", Self::OverlayTint),
         ("overlay-mask", Self::OverlayMask),
         ("overlay-image", Self::OverlayImage),
+        ("settings", Self::Settings),
+        ("beaker", Self::Beaker),
     ];
 
     pub fn from_name(name: &str) -> Option<Self> {
@@ -806,6 +811,36 @@ pub(crate) fn draw_icon(frame: &mut canvas::Frame, icon: Icon, size: f32, color:
             }
         }
         // A bin: its lid, the lid's handle and the tapered body.
+        // A gear: a ring with eight square teeth round it and an open hub.
+        Icon::Settings => {
+            frame.stroke(&canvas::Path::circle(p(8.0, 8.0), 4.2 * s), stroke);
+            frame.stroke(&canvas::Path::circle(p(8.0, 8.0), 1.7 * s), stroke);
+            for tooth in 0..8 {
+                let angle = tooth as f32 * std::f32::consts::FRAC_PI_4;
+                let (sin, cos) = angle.sin_cos();
+                line(
+                    frame,
+                    (8.0 + 4.2 * cos, 8.0 + 4.2 * sin),
+                    (8.0 + 6.2 * cos, 8.0 + 6.2 * sin),
+                );
+            }
+        }
+        // A beaker: a conical flask with a lipped neck and a level of liquid in it.
+        Icon::Beaker => {
+            line(frame, (5.5, 2.0), (10.5, 2.0));
+            poly(
+                frame,
+                &[
+                    (6.5, 2.0),
+                    (6.5, 6.0),
+                    (2.5, 13.5),
+                    (13.5, 13.5),
+                    (9.5, 6.0),
+                    (9.5, 2.0),
+                ],
+            );
+            line(frame, (4.4, 10.0), (11.6, 10.0));
+        }
         Icon::Trash => {
             line(frame, (3.0, 4.0), (13.0, 4.0));
             poly(frame, &[(6.0, 4.0), (6.0, 2.5), (10.0, 2.5), (10.0, 4.0)]);

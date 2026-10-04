@@ -171,6 +171,18 @@ pub enum Step {
     PerformanceCancel {
         row: usize,
     },
+    /// Open the Settings sheet at its Experiments tab, or close it, as its title bar button and
+    /// Escape do. Opening waits for the flags to be read.
+    Settings {
+        open: bool,
+    },
+    /// Change one flag as its row's control does, and wait for `flags.set` to answer: a value the
+    /// flag takes, or `null` for Reset. The sheet must be open.
+    Flag {
+        id: String,
+        #[serde(deserialize_with = "Option::deserialize")]
+        value: Option<Value>,
+    },
     /// Ask nothing of the editor for at least this many milliseconds, then capture. The evidence
     /// tick keeps rebuilding the view meanwhile, as the editor's own event sync does while a
     /// photograph is open, so the frame shows what idling did to the screen.
@@ -307,7 +319,11 @@ impl Step {
             Self::ViewIdle(step) => step.validate(),
             Self::Idle(step) => step.validate(),
             Self::Workspace(step) => step.validate(),
-            Self::Preview(_) | Self::Palette(_) | Self::Performance { .. } => Ok(()),
+            Self::Preview(_)
+            | Self::Palette(_)
+            | Self::Performance { .. }
+            | Self::Settings { .. } => Ok(()),
+            Self::Flag { id, .. } => text(id, "flag id"),
             Self::PerformanceCancel { row } => {
                 if *row < 4 {
                     Ok(())
