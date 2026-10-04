@@ -120,6 +120,9 @@ mod preview_tests;
 #[cfg(test)]
 mod proof_controls_tests;
 mod query_choice;
+mod remembered;
+#[cfg(test)]
+mod remembered_tests;
 mod settings;
 #[cfg(test)]
 mod settings_tests;
@@ -580,6 +583,8 @@ impl Editor {
             .presentation
             .queue
             .set_activity(editor.owner.activity());
+        // The remembered panels, overlays and brush are in place before the first frame.
+        editor.seed_remembered();
         if editor.live_server.is_none() {
             editor.status.text = "Editor ready; live API unavailable on this host".into();
         }
