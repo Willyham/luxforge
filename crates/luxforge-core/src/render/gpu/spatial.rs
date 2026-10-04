@@ -387,11 +387,12 @@ pub(crate) fn compose(
     Ok(composed)
 }
 
-/// Give each plane `apply` reads that more than one of the operation's passes write — a unit that
-/// holds its smoother's coefficients where its last pass then writes the result, or a plane the
-/// unit took from an earlier unit's scratch — a plane of its own, which the last of them writes and
-/// the apply reads, and answer the planes it leaves as scratch. The apply's unit is the last
-/// composed, so its passes are the last ones.
+/// Give each plane `apply` reads that more than one of the operation's passes write — a unit whose
+/// last pass writes its result into a plane an earlier pass of it wrote, as sharpening writes its
+/// change where its blur's horizontal pass was, or a plane the unit took from an earlier unit's
+/// scratch — a plane of its own, which the last of them writes and the apply reads, and answer the
+/// planes it leaves as scratch. The apply's unit is the last composed, so its passes are the last
+/// ones.
 ///
 /// So every plane an apply reads has one writer. A tick that changes part of the operation's
 /// input runs that writer only where its output changes and every other pass around it

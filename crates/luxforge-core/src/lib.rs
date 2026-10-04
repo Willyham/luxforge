@@ -72,16 +72,17 @@ pub use modules::{
     CropStage, CurveBackground, CurveChannel, CurveControl, DETAIL_EFFECT, Edge, EffectDescriptor,
     EffectStage, ExactGeometry, FieldPatch, FieldPatchModule, FitSettle, GPU_PROGRAMS,
     GroupControl, IdentityKind, LENS_EFFECT, LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE,
-    MIN_ANGLE, MIXER_EFFECT, ModuleDescriptor, ModuleLayout, ModuleRegistry, NewLayer,
-    NumberControl, NumberStyle, ORIENTATION_EFFECT, OutputRect, PERSPECTIVE_EFFECT, PIXEL_EFFECT,
-    PRESENCE_EFFECT, PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH, ParameterDescriptor,
-    ParameterKind, PickerControl, PointwiseColor, PresetsControl, Processing, Provider,
-    QueryChoiceControl, QueryRef, RailDecoration, RangeControl, RawModule, RawPayload, Region,
-    RegistryOptions, Resample, ResetAction, ResolvedControl, ResolvedReset, SamplingScale,
-    SpatialOperation, Spec, Stage, StageContext, StageQuestions, TaskControl, ToggleControl,
-    ToolModule, VIGNETTE_EFFECT, Values, WhiteBalanceMode, check_parameters, check_value,
-    gains_from_temperature_tint, guide_angle, insertion_index_among, largest_with_ratio_inside,
-    palette_bytes, resolve_control, resolve_group_reset, temperature_tint_from_gains,
+    MAX_MASKED_SPATIAL_LAYERS, MIN_ANGLE, MIXER_EFFECT, ModuleDescriptor, ModuleLayout,
+    ModuleRegistry, NewLayer, NumberControl, NumberStyle, ORIENTATION_EFFECT, OutputRect,
+    PERSPECTIVE_EFFECT, PIXEL_EFFECT, PRESENCE_EFFECT, PROOF_GENERATE_PATH, PROOF_PALETTE,
+    PROOF_PALETTE_PATH, ParameterDescriptor, ParameterKind, PickerControl, PointwiseColor,
+    PresetsControl, Processing, Provider, QueryChoiceControl, QueryRef, RailDecoration,
+    RangeControl, RawModule, RawPayload, Region, RegistryOptions, Resample, ResetAction,
+    ResolvedControl, ResolvedReset, SamplingScale, SpatialOperation, Spec, Stage, StageContext,
+    StageQuestions, TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT, Values,
+    WhiteBalanceMode, check_parameters, check_value, gains_from_temperature_tint, guide_angle,
+    insertion_index_among, largest_with_ratio_inside, palette_bytes, resolve_control,
+    resolve_group_reset, temperature_tint_from_gains,
 };
 pub use presets::{
     ImportReport, ImportedPreset, MAX_PRESET_BYTES, MappedSetting, PresetOrigin, PresetRecord,
@@ -95,13 +96,13 @@ pub use preview::{
 };
 pub use proxy::{ProxyApproximation, ProxyBounds, ProxyIdentity, ProxyPlan};
 pub use render::gpu::{
-    BoundaryKey, BoundaryRequest, CoordinateGrid, EstimateSource, GPU_PASS_INPUTS,
-    GPU_SHARED_VALUES, GPU_WORKGROUP_LANES, GRID_MAX_NODES, GRID_SAMPLE_TOLERANCE_PX,
-    GRID_TOLERANCE_PX, GpuAnswer, GpuApply, GpuBoundary, GpuChange, GpuClipping, GpuComponent,
-    GpuDescription, GpuEstimates, GpuFallback, GpuGeometry, GpuMask, GpuOperation, GpuPass,
-    GpuPassShape, GpuPlan, GpuPlanRequest, GpuPlane, GpuPlaneFormat, GpuPlaneSize, GpuPosition,
-    GpuPreview, GpuProgram, GpuProgramKind, GpuSpatial, GpuSpatialUnit, GpuView, gpu_plan,
-    gpu_plan_with,
+    BoundaryKey, BoundaryRequest, CoordinateGrid, EstimateSource, GPU_PASS_INPUTS, GPU_PLAN_LINKS,
+    GPU_SHARED_VALUES, GPU_WARM_LINKS, GPU_WORKGROUP_LANES, GRID_MAX_NODES,
+    GRID_SAMPLE_TOLERANCE_PX, GRID_TOLERANCE_PX, GpuAnswer, GpuApply, GpuBoundary, GpuChange,
+    GpuClipping, GpuComponent, GpuDescription, GpuEstimates, GpuFallback, GpuGeometry, GpuMask,
+    GpuOperation, GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest, GpuPlane, GpuPlaneFormat,
+    GpuPlaneSize, GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuSpatial, GpuSpatialUnit,
+    GpuView, gpu_plan, gpu_plan_with,
 };
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{

@@ -1148,13 +1148,16 @@ fn a_drag_changes_only_the_drafting_modules_section() {
             .map(|section| (section.module_id.clone(), section.clone()))
             .collect()
     };
-    let before = sections(&editor);
-    assert!(before.len() > 1, "more than one section is on screen");
     // The preset library disables its rows while any draft is open, so opening the gesture
-    // changes that section once; nothing else outside the drafting module moves.
+    // changes that section once while it is expanded (a collapsed one builds no controls, so
+    // nothing in it can follow); nothing else outside the drafting module moves.
     let library = crate::state::presets::presets_control(&editor.modules)
         .map(|(module, _)| module.id.clone())
         .expect("the presets control");
+    editor.controls.expanded.insert(library.clone(), true);
+    editor.rederive();
+    let before = sections(&editor);
+    assert!(before.len() > 1, "more than one section is on screen");
 
     let _ = testing::slide(&mut editor, &action, &parameter, 0.5);
     let opened = sections(&editor);

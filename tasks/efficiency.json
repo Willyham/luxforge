@@ -139,7 +139,7 @@
     {
       "id": "TASK-003",
       "description": "Stop scanning every process on the host at launch to report the graphics backend and adapter.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "crates/luxforge-app/src/app/mod.rs:558 calls iced::system::information(), which (with the workspace's `sysinfo` iced feature) runs System::new_all() and refresh_all() on a spawned thread, walking every process twice, during the startup decode. The result supplies only state.backend's graphics backend and adapter strings (evidence.rs:781).",
@@ -173,11 +173,11 @@
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Run the app's state tests, then one background smoke run and inspect state.json's backend."
+          "Run the app's backend tests, then one background smoke run and inspect its state.json backend."
         ],
         "commands": [
           "cargo test -p luxforge-app backend",
-          "cargo run --release --locked --package xtask -- smoke --scenario app --output NEW_DIR"
+          "cargo run --release --locked --package xtask -- smoke --scenario load --output NEW_DIR"
         ],
         "expected_results": [
           "Tests pass; state.json carries the backend and adapter; no process scan at launch."
@@ -619,7 +619,7 @@
     {
       "id": "TASK-011",
       "description": "Reduce the histogram reducer's per-pixel work, stop deep-copying every API answer, prepare the lineage query once, and buffer the live-session writer.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Bins::add_pixel (crates/luxforge-core/src/analysis.rs:202) increments r0..b255 per pixel although they equal r[0], r[255] and so on, then clip_class recomputes the same comparisons. Derive the per-channel extremes from the bins when building the report; classify with a 256-entry table e[v] = (v == 0) | (v == 255) << 1, counting e[r] | e[g] | e[b] into a four-way class count for any-channel and e[r] & e[g] & e[b] for all-channel; count in u32 per bounded chunk and widen on merge. It runs between the exact render and the settled frame (preview/worker.rs:417, :761), estimated 5 to 18 ms per settle. Delivering the frame before the report is a separate latency choice, not part of this task.",
@@ -692,7 +692,7 @@
     {
       "id": "TASK-012",
       "description": "Open the catalog in WAL mode with full flushes, so a commit appends once and reaches the drive.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "EditorService::open (crates/luxforge-core/src/editor.rs:642) sets synchronous=FULL and locking_mode=EXCLUSIVE with the default rollback journal: each commit writes pages twice and syncs three to four times. Bundled SQLite's fullfsync is off by default, so on macOS those syncs are plain fsync and not F_FULLFSYNC, unlike atomic_file::flush, which every other durable write uses.",
@@ -750,7 +750,7 @@
     {
       "id": "TASK-013",
       "description": "Reuse strokes already held by cached entries of the same asset when hydrating a newly read entry.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "entry_from (crates/luxforge-core/src/editor/catalog.rs:515) calls hydrate_strokes and read_strokes (:378 to :397), which run a SQL lookup, a JSON parse and a SHA-256 check for every referenced stroke. After each commit, undo or redo the next read misses the entry cache and repeats this for strokes the asset's cached entries already hold: O(strokes) per commit and O(n^2) over a painting session (up to 8192 points per mask, 64 strokes per component).",
@@ -806,7 +806,7 @@
     {
       "id": "TASK-014",
       "description": "Convert the lens warp grid once per held boundary, and copy and compare only the GPU preview blocks whose shared buffer changed.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "crates/luxforge-app/src/app/gpu_plan.rs (grid.nodes, about line 425) converts the warp grid's nodes (up to 262k, 2 MiB; about 880 KiB at Fit) through a temporary Vec into a new Arc<[u32]> on every tick, reached from gpu_preview.rs:498, although the grid is fixed for the draft. Convert it once when the boundary is held and pass the Arc each tick.",
@@ -877,7 +877,7 @@
     {
       "id": "TASK-015",
       "description": "Build control models only for tool sections that show them, and let export and capability job polls skip the full update when their read changed nothing.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "section (crates/luxforge-app/src/state/tools.rs:814) builds every section's controls on every message, collapsed or not; the view skips collapsed bodies (view/tools_panel.rs:226) but the derive does not. Control::Presets calls presets_model (state/presets.rs:451), which per preset clones its settings into apply_fields, four to five strings and two lowercase strings, and presettable_groups re-walks every module's control tree: roughly 1 ms per message with a large library, on every drag tick.",
@@ -1009,7 +1009,7 @@
     {
       "id": "TASK-017",
       "description": "Make a brush tick's cost independent of the stroke's length on the desktop and the owner by building, copying and cloning the points only when they change and are sent.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-011"
       ],
@@ -1094,7 +1094,7 @@
         "Contract (rule 14): the value is the f32 reduced plane a unit builds before applying any coefficient; a unit declares that it has one, beside SpatialUnit::estimate_key. The key mirrors EstimateKey (render/context.rs:336): source fingerprint and development identity, the prefix hash of the layers before the operation, stage dimensions and the phase's sampling (exact, proxy or window), and the unit's own reduction key; not its position or amount. One store in RenderContext beside EstimateStore, 64 MiB in total, named in docs/design/architecture.md's limits; evict least recently used before adding past the budget; refuse to hold an entry larger than the budget.",
         "Fill on the shared pool as its own pass before the operation's tiles in the render that first needs it, never on the owner or interface thread, cancelled with the render. Tiles read sub-rectangles; the guided filter stays per tile; when the plane covers the reach, shrink the tile's fill to what other units' halos still need. A point sample reads the plane when present and otherwise computes its window as today; both give the same byte.",
         "Tests: a hit returns the bytes a recomputation gives; each key part, changed alone, misses; the budget evicts and refuses; a render with and without the cache is byte-identical in both domains; a sample equals the rendered byte with and without the cached plane. Record hit rate across an amount drag and settle, rebuild cost and retained bytes in the measurement task.",
-        "Each masked Presence layer reads its own input, so each has its own entry, and at 60 MP 64 MiB holds about one Dehaze entry. The owner decided a recipe may hold 16 masked spatial layers, four until that work ships (docs/decisions.md, GPU previews), so include a stack of several masked Clarity and Dehaze layers at 60 MP in the adoption measurement and report its hit rate across an amount drag after a settle."
+        "Each masked Presence layer reads its own input, so each has its own entry, and at 60 MP 64 MiB holds about one Dehaze entry. A recipe may hold 16 masked spatial layers (docs/decisions.md, GPU previews), so include a stack of several masked Clarity and Dehaze layers at 60 MP in the adoption measurement and report its hit rate across an amount drag after a settle."
       ],
       "context_links": [
         {
@@ -1184,6 +1184,7 @@
       "extra_context": [
         "Timing waits for every feature task (rule 13). Build the base commit and the integrated branch, both in the release profile (the dist profile is deferred), back to back; run each workload alternately base/branch and reversed, on a quiet host, recording load, host, profile and cache state.",
         "Workloads: editor-performance on the generated 24 MP and 60 MP JPEGs (Basic then Presence, Detail, Presence after Detail, masked stacks); cold open and committed white balance for each RAW-manifest source with peak RSS and the development's peak; editor-latency drag, paint (long stroke) and settle at 24 and 60 MP, and --presence and --detail drags; a Clarity amount drag for the reduced-grid cache's hit rate, rebuild cost and retained bytes; measure for launch and idle; commit latency with the WAL catalog.",
+        "Where the desktop and owner tasks' savings show: the launch scan is skipped only in a normal launch, so measure's empty, 24mp and 60mp workloads (evidence launches) still ask for system information and only its idle row is a normal launch; a brush tick's owner copies are counted by tests/draft_tick (one copy of the path on an unplanned tick, three over a spatial stack) and its latency by editor-latency --mode paint; a collapsed section's saving is per message, largest with a large preset library; the WAL catalog's is commit latency (an import, a slider commit and a stroke commit).",
         "Record results in docs/specs/performance.md under a section of their own, update docs/engineering/performance-rules.md (anti-patterns removed: the serial zero-fills and per-tile planes), docs/features.md and the design's status. A change whose measured saving is nil or negative on its own workload is reverted and recorded as tried."
       ],
       "context_links": [

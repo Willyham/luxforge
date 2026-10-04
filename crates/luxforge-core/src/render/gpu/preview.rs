@@ -42,7 +42,7 @@ use crate::{
     Draft, EFFECT_FORMAT, EffectStage, Error, Evaluation, Layer, LayerId, MaskId, ModuleRegistry,
     ProxyBounds, ProxyIdentity, ProxyPlan, Recipe,
     mask_field::MaskSampling,
-    modules::{Region, Stage},
+    modules::{MAX_MASKED_SPATIAL_LAYERS, Region, Stage},
     render::{Compiled, spatial::prefix_hash, window::WindowPlan},
 };
 use serde_json::json;
@@ -133,6 +133,11 @@ pub struct GpuPreview {
     /// need, from the same boundary. Over the region's window the GPU shape charges the planes of
     /// its units at zero too, so the desktop draws this one when only it fits the budget.
     pub cpu_shape: Option<Box<GpuPlan>>,
+    /// The label the recipe list gives the layer [`Self::answer`]'s fallback names, when it names
+    /// one ([`ModuleRegistry::layer_label`]). The reason's index is into the stack the plan was
+    /// made from, which holds the neutral layer a drafted layer's first commit would add, so the
+    /// label travels with the answer rather than being read back from the committed stack's rows.
+    pub layer: Option<String>,
 }
 
 /// Whether a layer at `stage` has a GPU shape (`CompileStage::gpu_shape`): a colour or finish
@@ -509,6 +514,7 @@ pub(crate) fn plan_preview(
             answer: GpuAnswer::Fallback(GpuFallback::Unchanged),
             boundary: None,
             cpu_shape: None,
+            layer: None,
         });
     };
     // Every gesture is planned from the stack's first layer past its source layers, whatever it
@@ -696,28 +702,50 @@ fn planned_preview(
             warp: plan.geometry.needs_grid().then(|| plan.geometry.clone()),
         }),
     };
+    let layer = answer
+        .fallback()
+        .and_then(GpuFallback::layer)
+        .and_then(|layer| planned.layers.get(layer))
+        .map(|layer| registry.layer_label(&layer.effect_id));
     Ok(GpuPreview {
         answer,
         boundary: boundary_request,
         cpu_shape,
+        layer,
     })
 }
 
-/// How many restoration and spatial layers a warm list warms a drag of, in stack order: one plan
-/// each, the layer in its GPU shape, which is the one sequence every drag of it draws whatever its
-/// values (every unit is held, a neutral one as its identity) and whatever the estimate store holds
-/// (Dehaze takes the same passes for a stored light as for one it finds). A Presence or Detail
-/// sequence is the slowest to compile (up to two seconds cold on the M4); with the colour
-/// candidates — a handful of layers and modules — four keeps the list inside the surface's
-/// 16-sequence pipeline cache, so warming never evicts what it has just warmed. A layer whose drag
-/// takes the CPU path counts against none.
-const WARM_SPATIAL_PLANS: usize = 4;
+/// The most links one plan's chain holds: the colour operations before its first spatial
+/// operation, then one link for each spatial operation — a global Detail layer, a global Presence
+/// layer and each masked spatial layer ([`MAX_MASKED_SPATIAL_LAYERS`]).
+pub const GPU_PLAN_LINKS: usize = 3 + MAX_MASKED_SPATIAL_LAYERS;
+
+/// The most link sequences a warm list holds ([`plan_warm`]): the surface's 64-sequence pipeline
+/// cache (`PIPELINE_CACHE`, `crates/luxforge-ui/src/photo_surface/gpu_preview/compile.rs`) less
+/// the largest plan's [`GPU_PLAN_LINKS`], so a whole warm list and every link of the plan a drag
+/// draws are held together, and warming never evicts what a tick asks for or what it has just
+/// warmed. The stack's own plan and a drag of every restoration and spatial layer take at most
+/// `2 × GPU_PLAN_LINKS − 1` of them (each such drag adds its drafted link at most), so they always
+/// fit; the colour candidates fill the rest.
+pub const GPU_WARM_LINKS: usize = 45;
 
 /// What a warmed plan's program sequence is told apart by, as the surface keys a sequence or
-/// finer: each colour operation's programs and its mask's components; the spatial operation's
-/// program, clamp, mask, planes, passes but for their words, and applies; and the geometry tail's
-/// kind. Two plans of one key compile to one sequence, so a warm list holds one of them.
+/// finer: each link's key in chain order ([`warm_links`]). Two plans of one key compile to the same
+/// sequences.
+#[cfg(test)]
 pub(crate) fn warm_sequence(plan: &GpuPlan) -> Vec<String> {
+    warm_links(plan).concat()
+}
+
+/// What each link of a plan's chain is told apart by, as the surface keys the sequence it compiles
+/// for a link or finer (`crates/luxforge-ui/src/photo_surface/gpu_preview/chain.rs`): the colour
+/// operations before the first spatial operation, when there are any; then each spatial operation
+/// with the colour operations after it, the last link also holding the geometry tail and the
+/// output operations. A plan without a spatial operation is one link. A colour operation is told
+/// apart by its programs and its mask's components; a spatial operation by its program, clamp,
+/// mask, planes, passes but for their words, and applies; the tail by its kind. Two links of one
+/// key compile to one sequence, wherever they sit in a chain and whichever plan holds them.
+pub(crate) fn warm_links(plan: &GpuPlan) -> Vec<Vec<String>> {
     let mask = |mask: &Option<super::GpuMask>| {
         mask.as_ref().map(|mask| {
             let components: Vec<&str> = mask
@@ -740,48 +768,62 @@ pub(crate) fn warm_sequence(plan: &GpuPlan) -> Vec<String> {
             })
             .collect()
     };
-    let mut keys = colour(&plan.content);
-    // Each chained spatial operation in order, the colour operations after it among them.
+    let mut links = Vec::new();
+    let content = colour(&plan.content);
+    if !content.is_empty() || plan.spatial.is_empty() {
+        links.push(content);
+    }
+    // Each chained spatial operation in order, the colour operations after it in its link.
     for spatial in &plan.spatial {
-        keys.push(format!(
+        let mut link = vec![format!(
             "{}, clamps {}",
             spatial.program.entry, spatial.clamps
-        ));
-        keys.extend(mask(&spatial.mask));
-        keys.extend(spatial.planes.iter().map(|plane| format!("{plane:?}")));
-        keys.extend(spatial.passes.iter().map(|pass| {
+        )];
+        link.extend(mask(&spatial.mask));
+        link.extend(spatial.planes.iter().map(|plane| format!("{plane:?}")));
+        link.extend(spatial.passes.iter().map(|pass| {
             format!(
                 "{} {:?} -> {}, source {}, {:?}",
                 pass.kernel, pass.inputs, pass.output, pass.source, pass.shape
             )
         }));
         // Whether an apply is the identity is the tick's, as its words are: no part of the key.
-        keys.extend(spatial.applies.iter().map(|apply| {
+        link.extend(spatial.applies.iter().map(|apply| {
             format!(
                 "{} {:?}, words {}",
                 apply.function, apply.planes, apply.words
             )
         }));
-        keys.extend(colour(&spatial.after));
+        link.extend(colour(&spatial.after));
+        links.push(link);
     }
-    keys.push(format!(
+    let last = links.last_mut().expect("a plan is at least one link");
+    last.push(format!(
         "geometry affine {}, projective {}, clamps {}",
         plan.geometry.affine().is_some(),
         plan.geometry.projective().is_some(),
         plan.geometry.clamps
     ));
-    keys.extend(colour(&plan.output));
-    keys
+    last.extend(colour(&plan.output));
+    links
 }
 
 /// The plans a gesture on `evaluation`'s stack is likely to draw at `view`, for the desktop to
-/// warm their program sequences before a drag begins: a drag of each colour or finish layer the
-/// stack holds, and the first drag of each field-patch colour or finish module it does not hold
-/// yet; then a drag of each restoration or spatial layer the stack holds, at most
-/// [`WARM_SPATIAL_PLANS`] of them, reading the estimates the store holds, which a drag of a colour
-/// layer before them never does. Each is planned from that layer with the layer in its GPU shape,
-/// as a draft of it is planned ([`plan_preview`]). One plan per program sequence. `O(layers ×
-/// modules)` compiles on the catalog owner, with no pixel read.
+/// warm their program sequences before a drag begins, in the order they are to compile: when a
+/// layer is masked, the stack's own plan, which a stroke or a shape moved draws; a drag of each
+/// colour or finish layer the stack holds, and the first drag of each field-patch colour or finish
+/// module it does not hold yet; then a drag of each restoration or spatial layer the stack holds,
+/// reading the estimates the store holds, which a drag of a colour layer before them never does.
+/// Each drag is planned with its layer in its GPU shape, as a draft of it is planned
+/// ([`plan_preview`]).
+///
+/// The surface compiles one sequence per link of a plan's chain, so a plan joins only when it holds
+/// a link no plan before it holds ([`warm_links`]). A restoration or spatial layer's drag draws the
+/// stack's own links but its drafted one, so the list holds one drag for each distinct drafted
+/// shape, and the drag of every such layer finds each link it draws warmed. The list holds at most
+/// [`GPU_WARM_LINKS`] links: the stack's own plan and those drags always fit, and a colour
+/// candidate joins only while it leaves room for them. `O(layers × modules)` compiles on the
+/// catalog owner, with no pixel read.
 pub(crate) fn plan_warm(evaluation: &Evaluation, view: GpuView) -> Result<Vec<GpuPlan>, Error> {
     let registry = evaluation.registry();
     let recipe = evaluation.recipe();
@@ -792,14 +834,13 @@ pub(crate) fn plan_warm(evaluation: &Evaluation, view: GpuView) -> Result<Vec<Gp
             Some(EffectStage::Color | EffectStage::Finish)
         )
     };
-    // Each candidate: the stack it is planned over, its boundary, and whether it is a drag of a
-    // restoration or spatial layer.
-    let mut candidates: Vec<(Recipe, usize, bool)> = recipe
+    // Each colour candidate: the stack it is planned over and its boundary.
+    let mut colours: Vec<(Recipe, usize)> = recipe
         .layers
         .iter()
         .enumerate()
         .filter(|(_, layer)| colour(&layer.effect_id))
-        .map(|(index, _)| (recipe.clone(), index, false))
+        .map(|(index, _)| (recipe.clone(), index))
         .collect();
     for provider in registry.providers() {
         let descriptor = provider.descriptor();
@@ -818,23 +859,26 @@ pub(crate) fn plan_warm(evaluation: &Evaluation, view: GpuView) -> Result<Vec<Gp
         }
         let index =
             registry.insertion_index_for_target(&recipe.layers, &effect.id, None, &recipe.masks);
-        candidates.push((with_neutral(recipe, index, &effect.id, None), index, false));
+        colours.push((with_neutral(recipe, index, &effect.id, None), index));
     }
-    candidates.extend(
-        recipe
-            .layers
-            .iter()
-            .enumerate()
-            .filter(|(_, layer)| {
-                matches!(
-                    registry.effect_stage(&layer.effect_id),
-                    Some(EffectStage::Restoration | EffectStage::Spatial)
-                )
-            })
-            .map(|(index, _)| (recipe.clone(), index, true)),
-    );
+    let spatial = recipe.layers.iter().enumerate().filter(|(_, layer)| {
+        matches!(
+            registry.effect_stage(&layer.effect_id),
+            Some(EffectStage::Restoration | EffectStage::Spatial)
+        )
+    });
+    // Every link a plan the list holds compiles, and the links of `plan` it would add.
+    let mut links: Vec<Vec<String>> = Vec::new();
+    let fresh = |plan: &GpuPlan, held: &[Vec<String>]| {
+        let mut fresh: Vec<Vec<String>> = Vec::new();
+        for link in warm_links(plan) {
+            if !held.contains(&link) && !fresh.contains(&link) {
+                fresh.push(link);
+            }
+        }
+        fresh
+    };
     let mut plans: Vec<GpuPlan> = Vec::new();
-    let mut seen: Vec<Vec<String>> = Vec::new();
     // Every drag is planned from the stack's first layer past its source layers
     // ([`plan_preview`]), and so is a gesture of a mask the stack's layers already read: a stroke,
     // or a shape moved, draws the committed stack itself, every layer in the CPU's shape.
@@ -847,27 +891,37 @@ pub(crate) fn plan_warm(evaluation: &Evaluation, view: GpuView) -> Result<Vec<Gp
             Some(fit.estimates(evaluation)),
         )?
     {
-        seen.push(warm_sequence(&plan));
+        links = fresh(&plan, &links);
         plans.push(*plan);
     }
-    let mut spatial = 0;
-    for (planned, index, own) in candidates {
-        if own && spatial == WARM_SPATIAL_PLANS {
-            break;
+    // The restoration and spatial layers' drags are chosen first, so the colour candidates leave
+    // room for them, and join the list after the colour candidates. A spatial layer's own drag
+    // leaves the layers before it alone, so its ticks read the store, as the warmed plan does.
+    let mut drags: Vec<GpuPlan> = Vec::new();
+    for (index, _) in spatial {
+        let request = fit.request(editable(recipe).min(index)).drafted(index);
+        if let GpuAnswer::Plan(plan) =
+            gpu_plan_with(registry, recipe, request, Some(fit.estimates(evaluation)))?
+        {
+            let added = fresh(&plan, &links);
+            if !added.is_empty() && links.len() + added.len() <= GPU_WARM_LINKS {
+                links.extend(added);
+                drags.push(*plan);
+            }
         }
-        // A drag of a colour layer changes the input of every spatial layer after it, so its
-        // ticks take their estimates on the GPU; a spatial layer's own drag leaves the layers
-        // before it alone, so its ticks read the store, as the warmed plan does.
-        let estimates = own.then(|| fit.estimates(evaluation));
+    }
+    // A drag of a colour layer changes the input of every spatial layer after it, so its ticks
+    // take their estimates on the GPU.
+    for (planned, index) in colours {
         let request = fit.request(editable(&planned).min(index)).drafted(index);
-        if let GpuAnswer::Plan(plan) = gpu_plan_with(registry, &planned, request, estimates)? {
-            spatial += usize::from(own);
-            let sequence = warm_sequence(&plan);
-            if !seen.contains(&sequence) {
-                seen.push(sequence);
+        if let GpuAnswer::Plan(plan) = gpu_plan_with(registry, &planned, request, None)? {
+            let added = fresh(&plan, &links);
+            if !added.is_empty() && links.len() + added.len() <= GPU_WARM_LINKS {
+                links.extend(added);
                 plans.push(*plan);
             }
         }
     }
+    plans.extend(drags);
     Ok(plans)
 }

@@ -79,8 +79,12 @@ fn subprocess_client_edits_queries_and_exits_cleanly_on_eof() {
             assert_eq!(response["result"]["rgba"], pixel);
         }
     }
+    assert!(paths::wal(&catalog).exists(), "the open catalog's log");
     drop(input);
     assert!(child.wait().unwrap().success());
+    // The owner closed the catalog on the way out, which checkpointed its log and removed it.
+    assert!(!paths::wal(&catalog).exists());
+    assert!(!paths::shm(&catalog).exists());
     std::fs::remove_file(catalog).unwrap();
 }
 

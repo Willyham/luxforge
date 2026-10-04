@@ -21,7 +21,11 @@ use crate::{
     },
     state::{
         IN_FLIGHT,
-        presets::{PresetForm, PresetLibrary, capture_fields, import_status, presettable_groups},
+        presets::{
+            PresetForm, PresetLibrary, PresetsModel, capture_fields, import_status,
+            presets_control, presettable_groups,
+        },
+        tools,
     },
 };
 use iced::Task;
@@ -38,6 +42,20 @@ pub(crate) struct Presets {
 }
 
 impl Editor {
+    /// The Presets section's model, whether or not the panel draws the section. The derive builds
+    /// it only while the section is expanded (a library clones every preset's settings and
+    /// strings), so a reader outside the view, an evidence step naming a row, builds it here from
+    /// the state as it stands, by the function the derive uses.
+    pub(crate) fn presets_model_now(&self) -> Option<PresetsModel> {
+        let (module, _) = presets_control(&self.modules)?;
+        let section = self
+            .workspace
+            .tools
+            .all()
+            .find(|section| section.module_id == module.id)?;
+        tools::presets_in(&tools::controls_of(section, &self.inputs())).cloned()
+    }
+
     /// Every Presets-section change goes through here.
     pub(crate) fn preset_update(&mut self, message: PresetMessage) -> Task<Message> {
         match message {

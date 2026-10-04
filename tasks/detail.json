@@ -922,7 +922,7 @@
         "TASK-011"
       ],
       "extra_context": [
-        "Blend is the host's (1 - M)*in + M*u. Global precedes masked; masked instances follow the mask list and each adds to global Detail. Masked Detail and masked Presence share MAX_MASKED_SPATIAL_LAYERS = 4; keep the existing refusal message.",
+        "Blend is the host's (1 - M)*in + M*u. Global precedes masked; masked instances follow the mask list and each adds to global Detail. Masked Detail and masked Presence share MAX_MASKED_SPATIAL_LAYERS (16); keep the existing refusal message.",
         "Lightroom reasons in presets/mapping.rs become \"Lightroom sharpening is not mapped to Luxforge Detail\" and \"Lightroom noise reduction is not mapped to Luxforge Detail\" (NO_SHARPENING, NO_NOISE_REDUCTION); Unless rules unchanged; update presets/tests.rs expectations and docs/design/presets.md's statement.",
         "Compare exact raster buffers before JPEG encoding; never use lossy JPEG equality as an oracle."
       ],

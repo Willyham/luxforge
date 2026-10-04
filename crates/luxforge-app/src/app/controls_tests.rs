@@ -1615,8 +1615,9 @@ fn a_curve_module_that_does_not_apply_to_the_photo_queries_no_samples() {
 /// A group's reset is the one its header shows, which the tools panel resolved for the photo and
 /// the target: on a RAW photo's global target Basic's White balance runs the RAW development's
 /// As shot, not Basic's own reset.
-#[test]
-fn reset_group_runs_the_reset_the_panel_resolved() {
+/// A RAW photograph open with every built-in discovered, the id of Basic, the position of its
+/// group whose reset a RAW variant provides, and the reset that group's open header shows.
+fn raw_group_with_a_variant_reset() -> (Editor, PathBuf, String, usize, tools::ResetRef) {
     let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
     let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(descriptors()))));
     let payload = RawPayload::for_as_shot(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
@@ -1655,8 +1656,14 @@ fn reset_group_runs_the_reset_the_panel_resolved() {
         .cloned()
         .expect("the reset the header shows");
     assert_ne!(shown.action, declared.action, "the variant's reset");
+    (editor, catalog, basic.id, path, shown)
+}
+
+#[test]
+fn reset_group_runs_the_reset_the_panel_resolved() {
+    let (mut editor, catalog, basic, path, shown) = raw_group_with_a_variant_reset();
     let _ = editor.update(Message::Control(ControlMessage::ResetGroup {
-        module_id: basic.id.clone(),
+        module_id: basic,
         path: vec![path],
     }));
     assert!(
@@ -1667,6 +1674,96 @@ fn reset_group_runs_the_reset_the_panel_resolved() {
         "{}",
         editor.status.text
     );
+    finish(editor, catalog);
+}
+
+/// A collapsed section holds no group models, so the reset a `ResetGroup` names is resolved from
+/// the controls its module would show, built then: the reset its open header showed.
+#[test]
+fn reset_group_in_a_collapsed_section_runs_the_reset_its_open_header_showed() {
+    let (mut editor, catalog, basic, path, shown) = raw_group_with_a_variant_reset();
+    let _ = editor.update(Message::Control(ControlMessage::ToggleSection(
+        basic.clone(),
+    )));
+    let section = editor
+        .workspace
+        .tools
+        .all()
+        .find(|section| section.module_id == basic)
+        .expect("Basic");
+    assert!(!section.expanded && section.controls.is_empty());
+    assert!(
+        section.group_reset(&[path]).is_none(),
+        "the derived section holds no group"
+    );
+    let _ = editor.update(Message::Control(ControlMessage::ResetGroup {
+        module_id: basic,
+        path: vec![path],
+    }));
+    assert!(
+        editor
+            .status
+            .text
+            .starts_with(&format!("Running edit.{}", shown.action)),
+        "{}",
+        editor.status.text
+    );
+    finish(editor, catalog);
+}
+
+/// The correlated state a frame carries covers collapsed sections too: what the snapshot reports
+/// of a section the derive built no controls for (its controls, pickers, curves, colour fields,
+/// crop editor and preset library) equals what it reports once the section is open.
+#[test]
+fn a_collapsed_sections_snapshot_equals_its_open_sections() {
+    let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
+    editor.developer = true;
+    editor.rederive();
+    let report = |editor: &Editor| {
+        let state = editor.snapshot();
+        let mut presets = state["presets"].clone();
+        presets
+            .as_object_mut()
+            .expect("the presets summary")
+            .remove("expanded");
+        json!({
+            "section_controls": state["section_controls"],
+            "pickers": state["pickers"],
+            "curves": state["control_ui"]["curves"],
+            "colour_pickers": state["control_ui"]["pickers"],
+            "crop": state["crop"]["section"],
+            "presets": presets,
+        })
+    };
+    let closed: Vec<String> = editor
+        .workspace
+        .tools
+        .all()
+        .filter(|section| !section.expanded)
+        .map(|section| section.module_id.clone())
+        .collect();
+    assert!(closed.len() > 3, "several sections start collapsed");
+    let before = report(&editor);
+    assert!(
+        before["curves"]
+            .as_array()
+            .is_some_and(|curves| !curves.is_empty()),
+        "{before}"
+    );
+    assert!(
+        closed.iter().any(|module| module == "luxforge.detail")
+            && before["section_controls"]["luxforge.detail"]
+                .as_array()
+                .is_some_and(|controls| !controls.is_empty()),
+        "a collapsed section's controls are listed: {before}"
+    );
+    for module in &closed {
+        let _ = editor.update(Message::Control(ControlMessage::ToggleSection(
+            module.clone(),
+        )));
+    }
+    assert!(editor.workspace.tools.all().all(|section| section.expanded));
+    assert_eq!(before, report(&editor));
     finish(editor, catalog);
 }
 
@@ -1683,6 +1780,20 @@ fn detail_controls_generate_two_groups_with_hint_and_editable_zero_strength_fiel
     assert_eq!(section.hint.as_deref(), Some("Judge fine detail at 100%"));
     assert!(!section.expanded);
     assert!(section.enabled);
+    assert!(
+        section.controls.is_empty(),
+        "a collapsed section builds no control models"
+    );
+    let _ = editor.update(Message::Control(ControlMessage::ToggleSection(
+        "luxforge.detail".into(),
+    )));
+    let section = editor
+        .workspace
+        .tools
+        .all()
+        .find(|section| section.module_id == "luxforge.detail")
+        .unwrap();
+    assert!(section.expanded);
     assert_eq!(section.controls.len(), 2);
     for (control, label) in section
         .controls

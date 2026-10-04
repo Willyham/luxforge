@@ -4,7 +4,7 @@
 //! the GPU frame of the same plan through the photo surface's own shader, and judges each pair by
 //! its recipe's class. [`corpus_at_fit`] takes the families to run, so a test of any program class
 //! runs the same corpus with its own.
-use super::gpu_plan::surface_plan_at;
+use super::gpu_plan::{WarpGrid, surface_plan_at};
 use luxforge_core::{CompileStage, GpuAnswer, GpuPlanRequest, Layer, Processing, Stage, gpu_plan};
 use luxforge_reference::{
     preview_error::{self, Class, Rgb8, Statistics},
@@ -607,7 +607,8 @@ pub(crate) fn corpus_cell(
                 },
                 1.0,
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_string())?
+            .map(|grid| WarpGrid::new(&grid));
         let converted = match surface_plan_at(&plan, held, origin, grid.as_ref()) {
             Ok(converted) => converted,
             Err(reason) => {
@@ -988,7 +989,8 @@ pub(crate) fn region_cell(
             let grid = plan
                 .geometry
                 .grid(rect, f64::from(zoom) / 100.0)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| error.to_string())?
+                .map(|grid| WarpGrid::new(&grid));
             let converted = match super::gpu_plan::surface_plan_over(
                 &plan,
                 held,
@@ -1162,6 +1164,67 @@ pub(crate) fn headless(test: &str) -> Option<Qualifier> {
         "the surface holds the core's output encoding"
     );
     Qualifier::headless(test)
+}
+
+/// How many texels of `drawn` differ from `whole`'s in the bits of a colour channel. Bits, not a
+/// largest difference of values, which a NaN would leave out of a maximum.
+pub(crate) fn differing(drawn: &[[f32; 4]], whole: &[[f32; 4]]) -> usize {
+    assert_eq!(drawn.len(), whole.len(), "two frames of one size");
+    drawn
+        .iter()
+        .zip(whole)
+        .filter(|(drawn, whole)| {
+            (0..3).any(|channel| drawn[channel].to_bits() != whole[channel].to_bits())
+        })
+        .count()
+}
+
+/// `ticks` drawn as one slot draws a gesture's ([`Qualifier::evaluate_sequence`]), every tick's
+/// frame held bit for bit to `whole`'s, the frame a whole evaluation of the same plan draws; then
+/// drawn again with the poison on ([`Qualifier::set_poison`]), every link's passes starting from NaN
+/// in every texture of its pool, and held to the same frames, which shows that no pass read scratch
+/// beyond the cone its unit's reach bounds. Answers each tick's passes without the poison, link by
+/// link, `name` naming a tick in a failure.
+pub(crate) fn held_to_whole(
+    qualifier: &Qualifier,
+    ticks: &[(GpuPlan, Option<[u32; 4]>)],
+    whole: &[Vec<[f32; 4]>],
+    name: &dyn Fn(usize) -> String,
+) -> Vec<Vec<u64>> {
+    let mut passes = Vec::new();
+    let mut totals = [0; 2];
+    for poisoned in [false, true] {
+        qualifier.set_poison(poisoned);
+        let drawn = qualifier.evaluate_sequence(ticks);
+        qualifier.set_poison(false);
+        for (number, (tick, whole)) in drawn
+            .expect("a readback of every tick")
+            .iter()
+            .zip(whole)
+            .enumerate()
+        {
+            let differ = differing(&tick.output, whole);
+            assert_eq!(
+                differ,
+                0,
+                "{}, poisoned {poisoned}: texels that differ from the whole evaluation",
+                name(number)
+            );
+            totals[usize::from(poisoned)] += tick.ran();
+            if !poisoned {
+                passes.push(tick.passes.clone());
+            }
+        }
+    }
+    // The poison forgets every record, so a tick reuses no scratch: at least as many passes.
+    eprintln!(
+        "{} ticks bit for bit: {} passes, {} with the poison",
+        ticks.len(),
+        totals[0],
+        totals[1]
+    );
+    assert!(totals[1] >= totals[0], "the poison reuses no scratch");
+    passes
 }
 
 /// What a stack's first layer draws in its drafted GPU shape against its CPU shape's plan, over a

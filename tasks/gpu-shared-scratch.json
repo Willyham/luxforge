@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Lay out a chain's planes as each link's kept textures plus one pool of scratch textures for the slot, and compute the chain's whole charge from that layout without a device.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "What happens today:",
@@ -90,7 +90,7 @@
     {
       "id": "TASK-002",
       "description": "Hold the pool in each GPU-preview slot and run every link's scratch planes from it, with a schedule that trusts a pool texture only when the link itself wrote it last, keeping every frame bit for bit what today's evaluation draws.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
@@ -189,7 +189,7 @@
         "Through the qualifier, over masked Presence layers of all three fields on at least three masks, a global Presence layer and a masked Basic layer, drags of different links in turn over at least 20 ticks are bit for bit the whole evaluation, with each tick's pass count pinned.",
         "gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it, gpu_mask_a_moved_radial_is_evaluated_where_its_bounds_were_and_are, gpu_mask_a_mask_grown_toward_the_edge_reads_its_inputs_latest_values and gpu_presence_a_masked_layer_runs_its_passes_over_its_mask_alone pass, and pass again with the poison on, as does gpu_presence_a_neutral_unit_runs_no_pass_until_it_leaves_zero.",
         "The single-link pass counts stand, and the multi-link Dehaze count is pinned.",
-        "slot_charge, Qualifier::charged_bytes and the live slot report one figure. Four masked Texture and Clarity layers over 2292 x 1528 on a JPEG charge about 328 MB where they charged 551.6 MB; the test pins the exact figure.",
+        "slot_charge, Qualifier::charged_bytes and the live slot report one figure. Four masked Texture and Clarity layers over 2292 x 1528 on a JPEG charge 272.3 MB where they charged 495.5 MB (551.6 MB before Texture's band took one channel); the test pins the exact figure.",
         "Captured frames report the pool's bytes."
       ],
       "test_strategy": {
@@ -214,7 +214,7 @@
     {
       "id": "TASK-003",
       "description": "Hold a plan to the slot's own charge before its boundary exists, by making the desktop's region_charge count every link's intermediate and the shared planes through the chain charge.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-002"
       ],
@@ -284,7 +284,7 @@
     {
       "id": "TASK-004",
       "description": "Keep Texture's band in a one-channel plane of its own, so a Texture unit keeps 4 bytes a pixel instead of 8, with every frame bit for bit as before.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Today texture() (crates/luxforge-core/src/modules/presence/gpu.rs) declares three planes:",
@@ -361,7 +361,7 @@
     {
       "id": "TASK-005",
       "description": "Say in the status bar why a gesture is drawn on the slower CPU path when the GPU preview is on and the reason lasts, in the place, timing and wording the design records as defaults.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Today the status bar's render slot (StatusBarModel in crates/luxforge-app/src/state/status.rs) names the frame on screen. It reads gpu_text while a GPU frame is drawn, then Rendering… or the CPU frame's RenderTime::text. Why a gesture took the CPU path reaches only the evidence: Editor::gpu_plan_fallback (crates/luxforge-app/src/app/gpu_preview.rs) answers the preference or the drag's reason, which the snapshot records as state.surface.gpu.plan_fallback (crates/luxforge-app/src/app/snapshot.rs). The drag's reason holds the plan's code, the desktop's own reasons and the surface's fallback.",
@@ -442,7 +442,7 @@
     {
       "id": "TASK-006",
       "description": "Let a recipe hold 16 masked spatial layers (owner, 2026-10-03), with a compile cache that holds every link sequence the largest plan needs, so 16 masked layers draw on the GPU once compiled.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003",
         "TASK-005"
@@ -543,7 +543,7 @@
     {
       "id": "TASK-007",
       "description": "Measure on the M4 what the shared pool, the one-channel band and 16 masked layers cost and save, re-qualify the GPU preview, and bring the docs to the shipped behaviour.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-004",
         "TASK-006"

@@ -1321,6 +1321,52 @@ fn every_plane_an_apply_reads_has_one_writer() {
     }
 }
 
+/// All three Presence units hold the planes `docs/design/gpu-preview.md` states ("Bounds"). Over a
+/// stage of whole 16-pixel blocks they take 28.5625 bytes a pixel and the light's one texel:
+/// Texture's 24 at full resolution, Dehaze's and Clarity's 4.5 on their 4x grids and Dehaze's
+/// estimate on its 16x one. The applies keep 4.75 of them and the light, Texture's one-channel
+/// band 4.
+#[test]
+fn presence_holds_the_planes_its_design_states() {
+    let registry = colour_registry();
+    let recipe = colour_recipe(vec![Layer::new(
+        crate::PRESENCE_EFFECT,
+        json!({"texture": 30.0, "clarity": -20.0, "dehaze": 15.0}),
+    )]);
+    let (width, height) = (1536, 1024);
+    let plan = planned(answer(
+        &registry,
+        &recipe,
+        GpuPlanRequest::exact(0, stage(width, height)).qualifying(),
+    ));
+    let [step] = &plan.spatial[..] else {
+        panic!("one spatial operation");
+    };
+    let bytes = |plane: &super::GpuPlane| {
+        let (w, h) = plane.extent((0, 0), (width, height));
+        u64::from(w) * u64::from(h) * plane.format.texel_bytes()
+    };
+    let read = |plane: usize| {
+        step.applies
+            .iter()
+            .any(|apply| apply.planes.contains(&plane))
+    };
+    let kept: u64 = (0..step.planes.len())
+        .filter(|&plane| read(plane))
+        .map(|plane| bytes(&step.planes[plane]))
+        .sum();
+    // In sixteenths of a byte a pixel, beside the light's one `rgba32float` texel.
+    let (pixels, light) = (u64::from(width) * u64::from(height), 16);
+    assert_eq!(
+        step.plane_bytes((0, 0), (width, height)),
+        pixels * 457 / 16 + light
+    );
+    assert_eq!(kept, pixels * 76 / 16 + light);
+    let texture = &step.applies[1];
+    assert_eq!(texture.function, "lf_presence_texture");
+    assert_eq!(bytes(&step.planes[texture.planes[0]]), pixels * 4);
+}
+
 /// A proxy named for the estimate store before it is built is named as the built proxy's own pixel
 /// domain names it: a JPEG's window, and a RAW's derived development under a cropped and turned
 /// view and a window, equal whenever it is built and apart from its source's.

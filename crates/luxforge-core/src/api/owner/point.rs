@@ -81,7 +81,7 @@ impl Reply {
                     )),
                 });
                 let response_value = match result {
-                    Ok(value) => ApiResponse::success(id, sequence, value),
+                    Ok(value) => ApiResponse::value(id, sequence, value),
                     Err(error) => ApiResponse::failure(id, sequence, error),
                 };
                 let _ = response.send(response_value);
