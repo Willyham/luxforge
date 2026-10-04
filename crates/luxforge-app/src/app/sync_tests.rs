@@ -316,6 +316,7 @@ fn nothing_new() -> tasks::SyncResult {
         refresh: None,
         presets: None,
         capabilities: false,
+        flags: false,
         own: Vec::new(),
     }
 }

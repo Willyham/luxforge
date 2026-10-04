@@ -59,7 +59,9 @@ fn label<'a>(model: &ToggleModel) -> iced::widget::Text<'a> {
         })
 }
 
-fn switch<'a, M: Clone + 'a>(
+/// The [`toggle`]'s switch alone, for a row that lays out its own label, such as a Settings row
+/// with a description under its title.
+pub fn switch<'a, M: Clone + 'a>(
     model: &ToggleModel,
     on_toggle: impl Fn(bool) -> M + 'a,
 ) -> Element<'a, M> {

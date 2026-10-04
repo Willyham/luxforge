@@ -14,6 +14,7 @@ pub(crate) mod panel;
 pub(crate) mod performance;
 pub(crate) mod presets;
 pub(crate) mod query_choice;
+pub(crate) mod settings;
 pub(crate) mod status;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -297,6 +298,8 @@ pub(crate) struct Inputs<'a> {
     pub(crate) hover: &'a Hover,
     /// The command palette.
     pub(crate) palette: &'a palette::Palette,
+    /// The Settings sheet.
+    pub(crate) settings: &'a settings::Settings,
     /// The version chip row's naming form.
     pub(crate) version_form: &'a VersionForm,
     pub(crate) dimensions: Option<(u32, u32)>,
@@ -358,6 +361,7 @@ pub(crate) struct Workspace {
     pub(crate) histogram: histogram::HistogramModel,
     pub(crate) status: status::StatusBarModel,
     pub(crate) palette: palette::PaletteModel,
+    pub(crate) settings: settings::SettingsModel,
     /// The state panel's pinned last block. It keeps itself across derivations and is rebuilt only
     /// when a sample lands or the section opens or closes.
     pub(crate) performance: performance::PerformanceModel,
@@ -378,6 +382,7 @@ impl Workspace {
         self.histogram = histogram::derive(inputs, &self.histogram);
         self.status = status::derive(inputs);
         self.palette = palette::derive(inputs);
+        self.settings = settings::derive(inputs.settings);
     }
 
     /// Every picker control the panel derived, by the module whose pick mode it selects, with the
@@ -557,6 +562,7 @@ mod tests {
         performance_expanded: bool,
         performance: performance::PerformanceHistory,
         palette: palette::Palette,
+        settings: settings::Settings,
         version_form: VersionForm,
     }
 
@@ -597,6 +603,7 @@ mod tests {
                 performance_expanded: false,
                 performance: performance::PerformanceHistory::default(),
                 palette: palette::Palette::default(),
+                settings: settings::Settings::default(),
                 version_form: VersionForm::default(),
             }
         }
@@ -688,6 +695,7 @@ mod tests {
                 view_state: &self.view_state,
                 hover: &self.hover,
                 palette: &self.palette,
+                settings: &self.settings,
                 version_form: &self.version_form,
                 dimensions: Some((480, 320)),
                 photo: true,

@@ -2331,6 +2331,43 @@ pub(super) fn artifact_collect(
     Ok(json!({"job_id": id, "status": JobStatus::Queued}))
 }
 
+/// `flags.list`: the flags this host lists, read from the preferences file now.
+pub(super) fn flags_list(owner: &mut Owner, _: &Call<'_>, _: NoParams) -> Result<Value, Error> {
+    let developer = owner.service.registry().serves_test_modules();
+    let host = &owner.host;
+    methods::value(crate::flags::list(
+        &host.preferences,
+        host.launch_flags(),
+        developer,
+    )?)
+}
+
+host_params! {
+    pub(super) struct FlagsSet {
+        flag: String = string(64).notes("a listed flag's id"),
+        value: Option<Value> = json("the flag's new value, which must fit its kind: true or false, an option's value, or a number in range on its step; null or absent removes the stored value"),
+    }
+}
+
+/// `flags.set`: one checked write, announced when it changed the stored value, answered as
+/// `flags.list` is.
+pub(super) fn flags_set(
+    owner: &mut Owner,
+    call: &Call<'_>,
+    params: FlagsSet,
+) -> Result<Value, Error> {
+    let developer = owner.service.registry().serves_test_modules();
+    if crate::flags::set(
+        &owner.host.preferences,
+        &params.flag,
+        params.value,
+        developer,
+    )? {
+        announce_once(&mut owner.announced, &call.origin);
+    }
+    flags_list(owner, call, NoParams {})
+}
+
 /// `activity.list`: one lock and a copy of at most 80 small entries.
 pub(super) fn activity_list(owner: &mut Owner, _: &Call<'_>, _: NoParams) -> Result<Value, Error> {
     methods::value(owner.activity.snapshot())

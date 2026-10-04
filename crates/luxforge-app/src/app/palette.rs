@@ -4,7 +4,8 @@ use super::{
     Editor,
     message::{
         Message, action::ActionMessage, export::ExportMessage, history::HistoryMessage,
-        palette::PaletteMessage, performance::PerformanceMessage, view::ViewMessage,
+        palette::PaletteMessage, performance::PerformanceMessage, settings::SettingsMessage,
+        view::ViewMessage,
     },
 };
 use crate::state::palette::PaletteAction;
@@ -79,6 +80,9 @@ impl Editor {
                     }
                     Some(PaletteAction::Export { keep_metadata }) => {
                         self.dispatch(Message::Export(ExportMessage::Start { keep_metadata }))
+                    }
+                    Some(PaletteAction::Settings(tab)) => {
+                        self.dispatch(Message::Settings(SettingsMessage::Open(tab)))
                     }
                     None => Task::none(),
                 };
