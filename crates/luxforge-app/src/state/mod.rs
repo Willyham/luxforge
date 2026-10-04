@@ -379,12 +379,14 @@ impl Workspace {
 
     /// Every picker control the panel derived, by the module whose pick mode it selects, with the
     /// label it shows and whether it reads selected. A captured frame carries it so the rendered
-    /// button can be checked against what the model said it should be.
-    pub(crate) fn pickers(&self) -> serde_json::Value {
+    /// button can be checked against what the model said it should be. `sections` are the tools
+    /// panel's sections with their control models, those of a collapsed section built on demand
+    /// ([`tools::ToolsModel::with_controls`]), so the report lists every section's pickers.
+    pub(crate) fn pickers(sections: &[tools::SectionControls<'_>]) -> serde_json::Value {
         serde_json::Value::Object(
-            self.tools
-                .all()
-                .flat_map(|section| section.pickers())
+            sections
+                .iter()
+                .flat_map(|reported| tools::pickers_in(&reported.controls))
                 .map(|picker| {
                     (
                         picker.module_id.clone(),
@@ -404,14 +406,17 @@ impl Workspace {
     /// Every section's controls in the order the panel draws them, each with its kind and label
     /// and what it addresses: a slider's action, parameter and unit, a button's action and a
     /// picker's mode. The correlated evidence state reads which controls a section shows, and
-    /// where a variant put another module's control in a declared control's place.
-    pub(crate) fn section_controls(&self) -> serde_json::Value {
+    /// where a variant put another module's control in a declared control's place. `sections` are
+    /// the sections with their control models, a collapsed section's built on demand
+    /// ([`tools::ToolsModel::with_controls`]): the report lists every section, drawn or not.
+    pub(crate) fn section_controls(sections: &[tools::SectionControls<'_>]) -> serde_json::Value {
         use serde_json::json;
         serde_json::Value::Object(
-            self.tools
-                .all()
-                .map(|section| {
-                    let controls = control_tree::walk(&section.controls)
+            sections
+                .iter()
+                .map(|reported| {
+                    let section = reported.section;
+                    let controls = control_tree::walk(&reported.controls)
                         .filter_map(|control| match control {
                             tools::ControlModel::Group(group) => {
                                 Some(json!({"kind": "group", "label": group.label, "enabled": group.enabled, "unavailable": group.unavailable}))
@@ -738,6 +743,16 @@ mod tests {
             self.stacks.push(entry);
         }
 
+        /// Every module's section expanded, as the panel draws it when a person opens each: the
+        /// control models exist only for a section that shows them, so a test that reads a
+        /// section's controls expands it first.
+        fn all_expanded(mut self) -> Self {
+            for module in &self.modules {
+                self.expanded.insert(module.id.clone(), true);
+            }
+            self
+        }
+
         /// The open asset's source dimensions, which the crop layer's input stage starts from, and
         /// the displayed entry's rows described against them.
         fn sized(mut self, width: u32, height: u32) -> Self {
@@ -985,9 +1000,11 @@ mod tests {
 
     #[test]
     fn the_combined_crop_section_tracks_orientation_and_keeps_transform_buttons_out_of_drafts() {
-        let mut scene = Scene::new(descriptors()).opened(vec![luxforge_core::Layer::orientation(
-            luxforge_core::Orientation::of(luxforge_core::Transform::RotateRight),
-        )]);
+        let mut scene = Scene::new(descriptors()).all_expanded().opened(vec![
+            luxforge_core::Layer::orientation(luxforge_core::Orientation::of(
+                luxforge_core::Transform::RotateRight,
+            )),
+        ]);
         let workspace = scene.derive();
         let crop = section(&workspace, "luxforge.crop");
         assert_eq!(
@@ -1349,7 +1366,7 @@ mod tests {
         let modules = descriptors();
         let (action, x, _) = tools::point_pick(&modules).expect("a canvas pick");
         let (action, x) = (action.to_owned(), x.to_owned());
-        let mut scene = Scene::new(modules).opened(Vec::new());
+        let mut scene = Scene::new(modules).all_expanded().opened(Vec::new());
         // The pixel proof tool declares the only number controls today, so its section is listed.
         scene.developer = true;
         scene.fields.set(&action, &x, "007".into());
@@ -1545,7 +1562,7 @@ mod tests {
     /// the mode changes so the button on screen is never a frame behind the session.
     #[test]
     fn a_declared_picker_is_a_control_of_its_module_and_follows_the_workspace_mode() {
-        let mut scene = Scene::new(descriptors()).opened(Vec::new());
+        let mut scene = Scene::new(descriptors()).all_expanded().opened(Vec::new());
         scene.developer = true;
         let mut workspace = Workspace::default();
         workspace.derive(&scene.inputs());
@@ -1623,7 +1640,7 @@ mod tests {
             .expect("the declaring module")
             .id
             .clone();
-        let mut scene = Scene::new(modules).opened(Vec::new());
+        let mut scene = Scene::new(modules).all_expanded().opened(Vec::new());
         scene.developer = true;
         let mut workspace = Workspace::default();
         workspace.derive(&scene.inputs());
@@ -2849,7 +2866,9 @@ mod tests {
     #[test]
     fn a_modules_only_group_is_drawn_without_a_header_and_never_collapses() {
         let modules = descriptors();
-        let mut scene = Scene::new(modules.clone()).opened(Vec::new());
+        let mut scene = Scene::new(modules.clone())
+            .all_expanded()
+            .opened(Vec::new());
         scene.developer = true;
         if let Some(state) = &mut scene.document.state {
             state.asset.source = crate::state::testing::raw_source();
@@ -2917,7 +2936,7 @@ mod tests {
     #[test]
     fn the_tone_curve_section_draws_its_curve_without_a_label_line_with_the_hint_and_points_closed()
     {
-        let scene = Scene::new(descriptors()).opened(Vec::new());
+        let scene = Scene::new(descriptors()).all_expanded().opened(Vec::new());
         let workspace = scene.derive();
         let order: Vec<&str> = workspace
             .tools
@@ -3083,9 +3102,160 @@ mod tests {
         }
     }
 
+    /// A library of several presets, listed once so two scenes can hold the same identities.
+    fn several_presets() -> Vec<luxforge_core::PresetSummary> {
+        vec![
+            listed("Clean", "Imported", Some(counts(0, 0))),
+            listed("Lossy", "Imported", Some(counts(0, 2))),
+            listed("Warm", "User presets", None),
+            listed("Cool", "User presets", None),
+        ]
+    }
+
+    /// A scene with that library and, when `expanded`, every section open.
+    fn library_scene(expanded: bool, presets: &[luxforge_core::PresetSummary]) -> Scene {
+        let mut scene = Scene::new(descriptors());
+        if expanded {
+            scene = scene.all_expanded();
+        }
+        let mut scene = scene.opened(Vec::new());
+        scene.developer = true;
+        scene.presets.adopt(presets.to_vec(), 5);
+        scene
+    }
+
+    /// The derive builds control models only for a section that shows them: the view skips every
+    /// other body, and the Presets library clones each preset's settings and strings.
+    #[test]
+    fn a_collapsed_section_builds_no_controls_and_an_expanded_one_has_them() {
+        let mut scene = library_scene(false, &several_presets());
+        let workspace = scene.derive();
+        for section in workspace.tools.all() {
+            let declared = scene
+                .modules
+                .iter()
+                .find(|module| module.id == section.module_id)
+                .expect("the section's module");
+            if section.shows_controls() {
+                assert!(
+                    declared.controls.is_empty() || !section.controls.is_empty(),
+                    "{} is open and builds its controls",
+                    section.module_id
+                );
+            } else {
+                assert!(
+                    section.controls.is_empty(),
+                    "{} is collapsed and builds none",
+                    section.module_id
+                );
+            }
+        }
+        let presets = section(&workspace, "luxforge.presets");
+        assert!(!presets.expanded, "the library starts collapsed");
+        assert!(presets.controls.is_empty() && presets.presets().is_none());
+        assert!(section(&workspace, "luxforge.basic").expanded);
+        assert!(!section(&workspace, "luxforge.basic").controls.is_empty());
+
+        scene.expanded.insert("luxforge.presets".into(), true);
+        let workspace = scene.derive();
+        let presets = section(&workspace, "luxforge.presets");
+        assert_eq!(presets.presets().expect("the library").rows().count(), 4);
+
+        scene.expanded.insert("luxforge.presets".into(), false);
+        let workspace = scene.derive();
+        assert!(section(&workspace, "luxforge.presets").presets().is_none());
+    }
+
+    /// A module that is unavailable draws no controls, expanded or not.
+    #[test]
+    fn an_unavailable_section_builds_no_controls_but_reports_the_ones_it_would_show() {
+        let mut scene = library_scene(true, &several_presets());
+        let vignette = scene
+            .modules
+            .iter_mut()
+            .find(|module| module.id == "luxforge.vignette")
+            .expect("the vignette module");
+        vignette.availability = Availability::Unavailable {
+            reason: "disabled by --disable-module".into(),
+        };
+        let workspace = scene.derive();
+        let vignette = section(&workspace, "luxforge.vignette");
+        assert!(vignette.expanded && vignette.unavailable.is_some());
+        assert!(vignette.controls.is_empty());
+        let inputs = scene.inputs();
+        let built = tools::controls_of(vignette, &inputs);
+        assert!(!built.is_empty(), "the on-demand build has the controls");
+        assert!(
+            control_tree::walk(&built).all(|control| match control {
+                ControlModel::Group(group) => !group.enabled,
+                ControlModel::Slider(_) => true,
+                _ => true,
+            }),
+            "an unavailable module's groups are disabled, as an always-built section held them"
+        );
+        let report = Workspace::section_controls(&workspace.tools.with_controls(&inputs));
+        assert!(
+            report["luxforge.vignette"]
+                .as_array()
+                .is_some_and(|controls| !controls.is_empty()),
+            "the evidence report still lists the unavailable section's controls"
+        );
+    }
+
+    /// What a report reads for a collapsed section, built on demand, is exactly what the same
+    /// section held when the derive always built it: the models, the evidence `section_controls`
+    /// and `pickers` JSON, and the Presets library.
+    #[test]
+    fn a_collapsed_sections_report_equals_the_one_an_always_built_section_gave() {
+        let presets = several_presets();
+        let collapsed = library_scene(false, &presets);
+        let open = library_scene(true, &presets);
+        let collapsed_workspace = collapsed.derive();
+        let open_workspace = open.derive();
+        let (collapsed_inputs, open_inputs) = (collapsed.inputs(), open.inputs());
+        let from_collapsed = collapsed_workspace.tools.with_controls(&collapsed_inputs);
+        let from_open = open_workspace.tools.with_controls(&open_inputs);
+        assert_eq!(from_collapsed.len(), from_open.len());
+        let mut built_on_demand = 0;
+        for (left, right) in from_collapsed.iter().zip(&from_open) {
+            assert_eq!(left.section.module_id, right.section.module_id);
+            assert!(right.section.shows_controls());
+            assert_eq!(
+                left.controls, right.controls,
+                "{} reports the same controls collapsed or open",
+                left.section.module_id
+            );
+            if !left.section.shows_controls() {
+                built_on_demand += 1;
+                assert!(matches!(left.controls, std::borrow::Cow::Owned(_)));
+            }
+        }
+        assert!(built_on_demand > 3, "several sections were collapsed");
+        let json = Workspace::section_controls(&from_collapsed);
+        assert_eq!(json, Workspace::section_controls(&from_open));
+        assert!(
+            json["luxforge.detail"]
+                .as_array()
+                .is_some_and(|controls| controls.len() > 2),
+            "a collapsed section's controls are listed: {json}"
+        );
+        assert_eq!(
+            Workspace::pickers(&from_collapsed),
+            Workspace::pickers(&from_open)
+        );
+        let library = |sections: &[tools::SectionControls<'_>]| {
+            sections
+                .iter()
+                .find_map(|reported| tools::presets_in(&reported.controls).cloned())
+        };
+        let presets = library(&from_collapsed).expect("the collapsed library");
+        assert_eq!(presets.rows().count(), 4);
+        assert_eq!(Some(presets), library(&from_open));
+    }
+
     #[test]
     fn the_library_is_grouped_as_listed_with_its_partial_badges_and_unavailable_reasons() {
-        let mut scene = Scene::new(descriptors()).opened(Vec::new());
+        let mut scene = Scene::new(descriptors()).all_expanded().opened(Vec::new());
         let mut legacy = listed("Legacy", "Imported", Some(counts(0, 0)));
         legacy.unavailable = vec!["set-curve".into()];
         scene.presets.adopt(
@@ -3145,7 +3315,7 @@ mod tests {
 
     #[test]
     fn loading_empty_and_failed_libraries_say_so() {
-        let mut scene = Scene::new(descriptors()).opened(Vec::new());
+        let mut scene = Scene::new(descriptors()).all_expanded().opened(Vec::new());
         let workspace = scene.derive();
         assert!(presets_of(&workspace).loading, "nothing has answered yet");
         assert!(!presets_of(&workspace).empty);
@@ -3182,7 +3352,7 @@ mod tests {
 
     #[test]
     fn a_preset_applies_only_where_an_edit_could_and_never_over_a_draft() {
-        let mut scene = Scene::new(descriptors());
+        let mut scene = Scene::new(descriptors()).all_expanded();
         scene
             .presets
             .adopt(vec![listed("Warm", "User presets", None)], 1);
@@ -3241,7 +3411,7 @@ mod tests {
 
     #[test]
     fn the_palette_offers_each_applicable_preset_with_its_rows_own_message() {
-        let mut scene = Scene::new(descriptors()).opened(Vec::new());
+        let mut scene = Scene::new(descriptors()).all_expanded().opened(Vec::new());
         scene.palette.open = true;
         let mut legacy = listed("Legacy", "Imported", Some(counts(0, 0)));
         legacy.unavailable = vec!["set-curve".into()];
@@ -3279,7 +3449,7 @@ mod tests {
 
     #[test]
     fn the_create_form_offers_each_presettable_group_and_is_ready_only_when_complete() {
-        let mut scene = Scene::new(descriptors()).opened(Vec::new());
+        let mut scene = Scene::new(descriptors()).all_expanded().opened(Vec::new());
         scene.presets.adopt(Vec::new(), 1);
         let form = |scene: &Scene| presets_of(&scene.derive()).form.clone();
         let opened = form(&scene);

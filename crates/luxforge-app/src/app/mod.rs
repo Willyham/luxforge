@@ -690,7 +690,22 @@ impl Editor {
         self.activity.render_bar =
             state::canvas::render_bar(self.presentation.queue.progress(), self.activity.render_bar);
         let mut workspace = std::mem::take(&mut self.workspace);
-        let inputs = state::Inputs {
+        let inputs = self.inputs();
+        workspace.derive(&inputs);
+        for job in &mut workspace.performance.jobs {
+            job.cancelling = job
+                .job_id
+                .as_ref()
+                .is_some_and(|id| self.performance.cancelling.contains(id));
+        }
+        self.workspace = workspace;
+    }
+
+    /// What every region derives from, read off the desktop's state as it stands. The derive reads
+    /// it after every message; a report that needs a section's controls without its panel drawing
+    /// them builds them from it on demand ([`state::tools::controls_of`]).
+    pub(crate) fn inputs(&self) -> state::Inputs<'_> {
+        state::Inputs {
             document: &self.document,
             modules: &self.modules,
             modules_ready: self.modules_ready,
@@ -748,15 +763,7 @@ impl Editor {
             preset_form: &self.presets.form,
             performance_expanded: self.performance.expanded,
             performance: &self.performance.history,
-        };
-        workspace.derive(&inputs);
-        for job in &mut workspace.performance.jobs {
-            job.cancelling = job
-                .job_id
-                .as_ref()
-                .is_some_and(|id| self.performance.cancelling.contains(id));
         }
-        self.workspace = workspace;
     }
 
     /// Hand one message to the seam that owns it. Routing only: each seam's own update function
