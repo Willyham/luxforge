@@ -507,6 +507,13 @@ impl PathCapture {
         })
     }
 
+    /// How many grid positions the capture holds. A push that leaves this and
+    /// [`Self::capture_error`] as they were snapped into the cell before it, and changes nothing
+    /// [`Self::decimated`] or [`Self::stroke`] answers.
+    pub fn held(&self) -> usize {
+        self.grid.len()
+    }
+
     /// How many positions were pushed.
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
