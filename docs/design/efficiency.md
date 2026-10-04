@@ -1,6 +1,6 @@
 # CPU and memory efficiency
 
-Status: planned. The owner accepted the scope and the decisions below on 2026-10-03. The 16-bit quantizer and most of Detail's kernel work are done; the rest has not started, and the `dist` build profile is deferred. The task plan is [efficiency](../../tasks/efficiency.json).
+Status: in progress. The owner accepted the scope and the decisions below on 2026-10-03. Done: the 16-bit quantizer, most of Detail's kernel work, the launch scan, the histogram reducer, API answers, the lineage query, live-session writes, the WAL catalog, strokes shared on entry reads and the painting copies. The rest is in progress or not started, and the `dist` build profile is deferred. The task plan is [efficiency](../../tasks/efficiency.json).
 
 ## Outcome
 
@@ -38,7 +38,7 @@ The work comes from a read-only audit of the whole workspace on 2026-10-03. The 
   - Digests are identical, so this is not a format change.
 - **JPEG XL DNG decode on the shared pool.** `jxl-oxide` is built with `default-features = false`, which drops its `rayon` feature, so a JPEG XL DNG (Pixel, Galaxy) decodes serially on the source worker and cannot be cancelled during `render_frame`. With `rayon` enabled its default pool is the global one, so no private pool is added (rule 9). The decode is deterministic.
 - **Half floats on x86.** `half` is built without `std`, so x86_64 cannot detect F16C at run time and converts each boundary texel in software. Enable `std`. aarch64 already uses the hardware conversion, so the M4 is unchanged.
-- **The system scan at launch.** `app/mod.rs:558` calls `iced::system::information()`. Iced's `sysinfo` path runs `System::new_all()` and `refresh_all()`, walking every process on the host, to supply two strings: `state.backend`'s graphics backend and adapter. Supply them without a process scan: from the renderer's adapter information if a hook is cheap, or by deferring the call until something reads them. `state.backend` keeps reporting the same strings to every client, with no extra wait for an API reader.
+- **The system scan at launch.** `app/mod.rs:558` calls `iced::system::information()`. Iced's `sysinfo` path runs `System::new_all()` and `refresh_all()`, walking every process on the host, to supply two strings: `state.backend`'s graphics backend and adapter. Supply them without a process scan: from the renderer's adapter information if a hook is cheap, or by deferring the call until something reads them. `state.backend` keeps reporting the same strings to every client, with no extra wait for an API reader. Done: iced offers no adapter hook and wgpu's device none either, and only an evidence run reads the two strings (its frames, its capture gate and its `backend` event), so only an evidence launch asks for them.
 
 ### Build profile
 
@@ -106,6 +106,7 @@ A brush tick is O(points), and so O(n²) over a stroke, on both sides of the own
 - **Desktop.** Each path-growing move clears the stroke's memoized decimation (`mask_draft/brush.rs:192`), re-runs Ramer–Douglas–Peucker over the captured path through `capture_error` (`app/masks.rs:1673`), clones the points and builds a `Value` per point (`brush.rs:315`). It then overwrites `pending` even when a round trip is in flight (`app/draft.rs:196`), so the work is thrown away, deep-clones the fields into `sent` (`draft.rs:296`) and clones the set again into the session (`app/gesture.rs:745`). Build the fields only when they will be sent, by marking the draft dirty while a round trip is in flight. Hold the decimated points as `Arc<[[f64; 2]]>` and cache their `Value`. Keep a revision in place of the `sent` clone.
 - **Owner.** Every call deep-clones the session, draft included (`api/owner.rs:1483`). `draft.set` clones the draft (`api/methods.rs:2074`) and builds `next.request()` only to test a key (`:2083`). Planning builds `draft.request()` again (`editor/plan.rs:608`). The answer repeats the draft. Test keys on the fields directly, snapshot the session only for handlers that can park a pixel read (or share the draft behind an `Arc`), and avoid the second `request()`.
 - **Not in scope.** The wire protocol stays as it is. Append-only points would be an API change for the owner to decide.
+- **Done, and what remains.** The desktop builds a stroke's fields once per send, from the decimation cached as `Arc<[[f64; 2]]>`, which a position snapping into the cell before it keeps. `draft.set` answers in the update that sends it, so every path-growing move is still one send with one whole-path decimation and one copy into `sent`. The owner takes `draft.set`'s fields out of its request, merges without copying the fields it replaces and keeps the draft out of its rollback copy, so an unplanned tick copies the path once, into its answer. A tick planned over a spatial stack still copies it twice more: the request `Prepared` reads (`Draft::request`) and the values the mask planner splits; removing them needs the planner to read parameters by reference.
 
 The frozen coverage, draft identities, evidence semantics (`frame_pending`, `drained`) and one-entry-per-stroke history do not change.
 
@@ -150,7 +151,7 @@ In the durable build, open with `PRAGMA journal_mode=WAL`, `synchronous=FULL`, `
 The consequences, each covered by a test or documented:
 
 - While a catalog is open, `<catalog>-wal` lives beside it, and a crash leaves it there for the next open to recover. Anything that copies, moves or backs up a catalog treats the WAL file as part of it. The catalog-backup question stays open in [decisions](../decisions.md#open-product-questions).
-- A clean close checkpoints and removes the WAL file.
+- A clean close checkpoints and removes the WAL file. Quitting the desktop through the macOS application menu (Cmd+Q) does not run its close, as before this change, so the WAL file stays beside the catalog and the next open recovers it.
 - The format marker, the refusal of unsupported catalogs and recovery after an interrupted commit behave exactly as now.
 
 ## Acceptance
