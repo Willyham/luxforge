@@ -278,6 +278,115 @@ impl WorkspaceState {
     }
 }
 
+/// Which renderer draws the desktop's picture: the GPU, or the CPU reference renderer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RendererRecord {
+    Gpu,
+    #[default]
+    Reference,
+}
+
+/// Why the reference renderer draws the desktop's picture rather than the GPU: the desktop's photo
+/// surface's own reason, as its frames name it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RendererReason {
+    /// The photo surface has not checked its GPU stage yet: no photograph has been drawn.
+    SurfacePending,
+    /// The GPU stage cannot run on this graphics device, or the launch refused it
+    /// (`--no-gpu-render`), which the stage's capability check answers the same way.
+    NoAdapter,
+    /// The graphics device was lost; nothing waits for a recovery.
+    DeviceLost,
+}
+
+impl RendererReason {
+    /// Every reason, in the order the session's description lists them.
+    pub const ALL: [Self; 3] = [Self::SurfacePending, Self::NoAdapter, Self::DeviceLost];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SurfacePending => "surface-pending",
+            Self::NoAdapter => "no-adapter",
+            Self::DeviceLost => "device-lost",
+        }
+    }
+}
+
+/// Which renderer draws the desktop's picture on this machine, and why the reference does, as
+/// `{record, reason}` (`docs/design/gpu-first.md`): `{record: "gpu", reason: null}` while the
+/// desktop's photo surface can draw on its GPU, and `{record: "reference", reason}` while it
+/// cannot. An owner that draws nothing, `luxforge-json`'s, always reports the reference with no
+/// reason: it has no GPU stage to fall back from.
+///
+/// The process hosting the owner reports it ([`OwnerHandle::report_renderer`], a desktop-internal
+/// path), every client's session carries the owner's one value, and no method sets it, so no
+/// client can claim a renderer the desktop does not have. A GPU record never has a reason; a
+/// session read with one is refused.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RendererFields")]
+pub struct Renderer {
+    record: RendererRecord,
+    reason: Option<RendererReason>,
+}
+
+/// [`Renderer`]'s fields as they are read, before the GPU record's missing reason is checked.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RendererFields {
+    record: RendererRecord,
+    reason: Option<RendererReason>,
+}
+
+impl TryFrom<RendererFields> for Renderer {
+    type Error = &'static str;
+
+    fn try_from(fields: RendererFields) -> Result<Self, Self::Error> {
+        match fields {
+            RendererFields {
+                record: RendererRecord::Gpu,
+                reason: Some(_),
+            } => Err("a GPU renderer has no reason"),
+            RendererFields { record, reason } => Ok(Self { record, reason }),
+        }
+    }
+}
+
+impl Renderer {
+    /// The desktop's photo surface draws on its GPU.
+    pub const fn gpu() -> Self {
+        Self {
+            record: RendererRecord::Gpu,
+            reason: None,
+        }
+    }
+
+    /// The reference renderer draws the desktop's picture, for `reason`.
+    pub const fn reference(reason: RendererReason) -> Self {
+        Self {
+            record: RendererRecord::Reference,
+            reason: Some(reason),
+        }
+    }
+
+    /// An owner that draws nothing: the reference renderer is its only renderer.
+    pub const fn headless() -> Self {
+        Self {
+            record: RendererRecord::Reference,
+            reason: None,
+        }
+    }
+
+    pub fn record(self) -> RendererRecord {
+        self.record
+    }
+
+    pub fn reason(self) -> Option<RendererReason> {
+        self.reason
+    }
+}
+
 /// What a client may do beyond editing, fixed when it registers and forgotten when it disconnects.
 /// Only a client with permission authority may grant a module permission: the desktop's own client,
 /// which grants only after the person presses Allow, and `luxforge-json --permission-authority`,
@@ -311,6 +420,10 @@ pub struct ClientSession {
     /// and no method changes it.
     #[serde(default)]
     pub authority: ClientAuthority,
+    /// Which renderer draws the desktop's picture on this machine: the owner's one value, the same
+    /// in every client's session, which the owner sets before each call and no method changes.
+    #[serde(default)]
+    pub renderer: Renderer,
 }
 
 impl ClientSession {

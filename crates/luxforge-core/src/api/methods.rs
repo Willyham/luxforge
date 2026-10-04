@@ -732,7 +732,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "session.state",
         NoParams,
         |service, session, _| session_value(service, session),
-        "this client's selection, view, workspace state and session revision"
+        "this client's selection, view, workspace state and session revision, and renderer {record, reason}: which renderer draws the desktop's picture on this machine, the same in every client's session and set by no method (schema.list's renderer block lists its values)"
     ),
     service!(
         "resources.read",
@@ -1264,6 +1264,13 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
         // commands' widgets are the host descriptor's `controls`.
         "masks": {
             "points_per_mask": crate::POINTS_PER_MASK,
+        },
+        // The session's `renderer`, which no method sets: what each value means, so a client reads
+        // which renderer drew the desktop's picture, and why the reference did, without the desktop.
+        "renderer": {
+            "records": [crate::RendererRecord::Gpu, crate::RendererRecord::Reference],
+            "reasons": crate::RendererReason::ALL.map(crate::RendererReason::as_str),
+            "notes": "session.state's renderer is {record, reason}, the same for every client of this owner. record gpu: the desktop's photo surface draws on its GPU, and reason is null. record reference: the CPU reference renderer draws the desktop's picture, slower, and reason says why: surface-pending before the desktop has drawn a photograph, which is when its photo surface checks its GPU stage; no-adapter when the GPU stage cannot run on this graphics device, or the desktop was launched with --no-gpu-render, which refuses it the same way; device-lost when the graphics device was lost, which nothing waits to recover. record reference with a null reason is an owner that draws nothing, such as luxforge-json, whose renderer is always the reference. The desktop reports it from its photo surface and the session reports it; no method sets it.",
         },
         // Every mutating method names its envelope in its own `mutation` field.
         "mutation": {
