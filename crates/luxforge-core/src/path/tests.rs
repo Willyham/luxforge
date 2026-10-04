@@ -154,6 +154,21 @@ fn live_capture_stops_at_its_bound_and_never_returns_a_truncated_success() {
 }
 
 #[test]
+fn a_push_into_the_held_cell_changes_nothing_the_capture_answers() {
+    let mut capture = PathCapture::default();
+    capture.push([0.25, 0.25]);
+    let held = capture.held();
+    let decimated = capture.decimated(0.1).unwrap();
+    // A position that snaps into the cell before it is not held, so the answer stays.
+    capture.push([0.25 + 0.2 / COORDINATE_STEPS_PER_UNIT, 0.25]);
+    assert_eq!(capture.held(), held);
+    assert_eq!(capture.decimated(0.1).unwrap(), decimated);
+    capture.push([0.5, 0.25]);
+    assert_eq!(capture.held(), held + 1);
+    assert_ne!(capture.decimated(0.1).unwrap(), decimated);
+}
+
+#[test]
 fn live_capture_keeps_the_first_invalid_coordinate_reason() {
     for value in [f64::NAN, f64::INFINITY, -1.01, 2.01] {
         let mut capture = PathCapture::default();
