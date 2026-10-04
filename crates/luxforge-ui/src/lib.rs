@@ -19,9 +19,9 @@ pub mod theme;
 mod widgets;
 
 pub use photo_surface::{
-    Frame, Placement, RegionFrame, RegionOverlay, RegionQuality, SurfaceDiagnostics, SurfaceId,
-    Turn, photo_surface, region_texture_admissible, set_surface_waker, stage_surface,
-    surface_diagnostics, surface_retirement_pending, viewport_surface,
+    FirstDrawn, Frame, Placement, RegionFrame, RegionOverlay, RegionQuality, SurfaceDiagnostics,
+    SurfaceId, Turn, mips_admissible, photo_surface, region_texture_admissible, set_surface_waker,
+    stage_surface, surface_diagnostics, surface_retirement_pending, viewport_surface,
 };
 pub use widgets::*;
 
@@ -212,6 +212,14 @@ pub const GALLERY_PAGES: &[(&str, &[&str])] = &[
             "Face · mask draft bar, brush with Done",
         ],
     ),
+    (
+        "Zoom stops",
+        &[
+            "Zoom stops · resting on 100%",
+            "Zoom stops · Fit between 50% and 100%",
+            "Zoom stops · disabled",
+        ],
+    ),
     // -- Select: the thumbnail grid's pages.
     (
         "Select grid · cells and moments",
@@ -313,7 +321,7 @@ mod tests {
                 next += 1;
             }
         }
-        assert_eq!(next - 1, 126);
+        assert_eq!(next - 1, 129);
         assert!(gallery_page(GALLERY_PAGES.len()).is_none());
     }
 }

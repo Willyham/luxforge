@@ -26,6 +26,8 @@ mod fixtures;
 mod gallery_smoke;
 mod gazetteer;
 mod generate_catalog;
+mod gpu_preview_smoke;
+mod gpu_preview_zoom_smoke;
 mod histogram_smoke;
 mod inspect_dng;
 mod launch;
@@ -41,6 +43,7 @@ mod mask_interactions_smoke;
 mod mask_panel_smoke;
 mod mask_range_smoke;
 mod mask_smoke;
+mod minify_smoke;
 mod mixer_smoke;
 mod package;
 mod performance_smoke;
@@ -48,6 +51,7 @@ mod policy;
 mod presence_mixer_vignette_acceptance;
 mod presence_smoke;
 mod presets_smoke;
+mod preview_error;
 mod raw;
 mod raw_camera;
 mod raw_editor;
@@ -63,6 +67,7 @@ mod verify;
 mod viewport_smoke;
 mod vignette_smoke;
 mod workspace_smoke;
+mod zone_plate;
 mod zoom_smoke;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -522,6 +527,31 @@ fn main_result() -> Result {
                 .transpose()?;
             let moving_pan = a.flag("--moving-pan");
             let mask_overlay = a.flag("--mask-overlay");
+            let contend = a
+                .value("--contend")?
+                .map(|value| value.to_string_lossy().parse::<usize>())
+                .transpose()?;
+            let warm_ms = a
+                .value("--warm")?
+                .map(|value| value.to_string_lossy().parse::<u64>())
+                .transpose()?;
+            let gpu_preview_off = a.flag("--no-gpu-preview");
+            let masks = a
+                .value("--masks")?
+                .map(|value| value.to_string_lossy().parse::<usize>())
+                .transpose()?
+                .unwrap_or(1);
+            let mask_presence = a.flag("--mask-presence");
+            let window = a
+                .value("--window")?
+                .map(|value| -> Result<[u32; 2]> {
+                    let value = value.to_string_lossy().into_owned();
+                    let (width, height) = value
+                        .split_once('x')
+                        .ok_or("--window is WIDTHxHEIGHT logical points")?;
+                    Ok([width.parse()?, height.parse()?])
+                })
+                .transpose()?;
             let control = match a.value("--control")?.as_deref().and_then(OsStr::to_str) {
                 None | Some("slider") => editor_latency::Control::Slider,
                 Some("curve") => editor_latency::Control::Curve,
@@ -592,6 +622,12 @@ fn main_result() -> Result {
                     zoom,
                     moving_pan,
                     mask_overlay,
+                    contend,
+                    warm_ms,
+                    gpu_preview_off,
+                    masks,
+                    mask_presence,
+                    window,
                 },
             )?;
         }
@@ -755,9 +791,11 @@ fn main_result() -> Result {
                 diagnostics::measure(&root, &out, &bin, samples)?;
             }
         }
+        "preview-error" => preview_error::run(a)?,
+        "preview-corpus" => preview_error::corpus::run(&root, a)?,
         "__hang" => std::thread::sleep(std::time::Duration::from_secs(60)),
         "help" => println!(
-            "cargo xtask doctor|check [--quick]|check-repository|fmt|lint|test [--quick]|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|generate-catalog --output NEW [--files N] [--assets M] [--images N] [--seed N]|gazetteer --source cities15000.txt --output NEW|audit|raw-camera-metadata --index FILE --ids ID[,ID...] --output NEW [--max-source-mib N]|inspect-dng --source DNG [--json NEW]|raw-authentic --manifest FILE --output NEW|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N] [--lens-only (JPEG or RAW)]|detail-performance --source JPEG --output NEW [--samples N] [--case all|render|export|points|cancel|sharing]|detail-grid-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG_OR_RAW --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint|hover|viewport|crop-start] [--mask-overlay] [--zoom PERCENT] [--moving-pan] [--control slider|curve] [--action ID --parameter NAME (a field-patch slider, or with --control curve a module curve such as set-curve luminance)] [--crop DEGREES] [--basic] [--presence] [--curve-layer] [--detail] [--lens] [--perspective] [--mask] [--idle]|lens-qualification --manifest FILE --edges FILE --output NEW|lensfun-import --source DIR --output DIR|inventory --output NEW|package --output NEW|smoke --list|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (the scenarios --list shows taking one)] [--manifest FILE (the scenarios --list shows needing one)]|smoke --verify-only RUN_DIR --output NEW [--scenario NAME] [--source RAW]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]|catalog-measure --output NEW [--samples N] [--scale tiny|full] [--binary PATH] [--raw-corpus DIR] [--card DIR]"
+            "cargo xtask doctor|check [--quick]|check-repository|fmt|lint|test [--quick]|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|generate-catalog --output NEW [--files N] [--assets M] [--images N] [--seed N]|gazetteer --source cities15000.txt --output NEW|audit|raw-camera-metadata --index FILE --ids ID[,ID...] --output NEW [--max-source-mib N]|inspect-dng --source DNG [--json NEW]|raw-authentic --manifest FILE --output NEW|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N] [--lens-only (JPEG or RAW)]|detail-performance --source JPEG --output NEW [--samples N] [--case all|render|export|points|cancel|sharing]|detail-grid-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG_OR_RAW --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint|hover|viewport|crop-start] [--mask-overlay] [--zoom PERCENT] [--moving-pan] [--control slider|curve] [--action ID --parameter NAME (a field-patch slider, or with --control curve a module curve such as set-curve luminance)] [--crop DEGREES] [--basic] [--presence] [--curve-layer] [--detail] [--lens] [--perspective] [--mask] [--idle] [--warm MS] [--contend N] [--no-gpu-preview]|lens-qualification --manifest FILE --edges FILE --output NEW|lensfun-import --source DIR --output DIR|inventory --output NEW|package --output NEW|smoke --list|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (the scenarios --list shows taking one)] [--manifest FILE (the scenarios --list shows needing one)]|smoke --verify-only RUN_DIR --output NEW [--scenario NAME] [--source RAW]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|preview-error (--candidate PNG --reference PNG --photo-rect LEFT,TOP,RIGHT,BOTTOM | --evidence DIR --candidate-frame N --reference-frame N) [--class pointwise|spatial] [--output NEW_FILE]|preview-corpus [--manifest FILE] [--output NEW_FILE]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]|catalog-measure --output NEW [--samples N] [--scale tiny|full] [--binary PATH] [--raw-corpus DIR] [--card DIR]"
         ),
         _ => return Err("Unknown command; use cargo xtask help".into()),
     }

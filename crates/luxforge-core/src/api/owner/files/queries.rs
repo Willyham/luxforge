@@ -361,7 +361,7 @@ fn answer(owner: &mut Owner, parked: Parked, result: Result<Value, Error>) {
             if let Some(key) = key {
                 owner.requests.record(key, &mut value);
             }
-            ApiResponse::success(id, owner.log.sequence, value)
+            ApiResponse::value(id, owner.log.sequence, value)
         }
         Err(error) => ApiResponse::failure(id, owner.log.sequence, error),
     };

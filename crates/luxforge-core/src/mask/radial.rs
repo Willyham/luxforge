@@ -40,12 +40,25 @@ use super::{
 use crate::{
     Component, Error, ParameterDescriptor,
     modules::{Region, Stage},
+    render::gpu::{GpuDescription, GpuProgram, GpuProgramKind},
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, LazyLock};
 
 /// The token a stored component of this kind carries.
 pub(super) const KIND: &str = "radial";
+
+/// The radial gradient's GPU coverage program (`radial.wgsl`), for a preview during a gesture.
+/// It is enabled: on the M4 its half-coverage contour lies within a quarter pixel of
+/// this field's and, carrying a masked Basic layer, it meets the pointwise limits on the corpus
+/// (`docs/design/gpu-preview.md#mask-coverage`).
+pub(crate) static PROGRAM: GpuProgram = GpuProgram {
+    entry: "lf_mask_radial",
+    source: include_str!("radial.wgsl"),
+    kind: GpuProgramKind::Coverage,
+    words: 10,
+    enabled: true,
+};
 
 /// The legal range of a stored `angle`, in degrees. The falloff is total on any finite angle — the
 /// rotation is a `cos`/`sin` pair — so this is a payload rule and nothing more: it keeps one
@@ -278,6 +291,28 @@ impl ComponentField for Compiled {
     /// have.
     fn feature_px(&self, stage: Stage) -> f64 {
         self.span * self.radius_x.min(self.radius_y) * f64::from(stage.height)
+    }
+
+    /// The stage's height and the compiled terms, each narrowed to `f32` once, and the hard edge as
+    /// the constructor decided it: the program takes the same branch the CPU field does.
+    fn gpu(&self, stage: Stage) -> Option<GpuDescription> {
+        let narrowed = [
+            f64::from(stage.height),
+            self.cu,
+            self.cv,
+            self.ca,
+            self.sa,
+            self.radius_x,
+            self.radius_y,
+            self.r0,
+            self.span,
+        ];
+        let mut words: Vec<u32> = narrowed
+            .iter()
+            .map(|word| (*word as f32).to_bits())
+            .collect();
+        words.push(u32::from(self.hard));
+        Some(GpuDescription::new(&PROGRAM, words))
     }
 }
 

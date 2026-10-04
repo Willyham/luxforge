@@ -1,10 +1,28 @@
 //! Evidence capture waits for the frame its state describes, and an event is built only for a log.
 use super::{
     message::sync::SyncMessage,
-    testing::{boot, finish},
+    testing::{boot, boot_with, finish},
     *,
 };
 use luxforge_core::{CropStage, Zoom};
+
+#[test]
+fn failed_request_records_the_api_refusal_and_captures_its_state() {
+    let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"wait":{"ms":1}}]"#);
+    let _ = editor.next_step();
+    editor.status.text = "validation: white balance is unavailable".into();
+    editor.outcome(crate::app::outcome::Outcome::RequestEnded { failed: true });
+    let evidence = crate::app::testing::evidence(&editor);
+    let record = evidence.current.as_ref().expect("running step");
+    assert_eq!(record["status"], json!("failed"));
+    assert_eq!(
+        record["reason"],
+        json!("validation: white balance is unavailable")
+    );
+    assert!(evidence.capture_pending);
+    assert!(evidence.had_errors);
+    finish(editor, catalog);
+}
 
 /// An empty catalog has no photograph to draw, so GPU photo readiness must not block its frame.
 #[test]
@@ -313,6 +331,75 @@ fn an_event_is_built_only_when_a_log_takes_it() {
             .any(|record| record["event"] == "event_built" && record["detail"]["built"] == true),
         "{records:?}"
     );
+    finish(editor, catalog);
+}
+
+/// What an editor started from `config` asked the runtime to do at startup, in the runtime's own
+/// units of work: one for each task that does something, none for `Task::none()`.
+fn startup_units(config: crate::Config) -> usize {
+    let (editor, startup, catalog) = boot_with(config);
+    let units = startup.units();
+    finish(editor, catalog);
+    units
+}
+
+/// The configuration of an evidence run, which names a directory it does not create until it saves.
+fn an_evidence_config() -> crate::Config {
+    crate::Config {
+        evidence: Some(std::env::temp_dir().join("luxforge-evidence-system-information")),
+        ..crate::Config::default()
+    }
+}
+
+/// Iced answers a system-information request with a walk of every process on the host, and only an
+/// evidence run reads what it brings. A normal launch's startup is therefore an evidence run's
+/// less exactly that request, and the request itself is the one task that asks.
+#[test]
+fn a_normal_launch_asks_for_no_system_information() {
+    assert_eq!(system_information(false).units(), 0);
+    let request = system_information(true).units();
+    assert_eq!(request, 1, "the request is one task");
+    assert_eq!(
+        startup_units(crate::Config::default()) + request,
+        startup_units(an_evidence_config()),
+        "a normal startup carries every task an evidence startup does but the request",
+    );
+}
+
+/// An evidence run's frames, its capture gate and its `backend` event all read the graphics
+/// backend, so its startup still asks for it.
+#[test]
+fn an_evidence_launch_still_asks_for_the_graphics_backend() {
+    assert_eq!(system_information(true).units(), 1);
+    assert!(
+        startup_units(an_evidence_config()) > startup_units(crate::Config::default()),
+        "an evidence startup asks for what a normal one does not"
+    );
+}
+
+/// With nothing asking, the backend stays unknown and every state reads it as `null`; the answer to
+/// an evidence run's request records it, with the adapter, and the state carries it.
+#[test]
+fn the_graphics_backend_stays_unknown_until_an_evidence_run_reads_it() {
+    let (mut editor, catalog) = boot();
+    assert!(editor.activity.backend.is_none());
+    assert_eq!(editor.snapshot()["backend"], Value::Null);
+    let information = iced::system::Information {
+        system_name: None,
+        system_kernel: None,
+        system_version: None,
+        system_short_version: None,
+        cpu_brand: String::new(),
+        cpu_cores: None,
+        memory_total: 0,
+        memory_used: None,
+        graphics_backend: "Metal".into(),
+        graphics_adapter: "Test adapter".into(),
+    };
+    let _ = editor.update(Message::Evidence(EvidenceMessage::Info(information)));
+    let named = json!({"backend": "Metal", "adapter": "Test adapter"});
+    assert_eq!(editor.activity.backend, Some(named.clone()));
+    assert_eq!(editor.snapshot()["backend"], named);
     finish(editor, catalog);
 }
 

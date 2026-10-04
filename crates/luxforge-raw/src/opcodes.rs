@@ -21,12 +21,14 @@ pub(crate) enum Opcode {
 }
 
 /// Each implemented operation with the list it runs from and its DNG opcode ID.
-const IMPLEMENTED: [(u16, u32, Opcode); 5] = [
+const IMPLEMENTED: [(u16, u32, Opcode); 7] = [
     (OPCODE_LIST3, 1, Opcode::WarpRectilinear),
     (OPCODE_LIST3, 3, Opcode::FixVignetteRadial),
     (OPCODE_LIST3, 9, Opcode::GainMap),
     (OPCODE_LIST1, 4, Opcode::FixBadPixelsConstant),
     (OPCODE_LIST1, 5, Opcode::FixBadPixelsList),
+    (OPCODE_LIST1, 3, Opcode::FixVignetteRadial),
+    (OPCODE_LIST2, 9, Opcode::GainMap),
 ];
 
 impl Opcode {
@@ -61,10 +63,13 @@ mod tests {
                 }
             }
         }
-        assert_eq!(allowed, IMPLEMENTED);
+        allowed.sort_by_key(|(list, id, _)| (*list, *id));
+        let mut implemented = IMPLEMENTED;
+        implemented.sort_by_key(|(list, id, _)| (*list, *id));
+        assert_eq!(allowed, implemented);
         assert_eq!(
             IMPLEMENTED.map(|(_, _, opcode)| opcode.repairs_sensor()),
-            [false, false, false, true, true]
+            [false, false, false, true, true, false, false]
         );
     }
 }

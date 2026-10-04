@@ -486,6 +486,35 @@ impl PointwiseColor for Exposure {
     fn describe(&self) -> String {
         format!("exposure {:+} EV", self.ev)
     }
+    fn gpu(&self) -> Option<super::gpu::GpuDescription> {
+        Some(super::gpu::GpuDescription::new(
+            &super::gpu::testing::EXPOSURE,
+            vec![self.gain.to_bits()],
+        ))
+    }
+}
+
+/// The test exposure under a program that ships disabled, so a test can plan a stack that needs a
+/// disabled program whatever the shipped programs' qualification.
+#[derive(Debug)]
+pub(crate) struct Disabled(Exposure);
+
+impl PointwiseColor for Disabled {
+    fn apply_row(&self, y: u32, x0: u32, rgb: &mut [[f32; 3]]) {
+        self.0.apply_row(y, x0, rgb);
+    }
+    fn is_finite(&self) -> bool {
+        self.0.is_finite()
+    }
+    fn describe(&self) -> String {
+        format!("disabled {}", self.0.describe())
+    }
+    fn gpu(&self) -> Option<super::gpu::GpuDescription> {
+        Some(super::gpu::GpuDescription::new(
+            &super::gpu::testing::DISABLED,
+            vec![self.0.gain.to_bits()],
+        ))
+    }
 }
 
 /// A unit whose coefficients are finite but whose result is not: two of them in one operation
@@ -531,6 +560,12 @@ impl PointwiseColor for Positional {
     }
     fn describe(&self) -> String {
         format!("positional {}x{}", self.width, self.height)
+    }
+    fn gpu(&self) -> Option<super::gpu::GpuDescription> {
+        Some(super::gpu::GpuDescription::new(
+            &super::gpu::testing::POSITIONAL,
+            vec![self.width.to_bits(), self.height.to_bits()],
+        ))
     }
 }
 
@@ -616,6 +651,14 @@ impl ToolModule for ColorTestModule {
             .map_or(&[][..], Vec::as_slice)
         {
             units.push(Arc::new(Exposure::new(ev.as_f64().expect("an EV number"))));
+        }
+        for ev in payload["disabled"]
+            .as_array()
+            .map_or(&[][..], Vec::as_slice)
+        {
+            units.push(Arc::new(Disabled(Exposure::new(
+                ev.as_f64().expect("an EV number"),
+            ))));
         }
         if payload["infinite"] == json!(true) {
             units.push(Arc::new(Exposure::new(f64::INFINITY)));

@@ -7,6 +7,12 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+# The GPU preview's held boundary is rgba16float for JPEGs and rgba32float for RAW linear renders.
+# `std` lets x86_64 detect F16C at run time (the baseline x86_64 target has none at compile time),
+# so a boundary texel converts in hardware there. A build with Iced already has it, through
+# `iced_graphics`; a core-only build (the CLI, the core's tests) did not. aarch64 converts in
+# hardware either way, and the bits are the same. It adds no package.
+half = { version = "=2.7.1", default-features = false, features = ["std"] }
 idna_adapter.workspace = true
 luxforge-jpeg = { path = "../luxforge-jpeg" }
 # Only for `test-holds` below; no build of a shipped binary names it.
@@ -38,9 +44,18 @@ test-skip-disk-flush = []
 # check-repository`'s `test-holds-only-in-tests` rule), so a `cargo build` of any binary has neither
 # the hold nor `luxforge-testbase`.
 test-holds = ["dep:luxforge-testbase"]
+# Qualification only: `luxforge_core::qualification`, the Presence CPU filters over whole frames,
+# which the desktop's per-filter GPU readback tests hold each GPU kernel to. Only a
+# `[dev-dependencies]` table may turn it on (`cargo xtask check-repository`'s
+# `core-qualification-only-in-tests` rule), so no build of a binary has it.
+qualification = []
 
 [target.'cfg(windows)'.dependencies]
 winapi-util = "=0.1.11"
+
+# Hardware SHA-256 on aarch64; the reason is in `crates/luxforge-raw/Cargo.toml`.
+[target.'cfg(all(target_arch = "aarch64", not(target_os = "windows")))'.dependencies]
+sha2 = { workspace = true, features = ["asm"] }
 
 [dev-dependencies]
 # An independent JPEG decoder and encoder for the tests, and PNG for their diagnostic images.
@@ -48,8 +63,13 @@ image = { workspace = true, features = ["jpeg"] }
 kamadak-exif.workspace = true
 luxforge-reference = { path = "../luxforge-reference" }
 luxforge-testbase = { path = "../luxforge-testbase" }
+# Parses and validates the WGSL of every GPU program the core ships, with the surface's calling
+# convention prepended. A dev-dependency only: the core's normal dependencies hold no GPU crate.
+naga = { workspace = true, features = ["wgsl-in"] }
 # The core's own tests with the disk flush skipped (the feature above).
 luxforge-core = { path = ".", features = ["test-skip-disk-flush"] }
+# The counting allocator the `draft_tick` binary installs to hold a brush tick to its copies.
+luxforge-process = { path = "../luxforge-process", features = ["allocation-counter"] }
 
 [lints]
 workspace = true

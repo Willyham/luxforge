@@ -6,7 +6,9 @@ mod linear;
 mod optics;
 
 pub use linear::LinearImage;
-pub(crate) use linear::{ViewReader, layout};
+#[cfg(test)]
+pub(crate) use linear::finiteness_scans_during;
+pub(crate) use linear::{ViewReader, Walk, layout};
 pub use optics::{OpticalIdentity, SourceOptics};
 
 use crate::{
@@ -107,13 +109,29 @@ pub(crate) fn read_bounded_file(file: &mut File) -> Result<Vec<u8>, Error> {
     } else {
         luxforge_raw::MAX_SOURCE_BYTES
     };
-    if file.metadata().map_err(file_error)?.len() > limit as u64 {
-        return Err(Error::resource_limit("encoded bytes"));
-    }
+    let len = file.metadata().map_err(file_error)?.len();
+    let len = usize::try_from(len)
+        .ok()
+        .filter(|len| *len <= limit)
+        .ok_or_else(|| Error::resource_limit("encoded bytes"))?;
+    read_up_to(file, len, limit)
+}
+
+/// Everything `reader` yields, up to `limit` bytes, into a buffer reserved for the `len` bytes it
+/// was measured to hold and one more, which is room for `read_to_end`'s final empty read. `Take`
+/// hides the file's size from `read_to_end`, so an unsized buffer would double its way to up to
+/// twice the original and hold that through the whole unpack; this one is exactly the file. A file
+/// that grew since it was measured still reads on, growing the buffer as needed, but is refused
+/// once it passes `limit`, and the read stops one byte past it.
+fn read_up_to(reader: impl Read, len: usize, limit: usize) -> Result<Vec<u8>, Error> {
     let mut bytes = Vec::new();
-    file.take(limit.saturating_add(1) as u64)
+    bytes
+        .try_reserve_exact(len.saturating_add(1))
+        .map_err(|_| Error::resource_limit("encoded byte allocation"))?;
+    reader
+        .take(limit.saturating_add(1) as u64)
         .read_to_end(&mut bytes)
-        .map_err(file_error)?;
+        .map_err(|e| Error::file_access(e.kind().to_string()))?;
     if bytes.len() > limit {
         return Err(Error::resource_limit("encoded bytes"));
     }
@@ -726,6 +744,23 @@ mod tests {
     };
     use serde_json::{Value, json};
     use sha2::{Digest, Sha256};
+
+    /// Hashing an original on Apple silicon runs the SHA-2 instructions. `sha2` 0.10.9 compiles its
+    /// aarch64 backend only with the `asm` feature, which every crate's aarch64 target table turns
+    /// on, and that backend runs when the CPU has the instructions, which every Apple CPU does. The
+    /// test names what the backend needs; it does not see the feature itself, so it is the recorded
+    /// `cargo tree -e features -i sha2` and the disassembly check in docs/design/efficiency.md that
+    /// show `asm` is on. The digest is the published one for "abc" (FIPS 180-4), so the
+    /// instructions compute the same bytes.
+    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+    #[test]
+    fn fingerprint_hashing_has_the_sha2_instructions_on_apple_silicon() {
+        assert!(std::arch::is_aarch64_feature_detected!("sha2"));
+        assert_eq!(
+            format!("{:x}", Sha256::digest(b"abc")),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 
     /// Each RAW failure maps to one API error kind, and a refused compression, such as Nikon High
     /// Efficiency, is unsupported input that keeps the RAW crate's message.
@@ -1794,6 +1829,85 @@ mod jpeg_tests {
         let error = read_bounded_file(&mut opened).unwrap_err();
         assert_eq!(error.kind, ErrorKind::ResourceLimit);
         std::fs::remove_file(path).unwrap();
+    }
+
+    /// A file is read into a buffer sized from the file: `Take` hides the file's length from
+    /// `read_to_end`, so an unsized read doubles its way past it (a 40 MB NEF would hold 64 MiB
+    /// through the whole unpack). The capacity here is the length and at most the one byte the final
+    /// empty read may want, whatever the length, so no length can land just under a doubling.
+    #[test]
+    fn a_file_is_read_into_a_buffer_no_larger_than_its_length_and_a_probe_byte() {
+        use std::io::Write;
+        let directory = std::env::temp_dir().join(format!(
+            "luxforge-sized-read-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        // Not a JPEG signature, so the limit is RAW's. The lengths straddle powers of two.
+        for len in [
+            0_usize,
+            1,
+            2,
+            31,
+            32,
+            33,
+            4096,
+            4097,
+            100_003,
+            1 << 20,
+            (1 << 20) + 1,
+        ] {
+            let expected: Vec<u8> = (0..len).map(|index| (index * 7 % 251) as u8 | 1).collect();
+            let path = directory.join(format!("original-{len}.bin"));
+            let mut file = std::fs::File::create(&path).unwrap();
+            file.write_all(&expected).unwrap();
+            file.flush().unwrap();
+            let mut opened = std::fs::File::open(&path).unwrap();
+            let bytes = read_bounded_file(&mut opened).unwrap();
+            assert_eq!(bytes, expected, "{len} bytes are read whole");
+            assert!(
+                bytes.capacity() <= len + 1,
+                "a {len}-byte file was read into a {}-byte buffer",
+                bytes.capacity()
+            );
+            std::fs::remove_file(path).unwrap();
+        }
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    /// The reserved length is a hint, not a bound: a file that grew between the metadata check and
+    /// the read is still read whole while it stays inside the limit, and refused once it passes it,
+    /// after at most one byte past the limit.
+    #[test]
+    fn a_file_that_outgrows_its_measured_length_is_still_bounded_by_the_limit() {
+        use std::io::Cursor;
+        let (limit, measured) = (1_000_usize, 10_usize);
+        for grown in [measured, measured + 1, 500, limit] {
+            let content: Vec<u8> = (0..grown).map(|index| index as u8).collect();
+            let bytes = read_up_to(Cursor::new(content.clone()), measured, limit)
+                .expect("a file inside the limit");
+            assert_eq!(bytes, content, "{grown} bytes are read whole");
+        }
+        for grown in [limit + 1, limit + 2, 5_000] {
+            let mut source = Cursor::new(vec![0_u8; grown]);
+            let error = read_up_to(&mut source, measured, limit).unwrap_err();
+            assert_eq!(error.kind, ErrorKind::ResourceLimit, "{grown} bytes");
+            assert_eq!(
+                source.position(),
+                limit as u64 + 1,
+                "the read stops one byte past the limit"
+            );
+        }
+        let error = read_up_to(std::io::repeat(7), measured, limit).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::ResourceLimit, "an endless source");
+    }
+
+    /// A reservation the allocator refuses is a resource-limit error, not an abort.
+    #[test]
+    fn an_unreservable_length_is_a_resource_limit_error() {
+        let error = read_up_to(std::io::empty(), usize::MAX, usize::MAX).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::ResourceLimit);
     }
 
     #[test]

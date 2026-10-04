@@ -1,0 +1,6 @@
+[
+  {"view": {"zoom": 100}},
+  {"slider": {"action": "set-basic", "parameter": "exposure", "values": [1.0]}},
+  {"wait": {"ms": 2000}},
+  {"slider": {"action": "set-basic", "parameter": "exposure", "values": [1.0], "release": true}}
+]

@@ -254,6 +254,15 @@ pub struct PreviewRequest {
     /// have a proxy phase. `None` asks for the exact path alone. The owner only copies it into the
     /// job; the preview queue decides whether a proxy is worthwhile and builds it on its worker.
     pub proxy: Option<ProxyBounds>,
+    /// Plan the draft's GPU preview with the job ([`PreviewJob::gpu`]): the plan a gesture's tick
+    /// is drawn from at these bounds, and the boundary it starts from; or, for a committed stack,
+    /// the plans its gestures are likely to draw ([`PreviewJob::gpu_warm`]). Only a job with bounds
+    /// has either; planning is `O(layers)` here and reads no pixel.
+    pub gpu: bool,
+    /// At a percentage zoom of 100% or more, the region of the output stage a draft's GPU preview
+    /// is drawn over at full scale, and the physical pixels an output pixel takes there
+    /// ([`crate::GpuView::Region`]); `None` at Fit, where the bounds decide.
+    pub gpu_region: Option<(crate::modules::Region, f64)>,
 }
 
 impl PreviewRequest {
@@ -267,6 +276,8 @@ impl PreviewRequest {
             draft: None,
             analyse: false,
             proxy: None,
+            gpu: false,
+            gpu_region: None,
         }
     }
     /// Show this entry instead of the current one.
@@ -293,6 +304,19 @@ impl PreviewRequest {
     /// Offer this job a proxy phase at the display bounds the frame will be shown in.
     pub fn proxy(mut self, bounds: ProxyBounds) -> Self {
         self.proxy = Some(bounds);
+        self
+    }
+    /// Plan the draft's GPU preview with the job ([`Self::gpu`]).
+    pub fn gpu(mut self) -> Self {
+        self.gpu = true;
+        self
+    }
+
+    /// Plan the draft's GPU preview over `rect` of the output stage at full scale, drawn at
+    /// `magnification` physical pixels an output pixel: a percentage zoom of 100% or more.
+    pub fn gpu_region(mut self, rect: crate::modules::Region, magnification: f64) -> Self {
+        self.gpu = true;
+        self.gpu_region = Some((rect, magnification));
         self
     }
 }
@@ -1384,6 +1408,17 @@ fn subject(session: &ClientSession, params: &Value) -> Option<AssetId> {
         .map(|draft| draft.asset_id.clone())
 }
 
+/// What tells two states of a session's draft apart without its fields: every method that changes
+/// the draft installs one with another identity or revision, or another conflict state.
+fn draft_mark(draft: &crate::Draft) -> (DraftId, u64, u64, bool) {
+    (
+        draft.draft_id.clone(),
+        draft.base_revision,
+        draft.draft_revision,
+        draft.conflicted,
+    )
+}
+
 /// One request an owner handler answers.
 pub(super) struct Call<'a> {
     pub client: ClientId,
@@ -1461,21 +1496,38 @@ impl Owner {
         self.call_round(call, 0, false);
     }
 
-    fn call_round(&mut self, call: OwnerCall, rounds: usize, changed: bool) {
+    fn call_round(&mut self, mut call: OwnerCall, rounds: usize, changed: bool) {
         let client = call.client;
-        let mut before = self.sessions.entry(client).or_default().clone();
+        let session = self.sessions.entry(client).or_default();
+        // The rollback point of a call that parks a pixel read: the session as it was, but for its
+        // draft, the one part of it that grows with a brush stroke's path. No method changes the
+        // draft before the last step that can park — each installs its new draft once nothing it
+        // does can still defer — so a parked call finds the draft it began with still in the
+        // session, and the rollback keeps that one rather than a copy of it.
+        let draft = session.draft.take();
+        let mut before = session.clone();
+        session.draft = draft;
+        let began = session.draft.as_ref().map(draft_mark);
         if rounds == 0 && call.request.method == "draft.reapply" {
             before.pixel_memo.clear();
         }
         self.service
-            .begin_pixel_call(before.draft.as_ref(), before.pixel_memo.clone());
-        let result = self.answer(client, &call.request);
+            .begin_pixel_call(session.draft.as_ref(), before.pixel_memo.clone());
+        let result = self.answer(client, &mut call.request);
         let deferred = self.service.take_pixel_read();
         self.service.end_pixel_call();
         if let Some(read) = deferred {
             // No draft/session change survives an unanswered pass, and the request table records
             // only its final answer. The service defers before any catalog write is planned.
-            self.sessions.insert(client, before);
+            let session = self.sessions.entry(client).or_default();
+            before.draft = session.draft.take();
+            debug_assert_eq!(
+                before.draft.as_ref().map(draft_mark),
+                began,
+                "{} changed the session's draft before a step that parked a pixel read",
+                call.request.method
+            );
+            *session = before;
             self.announced.clear();
             if rounds >= crate::editor::pixels::MAX_PIXEL_READ_ROUNDS {
                 let error = if changed {
@@ -1616,7 +1668,9 @@ impl Owner {
         self.call_round(parked.call, parked.rounds, parked.changed);
     }
 
-    fn answer(&mut self, client: ClientId, request: &ApiRequest) -> Result<Planned, Error> {
+    /// `request` is the call's own, which a service handler may take values out of rather than copy
+    /// ([`methods::ServiceHandler`]); it is whole again whenever the call parks a read.
+    fn answer(&mut self, client: ClientId, request: &mut ApiRequest) -> Result<Planned, Error> {
         let method = methods::find(&self.service, &request.method)
             .ok_or_else(|| Error::protocol(format!("unknown method {}", request.method)))?;
         // Every mutation envelope is checked here, once, before any handler runs.
@@ -1632,11 +1686,7 @@ impl Owner {
         {
             return Ok(Planned::Value(first));
         }
-        let call = Call {
-            client,
-            request,
-            origin: Origin::new(&request.method, &request.id),
-        };
+        let origin = Origin::new(&request.method, &request.id);
         #[cfg(test)]
         if let Some(fault) = &self.fault {
             fault(&request.method);
@@ -1646,7 +1696,14 @@ impl Owner {
             views::freshen_selection(self, client)?;
         }
         let result = match method.route() {
-            Route::Owner(handler) => handler(self, &call).map(Planned::Value),
+            Route::Owner(handler) => {
+                let call = Call {
+                    client,
+                    request,
+                    origin,
+                };
+                handler(self, &call).map(Planned::Value)
+            }
             // A task queues a capability job and announces nothing: the task is announced when it
             // succeeds. It samples its asset's current entry before it is queued, so an
             // unprepared source or artifact is refused naming what it needs, as below.
@@ -1657,7 +1714,7 @@ impl Owner {
                     &self.service,
                     task_id,
                     &request.params,
-                    &call.origin,
+                    &origin,
                 )
                 .map(Planned::Value),
             Route::Service => {
@@ -1671,12 +1728,12 @@ impl Owner {
                 // The handler reports what it changed: a no-op and a retry answered from a
                 // store's request log changed nothing, and an asset's change names its revision.
                 method
-                    .plan(&mut self.service, session, &request.params)
+                    .plan_taking(&mut self.service, session, &mut request.params)
                     .map(|(planned, changed)| {
                         if let Changed::Something { revision } = changed {
                             let origin = match subject {
-                                Some(asset_id) => call.origin.clone().changed(asset_id, revision),
-                                None => call.origin.clone(),
+                                Some(asset_id) => origin.changed(asset_id, revision),
+                                None => origin,
                             };
                             announce_once(&mut self.announced, &origin);
                         }
@@ -1776,7 +1833,7 @@ impl Owner {
             .log
             .since_naming(held.wait.after, held.wait.asset_id.as_ref());
         let response = match methods::value(since) {
-            Ok(value) => ApiResponse::success(held.id, self.log.sequence, value),
+            Ok(value) => ApiResponse::value(held.id, self.log.sequence, value),
             Err(error) => ApiResponse::failure(held.id, self.log.sequence, error),
         };
         // A caller that has gone has nobody to answer.
@@ -1937,8 +1994,49 @@ impl Owner {
                 "the draft's pixel inputs changed; set or reapply the draft before previewing it",
             ));
         }
+        // A draft's GPU preview, planned from the job's own evaluation at the bounds the frame
+        // is drawn in: `O(layers)`, no pixel. A plan that cannot be made is reported, never an
+        // error the job's own frame would fail with.
         let job = job.map(|mut job| {
             job.analyse = request.analyse;
+            let view = match (request.gpu_region, request.proxy) {
+                (Some((rect, magnification)), _) => Some(crate::GpuView::Region {
+                    rect,
+                    magnification,
+                }),
+                (None, Some(bounds)) => Some(crate::GpuView::Fit(bounds)),
+                (None, None) => None,
+            };
+            // A committed stack's job carries the plans its gestures are likely to draw at its
+            // view, so the desktop warms their pipelines when the stack or the view changes rather
+            // than when a drag begins; and the stack's own plan and the boundary every gesture
+            // starts from, which the desktop holds before a gesture begins.
+            if let (true, None, Some(view), None) = (request.gpu, draft, view, request.layer_count)
+            {
+                job.gpu_warm = crate::render::gpu::plan_warm(&job.evaluation, view)
+                    .ok()
+                    .map(Into::into);
+                job.gpu_resident = crate::render::gpu::plan_resident(&job.evaluation, view)
+                    .ok()
+                    .flatten()
+                    .map(Box::new);
+            }
+            if let (true, Some(draft), Some(view), None) =
+                (request.gpu, draft, view, request.layer_count)
+            {
+                job.gpu = Some(Box::new(
+                    crate::render::gpu::plan_preview(&job.evaluation, draft, view).unwrap_or_else(
+                        |error| crate::GpuPreview {
+                            answer: crate::GpuAnswer::Fallback(crate::GpuFallback::Unplannable(
+                                error.detail,
+                            )),
+                            boundary: None,
+                            cpu_shape: None,
+                            layer: None,
+                        },
+                    ),
+                ));
+            }
             job
         });
         // A stack whose source is not prepared queues that preparation and answers with the job to

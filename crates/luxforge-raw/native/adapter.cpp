@@ -27,15 +27,16 @@ struct LfIdentity {
   uint32_t width, height, raw_bps, dng_version, decoder_flags, raw_count;
   uint32_t cfa_width, cfa_height;
   uint8_t cfa[36], black_cfa[36];
+  uint32_t channels;
 };
-static_assert(sizeof(LfIdentity) == 312, "LfIdentity layout differs from Rust");
+static_assert(sizeof(LfIdentity) == 316, "LfIdentity layout differs from Rust");
 
 struct LfMetadata {
   char make[64], model[64], decoder[80];
   uint32_t width, height, raw_pitch, raw_bps, dng_version, decoder_flags;
   uint32_t active_x, active_y, active_width, active_height;
   uint32_t inset_x, inset_y, inset_width, inset_height;
-  uint32_t cfa_width, cfa_height, flip, raw_count;
+  uint32_t cfa_width, cfa_height, flip, raw_count, channels;
   uint8_t cfa[36];
   // LibRaw's four Bayer sites are retained for black calibration. The public
   // CFA below merges both green sites to channel 1 for demosaicing.
@@ -56,7 +57,7 @@ static_assert(sizeof(LfDemosaicShape) == 100, "LfDemosaicShape layout differs fr
 
 // The decoder that fills the mosaic in lf_raw_unpack; Rust's NativeUnpacker has the same values.
 // Any other value is refused before unpack.
-enum LfUnpacker : uint32_t { LF_UNPACKER_LIBRAW = 0, LF_UNPACKER_RAWSPEED = 1 };
+enum LfUnpacker : uint32_t { LF_UNPACKER_LIBRAW = 0, LF_UNPACKER_RAWSPEED = 1, LF_UNPACKER_EXTERNAL_JXL = 2 };
 
 // What RawSpeed decoded (rawspeed_adapter.cpp).
 struct LfRawSpeedImage { uint32_t width, height, components, u16; };
@@ -290,13 +291,20 @@ int status_of(int code) noexcept {
 // The CFA dimensions and pattern, with LibRaw's four Bayer sites kept in black_cfa and both
 // greens merged to channel 1 in cfa. False for a site outside LibRaw's four channels.
 bool read_cfa(LibRaw &decoder, uint32_t &width, uint32_t &height, uint8_t cfa[36],
-              uint8_t black_cfa[36]) noexcept {
+              uint8_t black_cfa[36], uint32_t &channels) noexcept {
+  channels = 1;
   const auto &idata = decoder.imgdata.idata;
+  if (!idata.filters) {
+    width = height = 0;
+    channels = idata.colors;
+    return channels == 1 || (channels == 3 && idata.dng_version != 0);
+  }
   if (idata.filters == 9) {
     width = 6; height = 6;
     for (unsigned y = 0; y < 6; ++y)
       for (unsigned x = 0; x < 6; ++x) {
-        cfa[y * 6 + x] = idata.xtrans_abs[y][x];
+        // DNG stores its full-frame CFAPattern in xtrans; xtrans_abs is RAF-only.
+        cfa[y * 6 + x] = idata.dng_version ? idata.xtrans[y][x] : idata.xtrans_abs[y][x];
         black_cfa[y * 6 + x] = cfa[y * 6 + x];
       }
     return true;
@@ -345,6 +353,10 @@ int open_handle(const uint8_t *bytes, size_t length, LfCancel cancel, void *canc
       error(err, err_len, "LibRaw selected its Nikon High Efficiency decoder");
       return LF_STATUS_NIKON_HIGH_EFFICIENCY;
     }
+    // This bounded upstream decoder has a larger, owner-approved working set.
+    // Every other decoder retains 512 MiB; the file and pixel bounds remain shared.
+    if (std::strcmp(opened.decoder_name, "sony_arw6_load_raw()") == 0)
+      h->decoder.imgdata.rawparams.max_raw_memory_mb = 1024;
     const auto &d = h->decoder.imgdata;
     const auto *profile = std::find_if(std::begin(lf_cameras),std::end(lf_cameras),[&](const auto &camera){
       return std::strcmp(d.idata.make,camera.make)==0 && std::strcmp(d.idata.model,camera.model)==0;
@@ -356,7 +368,7 @@ int open_handle(const uint8_t *bytes, size_t length, LfCancel cancel, void *canc
     if (!s.raw_width || !s.raw_height || s.raw_width>LF_MAX_SIDE || s.raw_height>LF_MAX_SIDE || n>LF_MAX_PIXELS) {
       error(err, err_len, "RAW dimensions or stride exceed adapter limits"); return LF_STATUS_GEOMETRY;
     }
-    if (!read_cfa(h->decoder, identity->cfa_width, identity->cfa_height, identity->cfa, identity->black_cfa)) {
+    if (!read_cfa(h->decoder, identity->cfa_width, identity->cfa_height, identity->cfa, identity->black_cfa, identity->channels)) {
       std::memset(identity, 0, sizeof(*identity));
       error(err, err_len, "invalid Bayer CFA channel"); return LF_STATUS_UNSUPPORTED_CFA;
     }
@@ -416,9 +428,13 @@ extern "C" int lf_raw_unpack(void *handle, uint32_t unpacker,
                               LfMetadata *meta, char *err, size_t err_len) noexcept {
   if (!handle || !meta) { error(err, err_len, "invalid unpack arguments"); return LF_STATUS_INVALID_INPUT; }
   std::memset(meta, 0, sizeof(*meta));
-  if (unpacker != LF_UNPACKER_LIBRAW && unpacker != LF_UNPACKER_RAWSPEED) { error(err, err_len, "unknown RAW unpacker"); return LF_STATUS_INVALID_INPUT; }
+  if (unpacker != LF_UNPACKER_LIBRAW && unpacker != LF_UNPACKER_RAWSPEED && unpacker != LF_UNPACKER_EXTERNAL_JXL) { error(err, err_len, "unknown RAW unpacker"); return LF_STATUS_INVALID_INPUT; }
   auto *h = static_cast<Handle *>(handle);
   if (!h->opened || h->unpack_started) { error(err, err_len, "RAW handle was already unpacked"); return LF_STATUS_INVALID_INPUT; }
+  const bool external_jxl = unpacker == LF_UNPACKER_EXTERNAL_JXL;
+  if (external_jxl && (!h->decoder_name || std::strcmp(h->decoder_name,"jxl_dng_load_raw_placeholder()") != 0 || h->decoder.imgdata.idata.colors != 3 || h->decoder.imgdata.idata.filters || !h->decoder.imgdata.idata.dng_version)) {
+    error(err,err_len,"external JPEG XL metadata requires a three-channel DNG");return LF_STATUS_INVALID_INPUT;
+  }
   const LfReplaceable *replaceable = nullptr;
   if (unpacker == LF_UNPACKER_RAWSPEED) {
     for (const auto &row : lf_replaceable)
@@ -438,7 +454,7 @@ extern "C" int lf_raw_unpack(void *handle, uint32_t unpacker,
   if (cancel && cancel(cancel_context)) { error(err, err_len, "cancelled"); return LF_STATUS_CANCELLED; }
   h->unpack_started = true;
   try {
-    {
+    if (!external_jxl) {
       ProgressScope scope(h->decoder, cancel, cancel_context);
       ++unpack_calls;
       const int code = replaceable
@@ -456,13 +472,17 @@ extern "C" int lf_raw_unpack(void *handle, uint32_t unpacker,
     if (cancel && cancel(cancel_context)) { error(err, err_len, "cancelled"); return LF_STATUS_CANCELLED; }
     const auto &d=h->decoder.imgdata;
     const auto &s=d.sizes;
+    const unsigned channels = !d.idata.filters ? d.idata.colors : 1;
+    const unsigned storage_channels = channels == 3 && d.rawdata.color4_image ? 4 : channels;
     if(s.raw_width!=h->width||s.raw_height!=h->height||
-       (h->pitch!=0&&s.raw_pitch!=h->pitch)||
-       s.raw_pitch<unsigned(s.raw_width)*2||s.raw_pitch%2){
+       (channels == 1 && h->pitch!=0&&s.raw_pitch!=h->pitch)||
+       (!external_jxl && (s.raw_pitch<unsigned(s.raw_width)*storage_channels*2||s.raw_pitch%2))){
       error(err,err_len,"decoder changed mosaic geometry during unpack");return LF_STATUS_GEOMETRY;
     }
-    if (!d.rawdata.raw_image || d.rawdata.float_image || d.rawdata.color4_image || d.rawdata.color3_image) {
-      error(err, err_len, "decoder did not return a single-channel integer mosaic"); return LF_STATUS_UNSUPPORTED_CFA;
+    if (!external_jxl && (d.rawdata.float_image || d.rawdata.float3_image || d.rawdata.float4_image ||
+        (channels == 1 ? (!d.rawdata.raw_image || d.rawdata.color3_image || d.rawdata.color4_image)
+                       : ((!d.rawdata.color3_image && !d.rawdata.color4_image) || d.rawdata.raw_image)))) {
+      error(err, err_len, "decoder did not return the identified integer sensor layout"); return LF_STATUS_UNSUPPORTED_CFA;
     }
     if (h->profile && h->profile->calibrated && !h->decoder.apply_xyz_to_camera(h->profile->xyz_to_camera)) {
       error(err, err_len, "configured calibration requires three camera colours"); return LF_STATUS_UNSUPPORTED_CFA;
@@ -471,7 +491,7 @@ extern "C" int lf_raw_unpack(void *handle, uint32_t unpacker,
     const int code=h->decoder.get_decoder_info(&decoder_info);
     if (code != LIBRAW_SUCCESS) { error(err,err_len,libraw_strerror(code)); return LF_STATUS_FAILED; }
     LfMetadata filled{};
-    if (!read_cfa(h->decoder, filled.cfa_width, filled.cfa_height, filled.cfa, filled.black_cfa)) {
+    if (!read_cfa(h->decoder, filled.cfa_width, filled.cfa_height, filled.cfa, filled.black_cfa, filled.channels)) {
       error(err,err_len,"invalid Bayer CFA channel");return LF_STATUS_UNSUPPORTED_CFA;
     }
     copy_name(filled.make,sizeof(filled.make),d.idata.make);
@@ -490,6 +510,10 @@ extern "C" int lf_raw_unpack(void *handle, uint32_t unpacker,
     for(unsigned i=0;i<4;++i)filled.black_channels[i]=d.color.cblack[i];
     filled.black_repeat_height=d.color.cblack[4];
     filled.black_repeat_width=d.color.cblack[5];
+    // LibRaw may retain one dimension after folding a uniform repeat into black.
+    // A zero product means there are no repeat entries.
+    if (!filled.black_repeat_width || !filled.black_repeat_height)
+      filled.black_repeat_width = filled.black_repeat_height = 0;
     const uint64_t repeat=uint64_t(filled.black_repeat_width)*filled.black_repeat_height;
     if (repeat>4096) {error(err,err_len,"black pattern exceeds bound");return LF_STATUS_GEOMETRY;}
     for(size_t i=0;i<repeat;++i)filled.black_repeat[i]=d.color.cblack[6+i];
@@ -514,9 +538,16 @@ extern "C" int lf_raw_copy(void *handle, uint16_t *dest, size_t length,
     const auto &d=h->decoder.imgdata;
     const auto&s=d.sizes;
     if(!h->unpacked){error(err,err_len,"RAW handle is not unpacked");return LF_STATUS_INVALID_INPUT;}
-    if(!d.rawdata.raw_image || length!=uint64_t(s.raw_width)*s.raw_height){error(err,err_len,"mosaic length mismatch");return LF_STATUS_INVALID_INPUT;}
-    for(unsigned y=0;y<s.raw_height;++y)
-      std::memcpy(dest+size_t(y)*s.raw_width,d.rawdata.raw_image+size_t(y)*(s.raw_pitch/2),size_t(s.raw_width)*2);
+    const unsigned channels = !d.idata.filters ? d.idata.colors : 1;
+    const unsigned storage_channels = channels == 3 && d.rawdata.color4_image ? 4 : channels;
+    const uint16_t *source = channels == 3 ? reinterpret_cast<const uint16_t *>(d.rawdata.color4_image ? static_cast<void *>(d.rawdata.color4_image) : static_cast<void *>(d.rawdata.color3_image)) : d.rawdata.raw_image;
+    if(!source || length!=uint64_t(s.raw_width)*s.raw_height*channels){error(err,err_len,"sensor sample length mismatch");return LF_STATUS_INVALID_INPUT;}
+    for(unsigned y=0;y<s.raw_height;++y) {
+      const uint16_t *row = source+size_t(y)*(s.raw_pitch/2);
+      uint16_t *out = dest+size_t(y)*s.raw_width*channels;
+      if(storage_channels == channels) std::memcpy(out,row,size_t(s.raw_width)*channels*2);
+      else for(unsigned x=0;x<s.raw_width;++x) for(unsigned c=0;c<3;++c) out[size_t(x)*3+c]=row[size_t(x)*4+c];
+    }
     return LF_STATUS_OK;
   } catch (const std::exception &e) {error(err,err_len,e.what());return LF_STATUS_FAILED;}
     catch (...) {error(err,err_len,"unknown native copy failure");return LF_STATUS_FAILED;}
@@ -539,15 +570,22 @@ extern "C" int lf_raw_curve(void *handle, uint16_t *dest, size_t length) noexcep
 extern "C" long lf_raw_live_handles(void) noexcept { return live_handles; }
 extern "C" unsigned long long lf_raw_unpack_calls(void) noexcept { return unpack_calls; }
 
-// Demosaic Rust's normalized float mosaic, in which sensor white is 65535, into
-// three planes at the same scale. Rust owns the mosaic and planes, normalizes
-// before this call and divides the planes by 65535 after it.
-extern "C" int lf_raw_develop(const float *mosaic,size_t count,const LfDemosaicShape *shape,
-                               float *red,float *green,float *blue,
-                               rpTileExecutor executor,void *executor_context,
-                               LfCancel cancel,void *cancel_context,
-                               char *err,size_t err_len) noexcept {
-  if(!mosaic||!shape||!red||!green||!blue||!shape->width||!shape->height||
+// The demosaic input as librtprocess reads it: the float rows' row table, or
+// the sensor sites themselves.
+static const float *const *demosaic_input(const std::vector<const float*> &rows) { return rows.data(); }
+static const rpMosaicSites &demosaic_input(const rpMosaicSites &sites) { return sites; }
+
+// Demosaic the input `make_input` builds, in which sensor white is 65535, into
+// three planes at the same scale. Rust owns the input and planes, and divides
+// the planes by 65535 after the call. Both entry points check their own input
+// pointers first; the frame, planes and geometry checks are this one's.
+template <typename MakeInput>
+static int develop_planes(size_t count,const LfDemosaicShape *shape,
+                          float *red,float *green,float *blue,
+                          rpTileExecutor executor,void *executor_context,
+                          LfCancel cancel,void *cancel_context,
+                          char *err,size_t err_len,MakeInput make_input) noexcept {
+  if(!shape||!red||!green||!blue||!shape->width||!shape->height||
      count!=uint64_t(shape->width)*shape->height||count>LF_MAX_PIXELS||
      count>LF_MAX_RGB_BYTES/(3*sizeof(float))) {
     error(err,err_len,"invalid or oversized develop buffers");return LF_STATUS_INVALID_INPUT;
@@ -566,7 +604,6 @@ extern "C" int lf_raw_develop(const float *mosaic,size_t count,const LfDemosaicS
   if(cancel&&cancel(cancel_context)){error(err,err_len,"cancelled");return LF_STATUS_CANCELLED;}
   try{
     const size_t w=shape->width,h=shape->height;
-    std::vector<const float*> input_rows(h);
     std::vector<float*> rrows(h),grows(h),brows(h);
     unsigned bayer[2][2]{},xtrans[6][6]{};
     if(shape->cfa_width==2&&shape->cfa_height==2){
@@ -575,18 +612,19 @@ extern "C" int lf_raw_develop(const float *mosaic,size_t count,const LfDemosaicS
       for(size_t y=0;y<6;++y)for(size_t x=0;x<6;++x)xtrans[y][x]=shape->cfa[y*6+x];
     }else{error(err,err_len,"unsupported CFA");return LF_STATUS_UNSUPPORTED_CFA;}
     for(size_t y=0;y<h;++y){
-      input_rows[y]=mosaic+y*w;rrows[y]=red+y*w;grows[y]=green+y*w;brows[y]=blue+y*w;
+      rrows[y]=red+y*w;grows[y]=green+y*w;brows[y]=blue+y*w;
     }
+    const auto input=make_input(w,h);
     LfCancelState cancel_state{cancel,cancel_context};
     // librtprocess ignores this progress return; both demosaics check
     // cancel_state between tiles instead.
     auto no_cancel=[](double){return false;};
     rpError code=RP_WRONG_CFA;
     if(shape->cfa_width==2)
-      code=rcd_demosaic(w,h,input_rows.data(),rrows.data(),grows.data(),brows.data(),bayer,no_cancel,2,false,false,executor,executor_context,lf_tile_cancel,&cancel_state);
+      code=rcd_demosaic(w,h,demosaic_input(input),rrows.data(),grows.data(),brows.data(),bayer,no_cancel,2,false,false,executor,executor_context,lf_tile_cancel,&cancel_state);
     else{
       float cam[3][4]{};for(size_t i=0;i<12;++i)cam[i/4][i%4]=shape->rgb_cam[i];
-      code=markesteijn_demosaic(w,h,input_rows.data(),rrows.data(),grows.data(),brows.data(),xtrans,cam,no_cancel,1,false,2,false,executor,executor_context,lf_tile_cancel,&cancel_state);
+      code=markesteijn_demosaic(w,h,demosaic_input(input),rrows.data(),grows.data(),brows.data(),xtrans,cam,no_cancel,1,false,2,false,executor,executor_context,lf_tile_cancel,&cancel_state);
     }
     if(code!=RP_NO_ERROR){
       error(err,err_len,"float demosaic failed");
@@ -597,4 +635,52 @@ extern "C" int lf_raw_develop(const float *mosaic,size_t count,const LfDemosaicS
   }catch(const std::bad_alloc&){error(err,err_len,"native allocation failed");return LF_STATUS_ALLOCATION;}
    catch(const std::exception&e){error(err,err_len,e.what());return LF_STATUS_FAILED;}
    catch(...){error(err,err_len,"unknown native develop failure");return LF_STATUS_FAILED;}
+}
+
+// Demosaic Rust's normalized float mosaic, `count` values, in which sensor
+// white is 65535. Rust normalizes it before this call.
+extern "C" int lf_raw_develop(const float *mosaic,size_t count,const LfDemosaicShape *shape,
+                               float *red,float *green,float *blue,
+                               rpTileExecutor executor,void *executor_context,
+                               LfCancel cancel,void *cancel_context,
+                               char *err,size_t err_len) noexcept {
+  if(!mosaic){error(err,err_len,"invalid or oversized develop buffers");return LF_STATUS_INVALID_INPUT;}
+  return develop_planes(count,shape,red,green,blue,executor,executor_context,cancel,cancel_context,err,err_len,
+                        [mosaic](size_t w,size_t h){
+                          std::vector<const float*> rows(h);
+                          for(size_t y=0;y<h;++y)rows[y]=mosaic+y*w;
+                          return rows;
+                        });
+}
+
+// What the sensor-site input reads: the retained u16 mosaic and three tables,
+// the black level, white scale and gain of every site of one period of the CFA
+// and black patterns (period_width * period_height entries each, anchored at
+// sensor (0, 0)). Rust's SensorSites has the same layout.
+struct LfSensorSites {
+  const uint16_t *samples;
+  const float *black, *scale, *gain;
+  uint32_t period_width, period_height;
+};
+static_assert(sizeof(LfSensorSites) == 4 * sizeof(void *) + 8, "LfSensorSites layout differs from Rust");
+
+// Demosaic the retained mosaic, `count` samples, reading each site as its
+// normalized value (rpNormalizedSite), with no float mosaic. Its planes are
+// those lf_raw_develop gives for the mosaic Rust normalizes with the same
+// tables.
+extern "C" int lf_raw_develop_sites(const LfSensorSites *sites,size_t count,const LfDemosaicShape *shape,
+                                     float *red,float *green,float *blue,
+                                     rpTileExecutor executor,void *executor_context,
+                                     LfCancel cancel,void *cancel_context,
+                                     char *err,size_t err_len) noexcept {
+  if(!sites||!sites->samples||!sites->black||!sites->scale||!sites->gain||!shape||
+     !shape->cfa_width||!shape->cfa_height||!sites->period_width||!sites->period_height||
+     sites->period_width%shape->cfa_width||sites->period_height%shape->cfa_height){
+    error(err,err_len,"invalid or oversized develop buffers");return LF_STATUS_INVALID_INPUT;
+  }
+  return develop_planes(count,shape,red,green,blue,executor,executor_context,cancel,cancel_context,err,err_len,
+                        [sites](size_t w,size_t){
+                          return rpMosaicSites{sites->samples,w,sites->black,sites->scale,sites->gain,
+                                               sites->period_width,sites->period_height};
+                        });
 }

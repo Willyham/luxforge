@@ -18,7 +18,7 @@ use crate::{
         Workspace,
         title::{
             EXPORT_ITEMS, EXPORT_TOOLTIP, SEGMENT_FIT, SEGMENT_HUNDRED, SEGMENT_PERCENT,
-            TitleBarModel,
+            TitleBarModel, ZOOM_STOPS, percent_text,
         },
     },
     window_frame,
@@ -28,8 +28,9 @@ use iced::{
     widget::{Space, container, mouse_area, row, stack, text, text_input},
 };
 use luxforge_ui::{
-    ButtonSize, ButtonTone, Icon, IconButtonModel, inline_menu, popover, segment, segment_track,
-    text_button, theme, title_bar_icon_button,
+    ButtonSize, ButtonTone, Icon, IconButtonModel, NotchedSliderModel, StepKeys, chevron_segment,
+    hover_panel, inline_menu, notched_panel, popover, segment, segment_track, text_button, theme,
+    title_bar_icon_button,
 };
 
 /// The typed zoom field's focus target, so opening it puts the caret in it.
@@ -147,7 +148,9 @@ fn export(model: &TitleBarModel) -> Element<'_, Message> {
 }
 
 /// Fit, 100% and the effective percentage on one track, then Compare and Clipping. The
-/// percentage segment opens as the typed zoom field when pressed.
+/// percentage segment opens as the typed zoom field when pressed, and the zoom stops drop under it
+/// while the pointer rests on it or the field, or for a moment after a keyboard zoom step. While
+/// they show, the arrow keys step them.
 fn view_controls(model: &Workspace) -> Element<'_, Message> {
     let title = &model.title;
     let can_view = title.can_view;
@@ -162,12 +165,29 @@ fn view_controls(model: &Workspace) -> Element<'_, Message> {
             .style(theme::field_input_style(false))
             .into()
     } else {
-        segment(
+        chevron_segment(
             title.zoom_percent.clone(),
             title.zoom_segment == SEGMENT_PERCENT,
             can_view.then_some(Message::View(ViewMessage::EditZoom)),
         )
     };
+    let stops = notched_panel(
+        &NotchedSliderModel {
+            labels: ZOOM_STOPS.iter().map(|stop| percent_text(*stop)).collect(),
+            position: title.zoom_stop_position,
+            selected: title.zoom_stop,
+            // The typed field keeps Left and Right for its caret.
+            keys: if title.zoom_editing {
+                StepKeys::Vertical
+            } else {
+                StepKeys::All
+            },
+            enabled: can_view,
+        },
+        |stop| Message::View(ViewMessage::ZoomTo(ZOOM_STOPS[stop])),
+        |step| Message::View(ViewMessage::ZoomStep(step)),
+    );
+    let percent = hover_panel(percent, stops, can_view, title.zoom_reveal);
     let zoom = segment_track(vec![
         segment(
             "Fit".into(),

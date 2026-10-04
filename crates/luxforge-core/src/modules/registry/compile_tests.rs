@@ -495,41 +495,67 @@ fn a_masked_spatial_layer_compiles_with_its_mask_attached() {
 }
 
 /// Each masked spatial layer is a stage boundary and therefore a sequential full frame, so the
-/// design caps them at four. The fifth is a `resource-limit` error naming the limit; nothing is
-/// dropped, reordered or rendered as if it applied everywhere.
+/// design caps them, masked Detail and Presence layers counted together. A recipe of a mask for each
+/// layer the cap allows, half of them holding masked Detail and half masked Presence, compiles at
+/// the cap; one more masked Presence layer, on a mask that holds Detail, is a `resource-limit` error
+/// naming the limit, and nothing is dropped, reordered or rendered as if it applied everywhere.
 #[test]
-fn a_fifth_masked_spatial_layer_is_a_resource_limit() {
+fn a_masked_spatial_layer_past_the_cap_is_a_resource_limit() {
     let registry = ModuleRegistry::builtin();
-    let masks: Vec<Mask> = (0..MAX_MASKED_SPATIAL_LAYERS + 1)
+    let masks: Vec<Mask> = (0..MAX_MASKED_SPATIAL_LAYERS)
         .map(|index| gradient_mask(&format!("Mask {index}")))
         .collect();
-    let presence = |mask: &Mask| Layer {
-        id: LayerId::new(),
-        effect_id: crate::PRESENCE_EFFECT.into(),
-        effect_format: EFFECT_FORMAT,
-        payload: json!({"clarity": 40.0}),
+    assert!(
+        masks.len() <= crate::MASKS_PER_RECIPE,
+        "a recipe may hold them"
+    );
+    let layer = |effect: &str, payload: Value, mask: &Mask| Layer {
         mask: Some(mask.id.clone()),
-        artifacts: Vec::new(),
+        ..Layer::new(effect, payload)
     };
-    let recipe = |count: usize| Recipe {
+    // Detail is a restoration effect and comes before Presence, as placement puts it.
+    let half = masks.len() / 2;
+    let mut layers: Vec<Layer> = masks[..half]
+        .iter()
+        .map(|mask| layer(crate::DETAIL_EFFECT, json!({"sharpening": 40.0}), mask))
+        .chain(
+            masks[half..]
+                .iter()
+                .map(|mask| layer(crate::PRESENCE_EFFECT, json!({"clarity": 40.0}), mask)),
+        )
+        .collect();
+    let recipe = |layers: &[Layer]| Recipe {
         format: RECIPE_FORMAT,
-        layers: masks[..count].iter().map(presence).collect(),
+        layers: layers.to_vec(),
         masks: masks.clone(),
         ..Recipe::default()
     };
+    assert_eq!(layers.len(), MAX_MASKED_SPATIAL_LAYERS);
     registry
-        .compile(128, 128, &recipe(MAX_MASKED_SPATIAL_LAYERS))
-        .unwrap_or_else(|error| panic!("four masked spatial layers: {error:?}"));
+        .compile(128, 128, &recipe(&layers))
+        .unwrap_or_else(|error| {
+            panic!("{MAX_MASKED_SPATIAL_LAYERS} masked spatial layers: {error:?}")
+        });
+    layers.push(layer(
+        crate::PRESENCE_EFFECT,
+        json!({"clarity": 40.0}),
+        &masks[0],
+    ));
+    let past = recipe(&layers);
     let error = registry
-        .compile(128, 128, &recipe(MAX_MASKED_SPATIAL_LAYERS + 1))
+        .compile(128, 128, &past)
         .err()
-        .expect("five masked spatial layers");
+        .expect("a masked spatial layer past the cap");
     assert_eq!(error.kind, ErrorKind::ResourceLimit);
     assert_eq!(
         error.detail,
-        "this recipe holds 5 masked spatial layers, more than the 4 the host evaluates: each \
-         one is a stage boundary and therefore a sequential full frame"
+        format!(
+            "this recipe holds {} masked spatial layers, more than the {MAX_MASKED_SPATIAL_LAYERS} \
+             the host evaluates: each one is a stage boundary and therefore a sequential full frame",
+            MAX_MASKED_SPATIAL_LAYERS + 1
+        )
     );
+    assert_eq!(past.layers, layers, "the refused stack is kept");
 }
 
 /// The missing mask is refused wherever a recipe is evaluated, because compiling checks it and

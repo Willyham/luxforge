@@ -13,6 +13,7 @@ use crate::{
     modules::{
         ActionInput, ActionPlan, ActionRef, LayerEdit, MAX_COMPOSE_STEPS, QueryRef, Stage,
         StageContext, StageQuestions, check_parameters, check_target, not_applicable,
+        take_parameters,
     },
     render::{Compiled, Render, RenderOptions, RenderSource},
     source::PreparedSource,
@@ -60,7 +61,7 @@ impl<'r> Prepared<'r> {
                 let mut parameters = parameters;
                 let mask =
                     take_mask_target(registry, Targeted::Action(action_id), &mut parameters)?;
-                let checked = check_parameters(declared, &parameters)?;
+                let checked = take_parameters(declared, parameters)?;
                 let input = module.parse(action_id, &checked)?;
                 // Labelled from the action that was requested, which is not always the durable
                 // action identity the entry stores: `transform` is requested and its title the
@@ -77,7 +78,7 @@ impl<'r> Prepared<'r> {
                 action,
                 input: ActionInput {
                     action_id: command.method.to_owned(),
-                    parameters: check_parameters(&command.action, &parameters)?,
+                    parameters: take_parameters(&command.action, parameters)?,
                 },
                 mask: None,
                 label: String::new(),

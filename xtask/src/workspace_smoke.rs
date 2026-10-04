@@ -20,7 +20,6 @@ use luxforge_evidence::{
 const ROTATED: u8 = 6;
 const CROP_MODULE: &str = "luxforge.crop";
 const BASIC_MODULE: &str = "luxforge.basic";
-const TRANSFORM_MODULE: &str = "luxforge.transform";
 const POINTER_MODE: &str = "pointer";
 
 /// Every frame of `workspace`, in order: the open, then one per step. Comments in the acceptance
@@ -31,11 +30,12 @@ pub fn plan(_: &[PathBuf]) -> Plan {
     let workspace = |name: &str, request: WorkspaceStep| Step::new(name, request).commits(0);
     Plan::new(vec![
         panels(Step::opened("opened"), true, true, POINTER_MODE, false),
-        // `edit.transform rotate-right` commits one entry; the panels are untouched.
+        // Run the combined module's generated control through the palette: one entry,
+        // exactly the existing `edit.transform rotate-right` request.
         panels(
             Step::new(
                 "rotated",
-                script::Step::call("edit.transform", json!({"transform":"rotate-right"})),
+                PaletteStep::Run("Crop, transform, straighten · Rotate 90° right".into()),
             )
             .commits(1)
             .label("Rotate right"),
@@ -86,21 +86,18 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             true,
         ),
         Step::new("current", PreviewStep::Current).commits(0),
-        // Transforms, collapsed by its own default, expanded under a collapsed Basic: its four
-        // exact operations as one row of icon buttons, both view state alone.
+        // The combined crop section, expanded under a collapsed Basic: its four exact
+        // transforms lead Ratio and Angle, both view state alone.
         Step::new(
             "basic-collapsed",
             script::Step::section(BASIC_MODULE, false),
         )
         .commits(0)
         .collapsed(BASIC_MODULE),
-        Step::new(
-            "transform-expanded",
-            script::Step::section(TRANSFORM_MODULE, true),
-        )
-        .commits(0)
-        .expanded(TRANSFORM_MODULE)
-        .collapsed(BASIC_MODULE),
+        Step::new("crop-expanded", script::Step::section(CROP_MODULE, true))
+            .commits(0)
+            .expanded(CROP_MODULE)
+            .collapsed(BASIC_MODULE),
         // Starting a crop draft, by the `draft.start` route, enters the crop mode.
         panels(
             Step::new("draft", DraftStep::Start).commits(0),

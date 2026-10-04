@@ -47,6 +47,7 @@ use crate::{
     Component, Error,
     modules::{Region, Stage},
     path::{StrokeId, StrokeTable},
+    render::gpu::{GpuDescription, GpuProgram, GpuProgramKind},
 };
 
 // The one legal stroke radius is a stored distance, so it lies inside the study's own distance rule
@@ -71,6 +72,135 @@ pub const STROKES_PER_COMPONENT: usize = 64;
 /// refused and commits nothing, so the cap is paid for in full by that stroke and a mask whose
 /// strokes committed is never refused for it later, when a layer first draws it.
 pub const SEGMENTS_PER_PIXEL: usize = 64;
+
+/// The brush's GPU coverage program (`brush.wgsl`), for a preview during a gesture: the uniform
+/// grid index this field compiles, laid out as a storage block ([`Compiled::gpu_block`]).
+/// It is enabled: on the M4 its half-coverage contour lies within a quarter pixel of
+/// this field's and, carrying a masked Basic layer, it meets the pointwise limits on the corpus
+/// (`docs/design/gpu-preview.md#mask-coverage`).
+pub(crate) static PROGRAM: GpuProgram = GpuProgram {
+    entry: "lf_mask_brush",
+    source: include_str!("brush.wgsl"),
+    kind: GpuProgramKind::Coverage,
+    words: 9,
+    enabled: true,
+};
+
+/// Words one segment takes in the GPU block: `ax, ay, ex, ey, len2`.
+const GPU_SEGMENT_WORDS: usize = 5;
+
+/// Words one stroke's record takes in the GPU block: `R, band, flags, flow / 100`, and the colour
+/// limit's seed `(a, b)` and radius.
+const GPU_RECORD_WORDS: usize = 7;
+
+/// The most words a brush component's GPU storage block holds under the stroke limits: every point
+/// a mask may hold as a segment of five words, the largest grid's cell table, each of its cells at
+/// the occupancy cap, and a record of seven words for each stroke a component may hold. 316,034
+/// words, 1.21 MiB.
+pub const GPU_BLOCK_WORDS_MAX: usize = GPU_SEGMENT_WORDS * crate::model::POINTS_PER_MASK
+    + (GRID_SIDE_MAX + 1) * (GRID_SIDE_MAX + 1)
+    + 1
+    + (GRID_SIDE_MAX + 1) * (GRID_SIDE_MAX + 1) * SEGMENTS_PER_PIXEL
+    + GPU_RECORD_WORDS * STROKES_PER_COMPONENT;
+
+/// A brush description's segments and stroke records, word for word.
+type GpuParts = (Vec<[u32; GPU_SEGMENT_WORDS]>, Vec<[u32; GPU_RECORD_WORDS]>);
+
+/// The rectangle of the program's `pos` pixels, `[x0, y0, x1, y1]`, outside which the coverage the
+/// brush field described by `new` gives is the coverage the one described by `old` gives, both
+/// described by this program ([`Compiled::gpu`]): what a painted tick changes. Coverage depends
+/// only on the segments and the strokes' records — the grid index only says which segments a pixel
+/// tests — so the rectangle holds every segment the two blocks hold differently, at its old and its
+/// new place, grown by the largest stroke radius either holds, past which a segment covers nothing.
+/// `Some(None)` when the coverage is the same everywhere, and `None` when a stroke's record or the
+/// stage changed, which can change it anywhere.
+pub(crate) fn gpu_changed(old: &GpuDescription, new: &GpuDescription) -> Option<Option<[f64; 4]>> {
+    // The stage's height, which takes mask space to pixels: `u = (x + 0.5) / H`.
+    let height = match (old.words.first(), new.words.first()) {
+        (Some(old), Some(new)) if old == new => f64::from(f32::from_bits(*new)),
+        _ => return None,
+    };
+    let parts = |description: &GpuDescription| -> Option<GpuParts> {
+        let words = &description.words;
+        let block = description.block.as_deref().unwrap_or(&[]);
+        if words.len() < 9 || words[4] == 0 || words[5] == 0 {
+            return Some((Vec::new(), Vec::new()));
+        }
+        let segments_end = words[6] as usize;
+        let records_at = words[8] as usize;
+        if !segments_end.is_multiple_of(GPU_SEGMENT_WORDS)
+            || segments_end > block.len()
+            || records_at > block.len()
+            || !(block.len() - records_at).is_multiple_of(GPU_RECORD_WORDS)
+        {
+            return None;
+        }
+        let segments = block[..segments_end]
+            .chunks_exact(GPU_SEGMENT_WORDS)
+            .map(|segment| std::array::from_fn(|i| segment[i]))
+            .collect();
+        let records = block[records_at..]
+            .chunks_exact(GPU_RECORD_WORDS)
+            .map(|record| std::array::from_fn(|i| record[i]))
+            .collect();
+        Some((segments, records))
+    };
+    let (old_segments, old_records) = parts(old)?;
+    let (new_segments, new_records) = parts(new)?;
+    // A stroke's record holds its radius, falloff, flags, flow and colour limit: one that changed
+    // changes coverage wherever the stroke reaches. Strokes added or removed come and go with
+    // their segments.
+    if old_records
+        .iter()
+        .zip(&new_records)
+        .any(|(old, new)| old != new)
+    {
+        return None;
+    }
+    let radius = old_records
+        .iter()
+        .chain(&new_records)
+        .map(|record| f64::from(f32::from_bits(record[0])))
+        .fold(0.0_f64, f64::max);
+    let mut rect: Option<[f64; 4]> = None;
+    let mut include = |segment: &[u32; GPU_SEGMENT_WORDS]| {
+        let [ax, ay, ex, ey] = [0, 1, 2, 3].map(|i| f64::from(f32::from_bits(segment[i])));
+        let (u0, u1) = (ax.min(ax + ex), ax.max(ax + ex));
+        let (v0, v1) = (ay.min(ay + ey), ay.max(ay + ey));
+        rect = Some(match rect {
+            None => [u0, v0, u1, v1],
+            Some([a, b, c, d]) => [a.min(u0), b.min(v0), c.max(u1), d.max(v1)],
+        });
+    };
+    let common = old_segments.len().min(new_segments.len());
+    for (old, new) in old_segments[..common].iter().zip(&new_segments[..common]) {
+        if old != new {
+            include(old);
+            include(new);
+        }
+    }
+    for segment in old_segments[common..].iter().chain(&new_segments[common..]) {
+        include(segment);
+    }
+    if rect.is_some_and(|[u0, v0, u1, v1]| ![u0, v0, u1, v1].iter().all(|v| v.is_finite())) {
+        return None;
+    }
+    Some(rect.map(|[u0, v0, u1, v1]| {
+        [u0 - radius, v0 - radius, u1 + radius, v1 + radius].map(|value| value * height - 0.5)
+    }))
+}
+
+/// A record's flags.
+const GPU_HARD: u32 = 1;
+const GPU_ERASE: u32 = 2;
+const GPU_LIMITED: u32 = 4;
+
+// An index entry packs its stroke into the top eight bits and its segment, counted over the whole
+// component, into the low twenty-four.
+const _: () = assert!(
+    STROKES_PER_COMPONENT <= 1 << 8 && crate::model::POINTS_PER_MASK < 1 << 24,
+    "a GPU index entry holds its stroke and segment in one word"
+);
 
 /// Cells the index spans on each axis, at most. The cell side is the component's largest stroke
 /// radius, which is the scale at which a segment stops mattering to a pixel; this bound is what keeps
@@ -294,7 +424,11 @@ struct Index {
     rows: usize,
     /// `(stroke index, segment index)` per cell, in stored stroke order within each cell, so a
     /// pixel's fold visits strokes in the order the component stores them.
-    cells: Vec<Vec<(u32, u32)>>,
+    entries: Vec<(u32, u32)>,
+    /// Cell slices in `entries`. A contiguous index avoids a heap allocation per cell and keeps
+    /// neighbouring segment lists together during rendering. The existing cell/occupancy bounds
+    /// still govern its size.
+    offsets: Vec<usize>,
 }
 
 impl Index {
@@ -313,8 +447,8 @@ impl Index {
     /// a plane at any size.
     ///
     /// **Build cost** is `O(segments × cells each reaches)`. It reads no pixel, and the insertion
-    /// walks a segment's box row by row rather than filling its whole bounding rectangle, so a long
-    /// diagonal stroke costs the cells it reaches and not the cells it spans.
+    /// visits the conservative grown bounding rectangle twice, first counting entries and then
+    /// writing contiguous slices. No per-cell vector grows or retains spare capacity.
     fn build(strokes: &[CompiledStroke]) -> Self {
         let mut extent: Option<[f64; 4]> = None;
         let mut largest = 0.0f64;
@@ -358,20 +492,41 @@ impl Index {
             cell,
             cols,
             rows,
-            cells: vec![Vec::new(); cols * rows],
+            entries: Vec::new(),
+            offsets: Vec::new(),
         };
-        for (s, stroke) in strokes.iter().enumerate() {
-            for (g, segment) in stroke.segments.iter().enumerate() {
-                index.insert(s as u32, g as u32, segment, stroke.r);
+        let mut offsets = vec![0; cols * rows + 1];
+        for stroke in strokes {
+            for segment in &stroke.segments {
+                index.visit_cells(segment, stroke.r, |cell| offsets[cell + 1] += 1);
             }
         }
+        for cell in 1..offsets.len() {
+            offsets[cell] += offsets[cell - 1];
+        }
+        let mut entries = vec![(0, 0); offsets.last().copied().unwrap_or(0)];
+        let mut next = offsets[..cols * rows].to_vec();
+        for (s, stroke) in strokes.iter().enumerate() {
+            for (g, segment) in stroke.segments.iter().enumerate() {
+                index.visit_cells(segment, stroke.r, |cell| {
+                    entries[next[cell]] = (s as u32, g as u32);
+                    next[cell] += 1;
+                });
+            }
+        }
+        index.offsets = offsets;
+        index.entries = entries;
         index
     }
 
     /// The most entries any one cell lists: the most segments a pixel of this component can be made
     /// to test, which is the quantity the occupancy cap bounds. `O(cells)`.
     fn densest(&self) -> usize {
-        self.cells.iter().map(Vec::len).max().unwrap_or(0)
+        self.offsets
+            .windows(2)
+            .map(|pair| pair[1] - pair[0])
+            .max()
+            .unwrap_or(0)
     }
 
     fn empty() -> Self {
@@ -381,18 +536,19 @@ impl Index {
             cell: 1.0,
             cols: 0,
             rows: 0,
-            cells: Vec::new(),
+            entries: Vec::new(),
+            offsets: Vec::new(),
         }
     }
 
     /// Record one segment in every cell its grown box reaches.
-    fn insert(&mut self, stroke: u32, segment_index: u32, segment: &Segment, r: f64) {
+    fn visit_cells(&self, segment: &Segment, r: f64, mut visit: impl FnMut(usize)) {
         let [bu0, bv0, bu1, bv1] = segment.grown_box(r);
         let (col0, col1) = self.cell_range(bu0 - self.u0, bu1 - self.u0, self.cols);
         let (row0, row1) = self.cell_range(bv0 - self.v0, bv1 - self.v0, self.rows);
         for row in row0..=row1 {
             for col in col0..=col1 {
-                self.cells[row * self.cols + col].push((stroke, segment_index));
+                visit(row * self.cols + col);
             }
         }
     }
@@ -420,7 +576,7 @@ impl Index {
     /// the grid.
     #[inline]
     fn at(&self, u: f64, v: f64) -> &[(u32, u32)] {
-        if self.cells.is_empty() {
+        if self.entries.is_empty() {
             return &[];
         }
         let col = ((u - self.u0) / self.cell).floor();
@@ -428,7 +584,8 @@ impl Index {
         if !(col >= 0.0 && col < self.cols as f64 && row >= 0.0 && row < self.rows as f64) {
             return &[];
         }
-        &self.cells[row as usize * self.cols + col as usize]
+        let cell = row as usize * self.cols + col as usize;
+        &self.entries[self.offsets[cell]..self.offsets[cell + 1]]
     }
 }
 
@@ -656,6 +813,103 @@ impl ComponentField for Compiled {
     fn segments_at(&self, u: f64, v: f64) -> usize {
         self.index.at(u, v).len()
     }
+
+    /// The stage's height and this field's own grid index as GPU data: its geometry in the words and
+    /// its segments, cells and strokes in the storage block ([`Compiled::gpu_block`]), so a pixel
+    /// tests exactly the segments it tests here.
+    fn gpu(&self, stage: Stage) -> Option<GpuDescription> {
+        let (offsets, block) = self.gpu_block();
+        let index = &self.index;
+        let words = vec![
+            (f64::from(stage.height) as f32).to_bits(),
+            (index.u0 as f32).to_bits(),
+            (index.v0 as f32).to_bits(),
+            (index.cell as f32).to_bits(),
+            index.cols as u32,
+            index.rows as u32,
+            offsets[0],
+            offsets[1],
+            offsets[2],
+        ];
+        Some(GpuDescription::new(&PROGRAM, words).with_block(block))
+    }
+}
+
+impl Compiled {
+    /// This field's grid index as one storage block, and the offsets in it of the cell table, the
+    /// entries and the stroke records. `O(segments + entries)`; reads no pixel.
+    ///
+    /// The segments come first, in stored stroke order, so a stroke being painted — always the
+    /// component's last — only appends its new segments to that part between ticks; the cell table,
+    /// the entries and the records after it are this index, which the CPU rebuilds whenever the
+    /// strokes change, and are rewritten with it. Its size is bounded by the stroke limits
+    /// ([`GPU_BLOCK_WORDS_MAX`]).
+    pub(super) fn gpu_block(&self) -> ([u32; 3], Arc<[u32]>) {
+        let segments: usize = self
+            .strokes
+            .iter()
+            .map(|stroke| stroke.segments.len())
+            .sum();
+        // The index's own cell table: each cell's first entry, then the total. An empty index has
+        // no table and is written as the one total, 0.
+        let cells = self.index.offsets.len().saturating_sub(1);
+        let entries = self.index.entries.len();
+        let cells_at = GPU_SEGMENT_WORDS * segments;
+        let entries_at = cells_at + cells + 1;
+        let records_at = entries_at + entries;
+        let mut block = Vec::with_capacity(records_at + GPU_RECORD_WORDS * self.strokes.len());
+        let mut first = Vec::with_capacity(self.strokes.len());
+        for stroke in &self.strokes {
+            first.push((block.len() / GPU_SEGMENT_WORDS) as u32);
+            for segment in &stroke.segments {
+                block.extend(
+                    [segment.ax, segment.ay, segment.ex, segment.ey, segment.len2]
+                        .map(|term| (term as f32).to_bits()),
+                );
+            }
+        }
+        if self.index.offsets.is_empty() {
+            block.push(0);
+        } else {
+            block.extend(self.index.offsets.iter().map(|&offset| offset as u32));
+        }
+        block.extend(
+            self.index
+                .entries
+                .iter()
+                .map(|&(stroke, segment)| (stroke << 24) | (first[stroke as usize] + segment)),
+        );
+        for stroke in &self.strokes {
+            let flags = if stroke.hard { GPU_HARD } else { 0 }
+                | if stroke.erase { GPU_ERASE } else { 0 }
+                | if stroke.colour.is_some() {
+                    GPU_LIMITED
+                } else {
+                    0
+                };
+            let (seed, radius) = stroke.colour.as_ref().map_or(([0.0; 2], 0.0), |limit| {
+                let (mut points, radius) = limit.gpu_terms();
+                (points.next().unwrap_or([0.0; 2]), radius)
+            });
+            block.extend([
+                (stroke.r as f32).to_bits(),
+                (stroke.band as f32).to_bits(),
+                flags,
+                (stroke.amount as f32).to_bits(),
+                seed[0].to_bits(),
+                seed[1].to_bits(),
+                radius.to_bits(),
+            ]);
+        }
+        debug_assert_eq!(
+            block.len(),
+            records_at + GPU_RECORD_WORDS * self.strokes.len()
+        );
+        (
+            [cells_at as u32, entries_at as u32, records_at as u32],
+            Arc::from(block),
+        )
+    }
 }
 
 /// The densest cell of one brush component's index, bound to `binding`'s stage: the most segments
@@ -733,3 +987,7 @@ fn box_bounds(stage: Stage, u0: f64, v0: f64, u1: f64, v1: f64) -> Region {
         (v1 + sv) * height - 0.5,
     )
 }
+
+#[cfg(test)]
+#[path = "brush_gpu_tests.rs"]
+mod gpu_tests;

@@ -5,7 +5,7 @@ use crate::Error;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::OpenOptions,
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, BufWriter, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     sync::{
@@ -136,11 +136,26 @@ pub fn serve_json_lines_with(
 }
 
 fn serve_stream(stream: TcpStream, owner: &OwnerHandle, token: Option<&str>) -> Result<(), Error> {
+    let (reader, writer) = session_halves(stream)?;
+    serve(reader, writer, owner, token, ClientAuthority::Edit)
+}
+
+/// The two ends one served connection reads and writes through. Answers are one line each, so
+/// `TCP_NODELAY` is set: with Nagle's algorithm on, a line's last bytes can wait for the peer's
+/// acknowledgement of the bytes before it. The option belongs to the socket, so both ends have it.
+fn session_halves(stream: TcpStream) -> Result<(TcpStream, TcpStream), Error> {
+    stream
+        .set_nodelay(true)
+        .map_err(|error| Error::protocol(error.to_string()))?;
     let writer = stream
         .try_clone()
         .map_err(|error| Error::protocol(error.to_string()))?;
-    serve(stream, writer, owner, token, ClientAuthority::Edit)
+    Ok((stream, writer))
 }
+
+/// The buffer a session's answers are written through, large enough that a typical answer and
+/// its newline reach the socket (or the pipe) in one `write` instead of one per JSON fragment.
+const WRITE_BUFFER_BYTES: usize = 64 * 1024;
 
 /// Registers a client for the connection's lifetime and forgets its session on every exit path.
 struct Registration<'a> {
@@ -156,7 +171,7 @@ impl Drop for Registration<'_> {
 
 fn serve(
     reader: impl Read,
-    mut writer: impl Write,
+    writer: impl Write,
     owner: &OwnerHandle,
     token: Option<&str>,
     authority: ClientAuthority,
@@ -166,6 +181,7 @@ fn serve(
         client: owner.register_with(authority),
     };
     let mut reader = BufReader::new(reader);
+    let mut writer = BufWriter::with_capacity(WRITE_BUFFER_BYTES, writer);
     loop {
         let mut line = String::new();
         let bytes = reader
@@ -348,5 +364,116 @@ mod tests {
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// An inner writer that records the length of every `write` call and counts flushes, so a test
+    /// sees exactly what a session hands the socket.
+    #[derive(Default)]
+    struct CountingWriter {
+        writes: Vec<usize>,
+        flushes: usize,
+        bytes: Vec<u8>,
+    }
+
+    impl Write for CountingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.writes.push(buf.len());
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.flushes += 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn each_answer_line_reaches_the_inner_writer_in_one_write_and_a_big_one_in_few() {
+        let catalog = temp("buffered.sqlite");
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+
+        // Small answers: three requests, three lines, and exactly one `write` and one flush each.
+        let mut small = CountingWriter::default();
+        let input = [
+            request("a", "activity.list", json!({})),
+            request("b", "activity.list", json!({})),
+            request("c", "activity.list", json!({})),
+        ]
+        .concat();
+        serve_json_lines_with(
+            Cursor::new(input),
+            &mut small,
+            &owner,
+            ClientAuthority::Edit,
+        )
+        .unwrap();
+        let lines: Vec<&[u8]> = small.bytes.split_inclusive(|byte| *byte == b'\n').collect();
+        assert_eq!(lines.len(), 3);
+        assert!(lines.iter().all(|line| line.ends_with(b"\n")));
+        assert_eq!(
+            small.writes,
+            lines.iter().map(|line| line.len()).collect::<Vec<_>>(),
+            "one write per answer line, newline included"
+        );
+        assert_eq!(small.flushes, 3, "one flush per answer line");
+
+        // The same answer written straight into an unbuffered writer is many fragment writes, so
+        // the equality above does measure the buffer.
+        let answer: ApiResponse = serde_json::from_slice(lines[0]).unwrap();
+        let mut straight = CountingWriter::default();
+        serde_json::to_writer(&mut straight, &answer).unwrap();
+        assert!(
+            straight.writes.len() > 1,
+            "an unbuffered answer is written fragment by fragment, got {:?}",
+            straight.writes
+        );
+
+        // An answer that can exceed the buffer: the schema list. Each write fills the buffer, so
+        // the count follows the answer's size and not its number of JSON fragments.
+        let mut big = CountingWriter::default();
+        serve_json_lines_with(
+            Cursor::new(request("schema", "schema.list", json!({}))),
+            &mut big,
+            &owner,
+            ClientAuthority::Edit,
+        )
+        .unwrap();
+        assert!(big.bytes.ends_with(b"\n"));
+        assert_eq!(
+            big.bytes.iter().filter(|byte| **byte == b'\n').count(),
+            1,
+            "one answer, one line"
+        );
+        let most = big.bytes.len().div_ceil(WRITE_BUFFER_BYTES) + 1;
+        assert!(
+            big.writes.len() <= most,
+            "{} bytes took {} writes, expected at most {most}: {:?}",
+            big.bytes.len(),
+            big.writes.len(),
+            big.writes
+        );
+        assert_eq!(big.flushes, 1);
+
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn a_served_tcp_stream_has_nodelay_set_on_both_ends() {
+        let Ok(listener) = TcpListener::bind(("127.0.0.1", 0)) else {
+            eprintln!("skipped: this environment does not allow a loopback listener");
+            return;
+        };
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        assert!(
+            !accepted.nodelay().unwrap(),
+            "a fresh connection has Nagle's algorithm on"
+        );
+        let (reader, writer) = session_halves(accepted).unwrap();
+        assert!(reader.nodelay().unwrap());
+        assert!(writer.nodelay().unwrap());
+        drop(client);
     }
 }

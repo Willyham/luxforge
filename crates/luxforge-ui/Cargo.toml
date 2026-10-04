@@ -14,13 +14,28 @@ path = "src/lib.rs"
 iced.workspace = true
 iced_wgpu.workspace = true
 wgpu.workspace = true
+# Half floats for the GPU stage's rgba16float boundary. Already in the build through Iced and naga,
+# pinned to that version, so it adds no package. `std` lets x86_64 detect F16C at run time, as in
+# `luxforge-core`; Iced's graphics crate turns it on too, and this keeps it on whatever Iced does.
+half = { version = "=2.7.1", default-features = false, features = ["std"] }
+
+[features]
+# Qualification only: `photo_surface::gpu_preview::qualification`, which evaluates a GPU plan on a
+# headless device and reads its output back, for the desktop's per-program readback tests and the
+# GPU preview corpus harness. Only a `[dev-dependencies]` table may turn it on (`cargo xtask
+# check-repository`'s `gpu-qualification-only-in-tests` rule), so no build of the desktop reads a
+# GPU pixel back.
+qualification = []
 
 [dev-dependencies]
 # The one gate and wait. Core-free, so the widget crate, which may not reach the core, can use it.
 luxforge-testbase = { path = "../luxforge-testbase" }
-# The shared sRGB transfer function, for the tokens' linear-light composites. It depends on
-# nothing, so the widget crate's tests still never reach the core.
+# The one independent sRGB transfer function, which the tokens' linear-light composites and the
+# tests' linear-light expectations and the GPU stage's identity readback are computed through. It
+# depends on no workspace crate, so the widget crate stays core-free.
 luxforge-reference = { path = "../luxforge-reference" }
+# The process's memory figures, core-free, which the measurement of a boundary's arrival reads.
+luxforge-process = { path = "../luxforge-process" }
 
 [lints]
 workspace = true

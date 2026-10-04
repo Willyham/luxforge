@@ -46,6 +46,8 @@ pub(crate) enum PaletteAction {
     /// Open or close the state panel's Performance section.
     TogglePerformance,
     ToggleThirds,
+    /// Turn the GPU preview off or on: this client's `gpu_preview` preference.
+    ToggleGpuPreview,
     Fit,
     HundredPercent,
     Undo,
@@ -196,8 +198,22 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
             "resources.read \u{b7} activity.list".to_owned(),
             PaletteAction::TogglePerformance,
         ),
+        (
+            gpu_preview_label(workspace.gpu_preview).to_owned(),
+            "workspace.set".to_owned(),
+            PaletteAction::ToggleGpuPreview,
+        ),
     ]);
     entries
+}
+
+/// What the GPU preview entry calls itself: the action it would take, as every toggle does.
+fn gpu_preview_label(on: bool) -> &'static str {
+    if on {
+        "Turn off GPU preview"
+    } else {
+        "Turn on GPU preview"
+    }
 }
 
 /// What a toggle entry calls itself: it always names the action it would take, not the state it is
@@ -235,12 +251,12 @@ mod tests {
     fn sample() -> Vec<(String, String, PaletteAction)> {
         vec![
             (
-                "Transforms · Rotate right".to_owned(),
+                "Crop, transform, straighten · Rotate 90° right".to_owned(),
                 "edit.transform".to_owned(),
                 PaletteAction::Fit,
             ),
             (
-                "Transforms · Rotate left".to_owned(),
+                "Crop, transform, straighten · Rotate 90° left".to_owned(),
                 "edit.transform".to_owned(),
                 PaletteAction::Fit,
             ),
@@ -262,7 +278,10 @@ mod tests {
         );
         let narrowed = filter(entries.clone(), "ROTATE right");
         assert_eq!(narrowed.len(), 1);
-        assert_eq!(narrowed[0].0, "Transforms · Rotate right");
+        assert_eq!(
+            narrowed[0].0,
+            "Crop, transform, straighten · Rotate 90° right"
+        );
         assert_eq!(
             filter(entries.clone(), "rotate").len(),
             2,
@@ -280,6 +299,8 @@ mod tests {
     fn a_toggle_names_the_action_it_would_take_not_its_current_state() {
         assert_eq!(toggle_label(true, "thirds"), "Hide thirds");
         assert_eq!(toggle_label(false, "thirds"), "Show thirds");
+        assert_eq!(gpu_preview_label(true), "Turn off GPU preview");
+        assert_eq!(gpu_preview_label(false), "Turn on GPU preview");
     }
 
     #[test]
@@ -288,8 +309,8 @@ mod tests {
         let entries = palette_entries(&modules, false, None, None);
         let rotate = entries
             .iter()
-            .find(|(label, ..)| label == "Transforms · Rotate right")
-            .expect("the transform module's own control");
+            .find(|(label, ..)| label == "Crop, transform, straighten · Rotate 90° right")
+            .expect("the combined module's transform control");
         assert_eq!(rotate.1, "edit.transform");
         assert!(matches!(&rotate.2, PaletteAction::Run { action, .. } if action == "transform"));
 

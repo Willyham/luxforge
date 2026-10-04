@@ -3,6 +3,8 @@
 Status: implemented and verified with final quick/rendered checks, native RAW liveness and
 scoped 24/60 MP hover and continuous-paint measurements. The [performance evidence](../specs/performance.md#native-masking-interaction-qualification)
 records timing, memory and diagnostic limits; total editor memory and display latency remain unqualified.
+The [mask performance work](mask-performance.md) moves exact overlay painting off the UI thread,
+keeps its handoff bounded, and records a scoped native brush comparison.
 The [masking model](masking.md), frozen coverage equations, content coordinates, stroke storage
 and current catalog/API shapes remain the shared contract. The [workspace design](masking-workspace.md)
 describes the panel.
@@ -13,15 +15,16 @@ New mask and Add component → Linear or Radial arm an unplaced tool. Choosing t
 core draft, initial geometry, handles, history entry or mask. One `render.transform` answer supplies
 the content map; pointer moves use that map locally. A valid drag opens the ordinary draft on the
 actual geometry; if that draft cannot open, the tool stays in hand, unplaced. A click or invalid
-extent remains unplaced; Apply is disabled with a reason.
-Released gradients remain drafts until Apply/Enter or Cancel/Escape.
+extent remains unplaced. As in Lightroom, the release of the placing drag commits it as one entry:
+there is no Apply, and the draft bar ends with Done, which with nothing placed puts the tool down,
+as Escape does. Escape while the pointer is down discards the drag.
 
 New mask creation owns the tool from arming until its successful creation commit or cancellation,
-and an Add or Edit gradient owns it from arming until Apply or Cancel. Unrelated mask selection,
+and an Add gradient owns it from arming until its release commits or it is put down. Unrelated mask selection,
 row editing, adjustment fields, history, presets, Open, Export, mode changes, zoom, panel toggles
 and the palette are disabled, and desktop dispatch refuses them through one message
 classification. The mask's own shape/brush controls, coverage controls, canvas, row hover, focus
-movement, native scrolling of a zoomed view and Apply/Cancel remain available. Active brush
+movement, native scrolling of a zoomed view and Done/Cancel remain available. Active brush
 strokes refuse selection changes. Between strokes, selecting a different mask/component puts the old brush down;
 an explicit Paint more/Add/New action starts painting on the visible target.
 
@@ -30,6 +33,27 @@ entry; subsequent strokes continue on its committed component. A recoverable ref
 keeps recovery and Cancel available. A commit already in flight decides publication before a
 requested cancellation is resolved. Cancellation never removes an accepted entry or changes an
 original file.
+
+### Resting handles
+
+A committed linear or radial keeps its handles, as Lightroom's do. Committing a gradient selects
+the component it created or added, opening a mask selects its first gradient (a mask with none opens
+with nothing selected), and in Mask mode the selected gradient's handles rest on the canvas
+whenever nothing is held, the listing describes the displayed entry at the current state and no
+comparison is shown. Resting handles are desktop view state: no core draft, no `session.state`
+draft, no draft bar and no ownership of other controls. They are drawn from the stored payload and
+reopen from it whenever the payload changes (a commit, an undo, a typed field). Each new displayed
+entry asks `render.transform` again; the previous map keeps drawing the handles so they do not blink
+after a drag, but a press waits for the fresh map ("Waiting for mask coordinates").
+
+A press on a resting handle opens that drag's draft in the press's own update, under the start
+refusal every mask gesture answers, exactly as a brush press opens its stroke: `draft.begin` and the
+first `draft.set` carry the stored shape. Moves are drafted; the release commits one entry
+(`Update Radial 1`), and the handles return to rest on the committed shape. A release that moved
+nothing discards its draft and writes no entry. Escape during the drag discards it, and a commit
+refused as changed elsewhere keeps the ordinary Discard and Reapply notice. A press away from the
+handles is not captured, so it never redraws a committed shape; there is no separate Edit shape
+gesture. A drag is not a tool start: an Off overlay and a hidden eye stay as they are.
 
 Late answers stay with the target they were asked for. A canvas pick whose selection moved
 while its locate or sample was out is dropped with a reason. Cancel or Escape during a stroke's
@@ -73,7 +97,14 @@ providers and exact pixel-input refusals remain explicit.
 
 Fit and viewport requests use the same content transform and exact evaluator. The grid is a
 quantized coverage display, independent of whether the photograph is currently a proxy or exact
-frame. Green/white tint and both black presentations paint that one grid once.
+frame. Green/white tint and both black presentations paint that one grid once on the coverage
+worker, using an exact 256-code palette. Delivered results retain identity, dimensions and shared
+RGBA; the cache alone keeps the coverage plane. A handoff lease bounds worker and consumer
+buffers through adoption or replacement of a waiting result, and semantic cancellation wakes a
+blocked worker. The [performance design](mask-performance.md) states the unchanged byte bound.
+Coverage that finishes before its matching photograph is drained when that photograph is adopted,
+without first waking an undrawable window redraw. A later completion, feedback on unchanged photo
+pixels and an unavailable outcome wake normally; publication before draining prevents lost wakes.
 
 ## Visibility and keys
 
@@ -145,7 +176,7 @@ policy is implied by this repair.
 
 | Behavior | Evidence |
 | --- | --- |
-| No initial gradient; valid placement, Apply and cancellation | Actual-owner mask tests and native `mask-interactions`, `mask-linear` and `mask-combine` |
+| No initial gradient; valid placement committed on release, and cancellation | Actual-owner mask tests and native `mask-interactions`, `mask-linear` and `mask-combine` |
 | Creation owns unrelated controls; recovery stays available | Controller/state tests for masks, keys, history, presets, controls and Performance; correlated native draft/control state |
 | Selected mask/component, armed brush and visible coverage agree | Selection and delayed-result tests; disjoint native A/B pixels and subsequent stroke target |
 | Actual flow, feather, retracing, composition and commit coverage | Frozen independent mask-reference tests, exact candidate grids and native live/committed probes; no separate painted-path layer |

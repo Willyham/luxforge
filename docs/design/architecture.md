@@ -15,6 +15,7 @@ A Rust 1.94 workspace. Exact versions are pinned in `Cargo.lock`. Add boundaries
 | libjpeg-turbo through `mozjpeg` (its bundled source built with `cc`) | Reading and writing JPEG, behind the private `luxforge-jpeg` crate, the only code that names it (`cargo xtask check-repository` enforces this) |
 | `moxcms` | Conservative sRGB profile recognition |
 | `rfd` | Native and portal dialogs |
+| `tokio`, its `time` feature only (the executor Iced already runs on) | The desktop's job readers' interval, in `luxforge-app` |
 | Pinned, bundled LibRaw and librtprocess | RAW, behind the private `luxforge-raw` adapter |
 | Bundled SQLite through `rusqlite` | The catalog |
 | Rayon | The parallel raster pass |
@@ -31,7 +32,7 @@ A rule marked *(enforced)* is a rule `cargo xtask check-repository` applies.
 
 - `crates/luxforge-core`: images, recipes, rendering, the SQLite catalog and history, preview scheduling and the JSON API; its files are listed [below](#the-cores-files).
 - `crates/luxforge-net`: the host's network transport and secure secret store, behind the core's `Transport` and `SecretStore` traits. The desktop and `luxforge-json` build both and give them to the catalog owner through `HostConfig`. Only this crate may depend on `ureq`, and only it frames HTTP *(enforced)*. Its files are listed [below](#the-transports-files).
-- `crates/luxforge-ui`: the widget library and theme tokens of the Develop and Select workspaces. It depends on Iced only, never on the core, so a widget cannot hold editing logic.
+- `crates/luxforge-ui`: the widget library and theme tokens of the Develop and Select workspaces, and the photo surface that draws the photograph, whose GPU stage runs a gesture's preview plan, plain-data WGSL programs over a held boundary, within the GPU-preview budget ([GPU previews](gpu-preview.md)). It depends on Iced only, never on the core, so a widget cannot hold editing logic.
 - `crates/luxforge-jpeg`: the one JPEG codec, libjpeg-turbo through `mozjpeg`, and the JPEG container around it; described [below](#the-jpeg-codec). It depends on no workspace crate, and only `luxforge-core` depends on it *(enforced)*.
 - `crates/luxforge-raw`: the private RAW adapter over the pinned native LibRaw and librtprocess source, with a safe API ([its README](../../crates/luxforge-raw/README.md)) that develops a qualified RAW and, for any RAW LibRaw identifies, lists and extracts its embedded previews by positional reads without unpacking it; its `limits.rs` holds the RAW admission limits and the parallel thresholds in the [limits](#limits) table.
 - `crates/luxforge-process`: the counters the operating system keeps for this process (CPU time, memory, GPU time and GPU allocations), behind a safe API.
@@ -53,7 +54,7 @@ Paths are under `crates/luxforge-core/src`.
 | --- | --- |
 | `lib.rs` | The public surface, listed by name: what the desktop, `luxforge-json`, `luxforge-net`, the test kit, xtask and the core's integration tests use through the crate root, every type a public item's signature carries so a consumer can name whatever it receives, and the modules consumers name items through (`activity`, `analysis`, `capabilities`, `catalog_types`, `colour`, `jobs`, `latest`, `mask`, `path`, `resources` and `seed`). It keeps one marked section per lane of the catalog work for that lane's exports. Every other item is `pub(crate)` or narrower, so the compiler reports what nothing uses |
 | `editor.rs` | The editor service: the `EditorService` struct, opening a catalog, and the types its API speaks |
-| `editor/catalog.rs` | The schema, the format marker, row mapping, and the entry, stroke and request rows |
+| `editor/catalog.rs` | The lock and the journal, the schema, the format marker, row mapping, and the entry, stroke and request rows |
 | `editor/catalog_rows.rs` | The format-12 catalog tables' row writers and readers, which a Develop, the seeder and the library share: volumes, catalog folders, an asset's catalog columns and capture row, collections and members, picks and indexed folders |
 | `editor/entries.rs` | The cache of hydrated history entries and each asset's head, and the one `mutate` every write that moves a head goes through |
 | `editor/history.rs` | Admission, commits, undo, redo, restore, versions, lineage and request deduplication |
@@ -64,7 +65,7 @@ Paths are under `crates/luxforge-core/src`.
 | `editor/describe.rs` | State and recipe views |
 | `editor/artifact_store.rs` | Derived artifacts |
 | `editor/test_support.rs` | The helpers the service's tests share. Each concern's tests sit in its file, the artifact store's in `artifact_tests.rs` |
-| `render.rs` and `render/` | Rendering, one file per concept: `entry.rs` (the one way in, `render`, and the `Render` it returns), `compiled.rs` (segments separated by stage boundaries, and `Entry`, the one dispatch over the boundary kinds), `geometry.rs` (a resample's read rectangle and the byte domain's bilinear pass), `map.rs` (the shared exact, affine and warp coordinate mapping), `colour_runs.rs` (colour runs and their masked blend), `pipeline.rs` (the one pipeline, generic over its pixel domain), `byte.rs` and `linear.rs` (the two pixel domains, each with its rows and its driver), `spatial.rs` and `window.rs` (the spatial primitive's execution and the windowed proxy), `restoration.rs` (the bounded processed restoration-prefix cache), `input_grid.rs` (bounded value-mask inputs), `raster.rs` (the rendered frame), `locate.rs` (the locate and transform types), `context.rs` and `parallel.rs` (the render context's budgets and the one parallel gate) |
+| `render.rs` and `render/` | Rendering, one file per concept: `entry.rs` (the one way in, `render`, and the `Render` it returns), `compiled.rs` (segments separated by stage boundaries, and `Entry`, the one dispatch over the boundary kinds), `geometry.rs` (a resample's read rectangle and the byte domain's bilinear pass), `map.rs` (the shared exact, affine and warp coordinate mapping), `colour_runs.rs` (colour runs and their masked blend), `gpu.rs` and `gpu/` (the GPU programs modules own as WGSL beside their units, the plan a gesture's GPU preview is drawn from, and a lens warp's coordinate grid), `pipeline.rs` (the one pipeline, generic over its pixel domain), `byte.rs` and `linear.rs` (the two pixel domains, each with its rows and its driver), `spatial.rs` and `window.rs` (the spatial primitive's execution and the windowed proxy), `restoration.rs` (the bounded processed restoration-prefix cache), `input_grid.rs` (bounded value-mask inputs), `raster.rs` (the rendered frame), `locate.rs` (the locate and transform types), `context.rs` and `parallel.rs` (the render context's budgets and the one parallel gate) |
 | `source.rs` and `source/linear.rs` | The prepared sources: `SourceImage`, and the RAW source's `LinearImage` with its view |
 | `cancel.rs` | `Cancel`, the crate's one cancellation token |
 | `colour.rs` | Each colour equation the renderers and tool modules share, once: the sRGB transfer function and exact output quantizer, Rec. 709 luminance and the luminance-ratio reconstruction, the Oklab conversion, 3×3 linear algebra, and the Planckian locus with the CIE 1960 `uv` projection |
@@ -97,7 +98,7 @@ Two decodes serve previews. `Decoder::set_scale` decodes a whole frame at 1/2, 1
 
 Paths are under `crates/luxforge-app/src`.
 
-- `app/`: the Iced application, messages, update, owner tasks, evidence, keymap and the crop driver.
+- `app/`: the Iced application, messages, update, owner tasks, evidence, keymap and the crop driver, and the GPU preview's desktop half: the plan a tick hands the surface and its held boundary (`gpu_preview.rs`, `gpu_plan.rs`) and the settle's dissolve (`gpu_settle.rs`).
 - `state/`: the pure view model, with no framework types, no widget crate and no view.
 - `view/`: rendering, with no core types and no owner access, including the crop and mask canvases (`view/crop_canvas.rs` and `view/mask_canvas.rs`) and the one view transform and ellipse builder both draw through (`view/canvas_view.rs`).
 - The Select workspace of the [catalog](catalog.md#workspaces) is one seam across the three layers: `app/select.rs` (with `app/message/select.rs`: the switch, the owner's view tasks, the synchronous `browse.select` and the grid's layout, scroll and viewport), `state/select.rs` (what Select last read, its rows window, and every region's model) and `view/select.rs` (the Select screen, and the workspace switch both title bars draw).
@@ -153,20 +154,21 @@ A mask is a host object beside the layers — an ordered list of components with
 ## Persistence
 
 - Local SQLite holds current state, history entries with their snapshots, a monotonic revision, redo navigation and each request's whole answer (the [current catalog format](versions-and-lineage.md#storage-catalog-format-12)). The catalog owner is its only writer, in short atomic transactions; a failed write preserves the prior durable state. Originals and disposable pixel caches stay outside the database.
+- The catalog runs in WAL mode under an exclusive lock, so no `-shm` file exists and no other process reads it while it is open. Each commit appends to `<catalog>-wal` and is flushed in full (`synchronous=FULL`, `fullfsync` and `checkpoint_fullfsync`: `F_FULLFSYNC` on macOS). The `-wal` file lies beside an open or crashed catalog, and the next open recovers from it; a clean close checkpoints it and removes it ([storage](versions-and-lineage.md#storage-catalog-format-12)).
 - Only the current catalog and payload shapes are supported: an unsupported format fails explicitly without rewriting data, and unknown payloads and missing providers are retained and reported, never dropped.
 - Entry records are the only stored copy of a stack. Each entry's history row (sequence, action, label, actor, timestamp, undo parent and restore target) has its own columns, so a history page decodes no entry.
 - Every entry is retained: undo and redo navigate without inverse rows, Restore copies a snapshot into a new action, and versions are named references to entries ([versions and lineage](versions-and-lineage.md)).
 - Beside the entries the catalog holds the preset library ([presets](presets.md#library)), a content-addressed store of painted paths ([masking](masking.md#stroke-storage)) and each entry's references to derived artifacts, immutable content-addressed files in a `<catalog stem>.artifacts` directory that moves with the catalog ([derived artifacts](module-capabilities.md#derived-artifacts)).
 - The catalog's index and preview cache live in a `<catalog stem>.index` directory beside it: `index.sqlite`, what Luxforge read from the files it browses, and `previews/`. It is a cache with a format of its own, opened on first use and discarded and recreated when it cannot be used, never touching the catalog ([catalog](catalog.md#the-index-and-previews-cache)).
 - Module settings, grants, secrets and installed resources are user-level and never part of a catalog.
-- The owner keeps the last 8 entries it read, with their strokes resolved and shared between clones, and the last 16 assets' heads, each updated where a write commits: a history move, or a library change that rewrites where an asset's original is (`source.locate`, a relink `source.check` makes, and their undo and redo), announced as that change's event. Reopening starts that cache empty and recovers the same IDs, current snapshot and navigation state.
-- Backups need a consistent SQLite snapshot, not a copy of a live file.
+- The owner keeps the last 8 entries it read, with their strokes resolved and shared between clones (an entry read next takes the strokes the same asset's cached entries hold rather than reading them from the store again), and the last 16 assets' heads, each updated where a write commits: a history move, or a library change that rewrites where an asset's original is (`source.locate`, a relink `source.check` makes, and their undo and redo), announced as that change's event. Reopening starts that cache empty and recovers the same IDs, current snapshot and navigation state.
+- A catalog is copied or moved closed, or with its `-wal` file; a copy of the catalog file alone can lack recent commits. Backup is an [open product question](../decisions.md#open-product-questions).
 
 ## Rendering and limits
 
 Every frame, sample, grid and preview phase enters rendering through one function, `luxforge_core::render`, which checks the source, compiles the recipe once for its phase (exact, or the proxy phase's thin-mask sampling) and returns a `Render` that answers the frame, a pixel, a grid, the output stage and its geometry from that compilation. The editor service compiles each stack it evaluates once, on the catalog owner, into the one bound evaluation (`Evaluation`) its preview, analysis, sample, point and export plans carry, and their workers render that compilation through the same `Render` rather than compiling it again.
 
-What a render reads besides its source and recipe — the colour scratch budget, the spatial budget and the store of prepared spatial estimates, with their high-water marks — is a `RenderContext` passed in, not process state. The editor service owns one, and the catalog owner, the preview and analysis jobs it plans and the desktop's diagnostics share it, so their renders pace each other.
+What a render reads besides its source and recipe — the colour scratch budget, the spatial budget, the store of prepared spatial estimates and the store of reduced planes, with their high-water marks and counters — is a `RenderContext` passed in, not process state. The editor service owns one, and the catalog owner, the preview and analysis jobs it plans and the desktop's diagnostics share it, so their renders pace each other.
 
 ### Pixel domains
 
@@ -190,7 +192,7 @@ A recipe compiles into at most one raster pass per segment, and point queries an
 
 The compiled `Entry` that produces a segment's input frame is the one place the kinds are told apart. Everything the renderer asks of a boundary is one of its methods, each a single dispatch over the kinds: the stage it produces and the rectangle of that stage its frame holds, the rectangle of the stage before it that it reads, a windowed proxy's plan and cut of it, one point mapped back through it (locate) or evaluated through it, its forward map, its frame in the byte driver and in a frame-mode evaluation, its estimates, how the linear rows load it, and whether a point query evaluates it in tiles. No caller matches on the kind, so a new kind of boundary, such as the [Corrections](corrections.md) proposal's repair stage, is one more variant with one arm in each of those methods.
 
-Spatial tiles run in batches whose concurrency is what fits beside other evaluations in the render context's 256 MiB spatial target, reserved before each batch allocates, capped by the pool's workers and never less than one tile, so a render that finds the target taken slows rather than fails. The render's cancellation token is checked between batches. When the target holds a batch to fewer tiles than the pool has workers, each tile's own passes run their independent rows on the pool as well, so an operation whose working set allows two tiles at once still uses every core without taking more memory. Every value is the same arithmetic in the same order either way, so this changes no byte.
+Spatial tiles run in a rolling window of workers on the shared pool, one working set of the render context's 256 MiB spatial target per worker, reserved before its tiles allocate: as many as fit beside other evaluations, capped by the pool's workers and never less than one, so a render that finds the target taken slows rather than fails. Each worker pulls the next tile as soon as its last one is written, so no tile waits for another. After each tile a worker gives its share back while the target is passed, as long as another worker remains, and takes one more while one fits, up to that cap, so overlapping renders trade the target between them. Tiles are written as they finish; they are disjoint, so the order changes no byte. Below the spatial threshold the tiles run one at a time on the calling thread. The render's cancellation token is checked between tiles. When the target holds the window to fewer tiles than the pool has workers, each tile's own passes run their independent rows on the pool as well, so an operation whose working set allows two tiles at once still uses every core without taking more memory. Every value is the same arithmetic in the same order either way, so this changes no byte.
 
 The RAW linear path writes only its last segment's rows and pulls what lies before them, since a linear value between two boundaries is an `f64` that the next resample blends: a bounded rectangle at a time with its colour run over rows, a spatial operation's input one row at a time and a straightened crop's taps one block of output pixels at a time. For a render there, each spatial operation's output, which is `f32`, is materialized once as three f32 planes inside the 1.5 GiB RAW planar limit, and nothing is quantized before the terminal boundary. Each is built from the one before it and replaces it, so at most two exist while one is built and one afterwards.
 
@@ -241,11 +243,12 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | Evaluated RGBA8 frame (a narrow JPEG frame, a proxy, a linear-to-byte conversion), per buffer | 512 MiB | `MAX_FRAME_BYTES`, `crates/luxforge-raw/src/limits.rs` |
 | Evaluated RGB16 JPEG spatial frame, per buffer | 512 MiB, checked as width × height × 6 bytes | `ByteFrame::new`, `crates/luxforge-core/src/render/byte.rs` |
 | RAW encoded source | 512 MiB | `MAX_SOURCE_BYTES`, `crates/luxforge-raw/src/limits.rs` |
+| RAW retained u16 samples, per buffer | 512 MiB, including all three channels for linear RGB | Checked sample count × 2 against `MAX_SOURCE_BYTES`, `crates/luxforge-raw/src/lib.rs` |
 | RAW sensor pixels | 128 million | `MAX_PIXELS`, `crates/luxforge-raw/src/limits.rs` |
 | RAW side | 16384 px | `MAX_SIDE`, `crates/luxforge-raw/src/limits.rs` |
 | RAW planar RGB float allocation, per buffer | 1.5 GiB | `MAX_RGB_BYTES` (1536 MiB), `crates/luxforge-raw/src/limits.rs` |
 | A retained second RAW development | 600 MiB of planes | `RETAINED_DEVELOPMENT_BYTES`, `crates/luxforge-raw/src/limits.rs` |
-| LibRaw's native scratch | 512 MiB | No named constant: the literal `max_raw_memory_mb = 512` in `crates/luxforge-raw/native/adapter.cpp` |
+| LibRaw's native scratch | 512 MiB normally; 1 GiB for Sony ARW6 Compressed HQ only | `max_raw_memory_mb` selected by the exact upstream decoder in `crates/luxforge-raw/native/adapter.cpp`; the format-only exception is owner-approved |
 | One embedded RAW preview extracted, LibRaw's buffer and the copy returned each (the caller's own limit goes below it) | 64 MiB | `MAX_EMBEDDED_IMAGE_BYTES`, `crates/luxforge-raw/src/limits.rs` |
 | Bytes an embedded-preview handle reads from its source over its life (the caller's own budget goes below it) | 128 MiB | `MAX_EMBEDDED_READ_BUDGET`, `crates/luxforge-raw/src/limits.rs` |
 | An embedded-preview handle's read cache | 8 blocks of 16 KiB | `READ_BLOCKS` and `READ_BLOCK`, `crates/luxforge-raw/src/embedded.rs` |
@@ -256,6 +259,7 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | --- | --- | --- |
 | Colour scratch, aggregate (*target*) | 64 MiB | `DEFAULT_SCRATCH_BYTES`, `crates/luxforge-core/src/render/context.rs` |
 | One colour chunk's scratch | 1 MiB | `COLOR_CHUNK_SCRATCH_BYTES`, `crates/luxforge-core/src/render/colour_runs.rs` |
+| The 16-bit sRGB tables a wide JPEG frame converts through, built once per process | 256 KiB of decoded values, 256 KiB of code thresholds and a 128 KiB index into the thresholds | Fixed sizes: `TO_LINEAR16` and `QUANTIZER16` (`CODE_BINS16`), `crates/luxforge-core/src/colour.rs` |
 | Pointwise units per colour operation | 8 | `MAX_COLOR_UNITS`, `crates/luxforge-core/src/modules/processing.rs` |
 | Spatial tile working sets, aggregate (*target*) | 256 MiB | `SPATIAL_BUDGET_BYTES`, `crates/luxforge-core/src/modules/spatial.rs` |
 | Spatial units per spatial operation | 4 | `MAX_SPATIAL_UNITS`, `crates/luxforge-core/src/modules/spatial.rs` |
@@ -263,6 +267,7 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | Spatial tile side | 512 px up to a 128 px summed halo, 1024 px past it | `SPATIAL_TILE`, `SPATIAL_WIDE_TILE` and `SPATIAL_WIDE_HALO`, read through `spatial_tile`, `crates/luxforge-raw/src/limits.rs` |
 | Global estimate | 4 KiB each | `MAX_GLOBAL_BYTES`, `crates/luxforge-core/src/modules/spatial.rs` |
 | Cached estimates | 8 | `ESTIMATE_STORE_ENTRIES`, `crates/luxforge-core/src/modules/spatial.rs` |
+| Reduced planes of spatial operations' first units, every entry together | 64 MiB, least recently used evicted first and an entry larger than it refused; a frame render also collects one set of planes over its first unit's whole grid until it publishes them, at most the same 64 MiB | `REDUCED_STORE_BYTES`, `crates/luxforge-core/src/modules/spatial.rs`, enforced by `ReducedStore` in `crates/luxforge-core/src/render/reduced.rs` |
 | One point query's held spatial tiles | The spatial target's bytes (85 tiles of 3 MiB at 512 px, 21 of 12 MiB at 1024 px), never fewer than 16 | `SPATIAL_BUDGET_BYTES` over the largest tile's planes, floored at `POINT_TILES_FLOOR`, `crates/luxforge-core/src/render/spatial.rs` |
 | Parallel threshold: a segment's geometry | 0.5 MP | `PARALLEL_TRANSFORM_PIXELS`, read through `parallel_pixels`, `crates/luxforge-raw/src/limits.rs` |
 | Parallel threshold: one or two colour units | 0.1 MP | `PARALLEL_COLOUR_PIXELS`, as above |
@@ -295,6 +300,12 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | Renders waiting for the render worker, each one photograph at one entry with the tiers wanted of it | 2,000: ten screens of the smallest grid cells ahead of the worker | `RENDER_QUEUE_CAPACITY`, as above |
 | Rows of other renderer generations one discard page removes | 256, in one short write transaction, on a thread that ends when none is left | `DISCARD_PAGE`, `crates/luxforge-core/src/previews/photos.rs` |
 | Photographs whose preview rows one transaction deletes when they leave the catalog | 1,000, so one library change's 50,000 take 50 short transactions on the owner; their files are removed on a thread that ends when it has removed them | `FORGET_PAGE` and `remove_files`, as above |
+| A lens warp's GPU-preview coordinate grid | 262,144 nodes (2 MiB) | `GRID_MAX_NODES`, `crates/luxforge-core/src/render/gpu/grid.rs` |
+| A held GPU-preview boundary | 256 MiB, its CPU copy let go once the photo surface holds it | `BOUNDARY_MAX_BYTES`, `crates/luxforge-core/src/render/boundary.rs` |
+| A boundary's upload a frame | 32 MiB, so its arrival stages at most two frames' chunks | `UPLOAD_PER_FRAME`, `crates/luxforge-ui/src/photo_surface/gpu_preview.rs` |
+| GPU-preview textures and buffers, every photo surface's together, resident or retiring | 2 GiB, one slot per surface | `GPU_PREVIEW_BUDGET`, `crates/luxforge-ui/src/photo_surface/gpu_preview.rs` |
+| Compiled GPU-preview program sequences per photo pipeline, failed ones included | 64, every link of the largest plan beside a whole warm list, and as many waiting to compile | `PIPELINE_CACHE`, `crates/luxforge-ui/src/photo_surface/gpu_preview/compile.rs` |
+| Link sequences one GPU-preview warm list holds | 45, the compile cache less the largest plan's 19 links | `GPU_WARM_LINKS` and `GPU_PLAN_LINKS`, `crates/luxforge-core/src/render/gpu/preview.rs` |
 
 **Catalog and API**
 
@@ -401,6 +412,7 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | --- | --- | --- |
 | Masks per recipe | 16 | `MASKS_PER_RECIPE`, `crates/luxforge-core/src/model.rs` |
 | Components per mask | 32 | `COMPONENTS_PER_MASK`, `crates/luxforge-core/src/model.rs` |
+| Masked spatial layers per recipe | 16, masked Presence and Detail layers together | `MAX_MASKED_SPATIAL_LAYERS`, `crates/luxforge-core/src/modules/spatial.rs` |
 | Serialized mask bytes per recipe | 256 KiB | `MASK_BYTES_PER_RECIPE`, `crates/luxforge-core/src/model.rs` |
 
 **Export**
@@ -426,7 +438,7 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | Adapter request and response | 256 MiB each | `MAX_ADAPTER_BYTES`, `crates/luxforge-core/src/capabilities/descriptor.rs` |
 | Resource quota | 16 GiB | `DEFAULT_RESOURCE_QUOTA_BYTES`, `crates/luxforge-core/src/capabilities/resources.rs` |
 
-**RAW memory.** The 1.5 GiB value is per buffer, not a process RSS limit; LibRaw's native 512 MiB scratch ceiling, retained mosaics, concurrent previews, GPU/display allocations and editor liveness still require separate accounting. All 100 selected models have authentic adapter evidence; representative editor memory is recorded in the [resource ledger](modern-camera-resource-ledger.md).
+**RAW memory.** The 1.5 GiB value is per buffer, not a process RSS limit; LibRaw's native 512 MiB scratch ceiling (1 GiB for Sony Compressed HQ), retained integer samples, concurrent previews, GPU/display allocations and editor liveness still require separate accounting. All 341 retained corpus files have authentic adapter evidence; representative editor memory is recorded in the [resource ledger](modern-camera-resource-ledger.md) and [corpus support](corpus-camera-support.md). Linear RGB retains three interleaved u16 channels within the same 512 MiB retained-sample bound.
 
 The editor keeps at most two finished developments of the open RAW: its current one and, when its planes fit 600 MiB, the most recently used development at another white balance, so switching between two entries redevelops neither. The source worker's memory gate lets a redevelopment start beside that one retained development and waits for every other ([second development](raw-integration.md#second-development)). With both held, sampled steady-state process RSS is 2290 / 2352 MiB p50 / p95 on the X100VI (468 MiB of planes, 458 MiB above one development) and 1527 / 1559 MiB on the Z6 (264 MiB above), recorded in the [performance spec](../specs/performance.md#second-development).
 
@@ -449,6 +461,6 @@ One typed service backs the desktop and external JSON sessions. While the GUI is
 
 ## Modules and extension path
 
-The twelve built-in modules — presets, RAW, Basic, Tone curve, Detail, presence, mixer, transform, lens, perspective, crop and vignette, in the order `ModuleRegistry::builtin()` registers them (see [modules and API](modules-and-api.md#registry)) — and the developer-only pixel and controls proofs are linked modules; each declares its current effect identities, payloads and history actions. The crop module adds a `number` parameter kind and the `crop-frame` canvas interaction to the same descriptor shape, and updates its one crop layer in place through `ActionPlan::Update` rather than always appending; the transform module composes its four actions into one orientation layer ahead of the crop the same way, carrying every geometry layer after it, the crop today, through the transform in the same entry by asking each module's `carry` hook.
+The eleven built-in modules — **Crop, transform, straighten**, presets, RAW, Basic, Tone curve, Detail, presence, mixer, lens, perspective and vignette, in the order `ModuleRegistry::builtin()` registers them (see [modules and API](modules-and-api.md#registry)) — and the developer-only pixel and controls proofs are linked modules; each declares its current effect identities, payloads and history actions. The crop module adds a `number` parameter kind and the `crop-frame` canvas interaction to the same descriptor shape, and updates its one crop layer in place through `ActionPlan::Update` rather than always appending; the same module composes its four actions into one orientation layer ahead of the crop the same way, carrying every geometry layer after it, the crop today, through the transform in the same entry by asking each module's `carry` hook.
 
 The host generates `edit.<action>` API methods and the desktop generates controls from the same descriptors, so a module capability cannot exist without an API. Unknown or unavailable effects stay in every snapshot and fail rendering explicitly. Linked built-ins with lazy resources are enough for M4. External loading comes later around a selected use case with measured costs; see [modules](modules-and-api.md).

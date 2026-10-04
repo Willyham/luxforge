@@ -281,6 +281,10 @@ pub(crate) struct SectionModel {
     /// The module's resources, settings and permissions, above its controls, when it declares
     /// settings, resources or tasks.
     pub(crate) capability: Option<CapabilityModel>,
+    /// The module's control models, built only while the section draws them
+    /// ([`SectionModel::shows_controls`]) and empty for a collapsed or unavailable one: the view
+    /// skips such a body, so deriving it after every message would be work no one reads. A reader
+    /// outside the view that needs them anyway builds them on demand with [`controls_of`].
     pub(crate) controls: Vec<ControlModel>,
     pub(crate) layout: SectionLayout,
     /// A word for the section's own state, shown in its band while expanded: Draft while the
@@ -298,23 +302,21 @@ pub(crate) struct SectionModel {
 }
 
 impl SectionModel {
-    /// The preset library this section renders, when its module declares the `presets` control.
+    /// The preset library this section renders, when its module declares the `presets` control
+    /// and the section shows its controls ([`SectionModel::controls`]). Tests read the derived
+    /// section through it; the reports that cover collapsed sections read [`presets_in`] over
+    /// [`controls_of`] instead.
+    #[cfg(test)]
     pub(crate) fn presets(&self) -> Option<&PresetsModel> {
-        walk(&self.controls).find_map(|control| match control {
-            ControlModel::Presets(presets) => Some(presets.as_ref()),
-            _ => None,
-        })
+        presets_in(&self.controls)
     }
 
-    /// Every picker this section holds, at any depth. A module declares at most one, so this is
-    /// nought or one entry; it walks the tree rather than assuming where the module put it.
+    /// Every picker this section holds, at any depth, while it shows its controls. A module
+    /// declares at most one, so this is nought or one entry; it walks the tree rather than
+    /// assuming where the module put it. For tests, as [`SectionModel::presets`].
+    #[cfg(test)]
     pub(crate) fn pickers(&self) -> Vec<&PickerControl> {
-        walk(&self.controls)
-            .filter_map(|control| match control {
-                ControlModel::Picker(picker) => Some(picker),
-                _ => None,
-            })
-            .collect()
+        pickers_in(&self.controls)
     }
 
     /// The section draws its controls: it is expanded and its module is available.
@@ -364,11 +366,37 @@ impl SectionModel {
         if path == [0] && self.headerless_reset.is_some() {
             return self.headerless_reset.as_ref();
         }
-        walk(&self.controls).find_map(|control| match control {
-            ControlModel::Group(group) if group.path == path => group.reset.as_ref(),
+        group_reset_in(&self.controls, path)
+    }
+}
+
+/// The preset library among `controls`, where the module declared its `presets` control.
+pub(crate) fn presets_in(controls: &[ControlModel]) -> Option<&PresetsModel> {
+    walk(controls).find_map(|control| match control {
+        ControlModel::Presets(presets) => Some(presets.as_ref()),
+        _ => None,
+    })
+}
+
+/// Every picker among `controls`, at any depth.
+pub(crate) fn pickers_in(controls: &[ControlModel]) -> Vec<&PickerControl> {
+    walk(controls)
+        .filter_map(|control| match control {
+            ControlModel::Picker(picker) => Some(picker),
             _ => None,
         })
-    }
+        .collect()
+}
+
+/// The reset of the group at `path` among `controls`, as the group's model resolved it.
+pub(crate) fn group_reset_in<'a>(
+    controls: &'a [ControlModel],
+    path: &[usize],
+) -> Option<&'a ResetRef> {
+    walk(controls).find_map(|control| match control {
+        ControlModel::Group(group) if group.path == path => group.reset.as_ref(),
+        _ => None,
+    })
 }
 
 /// The curves a section has on screen ([`SectionModel::shown_curves`]).
@@ -575,6 +603,8 @@ impl GroupState {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct GroupControl {
+    pub(crate) enabled: bool,
+    pub(crate) unavailable: Option<String>,
     pub(crate) label: String,
     pub(crate) reset: Option<ResetRef>,
     /// The group's position inside its module's controls, so a reset names it without a search.
@@ -687,7 +717,7 @@ pub(crate) enum ControlModel {
     Task(TaskControl),
     /// A control this build cannot draw keeps its name on screen rather than disappearing.
     Unsupported(String),
-    /// The host's crop-frame editor, at the top of the declaring module's section.
+    /// The host's crop-frame editor, after the declaring module's own controls.
     CropFrame(Box<CropSectionModel>),
     /// The host's preset library, where the module declares its `presets` control.
     Presets(Box<PresetsModel>),
@@ -784,6 +814,24 @@ impl ToolsModel {
     pub(crate) fn all(&self) -> impl Iterator<Item = &SectionModel> {
         self.sections.iter().chain(self.developer.iter())
     }
+
+    /// Every section in registry order with its control models ([`controls_of`]): the derived ones
+    /// where the section shows them, the rest built now from `inputs`. A report that covers every
+    /// section reads this; the derive and the view never do.
+    pub(crate) fn with_controls<'a>(&'a self, inputs: &Inputs<'_>) -> Vec<SectionControls<'a>> {
+        self.all()
+            .map(|section| SectionControls {
+                section,
+                controls: controls_of(section, inputs),
+            })
+            .collect()
+    }
+}
+
+/// One section with its control models, shown or not ([`ToolsModel::with_controls`]).
+pub(crate) struct SectionControls<'a> {
+    pub(crate) section: &'a SectionModel,
+    pub(crate) controls: std::borrow::Cow<'a, [ControlModel]>,
 }
 
 /// Geometry diagnostics are host data: the desktop only formats the reported stage covers.
@@ -808,7 +856,8 @@ fn geometry_summary(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> Option<St
     ))
 }
 
-/// One module's section.
+/// One module's section. Its control models are built only when it shows them
+/// ([`SectionModel::shows_controls`]); see [`controls_of`] for a reader that needs the rest.
 fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionModel {
     let expanded = expanded(module, inputs);
     let unavailable = match &module.availability {
@@ -820,22 +869,52 @@ fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionModel {
     let active = active(module, inputs);
     let layout = section_layout(module, inputs);
     let scope = scope(module, inputs);
-    let mut controls = Vec::new();
-    // A declared crop frame is a host interaction, not a control: the host renders its draft panel
-    // here and the module's own controls, Reset crop included, still come below.
-    if let Some(frame) = crop_frame(inputs.modules).filter(|frame| frame.module.id == module.id) {
-        controls.push(ControlModel::CropFrame(Box::new(crop_section(
-            &frame, inputs, enabled,
-        ))));
-    }
-    // A stacked module whose controls are one group draws that group's controls directly: a
-    // header naming the only group repeats the band above it. The children keep their declared
-    // paths under the group, so a nested group's key and reset still name its real position.
+    // The same rule as `SectionModel::shows_controls`, read before the model exists.
+    let controls = if expanded && unavailable.is_none() {
+        module_controls(module, inputs, enabled)
+    } else {
+        Vec::new()
+    };
     let headerless = headerless_group(module);
     let headerless_reset = headerless
         .and(module.controls.first())
         .and_then(|group| group_reset(&module.id, group, inputs));
-    match headerless {
+    SectionModel {
+        module_id: module.id.clone(),
+        title: module.title.clone(),
+        hint: module.hint.clone(),
+        expanded,
+        active,
+        unavailable,
+        // The reset is declared, so it is always drawn: a section that cannot edit (a historical
+        // preview, a request in flight, a missing provider) dims it with the rest of its controls
+        // rather than dropping it, because a header that loses its icon changes height and every
+        // control under it moves on each commit round trip. The disabled header offers no press.
+        reset: ResetRef::of(module.reset.as_ref()),
+        headerless_reset,
+        capability: capabilities::section(module, inputs),
+        controls,
+        layout,
+        status: (inputs.draft.is_some() && owns_mode(module, inputs)).then(|| "Draft".to_owned()),
+        geometry_summary: geometry_summary(module, inputs),
+        scope: scope.map(str::to_owned),
+        enabled,
+        disabled_reason,
+    }
+}
+
+/// The control models of one module's section: its declared controls, then the host's crop-frame
+/// editor when the module's canvas declares one. `enabled` is the section's own.
+fn module_controls(
+    module: &ModuleDescriptor,
+    inputs: &Inputs<'_>,
+    enabled: bool,
+) -> Vec<ControlModel> {
+    let mut controls = Vec::new();
+    // A stacked module whose controls are one group draws that group's controls directly: a
+    // header naming the only group repeats the band above it. The children keep their declared
+    // paths under the group, so a nested group's key and reset still name its real position.
+    match headerless_group(module) {
         Some(children) => {
             for (index, control) in children.iter().enumerate() {
                 controls.push(control_model(
@@ -864,27 +943,39 @@ fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionModel {
             }
         }
     }
-    SectionModel {
-        module_id: module.id.clone(),
-        title: module.title.clone(),
-        hint: module.hint.clone(),
-        expanded,
-        active,
-        unavailable,
-        // The reset is declared, so it is always drawn: a section that cannot edit (a historical
-        // preview, a request in flight, a missing provider) dims it with the rest of its controls
-        // rather than dropping it, because a header that loses its icon changes height and every
-        // control under it moves on each commit round trip. The disabled header offers no press.
-        reset: ResetRef::of(module.reset.as_ref()),
-        headerless_reset,
-        capability: capabilities::section(module, inputs),
-        controls,
-        layout,
-        status: (inputs.draft.is_some() && owns_mode(module, inputs)).then(|| "Draft".to_owned()),
-        geometry_summary: geometry_summary(module, inputs),
-        scope: scope.map(str::to_owned),
-        enabled,
-        disabled_reason,
+    // Exact transforms lead the combined section, followed by the host's Ratio and Angle editor.
+    // The canvas declaration supplies this editor; no module identity is special-cased here.
+    if let Some(frame) = crop_frame(inputs.modules).filter(|frame| frame.module.id == module.id) {
+        controls.push(ControlModel::CropFrame(Box::new(crop_section(
+            &frame, inputs, enabled,
+        ))));
+    }
+    controls
+}
+
+/// A section's control models whether or not the panel draws them: the derived ones where it
+/// does, and otherwise the ones its module would show, built now from `inputs` by the same
+/// function the derive uses, so they equal what an always-built section held. For the readers
+/// outside the view that look at every section (the evidence report and its steps, and a group
+/// reset named by a collapsed section), never for the derive, which builds only what is drawn.
+pub(crate) fn controls_of<'a>(
+    section: &'a SectionModel,
+    inputs: &Inputs<'_>,
+) -> std::borrow::Cow<'a, [ControlModel]> {
+    use std::borrow::Cow;
+    if section.shows_controls() {
+        return Cow::Borrowed(&section.controls);
+    }
+    match module_of(inputs.modules, &section.module_id) {
+        Some(module) => {
+            let unavailable = match &module.availability {
+                luxforge_core::Availability::Available => None,
+                luxforge_core::Availability::Unavailable { reason } => Some(reason.as_str()),
+            };
+            let enabled = disabled_reason(unavailable, inputs).is_none();
+            Cow::Owned(module_controls(module, inputs, enabled))
+        }
+        None => Cow::Borrowed(&[]),
     }
 }
 
@@ -1087,9 +1178,32 @@ fn resolved_model(
     enabled: bool,
     path: &[usize],
 ) -> ControlModel {
+    let enabled = enabled
+        && !(owner.descriptor().is_some_and(source_only_module)
+            && inputs
+                .document
+                .state
+                .as_ref()
+                .is_some_and(|state| !state.asset.source.white_balance_available()));
     match control {
         Control::Group(group) => {
             let reset = group_reset(owner.id(), control, inputs);
+            let mono = inputs
+                .document
+                .state
+                .as_ref()
+                .is_some_and(|state| !state.asset.source.white_balance_available());
+            let unavailable = luxforge_core::resolve_group_reset(
+                owner.id(),
+                control,
+                source_kind(inputs.document.state.as_ref()),
+                inputs.target,
+            )
+            .is_some_and(|reset| {
+                module_of(inputs.modules, reset.module).is_some_and(source_only_module) && mono
+            })
+            .then(|| "Monochrome original".to_owned());
+            let enabled = enabled && unavailable.is_none();
             let controls: Vec<ControlModel> = group
                 .controls
                 .iter()
@@ -1101,6 +1215,8 @@ fn resolved_model(
                 })
                 .collect();
             ControlModel::Group(GroupControl {
+                enabled,
+                unavailable,
                 label: group.label.clone(),
                 reset,
                 path: path.to_vec(),
@@ -1236,16 +1352,24 @@ fn resolved_model(
             let action = button.action.as_str();
             let params = declared_action(inputs.modules, action)
                 .map(|declared| action_params(declared, &button.preset, inputs.fields));
+            let draft_reason = owner
+                .descriptor()
+                .filter(|module| {
+                    inputs.draft.is_some()
+                        && matches!(module.canvas, Some(CanvasInteraction::CropFrame { .. }))
+                })
+                .and(inputs.gesture)
+                .map(|gesture| format!("Finish the open {gesture} before running an action"));
             ControlModel::Action(ActionControl {
                 action: action.to_owned(),
                 label: button.label.clone(),
                 preset: button.preset.clone(),
-                runnable: enabled && matches!(params, Some(Ok(_))),
-                reason: match params {
+                runnable: enabled && draft_reason.is_none() && matches!(params, Some(Ok(_))),
+                reason: draft_reason.or_else(|| match params {
                     Some(Err(message)) => Some(message),
                     Some(Ok(_)) => None,
                     None => Some(format!("No module declares the action {action}")),
-                },
+                }),
                 style: match button.style {
                     ActionStyle::Default => ActionControlStyle::Default,
                     ActionStyle::Primary => ActionControlStyle::Primary,
@@ -2176,6 +2300,11 @@ impl MenuTarget {
     }
 }
 
+/// Source-specific controls require a colour response when their source cannot supply white balance.
+fn source_only_module(module: &ModuleDescriptor) -> bool {
+    module.applies_to(SourceTag::Raw) && !module.applies_to(SourceTag::Jpeg)
+}
+
 /// Whether `module` applies to the photo `state` holds, by the core's one rule
 /// ([`ModuleDescriptor::applies_to`]) for that photo's source kind: what the tools panel's
 /// sections, the palette, the mode strip, the mode shortcuts and the canvas pick gate all read, so
@@ -2288,6 +2417,10 @@ pub(crate) fn pick_modes<'a>(
         .iter()
         .filter(|module| module.is_available() && applies(module, state))
         .filter_map(|module| picker_mode(modules, module, kind, target))
+        .filter(|provider| {
+            !module_of(modules, provider).is_some_and(source_only_module)
+                || state.is_none_or(|state| state.asset.source.white_balance_available())
+        })
         .collect()
 }
 
@@ -2451,6 +2584,7 @@ pub(crate) fn canvas_pick<'a>(
 /// here, so it knows no tool by name.
 pub(crate) struct CropFrame<'a> {
     pub(crate) module: &'a ModuleDescriptor,
+    effect: &'a str,
     pub(crate) action: &'a str,
     pub(crate) angle: &'a str,
     x: &'a str,
@@ -2463,12 +2597,12 @@ pub(crate) struct CropFrame<'a> {
 }
 
 impl CropFrame<'_> {
-    /// The durable effect identity of the crop layer: the module's geometry effect.
+    /// The crop canvas's explicitly bound effect, independent of other owned geometry effects.
     pub(crate) fn effect(&self) -> Option<&str> {
         self.module
             .effects
             .iter()
-            .find(|effect| effect.stage == EffectStage::Geometry)
+            .find(|effect| effect.id == self.effect && effect.stage == EffectStage::Geometry)
             .map(|effect| effect.id.as_str())
     }
 
@@ -2532,6 +2666,7 @@ pub(crate) fn crop_row<'a>(
 pub(crate) fn crop_frame(modules: &[ModuleDescriptor]) -> Option<CropFrame<'_>> {
     modules.iter().find_map(|module| match &module.canvas {
         Some(CanvasInteraction::CropFrame {
+            effect,
             action,
             angle,
             x,
@@ -2544,6 +2679,7 @@ pub(crate) fn crop_frame(modules: &[ModuleDescriptor]) -> Option<CropFrame<'_>> 
             ..
         }) if module.is_available() => Some(CropFrame {
             module,
+            effect,
             action,
             angle,
             x,
@@ -2723,6 +2859,27 @@ mod tests {
         // A parameter no action declares, and an action no module declares, draft nothing.
         assert!(!drafts(&modules, "set-raw-red-gain", "kelvin"));
         assert!(!drafts(&modules, "no-such-action", "ev"));
+    }
+
+    #[test]
+    fn the_crop_canvas_binds_its_layer_independently_of_geometry_descriptor_order() {
+        let mut modules: Vec<_> = luxforge_core::ModuleRegistry::builtin()
+            .descriptors()
+            .into_iter()
+            .cloned()
+            .collect();
+        for reverse in [false, true] {
+            if reverse {
+                modules
+                    .iter_mut()
+                    .find(|module| module.id == "luxforge.crop")
+                    .unwrap()
+                    .effects
+                    .reverse();
+            }
+            let frame = crop_frame(&modules).expect("the combined crop canvas");
+            assert_eq!(frame.effect(), Some(luxforge_core::CROP_EFFECT));
+        }
     }
 
     #[test]

@@ -55,6 +55,8 @@ pub(crate) const SETTINGS_RESET: &str = "settings reset";
 /// configuration, login keychain or network.
 #[derive(Clone)]
 pub struct HostConfig {
+    /// Small host preferences outside any catalog, normally the application configuration root.
+    pub preferences_dir: Option<PathBuf>,
     /// The directory that holds `settings.json` and `grants.json`, normally `<config>/modules`.
     /// `None` refuses every settings and permission method with `not-ready`. Nothing is created
     /// until the first write.
@@ -75,6 +77,7 @@ impl HostConfig {
     /// method, and every request, reports `not-ready`.
     pub fn unconfigured() -> Self {
         Self {
+            preferences_dir: None,
             config_dir: None,
             resource_dir: None,
             secrets: Arc::new(UnavailableSecretStore::new("no secure store is configured")),
@@ -89,6 +92,7 @@ impl HostConfig {
 impl std::fmt::Debug for HostConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HostConfig")
+            .field("preferences_dir", &self.preferences_dir)
             .field("config_dir", &self.config_dir)
             .field("resource_dir", &self.resource_dir)
             .field("secrets", &self.secrets.name())
@@ -255,6 +259,7 @@ pub(crate) struct Requirement {
 /// each live task reports back. Its jobs are records in the owner's one job table, run on that
 /// table's `transfer` and `module` lanes.
 pub(crate) struct CapabilityHost {
+    pub(crate) preferences: crate::preferences::PreferenceStore,
     config: HostConfig,
     settings: Option<SettingsStore>,
     grants: Option<GrantsStore>,
@@ -267,6 +272,7 @@ pub(crate) struct CapabilityHost {
 impl CapabilityHost {
     pub(crate) fn new(config: HostConfig) -> Self {
         Self {
+            preferences: crate::preferences::PreferenceStore::new(config.preferences_dir.clone()),
             settings: config.config_dir.clone().map(SettingsStore::new),
             grants: config.config_dir.clone().map(GrantsStore::new),
             resources: config.resource_dir.clone().map(ResourceStore::new),

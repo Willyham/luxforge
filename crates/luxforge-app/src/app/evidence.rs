@@ -85,6 +85,8 @@ pub(crate) struct Evidence {
     pub(crate) capture_pending: bool,
     /// A native view-change probe whose own tick and capture streams are suspended until due.
     pub(crate) view_idle: Option<ViewIdleObservation>,
+    /// A native idle check, with the same streams suspended until its window ends.
+    pub(crate) idle: Option<IdleObservation>,
     /// Permit a diagnostic capture of a blank/stale result after a failed view-idle check.
     pub(crate) allow_unready_capture: bool,
     /// This capture was armed by the mask overlay, so it must show one.
@@ -116,6 +118,8 @@ pub(crate) struct Evidence {
     /// When a `wait` step's frame may be captured. The evidence tick checks it, so a wait adds no
     /// timer of its own.
     pub(crate) wait_until: Option<Instant>,
+    /// A running `gpu_warmed` step, which the evidence tick checks as it checks a `wait`.
+    pub(crate) warm_wait: Option<WarmWait>,
     /// The run's second client, registered on the owner at the first `agent` step and disconnected
     /// when the run finishes.
     pub(crate) agent: Option<ClientId>,
@@ -132,6 +136,9 @@ pub(crate) struct Evidence {
     pub(crate) sync: CaptureSync,
     /// What only a captured frame's state reports, from the outcomes the seams report.
     pub(crate) recorded: Recorded,
+    /// The GPU identity hook, for a run launched with `--evidence-gpu-identity`: the photograph at
+    /// Fit is drawn through the GPU stage, and a capture waits for that draw.
+    pub(crate) gpu_identity: Option<super::gpu_identity::GpuIdentity>,
 }
 
 /// What only a captured frame's state reports, kept by the evidence driver from the outcomes the
@@ -152,6 +159,14 @@ pub(crate) struct Recorded {
     /// oldest first, each with the wall-clock moment it was read, so a runner can re-derive the
     /// shown figures and the newest rate without trusting the model that derived them.
     pub(crate) performance: VecDeque<(u64, Value)>,
+}
+
+/// A running `gpu_warmed` step: when it began, and the earliest and the latest it may end.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WarmWait {
+    started: Instant,
+    quiet_until: Instant,
+    deadline: Instant,
 }
 
 /// What a running `agent` step waits for. The desktop sends nothing for it: the owner wakes the
@@ -185,6 +200,7 @@ impl Evidence {
             frames: Vec::new(),
             capture_pending: false,
             view_idle: None,
+            idle: None,
             allow_unready_capture: false,
             capture_overlay: false,
             saving: false,
@@ -195,6 +211,7 @@ impl Evidence {
             tools_scroll: None,
             capability_wait: None,
             wait_until: None,
+            warm_wait: None,
             agent: None,
             agent_wait: None,
             long_work_wait: None,
@@ -202,7 +219,36 @@ impl Evidence {
             grid_scroll: None,
             sync: CaptureSync::default(),
             recorded: Recorded::default(),
+            gpu_identity: None,
         }
+    }
+}
+
+/// A native idle check in progress ([`luxforge_evidence::IdleStep`]): the settle, then the
+/// window, and what the window started from.
+pub(crate) struct IdleObservation {
+    pub(crate) settle_until: Instant,
+    pub(crate) settle_ms: u64,
+    pub(crate) ms: u64,
+    /// The window, once the settle has passed: `None` while settling.
+    pub(crate) window: Option<IdleWindow>,
+}
+
+/// An idle check's window: when it began and ends, and the surface's drawn frames, the views built
+/// and the process's CPU time when it began.
+#[derive(Clone, Copy)]
+pub(crate) struct IdleWindow {
+    pub(crate) started: Instant,
+    pub(crate) until: Instant,
+    pub(crate) drawn: u64,
+    pub(crate) views: u64,
+    pub(crate) cpu_ns: Option<u64>,
+}
+
+impl Evidence {
+    /// Whether evidence's own tick and capture streams are suspended for a native idle probe.
+    pub(crate) fn suspended(&self) -> bool {
+        self.view_idle.is_some() || self.idle.is_some()
     }
 }
 
@@ -383,10 +429,10 @@ pub(crate) struct PacedStroke {
 /// xtask writes them, so a step has one spelling on both ends.
 pub(crate) use luxforge_evidence::{
     CapabilityAction, CapabilityStep, ControlsStep, CurveStep, CurveStepEvent, DoubleClickStep,
-    DraftStep, DragHandle, ExportStep, FieldStep, GroupStep, KindMenuStep, MaskRow, MaskStep,
-    PaintStep, PaletteStep, PickStep, PickerStep, PresetCreateStep, PresetPick, PreviewStep,
-    Reference, ResetStep, RowStep, SectionStep, SliderDraftStep, SliderEnd, SliderStep, Step,
-    TabStep, ViewIdleStep, ViewStep, WorkspaceStep,
+    DraftStep, DragHandle, ExportStep, FieldStep, GroupStep, IdleStep, KindMenuStep, MaskRow,
+    MaskStep, PaintStep, PaletteStep, PickStep, PickerStep, PresetCreateStep, PresetPick,
+    PreviewStep, Reference, ResetStep, RowStep, SectionStep, SliderDraftStep, SliderEnd,
+    SliderStep, Step, TabStep, ViewIdleStep, ViewStep, WorkspaceStep,
 };
 
 #[derive(Clone, Copy)]
@@ -440,6 +486,7 @@ pub(crate) enum Settle {
     /// The Performance section's first read since it started sampling has answered, so the frame
     /// shows its figures rather than the dashes before them.
     Performance,
+    PerformanceCancel,
     /// A capability step's round trips have answered and, unless it said otherwise, the jobs it
     /// started have finished.
     Capability,
@@ -482,6 +529,7 @@ impl Settle {
             Self::Pan => "pan",
             Self::Quiet => "quiet",
             Self::Performance => "performance",
+            Self::PerformanceCancel => "performance_cancel",
             Self::Capability => "capability",
             Self::Export => "export",
             Self::Agent => "agent",
@@ -524,6 +572,16 @@ enum ExpectedPhotoDraw {
         generation: u64,
         quality: luxforge_ui::RegionQuality,
     },
+    /// The GPU identity hook's draw: the GPU stage's output over the boundary held from the frame
+    /// of this version.
+    Gpu {
+        boundary: u64,
+    },
+    /// A gesture's GPU frame: the plan of this draft revision over the boundary of this version.
+    GpuTick {
+        boundary: u64,
+        revision: u64,
+    },
 }
 
 fn photo_drawn(
@@ -531,6 +589,15 @@ fn photo_drawn(
     gpu: luxforge_ui::photo_surface::SurfaceDiagnostics,
 ) -> bool {
     match expected {
+        ExpectedPhotoDraw::Gpu { boundary } => {
+            gpu.drawn_path == Some(luxforge_ui::photo_surface::DrawingPath::Gpu)
+                && gpu.drawn_gpu_boundary == Some(boundary)
+        }
+        ExpectedPhotoDraw::GpuTick { boundary, revision } => {
+            gpu.drawn_path == Some(luxforge_ui::photo_surface::DrawingPath::Gpu)
+                && gpu.drawn_gpu_boundary == Some(boundary)
+                && gpu.drawn_gpu_tag == Some(revision)
+        }
         ExpectedPhotoDraw::Full { version, content } => {
             gpu.drawn_full_version == Some(version)
                 && content.is_none_or(|content| gpu.drawn_content == Some(content))
@@ -608,6 +675,28 @@ impl Editor {
         {
             return true;
         }
+        // The status bar names the frame the surface drew last, which only that draw can say: a
+        // change of drawing path wakes the desktop, whose next update derives the label again.
+        let label_current = self.workspace.status.gpu_us == self.gpu_frame_us();
+        // A gesture drawn on the GPU: the frame to capture is the GPU draw of its newest tick, once
+        // its pipeline is ready. Until the surface has evaluated it, or while it is held behind
+        // the CPU frame of its revision, the CPU frame is the one drawn.
+        let surfaces = self.surfaces();
+        if let (Some(_), Some(revision), false, Some(boundary)) = (
+            surfaces.gpu,
+            surfaces.gpu_tag,
+            surfaces.gpu_hold,
+            self.gpu.held_version(),
+        ) && luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE)
+            .gpu_ready_boundary
+            == Some(boundary)
+        {
+            return label_current
+                && photo_drawn(
+                    ExpectedPhotoDraw::GpuTick { boundary, revision },
+                    luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE),
+                );
+        }
         let full = self
             .presentation
             .presenter
@@ -633,29 +722,48 @@ impl Editor {
             None
         }
         .or_else(|| {
-            full.map(|photo| ExpectedPhotoDraw::Full {
-                version: photo.version(),
-                content: (matches!(
+            full.map(|photo| {
+                let percent = matches!(
                     self.session.preview.view.zoom,
                     luxforge_core::Zoom::Percent { .. }
-                ) && full_current)
-                    .then_some(self.presentation.presented_content),
+                );
+                // The GPU identity hook draws the photograph at Fit through the GPU stage, so the
+                // frame to capture is that draw, over the boundary held from this frame; with the
+                // GPU preview turned off it hands the surface nothing, and the frame is the CPU's.
+                let forced = self
+                    .evidence
+                    .as_ref()
+                    .is_some_and(|evidence| evidence.gpu_identity.is_some())
+                    && self.gpu_preview_allowed().is_ok();
+                if forced && !percent && self.presentation.compare_after.is_none() {
+                    ExpectedPhotoDraw::Gpu {
+                        boundary: photo.version(),
+                    }
+                } else {
+                    ExpectedPhotoDraw::Full {
+                        version: photo.version(),
+                        content: (percent && full_current)
+                            .then_some(self.presentation.presented_content),
+                    }
+                }
             })
         });
-        expected.is_some_and(|expected| {
-            photo_drawn(
-                expected,
-                luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE),
-            )
-        }) && self.surfaces().comparison.is_none_or(|(after, _)| {
-            photo_drawn(
-                ExpectedPhotoDraw::Full {
-                    version: after.version(),
-                    content: None,
-                },
-                luxforge_ui::surface_diagnostics(crate::view::canvas::COMPARE_SURFACE),
-            )
-        })
+        label_current
+            && expected.is_some_and(|expected| {
+                photo_drawn(
+                    expected,
+                    luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE),
+                )
+            })
+            && self.surfaces().comparison.is_none_or(|(after, _)| {
+                photo_drawn(
+                    ExpectedPhotoDraw::Full {
+                        version: after.version(),
+                        content: None,
+                    },
+                    luxforge_ui::surface_diagnostics(crate::view::canvas::COMPARE_SURFACE),
+                )
+            })
     }
 
     /// Evidence with clipping enabled must show the requested mask over the current photograph,
@@ -671,6 +779,15 @@ impl Editor {
             return true;
         }
         let enabled = self.session.workspace.clip_shadows || self.session.workspace.clip_highlights;
+        // Over a GPU frame the plan's own marks are the overlay: the CPU frame's is not drawn.
+        let diagnostics = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
+        if enabled
+            && diagnostics.drawn_path == Some(luxforge_ui::photo_surface::DrawingPath::Gpu)
+            && diagnostics.drawn_clipping_marks
+                == super::gpu_settle::clip_flags(&self.session.workspace)
+        {
+            return true;
+        }
         let failed = self
             .evidence
             .as_ref()
@@ -689,6 +806,15 @@ impl Editor {
     /// One of evidence mode's own messages.
     pub(super) fn evidence_update(&mut self, message: EvidenceMessage) -> Task<Message> {
         match message {
+            EvidenceMessage::GpuBoundary(boundary) => {
+                if let Some(hook) = self
+                    .evidence
+                    .as_mut()
+                    .and_then(|evidence| evidence.gpu_identity.as_mut())
+                {
+                    hook.adopt(boundary);
+                }
+            }
             EvidenceMessage::Info(info) => {
                 self.activity.backend =
                     Some(json!({"backend":info.graphics_backend,"adapter":info.graphics_adapter}));
@@ -697,11 +823,7 @@ impl Editor {
                 });
             }
             EvidenceMessage::Tick => {
-                if self
-                    .evidence
-                    .as_ref()
-                    .is_some_and(|evidence| evidence.view_idle.is_some())
-                {
+                if self.evidence.as_ref().is_some_and(Evidence::suspended) {
                     return Task::none();
                 }
                 let expired = self.evidence.as_ref().is_some_and(|evidence| {
@@ -719,15 +841,12 @@ impl Editor {
                 self.wait_elapsed();
             }
             EvidenceMessage::ViewIdleDeadline => return self.view_idle_deadline(),
+            EvidenceMessage::IdleDeadline => return self.idle_deadline(),
             EvidenceMessage::PacedSliderTick => return self.slider_paced_tick(),
             EvidenceMessage::PacedStrokeTick => return self.stroke_paced_tick(),
             EvidenceMessage::DoubleClickSecond => return self.double_click_second(),
             EvidenceMessage::Capture => {
-                if self
-                    .evidence
-                    .as_ref()
-                    .is_some_and(|evidence| evidence.view_idle.is_some())
-                {
+                if self.evidence.as_ref().is_some_and(Evidence::suspended) {
                     return Task::none();
                 }
                 let rows_shown = self.recipe_rows_shown();
@@ -1002,6 +1121,7 @@ impl Editor {
                 task
             }
             Step::ViewIdle(step) => self.view_idle_step(step),
+            Step::Idle(step) => self.idle_check_step(step),
             Step::Workspace(workspace) => self.workspace_step(workspace),
             Step::Preview(preview) => self.preview_step(preview),
             Step::Compare(compare) => {
@@ -1062,7 +1182,23 @@ impl Editor {
             Step::PresetDelete(pick) => self.preset_delete_step(pick),
             Step::PresetImport { path } => self.preset_import_step(path),
             Step::Performance { expanded } => self.performance_step(expanded),
+            Step::PerformanceCancel { row } => {
+                let job = self
+                    .workspace
+                    .performance
+                    .jobs
+                    .get(row)
+                    .filter(|job| job.running && !job.cancelling)
+                    .and_then(|job| job.job_id.clone());
+                let Some(job_id) = job else {
+                    return self.fail_step("the Performance row has no enabled Cancel button");
+                };
+                self.note_step(json!({"job_id": job_id}));
+                self.await_step(Settle::PerformanceCancel);
+                self.update(Message::Performance(PerformanceMessage::Cancel(job_id)))
+            }
             Step::Wait { ms } => self.wait_step(ms),
+            Step::GpuWarmed { quiet_ms, ms } => self.warm_wait_step(quiet_ms, ms),
             Step::Key { key } => self.key_step(key),
             Step::Pan { x, y } => self.pan_step(x, y),
             Step::Capability(step) => self.capability_step(step),
@@ -1553,14 +1689,29 @@ impl Editor {
             return self.fail_step("a mask step needs Mask mode");
         }
         let overlay = self.mask_coverage_target().is_some();
+        let selecting = matches!(step, MaskStep::SelectComponent(Some(_)));
         // A drag is several messages; every other gesture is exactly one.
-        if let MaskStep::Drag { handle, points } = &step {
+        if let MaskStep::Drag {
+            handle,
+            points,
+            release,
+        } = &step
+        {
             let handle = mask_handle(*handle);
             let Some((first, rest)) = points.split_first() else {
                 return self.fail_step("a mask drag needs at least one point");
             };
-            if self.held_mask().is_none() {
-                return self.fail_step("no mask gesture is open to drag");
+            if self.drawn_mask().is_none() {
+                return self
+                    .fail_step("no mask gesture is open and no gradient is selected to drag");
+            }
+            if self.held_mask().is_none()
+                && self
+                    .resting
+                    .as_ref()
+                    .is_none_or(|resting| resting.mask.map.is_none())
+            {
+                return self.fail_step("the selected gradient's handles have no content map");
             }
             let asked = self.presentation.preview_generation;
             let mut tasks = vec![self.mask_message(MaskMessage::Handle(MaskPointer::Begin {
@@ -1574,7 +1725,9 @@ impl Editor {
                     y: point[1],
                 })));
             }
-            tasks.push(self.mask_message(MaskMessage::Handle(MaskPointer::End)));
+            if *release {
+                tasks.push(self.mask_message(MaskMessage::Handle(MaskPointer::End)));
+            }
             self.await_mask_frame(asked);
             self.note_step(json!({"masks": self.workspace.masks.summary()}));
             return Task::batch(tasks);
@@ -1670,10 +1823,6 @@ impl Editor {
                 };
                 (Message::View(ViewMessage::OpenMenu(target)), Expect::Redraw)
             }
-            MaskStep::EditShape(reference) => match self.resolve_component(None, &reference) {
-                Ok(id) => (Message::Mask(MaskMessage::EditShape(id)), Expect::Gesture),
-                Err(reason) => return self.fail_step(reason),
-            },
             // Choosing the next component's mode changes no pixel and asks for nothing: it is the
             // Add row's own state, and its captured frame is the panel showing that choice.
             MaskStep::Mode(mode) => {
@@ -1838,13 +1987,19 @@ impl Editor {
                     Expect::Gesture,
                 )
             }
+            // A gradient's release commits the draft its placement opened, so its frame is the
+            // commit's; a release that placed nothing sends nothing.
             MaskStep::Release => {
                 if self.held_mask().is_none() {
                     return self.fail_step("no mask gesture is open to release");
                 }
                 (
                     Message::Mask(MaskMessage::Handle(MaskPointer::End)),
-                    Expect::Gesture,
+                    if self.mask_gesture().is_some() {
+                        Expect::RoundTrip
+                    } else {
+                        Expect::Gesture
+                    },
                 )
             }
             // The host's own pick, entered and left the way the panel's button does: one
@@ -1934,10 +2089,17 @@ impl Editor {
             MaskStep::Drag { .. } => unreachable!("a drag is answered above"),
         };
         if matches!(expect, Expect::Redraw) {
-            self.capture_next_frame();
             let task = self.dispatch(message);
+            // A selected gradient's handles come to rest once their content map answers, and a
+            // later drag is placed by that map, so the step waits for it rather than the redraw.
+            let resting = self.follow_resting_handles();
+            if selecting && self.resting.as_ref().is_some_and(|resting| resting.stale()) {
+                self.await_step(Settle::MaskMap);
+            } else {
+                self.capture_next_frame();
+            }
             self.note_step(json!({"masks": self.workspace.masks.summary()}));
-            return task;
+            return Task::batch([task, resting]);
         }
         // A row edit the panel refuses sends nothing, so the step would wait for a frame nothing
         // arms. Whether one went out is read from the request the panel records as it sends it,
@@ -2725,9 +2887,8 @@ impl Editor {
                     parameter: step.parameter.clone(),
                     event: CurveEditorEvent::Channel(index),
                 }));
-                if selected_curve_channel(&self.workspace.tools, &step.action, &step.parameter)
-                    != Some(index)
-                {
+                let sections = self.workspace.tools.with_controls(&self.inputs());
+                if selected_curve_channel(&sections, &step.action, &step.parameter) != Some(index) {
                     return self.fail_step("the declared curve channel was not selected");
                 }
                 self.capture_next_frame();
@@ -2741,9 +2902,8 @@ impl Editor {
                     parameter: step.parameter.clone(),
                     event: CurveEditorEvent::Points(open),
                 }));
-                if curve_points_open(&self.workspace.tools, &step.action, &step.parameter)
-                    != Some(open)
-                {
+                let sections = self.workspace.tools.with_controls(&self.inputs());
+                if curve_points_open(&sections, &step.action, &step.parameter) != Some(open) {
                     return self.fail_step(if open {
                         "the curve's Points list did not open"
                     } else {
@@ -2757,9 +2917,8 @@ impl Editor {
             // closed one and neither can a script. The text is typed as the field publishes it and
             // Enter commits that one coordinate.
             CurveStepEvent::Type { index, axis, text } => {
-                if curve_points_open(&self.workspace.tools, &step.action, &step.parameter)
-                    != Some(true)
-                {
+                let sections = self.workspace.tools.with_controls(&self.inputs());
+                if curve_points_open(&sections, &step.action, &step.parameter) != Some(true) {
                     return self.fail_step("the curve's Points list is not open");
                 }
                 self.begin_request();
@@ -2806,16 +2965,22 @@ impl Editor {
             // drained, so the pixels belong to the newest value it sent.
             SliderEnd::Open => {
                 self.await_step(Settle::SliderDraft);
+                let drained = self
+                    .core_gesture()
+                    .is_some_and(|gesture| gesture.draft.drained());
                 // A value whose preview job was refused has already drained with no frame of its
                 // own to wait for, so the frame on screen is the step's evidence.
-                if self
-                    .core_gesture()
-                    .is_some_and(|gesture| gesture.draft.drained())
+                if drained
                     && self
                         .slider_gesture()
                         .is_some_and(|slider| slider.unpreviewed)
                 {
                     self.settle_step(Settle::SliderDraft, "draft_refused");
+                } else if drained && self.gpu_draws_newest_tick() {
+                    // The newest value was drawn on the GPU as its set answered, before this step
+                    // waited: no CPU frame of its own is coming, and the capture waits for the
+                    // surface's draw of it.
+                    self.settle_step(Settle::SliderDraft, "gpu_tick");
                 }
             }
             // The committed pixels are the evidence, so this waits for the render the commit
@@ -2938,8 +3103,67 @@ impl Editor {
         Task::none()
     }
 
+    fn warm_wait_step(&mut self, quiet_ms: u64, ms: u64) -> Task<Message> {
+        if let Some(evidence) = &mut self.evidence {
+            let started = Instant::now();
+            evidence.warm_wait = Some(WarmWait {
+                started,
+                quiet_until: started + Duration::from_millis(quiet_ms),
+                deadline: started + Duration::from_millis(ms),
+            });
+        }
+        Task::none()
+    }
+
+    /// Whether the GPU stage has compiled everything handed to it: the desktop's newest warm list
+    /// taken, and nothing queued or compiling.
+    fn gpu_warmed(&self) -> (bool, Value) {
+        let gpu = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
+        let wanted = self
+            .gpu
+            .warm()
+            .map(luxforge_ui::photo_surface::GpuWarm::version);
+        let taken = wanted.is_none() || gpu.gpu_preview_warmed == wanted;
+        let warmed = taken && gpu.gpu_preview_compile_pending == 0;
+        (
+            warmed,
+            json!({"warm": wanted, "taken": gpu.gpu_preview_warmed,
+                "pending": gpu.gpu_preview_compile_pending}),
+        )
+    }
+
+    /// Called by every evidence tick: a `gpu_warmed` step captures its frame once its quiet has
+    /// passed and the GPU stage has compiled what it was handed, or at its deadline.
+    fn warm_wait_elapsed(&mut self) {
+        let Some(wait) = self
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.warm_wait)
+        else {
+            return;
+        };
+        let now = Instant::now();
+        if now < wait.quiet_until {
+            return;
+        }
+        let (warmed, figures) = self.gpu_warmed();
+        let late = now >= wait.deadline;
+        if !warmed && !late {
+            return;
+        }
+        if let Some(evidence) = &mut self.evidence {
+            evidence.warm_wait = None;
+        }
+        let mut detail = figures;
+        detail["finished"] = json!(warmed);
+        detail["waited_ms"] = json!(now.duration_since(wait.started).as_secs_f64() * 1000.0);
+        self.note_step(json!({"gpu_warmed": detail}));
+        self.capture_next_frame();
+    }
+
     /// Called by every evidence tick: a `wait` step whose time is up captures its frame.
     pub(crate) fn wait_elapsed(&mut self) {
+        self.warm_wait_elapsed();
         let due = self.evidence.as_ref().is_some_and(|evidence| {
             evidence
                 .wait_until
@@ -3145,6 +3369,93 @@ impl Editor {
                 self.view_state.zoom = number_text(f64::from(value));
                 self.update(Message::View(ViewMessage::ApplyZoom))
             }
+        }
+    }
+
+    /// Leave the editor alone, with evidence's own tick and capture streams suspended, for the
+    /// step's settle and then its window ([`luxforge_evidence::IdleStep`]).
+    fn idle_check_step(&mut self, step: IdleStep) -> Task<Message> {
+        if let Some(evidence) = &mut self.evidence {
+            evidence.capture_pending = false;
+            evidence.awaiting = None;
+            evidence.idle = Some(IdleObservation {
+                settle_until: Instant::now() + Duration::from_millis(step.settle_ms),
+                settle_ms: step.settle_ms,
+                ms: step.ms,
+                window: None,
+            });
+        }
+        Task::none()
+    }
+
+    /// The idle check's phase ends: the settle opens the window, counting from the surface's drawn
+    /// frames, the views built and the process's CPU time so far, and the window's end checks that
+    /// nothing was drawn or updated in it but the one frame and view of its own start. A dissolve
+    /// asks for frames only while it runs, so one that ended in the settle draws nothing in the
+    /// window. The CPU the whole process spent over the window is recorded beside it, a figure and
+    /// not part of the verdict.
+    fn idle_deadline(&mut self) -> Task<Message> {
+        let Some(observation) = self.evidence.as_ref().and_then(|e| e.idle.as_ref()) else {
+            return Task::none();
+        };
+        let now = Instant::now();
+        let gpu = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
+        let views = self.log.loop_timing.get().views;
+        let Some(window) = observation.window else {
+            if now >= observation.settle_until {
+                let window = IdleWindow {
+                    started: now,
+                    until: now + Duration::from_millis(observation.ms),
+                    drawn: gpu.drawn_frames,
+                    views,
+                    cpu_ns: luxforge_core::resources::process_cpu_time_ns(),
+                };
+                if let Some(idle) = self.evidence.as_mut().and_then(|e| e.idle.as_mut()) {
+                    idle.window = Some(window);
+                }
+            }
+            return Task::none();
+        };
+        if now < window.until {
+            return Task::none();
+        }
+        let elapsed_ns = now.saturating_duration_since(window.started).as_nanos() as f64;
+        let cpu_ns = window
+            .cpu_ns
+            .zip(luxforge_core::resources::process_cpu_time_ns())
+            .map(|(before, after)| after.saturating_sub(before));
+        let drawn_delta = gpu.drawn_frames.saturating_sub(window.drawn);
+        let views_delta = views.saturating_sub(window.views);
+        // The window's start was an update of its own, whose view and frame it may count.
+        let passed = drawn_delta <= 1
+            && views_delta <= 1
+            && gpu.drawn_dissolve.is_none()
+            && self.gpu_settle.dissolve().is_none();
+        let detail = json!({
+            "passed": passed,
+            "settle_ms": observation.settle_ms,
+            "window_ms": observation.ms,
+            "drawn_frames_delta": drawn_delta,
+            "views_delta": views_delta,
+            "dissolve_drawn": gpu.drawn_dissolve.is_some(),
+            "dissolve_running": self.gpu_settle.dissolve().is_some(),
+            "drawn_frames": gpu.drawn_frames,
+            "measured_window_ms": elapsed_ns / 1e6,
+            "process_cpu_ms": cpu_ns.map(|ns| ns as f64 / 1e6),
+            "process_cpu_percent_one_core": cpu_ns
+                .filter(|_| elapsed_ns > 0.0)
+                .map(|ns| 100.0 * ns as f64 / elapsed_ns),
+        });
+        self.event("idle_check", || detail.clone());
+        self.note_step(json!({"idle_check": detail}));
+        if let Some(evidence) = &mut self.evidence {
+            evidence.idle = None;
+        }
+        if passed {
+            self.capture_next_frame();
+            Task::none()
+        } else {
+            self.fail_step("the editor drew or updated while it should have been idle")
         }
     }
 
@@ -3578,6 +3889,7 @@ impl Editor {
             PaletteAction::Mode(_)
             | PaletteAction::TogglePanel(_)
             | PaletteAction::ToggleThirds
+            | PaletteAction::ToggleGpuPreview
             | PaletteAction::Fit
             | PaletteAction::HundredPercent => self.await_step(Settle::Session),
             PaletteAction::TogglePerformance => self.arm_performance_settle(),
@@ -3623,13 +3935,7 @@ impl Editor {
             Ok(row) => row,
             Err(reason) => return self.fail_step(reason),
         };
-        let presets = self
-            .workspace
-            .tools
-            .all()
-            .find_map(|section| section.presets())
-            .cloned()
-            .unwrap_or_default();
+        let presets = self.presets_model_now().unwrap_or_default();
         let Some(preset) = row.apply.clone().filter(|_| row.enabled) else {
             let reason = row
                 .unavailable
@@ -3707,10 +4013,7 @@ impl Editor {
     /// The one row a step names: the exact name, and the group when the step gives one.
     fn preset_row(&self, pick: &PresetPick) -> Result<PresetRow, String> {
         let presets = self
-            .workspace
-            .tools
-            .all()
-            .find_map(|section| section.presets())
+            .presets_model_now()
             .ok_or("no module declares a presets control")?;
         let matches: Vec<&PresetRow> = presets
             .rows()
@@ -3918,6 +4221,9 @@ impl Editor {
             }
             Outcome::NoNewFrame => self.settle_step(Settle::Preview, by),
             Outcome::RequestEnded { failed } => {
+                if failed {
+                    self.refuse_step(&self.status.text.clone());
+                }
                 if let Some(evidence) = &mut self.evidence {
                     evidence.had_errors |= failed;
                     evidence.capture_pending = true;
@@ -4043,6 +4349,13 @@ impl Editor {
             Outcome::PerformanceRestarted => {
                 if let Some(evidence) = &mut self.evidence {
                     evidence.recorded.performance.clear();
+                }
+            }
+            Outcome::PerformanceCancelled { failed } => {
+                if failed {
+                    let _ = self.fail_step(self.status.text.clone());
+                } else {
+                    self.settle_step(Settle::PerformanceCancel, by);
                 }
             }
             Outcome::ExportPlanned(plan) => {
@@ -4264,13 +4577,16 @@ fn group_path(controls: &[luxforge_core::Control], label: &str) -> Option<Vec<us
     None
 }
 
+/// The channel the curve drawing `action`'s `parameter` has selected, as the tools panel derives
+/// it; `None` when no such curve exists. `sections` carry every section's controls, a collapsed
+/// section's built on demand, so a curve in one is found as it always was.
 fn selected_curve_channel(
-    tools: &crate::state::tools::ToolsModel,
+    sections: &[crate::state::tools::SectionControls<'_>],
     action: &str,
     parameter: &str,
 ) -> Option<usize> {
-    tools.all().find_map(|section| {
-        walk(&section.controls).find_map(|control| match control {
+    sections.iter().find_map(|reported| {
+        walk(&reported.controls).find_map(|control| match control {
             crate::state::tools::ControlModel::Curve(curve)
                 if curve.action == action
                     && curve
@@ -4286,14 +4602,15 @@ fn selected_curve_channel(
 }
 
 /// Whether the curve drawing `action`'s `parameter` shows its Points list, as the tools panel
-/// derives it; `None` when no such curve is drawn.
+/// derives it; `None` when no such curve exists. `sections` are as for
+/// [`selected_curve_channel`].
 fn curve_points_open(
-    tools: &crate::state::tools::ToolsModel,
+    sections: &[crate::state::tools::SectionControls<'_>],
     action: &str,
     parameter: &str,
 ) -> Option<bool> {
-    tools.all().find_map(|section| {
-        walk(&section.controls).find_map(|control| match control {
+    sections.iter().find_map(|reported| {
+        walk(&reported.controls).find_map(|control| match control {
             crate::state::tools::ControlModel::Curve(curve)
                 if curve.action == action
                     && curve
@@ -4406,13 +4723,24 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
                 iced::time::every(Duration::from_millis(idle.ms))
                     .map(|_| Message::Evidence(EvidenceMessage::ViewIdleDeadline)),
             );
+        } else if let Some(idle) = &evidence.idle {
+            // One timer per phase, due at its end: nothing else of evidence's wakes the editor.
+            let phase = if idle.window.is_none() {
+                idle.settle_ms
+            } else {
+                idle.ms
+            };
+            subscriptions.push(
+                iced::time::every(Duration::from_millis(phase))
+                    .map(|_| Message::Evidence(EvidenceMessage::IdleDeadline)),
+            );
         } else {
             subscriptions.push(
                 iced::time::every(Duration::from_millis(250))
                     .map(|_| Message::Evidence(EvidenceMessage::Tick)),
             );
         }
-        if evidence.capture_pending && evidence.view_idle.is_none() {
+        if evidence.capture_pending && !evidence.suspended() {
             subscriptions
                 .push(iced::window::frames().map(|_| Message::Evidence(EvidenceMessage::Capture)));
         }
@@ -4449,12 +4777,28 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
 }
 
 /// After every message: a step waiting for quiet settles once this client has nothing in flight,
-/// a capability step once its module's round trips and jobs have, and a loupe `arrows` step
-/// presses its first arrow once the look-ahead is warm.
+/// a capability step once its module's round trips and jobs have, a loupe `arrows` step presses its
+/// first arrow once the look-ahead is warm, and the GPU identity hook follows the photograph at
+/// Fit.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     editor.settle_when_quiet();
     editor.settle_capability();
-    editor.loupe_arrows_when_warm()
+    let arrows = editor.loupe_arrows_when_warm();
+    // The GPU identity hook follows the photograph at Fit, the one view it draws.
+    let fit = matches!(editor.session.preview.view.zoom, luxforge_core::Zoom::Fit);
+    let photo = editor
+        .presentation
+        .presenter
+        .photo_for(editor.presentation.presented_content);
+    let identity = match editor
+        .evidence
+        .as_mut()
+        .and_then(|evidence| evidence.gpu_identity.as_mut())
+    {
+        Some(hook) if fit => hook.follow(photo),
+        _ => Task::none(),
+    };
+    Task::batch([arrows, identity])
 }
 
 #[cfg(test)]
@@ -4462,6 +4806,84 @@ mod tests {
     use super::*;
     use crate::app::message::sync::SyncMessage;
     use crate::app::testing::{evidence, finish, scripted};
+
+    /// A step that names a preset row or a curve reads the sections whether or not the panel draws
+    /// them: the derive builds no controls for a collapsed one, so the step builds them on demand.
+    #[test]
+    fn a_step_finds_a_preset_row_and_a_curve_in_collapsed_sections() {
+        let (mut editor, catalog) =
+            crate::app::testing::opened_with_modules(crate::app::testing::descriptors(), 1);
+        editor.presets.library.adopt(
+            vec![
+                crate::state::testing::listed("Warm", "User presets", None),
+                crate::state::testing::listed("Cool", "User presets", None),
+            ],
+            1,
+        );
+        editor.rederive();
+        let presets = crate::state::presets::presets_control(&editor.modules)
+            .map(|(module, _)| module.id.clone())
+            .expect("the presets control");
+        let curve = editor
+            .modules
+            .iter()
+            .flat_map(|module| walk(&module.controls))
+            .find_map(|control| match control {
+                luxforge_core::Control::Curve(curve) => Some(curve.clone()),
+                _ => None,
+            })
+            .expect("a declared curve");
+        let section = |editor: &Editor, module: &str| {
+            editor
+                .workspace
+                .tools
+                .all()
+                .find(|section| section.module_id == module)
+                .map(|section| (section.expanded, section.controls.is_empty()))
+        };
+        let curve_module = editor
+            .modules
+            .iter()
+            .find(|module| {
+                walk(&module.controls)
+                    .any(|control| matches!(control, luxforge_core::Control::Curve(_)))
+            })
+            .expect("the curve's module")
+            .id
+            .clone();
+        // Both sections start collapsed, and hold no models.
+        assert_eq!(section(&editor, &presets), Some((false, true)));
+        assert_eq!(section(&editor, &curve_module), Some((false, true)));
+
+        let pick = |name: &str| luxforge_evidence::PresetPick {
+            name: name.into(),
+            group: None,
+        };
+        let row = editor
+            .preset_row(&pick("Warm"))
+            .expect("the collapsed library's row");
+        assert_eq!(
+            (row.name.as_str(), row.group.as_str()),
+            ("Warm", "User presets")
+        );
+        assert!(row.enabled && row.apply.is_some());
+        assert_eq!(
+            editor.preset_row(&pick("Missing")),
+            Err("no preset is named Missing".to_owned())
+        );
+
+        let parameter = &curve.channels[0].parameter;
+        let sections = editor.workspace.tools.with_controls(&editor.inputs());
+        assert_eq!(
+            selected_curve_channel(&sections, &curve.action, parameter),
+            Some(0)
+        );
+        assert_eq!(
+            curve_points_open(&sections, &curve.action, parameter),
+            Some(false)
+        );
+        finish(editor, catalog);
+    }
 
     #[test]
     fn query_choice_retry_step_uses_the_button_message_and_waits_for_its_answer() {
@@ -4652,6 +5074,54 @@ mod tests {
         assert!(editor.evidence.as_ref().unwrap().view_idle.is_none());
         assert!(editor.evidence.as_ref().unwrap().capture_pending);
         assert!(editor.evidence.as_ref().unwrap().current.as_ref().unwrap()["view_idle_check"]["passed"].is_boolean());
+        crate::app::testing::finish(editor, catalog);
+    }
+
+    /// An idle check suspends evidence's own ticks and captures, opens its window once its settle
+    /// has passed, and at the window's end records what was drawn in it and captures the frame.
+    #[test]
+    fn an_idle_check_suspends_evidence_and_records_its_window() {
+        let (mut editor, catalog, _, _) =
+            crate::app::testing::scripted(r#"[{"idle":{"settle_ms":500,"ms":1000}}]"#);
+        let _ = editor.next_step();
+        let idle = |editor: &Editor| editor.evidence.as_ref().unwrap().idle.is_some();
+        assert!(idle(&editor));
+        let _ = editor.evidence_update(EvidenceMessage::Tick);
+        let _ = editor.evidence_update(EvidenceMessage::Capture);
+        assert!(!editor.evidence.as_ref().unwrap().capture_pending);
+        // Early: nothing moves on.
+        let _ = editor.evidence_update(EvidenceMessage::IdleDeadline);
+        assert!(
+            editor
+                .evidence
+                .as_ref()
+                .unwrap()
+                .idle
+                .as_ref()
+                .unwrap()
+                .window
+                .is_none()
+        );
+        let observation = editor.evidence.as_mut().unwrap().idle.as_mut().unwrap();
+        observation.settle_until = Instant::now() - Duration::from_millis(1);
+        let _ = editor.evidence_update(EvidenceMessage::IdleDeadline);
+        let observation = editor.evidence.as_mut().unwrap().idle.as_mut().unwrap();
+        let window = observation.window.expect("the window opened");
+        assert!(window.until > Instant::now());
+        observation.window = Some(IdleWindow {
+            until: Instant::now() - Duration::from_millis(1),
+            ..window
+        });
+        let _ = editor.evidence_update(EvidenceMessage::IdleDeadline);
+        assert!(!idle(&editor));
+        let check = &editor.evidence.as_ref().unwrap().current.as_ref().unwrap()["idle_check"];
+        assert_eq!(check["passed"], json!(true), "{check}");
+        assert_eq!(check["drawn_frames_delta"], json!(0));
+        assert!(
+            check["process_cpu_percent_one_core"].as_f64().is_some(),
+            "the window's CPU is recorded where the platform reports it: {check}"
+        );
+        assert!(editor.evidence.as_ref().unwrap().capture_pending);
         crate::app::testing::finish(editor, catalog);
     }
 
@@ -4914,6 +5384,7 @@ mod tests {
             frames: Vec::new(),
             capture_pending: false,
             view_idle: None,
+            idle: None,
             allow_unready_capture: false,
             capture_overlay: false,
             saving: false,
@@ -4924,6 +5395,7 @@ mod tests {
             tools_scroll: None,
             capability_wait: None,
             wait_until: None,
+            warm_wait: None,
             agent: None,
             agent_wait: None,
             long_work_wait: None,
@@ -4931,6 +5403,7 @@ mod tests {
             grid_scroll: None,
             sync: CaptureSync::default(),
             recorded: Recorded::default(),
+            gpu_identity: None,
         });
         editor.activity.requested = 1;
 
@@ -5183,6 +5656,32 @@ mod tests {
         assert!(!editor.performance.expanded);
         assert!(evidence(&editor).capture_pending);
         assert_eq!(editor.performance.requested, 1, "closing asks for nothing");
+        finish(editor, catalog);
+    }
+
+    #[test]
+    fn a_performance_cancel_step_waits_for_the_buttons_own_command_answer() {
+        let (mut editor, catalog, _, _) = scripted(r#"[{"performance_cancel":{"row":0}}]"#);
+        let job_id = luxforge_core::JobId::new();
+        editor
+            .performance
+            .history
+            .push(luxforge_core::resources::read(
+                &luxforge_core::RenderContext::new(),
+            ));
+        editor.long_work.state.observe(
+            serde_json::from_value(json!({"sequence":1,"active":[{"id":1,"kind":"module.task","label":"Running task","job_id":job_id,"elapsed_ms":1600}],"recent":[],"untracked":0})).unwrap(),
+        );
+        editor.rederive();
+        let _ = editor.next_step();
+        assert_eq!(evidence(&editor).awaiting, Some(Settle::PerformanceCancel));
+        assert!(!evidence(&editor).capture_pending);
+        let _ = editor.update(Message::Performance(PerformanceMessage::Cancelled {
+            job_id,
+            result: Ok(json!({"status":"cancelled"})),
+        }));
+        assert!(evidence(&editor).capture_pending);
+        assert_eq!(editor.status.text, "Background job cancelled");
         finish(editor, catalog);
     }
 

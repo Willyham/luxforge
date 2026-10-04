@@ -497,6 +497,10 @@ fn plain<'a>(
     let (clipping, coverage) = (surfaces.clipping, surfaces.coverage);
     let mask_draft = surfaces.mask_draft;
     let mask_map = surfaces.mask_map;
+    let gpu = surfaces.gpu;
+    let (gpu_hold, gpu_tag, gpu_warm) = (surfaces.gpu_hold, surfaces.gpu_tag, surfaces.gpu_warm);
+    let gpu_change = surfaces.gpu_change;
+    let dissolve = surfaces.dissolve;
     match model.zoom {
         ZoomView::Fit => {
             let Some(raster) = raster else {
@@ -516,6 +520,12 @@ fn plain<'a>(
                 // all fit these dimensions.
                 .exact_stage((width, height))
                 .overlays(clipping, coverage)
+                .gpu_preview(gpu)
+                .gpu_hold(gpu_hold)
+                .gpu_tag(gpu_tag)
+                .gpu_change(gpu_change)
+                .gpu_warm(gpu_warm)
+                .dissolve(dissolve)
                 .into();
                 // The open gesture's handles sit above the photograph and its overlays, mapped
                 // through the affine and the same contained rectangle the photograph is drawn into.
@@ -616,6 +626,15 @@ fn plain<'a>(
                         )
                         .overlays(clipping.filter(|_| whole), coverage.filter(|_| whole))
                         .region_overlays(surfaces.region_clipping, surfaces.region_coverage)
+                        // At 100% and above a gesture's plan draws the visible region at full
+                        // scale, placed at its rectangle of the stage, and settles into the
+                        // view's own frame through the dissolve.
+                        .gpu_preview(gpu)
+                        .gpu_hold(gpu_hold)
+                        .gpu_tag(gpu_tag)
+                        .gpu_change(gpu_change)
+                        .gpu_warm(gpu_warm)
+                        .dissolve(dissolve)
                         .into()
                     };
                 let handles = mask_draft
@@ -1261,6 +1280,12 @@ mod tests {
             mask_draft: None,
             mask_map: None,
             draft: None,
+            gpu: None,
+            gpu_hold: false,
+            gpu_tag: None,
+            gpu_change: None,
+            dissolve: None,
+            gpu_warm: None,
         };
         let model = CanvasModel {
             photo: PhotoView::Plain,

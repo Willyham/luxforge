@@ -95,8 +95,19 @@ pub(crate) type Globals = Arc<Vec<Option<Global>>>;
 pub(crate) struct WindowPlan {
     /// The rectangle of the whole proxy source the first segment reads.
     pub(crate) source: Region,
-    /// Per segment, the rectangle of its output stage that is kept.
-    outputs: Vec<Region>,
+    /// Per segment, what is cut ([`SegmentCut`]).
+    cuts: Vec<SegmentCut>,
+}
+
+/// Where one segment of a [`WindowPlan`] is cut.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SegmentCut {
+    /// The rectangle of its output stage that is kept.
+    output: Region,
+    /// The rectangle of the whole stage it receives that its kept output reads through its exact
+    /// geometry: inside what its boundary's cut frame holds, which a spatial operation grows by
+    /// its halo and the CPU's tile grid.
+    read: Region,
 }
 
 /// The stage segment `index` reads: the source for the first, or the whole stage the boundary
@@ -127,11 +138,40 @@ impl WindowPlan {
 
     /// Plan a non-empty requested rectangle in the *uncut* output stage. Unlike the cropped-proxy
     /// convenience above, the final output may itself be cut even when the whole source is read.
-    /// Its original stage coordinates are kept in `outputs` for positional finish units.
+    /// Its original stage coordinates are kept in its cuts for positional finish units.
     pub(crate) fn of_rect(
         compiled: &Compiled,
         source: (u32, u32),
         requested: Region,
+    ) -> Result<Self, RegionFallback> {
+        Self::walk(compiled, source, requested, None)
+    }
+
+    /// [`Self::of_rect`] for a GPU preview's region whose boundary lies in segment `boundary`: the
+    /// CPU renders the boundary through the segments up to it, which are planned as the CPU cuts
+    /// them, and the GPU evaluates every boundary after it, each of whose windows is its output's
+    /// grown by its halo alone ([`super::Entry::plan_gpu_window`]). A spatial step evaluates every
+    /// pixel of the window it holds, so it needs no tile grid, which is the CPU's. Only
+    /// [`Self::reads`] of segments up to `boundary` and [`Self::apply_through`] to it are the
+    /// CPU's own cuts. A global estimate behind an earlier spatial layer is no refusal here: the
+    /// boundary's render reads one before the boundary from the estimate store alone
+    /// (`Render::region_boundary`), and the plan carries its own for those after it.
+    pub(crate) fn of_gpu_rect(
+        compiled: &Compiled,
+        source: (u32, u32),
+        requested: Region,
+        boundary: usize,
+    ) -> Result<Self, RegionFallback> {
+        Self::walk(compiled, source, requested, Some(boundary))
+    }
+
+    /// The walk both plans share, back from the output: the entry of a segment after `gpu_after`
+    /// is planned for the GPU, every other as the CPU cuts it.
+    fn walk(
+        compiled: &Compiled,
+        source: (u32, u32),
+        requested: Region,
+        gpu_after: Option<usize>,
     ) -> Result<Self, RegionFallback> {
         let segments = &compiled.segments;
         let source = Stage {
@@ -146,7 +186,14 @@ impl WindowPlan {
         if requested.x1() > output.width || requested.y1() > output.height {
             return Err(RegionFallback::UnplannableGeometry);
         }
-        let mut outputs = vec![Region::whole(segments[count - 1].stage()); count];
+        let whole = Region::whole(segments[count - 1].stage());
+        let mut cuts = vec![
+            SegmentCut {
+                output: whole,
+                read: whole,
+            };
+            count
+        ];
         // What the segment being walked must produce, in its output stage's coordinates.
         let mut needed = requested;
         let mut read_source = None;
@@ -155,7 +202,7 @@ impl WindowPlan {
             if needed.is_empty() {
                 return Err(RegionFallback::UnplannableGeometry);
             }
-            outputs[index] = needed;
+            cuts[index].output = needed;
             let cut = needed != Region::whole(segment.stage());
             if cut && segment.has_pixels {
                 return Err(RegionFallback::PointReplacement);
@@ -165,21 +212,56 @@ impl WindowPlan {
             if read.x1() > input.width || read.y1() > input.height {
                 return Err(RegionFallback::UnplannableGeometry);
             }
+            cuts[index].read = read;
             match &segment.entry {
                 None => read_source = Some(read),
+                Some(entry) if gpu_after.is_some_and(|boundary| index > boundary) => {
+                    needed = entry.plan_gpu_window(read, segments[index - 1].stage())?;
+                }
+                // A GPU preview's boundary reads an estimate behind an earlier spatial layer from
+                // the estimate store, never from a reduction of the cut stage, so only the CPU's
+                // own region refuses one.
                 Some(entry) => {
                     needed = entry.plan_window(
                         read,
                         segments[index - 1].stage(),
-                        compiled.spatial_before(index),
+                        compiled.spatial_before(index) && gpu_after.is_none(),
                     )?;
                 }
             }
         }
         Ok(Self {
             source: read_source.ok_or(RegionFallback::UnplannableGeometry)?,
-            outputs,
+            cuts,
         })
+    }
+
+    /// The rectangle of the whole stage segment `segment` receives that its kept output reads: the
+    /// source's window for the first segment, and for a later one the part of its boundary's cut
+    /// frame inside that boundary's own margins, which a GPU preview's region boundary in it holds
+    /// ([`Self::of_gpu_rect`]).
+    pub(crate) fn reads(&self, segment: usize) -> Region {
+        self.cuts[segment].read
+    }
+
+    /// [`Self::reads`], when it is less than the whole stage segment `segment` of `compiled`
+    /// receives from a source of `source` dimensions; `None` when the segment reads all of it.
+    pub(crate) fn received_cut(
+        &self,
+        compiled: &Compiled,
+        source: (u32, u32),
+        segment: usize,
+    ) -> Option<Region> {
+        let whole = input_stage(
+            compiled.segments.get(..=segment)?,
+            segment,
+            Stage {
+                width: source.0,
+                height: source.1,
+            },
+        );
+        let received = self.reads(segment);
+        (received != Region::whole(whole)).then_some(received)
     }
 
     /// Rewrite `compiled`, the stack this plan was made from, to read a source of the window's
@@ -188,15 +270,30 @@ impl WindowPlan {
     /// one; it is asked nothing otherwise.
     pub(crate) fn apply(
         &self,
+        compiled: Compiled,
+        source: (u32, u32),
+        globals: impl FnMut(usize) -> Result<Vec<Option<Global>>, Error>,
+    ) -> Result<Compiled, Error> {
+        let last = compiled.segments.len().saturating_sub(1);
+        self.apply_through(compiled, source, last, globals)
+    }
+
+    /// [`Self::apply`] to segments `0..=last` alone, the rest left as they were compiled: what a
+    /// render that stops at segment `last` reads, such as a GPU preview's region boundary
+    /// ([`Self::of_gpu_rect`]), whose later segments the GPU evaluates and no CPU frame of the cut
+    /// compilation reaches. No estimate is asked for a segment past `last`.
+    pub(crate) fn apply_through(
+        &self,
         mut compiled: Compiled,
         source: (u32, u32),
+        last: usize,
         mut globals: impl FnMut(usize) -> Result<Vec<Option<Global>>, Error>,
     ) -> Result<Compiled, Error> {
         let source = Stage {
             width: source.0,
             height: source.1,
         };
-        if self.outputs.len() != compiled.segments.len() {
+        if self.cuts.len() != compiled.segments.len() || last >= compiled.segments.len() {
             return Err(Error::internal(
                 "a proxy window was planned for another compilation",
             ));
@@ -207,7 +304,7 @@ impl WindowPlan {
         let full_inputs: Vec<_> = (0..compiled.segments.len())
             .map(|index| input_stage(&compiled.segments, index, source))
             .collect();
-        for (index, whole_input) in full_inputs.iter().copied().enumerate() {
+        for (index, whole_input) in full_inputs.iter().copied().enumerate().take(last + 1) {
             // The window of the whole stage this segment reads: the source's, or the one its
             // boundary's cut frame holds ([`super::Entry::cut`]), read from the geometry the
             // segment composed before it is rebased below.
@@ -215,8 +312,8 @@ impl WindowPlan {
             let input = match &mut segment.entry {
                 None => self.source,
                 Some(entry) => {
-                    let read = segment.geometry.unmap_region(self.outputs[index]);
-                    entry.cut(read, self.outputs[index - 1], whole_input, || {
+                    let read = segment.geometry.unmap_region(self.cuts[index].output);
+                    entry.cut(read, self.cuts[index - 1].output, whole_input, || {
                         globals(index)
                     })?
                 }
@@ -232,7 +329,7 @@ impl WindowPlan {
                 );
                 segment.geometry = place.then(segment.geometry);
             }
-            let kept = self.outputs[index];
+            let kept = self.cuts[index].output;
             if kept != Region::whole(segment.stage()) {
                 segment.output_origin = (kept.x0, kept.y0);
                 let cut = ExactGeometry::crop(
@@ -1400,6 +1497,85 @@ mod tests {
         }
     }
 
+    /// A straightened crop behind a lens or perspective warp is fused into the warp's resample,
+    /// whose segment then writes the crop's stage: its windowed proxy is cut as any other crop's,
+    /// byte for byte the whole proxy stage's frame, tight or as wide as a 16:9 fit at 7°.
+    #[test]
+    fn a_crop_fused_into_a_warp_has_a_windowed_proxy() {
+        let context = RenderContext::new();
+        let registry = crate::render::warp_tests::registry();
+        let lens = layer(
+            "luxforge.lens.distortion",
+            json!({"terms": [-0.079, 0.0, 0.0]}),
+            None,
+        );
+        let perspective = layer(
+            crate::PERSPECTIVE_EFFECT,
+            json!({"horizontal": 20, "vertical": -10}),
+            None,
+        );
+        let basic = layer(BASIC_EFFECT, json!({"exposure": 0.5, "contrast": 25}), None);
+        let wide = Layer::crop(crate::render::tests::fitted_crop(
+            600,
+            400,
+            7.0,
+            [0.0, 0.0, 1.0, 1.0],
+        ));
+        let tight = crop(7.0, 0.42, 0.47, 0.14, 0.12);
+        let bounds = ProxyBounds {
+            width: 60,
+            height: 44,
+        };
+        for (domain, source) in [("jpeg", jpeg(600, 400)), ("raw", raw(600, 400))] {
+            for (name, warps) in [
+                ("lens", vec![lens.clone()]),
+                ("perspective", vec![perspective.clone()]),
+                (
+                    "lens and perspective",
+                    vec![lens.clone(), perspective.clone()],
+                ),
+            ] {
+                for (fit, crop) in [("tight", &tight), ("wide", &wide)] {
+                    let mut layers = vec![basic.clone()];
+                    layers.extend(warps.iter().cloned());
+                    layers.push(crop.clone());
+                    let stack = recipe(layers, Vec::new());
+                    let exact = exact(&context, &registry, &source, &stack);
+                    let fused = exact.compiled.segments.last().expect("a segment");
+                    assert!(
+                        fused.geometry.is_identity(fused.width, fused.height),
+                        "{domain} {name} {fit}: the fused segment's geometry is its own stage's"
+                    );
+                    let (plan, frame) =
+                        windowed_frame(&context, &registry, &source, &exact, &stack, bounds);
+                    let window = plan
+                        .window
+                        .expect("a straightened crop's proxy is windowed");
+                    if fit == "tight" {
+                        assert!(
+                            u64::from(window.width) * u64::from(window.height)
+                                < u64::from(plan.width) * u64::from(plan.height) / 4,
+                            "{domain} {name}: a {window:?} window of a {}x{} stage",
+                            plan.width,
+                            plan.height
+                        );
+                    }
+                    let whole = whole_frame(&context, &registry, &source, &stack, plan);
+                    assert_eq!(
+                        (frame.width, frame.height),
+                        (whole.width, whole.height),
+                        "{domain} {name} {fit}"
+                    );
+                    assert!(
+                        frame.rgba == whole.rgba,
+                        "{domain} {name} {fit}: the windowed proxy frame differs from the whole \
+                         stage's"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_cold_windowed_fit_proxy_uses_its_own_cancel_token_for_dehaze() {
         let registry = ModuleRegistry::builtin();
@@ -1649,6 +1825,56 @@ mod tests {
                     frame.rgba == reference.rgba,
                     "{domain} {index}: the windowed spatial proxy differs from the whole stage"
                 );
+            }
+        }
+    }
+
+    /// A window runs each spatial operation over its window as its own stage, whose edge blocks
+    /// are not the whole stage's, so it neither reads nor fills the store of reduced planes: not
+    /// in a context that holds nothing, and not in one that holds the whole proxy stage's planes,
+    /// where it writes the same bytes and leaves every counter as it was.
+    #[test]
+    fn a_windowed_render_neither_reads_nor_fills_the_reduced_planes() {
+        let registry = ModuleRegistry::builtin();
+        let bounds = ProxyBounds {
+            width: 120,
+            height: 80,
+        };
+        for presence in [json!({"dehaze": 30}), json!({"clarity": 45})] {
+            let stack = recipe(
+                vec![
+                    layer(PRESENCE_EFFECT, presence.clone(), None),
+                    crop(0.0, 0.72, 0.7, 0.16, 0.16),
+                ],
+                Vec::new(),
+            );
+            for (domain, source) in [("jpeg", jpeg(1200, 800)), ("raw", raw(1200, 800))] {
+                let case = format!("{presence} {domain}");
+                let empty = RenderContext::new();
+                let exact_render = exact(&empty, &registry, &source, &stack);
+                let (plan, cold) =
+                    windowed_frame(&empty, &registry, &source, &exact_render, &stack, bounds);
+                assert!(plan.window.is_some(), "{case}: a tight crop is windowed");
+                let counts = empty.reduced().counts();
+                assert_eq!(
+                    (
+                        counts.render_hits + counts.render_misses,
+                        counts.tile_hits + counts.tile_misses,
+                        counts.publishes,
+                    ),
+                    (0, 0, 0),
+                    "{case}: the window neither looks nor fills"
+                );
+
+                let held = RenderContext::new();
+                whole_frame(&held, &registry, &source, &stack, plan);
+                let before = held.reduced().counts();
+                assert_eq!(before.publishes, 1, "{case}: the whole proxy stage fills");
+                let exact_render = exact(&held, &registry, &source, &stack);
+                let (_, warm) =
+                    windowed_frame(&held, &registry, &source, &exact_render, &stack, bounds);
+                assert_eq!(held.reduced().counts(), before, "{case}: nothing read");
+                assert_eq!(warm.rgba, cold.rgba, "{case}");
             }
         }
     }

@@ -6,11 +6,14 @@
 //! the secret store is in memory.
 use super::{
     Boot, Editor,
-    capabilities::{poll, run},
+    capabilities::{Polled, capability_pass, capability_reads, read_job, run},
     evidence::Settle,
+    job_reads::{self, Pass, Reader},
     message::{Message, capability::CapabilityMessage, control::ControlMessage, sync::SyncMessage},
     tasks::{ACTOR, HostAnswer, REQUEST_NUMBER, Scope, call, refresh, request},
-    testing::{attach_log, import_and_adopt, logged},
+    testing::{
+        Followed, attach_log, derive_ran, idle_workers, import_and_adopt, logged, mark_no_derive,
+    },
 };
 use crate::{
     Config,
@@ -21,8 +24,9 @@ use crate::{
     },
 };
 use luxforge_core::{
-    AssetId, HostConfig, ModuleDescriptor, OwnerHandle, capabilities::secrets::MemorySecretStore,
-    jobs::JobStatus,
+    AssetId, HostConfig, ModuleDescriptor, OwnerHandle,
+    capabilities::secrets::MemorySecretStore,
+    jobs::{JobRecord, JobStatus},
 };
 use luxforge_testbase::{ProofEndpoint, wait_for, wait_until};
 use luxforge_testkit::proof_protocol;
@@ -127,17 +131,26 @@ impl Proof {
         }
     }
 
-    /// Poll the tracked live jobs, as the timer would, until none is left.
+    /// Read each tracked live job once, as a reader's pass would.
+    fn read_live(&self) -> Vec<(String, String, Result<JobRecord, String>)> {
+        self.editor
+            .capabilities
+            .live_jobs()
+            .into_iter()
+            .map(|(module, job)| {
+                let record = read_job(&self.editor.owner, self.editor.client, &job);
+                (module, job, record)
+            })
+            .collect()
+    }
+
+    /// Read the tracked live jobs, as the reader would, until none is left.
     fn finish_jobs(&mut self) {
         wait_until("every tracked job finishing", || {
             if !self.editor.capabilities.live() {
                 return true;
             }
-            let polled = poll(
-                &self.editor.owner,
-                self.editor.client,
-                self.editor.capabilities.live_jobs(),
-            );
+            let polled = self.read_live();
             self.send(CapabilityMessage::Polled(polled));
             self.answer();
             false
@@ -311,8 +324,8 @@ fn a_section_reads_its_settings_and_status_once_it_is_expanded() {
             )));
     }
     assert!(proof.editor.capability_started.is_empty());
-    // With nothing in flight there is no poll timer.
-    assert!(proof.editor.capability_poll_subscription().is_none());
+    // With nothing in flight there is no job reader.
+    assert!(proof.editor.capability_reader_subscription().is_none());
     proof.stop();
 }
 
@@ -460,7 +473,7 @@ fn consent_install_task_and_apply_go_through_the_notice_and_revoke_all_withdraws
     );
     assert_eq!(sent[1]["method"], "module.resource.install");
     assert!(proof.editor.capabilities.live(), "the install is followed");
-    assert!(proof.editor.capability_poll_subscription().is_some());
+    assert!(proof.editor.capability_reader_subscription().is_some());
     // The transfer lane reports its first progress asynchronously, and the download stays held at
     // the endpoint's palette gate until the test opens it, so the install is observed running.
     let installing = wait_for("the install reporting progress", || {
@@ -471,18 +484,14 @@ fn consent_install_task_and_apply_go_through_the_notice_and_revoke_all_withdraws
         {
             return Some(installing);
         }
-        let polled = poll(
-            &proof.editor.owner,
-            proof.editor.client,
-            proof.editor.capabilities.live_jobs(),
-        );
+        let polled = proof.read_live();
         proof.send(CapabilityMessage::Polled(polled));
         None
     });
     assert!(installing.state.starts_with("Installing"), "{installing:?}");
     proof.endpoint.palette().open();
     proof.finish_jobs();
-    assert!(proof.editor.capability_poll_subscription().is_none());
+    assert!(proof.editor.capability_reader_subscription().is_none());
     assert_eq!(proof.block().resources[0].state, "Installed");
     // The task sends the open asset and the ready profile, asks for the photo-data consent and,
     // once allowed, runs to a result Apply can commit.
@@ -669,10 +678,10 @@ fn a_task_result_belongs_to_its_asset_and_a_wrong_key_fails_the_job() {
     proof.stop();
 }
 
-/// A task's job that ends before the job poll reads it is reported by the next status read made for
-/// any other reason — the owner's wake when this desktop's own task ended, which reads the module
-/// again — and that read tracks the job as ended, which stops the poll. So the run takes its
-/// result from that read, and Apply offers it.
+/// A task's job that ends before the job reader reads it is reported by the next status read made
+/// for any other reason — the owner's wake when this desktop's own task ended, which reads the
+/// module again — and that read tracks the job as ended, which ends the reader. So the run takes
+/// its result from that read, and Apply offers it.
 #[test]
 fn a_task_run_takes_its_result_from_a_status_read_that_sees_its_job_end() {
     let mut proof = Proof::start();
@@ -688,12 +697,12 @@ fn a_task_run_takes_its_result_from_a_status_read_that_sees_its_job_end() {
     wait_until("the task's job", || {
         proof.api("job.read", json!({"job_id": job.job_id}))["status"] == "ready"
     });
-    // The read the event sync asks for, in place of the job poll.
+    // The read the event sync asks for, in place of the job reader.
     let _ = proof.editor.reload_capabilities();
     proof.answer();
     assert!(
         !proof.editor.capabilities.live(),
-        "the job is tracked as ended, so nothing polls it"
+        "the job is tracked as ended, so nothing reads it"
     );
     assert!(
         matches!(
@@ -738,6 +747,400 @@ fn a_cancel_goes_through_the_job_method() {
         &proof.state().tasks[TASK].phase,
         TaskPhase::Failed { code, .. } if code == "cancelled"
     ));
+    proof.stop();
+}
+
+/// While a task runs, its reader sends the desktop a record only when it has changed. The
+/// reader's first read of a job can answer the record the round trip that started it already
+/// tracked, and that read changes nothing: it skips the hooks and the derive. Progress and the
+/// job's end are changes: they take the full update and show in the block, against the real owner.
+#[test]
+fn a_job_read_that_changes_nothing_skips_the_hooks_and_the_derive() {
+    let mut proof = Proof::start();
+    proof.ready();
+    idle_workers(&mut proof.editor);
+    proof.endpoint.generation().shut();
+    proof.send(CapabilityMessage::RunTask {
+        module_id: MODULE.into(),
+        task: TASK.into(),
+    });
+    proof.answer();
+    proof.send(CapabilityMessage::Consent(true));
+    proof.answer();
+    assert!(matches!(
+        proof.task_control().state,
+        TaskControlState::Running { .. }
+    ));
+    assert!(proof.editor.capabilities.live());
+
+    // The first read settles what is held, whether or not it differed from the answer's own.
+    let polled = proof.read_live();
+    assert_eq!(polled.len(), 1);
+    proof.send(CapabilityMessage::Polled(polled.clone()));
+    proof.answer();
+
+    // The same read again, as a restarted reader's first read would be, changes nothing.
+    let updates = proof.editor.full_updates;
+    mark_no_derive(&proof.editor);
+    proof.send(CapabilityMessage::Polled(polled.clone()));
+    assert_eq!(
+        proof.editor.full_updates, updates,
+        "a read of what is held runs no hooks"
+    );
+    assert!(!derive_ran(&proof.editor), "and no derive");
+    assert_eq!(proof.editor.log.loop_timing.get().last_rederive_ms, 0.0);
+
+    // What counts as unchanged, read against what is held: an ended job, a read that failed, a
+    // job not tracked and any difference at all are not.
+    let polled_message = |polled: Vec<(String, String, Result<_, String>)>| {
+        Message::Capability(CapabilityMessage::Polled(polled))
+    };
+    let held = polled[0].2.clone().expect("the job's record");
+    let with = |record: Result<_, String>, module: &str| {
+        polled_message(vec![(module.to_owned(), polled[0].1.clone(), record)])
+    };
+    assert!(
+        proof
+            .editor
+            .job_read_changes_nothing(&with(Ok(held.clone()), MODULE))
+    );
+    let mut moved = held.clone();
+    moved.progress.fraction = Some(0.5);
+    let mut ended = held.clone();
+    ended.status = JobStatus::Ready;
+    for (case, message) in [
+        ("progress", with(Ok(moved.clone()), MODULE)),
+        ("an ended job", with(Ok(ended), MODULE)),
+        ("a failed read", with(Err("gone".into()), MODULE)),
+        (
+            "an untracked module",
+            with(Ok(held.clone()), "luxforge.other"),
+        ),
+    ] {
+        assert!(!proof.editor.job_read_changes_nothing(&message), "{case}");
+    }
+
+    // Progress takes the full update, and the block shows it.
+    let updates = proof.editor.full_updates;
+    mark_no_derive(&proof.editor);
+    proof.send(CapabilityMessage::Polled(vec![(
+        MODULE.into(),
+        polled[0].1.clone(),
+        Ok(moved),
+    )]));
+    assert_eq!(proof.editor.full_updates, updates + 1);
+    assert!(derive_ran(&proof.editor));
+    let TaskControlState::Running { text, .. } = proof.task_control().state else {
+        panic!("a running task: {:?}", proof.task_control().state);
+    };
+    assert!(text.contains("50%"), "{text}");
+
+    // The job's end comes from the reader the subscription starts, as a real run delivers it:
+    // each message it sends is applied, the end takes the full update and the run takes its
+    // outcome, and the reader ends with its job.
+    proof.endpoint.generation().open();
+    assert!(proof.editor.capability_reader_subscription().is_some());
+    let mut reader = Followed::new(capability_reads(&Reader {
+        identity: proof.editor.capabilities.live_jobs(),
+        owner: proof.editor.owner.clone(),
+        client: proof.editor.client,
+    }));
+    let mut sent = 0;
+    let mut ended_seen = false;
+    while let Some(message) = reader.next() {
+        sent += 1;
+        let ended = matches!(
+            &message,
+            Message::Capability(CapabilityMessage::Polled(polled))
+                if polled.iter().any(|(_, _, record)| record
+                    .as_ref()
+                    .is_ok_and(|record| record.status.is_finished()))
+        );
+        let updates = proof.editor.full_updates;
+        let _ = proof.editor.update(message);
+        if ended {
+            ended_seen = true;
+            assert!(
+                proof.editor.full_updates > updates,
+                "an ended job is a change"
+            );
+        }
+        proof.answer();
+    }
+    assert!(
+        ended_seen,
+        "the reader's last message was the job's end ({sent} sent)"
+    );
+    assert!(!proof.editor.capabilities.live());
+    assert!(
+        matches!(
+            proof.task_control().state,
+            TaskControlState::Succeeded { .. } | TaskControlState::Failed(_)
+        ),
+        "{:?}",
+        proof.task_control().state
+    );
+    proof.stop();
+}
+
+/// A tracked job as the owner would read it.
+fn job_at(job: &str, status: &str, fraction: Option<f64>) -> JobRecord {
+    serde_json::from_value(json!({
+        "job_id": job,
+        "kind": "task",
+        "status": status,
+        "progress": fraction.map_or(json!({}), |fraction| json!({"fraction": fraction})),
+        "module_id": MODULE,
+    }))
+    .unwrap()
+}
+
+/// Scripted owner answers by job, and the reads made of each.
+#[derive(Default)]
+struct Owned {
+    answers: std::collections::BTreeMap<String, Result<JobRecord, String>>,
+    reads: std::collections::BTreeMap<String, usize>,
+}
+
+impl Owned {
+    fn answer(&mut self, job: &str, answer: Result<JobRecord, String>) {
+        let _ = self.answers.insert(job.to_owned(), answer);
+    }
+
+    fn read(&mut self, job: &str) -> Result<JobRecord, String> {
+        *self.reads.entry(job.to_owned()).or_default() += 1;
+        self.answers[job].clone()
+    }
+}
+
+fn polled(pass: Pass<Message>) -> (Polled, bool) {
+    let (Pass::Send(Message::Capability(CapabilityMessage::Polled(entries)))
+    | Pass::Last(Message::Capability(CapabilityMessage::Polled(entries)))) = &pass
+    else {
+        panic!("a quiet pass");
+    };
+    (entries.clone(), matches!(pass, Pass::Last(_)))
+}
+
+/// A reader of capability jobs sends each job's first read, then only the entries that changed, in
+/// one message per pass: a pass in which no job changed sends nothing, and the entries the handler
+/// applies one by one are never repeated. A job's end is sent once and that job is read no more;
+/// the reader's last message is the end of the last job.
+#[test]
+fn a_capability_reader_sends_only_the_jobs_that_changed_and_stops_per_job() {
+    let owned = Arc::new(std::sync::Mutex::new(Owned::default()));
+    let (a, b) = ("job-aaaaaaaaaaaa", "job-bbbbbbbbbbbb");
+    {
+        let mut owned = owned.lock().unwrap();
+        owned.answer(a, Ok(job_at(a, "running", Some(0.1))));
+        owned.answer(b, Ok(job_at(b, "queued", None)));
+    }
+    let read = owned.clone();
+    let mut pass = capability_pass(
+        vec![(MODULE.into(), a.into()), (MODULE.into(), b.into())],
+        move |job| read.lock().unwrap().read(job),
+    );
+
+    // The first pass sends both, in the order the desktop tracks them.
+    let (entries, last) = polled(pass());
+    assert!(!last);
+    assert_eq!(
+        entries
+            .iter()
+            .map(|(module, job, record)| (module.as_str(), job.as_str(), record.is_ok()))
+            .collect::<Vec<_>>(),
+        [(MODULE, a, true), (MODULE, b, true)]
+    );
+
+    // Many passes of the same records send nothing.
+    for _ in 0..50 {
+        assert!(matches!(pass(), Pass::Quiet));
+    }
+
+    // Progress of one job sends that job alone.
+    owned
+        .lock()
+        .unwrap()
+        .answer(a, Ok(job_at(a, "running", Some(0.4))));
+    let (entries, last) = polled(pass());
+    assert!(!last);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].1, a);
+    assert_eq!(
+        entries[0].2.as_ref().unwrap().progress.fraction,
+        Some(0.4),
+        "the moved record"
+    );
+    assert!(matches!(pass(), Pass::Quiet));
+
+    // A job's end is sent once, alone, and that job is not read again.
+    owned
+        .lock()
+        .unwrap()
+        .answer(a, Ok(job_at(a, "ready", Some(1.0))));
+    let (entries, last) = polled(pass());
+    assert!(!last, "the other job is still live");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].1, a);
+    let reads_of_a = owned.lock().unwrap().reads[a];
+    for _ in 0..10 {
+        assert!(matches!(pass(), Pass::Quiet));
+    }
+    assert_eq!(
+        owned.lock().unwrap().reads[a],
+        reads_of_a,
+        "an ended job is read no more"
+    );
+
+    // A read that fails is the end of that job too, sent once; the reader stops with its last job.
+    owned.lock().unwrap().answer(b, Err("gone".into()));
+    let (entries, last) = polled(pass());
+    assert!(last, "no job is left to read");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].1, b);
+    assert_eq!(entries[0].2, Err("gone".to_owned()));
+}
+
+/// Two jobs that end in the same pass are sent in the same message, so the handler refreshes their
+/// module once, as it did when it was handed every job's read together.
+#[test]
+fn a_capability_reader_sends_jobs_that_end_together_in_one_message() {
+    let owned = Arc::new(std::sync::Mutex::new(Owned::default()));
+    let (a, b) = ("job-aaaaaaaaaaaa", "job-bbbbbbbbbbbb");
+    {
+        let mut owned = owned.lock().unwrap();
+        owned.answer(a, Ok(job_at(a, "running", None)));
+        owned.answer(b, Ok(job_at(b, "running", None)));
+    }
+    let read = owned.clone();
+    let mut pass = capability_pass(
+        vec![(MODULE.into(), a.into()), (MODULE.into(), b.into())],
+        move |job| read.lock().unwrap().read(job),
+    );
+    let _ = polled(pass());
+    {
+        let mut owned = owned.lock().unwrap();
+        owned.answer(a, Ok(job_at(a, "ready", Some(1.0))));
+        owned.answer(b, Ok(job_at(b, "cancelled", None)));
+    }
+    let (entries, last) = polled(pass());
+    assert!(last);
+    assert_eq!(entries.len(), 2);
+}
+
+/// The whole stream of a reader following two jobs: the update loop gets a message for each pass
+/// in which something changed and for no other. The first carries both jobs, the next only the job
+/// that moved, a failed read ends that job alone and the last job's end ends the stream, with
+/// each job read exactly as long as it was live.
+#[test]
+fn a_capability_reader_yields_a_message_only_for_a_pass_in_which_a_job_changed() {
+    let (a, b) = ("job-aaaaaaaaaaaa", "job-bbbbbbbbbbbb");
+    let reads = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<
+        String,
+        usize,
+    >::new()));
+    let counted = reads.clone();
+    // Job a runs unchanged for ten passes and is ready on the eleventh. Job b is queued for three,
+    // running for three and then cannot be read.
+    let mut stream = Followed::new(job_reads::reads(
+        std::time::Duration::from_micros(200),
+        capability_pass(
+            vec![(MODULE.into(), a.into()), (MODULE.into(), b.into())],
+            move |job| {
+                let mut counts = counted.lock().unwrap();
+                let pass = counts.entry(job.to_owned()).or_default();
+                *pass += 1;
+                match (job == a, *pass) {
+                    (true, 1..=10) => Ok(job_at(a, "running", Some(0.1))),
+                    (true, _) => Ok(job_at(a, "ready", Some(1.0))),
+                    (false, 1..=3) => Ok(job_at(b, "queued", None)),
+                    (false, 4..=6) => Ok(job_at(b, "running", None)),
+                    (false, _) => Err("gone".to_owned()),
+                }
+            },
+        ),
+    ));
+    let mut sent = Vec::new();
+    while let Some(message) = stream.next() {
+        let Message::Capability(CapabilityMessage::Polled(entries)) = message else {
+            panic!("the reader sent {message:?}");
+        };
+        sent.push(
+            entries
+                .into_iter()
+                .map(|(_, job, record)| {
+                    let state = match record {
+                        Ok(record) => format!("{:?}", record.status),
+                        Err(error) => error,
+                    };
+                    (job, state)
+                })
+                .collect::<Vec<_>>(),
+        );
+    }
+    let jobs = |entries: &[(&str, &str)]| -> Vec<(String, String)> {
+        entries
+            .iter()
+            .map(|(job, state)| ((*job).to_owned(), (*state).to_owned()))
+            .collect()
+    };
+    assert_eq!(
+        sent,
+        [
+            jobs(&[(a, "Running"), (b, "Queued")]),
+            jobs(&[(b, "Running")]),
+            jobs(&[(b, "gone")]),
+            jobs(&[(a, "Ready")]),
+        ]
+    );
+    let counts = reads.lock().unwrap();
+    assert_eq!(counts[a], 11, "a is read until its end");
+    assert_eq!(counts[b], 7, "b is read until its read failed");
+}
+
+/// The reader is identified by the set of live jobs: the same set, however often the desktop
+/// rebuilds its subscriptions, is the same reader, and a different set is another.
+#[test]
+fn a_capability_reader_is_identified_by_the_set_of_live_jobs() {
+    use iced::advanced::subscription::{Hasher, into_recipes};
+    use std::hash::Hasher as _;
+    let mut proof = Proof::start();
+    proof.ready();
+    assert!(proof.editor.capability_reader_subscription().is_none());
+    proof.endpoint.generation().shut();
+    proof.send(CapabilityMessage::RunTask {
+        module_id: MODULE.into(),
+        task: TASK.into(),
+    });
+    proof.answer();
+    proof.send(CapabilityMessage::Consent(true));
+    proof.answer();
+    let identity = |proof: &Proof| {
+        let mut recipes = into_recipes(
+            proof
+                .editor
+                .capability_reader_subscription()
+                .expect("a live job"),
+        );
+        assert_eq!(recipes.len(), 1);
+        let mut hasher = Hasher::default();
+        recipes.remove(0).hash(&mut hasher);
+        hasher.finish()
+    };
+    let first = identity(&proof);
+    assert_eq!(identity(&proof), first, "rebuilt, it is the same reader");
+    let polled = proof.read_live();
+    let mut moved = polled[0].2.clone().unwrap();
+    moved.progress.fraction = Some(0.5);
+    proof.send(CapabilityMessage::Polled(vec![(
+        MODULE.into(),
+        polled[0].1.clone(),
+        Ok(moved),
+    )]));
+    assert_eq!(identity(&proof), first, "a changed record is the same job");
+    proof.endpoint.generation().open();
+    proof.finish_jobs();
+    assert!(proof.editor.capability_reader_subscription().is_none());
     proof.stop();
 }
 

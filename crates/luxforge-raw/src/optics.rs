@@ -63,9 +63,14 @@ pub fn optical_ledger(metadata: &RawMetadata) -> OpticalLedger {
     ledger.interpretation.clone_from(&correction.interpretation);
     let declared = metadata.mode.dng_optics();
     for opcode in &correction.applied {
-        // The implemented optical operations all run in list 3. Report its ordinal, not its
-        // numeric TIFF tag.
-        let provenance = |name| format!("dng-opcode:list3:{name}");
+        // Report the processing stage rather than its numeric TIFF tag.
+        let list = match opcode.list {
+            51008 => 1,
+            51009 => 2,
+            51022 => 3,
+            _ => 0,
+        };
+        let provenance = |name| format!("dng-opcode:list{list}:{name}");
         match Opcode::implemented(opcode.list, opcode.id) {
             Some(Opcode::WarpRectilinear) => {
                 if declared.and_then(|optics| optics.warp_rectilinear)
@@ -123,6 +128,7 @@ mod tests {
             },
         });
         RawMetadata {
+            layout: crate::RawLayout::Mosaic,
             make: "Test".into(),
             model: "Camera".into(),
             mode: RawMode::from_id(mode).unwrap(),
@@ -240,6 +246,7 @@ mod tests {
                 "dng_corrections",
                 "exif_orientation",
                 "format_identity",
+                "layout",
                 "libraw_flip",
                 "libraw_inset",
                 "make",

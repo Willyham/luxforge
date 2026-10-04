@@ -353,6 +353,7 @@ impl Masking {
             .update(Message::View(ViewMessage::SetMode(mode.to_owned())));
         // A refused mode change sends no request, so the session is only asked when one was sent.
         if self.editor.status.text.starts_with("Apply or Cancel")
+            || self.editor.status.text.starts_with("Finish or cancel")
             || self.editor.status.text.starts_with("Finish or discard")
         {
             return;
@@ -521,6 +522,84 @@ impl Masking {
         self.assert_geometry_sent();
     }
 
+    /// Answer the selected gradient's resting handles' `render.transform`, as the runtime's task
+    /// does. Until it answers they are not drawn and a press on them waits.
+    fn rest_handles(&mut self) {
+        let id = self
+            .editor
+            .resting
+            .as_ref()
+            .expect("the selected gradient's handles rest on the canvas")
+            .id;
+        let (transform, _) = call(
+            &self.owner(),
+            self.editor.client,
+            "render.transform",
+            json!({"asset_id": self.asset}),
+        )
+        .unwrap();
+        let _ = self.editor.update(Message::Mask(MaskMessage::Transform(
+            id,
+            Ok(serde_json::from_value(transform).unwrap()),
+        )));
+        let resting = self
+            .editor
+            .resting
+            .as_ref()
+            .expect("the handles still rest");
+        assert!(!resting.stale() && resting.mask.map.is_some());
+    }
+
+    /// The selected gradient's resting shape.
+    fn resting_shape(&self) -> &MaskDraft {
+        &self
+            .editor
+            .resting
+            .as_ref()
+            .expect("resting handles")
+            .mask
+            .shape
+    }
+
+    /// Where one resting handle is drawn, in normalized content coordinates.
+    fn resting_handle(&self, handle: MaskHandle) -> (f64, f64) {
+        self.editor
+            .resting
+            .as_ref()
+            .expect("resting handles")
+            .mask
+            .shape
+            .handles()
+            .into_iter()
+            .find(|(known, _)| *known == handle)
+            .map(|(_, point)| point)
+            .unwrap_or_else(|| panic!("{handle:?} is drawn"))
+    }
+
+    /// Drag one resting handle by `by`, as a press, a move and a release on the canvas do. The press
+    /// opens the drag's draft and the release commits it: nothing presses Apply.
+    fn drag_resting(&mut self, handle: MaskHandle, by: (f64, f64)) {
+        let from = self.resting_handle(handle);
+        self.message(MaskMessage::Handle(MaskPointer::Begin {
+            handle,
+            x: from.0,
+            y: from.1,
+        }));
+        assert!(
+            self.editor.mask_gesture().is_some(),
+            "the press opened a draft: {}",
+            self.editor.status.text
+        );
+        self.assert_geometry_sent();
+        self.message(MaskMessage::Handle(MaskPointer::Drag {
+            x: from.0 + by.0,
+            y: from.1 + by.1,
+        }));
+        self.assert_geometry_sent();
+        self.message(MaskMessage::Handle(MaskPointer::End));
+        self.commit_open_draft();
+    }
+
     /// The gesture's newest geometry is already in its core draft.
     ///
     /// A mask gesture's `draft.set` runs synchronously on the desktop thread, in the update that
@@ -605,12 +684,24 @@ impl Masking {
         testing::answer_commit(&mut self.editor, Ok(Some(refreshed)));
     }
 
-    /// One whole shape drawn in a stroke, as a press and a drag on the photograph do.
-    fn sweep(&mut self, from: (f64, f64), to: (f64, f64)) {
+    /// One whole shape drawn in a stroke, as a press and a drag on the photograph do, with the
+    /// pointer still down: the gesture's draft is open and nothing is committed yet.
+    fn sweep_held(&mut self, from: (f64, f64), to: (f64, f64)) {
         self.message(MaskMessage::Handle(MaskPointer::Sweep { from, to }));
         self.assert_geometry_sent();
+    }
+
+    /// The pointer comes up on a gradient's drag, which commits it as one entry, as Lightroom's
+    /// does; the commit is answered here as its task does.
+    fn release(&mut self) {
         self.message(MaskMessage::Handle(MaskPointer::End));
-        self.assert_geometry_sent();
+        self.commit_open_draft();
+    }
+
+    /// One whole gradient drawn in a stroke and committed on its release.
+    fn sweep(&mut self, from: (f64, f64), to: (f64, f64)) {
+        self.sweep_held(from, to);
+        self.release();
     }
 
     /// Draw one whole gradient and commit it, which is what New mask does end to end.
@@ -618,7 +709,6 @@ impl Masking {
         self.message(MaskMessage::New(LINEAR.to_owned()));
         self.open_gesture();
         self.sweep((0.5, 0.2), (0.5, 0.8));
-        self.apply();
     }
 
     /// Add one component of that kind and mode to the open mask, through the Add row and the canvas
@@ -630,7 +720,6 @@ impl Masking {
         self.message(MaskMessage::Add(kind.to_owned()));
         self.open_gesture();
         self.sweep((0.25, 0.3), (0.7, 0.65));
-        self.apply();
         // The Add row is left where every other gesture leaves it, so a later New mask is not
         // refused by a mode this helper chose.
         self.message(MaskMessage::SetAddMode(crate::state::masks::mode_index(
@@ -825,7 +914,7 @@ fn mask_is_a_canvas_mode_and_leaving_it_with_an_open_gesture_is_refused() {
     masking.open_gesture();
     masking.set_mode(POINTER_MODE);
     assert!(
-        masking.editor.status.text.starts_with("Apply or Cancel"),
+        masking.editor.status.text.starts_with("Finish or cancel"),
         "{}",
         masking.editor.status.text
     );
@@ -850,7 +939,8 @@ fn mask_is_a_canvas_mode_and_leaving_it_with_an_open_gesture_is_refused() {
     assert!(!masking.editor.mask_mode_active());
 }
 
-/// A gradient drags as one draft and commits once, and its exact values are editable as numbers.
+/// A gradient is placed by one drag that is one draft, committed once on its release, and its exact
+/// values are editable as numbers.
 #[test]
 fn a_gradient_drags_as_one_draft_commits_once_and_is_editable_as_numbers() {
     let mut masking = Masking::opened();
@@ -859,10 +949,10 @@ fn a_gradient_drags_as_one_draft_commits_once_and_is_editable_as_numbers() {
 
     masking.message(MaskMessage::New(LINEAR.to_owned()));
     masking.open_gesture();
-    // One press, several moves and a release: the whole drag is one draft, so nothing is committed
-    // until Apply and no entry is written per move.
+    // One press, several moves and a release: the whole drag is one draft, so no entry is written
+    // per move, and the release commits it.
     masking.message(MaskMessage::Handle(MaskPointer::Begin {
-        handle: MaskHandle::End,
+        handle: MaskHandle::Extent,
         x: 0.5,
         y: 0.75,
     }));
@@ -870,12 +960,10 @@ fn a_gradient_drags_as_one_draft_commits_once_and_is_editable_as_numbers() {
         masking.message(MaskMessage::Handle(MaskPointer::Drag { x: 0.5, y }));
         masking.assert_geometry_sent();
     }
-    masking.message(MaskMessage::Handle(MaskPointer::End));
-    masking.assert_geometry_sent();
     assert_eq!(
         masking.editor.document.history.entries.len(),
         before,
-        "a drag committed something before Apply"
+        "a move committed something before the release"
     );
     // The number fields show the exact values the drag produced, to the declared precision.
     let fields = masking
@@ -891,7 +979,8 @@ fn a_gradient_drags_as_one_draft_commits_once_and_is_editable_as_numbers() {
     assert_eq!(fields[3].name, "y1");
     assert!(fields[3].text.starts_with("0.9"), "{fields:?}");
 
-    masking.apply();
+    masking.release();
+    assert!(masking.editor.core_gesture().is_none());
     assert_eq!(
         masking.editor.document.history.entries.len(),
         before + 1,
@@ -910,12 +999,11 @@ fn a_gradient_drags_as_one_draft_commits_once_and_is_editable_as_numbers() {
         Some(&mask.id)
     );
 
-    // A typed field is the same edit as a drag: the draft accepts it and refuses what the declared
-    // range refuses, so no gesture is reachable only by pointer.
-    masking.message(MaskMessage::EditShape(
-        mask.components[0].id.as_str().to_owned(),
-    ));
+    // A field typed while a drag is open is the same edit as the drag: the draft accepts it and
+    // refuses what the declared range refuses.
+    masking.message(MaskMessage::New(LINEAR.to_owned()));
     masking.open_gesture();
+    masking.sweep_held((0.5, 0.2), (0.5, 0.8));
     masking.message(MaskMessage::Field {
         name: "y1".into(),
         value: 0.5,
@@ -944,11 +1032,162 @@ fn a_gradient_drags_as_one_draft_commits_once_and_is_editable_as_numbers() {
         0.5,
         "a value outside the declared range changes nothing"
     );
-    masking.apply();
+    masking.release();
     assert_eq!(
-        masking.listing().masks[0].components[0].payload["y1"],
+        masking.listing().masks[1].components[0].payload["y1"],
         json!(0.5)
     );
+}
+
+/// A committed gradient keeps its handles, as Lightroom's do: the new component is selected, its
+/// handles rest on the canvas without holding a draft or the other controls, and each drag of them
+/// is one draft committed on release as one entry, after which they rest on what was committed.
+#[test]
+fn a_committed_gradient_keeps_its_handles_and_each_drag_is_one_entry() {
+    for (kind, anchor) in [(LINEAR, MaskHandle::Middle), (RADIAL, MaskHandle::Centre)] {
+        let mut masking = Masking::opened();
+        masking.enter_mask_mode();
+        masking.message(MaskMessage::New(kind.to_owned()));
+        masking.open_gesture();
+        masking.sweep((0.4, 0.3), (0.6, 0.7));
+        let report = masking.listing().masks[0].clone();
+        let component = report.components[0].id.clone();
+        assert_eq!(
+            masking.editor.mask_panel.selected_component.as_ref(),
+            Some(&component),
+            "the {kind} just drawn is selected"
+        );
+        // The handles rest on the stored payload, holding no draft and owning no control, and are
+        // drawn once their content map answers.
+        assert!(masking.editor.core_gesture().is_none());
+        assert!(masking.editor.held_mask().is_none());
+        assert!(masking.editor.mask_tool_refusal().is_none());
+        assert!(masking.editor.drawn_mask().unwrap().map.is_none());
+        masking.rest_handles();
+        let drawn = &masking.editor.drawn_mask().unwrap().shape;
+        assert!(drawn.direct());
+        for (name, value) in drawn.values() {
+            assert_eq!(report.components[0].payload[name], json!(value), "{name}");
+        }
+
+        // Moving the whole figure is one draft and one entry, committed on release.
+        let before = masking.labels();
+        let stored = report.components[0].payload.clone();
+        masking.drag_resting(anchor, (0.1, 0.05));
+        assert_eq!(masking.labels().len(), before.len() + 1, "{kind}");
+        assert!(masking.editor.core_gesture().is_none());
+        let moved = masking.listing().masks[0].components[0].clone();
+        assert_eq!(moved.id, component, "a drag patches the component");
+        let shift = |name: &str, by: f64| {
+            let delta = moved.payload[name].as_f64().unwrap() - stored[name].as_f64().unwrap();
+            assert!((delta - by).abs() < 1e-9, "{kind} {name} moved by {delta}");
+        };
+        if kind == LINEAR {
+            shift("x0", 0.1);
+            shift("x1", 0.1);
+            shift("y0", 0.05);
+            shift("y1", 0.05);
+        } else {
+            shift("x", 0.1);
+            shift("y", 0.05);
+            shift("radius_x", 0.0);
+            shift("radius_y", 0.0);
+        }
+
+        // The handles come back to rest on what was committed, and drag again.
+        let resting = masking
+            .editor
+            .resting
+            .as_ref()
+            .expect("the handles rest again");
+        for (name, value) in resting.mask.shape.values() {
+            assert_eq!(moved.payload[name], json!(value), "{name}");
+        }
+        assert!(resting.stale(), "the new entry's map is asked for again");
+        masking.rest_handles();
+        let reshape = if kind == LINEAR {
+            MaskHandle::End
+        } else {
+            MaskHandle::RadiusPlusX
+        };
+        masking.drag_resting(reshape, (0.05, 0.0));
+        assert_eq!(masking.labels().len(), before.len() + 2, "{kind}");
+    }
+}
+
+/// Opening a mask selects its first gradient, whose handles then rest on the canvas, as Lightroom
+/// shows an opened mask's; a mask with no gradient opens with nothing selected.
+#[test]
+fn opening_a_mask_selects_its_first_gradient() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+    masking.message(MaskMessage::Paint(PaintTarget::NewMask));
+    masking.open_gesture();
+    masking.paint(&[(0.2, 0.2), (0.4, 0.3)]);
+    let listing = masking.listing();
+    let (gradient, brush) = (listing.masks[0].clone(), listing.masks[1].clone());
+
+    masking.message(MaskMessage::Select(gradient.id.to_string()));
+    assert!(
+        !masking.editor.armed_brush(),
+        "opening a mask puts the brush down"
+    );
+    assert_eq!(
+        masking.editor.mask_panel.selected_component.as_ref(),
+        Some(&gradient.components[0].id)
+    );
+    assert!(masking.editor.resting.is_some(), "its handles rest");
+    masking.rest_handles();
+
+    masking.message(MaskMessage::Select(brush.id.to_string()));
+    assert_eq!(masking.editor.mask_panel.selected_component, None);
+    assert!(masking.editor.resting.is_none());
+}
+
+/// A press on a resting handle that moves nothing writes no entry, a press waits for a map of the
+/// stack on screen, and the handles rest only on a selected gradient in Mask mode.
+#[test]
+fn resting_handles_follow_the_selection_and_a_still_press_writes_nothing() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.message(MaskMessage::New(RADIAL.to_owned()));
+    masking.open_gesture();
+    masking.sweep((0.4, 0.4), (0.6, 0.6));
+    let component = masking.listing().masks[0].components[0].id.clone();
+    let before = masking.labels();
+
+    // Before the map answers, a press is placed by nothing and waits.
+    masking.message(MaskMessage::Handle(MaskPointer::Begin {
+        handle: MaskHandle::Centre,
+        x: 0.4,
+        y: 0.4,
+    }));
+    assert!(masking.editor.core_gesture().is_none());
+    assert_eq!(masking.editor.status.text, "Waiting for mask coordinates");
+
+    masking.rest_handles();
+    let centre = masking.resting_handle(MaskHandle::Centre);
+    masking.message(MaskMessage::Handle(MaskPointer::Begin {
+        handle: MaskHandle::Centre,
+        x: centre.0,
+        y: centre.1,
+    }));
+    assert!(masking.editor.core_gesture().is_some());
+    masking.message(MaskMessage::Handle(MaskPointer::End));
+    assert!(masking.editor.core_gesture().is_none());
+    assert!(masking.editor.session.draft.is_none());
+    assert_eq!(masking.labels(), before, "a still press is not an edit");
+    assert!(masking.editor.resting.is_some());
+
+    // Clearing the selection takes the handles away, and selecting the row again rests them.
+    masking.message(MaskMessage::SelectComponent(String::new()));
+    assert!(masking.editor.resting.is_none());
+    masking.message(MaskMessage::SelectComponent(component.to_string()));
+    assert!(masking.editor.resting.is_some());
+    // Outside Mask mode nothing rests on the canvas.
+    masking.set_mode(luxforge_core::POINTER_MODE);
+    assert!(masking.editor.resting.is_none());
 }
 
 /// Selecting a mask shows its component list and, beneath it, the generated sections of the
@@ -1158,14 +1397,7 @@ fn the_panel_shows_the_familys_refusals_instead_of_offering_them() {
     )));
     masking.message(MaskMessage::Add(LINEAR.to_owned()));
     masking.open_gesture();
-    masking.message(MaskMessage::Handle(MaskPointer::Sweep {
-        from: (0.2, 0.5),
-        to: (0.8, 0.5),
-    }));
-    masking.assert_geometry_sent();
-    masking.message(MaskMessage::Handle(MaskPointer::End));
-    masking.assert_geometry_sent();
-    masking.apply();
+    masking.sweep((0.2, 0.5), (0.8, 0.5));
     let panel = &masking.editor.workspace.masks;
     assert_eq!(panel.components.len(), 2);
     assert_eq!(panel.components[1].mode, ComponentMode::Subtract.as_str());
@@ -1277,16 +1509,14 @@ fn new_gradients_are_unplaced_and_cancel_without_a_draft_or_history() {
         let shape = masking.editor.mask_shape().expect("the tool is armed");
         assert!(shape.unplaced() && shape.handles().is_empty() && shape.fields().is_empty());
         assert!(masking.editor.gesture.is_none() && masking.editor.session.draft.is_none());
-        assert!(
-            !masking
-                .editor
-                .workspace
-                .canvas
-                .draft_bar
-                .as_ref()
-                .expect("placement bar")
-                .can_apply
-        );
+        let bar = masking
+            .editor
+            .workspace
+            .canvas
+            .draft_bar
+            .clone()
+            .expect("placement bar");
+        assert!(bar.done && bar.apply_reason.is_none(), "{bar:?}");
         for (x, y) in [
             (0.3, 0.3),
             (0.3 + 1e-7, 0.3 + 1e-7),
@@ -1300,7 +1530,6 @@ fn new_gradients_are_unplaced_and_cancel_without_a_draft_or_history() {
             }));
             masking.message(MaskMessage::Handle(MaskPointer::Drag { x, y }));
             masking.message(MaskMessage::Handle(MaskPointer::End));
-            masking.draft(DraftMessage::Commit);
             assert!(masking.editor.gesture.is_none());
             assert!(masking.editor.session.draft.is_none());
             let shape = masking
@@ -1309,7 +1538,8 @@ fn new_gradients_are_unplaced_and_cancel_without_a_draft_or_history() {
                 .expect("invalid extent retains the tool");
             assert!(shape.unplaced() && shape.handles().is_empty() && shape.fields().is_empty());
         }
-        masking.draft(DraftMessage::Cancel);
+        // Done with nothing placed puts the tool down and sends nothing.
+        masking.draft(DraftMessage::Commit);
         assert!(masking.editor.mask_shape().is_none());
         assert!(masking.labels().is_empty() && masking.listing().masks.is_empty());
     }
@@ -1321,6 +1551,7 @@ fn creating_a_mask_locks_unrelated_controls_and_unlocks_after_first_stroke() {
     masking.enter_mask_mode();
     masking.draw_mask();
     let previous = masking.editor.mask_panel.selected_mask.clone();
+    let previous_component = masking.editor.mask_panel.selected_component.clone();
     masking.message(MaskMessage::Paint(PaintTarget::NewMask));
     masking.open_gesture();
     assert!(!masking.editor.workspace.masks.enabled);
@@ -1332,10 +1563,11 @@ fn creating_a_mask_locks_unrelated_controls_and_unlocks_after_first_stroke() {
         ComponentMode::Subtract,
     )));
     assert_eq!(masking.editor.mask_panel.mode, ComponentMode::Add);
-    masking.message(MaskMessage::SelectComponent(
-        masking.listing().masks[0].components[0].id.to_string(),
-    ));
-    assert!(masking.editor.mask_panel.selected_component.is_none());
+    masking.message(MaskMessage::SelectComponent(String::new()));
+    assert_eq!(
+        masking.editor.mask_panel.selected_component, previous_component,
+        "the creation refuses a selection change"
+    );
     let _ = masking
         .editor
         .control_moved("set-basic".into(), "exposure".into(), json!(1.0));
@@ -1419,7 +1651,9 @@ fn selecting_another_mask_puts_down_the_old_brush_and_clears_hover() {
     masking.create_mask_through_the_api();
     let second = masking.listing().masks[1].id.clone();
     masking.message(MaskMessage::Select(first.id.to_string()));
-    masking.message(MaskMessage::EditShape(first.components[0].id.to_string()));
+    masking.message(MaskMessage::Paint(PaintTarget::Component(
+        first.components[0].id.to_string(),
+    )));
     masking.open_gesture();
     masking.editor.mask_panel.hovered_component = Some(first.components[0].id.clone());
     masking.message(MaskMessage::Select(second.to_string()));
@@ -1446,7 +1680,9 @@ fn an_active_stroke_refuses_mask_selection_until_cancelled() {
     masking.create_mask_through_the_api();
     let second = masking.listing().masks[1].id.clone();
     masking.message(MaskMessage::Select(first.id.to_string()));
-    masking.message(MaskMessage::EditShape(first.components[0].id.to_string()));
+    masking.message(MaskMessage::Paint(PaintTarget::Component(
+        first.components[0].id.to_string(),
+    )));
     masking.open_gesture();
     masking.message(MaskMessage::Handle(MaskPointer::PaintBegin {
         x: 0.3,
@@ -1454,7 +1690,7 @@ fn an_active_stroke_refuses_mask_selection_until_cancelled() {
     }));
     masking.message(MaskMessage::Select(second.to_string()));
     assert_eq!(masking.editor.mask_panel.selected_mask, Some(first.id));
-    assert!(masking.editor.status.text.contains("Apply or Cancel"));
+    assert!(masking.editor.status.text.contains("Finish or cancel"));
     masking.draft(DraftMessage::Cancel);
     masking.message(MaskMessage::Select(second.to_string()));
     assert_eq!(masking.editor.mask_panel.selected_mask, Some(second));
@@ -1798,6 +2034,8 @@ fn hovering_a_row_shows_that_components_contribution_and_leaving_restores_the_ma
     masking.message(MaskMessage::ToggleOverlay);
     let listed = masking.listing().masks[0].clone();
     let second = listed.components[1].id.clone();
+    // The gradient just added is selected, so its handles rest; the rows below are about hover.
+    masking.message(MaskMessage::SelectComponent(String::new()));
 
     let covering = |component: Option<&ComponentId>| {
         Some(MaskCoverageTarget::Existing {
@@ -2198,7 +2436,6 @@ fn the_add_row_chooses_the_mode_before_the_gesture() {
         assert!(shape.fields().is_empty());
         masking.open_gesture();
         masking.sweep((0.3, 0.3), (0.7, 0.7));
-        masking.apply();
         let listed = masking.listing().masks[0].clone();
         let added = listed.components.last().expect("the component was added");
         assert_eq!(added.mode, mode, "the gesture created a {mode:?} component");
@@ -2221,23 +2458,23 @@ fn a_radial_drags_as_one_draft_commits_once_and_matches_its_number_fields() {
     assert!(aspect > 0.0 && aspect.is_finite(), "{aspect}");
 
     masking.sweep((0.5, 0.5), (0.75, 0.8));
-    // Every handle is where the panel's own fields say it is, at every step of the drag.
-    let handles: Vec<_> = masking.editor.mask_shape().expect("a gesture").handles();
+    assert_eq!(
+        masking.editor.document.history.entries.len(),
+        before + 1,
+        "the placing drag is one history entry"
+    );
+    // The committed radial's handles rest on it. Every handle is where the panel's own fields say
+    // it is, at every step of its drag, and each drag is one more entry.
+    masking.rest_handles();
+    let handles: Vec<_> = masking.resting_shape().handles();
     assert_eq!(
         handles.len(),
         7,
         "four radii, a centre, a rotation grip and the ring"
     );
-    for (handle, _) in &handles {
-        let from = masking
-            .editor
-            .mask_shape()
-            .unwrap()
-            .handles()
-            .into_iter()
-            .find(|(known, _)| known == handle)
-            .map(|(_, point)| point)
-            .expect("the handle is drawn");
+    let mut drawn: Vec<(String, f64)> = Vec::new();
+    for (count, (handle, _)) in handles.iter().enumerate() {
+        let from = masking.resting_handle(*handle);
         masking.message(MaskMessage::Handle(MaskPointer::Begin {
             handle: *handle,
             x: from.0,
@@ -2251,24 +2488,22 @@ fn a_radial_drags_as_one_draft_commits_once_and_matches_its_number_fields() {
             masking.assert_geometry_sent();
             masking.assert_fields_match_the_draft(&format!("{handle:?} {step:?}"));
         }
-        masking.message(MaskMessage::Handle(MaskPointer::End));
-        masking.assert_geometry_sent();
+        drawn = masking
+            .editor
+            .mask_shape()
+            .unwrap()
+            .values()
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), value))
+            .collect();
+        masking.release();
+        assert_eq!(
+            masking.editor.document.history.entries.len(),
+            before + 2 + count,
+            "the drag of {handle:?} is one history entry"
+        );
+        masking.rest_handles();
     }
-    // One drag of seven handles is still one draft, and the commit is one entry.
-    let drawn: Vec<(String, f64)> = masking
-        .editor
-        .mask_shape()
-        .unwrap()
-        .values()
-        .into_iter()
-        .map(|(name, value)| (name.to_owned(), value))
-        .collect();
-    masking.apply();
-    assert_eq!(
-        masking.editor.document.history.entries.len(),
-        before + 1,
-        "a shape gesture is one history entry"
-    );
     let listed = masking.listing().masks[0].clone();
     assert_eq!(listed.components.len(), 1);
     assert_eq!(listed.components[0].kind, RADIAL);
@@ -2305,16 +2540,17 @@ fn a_radial_drags_as_one_draft_commits_once_and_matches_its_number_fields() {
         );
     }
 
-    // Reopening the component starts from exactly the stored payload rather than a reconstruction.
-    masking.message(MaskMessage::EditShape(
-        listed.components[0].id.as_str().to_owned(),
-    ));
-    masking.open_gesture();
-    let reopened = masking.editor.mask_shape().expect("a gesture");
-    for (name, value) in reopened.values() {
+    // The resting handles start from exactly the stored payload rather than a reconstruction.
+    let resting = &masking
+        .editor
+        .resting
+        .as_ref()
+        .expect("resting handles")
+        .mask
+        .shape;
+    for (name, value) in resting.values() {
         assert_eq!(listed.components[0].payload[name], json!(value), "{name}");
     }
-    masking.draft(DraftMessage::Cancel);
 }
 
 /// The panel refuses rather than silently coercing, and says why each time: a first component that
@@ -2828,6 +3064,84 @@ fn painting_commits_one_entry_a_stroke_and_the_brush_keys_size_it() {
     );
 }
 
+/// A long stroke through the editor's own messages: every move that grows the path sends one
+/// `draft.set` whose fields it decimated and serialized once, and leaves the gesture drained with no
+/// frame of its own pending, its evidence reporting the fields it sent. A move into the cell before
+/// it decimates nothing and sends nothing. The stroke still commits one entry.
+#[test]
+fn a_long_stroke_builds_its_fields_once_per_move_and_reads_drained_between_moves() {
+    use crate::mask_draft::brush_counts;
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.message(MaskMessage::Paint(PaintTarget::NewMask));
+    masking.open_gesture();
+    let before = masking.labels().len();
+    let wave = |step: usize| {
+        let along = step as f64 / 600.0;
+        (0.1 + 0.8 * along, 0.5 + 0.25 * (along * 30.0).sin())
+    };
+    let (x, y) = wave(0);
+    masking.message(MaskMessage::Handle(MaskPointer::PaintBegin { x, y }));
+    masking.assert_geometry_sent();
+    tasks::owner_calls::take();
+    for step in 1..=400 {
+        brush_counts::take();
+        let (x, y) = wave(step);
+        masking.message(MaskMessage::Handle(MaskPointer::PaintTo { x, y }));
+        assert_eq!(
+            brush_counts::take(),
+            (1, 1),
+            "move {step} decimated and serialized its path once"
+        );
+        assert_eq!(
+            tasks::owner_calls::take()
+                .iter()
+                .filter(|method| *method == "draft.set")
+                .count(),
+            1,
+            "move {step} sent one draft.set"
+        );
+        let gesture = masking.editor.core_gesture().expect("the stroke is open");
+        assert!(
+            gesture.draft.drained() && !masking.editor.mask_frame_pending(),
+            "move {step}: nothing is in flight or waiting"
+        );
+        let held = masking
+            .editor
+            .mask_shape()
+            .map(|shape| Value::Object(shape.fields()))
+            .expect("the stroke's fields");
+        assert_eq!(gesture.draft.sent(), Some(&held), "move {step} sent them");
+        assert_eq!(masking.editor.draft_summary()["fields"], held);
+        let summary = masking.editor.mask_draft_summary();
+        assert_eq!(summary["stroke"]["captured"], step + 1);
+        assert_eq!(
+            summary["stroke"]["posted"],
+            held["points"].as_array().map(Vec::len).unwrap()
+        );
+    }
+    brush_counts::take();
+    let (x, y) = wave(400);
+    let cell = 1.0 / luxforge_core::path::COORDINATE_STEPS_PER_UNIT;
+    masking.message(MaskMessage::Handle(MaskPointer::PaintTo {
+        x: x + 0.1 * cell,
+        y,
+    }));
+    assert_eq!(
+        brush_counts::take(),
+        (0, 1),
+        "a move into the held cell decimates nothing"
+    );
+    assert!(
+        !tasks::owner_calls::take().contains(&"draft.set".to_owned()),
+        "and sends nothing"
+    );
+    masking.assert_geometry_sent();
+    masking.message(MaskMessage::Handle(MaskPointer::PaintEnd));
+    masking.commit_open_draft();
+    assert_eq!(masking.labels().len(), before + 1, "one stroke, one entry");
+}
+
 /// `mask.delete-stroke` is a forward edit and is presented as one: it appends an entry, removes only
 /// the stroke it names, and leaves every entry after that stroke exactly where it is.
 #[test]
@@ -3033,6 +3347,7 @@ fn an_answer_that_arrives_after_discard_presents_no_frame_and_leaves_no_draft() 
         draft_id,
         fields,
         Some((masking.asset.clone(), None)),
+        crate::app::gpu_preview::GpuAsk::Off,
     );
     assert!(late_set.is_ok(), "the owner accepts the geometry");
 
@@ -3247,7 +3562,7 @@ fn a_slider_gesture_is_refused_while_a_drawn_mask_gesture_is_open() {
     masking.enter_mask_mode();
     masking.message(MaskMessage::New(LINEAR.to_owned()));
     masking.open_gesture();
-    masking.sweep((0.2, 0.2), (0.8, 0.8));
+    masking.sweep_held((0.2, 0.2), (0.8, 0.8));
     let before = masking.editor.mask_shape().cloned();
     assert!(before.is_some() && !masking.editor.armed_brush());
     let _ =
@@ -3259,7 +3574,7 @@ fn a_slider_gesture_is_refused_while_a_drawn_mask_gesture_is_open() {
             .editor
             .status
             .text
-            .contains("Apply or Cancel the mask gesture"),
+            .contains("Finish or cancel the mask gesture"),
         "{}",
         masking.editor.status.text
     );
@@ -3294,7 +3609,7 @@ fn race_c_discard_during_a_commit_sends_no_racing_cancel() {
     masking.enter_mask_mode();
     masking.message(MaskMessage::New(LINEAR.to_owned()));
     masking.open_gesture();
-    masking.sweep((0.5, 0.2), (0.5, 0.8));
+    masking.sweep_held((0.5, 0.2), (0.5, 0.8));
     let log = attach_log(&mut masking.editor);
     masking.draft(DraftMessage::Commit);
     // Discard while the commit is on its way.
@@ -3502,6 +3817,7 @@ fn cancelled_masked_adjustments_restore_committed_pixels_history_and_coverage() 
             held.draft_id,
             Value::Object(held.fields),
             Some((masking.asset.clone(), None)),
+            crate::app::gpu_preview::GpuAsk::Off,
         );
         assert!(
             late_set.is_ok(),
@@ -3605,7 +3921,7 @@ fn race_g_a_proxy_refit_waits_for_a_mask_gesture() {
     masking.enter_mask_mode();
     masking.message(MaskMessage::New(LINEAR.to_owned()));
     masking.open_gesture();
-    masking.sweep((0.5, 0.2), (0.5, 0.8));
+    masking.sweep_held((0.5, 0.2), (0.5, 0.8));
     masking.editor.view_state.window = (1440.0, 900.0);
     masking.editor.presentation.dimensions = Some((4000, 3000));
     masking.editor.session.preview.view.zoom = luxforge_core::Zoom::Fit;
@@ -3633,7 +3949,7 @@ fn every_start_answers_to_the_one_refusal() {
     masking.enter_mask_mode();
     masking.message(MaskMessage::New(LINEAR.to_owned()));
     masking.open_gesture();
-    masking.sweep((0.5, 0.2), (0.5, 0.8));
+    masking.sweep_held((0.5, 0.2), (0.5, 0.8));
     let open = masking.editor.mask_shape().cloned();
 
     let _ = masking
@@ -3641,36 +3957,36 @@ fn every_start_answers_to_the_one_refusal() {
         .control_moved("set-basic".to_owned(), "exposure".to_owned(), json!(0.2));
     assert_eq!(
         masking.editor.status.text,
-        "Apply or Cancel the mask gesture before editing a slider"
+        "Finish or cancel the mask gesture before editing a slider"
     );
     let _ = masking
         .editor
         .update(Message::History(HistoryMessage::CompareBegin));
     assert_eq!(
         masking.editor.status.text,
-        "Apply or Cancel the mask gesture before comparing with the original"
+        "Finish or cancel the mask gesture before comparing with the original"
     );
     let _ = masking.editor.update(Message::View(ViewMessage::SetMode(
         luxforge_core::POINTER_MODE.to_owned(),
     )));
     assert_eq!(
         masking.editor.status.text,
-        "Apply or Cancel the new mask gesture before using other controls"
+        "Finish or cancel the new mask gesture before using other controls"
     );
     let _ = masking
         .editor
         .update(Message::Crop(crate::app::message::crop::CropMessage::Start));
     assert_eq!(
         masking.editor.status.text,
-        "Apply or Cancel the mask gesture before cropping"
+        "Finish or cancel the mask gesture before cropping"
     );
     assert_eq!(
         masking.editor.gesture_refusal(Starting::Pick).as_deref(),
-        Some("Apply or Cancel the mask gesture before picking from the photograph")
+        Some("Finish or cancel the mask gesture before picking from the photograph")
     );
     assert_eq!(
         masking.editor.gesture_refusal(Starting::Preset).as_deref(),
-        Some("Apply or Cancel the mask gesture before applying a preset")
+        Some("Finish or cancel the mask gesture before applying a preset")
     );
     masking.editor.developer = true;
     let _ = masking
@@ -3693,29 +4009,25 @@ fn history_navigation_is_refused_while_a_mask_gesture_is_open() {
     masking.enter_mask_mode();
     masking.message(MaskMessage::New(LINEAR.to_owned()));
     masking.open_gesture();
-    masking.sweep((0.5, 0.2), (0.5, 0.8));
+    masking.sweep_held((0.5, 0.2), (0.5, 0.8));
     let entry = luxforge_core::EntryId::new();
     crate::app::history_tests::history_refused(
         &mut masking.editor,
         &entry,
-        "Apply or Cancel the mask gesture before undoing, redoing or restoring",
+        "Finish or cancel the mask gesture before undoing, redoing or restoring",
     );
 }
 
-/// A scripted release that ends a sweep where the sweep left it asks for no frame, so the step
-/// captures the next redraw instead of waiting for pixels nothing will render.
-///
-/// The draft driver sends only geometry the core draft does not already hold. The release after a
-/// sweep changes no geometry, so it sends no `draft.set` and no preview job; the step's evidence is
-/// the gesture no longer dragging, drawn on the next frame. Waiting for a preview there ran the
-/// `mask-linear` and `mask-combine` scenarios to their deadline.
+/// A scripted release that ends a sweep commits the gradient the sweep placed, re-sending no
+/// geometry the core draft already holds, and the step waits for the commit rather than capturing
+/// the next redraw.
 ///
 /// The overlay is turned Off while the sweep's coverage grid is still computing, which cancels it.
-/// A cancelled job keeps the worker busy until it returns but delivers nothing, so it is no frame
-/// the release waits for either. The worker is held at a gate so the release always runs while
+/// A cancelled job keeps the worker busy until it returns but delivers nothing, so the step waits
+/// for the commit and not for it. The worker is held at a gate so the release always runs while
 /// that job is still on it, whatever the host's load.
 #[test]
-fn a_release_that_changes_no_geometry_captures_the_next_redraw() {
+fn a_scripted_release_commits_the_swept_gradient_without_resending_geometry() {
     use crate::app::{
         mask_coverage::CoverageQueue,
         testing::{attach_log, attach_script, evidence, logged},
@@ -3736,8 +4048,6 @@ fn a_release_that_changes_no_geometry_captures_the_next_redraw() {
     }));
     masking.assert_geometry_sent();
     gate.wait_reached(1, "the sweep's coverage grid");
-    // This checks geometry-only release. Coverage that was still arriving would correctly keep
-    // the evidence step waiting for its evaluated grid instead of capturing before it is drawn.
     masking.message(MaskMessage::Overlay(0));
     assert!(
         masking.editor.coverage_worker.queue.is_busy(),
@@ -3747,25 +4057,26 @@ fn a_release_that_changes_no_geometry_captures_the_next_redraw() {
         !masking.editor.mask_coverage_pending(),
         "a cancelled grid is no coverage anything waits for"
     );
-    // The sweep's own preview can still be in flight here, and a step correctly waits for it;
-    // let it land so the release is judged alone.
+    // The sweep's own preview can still be in flight here; let it land so the release is judged
+    // alone.
     drain_queue(&mut masking);
-    let asked = masking.editor.presentation.preview_generation;
+    let before = masking.labels();
 
     attach_script(&mut masking.editor, r#"[{"mask":{"release":true}}]"#);
     let log = attach_log(&mut masking.editor);
     let _ = masking.editor.next_step();
-    assert_eq!(
-        masking.editor.presentation.preview_generation, asked,
-        "the release asked for no frame"
-    );
     let run = evidence(&masking.editor);
-    assert_eq!(run.awaiting, None, "nothing is waited for");
-    assert!(run.capture_pending, "the next redraw is the step's frame");
+    assert!(
+        run.awaiting.is_some() && !run.capture_pending,
+        "the step waits for the commit's frame"
+    );
     assert_eq!(
-        masking.editor.mask_draft_summary()["dragging"],
-        json!(false),
-        "and it shows the gesture released, still open for Apply"
+        masking
+            .editor
+            .core_gesture()
+            .and_then(|open| open.draft.in_flight()),
+        Some(Round::Commit),
+        "the release sent the commit"
     );
     gate.open();
     luxforge_testbase::wait_until("the cancelled grid returns", || {
@@ -3780,6 +4091,8 @@ fn a_release_that_changes_no_geometry_captures_the_next_redraw() {
         testing::events(&records, "mask_draft_set").is_empty(),
         "the release re-sent geometry the core draft already holds"
     );
+    masking.commit_open_draft();
+    assert_eq!(masking.labels().len(), before.len() + 1);
 }
 
 /// A released stroke's step settles on the committed frame while the brush goes back in hand.
@@ -3826,7 +4139,7 @@ fn a_generated_mask_command_is_refused_while_a_gesture_is_open() {
     masking.draw_mask();
     masking.message(MaskMessage::New(LINEAR.to_owned()));
     masking.open_gesture();
-    masking.sweep((0.2, 0.2), (0.8, 0.8));
+    masking.sweep_held((0.2, 0.2), (0.8, 0.8));
     let before = masking.editor.mask_shape().cloned();
     let submit = |masking: &mut Masking| {
         masking.editor.mask_panel.last_request = None;
@@ -3843,7 +4156,7 @@ fn a_generated_mask_command_is_refused_while_a_gesture_is_open() {
     assert!(!masking.editor.busy);
     assert_eq!(
         masking.editor.status.text,
-        "Apply or Cancel the mask gesture before editing a mask"
+        "Finish or cancel the mask gesture before editing a mask"
     );
     assert_eq!(masking.editor.mask_shape().cloned(), before);
     assert!(!masking.editor.gesture_conflicted());
@@ -4485,34 +4798,33 @@ fn a_mask_tool_shows_candidate_coverage_and_honours_explicit_o() {
         masking.editor.mask_coverage_target().is_none(),
         "an unplaced tool has no coverage"
     );
-    masking.sweep((0.5, 0.2), (0.5, 0.8));
+    masking.sweep_held((0.5, 0.2), (0.5, 0.8));
     assert_eq!(
         masking.editor.mask_coverage_target(),
         Some(MaskCoverageTarget::DraftCreated)
     );
-    masking.apply();
+    masking.release();
     assert_eq!(overlay_state(&masking), ("off".into(), "off".into(), false));
     let mask = masking.listing().masks[0].id.clone();
     let component = masking.listing().masks[0].components[0]
         .id
         .as_str()
         .to_owned();
-    masking.message(MaskMessage::EditShape(component));
-    masking.open_gesture();
+    // Resting handles are not a tool start, so the Off setting stays off until `O` turns it on.
+    masking.message(MaskMessage::SelectComponent(component));
+    masking.rest_handles();
+    assert!(masking.editor.mask_coverage_target().is_none());
+    masking.key("o", Modifiers::empty());
+    assert_eq!(
+        overlay_state(&masking),
+        ("tint".into(), "tint".into(), false)
+    );
     assert_eq!(
         masking.editor.mask_coverage_target(),
         Some(MaskCoverageTarget::Existing {
             mask: mask.clone(),
             component: None
         })
-    );
-    masking.key("o", Modifiers::empty());
-    assert_eq!(overlay_state(&masking), ("off".into(), "off".into(), false));
-    assert!(masking.editor.mask_coverage_target().is_none());
-    masking.key("o", Modifiers::empty());
-    assert_eq!(
-        overlay_state(&masking),
-        ("tint".into(), "tint".into(), false)
     );
     call(
         &masking.owner(),
@@ -4521,7 +4833,6 @@ fn a_mask_tool_shows_candidate_coverage_and_honours_explicit_o() {
         json!({"mask_overlay":"tint"}),
     )
     .expect("the visibility task persists its setting");
-    masking.draft(DraftMessage::Cancel);
     assert_eq!(
         overlay_state(&masking),
         ("tint".into(), "tint".into(), false),
@@ -4551,78 +4862,42 @@ fn a_mask_tool_shows_candidate_coverage_and_honours_explicit_o() {
     );
 }
 
-/// Editing a hidden eye initially shows the shape over an Off setting. The choice is automatic
-/// only: both O and the UI's Off choice stay hidden through subsequent field edits, and neither
-/// choice changes the eye or loses the existing component identity.
+/// Dragging a hidden gradient's resting handles is not a tool start: an Off overlay stays off and
+/// the eye stays hidden through the drag and its commit, and the component keeps its identity.
 #[test]
-fn editing_a_hidden_shape_shows_automatic_coverage_until_explicitly_hidden() {
-    for kind in [LINEAR, RADIAL] {
+fn dragging_a_hidden_gradient_keeps_its_overlay_hidden() {
+    for (kind, anchor) in [(LINEAR, MaskHandle::Middle), (RADIAL, MaskHandle::Centre)] {
         let mut masking = Masking::opened();
         masking.enter_mask_mode();
         masking.message(MaskMessage::New(kind.to_owned()));
         masking.open_gesture();
         masking.sweep((0.4, 0.4), (0.7, 0.7));
-        masking.apply();
         let report = masking.listing().masks[0].clone();
         let component = report.components[0].id.clone();
         masking.message(MaskMessage::ToggleVisible(report.id.to_string()));
         assert!(masking.editor.mask_panel.hidden.contains(&report.id));
         let before = masking.labels();
+        masking.rest_handles();
 
-        for use_key in [true, false] {
-            masking.message(MaskMessage::EditShape(component.to_string()));
-            masking.open_gesture();
-            assert_eq!(overlay_state(&masking), ("off".into(), "tint".into(), true));
-            assert_eq!(masking.editor.workspace.masks.overlay.selected, 1);
-            assert_eq!(
-                masking.editor.mask_coverage_target(),
-                Some(MaskCoverageTarget::Existing {
-                    mask: report.id.clone(),
-                    component: None,
-                }),
-                "automatic coverage shows the hidden {kind} being edited"
-            );
-            if use_key {
-                masking.key("o", Modifiers::empty());
-            } else {
-                masking.message(MaskMessage::Overlay(0));
-            }
-            assert_eq!(overlay_state(&masking), ("off".into(), "off".into(), false));
-            assert_eq!(masking.editor.workspace.masks.overlay.selected, 0);
-            assert!(masking.editor.mask_coverage_target().is_none());
-            if use_key {
-                // `O` again shows the held tool's own mask, whatever its eye says.
-                masking.key("o", Modifiers::empty());
-                assert_eq!(
-                    overlay_state(&masking),
-                    ("tint".into(), "tint".into(), false)
-                );
-                assert!(masking.editor.mask_coverage_target().is_some());
-                masking.key("o", Modifiers::empty());
-                assert!(masking.editor.mask_coverage_target().is_none());
-            }
-            masking.message(MaskMessage::Field {
-                name: if kind == LINEAR { "x0" } else { "x" }.into(),
-                value: 0.45,
-            });
-            assert!(masking.editor.mask_coverage_target().is_none());
-            assert_eq!(overlay_state(&masking), ("off".into(), "off".into(), false));
-            assert!(masking.editor.mask_panel.hidden.contains(&report.id));
-            assert_eq!(
-                masking.editor.mask_shape().unwrap().component,
-                Some(component.clone())
-            );
-            if use_key {
-                masking.draft(DraftMessage::Cancel);
-                assert_eq!(masking.labels(), before);
-            } else {
-                masking.apply();
-                assert_eq!(masking.labels().len(), before.len() + 1);
-            }
-            assert!(masking.editor.mask_panel.hidden.contains(&report.id));
-            assert!(masking.editor.mask_coverage_target().is_none());
-            assert_eq!(overlay_state(&masking), ("off".into(), "off".into(), false));
-        }
+        let from = masking.resting_handle(anchor);
+        masking.message(MaskMessage::Handle(MaskPointer::Begin {
+            handle: anchor,
+            x: from.0,
+            y: from.1,
+        }));
+        masking.message(MaskMessage::Handle(MaskPointer::Drag {
+            x: from.0 + 0.05,
+            y: from.1,
+        }));
+        assert!(masking.editor.mask_gesture().is_some());
+        assert_eq!(overlay_state(&masking), ("off".into(), "off".into(), false));
+        assert!(masking.editor.mask_coverage_target().is_none());
+        masking.message(MaskMessage::Handle(MaskPointer::End));
+        masking.commit_open_draft();
+        assert_eq!(masking.labels().len(), before.len() + 1);
+        assert!(masking.editor.mask_panel.hidden.contains(&report.id));
+        assert!(masking.editor.mask_coverage_target().is_none());
+        assert_eq!(overlay_state(&masking), ("off".into(), "off".into(), false));
         assert_eq!(masking.listing().masks[0].components[0].id, component);
     }
 }
@@ -4639,7 +4914,7 @@ fn an_evidence_tint_colour_choice_preserves_automatic_coverage() {
     masking.enter_mask_mode();
     masking.message(MaskMessage::New(LINEAR.to_owned()));
     masking.open_gesture();
-    masking.sweep((0.3, 0.3), (0.7, 0.7));
+    masking.sweep_held((0.3, 0.3), (0.7, 0.7));
     assert_eq!(overlay_state(&masking), ("off".into(), "tint".into(), true));
     attach_script(
         &mut masking.editor,
@@ -4741,7 +5016,18 @@ fn an_evidence_overlay_choice_rejects_a_grid_that_beats_its_session_answer() {
             json!({"mask_overlay":"tint"}),
         )
         .expect("the initial green Tint persists at the owner");
+        // Coverage already asked for is taken up first, and the paint slot is held across the
+        // refresh: the coverage it asks for completes after the message and waits here, rather
+        // than being adopted by the message itself when the host is busy.
+        luxforge_testbase::wait_until("earlier coverage is taken up", || {
+            let _ = masking
+                .editor
+                .update(Message::Preview(PreviewMessage::Poll));
+            !masking.editor.coverage_worker.queue.is_busy()
+        });
+        let painting = masking.editor.coverage_worker.queue.hold_painting();
         masking.refresh();
+        drop(painting);
         luxforge_testbase::wait_until("the old green coverage completes", || {
             masking.editor.coverage_worker.queue.ready()
         });
@@ -4860,17 +5146,17 @@ fn a_mask_gestures_status_line_names_it_and_the_strip_keeps_mask_selected() {
     };
 
     masking.message(MaskMessage::Add(RADIAL.to_owned()));
-    let line = "Mask mode · Mask 1 · Radial draft · Apply or Enter commits one entry";
+    let line = "Mask mode · Mask 1 · Radial · each drag is one entry";
     assert_eq!(masking.editor.status.text, line);
     masking.open_gesture();
-    masking.sweep((0.3, 0.3), (0.6, 0.6));
+    masking.sweep_held((0.3, 0.3), (0.6, 0.6));
     assert_eq!(
         masking.editor.mask_gesture_status().as_deref(),
         Some(line),
         "every drafted frame says the same"
     );
     assert!(mask_selected(&masking));
-    masking.apply();
+    masking.release();
     assert_eq!(masking.editor.mask_gesture_status(), None);
     assert!(mask_selected(&masking), "the mode outlives the gesture");
 
@@ -5294,7 +5580,9 @@ fn the_panel_keys_send_the_requests_their_rows_copy() {
         .as_str()
         .to_owned();
 
-    // `⌫` on a mask's only component is the host's refusal, stated, and nothing is sent.
+    // `⌫` on a mask's only component deletes the mask, which is what the row's menu offers in that
+    // position. The request is not run: the rest of this test edits the mask.
+    let expected = masking.request_for(&RowEdit::DeleteMask(mask.clone()));
     masking.message(MaskMessage::SelectComponent(only.clone()));
     masking.editor.mask_panel.last_request = None;
     named_key(
@@ -5303,12 +5591,9 @@ fn the_panel_keys_send_the_requests_their_rows_copy() {
         Modifiers::empty(),
         iced::event::Status::Ignored,
     );
-    assert!(masking.editor.mask_panel.last_request.is_none());
-    assert!(
-        masking.editor.status.text.contains("delete the mask"),
-        "{}",
-        masking.editor.status.text
-    );
+    assert_eq!(masking.sent(), Some(expected));
+    masking.editor.busy = false;
+    masking.editor.mask_panel.command_in_flight = false;
 
     // `X` inverts the selected component.
     let expected = masking.request_for(&RowEdit::ComponentInvert {
@@ -5485,7 +5770,6 @@ fn a_kind_menus_letters_start_its_kinds_while_it_is_open() {
     );
     masking.open_gesture();
     masking.sweep((0.5, 0.2), (0.5, 0.8));
-    masking.apply();
 
     // `R` with the Add menu open is the radial, not the crop's mode.
     open(&mut masking, MenuTarget::AddComponent);
@@ -5664,12 +5948,28 @@ fn a_script_opens_a_kind_menu_and_presses_an_eye() {
         .id
         .as_str()
         .to_owned();
-    masking.message(MaskMessage::EditShape(component));
+    masking.message(MaskMessage::SelectComponent(component));
+    masking.rest_handles();
+    assert_eq!(
+        masking.editor.snapshot()["draft_bar"],
+        Value::Null,
+        "resting handles hold no draft"
+    );
+    let middle = masking.resting_handle(MaskHandle::Middle);
+    masking.message(MaskMessage::Handle(MaskPointer::Begin {
+        handle: MaskHandle::Middle,
+        x: middle.0,
+        y: middle.1,
+    }));
     let bar = masking.editor.snapshot()["draft_bar"].clone();
     assert_eq!(bar["title"], json!("Mask 1"), "{bar}");
     assert_eq!(bar["subject"], json!("Linear 1 · Add"), "{bar}");
     assert_eq!(bar["kind"], json!(LINEAR), "{bar}");
-    assert_eq!(bar["done"], json!(false), "{bar}");
+    assert_eq!(
+        bar["done"],
+        json!(true),
+        "every mask gesture ends with Done: {bar}"
+    );
     let _ = masking.editor.update(Message::Draft(DraftMessage::Cancel));
 
     // An eye on a mask the listing does not hold fails its step with the reason.
@@ -5935,4 +6235,32 @@ fn the_coverage_overlay_of_a_curve_only_mask_reads_the_curve_layers_input() {
         "the global curve ahead of the masked one moves the input the mask reads, so the input is \
          the masked curve layer's and not the Basic layer's"
     );
+}
+
+/// At a percentage zoom the mask overlay's region coverage, which the coverage worker computes for
+/// each tick over the view's region, is laid over the GPU region frame, so an overlay shown does
+/// not keep a gesture on the CPU path: a new mask that no layer reads yet changes no pixel, which
+/// is the reason its ticks name, and asks for no boundary.
+#[test]
+fn a_percentage_mask_gesture_with_its_overlay_shown_is_kept_off_the_gpu_only_by_its_own_reason() {
+    let mut masking = Masking::opened();
+    luxforge_testbase::wait_until("the first frame", || {
+        let _ = masking
+            .editor
+            .update(Message::Preview(PreviewMessage::Poll));
+        masking.editor.presentation.dimensions.is_some()
+    });
+    masking.enter_mask_mode();
+    masking.editor.session.preview.view.zoom = luxforge_core::Zoom::Percent { value: 400.0 };
+    masking.message(MaskMessage::New(LINEAR.to_owned()));
+    masking.open_gesture();
+    masking.sweep_held((0.5, 0.2), (0.5, 0.8));
+    assert!(
+        masking.editor.mask_coverage_target().is_some(),
+        "the overlay is shown"
+    );
+    assert_eq!(masking.editor.gpu_plan_fallback(), Some("unchanged".into()));
+    assert_eq!(masking.editor.gpu.ticks().2, 0, "no boundary is asked for");
+    assert!(masking.editor.surfaces().gpu.is_none());
+    masking.draft(DraftMessage::Cancel);
 }

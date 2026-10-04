@@ -193,7 +193,7 @@ fn qualify_sample(sample: &ManifestSample) -> SampleResult {
         Err(e) => return failed_after(sample, format!("decode: {e}"), Some(before)),
     };
     let metadata = raw.metadata().clone();
-    let mosaic_sha256 = hash_u16(raw.mosaic());
+    let mosaic_sha256 = hash_u16(raw.source_samples());
     let as_shot = match raw.develop(metadata.as_shot_gains, &cancel) {
         Ok(image) => match plane_stats(image) {
             Ok(stats) => stats,
@@ -201,11 +201,21 @@ fn qualify_sample(sample: &ManifestSample) -> SampleResult {
         },
         Err(e) => return failed_after(sample, format!("as-shot develop: {e}"), Some(before)),
     };
-    let perturbed = [
+    let mut perturbed = [
         (metadata.as_shot_gains[0] * 1.05).min(32.0),
         1.0,
         (metadata.as_shot_gains[2] * 0.95).max(f32::MIN_POSITIVE),
     ];
+    if metadata.layout == luxforge_raw::RawLayout::Monochrome {
+        if raw.develop(perturbed, &cancel).is_ok() {
+            return failed_after(
+                sample,
+                "monochrome WB unexpectedly available".into(),
+                Some(before),
+            );
+        }
+        perturbed = [1.0; 3];
+    }
     let perturbed_wb = match raw.develop(perturbed, &cancel) {
         Ok(image) => match plane_stats(image) {
             Ok(stats) => stats,

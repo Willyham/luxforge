@@ -346,6 +346,7 @@ pub(crate) fn synthetic_raw_metadata() -> luxforge_raw::RawMetadata {
         height: 32,
     };
     RawMetadata {
+        layout: luxforge_raw::RawLayout::Mosaic,
         make: "Test".into(),
         model: "Camera".into(),
         mode: RawMode::from_id("NikonZ6Lossless14").unwrap(),

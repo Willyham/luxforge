@@ -115,6 +115,22 @@ fn native_hover_sweep_round_trips_and_bounds_its_work_and_duration() {
 }
 
 #[test]
+fn idle_step_round_trips_and_bounds_its_windows() {
+    let script = r#"[{"idle":{"settle_ms":500,"ms":1000}}]"#;
+    let steps = parse(script).expect("a valid idle check");
+    assert_eq!(
+        steps,
+        vec![Step::Idle(IdleStep {
+            settle_ms: 500,
+            ms: 1000
+        })]
+    );
+    assert_eq!(parse(&write(&steps).to_string()).unwrap(), steps);
+    assert!(parse(r#"[{"idle":{"settle_ms":0,"ms":1000}}]"#).is_err());
+    assert!(parse(r#"[{"idle":{"settle_ms":500,"ms":20000}}]"#).is_err());
+}
+
+#[test]
 fn view_idle_step_round_trips_and_bounds_its_deadline() {
     let script = r#"[{"view_idle":{"view":{"zoom":"fit"},"ms":1000}}]"#;
     let steps = parse(script).expect("a valid native idle probe");
@@ -223,6 +239,7 @@ fn api_draft_view_workspace_preview_palette_and_hover_round_trip() {
         {"wait":{"ms":1000}},
         {"pan":{"x":0.5,"y":1.0}},
         {"performance":{"expanded":true}},
+        {"performance_cancel":{"row":0}},
         {"gallery":{"page":8}},
         {"gallery":{"page":null}},
         {"tools_scroll":1.0},
@@ -246,9 +263,9 @@ fn api_draft_view_workspace_preview_palette_and_hover_round_trip() {
     );
     assert_eq!(steps[22], Step::Preview(PreviewStep::Current));
     assert_eq!(steps[25], Step::hover(12, 34));
-    assert_eq!(steps[31], Step::gallery(None));
+    assert_eq!(steps[32], Step::gallery(None));
     assert_eq!(
-        steps[33],
+        steps[34],
         Step::agent("edit.transform", json!({"transform":"rotate-right"}))
     );
     // An integer where a number is expected is the same number.
@@ -354,6 +371,10 @@ fn api_draft_view_workspace_preview_palette_and_hover_round_trip() {
         (json!({"pan":{"x":1.5,"y":0}}), "fraction from 0 to 1"),
         (json!({"pan":{"x":0,"y":0,"z":0}}), "unknown field `z`"),
         (json!({"performance":{}}), "missing field `expanded`"),
+        (
+            json!({"performance_cancel":{"row":4}}),
+            "performance_cancel row must be below 4",
+        ),
         (json!({"performance":{"expanded":1}}), "expected a boolean"),
         (
             json!({"performance":{"expanded":true,"module":"x"}}),
@@ -651,7 +672,6 @@ fn every_mask_verb_round_trips_its_script() {
         {"mask":{"select_component":null}},
         {"mask":{"hover":{"name":"Linear 1"}}},
         {"mask":{"hover":null}},
-        {"mask":{"edit_shape":0}},
         {"mask":{"mode":"subtract"}},
         {"mask":{"new":"linear"}},
         {"mask":{"add":"radial"}},
@@ -667,6 +687,7 @@ fn every_mask_verb_round_trips_its_script() {
         {"mask":{"sweep":{"from":[0.5,0.2],"to":[0.5,0.8]}}},
         {"mask":{"release":true}},
         {"mask":{"drag":{"handle":"radius+x","points":[[0.4,0.4],[0.45,0.4]]}}},
+        {"mask":{"drag":{"handle":"middle","points":[[0.5,0.5]],"release":false}}},
         {"mask":{"apply":true}},
         {"mask":{"cancel":true}},
         {"mask":{"pick":true}},
@@ -689,13 +710,13 @@ fn every_mask_verb_round_trips_its_script() {
     );
     assert_eq!(steps[4], MaskStep::SelectComponent(None).into());
     assert_eq!(steps[6], MaskStep::Hover(None).into());
-    assert_eq!(steps[11], MaskStep::Paint(PaintStep::NewMask).into());
+    assert_eq!(steps[10], MaskStep::Paint(PaintStep::NewMask).into());
     assert_eq!(
-        steps[13],
+        steps[12],
         MaskStep::Paint(PaintStep::Component(Reference::name("Brush 1"))).into()
     );
     assert_eq!(
-        steps[14],
+        steps[13],
         MaskStep::Brush(BrushStep {
             size: Some(0.08),
             feather: Some(50.0),
@@ -705,11 +726,11 @@ fn every_mask_verb_round_trips_its_script() {
         .into()
     );
     assert_eq!(
-        steps[17],
+        steps[16],
         MaskStep::stroke([[0.3, 0.3], [0.4, 0.35]], true).into()
     );
     assert_eq!(
-        steps[19],
+        steps[18],
         MaskStep::Stroke {
             points: vec![[0.5, 0.5]],
             release: true,
@@ -719,10 +740,20 @@ fn every_mask_verb_round_trips_its_script() {
         .into()
     );
     assert_eq!(
-        steps[22],
+        steps[21],
         MaskStep::Drag {
             handle: DragHandle::RadiusPlusX,
-            points: vec![[0.4, 0.4], [0.45, 0.4]]
+            points: vec![[0.4, 0.4], [0.45, 0.4]],
+            release: true,
+        }
+        .into()
+    );
+    assert_eq!(
+        steps[22],
+        MaskStep::Drag {
+            handle: DragHandle::Middle,
+            points: vec![[0.5, 0.5]],
+            release: false,
         }
         .into()
     );
@@ -758,7 +789,7 @@ fn every_mask_verb_round_trips_its_script() {
         ),
         (json!({"mask":{"select":{"name":" "}}}), "non-empty string"),
         (json!({"mask":{"select":""}}), "non-empty string"),
-        (json!({"mask":{"edit_shape":null}}), "position in the list"),
+        (json!({"mask":{"select":null}}), "position in the list"),
         (json!({"mask":{"apply":false}}), "takes true"),
         (json!({"mask":{"new":""}}), "component kind"),
         (

@@ -248,7 +248,7 @@ fn original(asset: &SeedAsset) -> Result<(AssetRecord, HistoryEntry), Error> {
 
 /// A RAW interpretation of the photograph's size under a pinned mode, naming its camera.
 fn synthetic_interpretation(asset: &SeedAsset) -> Result<RawInterpretation, Error> {
-    use luxforge_raw::{RawMetadata, RawMode, RawRect};
+    use luxforge_raw::{RawLayout, RawMetadata, RawMode, RawRect};
     let rect = RawRect {
         x: 0,
         y: 0,
@@ -262,6 +262,7 @@ fn synthetic_interpretation(asset: &SeedAsset) -> Result<RawInterpretation, Erro
         mode: RawMode::from_id("NikonZ6Lossless14").ok_or_else(|| {
             Error::internal("the pinned seeding mode is not in the camera catalog")
         })?,
+        layout: RawLayout::Mosaic,
         sensor_width: asset.width,
         sensor_height: asset.height,
         active_area: rect,

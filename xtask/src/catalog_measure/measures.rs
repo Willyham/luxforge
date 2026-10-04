@@ -941,6 +941,12 @@ fn drag(cx: &Context, name: &str, scope: &str) -> Result<Vec<Row>> {
             zoom: None,
             moving_pan: false,
             mask_overlay: false,
+            contend: None,
+            warm_ms: None,
+            gpu_preview_off: false,
+            masks: 1,
+            mask_presence: false,
+            window: None,
         },
     )?;
     let report = read_json(&dir.join("latency.json"))?;

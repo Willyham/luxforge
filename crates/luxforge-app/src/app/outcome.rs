@@ -75,6 +75,8 @@ pub(crate) enum Outcome<'a> {
     PerformanceRead(Option<Box<PerformanceRead>>),
     /// The Performance section started sampling again, so nothing read before counts.
     PerformanceRestarted,
+    /// The section's `job.cancel` request answered, or was refused.
+    PerformanceCancelled { failed: bool },
     /// `export.plan` answered for the export in progress.
     ExportPlanned(&'a Value),
     /// `export.jpeg` queued the export in progress.
@@ -149,6 +151,7 @@ impl Outcome<'_> {
             Self::MaskCommandFailed(_) => "mask_command_failed",
             Self::PerformanceRead(_) => "performance_read",
             Self::PerformanceRestarted => "performance_restarted",
+            Self::PerformanceCancelled { .. } => "performance_cancelled",
             Self::ExportPlanned(_) => "export_planned",
             Self::ExportQueued(_) => "export_queued",
             Self::ExportEnded { .. } => "export_ended",

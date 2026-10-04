@@ -246,6 +246,14 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         if character(key, "k") {
             return Some(Message::Palette(PaletteMessage::Open));
         }
+        // Zoom in and out a stop at a time. `=` is the plus key unshifted; a layout that reports
+        // the shifted `+` reaches the same step. Held, they repeat, as stepping a zoom does.
+        if character(key, "=") || character(key, "+") {
+            return Some(Message::View(ViewMessage::ZoomStep(1)));
+        }
+        if character(key, "-") {
+            return Some(Message::View(ViewMessage::ZoomStep(-1)));
+        }
         // Export the displayed entry; Shift keeps its metadata.
         if character(key, "e") {
             return Some(Message::Export(ExportMessage::Start {
@@ -715,6 +723,35 @@ mod tests {
             location: iced::keyboard::Location::Standard,
             modifiers: Modifiers::empty(),
         })
+    }
+
+    /// Command with plus or minus steps the zoom a stop at a time, whatever has the focus, held
+    /// or not; the bare keys and Option are not zoom keys.
+    #[test]
+    fn command_plus_and_minus_step_the_zoom() {
+        let context = KeyContext::default();
+        let step = |key: &str, modifiers, repeat, status| match keymap(
+            &held(letter(key), modifiers, repeat),
+            status,
+            &context,
+        ) {
+            Some(Message::View(ViewMessage::ZoomStep(step))) => Some(step),
+            _ => None,
+        };
+        for status in [Status::Ignored, Status::Captured] {
+            for repeat in [false, true] {
+                assert_eq!(step("=", Modifiers::COMMAND, repeat, status), Some(1));
+                assert_eq!(step("+", Modifiers::COMMAND, repeat, status), Some(1));
+                assert_eq!(
+                    step("+", Modifiers::COMMAND | Modifiers::SHIFT, repeat, status),
+                    Some(1)
+                );
+                assert_eq!(step("-", Modifiers::COMMAND, repeat, status), Some(-1));
+            }
+        }
+        assert_eq!(step("=", Modifiers::empty(), false, Status::Ignored), None);
+        assert_eq!(step("-", Modifiers::empty(), false, Status::Ignored), None);
+        assert_eq!(step("-", Modifiers::ALT, false, Status::Ignored), None);
     }
 
     #[test]

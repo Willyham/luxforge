@@ -246,7 +246,7 @@ The existing limits hold unchanged; the unit adds no allocation, queue, timer or
 
 The Tone curve, [Detail](detail.md), and [lens and perspective](lens-and-perspective.md) modules share these contracts:
 
-- **Panel and registry order** (`linked_modules`): Presets · (Pixel) · (RAW) · Basic · **Tone curve** · Detail · Presence · Colour mixer · Transforms · Lens correction · Perspective · Crop · Vignette · (Controls). The registry array, its doc comment and `the_one_assembly_serves_test_modules_only_in_developer_mode` in `registry/tests.rs` cover this order.
+- **Panel and registry order** (`linked_modules`): Crop, transform, straighten · Presets · (Pixel) · (RAW) · Basic · **Tone curve** · Detail · Presence · Colour mixer · Lens correction · Perspective · Vignette · (Controls). The registry array, its doc comment and `the_one_assembly_serves_test_modules_only_in_developer_mode` in `registry/tests.rs` cover this order.
 - **Compile context.** `CompileStage` carries actual and full-resolution dimensions and sampling scale through `ToolModule::compile` and `FieldPatch::compile`; the curve ignores stage and scale.
 - **The field-patch framework** (`modules/field_patch.rs`) has `Values::curve`, restoration and geometry shapes, and non-presettable actions, covered by framework tests.
 - **Generated and registry files**: the descriptor snapshot, the conformance `KNOWN` list, the smoke `SCENARIOS`, the fixture `TABLE` in `xtask/src/fixtures.rs`, and the reference crate's `lib.rs` and `tests/studies/main.rs` hold the curve's entries; the descriptor snapshot is regenerated from the registry.

@@ -100,6 +100,7 @@ fn run() -> Result<(), (String, String)> {
         platform_secret_store()
     };
     let host = HostConfig {
+        preferences_dir: paths.as_ref().map(|paths| paths.config.clone()),
         config_dir: paths.as_ref().map(Paths::module_config),
         resource_dir: paths.as_ref().map(Paths::module_resources),
         secrets,

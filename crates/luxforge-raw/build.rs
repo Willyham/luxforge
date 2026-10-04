@@ -87,7 +87,7 @@ fn hunk_position(token: &str, prefix: char) -> (usize, usize) {
 
 /// Apply the checked-in unified diff without an external `patch` or Git executable. Exact
 /// context matching deliberately rejects an upstream update until its patch is reviewed.
-fn apply_patch(root: &Path, patch: &str) {
+fn apply_patch(root: &Path, patch: &str, allowed: &[&str]) {
     let mut lines = patch.lines().peekable();
     while let Some(header) = lines.next() {
         let name = header.strip_prefix("--- a/").expect("patch source header");
@@ -97,17 +97,13 @@ fn apply_patch(root: &Path, patch: &str) {
             .expect("patch target header");
         assert_eq!(name, updated, "patch cannot rename native source files");
         assert!(
-            matches!(
-                name,
-                "src/demosaic/markesteijn.cc"
-                    | "src/demosaic/rcd.cc"
-                    | "src/include/librtprocess.h"
-                    | "src/include/mytime.h"
-            ),
+            allowed.contains(&name),
             "patch targets an unexpected native source: {name}"
         );
         let path = root.join(name);
-        let original = fs::read_to_string(&path).expect("read staged native source");
+        let original = fs::read_to_string(&path)
+            .expect("read staged native source")
+            .replace("\r\n", "\n");
         let source_lines: Vec<_> = original.split_inclusive('\n').collect();
         let mut result = String::new();
         let mut cursor = 0;
@@ -192,6 +188,45 @@ fn text(value: &str) -> String {
     format!("Cow::Borrowed({value:?})")
 }
 
+fn dng_value(dng: Option<&profiles::Dng>) -> String {
+    match dng {
+        None => "None".to_string(),
+        Some(dng) => {
+            let opcodes: Vec<String> = dng
+                .required_opcodes
+                .iter()
+                .map(|op| {
+                    format!(
+                        "Opcode {{ id: {}, list: {}, version: {}, flags: {} }}",
+                        op.id, op.list, op.version, op.flags
+                    )
+                })
+                .collect();
+            let role = |value: Option<profiles::DngOpticalRole>| {
+                value.map_or_else(
+                    || "None".to_string(),
+                    |role| format!("Some(DngOpticalRole::{role:?})"),
+                )
+            };
+            let optics = dng.optics.map_or_else(|| "None".to_string(), |optics| {
+                    format!("Some(DngOptics {{ gain_map: {}, warp_rectilinear: {}, fix_vignette_radial: {} }})",
+                        role(optics.gain_map), role(optics.warp_rectilinear), role(optics.fix_vignette_radial))
+                });
+            format!(
+                "Some(Dng {{ container: DngContainer::{:?}, calibration: DngCalibration::{:?}, illuminants: {:?}, selected_matrix: {}, calibration_identity: {}, corrections: DngCorrections::{:?}, interpretation: {}, optics: {optics}, required_opcodes: Cow::Borrowed(&[{}]), decoder_active_bottom_trim: {} }})",
+                dng.container,
+                dng.calibration,
+                dng.illuminants,
+                dng.selected_matrix,
+                text(&dng.calibration_identity),
+                dng.corrections,
+                text(&dng.interpretation),
+                opcodes.join(", "),
+                dng.decoder_active_bottom_trim,
+            )
+        }
+    }
+}
 fn mode(mode: &profiles::Mode) -> String {
     let compression = mode.compression.map_or_else(
         || "None".to_string(),
@@ -202,8 +237,18 @@ fn mode(mode: &profiles::Mode) -> String {
             )
         },
     );
+    let processing = mode.processing.as_ref().map_or_else(
+        || "None".to_string(),
+        |processing| {
+            format!(
+                "Some(Processing {{ crop: Crop::{:?}, dng: {} }})",
+                processing.crop,
+                dng_value(processing.dng.as_ref())
+            )
+        },
+    );
     format!(
-        "Mode {{ id: {}, bits: {}, raw_count: {}, decoder: {}, dng_version: {:?}, validation: ModeValidation::{:?}, compression: {compression}, frame_size: {:?}, unpacker: Unpacker::{:?} }}",
+        "Mode {{ id: {}, bits: {}, raw_count: {}, decoder: {}, dng_version: {:?}, validation: ModeValidation::{:?}, compression: {compression}, frame_size: {:?}, unpacker: Unpacker::{:?}, processing: {processing} }}",
         text(&mode.id),
         mode.bits,
         mode.raw_count,
@@ -230,47 +275,7 @@ fn static_catalog(catalog: &profiles::Catalog) -> String {
             modes.len(),
             modes.join(", ")
         ));
-        let dng = match &camera.dng {
-            None => "None".to_string(),
-            Some(dng) => {
-                let opcodes: Vec<String> = dng
-                    .required_opcodes
-                    .iter()
-                    .map(|op| {
-                        format!(
-                            "Opcode {{ id: {}, list: {}, version: {}, flags: {} }}",
-                            op.id, op.list, op.version, op.flags
-                        )
-                    })
-                    .collect();
-                out.push_str(&format!(
-                    "static OPCODES_{index}: [Opcode; {}] = [{}];\n",
-                    opcodes.len(),
-                    opcodes.join(", ")
-                ));
-                let role = |value: Option<profiles::DngOpticalRole>| {
-                    value.map_or_else(
-                        || "None".to_string(),
-                        |role| format!("Some(DngOpticalRole::{role:?})"),
-                    )
-                };
-                let optics = dng.optics.map_or_else(|| "None".to_string(), |optics| {
-                    format!("Some(DngOptics {{ gain_map: {}, warp_rectilinear: {}, fix_vignette_radial: {} }})",
-                        role(optics.gain_map), role(optics.warp_rectilinear), role(optics.fix_vignette_radial))
-                });
-                format!(
-                    "Some(Dng {{ container: DngContainer::{:?}, calibration: DngCalibration::{:?}, illuminants: {:?}, selected_matrix: {}, calibration_identity: {}, corrections: DngCorrections::{:?}, interpretation: {}, optics: {optics}, required_opcodes: Cow::Borrowed(&OPCODES_{index}), decoder_active_bottom_trim: {} }})",
-                    dng.container,
-                    dng.calibration,
-                    dng.illuminants,
-                    dng.selected_matrix,
-                    text(&dng.calibration_identity),
-                    dng.corrections,
-                    text(&dng.interpretation),
-                    dng.decoder_active_bottom_trim,
-                )
-            }
-        };
+        let dng = dng_value(camera.dng.as_ref());
         let calibration = camera.calibration.as_ref().map_or_else(
             || "None".to_string(),
             |calibration| {
@@ -283,11 +288,12 @@ fn static_catalog(catalog: &profiles::Catalog) -> String {
             },
         );
         cameras.push(format!(
-            "Camera {{ make: {}, model: {}, sensor_size: {:?}, cfa_size: {:?}, crop: Crop::{:?}, dng: {dng}, calibration: {calibration}, modes: Cow::Borrowed(&MODES_{index}) }}",
+            "Camera {{ make: {}, model: {}, sensor_size: {:?}, cfa_size: {:?}, channels: {}, crop: Crop::{:?}, dng: {dng}, calibration: {calibration}, modes: Cow::Borrowed(&MODES_{index}) }}",
             text(&camera.make),
             text(&camera.model),
             camera.sensor_size,
             camera.cfa_size,
+            camera.channels,
             camera.crop,
         ));
     }
@@ -302,11 +308,37 @@ fn static_catalog(catalog: &profiles::Catalog) -> String {
 
 fn main() {
     let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("manifest dir"));
-    let libraw = manifest.join("vendor/libraw-0.22.2");
+    let libraw_upstream = manifest.join("vendor/libraw-0.22.2");
     let rt_upstream = manifest.join("vendor/librtprocess-9a858270");
     let catalog = profiles::Catalog::parse(include_str!("data/cameras.json"))
         .expect("invalid RAW camera catalog");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("output dir"));
+    let libraw = out.join("libraw-0.22.2-arw6");
+    if libraw.exists() {
+        fs::remove_dir_all(&libraw).expect("remove staged LibRaw");
+    }
+    copy_tree(&libraw_upstream, &libraw);
+    apply_patch(
+        &libraw,
+        include_str!("patches/libraw-arw6.patch"),
+        &[
+            "internal/libraw_cameraids.h",
+            "internal/libraw_internal_funcs.h",
+            "src/metadata/identify.cpp",
+            "src/metadata/normalize_model.cpp",
+            "src/metadata/sony.cpp",
+            "src/metadata/tiff.cpp",
+            "src/tables/cameralist.cpp",
+            "src/tables/colordata.cpp",
+            "src/utils/decoder_info.cpp",
+            "src/utils/open.cpp",
+        ],
+    );
+    fs::write(
+        libraw.join("src/decoders/sony_arw6.cpp"),
+        include_bytes!("patches/sony_arw6.cpp"),
+    )
+    .expect("stage upstream Sony ARW6 decoder");
     let mut native = String::from(
         "// Generated from data/cameras.json; do not edit.\nstatic const struct { const char *make, *model; bool calibrated; double xyz_to_camera[9]; } lf_cameras[] = {\n",
     );
@@ -367,7 +399,27 @@ fn main() {
         fs::remove_dir_all(&rt).expect("remove previous staged native sources");
     }
     copy_tree(&rt_upstream, &rt);
-    apply_patch(&rt, include_str!("patches/librtprocess-local.patch"));
+    apply_patch(
+        &rt,
+        include_str!("patches/librtprocess-local.patch"),
+        &[
+            "src/demosaic/markesteijn.cc",
+            "src/demosaic/rcd.cc",
+            "src/include/librtprocess.h",
+            "src/include/mytime.h",
+        ],
+    );
+    // The sensor-site input stacks on the local patch: its context is the locally patched source.
+    apply_patch(
+        &rt,
+        include_str!("patches/librtprocess-mosaic.patch"),
+        &[
+            "src/demosaic/border.cc",
+            "src/demosaic/markesteijn.cc",
+            "src/demosaic/rcd.cc",
+            "src/include/librtprocess.h",
+        ],
+    );
     let mut build = cc::Build::new();
     build
         .cpp(true)
@@ -406,6 +458,9 @@ fn main() {
     println!("cargo:rerun-if-changed=vendor/libraw-0.22.2");
     println!("cargo:rerun-if-changed=vendor/librtprocess-9a858270");
     println!("cargo:rerun-if-changed=patches/librtprocess-local.patch");
+    println!("cargo:rerun-if-changed=patches/librtprocess-mosaic.patch");
+    println!("cargo:rerun-if-changed=patches/libraw-arw6.patch");
+    println!("cargo:rerun-if-changed=patches/sony_arw6.cpp");
     println!("cargo:rerun-if-changed=native/rawspeed_adapter.cpp");
     println!("cargo:rerun-if-changed=native/rawspeed");
     println!("cargo:rerun-if-changed={RAWSPEED}");

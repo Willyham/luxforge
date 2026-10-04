@@ -29,6 +29,7 @@ mod actions_tests;
 pub(crate) mod capabilities;
 #[cfg(test)]
 mod capabilities_tests;
+pub(crate) mod compare_after;
 pub(crate) mod controls;
 #[cfg(test)]
 mod controls_tests;
@@ -44,9 +45,46 @@ mod export_tests;
 pub(crate) mod gesture;
 #[cfg(test)]
 mod gesture_tests;
+#[cfg(test)]
+mod gpu_colour_tests;
+#[cfg(test)]
+mod gpu_dehaze_tests;
+#[cfg(test)]
+mod gpu_detail_tests;
+pub(crate) mod gpu_identity;
+#[cfg(test)]
+mod gpu_mask_tests;
+#[cfg(test)]
+mod gpu_notice_tests;
+#[cfg(test)]
+mod gpu_presence_tests;
+pub(crate) mod gpu_preview;
+#[cfg(test)]
+mod gpu_preview_tests;
+#[cfg(test)]
+pub(crate) mod gpu_qualification;
+#[cfg(test)]
+mod gpu_window_tests;
+// The one conversion Fit drags will hand the photo surface its GPU plan through; the desktop does
+// not draw a gesture on the GPU yet, so only its tests reach it.
+mod drawn_frames;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Fit drags convert their GPU plans here once the desktop draws them on the GPU"
+    )
+)]
+pub(crate) mod gpu_plan;
+pub(crate) mod gpu_settle;
+#[cfg(test)]
+mod gpu_settle_tests;
 mod history;
 #[cfg(test)]
 mod history_tests;
+pub(crate) mod job_reads;
+#[cfg(test)]
+mod job_reads_tests;
 pub(crate) mod keymap;
 mod lifecycle;
 #[cfg(test)]
@@ -128,7 +166,10 @@ use luxforge_core::{
     ClientAuthority, ClientId, ClientSession, LocalServer, ModuleDescriptor, OwnerHandle,
     POINTER_MODE,
 };
-use message::{Message, evidence::EvidenceMessage, preview::PreviewMessage, view::ViewMessage};
+use message::{
+    Message, capability::CapabilityMessage, evidence::EvidenceMessage,
+    performance::PerformanceMessage, preview::PreviewMessage, view::ViewMessage,
+};
 use serde_json::{Value, json};
 use std::{sync::Arc, thread::JoinHandle, time::Instant};
 use tasks::{modules_task, presets_task};
@@ -307,6 +348,9 @@ pub(crate) struct Editor {
     /// identity and content map, which the view model may not name, so it is not in the panel's
     /// view-model state.
     pub(crate) armed: Option<masks::ArmedBrush>,
+    /// The selected gradient's handles, drawn while nothing is held so a committed gradient can be
+    /// dragged again. Local view state holding no core draft: a press on a handle opens one.
+    pub(crate) resting: Option<masks::RestingHandles>,
     /// One active and one replaceable pending job filling every mask's coverage thumbnail, and the
     /// settled stack it describes.
     pub(crate) thumbnailer: thumbnails::Thumbnailer,
@@ -326,6 +370,10 @@ pub(crate) struct Editor {
     /// exactly those through the owner and hand the answers back.
     #[cfg(test)]
     pub(crate) capability_started: Vec<(String, state::capabilities::Operation)>,
+    /// How many updates ran the whole route, hooks, derive and all, rather than a fast path, so a
+    /// test can tell that a message skipped it.
+    #[cfg(test)]
+    pub(crate) full_updates: u64,
     /// The state panel's Performance section: its flag, what it has read and its one read in
     /// flight. It samples only while expanded with the state panel shown.
     pub(crate) performance: performance::Sampler,
@@ -339,6 +387,13 @@ pub(crate) struct Editor {
     /// Developing picks and the development set: Develop N's confirmation, the set and its
     /// filmstrip, and the large previews a move draws first.
     pub(crate) develop: develop::Develop,
+    /// The open gesture's GPU preview — its plan, its held boundary and its path — and the warm
+    /// list of the committed stack.
+    pub(crate) gpu: gpu_preview::GpuPreviews,
+    /// The settle's hand-off from the GPU frame on screen to the CPU frame that replaces it.
+    pub(crate) gpu_settle: gpu_settle::GpuSettle,
+    /// The surface's drawn frames as evidence logs them ([`drawn_frames`]).
+    drawn_frames: drawn_frames::DrawnFrames,
     /// The whole screen as plain data, derived again after every message.
     pub(crate) workspace: Workspace,
 }
@@ -387,13 +442,15 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 18] = [
+const AFTER_MESSAGE: [AfterMessage; 21] = [
     view_state::after_message,
     performance::after_message,
     slider::after_message,
     evidence::after_message,
     controls::after_message,
     preview::after_message,
+    gpu_preview::after_message,
+    gpu_settle::after_message,
     mask_panel::after_message,
     crop::after_message,
     sync::after_message,
@@ -406,6 +463,7 @@ const AFTER_MESSAGE: [AfterMessage; 18] = [
     loupe::after_message,
     develop::after_message,
     long_work::after_message,
+    drawn_frames::after_message,
 ];
 
 /// The seams whose work reads the screen just derived: what a capability section or a curve shows
@@ -434,6 +492,19 @@ const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 13] = [
     long_work::subscription,
 ];
 
+/// The graphics backend and adapter, asked of the renderer only by an evidence run, which is the
+/// only thing that reads them: its frames' `state.backend`, its capture gate and its `backend`
+/// event. A normal launch asks for nothing, because iced answers the request with
+/// `System::new_all()` and `refresh_all()` on a spawned thread, a walk of every process on the
+/// host that returns two strings no one in a normal launch reads. The workspace keeps iced's
+/// `sysinfo` feature for this call; without it the request never answers.
+fn system_information(evidence: bool) -> Task<Message> {
+    if !evidence {
+        return Task::none();
+    }
+    iced::system::information().map(|value| Message::Evidence(EvidenceMessage::Info(value)))
+}
+
 impl Editor {
     pub(crate) fn new(boot: Boot) -> (Self, Task<Message>) {
         let Boot {
@@ -450,9 +521,17 @@ impl Editor {
         let client = client.unwrap_or_else(|| owner.register_with(ClientAuthority::Permissions));
         let evidence = config.evidence.take().map(|dir| {
             let queue = std::mem::take(&mut config.files);
-            Evidence::new(dir, queue, std::mem::take(&mut config.script))
+            let mut evidence = Evidence::new(dir, queue, std::mem::take(&mut config.script));
+            evidence.gpu_identity = config.gpu_identity.then(Default::default);
+            evidence
         });
         let initial = config.files.pop_front();
+        let preferences = tasks::call(&owner, client, "preferences.read", json!({}));
+        let expanded = preferences
+            .as_ref()
+            .ok()
+            .and_then(|(value, _)| value["performance_expanded"].as_bool())
+            .unwrap_or(true);
         let mut editor = Self {
             owner: owner.clone(),
             owner_join: Some(join),
@@ -485,6 +564,7 @@ impl Editor {
             crop_section: Default::default(),
             mask_panel: Default::default(),
             armed: None,
+            resting: None,
             thumbnailer: Default::default(),
             coverage_worker: Default::default(),
             palette: Default::default(),
@@ -493,11 +573,16 @@ impl Editor {
             capabilities: Default::default(),
             #[cfg(test)]
             capability_started: Vec::new(),
-            performance: performance::Sampler::open(),
+            #[cfg(test)]
+            full_updates: 0,
+            performance: performance::Sampler::new(expanded),
             export: Default::default(),
             select: Default::default(),
             long_work: long_work::LongWork::watching(&owner),
             develop: Default::default(),
+            gpu: Default::default(),
+            gpu_settle: Default::default(),
+            drawn_frames: Default::default(),
             workspace: Default::default(),
         };
         // The workers wake the event loop through one channel instead of a poll. The closure is
@@ -508,6 +593,9 @@ impl Editor {
         editor.thumbnailer.queue.set_waker(waker::waker());
         editor.coverage_worker.queue.set_waker(waker::waker());
         luxforge_ui::set_surface_waker(waker::waker());
+        // The GPU preview encodes its output with the core's quantizer, which the widget crate
+        // cannot reach.
+        gpu_plan::install_output_encoding();
         // The owner wakes the event sync when another client changes something, so no timer asks
         // it whether anything did.
         editor
@@ -521,6 +609,9 @@ impl Editor {
         if editor.live_server.is_none() {
             editor.status.text = "Editor ready; live API unavailable on this host".into();
         }
+        if let Err(reason) = preferences {
+            editor.status.text = format!("Could not read Performance preference: {reason}");
+        }
         editor.event(
             "startup",
             || json!({"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"version":env!("CARGO_PKG_VERSION"),"debug_assertions":cfg!(debug_assertions),"mode":if editor.evidence.is_some() {"evidence"} else {"editor"}}),
@@ -529,8 +620,7 @@ impl Editor {
             .and_then(iced::window::scale_factor)
             .map(|value| Message::View(ViewMessage::ScaleFactor(value)));
         let trackpad = view_state::install_trackpad();
-        let backend = iced::system::information()
-            .map(|value| Message::Evidence(EvidenceMessage::Info(value)));
+        let backend = system_information(editor.evidence.is_some());
         // Tool controls are discovered once, through the same API every other client uses, and the
         // preset library is listed the same way; the event sync keeps it current afterwards.
         let modules = modules_task(editor.owner.clone(), editor.client);
@@ -591,6 +681,47 @@ impl Editor {
     /// Route the message to its seam, then run every seam's hook in [`AFTER_MESSAGE`], derive the
     /// screen again, run the hooks that read it in [`AFTER_DERIVE`], and wake the workers' poll.
     fn update_inner(&mut self, message: Message) -> Task<Message> {
+        if self.update_is_quiet() {
+            // An idle resource sample changes only this section. Keep the same sampling
+            // resolution, but avoid rebuilding all tool controls, masks, history and histogram for
+            // its redraw.
+            if self.performance.cancelling.is_empty()
+                && matches!(
+                    &message,
+                    Message::Performance(
+                        PerformanceMessage::Tick | PerformanceMessage::Sampled { .. }
+                    )
+                )
+            {
+                let task = self.dispatch(message);
+                let transition = self.performance_transition();
+                let rederive_started = Instant::now();
+                self.workspace.performance.refresh_sample(
+                    self.performance.expanded,
+                    &self.performance.history,
+                    &self.long_work.state,
+                    self.select.state.home.as_deref(),
+                );
+                let mut timing = self.log.loop_timing.get();
+                timing.last_rederive_ms = rederive_started.elapsed().as_secs_f64() * 1000.0;
+                self.log.loop_timing.set(timing);
+                return Task::batch([task, transition]);
+            }
+            // A capability reader's first read of a job can answer the record the round trip that
+            // started it already tracked, which changes no state the hooks or the derive read.
+            // Dispatch it and stop. (Every later read the reader sends is a change.)
+            if self.job_read_changes_nothing(&message) {
+                let task = self.dispatch(message);
+                let mut timing = self.log.loop_timing.get();
+                timing.last_rederive_ms = 0.0;
+                self.log.loop_timing.set(timing);
+                return task;
+            }
+        }
+        #[cfg(test)]
+        {
+            self.full_updates += 1;
+        }
         let before = Before::of(self);
         let mut tasks = vec![self.dispatch(message)];
         tasks.extend(AFTER_MESSAGE.iter().map(|hook| hook(self, &before)));
@@ -609,6 +740,38 @@ impl Editor {
         Task::batch(tasks)
     }
 
+    /// Nothing else is going on: no evidence run to keep in step, no request in flight, no open
+    /// gesture, idle workers, a settled view and no event read outstanding. The only state in
+    /// which a message that changes nothing can skip the hooks and the derive, because each hook
+    /// answers a change a message made, and in this state the one before it already did.
+    fn update_is_quiet(&self) -> bool {
+        self.evidence.is_none()
+            && !self.busy
+            && self.gesture.is_none()
+            && !self.workers_busy()
+            && !self.view_plan.dirty
+            && !self.view_plan.in_flight
+            && self.view_plan.quiet_since.is_none()
+            && self.sync.poll.idle()
+    }
+
+    /// Whether this message is a capability reader's send that leaves everything the screen and
+    /// the hooks read as it is: every record in it is of a job still queued or running that
+    /// answers exactly the record the desktop already tracks. The comparison is made against the
+    /// held state, before the message is applied; anything that differs, and every ended or failed
+    /// job, takes the full update. An export reader's first read is never one, since the desktop
+    /// holds no record of the job until a read arrives.
+    fn job_read_changes_nothing(&self, message: &Message) -> bool {
+        let Message::Capability(CapabilityMessage::Polled(polled)) = message else {
+            return false;
+        };
+        polled.iter().all(|(module, _, result)| {
+            result
+                .as_ref()
+                .is_ok_and(|record| self.capabilities.tracks_exactly(module, record))
+        })
+    }
+
     /// One of the bounded preview or overlay workers has a job.
     fn workers_busy(&self) -> bool {
         self.presentation.queue.is_busy()
@@ -625,7 +788,22 @@ impl Editor {
         self.activity.render_bar =
             state::canvas::render_bar(self.presentation.queue.progress(), self.activity.render_bar);
         let mut workspace = std::mem::take(&mut self.workspace);
-        let inputs = state::Inputs {
+        let inputs = self.inputs();
+        workspace.derive(&inputs);
+        for job in &mut workspace.performance.jobs {
+            job.cancelling = job
+                .job_id
+                .as_ref()
+                .is_some_and(|id| self.performance.cancelling.contains(id));
+        }
+        self.workspace = workspace;
+    }
+
+    /// What every region derives from, read off the desktop's state as it stands. The derive reads
+    /// it after every message; a report that needs a section's controls without its panel drawing
+    /// them builds them from it on demand ([`state::tools::controls_of`]).
+    pub(crate) fn inputs(&self) -> state::Inputs<'_> {
+        state::Inputs {
             document: &self.document,
             modules: &self.modules,
             modules_ready: self.modules_ready,
@@ -673,6 +851,8 @@ impl Editor {
             clients: self.live_server.as_ref().map(LocalServer::connected),
             rendering: self.presentation.queue.is_busy() || self.surface_photo_updating(),
             render: self.activity.render,
+            gpu_frame_us: self.gpu_frame_us(),
+            cpu_reason: self.gpu_cpu_reason(),
             render_bar: self.activity.render_bar,
             render_error: self.presentation.render_error.as_ref(),
             analysis: self.presentation.analysis.as_ref(),
@@ -685,9 +865,7 @@ impl Editor {
             select: &self.select.state,
             long_work: &self.long_work.state,
             develop: &self.develop.state,
-        };
-        workspace.derive(&inputs);
-        self.workspace = workspace;
+        }
     }
 
     /// Hand one message to the seam that owns it. Routing only: each seam's own update function
@@ -768,9 +946,12 @@ impl Editor {
                     !self.document.compare_hold
                         && self.presentation.presented_entry == self.document.original_entry
                 })
-                .map(|(frame, comparison)| (frame, comparison.position)),
-            mask_draft: self.mask_shape(),
-            mask_map: self.held_mask().and_then(|mask| mask.map.as_ref()),
+                .map(|(after, comparison)| {
+                    let fit = matches!(self.session.preview.view.zoom, luxforge_core::Zoom::Fit);
+                    (after.drawn(fit), comparison.position)
+                }),
+            mask_draft: self.drawn_mask().map(|mask| &mask.shape),
+            mask_map: self.drawn_mask().and_then(|mask| mask.map.as_ref()),
             draft: self.crop(),
             ..self.presentation.surfaces(self.overlays.request.as_ref())
         };
@@ -780,6 +961,18 @@ impl Editor {
             surfaces.region_clipping = None;
             surfaces.region_coverage = None;
         }
+        surfaces.gpu = self.gpu_plan(surfaces.photo);
+        // The open gesture's plan is held behind the CPU frame of its revision once that frame is
+        // presented, and tagged with the revision it draws.
+        if surfaces.gpu.is_some()
+            && let Some((_, revision)) = self.gesture_gpu_plan()
+        {
+            surfaces.gpu_hold = self.gpu_held();
+            surfaces.gpu_tag = Some(revision);
+            surfaces.gpu_change = self.gpu.surface_change();
+        }
+        surfaces.gpu_warm = self.gpu.warm();
+        surfaces.dissolve = self.gpu_settle.dissolve();
         surfaces
     }
 

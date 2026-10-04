@@ -88,6 +88,7 @@ impl Fixture {
 
     fn host(&self) -> HostConfig {
         HostConfig {
+            preferences_dir: None,
             config_dir: Some(self.config()),
             resource_dir: Some(self.resources()),
             secrets: self.secrets.clone(),

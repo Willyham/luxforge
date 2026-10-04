@@ -315,6 +315,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
             preset: Map::new(),
         }),
         canvas: Some(CanvasInteraction::CropFrame {
+            effect: CROP_EFFECT.into(),
             action: "crop".into(),
             angle: "angle".into(),
             x: "x".into(),
@@ -390,6 +391,7 @@ pub(crate) fn raw_source() -> luxforge_core::SourceKind {
             "make": "Nikon",
             "model": "Z 6",
             "mode": "NikonZ6Lossless14",
+            "layout": "mosaic",
             "sensor_width": 6048,
             "sensor_height": 4032,
             "active_area": rect,

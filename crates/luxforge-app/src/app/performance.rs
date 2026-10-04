@@ -28,9 +28,10 @@ use crate::{
     state::performance::PerformanceHistory,
 };
 use iced::{Subscription, Task};
-use luxforge_core::resources::ResourceReport;
+use luxforge_core::{JobId, resources::ResourceReport};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 /// The sampler's interval, which is the sparklines' resolution: sixty points span a minute.
@@ -45,10 +46,14 @@ pub(crate) fn sampling(expanded: bool, state_panel_shown: bool) -> bool {
 /// The section's local state: its expanded flag, what it has read and the one read in flight.
 #[derive(Debug, Default)]
 pub(crate) struct Sampler {
-    /// Local to this client and this launch, open at start (the owner's decision of 2026-09-23).
+    /// Local to this client, initialized from the saved user preference (open on first use).
     /// Collapsing it, or hiding the state panel, stops the timer, which is the only way the
     /// section costs anything.
     pub(crate) expanded: bool,
+    pub(crate) saving: Coalesce<bool>,
+    pub(crate) cancelling: BTreeSet<JobId>,
+    /// A window close waits for the newest preference write before stopping the owner.
+    pub(crate) closing: bool,
     pub(crate) history: PerformanceHistory,
     /// The one read in flight: a read is never duplicated beside it.
     pub(crate) read: Coalesce<()>,
@@ -68,9 +73,9 @@ pub(crate) struct Sampler {
 impl Sampler {
     /// The section as a launch finds it: open, having read nothing yet. It starts sampling on the
     /// first message the editor handles, like any other change to the gate.
-    pub(crate) fn open() -> Self {
+    pub(crate) fn new(expanded: bool) -> Self {
         Self {
-            expanded: true,
+            expanded,
             ..Self::default()
         }
     }
@@ -99,13 +104,96 @@ impl Editor {
         match message {
             PerformanceMessage::Toggle => {
                 self.performance.expanded = !self.performance.expanded;
+                self.performance.saving.offer(self.performance.expanded);
+                self.save_performance_preference()
             }
-            PerformanceMessage::Tick => return self.performance_tick(),
+            PerformanceMessage::Saved(result) => {
+                self.performance.saving.answered();
+                if let Err(reason) = result {
+                    self.status.text = format!("Could not save Performance preference: {reason}");
+                    self.event(
+                        "performance_preference_failed",
+                        || json!({"reason": reason}),
+                    );
+                }
+                if self.performance.closing && self.performance.saving.idle() {
+                    return self.close();
+                }
+                self.save_performance_preference()
+            }
+            PerformanceMessage::Cancel(job_id) => {
+                if self.performance.cancelling.len() >= crate::state::performance::MAX_JOB_ROWS
+                    || !self
+                        .workspace
+                        .performance
+                        .jobs
+                        .iter()
+                        .any(|row| row.running && row.job_id.as_ref() == Some(&job_id))
+                    || !self.performance.cancelling.insert(job_id.clone())
+                {
+                    return Task::none();
+                }
+                let owner = self.owner.clone();
+                let client = self.client;
+                let answer_id = job_id.clone();
+                crate::app::tasks::owner_task(
+                    move || {
+                        crate::app::tasks::call(
+                            &owner,
+                            client,
+                            "job.cancel",
+                            json!({"job_id": job_id}),
+                        )
+                        .map(|(answer, _)| answer)
+                    },
+                    move |result| {
+                        Message::Performance(PerformanceMessage::Cancelled {
+                            job_id: answer_id,
+                            result,
+                        })
+                    },
+                )
+            }
+            PerformanceMessage::Cancelled { job_id, result } => {
+                self.performance.cancelling.remove(&job_id);
+                let failed = result.is_err();
+                self.status.text = match result {
+                    Ok(answer) => match answer["status"].as_str() {
+                        Some("cancelled") => "Background job cancelled".into(),
+                        Some("ready") => "Background job already finished".into(),
+                        Some("failed" | "superseded") => "Background job already ended".into(),
+                        _ => "Cancellation requested for background job".into(),
+                    },
+                    Err(reason) => format!("Could not cancel background job: {reason}"),
+                };
+                self.outcome(Outcome::PerformanceCancelled { failed });
+                self.performance_tick()
+            }
+            PerformanceMessage::Tick => self.performance_tick(),
             PerformanceMessage::Sampled { epoch, result } => {
-                return self.performance_sampled(epoch, result);
+                self.performance_sampled(epoch, result)
             }
         }
-        Task::none()
+    }
+
+    fn save_performance_preference(&mut self) -> Task<Message> {
+        let Some(expanded) = self.performance.saving.start() else {
+            return Task::none();
+        };
+        let owner = self.owner.clone();
+        let client = self.client;
+        crate::app::tasks::owner_task(
+            move || {
+                crate::app::tasks::call(
+                    &owner,
+                    client,
+                    "preferences.set",
+                    json!({"performance_expanded": expanded}),
+                )
+                .map(|_| ())
+            },
+            |result| Message::Performance(PerformanceMessage::Saved(result)),
+        )
     }
 
     /// Whether the Performance section samples now: expanded, with the state panel on screen. The
@@ -229,6 +317,8 @@ impl Editor {
             })).collect::<Vec<_>>(),
             "jobs": model.jobs.iter().map(|job| {
                 let mut row = json!({
+                    "job_id": job.job_id,
+                    "cancelling": job.cancelling,
                     "label": job.label,
                     "trailing": job.trailing,
                     "detail": job.detail,
@@ -278,6 +368,168 @@ mod tests {
         testing::{boot, finish},
     };
     use crate::state::palette::PaletteAction;
+
+    /// Model work only: compare the former full derivation route with the idle sampler's
+    /// scoped refresh. Import/decoding, owner calls, widgets, layout and GPU work are not timed.
+    #[test]
+    #[ignore = "release model-cost diagnostic over the generated 24 MP photo"]
+    fn performance_model_work() {
+        use std::time::Instant;
+
+        let catalog = luxforge_testbase::paths::temp_path("performance-model.sqlite");
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/generated/24mp.jpg");
+        let (mut editor, _, _) = crate::app::testing::real_photo_at(&catalog, &fixture);
+        editor.performance.expanded = true;
+        editor.presentation.queue.cancel();
+        editor.overlays.queue.cancel();
+        editor.thumbnailer.queue.cancel();
+        editor.coverage_worker.queue.cancel();
+        luxforge_testbase::wait_until("model measurement has no pixel worker", || {
+            !editor.workers_busy()
+        });
+        let (resource, _) =
+            call(&editor.owner, editor.client, "resources.read", json!({})).unwrap();
+        let mut sample: ResourceReport = serde_json::from_value(resource).unwrap();
+        let mut full = Vec::with_capacity(1000);
+        let mut scoped = Vec::with_capacity(1000);
+        for iteration in 0..1200 {
+            for only_performance in [iteration % 2 == 0, iteration % 2 != 0] {
+                sample.monotonic_ns += 1_000_000_000;
+                if let Some(time) = &mut sample.cpu.time_ns {
+                    *time += 5_000_000;
+                }
+                editor.performance.history.push(sample.clone());
+                // Each route must derive a newly changed sample; measuring the second route
+                // against the first route's cached version would time a no-op.
+                assert_ne!(
+                    editor.workspace.performance.version,
+                    editor.performance.history.version()
+                );
+                let started = Instant::now();
+                if only_performance {
+                    editor.workspace.performance.refresh_sample(
+                        editor.performance.expanded,
+                        &editor.performance.history,
+                        &editor.long_work.state,
+                        editor.select.state.home.as_deref(),
+                    );
+                } else {
+                    editor.rederive();
+                }
+                let micros = started.elapsed().as_secs_f64() * 1_000_000.0;
+                std::hint::black_box(&editor.workspace);
+                if iteration >= 200 {
+                    if only_performance {
+                        scoped.push(micros);
+                    } else {
+                        full.push(micros);
+                    }
+                }
+            }
+        }
+        let distribution = |samples| {
+            let d = luxforge_testbase::Distribution::of(samples).unwrap();
+            json!({"count": d.count, "p50": d.p50, "p95": d.p95,
+                "min": d.min, "max": d.max, "samples": d.samples})
+        };
+        println!(
+            "performance_model_work {}",
+            json!({"unit": "us", "full": distribution(full), "scoped": distribution(scoped)})
+        );
+        finish(editor, catalog);
+    }
+
+    #[test]
+    fn disclosure_is_a_discovered_user_preference_and_reopening_initializes_its_gate() {
+        use crate::app::Boot;
+        use std::sync::Arc;
+        let root = luxforge_testbase::paths::temp_path("performance-preference");
+        let launch = |catalog: &std::path::Path| {
+            let mut host = luxforge_core::HostConfig::unconfigured();
+            host.preferences_dir = Some(root.clone());
+            let (owner, join) = luxforge_core::OwnerHandle::start_with_host(
+                catalog,
+                Arc::new(luxforge_core::ModuleRegistry::builtin()),
+                host,
+            )
+            .unwrap();
+            Editor::new(Boot {
+                owner,
+                join,
+                live_server: None,
+                config: crate::Config::default(),
+                client: None,
+                initial_import: None,
+                window: (1440.0, 900.0),
+            })
+            .0
+        };
+        let catalog = root.with_extension("sqlite");
+        let mut editor = launch(&catalog);
+        assert!(editor.performance.expanded);
+        let (schemas, _) = call(&editor.owner, editor.client, "schema.list", json!({})).unwrap();
+        let schemas = schemas.to_string();
+        assert!(
+            schemas.contains("preferences.read")
+                && schemas.contains("preferences.set")
+                && schemas.contains("performance_expanded")
+        );
+        let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
+        assert!(!editor.performance_sampling());
+        let (saved, _) = call(
+            &editor.owner,
+            editor.client,
+            "preferences.set",
+            json!({"performance_expanded": false}),
+        )
+        .unwrap();
+        assert_eq!(saved["performance_expanded"], false);
+        let _ = editor.update(Message::Performance(PerformanceMessage::Saved(Ok(()))));
+        assert!(editor.performance.saving.idle());
+        assert!(
+            editor.document.state.is_none(),
+            "a user preference requires no photo or history"
+        );
+        finish(editor, catalog.clone());
+        let mut reopened = launch(&catalog);
+        assert!(!reopened.performance.expanded);
+        let _ = reopened.update(Message::Performance(PerformanceMessage::Tick));
+        assert_eq!(
+            reopened.performance.requested, 0,
+            "a saved collapse creates no timer/read"
+        );
+        finish(reopened, catalog);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancellation_requires_a_running_listed_id_and_disables_duplicates_until_answered() {
+        let (mut editor, catalog) = boot_collapsed();
+        let id = JobId::new();
+        let _ = editor.performance_update(PerformanceMessage::Cancel(id.clone()));
+        assert!(editor.performance.cancelling.is_empty());
+        editor
+            .workspace
+            .performance
+            .jobs
+            .push(crate::state::performance::JobRow {
+                job_id: Some(id.clone()),
+                running: true,
+                ..Default::default()
+            });
+        let _ = editor.performance_update(PerformanceMessage::Cancel(id.clone()));
+        assert_eq!(editor.performance.cancelling.len(), 1);
+        let _ = editor.performance_update(PerformanceMessage::Cancel(id.clone()));
+        assert_eq!(editor.performance.cancelling.len(), 1);
+        let _ = editor.performance_update(PerformanceMessage::Cancelled {
+            job_id: id,
+            result: Err("job is no longer available".into()),
+        });
+        assert!(editor.performance.cancelling.is_empty());
+        assert!(editor.status.text.contains("job is no longer available"));
+        finish(editor, catalog);
+    }
 
     /// A real read, answered by the editor's own owner exactly as the task would ask for it.
     fn read(editor: &Editor) -> Box<PerformanceRead> {

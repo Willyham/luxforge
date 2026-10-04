@@ -46,6 +46,7 @@ pub(super) fn enumerated(name: &str) -> ParameterDescriptor {
 
 pub(super) fn frame_canvas(action: &str, fit_action: &str) -> CanvasInteraction {
     CanvasInteraction::CropFrame {
+        effect: "test.module.effect".into(),
         action: action.into(),
         angle: "angle".into(),
         x: "x".into(),
@@ -64,6 +65,10 @@ pub(super) fn frame_canvas(action: &str, fit_action: &str) -> CanvasInteraction 
 /// declares, used here to prove every crop-frame rejection.
 pub(super) fn frame_descriptor() -> ModuleDescriptor {
     ModuleDescriptor {
+        effects: vec![EffectDescriptor::new(
+            "test.module.effect",
+            EffectStage::Geometry,
+        )],
         actions: vec![
             ActionDescriptor {
                 parameters: vec![

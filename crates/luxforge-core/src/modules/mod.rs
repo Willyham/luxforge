@@ -20,10 +20,25 @@ mod processing;
 mod raw;
 mod registry;
 mod spatial;
-mod transform;
 mod vignette;
 
 pub use crate::render::map::{Mapping, RadialModel, WarpStep};
+
+/// Every GPU program a built-in module ships (`docs/design/gpu-preview.md`): each a `.wgsl` file
+/// beside the CPU unit it mirrors, in the order the units run in a stack. The core's tests validate
+/// each under the photo surface's calling convention and fail for a `.wgsl` file this list omits;
+/// the desktop's tests check each against the surface's own prelude and qualify each on a device.
+pub static GPU_PROGRAMS: &[&crate::GpuProgram] = &[
+    &detail::DETAIL_PROGRAM,
+    &basic::WHITE_BALANCE_PROGRAM,
+    &basic::EXPOSURE_PROGRAM,
+    &basic::TONE_PROGRAM,
+    &basic::COLOUR_ADJUST_PROGRAM,
+    &curve::TONE_CURVE_PROGRAM,
+    &mixer::MIXER_PROGRAM,
+    &vignette::VIGNETTE_PROGRAM,
+    &presence::PRESENCE_PROGRAM,
+];
 pub use basic::BASIC_EFFECT;
 pub(crate) use basic::BasicModule;
 pub(crate) use capabilities_proof::CapabilitiesProofModule;
@@ -37,10 +52,12 @@ pub use capabilities_proof::{
 pub use capability::CapabilityModule;
 pub use controls::{CONTROLS_EFFECT, Controls, ControlsModule};
 pub(crate) use crop::CropModule;
+pub use crop::ORIENTATION_EFFECT;
 pub use crop::geometry::{
     BoxRect, CropPayload, CropStage, Edge, MAX_ANGLE, MIN_ANGLE, OutputRect, guide_angle,
     largest_with_ratio_inside,
 };
+pub(crate) use crop::stored_orientation;
 pub use crop::{CROP_EFFECT, CropAspect};
 pub use curve::CURVE_EFFECT;
 pub(crate) use curve::CurveModule;
@@ -61,10 +78,15 @@ pub(crate) use descriptor::{
 };
 pub(crate) use descriptor::{
     PRESET_SETTINGS, check_declaration, check_declared_values, check_parameter_declarations,
-    check_settings, check_target, decode_parameters, label_value, not_applicable, title_case,
+    check_settings, check_target, decode_parameters, label_value, not_applicable, take_parameters,
+    title_case,
 };
 pub use detail::DETAIL_EFFECT;
 use detail::DetailModule;
+#[cfg(test)]
+pub(crate) use detail::gpu_functions as detail_gpu_functions;
+#[cfg(feature = "qualification")]
+pub use detail::qualification as detail_qualification;
 pub use field_patch::{FieldPatch, FieldPatchModule, Spec, Values};
 pub use lens::LENS_EFFECT;
 pub(crate) use lens::LensModule;
@@ -76,6 +98,10 @@ pub use pixel::PIXEL_EFFECT;
 pub(crate) use pixel::PixelModule;
 pub use presence::PRESENCE_EFFECT;
 pub(crate) use presence::PresenceModule;
+#[cfg(test)]
+pub(crate) use presence::gpu_functions as presence_gpu_functions;
+#[cfg(feature = "qualification")]
+pub use presence::qualification as presence_qualification;
 pub(crate) use presets::{APPLY_PRESET, MAX_PRESET_NAME, PresetsModule};
 pub(crate) use processing::MAX_COLOR_UNITS;
 pub use processing::{
@@ -99,13 +125,11 @@ pub(crate) use registry::tests::{
 pub use registry::{ActionRef, QueryRef};
 pub use registry::{ModuleRegistry, Provider, RegistryOptions, insertion_index_among};
 pub(crate) use spatial::{
-    ESTIMATE_REDUCTION, ESTIMATE_STORE_ENTRIES, Global, MAX_MASKED_SPATIAL_LAYERS,
-    MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes, PlanesMut, Reduction,
-    SPATIAL_BUDGET_BYTES, SpatialUnit,
+    Cells, ESTIMATE_REDUCTION, ESTIMATE_STORE_ENTRIES, Global, GridPlanes, MAX_REDUCTION_PIXELS,
+    MAX_SPATIAL_HALO, Parallelism, Planes, PlanesMut, REDUCED_STORE_BYTES, Reduced, ReducedGrid,
+    Reduction, SPATIAL_BUDGET_BYTES, SpatialUnit,
 };
-pub use spatial::{Region, SpatialOperation};
-pub use transform::ORIENTATION_EFFECT;
-pub(crate) use transform::{TransformModule, stored_orientation};
+pub use spatial::{MAX_MASKED_SPATIAL_LAYERS, Region, SpatialOperation};
 pub use vignette::VIGNETTE_EFFECT;
 pub(crate) use vignette::VignetteModule;
 
@@ -510,7 +534,7 @@ pub trait ToolModule: Send + Sync {
     ) -> Result<Processing, Error>;
     /// This stored geometry layer re-expressed for its input stage turned or reflected by
     /// `orientation`, so it selects the same content in the turned stage. `input` is the stage the
-    /// layer received before the orientation. The transform module asks it of every geometry layer
+    /// layer received before the orientation. The crop module asks it of every geometry layer
     /// after the orientation when an action turns or reflects the photograph, and stores what
     /// comes back through the layer's own update, so the orientation goes ahead of a module it
     /// never names. `Ok(None)` says the payload is unchanged, the default: an effect whose payload

@@ -6,6 +6,14 @@ Status: **accepted; implemented in the core and the desktop.** The owner decided
 
 Every photo shows the same Basic section: White balance (Temperature, Tint, Neutral picker, As shot) and Tone with Exposure first, in the same order and with the same labels. On a RAW photo, Temperature and Tint set the source development's white balance in Kelvin and Luxforge tint units against the camera matrix. On a JPEG they set Basic's relative correction. The RAW section goes, and so do Basic's duplicate controls on RAW. Every change a control makes has the API the control sends.
 
+A monochrome RAW original has no source colour response. Its global White
+balance group reads `Monochrome original` and disables every child and reset;
+the keyboard picker is unavailable. Colour-changing source white-balance and
+picker API requests refuse explicitly. As shot is already neutral and is a
+no-op, so the composite Reset Basic still resets tone/exposure. Masked Basic
+creative adjustments retain their own semantics. This availability comes from
+authoritative source layout, not a camera-name branch.
+
 In scope: descriptors, the RAW module's actions and payload, the refusals that keep one path, presets, history labels, the desktop's applicability checks and the evidence. Out of scope, with no placeholders: Auto and named white-balance modes, a control for RAW's explicit gains (they stay API-only), and any change to the frozen equations of [Basic white balance](basic-white-balance.md) or the [RAW locus](initial-raw.md#minimal-controls-and-shared-basic-integration).
 
 ## Current state

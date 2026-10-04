@@ -10,7 +10,66 @@ use luxforge_core::{
     latest::{Latest, Running},
 };
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::sync::{
+    Arc, Condvar, Mutex,
+    atomic::{AtomicU64, Ordering},
+};
+
+/// Coverage that precedes its matching photo cannot be drawn yet. Avoid waking a redraw only to
+/// retain it; the photo update publishes its content and drains ready coverage in the same turn.
+/// If completion follows that drain, the worker sees the published content and wakes normally.
+#[derive(Default)]
+struct PhotoGate {
+    presented: AtomicU64,
+    ready: AtomicU64,
+    #[cfg(test)]
+    decisions: AtomicU64,
+}
+
+/// One worker-owned painted result, including a pass still painting. The consumer releases it
+/// after adoption or replacement of its waiting result. At most two RGBA grids belong to this
+/// handoff, beyond the presenter's existing frames. Completions carry metadata, never another
+/// coverage plane.
+#[derive(Default)]
+struct PaintSlot {
+    busy: Mutex<bool>,
+    changed: Condvar,
+    #[cfg(test)]
+    waiting: std::sync::atomic::AtomicUsize,
+}
+struct PaintLease(Arc<PaintSlot>);
+impl PaintSlot {
+    fn reserve(
+        self: &Arc<Self>,
+        cancel: &luxforge_core::Cancel,
+    ) -> Result<Arc<PaintLease>, luxforge_core::Error> {
+        let mut busy = self.busy.lock().unwrap();
+        loop {
+            cancel.check()?;
+            if !*busy {
+                *busy = true;
+                return Ok(Arc::new(PaintLease(self.clone())));
+            }
+            #[cfg(test)]
+            self.waiting
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+            busy = self.changed.wait(busy).unwrap();
+            #[cfg(test)]
+            self.waiting
+                .fetch_sub(1, std::sync::atomic::Ordering::Release);
+        }
+    }
+    fn wake(&self) {
+        let _busy = self.busy.lock().unwrap();
+        self.changed.notify_all();
+    }
+}
+impl Drop for PaintLease {
+    fn drop(&mut self) {
+        *self.0.busy.lock().unwrap() = false;
+        self.0.changed.notify_all();
+    }
+}
 
 /// Everything a view-only coverage choice changes. An epoch fences changes even when the same
 /// mask is selected again before an earlier result arrives.
@@ -67,26 +126,112 @@ struct Job {
 #[derive(Clone)]
 pub(crate) struct Completion {
     stamp: Stamp,
-    outcome: MaskOverlayOutcome,
+    outcome: Arc<Feedback>,
+    /// The existing bounded RGBA display grid, painted on the worker rather than the UI thread.
+    painted: Option<Arc<Vec<u8>>>,
+    lease: Option<Arc<PaintLease>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GridStamp {
+    mask: luxforge_core::MaskId,
+    component: Option<luxforge_core::ComponentId>,
+    cells_w: u32,
+    cells_h: u32,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Feedback {
+    grid: Option<GridStamp>,
+    absent: Option<String>,
+}
+
+impl Completion {
+    #[cfg(test)]
+    fn new(stamp: Stamp, outcome: Arc<MaskOverlayOutcome>) -> Self {
+        Self::paint(stamp, outcome, &luxforge_core::Cancel::never()).unwrap()
+    }
+
+    fn paint(
+        stamp: Stamp,
+        outcome: Arc<MaskOverlayOutcome>,
+        cancel: &luxforge_core::Cancel,
+    ) -> Result<Self, luxforge_core::Error> {
+        let painted = match outcome.grid.as_ref() {
+            Some(grid) => super::masks::mask_overlay::paint_cancellable(
+                grid,
+                stamp.spec.mode,
+                stamp.spec.colour,
+                cancel,
+            )?
+            .map(Arc::new),
+            None => None,
+        };
+        cancel.check()?;
+        // The cache alone retains coverage. A delivered result needs identity and dimensions;
+        // retaining its coverage as well as RGBA would increase the image-buffer bound.
+        let outcome = Arc::new(Feedback {
+            grid: outcome.grid.as_ref().map(|grid| GridStamp {
+                mask: grid.mask.clone(),
+                component: grid.component.clone(),
+                cells_w: grid.cells_w,
+                cells_h: grid.cells_h,
+            }),
+            absent: outcome.absent.clone(),
+        });
+        Ok(Self {
+            stamp,
+            outcome,
+            painted,
+            lease: None,
+        })
+    }
 }
 
 /// One active request and one replaceable pending request, with one cached bounded grid. No cache
 /// entry owns an evaluation, source, recipe or photograph buffer.
 pub(crate) struct CoverageQueue {
     worker: Latest<Job, Completion>,
+    paint_slot: Arc<PaintSlot>,
+    photo_gate: Arc<PhotoGate>,
 }
 
 impl Default for CoverageQueue {
     fn default() -> Self {
-        let mut cached: Option<(u64, MaskOverlayOutcome)> = None;
+        Self::passing("luxforge-mask-coverage", || {})
+    }
+}
+
+impl CoverageQueue {
+    /// The coverage worker, named `name`, calling `pass` before each job: nothing in production,
+    /// a test's gate in [`Self::held`].
+    fn passing(name: &str, pass: impl Fn() + Send + 'static) -> Self {
+        let mut cached: Option<(u64, Arc<MaskOverlayOutcome>)> = None;
         let mut input_cache = luxforge_core::InputGridCache::default();
+        let paint_slot = Arc::new(PaintSlot::default());
+        let slot = paint_slot.clone();
+        let photo_gate = Arc::new(PhotoGate::default());
+        let gate = photo_gate.clone();
         Self {
-            worker: Latest::new(
-                "luxforge-mask-coverage",
-                move |job: Job, running: &Running<'_, _, _>| {
-                    run_coverage(job, running, &mut cached, &mut input_cache)
-                },
-            ),
+            paint_slot,
+            photo_gate,
+            worker: Latest::new(name, move |job: Job, running: &Running<'_, _, _>| {
+                pass();
+                let lease = slot.reserve(running.abandoned()).ok()?;
+                let mut done = run_coverage(job, running, &mut cached, &mut input_cache)?;
+                if done.painted.is_some() {
+                    done.lease = Some(lease);
+                }
+                // An unavailable outcome needs no matching photo and must wake immediately.
+                gate.ready.store(
+                    if done.painted.is_some() {
+                        done.stamp.content
+                    } else {
+                        0
+                    },
+                    Ordering::SeqCst,
+                );
+                Some(done)
+            }),
         }
     }
 }
@@ -94,7 +239,7 @@ impl Default for CoverageQueue {
 fn run_coverage(
     job: Job,
     running: &Running<'_, Job, Completion>,
-    cached: &mut Option<(u64, MaskOverlayOutcome)>,
+    cached: &mut Option<(u64, Arc<MaskOverlayOutcome>)>,
     input_cache: &mut luxforge_core::InputGridCache,
 ) -> Option<Completion> {
     let result = job.evaluation.mask_overlay_coverage_with_cache(
@@ -112,31 +257,40 @@ fn run_coverage(
             key,
             outcome: Some(outcome),
         }) => {
+            let outcome = Arc::new(outcome);
             *cached = Some((key, outcome.clone()));
             outcome
         }
         Ok(MaskCoverage { outcome: None, .. }) => cached.as_ref()?.1.clone(),
         Err(error) if error.kind == ErrorKind::Cancelled => return None,
-        Err(error) => MaskOverlayOutcome {
+        Err(error) => Arc::new(MaskOverlayOutcome {
             grid: None,
             absent: Some(error.detail),
-        },
+        }),
     };
-    Some(Completion {
-        stamp: job.stamp,
-        outcome,
-    })
+    Completion::paint(job.stamp, outcome, running.abandoned()).ok()
 }
 
 impl CoverageQueue {
     pub(crate) fn set_waker(&mut self, waker: Arc<dyn Fn() + Send + Sync>) {
-        self.worker.set_waker(waker);
+        let gate = self.photo_gate.clone();
+        self.worker.set_waker(Arc::new(move || {
+            if gate.ready.load(Ordering::SeqCst) <= gate.presented.load(Ordering::SeqCst) {
+                waker();
+            }
+            #[cfg(test)]
+            gate.decisions.fetch_add(1, Ordering::Release);
+        }));
+    }
+    fn photo_presented(&mut self, content: u64) {
+        self.photo_gate.presented.store(content, Ordering::SeqCst);
     }
     fn request(&mut self, job: Job) {
         let _ = self.worker.request(job);
     }
     pub(crate) fn cancel(&mut self) {
         self.worker.cancel();
+        self.paint_slot.wake();
     }
     pub(crate) fn is_busy(&self) -> bool {
         self.worker.is_busy()
@@ -152,17 +306,28 @@ impl CoverageQueue {
     /// while it changes what the desktop asks for.
     #[cfg(test)]
     pub(crate) fn held(gate: Arc<luxforge_testbase::Gate>) -> Self {
-        let mut cached: Option<(u64, MaskOverlayOutcome)> = None;
-        let mut input_cache = luxforge_core::InputGridCache::default();
-        Self {
-            worker: Latest::new(
-                "luxforge-mask-coverage-held",
-                move |job: Job, running: &Running<'_, _, _>| {
-                    gate.pass();
-                    run_coverage(job, running, &mut cached, &mut input_cache)
-                },
-            ),
-        }
+        Self::passing("luxforge-mask-coverage-held", move || gate.pass())
+    }
+
+    /// Hold the paint slot as an undelivered result does: a job taken meanwhile waits to paint
+    /// until the hold drops, so its completion cannot arrive inside the message that asked for it.
+    #[cfg(test)]
+    pub(crate) fn hold_painting(&self) -> PaintingHeld {
+        PaintingHeld(
+            self.paint_slot
+                .reserve(&luxforge_core::Cancel::never())
+                .expect("a reservation nothing cancels"),
+        )
+    }
+}
+
+/// A test's hold on the coverage worker's paint slot ([`CoverageQueue::hold_painting`]).
+#[cfg(test)]
+pub(crate) struct PaintingHeld(#[allow(dead_code)] Arc<PaintLease>);
+
+impl Drop for CoverageQueue {
+    fn drop(&mut self) {
+        self.cancel();
     }
 }
 
@@ -478,7 +643,11 @@ impl Editor {
         });
     }
 
-    pub(crate) fn mask_coverage_ready(&mut self, done: Completion) {
+    pub(crate) fn mask_coverage_ready(&mut self, mut done: Completion) {
+        // Hold the slot through this adoption, including dropping any replaced waiting result.
+        // Releasing it during poll could overlap old waiting + delivered + next painted grids.
+        // A retained waiting result owns no lease, so it never blocks the next coverage pass.
+        let _handoff = done.lease.take();
         self.reconcile_coverage_spec();
         if !self.coverage_worker.accepts(&done) {
             return;
@@ -504,14 +673,22 @@ impl Editor {
             return;
         }
         let generation = self.presentation.presented_generation;
-        let MaskOverlayOutcome { grid, absent } = done.outcome;
+        let Feedback { grid, absent } = done.outcome.as_ref();
         if let Some(grid) = grid {
             let mask = grid.mask.clone();
             let component = grid.component.clone();
             self.event("mask_coverage_ready", || json!({"epoch":done.stamp.epoch,
                 "generation":generation,"identity":done.stamp.identity,"mask":grid.mask,
                 "component":grid.component,"region":done.stamp.spec.region.map(|r| [r.x0,r.y0,r.width,r.height])}));
-            if self.present_mask_overlay(generation, grid) {
+            if done.painted.as_ref().is_some_and(|painted| {
+                self.present_painted_mask_overlay(
+                    generation,
+                    &grid.mask,
+                    grid.component.as_ref(),
+                    (grid.cells_w, grid.cells_h),
+                    painted.clone(),
+                )
+            }) {
                 self.coverage_worker.adopted = Some(Adopted {
                     stamp: done.stamp,
                     generation,
@@ -529,7 +706,7 @@ impl Editor {
         } else if let Some(reason) = absent {
             self.coverage_worker.adopted = None;
             self.coverage_worker.unavailable = Some((done.stamp, reason.clone()));
-            self.mask_overlay_unavailable(generation, &reason);
+            self.mask_overlay_unavailable(generation, reason);
         }
     }
 }
@@ -537,6 +714,15 @@ impl Editor {
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     let changed = editor.reconcile_coverage_spec();
     let missing = editor.restamp_mask_coverage();
+    // Publish before polling: a worker whose wake saw the older photo already enqueued its
+    // result, which this drain sees. A later completion sees the new photo and wakes normally.
+    editor
+        .coverage_worker
+        .queue
+        .photo_presented(editor.presentation.presented_content);
+    while let Some(done) = editor.coverage_worker.queue.poll() {
+        editor.mask_coverage_ready(done);
+    }
     if let Some(done) = editor.coverage_worker.waiting.take() {
         editor.mask_coverage_ready(done);
     }
@@ -642,10 +828,7 @@ mod tests {
             requested: Some(stamp.clone()),
             ..Default::default()
         };
-        let done = Completion {
-            stamp: stamp.clone(),
-            outcome: MaskOverlayOutcome::default(),
-        };
+        let done = Completion::new(stamp.clone(), Arc::new(MaskOverlayOutcome::default()));
         assert!(worker.accepts(&done));
         let mut old = done.clone();
         old.stamp.identity.recipe_hash.push('a');
@@ -710,6 +893,8 @@ mod tests {
         let mut cached = None;
         let mut input_cache = luxforge_core::InputGridCache::default();
         let queue = CoverageQueue {
+            paint_slot: Arc::default(),
+            photo_gate: Arc::default(),
             worker: Latest::new("coverage-progress-test", move |job: Job, running| {
                 started_tx
                     .send(job.stamp.identity.draft.as_ref().unwrap().draft_revision)
@@ -771,9 +956,14 @@ mod tests {
                 .unwrap()
                 .outcome
                 .unwrap();
+            let expected = Completion::new(done.stamp.clone(), Arc::new(expected));
             assert_eq!(
-                done.outcome, expected,
+                done.outcome, expected.outcome,
                 "each progressive frame is the exact accepted snapshot"
+            );
+            assert_eq!(
+                done.painted, expected.painted,
+                "the same snapshot's exact display bytes"
             );
             worker.adopted = Some(Adopted {
                 stamp: done.stamp.clone(),
@@ -838,6 +1028,63 @@ mod tests {
     }
 
     #[test]
+    fn coverage_wakes_only_when_drawable_and_photo_publication_cannot_lose_a_result() {
+        let (evaluation, mask) = fixture();
+        let mut queue = CoverageQueue::default();
+        let (wake_tx, wake_rx) = std::sync::mpsc::channel();
+        queue.set_waker(Arc::new(move || wake_tx.send(()).unwrap()));
+        let mut request = stamp(&evaluation, &mask, 1);
+        request.content = 8;
+        queue.photo_presented(7);
+        queue.request(Job {
+            evaluation: evaluation.clone(),
+            stamp: request.clone(),
+        });
+        luxforge_testbase::wait_until("coverage ready before its photo", || queue.ready());
+        luxforge_testbase::wait_until("the worker decided whether to wake", || {
+            queue.photo_gate.decisions.load(Ordering::Acquire) == 1
+        });
+        assert!(
+            wake_rx.try_recv().is_err(),
+            "an undrawable grid causes no redraw"
+        );
+        // Completion before publication is adopted by the same turn's drain, without a wake.
+        queue.photo_presented(8);
+        let done = queue.poll().unwrap();
+        assert_eq!(done.stamp.content, 8);
+        assert!(done.painted.is_some());
+        drop(done);
+
+        // Completion after publication must wake, including cache hits on unchanged pixels.
+        queue.request(Job {
+            evaluation: evaluation.clone(),
+            stamp: request.clone(),
+        });
+        wake_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        drop(queue.poll().unwrap());
+
+        // An unavailable result remains immediate, even without a matching photograph.
+        request.content = 9;
+        request.spec.target = MaskCoverageTarget::Existing {
+            mask: luxforge_core::MaskId::new(),
+            component: None,
+        };
+        request.feedback_key = None;
+        queue.request(Job {
+            evaluation,
+            stamp: request,
+        });
+        wake_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let done = queue.poll().unwrap();
+        assert!(done.painted.is_none());
+        assert!(done.outcome.absent.is_some());
+    }
+
+    #[test]
     fn coverage_cache_releases_sources_and_cancelled_jobs_can_be_requested_again() {
         let (evaluation, mask) = fixture();
         let mut queue = CoverageQueue::default();
@@ -847,9 +1094,10 @@ mod tests {
             evaluation: first,
             stamp: request.clone(),
         });
-        let done = luxforge_testbase::wait_for("the exact coverage worker", || queue.poll());
+        let mut done = luxforge_testbase::wait_for("the exact coverage worker", || queue.poll());
         assert_eq!(done.stamp, request);
         assert_eq!(done.outcome.grid.as_ref().unwrap().mask, mask.id);
+        done.lease.take(); // Consumer finished the handoff; retain only bytes for the comparison.
         luxforge_testbase::wait_until("the coverage source is released", || {
             pixels.strong_count() == 0 && !queue.is_busy()
         });
@@ -863,10 +1111,54 @@ mod tests {
         });
         let cached = luxforge_testbase::wait_for("the coverage cache hit", || queue.poll());
         assert_eq!(cached.outcome, done.outcome);
+        assert_eq!(
+            cached.painted, done.painted,
+            "cache hits paint the same exact bytes"
+        );
         luxforge_testbase::wait_until("the cached job releases its source", || {
             pixels.strong_count() == 0 && !queue.is_busy()
         });
         assert!(!queue.ready());
+    }
+
+    #[test]
+    fn an_unconsumed_painted_result_bounds_the_next_pass_and_cancellation_wakes_it() {
+        let (evaluation, mask) = fixture();
+        let mut queue = CoverageQueue::default();
+        let request = stamp(&evaluation, &mask, 1);
+        queue.request(Job {
+            evaluation: evaluation.clone(),
+            stamp: request.clone(),
+        });
+        luxforge_testbase::wait_until("one unconsumed painted result", || queue.ready());
+        let (second, pixels) = fresh_stack(&evaluation);
+        queue.request(Job {
+            evaluation: second,
+            stamp: request.clone(),
+        });
+        luxforge_testbase::wait_until("the next pass is blocked before allocating", || {
+            queue
+                .paint_slot
+                .waiting
+                .load(std::sync::atomic::Ordering::Acquire)
+                == 1
+        });
+        assert!(*queue.paint_slot.busy.lock().unwrap());
+        let delivering = queue.poll().unwrap();
+        assert!(delivering.lease.is_some(), "poll retains the handoff lease");
+        assert!(*queue.paint_slot.busy.lock().unwrap());
+        queue.cancel();
+        luxforge_testbase::wait_until("cancellation releases the blocked source", || {
+            pixels.strong_count() == 0 && !queue.is_busy()
+        });
+        assert!(queue.poll().is_none());
+        drop(delivering);
+        queue.request(Job {
+            evaluation,
+            stamp: request,
+        });
+        let done = luxforge_testbase::wait_for("a new request after cancellation", || queue.poll());
+        assert!(done.painted.is_some());
     }
 
     fn drain_photo(editor: &mut Editor) {
@@ -1214,10 +1506,7 @@ mod tests {
                 .unwrap()
                 .outcome
                 .unwrap();
-            let done = Completion {
-                stamp: request,
-                outcome,
-            };
+            let done = Completion::new(request, Arc::new(outcome));
             editor.mask_coverage_ready(done.clone());
             assert!(
                 editor.coverage_worker.waiting.is_some(),
@@ -1514,10 +1803,7 @@ mod tests {
             .unwrap()
             .outcome
             .unwrap();
-        let done = Completion {
-            stamp: request,
-            outcome,
-        };
+        let done = Completion::new(request, Arc::new(outcome));
         editor.mask_coverage_ready(done.clone());
         assert!(editor.coverage_worker.waiting.is_some());
         editor.preview_failed(

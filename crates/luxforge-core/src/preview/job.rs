@@ -124,6 +124,23 @@ pub struct PreviewJob {
     /// Worker-only reason a region was declined before the existing proxy/exact fallback ran.
     /// Owner-planned jobs start with `None`; the worker fills it in its own owned job.
     pub viewport_declined: Option<String>,
+    /// An open draft's GPU preview, planned with this job when its request asked
+    /// (`PreviewRequest::gpu`): the plan a tick is drawn from, or why the gesture takes the CPU
+    /// path, and the boundary it starts from. Preview state, never an API result.
+    pub gpu: Option<Box<crate::GpuPreview>>,
+    /// The plans a gesture on this job's stack is likely to draw, planned with a committed stack's
+    /// job when its request asked (`PreviewRequest::gpu`), so the desktop can compile their
+    /// program sequences before a drag begins. Preview state, never an API result.
+    pub gpu_warm: Option<std::sync::Arc<[crate::GpuPlan]>>,
+    /// A committed stack's GPU preview at Fit, planned with its job when its request asked
+    /// (`PreviewRequest::gpu`): the plan of the stack itself from its first content layer, and the
+    /// boundary every gesture over the same source and view starts from, which the desktop holds
+    /// before a gesture begins. Preview state, never an API result.
+    pub gpu_resident: Option<Box<crate::GpuPreview>>,
+    /// Render this GPU preview boundary after the job's Fit frame, as one more result of the job
+    /// ([`super::BoundaryOutcome`]). The desktop asks for it on a draft's job until the draft holds
+    /// one, and on a committed stack's job when it holds none of that key.
+    pub boundary: Option<crate::BoundaryRequest>,
 }
 
 impl PreviewJob {
@@ -141,6 +158,10 @@ impl PreviewJob {
             viewport: None,
             intent: PreviewIntent::Immediate,
             viewport_declined: None,
+            gpu: None,
+            gpu_warm: None,
+            gpu_resident: None,
+            boundary: None,
         })
     }
 }

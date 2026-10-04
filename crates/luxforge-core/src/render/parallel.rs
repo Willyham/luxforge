@@ -9,6 +9,17 @@
 
 pub(crate) use luxforge_raw::RenderPass;
 
+/// The kind of an interpolating resample's pass: a warp's when its map holds a nonlinear step,
+/// and otherwise a resample's. Whichever pass evaluates a resample, the byte path's frame or the
+/// linear rows' taps, asks its gate this way.
+pub(crate) fn resample_pass(resample: &crate::modules::Resample) -> RenderPass {
+    if resample.map.has_warp() {
+        RenderPass::Warp
+    } else {
+        RenderPass::Resample
+    }
+}
+
 /// Whether a `pass` over `pixels` runs on the shared Rayon pool: at and past its kind's threshold.
 #[cfg(not(test))]
 pub(crate) fn pooled(pass: RenderPass, pixels: u64) -> bool {
@@ -19,21 +30,42 @@ pub(crate) fn pooled(pass: RenderPass, pixels: u64) -> bool {
 /// unless this thread forced one way ([`force`]).
 #[cfg(test)]
 pub(crate) fn pooled(pass: RenderPass, pixels: u64) -> bool {
-    FORCED
+    let pooled = FORCED
         .get()
-        .unwrap_or_else(|| pixels >= luxforge_raw::parallel_pixels(pass))
+        .unwrap_or_else(|| pixels >= luxforge_raw::parallel_pixels(pass));
+    if pooled {
+        WATCHED.with_borrow_mut(|watched| {
+            if let Some(watched) = watched {
+                watched.push(pass);
+            }
+        });
+    }
+    pooled
 }
 
 #[cfg(test)]
 thread_local! {
     static FORCED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    /// The pass kinds this thread's gates have pooled while [`pooled_during`] watches.
+    static WATCHED: std::cell::RefCell<Option<Vec<RenderPass>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// `work`'s result, and the kinds of the passes every gate this thread asked meanwhile sent to the
+/// pool, in the order they were asked: which gate pooled a pass, for a test.
+#[cfg(test)]
+pub(crate) fn pooled_during<T>(work: impl FnOnce() -> T) -> (T, Vec<RenderPass>) {
+    let outer = WATCHED.replace(Some(Vec::new()));
+    let result = work();
+    let watched = WATCHED.replace(outer).unwrap_or_default();
+    (result, watched)
 }
 
 /// Force every gate this thread asks to pool (`Some(true)`) or to run serially (`Some(false)`), or
 /// return it to the thresholds (`None`), for a test; returns the previous setting. The setting
 /// belongs to the thread, so one test's never reaches a render another test runs beside it; every
 /// gate is asked on the thread that asked for the frame or the proxy, and a spatial tile's own
-/// passes follow the gate its batch was given.
+/// passes follow the gate its render was given.
 #[cfg(test)]
 pub(crate) fn force(pooled: Option<bool>) -> Option<bool> {
     FORCED.replace(pooled)
@@ -146,7 +178,7 @@ mod tests {
     }
 
     /// Where a case's pixels come from.
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Debug)]
     enum Domain {
         Byte,
         Linear,
@@ -265,12 +297,18 @@ mod tests {
             "segment: exposure +1 EV, linear" => render(Domain::Linear, vec![exposure()]),
             "heavy colour: full Basic" => render(Domain::Byte, vec![full_basic()]),
             "heavy colour: full Basic, linear" => render(Domain::Linear, vec![full_basic()]),
-            "resample: 10 degree crop" => {
+            "resample: 10 degree crop" | "resample: 10 degree crop, linear" => {
                 // The crop writes about 0.43 of its input's pixels; the input is sized so that the
-                // output, which the gate counts, is about the target.
+                // output, which the gate counts, is about the target. On the linear path the
+                // terminal pass's rows pull its taps.
                 let input = stage_of(megapixels / 0.43);
                 let (crop, output) = straightened_crop(input.0, input.1);
-                run(Domain::Byte, input, Work::Render(vec![crop]), output)
+                let domain = if label.ends_with("linear") {
+                    Domain::Linear
+                } else {
+                    Domain::Byte
+                };
+                run(domain, input, Work::Render(vec![crop]), output)
             }
             "warp: lens, byte" => run(Domain::Byte, stage, Work::Warp(vec![lens()]), whole),
             "warp: lens, linear" => run(Domain::Linear, stage, Work::Warp(vec![lens()]), whole),
@@ -317,40 +355,63 @@ mod tests {
 
     /// Every pass kind at a size its own threshold pools and the one-megapixel threshold every pass
     /// shared before did not (256 Ki pixels for a heavy colour pass), on both pixel domains where
-    /// the pass has one: the pooled run and a serial run write the same bytes.
+    /// the pass has one: the pass's own gate sends it to the pool, and the pooled run and a serial
+    /// run write the same bytes. The straightened crop's output, between the resample's threshold
+    /// and the transform's, is pooled by the resample's gate on both paths: the byte path's frame
+    /// and, on the linear path, the terminal pass whose rows pull its taps. Below the resample's
+    /// threshold, a full Basic layer before the crop pools that linear pass by the heavy colour
+    /// gate, since its taps run that layer's units.
     #[test]
     fn slow_a_pass_between_the_shared_and_its_own_threshold_pools_to_the_serial_bytes() {
         let (crop, crop_output) = straightened_crop(720, 480);
+        let (small_crop, small_crop_output) = straightened_crop(420, 280);
+        assert!(!pooled(RenderPass::Resample, small_crop_output));
         let presence_all = presence(json!({"clarity": 60.0, "texture": 40.0, "dehaze": 30.0}));
         let cases = [
             (
                 RenderPass::Transform,
                 (900, 600),
                 Work::Render(vec![turn(Transform::RotateRight)]),
+                pixels((900, 600)),
             ),
             (
                 RenderPass::Colour,
                 (450, 300),
                 Work::Render(vec![exposure()]),
+                pixels((450, 300)),
             ),
             (
                 RenderPass::HeavyColour,
                 (240, 160),
                 Work::Render(vec![full_basic()]),
+                pixels((240, 160)),
             ),
-            (RenderPass::Resample, (720, 480), Work::Render(vec![crop])),
+            (
+                RenderPass::Resample,
+                (720, 480),
+                Work::Render(vec![crop]),
+                crop_output,
+            ),
+            (
+                RenderPass::HeavyColour,
+                (420, 280),
+                Work::Render(vec![full_basic(), small_crop]),
+                small_crop_output,
+            ),
             (
                 RenderPass::Spatial,
                 (660, 440),
                 Work::Render(vec![presence_all]),
+                pixels((660, 440)),
             ),
-            (RenderPass::Proxy, (900, 600), Work::Proxy),
+            (
+                RenderPass::Proxy,
+                (900, 600),
+                Work::Proxy,
+                pixels((900, 600)),
+            ),
         ];
-        for (pass, stage, work) in cases {
-            let counted = match pass {
-                RenderPass::Resample => crop_output,
-                _ => pixels(stage),
-            };
+        for (pass, stage, work, counted) in cases {
             let shared = match pass {
                 RenderPass::HeavyColour => 256 * 1024,
                 _ => luxforge_raw::PARALLEL_PIXELS,
@@ -369,25 +430,32 @@ mod tests {
                     None => Work::Proxy,
                 };
                 let Run { once, .. } = run(domain, stage, work, counted);
-                let pooled = once().bytes();
+                let (output, passes) = pooled_during(&once);
+                assert!(
+                    passes.contains(&pass),
+                    "{pass:?} over {counted} pixels on {domain:?}: its gate pooled only \
+                     {passes:?}"
+                );
+                let pooled = output.bytes();
                 force(Some(false));
                 let serial = once().bytes();
                 force(None);
                 assert!(
                     pooled == serial,
-                    "{pass:?} over {counted} pixels: pooled and serial differ"
+                    "{pass:?} over {counted} pixels on {domain:?}: pooled and serial differ"
                 );
             }
         }
     }
 
-    const CASES: [&str; 19] = [
+    const CASES: [&str; 20] = [
         "segment: quarter turn",
         "segment: exposure +1 EV",
         "segment: exposure +1 EV, linear",
         "heavy colour: full Basic",
         "heavy colour: full Basic, linear",
         "resample: 10 degree crop",
+        "resample: 10 degree crop, linear",
         "warp: lens, byte",
         "warp: lens, linear",
         "warp: perspective, byte",
