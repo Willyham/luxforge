@@ -644,9 +644,10 @@ impl StrokeFault {
 /// It is attached to a recipe when the recipe is read out of its store and is never serialized with
 /// it, which is what makes "no catalog ever holds embedded stroke points" a property of the types
 /// rather than of the code that happens to write them. Resolution is one lookup per distinct
-/// reference and no replay of anything. Each stroke is held as the type its reference declared
-/// ([`StrokeType`]) and read back only as that type ([`Self::get`], [`Self::resolve`]), so two
-/// consumers share one store without either reading the other's strokes.
+/// reference, less the strokes another table read from the same store already holds
+/// ([`Self::load_shared`]), and no replay of anything. Each stroke is held as the type its
+/// reference declared ([`StrokeType`]) and read back only as that type ([`Self::get`],
+/// [`Self::resolve`]), so two consumers share one store without either reading the other's strokes.
 ///
 /// The origin names where the recipe came from — a history entry, a draft — so a refusal can say
 /// which stored thing is broken as well as which stroke.
@@ -670,7 +671,8 @@ struct Resolved {
     strokes: BTreeMap<StrokeId, Arc<dyn StoredStroke>>,
     faults: BTreeMap<StrokeId, StrokeFault>,
     /// Ids of `strokes` already known to be durable in the catalog's content-addressed store: read
-    /// from there ([`StrokeTable::load`]) or written there since ([`StrokeTable::mark_stored`]).
+    /// from there ([`StrokeTable::load`]), shared from a table that was
+    /// ([`StrokeTable::load_shared`]), or written there since ([`StrokeTable::mark_stored`]).
     /// A commit writes every referenced id **outside** this set, rather than trying to track which
     /// ones a stroke command captured fresh — the table is shared and copied by every plan, draft and
     /// cached entry, and a set that answered "known stored" is safe under all of them by
@@ -740,6 +742,40 @@ impl StrokeTable {
             }
             Err(_) => self.fault(id, StrokeFault::Corrupt),
         }
+    }
+
+    /// Resolve one reference by sharing the stroke one of `sources` already holds for it, instead of
+    /// reading it from the store again, and say whether one did.
+    ///
+    /// The strokes of `sources` — the tables of entries the entry cache holds — were each read from
+    /// the store and checked against their address by [`Self::load`], and a stored stroke is
+    /// immutable, so the same address names the same stroke now. A stroke is shared only when the
+    /// source holds it as the type this reference declares and has it marked known stored; any other
+    /// reference is left for [`Self::load`], so a stroke held as another type, or one that did not
+    /// resolve, reads and faults exactly as it does with no source at all. A shared stroke is marked
+    /// known stored here as `load` marks one it read, which keeps a later commit from writing it
+    /// again.
+    pub(crate) fn load_shared(&mut self, reference: &StrokeReference, sources: &[Self]) -> bool {
+        let Some(stroke) = sources
+            .iter()
+            .find_map(|source| source.shareable(reference))
+        else {
+            return false;
+        };
+        let held = self.held();
+        held.strokes.insert(reference.id.clone(), stroke);
+        held.stored.insert(reference.id.clone());
+        true
+    }
+
+    /// The stroke this table holds for `reference`: of the declared type, and known stored.
+    fn shareable(&self, reference: &StrokeReference) -> Option<Arc<dyn StoredStroke>> {
+        let held = self.0.as_ref()?;
+        let stroke = held.strokes.get(&reference.id)?;
+        let kind: &dyn StoredStroke = stroke.as_ref();
+        ((kind as &dyn Any).type_id() == reference.kind.type_id
+            && held.stored.contains(&reference.id))
+        .then(|| stroke.clone())
     }
 
     /// Whether `id` is resolved or faulted already, so one address is read from the store once
