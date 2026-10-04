@@ -1,6 +1,7 @@
 //! The Settings sheet: a modal sheet centred over the dimmed workspace, with a tab rail on its
-//! leading side and the selected tab's content. Experiments, the one tab, lists every flag with the
-//! control its kind needs ([design](../../../../docs/design/settings-and-flags.md#settings-surface)).
+//! leading side and the selected tab's content. General holds the person's preferences;
+//! Experiments lists every flag with the control its kind needs
+//! ([design](../../../../docs/design/settings-and-flags.md#settings-surface)).
 use crate::{
     app::message::{Message, settings::SettingsMessage},
     state::settings::{FlagControl, FlagRow, SettingsModel, SettingsTab},
@@ -21,6 +22,11 @@ const HEIGHT: f32 = 480.0;
 const RAIL_WIDTH: f32 = 160.0;
 /// A number field's box.
 const NUMBER_WIDTH: f32 = 64.0;
+
+/// What General's Auto collapse history row says under its title.
+pub(crate) const AUTO_COLLAPSE_DESCRIPTION: &str = "Successive edits of one control keep one history \
+     entry: Contrast +15, \u{2212}30 and +10 leave Contrast +10, and setting a control back to where \
+     it started leaves none. Collapsed entries are kept and stay readable through the API.";
 
 /// What Experiments says before its rows.
 pub(crate) const EXPERIMENTS_INTRO: &str =
@@ -64,6 +70,7 @@ pub(crate) fn settings(model: &SettingsModel) -> Option<Element<'_, Message>> {
                 ))
             });
     let content = match open {
+        SettingsTab::General => general(model),
         SettingsTab::Experiments => experiments(model),
     };
     let body = row![
@@ -107,8 +114,48 @@ pub(crate) fn settings(model: &SettingsModel) -> Option<Element<'_, Message>> {
 
 fn tab_icon(tab: SettingsTab) -> Icon {
     match tab {
+        SettingsTab::General => Icon::Settings,
         SettingsTab::Experiments => Icon::Beaker,
     }
+}
+
+fn general(model: &SettingsModel) -> Element<'_, Message> {
+    let mut content = column![title("General")]
+        .spacing(theme::SPACING)
+        .width(Length::Fill);
+    if let Some(error) = &model.preferences_error {
+        content = content.push(error_caption(format!(
+            "Could not read or change the preferences: {error}"
+        )));
+    }
+    let Some(on) = model.auto_collapse else {
+        if model.preferences_error.is_none() {
+            content = content.push(caption("Reading the preferences\u{2026}"));
+        }
+        return content.into();
+    };
+    let text = column![
+        label("Auto collapse history"),
+        caption(AUTO_COLLAPSE_DESCRIPTION)
+    ]
+    .spacing(theme::ROW_SPACING)
+    .width(Length::Fill);
+    let switch = switch(
+        &ToggleModel {
+            label: "Auto collapse history".into(),
+            on,
+            enabled: true,
+        },
+        |on| Message::Settings(SettingsMessage::SetAutoCollapse(on)),
+    );
+    content
+        .push(horizontal_rule())
+        .push(
+            row![text, switch]
+                .spacing(theme::SPACING * 2.0)
+                .align_y(Alignment::Start),
+        )
+        .into()
 }
 
 fn experiments(model: &SettingsModel) -> Element<'_, Message> {

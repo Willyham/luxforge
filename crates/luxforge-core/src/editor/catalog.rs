@@ -11,7 +11,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// Format 11 stores each asset's source kind tag in a column of its own beside the interpretation,
+/// Format 12 records the entries auto-collapse hid in a table of their own, beside the entries
+/// that stay as they were written, so a history page leaves them out without changing any entry.
+/// Format 11 stored each asset's source kind tag in a column of its own beside the interpretation,
 /// so a `catalog.list` page reads columns only and decodes no interpretation. Format 10 stored each
 /// asset request's whole answer in the request table — for a `mask.*` command
 /// the label it committed and the mask and component it addressed or minted beside the mutation
@@ -24,7 +26,7 @@ use std::{
 /// catalog's own identity with the derived-artifact tables. Format 4 made entry records the only
 /// stored copy of a stack and format 3 stored each entry's rendered label. Every other marker,
 /// earlier or later, is refused by name and left as it is; choose a new catalog path.
-pub(super) const CATALOG_FORMAT: i64 = 11;
+pub(super) const CATALOG_FORMAT: i64 = 12;
 pub(super) const ASSET_COLUMNS: &str =
     "id,source_root,locator,fingerprint,file_identity,byte_len,width,height,source_json";
 
@@ -190,6 +192,13 @@ impl EditorService {
                     result_json TEXT NOT NULL,
                     PRIMARY KEY(asset_id, request_id)
                  );
+                 CREATE TABLE collapsed_entries (
+                    entry_id TEXT PRIMARY KEY REFERENCES entries(id),
+                    asset_id TEXT NOT NULL REFERENCES assets(id)
+                 );
+                 CREATE TRIGGER collapsed_entries_are_permanent BEFORE DELETE ON collapsed_entries BEGIN
+                    SELECT RAISE(ABORT, 'collapsed entries stay collapsed');
+                 END;
                  CREATE TABLE versions (
                     asset_id TEXT NOT NULL REFERENCES assets(id),
                     name TEXT NOT NULL COLLATE NOCASE,

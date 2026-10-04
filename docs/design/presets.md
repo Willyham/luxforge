@@ -101,7 +101,7 @@ CREATE TABLE presets (
 );
 ```
 
-A catalog of an earlier format is refused by name, as every format change has been; choose a new catalog path. The current catalog format is described in [versions and lineage](versions-and-lineage.md#storage-catalog-format-11). The desktop's default catalog lives in the configuration directory, so in practice the library is per installation.
+A catalog of an earlier format is refused by name, as every format change has been; choose a new catalog path. The current catalog format is described in [versions and lineage](versions-and-lineage.md#storage-catalog-format-12). The desktop's default catalog lives in the configuration directory, so in practice the library is per installation.
 
 **Record.** `{id, name, group, settings, origin, report, actor, created_ms, updated_ms, unavailable}`:
 
@@ -264,7 +264,7 @@ The library is listed at startup, after each of the desktop's own preset calls, 
 
 The owner asked for this work to proceed without blocking. These are proposals the owner can revise:
 
-1. Presets are catalog data (see [versions and lineage](versions-and-lineage.md#storage-catalog-format-11)), not files in a settings folder. Sharing goes through export and import of the `.lfpreset` document.
+1. Presets are catalog data (see [versions and lineage](versions-and-lineage.md#storage-catalog-format-12)), not files in a settings folder. Sharing goes through export and import of the `.lfpreset` document.
 2. Only field-patch actions are presettable, so RAW's explicit gains and sensor pick, transforms and crop are excluded. The RAW white balance (`set-raw`) is presettable, and a preset carries each kind's white balance separately (owner decision 6, [source-kind controls](source-controls.md#decisions)).
 3. `apply-preset` carries the settings, not a library reference.
 4. Imports are value transfers for the controls Luxforge has, and Lightroom's absolute `Temperature` and `Tint` a value conversion through the white they name (owner decision 5). Nothing is clamped.

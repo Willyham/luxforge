@@ -1162,6 +1162,14 @@ fn owner_loop(
         let _ = completions.send(OwnerMessage::AnalysisReady);
     }));
     queue.set_activity(activity.clone());
+    // History collapses as the person chose, or by default when the preferences cannot be read:
+    // the desktop reports that failure when it reads them itself.
+    let mut service = service;
+    service.set_auto_collapse(
+        host.preferences
+            .read()
+            .map_or(true, |preferences| preferences.auto_collapse_history),
+    );
     let mut owner = Owner {
         service,
         host,
@@ -2366,6 +2374,37 @@ pub(super) fn flags_set(
         announce_once(&mut owner.announced, &call.origin);
     }
     flags_list(owner, call, NoParams {})
+}
+
+host_params! {
+    pub(super) struct PreferencesSet {
+        performance_expanded: Option<bool> = boolean(),
+        auto_collapse_history: Option<bool> = boolean(),
+    }
+}
+
+/// `preferences.set`: one write of the preferences named. A change to auto-collapse reaches the
+/// catalog writer at once, for the next edit, and is announced, so a client showing it reads it
+/// again.
+pub(super) fn preferences_set(
+    owner: &mut Owner,
+    call: &Call<'_>,
+    params: PreferencesSet,
+) -> Result<Value, Error> {
+    let stored = owner
+        .host
+        .preferences
+        .set(crate::preferences::PreferenceChange {
+            performance_expanded: params.performance_expanded,
+            auto_collapse_history: params.auto_collapse_history,
+        })?;
+    if stored.auto_collapse_history != owner.service.auto_collapse() {
+        owner
+            .service
+            .set_auto_collapse(stored.auto_collapse_history);
+        announce_once(&mut owner.announced, &call.origin);
+    }
+    Ok(methods::preference_values(&stored))
 }
 
 /// `activity.list`: one lock and a copy of at most 80 small entries.
