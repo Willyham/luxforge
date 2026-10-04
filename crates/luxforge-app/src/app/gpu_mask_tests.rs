@@ -1632,3 +1632,167 @@ fn gpu_mask_a_painted_stroke_costs_where_it_changes() {
         );
     }
 }
+
+/// What a painted stroke's ticks cost the GPU at the Fit stage of `editor-latency --mode paint
+/// --masks N --mask-presence` on the generated 24 MP JPEG in its 1728 × 1080 window (2292 × 1528 of
+/// a 6000 × 4000 photograph), in the harness's own layout: the brushed mask, its seeding stroke
+/// committed and the measured stroke painted into the same component one position a tick, and
+/// each further mask a radial placed as the harness places it; each mask holding a masked Basic
+/// exposure of +0.6 and a masked Presence layer of Clarity 50 and Texture 40, placement putting
+/// every masked Basic layer before every masked Presence layer. Each tick changes the first
+/// mask's Basic layer near the stroke's end, so every Presence link after it is evaluated where
+/// that change reaches and its mask can cover anything. For 3, 10 and 16 masks it prints the
+/// slot's charge, the share of the stage a tick changes, the GPU's throughput a tick evaluated
+/// incrementally and whole, with the CPU's encoding beside each, after the chain's first two
+/// ticks compiled and drew, and how long each incremental tick alone keeps the GPU, from its
+/// submission to its completion. A measurement, not a timing gate: run it on purpose in release,
+/// with `--ignored --nocapture`, on a quiet host, and record the load beside its figures.
+#[test]
+#[ignore = "a measurement, run on purpose"]
+fn gpu_mask_the_paint_harness_layout_costs_a_tick_at_fit() {
+    let test = "gpu_mask_the_paint_harness_layout_costs_a_tick_at_fit";
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
+        return;
+    };
+    eprintln!("{test}: adapter {}", qualifier.adapter());
+    let seed = Stroke::capture(&[[0.2, 0.3], [0.8, 0.3]], 0.06, 50.0, 100.0, false).unwrap();
+    let path: Vec<[f64; 2]> = (0..120)
+        .map(|index| {
+            let t = f64::from(index) / 119.0;
+            [
+                0.2 + 0.8 * t,
+                0.5 + 0.2 * (std::f64::consts::TAU * 2.5 * t).sin(),
+            ]
+        })
+        .collect();
+    let (width, height) = (2292u32, 1528u32);
+    let pixels: Vec<[f32; 3]> = (0..width * height)
+        .map(|index| {
+            let (x, y) = (index % width, index / width);
+            let v = ((x * 7 + y * 13) % 255) as f32 / 255.0;
+            [v * 0.8, 0.3 + v * 0.4, 0.5 - v * 0.3]
+        })
+        .collect();
+    let held_boundary = boundary(width, height, 1, &pixels).expect("a boundary");
+    let request = GpuPlanRequest::fit(0, stage(width, height), stage(6000, 4000));
+    for masks in [3usize, 10, 16] {
+        let radials: Vec<Mask> = (2..=masks)
+            .map(|index| {
+                let t = (index - 2) as f64 / (masks.max(3) - 2) as f64;
+                let mut mask = mask_of(
+                    &[(
+                        "radial",
+                        ComponentMode::Add,
+                        false,
+                        json!({"x": 0.15 + 0.7 * t, "y": 0.35 + 0.3 * (t * 7.0).sin().abs(),
+                               "radius_x": 0.18, "radius_y": 0.14, "angle": 0.0,
+                               "feather": 50.0}),
+                    )],
+                    false,
+                    100.0,
+                );
+                mask.name = format!("Mask {index}");
+                mask
+            })
+            .collect();
+        let stack = |tick: usize| {
+            let painted = Stroke::capture(&path[..=tick], 0.06, 50.0, 100.0, false).unwrap();
+            let (brushed, strokes) = brush(vec![seed.clone(), painted]);
+            let masks: Vec<Mask> = std::iter::once(brushed).chain(radials.clone()).collect();
+            let masked = |mask: &Mask, effect: &str, payload: Value| Layer {
+                mask: Some(mask.id.clone()),
+                ..Layer::new(effect, payload)
+            };
+            let mut layers: Vec<Layer> = masks
+                .iter()
+                .map(|mask| masked(mask, BASIC_EFFECT, json!({"exposure": 0.6})))
+                .collect();
+            layers.extend(masks.iter().map(|mask| {
+                masked(
+                    mask,
+                    luxforge_core::PRESENCE_EFFECT,
+                    json!({"clarity": 50.0, "texture": 40.0}),
+                )
+            }));
+            Recipe {
+                layers,
+                masks,
+                strokes,
+                ..Recipe::default()
+            }
+        };
+        let plans: Vec<_> = (1..path.len())
+            .map(|tick| planned(&stack(tick), request))
+            .collect();
+        assert_eq!(plans[0].spatial.len(), masks, "a Presence link a mask");
+        assert_eq!(plans[0].content.len(), masks, "the Basic layers first");
+        let mut shares = Vec::new();
+        let ticks: Vec<_> = plans
+            .iter()
+            .enumerate()
+            .map(|(tick, plan)| {
+                let inside = (tick > 0).then(|| match plan.changes_since(&plans[tick - 1]) {
+                    luxforge_core::GpuChange::Inside(rect) => {
+                        shares
+                            .push(f64::from(rect.width * rect.height) / f64::from(width * height));
+                        [
+                            rect.x0,
+                            rect.y0,
+                            rect.x0 + rect.width,
+                            rect.y0 + rect.height,
+                        ]
+                    }
+                    luxforge_core::GpuChange::Nothing => [0; 4],
+                    luxforge_core::GpuChange::Anywhere => panic!("tick {tick}: a change anywhere"),
+                });
+                let converted = surface_plan(plan, held_boundary.clone()).expect("a runnable plan");
+                (converted, inside)
+            })
+            .collect();
+        let charged = qualifier.charged_bytes(&ticks[0].0).expect("a charge");
+        let whole: Vec<_> = ticks.iter().map(|(plan, _)| (plan.clone(), None)).collect();
+        // Once to compile the chain's pipelines, then measured.
+        let compiled = std::time::Instant::now();
+        qualifier
+            .time_throughput(&ticks[..2])
+            .expect("a compiled chain");
+        let compiled = compiled.elapsed();
+        let (encoding, incremental) = qualifier.time_throughput(&ticks).expect("a timing");
+        let (whole_encoding, wholly) = qualifier.time_throughput(&whole).expect("a timing");
+        // Each incremental tick alone, from its submission to its completion after the tick
+        // before it was drawn whole and waited for: how long one tick's work keeps the GPU.
+        let mut alone: Vec<f64> = (1..ticks.len())
+            .map(|tick| {
+                let (_, wall) = qualifier
+                    .time_throughput(&ticks[tick - 1..=tick])
+                    .expect("a timing");
+                wall.as_secs_f64() * 1e3
+            })
+            .collect();
+        alone.sort_by(f64::total_cmp);
+        shares.sort_by(f64::total_cmp);
+        let at = |values: &[f64], share: usize| values[(values.len() - 1) * share / 100];
+        let mean = shares.iter().sum::<f64>() / shares.len() as f64;
+        eprintln!(
+            "{test}: {masks} masks at {width}x{height}: the slot charges {:.1} MB; the chain \
+             compiled and drew its first ticks in {:.0} ms; each of {} ticks changes {:.1}% of \
+             the stage on average (p50 {:.1}%, p95 {:.1}%, largest {:.1}%); incremental {:.2} ms \
+             a tick (encoding {:.2} ms), whole {:.2} ms (encoding {:.2} ms); one incremental \
+             tick alone p50 {:.2} ms, p95 {:.2} ms, largest {:.2} ms",
+            charged as f64 / 1e6,
+            compiled.as_secs_f64() * 1e3,
+            ticks.len(),
+            100.0 * mean,
+            100.0 * at(&shares, 50),
+            100.0 * at(&shares, 95),
+            100.0 * at(&shares, 100),
+            incremental.as_secs_f64() * 1e3,
+            encoding.as_secs_f64() * 1e3,
+            wholly.as_secs_f64() * 1e3,
+            whole_encoding.as_secs_f64() * 1e3,
+            at(&alone, 50),
+            at(&alone, 95),
+            at(&alone, 100),
+        );
+    }
+}
