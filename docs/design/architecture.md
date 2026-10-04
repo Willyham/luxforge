@@ -149,7 +149,7 @@ A mask is a host object beside the layers — an ordered list of components with
 
 Every frame, sample, grid and preview phase enters rendering through one function, `luxforge_core::render`, which checks the source, compiles the recipe once for its phase (exact, or the proxy phase's thin-mask sampling) and returns a `Render` that answers the frame, a pixel, a grid, the output stage and its geometry from that compilation. The editor service compiles each stack it evaluates once, on the catalog owner, into the one bound evaluation (`Evaluation`) its preview, analysis, sample, point and export plans carry, and their workers render that compilation through the same `Render` rather than compiling it again.
 
-What a render reads besides its source and recipe — the colour scratch budget, the spatial budget and the store of prepared spatial estimates, with their high-water marks — is a `RenderContext` passed in, not process state. The editor service owns one, and the catalog owner, the preview and analysis jobs it plans and the desktop's diagnostics share it, so their renders pace each other.
+What a render reads besides its source and recipe — the colour scratch budget, the spatial budget, the store of prepared spatial estimates and the store of reduced planes, with their high-water marks and counters — is a `RenderContext` passed in, not process state. The editor service owns one, and the catalog owner, the preview and analysis jobs it plans and the desktop's diagnostics share it, so their renders pace each other.
 
 ### Pixel domains
 
@@ -245,6 +245,7 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | Spatial tile side | 512 px up to a 128 px summed halo, 1024 px past it | `SPATIAL_TILE`, `SPATIAL_WIDE_TILE` and `SPATIAL_WIDE_HALO`, read through `spatial_tile`, `crates/luxforge-raw/src/limits.rs` |
 | Global estimate | 4 KiB each | `MAX_GLOBAL_BYTES`, `crates/luxforge-core/src/modules/spatial.rs` |
 | Cached estimates | 8 | `ESTIMATE_STORE_ENTRIES`, `crates/luxforge-core/src/modules/spatial.rs` |
+| Reduced planes of spatial operations' first units, every entry together | 64 MiB, least recently used evicted first and an entry larger than it refused; a frame render also collects one set of planes over its first unit's whole grid until it publishes them, at most the same 64 MiB | `REDUCED_STORE_BYTES`, `crates/luxforge-core/src/modules/spatial.rs`, enforced by `ReducedStore` in `crates/luxforge-core/src/render/reduced.rs` |
 | One point query's held spatial tiles | The spatial target's bytes (85 tiles of 3 MiB at 512 px, 21 of 12 MiB at 1024 px), never fewer than 16 | `SPATIAL_BUDGET_BYTES` over the largest tile's planes, floored at `POINT_TILES_FLOOR`, `crates/luxforge-core/src/render/spatial.rs` |
 | Parallel threshold: a segment's geometry | 0.5 MP | `PARALLEL_TRANSFORM_PIXELS`, read through `parallel_pixels`, `crates/luxforge-raw/src/limits.rs` |
 | Parallel threshold: one or two colour units | 0.1 MP | `PARALLEL_COLOUR_PIXELS`, as above |
