@@ -145,7 +145,7 @@
     {
       "id": "TASK-003",
       "description": "Remembered workspace, brush and export folder: seed the desktop's session and Masks panel from the stored values at launch and store them as they change.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-002"
       ],
@@ -205,7 +205,7 @@
     {
       "id": "TASK-004",
       "description": "Canvas background and interface size: the two General rows and their effects on the canvas colour and the application's scale factor.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-002"
       ],
@@ -264,7 +264,7 @@
     {
       "id": "TASK-005",
       "description": "Launch preferences: the Catalog row and the catalog location at launch with its missing-folder fallback, and the remembered window frame.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-002"
       ],
@@ -324,7 +324,7 @@
     {
       "id": "TASK-006",
       "description": "Verification and documentation: extend the settings smoke scenario, check remembered state across two background launches, and update feature status, the user guide and decisions.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-003",
         "TASK-004",
