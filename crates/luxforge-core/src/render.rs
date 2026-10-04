@@ -30,8 +30,6 @@ pub(crate) mod map;
 pub(crate) mod parallel;
 mod pipeline;
 mod raster;
-// Read by the frame and point paths from the next commit on.
-#[allow(dead_code)]
 pub(crate) mod reduced;
 mod restoration;
 pub(crate) mod spatial;

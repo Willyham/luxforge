@@ -128,7 +128,8 @@ pub use registry::{ModuleRegistry, Provider, RegistryOptions, insertion_index_am
 pub(crate) use spatial::{
     Cells, ESTIMATE_REDUCTION, ESTIMATE_STORE_ENTRIES, Global, GridPlanes,
     MAX_MASKED_SPATIAL_LAYERS, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes,
-    PlanesMut, REDUCED_STORE_BYTES, ReducedGrid, Reduction, SPATIAL_BUDGET_BYTES, SpatialUnit,
+    PlanesMut, REDUCED_STORE_BYTES, Reduced, ReducedGrid, Reduction, SPATIAL_BUDGET_BYTES,
+    SpatialUnit,
 };
 pub use spatial::{Region, SpatialOperation};
 pub use vignette::VIGNETTE_EFFECT;

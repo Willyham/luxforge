@@ -8,6 +8,7 @@
 //! sampled byte is the byte a render of that tile produces.
 
 use super::context::{EstimateKey, EstimateStore, SpatialBudget, SpatialReservation};
+use super::reduced::ReducedEntry;
 use crate::Cancel;
 #[cfg(test)]
 use crate::ErrorKind;
@@ -15,8 +16,8 @@ use crate::{
     Error,
     mask_field::{MaskField, MaskSampling},
     modules::{
-        ESTIMATE_REDUCTION, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes,
-        PlanesMut, Reduction, Region, SpatialOperation, Stage,
+        Cells, ESTIMATE_REDUCTION, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism,
+        Planes, PlanesMut, Reduced, Reduction, Region, SpatialOperation, Stage,
     },
 };
 use rayon::prelude::*;
@@ -154,7 +155,6 @@ impl SpatialPlan {
     }
 
     /// The side of this plan's tiles.
-    #[cfg(test)]
     pub(crate) fn tile(&self) -> u32 {
         self.tile
     }
@@ -598,7 +598,7 @@ pub(crate) fn run_tile<'s>(
     cancel: &Cancel,
     fill: impl Fn(Region, &mut [f32]) -> Result<(), Error>,
 ) -> Result<(Region, &'s [f32]), Error> {
-    let (region, held) = run_tile_in(
+    let (region, held, _) = run_tile_in(
         plan,
         operation,
         globals,
@@ -606,9 +606,66 @@ pub(crate) fn run_tile<'s>(
         parallelism,
         scratch,
         cancel,
+        TilePlanes::None,
         fill,
     )?;
     Ok((region, scratch.held(held)))
+}
+
+/// What a tile does with the reduced planes of its operation's first unit, when that unit declares
+/// any ([`crate::modules::SpatialUnit::reduced_grid`]): never asked of a later unit, whose input is
+/// the earlier units' output over its tile's own rectangles.
+#[derive(Clone, Copy)]
+pub(crate) enum TilePlanes<'a> {
+    /// Nothing: the unit computes its planes as it always has. A windowed render, a restoration
+    /// region and a unit without a grid take this.
+    None,
+    /// Read `held` when it covers the unit's reach in the grid, and otherwise compute the planes,
+    /// handing the tile's own cells back when `hand` says so (a frame render collecting them) and
+    /// not otherwise (a point query, which never fills the store).
+    Store {
+        held: Option<&'a ReducedEntry>,
+        hand: bool,
+    },
+}
+
+/// What one tile did with its first unit's reduced planes.
+#[derive(Debug)]
+pub(crate) enum PlaneUse {
+    /// Nothing: no planes, or a masked tile copied without evaluating a unit.
+    None,
+    /// It read held planes, and its input held only the unit's output rectangle.
+    Served,
+    /// It computed them, handing back these cells when asked to.
+    Computed(Option<Cells>),
+}
+
+/// [`run_tile`] with its operation's first unit's reduced planes as `planes` says, answering what
+/// the tile did with them beside its values.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_tile_planned<'s>(
+    plan: &SpatialPlan,
+    operation: &SpatialOperation,
+    globals: &[Option<Global>],
+    tile: Region,
+    parallelism: Parallelism,
+    scratch: &'s mut TileScratch,
+    cancel: &Cancel,
+    planes: TilePlanes<'_>,
+    fill: impl Fn(Region, &mut [f32]) -> Result<(), Error>,
+) -> Result<(Region, &'s [f32], PlaneUse), Error> {
+    let (region, held, used) = run_tile_in(
+        plan,
+        operation,
+        globals,
+        tile,
+        parallelism,
+        scratch,
+        cancel,
+        planes,
+        fill,
+    )?;
+    Ok((region, scratch.held(held), used))
 }
 
 /// [`run_tile`], answering where in the slot the tile's values were left rather than borrowing
@@ -622,8 +679,9 @@ fn run_tile_in(
     parallelism: Parallelism,
     slot: &mut TileScratch,
     cancel: &Cancel,
+    planes: TilePlanes<'_>,
     fill: impl Fn(Region, &mut [f32]) -> Result<(), Error>,
-) -> Result<(Region, Held), Error> {
+) -> Result<(Region, Held, PlaneUse), Error> {
     cancel.check()?;
     #[cfg(test)]
     OBSERVED_TILES.with(|counter| {
@@ -666,10 +724,20 @@ fn run_tile_in(
             MASKED_TILES_COPIED.fetch_add(1, Ordering::Relaxed);
             #[cfg(test)]
             slot.check_held(plan);
-            return Ok((tile, Held::Planes { buffer: 0, len }));
+            return Ok((tile, Held::Planes { buffer: 0, len }, PlaneUse::None));
         }
     }
-    let regions = plan.regions(tile);
+    let mut regions = plan.regions(tile);
+    // Every unit's scratch is what it asks for the input rectangle it reads without held planes,
+    // which bounds what it takes with them; the slot and the charge stay what they were.
+    let scratch = scratch_values(operation, &regions);
+    let mut reduced = Planned::decide(operation, stage, tile, &regions, planes);
+    if let Planned::Read(_) = reduced {
+        // The first unit reads its reduced grid from the held planes, so its input is only the
+        // rectangle it fills, as today's chain gives it; every later unit's rectangles are
+        // today's.
+        regions[0] = regions[1];
+    }
     let input = reused(&mut slot.planes[0], len_of(regions[0]), largest.planes[0]);
     fill(regions[0], input)?;
     // The snapshot of the tile's own input, taken before the chain runs because from its second
@@ -701,13 +769,12 @@ fn run_tile_in(
         MASKED_TILES_COPIED.fetch_add(1, Ordering::Relaxed);
         #[cfg(test)]
         slot.check_held(plan);
-        return Ok((tile, Held::Snapshot));
+        return Ok((tile, Held::Snapshot, PlaneUse::None));
     }
     #[cfg(test)]
     if mask.is_some() {
         MASKED_TILES_EVALUATED.fetch_add(1, Ordering::Relaxed);
     }
-    let scratch = scratch_values(operation, &regions);
     for (index, unit) in operation.units().iter().enumerate() {
         // Unit `index` reads buffer `index % 2` and writes the other one.
         let [even, odd] = &mut slot.planes;
@@ -723,14 +790,32 @@ fn run_tile_in(
             largest.planes[(index + 1) % 2],
         );
         let mut output = PlanesMut::new(stage, regions[index + 1], next)?;
-        unit.apply_cancellable(
-            &input,
-            &mut output,
-            globals.get(index).and_then(Option::as_ref),
-            reused(&mut slot.units, scratch, largest.scratch),
-            parallelism,
-            cancel,
-        )?;
+        let global = globals.get(index).and_then(Option::as_ref);
+        let unit_scratch = reused(&mut slot.units, scratch, largest.scratch);
+        let handed = match (index, &mut reduced) {
+            (0, Planned::Read(entry)) => Some(Reduced::Held(entry.planes())),
+            (0, Planned::Hand(cells)) => Some(Reduced::Hand(cells)),
+            _ => None,
+        };
+        match handed {
+            Some(handed) => unit.apply_reduced(
+                &input,
+                &mut output,
+                global,
+                unit_scratch,
+                parallelism,
+                cancel,
+                handed,
+            )?,
+            None => unit.apply_cancellable(
+                &input,
+                &mut output,
+                global,
+                unit_scratch,
+                parallelism,
+                cancel,
+            )?,
+        }
         let finite = match parallelism {
             Parallelism::Pool => next.par_iter().all(|value| value.is_finite()),
             Parallelism::Serial => next.iter().all(|value| value.is_finite()),
@@ -755,7 +840,58 @@ fn run_tile_in(
             &mut slot.planes[buffer][..len],
         );
     }
-    Ok((region, Held::Planes { buffer, len }))
+    Ok((region, Held::Planes { buffer, len }, reduced.used()))
+}
+
+/// What [`run_tile_in`] decided for its first unit's reduced planes on one tile.
+enum Planned<'a> {
+    /// No planes to read or hand back: the unit runs as it always has.
+    None,
+    /// Read from this entry.
+    Read(&'a ReducedEntry),
+    /// Computed, the tile's cells handed back into these.
+    Hand(Cells),
+    /// Computed and not handed back.
+    Computed,
+}
+
+impl<'a> Planned<'a> {
+    /// Read `planes`' entry if it covers the first unit's reach from the output rectangle today's
+    /// chain gives it (`regions[1]`), and otherwise compute, handing the tile's cells back if
+    /// asked. Only the first unit is ever asked: its input is the operation's input.
+    fn decide(
+        operation: &SpatialOperation,
+        stage: Stage,
+        tile: Region,
+        regions: &[Region],
+        planes: TilePlanes<'a>,
+    ) -> Self {
+        let TilePlanes::Store { held, hand } = planes else {
+            return Self::None;
+        };
+        let Some((unit, grid)) = operation
+            .units()
+            .first()
+            .and_then(|unit| Some((unit, unit.reduced_grid()?)))
+        else {
+            return Self::None;
+        };
+        let reach = unit.reduced_reach(regions[1], stage);
+        match held {
+            Some(entry) if entry.covers(reach) => Self::Read(entry),
+            _ if hand => Self::Hand(Cells::for_tile(&grid, tile)),
+            _ => Self::Computed,
+        }
+    }
+
+    fn used(self) -> PlaneUse {
+        match self {
+            Self::None => PlaneUse::None,
+            Self::Read(_) => PlaneUse::Served,
+            Self::Hand(cells) => PlaneUse::Computed(Some(cells)),
+            Self::Computed => PlaneUse::Computed(None),
+        }
+    }
 }
 
 /// What evaluating a mask over one tile proved, in the tile's row-major pixel order.
@@ -1511,7 +1647,7 @@ impl<'a> PointTiles<'a> {
         let values = {
             let _reservation = self.budget.reserve(plan.working_set, 1);
             let mut slot = TileScratch::default();
-            let (region, held) = run_tile_in(
+            let (region, held, _) = run_tile_in(
                 plan,
                 operation,
                 globals,
@@ -1519,6 +1655,7 @@ impl<'a> PointTiles<'a> {
                 Parallelism::Serial,
                 &mut slot,
                 cancel,
+                TilePlanes::None,
                 &fill,
             )?;
             slot.into_tile(held, region, tile)

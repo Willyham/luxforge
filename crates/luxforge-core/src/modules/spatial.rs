@@ -342,8 +342,6 @@ impl ReducedGrid {
 
 /// A rectangle of a reduced grid's cells held as planes: one complete plane of
 /// `rect.width × rect.height` values in row-major order per plane, one after the other.
-// Read by the tile paths from the next commit on.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct GridPlanes<'a> {
     grid: Stage,
@@ -352,7 +350,6 @@ pub(crate) struct GridPlanes<'a> {
     values: &'a [f32],
 }
 
-#[allow(dead_code)]
 impl<'a> GridPlanes<'a> {
     pub(crate) fn new(grid: Stage, rect: Region, planes: usize, values: &'a [f32]) -> Self {
         debug_assert_eq!(values.len() as u64, rect.pixels() * planes as u64);
@@ -396,7 +393,6 @@ pub(crate) struct Cells {
     values: Vec<f32>,
 }
 
-#[allow(dead_code)]
 impl Cells {
     /// The cells `tile` owns of `grid`'s planes, to be written by the unit that runs on it. Test
     /// builds fill them with NaN first, so a cell the unit leaves unwritten fails the render that
@@ -440,6 +436,18 @@ impl Cells {
         let len = self.rect.pixels() as usize;
         &mut self.values[index * len..(index + 1) * len]
     }
+}
+
+/// How a unit that runs first in its operation and declares a [`ReducedGrid`] treats it on one
+/// tile ([`SpatialUnit::apply_reduced`]).
+#[derive(Debug)]
+pub(crate) enum Reduced<'a> {
+    /// Compute the planes as always and copy the cells the tile owns into these.
+    Hand(&'a mut Cells),
+    /// Read the planes from these, which hold every cell [`SpatialUnit::reduced_reach`] names for
+    /// the output rectangle, instead of computing them. The input then holds only the output
+    /// rectangle.
+    Held(GridPlanes<'a>),
 }
 
 /// One rectangle of planar `f32` linear-sRGB RGB a unit reads, with its position in the stage.
@@ -745,6 +753,50 @@ pub(crate) trait SpatialUnit: Send + Sync {
     /// CPU path for such a drag unless it says otherwise. Answered while planning.
     fn holds_restored_estimate(&self) -> bool {
         false
+    }
+
+    /// The planes this unit computes from a reduced grid of its input before it applies any
+    /// coefficient, when it has any, or `None`, the default. The host keeps them across renders
+    /// for a unit that runs first in its operation, whose input is the operation's input, so a
+    /// cell is the same value in every tile that computes it; it never asks a later unit.
+    fn reduced_grid(&self) -> Option<ReducedGrid> {
+        None
+    }
+
+    /// The cells of [`Self::reduced_grid`] the unit reads to fill `output`, a rectangle of
+    /// `stage`: the rectangle [`Self::apply_reduced`] reads from held planes. The default, for a
+    /// unit without a grid, is none.
+    fn reduced_reach(&self, _output: Region, _stage: Stage) -> Region {
+        Region::EMPTY
+    }
+
+    /// [`Self::apply_cancellable`] for a unit that declares a [`Self::reduced_grid`] and runs first
+    /// in its operation, with what the host decided for its planes on this tile:
+    ///
+    /// - [`Reduced::Hand`]: compute everything as `apply` does, from an input that holds the
+    ///   unit's whole reach, and copy the cells the tile owns into the cells handed in, exactly
+    ///   the values computed.
+    /// - [`Reduced::Held`]: read the planes over [`Self::reduced_reach`] from the held planes
+    ///   instead of computing them, from an input that holds only `output`'s rectangle. Every
+    ///   other value is computed as `apply` computes it, so the output is the same bits.
+    ///
+    /// Either takes no more scratch than [`Self::scratch_bytes`] declares for the input rectangle
+    /// the unit reads without held planes, which is what the host hands it. The default refuses:
+    /// the host hands planes only to a unit that declares a grid.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_reduced(
+        &self,
+        _input: &Planes<'_>,
+        _output: &mut PlanesMut<'_>,
+        _global: Option<&Global>,
+        _scratch: &mut [f32],
+        _parallelism: Parallelism,
+        _cancel: &Cancel,
+        _reduced: Reduced<'_>,
+    ) -> Result<(), Error> {
+        Err(Error::internal(
+            "a spatial unit without a reduced grid was handed reduced planes",
+        ))
     }
 
     /// Run one tile under the render's cancellation token. Units with several passes override

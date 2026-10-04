@@ -38,7 +38,7 @@
 use crate::{
     Error,
     colour::{luma, srgb},
-    modules::{Parallelism, Planes, Stage},
+    modules::{Cells, GridPlanes, Parallelism, Planes, Region, Stage},
 };
 use rayon::prelude::*;
 use std::ops::Range;
@@ -312,6 +312,22 @@ pub(super) struct Plane<'a> {
 }
 
 impl<'a> Plane<'a> {
+    /// A plane over values held elsewhere: `data` holds `rect` of the frame `geometry` names,
+    /// row-major, such as a reduced grid's held planes.
+    pub(super) fn over(data: &'a [f32], geometry: Geometry, rect: Rect) -> Result<Self, Error> {
+        let len = rect.pixels();
+        if data.len() < len {
+            return Err(Error::internal(format!(
+                "a presence plane of {len} values was handed {}",
+                data.len()
+            )));
+        }
+        Ok(Self {
+            geometry: Geometry::new(geometry.width, geometry.height, rect),
+            data: &data[..len],
+        })
+    }
+
     pub(super) fn geometry(&self) -> Geometry {
         self.geometry
     }
@@ -1139,6 +1155,69 @@ struct Sample {
     i0: i64,
     fx: f32,
     gx: f32,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Held reduced planes.
+// ---------------------------------------------------------------------------------------------
+
+/// A reduced rectangle as the host's region of the grid.
+pub(super) fn grid_region(rect: Rect) -> Region {
+    if rect.is_empty() {
+        return Region::EMPTY;
+    }
+    Region {
+        x0: rect.x0 as u32,
+        y0: rect.y0 as u32,
+        width: rect.width() as u32,
+        height: rect.height() as u32,
+    }
+}
+
+/// Plane `index` of held reduced planes as a plane of the reduced frame `geometry` names, after
+/// checking that they are planes of that frame and hold every cell of `reach`: what the host
+/// vouched for when it handed them over, checked once rather than trusted.
+pub(super) fn held_plane<'a>(
+    planes: &GridPlanes<'a>,
+    index: usize,
+    geometry: Geometry,
+    reach: Rect,
+) -> Result<Plane<'a>, Error> {
+    let frame = geometry.frame();
+    let grid = planes.grid();
+    let rect = Rect::of(planes.rect());
+    let holds = reach.is_empty()
+        || (reach.x0 >= rect.x0
+            && reach.y0 >= rect.y0
+            && reach.x1 <= rect.x1
+            && reach.y1 <= rect.y1);
+    if (i64::from(grid.width), i64::from(grid.height)) != (frame.x1, frame.y1) || !holds {
+        return Err(Error::internal(format!(
+            "held reduced planes of {}x{} cells over {rect:?} cannot serve {reach:?} of a {}x{} \
+             grid",
+            grid.width, grid.height, frame.x1, frame.y1
+        )));
+    }
+    Plane::over(planes.plane(index), geometry, rect)
+}
+
+/// Copy the cells a tile hands back out of `plane`, a plane of the reduced grid this tile computed
+/// over a rectangle that holds them, into plane `index` of `cells`.
+pub(super) fn hand_back(cells: &mut Cells, index: usize, plane: &Plane<'_>) {
+    let rect = Rect::of(cells.rect());
+    if rect.is_empty() {
+        return;
+    }
+    let held = plane.geometry.rect;
+    assert!(
+        rect.x0 >= held.x0 && rect.y0 >= held.y0 && rect.x1 <= held.x1 && rect.y1 <= held.y1,
+        "a tile hands back cells {rect:?} it did not compute: it computed {held:?}"
+    );
+    let width = rect.width() as usize;
+    let values = cells.plane_mut(index);
+    for (row, y) in (rect.y0..rect.y1).enumerate() {
+        values[row * width..(row + 1) * width].copy_from_slice(plane.span(y, rect.x0, rect.x1));
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

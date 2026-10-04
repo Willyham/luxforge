@@ -36,9 +36,10 @@
 use super::{
     ColorRun, Compiled, MaskedInput, RenderContext, ResampleEntry, ScratchBudget, Segment,
     color_chunk_rows, color_runs, mapped_replacements,
+    reduced::ReducedKey,
     spatial::{
-        PointTiles, SpatialPlan, Tiling, build_reduction_cancellable, fill_planes, resolve_globals,
-        run_tile, run_tiles,
+        PlaneUse, PointTiles, SpatialPlan, TilePlanes, Tiling, build_reduction_cancellable,
+        fill_planes, resolve_globals, run_tile, run_tile_planned, run_tiles,
     },
 };
 
@@ -65,7 +66,9 @@ pub(super) fn colour_input<'r, D: PixelDomain>(
 }
 use crate::{
     Cancel, Error,
-    modules::{Global, Parallelism, Reduction, Region, SpatialOperation, Stage},
+    modules::{
+        Cells, Global, Parallelism, ReducedGrid, Reduction, Region, SpatialOperation, Stage,
+    },
 };
 use rayon::prelude::*;
 #[cfg(test)]
@@ -1029,6 +1032,10 @@ pub(crate) struct SpatialEntry {
     /// by a windowed proxy, whose stage is a window that cannot be reduced as a whole
     /// ([`super::window`]). `None` everywhere else.
     pub(super) globals: Option<super::window::Globals>,
+    /// Whether a windowed proxy cut this operation to a window, which it runs over as its own
+    /// stage. A window's edge blocks are not the whole stage's, so it neither reads nor fills the
+    /// store of reduced planes ([`super::reduced`]).
+    pub(super) windowed: bool,
 }
 
 impl SpatialEntry {
@@ -1039,7 +1046,32 @@ impl SpatialEntry {
             fit_settle: crate::FitSettle::Proxy,
             prefix_hash,
             globals: None,
+            windowed: false,
         }
+    }
+
+    /// The key of the store's reduced planes of this operation's first unit over `stage` in
+    /// `domain`, mirroring an estimate's ([`resolve_globals`]), with the grid the unit declares;
+    /// `None` when the first unit declares none or a window cut the operation. Only the first unit
+    /// is asked: a later unit's input is the earlier units' output over its tile's own rectangles,
+    /// which no shared plane reproduces. `O(1)`, and reads no pixel.
+    pub(super) fn reduced_key<D: PixelDomain>(
+        &self,
+        domain: &D,
+        stage: Stage,
+    ) -> Option<(ReducedKey, ReducedGrid)> {
+        if self.windowed {
+            return None;
+        }
+        let grid = self.operation.units().first()?.reduced_grid()?;
+        let key = ReducedKey {
+            fingerprint: domain.fingerprint().to_owned(),
+            prefix_hash: input_prefix_key(domain, &self.prefix_hash).into_owned(),
+            width: stage.width,
+            height: stage.height,
+            reduction: grid.key.clone(),
+        };
+        Some((key, grid))
     }
 
     /// The SHA-256 of the layers before this one, which a stored estimate's key names.
@@ -1093,6 +1125,7 @@ impl SpatialEntry {
         whole: Stage,
         globals: impl FnOnce() -> Result<Vec<Option<Global>>, Error>,
     ) -> Result<(), Error> {
+        self.windowed = true;
         if previous != Region::whole(whole)
             && let Some(mask) = self.operation.mask()
         {
@@ -1133,6 +1166,12 @@ impl SpatialEntry {
 /// the one place either driver materializes a spatial operation. `fill` reads one rectangle of the
 /// stage it reads into three planes, for every tile and, on a store miss, for the reduction its
 /// global estimates ([`SpatialEntry::globals`]) are prepared from.
+///
+/// When the operation's first unit declares reduced planes ([`SpatialEntry::reduced_key`]), a tile
+/// whose reach in the grid the store's entry covers reads them and reads its input over the unit's
+/// output rectangle alone; any other tile computes them as it always has and hands back the cells
+/// it owns, which the write lock copies into the render's pending planes. They are published when
+/// every tile is written, and not at all when the render fails or is cancelled.
 /// Every tile runs through [`run_tile`], in a rolling window whose width the spatial budget sets,
 /// checking `cancel` between tiles ([`run_tiles`]). No full-frame float buffer exists beside the
 /// output, only one tile's working set per tile in flight, charged to the spatial budget before
@@ -1157,6 +1196,24 @@ pub(super) fn spatial_entry<D: PixelDomain>(
             fill(region, planes, Parallelism::Serial)
         })
     })?;
+    let store = context.reduced();
+    let global = globals.first().and_then(Option::as_ref);
+    let (held, mut pending) = match entry.reduced_key(domain, stage) {
+        Some((key, grid)) => {
+            let held = store.lookup(&key, global);
+            store.note_render(held.is_some());
+            (held, store.pending(key, global, &grid, plan.tile()))
+        }
+        None => (None, None),
+    };
+    let planes = if held.is_some() || pending.is_some() {
+        TilePlanes::Store {
+            held: held.as_deref(),
+            hand: pending.is_some(),
+        }
+    } else {
+        TilePlanes::None
+    };
     let mut frame = D::spatial_frame(stage, wide)?;
     #[cfg(test)]
     context.note_spatial_frame();
@@ -1165,7 +1222,7 @@ pub(super) fn spatial_entry<D: PixelDomain>(
         context.spatial(),
         cancel,
         |tile, parallelism, scratch| {
-            let (region, values) = run_tile(
+            let (region, values, used) = run_tile_planned(
                 &plan,
                 operation,
                 &globals,
@@ -1173,15 +1230,36 @@ pub(super) fn spatial_entry<D: PixelDomain>(
                 parallelism,
                 scratch,
                 cancel,
+                planes,
                 |region, planes| fill(region, planes, parallelism),
             )?;
-            Ok(D::tile_output(region, values, tile, parallelism, wide))
+            let cells = match used {
+                PlaneUse::Served => {
+                    store.note_tile(true, 0);
+                    None
+                }
+                PlaneUse::Computed(cells) => {
+                    store.note_tile(false, cells.as_ref().map_or(0, Cells::count));
+                    cells
+                }
+                PlaneUse::None => None,
+            };
+            Ok((
+                D::tile_output(region, values, tile, parallelism, wide),
+                cells,
+            ))
         },
-        |tile, output| {
+        |tile, (output, cells)| {
             D::write_tile(&mut frame, stage, tile, output);
+            if let (Some(pending), Some(cells)) = (pending.as_mut(), cells) {
+                pending.write(tile, &cells);
+            }
             Ok(())
         },
     )?;
+    if let Some(pending) = pending {
+        store.publish(pending, held.as_ref());
+    }
     Ok(frame)
 }
 
