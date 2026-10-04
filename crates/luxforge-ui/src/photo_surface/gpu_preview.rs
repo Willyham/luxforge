@@ -98,10 +98,13 @@ use wgpu::naga;
 
 /// The GPU-preview budget: every GPU-preview texture and buffer, resident or retiring, of every
 /// surface together. A plan runs as a chain of links, each spatial operation's output kept by
-/// content in an intermediate the boundary's size beside its planes, so a full-screen Fit slot of a
-/// RAW's `f32` boundary with Detail and three masked Presence layers holds 0.86 GB, and a 100%
-/// region of ten masks, four with Presence, 1.47 GB; 2 GiB holds them and a slot overlapping the
-/// one it replaces (owner, 2026-10-03: interactive speed comes before memory).
+/// content in an intermediate the boundary's size beside its kept planes, its scratch planes in the
+/// slot's one pool, so a full-screen Fit slot of a RAW's `f32` boundary with Detail and three
+/// masked Presence layers holds 0.56 GB, a 100% region of three masked Presence layers 0.54 GB,
+/// and a Fit slot of sixteen 0.82 GB; 2 GiB holds them and a slot overlapping the one it replaces
+/// (owner, 2026-10-03: interactive speed comes before memory). A 100% window grows with every
+/// chained spatial layer, so a region of more than eight masked Presence layers in the paint
+/// harness's view passes it.
 pub const GPU_PREVIEW_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
 
 /// The words before any step's: the texel map's origin and step, then the offset of the output's
@@ -3167,11 +3170,21 @@ impl PhotoPipeline {
 pub(super) fn slot_charge(device: &wgpu::Device, plan: &GpuPlan) -> Result<u64, GpuFallback> {
     let shape = Shape::of(plan);
     let limit = device.limits().max_texture_dimension_2d;
-    let chain = chain::chain(&plan.steps);
     let origin = (
         plan.texels.origin[0].max(0.0) as u32,
         plan.texels.origin[1].max(0.0) as u32,
     );
+    Ok(shape.texture_bytes(limit)
+        + slot_buffers(device, plan)?.iter().sum::<u64>()
+        + chain_charge(&plan.steps, shape.boundary, origin, shape.format).total())
+}
+
+/// Each link's words and blocks buffers together, at the capacities a slot holding `plan` gives
+/// them on `device`, in chain order, the last link's last: the part of [`slot_charge`] beside the
+/// textures and the chain's charge.
+#[cfg(any(test, feature = "qualification"))]
+pub(super) fn slot_buffers(device: &wgpu::Device, plan: &GpuPlan) -> Result<Vec<u64>, GpuFallback> {
+    let chain = chain::chain(&plan.steps);
     let buffers = |steps: &[GpuStep], offset: (u32, u32)| {
         let (mut words, mut blocks) = (Vec::new(), Vec::new());
         chain::pack_steps(plan.texels, offset, steps, &mut words, &mut blocks);
@@ -3180,13 +3193,12 @@ pub(super) fn slot_charge(device: &wgpu::Device, plan: &GpuPlan) -> Result<u64, 
                 + buffer_capacity(device, (blocks.len() * 4) as u64)?,
         )
     };
-    let mut total = shape.texture_bytes(limit)
-        + buffers(chain.last, output_offset(plan))?
-        + chain_charge(&plan.steps, shape.boundary, origin, shape.format).total();
-    for link in &chain.links {
-        total += buffers(link, (0, 0))?;
-    }
-    Ok(total)
+    chain
+        .links
+        .iter()
+        .map(|link| buffers(link, (0, 0)))
+        .chain(std::iter::once(buffers(chain.last, output_offset(plan))))
+        .collect()
 }
 
 /// What a chain's planes and intermediates take of the GPU-preview budget with its links' scratch
