@@ -465,7 +465,8 @@ impl<'a> PlanesMut<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Parallelism {
     /// Every loop on the calling thread: a point sample, a stage below the host's parallel
-    /// threshold, or a batch that already gives every worker of the pool a tile of its own.
+    /// threshold, or a window of tiles that already gives every worker of the pool a tile of its
+    /// own.
     Serial,
     /// Independent rows, or column strips, of each pass on the shared Rayon pool: a render's tile
     /// when the spatial budget, not the pool, limits how many tiles run at once, so the tiles in
@@ -632,7 +633,7 @@ pub(crate) trait SpatialUnit: Send + Sync {
 /// The mask is the host's half of the primitive and a module never sets it: a module compiles its
 /// payload into units and returns a plain operation, and `SpatialOperation::with_mask` attaches
 /// the `MaskField` the layer's own `mask` reference names. **A mask changes nothing about the
-/// neighbourhood** — the halo, the tiling, the scratch, the batch concurrency and the global
+/// neighbourhood** — the halo, the tiling, the scratch, the window's concurrency and the global
 /// estimate are all what they were, and every unit still reads the finished frame before the
 /// operation and writes the next one. What changes is the *write*: the host blends the chain's
 /// output at the output rectangle against the same input that tile already holds, per channel, in

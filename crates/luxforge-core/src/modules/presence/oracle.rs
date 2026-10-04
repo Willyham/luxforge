@@ -177,7 +177,7 @@ fn evaluate(
         .map(|unit| unit.prepare(&reduction))
         .collect();
     let mut output = vec![[0.0_f32; 3]; pixels.len()];
-    // One slot for every tile, as a render's batch slot is reused, so the frozen tolerance is
+    // One slot for every tile, as a render's worker reuses its slot, so the frozen tolerance is
     // checked against units that find the previous tile's values in their planes and scratch.
     let mut scratch = TileScratch::for_plan(&plan);
     for tile in plan.tiles() {
@@ -673,7 +673,7 @@ fn a_reused_dehaze_estimate_preserves_rendered_and_sampled_bytes_on_both_paths()
 fn a_render_at_tile_128_and_at_tile_512_agree_on_every_code() {
     let registry = ModuleRegistry::builtin();
     // Larger than one production tile on both sides of the 512 grid, so both tile sizes exercise
-    // partial edge tiles and more than one batch.
+    // partial edge tiles and more than one tile in flight.
     let source = textured_source(600, 400);
     let stack = presence_recipe(json!({"texture": 60.0, "clarity": -40.0, "dehaze": 35.0}));
     let mut frames = Vec::new();

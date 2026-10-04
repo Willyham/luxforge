@@ -38,7 +38,7 @@ use super::{
     color_chunk_rows, color_runs, mapped_replacements,
     spatial::{
         PointTiles, SpatialPlan, Tiling, build_reduction_cancellable, fill_planes, resolve_globals,
-        run_batches, run_tile,
+        run_tile, run_tiles,
     },
 };
 
@@ -169,7 +169,7 @@ pub(crate) trait PixelDomain: Sync {
 
     /// One tile's output, from the rectangle `region` its last unit wrote, with each of the tile's
     /// rows in the layout the frame holds it in, computed in the parallel phase. `values` is
-    /// borrowed from the batch slot the tile ran in, whose next tile writes over it, so the output
+    /// borrowed from the slot the tile ran in, whose next tile writes over it, so the output
     /// owns a copy of the tile and of nothing else.
     fn tile_output(
         region: Region,
@@ -1066,12 +1066,12 @@ impl SpatialEntry {
 /// the one place either driver materializes a spatial operation. `fill` reads one rectangle of the
 /// stage it reads into three planes, for every tile and, on a store miss, for the reduction its
 /// global estimates ([`SpatialEntry::globals`]) are prepared from.
-/// Every tile runs through [`run_tile`], in batches whose concurrency the spatial budget sets,
-/// checking `cancel` between batches. No full-frame float buffer exists beside the output, only
-/// one tile's working set per tile in flight, charged to the spatial budget before each batch of
-/// tiles allocates, and held in the batch slot the tile runs in, which reuses its planes for every
-/// tile it runs ([`run_batches`]). Each tile's output is taken out of its slot in the parallel
-/// phase ([`PixelDomain::tile_output`]).
+/// Every tile runs through [`run_tile`], in a rolling window whose width the spatial budget sets,
+/// checking `cancel` between tiles ([`run_tiles`]). No full-frame float buffer exists beside the
+/// output, only one tile's working set per tile in flight, charged to the spatial budget before
+/// the tiles it runs allocate, and held in the slot of the worker that runs it, which reuses its
+/// planes for every tile it runs. Each tile's output is taken out of its slot in the parallel
+/// phase ([`PixelDomain::tile_output`]) and written as it finishes.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spatial_entry<D: PixelDomain>(
     domain: &D,
@@ -1093,7 +1093,7 @@ pub(super) fn spatial_entry<D: PixelDomain>(
     let mut frame = D::spatial_frame(stage, wide)?;
     #[cfg(test)]
     context.note_spatial_frame();
-    run_batches(
+    run_tiles(
         &plan,
         context.spatial(),
         cancel,

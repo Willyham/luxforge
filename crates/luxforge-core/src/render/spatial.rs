@@ -22,8 +22,9 @@ use crate::{
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 #[cfg(test)]
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[cfg(test)]
 const MIB: f64 = (1024 * 1024) as f64;
@@ -370,7 +371,7 @@ fn widest_regions(length: u32, tile: u32, halos: &[u32], summed_halo: u32) -> Ve
 }
 
 /// The buffers one tile slot reuses from tile to tile, instead of allocating and zero-filling them
-/// per tile and per unit: [`run_batches`] keeps one per tile a batch runs at once, and a point
+/// per tile and per unit: each worker of [`run_tiles`] keeps one for the tiles it runs, and a point
 /// query's tile and a restoration region start from an empty one.
 ///
 /// - **Two plane buffers**, ping-ponged along the unit chain. Buffer 0 holds the tile's input and
@@ -458,6 +459,26 @@ impl TileScratch {
         }
     }
 
+    /// Each buffer's allocation, in elements, to tell when one was replaced.
+    #[cfg(test)]
+    fn capacities(&self) -> [usize; 4] {
+        [
+            self.planes[0].capacity(),
+            self.planes[1].capacity(),
+            self.snapshot.capacity(),
+            self.units.capacity(),
+        ]
+    }
+
+    /// How many buffers were allocated since `before` was read: a buffer only ever changes its
+    /// allocation by growing into a new one.
+    #[cfg(test)]
+    fn allocations_since(&self, before: [usize; 4]) -> u64 {
+        std::iter::zip(self.capacities(), before)
+            .filter(|(now, before)| now != before)
+            .count() as u64
+    }
+
     /// The bytes this slot's buffers hold.
     #[cfg(test)]
     fn bytes(&self) -> u64 {
@@ -505,8 +526,6 @@ fn reused(buffer: &mut Vec<f32>, len: usize, largest: usize) -> &mut [f32] {
     if buffer.len() < len {
         *buffer = Vec::new();
         *buffer = vec![0.0; len.max(largest)];
-        #[cfg(test)]
-        SLOT_GROWTHS.set(SLOT_GROWTHS.get() + 1);
     }
     let values = &mut buffer[..len];
     #[cfg(test)]
@@ -857,8 +876,6 @@ fn cut_out_into(region: Region, values: &[f32], tile: Region, out: &mut Vec<f32>
         // Released before the larger one is taken, as a slot's planes are.
         *out = Vec::new();
         *out = Vec::with_capacity(len.max(largest));
-        #[cfg(test)]
-        SLOT_GROWTHS.set(SLOT_GROWTHS.get() + 1);
     }
     append_tile(region, values, tile, out);
 }
@@ -963,15 +980,6 @@ thread_local! {
     static TILE_COPY: std::cell::Cell<TileCopy> = const { std::cell::Cell::new(TileCopy::Proved) };
     static OBSERVED_TILES: std::cell::RefCell<Option<Arc<AtomicU64>>> = const { std::cell::RefCell::new(None) };
     static TILE_CHECKPOINT: std::cell::RefCell<Option<TileCheckpoint>> = const { std::cell::RefCell::new(None) };
-    static SLOT_GROWTHS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-/// How many times a tile slot's buffer has grown, which is to say allocated, on this thread: every
-/// tile of a stage below the spatial pass's parallel threshold runs on the thread that asked for
-/// the frame, so a test that renders one counts its own render's allocations.
-#[cfg(test)]
-pub(crate) fn slot_growths() -> u64 {
-    SLOT_GROWTHS.get()
 }
 
 #[cfg(test)]
@@ -1025,89 +1033,300 @@ pub(crate) fn reset_masked_tile_counts() {
     MASKED_TILES_EVALUATED.store(0, Ordering::Relaxed);
 }
 
-/// Run every tile of a stage in batches, on the shared Rayon pool at and above the spatial pass's
-/// parallel threshold ([`luxforge_raw::PARALLEL_SPATIAL_PIXELS`]) and serially below it, checking
-/// the cancellation token between batches.
+/// Run every tile of a stage, as a rolling window of workers on the shared Rayon pool at and above
+/// the spatial pass's parallel threshold ([`luxforge_raw::PARALLEL_SPATIAL_PIXELS`]) and in a plain
+/// loop on the calling thread below it, checking the cancellation token between tiles.
 ///
-/// Each batch reserves its working sets from the budget before any of its tiles allocates, asking
-/// for the plan's concurrency and running as many tiles as the reservation covers, so a render that
-/// overlaps another slows down rather than failing and speeds up again once the other releases.
-/// When that leaves the batch narrower than the pool, each tile's own passes run on the pool as
-/// well (see [`tile_parallelism`]), so an operation whose working set holds the batch to two tiles
-/// still uses every worker without taking more memory.
+/// **Shares.** Every tile in flight holds one working set of the budget, reserved before it
+/// allocates. The window starts as wide as one reservation for the plan's concurrency grants
+/// ([`SpatialBudget::reserve`]: as many as fit beside what other evaluations hold, and always one),
+/// split into one share per worker, so a render that overlaps another slows down rather than
+/// failing. Each worker owns one slot ([`TileScratch::for_plan`]), whose buffers are allocated once
+/// at the plan's largest tile, and pulls the next tile from a shared counter, so no tile waits for
+/// another: a slow tile on an efficiency core holds its own worker and nothing else. Each of a
+/// worker's tiles is a job of its own on the pool, which hands the slot and the share to the
+/// worker's next one, so a thread that picks a worker up while it waits inside another tile's pass
+/// runs one tile of it, not the rest of the render. No worker waits on another but for the short
+/// lock its tile is written under.
 ///
-/// `work` computes one tile's result under the parallelism it is given, in the batch slot it runs
-/// in ([`TileScratch`]: the tile's plane buffers, its masked snapshot and its unit scratch), and
-/// `write` places it, so the tiles themselves never share a mutable frame: a batch's results are
-/// bounded by its concurrency times one tile. A result owns what it needs of the slot, because the
-/// slot's next tile overwrites its buffers. `work` runs in the parallel phase, so everything done
-/// per pixel belongs there — the quantization, the layout of the frame's rows and the copy of the
-/// tile out of its slot — and `write` is left the serial copy of whole rows. A slot is built for
-/// the plan, so each of its buffers is allocated once, at the plan's largest tile; it keeps them
-/// from batch to batch and releases them when a narrower reservation drops the slot, so while a
-/// batch runs the buffers held cover no more tiles than its reservation; between one batch's
-/// release and the next reservation the slots are held uncharged, and the render drops them all
-/// when it ends.
-pub(crate) fn run_batches<T: Send>(
+/// **Pacing**, decided by each worker after each tile, so overlapping renders still trade the
+/// target between them. While tiles remain, a worker that finds the budget past its target gives
+/// back its share, drops its slot and stops, unless it is the window's last; and one that finds the
+/// window narrower than the plan's concurrency takes one more share if it fits under the target
+/// ([`SpatialBudget::try_reserve`]) and starts one more worker with it. A tile's own passes run on
+/// the pool when the window, as the tile starts, is narrower than the pool (see
+/// [`tile_parallelism`]), so an operation whose working set holds the window to two tiles still uses
+/// every worker without taking more memory; that changes when a value is computed, never what it is.
+///
+/// **Writes.** `work` computes one tile's result in the parallel phase, in its worker's slot — the
+/// quantization, the layout of the frame's rows and the copy of the tile out of the slot, which the
+/// worker's next tile overwrites — and `write` places it, under one lock that also advances the
+/// progress meter, so `write` is left the serial copy of whole rows and a worker holds at most one
+/// result. Tiles are written as they finish, not in tile order: they are disjoint rectangles of the
+/// frame, so its bytes cannot depend on the order.
+///
+/// **Stopping.** The first error, the token's included, stops every worker before its next tile;
+/// the tiles already running finish or see the token themselves, and the error is returned once the
+/// window has emptied. Every share and slot is released by its worker on every path. Between a
+/// worker's stop and the render's end, nothing it held stays charged or allocated.
+pub(crate) fn run_tiles<T: Send>(
     plan: &SpatialPlan,
     budget: &SpatialBudget,
     cancel: &Cancel,
     work: impl Fn(Region, Parallelism, &mut TileScratch) -> Result<T, Error> + Sync,
-    mut write: impl FnMut(Region, T) -> Result<(), Error>,
+    write: impl FnMut(Region, T) -> Result<(), Error> + Send,
 ) -> Result<(), Error> {
     let tiles = plan.tiles();
+    if tiles.is_empty() {
+        return Ok(());
+    }
+    // Before the reservation, so a cancelled render never takes working sets it will not use.
+    cancel.check()?;
     let large = super::parallel::pooled(
         super::parallel::RenderPass::Spatial,
         plan.stage.width as u64 * plan.stage.height as u64,
     );
     let workers = rayon::current_num_threads();
-    let concurrency = budget.concurrency(plan.working_set);
-    let mut slots: Vec<TileScratch> = Vec::new();
-    let mut start = 0;
-    while start < tiles.len() {
-        // Before the reservation, so a cancelled render never takes working sets it will not use.
-        cancel.check()?;
-        let reservation = budget.reserve(plan.working_set, concurrency.min(tiles.len() - start));
-        let batch = &tiles[start..start + reservation.tiles()];
-        start += batch.len();
-        slots.resize_with(batch.len(), || TileScratch::for_plan(plan));
-        let parallelism = tile_parallelism(large, batch.len(), workers);
-        let results: Vec<T> = if large && batch.len() > 1 {
-            batch
-                .par_iter()
-                .zip(slots.par_iter_mut())
-                .map(|(tile, scratch)| work(*tile, parallelism, scratch))
-                .collect::<Result<Vec<T>, Error>>()?
-        } else {
-            batch
-                .iter()
-                .zip(slots.iter_mut())
-                .map(|(tile, scratch)| work(*tile, parallelism, scratch))
-                .collect::<Result<Vec<T>, Error>>()?
-        };
-        for (tile, result) in batch.iter().zip(results) {
-            write(*tile, result)?;
+    if !large || tiles.len() == 1 {
+        return run_serially(plan, budget, cancel, &tiles, large, workers, work, write);
+    }
+    let concurrency = budget.concurrency(plan.working_set).min(tiles.len());
+    let shares = budget.reserve(plan.working_set, concurrency).into_shares();
+    let window = Window {
+        plan,
+        budget,
+        cancel,
+        tiles: &tiles,
+        work: &work,
+        write: Mutex::new(write),
+        next: AtomicUsize::new(0),
+        width: AtomicUsize::new(shares.len()),
+        concurrency,
+        workers,
+        stop: AtomicBool::new(false),
+        error: OnceLock::new(),
+    };
+    rayon::scope(|scope| {
+        for share in shares {
+            let window = &window;
+            let worker = Worker::new(plan, share);
+            scope.spawn(move |scope| window.run(scope, worker));
         }
+    });
+    match window.error.into_inner() {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+/// Below the parallel threshold, or for a stage of one tile: every tile on the calling thread in
+/// one slot under one share, the token checked between tiles.
+#[allow(clippy::too_many_arguments)]
+fn run_serially<T>(
+    plan: &SpatialPlan,
+    budget: &SpatialBudget,
+    cancel: &Cancel,
+    tiles: &[Region],
+    large: bool,
+    workers: usize,
+    work: impl Fn(Region, Parallelism, &mut TileScratch) -> Result<T, Error>,
+    mut write: impl FnMut(Region, T) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let _share = budget.reserve(plan.working_set, 1);
+    let mut slot = TileScratch::for_plan(plan);
+    let parallelism = tile_parallelism(large, 1, workers);
+    for (index, tile) in tiles.iter().enumerate() {
+        if index > 0 {
+            cancel.check()?;
+        }
+        #[cfg(test)]
+        let before = slot.capacities();
+        let output = work(*tile, parallelism, &mut slot);
+        #[cfg(test)]
+        budget.note_slot_allocations(slot.allocations_since(before));
+        write(*tile, output?)?;
         if let Some(progress) = cancel.progress() {
-            progress.advance(batch.len() as u64);
+            progress.advance(1);
         }
     }
     Ok(())
 }
 
-/// How many tiles [`run_batches`] runs for `operation` over `stage`: what a whole-frame render
-/// plans its progress in, without building the tiles.
+/// One render's rolling window of tile workers ([`run_tiles`]).
+struct Window<'w, F, W> {
+    plan: &'w SpatialPlan,
+    budget: &'w SpatialBudget,
+    cancel: &'w Cancel,
+    tiles: &'w [Region],
+    work: &'w F,
+    /// The frame's write and the progress meter's advance, one tile at a time.
+    write: Mutex<W>,
+    /// The next tile to start.
+    next: AtomicUsize,
+    /// How many workers, and so shares, the window holds.
+    width: AtomicUsize,
+    /// The widest the window grows: the budget's concurrency for the plan, at most the tiles.
+    concurrency: usize,
+    /// The pool's workers.
+    workers: usize,
+    /// Set by the first error, so no worker starts another tile.
+    stop: AtomicBool,
+    /// The first error.
+    error: OnceLock<Error>,
+}
+
+impl<'w, T, F, W> Window<'w, F, W>
+where
+    F: Fn(Region, Parallelism, &mut TileScratch) -> Result<T, Error> + Sync,
+    W: FnMut(Region, T) -> Result<(), Error> + Send,
+{
+    /// One tile of one worker, as a job of its own: the worker's next tile, if it has one, is
+    /// spawned as the next job with the worker's slot and share. A pool thread waiting inside
+    /// another tile's pass that picks a worker's job up therefore runs one tile of it before it
+    /// looks at its own work again, never the rest of the window.
+    fn run<'s>(&'s self, scope: &rayon::Scope<'s>, mut worker: Worker<'w>)
+    where
+        'w: 's,
+    {
+        // A panicking tile stops the window as an error does; the scope then carries the panic.
+        let _unwinding = StopOnUnwind(&self.stop);
+        if !self.tile(&mut worker.slot) {
+            self.width.fetch_sub(1, Ordering::Relaxed);
+            return;
+        }
+        if self.narrowed() {
+            // The worker's slot and share are released here.
+            return;
+        }
+        self.widen(scope);
+        scope.spawn(move |scope| self.run(scope, worker));
+    }
+
+    /// Pull and run one tile in `slot` and write it: whether the worker has a next tile to pull.
+    /// No tile is pulled once the window has stopped or the token is cancelled.
+    fn tile(&self, slot: &mut TileScratch) -> bool {
+        if self.stop.load(Ordering::Relaxed) {
+            return false;
+        }
+        if let Err(error) = self.cancel.check() {
+            self.fail(error);
+            return false;
+        }
+        let Some(&tile) = self.tiles.get(self.next.fetch_add(1, Ordering::Relaxed)) else {
+            return false;
+        };
+        let parallelism = tile_parallelism(true, self.width.load(Ordering::Relaxed), self.workers);
+        #[cfg(test)]
+        let before = slot.capacities();
+        let output = (self.work)(tile, parallelism, slot);
+        #[cfg(test)]
+        self.budget
+            .note_slot_allocations(slot.allocations_since(before));
+        if let Err(error) = output.and_then(|output| self.write(tile, output)) {
+            self.fail(error);
+            return false;
+        }
+        self.next.load(Ordering::Relaxed) < self.tiles.len()
+    }
+
+    /// Place one finished tile and count it.
+    fn write(&self, tile: Region, output: T) -> Result<(), Error> {
+        let mut write = self
+            .write
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (*write)(tile, output)?;
+        if let Some(progress) = self.cancel.progress() {
+            progress.advance(1);
+        }
+        Ok(())
+    }
+
+    /// Stop every worker before its next tile, keeping the first error.
+    fn fail(&self, error: Error) {
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = self.error.set(error);
+    }
+
+    /// Whether this worker leaves the window because the budget is past its target, which it does
+    /// only while another worker stays: the window never empties while tiles remain.
+    fn narrowed(&self) -> bool {
+        self.budget.in_use() > self.budget.target()
+            && self
+                .width
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |width| {
+                    (width > 1).then(|| width - 1)
+                })
+                .is_ok()
+    }
+
+    /// Start one more worker when the window is narrower than the plan's concurrency and one more
+    /// share fits under the target.
+    fn widen<'s>(&'s self, scope: &rayon::Scope<'s>)
+    where
+        'w: 's,
+    {
+        if self
+            .width
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |width| {
+                (width < self.concurrency).then(|| width + 1)
+            })
+            .is_err()
+        {
+            return;
+        }
+        match self.budget.try_reserve(self.plan.working_set) {
+            Some(share) => {
+                let worker = Worker::new(self.plan, share);
+                scope.spawn(move |scope| self.run(scope, worker));
+            }
+            None => {
+                self.width.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+/// One worker of a window: its slot, then its share, released in that order when it leaves.
+struct Worker<'w> {
+    slot: TileScratch,
+    _share: SpatialReservation<'w>,
+}
+
+impl<'w> Worker<'w> {
+    fn new(plan: &SpatialPlan, share: SpatialReservation<'w>) -> Self {
+        Self {
+            slot: TileScratch::for_plan(plan),
+            _share: share,
+        }
+    }
+}
+
+/// Sets a window's stop flag if a worker unwinds, so a panicking tile stops the others' pulls.
+struct StopOnUnwind<'a>(&'a AtomicBool);
+
+impl Drop for StopOnUnwind<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+/// How many tiles [`run_tiles`] runs for `operation` over `stage`: what a whole-frame render plans
+/// its progress in, without building the tiles.
 pub(crate) fn tile_count(operation: &SpatialOperation, stage: Stage, tiling: Tiling) -> u64 {
     let side = u64::from(tiling.tile(operation, stage).max(1));
     u64::from(stage.width).div_ceil(side) * u64::from(stage.height).div_ceil(side)
 }
 
-/// How a batch's tiles schedule their own passes: on the pool only for a stage at or above the
-/// parallel threshold whose batch holds fewer tiles than the pool has workers, which is when the
-/// budget rather than the pool limits the batch. A batch as wide as the pool already occupies every
-/// worker, and splitting its tiles' passes as well measured 20 to 40% slower (Texture or Dehaze
-/// alone at 24 and 60 MP). A point sample never comes through here; it runs serially on its calling
-/// thread, where a pass on the pool would queue behind a render holding it.
+/// How a tile schedules its own passes, decided as it starts from how many tiles its window holds
+/// then: on the pool only for a stage at or above the parallel threshold whose window is narrower
+/// than the pool has workers, which is when the budget rather than the pool limits the window. A
+/// window as wide as the pool already occupies every worker, and splitting its tiles' passes as
+/// well measured 20 to 40% slower (Texture or Dehaze alone at 24 and 60 MP). A point sample never
+/// comes through here; it runs serially on its calling thread, where a pass on the pool would queue
+/// behind a render holding it.
 pub(crate) fn tile_parallelism(large: bool, tiles: usize, workers: usize) -> Parallelism {
     if large && tiles < workers {
         Parallelism::Pool
@@ -2042,6 +2261,54 @@ mod tests {
         }
     }
 
+    /// A unit with no neighbourhood that copies its input and passes a test's gate only for the
+    /// one output rectangle whose origin is `(x0, y0)`: as the last unit of an operation, the one
+    /// tile with that origin, so a test can hold that tile and no other.
+    #[derive(Debug)]
+    struct HeldAt {
+        x0: u32,
+        y0: u32,
+        gate: Arc<Gate>,
+    }
+
+    impl SpatialUnit for HeldAt {
+        fn halo(&self, _: Stage) -> u32 {
+            0
+        }
+
+        fn scratch_bytes(&self, _: Stage) -> u64 {
+            0
+        }
+
+        fn apply(
+            &self,
+            input: &Planes<'_>,
+            output: &mut PlanesMut<'_>,
+            _: Option<&Global>,
+            _: &mut [f32],
+            _: Parallelism,
+        ) -> Result<(), Error> {
+            let out = output.region();
+            if (out.x0, out.y0) == (self.x0, self.y0) {
+                self.gate.pass();
+            }
+            for y in out.y0..out.y1() {
+                for x in out.x0..out.x1() {
+                    output.set(x, y, input.sample(i64::from(x), i64::from(y)));
+                }
+            }
+            Ok(())
+        }
+
+        fn is_finite(&self) -> bool {
+            true
+        }
+
+        fn describe(&self) -> String {
+            format!("held at ({}, {})", self.x0, self.y0)
+        }
+    }
+
     /// A unit whose coefficients are not finite, which compilation must refuse.
     #[derive(Debug)]
     struct NonFinite;
@@ -2166,6 +2433,14 @@ mod tests {
                     None if unit == "held" => Arc::new(Held {
                         gate: self.gate.clone(),
                     }),
+                    Some(("hold", at)) => {
+                        let (x0, y0) = at.split_once(',').expect("a tile origin");
+                        Arc::new(HeldAt {
+                            x0: x0.parse().expect("a column"),
+                            y0: y0.parse().expect("a row"),
+                            gate: self.gate.clone(),
+                        })
+                    }
                     _ => panic!("unknown test unit {unit}"),
                 });
             }
@@ -3717,7 +3992,7 @@ mod tests {
         assert_eq!(sampled.rgba, rendered.pixel(100, 75), "the rendered byte");
 
         drop(held);
-        assert_eq!(budget.in_use(), 0, "every batch released its reservation");
+        assert_eq!(budget.in_use(), 0, "every share was released");
     }
 
     #[test]
@@ -4867,12 +5142,13 @@ mod tests {
     // Slot buffers.
     // -----------------------------------------------------------------------------------------
 
-    /// A render allocates its tile planes once per batch slot, not once per tile or unit: each
-    /// buffer of a slot grows once, straight to the largest request of the plan's tiles, although
-    /// the corner and edge tiles a slot starts with ask for less and the tiles beside the last,
-    /// partial ones ask for more than an interior tile, and is then reused, uncleared, for every
-    /// tile the slot runs. On the byte path and the RAW linear path, masked and not, over 176 tiles
-    /// of a three-unit chain, where a fresh input and one output per unit and tile were 704
+    /// A render allocates its tile planes once per slot, not once per tile or unit: each buffer of
+    /// a slot grows once, straight to the largest request of the plan's tiles, although the corner
+    /// and edge tiles a slot starts with ask for less and the tiles beside the last, partial ones
+    /// ask for more than an interior tile, and is then reused, uncleared, for every tile the slot
+    /// runs. In the one slot of a stage below the parallel threshold and in each worker's slot of a
+    /// window above it, on the byte path and the RAW linear path, masked and not, over 176 tiles of
+    /// a three-unit chain, where a fresh input and one output per unit and tile were 704
     /// allocations.
     #[test]
     fn a_render_allocates_its_tile_planes_once_per_slot() {
@@ -4880,9 +5156,7 @@ mod tests {
 
         let (registry, _, applied) = counting_registry();
         // Partial tiles 3 and 2 px wide at the right and bottom edges, narrower than the chain's
-        // 5 px summed halo, so the regions take every size the stage edges give them; and below the
-        // spatial pass's parallel threshold, forced as well, so every tile runs on this thread,
-        // which is where the growths are counted.
+        // 5 px summed halo, so the regions take every size the stage edges give them.
         let (width, height, tile) = (243, 162, 16);
         let stage = Stage { width, height };
         let source = gradient(width, height);
@@ -4897,7 +5171,6 @@ mod tests {
             Arc::new(BoxBlur { radius: 2 }),
         ])
         .unwrap();
-        let pooled = crate::render::parallel::force(Some(false));
         for masked in [false, true] {
             let operation = if masked {
                 unmasked.clone().with_mask(field.clone())
@@ -4921,40 +5194,46 @@ mod tests {
             };
             // Two plane buffers and the unit scratch, and a masked tile's snapshot.
             let buffers = if masked { 4 } else { 3 };
-            for linear_path in [false, true] {
-                let path = if linear_path { "linear" } else { "byte" };
-                // Three tiles at once, so three slots where the pool has three workers.
+            for (pooled, linear_path) in
+                [(false, false), (false, true), (true, false), (true, true)]
+            {
+                let case = format!(
+                    "masked: {masked}, {} path, {}",
+                    if linear_path { "linear" } else { "byte" },
+                    if pooled { "window" } else { "serial" }
+                );
+                let forced = crate::render::parallel::force(Some(pooled));
+                // Three tiles at once where the pool has three workers: three workers, three
+                // slots. Below the threshold the tiles run in one.
                 let context = RenderContext::with_spatial_target(3 * plan.working_set());
-                let slots = context.spatial().concurrency(plan.working_set()) as u64;
+                let slots = if pooled {
+                    context.spatial().concurrency(plan.working_set()) as u64
+                } else {
+                    1
+                };
                 let input = if linear_path {
                     crate::render::testing::linear(&linear, LinearSettings::default())
                 } else {
                     crate::RenderSource::Byte(&source)
                 };
-                let (grown, ran) = (slot_growths(), applied.get());
+                let ran = applied.get();
                 tiled_in(&context, &registry, input, &stack, tile).unwrap();
-                let (grown, ran) = (slot_growths() - grown, (applied.get() - ran) as u64);
+                crate::render::parallel::force(forced);
+                let allocated = context.spatial().slot_allocations();
+                let ran = (applied.get() - ran) as u64;
                 assert!(
                     ran > 2 * slots * buffers,
-                    "masked: {masked}, {path} path: only {ran} tiles ran the chain"
+                    "{case}: only {ran} tiles ran the chain"
                 );
-                if masked {
-                    // A slot whose tiles were all copied never grows its second plane, scratch
-                    // or snapshot.
-                    assert!(
-                        (1..=slots * buffers).contains(&grown),
-                        "masked, {path} path: {grown} growths over {slots} slots of {ran} tiles"
-                    );
-                } else {
-                    assert_eq!(
-                        grown,
-                        slots * buffers,
-                        "{path} path: {grown} growths over {slots} slots of {ran} tiles"
-                    );
-                }
+                // A worker whose tiles were all copied never allocates its second plane, scratch
+                // or snapshot, and one that found no tile left allocates nothing.
+                let least = if masked || pooled { 1 } else { buffers };
+                assert!(
+                    (least..=slots * buffers).contains(&allocated),
+                    "{case}: {allocated} allocations over {slots} slots of {ran} tiles"
+                );
             }
         }
-        crate::render::parallel::force(pooled);
     }
 
     /// A unit that writes every row of its output rectangle but the last.
@@ -5070,16 +5349,335 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------------------------
+    // The rolling window.
+    // -----------------------------------------------------------------------------------------
+
+    /// The pool a window test runs on: four threads whatever the host has, so a window of four
+    /// shares is as wide as the pool, its tiles' passes are serial and one held worker leaves three
+    /// running.
+    fn window_pool() -> rayon::ThreadPool {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .expect("a four-thread test pool")
+    }
+
+    /// The stage, operation and plan [`window_render`] runs: a 1 px blur of a 160 × 128 stage in
+    /// 80 tiles of 16 px.
+    fn window_plan() -> (Stage, SpatialOperation, SpatialPlan) {
+        let stage = Stage {
+            width: 160,
+            height: 128,
+        };
+        let operation = SpatialOperation::new(vec![Arc::new(BoxBlur { radius: 1 })]).unwrap();
+        let plan = SpatialPlan::new(&operation, stage, Tiling::Fixed(16)).unwrap();
+        (stage, operation, plan)
+    }
+
+    fn window_fill(
+        region: Region,
+        planes: &mut [f32],
+        parallelism: Parallelism,
+    ) -> Result<(), Error> {
+        fill_planes(region, planes, parallelism, |x, y| {
+            Ok([
+                x as f32 / 160.0,
+                y as f32 / 128.0,
+                ((x * 7 + y * 3) % 11) as f32 / 11.0,
+            ])
+        })
+    }
+
+    /// Every tile of [`window_plan`] through [`run_tiles`] under `context`'s budget, on `pool` with
+    /// the spatial pass forced past its threshold, the `n`-th tile to start passing `hold(n)` first,
+    /// and each tile's own planes kept in the order they were written.
+    fn window_render(
+        pool: &rayon::ThreadPool,
+        context: &RenderContext,
+        cancel: &Cancel,
+        hold: impl Fn(usize) + Sync,
+    ) -> Result<Vec<(Region, Vec<f32>)>, Error> {
+        let (_, operation, plan) = window_plan();
+        let started = AtomicUsize::new(0);
+        let mut written = Vec::new();
+        pool.install(|| {
+            let forced = crate::render::parallel::force(Some(true));
+            let result = run_tiles(
+                &plan,
+                context.spatial(),
+                cancel,
+                |tile, parallelism, slot| {
+                    hold(started.fetch_add(1, AtomicOrdering::SeqCst));
+                    let (region, values) = run_tile(
+                        &plan,
+                        &operation,
+                        &[],
+                        tile,
+                        parallelism,
+                        slot,
+                        cancel,
+                        |region, planes| window_fill(region, planes, parallelism),
+                    )?;
+                    Ok(cut_out(region, values, tile))
+                },
+                |tile, values| {
+                    written.push((tile, values));
+                    Ok(())
+                },
+            );
+            crate::render::parallel::force(forced);
+            result
+        })?;
+        Ok(written)
+    }
+
+    /// Every tile of [`window_plan`] written exactly once, each the bits a tile run alone gives.
+    fn assert_window_frame(written: &[(Region, Vec<f32>)], case: &str) {
+        let (_, operation, plan) = window_plan();
+        let tiles = plan.tiles();
+        assert_eq!(
+            written.len(),
+            tiles.len(),
+            "{case}: every tile written once"
+        );
+        for tile in tiles {
+            let mut slot = TileScratch::default();
+            let (region, values) = run_tile(
+                &plan,
+                &operation,
+                &[],
+                tile,
+                Parallelism::Serial,
+                &mut slot,
+                &Cancel::never(),
+                |region, planes| window_fill(region, planes, Parallelism::Serial),
+            )
+            .unwrap();
+            let expected = cut_out(region, values, tile);
+            let found: Vec<_> = written.iter().filter(|(at, _)| *at == tile).collect();
+            assert_eq!(found.len(), 1, "{case}: {tile:?} written once");
+            assert!(
+                found[0]
+                    .1
+                    .iter()
+                    .zip(&expected)
+                    .all(|(found, expected)| found.to_bits() == expected.to_bits()),
+                "{case}: {tile:?} differs from the tile run alone"
+            );
+        }
+    }
+
+    /// No tile waits for another: one tile, held at a gate, holds back nothing but itself, so every
+    /// other tile of the render is written while it is held, and once it is released the frame is
+    /// the reference's. On the byte path and the RAW linear path, with the spatial pass past its
+    /// threshold and a target that admits four tiles at once, on four threads. With a barrier
+    /// between batches the held tile's batch could never finish, so the wait for the rest is bounded
+    /// and fails, releasing the tile, rather than hanging.
+    #[test]
+    fn a_held_tile_holds_back_no_other_tile() {
+        use crate::cancel::RenderProgress;
+
+        let (registry, gate) = held_registry();
+        let (width, height, tile) = (160_u32, 128_u32, 16_u32);
+        // The held tile is an interior one, so its last unit's rectangle is the tile.
+        let stack = recipe(vec![spatial_layer(&["blur:2", "hold:48,48"])]);
+        let operation = SpatialOperation::new(vec![
+            Arc::new(BoxBlur { radius: 2 }) as Arc<dyn SpatialUnit>,
+            Arc::new(Reach { halo: 0 }),
+        ])
+        .unwrap();
+        let plan =
+            SpatialPlan::new(&operation, Stage { width, height }, Tiling::Fixed(tile)).unwrap();
+        let tiles = plan.tiles().len() as u64;
+        let pool = window_pool();
+        let source = gradient(width, height);
+        let linear = linear_source(width, height);
+        for linear_path in [false, true] {
+            let path = if linear_path { "linear" } else { "byte" };
+            let context = RenderContext::with_spatial_target(4 * plan.working_set());
+            let meter = RenderProgress::new(|_| {});
+            let cancel = Cancel::new().with_progress(&meter);
+            let reached = gate.reached();
+            gate.shut();
+            let (rest, raster) = std::thread::scope(|scope| {
+                let render = scope.spawn(|| {
+                    pool.install(|| {
+                        let forced = crate::render::parallel::force(Some(true));
+                        let input = if linear_path {
+                            crate::render::testing::linear(&linear, LinearSettings::default())
+                        } else {
+                            crate::RenderSource::Byte(&source)
+                        };
+                        let raster = frame_in(
+                            &context,
+                            &registry,
+                            input,
+                            SnapshotId::new(),
+                            &stack,
+                            RenderOptions::exact(&cancel).with_tile(tile),
+                        );
+                        crate::render::parallel::force(forced);
+                        raster
+                    })
+                });
+                let rest =
+                    luxforge_testbase::try_wait_for("every tile but the held one written", || {
+                        (gate.holding() && meter.counts().done == tiles - 1).then_some(())
+                    });
+                let held = gate.reached() - reached;
+                gate.open();
+                let raster = render.join().expect("the render thread does not panic");
+                (rest.map(|()| held), raster)
+            });
+            let held = rest.unwrap_or_else(|hung| panic!("{path} path: {hung}"));
+            assert_eq!(held, 1, "{path} path: only the one tile passes the gate");
+            let raster = raster.unwrap_or_else(|error| panic!("{path} path: {error:?}"));
+            assert_eq!(meter.counts().done, tiles, "{path} path");
+            let expected = if linear_path {
+                reference_chain(width, height, linear_frame(&linear), &[RefUnit::Blur(2)])
+            } else {
+                reference_chain(
+                    width,
+                    height,
+                    decode_frame(source.rgba.as_ref()),
+                    &[RefUnit::Blur(2)],
+                )
+            };
+            assert_frame(&raster, &expected, &format!("{path} path, a tile held"));
+            assert_eq!(context.spatial().in_use(), 0, "{path} path");
+        }
+    }
+
+    /// The window narrows when another evaluation takes the target: four workers hold the whole
+    /// target at their first tiles, another evaluation reserves all of it again, and as each
+    /// worker finishes it gives back its share until one worker is left to run the next tile.
+    /// Once the other evaluation releases the target the render completes, its frame exact.
+    #[test]
+    fn a_window_narrows_when_another_evaluation_takes_the_target() {
+        let (_, _, plan) = window_plan();
+        let pool = window_pool();
+        let context = RenderContext::with_spatial_target(4 * plan.working_set());
+        let budget = context.spatial();
+        let (first, later) = (Gate::new(), Gate::new());
+        first.shut();
+        later.shut();
+        let cancel = Cancel::new();
+        let written = std::thread::scope(|scope| {
+            let render = scope.spawn(|| {
+                window_render(&pool, &context, &cancel, |started| {
+                    if started < 4 {
+                        first.pass()
+                    } else {
+                        later.pass()
+                    }
+                })
+            });
+            first.wait_reached(4, "the window's first four tiles");
+            assert_eq!(
+                budget.in_use(),
+                budget.target(),
+                "four shares fill the target"
+            );
+            let other = budget.reserve(budget.target(), 1);
+            first.open();
+            luxforge_testbase::wait_until("the window to narrow to one share", || {
+                later.holding() && budget.in_use() == budget.target() + plan.working_set()
+            });
+            assert_eq!(later.waiting(), 1, "one worker runs on");
+            assert_eq!(later.reached(), 1, "and no other started a tile");
+            drop(other);
+            later.open();
+            render.join().expect("the render thread does not panic")
+        })
+        .expect("the render completes");
+        assert_window_frame(&written, "narrowed");
+        assert_eq!(budget.in_use(), 0, "every share is released");
+    }
+
+    /// The window widens when the target is released: a render that started beside another
+    /// evaluation holding the whole target runs one share, and once that is released each tile it
+    /// finishes takes one more share, until it holds the plan's concurrency, four, and no more.
+    #[test]
+    fn a_window_widens_when_another_evaluation_releases_the_target() {
+        let (_, _, plan) = window_plan();
+        let pool = window_pool();
+        let context = RenderContext::with_spatial_target(4 * plan.working_set());
+        let budget = context.spatial();
+        let (first, later) = (Gate::new(), Gate::new());
+        first.shut();
+        later.shut();
+        let cancel = Cancel::new();
+        let other = budget.reserve(budget.target(), 1);
+        let written = std::thread::scope(|scope| {
+            let render = scope.spawn(|| {
+                window_render(&pool, &context, &cancel, |started| {
+                    if started == 0 {
+                        first.pass()
+                    } else {
+                        later.pass()
+                    }
+                })
+            });
+            first.wait_reached(1, "the window's first tile");
+            assert_eq!(
+                budget.in_use(),
+                budget.target() + plan.working_set(),
+                "beside a taken target the window holds one share"
+            );
+            drop(other);
+            budget.reset_peak();
+            first.open();
+            luxforge_testbase::wait_until("the window to widen by one share", || {
+                later.waiting() == 2 && budget.in_use() == 2 * plan.working_set()
+            });
+            later.open();
+            render.join().expect("the render thread does not panic")
+        })
+        .expect("the render completes");
+        assert_window_frame(&written, "widened");
+        assert_eq!(
+            budget.peak(),
+            4 * plan.working_set(),
+            "the window widened to the plan's concurrency and no further"
+        );
+        assert_eq!(budget.in_use(), 0, "every share is released");
+    }
+
+    /// A window cancelled while each of its four workers is inside a tile finishes those tiles,
+    /// starts no other, returns the cancelled kind and releases every share.
+    #[test]
+    fn a_cancelled_window_starts_no_tile_after_the_token_and_releases_its_shares() {
+        let (_, _, plan) = window_plan();
+        let pool = window_pool();
+        let context = RenderContext::with_spatial_target(4 * plan.working_set());
+        let gate = Gate::new();
+        gate.shut();
+        let cancel = Cancel::new();
+        let result = std::thread::scope(|scope| {
+            let render = scope.spawn(|| window_render(&pool, &context, &cancel, |_| gate.pass()));
+            gate.wait_reached(4, "the window's four tiles");
+            cancel.cancel();
+            gate.open();
+            render.join().expect("the render thread does not panic")
+        });
+        let error = result.expect_err("a cancelled window returns no frame");
+        assert_eq!(error.kind, ErrorKind::Cancelled);
+        assert_eq!(gate.reached(), 4, "no tile started after the token");
+        assert_eq!(context.spatial().in_use(), 0, "every share is released");
+    }
+
+    // -----------------------------------------------------------------------------------------
     // Cancellation.
     // -----------------------------------------------------------------------------------------
 
     /// The render is held inside its first tile while the token is cancelled, so the stop is
-    /// raised exactly once one batch has started and every later batch is still to come.
+    /// raised exactly once that tile has started and every later tile is still to come.
     #[test]
-    fn a_cancelled_render_stops_between_tile_batches_and_releases_its_reservation() {
+    fn a_cancelled_render_stops_between_tiles_and_releases_its_reservation() {
         let (registry, gate) = held_registry();
-        // Many tiles, one at a time: 64 px tiles, and the target is exactly one working set so the
-        // operation runs a batch of one tile, which is where the token is checked.
+        // Many tiles, one at a time: 64 px tiles below the parallel threshold, and the target is
+        // exactly one working set, so the operation runs one tile at a time and checks the token
+        // between them.
         let tile = 64;
         let source = gradient(300, 200);
         let stack = recipe(vec![spatial_layer(&["blur:24", "held"])]);
@@ -5097,7 +5695,7 @@ mod tests {
             Tiling::Fixed(tile),
         )
         .unwrap();
-        assert!(plan.tiles().len() > 4, "several batches of one tile");
+        assert!(plan.tiles().len() > 4, "several tiles, one at a time");
         let context = RenderContext::with_spatial_target(plan.working_set());
         let budget = context.spatial();
         let cancel = Cancel::new();
@@ -5130,10 +5728,10 @@ mod tests {
         assert_eq!(
             gate.reached(),
             1,
-            "the render stopped after the batch it was in, one of {} tiles",
+            "the render stopped after the tile it was in, one of {} tiles",
             plan.tiles().len()
         );
-        assert_eq!(budget.in_use(), 0, "the batch reservation is released");
+        assert_eq!(budget.in_use(), 0, "the reservation is released");
         // An already cancelled token refuses before any tile runs.
         let error = match render() {
             Ok(_) => panic!("still cancelled"),
@@ -5144,13 +5742,13 @@ mod tests {
     }
 
     #[test]
-    fn a_tile_spreads_its_passes_over_the_pool_only_when_the_budget_narrows_its_batch() {
+    fn a_tile_spreads_its_passes_over_the_pool_only_when_the_budget_narrows_its_window() {
         assert_eq!(tile_parallelism(true, 2, 14), Parallelism::Pool);
         assert_eq!(tile_parallelism(true, 13, 14), Parallelism::Pool);
         assert_eq!(
             tile_parallelism(true, 14, 14),
             Parallelism::Serial,
-            "a batch as wide as the pool already occupies every worker"
+            "a window as wide as the pool already occupies every worker"
         );
         assert_eq!(
             tile_parallelism(false, 1, 14),
@@ -5160,13 +5758,13 @@ mod tests {
         assert_eq!(tile_parallelism(true, 1, 1), Parallelism::Serial);
     }
 
-    /// A render whose batches the budget narrows to one tile fills, checks and quantizes each tile
-    /// on the pool; one whose batches are as wide as the pool does all of that serially. Both paths
+    /// A render whose window the budget narrows to one tile fills, checks and quantizes each tile
+    /// on the pool; one whose window is as wide as the pool does all of that serially. Both paths
     /// give the same frame to the byte.
     #[test]
     fn a_render_with_pooled_tiles_equals_one_with_serial_tiles() {
         let registry = spatial_registry();
-        // Forced past the parallel threshold, in 16 px tiles so that a batch as wide as the pool
+        // Forced past the parallel threshold, in 16 px tiles so that a window as wide as the pool
         // exists whatever the pool's size.
         let (width, height) = (250, 250);
         let tile = 16;
@@ -5182,7 +5780,7 @@ mod tests {
         let plan =
             SpatialPlan::new(&operation, Stage { width, height }, Tiling::Fixed(tile)).unwrap();
         let mut frames = Vec::new();
-        // One working set: batches of one tile, pooled. Unbounded: batches as wide as the pool,
+        // One working set: a window of one tile, pooled. Unbounded: a window as wide as the pool,
         // serial.
         for target in [plan.working_set(), u64::MAX / 2] {
             let context = RenderContext::with_spatial_target(target);

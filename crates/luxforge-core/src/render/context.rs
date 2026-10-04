@@ -55,7 +55,7 @@ impl RenderContext {
         Self::targeted(bytes, SPATIAL_BUDGET_BYTES)
     }
 
-    /// A context whose spatial budget has this target, for a test that narrows the tile batches of
+    /// A context whose spatial budget has this target, for a test that narrows the tile windows of
     /// the renders it makes through it.
     #[cfg(test)]
     pub(crate) fn with_spatial_target(bytes: u64) -> Self {
@@ -219,19 +219,24 @@ impl Drop for ScratchReservation<'_> {
 /// tile of a 60 MP stage with all three frozen presence units reads a 1408 × 1408 input region and
 /// needs about 101 MiB, which the 64 MiB scratch target could not hold at all.
 ///
-/// It is a target, not a limit. It decides how many tiles run at once: a batch takes as many
-/// working sets as fit beside what other evaluations hold, and never fewer than one. So a render
-/// that meets the target already taken — the histogram's analysis rendering the same stack as the
-/// preview, say — slows to one tile at a time instead of failing, and a tile larger than the whole
-/// target still runs, alone. The overshoot is at most one working set per spatial evaluation in
-/// flight, and [`Self::peak`] shows it. Nothing here refuses work.
+/// It is a target, not a limit. It decides how many tiles run at once: a render's window of tiles
+/// starts with as many working sets as fit beside what other evaluations hold, and never fewer
+/// than one, then gives one back when the target is passed and takes one more when one fits
+/// (`render::spatial::run_tiles`). So a render that meets the target already taken — the
+/// histogram's analysis rendering the same stack as the preview, say — slows to one tile at a time
+/// instead of failing, and a tile larger than the whole target still runs, alone. The overshoot is
+/// at most one working set per spatial evaluation in flight, and [`Self::peak`] shows it. Nothing
+/// here refuses work.
 ///
-/// A reservation covers one batch and is taken before any of its tiles allocates, so the next
-/// batch sees whatever other evaluations released in the meantime.
+/// Each share is reserved before the tiles it runs allocate, and given back the moment its worker
+/// stops, so a render's window sees whatever other evaluations released in the meantime.
 pub(crate) struct SpatialBudget {
     target: u64,
     used: AtomicU64,
     peak: AtomicU64,
+    /// How many times a tile slot's buffer was allocated by the renders under this budget.
+    #[cfg(test)]
+    slot_allocations: AtomicU64,
 }
 
 impl SpatialBudget {
@@ -240,7 +245,23 @@ impl SpatialBudget {
             target,
             used: AtomicU64::new(0),
             peak: AtomicU64::new(0),
+            #[cfg(test)]
+            slot_allocations: AtomicU64::new(0),
         }
+    }
+
+    /// Count `allocations` of tile slot buffers made by a render under this budget, for a test that
+    /// proves a render allocates its planes once per slot, on whichever threads its tiles ran.
+    #[cfg(test)]
+    pub(crate) fn note_slot_allocations(&self, allocations: u64) {
+        self.slot_allocations
+            .fetch_add(allocations, Ordering::Relaxed);
+    }
+
+    /// Every tile slot buffer allocated by the renders under this budget.
+    #[cfg(test)]
+    pub(crate) fn slot_allocations(&self) -> u64 {
+        self.slot_allocations.load(Ordering::Relaxed)
     }
 
     pub(crate) fn target(&self) -> u64 {
@@ -251,8 +272,8 @@ impl SpatialBudget {
         self.used.load(Ordering::SeqCst)
     }
 
-    /// The high-water mark of [`Self::in_use`]. A batch releases its reservation as soon as its
-    /// tiles are written, so `in_use` observed from outside a render is almost always zero; this is
+    /// The high-water mark of [`Self::in_use`]. A render releases each share as soon as its worker
+    /// stops, so `in_use` observed from outside a render is almost always zero; this is
     /// what makes the budget observable after the fact, including a peak above the target when
     /// evaluations overlapped or one tile needed more than all of it.
     pub(crate) fn peak(&self) -> u64 {
@@ -268,7 +289,8 @@ impl SpatialBudget {
     }
 
     /// How many tiles of `working_set` bytes the target and the pool allow in flight together when
-    /// nothing else holds any of the target: what each batch asks for, and at least one.
+    /// nothing else holds any of the target: the widest a render's window asks to be, and at least
+    /// one.
     pub(crate) fn concurrency(&self, working_set: u64) -> usize {
         usize::try_from(self.target() / working_set.max(1))
             .unwrap_or(usize::MAX)
@@ -299,6 +321,27 @@ impl SpatialBudget {
             tiles: tiles as usize,
         }
     }
+
+    /// Reserve one more working set only if it fits in what the target has left: how a render's
+    /// window widens. Unlike [`Self::reserve`] it never passes the target, and the high-water mark
+    /// follows the same rule.
+    pub(crate) fn try_reserve(&self, working_set: u64) -> Option<SpatialReservation<'_>> {
+        let target = self.target();
+        let used = self
+            .used
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+                let after = used.saturating_add(working_set);
+                (after <= target).then_some(after)
+            })
+            .ok()?;
+        self.peak
+            .fetch_max(used.saturating_add(working_set), Ordering::Relaxed);
+        Some(SpatialReservation {
+            budget: self,
+            bytes: working_set,
+            tiles: 1,
+        })
+    }
 }
 
 pub(crate) struct SpatialReservation<'a> {
@@ -307,10 +350,33 @@ pub(crate) struct SpatialReservation<'a> {
     tiles: usize,
 }
 
-impl SpatialReservation<'_> {
+impl<'a> SpatialReservation<'a> {
     /// How many tiles this reservation covers: at least one, at most what was asked for.
+    #[cfg(test)]
     pub(crate) fn tiles(&self) -> usize {
         self.tiles
+    }
+
+    /// This reservation as one guard per tile it covers, each releasing its own share when it is
+    /// dropped, so a render's window can give back one share at a time. Together they hold and
+    /// release exactly what this one did.
+    pub(crate) fn into_shares(mut self) -> Vec<SpatialReservation<'a>> {
+        let bytes = std::mem::take(&mut self.bytes);
+        let tiles = self.tiles.max(1);
+        let share = bytes / tiles as u64;
+        (0..tiles)
+            .map(|index| SpatialReservation {
+                budget: self.budget,
+                // A reservation's bytes are its tiles times one working set, so the remainder is
+                // zero unless that product saturated; the first share keeps it either way.
+                bytes: if index == 0 {
+                    share + bytes % tiles as u64
+                } else {
+                    share
+                },
+                tiles: 1,
+            })
+            .collect()
     }
 }
 
