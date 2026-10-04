@@ -29,6 +29,11 @@ pub const JOBS: usize = 3;
 /// normal outcome.
 const DEADLINE: Duration = Duration::from_secs(20 * 60);
 
+/// The release gate's bound: `gpu-qualification` renders every stack of the corpus on the reference
+/// renderer and on the GPU at four views, which takes far longer than any other component, so it
+/// alone is killed only after three hours.
+const GATE_DEADLINE: Duration = Duration::from_secs(3 * 60 * 60);
+
 /// The 24 MP generated workload's path, relative to the repository root, that the timing
 /// components read as their `--source`. `fixtures::TABLE` is the one table of what `generate`
 /// writes and what a directory needs to hold; this just names its first entry's location so the
@@ -80,6 +85,9 @@ enum Status {
     Passed,
     Failed,
     Skipped,
+    /// The component ran and exited with [`INCOMPLETE_EXIT_CODE`]: nothing it ran failed, but it
+    /// could not run all it lists, as the release gate cannot without a source or an adapter.
+    Incomplete,
     TimedOut,
     NotRun,
 }
@@ -90,6 +98,7 @@ impl Status {
             Self::Passed => "passed",
             Self::Failed => "failed",
             Self::Skipped => "skipped",
+            Self::Incomplete => "incomplete",
             Self::TimedOut => "timed_out",
             Self::NotRun => "not_run",
         }
@@ -125,6 +134,8 @@ struct Spec {
     manifest: bool,
     /// Why this component cannot run, when it cannot.
     skip: Option<&'static str>,
+    /// How long it may run before it is killed and recorded as `timed_out`.
+    deadline: Duration,
 }
 
 fn spec(name: &str, tier: &'static str, args: &[&str]) -> Spec {
@@ -137,6 +148,7 @@ fn spec(name: &str, tier: &'static str, args: &[&str]) -> Spec {
         binary: false,
         manifest: false,
         skip: None,
+        deadline: DEADLINE,
     }
 }
 
@@ -297,6 +309,16 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
                 )
             });
         }
+        // The release gate: every stack of the corpus on the reference renderer and on the GPU,
+        // each output kind the GPU renders held to its recorded limit. It runs alone, after the
+        // pool, since it fills the host's cores and the device; given the RAW manifest when the run
+        // has one, and incomplete without it.
+        specs.push(Spec {
+            result: Some("report.json"),
+            manifest: true,
+            deadline: GATE_DEADLINE,
+            ..spec("gpu-qualification", "gate", &["gpu-qualification"])
+        });
     }
     if tier == Tier::Full {
         let sources = manifest.unwrap_or(&[]);
@@ -476,6 +498,7 @@ fn execute(
     args: &[OsString],
     log: &Path,
     env: Option<(&str, String)>,
+    deadline: Duration,
 ) -> Result<(Option<i32>, bool)> {
     let file = fs::File::create(log)?;
     let mut command = Command::new(program);
@@ -494,7 +517,7 @@ fn execute(
         if let Some(status) = child.try_wait()? {
             return Ok((status.code(), false));
         }
-        if started.elapsed() >= DEADLINE {
+        if started.elapsed() >= deadline {
             child.kill()?;
             child.wait()?;
             return Ok((None, true));
@@ -832,14 +855,20 @@ fn collect(out: &Path, tier: Tier, entries: &[Entry]) -> (Vec<Value>, Vec<Value>
     (rows, targets)
 }
 
-/// Every component that proved nothing: `skipped` (a prerequisite this run does not have, such as
-/// no `--manifest`) or `not_run` (never reached, usually because an earlier setup step failed). A
-/// skip is not a pass, so a tier with one of these and no outright failure is `incomplete` rather
-/// than `passed`.
+/// Every component that did not prove all it lists: `skipped` (a prerequisite this run does not
+/// have, such as no `--manifest`), `incomplete` (it ran and could not run everything, such as the
+/// release gate without a source) or `not_run` (never reached, usually because an earlier setup
+/// step failed). A skip is not a pass, so a tier with one of these and no outright failure is
+/// `incomplete` rather than `passed`.
 fn incomplete(entries: &[Entry]) -> Vec<&Entry> {
     entries
         .iter()
-        .filter(|e| matches!(e.status, Status::Skipped | Status::NotRun))
+        .filter(|e| {
+            matches!(
+                e.status,
+                Status::Skipped | Status::Incomplete | Status::NotRun
+            )
+        })
         .collect()
 }
 
@@ -1153,6 +1182,7 @@ fn component(
         &arguments(s, &dir, &ctx.bin, ctx.manifest.as_deref()),
         &dir.join("console.log"),
         env,
+        s.deadline,
     );
     entry.elapsed_s = clock.elapsed().as_secs_f64();
     match ran {
@@ -1165,6 +1195,9 @@ fn component(
             entry.status = match (timed_out, code) {
                 (true, _) => Status::TimedOut,
                 (false, Some(0)) => Status::Passed,
+                (false, Some(code)) if code == i32::from(INCOMPLETE_EXIT_CODE) => {
+                    Status::Incomplete
+                }
                 _ => Status::Failed,
             };
             if entry.status != Status::Passed {
@@ -1522,7 +1555,7 @@ mod tests {
         assert_eq!(&rendered[..2], ["check", "editor-acceptance"]);
         assert_eq!(
             rendered.len(),
-            2 + smoke::SCENARIOS.iter().filter(|s| s.rendered()).count()
+            2 + smoke::SCENARIOS.iter().filter(|s| s.rendered()).count() + 1
         );
         assert_eq!(
             &rendered[2..6],
@@ -1533,7 +1566,16 @@ mod tests {
                 "smoke-empty"
             ]
         );
-        assert_eq!(rendered.last().unwrap(), "smoke-unavailable");
+        // The release gate last, alone after the pool, given the manifest when there is one and
+        // the longest bound.
+        assert_eq!(rendered[rendered.len() - 2], "smoke-unavailable");
+        assert_eq!(rendered.last().unwrap(), "gpu-qualification");
+        let gate = plan(Tier::Rendered, None, true).pop().unwrap();
+        assert_eq!(gate.args, ["gpu-qualification"]);
+        assert_eq!(gate.tier, "gate");
+        assert!(gate.output && gate.manifest && !gate.binary);
+        assert_eq!(gate.deadline, GATE_DEADLINE);
+        assert_eq!(gate.result, Some("report.json"));
         assert_eq!(
             names(Tier::Timing, None, true),
             [
@@ -1565,7 +1607,7 @@ mod tests {
         );
         assert_eq!(
             full.len(),
-            2 + smoke::SCENARIOS.iter().filter(|s| s.rendered()).count() + 7
+            2 + smoke::SCENARIOS.iter().filter(|s| s.rendered()).count() + 1 + 7
         );
         // Missing generated fixtures are produced first, and only where a tier needs them.
         assert_eq!(names(Tier::Quick, None, false)[0], "check");
@@ -2034,6 +2076,24 @@ mod tests {
         assert!(text.contains("raw-editor (skipped"), "{text}");
         assert!(text.contains("measure (not_run"), "{text}");
         assert!(text.contains("summary.md"), "{text}");
+    }
+    #[test]
+    fn a_component_that_ran_but_could_not_run_everything_makes_the_tier_incomplete() {
+        let out = Path::new("/tmp/verify");
+        let error = outcome(
+            &[
+                entry("check", Status::Passed),
+                entry("gpu-qualification", Status::Incomplete),
+            ],
+            out,
+        )
+        .unwrap_err();
+        assert!(error.downcast_ref::<Incomplete>().is_some(), "{error}");
+        assert!(
+            error.to_string().contains("gpu-qualification (incomplete"),
+            "{error}"
+        );
+        assert!(!Status::Incomplete.failure());
     }
     #[test]
     fn any_failure_names_its_components_in_the_exit_error() {
