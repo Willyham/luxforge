@@ -115,9 +115,9 @@ pub mod gpu_preview;
 pub use gpu_preview::{
     BoundaryFormat, ClipMarks, Coverage, CoverageComponent, CoverageMode, DISSOLVE_DURATION,
     Dissolve, DrawingPath, DrawnDissolve, GPU_PREVIEW_BUDGET, GpuBoundary, GpuChange, GpuFallback,
-    GpuPlan, GpuProgram, GpuRegion, GpuStep, GpuTail, GpuWarm, MaskedColour, OutputEncoding,
-    PIPELINE_CACHE, PRELUDE, PositionMap, TexelMap, install_output_encoding, output_encoding,
-    validate_step,
+    GpuPlan, GpuProgram, GpuRegion, GpuStageState, GpuStep, GpuTail, GpuWarm, MaskedColour,
+    OutputEncoding, PIPELINE_CACHE, PRELUDE, PositionMap, TexelMap, install_output_encoding,
+    output_encoding, refuse_gpu_stage, validate_step,
 };
 
 /// Which photo surface a primitive draws. The pipeline keeps one set of textures per id, so two
@@ -183,6 +183,8 @@ impl SurfaceFigures {
         overall.drawn_dissolve = drawn.drawn_dissolve;
         overall.drawn_clipping_marks = drawn.drawn_clipping_marks;
         overall.first_drawn = drawn.first_drawn;
+        // Read live: a lost device's callback changes it between draws.
+        overall.gpu_stage = self.preview.stage_state();
         // Read live, as the budget is: the queue reports the drawn GPU frame's pass complete at a
         // later submit or poll.
         overall.gpu_preview_done_us = self
@@ -216,7 +218,7 @@ impl SurfaceFigures {
 /// The figures of the pipeline Iced creates for the application, which the free functions below
 /// read. They are process-wide because the desktop has no handle on that pipeline: Iced keeps one
 /// per renderer in its own storage, shared by every photo surface on screen. A pipeline a test
-/// builds counts into figures of its own ([`PhotoPipeline::with_figures`]).
+/// builds counts into figures of its own ([`PhotoPipeline::with_stage`]).
 static PROCESS_FIGURES: OnceLock<Arc<SurfaceFigures>> = OnceLock::new();
 
 fn process_figures() -> &'static Arc<SurfaceFigures> {
@@ -287,6 +289,14 @@ pub fn set_surface_waker(waker: Arc<dyn Fn() + Send + Sync>) {
 /// Whether a redraw must remain subscribed to the surface's GPU retirement wake.
 pub fn surface_retirement_pending() -> bool {
     process_figures().retirement_pending.load(Ordering::Acquire) != 0
+}
+
+/// Whether the GPU stage of the pipeline Iced creates for the photo surfaces can draw at all, read
+/// live and without the rest of [`surface_diagnostics`]: `Unchecked` until the first photograph is
+/// drawn, which creates the pipeline, and the stage's own wake tells the desktop when that answer
+/// comes or changes ([`GpuStageState`]).
+pub fn gpu_stage() -> GpuStageState {
+    process_figures().preview.stage_state()
 }
 
 /// A snapshot of actual texture work and draw encoding, distinct from desktop frame adoption.
@@ -423,6 +433,8 @@ pub struct SurfaceDiagnostics {
     pub gpu_preview_compile_pending: u64,
     /// The newest warm list's version the GPU stage has queued ([`PhotoSurface::gpu_warm`]).
     pub gpu_preview_warmed: Option<u64>,
+    /// Whether the GPU stage can draw at all on the pipeline's device ([`gpu_stage`]).
+    pub gpu_stage: GpuStageState,
 }
 
 /// Aggregate resource counters with the requested surface's own last draw identity.
@@ -3291,9 +3303,16 @@ fn sampler(device: &wgpu::Device, label: &str, filter: wgpu::FilterMode) -> wgpu
 }
 
 impl shader::Pipeline for PhotoPipeline {
-    /// The application's pipeline, which counts into the process-wide figures the desktop reads.
+    /// The application's pipeline, which counts into the process-wide figures the desktop reads,
+    /// its GPU stage refused when the launch refused it ([`refuse_gpu_stage`]).
     fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        Self::with_figures(device, queue, format, Arc::clone(process_figures()))
+        Self::with_stage(
+            device,
+            queue,
+            format,
+            Arc::clone(process_figures()),
+            gpu_preview::gpu_stage_refused(),
+        )
     }
 
     /// Iced calls this at the end of every frame, after every primitive of the frame was prepared
@@ -3331,12 +3350,26 @@ impl shader::Pipeline for PhotoPipeline {
 }
 
 impl PhotoPipeline {
-    /// A pipeline that counts its texture work into `figures`.
+    /// A pipeline that counts its texture work into `figures`, its GPU stage available wherever
+    /// the device can run it, whatever the process's launch refused.
+    #[cfg(test)]
     fn with_figures(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
         figures: Arc<SurfaceFigures>,
+    ) -> Self {
+        Self::with_stage(device, queue, format, figures, false)
+    }
+
+    /// A pipeline that counts its texture work into `figures`, its GPU stage refused when
+    /// `refused`: the stage's capability check then answers unavailable ([`GpuStageState`]).
+    fn with_stage(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        figures: Arc<SurfaceFigures>,
+        refused: bool,
     ) -> Self {
         // The toolkit gamma corrects exactly when it chose an sRGB target, and stores image pixels
         // in an sRGB-typed texture when it does. Matching that is what makes a frame's byte land
@@ -3463,7 +3496,7 @@ impl PhotoPipeline {
         std::thread::spawn(move || {
             retirement_worker(waiter_device, waiter_queue, retirement_receiver, finish);
         });
-        let gpu = gpu_preview::GpuStage::new(device, format, &figures.preview);
+        let gpu = gpu_preview::GpuStage::new(device, format, &figures.preview, refused);
         Self {
             pipeline,
             layout,

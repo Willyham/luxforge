@@ -21,6 +21,7 @@ pub(crate) mod performance;
 pub(crate) mod pointer;
 pub(crate) mod preset;
 pub(crate) mod preview;
+pub(crate) mod renderer;
 pub(crate) mod settings;
 pub(crate) mod sync;
 pub(crate) mod view;
@@ -57,6 +58,8 @@ pub(crate) enum Message {
     /// One export gesture or answer.
     Export(export::ExportMessage),
     Evidence(evidence::EvidenceMessage),
+    /// The owner's answer to the desktop's report of which renderer draws its picture.
+    Renderer(renderer::RendererMessage),
     Close,
 }
 

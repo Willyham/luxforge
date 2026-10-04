@@ -3,7 +3,7 @@
 //! events the call announced; the owner handlers the table names live here.
 use super::{
     ApiEvent, ApiRequest, ApiResponse, ClientAuthority, ClientSession, EventsResult, Origin,
-    announce_once,
+    Renderer, announce_once,
     methods::{self, Changed, Planned, Retries, Route},
     params::{NoParams, host_params},
 };
@@ -51,6 +51,8 @@ mod export_tests;
 #[cfg(test)]
 mod first_open_tests;
 mod point;
+#[cfg(test)]
+mod renderer_tests;
 mod requests;
 
 const EVENT_CAPACITY: usize = 256;
@@ -116,6 +118,13 @@ enum OwnerMessage {
     Register {
         client: ClientId,
         authority: ClientAuthority,
+    },
+    /// The host reports which renderer draws its picture ([`OwnerHandle::report_renderer`]),
+    /// answered with the reporting client's session.
+    Renderer {
+        client: ClientId,
+        renderer: Renderer,
+        reply: SyncSender<ClientSession>,
     },
     /// A lane of the job table finished a capability or export job. Like the analysis worker, the
     /// lane posts it into this channel, so nothing polls.
@@ -1134,6 +1143,29 @@ impl OwnerHandle {
             .map_err(|_| Error::protocol("catalog owner stopped before preview"))?
     }
 
+    /// Report which renderer draws the picture of the process hosting this owner, as its display
+    /// knows it: every client's session then carries it, and each session that held another one is
+    /// touched, so a client keeping its newest session sees the change. Answers `client`'s own
+    /// session. A desktop-internal path, not a JSON method: no client of the API can claim a
+    /// renderer, and a host that draws nothing never reports one. It emits no event.
+    pub fn report_renderer(
+        &self,
+        client: ClientId,
+        renderer: Renderer,
+    ) -> Result<ClientSession, Error> {
+        let (reply, answer) = sync_channel(1);
+        self.sender
+            .send(OwnerMessage::Renderer {
+                client,
+                renderer,
+                reply,
+            })
+            .map_err(|_| Error::protocol("catalog owner is unavailable"))?;
+        answer
+            .recv()
+            .map_err(|_| Error::protocol("catalog owner stopped before the renderer was reported"))
+    }
+
     /// Hand the owner a report the caller's own preview worker produced for this identity. The next
     /// `analysis.request` for the same identity is then a cache hit, so a displayed target is never
     /// rendered twice. Fire and forget: it answers nothing and emits no event.
@@ -1172,9 +1204,11 @@ fn owner_loop(
             .read()
             .map_or(true, |preferences| preferences.auto_collapse_history),
     );
+    let renderer = host.launch_renderer();
     let mut owner = Owner {
         service,
         host,
+        renderer,
         jobs,
         #[cfg(test)]
         export_hold: None,
@@ -1277,6 +1311,13 @@ fn owner_loop(
                 }
                 OwnerMessage::Register { client, authority } => {
                     owner.sessions.entry(client).or_default().authority = authority;
+                }
+                OwnerMessage::Renderer {
+                    client,
+                    renderer,
+                    reply,
+                } => {
+                    let _ = reply.send(owner.report_renderer(client, renderer));
                 }
                 OwnerMessage::JobFinished { job_id, result } => {
                     if owner.jobs.kind(&job_id) == Some(JobKind::Export) {
@@ -1445,6 +1486,9 @@ pub(super) struct Call<'a> {
 pub(super) struct Owner {
     pub(super) service: EditorService,
     pub(super) host: CapabilityHost,
+    /// Which renderer draws the host's picture, which every client's session carries
+    /// ([`OwnerHandle::report_renderer`]).
+    renderer: Renderer,
     /// Every job this owner runs, of every kind, and the lanes that run capability work and export.
     pub(super) jobs: Jobs,
     /// What every export accepted from now on calls as it begins each phase.
@@ -1490,6 +1534,21 @@ impl Owner {
             .map_or(ClientAuthority::Edit, |session| session.authority)
     }
 
+    /// The host's report of the renderer that draws its picture: every session that held another
+    /// takes it and is touched; `client`'s session is answered.
+    fn report_renderer(&mut self, client: ClientId, renderer: Renderer) -> ClientSession {
+        self.renderer = renderer;
+        for session in self.sessions.values_mut() {
+            if session.renderer != renderer {
+                session.renderer = renderer;
+                session.touch();
+            }
+        }
+        let session = self.sessions.entry(client).or_default();
+        session.renderer = renderer;
+        session.clone()
+    }
+
     /// Answer one request: find its method, answer a retry from the request table when the method
     /// declares the owner answers its retries, otherwise call its handler, then record the events
     /// its changes announced. A sample through a spatial layer is only planned here: the point
@@ -1502,6 +1561,8 @@ impl Owner {
     fn call_round(&mut self, mut call: OwnerCall, rounds: usize, changed: bool) {
         let client = call.client;
         let session = self.sessions.entry(client).or_default();
+        // The owner's one renderer, in whatever session this call reports.
+        session.renderer = self.renderer;
         // The rollback point of a call that parks a pixel read: the session as it was, but for its
         // draft, the one part of it that grows with a brush stroke's path. No method changes the
         // draft before the last step that can park — each installs its new draft once nothing it

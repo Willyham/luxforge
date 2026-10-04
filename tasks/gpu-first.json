@@ -78,13 +78,14 @@
     },
     {
       "id": "TASK-002",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "description": "Draw a drag on the GPU at percentage zooms below 100%, planned at the displayed-size proxy exactly as Fit is (stage 1).",
       "extra_context": [
         "docs/design/gpu-preview.md: below 100% a percentage view plans no GPU preview and the status bar names `not-fit` (crates/luxforge-app/src/app/preview.rs, the percentage branch of the plan request). The CPU path then renders the displayed-size proxy of the whole stage, up to 8 MP, on every tick: roughly 80 to 300 ms at 33% of 60 MP with Detail, Presence and masks, estimated from the Fit figures with the preview off.",
         "The Fit path already plans the preview at the display-bounded proxy and holds its boundary from the proxy phase; a percentage below 100% differs only in the proxy's size and the view's placement. Budgets, limits, the error limit and the other fallback reasons stay; `not-fit` goes.",
-        "Qualify at the percentage view's proxy size with the existing corpus (docs/design/gpu-preview.md, Qualifying a program)."
+        "Qualify at the percentage view's proxy size with the existing corpus (docs/design/gpu-preview.md, Qualifying a program).",
+        "Delivered 2026-10-04: drags at 50% and 33% draw on the GPU from the displayed-size proxy (the gpu-preview-zoom scenario, artifacts/gpu-first/task-002/task002-zoom-2 on the integration worktree), and the release gate's first run holds the drag's frame at 33% and 50% within its class's limit against the frame it stands in for on every measured cell (artifacts/gpu-first/task-001/gq-full-2/report.json); the zoom fallback reason is gone."
       ],
       "context_links": [
         {
@@ -158,7 +159,8 @@
         "Today a commit requests a preview job whose proxy phase renders the Fit proxy on the CPU and whose exact phase renders the whole frame; the GPU draws only drags, over a boundary held from the CPU proxy (docs/design/gpu-preview.md, The held input boundary; docs/design/instant-preview.md, Fit proxy and exact phases). With the GPU as the renderer of record the picture at rest is the GPU's own frame of the committed stack, and the CPU proxy phase, the restoration-prefix cache (crates/luxforge-core/src/preview/restoration.rs) and Detail's settled-from-exact display (FitSettle::Exact, downscale_raster) are not needed on this path.",
         "The at-rest picture must meet the display limit against the reference reduced to the view's size, on the corpus, at Fit, below 100% and at 100%; the label vocabulary changes: nothing at rest is called approximate, and the status bar's render figure is the GPU frame's.",
         "Compare and history return draw the retained content on the GPU in one frame, so no retained-frame re-adoption is needed. The settle dissolve keeps its form, between two GPU frames.",
-        "Detail's exact-settle progress bar (the Detail plan's in-progress task) loses its subject on this path; keep its machinery for export and any job longer than a second, or retire it with the exact phase in stage 5, and say which in the Detail design."
+        "Detail's exact-settle progress bar (the Detail plan's in-progress task) loses its subject on this path; keep its machinery for export and any job longer than a second, or retire it with the exact phase in stage 5, and say which in the Detail design.",
+        "Recorded default since the gate's first run (2026-10-04, docs/design/gpu-first.md, Proposals with recorded defaults): a frame processed over a source reduced to the view's size misses the limit against the reference on 475 of 744 cells below 100%, so the picture at rest at Fit and below 100% is process-first, the stack at full resolution in tiles reduced to the view's size, which met every limit; the source's reduction (a box pass over the GPU-resident source, or its mip chain) serves the drag's boundary, whose frame is held to the at-rest frame it settles to."
       ],
       "context_links": [
         {
@@ -241,7 +243,8 @@
       "extra_context": [
         "Today every non-interactive job runs the exact phase for the histogram (crates/luxforge-core/src/preview/worker.rs; crates/luxforge-core/src/analysis.rs reduces the exact frame), and a 120 ms pause in a drag starts one too (crates/luxforge-app/src/app/preview.rs `quiet_refine`). Estimated at about 1 s at 24 MP and 3 s at 60 MP with Detail, Presence and three masked layers, per commit and per pause.",
         "On the GPU the counts are a reduction over full-resolution tiles of the stack rendered with halos, inside the GPU budget, run after each commit and release; during motion the counts come from the displayed frame and the inspector says updating, as the accepted baseline already allows (docs/decisions.md, Interactive previews at 100%). The report keeps its shape, identity and the owner's cache so an API client's `analysis.request` is a hit.",
-        "Tolerance: the summed absolute bin difference and each clipping count within 0.1% of the output pixel count against the reference, measured by the harness on the corpus; the quiet timer stays for 100% region refinement only if stage 5 still needs it."
+        "Tolerance: the summed absolute bin difference and each clipping count within 0.1% of the output pixel count against the reference, measured by the harness on the corpus; the quiet timer stays for 100% region refinement only if stage 5 still needs it.",
+        "The full-stage tiles stage 2's at-rest picture renders (TASK-003, process-first) are the reduction's renderer: the counts are one more reduction over the same tiles, run after each commit and release."
       ],
       "context_links": [
         {

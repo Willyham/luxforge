@@ -148,6 +148,34 @@ fn only_a_client_started_with_permission_authority_may_grant() {
     );
 }
 
+/// The headless owner draws nothing and has no GPU stage, so every client's session reports the
+/// reference renderer with no reason, whatever its authority, and `schema.list` says what the
+/// field's values mean. No request can claim another renderer.
+#[test]
+fn the_headless_owner_reports_the_reference_renderer() {
+    let data_root = paths::temp_path("json-cli-renderer");
+    let requests = [
+        json!({"id": "state", "method": "session.state", "params": {}}),
+        json!({"id": "claim", "method": "workspace.set", "params": {
+            "renderer": {"record": "gpu", "reason": null},
+        }}),
+        json!({"id": "again", "method": "session.state", "params": {}}),
+        json!({"id": "schema", "method": "schema.list", "params": {}}),
+    ];
+    for extra in [&[][..], &["--permission-authority"][..]] {
+        let answers = session(&data_root, extra, &requests);
+        let headless = json!({"record": "reference", "reason": null});
+        assert_eq!(answers[0]["result"]["renderer"], headless, "{extra:?}");
+        assert_eq!(answers[1]["error"]["code"], json!("validation"));
+        assert_eq!(answers[2]["result"]["renderer"], headless);
+        assert_eq!(
+            answers[3]["result"]["renderer"]["records"],
+            json!(["gpu", "reference"])
+        );
+    }
+    assert!(!data_root.exists());
+}
+
 /// `luxforge-json` serves the test modules only with `--developer`, whatever its build profile:
 /// without it `schema.list` names no method a developer-only module generates and `module.list` no
 /// such module; with it the list gains exactly those. A proof endpoint without it is refused

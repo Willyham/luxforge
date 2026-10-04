@@ -48,11 +48,20 @@ pub(super) fn host_config(config: &Config) -> HostConfig {
         secrets,
         transport: Arc::new(HttpTransport::system()),
         launch_flags: config.launch_flags.clone(),
+        // What the launch knows of its renderer before the window opens, which every client's
+        // session reports until the photo surface has checked its GPU stage.
+        renderer: super::renderer::launched(config.no_gpu_render),
         ..HostConfig::unconfigured()
     }
 }
 
 pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
+    // Refused before the window, and so before Iced creates the photo surface's pipeline, whose
+    // capability check then answers unavailable: the editor runs as on a machine whose adapter
+    // cannot run the GPU stage.
+    if config.no_gpu_render {
+        luxforge_ui::photo_surface::refuse_gpu_stage();
+    }
     // Evidence runs never touch a real catalog: theirs lives inside the new evidence directory.
     let catalog = match (&config.catalog, &config.evidence) {
         (Some(catalog), _) => catalog.clone(),

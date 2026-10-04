@@ -62,6 +62,23 @@ pub(crate) fn boot() -> (Editor, PathBuf) {
     (editor, catalog)
 }
 
+/// The owner a launch from `config` starts for `catalog`: the built-in registry, holding what the
+/// launch knows of its renderer as the desktop's own launch tells it.
+pub(crate) fn start_owner(
+    catalog: &std::path::Path,
+    config: &Config,
+) -> (luxforge_core::OwnerHandle, std::thread::JoinHandle<()>) {
+    luxforge_core::OwnerHandle::start_with_host(
+        catalog,
+        Arc::new(luxforge_core::ModuleRegistry::builtin()),
+        luxforge_core::HostConfig {
+            renderer: crate::app::renderer::launched(config.no_gpu_render),
+            ..luxforge_core::HostConfig::unconfigured()
+        },
+    )
+    .unwrap()
+}
+
 /// An editor started from `config`, the startup task it asked the runtime for, and its catalog.
 pub(crate) fn boot_with(config: Config) -> (Editor, iced::Task<Message>, PathBuf) {
     let catalog = std::env::temp_dir().join(format!(
@@ -69,7 +86,7 @@ pub(crate) fn boot_with(config: Config) -> (Editor, iced::Task<Message>, PathBuf
         std::process::id(),
         REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
     ));
-    let (owner, join) = luxforge_core::OwnerHandle::start(&catalog).unwrap();
+    let (owner, join) = start_owner(&catalog, &config);
     let (editor, startup) = Editor::new(Boot {
         owner,
         join,
@@ -147,14 +164,24 @@ pub(crate) fn real_photo_at(
     catalog: &std::path::Path,
     fixture: &std::path::Path,
 ) -> (Editor, AssetId, luxforge_core::ClientId) {
-    let (owner, join) = luxforge_core::OwnerHandle::start(catalog).unwrap();
+    real_photo_launched(catalog, fixture, Config::default())
+}
+
+/// [`real_photo_at`] for an editor launched from `config`, its owner started as that launch starts
+/// it ([`start_owner`]).
+pub(crate) fn real_photo_launched(
+    catalog: &std::path::Path,
+    fixture: &std::path::Path,
+    config: Config,
+) -> (Editor, AssetId, luxforge_core::ClientId) {
+    let (owner, join) = start_owner(catalog, &config);
     let agent = owner.register();
     let asset = import_and_adopt(&owner, agent, fixture);
     let (mut editor, _) = Editor::new(Boot {
         owner: owner.clone(),
         join,
         live_server: None,
-        config: Config::default(),
+        config,
         client: None,
         initial_import: None,
         window: (1440.0, 900.0),
