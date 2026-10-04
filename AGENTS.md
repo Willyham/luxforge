@@ -8,10 +8,10 @@ Every change is measured against these.
 
 1. **Originals are sacred.** Source files are never modified. Edits are data: ordered layers in a recipe, with immutable history. Never silently discard an incompatible catalog, recipe or edit; fail explicitly and keep the data.
 2. **Everything is programmable.** Every operation a person can perform has a discoverable, schema-described programmatic equivalent through the same command service. A GUI gesture is never the only interface. UI and API parity is verified, not assumed.
-3. **Fast, bounded and honest.** Responsiveness, bounded memory and image correctness are architectural requirements, not later tuning. Measure on photo-sized inputs before claiming a performance result. The rules that keep this true are in [performance rules](docs/engineering/performance-rules.md).
+3. **Fast, bounded and honest.** Responsiveness, bounded memory and image correctness are architectural requirements, not later tuning. The GPU is the renderer of record and correctness is a declared tolerance against the whole-frame CPU reference, measured on the corpus ([GPU-first](docs/design/gpu-first.md), owner 2026-10-04); bit identity is asked of the reference, not of the GPU. Measure on photo-sized inputs before claiming a performance result. The rules that keep this true are in [performance rules](docs/engineering/performance-rules.md).
 4. **Small core, deliberate extension points.** The core owns recipe transactions, history and undo, shared invariants and bounded services. Tool modules own their validation, controls and processing through those APIs. Prefer lazy, optional modules and measure before splitting the core into loadable binaries. External module loading is required later, not now.
 5. **Open source, first on the owner's Mac.** GPL-3.0-or-later project code and open-source dependencies. Target the owner's M4 MacBook Pro first; keep Windows and Linux portable, and distinguish VM or headless functional checks from native GPU evidence.
-6. **Prove it.** Claims about behavior come with evidence: exact-buffer tests, correlated state, logs and captures for UI, and recorded measurements with their scope. A skipped check is not a pass.
+6. **Prove it.** Claims about behavior come with evidence: exact-buffer tests for the reference renderer, reference-buffer tests within the declared tolerance for the GPU, correlated state, logs and captures for UI, and recorded measurements with their scope. A skipped check is not a pass.
 7. **Beautiful defaults, familiar feel.** A small, focused workspace with sensible defaults. Lightroom Library and Develop are a familiarity reference, not a feature checklist or a rendering target.
 
 ## Current state
@@ -33,7 +33,7 @@ S0 through M4 are accepted, and the [Develop workspace](docs/design/develop-work
 - Framework widgets hold no authoritative editing or catalog logic. Business rules live in the UI-independent core.
 - Every user-facing operation extends the command registry and its schema. Add the API with the feature.
 - Decode, render, import and export never block the UI thread or the catalog owner thread. Bound queues and memory; cancel stale work.
-- Back image behavior with exact fixtures. Test source preservation and recovery, not just successful rendering.
+- Back image behavior with exact fixtures for the reference renderer and with the reference comparison, within the declared tolerance, for the GPU. Test source preservation and recovery, not just successful rendering.
 - Pin dependencies. Manual license, native and asset reviews are deferred by the owner; keep notices and never claim an audit is complete.
 - **Current shapes only.** Luxforge is pre-release and breaking changes are expected. Support only the latest catalog, recipe, API and module shapes. Do not maintain migrations, compatibility shims, old-version fixtures or historical parity checks. Internal format markers reject unsupported data explicitly without rewriting or discarding it; use a new catalog when necessary. Current UI/API correctness and exact image tests still apply. Missing or disabled providers report affected edits; they never silently omit an effect from a render or export.
 
