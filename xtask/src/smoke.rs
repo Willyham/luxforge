@@ -823,7 +823,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "settings",
-        about: "The Settings sheet's Experiments tab: every flag kind changed, refused, reset and read back",
+        about: "The Settings sheet's Experiments tab: every flag kind changed, refused, reset and read back; the General rows: the canvas background drawn, the interface size scaling the title bar, the mask overlay colour, the lens switch and a catalog folder's relaunch note",
         launches: &[LaunchSpec {
             plan: settings::plan,
             // The proof flags, which the choice and number controls are checked on, are listed
@@ -835,7 +835,8 @@ pub static SCENARIOS: &[Scenario] = &[
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(PANELLED),
         note: None,
-        own: None,
+        // The catalog step names a folder inside the launch's own evidence directory.
+        own: Some(settings::run),
     },
     Scenario {
         name: "gallery",
