@@ -224,23 +224,7 @@ impl SpatialUnit for Denoise {
             #[cfg(test)]
             filters::finished_level(cancel);
         }
-        output.for_rows(parallelism, |y, red, green, blue| {
-            if cancel.is_cancelled() {
-                return;
-            }
-            for column in 0..out.width as usize {
-                let x = i64::from(out.x0) + column as i64;
-                let y = i64::from(y);
-                let i = geometry.index(x, y);
-                let value = filters::reconstruct(
-                    input.sample(x, y),
-                    [lab[i], lab[len + i], lab[2 * len + i]],
-                    [delta[i], delta[len + i], delta[2 * len + i]],
-                );
-                [red[column], green[column], blue[column]] = value;
-            }
-        });
-        cancel.check()
+        finish(input, output, lab, delta, geometry, parallelism, cancel)
     }
     fn gpu(&self, _: Option<&Global>) -> Option<GpuSpatialUnit> {
         super::gpu::denoise(
@@ -265,6 +249,38 @@ impl SpatialUnit for Denoise {
             self.halo
         )
     }
+}
+
+/// The unit's last pass: each pixel of `output` reconstructed from its input, its Oklab `lab` and
+/// the levels' change `delta`, both planar L, a and b over `geometry.held`.
+pub(super) fn finish(
+    input: &Planes<'_>,
+    output: &mut PlanesMut<'_>,
+    lab: &[f32],
+    delta: &[f32],
+    geometry: Geometry,
+    parallelism: Parallelism,
+    cancel: &Cancel,
+) -> Result<(), Error> {
+    let out = output.region();
+    let len = geometry.held.pixels() as usize;
+    output.for_rows(parallelism, |y, red, green, blue| {
+        if cancel.is_cancelled() {
+            return;
+        }
+        for column in 0..out.width as usize {
+            let x = i64::from(out.x0) + column as i64;
+            let y = i64::from(y);
+            let i = geometry.index(x, y);
+            let value = filters::reconstruct(
+                input.sample(x, y),
+                [lab[i], lab[len + i], lab[2 * len + i]],
+                [delta[i], delta[len + i], delta[2 * len + i]],
+            );
+            [red[column], green[column], blue[column]] = value;
+        }
+    });
+    cancel.check()
 }
 
 /// One level's soft shrinkage over `out`, added to `delta`: for each channel kind with a threshold,

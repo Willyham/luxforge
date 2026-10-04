@@ -1,7 +1,7 @@
 use super::filters::{self, Geometry, Kernel};
 use crate::{
     Cancel, Error,
-    modules::{Global, Parallelism, Planes, PlanesMut, SamplingScale, SpatialUnit, Stage},
+    modules::{Global, Parallelism, Planes, PlanesMut, Region, SamplingScale, SpatialUnit, Stage},
     render::gpu::GpuSpatialUnit,
 };
 
@@ -101,7 +101,7 @@ impl Sharpen {
     }
 
     /// The gain, the coring threshold squared and the masking scale squared the unit holds.
-    #[cfg(feature = "qualification")]
+    #[cfg(any(test, feature = "qualification"))]
     pub(super) fn coefficients(&self) -> [f32; 3] {
         [self.gain, self.theta_squared, self.mask_squared]
     }
@@ -111,6 +111,92 @@ impl Sharpen {
     #[cfg(test)]
     pub(super) fn kernels(&self) -> (&[Kernel; 2], &[Kernel; 2]) {
         (&self.kernels, &self.guide)
+    }
+
+    /// The limiter over the rows of `out` from the planes of the input's lightness `l`, its blur
+    /// and its guide, each held over `geometry.held`.
+    pub(super) fn limiter<'a>(
+        &'a self,
+        l: &'a [f32],
+        blurred: &'a [f32],
+        guide: &'a [f32],
+        geometry: Geometry,
+        out: Region,
+    ) -> Limiter<'a> {
+        Limiter {
+            unit: self,
+            l,
+            blurred,
+            guide,
+            geometry,
+            out,
+        }
+    }
+
+    /// The unit's last pass: each pixel of `output` reconstructed from its input, its Oklab `lab`
+    /// (planar L, a and b over `geometry.held`) and the change of lightness the limiter gives it.
+    /// A row's limited lightness waits in its red row until the row's pixels are reconstructed.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn finish(
+        &self,
+        input: &Planes<'_>,
+        output: &mut PlanesMut<'_>,
+        lab: &[f32],
+        blurred: &[f32],
+        guide: &[f32],
+        geometry: Geometry,
+        parallelism: Parallelism,
+        cancel: &Cancel,
+    ) -> Result<(), Error> {
+        let out = output.region();
+        let len = geometry.held.pixels() as usize;
+        let l = &lab[..len];
+        let limiter = self.limiter(l, blurred, guide, geometry, out);
+        output.for_rows(parallelism, |y, red, green, blue| {
+            if cancel.is_cancelled() {
+                return;
+            }
+            limiter.row(y, red);
+            for column in 0..out.width as usize {
+                let x = i64::from(out.x0) + column as i64;
+                let y = i64::from(y);
+                let i = geometry.index(x, y);
+                let value = filters::reconstruct(
+                    input.sample(x, y),
+                    [l[i], lab[len + i], lab[2 * len + i]],
+                    [red[column] - l[i], 0.0, 0.0],
+                );
+                [red[column], green[column], blue[column]] = value;
+            }
+        });
+        cancel.check()
+    }
+}
+
+/// Sharpening's limiter over the rows of one output rectangle.
+#[derive(Clone, Copy)]
+pub(super) struct Limiter<'a> {
+    unit: &'a Sharpen,
+    l: &'a [f32],
+    blurred: &'a [f32],
+    guide: &'a [f32],
+    geometry: Geometry,
+    out: Region,
+}
+impl Limiter<'_> {
+    /// The limited lightness of stage row `y` over the output's columns, into `row`.
+    pub(super) fn row(&self, y: u32, row: &mut [f32]) {
+        for (column, value) in row.iter_mut().enumerate() {
+            let x = i64::from(self.out.x0) + column as i64;
+            *value = self.unit.limited(
+                self.l,
+                self.blurred,
+                self.guide,
+                self.geometry,
+                x,
+                i64::from(y),
+            );
+        }
     }
 }
 impl SpatialUnit for Sharpen {
@@ -181,24 +267,16 @@ impl SpatialUnit for Sharpen {
             )?;
             &*blurred
         };
-        output.for_rows(parallelism, |y, red, green, blue| {
-            if cancel.is_cancelled() {
-                return;
-            }
-            for column in 0..out.width as usize {
-                let x = i64::from(out.x0) + column as i64;
-                let y = i64::from(y);
-                let i = geometry.index(x, y);
-                let limited = self.limited(l, blurred, guide, geometry, x, y);
-                let value = filters::reconstruct(
-                    input.sample(x, y),
-                    [l[i], lab[len + i], lab[2 * len + i]],
-                    [limited - l[i], 0.0, 0.0],
-                );
-                [red[column], green[column], blue[column]] = value;
-            }
-        });
-        cancel.check()
+        self.finish(
+            input,
+            output,
+            lab,
+            blurred,
+            guide,
+            geometry,
+            parallelism,
+            cancel,
+        )
     }
     fn gpu(&self, _: Option<&Global>) -> Option<GpuSpatialUnit> {
         super::gpu::sharpen(
