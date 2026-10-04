@@ -1,14 +1,16 @@
 //! The spatial step's own tests: the spatial convention checked on a program alone, the modules the
 //! surface assembles for its passes and frame, and, on a headless device, passes that fill planes
-//! before the frame's pass reads them, charged to the budget and released with the slot. Last, a
-//! chain's planes laid out as each link's kept textures and one pool of scratch textures, and the
-//! chain's charge, without a device.
+//! before the frame's pass reads them, charged to the budget and released with the slot, and the
+//! links of a chain taking their scratch planes from the slot's one pool in turn. Last, a chain's
+//! planes laid out as each link's kept textures and one pool of scratch textures, and the chain's
+//! charge, without a device.
 use super::super::spatial::{Slots, fragment_declarations, pass_module};
 use super::*;
 
 /// A hand-supplied spatial program under the convention: a pass that copies its unit's input into
-/// a plane, a horizontal box mean of a plane of radius word 0, a workgroup pass that sums its lanes
-/// through the shared scratch, and an apply that shows the mean and the lanes' sum.
+/// a plane, a horizontal and a vertical box mean of a plane of the radius its word holds, a
+/// workgroup pass that sums its lanes through the shared scratch, an apply that shows the mean and
+/// the lanes' sum, and one that mixes its input toward a plane by its word.
 const PROGRAM: &str = "\
 fn lf_test_copy(at: vec2<i32>, words: u32, block: u32) {
     lf_store(at, vec4<f32>(lf_source(at), 1.0));
@@ -21,6 +23,19 @@ fn lf_test_mean_x(at: vec2<i32>, words: u32, block: u32) {
         sum += lf_plane(0u, at + vec2<i32>(dx, 0));
     }
     lf_store(at, sum / f32(2 * r + 1));
+}
+
+fn lf_test_mean_y(at: vec2<i32>, words: u32, block: u32) {
+    let r = i32(lf_word(words));
+    var sum = vec4<f32>(0.0);
+    for (var dy = -r; dy <= r; dy++) {
+        sum += lf_plane(0u, at + vec2<i32>(0, dy));
+    }
+    lf_store(at, sum / f32(2 * r + 1));
+}
+
+fn lf_test_blur(rgb: vec3<f32>, at: vec2<i32>, words: u32, block: u32, planes: u32) -> vec3<f32> {
+    return mix(rgb, lf_plane(planes, at).xyz, lf_f32(words));
 }
 
 fn lf_test_lanes(at: vec2<i32>, words: u32, block: u32) {
@@ -48,7 +63,7 @@ const RADIUS: u32 = 3;
 /// The apply's word: what the lanes' half is scaled by.
 const SCALE: f32 = 0.5;
 
-fn test_spatial() -> GpuSpatial {
+pub(super) fn test_spatial() -> GpuSpatial {
     GpuSpatial {
         program: GpuProgram {
             words: vec![RADIUS, SCALE.to_bits()],
@@ -313,7 +328,7 @@ fn a_reduced_plane_holds_the_stage_blocks_its_boundary_reaches() {
 /// passes, and a return from it, its planes still holding what they did, only those again.
 #[test]
 fn an_identity_applys_planes_are_written_only_once_it_is_not() {
-    use super::super::spatial::{PlanesKey, Schedule};
+    use super::super::spatial::{PlanesKey, Pool, Schedule};
     let (boundary, _) = boundary_values();
     // Unit A copies its input and takes its mean, and both units' applies read the lanes; unit B
     // copies its input through A's apply and takes its mean. Each pass has words of its own.
@@ -354,7 +369,9 @@ fn an_identity_applys_planes_are_written_only_once_it_is_not() {
         }
     };
     let key = PlanesKey::of(&ticks(RADIUS, true).steps, (SIDE, SIDE), (0, 0)).expect("planes");
-    let mut schedule = Schedule::default();
+    // The pool's records alone: the link's scratch is its own throughout.
+    let mut pool = Pool::default();
+    let mut schedule = Schedule::new(&mut pool);
     let (mut words, mut blocks) = (Vec::new(), Vec::new());
     for (tick, plan, runs) in [
         (
@@ -380,7 +397,8 @@ fn an_identity_applys_planes_are_written_only_once_it_is_not() {
         ),
     ] {
         super::super::pack(&plan, &mut words, &mut blocks);
-        let ran = schedule.run(&plan.steps, &words, &blocks, plan.boundary.version(), &key);
+        let version = plan.boundary.version();
+        let ran = schedule.run(&plan.steps, &words, &blocks, version, &key, &mut pool);
         assert_eq!(ran, runs, "{tick}");
     }
 }
@@ -490,8 +508,10 @@ fn a_spatial_step_runs_its_passes_before_the_frame_that_applies_them() {
     eprintln!("{test}: {} texels within {largest} code", expected.len());
 }
 
-/// The planes are charged with the slot and released with it; a plan whose planes would pass the
-/// budget takes the CPU path and names it.
+/// The planes are charged with the slot and released with it: the spatial link's kept planes and
+/// its passes' parameters, and the slot's pool of scratch textures, which the evidence names. A
+/// plan whose pool, or whose kept planes, would pass the budget takes the CPU path and names it,
+/// and nothing it would have created stays charged.
 #[test]
 fn spatial_planes_are_charged_released_and_refused_past_the_budget() {
     let test = "spatial_planes_are_charged_released_and_refused_past_the_budget";
@@ -501,8 +521,10 @@ fn spatial_planes_are_charged_released_and_refused_past_the_budget() {
     let mut pipeline = own_pipeline(&device, &queue);
     let (boundary, _) = boundary_values();
     let plan = spatial_plan(&boundary);
-    // The three planes, and each of the three passes' 256-byte slice of the parameters.
-    let planes = 64 * 64 * 8 + 64 * 64 * 16 + 16 + 3 * 256;
+    // The kept planes, the mean's and the lanes', and each of the three passes' 256-byte slice of
+    // the parameters; and the pool, a texture for the copy, the one scratch plane.
+    let kept = 64 * 64 * 16 + 16 + 3 * 256;
+    let pool = 64 * 64 * 8;
     // The colour step before the spatial one is the chain's first link: its intermediate, the
     // boundary's size at its eight bytes a texel, and its words and blocks buffers.
     let link = 64 * 64 * 8 + 2 * 1024;
@@ -514,44 +536,75 @@ fn spatial_planes_are_charged_released_and_refused_past_the_budget() {
     );
     let seen = diagnostics(&pipeline, ID);
     assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
-    assert_eq!(seen.gpu_preview_in_use_bytes, SLOT_BYTES + planes + link);
+    assert_eq!(
+        seen.gpu_preview_in_use_bytes,
+        SLOT_BYTES + link + kept + pool
+    );
+    assert_eq!(seen.gpu_preview_scratch_bytes, pool);
     // The figure a qualification report states is the slot's own.
     assert_eq!(
         slot_charge(&device, &plan),
         Ok(seen.gpu_preview_in_use_bytes)
     );
-    // The plan stops: the slot and its planes retire, and the figure returns to zero.
+    // The plan stops: the slot, its planes and its pool retire, and the figures return to zero.
     paint(&device, &queue, &mut pipeline, &primitive(ID, None));
     settle(&pipeline);
-    assert_eq!(diagnostics(&pipeline, ID).gpu_preview_in_use_bytes, 0);
-    // A budget that holds the slot but not its planes.
-    pipeline.set_gpu_budget(SLOT_BYTES + planes - 1);
-    assert_cpu_frame(&paint(
-        &device,
-        &queue,
-        &mut pipeline,
-        &primitive(ID, Some(plan)),
-    ));
     let seen = diagnostics(&pipeline, ID);
-    assert_eq!(seen.drawn_path, Some(DrawingPath::Cpu));
-    assert!(
-        matches!(seen.gpu_fallback, Some(GpuFallback::BudgetExceeded { requested, .. })
-            if requested == planes),
-        "{:?}",
-        seen.gpu_fallback
+    assert_eq!(
+        (
+            seen.gpu_preview_in_use_bytes,
+            seen.gpu_preview_scratch_bytes
+        ),
+        (0, 0)
     );
-    settle(&pipeline);
-    assert_eq!(diagnostics(&pipeline, ID).gpu_preview_in_use_bytes, 0);
+    // A budget that holds the slot and its colour link but not the pool, then one that holds the
+    // pool too but not the kept planes: each refused before it is created.
+    for (what, budget, refused) in [
+        ("the pool", SLOT_BYTES + link + pool - 1, pool),
+        ("the kept planes", SLOT_BYTES + link + pool + kept - 1, kept),
+    ] {
+        pipeline.set_gpu_budget(budget);
+        assert_cpu_frame(&paint(
+            &device,
+            &queue,
+            &mut pipeline,
+            &primitive(ID, Some(plan.clone())),
+        ));
+        let seen = diagnostics(&pipeline, ID);
+        assert_eq!(seen.drawn_path, Some(DrawingPath::Cpu), "{what}");
+        assert!(
+            matches!(seen.gpu_fallback, Some(GpuFallback::BudgetExceeded { requested, .. })
+                if requested == refused),
+            "{what}: {:?}",
+            seen.gpu_fallback
+        );
+        assert_eq!(
+            seen.gpu_fallback.map(GpuFallback::as_str),
+            Some("budget-exceeded")
+        );
+        assert!(seen.gpu_preview_peak_bytes <= SLOT_BYTES + link + pool + kept);
+        settle(&pipeline);
+        let seen = diagnostics(&pipeline, ID);
+        assert_eq!(
+            (
+                seen.gpu_preview_in_use_bytes,
+                seen.gpu_preview_scratch_bytes
+            ),
+            (0, 0),
+            "{what}"
+        );
+    }
 }
 
-/// A plan whose planes the budget holds only once the ones they replace have gone, drawn straight
-/// after the smaller plan: the planes it replaces stay charged until their retirement ends, when
-/// the GPU is done with them, so the larger plan's first frame is the CPU's, naming the budget,
-/// and nothing of it is created. Once the retirement ends, the next frame holds the larger planes
-/// and every frame after it draws them on the GPU, the slot charged the same: one frame falls
-/// back, and nothing is allocated again or released after it. The in-use figure never passes the
-/// budget. A drag at 100% whose slot replaces a Fit slot, or another region's, meets this as its
-/// boundary arrives.
+/// A plan whose pool texture the budget holds only once the one it replaces has gone, drawn
+/// straight after the smaller plan: its spatial step's copy, a scratch plane, is held twice as
+/// wide, so the pool's texture of the copy's class retires and one of the wider class takes its
+/// place. The texture it replaces stays charged until its retirement ends, when the GPU is done
+/// with it, so the larger plan's first frame is the CPU's, naming the budget, and nothing of it is
+/// created. Once the retirement ends, the next frame holds the wider texture and every frame after
+/// it draws on the GPU, the slot charged the same: one frame falls back, and nothing is allocated
+/// again or released after it. The in-use figure never passes the budget. A drag at 100% whose
+/// slot replaces a Fit slot, or another region's, meets this as its boundary arrives.
 #[test]
 fn a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own() {
     let test = "a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own";
@@ -561,8 +614,9 @@ fn a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own() {
     let mut pipeline = own_pipeline(&device, &queue);
     let (boundary, _) = boundary_values();
     let single = spatial_plan(&boundary);
-    // The same chain, its spatial step's copy held in a plane twice as wide: the last link's planes
-    // are replaced, and the colour link before it is kept.
+    // The same chain, its spatial step's copy held in a plane twice as wide: the last link's
+    // scratch takes another pool texture, its kept planes are as large as they were, and the
+    // colour link before it is kept.
     let mut wider = test_spatial();
     wider.planes[0].format = PlaneFormat::Quad;
     let larger = GpuPlan {
@@ -572,18 +626,19 @@ fn a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own() {
         ],
         ..single.clone()
     };
-    let planes = |plan: &GpuPlan| {
-        super::super::spatial::PlanesKey::of(&plan.steps, (SIDE, SIDE), (0, 0))
-            .expect("planes")
-            .bytes()
-    };
-    let (small, large) = (planes(&single), planes(&larger));
+    let charge =
+        |plan: &GpuPlan| chain_charge(&plan.steps, (SIDE, SIDE), (0, 0), BoundaryFormat::Half);
+    let (small, large) = (charge(&single), charge(&larger));
+    assert_eq!(small.kept, large.kept, "the kept planes are as large");
+    assert_eq!((small.pool, large.pool), (64 * 64 * 8, 64 * 64 * 16));
     // The colour step before the spatial one is the chain's first link: its intermediate, the
     // boundary's size at its eight bytes a texel, and its words and blocks buffers.
     let link = 64 * 64 * 8 + 2 * 1024;
-    // The slot with either plan's planes, never both.
-    let budget = SLOT_BYTES + link + large;
-    assert!(SLOT_BYTES + link + small + large > budget);
+    let kept: u64 = small.kept.iter().sum();
+    let (small, large) = (small.pool, large.pool);
+    // The slot with either plan's pool, never both.
+    let budget = SLOT_BYTES + link + kept + large;
+    assert!(SLOT_BYTES + link + kept + small + large > budget);
     pipeline.set_gpu_budget(budget);
     paint(
         &device,
@@ -593,8 +648,12 @@ fn a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own() {
     );
     let seen = diagnostics(&pipeline, ID);
     assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
-    assert_eq!(seen.gpu_preview_in_use_bytes, SLOT_BYTES + link + small);
-    // Straight after it: the smaller planes still retire.
+    assert_eq!(
+        seen.gpu_preview_in_use_bytes,
+        SLOT_BYTES + link + kept + small
+    );
+    assert_eq!(seen.gpu_preview_scratch_bytes, small);
+    // Straight after it: the smaller pool texture still retires.
     let first = paint(
         &device,
         &queue,
@@ -613,8 +672,8 @@ fn a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own() {
             );
             eprintln!("{test}: the first frame is the CPU's, naming the budget");
         }
-        // The retirement ended before the larger planes were charged.
-        Some(DrawingPath::Gpu) => eprintln!("{test}: the replaced planes had retired already"),
+        // The retirement ended before the wider texture was charged.
+        Some(DrawingPath::Gpu) => eprintln!("{test}: the replaced texture had retired already"),
         None => panic!("a frame was drawn"),
     }
     settle(&pipeline);
@@ -629,9 +688,13 @@ fn a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own() {
         assert_eq!(
             (seen.drawn_path, seen.gpu_fallback),
             (Some(DrawingPath::Gpu), None),
-            "frame {frame} once the replaced planes retired"
+            "frame {frame} once the replaced texture retired"
         );
-        assert_eq!(seen.gpu_preview_in_use_bytes, SLOT_BYTES + link + large);
+        assert_eq!(
+            seen.gpu_preview_in_use_bytes,
+            SLOT_BYTES + link + kept + large
+        );
+        assert_eq!(seen.gpu_preview_scratch_bytes, large);
         assert!(seen.gpu_preview_peak_bytes <= budget);
     }
     assert_eq!(
@@ -867,6 +930,486 @@ fn a_change_to_an_apply_alone_runs_no_pass() {
     }
 }
 
+/// The test step with a word of its own for each pass — the copy's and the lanes', which they do
+/// not read, and the mean's radius — then the apply's scale, so a change to the mean's radius
+/// reruns the mean alone, over a copy its link still holds.
+fn worded(radius: u32, scale_by: f32) -> GpuSpatial {
+    let mut spatial = test_spatial();
+    spatial.program.words = vec![0, radius, 0, scale_by.to_bits()];
+    for (pass, words) in spatial.passes.iter_mut().zip(0..) {
+        pass.words = words;
+    }
+    spatial.applies[0].words = 3;
+    spatial
+}
+
+/// A coverage program: zero left of stage column 20, rising to one at column 44.
+fn ramp() -> GpuProgram {
+    GpuProgram::new(
+        "cover_ramp",
+        "fn cover_ramp(pos: vec2<f32>, rgb: vec3<f32>, words: u32, block: u32) -> f32 {\n    \
+         return clamp((pos.x - 20.0) / 24.0, 0.0, 1.0);\n}\n",
+    )
+}
+
+/// A masked spatial step: its input copied into a plane, a horizontal box mean of that and a
+/// vertical one of the mean, each of its own word's radius, and an apply that mixes its input
+/// toward the last by its word; through a mask whose coverage is zero outside `[24, 40) × [20, 44)`
+/// of the stage, so its passes run over that rectangle grown by their reach alone. The copy is
+/// scratch of the test step's class, the horizontal mean scratch of a class no other link of the
+/// chained tests holds as scratch.
+fn blurred(radius_x: u32, radius_y: u32, amount: f32) -> GpuSpatial {
+    let plane = |format| GpuPlane {
+        format,
+        size: PlaneSize::Reduced(1),
+    };
+    let pass = |kernel: &'static str, inputs: Vec<u32>, output: u32, words: u32| GpuPass {
+        kernel: Cow::Borrowed(kernel),
+        inputs,
+        output,
+        words,
+        source: 0,
+        reads_source: kernel == "lf_test_copy",
+        shape: PassShape::Texels { span: [1, 1] },
+        unit: 0,
+    };
+    GpuSpatial {
+        program: GpuProgram {
+            words: vec![0, radius_x, radius_y, amount.to_bits()],
+            ..GpuProgram::new("lf_test", PROGRAM)
+        },
+        planes: vec![
+            plane(PlaneFormat::Colour),
+            plane(PlaneFormat::Quad),
+            plane(PlaneFormat::Quad),
+        ],
+        passes: vec![
+            pass("lf_test_copy", vec![], 0, 0),
+            pass("lf_test_mean_x", vec![0], 1, 1),
+            pass("lf_test_mean_y", vec![1], 2, 2),
+        ],
+        applies: vec![GpuApply {
+            function: Cow::Borrowed("lf_test_blur"),
+            planes: vec![2],
+            words: 3,
+            identity: false,
+        }],
+        clamps: true,
+        mask: Some(Coverage {
+            position: PositionMap::IDENTITY,
+            bounds: [24, 20, 40, 44],
+            supersample: false,
+            components: vec![CoverageComponent {
+                mode: CoverageMode::Add,
+                invert: false,
+                program: ramp(),
+            }],
+            invert: false,
+            scale: 1.0,
+        }),
+        // The apply reads its input within the larger radius: one mean runs along each axis.
+        halos: vec![radius_x.max(radius_y)],
+    }
+}
+
+/// What the chained tests' plan holds: the colour step before its links scales by `before`; its
+/// first link is [`worded`] at `first`'s radius and scale, its second [`blurred`] at `blur`'s radii
+/// and amount, and its last [`worded`] again at `last`'s, with colour steps between them.
+#[derive(Clone, Copy)]
+struct Chained {
+    before: f32,
+    first: (u32, f32),
+    blur: (u32, u32, f32),
+    last: (u32, f32),
+}
+
+fn chained_plan(boundary: &GpuBoundary, chained: Chained) -> GpuPlan {
+    let Chained {
+        before,
+        first,
+        blur,
+        last,
+    } = chained;
+    GpuPlan {
+        boundary: boundary.clone(),
+        texels: TexelMap::IDENTITY,
+        steps: vec![
+            GpuStep::colour(scale(before)),
+            GpuStep::Spatial(Box::new(worded(first.0, first.1))),
+            GpuStep::colour(scale(1.5)),
+            GpuStep::Spatial(Box::new(blurred(blur.0, blur.1, blur.2))),
+            GpuStep::colour(swap(true)),
+            GpuStep::Spatial(Box::new(worded(last.0, last.1))),
+        ],
+        region: None,
+    }
+}
+
+/// How many passes each spatial link of a chained plan's slot has dispatched, in chain order.
+fn link_passes(pipeline: &PhotoPipeline) -> [u64; 3] {
+    let slot = pipeline.surfaces[&ID].gpu.as_ref().expect("a slot");
+    let link = |index: usize| {
+        slot.chain[index]
+            .spatial
+            .as_ref()
+            .expect("the link's planes")
+            .dispatched
+    };
+    let last = slot.spatial.as_ref().expect("the last link's planes");
+    [link(1), link(2), last.dispatched]
+}
+
+/// The frame a fresh slot draws for `plan`: `reference`'s slot released and allocated again, so
+/// every link runs every pass its applies need over its own new planes and pool.
+fn fresh(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    reference: &mut PhotoPipeline,
+    plan: &GpuPlan,
+) -> Vec<u8> {
+    paint(device, queue, reference, &primitive(ID, None));
+    settle(reference);
+    let drawn = paint(device, queue, reference, &primitive(ID, Some(plan.clone())));
+    assert_eq!(
+        diagnostics(reference, ID).drawn_path,
+        Some(DrawingPath::Gpu)
+    );
+    drawn
+}
+
+/// Three spatial links with colour steps between them take their scratch planes from the slot's
+/// one pool: the two test steps' copies and the masked link's take one texture in turn, and the
+/// masked link's horizontal mean one of a class only it holds as scratch. Through the slot's own
+/// prepare path, every frame is the frame a fresh slot draws for the same plan, bit for bit, while
+/// the ticks change in turn one link's pass words, another link's apply word, the step before and
+/// the boundary, each link running:
+///
+/// - the mean alone when only its radius moved and it wrote the copy's pool texture last, its first
+///   writer skipped, and the copy again as well when another link wrote that texture since;
+/// - every pass when its input moved, and none when only its apply's word did;
+/// - the masked link's vertical mean alone when only its radius moved, the horizontal mean its pool
+///   texture still holds being its own, though the copy's texture was written by another link.
+///
+/// The slot is charged the chain's figure, its pool once, which the evidence names. No texture an
+/// apply reads is one another link's pass writes, and no pool texture has more than one holder:
+/// each record's holder is one link's schedule. With the poison on, every link's passes starting
+/// from NaN in every pool texture, every frame is still the fresh slot's, bit for bit: no pass reads
+/// scratch it did not write in its tick.
+#[test]
+fn chained_links_take_their_scratch_from_one_pool_and_draw_what_a_fresh_slot_draws() {
+    let test = "chained_links_take_their_scratch_from_one_pool_and_draw_what_a_fresh_slot_draws";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let (boundary, _) = boundary_values();
+    let (other, _) = boundary_with_codes(boundary.version() + 1);
+    let mut settings = Chained {
+        before: 0.5,
+        first: (3, 0.5),
+        blur: (6, 5, 0.75),
+        last: (2, 0.25),
+    };
+    // Each tick: what it changes from the tick before, whether over the other boundary, and the
+    // passes each link runs.
+    type Change = fn(&mut Chained);
+    let changes: [(&str, Change, bool, [u64; 3]); 10] = [
+        ("the first", |_| {}, false, [3, 3, 3]),
+        (
+            "the last link's pass word",
+            |c| c.last.0 = 1,
+            false,
+            [0, 0, 1],
+        ),
+        (
+            "the first link's apply word",
+            |c| c.first.1 = 0.75,
+            false,
+            [0, 3, 3],
+        ),
+        (
+            "the first link's pass word, after the last wrote its copy's texture",
+            |c| c.first.0 = 2,
+            false,
+            [2, 3, 3],
+        ),
+        ("the step before", |c| c.before = 0.25, false, [3, 3, 3]),
+        ("the boundary", |_| {}, true, [3, 3, 3]),
+        (
+            "the last link's pass word again",
+            |c| c.last.0 = 2,
+            true,
+            [0, 0, 1],
+        ),
+        (
+            "the masked link's vertical radius",
+            |c| c.blur.1 = 4,
+            true,
+            [0, 1, 3],
+        ),
+        (
+            "the masked link's horizontal radius",
+            |c| c.blur.0 = 5,
+            true,
+            [0, 3, 3],
+        ),
+        (
+            "the masked link's apply word",
+            |c| c.blur.2 = 0.5,
+            true,
+            [0, 0, 3],
+        ),
+    ];
+    let mut ticks: Vec<(&str, GpuPlan, [u64; 3])> = Vec::new();
+    for (change, apply, over_other, runs) in changes {
+        apply(&mut settings);
+        let over = if over_other { &other } else { &boundary };
+        ticks.push((change, chained_plan(over, settings), runs));
+    }
+    let mut reference = own_pipeline(&device, &queue);
+    let expected: Vec<Vec<u8>> = ticks
+        .iter()
+        .map(|(_, plan, _)| fresh(&device, &queue, &mut reference, plan))
+        .collect();
+    let pool = 64 * 64 * 8 + 64 * 64 * 16;
+    for poisoned in [false, true] {
+        let mut pipeline = own_pipeline(&device, &queue);
+        pipeline.set_scratch_poison(poisoned);
+        let mut before = [0; 3];
+        for ((change, plan, runs), expected) in ticks.iter().zip(&expected) {
+            let drawn = paint(
+                &device,
+                &queue,
+                &mut pipeline,
+                &primitive(ID, Some(plan.clone())),
+            );
+            let seen = diagnostics(&pipeline, ID);
+            assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu), "{change}");
+            let differing = drawn
+                .chunks_exact(4)
+                .zip(expected.chunks_exact(4))
+                .filter(|(drawn, expected)| drawn != expected)
+                .count();
+            assert_eq!(
+                differing, 0,
+                "{change}, poisoned {poisoned}: pixels unlike a fresh slot's"
+            );
+            let now = link_passes(&pipeline);
+            let ran: Vec<u64> = now
+                .iter()
+                .zip(before)
+                .map(|(now, before)| now - before)
+                .collect();
+            before = now;
+            eprintln!("{test}: {change}, poisoned {poisoned}: {ran:?} passes");
+            if !poisoned {
+                assert_eq!(ran, runs, "{change}");
+                assert_eq!(seen.gpu_preview_scratch_bytes, pool, "{change}");
+                assert_eq!(
+                    slot_charge(&device, plan),
+                    Ok(seen.gpu_preview_in_use_bytes),
+                    "{change}"
+                );
+            }
+        }
+        if poisoned {
+            continue;
+        }
+        // What each link's applies read, and what its passes write, by texture.
+        let slot = pipeline.surfaces[&ID].gpu.as_ref().expect("a slot");
+        let (_, last_plan, _) = ticks.last().expect("ticks");
+        let split = super::super::chain::chain(&last_plan.steps);
+        let links = [
+            (split.links[1], slot.chain[1].spatial.as_deref()),
+            (split.links[2], slot.chain[2].spatial.as_deref()),
+            (split.last, slot.spatial.as_deref()),
+        ];
+        let pooled = slot.pool.textures();
+        let mut applied: Vec<Vec<&wgpu::Texture>> = Vec::new();
+        let mut written: Vec<Vec<&wgpu::Texture>> = Vec::new();
+        for (steps, held) in links {
+            let held = held.expect("a spatial link's planes");
+            let GpuStep::Spatial(spatial) = &steps[0] else {
+                panic!("a link opens with its spatial step");
+            };
+            let (kept, _) = held.planes.resources();
+            let texture = |plane: u32| match held.planes.key.location(0, plane) {
+                Some(super::super::spatial::PlaneTexture::Kept(index)) => kept[index],
+                Some(super::super::spatial::PlaneTexture::Pool(class, number)) => pooled
+                    .iter()
+                    .find(|(at, _)| *at == (class, number))
+                    .map(|(_, texture)| *texture)
+                    .expect("the pool holds the link's scratch"),
+                None => panic!("plane {plane} is the link's"),
+            };
+            applied.push(
+                spatial
+                    .applies
+                    .iter()
+                    .flat_map(|apply| &apply.planes)
+                    .map(|plane| texture(*plane))
+                    .collect(),
+            );
+            written.push(
+                spatial
+                    .passes
+                    .iter()
+                    .map(|pass| texture(pass.output))
+                    .collect(),
+            );
+        }
+        for (reader, reads) in applied.iter().enumerate() {
+            for texture in reads {
+                assert!(
+                    pooled.iter().all(|(_, pool)| pool != texture),
+                    "link {reader}'s apply reads no pool texture"
+                );
+                for (writer, writes) in written.iter().enumerate() {
+                    if writer != reader {
+                        assert!(
+                            !writes.contains(texture),
+                            "link {writer}'s pass writes a texture link {reader}'s apply reads"
+                        );
+                    }
+                }
+            }
+        }
+        let holders: Vec<u64> = links
+            .iter()
+            .map(|(_, held)| held.expect("planes").schedule.holder())
+            .collect();
+        let records = slot.pool.holders();
+        for (at, holder) in &records {
+            assert_eq!(
+                holders.iter().filter(|held| *held == holder).count(),
+                1,
+                "{at:?} is held by one link"
+            );
+            assert_eq!(records.iter().filter(|(other, _)| other == at).count(), 1);
+        }
+        assert!(!records.is_empty(), "the links' passes left records");
+    }
+}
+
+/// The pool follows the plan's need. A chain whose last link holds a scratch plane of a class no
+/// other link holds needs a texture of it; when that link is replaced by one that does not, the
+/// texture retires, charged until the GPU is done with it, and the pool's generation moves on. A
+/// link the change left alone keeps its groups until it next runs, when, bound under the old
+/// generation, it rebuilds them and forgets what its planes held: a change to its apply's word then
+/// runs every pass its applies need. The texture coming back adds one, which moves no binding and
+/// bumps nothing: the same change runs none. Every frame is a fresh slot's, bit for bit.
+#[test]
+fn the_pools_generation_rebinds_a_link_once_a_texture_goes() {
+    let test = "the_pools_generation_rebinds_a_link_once_a_texture_goes";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let mut reference = own_pipeline(&device, &queue);
+    let (boundary, _) = boundary_values();
+    let plan = |first_scale: f32, wide: bool| {
+        let mut last = worded(2, 0.25);
+        if wide {
+            last.planes[0].format = PlaneFormat::Quad;
+        }
+        GpuPlan {
+            boundary: boundary.clone(),
+            texels: TexelMap::IDENTITY,
+            steps: vec![
+                GpuStep::colour(scale(0.5)),
+                GpuStep::Spatial(Box::new(worded(3, first_scale))),
+                GpuStep::colour(scale(1.5)),
+                GpuStep::Spatial(Box::new(last)),
+            ],
+            region: None,
+        }
+    };
+    let first_link = |pipeline: &PhotoPipeline| {
+        let slot = pipeline.surfaces[&ID].gpu.as_ref().expect("a slot");
+        let spatial = slot.chain[1].spatial.as_ref().expect("planes");
+        let built = spatial
+            .groups
+            .as_ref()
+            .map(|(_, generation, _)| *generation);
+        (
+            spatial.dispatched,
+            built,
+            slot.pool.generation(),
+            slot.pool.bytes(),
+        )
+    };
+    let (copy, wide) = (64 * 64 * 8, 64 * 64 * 16);
+    // Each tick: what it changes, its plan, the passes the first link runs, the generation the
+    // pool is at and its bytes.
+    let ticks = [
+        ("the wide last link", plan(0.5, true), 3, 0, copy + wide),
+        (
+            "a last link of the copy's class",
+            plan(0.5, false),
+            0,
+            1,
+            copy,
+        ),
+        (
+            "the first link's apply word, bound under another generation",
+            plan(0.75, false),
+            3,
+            1,
+            copy,
+        ),
+        (
+            "the wide last link again",
+            plan(0.75, true),
+            0,
+            1,
+            copy + wide,
+        ),
+        (
+            "the first link's apply word once more",
+            plan(0.5, true),
+            0,
+            1,
+            copy + wide,
+        ),
+    ];
+    let mut before = 0;
+    for (change, plan, runs, generation, bytes) in ticks {
+        let drawn = paint(
+            &device,
+            &queue,
+            &mut pipeline,
+            &primitive(ID, Some(plan.clone())),
+        );
+        assert_eq!(
+            drawn,
+            fresh(&device, &queue, &mut reference, &plan),
+            "{change}: the frame a fresh slot draws"
+        );
+        let (dispatched, built, at, held) = first_link(&pipeline);
+        eprintln!(
+            "{test}: {change}: {} passes, generation {at}",
+            dispatched - before
+        );
+        assert_eq!(dispatched - before, runs, "{change}");
+        before = dispatched;
+        assert_eq!((at, held), (generation, bytes), "{change}");
+        if runs > 0 {
+            assert_eq!(
+                built,
+                Some(generation),
+                "{change}: the groups bind this generation"
+            );
+        }
+        settle(&pipeline);
+        let seen = diagnostics(&pipeline, ID);
+        assert_eq!(seen.gpu_preview_scratch_bytes, bytes, "{change}");
+        assert_eq!(
+            slot_charge(&device, &plan),
+            Ok(seen.gpu_preview_in_use_bytes),
+            "{change}"
+        );
+    }
+}
+
 // ---- The pool's layout, without a device ------------------------------------------------------
 
 /// The boundary the layout tests cover, and the stage pixel of its first texel: a window whose
@@ -1061,13 +1604,15 @@ fn a_link_keeps_the_planes_its_applies_read_and_numbers_its_scratch_by_class() {
     assert_eq!(assert_served(&steps).bytes(), SCRATCH_A);
 }
 
-/// A plan of one link lays out the textures its slot holds, a texture for every plane at its own
-/// format and extent, which its passes write in, and its chain's charge is its planes' figure with
-/// no intermediate. The test plan's spatial step after a colour step adds that link's intermediate
-/// alone, and charges what the slot charges its planes and intermediate.
+/// A plan of one link holds a texture for every plane at its own format and extent, which its
+/// passes write in: a kept texture of its own, or a texture of the pool, which alone it holds its
+/// scratch planes; and its chain's charge is its planes' figure with no intermediate. The test
+/// plan's spatial step after a colour step adds that link's intermediate alone.
 #[test]
 fn a_single_link_lays_out_the_textures_it_held_and_charges_them() {
-    use super::super::spatial::{PlanesKey, texture_formats, written_format};
+    use super::super::spatial::{
+        PlaneTexture, PlanesKey, PoolKey, texture_formats, written_format,
+    };
     for (name, step) in [
         ("the test step", GpuStep::Spatial(Box::new(test_spatial()))),
         ("shape a", shape_a()),
@@ -1078,16 +1623,21 @@ fn a_single_link_lays_out_the_textures_it_held_and_charges_them() {
             unreachable!()
         };
         let key = PlanesKey::of(&steps, LAID, LAID_AT).expect("planes");
-        let textures: Vec<GpuPlane> = key.textures().collect();
-        assert_eq!(textures.len(), spatial.planes.len(), "{name}");
+        let pool = PoolKey::of([&steps[..]], LAID, LAID_AT);
         let mut seen = Vec::new();
         for (number, declared) in spatial.planes.iter().enumerate() {
-            let texture = key.texture(0, number as u32);
+            let texture = key.location(0, number as u32).expect("a location");
             assert!(!seen.contains(&texture), "{name}: plane {number} alone");
             seen.push(texture);
-            let held = textures[texture];
+            let (format, extent) = match texture {
+                PlaneTexture::Kept(index) => {
+                    let held = key.kept()[index];
+                    (held.format.texture(), held.extent(LAID_AT, LAID))
+                }
+                PlaneTexture::Pool(class, _) => (class.format.texture(), pool.extent(class)),
+            };
             assert_eq!(
-                (held.format.texture(), held.extent(LAID_AT, LAID)),
+                (format, extent),
                 (declared.format.texture(), declared.extent(LAID_AT, LAID)),
                 "{name}: plane {number}"
             );
@@ -1244,9 +1794,10 @@ fn the_pool_holds_for_each_class_the_most_any_one_link_holds() {
 }
 
 /// The desktop's figure for a plan's spatial steps before its boundary exists holds every step's
-/// planes in textures of their own, as each step's link does, with every pass's parameters.
+/// planes in textures of their own, with every pass's parameters: each link's kept planes and
+/// scratch, where the slot holds the scratch once for every link.
 #[test]
-fn plane_bytes_holds_each_steps_planes_as_its_link_does() {
+fn plane_bytes_holds_every_steps_planes_in_textures_of_their_own() {
     let steps = [shape_a(), shape_b(), shape_a()];
     assert_eq!(
         super::super::spatial::plane_bytes(&steps, LAID, LAID_AT),

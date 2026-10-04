@@ -20,10 +20,15 @@
 //!   content key of what it holds — the key of its input and the link's packed words, blocks and
 //!   pipeline — so a tick runs only the links from the first one it changes, and inside a link only
 //!   the passes the tick changes ([`spatial::Schedule`]).
+//! - **Scratch is the slot's.** A link holds the planes its applies read; its scratch planes are
+//!   the slot's pool's, which every link writes in turn ([`spatial::Pool`]), so a link trusts what a
+//!   pool texture holds only when it wrote it last.
 //! - **Bounds.** Each intermediate is the boundary's size in the boundary's format, charged to the
-//!   GPU-preview budget with the slot, beside each link's words, blocks and planes.
+//!   GPU-preview budget with the slot, beside each link's words, blocks and kept planes and the
+//!   pool, once ([`super::chain_charge`]).
 use super::{
-    Charged, Compiled, GpuStep, MAP_WORDS, STEP_WORDS, TexelMap, encode_pass_over, spatial::Rect,
+    Charged, Compiled, GpuStep, MAP_WORDS, STEP_WORDS, TexelMap, encode_pass_over,
+    spatial::{Pool, Rect},
 };
 
 /// `steps` split into the links the stage runs one after another: every link before the last,
@@ -114,7 +119,8 @@ pub(super) fn boundary_key(version: u64) -> u64 {
 }
 
 /// One link of a slot's chain before its last: the intermediate it writes, which the next link
-/// reads as its boundary; its own words, blocks and spatial planes; and what the intermediate holds.
+/// reads as its boundary; its own words, blocks and kept spatial planes; and what the intermediate
+/// holds.
 pub(super) struct LinkSlot {
     pub(super) texture: wgpu::Texture,
     target: wgpu::TextureView,
@@ -156,7 +162,7 @@ impl LinkSlot {
         }
     }
 
-    /// Everything the link holds, as charged.
+    /// Everything the link holds, as charged: the pool's textures are the slot's.
     pub(super) fn bytes(&self) -> u64 {
         self.texture_bytes
             + self.words.bytes
@@ -167,13 +173,14 @@ impl LinkSlot {
                 .map_or(0, |spatial| spatial.planes.bytes)
     }
 
-    /// Forget what the link's buffers and intermediate hold: new buffers or a new input.
-    pub(super) fn forget(&mut self) {
+    /// Forget what the link's buffers and intermediate hold: new buffers or a new input. Its
+    /// planes' schedule takes a new holder from `pool`.
+    pub(super) fn forget(&mut self, pool: &mut Pool) {
         self.written_words.clear();
         self.written_blocks.clear();
         self.key = None;
         if let Some(spatial) = self.spatial.as_mut() {
-            spatial.forget();
+            spatial.forget(pool);
         }
     }
 
@@ -206,8 +213,9 @@ impl LinkSlot {
     /// passes this tick changes, then its frame's pass over the boundary's `size`. On an
     /// incremental tick (`dirty`, the rectangle its input and its own steps changed in since it
     /// last ran, when it last ran the same pipeline) only over the rectangle that change reaches,
-    /// keeping the rest of what the intermediate holds. Answers whether it encoded anything, how
-    /// many passes it dispatched, and on an incremental tick the rectangle its output changed in.
+    /// keeping the rest of what the intermediate holds. Its scratch planes are `pool`'s. Answers
+    /// whether it encoded anything, how many passes it dispatched, and on an incremental tick the
+    /// rectangle its output changed in.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn encode(
         &mut self,
@@ -215,6 +223,7 @@ impl LinkSlot {
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         (compiled, pipeline): (&Compiled, u64),
+        pool: &mut Pool,
         steps: &[GpuStep],
         (words, blocks): (&[u32], &[u32]),
         input: u64,
@@ -236,6 +245,7 @@ impl LinkSlot {
                 encoder,
                 (&compiled.spatial, pipeline),
                 &self.bindings,
+                pool,
                 steps,
                 (words, blocks),
                 input,
@@ -248,8 +258,8 @@ impl LinkSlot {
         let planes = self
             .spatial
             .as_ref()
-            .and_then(|spatial| spatial.groups.as_ref())
-            .and_then(|(_, groups)| groups.fragment.as_ref());
+            .and_then(|spatial| spatial.groups())
+            .and_then(|groups| groups.fragment.as_ref());
         encode_pass_over(
             encoder,
             &self.target,

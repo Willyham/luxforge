@@ -353,6 +353,8 @@ impl Editor {
                     "progress":dissolve.progress()})),
                 "gpu_preview_budget_bytes":gpu.gpu_preview_budget_bytes,
                 "gpu_preview_in_use_bytes":gpu.gpu_preview_in_use_bytes,
+                // Of the figure in use, the slots' pools of scratch textures, each counted once.
+                "gpu_preview_scratch_bytes":gpu.gpu_preview_scratch_bytes,
                 "gpu_preview_peak_bytes":gpu.gpu_preview_peak_bytes,
                 "gpu_preview_passes":gpu.gpu_preview_passes,
                 "gpu_preview_spatial_passes":gpu.gpu_preview_spatial_passes,

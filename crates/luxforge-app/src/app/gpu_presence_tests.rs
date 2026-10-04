@@ -15,7 +15,9 @@
 //! A test with no adapter prints that it was skipped and asserts nothing: the skip is the report,
 //! and `cargo test` counting it as passed does not make it GPU evidence.
 use super::gpu_plan::surface_plan;
-use super::gpu_qualification::{Stream, codes, corpus_at_fit, drafted_against_cpu, figures, worst};
+use super::gpu_qualification::{
+    Stream, codes, corpus_at_fit, differing, drafted_against_cpu, figures, worst,
+};
 use luxforge_core::{
     Cancel, GPU_PROGRAMS, GpuAnswer, GpuEstimates, GpuPlanRequest, GpuProgramKind, Layer,
     LinearImage, LinearSettings, ModuleRegistry, PRESENCE_EFFECT, Recipe, RenderContext,
@@ -1414,7 +1416,9 @@ fn gpu_presence_corpus_at_fit() {
 
 /// A tick runs only the passes whose words or inputs changed: after the plan a drag started from,
 /// a change to an amount reruns only the passes that read it, directly or through a unit's input,
-/// and draws exactly what a slot that ran every pass draws.
+/// and draws exactly what a slot that ran every pass draws. Of all three units' 22 passes, a
+/// Clarity drag runs none, a Texture drag 5 and a Dehaze drag 19, the light stored or taken on the
+/// GPU: one link alone wrote its scratch last, so the pool it takes it from changes no count.
 #[test]
 fn gpu_presence_a_drag_reruns_only_the_passes_it_changes() {
     let test = "gpu_presence_a_drag_reruns_only_the_passes_it_changes";
@@ -1477,50 +1481,50 @@ fn gpu_presence_a_drag_reruns_only_the_passes_it_changes() {
         let held = boundary(width, height, 1, &pixels).expect("a boundary");
         (surface_plan(&plan, held).expect("a runnable plan"), passes)
     };
-    // Each drag: what it starts from, where it goes, the light, and how many passes it may run.
+    // Each drag: what it starts from, where it goes, the light, and how many passes it runs.
     let drags = [
         (
             "Clarity",
             json!({"texture": 40, "clarity": -10, "dehaze": 25}),
             &stored,
-            Some(0),
+            0,
         ),
         (
             "Texture",
             json!({"texture": 75, "clarity": 30, "dehaze": 25}),
             &stored,
-            None,
+            5,
         ),
         (
             "Dehaze",
             json!({"texture": 40, "clarity": 30, "dehaze": 60}),
             &stored,
-            None,
+            19,
         ),
         (
             "all three",
             json!({"texture": 75, "clarity": -10, "dehaze": 60}),
             &stored,
-            None,
+            19,
         ),
-        ("nothing", start.clone(), &stored, Some(0)),
+        ("nothing", start.clone(), &stored, 0),
         (
             "Clarity, light on the GPU",
             json!({"texture": 40, "clarity": -10, "dehaze": 25}),
             &fresh,
-            Some(0),
+            0,
         ),
         (
             "Texture, light on the GPU",
             json!({"texture": 75, "clarity": 30, "dehaze": 25}),
             &fresh,
-            None,
+            5,
         ),
         (
             "Dehaze, light on the GPU",
             json!({"texture": 40, "clarity": 30, "dehaze": 60}),
             &fresh,
-            None,
+            19,
         ),
     ];
     for (drag, payload, context, wanted) in drags {
@@ -1531,17 +1535,10 @@ fn gpu_presence_a_drag_reruns_only_the_passes_it_changes() {
             .expect("a readback after the first");
         let whole = qualifier.evaluate(&then).expect("a readback of every pass");
         eprintln!("{test}: {drag}: {ran} of {all} passes");
-        if let Some(wanted) = wanted {
-            assert_eq!(ran, wanted, "{drag}");
-        }
-        assert!(ran <= all, "{drag}");
-        let differing = after
-            .iter()
-            .zip(&whole)
-            .filter(|(after, whole)| after.map(f32::to_bits) != whole.map(f32::to_bits))
-            .count();
+        assert_eq!((ran, all), (wanted, 22), "{drag}");
         assert_eq!(
-            differing, 0,
+            differing(&after, &whole),
+            0,
             "{drag}: texels that differ from every pass run"
         );
     }
@@ -1553,7 +1550,8 @@ fn gpu_presence_a_drag_reruns_only_the_passes_it_changes() {
 /// Texture drag with Clarity at zero none. Within one drag, a unit leaving zero runs, in that tick,
 /// every pass whose input moved while it was neutral, or every one when it has never run; one
 /// returning to a value its planes still hold runs none. Every tick draws, bit for bit, what a run
-/// of every pass draws, the atmospheric light stored and taken on the GPU.
+/// of every pass draws, the atmospheric light stored and taken on the GPU, and so it does with the
+/// poison on, the scratch pool's textures holding NaN before each tick's passes.
 #[test]
 fn gpu_presence_a_neutral_unit_runs_no_pass_until_it_leaves_zero() {
     let test = "gpu_presence_a_neutral_unit_runs_no_pass_until_it_leaves_zero";
@@ -1718,14 +1716,20 @@ fn gpu_presence_a_neutral_unit_runs_no_pass_until_it_leaves_zero() {
             eprintln!("{test}: {drag}: {payload}: {ran} of {all} passes");
             assert_eq!(ran_whole, all, "{drag}: {payload}: every pass");
             assert_eq!(ran, *wanted, "{drag}: {payload}");
-            let differing = after
-                .iter()
-                .zip(&whole)
-                .filter(|(after, whole)| after.map(f32::to_bits) != whole.map(f32::to_bits))
-                .count();
             assert_eq!(
-                differing, 0,
+                differing(&after, &whole),
+                0,
                 "{drag}: {payload}: texels that differ from every pass run"
+            );
+            // Again with the poison on: every tick's passes start from NaN in every pool texture.
+            qualifier.set_poison(true);
+            let poisoned = qualifier.evaluate_ticks(&drawn);
+            qualifier.set_poison(false);
+            let (poisoned, _) = poisoned.expect("a poisoned readback after the ticks before");
+            assert_eq!(
+                differing(&poisoned, &whole),
+                0,
+                "{drag}: {payload}: texels that differ from every pass run, with the poison"
             );
         }
     }
@@ -1797,15 +1801,19 @@ mod near_black;
 // Detail followed by Presence, chained in one plan.
 mod chain;
 
+// Masked Presence layers chained in one plan, their scratch planes in one pool.
+mod pool;
+
 /// A masked Presence layer's passes run only over its mask's bounds grown by every unit's reach
 /// (`GpuSpatial::pass_rect`), and its applies only where its coverage is not zero: the frame is the
 /// one its passes give run over the whole boundary, which widening the mask's bounds to the whole
 /// stage asks for — coverage outside the true bounds is exactly zero either way — bit for bit:
 /// the reach covers each running sum's run back to where it starts over the whole plane, so no
-/// sum the applies read carries a value an earlier pass left outside the rectangle. A small radial
-/// off centre, a radial at the edge and a linear gradient, at Fit's thin-feature scale and at the
-/// exact stage, with Texture, Clarity and Dehaze, whose global estimate keeps the whole boundary,
-/// and with Clarity alone.
+/// sum the applies read carries a value an earlier pass left outside the rectangle. So it is with
+/// the poison on, the scratch pool's textures holding NaN wherever the passes do not write them.
+/// A small radial off centre, a radial at the edge and a linear gradient, at Fit's thin-feature
+/// scale and at the exact stage, with Texture, Clarity and Dehaze, whose global estimate keeps the
+/// whole boundary, and with Clarity alone.
 #[test]
 fn gpu_presence_a_masked_layer_runs_its_passes_over_its_mask_alone() {
     let test = "gpu_presence_a_masked_layer_runs_its_passes_over_its_mask_alone";
@@ -1871,16 +1879,23 @@ fn gpu_presence_a_masked_layer_runs_its_passes_over_its_mask_alone() {
                     qualifier.evaluate(&bounded).expect("a readback"),
                     qualifier.evaluate(&whole).expect("a readback"),
                 );
-                let largest = left
-                    .iter()
-                    .zip(&right)
-                    .flat_map(|(a, b)| (0..3).map(move |channel| (a[channel] - b[channel]).abs()))
-                    .fold(0.0_f32, f32::max);
+                // Again with the pool's textures holding NaN outside what the passes write.
+                qualifier.set_poison(true);
+                let poisoned = qualifier.evaluate(&bounded).expect("a poisoned readback");
+                qualifier.set_poison(false);
+                let (differ, poisoned_differ) =
+                    (differing(&left, &right), differing(&poisoned, &right));
                 eprintln!(
-                    "{test}: {payload} {} over {rect:?}: largest difference {largest:e}",
+                    "{test}: {payload} {} over {rect:?}: {differ} texels differ, {poisoned_differ} \
+                     with the poison",
                     component.name
                 );
-                assert!(largest == 0.0, "{payload} {}: {largest}", component.name);
+                assert_eq!(
+                    (differ, poisoned_differ),
+                    (0, 0),
+                    "{payload} {}",
+                    component.name
+                );
             }
         }
     }
@@ -1894,9 +1909,10 @@ fn gpu_presence_a_masked_layer_runs_its_passes_over_its_mask_alone() {
 /// own, over a 24 MP photograph's full-screen Fit stage on a JPEG's half-float boundary, laid out
 /// with their scratch planes in one pool (`chain_charge`): each layer is a link keeping the planes
 /// its applies read, each link but the last writes an intermediate, and the pool holds one link's
-/// scratch for all of them. A layer after the first adds its kept planes and an intermediate, where
-/// today's slot, each link holding its scratch planes as its own, adds them as well
-/// (`Qualifier::charged_bytes`, on a device).
+/// scratch for all of them. A layer after the first adds its kept planes and an intermediate, and
+/// the slot (`Qualifier::charged_bytes`, on a device, the figure the live slot charges) adds the
+/// link's words and blocks buffers beside them: four layers charge 272.3 MB, where with each link
+/// holding its scratch planes as its own they charged 495.5 MB.
 #[test]
 fn gpu_presence_masked_layers_take_their_scratch_from_one_pool() {
     use luxforge_ui::photo_surface::{BoundaryFormat, gpu_preview::chain_charge};
@@ -1947,13 +1963,15 @@ fn gpu_presence_masked_layers_take_their_scratch_from_one_pool() {
     const POOL: u64 = 74_421_240;
     // Each layer after the first adds its kept planes and an intermediate to the chain: 42.9 MB.
     const LAYER: u64 = 42_904_984;
-    // Today's slot adds the link's scratch planes, and its words and blocks buffers, too: 117.3 MB.
-    const SLOT_LAYER: u64 = LAYER + POOL + 2 * 1024;
+    // The slot adds the link's words and blocks buffers too: 42.9 MB.
+    const SLOT_LAYER: u64 = LAYER + 2 * 1024;
     let qualifier = crate::app::gpu_qualification::headless(test);
-    for (layers, chain, slot) in [
-        (1usize, 89_308_816, 143_542_768),
-        (2, 132_213_800, 260_871_040),
-        (4, 218_023_768, 495_527_584),
+    // Each case: its layers, the chain's charge, the slot's, and the slot's when every link held
+    // its scratch planes as its own.
+    for (layers, chain, slot, own) in [
+        (1usize, 89_308_816, 143_542_768, 143_542_768),
+        (2, 132_213_800, 186_449_800, 260_871_040),
+        (4, 218_023_768, 272_263_864, 495_527_584),
     ] {
         let (plan, planes) = plan_of(layers);
         let spatial = plan
@@ -1983,12 +2001,15 @@ fn gpu_presence_masked_layers_take_their_scratch_from_one_pool() {
         let after = layers as u64 - 1;
         assert_eq!(chain, KEPT + POOL + after * LAYER);
         assert_eq!(LAYER, KEPT + INTERMEDIATE);
-        // Today's slot on a device, where its boundary, output and buffers are known.
+        // The slot on a device, where its boundary, output and buffers are known.
         if let Some(qualifier) = &qualifier {
             let charged = qualifier.charged_bytes(&plan).expect("a charge");
-            eprintln!("{test}: {layers} layers: today's slot {charged} B");
+            eprintln!("{test}: {layers} layers: the slot {charged} B");
             assert_eq!(charged, slot);
             assert_eq!(slot - 143_542_768, after * SLOT_LAYER);
+            // Each link holding its own scratch charged the pool again for every layer after the
+            // first.
+            assert_eq!(own - slot, after * POOL);
         }
     }
 }

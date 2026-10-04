@@ -442,7 +442,8 @@ fn resource_rows(usage: &Value, last: &Value) -> Vec<Value> {
             .map(|bytes| bytes / (1024.0 * 1024.0)),
     ));
     // The GPU preview stage's own budget, charged outside the photo slots: the most it has held
-    // over the run, what it holds at the last frame, and its budget.
+    // over the run, what it holds at the last frame and how much of that is the scratch pool its
+    // links share, and its budget.
     let preview = &last["state"]["surface"]["gpu"];
     rows.push(counter(
         "gpu_preview_peak_bytes",
@@ -453,6 +454,11 @@ fn resource_rows(usage: &Value, last: &Value) -> Vec<Value> {
         "last_gpu_preview_in_use_bytes",
         "bytes",
         preview["gpu_preview_in_use_bytes"].as_u64(),
+    ));
+    rows.push(counter(
+        "last_gpu_preview_scratch_bytes",
+        "bytes",
+        preview["gpu_preview_scratch_bytes"].as_u64(),
     ));
     rows.push(counter(
         "gpu_preview_budget_bytes",

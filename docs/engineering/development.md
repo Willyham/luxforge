@@ -1124,7 +1124,8 @@ scratch high-water and correlated state. Native GPU allocation, when the platfor
 and the photo surface's full, region, retiring and crop-stage texture bytes are captured levels
 from the gesture, not idle-process measurements or peaks. The GPU preview stage's own budget is
 reported beside them: `gpu_preview_peak_bytes`, the most its slots have held over the run, which is
-its high-water, with `last_gpu_preview_in_use_bytes` and `gpu_preview_budget_bytes`. `measure`
+its high-water, with `last_gpu_preview_in_use_bytes`, `last_gpu_preview_scratch_bytes` (the part
+that is the slots' shared scratch pools) and `gpu_preview_budget_bytes`. `measure`
 drives no gesture, so it has no GPU preview figures. Surface bytes exclude backend staging;
 invisible windows provide no compositor or scanout figures. Missing counters remain null.
 

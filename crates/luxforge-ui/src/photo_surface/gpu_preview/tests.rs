@@ -895,8 +895,57 @@ fn a_chain_passes_each_program_its_words_block_and_stage_position() {
     );
 }
 
+/// What `texture` takes, measured from the texture itself.
+fn texture_bytes(texture: &wgpu::Texture) -> u64 {
+    let size = texture.size();
+    u64::from(size.width)
+        * u64::from(size.height)
+        * u64::from(
+            texture
+                .format()
+                .block_copy_size(None)
+                .expect("a plain format"),
+        )
+}
+
+/// What `slot` holds, measured from its resources themselves: its boundary, output, placement
+/// uniform, words and blocks; each earlier link's intermediate, words, blocks, kept planes and
+/// parameters; the last link's kept planes and parameters; and the pool's textures, once.
+fn held_bytes(slot: &GpuSlot) -> u64 {
+    let planes = |spatial: Option<&SpatialSlot>| {
+        spatial.map_or(0, |spatial| {
+            let (kept, parameters) = spatial.planes.resources();
+            kept.into_iter().map(texture_bytes).sum::<u64>() + parameters.size()
+        })
+    };
+    texture_bytes(&slot.boundary)
+        + texture_bytes(&slot.output.tiles[0].texture)
+        + slot.output.tiles[0].uniform.size()
+        + slot.words.buffer.size()
+        + slot.blocks.buffer.size()
+        + slot
+            .chain
+            .iter()
+            .map(|link| {
+                texture_bytes(&link.texture)
+                    + link.words.buffer.size()
+                    + link.blocks.buffer.size()
+                    + planes(link.spatial.as_deref())
+            })
+            .sum::<u64>()
+        + planes(slot.spatial.as_deref())
+        + slot
+            .pool
+            .textures()
+            .into_iter()
+            .map(|(_, texture)| texture_bytes(texture))
+            .sum::<u64>()
+}
+
 /// Every allocation is charged, and the in-use figure returns to zero once the slot is released —
-/// when the plan stops, and when the surface closes.
+/// when the plan stops, and when the surface closes. A chain of spatial links is charged each
+/// link's intermediate, buffers and kept planes, and the pool of scratch textures its links share,
+/// once, which the evidence names apart and which returns to zero with the slot.
 #[test]
 fn every_allocation_is_charged_and_a_released_slot_returns_the_budget_to_zero() {
     let test = "every_allocation_is_charged_and_a_released_slot_returns_the_budget_to_zero";
@@ -913,25 +962,10 @@ fn every_allocation_is_charged_and_a_released_slot_returns_the_budget_to_zero() 
         &primitive(ID, Some(identity_plan.clone())),
     );
     // What the slot holds, measured from the resources themselves.
-    let slot = pipeline.surfaces[&ID].gpu.as_ref().expect("a slot");
-    let texture = |texture: &wgpu::Texture| {
-        let size = texture.size();
-        u64::from(size.width)
-            * u64::from(size.height)
-            * u64::from(
-                texture
-                    .format()
-                    .block_copy_size(None)
-                    .expect("a plain format"),
-            )
-    };
-    let held = texture(&slot.boundary)
-        + texture(&slot.output.tiles[0].texture)
-        + slot.output.tiles[0].uniform.size()
-        + slot.words.buffer.size()
-        + slot.blocks.buffer.size();
+    let held = held_bytes(pipeline.surfaces[&ID].gpu.as_ref().expect("a slot"));
     assert_eq!(held, SLOT_BYTES);
     assert_eq!(diagnostics(&pipeline, ID).gpu_preview_in_use_bytes, held);
+    assert_eq!(diagnostics(&pipeline, ID).gpu_preview_scratch_bytes, 0);
 
     // The plan stops: the next frame is the CPU's and the slot retires.
     assert_cpu_frame(&paint(&device, &queue, &mut pipeline, &primitive(ID, None)));
@@ -950,7 +984,7 @@ fn every_allocation_is_charged_and_a_released_slot_returns_the_budget_to_zero() 
         &device,
         &queue,
         &mut pipeline,
-        &primitive(ID, Some(identity_plan)),
+        &primitive(ID, Some(identity_plan.clone())),
     );
     assert_eq!(
         diagnostics(&pipeline, ID).gpu_preview_in_use_bytes,
@@ -961,6 +995,62 @@ fn every_allocation_is_charged_and_a_released_slot_returns_the_budget_to_zero() 
     assert!(!pipeline.surfaces.contains_key(&ID));
     settle(&pipeline);
     assert_eq!(diagnostics(&pipeline, ID).gpu_preview_in_use_bytes, 0);
+
+    // Three spatial links after a colour step, colour steps between them: four links, three of
+    // them with kept planes, and one pool texture their copies take in turn.
+    let spatial = || GpuStep::Spatial(Box::new(spatial::test_spatial()));
+    let chained = GpuPlan {
+        steps: vec![
+            GpuStep::colour(scale(0.5)),
+            spatial(),
+            GpuStep::colour(scale(1.5)),
+            spatial(),
+            GpuStep::colour(swap(true)),
+            spatial(),
+        ],
+        ..identity_plan
+    };
+    for close in [false, true] {
+        paint(
+            &device,
+            &queue,
+            &mut pipeline,
+            &primitive(ID, Some(chained.clone())),
+        );
+        let slot = pipeline.surfaces[&ID].gpu.as_ref().expect("a slot");
+        let held = held_bytes(slot);
+        let seen = diagnostics(&pipeline, ID);
+        assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
+        assert_eq!(seen.gpu_preview_in_use_bytes, held);
+        assert_eq!(slot_charge(&device, &chained), Ok(held));
+        let charge = chain_charge(&chained.steps, (SIDE, SIDE), (0, 0), BoundaryFormat::Half);
+        assert_eq!(charge.intermediates, [64 * 64 * 8; 3]);
+        assert_eq!(charge.pool, 64 * 64 * 8, "one copy's texture for all three");
+        assert_eq!(slot.pool.textures().len(), 1);
+        assert_eq!(seen.gpu_preview_scratch_bytes, charge.pool);
+        assert_eq!(
+            held,
+            SLOT_BYTES + 3 * 2 * MIN_BUFFER + charge.total(),
+            "the slot, every earlier link's buffers and the chain"
+        );
+        // The plan stops, or the surface closes: the pool goes with the slot.
+        if close {
+            pipeline.trim();
+            pipeline.trim();
+            assert!(!pipeline.surfaces.contains_key(&ID));
+        } else {
+            paint(&device, &queue, &mut pipeline, &primitive(ID, None));
+        }
+        settle(&pipeline);
+        let seen = diagnostics(&pipeline, ID);
+        assert_eq!(
+            (
+                seen.gpu_preview_in_use_bytes,
+                seen.gpu_preview_scratch_bytes
+            ),
+            (0, 0)
+        );
+    }
 }
 
 /// A redraw of an unchanged plan encodes no pass; new words or a new boundary version do.
