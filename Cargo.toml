@@ -61,6 +61,13 @@ serde = { version = "=1.0.229", features = ["derive"] }
 # `float_roundtrip` reads a stored `f64` back bit-exact: without it, some 17-digit doubles a RAW
 # tint or a recipe field stores parse one ulp off.
 serde_json = { version = "=1.0.149", features = ["float_roundtrip"] }
+# Pinned to 0.10.9, not 0.11: 0.11 would drop `{:x}` on a digest (its `hybrid-array` output has no
+# `LowerHex`), which 83 call sites in 36 files use. 0.10.9 builds its aarch64 SHA-2 backend only
+# with the `asm` feature, so every crate that names `sha2` also turns `asm` on for aarch64 outside
+# Windows, in a target table of its own manifest (as in `crates/luxforge-raw/Cargo.toml`), so that
+# every build of any of them resolves the same features. That is the only place `asm` is wanted:
+# x86 uses SHA-NI without it, and the `sha2-asm` crate it pulls in refuses to build for Windows. See
+# docs/design/efficiency.md#build-and-dependencies.
 sha2 = "=0.10.9"
 url = "=2.5.8"
 uuid = { version = "=1.26.1", features = ["v4"] }

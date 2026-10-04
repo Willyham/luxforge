@@ -1828,4 +1828,54 @@ mod tests {
             }
         }
     }
+
+    /// A window runs each spatial operation over its window as its own stage, whose edge blocks
+    /// are not the whole stage's, so it neither reads nor fills the store of reduced planes: not
+    /// in a context that holds nothing, and not in one that holds the whole proxy stage's planes,
+    /// where it writes the same bytes and leaves every counter as it was.
+    #[test]
+    fn a_windowed_render_neither_reads_nor_fills_the_reduced_planes() {
+        let registry = ModuleRegistry::builtin();
+        let bounds = ProxyBounds {
+            width: 120,
+            height: 80,
+        };
+        for presence in [json!({"dehaze": 30}), json!({"clarity": 45})] {
+            let stack = recipe(
+                vec![
+                    layer(PRESENCE_EFFECT, presence.clone(), None),
+                    crop(0.0, 0.72, 0.7, 0.16, 0.16),
+                ],
+                Vec::new(),
+            );
+            for (domain, source) in [("jpeg", jpeg(1200, 800)), ("raw", raw(1200, 800))] {
+                let case = format!("{presence} {domain}");
+                let empty = RenderContext::new();
+                let exact_render = exact(&empty, &registry, &source, &stack);
+                let (plan, cold) =
+                    windowed_frame(&empty, &registry, &source, &exact_render, &stack, bounds);
+                assert!(plan.window.is_some(), "{case}: a tight crop is windowed");
+                let counts = empty.reduced().counts();
+                assert_eq!(
+                    (
+                        counts.render_hits + counts.render_misses,
+                        counts.tile_hits + counts.tile_misses,
+                        counts.publishes,
+                    ),
+                    (0, 0, 0),
+                    "{case}: the window neither looks nor fills"
+                );
+
+                let held = RenderContext::new();
+                whole_frame(&held, &registry, &source, &stack, plan);
+                let before = held.reduced().counts();
+                assert_eq!(before.publishes, 1, "{case}: the whole proxy stage fills");
+                let exact_render = exact(&held, &registry, &source, &stack);
+                let (_, warm) =
+                    windowed_frame(&held, &registry, &source, &exact_render, &stack, bounds);
+                assert_eq!(held.reduced().counts(), before, "{case}: nothing read");
+                assert_eq!(warm.rgba, cold.rgba, "{case}");
+            }
+        }
+    }
 }

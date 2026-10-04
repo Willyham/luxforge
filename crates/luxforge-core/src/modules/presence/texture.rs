@@ -146,11 +146,14 @@ impl SpatialUnit for Texture {
         let fine_buffer = scratch.take(out.pixels())?;
         let coarse_buffer = scratch.take(out.pixels())?;
 
+        // Every pass below reads its input and planes as row slices: its columns lie inside the
+        // stage, where no read clamps.
         let mut encoded = PlaneMut::over(encoded_buffer, geometry, encoded_rect)?;
+        let columns = filters::input_columns(input, encoded_rect.x0, encoded_rect.x1);
         encoded.for_rows(parallelism, |y, row| {
-            for x in encoded_rect.x0..encoded_rect.x1 {
-                row[(x - encoded_rect.x0) as usize] =
-                    filters::encoded_luminance(input.sample(x, y));
+            let [red, green, blue] = input.row(y).map(|plane| &plane[columns.clone()]);
+            for (value, ((r, g), b)) in row.iter_mut().zip(red.iter().zip(green).zip(blue)) {
+                *value = filters::encoded_luminance([*r, *g, *b]);
             }
         });
         let encoded: Plane<'_> = encoded.as_plane();
@@ -175,12 +178,20 @@ impl SpatialUnit for Texture {
         )?;
 
         let (fine, coarse) = (fine.as_plane(), coarse.as_plane());
+        let columns = filters::input_columns(input, out.x0, out.x1);
         output.for_rows(parallelism, |y, red, green, blue| {
             let y = i64::from(y);
-            for x in out.x0..out.x1 {
-                let rgb = input.sample(x, y);
-                let e = encoded.get(x, y);
-                let band = fine.get(x, y) - coarse.get(x, y);
+            // Every row cut to the output's width, so the loop indexes them with no bounds check.
+            let width = red.len();
+            let (green, blue) = (&mut green[..width], &mut blue[..width]);
+            let [r, g, b] = input.row(y).map(|plane| &plane[columns.clone()][..width]);
+            let encoded = &encoded.span(y, out.x0, out.x1)[..width];
+            let fine = &fine.span(y, out.x0, out.x1)[..width];
+            let coarse = &coarse.span(y, out.x0, out.x1)[..width];
+            for column in 0..width {
+                let rgb = [r[column], g[column], b[column]];
+                let e = encoded[column];
+                let band = fine[column] - coarse[column];
                 let delta = filters::soft_clip(self.gain * band, e, LIMIT_TEXTURE);
                 let value = if delta == 0.0 {
                     // An exact pass-through, with no encode/decode round trip to round it.
@@ -188,7 +199,6 @@ impl SpatialUnit for Texture {
                 } else {
                     luma::reconstruct(rgb, luma::rec709(rgb), srgb::decode_f32(e + delta))
                 };
-                let column = (x - out.x0) as usize;
                 [red[column], green[column], blue[column]] = value;
             }
         });

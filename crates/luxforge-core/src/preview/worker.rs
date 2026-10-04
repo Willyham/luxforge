@@ -29,10 +29,10 @@ use std::{
 /// consumer may show how far it has got.
 pub const PROGRESS_QUIET: Duration = Duration::from_millis(250);
 /// The least time between two progress wakes of one exact phase, so a render of many quick
-/// batches wakes the consumer at most twenty times a second.
+/// tiles wakes the consumer at most twenty times a second.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(50);
 
-/// The progress meter of one job's exact phase: it reports each finished batch's fraction to the
+/// The progress meter of one job's exact phase: it reports each finished tile's fraction to the
 /// job's activity and, once the phase has run [`PROGRESS_QUIET`], wakes the consumer at most once
 /// per [`PROGRESS_INTERVAL`]. It wakes nothing before `phase` is set, when the exact phase starts.
 pub(super) fn exact_meter(

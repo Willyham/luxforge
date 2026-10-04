@@ -8,6 +8,7 @@
 //! sampled byte is the byte a render of that tile produces.
 
 use super::context::{EstimateKey, EstimateStore, SpatialBudget, SpatialReservation};
+use super::reduced::{ReducedEntry, ReducedStore};
 use crate::Cancel;
 #[cfg(test)]
 use crate::ErrorKind;
@@ -15,15 +16,16 @@ use crate::{
     Error,
     mask_field::{MaskField, MaskSampling},
     modules::{
-        ESTIMATE_REDUCTION, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes,
-        PlanesMut, Reduction, Region, SpatialOperation, Stage,
+        Cells, ESTIMATE_REDUCTION, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism,
+        Planes, PlanesMut, Reduced, Reduction, Region, SpatialOperation, Stage,
     },
 };
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 #[cfg(test)]
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[cfg(test)]
 const MIB: f64 = (1024 * 1024) as f64;
@@ -66,7 +68,8 @@ impl Tiling {
 ///
 /// It is built when the recipe is compiled, which is where an operation whose declarations the
 /// host does not accept is refused, and again when a frame or a sample is actually evaluated.
-/// Building it is `O(units)` and reads nothing.
+/// Building it is `O(units)` per tile along each side of the stage, at most 32 tiles a side in
+/// production, and reads nothing.
 #[derive(Clone, Debug)]
 pub(crate) struct SpatialPlan {
     stage: Stage,
@@ -76,6 +79,8 @@ pub(crate) struct SpatialPlan {
     tile: u32,
     /// The bytes one tile may hold at once, computed for the largest tile of the stage.
     working_set: u64,
+    /// The largest request each buffer of a slot makes over this plan's tiles.
+    largest: SlotValues,
 }
 
 impl SpatialPlan {
@@ -119,18 +124,21 @@ impl SpatialPlan {
             )));
         }
         let tile = tiling.tile(operation, stage);
-        let working_set = worst_case_working_set(operation, stage, &halos, summed_halo, tile);
+        let regions = largest_regions(stage, tile, &halos, summed_halo);
+        let working_set = worst_case_working_set(operation, stage, &regions, tile);
         if working_set == u64::MAX {
             return Err(Error::resource_limit(
                 "spatial working-set byte length overflow",
             ));
         }
+        let largest = largest_slot_values(operation, stage, &regions, tile);
         Ok(Self {
             stage,
             halos,
             summed_halo,
             tile,
             working_set,
+            largest,
         })
     }
 
@@ -138,8 +146,15 @@ impl SpatialPlan {
         self.working_set
     }
 
-    /// The side of this plan's tiles.
+    /// The bytes a slot that runs this plan's tiles holds at most: its two plane buffers, the
+    /// masked snapshot and the unit scratch, each at the largest request a tile of the plan makes
+    /// ([`SlotValues`]).
     #[cfg(test)]
+    pub(crate) fn slot_bytes(&self) -> u64 {
+        self.largest.bytes()
+    }
+
+    /// The side of this plan's tiles.
     pub(crate) fn tile(&self) -> u32 {
         self.tile
     }
@@ -201,73 +216,321 @@ impl SpatialPlan {
 }
 
 /// The upper bound on one tile's live bytes: the input region, every intermediate plane, the last
-/// unit's output and the largest scratch any unit asks for, all sized for the largest tile of the
-/// stage. It is an upper bound in two ways — the chain holds at most two plane buffers at a time,
-/// and an edge tile's regions are smaller — which is what makes a batch reservation taken up front
-/// enough for every tile in it.
+/// unit's output and the largest scratch any unit asks for, each region at the largest it is over
+/// the plan's tiles ([`largest_regions`]). It is an upper bound in two ways — a tile's slot holds
+/// two of those regions at a time, and most tiles' regions are smaller than the largest — which is
+/// what makes a reservation taken before a tile runs enough for whichever tile it is.
+///
+/// Each region is the tiles' own rectangle, grown and shrunk by the rule [`SpatialPlan::regions`]
+/// follows, rather than `tile + 2 × remaining halo` on a side: beside a partial edge tile narrower
+/// than the summed halo, a tile's input region reaches the stage edge, no unit's rectangle shrinks
+/// on that side, and the units' rectangles are wider than that. Wherever the stage has a tile clear
+/// of both edges on each side and no such partial tile, the two are the same.
 ///
 /// A **masked** operation adds exactly one tile-sized plane buffer on top of that: the snapshot of
 /// the tile's own input the blend is against. The blend itself is in place in the last unit's
 /// planes, which the chain already counted. One tile does not scale with the frame, and an unmasked
-/// operation adds nothing at all, so its working set, its concurrency and therefore its batching are
-/// byte for byte what they were before masks existed.
+/// operation adds nothing at all, so its working set and its concurrency are byte for byte what they
+/// were before masks existed.
 fn worst_case_working_set(
     operation: &SpatialOperation,
     stage: Stage,
-    halos: &[u32],
-    summed_halo: u32,
+    regions: &[Region],
     tile: u32,
 ) -> u64 {
-    let tile_width = tile.min(stage.width);
-    let tile_height = tile.min(stage.height);
-    let mut remaining = summed_halo;
     let mut planes = 0_u64;
     let mut scratch = 0_u64;
-    for step in 0..=halos.len() {
-        let region = Region {
-            x0: 0,
-            y0: 0,
-            width: (tile_width.saturating_add(2 * remaining)).min(stage.width),
-            height: (tile_height.saturating_add(2 * remaining)).min(stage.height),
-        };
+    for (step, region) in regions.iter().enumerate() {
         planes = planes.saturating_add(region.plane_bytes());
-        if let (Some(unit), Some(halo)) = (operation.units().get(step), halos.get(step)) {
+        if let Some(unit) = operation.units().get(step) {
             scratch = scratch.max(unit.scratch_bytes(Stage {
                 width: region.width,
                 height: region.height,
             }));
-            remaining = remaining.saturating_sub(*halo);
         }
     }
     if operation.mask().is_some() {
-        let tile = Region {
-            x0: 0,
-            y0: 0,
-            width: tile_width,
-            height: tile_height,
-        };
-        planes = planes.saturating_add(tile.plane_bytes());
+        planes = planes.saturating_add(largest_tile(stage, tile).plane_bytes());
     }
     planes.saturating_add(scratch)
 }
 
-/// The unit scratch one tile slot of a render reuses from tile to tile, instead of allocating and
-/// zero-filling it per tile: [`run_batches`] keeps one per tile a batch runs at once, and a point
-/// query's tile starts from an empty one. It grows to the largest request its tiles make and is
-/// never cleared, which the [`crate::modules::SpatialUnit`] contract allows: a unit treats its
-/// scratch as uninitialized and never expects its own values back on the next tile. It holds at
-/// most one tile's scratch, which the tile's working set already charges to the spatial budget.
+/// The largest tile of the stage, which is its first.
+fn largest_tile(stage: Stage, tile: u32) -> Region {
+    Region {
+        x0: 0,
+        y0: 0,
+        width: tile.min(stage.width),
+        height: tile.min(stage.height),
+    }
+}
+
+/// How many `f32` values each buffer of a slot holds at most for one plan's tiles: plane buffer 0
+/// at the input region (it also holds the odd units' outputs, which lie inside it), plane buffer 1
+/// at the first unit's output (and the later even units'), a masked operation's snapshot at one
+/// tile, and the largest unit scratch.
+///
+/// Each is the largest request any tile of the plan makes ([`largest_slot_values`]), so a slot
+/// built for the plan grows each buffer once. [`worst_case_working_set`] charges a tile every
+/// region of its chain at the same largest sizes and a slot holds two of them, so a slot holds less
+/// than the working set its tile is charged.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct SlotValues {
+    planes: [usize; 2],
+    snapshot: usize,
+    scratch: usize,
+}
+
+impl SlotValues {
+    #[cfg(test)]
+    fn bytes(self) -> u64 {
+        let values = self.planes[0] as u64 + self.planes[1] as u64 + self.snapshot as u64;
+        values
+            .saturating_add(self.scratch as u64)
+            .saturating_mul(std::mem::size_of::<f32>() as u64)
+    }
+}
+
+/// The largest request of each buffer of a slot over the tiles of a plan: region `k` of the chain
+/// (the input region at `k = 0`, unit `k - 1`'s output after it) lives in plane buffer `k % 2`, and
+/// a unit's largest scratch is its request for its largest input region, as the charge assumes.
+fn largest_slot_values(
+    operation: &SpatialOperation,
+    stage: Stage,
+    regions: &[Region],
+    tile: u32,
+) -> SlotValues {
+    let values = |bytes: u64| {
+        usize::try_from(bytes.div_ceil(std::mem::size_of::<f32>() as u64)).unwrap_or(usize::MAX)
+    };
+    let mut largest = SlotValues::default();
+    for (step, region) in regions.iter().enumerate() {
+        let planes = &mut largest.planes[step % 2];
+        *planes = (*planes).max(values(region.plane_bytes()));
+        if let Some(unit) = operation.units().get(step) {
+            largest.scratch = largest.scratch.max(values(unit.scratch_bytes(Stage {
+                width: region.width,
+                height: region.height,
+            })));
+        }
+    }
+    if operation.mask().is_some() {
+        largest.snapshot = values(largest_tile(stage, tile).plane_bytes());
+    }
+    largest
+}
+
+/// The largest each region of a tile's chain is over the plan's tiles, in chain order: the input
+/// region, then each unit's output. A region's width depends only on its tile's column and its
+/// height only on its tile's row, and the tiles are a grid, so the largest region `k` is the widest
+/// region `k` of any column by the tallest of any row ([`widest_regions`]). `O(units)` per tile
+/// along each side of the stage.
+fn largest_regions(stage: Stage, tile: u32, halos: &[u32], summed_halo: u32) -> Vec<Region> {
+    let widths = widest_regions(stage.width, tile, halos, summed_halo);
+    let heights = widest_regions(stage.height, tile, halos, summed_halo);
+    widths
+        .into_iter()
+        .zip(heights)
+        .map(|(width, height)| Region {
+            x0: 0,
+            y0: 0,
+            width,
+            height,
+        })
+        .collect()
+}
+
+/// The widest each region of the chain is over the tiles along one side of the stage, `length`
+/// long and cut into tiles of `tile`, by the rule the tiles' own rectangles follow
+/// ([`SpatialPlan::regions`]): the tile grown by the summed halo, then shrunk by each unit's halo,
+/// on a stage one pixel deep.
+fn widest_regions(length: u32, tile: u32, halos: &[u32], summed_halo: u32) -> Vec<u32> {
+    let stage = Stage {
+        width: length,
+        height: 1,
+    };
+    let mut widest = vec![0; halos.len() + 1];
+    let mut x0 = 0;
+    while x0 < length {
+        let width = tile.max(1).min(length - x0);
+        let mut region = Region {
+            x0,
+            y0: 0,
+            width,
+            height: 1,
+        }
+        .grown(summed_halo, stage);
+        widest[0] = widest[0].max(region.width);
+        for (step, halo) in halos.iter().enumerate() {
+            region = region.shrunk(*halo, stage);
+            widest[step + 1] = widest[step + 1].max(region.width);
+        }
+        x0 += width;
+    }
+    widest
+}
+
+/// The buffers one tile slot reuses from tile to tile, instead of allocating and zero-filling them
+/// per tile and per unit: each worker of [`run_tiles`] keeps one for the tiles it runs, and a point
+/// query's tile and a restoration region start from an empty one.
+///
+/// - **Two plane buffers**, ping-ponged along the unit chain. Buffer 0 holds the tile's input and
+///   the outputs of the odd units (1, 3, …), buffer 1 the outputs of the even units (0, 2, …): unit
+///   `i` reads buffer `i % 2` and writes buffer `(i + 1) % 2`. The chain never holds more than two
+///   rectangles at once, which is all a unit reads and writes.
+/// - **The snapshot** of a masked tile's own input, the blend's `in`, which [`cut_out`] rebuilds by
+///   appending each row.
+/// - **The unit scratch** every unit of the chain is handed.
+///
+/// A buffer is handed out as an exact-length prefix, grows when a request is longer than it and is
+/// never cleared, which every writer allows: each `fill` writes every value of the rectangle it is
+/// handed, a unit fills its whole output rectangle and treats its scratch as uninitialized
+/// ([`crate::modules::SpatialUnit`]), and the snapshot's rows are appended. Test builds fill each
+/// prefix with NaN before it is handed out, so a writer that leaves a value unwritten, or a unit
+/// that reads scratch it did not write, fails the exactness tests rather than reading zeros or the
+/// previous tile.
+///
+/// A slot built for a plan ([`Self::for_plan`]), which every render slot is, grows each buffer once,
+/// straight to the largest request any tile of that plan makes ([`SlotValues`]), so a render
+/// allocates its planes once per slot, not once per tile or unit: the corner tile a slot often
+/// starts with asks for less than an interior tile. A default slot runs one tile and grows each
+/// buffer to exactly what that tile asks, which is what a point query or a one-pixel restoration
+/// window held before slots were reused. Either way a slot holds two of the chain's rectangles,
+/// which the tile's reservation already charges to the spatial budget among all of them (see
+/// [`SlotValues`] for the one geometry the charge has always under-counted).
 #[derive(Debug, Default)]
-pub(crate) struct TileScratch(Vec<f32>);
+pub(crate) struct TileScratch {
+    planes: [Vec<f32>; 2],
+    snapshot: Vec<f32>,
+    units: Vec<f32>,
+    /// What each buffer grows to when it grows: the plan's largest requests, or nothing for a slot
+    /// that runs one tile.
+    largest: SlotValues,
+}
+
+/// Where a finished tile's values are in its slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Held {
+    /// The first `len` values of plane buffer `buffer`.
+    Planes { buffer: usize, len: usize },
+    /// The whole snapshot, which is exactly the tile.
+    Snapshot,
+}
 
 impl TileScratch {
-    /// `len` values, the slot grown once to the largest `len` asked of it.
-    fn values(&mut self, len: usize) -> &mut [f32] {
-        if self.0.len() < len {
-            self.0.resize(len, 0.0);
+    /// A slot for the tiles of `plan`: empty until its first tile, then each buffer grown once to
+    /// the largest request of the plan's tiles.
+    pub(crate) fn for_plan(plan: &SpatialPlan) -> Self {
+        Self {
+            largest: plan.largest,
+            ..Self::default()
         }
-        &mut self.0[..len]
     }
+
+    /// The values a finished tile left in this slot.
+    fn held(&self, held: Held) -> &[f32] {
+        match held {
+            Held::Planes { buffer, len } => &self.planes[buffer][..len],
+            Held::Snapshot => &self.snapshot,
+        }
+    }
+
+    /// The tile's own three planes, owned, for a point query that holds them past its slot: the
+    /// buffer that holds them taken out of the slot and cut to its length in place when their
+    /// rectangle is the tile, and otherwise the tile copied out of that rectangle ([`cut_out`]).
+    /// The slot's other buffers are released first. A point query holds exactly the tile, as it did
+    /// before slots were reused, and copies it only when the last unit's rectangle is wider.
+    fn into_tile(mut self, held: Held, region: Region, tile: Region) -> Vec<f32> {
+        let (mut values, len) = match held {
+            Held::Planes { buffer, len } => (std::mem::take(&mut self.planes[buffer]), len),
+            Held::Snapshot => {
+                let snapshot = std::mem::take(&mut self.snapshot);
+                let len = snapshot.len();
+                (snapshot, len)
+            }
+        };
+        drop(self);
+        if region == tile {
+            values.truncate(len);
+            values.shrink_to_fit();
+            values
+        } else {
+            cut_out(region, &values[..len], tile)
+        }
+    }
+
+    /// Each buffer's allocation, in elements, to tell when one was replaced.
+    #[cfg(test)]
+    fn capacities(&self) -> [usize; 4] {
+        [
+            self.planes[0].capacity(),
+            self.planes[1].capacity(),
+            self.snapshot.capacity(),
+            self.units.capacity(),
+        ]
+    }
+
+    /// How many buffers were allocated since `before` was read: a buffer only ever changes its
+    /// allocation by growing into a new one.
+    #[cfg(test)]
+    fn allocations_since(&self, before: [usize; 4]) -> u64 {
+        std::iter::zip(self.capacities(), before)
+            .filter(|(now, before)| now != before)
+            .count() as u64
+    }
+
+    /// The bytes this slot's buffers hold.
+    #[cfg(test)]
+    fn bytes(&self) -> u64 {
+        let values = self.planes[0].capacity()
+            + self.planes[1].capacity()
+            + self.snapshot.capacity()
+            + self.units.capacity();
+        values as u64 * std::mem::size_of::<f32>() as u64
+    }
+
+    /// The claims [`SlotValues`] makes, checked on every tile a test runs: no tile of the plan asks
+    /// a buffer for more than the plan's largest request, so a slot built for the plan never grows
+    /// a second time and a slot that runs one tile never holds more than one built for the plan;
+    /// and what a slot holds never passes the working set its tile is charged.
+    #[cfg(test)]
+    fn check_held(&self, plan: &SpatialPlan) {
+        let largest = plan.largest;
+        let held = [
+            (self.planes[0].len(), largest.planes[0]),
+            (self.planes[1].len(), largest.planes[1]),
+            (self.snapshot.capacity(), largest.snapshot),
+            (self.units.len(), largest.scratch),
+        ];
+        assert!(
+            held.iter().all(|(held, largest)| held <= largest),
+            "a tile slot's buffers {held:?} pass the plan's largest requests"
+        );
+        assert!(self.bytes() <= largest.bytes());
+        assert!(
+            self.bytes() <= plan.working_set,
+            "a tile slot holds {} bytes, past its {} byte working set",
+            self.bytes(),
+            plan.working_set
+        );
+    }
+}
+
+/// The first `len` values of `buffer`, which grows first when it holds fewer: to `largest`, the
+/// plan's largest request for it, when that is longer. The old buffer is released before the larger
+/// one is taken, so a slot never holds both, and the larger one is taken zeroed, so its pages are
+/// faulted in by the pass that writes them rather than filled first (performance rule 2). Nothing
+/// is cleared: the caller writes every value of the prefix before reading it. Test builds fill the
+/// prefix with NaN to prove that.
+fn reused(buffer: &mut Vec<f32>, len: usize, largest: usize) -> &mut [f32] {
+    if buffer.len() < len {
+        *buffer = Vec::new();
+        *buffer = vec![0.0; len.max(largest)];
+    }
+    let values = &mut buffer[..len];
+    #[cfg(test)]
+    values.fill(f32::NAN);
+    values
 }
 
 /// How many `f32` values of scratch one tile's chain needs: the largest request of any unit for its
@@ -290,10 +553,11 @@ fn scratch_values(operation: &SpatialOperation, regions: &[Region]) -> usize {
 
 const NON_FINITE_SPATIAL: &str = "spatial processing produced a non-finite value";
 
-/// Run one tile's unit chain. `fill` writes a region's three planes; the result is the rectangle
-/// the values cover and those planar values, which always contains `tile`. `parallelism` is handed
-/// to every unit and decides whether this function's own finiteness check runs on the pool; it
-/// never changes a value. `scratch` is the unit scratch of the slot the tile runs in.
+/// Run one tile's unit chain in the slot `scratch`. `fill` writes a region's three planes; the
+/// result is the rectangle the values cover, which always contains `tile`, and those planar values,
+/// borrowed from the slot buffer that holds them until the slot runs its next tile. `parallelism`
+/// is handed to every unit and decides whether this function's own finiteness check runs on the
+/// pool; it never changes a value.
 ///
 /// Every path uses this one function: the byte render, the RAW float frame and the point sample.
 /// That is what makes a sample equal to the rendered byte by construction rather than by
@@ -319,21 +583,105 @@ const NON_FINITE_SPATIAL: &str = "spatial processing produced a non-finite value
 ///   out of the result — away from the stage edges the last unit's rectangle *is* the tile, and
 ///   against an edge the shrink rule leaves it wider and the extra rows hold unblended filter
 ///   output that nobody takes. Blending in place rather than copying the tile out is what keeps a
-///   masked tile to one extra allocation instead of two.
+///   masked tile to one buffer beyond the chain's, the snapshot, instead of two.
 ///
 /// The halo's coverage plays no part in either path: the halo is read by the units, and the blend
 /// never writes it, so a tile's output is decided by the coverage at the tile's own pixels alone.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run_tile(
+pub(crate) fn run_tile<'s>(
     plan: &SpatialPlan,
     operation: &SpatialOperation,
     globals: &[Option<Global>],
     tile: Region,
     parallelism: Parallelism,
-    scratch: &mut TileScratch,
+    scratch: &'s mut TileScratch,
     cancel: &Cancel,
     fill: impl Fn(Region, &mut [f32]) -> Result<(), Error>,
-) -> Result<(Region, Vec<f32>), Error> {
+) -> Result<(Region, &'s [f32]), Error> {
+    let (region, held, _) = run_tile_in(
+        plan,
+        operation,
+        globals,
+        tile,
+        parallelism,
+        scratch,
+        cancel,
+        TilePlanes::None,
+        fill,
+    )?;
+    Ok((region, scratch.held(held)))
+}
+
+/// What a tile does with the reduced planes of its operation's first unit, when that unit declares
+/// any ([`crate::modules::SpatialUnit::reduced_grid`]): never asked of a later unit, whose input is
+/// the earlier units' output over its tile's own rectangles.
+#[derive(Clone, Copy)]
+pub(crate) enum TilePlanes<'a> {
+    /// Nothing: the unit computes its planes as it always has. A windowed render, a restoration
+    /// region and a unit without a grid take this.
+    None,
+    /// Read `held` when it covers the unit's reach in the grid, and otherwise compute the planes,
+    /// handing the tile's own cells back when `hand` says so (a frame render collecting them) and
+    /// not otherwise (a point query, which never fills the store).
+    Store {
+        held: Option<&'a ReducedEntry>,
+        hand: bool,
+    },
+}
+
+/// What one tile did with its first unit's reduced planes.
+#[derive(Debug)]
+pub(crate) enum PlaneUse {
+    /// Nothing: no planes, or a masked tile copied without evaluating a unit.
+    None,
+    /// It read held planes, and its input held only the unit's output rectangle.
+    Served,
+    /// It computed them, handing back these cells when asked to.
+    Computed(Option<Cells>),
+}
+
+/// [`run_tile`] with its operation's first unit's reduced planes as `planes` says, answering what
+/// the tile did with them beside its values.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_tile_planned<'s>(
+    plan: &SpatialPlan,
+    operation: &SpatialOperation,
+    globals: &[Option<Global>],
+    tile: Region,
+    parallelism: Parallelism,
+    scratch: &'s mut TileScratch,
+    cancel: &Cancel,
+    planes: TilePlanes<'_>,
+    fill: impl Fn(Region, &mut [f32]) -> Result<(), Error>,
+) -> Result<(Region, &'s [f32], PlaneUse), Error> {
+    let (region, held, used) = run_tile_in(
+        plan,
+        operation,
+        globals,
+        tile,
+        parallelism,
+        scratch,
+        cancel,
+        planes,
+        fill,
+    )?;
+    Ok((region, scratch.held(held), used))
+}
+
+/// [`run_tile`], answering where in the slot the tile's values were left rather than borrowing
+/// them, for a caller that takes them out of the slot.
+#[allow(clippy::too_many_arguments)]
+fn run_tile_in(
+    plan: &SpatialPlan,
+    operation: &SpatialOperation,
+    globals: &[Option<Global>],
+    tile: Region,
+    parallelism: Parallelism,
+    slot: &mut TileScratch,
+    cancel: &Cancel,
+    planes: TilePlanes<'_>,
+    fill: impl Fn(Region, &mut [f32]) -> Result<(), Error>,
+) -> Result<(Region, Held, PlaneUse), Error> {
     cancel.check()?;
     #[cfg(test)]
     OBSERVED_TILES.with(|counter| {
@@ -349,6 +697,8 @@ pub(crate) fn run_tile(
     });
     let stage = plan.stage;
     let mask = operation.mask();
+    let largest = slot.largest;
+    let len_of = |region: Region| (region.pixels() * 3) as usize;
     // What is known about the tile's coverage before a pixel is read: everything outside the
     // bounds, where it is exactly zero; the whole field for a mask that reads no pixel; nothing for
     // one that does.
@@ -365,54 +715,107 @@ pub(crate) fn run_tile(
     if let Some(coverage) = before
         && coverage.zero
     {
-        let mut values = vec![0.0_f32; (tile.pixels() * 3) as usize];
-        fill(tile, &mut values)?;
-        if copies_exactly(&values) {
+        // The tile alone, in the buffer the chain's input would have been read into.
+        let len = len_of(tile);
+        let input = reused(&mut slot.planes[0], len, largest.planes[0]);
+        fill(tile, input)?;
+        if copies_exactly(input) {
             #[cfg(test)]
             MASKED_TILES_COPIED.fetch_add(1, Ordering::Relaxed);
-            return Ok((tile, values));
+            #[cfg(test)]
+            slot.check_held(plan);
+            return Ok((tile, Held::Planes { buffer: 0, len }, PlaneUse::None));
         }
     }
-    let regions = plan.regions(tile);
-    let mut values = vec![0.0_f32; (regions[0].pixels() * 3) as usize];
-    fill(regions[0], &mut values)?;
-    // The snapshot of the tile's own input, taken before the chain runs because the chain consumes
-    // the buffer it was read into. It is one tile and it is charged to the budget through
-    // `worst_case_working_set`; nothing here scales with the frame.
-    let input = mask.map(|_| cut_out(regions[0], &values, tile));
+    let mut regions = plan.regions(tile);
+    // Every unit's scratch is what it asks for the input rectangle it reads without held planes,
+    // which bounds what it takes with them; the slot and the charge stay what they were.
+    let scratch = scratch_values(operation, &regions);
+    let mut reduced = Planned::decide(operation, stage, tile, &regions, planes);
+    if let Planned::Read(_) = reduced {
+        // The first unit reads its reduced grid from the held planes, so its input is only the
+        // rectangle it fills, as today's chain gives it; every later unit's rectangles are
+        // today's.
+        regions[0] = regions[1];
+    }
+    let input = reused(&mut slot.planes[0], len_of(regions[0]), largest.planes[0]);
+    fill(regions[0], input)?;
+    // The snapshot of the tile's own input, taken before the chain runs because from its second
+    // unit on the chain writes over the buffer it was read into. It is one tile and it is charged to
+    // the budget through `worst_case_working_set`; nothing here scales with the frame.
+    if mask.is_some() {
+        cut_out_into(
+            regions[0],
+            input,
+            tile,
+            &mut slot.snapshot,
+            largest.snapshot,
+        );
+    }
+    let input = mask.map(|_| slot.snapshot.as_slice());
     // A mask that reads pixels is answered on this snapshot, which is the pixel the blend hands it,
     // so the proof and the blend evaluate the one field at the same arguments.
-    let coverage = match (mask, &input, before) {
+    let coverage = match (mask, input, before) {
         (Some(mask), Some(input), None) if copy == TileCopy::Proved => {
             Some(zero_coverage(mask, tile, Some(input)))
         }
         (_, _, before) => before,
     };
-    if let (Some(coverage), Some(input)) = (coverage, &input)
+    if let (Some(coverage), Some(input)) = (coverage, input)
         && coverage.zero
         && copies_exactly(input)
     {
         #[cfg(test)]
         MASKED_TILES_COPIED.fetch_add(1, Ordering::Relaxed);
-        return Ok((tile, input.clone()));
+        #[cfg(test)]
+        slot.check_held(plan);
+        return Ok((tile, Held::Snapshot, PlaneUse::None));
     }
     #[cfg(test)]
     if mask.is_some() {
         MASKED_TILES_EVALUATED.fetch_add(1, Ordering::Relaxed);
     }
-    let scratch = scratch.values(scratch_values(operation, &regions));
     for (index, unit) in operation.units().iter().enumerate() {
-        let input = Planes::new(stage, regions[index], &values)?;
-        let mut next = vec![0.0_f32; (regions[index + 1].pixels() * 3) as usize];
-        let mut output = PlanesMut::new(stage, regions[index + 1], &mut next)?;
-        unit.apply_cancellable(
-            &input,
-            &mut output,
-            globals.get(index).and_then(Option::as_ref),
-            scratch,
-            parallelism,
-            cancel,
-        )?;
+        // Unit `index` reads buffer `index % 2` and writes the other one.
+        let [even, odd] = &mut slot.planes;
+        let (from, to) = if index % 2 == 0 {
+            (even, odd)
+        } else {
+            (odd, even)
+        };
+        let input = Planes::new(stage, regions[index], &from[..len_of(regions[index])])?;
+        let next = reused(
+            to,
+            len_of(regions[index + 1]),
+            largest.planes[(index + 1) % 2],
+        );
+        let mut output = PlanesMut::new(stage, regions[index + 1], next)?;
+        let global = globals.get(index).and_then(Option::as_ref);
+        let unit_scratch = reused(&mut slot.units, scratch, largest.scratch);
+        let handed = match (index, &mut reduced) {
+            (0, Planned::Read(entry)) => Some(Reduced::Held(entry.planes())),
+            (0, Planned::Hand(cells)) => Some(Reduced::Hand(cells)),
+            _ => None,
+        };
+        match handed {
+            Some(handed) => unit.apply_reduced(
+                &input,
+                &mut output,
+                global,
+                unit_scratch,
+                parallelism,
+                cancel,
+                handed,
+            )?,
+            None => unit.apply_cancellable(
+                &input,
+                &mut output,
+                global,
+                unit_scratch,
+                parallelism,
+                cancel,
+            )?,
+        }
         let finite = match parallelism {
             Parallelism::Pool => next.par_iter().all(|value| value.is_finite()),
             Parallelism::Serial => next.iter().all(|value| value.is_finite()),
@@ -420,14 +823,75 @@ pub(crate) fn run_tile(
         if !finite {
             return Err(Error::resource_limit(NON_FINITE_SPATIAL));
         }
-        values = next;
     }
     let region = *regions.last().expect("a chain always has an input region");
-    if let (Some(mask), Some(input)) = (mask, &input) {
+    let buffer = operation.units().len() % 2;
+    let len = len_of(region);
+    #[cfg(test)]
+    slot.check_held(plan);
+    if let Some(mask) = mask {
         let known = coverage.map_or(0, |coverage| coverage.leading);
-        blend(mask, region, tile, input, known, &mut values);
+        blend(
+            mask,
+            region,
+            tile,
+            &slot.snapshot,
+            known,
+            &mut slot.planes[buffer][..len],
+        );
     }
-    Ok((region, values))
+    Ok((region, Held::Planes { buffer, len }, reduced.used()))
+}
+
+/// What [`run_tile_in`] decided for its first unit's reduced planes on one tile.
+enum Planned<'a> {
+    /// No planes to read or hand back: the unit runs as it always has.
+    None,
+    /// Read from this entry.
+    Read(&'a ReducedEntry),
+    /// Computed, the tile's cells handed back into these.
+    Hand(Cells),
+    /// Computed and not handed back.
+    Computed,
+}
+
+impl<'a> Planned<'a> {
+    /// Read `planes`' entry if it covers the first unit's reach from the output rectangle today's
+    /// chain gives it (`regions[1]`), and otherwise compute, handing the tile's cells back if
+    /// asked. Only the first unit is ever asked: its input is the operation's input.
+    fn decide(
+        operation: &SpatialOperation,
+        stage: Stage,
+        tile: Region,
+        regions: &[Region],
+        planes: TilePlanes<'a>,
+    ) -> Self {
+        let TilePlanes::Store { held, hand } = planes else {
+            return Self::None;
+        };
+        let Some((unit, grid)) = operation
+            .units()
+            .first()
+            .and_then(|unit| Some((unit, unit.reduced_grid()?)))
+        else {
+            return Self::None;
+        };
+        let reach = unit.reduced_reach(regions[1], stage);
+        match held {
+            Some(entry) if entry.covers(reach) => Self::Read(entry),
+            _ if hand => Self::Hand(Cells::for_tile(&grid, tile)),
+            _ => Self::Computed,
+        }
+    }
+
+    fn used(self) -> PlaneUse {
+        match self {
+            Self::None => PlaneUse::None,
+            Self::Read(_) => PlaneUse::Served,
+            Self::Hand(cells) => PlaneUse::Computed(Some(cells)),
+            Self::Computed => PlaneUse::Computed(None),
+        }
+    }
 }
 
 /// What evaluating a mask over one tile proved, in the tile's row-major pixel order.
@@ -528,11 +992,34 @@ fn reaches(bounds: Region, tile: Region) -> bool {
 ///
 /// It is built with `with_capacity` and `extend_from_slice` rather than a zeroed `vec!`, because
 /// every value is written before any is read and zeroing one tile plane per tile is a page fault
-/// per 4 KiB for nothing.
-fn cut_out(region: Region, values: &[f32], tile: Region) -> Vec<f32> {
+/// per 4 KiB for nothing. The RAW float frame's write-back takes each tile's planes out of its slot
+/// this way, in the parallel phase, and a point query the tile it holds when the last unit's
+/// rectangle is wider.
+pub(super) fn cut_out(region: Region, values: &[f32], tile: Region) -> Vec<f32> {
+    let mut out = Vec::with_capacity(tile.pixels() as usize * 3);
+    append_tile(region, values, tile, &mut out);
+    out
+}
+
+/// [`cut_out`] into `out`, whose values are replaced and whose allocation is kept: a slot's
+/// snapshot, which grows once, to `largest` values when that is more than the tile, and is
+/// otherwise reused for every tile of the slot. Every value is appended, so nothing is cleared or
+/// zeroed first.
+fn cut_out_into(region: Region, values: &[f32], tile: Region, out: &mut Vec<f32>, largest: usize) {
+    let len = tile.pixels() as usize * 3;
+    out.clear();
+    if out.capacity() < len {
+        // Released before the larger one is taken, as a slot's planes are.
+        *out = Vec::new();
+        *out = Vec::with_capacity(len.max(largest));
+    }
+    append_tile(region, values, tile, out);
+}
+
+/// Append `tile`'s three planes, row by row, from a larger rectangle's planes.
+fn append_tile(region: Region, values: &[f32], tile: Region, out: &mut Vec<f32>) {
     let source = region.pixels() as usize;
     let width = tile.width as usize;
-    let mut out = Vec::with_capacity(tile.pixels() as usize * 3);
     for channel in 0..3 {
         for y in tile.y0..tile.y1() {
             let from = channel * source
@@ -541,7 +1028,6 @@ fn cut_out(region: Region, values: &[f32], tile: Region) -> Vec<f32> {
             out.extend_from_slice(&values[from..from + width]);
         }
     }
-    out
 }
 
 /// The masked write: `out = (1 − M)·in + M·u` per channel, over the tile, in linear float, in place
@@ -553,8 +1039,8 @@ fn cut_out(region: Region, values: &[f32], tile: Region) -> Vec<f32> {
 /// [`MaskField::evaluate`] at the tile's own stage coordinates, which are the mask's own stage
 /// coordinates because a spatial operation opens its segment at the stage its layer received.
 ///
-/// `input` is the tile-shaped snapshot [`cut_out`] took before the chain ran; `output` is the whole
-/// of the last unit's rectangle, and only the `tile` part of it is touched. The first `known`
+/// `input` is the tile-shaped snapshot [`cut_out_into`] took before the chain ran; `output` is the
+/// whole of the last unit's rectangle, and only the `tile` part of it is touched. The first `known`
 /// pixels, in row-major order, were proved to have coverage of exactly `+0.0` by
 /// [`zero_coverage`], which evaluated the same field at the same arguments; they are blended at
 /// that coverage without evaluating it again.
@@ -683,86 +1169,300 @@ pub(crate) fn reset_masked_tile_counts() {
     MASKED_TILES_EVALUATED.store(0, Ordering::Relaxed);
 }
 
-/// Run every tile of a stage in batches, on the shared Rayon pool at and above the spatial pass's
-/// parallel threshold ([`luxforge_raw::PARALLEL_SPATIAL_PIXELS`]) and serially below it, checking
-/// the cancellation token between batches.
+/// Run every tile of a stage, as a rolling window of workers on the shared Rayon pool at and above
+/// the spatial pass's parallel threshold ([`luxforge_raw::PARALLEL_SPATIAL_PIXELS`]) and in a plain
+/// loop on the calling thread below it, checking the cancellation token between tiles.
 ///
-/// Each batch reserves its working sets from the budget before any of its tiles allocates, asking
-/// for the plan's concurrency and running as many tiles as the reservation covers, so a render that
-/// overlaps another slows down rather than failing and speeds up again once the other releases.
-/// When that leaves the batch narrower than the pool, each tile's own passes run on the pool as
-/// well (see [`tile_parallelism`]), so an operation whose working set holds the batch to two tiles
-/// still uses every worker without taking more memory.
+/// **Shares.** Every tile in flight holds one working set of the budget, reserved before it
+/// allocates. The window starts as wide as one reservation for the plan's concurrency grants
+/// ([`SpatialBudget::reserve`]: as many as fit beside what other evaluations hold, and always one),
+/// split into one share per worker, so a render that overlaps another slows down rather than
+/// failing. Each worker owns one slot ([`TileScratch::for_plan`]), whose buffers are allocated once
+/// at the plan's largest tile, and pulls the next tile from a shared counter, so no tile waits for
+/// another: a slow tile on an efficiency core holds its own worker and nothing else. Each of a
+/// worker's tiles is a job of its own on the pool, which hands the slot and the share to the
+/// worker's next one, so a thread that picks a worker up while it waits inside another tile's pass
+/// runs one tile of it, not the rest of the render. No worker waits on another but for the short
+/// lock its tile is written under.
 ///
-/// `work` computes one tile's result under the parallelism it is given, with the unit scratch of
-/// the batch slot it runs in, and `write` places it, so the tiles themselves never share a mutable
-/// frame: a batch's results are bounded by its concurrency times one tile. `work` runs in the
-/// parallel phase, so everything done per pixel belongs there — the quantization and the
-/// layout of the frame's rows — and `write` is left the serial copy of whole rows. A slot keeps its
-/// scratch from batch to batch and releases it when a narrower reservation drops the slot, so while
-/// a batch runs the scratch held covers no more tiles than its reservation; between one batch's
-/// release and the next reservation the slots are held uncharged, and the render drops them all
-/// when it ends.
-pub(crate) fn run_batches<T: Send>(
+/// **Pacing**, decided by each worker after each tile, so overlapping renders still trade the
+/// target between them. While tiles remain, a worker that finds the budget past its target gives
+/// back its share, drops its slot and stops, unless it is the window's last; and one that finds the
+/// window narrower than the plan's concurrency takes one more share if it fits under the target
+/// ([`SpatialBudget::try_reserve`]) and starts one more worker with it. A tile's own passes run on
+/// the pool when the window, as the tile starts, is narrower than the pool (see
+/// [`tile_parallelism`]), so an operation whose working set holds the window to two tiles still uses
+/// every worker without taking more memory; that changes when a value is computed, never what it is.
+///
+/// **Writes.** `work` computes one tile's result in the parallel phase, in its worker's slot — the
+/// quantization, the layout of the frame's rows and the copy of the tile out of the slot, which the
+/// worker's next tile overwrites — and `write` places it, under one lock that also advances the
+/// progress meter, so `write` is left the serial copy of whole rows and a worker holds at most one
+/// result. Tiles are written as they finish, not in tile order: they are disjoint rectangles of the
+/// frame, so its bytes cannot depend on the order.
+///
+/// **Stopping.** The first error, the token's included, stops every worker before its next tile;
+/// the tiles already running finish or see the token themselves, and the error is returned once the
+/// window has emptied. Every share and slot is released by its worker on every path. Between a
+/// worker's stop and the render's end, nothing it held stays charged or allocated.
+pub(crate) fn run_tiles<T: Send>(
     plan: &SpatialPlan,
     budget: &SpatialBudget,
     cancel: &Cancel,
     work: impl Fn(Region, Parallelism, &mut TileScratch) -> Result<T, Error> + Sync,
-    mut write: impl FnMut(Region, T) -> Result<(), Error>,
+    write: impl FnMut(Region, T) -> Result<(), Error> + Send,
 ) -> Result<(), Error> {
     let tiles = plan.tiles();
+    if tiles.is_empty() {
+        return Ok(());
+    }
+    // Before the reservation, so a cancelled render never takes working sets it will not use.
+    cancel.check()?;
     let large = super::parallel::pooled(
         super::parallel::RenderPass::Spatial,
         plan.stage.width as u64 * plan.stage.height as u64,
     );
     let workers = rayon::current_num_threads();
-    let concurrency = budget.concurrency(plan.working_set);
-    let mut slots: Vec<TileScratch> = Vec::new();
-    let mut start = 0;
-    while start < tiles.len() {
-        // Before the reservation, so a cancelled render never takes working sets it will not use.
-        cancel.check()?;
-        let reservation = budget.reserve(plan.working_set, concurrency.min(tiles.len() - start));
-        let batch = &tiles[start..start + reservation.tiles()];
-        start += batch.len();
-        slots.resize_with(batch.len(), TileScratch::default);
-        let parallelism = tile_parallelism(large, batch.len(), workers);
-        let results: Vec<T> = if large && batch.len() > 1 {
-            batch
-                .par_iter()
-                .zip(slots.par_iter_mut())
-                .map(|(tile, scratch)| work(*tile, parallelism, scratch))
-                .collect::<Result<Vec<T>, Error>>()?
-        } else {
-            batch
-                .iter()
-                .zip(slots.iter_mut())
-                .map(|(tile, scratch)| work(*tile, parallelism, scratch))
-                .collect::<Result<Vec<T>, Error>>()?
-        };
-        for (tile, result) in batch.iter().zip(results) {
-            write(*tile, result)?;
+    if !large || tiles.len() == 1 {
+        return run_serially(plan, budget, cancel, &tiles, large, workers, work, write);
+    }
+    let concurrency = budget.concurrency(plan.working_set).min(tiles.len());
+    let shares = budget.reserve(plan.working_set, concurrency).into_shares();
+    let window = Window {
+        plan,
+        budget,
+        cancel,
+        tiles: &tiles,
+        work: &work,
+        write: Mutex::new(write),
+        next: AtomicUsize::new(0),
+        width: AtomicUsize::new(shares.len()),
+        concurrency,
+        workers,
+        stop: AtomicBool::new(false),
+        error: OnceLock::new(),
+    };
+    rayon::scope(|scope| {
+        for share in shares {
+            let window = &window;
+            let worker = Worker::new(plan, share);
+            scope.spawn(move |scope| window.run(scope, worker));
         }
+    });
+    match window.error.into_inner() {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+/// Below the parallel threshold, or for a stage of one tile: every tile on the calling thread in
+/// one slot under one share, the token checked between tiles.
+#[allow(clippy::too_many_arguments)]
+fn run_serially<T>(
+    plan: &SpatialPlan,
+    budget: &SpatialBudget,
+    cancel: &Cancel,
+    tiles: &[Region],
+    large: bool,
+    workers: usize,
+    work: impl Fn(Region, Parallelism, &mut TileScratch) -> Result<T, Error>,
+    mut write: impl FnMut(Region, T) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let _share = budget.reserve(plan.working_set, 1);
+    let mut slot = TileScratch::for_plan(plan);
+    let parallelism = tile_parallelism(large, 1, workers);
+    for (index, tile) in tiles.iter().enumerate() {
+        if index > 0 {
+            cancel.check()?;
+        }
+        #[cfg(test)]
+        let before = slot.capacities();
+        let output = work(*tile, parallelism, &mut slot);
+        #[cfg(test)]
+        budget.note_slot_allocations(slot.allocations_since(before));
+        write(*tile, output?)?;
         if let Some(progress) = cancel.progress() {
-            progress.advance(batch.len() as u64);
+            progress.advance(1);
         }
     }
     Ok(())
 }
 
-/// How many tiles [`run_batches`] runs for `operation` over `stage`: what a whole-frame render
-/// plans its progress in, without building the tiles.
+/// One render's rolling window of tile workers ([`run_tiles`]).
+struct Window<'w, F, W> {
+    plan: &'w SpatialPlan,
+    budget: &'w SpatialBudget,
+    cancel: &'w Cancel,
+    tiles: &'w [Region],
+    work: &'w F,
+    /// The frame's write and the progress meter's advance, one tile at a time.
+    write: Mutex<W>,
+    /// The next tile to start.
+    next: AtomicUsize,
+    /// How many workers, and so shares, the window holds.
+    width: AtomicUsize,
+    /// The widest the window grows: the budget's concurrency for the plan, at most the tiles.
+    concurrency: usize,
+    /// The pool's workers.
+    workers: usize,
+    /// Set by the first error, so no worker starts another tile.
+    stop: AtomicBool,
+    /// The first error.
+    error: OnceLock<Error>,
+}
+
+impl<'w, T, F, W> Window<'w, F, W>
+where
+    F: Fn(Region, Parallelism, &mut TileScratch) -> Result<T, Error> + Sync,
+    W: FnMut(Region, T) -> Result<(), Error> + Send,
+{
+    /// One tile of one worker, as a job of its own: the worker's next tile, if it has one, is
+    /// spawned as the next job with the worker's slot and share. A pool thread waiting inside
+    /// another tile's pass that picks a worker's job up therefore runs one tile of it before it
+    /// looks at its own work again, never the rest of the window.
+    fn run<'s>(&'s self, scope: &rayon::Scope<'s>, mut worker: Worker<'w>)
+    where
+        'w: 's,
+    {
+        // A panicking tile stops the window as an error does; the scope then carries the panic.
+        let _unwinding = StopOnUnwind(&self.stop);
+        if !self.tile(&mut worker.slot) {
+            self.width.fetch_sub(1, Ordering::Relaxed);
+            return;
+        }
+        if self.narrowed() {
+            // The worker's slot and share are released here.
+            return;
+        }
+        self.widen(scope);
+        scope.spawn(move |scope| self.run(scope, worker));
+    }
+
+    /// Pull and run one tile in `slot` and write it: whether the worker has a next tile to pull.
+    /// No tile is pulled once the window has stopped or the token is cancelled.
+    fn tile(&self, slot: &mut TileScratch) -> bool {
+        if self.stop.load(Ordering::Relaxed) {
+            return false;
+        }
+        if let Err(error) = self.cancel.check() {
+            self.fail(error);
+            return false;
+        }
+        let Some(&tile) = self.tiles.get(self.next.fetch_add(1, Ordering::Relaxed)) else {
+            return false;
+        };
+        let parallelism = tile_parallelism(true, self.width.load(Ordering::Relaxed), self.workers);
+        #[cfg(test)]
+        let before = slot.capacities();
+        let output = (self.work)(tile, parallelism, slot);
+        #[cfg(test)]
+        self.budget
+            .note_slot_allocations(slot.allocations_since(before));
+        if let Err(error) = output.and_then(|output| self.write(tile, output)) {
+            self.fail(error);
+            return false;
+        }
+        self.next.load(Ordering::Relaxed) < self.tiles.len()
+    }
+
+    /// Place one finished tile and count it.
+    fn write(&self, tile: Region, output: T) -> Result<(), Error> {
+        let mut write = self
+            .write
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (*write)(tile, output)?;
+        if let Some(progress) = self.cancel.progress() {
+            progress.advance(1);
+        }
+        Ok(())
+    }
+
+    /// Stop every worker before its next tile, keeping the first error.
+    fn fail(&self, error: Error) {
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = self.error.set(error);
+    }
+
+    /// Whether this worker leaves the window because the budget is past its target, which it does
+    /// only while another worker stays: the window never empties while tiles remain.
+    fn narrowed(&self) -> bool {
+        self.budget.in_use() > self.budget.target()
+            && self
+                .width
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |width| {
+                    (width > 1).then(|| width - 1)
+                })
+                .is_ok()
+    }
+
+    /// Start one more worker when the window is narrower than the plan's concurrency and one more
+    /// share fits under the target.
+    fn widen<'s>(&'s self, scope: &rayon::Scope<'s>)
+    where
+        'w: 's,
+    {
+        if self
+            .width
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |width| {
+                (width < self.concurrency).then(|| width + 1)
+            })
+            .is_err()
+        {
+            return;
+        }
+        match self.budget.try_reserve(self.plan.working_set) {
+            Some(share) => {
+                let worker = Worker::new(self.plan, share);
+                scope.spawn(move |scope| self.run(scope, worker));
+            }
+            None => {
+                self.width.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+/// One worker of a window: its slot, then its share, released in that order when it leaves.
+struct Worker<'w> {
+    slot: TileScratch,
+    _share: SpatialReservation<'w>,
+}
+
+impl<'w> Worker<'w> {
+    fn new(plan: &SpatialPlan, share: SpatialReservation<'w>) -> Self {
+        Self {
+            slot: TileScratch::for_plan(plan),
+            _share: share,
+        }
+    }
+}
+
+/// Sets a window's stop flag if a worker unwinds, so a panicking tile stops the others' pulls.
+struct StopOnUnwind<'a>(&'a AtomicBool);
+
+impl Drop for StopOnUnwind<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+/// How many tiles [`run_tiles`] runs for `operation` over `stage`: what a whole-frame render plans
+/// its progress in, without building the tiles.
 pub(crate) fn tile_count(operation: &SpatialOperation, stage: Stage, tiling: Tiling) -> u64 {
     let side = u64::from(tiling.tile(operation, stage).max(1));
     u64::from(stage.width).div_ceil(side) * u64::from(stage.height).div_ceil(side)
 }
 
-/// How a batch's tiles schedule their own passes: on the pool only for a stage at or above the
-/// parallel threshold whose batch holds fewer tiles than the pool has workers, which is when the
-/// budget rather than the pool limits the batch. A batch as wide as the pool already occupies every
-/// worker, and splitting its tiles' passes as well measured 20 to 40% slower (Texture or Dehaze
-/// alone at 24 and 60 MP). A point sample never comes through here; it runs serially on its calling
-/// thread, where a pass on the pool would queue behind a render holding it.
+/// How a tile schedules its own passes, decided as it starts from how many tiles its window holds
+/// then: on the pool only for a stage at or above the parallel threshold whose window is narrower
+/// than the pool has workers, which is when the budget rather than the pool limits the window. A
+/// window as wide as the pool already occupies every worker, and splitting its tiles' passes as
+/// well measured 20 to 40% slower (Texture or Dehaze alone at 24 and 60 MP). A point sample never
+/// comes through here; it runs serially on its calling thread, where a pass on the pool would queue
+/// behind a render holding it.
 pub(crate) fn tile_parallelism(large: bool, tiles: usize, workers: usize) -> Parallelism {
     if large && tiles < workers {
         Parallelism::Pool
@@ -821,6 +1521,9 @@ const POINT_TILES_FLOOR: usize = 16;
 /// through this cache itself and its global estimate may reduce a stage on the pool.
 pub(crate) struct PointTiles<'a> {
     budget: &'a SpatialBudget,
+    /// The store a segment's first unit reads its reduced planes from when it holds them, which a
+    /// point query never fills.
+    reduced: &'a ReducedStore,
     tiling: Tiling,
     state: Mutex<PointState<'a>>,
     /// Every (segment, tile) this query evaluated, in order.
@@ -842,10 +1545,14 @@ struct Prepared {
     segment: usize,
     plan: SpatialPlan,
     globals: Vec<Option<Global>>,
+    /// The entry of the first unit's reduced planes the store held when the segment was first
+    /// read, `Some(None)` when it held none, and `None` for a segment whose planes are never read
+    /// (a window, or no unit that runs first declares a grid).
+    planes: Option<Option<Arc<ReducedEntry>>>,
 }
 
-/// One evaluated tile of one spatial segment: exactly the tile's three planes, cut from the last
-/// unit's rectangle, and the budget it is charged to.
+/// One evaluated tile of one spatial segment: exactly the tile's three planes, taken out of the
+/// slot it ran in ([`TileScratch::into_tile`]), and the budget it is charged to.
 struct HeldTile<'a> {
     segment: usize,
     tile: Region,
@@ -868,9 +1575,14 @@ impl PointState<'_> {
 impl<'a> PointTiles<'a> {
     /// An empty cache for one query whose segments are cut into tiles by `tiling`, holding at most
     /// what `budget`'s target has bytes for.
-    pub(crate) fn new(tiling: Tiling, budget: &'a SpatialBudget) -> Self {
+    pub(crate) fn new(
+        tiling: Tiling,
+        budget: &'a SpatialBudget,
+        reduced: &'a ReducedStore,
+    ) -> Self {
         Self {
             budget,
+            reduced,
             tiling,
             state: Mutex::default(),
             #[cfg(test)]
@@ -901,8 +1613,12 @@ impl<'a> PointTiles<'a> {
 
     /// One pixel of the output of spatial segment `segment`, whose operation reads and writes
     /// `stage`: from the held tile that contains it, or else from that tile evaluated now. `globals`
-    /// resolves the operation's estimates once for the segment's first tile, and `fill` reads one
-    /// rectangle of the stage the operation reads into three planes, on this thread.
+    /// resolves the operation's estimates once for the segment's first tile, and `planes` then
+    /// looks up the store's entry of its first unit's reduced planes for those estimates, `None`
+    /// for a segment that never reads one ([`Prepared::planes`]). A tile reads the entry when it
+    /// covers the unit's reach and otherwise computes the planes as a render does, handing nothing
+    /// back: both give the same values. `fill` reads one rectangle of the stage the operation
+    /// reads into three planes, on this thread.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn pixel(
         &self,
@@ -913,6 +1629,7 @@ impl<'a> PointTiles<'a> {
         y: u32,
         cancel: &Cancel,
         globals: impl FnOnce() -> Result<Vec<Option<Global>>, Error>,
+        planes: impl FnOnce(&[Option<Global>]) -> Option<Option<Arc<ReducedEntry>>>,
         fill: impl Fn(Region, &mut [f32]) -> Result<(), Error>,
     ) -> Result<[f32; 3], Error> {
         let prepared = {
@@ -929,10 +1646,14 @@ impl<'a> PointTiles<'a> {
         let prepared = match prepared {
             Some(prepared) => prepared,
             None => {
+                let plan = SpatialPlan::new(operation, stage, self.tiling)?;
+                let globals = globals()?;
+                let planes = planes(&globals);
                 let prepared = Arc::new(Prepared {
                     segment,
-                    plan: SpatialPlan::new(operation, stage, self.tiling)?,
-                    globals: globals()?,
+                    plan,
+                    globals,
+                    planes,
                 });
                 let mut state = self.lock();
                 state.largest = state.largest.max(prepared.plan.tile);
@@ -940,25 +1661,42 @@ impl<'a> PointTiles<'a> {
                 prepared
             }
         };
-        let Prepared { plan, globals, .. } = &*prepared;
+        let Prepared {
+            plan,
+            globals,
+            planes,
+            ..
+        } = &*prepared;
         let tile = plan.tile_containing(x, y);
-        let (region, values) = {
+        let planes = match planes {
+            Some(held) => TilePlanes::Store {
+                held: held.as_deref(),
+                hand: false,
+            },
+            None => TilePlanes::None,
+        };
+        // The tile runs in a slot of its own, whose buffers fit what this tile asks, and the tile's
+        // planes are taken out of it, all under the tile's working set.
+        let values = {
             let _reservation = self.budget.reserve(plan.working_set, 1);
-            run_tile(
+            let mut slot = TileScratch::default();
+            let (region, held, used) = run_tile_in(
                 plan,
                 operation,
                 globals,
                 tile,
                 Parallelism::Serial,
-                &mut TileScratch::default(),
+                &mut slot,
                 cancel,
+                planes,
                 &fill,
-            )?
-        };
-        let values = if region == tile {
-            values
-        } else {
-            cut_out(region, &values, tile)
+            )?;
+            match used {
+                PlaneUse::Served => self.reduced.note_point(true),
+                PlaneUse::Computed(_) => self.reduced.note_point(false),
+                PlaneUse::None => {}
+            }
+            slot.into_tile(held, region, tile)
         };
         let value = plane_pixel(tile, &values, x, y);
         #[cfg(test)]
@@ -1698,6 +2436,54 @@ mod tests {
         }
     }
 
+    /// A unit with no neighbourhood that copies its input and passes a test's gate only for the
+    /// one output rectangle whose origin is `(x0, y0)`: as the last unit of an operation, the one
+    /// tile with that origin, so a test can hold that tile and no other.
+    #[derive(Debug)]
+    struct HeldAt {
+        x0: u32,
+        y0: u32,
+        gate: Arc<Gate>,
+    }
+
+    impl SpatialUnit for HeldAt {
+        fn halo(&self, _: Stage) -> u32 {
+            0
+        }
+
+        fn scratch_bytes(&self, _: Stage) -> u64 {
+            0
+        }
+
+        fn apply(
+            &self,
+            input: &Planes<'_>,
+            output: &mut PlanesMut<'_>,
+            _: Option<&Global>,
+            _: &mut [f32],
+            _: Parallelism,
+        ) -> Result<(), Error> {
+            let out = output.region();
+            if (out.x0, out.y0) == (self.x0, self.y0) {
+                self.gate.pass();
+            }
+            for y in out.y0..out.y1() {
+                for x in out.x0..out.x1() {
+                    output.set(x, y, input.sample(i64::from(x), i64::from(y)));
+                }
+            }
+            Ok(())
+        }
+
+        fn is_finite(&self) -> bool {
+            true
+        }
+
+        fn describe(&self) -> String {
+            format!("held at ({}, {})", self.x0, self.y0)
+        }
+    }
+
     /// A unit whose coefficients are not finite, which compilation must refuse.
     #[derive(Debug)]
     struct NonFinite;
@@ -1822,6 +2608,14 @@ mod tests {
                     None if unit == "held" => Arc::new(Held {
                         gate: self.gate.clone(),
                     }),
+                    Some(("hold", at)) => {
+                        let (x0, y0) = at.split_once(',').expect("a tile origin");
+                        Arc::new(HeldAt {
+                            x0: x0.parse().expect("a column"),
+                            y0: y0.parse().expect("a row"),
+                            gate: self.gate.clone(),
+                        })
+                    }
                     _ => panic!("unknown test unit {unit}"),
                 });
             }
@@ -3147,6 +3941,151 @@ mod tests {
     // The budget is a target.
     // -----------------------------------------------------------------------------------------
 
+    /// Every spatial operation the production stacks compile to at 24 and 60 MP, with the stage it
+    /// runs at: all three Presence units, and Detail's sharpening and noise reduction, each alone
+    /// and under a mask, through the registry's own compilation.
+    fn production_operations() -> Vec<(String, Stage, SpatialOperation)> {
+        use crate::render::Entry;
+        let registry = ModuleRegistry::builtin();
+        let mask = point_mask("Gradient", 0.2, 0.8);
+        let presence = json!({"texture": 100.0, "clarity": 100.0, "dehaze": 100.0});
+        let detail = json!({"sharpening": 100.0, "radius": 3.0, "luminance": 100.0,
+                            "colour": 100.0});
+        let mut operations = Vec::new();
+        for (width, height) in [(6000_u32, 4000_u32), (10_000, 6000)] {
+            for (name, effect, payload) in [
+                ("presence", crate::PRESENCE_EFFECT, &presence),
+                ("detail", crate::DETAIL_EFFECT, &detail),
+            ] {
+                for masked in [false, true] {
+                    let stack = Recipe {
+                        format: crate::RECIPE_FORMAT,
+                        layers: vec![Layer {
+                            mask: masked.then(|| mask.id.clone()),
+                            ..Layer::new(effect, payload.clone())
+                        }],
+                        masks: if masked {
+                            vec![mask.clone()]
+                        } else {
+                            Vec::new()
+                        },
+                        ..Recipe::default()
+                    };
+                    let compiled = registry.compile(width, height, &stack).unwrap();
+                    let operation = compiled
+                        .segments
+                        .iter()
+                        .find_map(|segment| segment.entry.as_ref().and_then(Entry::point_tiles))
+                        .expect("a spatial segment")
+                        .clone();
+                    assert_eq!(operation.mask().is_some(), masked);
+                    operations.push((
+                        format!("{name} {width}x{height} masked {masked}"),
+                        Stage { width, height },
+                        operation,
+                    ));
+                }
+            }
+        }
+        operations
+    }
+
+    /// The charge at the production sizes is byte for byte the figure the halo-bounded charge
+    /// (`tile + 2 × remaining halo` a side) gave before it was made honest, so the budget's
+    /// concurrency and high-water mark there are unchanged: all three Presence units, and Detail's
+    /// sharpening and noise reduction, at 6000 × 4000 and 10000 × 6000, masked and not.
+    #[test]
+    fn the_charge_at_the_production_sizes_is_what_it_was() {
+        let before: [(&str, u64); 8] = [
+            ("presence 6000x4000 masked false", 157_487_264),
+            ("presence 6000x4000 masked true", 170_070_176),
+            ("detail 6000x4000 masked false", 28_946_224),
+            ("detail 6000x4000 masked true", 32_091_952),
+            ("presence 10000x6000 masked false", 218_667_104),
+            ("presence 10000x6000 masked true", 231_250_016),
+            ("detail 10000x6000 masked false", 28_946_224),
+            ("detail 10000x6000 masked true", 32_091_952),
+        ];
+        let operations = production_operations();
+        assert_eq!(operations.len(), before.len());
+        for ((name, stage, operation), (expected_name, expected)) in operations.iter().zip(before) {
+            assert_eq!(name, expected_name);
+            let plan = SpatialPlan::new(operation, *stage, Tiling::Halo).unwrap();
+            assert_eq!(plan.working_set(), expected, "{name}");
+            assert!(plan.slot_bytes() < plan.working_set(), "{name}");
+        }
+    }
+
+    /// The charge covers every tile's own chain, and the slot that runs it, on stages whose last
+    /// partial tile is narrower than the summed halo. There the tile beside it keeps an unshrunk
+    /// side: one 4 px blur in 37 px tiles over 150 rows leaves a 2 px last row, so the row before
+    /// it writes 37 × 39 pixels where the halo-bounded charge counted 37 × 37, 65,028 bytes for a
+    /// chain and a slot that hold 65,916.
+    #[test]
+    fn the_charge_covers_a_tile_beside_a_partial_tile_narrower_than_the_halo() {
+        use crate::{mask_field::MaskSampling, path::StrokeTable};
+
+        let blur = |radius| Arc::new(BoxBlur { radius }) as Arc<dyn SpatialUnit>;
+        let one = SpatialOperation::new(vec![blur(4)]).unwrap();
+        let stage = Stage {
+            width: 200,
+            height: 150,
+        };
+        let plan = SpatialPlan::new(&one, stage, Tiling::Fixed(37)).unwrap();
+        assert_eq!(plan.working_set(), 65_916, "was 65,028");
+        assert_eq!(plan.slot_bytes(), 65_916);
+        let (_, mask) = zero_coverage_masks().swap_remove(0);
+        let three = SpatialOperation::new(vec![
+            blur(3),
+            Arc::new(Counted::default()) as Arc<dyn SpatialUnit>,
+            blur(2),
+        ])
+        .unwrap();
+        for (operation, width, height, tile) in [
+            (&one, 200, 150, 37),
+            (&one, 200, 150, 64),
+            (&one, 41, 30, 8),
+            (&three, 243, 162, 16),
+            (&three, 250, 170, 16),
+            (&three, 40, 30, 4),
+        ] {
+            let stage = Stage { width, height };
+            let field =
+                MaskField::compile(&mask, stage, &StrokeTable::default(), MaskSampling::Point)
+                    .unwrap();
+            for operation in [operation.clone(), operation.clone().with_mask(field)] {
+                let case = format!("{operation:?} at {width}x{height} in {tile} px tiles");
+                let plan = SpatialPlan::new(&operation, stage, Tiling::Fixed(tile)).unwrap();
+                assert!(plan.slot_bytes() <= plan.working_set(), "{case}");
+                for tile in plan.tiles() {
+                    let regions = plan.regions(tile);
+                    let planes: u64 = regions.iter().map(|region| region.plane_bytes()).sum();
+                    let scratch = operation
+                        .units()
+                        .iter()
+                        .zip(&regions)
+                        .map(|(unit, region)| {
+                            unit.scratch_bytes(Stage {
+                                width: region.width,
+                                height: region.height,
+                            })
+                        })
+                        .max()
+                        .unwrap_or(0);
+                    let snapshot = if operation.mask().is_some() {
+                        tile.plane_bytes()
+                    } else {
+                        0
+                    };
+                    assert!(
+                        planes + scratch + snapshot <= plan.working_set(),
+                        "{case}: {tile:?}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_reservation_takes_what_fits_and_never_less_than_one_tile() {
         let context = RenderContext::with_spatial_target(1000);
@@ -3228,7 +4167,7 @@ mod tests {
         assert_eq!(sampled.rgba, rendered.pixel(100, 75), "the rendered byte");
 
         drop(held);
-        assert_eq!(budget.in_use(), 0, "every batch released its reservation");
+        assert_eq!(budget.in_use(), 0, "every share was released");
     }
 
     #[test]
@@ -4223,7 +5162,7 @@ mod tests {
                                 fill,
                             )
                             .map(|(region, values)| {
-                                cut_out(region, &values, tile)
+                                cut_out(region, values, tile)
                                     .into_iter()
                                     .map(f32::to_bits)
                                     .collect::<Vec<_>>()
@@ -4375,16 +5314,545 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------------------------
+    // Slot buffers.
+    // -----------------------------------------------------------------------------------------
+
+    /// A render allocates its tile planes once per slot, not once per tile or unit: each buffer of
+    /// a slot grows once, straight to the largest request of the plan's tiles, although the corner
+    /// and edge tiles a slot starts with ask for less and the tiles beside the last, partial ones
+    /// ask for more than an interior tile, and is then reused, uncleared, for every tile the slot
+    /// runs. In the one slot of a stage below the parallel threshold and in each worker's slot of a
+    /// window above it, on the byte path and the RAW linear path, masked and not, over 176 tiles of
+    /// a three-unit chain, where a fresh input and one output per unit and tile were 704
+    /// allocations.
+    #[test]
+    fn a_render_allocates_its_tile_planes_once_per_slot() {
+        use crate::{mask_field::MaskSampling, path::StrokeTable};
+
+        let (registry, _, applied) = counting_registry();
+        // Partial tiles 3 and 2 px wide at the right and bottom edges, narrower than the chain's
+        // 5 px summed halo, so the regions take every size the stage edges give them.
+        let (width, height, tile) = (243, 162, 16);
+        let stage = Stage { width, height };
+        let source = gradient(width, height);
+        let linear = linear_source(width, height);
+        let units = ["blur:3", "count", "blur:2"];
+        let (_, mask) = zero_coverage_masks().swap_remove(0);
+        let field =
+            MaskField::compile(&mask, stage, &StrokeTable::default(), MaskSampling::Point).unwrap();
+        let unmasked = SpatialOperation::new(vec![
+            Arc::new(BoxBlur { radius: 3 }) as Arc<dyn SpatialUnit>,
+            Arc::new(Counted::default()),
+            Arc::new(BoxBlur { radius: 2 }),
+        ])
+        .unwrap();
+        for masked in [false, true] {
+            let operation = if masked {
+                unmasked.clone().with_mask(field.clone())
+            } else {
+                unmasked.clone()
+            };
+            let plan = SpatialPlan::new(&operation, stage, Tiling::Fixed(tile)).unwrap();
+            assert_eq!(plan.tiles().len(), 176);
+            let stack = Recipe {
+                format: crate::RECIPE_FORMAT,
+                layers: vec![Layer {
+                    mask: masked.then(|| mask.id.clone()),
+                    ..spatial_layer(&units)
+                }],
+                masks: if masked {
+                    vec![mask.clone()]
+                } else {
+                    Vec::new()
+                },
+                ..Recipe::default()
+            };
+            // Two plane buffers and the unit scratch, and a masked tile's snapshot.
+            let buffers = if masked { 4 } else { 3 };
+            for (pooled, linear_path) in
+                [(false, false), (false, true), (true, false), (true, true)]
+            {
+                let case = format!(
+                    "masked: {masked}, {} path, {}",
+                    if linear_path { "linear" } else { "byte" },
+                    if pooled { "window" } else { "serial" }
+                );
+                let forced = crate::render::parallel::force(Some(pooled));
+                // Three tiles at once where the pool has three workers: three workers, three
+                // slots. Below the threshold the tiles run in one.
+                let context = RenderContext::with_spatial_target(3 * plan.working_set());
+                let slots = if pooled {
+                    context.spatial().concurrency(plan.working_set()) as u64
+                } else {
+                    1
+                };
+                let input = if linear_path {
+                    crate::render::testing::linear(&linear, LinearSettings::default())
+                } else {
+                    crate::RenderSource::Byte(&source)
+                };
+                let ran = applied.get();
+                tiled_in(&context, &registry, input, &stack, tile).unwrap();
+                crate::render::parallel::force(forced);
+                let allocated = context.spatial().slot_allocations();
+                let ran = (applied.get() - ran) as u64;
+                assert!(
+                    ran > 2 * slots * buffers,
+                    "{case}: only {ran} tiles ran the chain"
+                );
+                // A worker whose tiles were all copied never allocates its second plane, scratch
+                // or snapshot, and one that found no tile left allocates nothing.
+                let least = if masked || pooled { 1 } else { buffers };
+                assert!(
+                    (least..=slots * buffers).contains(&allocated),
+                    "{case}: {allocated} allocations over {slots} slots of {ran} tiles"
+                );
+            }
+        }
+    }
+
+    /// A unit that writes every row of its output rectangle but the last.
+    #[derive(Debug)]
+    struct Partial;
+
+    impl SpatialUnit for Partial {
+        fn halo(&self, _: Stage) -> u32 {
+            0
+        }
+
+        fn scratch_bytes(&self, _: Stage) -> u64 {
+            0
+        }
+
+        fn apply(
+            &self,
+            input: &Planes<'_>,
+            output: &mut PlanesMut<'_>,
+            _: Option<&Global>,
+            _: &mut [f32],
+            _: Parallelism,
+        ) -> Result<(), Error> {
+            let out = output.region();
+            for y in out.y0..out.y1() - 1 {
+                for x in out.x0..out.x1() {
+                    output.set(x, y, input.sample(i64::from(x), i64::from(y)));
+                }
+            }
+            Ok(())
+        }
+
+        fn is_finite(&self) -> bool {
+            true
+        }
+
+        fn describe(&self) -> String {
+            "partial copy".into()
+        }
+    }
+
+    /// A slot's buffers are reused uncleared, which is exact only because every fill and every unit
+    /// writes every value it is handed. Test builds hand each buffer out filled with NaN, so a
+    /// writer that leaves a value unwritten fails the tile, on its first tile and on a reused slot
+    /// alike, instead of passing on the zeros of a fresh buffer or the previous tile's values: that
+    /// is what lets every exactness test prove the contract.
+    #[test]
+    fn a_value_left_unwritten_in_a_reused_slot_fails_the_tile() {
+        let stage = Stage {
+            width: 40,
+            height: 24,
+        };
+        type Fill<'a> = &'a dyn Fn(Region, &mut [f32]) -> Result<(), Error>;
+        let complete = |region: Region, planes: &mut [f32]| {
+            fill_planes(region, planes, Parallelism::Serial, |x, y| {
+                Ok([x as f32 / 40.0, y as f32 / 24.0, 0.5])
+            })
+        };
+        // Every value but the last, which the blur reads.
+        let skipped = |region: Region, planes: &mut [f32]| {
+            let last = planes.len() - 1;
+            let kept = planes[last];
+            complete(region, planes)?;
+            planes[last] = kept;
+            Ok(())
+        };
+        let operation = |last: Arc<dyn SpatialUnit>| {
+            SpatialOperation::new(vec![Arc::new(BoxBlur { radius: 1 }), last]).unwrap()
+        };
+        let copy = operation(Arc::new(Reach { halo: 0 }));
+        let partial = operation(Arc::new(Partial));
+        let copy_plan = SpatialPlan::new(&copy, stage, Tiling::Fixed(8)).unwrap();
+        for (name, operation, fill) in [
+            ("a fill", &copy, &skipped as Fill<'_>),
+            ("a unit", &partial, &complete as Fill<'_>),
+        ] {
+            let plan = SpatialPlan::new(operation, stage, Tiling::Fixed(8)).unwrap();
+            let mut reused = TileScratch::for_plan(&plan);
+            for tile in plan.tiles() {
+                // The reused slot's buffers hold this tile's finite values first, so what fails
+                // below is the value left unwritten, not an empty slot.
+                run_tile(
+                    &copy_plan,
+                    &copy,
+                    &[],
+                    tile,
+                    Parallelism::Serial,
+                    &mut reused,
+                    &Cancel::never(),
+                    complete,
+                )
+                .unwrap();
+                for slot in [&mut TileScratch::default(), &mut reused] {
+                    let error = run_tile(
+                        &plan,
+                        operation,
+                        &[],
+                        tile,
+                        Parallelism::Serial,
+                        slot,
+                        &Cancel::never(),
+                        fill,
+                    )
+                    .unwrap_err();
+                    assert_eq!(
+                        (error.kind, error.detail.as_str()),
+                        (ErrorKind::ResourceLimit, NON_FINITE_SPATIAL),
+                        "{name} that leaves a value unwritten in {tile:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // The rolling window.
+    // -----------------------------------------------------------------------------------------
+
+    /// The pool a window test runs on: four threads whatever the host has, so a window of four
+    /// shares is as wide as the pool, its tiles' passes are serial and one held worker leaves three
+    /// running.
+    fn window_pool() -> rayon::ThreadPool {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .expect("a four-thread test pool")
+    }
+
+    /// The stage, operation and plan [`window_render`] runs: a 1 px blur of a 160 × 128 stage in
+    /// 80 tiles of 16 px.
+    fn window_plan() -> (Stage, SpatialOperation, SpatialPlan) {
+        let stage = Stage {
+            width: 160,
+            height: 128,
+        };
+        let operation = SpatialOperation::new(vec![Arc::new(BoxBlur { radius: 1 })]).unwrap();
+        let plan = SpatialPlan::new(&operation, stage, Tiling::Fixed(16)).unwrap();
+        (stage, operation, plan)
+    }
+
+    fn window_fill(
+        region: Region,
+        planes: &mut [f32],
+        parallelism: Parallelism,
+    ) -> Result<(), Error> {
+        fill_planes(region, planes, parallelism, |x, y| {
+            Ok([
+                x as f32 / 160.0,
+                y as f32 / 128.0,
+                ((x * 7 + y * 3) % 11) as f32 / 11.0,
+            ])
+        })
+    }
+
+    /// Every tile of [`window_plan`] through [`run_tiles`] under `context`'s budget, on `pool` with
+    /// the spatial pass forced past its threshold, the `n`-th tile to start passing `hold(n)` first,
+    /// and each tile's own planes kept in the order they were written.
+    fn window_render(
+        pool: &rayon::ThreadPool,
+        context: &RenderContext,
+        cancel: &Cancel,
+        hold: impl Fn(usize) + Sync,
+    ) -> Result<Vec<(Region, Vec<f32>)>, Error> {
+        let (_, operation, plan) = window_plan();
+        let started = AtomicUsize::new(0);
+        let mut written = Vec::new();
+        pool.install(|| {
+            let forced = crate::render::parallel::force(Some(true));
+            let result = run_tiles(
+                &plan,
+                context.spatial(),
+                cancel,
+                |tile, parallelism, slot| {
+                    hold(started.fetch_add(1, AtomicOrdering::SeqCst));
+                    let (region, values) = run_tile(
+                        &plan,
+                        &operation,
+                        &[],
+                        tile,
+                        parallelism,
+                        slot,
+                        cancel,
+                        |region, planes| window_fill(region, planes, parallelism),
+                    )?;
+                    Ok(cut_out(region, values, tile))
+                },
+                |tile, values| {
+                    written.push((tile, values));
+                    Ok(())
+                },
+            );
+            crate::render::parallel::force(forced);
+            result
+        })?;
+        Ok(written)
+    }
+
+    /// Every tile of [`window_plan`] written exactly once, each the bits a tile run alone gives.
+    fn assert_window_frame(written: &[(Region, Vec<f32>)], case: &str) {
+        let (_, operation, plan) = window_plan();
+        let tiles = plan.tiles();
+        assert_eq!(
+            written.len(),
+            tiles.len(),
+            "{case}: every tile written once"
+        );
+        for tile in tiles {
+            let mut slot = TileScratch::default();
+            let (region, values) = run_tile(
+                &plan,
+                &operation,
+                &[],
+                tile,
+                Parallelism::Serial,
+                &mut slot,
+                &Cancel::never(),
+                |region, planes| window_fill(region, planes, Parallelism::Serial),
+            )
+            .unwrap();
+            let expected = cut_out(region, values, tile);
+            let found: Vec<_> = written.iter().filter(|(at, _)| *at == tile).collect();
+            assert_eq!(found.len(), 1, "{case}: {tile:?} written once");
+            assert!(
+                found[0]
+                    .1
+                    .iter()
+                    .zip(&expected)
+                    .all(|(found, expected)| found.to_bits() == expected.to_bits()),
+                "{case}: {tile:?} differs from the tile run alone"
+            );
+        }
+    }
+
+    /// No tile waits for another: one tile, held at a gate, holds back nothing but itself, so every
+    /// other tile of the render is written while it is held, and once it is released the frame is
+    /// the reference's. On the byte path and the RAW linear path, with the spatial pass past its
+    /// threshold and a target that admits four tiles at once, on four threads. With a barrier
+    /// between batches the held tile's batch could never finish, so the wait for the rest is bounded
+    /// and fails, releasing the tile, rather than hanging.
+    #[test]
+    fn a_held_tile_holds_back_no_other_tile() {
+        use crate::cancel::RenderProgress;
+
+        let (registry, gate) = held_registry();
+        let (width, height, tile) = (160_u32, 128_u32, 16_u32);
+        // The held tile is an interior one, so its last unit's rectangle is the tile.
+        let stack = recipe(vec![spatial_layer(&["blur:2", "hold:48,48"])]);
+        let operation = SpatialOperation::new(vec![
+            Arc::new(BoxBlur { radius: 2 }) as Arc<dyn SpatialUnit>,
+            Arc::new(Reach { halo: 0 }),
+        ])
+        .unwrap();
+        let plan =
+            SpatialPlan::new(&operation, Stage { width, height }, Tiling::Fixed(tile)).unwrap();
+        let tiles = plan.tiles().len() as u64;
+        let pool = window_pool();
+        let source = gradient(width, height);
+        let linear = linear_source(width, height);
+        for linear_path in [false, true] {
+            let path = if linear_path { "linear" } else { "byte" };
+            let context = RenderContext::with_spatial_target(4 * plan.working_set());
+            let meter = RenderProgress::new(|_| {});
+            let cancel = Cancel::new().with_progress(&meter);
+            let reached = gate.reached();
+            gate.shut();
+            let (rest, raster) = std::thread::scope(|scope| {
+                let render = scope.spawn(|| {
+                    pool.install(|| {
+                        let forced = crate::render::parallel::force(Some(true));
+                        let input = if linear_path {
+                            crate::render::testing::linear(&linear, LinearSettings::default())
+                        } else {
+                            crate::RenderSource::Byte(&source)
+                        };
+                        let raster = frame_in(
+                            &context,
+                            &registry,
+                            input,
+                            SnapshotId::new(),
+                            &stack,
+                            RenderOptions::exact(&cancel).with_tile(tile),
+                        );
+                        crate::render::parallel::force(forced);
+                        raster
+                    })
+                });
+                let rest =
+                    luxforge_testbase::try_wait_for("every tile but the held one written", || {
+                        (gate.holding() && meter.counts().done == tiles - 1).then_some(())
+                    });
+                let held = gate.reached() - reached;
+                gate.open();
+                let raster = render.join().expect("the render thread does not panic");
+                (rest.map(|()| held), raster)
+            });
+            let held = rest.unwrap_or_else(|hung| panic!("{path} path: {hung}"));
+            assert_eq!(held, 1, "{path} path: only the one tile passes the gate");
+            let raster = raster.unwrap_or_else(|error| panic!("{path} path: {error:?}"));
+            assert_eq!(meter.counts().done, tiles, "{path} path");
+            let expected = if linear_path {
+                reference_chain(width, height, linear_frame(&linear), &[RefUnit::Blur(2)])
+            } else {
+                reference_chain(
+                    width,
+                    height,
+                    decode_frame(source.rgba.as_ref()),
+                    &[RefUnit::Blur(2)],
+                )
+            };
+            assert_frame(&raster, &expected, &format!("{path} path, a tile held"));
+            assert_eq!(context.spatial().in_use(), 0, "{path} path");
+        }
+    }
+
+    /// The window narrows when another evaluation takes the target: four workers hold the whole
+    /// target at their first tiles, another evaluation reserves all of it again, and as each
+    /// worker finishes it gives back its share until one worker is left to run the next tile.
+    /// Once the other evaluation releases the target the render completes, its frame exact.
+    #[test]
+    fn a_window_narrows_when_another_evaluation_takes_the_target() {
+        let (_, _, plan) = window_plan();
+        let pool = window_pool();
+        let context = RenderContext::with_spatial_target(4 * plan.working_set());
+        let budget = context.spatial();
+        let (first, later) = (Gate::new(), Gate::new());
+        first.shut();
+        later.shut();
+        let cancel = Cancel::new();
+        let written = std::thread::scope(|scope| {
+            let render = scope.spawn(|| {
+                window_render(&pool, &context, &cancel, |started| {
+                    if started < 4 {
+                        first.pass()
+                    } else {
+                        later.pass()
+                    }
+                })
+            });
+            first.wait_reached(4, "the window's first four tiles");
+            assert_eq!(
+                budget.in_use(),
+                budget.target(),
+                "four shares fill the target"
+            );
+            let other = budget.reserve(budget.target(), 1);
+            first.open();
+            luxforge_testbase::wait_until("the window to narrow to one share", || {
+                later.holding() && budget.in_use() == budget.target() + plan.working_set()
+            });
+            assert_eq!(later.waiting(), 1, "one worker runs on");
+            assert_eq!(later.reached(), 1, "and no other started a tile");
+            drop(other);
+            later.open();
+            render.join().expect("the render thread does not panic")
+        })
+        .expect("the render completes");
+        assert_window_frame(&written, "narrowed");
+        assert_eq!(budget.in_use(), 0, "every share is released");
+    }
+
+    /// The window widens when the target is released: a render that started beside another
+    /// evaluation holding the whole target runs one share, and once that is released each tile it
+    /// finishes takes one more share, until it holds the plan's concurrency, four, and no more.
+    #[test]
+    fn a_window_widens_when_another_evaluation_releases_the_target() {
+        let (_, _, plan) = window_plan();
+        let pool = window_pool();
+        let context = RenderContext::with_spatial_target(4 * plan.working_set());
+        let budget = context.spatial();
+        let (first, later) = (Gate::new(), Gate::new());
+        first.shut();
+        later.shut();
+        let cancel = Cancel::new();
+        let other = budget.reserve(budget.target(), 1);
+        let written = std::thread::scope(|scope| {
+            let render = scope.spawn(|| {
+                window_render(&pool, &context, &cancel, |started| {
+                    if started == 0 {
+                        first.pass()
+                    } else {
+                        later.pass()
+                    }
+                })
+            });
+            first.wait_reached(1, "the window's first tile");
+            assert_eq!(
+                budget.in_use(),
+                budget.target() + plan.working_set(),
+                "beside a taken target the window holds one share"
+            );
+            drop(other);
+            budget.reset_peak();
+            first.open();
+            luxforge_testbase::wait_until("the window to widen by one share", || {
+                later.waiting() == 2 && budget.in_use() == 2 * plan.working_set()
+            });
+            later.open();
+            render.join().expect("the render thread does not panic")
+        })
+        .expect("the render completes");
+        assert_window_frame(&written, "widened");
+        assert_eq!(
+            budget.peak(),
+            4 * plan.working_set(),
+            "the window widened to the plan's concurrency and no further"
+        );
+        assert_eq!(budget.in_use(), 0, "every share is released");
+    }
+
+    /// A window cancelled while each of its four workers is inside a tile finishes those tiles,
+    /// starts no other, returns the cancelled kind and releases every share.
+    #[test]
+    fn a_cancelled_window_starts_no_tile_after_the_token_and_releases_its_shares() {
+        let (_, _, plan) = window_plan();
+        let pool = window_pool();
+        let context = RenderContext::with_spatial_target(4 * plan.working_set());
+        let gate = Gate::new();
+        gate.shut();
+        let cancel = Cancel::new();
+        let result = std::thread::scope(|scope| {
+            let render = scope.spawn(|| window_render(&pool, &context, &cancel, |_| gate.pass()));
+            gate.wait_reached(4, "the window's four tiles");
+            cancel.cancel();
+            gate.open();
+            render.join().expect("the render thread does not panic")
+        });
+        let error = result.expect_err("a cancelled window returns no frame");
+        assert_eq!(error.kind, ErrorKind::Cancelled);
+        assert_eq!(gate.reached(), 4, "no tile started after the token");
+        assert_eq!(context.spatial().in_use(), 0, "every share is released");
+    }
+
+    // -----------------------------------------------------------------------------------------
     // Cancellation.
     // -----------------------------------------------------------------------------------------
 
     /// The render is held inside its first tile while the token is cancelled, so the stop is
-    /// raised exactly once one batch has started and every later batch is still to come.
+    /// raised exactly once that tile has started and every later tile is still to come.
     #[test]
-    fn a_cancelled_render_stops_between_tile_batches_and_releases_its_reservation() {
+    fn a_cancelled_render_stops_between_tiles_and_releases_its_reservation() {
         let (registry, gate) = held_registry();
-        // Many tiles, one at a time: 64 px tiles, and the target is exactly one working set so the
-        // operation runs a batch of one tile, which is where the token is checked.
+        // Many tiles, one at a time: 64 px tiles below the parallel threshold, and the target is
+        // exactly one working set, so the operation runs one tile at a time and checks the token
+        // between them.
         let tile = 64;
         let source = gradient(300, 200);
         let stack = recipe(vec![spatial_layer(&["blur:24", "held"])]);
@@ -4402,7 +5870,7 @@ mod tests {
             Tiling::Fixed(tile),
         )
         .unwrap();
-        assert!(plan.tiles().len() > 4, "several batches of one tile");
+        assert!(plan.tiles().len() > 4, "several tiles, one at a time");
         let context = RenderContext::with_spatial_target(plan.working_set());
         let budget = context.spatial();
         let cancel = Cancel::new();
@@ -4435,10 +5903,10 @@ mod tests {
         assert_eq!(
             gate.reached(),
             1,
-            "the render stopped after the batch it was in, one of {} tiles",
+            "the render stopped after the tile it was in, one of {} tiles",
             plan.tiles().len()
         );
-        assert_eq!(budget.in_use(), 0, "the batch reservation is released");
+        assert_eq!(budget.in_use(), 0, "the reservation is released");
         // An already cancelled token refuses before any tile runs.
         let error = match render() {
             Ok(_) => panic!("still cancelled"),
@@ -4449,13 +5917,13 @@ mod tests {
     }
 
     #[test]
-    fn a_tile_spreads_its_passes_over_the_pool_only_when_the_budget_narrows_its_batch() {
+    fn a_tile_spreads_its_passes_over_the_pool_only_when_the_budget_narrows_its_window() {
         assert_eq!(tile_parallelism(true, 2, 14), Parallelism::Pool);
         assert_eq!(tile_parallelism(true, 13, 14), Parallelism::Pool);
         assert_eq!(
             tile_parallelism(true, 14, 14),
             Parallelism::Serial,
-            "a batch as wide as the pool already occupies every worker"
+            "a window as wide as the pool already occupies every worker"
         );
         assert_eq!(
             tile_parallelism(false, 1, 14),
@@ -4465,13 +5933,13 @@ mod tests {
         assert_eq!(tile_parallelism(true, 1, 1), Parallelism::Serial);
     }
 
-    /// A render whose batches the budget narrows to one tile fills, checks and quantizes each tile
-    /// on the pool; one whose batches are as wide as the pool does all of that serially. Both paths
+    /// A render whose window the budget narrows to one tile fills, checks and quantizes each tile
+    /// on the pool; one whose window is as wide as the pool does all of that serially. Both paths
     /// give the same frame to the byte.
     #[test]
     fn a_render_with_pooled_tiles_equals_one_with_serial_tiles() {
         let registry = spatial_registry();
-        // Forced past the parallel threshold, in 16 px tiles so that a batch as wide as the pool
+        // Forced past the parallel threshold, in 16 px tiles so that a window as wide as the pool
         // exists whatever the pool's size.
         let (width, height) = (250, 250);
         let tile = 16;
@@ -4487,7 +5955,7 @@ mod tests {
         let plan =
             SpatialPlan::new(&operation, Stage { width, height }, Tiling::Fixed(tile)).unwrap();
         let mut frames = Vec::new();
-        // One working set: batches of one tile, pooled. Unbounded: batches as wide as the pool,
+        // One working set: a window of one tile, pooled. Unbounded: a window as wide as the pool,
         // serial.
         for target in [plan.working_set(), u64::MAX / 2] {
             let context = RenderContext::with_spatial_target(target);

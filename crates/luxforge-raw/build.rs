@@ -409,6 +409,17 @@ fn main() {
             "src/include/mytime.h",
         ],
     );
+    // The sensor-site input stacks on the local patch: its context is the locally patched source.
+    apply_patch(
+        &rt,
+        include_str!("patches/librtprocess-mosaic.patch"),
+        &[
+            "src/demosaic/border.cc",
+            "src/demosaic/markesteijn.cc",
+            "src/demosaic/rcd.cc",
+            "src/include/librtprocess.h",
+        ],
+    );
     let mut build = cc::Build::new();
     build
         .cpp(true)
@@ -444,6 +455,7 @@ fn main() {
     println!("cargo:rerun-if-changed=vendor/libraw-0.22.2");
     println!("cargo:rerun-if-changed=vendor/librtprocess-9a858270");
     println!("cargo:rerun-if-changed=patches/librtprocess-local.patch");
+    println!("cargo:rerun-if-changed=patches/librtprocess-mosaic.patch");
     println!("cargo:rerun-if-changed=patches/libraw-arw6.patch");
     println!("cargo:rerun-if-changed=patches/sony_arw6.cpp");
     println!("cargo:rerun-if-changed=native/rawspeed_adapter.cpp");

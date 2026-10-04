@@ -18,6 +18,11 @@ image = { workspace = true, features = ["jpeg"] }
 serde_json.workspace = true
 sha2.workspace = true
 
+# Hardware SHA-256 on aarch64 for the tests' digests, so that every build resolves one `sha2`; the
+# reason is in `crates/luxforge-raw/Cargo.toml`.
+[target.'cfg(all(target_arch = "aarch64", not(target_os = "windows")))'.dev-dependencies]
+sha2 = { workspace = true, features = ["asm"] }
+
 # The decoder reads libjpeg's warning code through its error manager's raw pointer: one `unsafe`
 # block, in `decode.rs`, allowed there by name. The crate denies `unsafe` everywhere else, and the
 # rest of the workspace keeps its forbid(unsafe_code) policy.

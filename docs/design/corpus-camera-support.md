@@ -92,12 +92,13 @@ and peaks at 1,233,829,888 bytes RSS (about 1.15 GiB): total process memory
 includes allocations outside decoder working space. This is one functional
 trial, not a latency distribution or total-process ceiling.
 
-JPEG XL uses pinned Rust jxl-oxide with a 512 MiB allocation tracker and no new
-thread pool. A source must be one 16-bit RGB DNG segment with exactly one
+JPEG XL uses pinned Rust jxl-oxide with a 512 MiB allocation tracker, decoding on
+the global Rayon pool (its `rayon` feature, named explicitly in the adapter) and
+adding no pool of its own. A source must be one 16-bit RGB DNG segment with exactly one
 nonanimated frame, matching dimensions, orientation and no extra channels.
 Header/stream feeds and output rows check cancellation. The library's final
 `render_frame` call has no cancellation hook; cancellation waits for that
-bounded decode interval. It runs on the existing source worker, never the
+bounded decode interval. It is called from the existing source worker, never the
 owner or UI thread.
 
 ## Performance review
@@ -109,9 +110,12 @@ owner or UI thread.
   DNG repairs exclude masked padding; existing strict-path references preserve
   their established full-frame interpretation.
 - Direct RGB/monochrome development allocates only the bounded output planes;
-  CFA normalization still uses its bounded single float mosaic and shared native
-  jobs. JPEG XL tracked scratch and Sony's upstream working-space estimate have
-  their separate limits above. These are allocation limits, not an RSS bound.
+  CFA development reads the retained mosaic through per-site tables, and only a
+  development whose sensor stage rewrites the normalized values (DNG stage-one
+  vignette or stage-two gain maps, or sparse repairs) uses its bounded single
+  float mosaic; both share the native jobs. JPEG XL tracked scratch and Sony's
+  upstream working-space estimate have their separate limits above. These are
+  allocation limits, not an RSS bound.
 - Neutral sampling evaluates a fixed 13×13 source patch, including the same
   source-stage gains as development; queries, validation and no-op checks
   allocate no frame. Exact tests cover signed headroom, channel order, grayscale,

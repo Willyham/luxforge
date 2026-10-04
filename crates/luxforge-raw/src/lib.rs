@@ -30,6 +30,7 @@ mod optics;
 mod profiles;
 mod rawspeed;
 mod unpacker;
+mod zeroed;
 pub use dng::{DngCalibrationMetadata, DngCorrectionMetadata, DngOpcodeProvenance};
 use format::{classify_mode, raf_default_crop};
 pub use limits::{
@@ -803,11 +804,7 @@ impl RawSource {
             bytes,
             &opcodes,
         )?;
-        let mut samples = Vec::new();
-        samples
-            .try_reserve_exact(n)
-            .map_err(|_| RawError::ResourceLimit("sensor mosaic allocation"))?;
-        samples.resize(n, 0);
+        let mut samples = zeroed::zeroed_vec::<u16>(n, "sensor mosaic allocation")?;
         if unpacker == NativeUnpacker::JxlOxide {
             jxl::decode_into(bytes, &native, &mut samples, cancel)?;
         } else {
@@ -1235,8 +1232,8 @@ impl RawSource {
 mod tests {
     use super::*;
     use develop::{
-        DemosaicShape, DevelopDiagnostics, DevelopOptions, develop_with, development_lanes,
-        native_demosaic,
+        DemosaicInput, DemosaicShape, DevelopDiagnostics, DevelopOptions, develop_with,
+        development_lanes, native_demosaic, native_demosaic_sites,
     };
 
     /// The development executor with `worker_limit` ([`DevelopOptions::worker_limit`]).
@@ -1263,6 +1260,18 @@ mod tests {
         gains: [f32; 3],
         lanes: usize,
     ) -> Vec<f32> {
+        synthetic_normalization(samples, meta, patches, gains)
+            .run(lanes, &AtomicBool::new(false))
+            .unwrap()
+    }
+
+    /// The normalization of a synthetic mosaic described by native metadata.
+    fn synthetic_normalization<'a>(
+        samples: &'a [u16],
+        meta: &'a NativeMetadata,
+        patches: &'a [MosaicCorrection],
+        gains: [f32; 3],
+    ) -> normalize::Normalization<'a> {
         let (cfa_width, cfa_height) = (meta.cfa_width as usize, meta.cfa_height as usize);
         let (repeat_width, repeat_height) = (
             meta.black_repeat_width as usize,
@@ -1286,8 +1295,6 @@ mod tests {
             white: meta.white,
             gains,
         }
-        .run(lanes, &AtomicBool::new(false))
-        .unwrap()
     }
 
     /// A synthetic mosaic, its native metadata, its sparse repairs and its gains.
@@ -1556,6 +1563,49 @@ mod tests {
         cancel_context: *mut c_void,
     ) -> (Result<(), RawError>, Vec<f32>) {
         develop_synthetic(samples, meta, &[], gains, trace, cancel, cancel_context)
+    }
+
+    /// [`run_bayer`] through the sensor-site input: the native demosaic reads each site from
+    /// `samples` through the normalization's per-site tables, and no float mosaic exists.
+    fn run_sites(
+        samples: &[u16],
+        meta: &NativeMetadata,
+        gains: [f32; 3],
+        trace: Option<&TracedExecutor<'_>>,
+        cancel: CancelCallback,
+        cancel_context: *mut c_void,
+    ) -> (Result<(), RawError>, Vec<f32>) {
+        let n = samples.len();
+        let mut output = vec![f32::NAN; n * 3];
+        let lanes = trace.map_or(1, |trace| {
+            development_lanes(n, trace.inner.worker_limit, true)
+        });
+        let sites = synthetic_normalization(samples, meta, &[], gains)
+            .sensor_sites(&AtomicBool::new(false))
+            .unwrap();
+        let result = native_demosaic_sites(
+            samples,
+            &sites,
+            &DemosaicShape::of(meta),
+            &mut output,
+            trace.map(|trace| {
+                (
+                    traced_execute as native_tiles::TileExecutor,
+                    (trace as *const TracedExecutor<'_>).cast_mut().cast(),
+                )
+            }),
+            cancel,
+            cancel_context,
+        )
+        .and_then(|()| {
+            normalize::scale_planes(
+                &mut output,
+                meta.width as usize,
+                lanes,
+                &AtomicBool::new(false),
+            )
+        });
+        (result, output)
     }
 
     /// An X-Trans mosaic with the same edges, ramps and noise as
@@ -1947,6 +1997,640 @@ mod tests {
             assert_eq!(code, Ok(()));
             assert_eq!(first_difference(&serial, &recovered), None);
         }
+    }
+
+    /// Where two plane sets first differ, for a failure message: the channel, the site and both
+    /// values' bits.
+    fn difference_at(left: &[f32], right: &[f32], width: usize) -> Option<String> {
+        let at = first_difference(left, right)?;
+        let n = left.len() / 3;
+        let (channel, site) = (at / n, at % n);
+        Some(format!(
+            "channel {channel} at ({}, {}): {:#010x} vs {:#010x}",
+            site % width,
+            site / width,
+            left[at].to_bits(),
+            right[at].to_bits()
+        ))
+    }
+
+    /// [`synthetic_xtrans`] with its CFA, and the black calibration sites that follow it, shifted
+    /// by `dy` rows and `dx` columns: one of the pattern's 36 phases.
+    fn synthetic_xtrans_phase(
+        width: usize,
+        height: usize,
+        dy: usize,
+        dx: usize,
+    ) -> (Vec<u16>, NativeMetadata) {
+        let (samples, mut meta) = synthetic_xtrans(width, height);
+        let base = meta.cfa;
+        for y in 0..6 {
+            for x in 0..6 {
+                meta.cfa[y * 6 + x] = base[(y + dy) % 6 * 6 + (x + dx) % 6];
+            }
+        }
+        meta.black_cfa = meta.cfa;
+        (samples, meta)
+    }
+
+    /// A labelled synthetic mosaic, its native metadata and the gains to develop it at.
+    type SensorSiteCase = (String, Vec<u16>, NativeMetadata, Vec<[f32; 3]>);
+
+    /// The synthetic mosaics, each with its gains, that the sensor-site input is held to the float
+    /// mosaic on: every Bayer CFA phase at the RCD tile edges of
+    /// `rcd_tile_jobs_match_the_serial_raster_bits`, black repeat patterns that do and do not
+    /// divide the CFA, X-Trans frames from the native minimum up and in all 36 phases of its
+    /// pattern, gains that push red and blue far past sensor white (RCD's input clip, X-Trans's
+    /// unclamped values) or keep them under it, and mosaics entirely at sensor white and
+    /// entirely under black.
+    fn sensor_site_cases() -> Vec<SensorSiteCase> {
+        let mut cases = Vec::new();
+        let bayer_gains = vec![[1.7, 1.0, 1.3], [0.6, 1.0, 2.9], [4.0, 1.0, 3.5]];
+        let cfas = [[0, 1, 1, 2], [1, 0, 2, 1], [2, 1, 1, 0], [1, 2, 0, 1]];
+        for (index, (width, height)) in [
+            (10, 10),
+            (17, 23),
+            (18, 18),
+            (40, 30),
+            (193, 194),
+            (194, 194),
+            (195, 371),
+            (370, 370),
+            (357, 369),
+            (371, 546),
+            (547, 353),
+            (1411, 353),
+            (1057, 883),
+            (2000, 1500),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let cfa = cfas[index % 4];
+            let (samples, meta) = synthetic_bayer(width, height, cfa);
+            cases.push((
+                format!("Bayer {width}x{height} {cfa:?}"),
+                samples,
+                meta,
+                bayer_gains.clone(),
+            ));
+        }
+        for (samples, meta, _, gains) in normalization_cases() {
+            let label = format!(
+                "{} {}x{} repeat {}x{}",
+                if meta.cfa_width == 2 {
+                    "Bayer"
+                } else {
+                    "X-Trans"
+                },
+                meta.width,
+                meta.height,
+                meta.black_repeat_width,
+                meta.black_repeat_height
+            );
+            cases.push((label, samples, meta, vec![gains, [3.0, 1.0, 0.4]]));
+        }
+        let xtrans_gains = vec![
+            [1.7, 1.0, 1.3],
+            [2.1, 1.0, 0.8],
+            [8.0, 1.0, 6.0],
+            [0.3, 1.0, 0.4],
+        ];
+        for (width, height) in [
+            (120, 120),
+            (121, 221),
+            (126, 126),
+            (219, 219),
+            (239, 347),
+            (317, 315),
+            (1003, 413),
+            (1005, 413),
+        ] {
+            let (samples, meta) = synthetic_xtrans(width, height);
+            cases.push((
+                format!("X-Trans {width}x{height}"),
+                samples,
+                meta,
+                xtrans_gains.clone(),
+            ));
+        }
+        for dy in 0..6 {
+            for dx in 0..6 {
+                let (samples, meta) = synthetic_xtrans_phase(239, 347, dy, dx);
+                cases.push((
+                    format!("X-Trans 239x347 phase ({dy}, {dx})"),
+                    samples,
+                    meta,
+                    vec![[1.7, 1.0, 1.3], [8.0, 1.0, 6.0]],
+                ));
+            }
+        }
+        // The clip test's mosaics: every site at sensor white, and every site 64 codes under
+        // black.
+        let (_, mut bayer) = synthetic_bayer(64, 48, [0, 1, 1, 2]);
+        bayer.black_channels = [0.0; 4];
+        let (_, mut xtrans) = synthetic_xtrans(126, 126);
+        xtrans.black_channels = [0.0; 4];
+        xtrans.black_repeat_width = 0;
+        xtrans.black_repeat_height = 0;
+        for meta in [bayer, xtrans] {
+            let n = (meta.width * meta.height) as usize;
+            for (level, value) in [("white", meta.white as u16), ("under black", 0)] {
+                cases.push((
+                    format!("{}x{} at {level}", meta.width, meta.height),
+                    vec![value; n],
+                    meta.clone(),
+                    vec![[2.0, 1.0, 1.5], [32.0, 1.0, 32.0]],
+                ));
+            }
+        }
+        cases
+    }
+
+    /// The sensor-site input develops every synthetic case to the float mosaic's planes bit for
+    /// bit, border band included, serial and on the pool at one worker and at the pool's width,
+    /// each tile job once and never more than eight at once.
+    #[test]
+    fn sensor_sites_develop_the_float_mosaic_bits() {
+        let never = AtomicBool::new(false);
+        let never_context = (&never as *const AtomicBool).cast_mut().cast();
+        for (label, samples, meta, gains) in sensor_site_cases() {
+            let width = meta.width as usize;
+            for gains in gains {
+                let (code, float) =
+                    run_bayer(&samples, &meta, gains, None, cancelled, never_context);
+                assert_eq!(code, Ok(()), "{label} float mosaic at {gains:?}");
+                let (code, sites) =
+                    run_sites(&samples, &meta, gains, None, cancelled, never_context);
+                assert_eq!(code, Ok(()), "{label} sensor sites at {gains:?}");
+                if let Some(at) = difference_at(&float, &sites, width) {
+                    panic!("{label} at {gains:?}: sensor sites differ, {at}");
+                }
+                for worker_limit in [1, 0] {
+                    let trace = traced(&never, worker_limit);
+                    let (code, pooled) = run_sites(
+                        &samples,
+                        &meta,
+                        gains,
+                        Some(&trace),
+                        cancelled,
+                        never_context,
+                    );
+                    assert_eq!(code, Ok(()), "{label} pooled sensor sites");
+                    if let Some(at) = difference_at(&float, &pooled, width) {
+                        panic!("{label} at {gains:?}, {worker_limit} workers: {at}");
+                    }
+                    let jobs = trace.last_jobs.lock().unwrap().clone();
+                    assert!(jobs.iter().all(|&runs| runs == 1), "{label}");
+                    assert!(trace.peak.load(Ordering::Relaxed) <= 8);
+                    assert!(!trace.off_pool.load(Ordering::Relaxed));
+                }
+            }
+        }
+    }
+
+    /// One synthetic development through either input: [`run_bayer`] or [`run_sites`].
+    type SyntheticRun = fn(
+        &[u16],
+        &NativeMetadata,
+        [f32; 3],
+        Option<&TracedExecutor<'_>>,
+        CancelCallback,
+        *mut c_void,
+    ) -> (Result<(), RawError>, Vec<f32>);
+
+    /// The sensor-site input checks cancellation exactly where the float mosaic's does (before
+    /// the demosaic, before every tile and after it) and stops a frame part way; it fails below
+    /// the native geometry minimums and when a tile job fails as the float mosaic does, and a
+    /// development after a failure gives the same bits.
+    #[test]
+    fn sensor_sites_cancel_and_fail_as_the_float_mosaic_does() {
+        struct CancelAt {
+            calls: std::sync::atomic::AtomicUsize,
+            first_cancel_call: usize,
+        }
+        extern "C" fn cancel_at(context: *mut c_void) -> c_int {
+            // SAFETY: each native call is synchronous and receives this live state.
+            let state = unsafe { &*context.cast::<CancelAt>() };
+            c_int::from(state.calls.fetch_add(1, Ordering::Relaxed) >= state.first_cancel_call)
+        }
+        let never = AtomicBool::new(false);
+        let never_context = (&never as *const AtomicBool).cast_mut().cast();
+        let inputs: [(&str, SyntheticRun); 2] =
+            [("float mosaic", run_bayer), ("sensor sites", run_sites)];
+        let gains = [1.2, 1.0, 1.4];
+        for (samples, meta) in [
+            synthetic_bayer(2400, 1800, [0, 1, 1, 2]),
+            synthetic_xtrans(1203, 877),
+        ] {
+            let n = samples.len();
+            let executor = traced(&never, 0);
+            for trace in [None, Some(&executor)] {
+                let calls = inputs.map(|(name, run)| {
+                    let full = CancelAt {
+                        calls: std::sync::atomic::AtomicUsize::new(0),
+                        first_cancel_call: usize::MAX,
+                    };
+                    let (code, _) = run(
+                        &samples,
+                        &meta,
+                        gains,
+                        trace,
+                        cancel_at,
+                        (&full as *const CancelAt).cast_mut().cast(),
+                    );
+                    assert_eq!(code, Ok(()), "{name}");
+                    full.calls.load(Ordering::Relaxed)
+                });
+                assert_eq!(calls[0], calls[1], "cancellation checks differ");
+                if meta.cfa_width == 2 {
+                    // Once before the demosaic, before each tile, after the jobs join and after
+                    // the demosaic.
+                    assert_eq!(
+                        calls[1],
+                        1 + 2400_usize.div_ceil(176) * 1800_usize.div_ceil(176) + 2
+                    );
+                }
+                let state = CancelAt {
+                    calls: std::sync::atomic::AtomicUsize::new(0),
+                    first_cancel_call: 13,
+                };
+                let (code, output) = run_sites(
+                    &samples,
+                    &meta,
+                    gains,
+                    trace,
+                    cancel_at,
+                    (&state as *const CancelAt).cast_mut().cast(),
+                );
+                assert_eq!(code, Err(RawError::Cancelled));
+                let written = output[..n].iter().filter(|value| !value.is_nan()).count();
+                assert!(
+                    written > 0 && written * 2 < n,
+                    "{written} of {n} red samples"
+                );
+                assert!(state.calls.load(Ordering::Relaxed) < calls[1]);
+            }
+        }
+        for (samples, meta) in [
+            synthetic_bayer(9, 40, [0, 1, 1, 2]),
+            synthetic_bayer(40, 9, [1, 0, 2, 1]),
+            synthetic_xtrans(119, 413),
+            synthetic_xtrans(413, 119),
+        ] {
+            let executor = traced(&never, 0);
+            for trace in [None, Some(&executor)] {
+                for (name, run) in inputs {
+                    let (code, output) =
+                        run(&samples, &meta, [1.0; 3], trace, cancelled, never_context);
+                    assert!(
+                        matches!(code.unwrap_err(), RawError::ResourceLimit(_)),
+                        "{name} {}x{}",
+                        meta.width,
+                        meta.height
+                    );
+                    assert!(output.iter().all(|value| value.is_nan()));
+                }
+            }
+        }
+        for (samples, meta) in [
+            synthetic_bayer(1057, 883, [1, 2, 0, 1]),
+            synthetic_xtrans(1203, 877),
+        ] {
+            let (code, serial) = run_bayer(&samples, &meta, gains, None, cancelled, never_context);
+            assert_eq!(code, Ok(()));
+            let counted = traced(&never, 0);
+            let (code, _) = run_sites(
+                &samples,
+                &meta,
+                gains,
+                Some(&counted),
+                cancelled,
+                never_context,
+            );
+            assert_eq!(code, Ok(()));
+            let jobs = counted.last_jobs.lock().unwrap().len();
+            assert!(jobs > 1);
+            for worker_limit in [1, 4] {
+                for fault_job in [0, jobs - 1] {
+                    let faulting = TracedExecutor {
+                        fault_job: Some(fault_job),
+                        ..traced(&never, worker_limit)
+                    };
+                    let (code, _) = run_sites(
+                        &samples,
+                        &meta,
+                        gains,
+                        Some(&faulting),
+                        cancelled,
+                        never_context,
+                    );
+                    assert!(matches!(code.unwrap_err(), RawError::Native(_)));
+                    assert_eq!(faulting.active.load(Ordering::Relaxed), 0);
+                }
+                let executor = traced(&never, worker_limit);
+                let (code, recovered) = run_sites(
+                    &samples,
+                    &meta,
+                    gains,
+                    Some(&executor),
+                    cancelled,
+                    never_context,
+                );
+                assert_eq!(code, Ok(()));
+                assert_eq!(first_difference(&serial, &recovered), None);
+            }
+        }
+    }
+
+    /// A development reads the sensor sites, with no float mosaic, unless its sensor stage
+    /// rewrites the normalized values, here with sparse repairs. Its diagnostics show the float
+    /// mosaic's 4 bytes a site gone from what it holds through the demosaic, less the per-site
+    /// tables it holds instead, and its planes are the float mosaic's, bit for bit.
+    #[test]
+    fn developments_drop_the_float_mosaic_unless_the_sensor_stage_rewrites_it() {
+        let cancel = AtomicBool::new(false);
+        let gains = [1.7, 1.0, 1.3];
+        let develop = |raw: &RawSource, float_mosaic: bool, executor: bool| {
+            let mut diagnostics = DevelopDiagnostics::default();
+            let image = develop_with(
+                raw,
+                gains,
+                &cancel,
+                DevelopOptions {
+                    executor,
+                    diagnostics: Some(&mut diagnostics),
+                    float_mosaic,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            (image.data, diagnostics)
+        };
+        for (samples, meta) in [
+            synthetic_bayer(1057, 883, [1, 2, 0, 1]),
+            synthetic_xtrans(1203, 877),
+        ] {
+            let n = samples.len();
+            let width = meta.width as usize;
+            let mut raw = layout_tests::mosaic_source(samples, &meta);
+            assert_eq!(DemosaicInput::of(&raw), DemosaicInput::SensorSites);
+            let mut unrepaired = Vec::new();
+            for executor in [false, true] {
+                let (sites, read_sites) = develop(&raw, false, executor);
+                let (float, read_float) = develop(&raw, true, executor);
+                if let Some(at) = difference_at(&float, &sites, width) {
+                    panic!("{width}-wide development differs: {at}");
+                }
+                assert_eq!(read_sites.input, Some(DemosaicInput::SensorSites));
+                assert_eq!(read_float.input, Some(DemosaicInput::FloatMosaic));
+                assert_eq!(read_sites.float_mosaic_bytes, 0);
+                assert_eq!(read_float.float_mosaic_bytes, 4 * n);
+                assert_eq!(read_float.demosaic_bytes, (4 + 12) * n);
+                let tables = read_sites.demosaic_bytes - 12 * n;
+                assert!(tables > 0 && tables < 16 * 1024, "{tables} table bytes");
+                assert_eq!(
+                    read_float.demosaic_bytes - read_sites.demosaic_bytes,
+                    4 * n - tables
+                );
+                unrepaired = sites;
+            }
+            // The public development takes the same input.
+            let public = raw.develop(gains, &cancel).unwrap();
+            assert_eq!(first_difference(&public.data, &unrepaired), None);
+            for float_mosaic in [false, true] {
+                let options = DevelopOptions {
+                    float_mosaic,
+                    ..Default::default()
+                };
+                assert!(matches!(
+                    develop_with(&raw, gains, &AtomicBool::new(true), options),
+                    Err(RawError::Cancelled)
+                ));
+            }
+            // Sparse repairs keep the float mosaic, which carries them.
+            raw.mosaic_corrections = Arc::new(
+                [1000, n / 2, n - 7]
+                    .map(|index| MosaicCorrection {
+                        index: index as u32,
+                        value: 0,
+                    })
+                    .to_vec(),
+            );
+            assert_eq!(DemosaicInput::of(&raw), DemosaicInput::FloatMosaic);
+            let (repaired, read) = develop(&raw, false, true);
+            assert_eq!(read.input, Some(DemosaicInput::FloatMosaic));
+            assert_eq!(read.float_mosaic_bytes, 4 * n);
+            assert_eq!(
+                first_difference(&repaired, &develop(&raw, true, true).0),
+                None
+            );
+            assert!(first_difference(&repaired, &unrepaired).is_some());
+        }
+    }
+
+    /// Every file in the directories `LUXFORGE_RAW_SAMPLE_DIRS` lists (a path list; each file
+    /// once, whatever its name; dot files and JSON, text and image side files skipped) that the
+    /// catalog decodes is developed at its as-shot gains and at the qualifier's perturbed white
+    /// balance through the input its development takes and through a forced float mosaic, and
+    /// the planes must be identical bit for bit. A row per file gives its path, layout, input
+    /// and outcome; a file the catalog refuses is listed as refused, not failed. Where the
+    /// [evidence manifest](../../fixtures/modern-camera-evidence.json) records the source, the
+    /// complete development's hash (DNG corrections after the demosaic included) is compared
+    /// with it too, and reported. Run in release:
+    ///
+    /// ```text
+    /// LUXFORGE_RAW_SAMPLE_DIRS=/path/to/selection:/path/to/popular:/path/to/owner/raw \
+    ///   cargo test --release -p luxforge-raw --locked --lib sensor_sites_match_the_float_mosaic \
+    ///   -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "authentic sensor-site exactness over local sample directories"]
+    fn sensor_sites_match_the_float_mosaic_on_every_local_sample() {
+        use sha2::{Digest, Sha256};
+        let dirs = std::env::var_os("LUXFORGE_RAW_SAMPLE_DIRS").expect("LUXFORGE_RAW_SAMPLE_DIRS");
+        let evidence: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../fixtures/modern-camera-evidence.json"
+            ))
+            .expect("evidence manifest"),
+        )
+        .expect("evidence JSON");
+        let entries = evidence["entries"].as_array().expect("evidence entries");
+        let mut files = Vec::new();
+        for dir in std::env::split_paths(&dirs) {
+            let mut listed: Vec<_> = std::fs::read_dir(&dir)
+                .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+                .map(|entry| entry.expect("directory entry").path())
+                .filter(|path| {
+                    let skipped = path
+                        .file_name()
+                        .is_some_and(|name| name.to_string_lossy().starts_with('.'))
+                        || path.extension().is_some_and(|ext| {
+                            ["json", "txt", "md", "xmp", "jpg", "jpeg", "csv"]
+                                .contains(&ext.to_string_lossy().to_ascii_lowercase().as_str())
+                        });
+                    !skipped && std::fs::metadata(path).is_ok_and(|m| m.is_file())
+                })
+                .collect();
+            listed.sort();
+            files.extend(listed);
+        }
+        let cancel = AtomicBool::new(false);
+        let mut seen = std::collections::HashSet::new();
+        let mut counts: std::collections::BTreeMap<(String, String), usize> =
+            std::collections::BTreeMap::new();
+        let (mut refused, mut differing, mut evidence_rows) = (Vec::new(), Vec::new(), Vec::new());
+        println!("path\tlayout\tinput\tas-shot\tperturbed\tevidence");
+        for path in files {
+            let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            let source = format!("{:x}", Sha256::digest(&bytes));
+            if !seen.insert(source.clone()) {
+                continue;
+            }
+            let name = path.display().to_string();
+            let raw = match RawSource::decode(&bytes[..], &cancel) {
+                Ok(raw) => raw,
+                Err(error) => {
+                    println!("{name}\t-\t-\trefused: {error}\t-\t-");
+                    refused.push(name);
+                    continue;
+                }
+            };
+            drop(bytes);
+            let m = &raw.metadata;
+            let layout = match (m.layout, m.cfa_width) {
+                (RawLayout::Mosaic, 2) => "Bayer",
+                (RawLayout::Mosaic, 6) => "X-Trans",
+                (RawLayout::Mosaic, _) => "other CFA",
+                (RawLayout::LinearRgb, _) => "linear RGB",
+                (RawLayout::Monochrome, _) => "monochrome",
+            };
+            let input = if m.layout == RawLayout::Mosaic {
+                match DemosaicInput::of(&raw) {
+                    DemosaicInput::SensorSites => "sensor sites",
+                    DemosaicInput::FloatMosaic => "float mosaic",
+                }
+            } else {
+                "direct"
+            };
+            *counts
+                .entry((layout.to_owned(), input.to_owned()))
+                .or_default() += 1;
+            let gains = m.as_shot_gains;
+            let perturbed = if m.layout == RawLayout::Monochrome {
+                [1.0; 3]
+            } else {
+                [
+                    (gains[0] * 1.05).min(32.0),
+                    1.0,
+                    (gains[2] * 0.95).max(f32::MIN_POSITIVE),
+                ]
+            };
+            let recorded = entries
+                .iter()
+                .find(|entry| entry["source_sha256"] == source.as_str());
+            let mut outcomes = Vec::new();
+            let mut hashes = Vec::new();
+            for gains in [gains, perturbed] {
+                let mut read = DevelopDiagnostics::default();
+                let chosen = develop_with(
+                    &raw,
+                    gains,
+                    &cancel,
+                    DevelopOptions {
+                        diagnostics: Some(&mut read),
+                        ..Default::default()
+                    },
+                );
+                let mut read_float = DevelopDiagnostics::default();
+                let float = develop_with(
+                    &raw,
+                    gains,
+                    &cancel,
+                    DevelopOptions {
+                        diagnostics: Some(&mut read_float),
+                        float_mosaic: true,
+                        ..Default::default()
+                    },
+                );
+                let outcome = match (chosen, float) {
+                    (Ok(mut chosen), Ok(float)) => {
+                        match difference_at(&chosen.data, &float.data, m.sensor_width as usize) {
+                            Some(at) => format!("DIFFERS: {at}"),
+                            None => {
+                                drop(float);
+                                if let Some(correction) = &raw.dng_correction {
+                                    correction.apply(&mut chosen, &cancel).unwrap();
+                                }
+                                hashes.push(bits_digest(&chosen.data));
+                                let peak = if read.input.is_some() {
+                                    format!(
+                                        "; held through the demosaic {} B, {} B with a float \
+                                         mosaic of {} B",
+                                        read.demosaic_bytes,
+                                        read_float.demosaic_bytes,
+                                        read_float.float_mosaic_bytes
+                                    )
+                                } else {
+                                    String::new()
+                                };
+                                format!("identical{peak}")
+                            }
+                        }
+                    }
+                    (Err(chosen), Err(float)) if chosen == float => {
+                        format!("both refused: {chosen}")
+                    }
+                    (chosen, float) => format!(
+                        "DIFFERS: {:?} vs {:?}",
+                        chosen.map(|_| ()),
+                        float.map(|_| ())
+                    ),
+                };
+                outcomes.push(outcome);
+            }
+            let evidence = match recorded {
+                None => "not recorded".to_owned(),
+                Some(entry) if hashes.len() == 2 => {
+                    let frozen = [
+                        &entry["as_shot"]["sha256"],
+                        &entry["perturbed_wb"]["sha256"],
+                    ];
+                    if frozen
+                        .iter()
+                        .zip(&hashes)
+                        .all(|(frozen, hash)| *frozen == hash.as_str())
+                    {
+                        "matches".to_owned()
+                    } else {
+                        evidence_rows.push(name.clone());
+                        format!("MISMATCH (recorded {frozen:?}, developed {hashes:?})")
+                    }
+                }
+                Some(_) => "not compared".to_owned(),
+            };
+            if outcomes
+                .iter()
+                .any(|outcome| outcome.starts_with("DIFFERS"))
+            {
+                differing.push(name.clone());
+            }
+            println!(
+                "{name}\t{layout}\t{input}\t{}\t{}\t{evidence}",
+                outcomes[0], outcomes[1]
+            );
+        }
+        println!(
+            "summary: {counts:?}; refused {}: {refused:?}",
+            refused.len()
+        );
+        println!("evidence mismatches: {evidence_rows:?}");
+        assert!(
+            differing.is_empty(),
+            "sensor sites differ from the float mosaic on {differing:?}"
+        );
     }
 
     #[test]
