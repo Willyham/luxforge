@@ -1055,12 +1055,13 @@
     {
       "id": "TASK-014",
       "description": "Measure finished Detail, the 16-bit hand-off and both caches on the M4, sequentially on a quiet host.",
-      "status": "pending",
+      "status": "cancelled",
       "dependencies": [
         "TASK-009",
         "TASK-012"
       ],
       "extra_context": [
+        "Cancelled 2026-10-04: the owner's GPU-first decision retires the settled-Fit display from exact, the restoration-prefix cache and the CPU point path this task was to measure (docs/design/gpu-first.md, stages 2 to 4); the GPU-first plan measures Detail on the GPU path instead, and the 16-bit hand-off's measurement, if still wanted, moves with it.",
         "Runs only on the finished integration build, sequentially on a quiet host, never beside feature work, tests, builds or another plan's measurements. The true implementation outputs are the processed prefix cache (TASK-009) and integrated module/read/mask/preset paths (TASK-012). Before each scoped measurement, relevant native functional cases must pass on that exact build/source/density and their evidence must be linked. Unavailable densities or other unfinished TASK-016 cases remain unqualified and do not forbid measuring the supported verified scope; this task neither completes TASK-016 nor the independent quality gates in TASK-013.",
         "Build a baseline release editor from the plan's base commit in a separate worktree and pass it to editor-latency with --binary PATH for Presence JPEG before figures. Run before/after back to back and once reversed, with identical source, display bounds, fields and sample count. Keep binary/source/lockfile identities and host load with every report. Use 30 observations for a p50/p95 claim; fewer observations, paint positions and single viewport journeys retain their narrower scope.",
         "editor-latency --detail is implemented and commits sharpening 60, luminance 40 and colour 40 before a gesture. Paint commits global Detail before selecting the brush mask and checks the captured stack; the separate --idle hold/reopen workload also persists Detail when requested. Its unlimited brush reads no input pixels, so paint/hover overlay figures do not alone measure the value-mask input-grid cache. Hover already places Detail before its masked adjustment. Idle private cache/scratch counters are not observable without a captured state; retained caches and process residency must be distinguished.",
@@ -1187,7 +1188,8 @@
       ],
       "extra_context": [
         "No milestone claim until the evidence is present. Output sharpening, AI/profiled/sensor denoise and export resizing remain out of scope.",
-        "Docs to bring to delivered behaviour: this design (drop planned wording), decisions (only if a delivered result changes a recorded choice), architecture (restoration stage, wide byte frames, caches and their limits), modules-and-api (descriptor, fit_settle, Planned::Query, parked reads), instant-preview (settled Fit, prefix cache, window fallback), masking (input-grid cache, remaining refusal, shared masked-spatial cap), presets (Lightroom reasons), Presence design and study (16-bit hand-off), performance rules (rule 5 text on planning samplers, known-cost rows), feature status and user guide (zero defaults, capture versus output sharpening, settled Fit, 100% inspection, masked Detail adds to global, RAW/JPEG differences)."
+        "Docs to bring to delivered behaviour: this design (drop planned wording), decisions (only if a delivered result changes a recorded choice), architecture (restoration stage, wide byte frames, caches and their limits), modules-and-api (descriptor, fit_settle, Planned::Query, parked reads), instant-preview (settled Fit, prefix cache, window fallback), masking (input-grid cache, remaining refusal, shared masked-spatial cap), presets (Lightroom reasons), Presence design and study (16-bit hand-off), performance rules (rule 5 text on planning samplers, known-cost rows), feature status and user guide (zero defaults, capture versus output sharpening, settled Fit, 100% inspection, masked Detail adds to global, RAW/JPEG differences).",
+        "Since 2026-10-04 the contracts to bring to delivered behaviour exclude what the GPU-first plan retires (the settled Fit from exact, the prefix cache, the off-owner point path): state them as retiring where they still exist and leave their removal to that plan (docs/design/gpu-first.md)."
       ],
       "context_links": [
         {
@@ -1319,7 +1321,8 @@
       "extra_context": [
         "Owner request, 2026-10-01: heavy sharpening can be slow; if that is unavoidable, show the rendering state on the main image rather than only in the Performance section, as a loading bar across the image when something is expected to take more than a second.",
         "The settled Fit's latency is the recorded default of the Detail design (about 0.5 s at 24 MP and 2.5 s at 60 MP on the M4, estimated); the full-resolution restoration frame cache that would avoid it is not planned, so this task shows the wait rather than removing it.",
-        "Implemented with functional tests: the render-progress planning test on both pixel domains, the preview queue's published phase and wake gating, the desktop's reveal rule, status text and the bar's geometry. The native rendered check of the bar over a long Detail settlement is outstanding."
+        "Implemented with functional tests: the render-progress planning test on both pixel domains, the preview queue's published phase and wake gating, the desktop's reveal rule, status text and the bar's geometry. The native rendered check of the bar over a long Detail settlement is outstanding.",
+        "Conflict noted 2026-10-04: the GPU-first plan's stage 2 removes the whole-frame exact phase from the preview path, which is this bar's subject. Keep the bar's machinery generic (any job expected to take more than a second: an export, a GPU tile pass, a cold shader warm-up) so it survives that stage, and say so in the Detail design."
       ],
       "context_links": [
         {

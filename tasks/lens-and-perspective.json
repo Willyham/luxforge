@@ -1061,7 +1061,8 @@
         "Replace NEW_DIR, JPEG, RAW and FILE with fresh output paths, the generated lens workloads, the private manifest's nikon-z6 and dji-air2s files and the manifest. Set PARALLEL_WARP_PIXELS from the measurement and document it in docs/specs/performance.md.",
         "The lens-only editor-performance mode accepts JPEG or RAW and compares a neutral Lens layer against the selected profile with the same Perspective and 2.5-degree crop; it measures point picks, serial export completion and cancellation-to-terminal with source preservation. Run each supplied source separately on the quiet host.",
         "Harness setup is implemented: `--perspective` seeds +20/-10 alongside `--lens` and `--crop`; viewport `--samples 30` runs 30 sequential journeys and reports 60 correlated pan/refinement observations. Crop opening is bounded to 14 repeats per run and reports its actual count; `--idle` reopens the same edited catalog. OS GPU allocation may be unavailable and backend staging is unmeasured, so application-owned surface counters are not a total GPU-memory guarantee.",
-        "CORE_TEST_BINARY is the release luxforge_core test executable reported by the preceding --no-run build. These fixture/build commands finish before the quiet timing window; the following commands use rebuilt binaries directly. After setting the measured threshold, rebuild again before the final full tier."
+        "CORE_TEST_BINARY is the release luxforge_core test executable reported by the preceding --no-run build. These fixture/build commands finish before the quiet timing window; the following commands use rebuilt binaries directly. After setting the measured threshold, rebuild again before the final full tier.",
+        "Noted 2026-10-04: the GPU-first plan changes the latency baselines of every view; take this plan's latency figures after that plan's stage 2 or record which renderer drew them."
       ],
       "context_links": [
         {

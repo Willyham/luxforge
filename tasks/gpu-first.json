@@ -1,0 +1,829 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "gpu-first",
+  "title": "GPU-first rendering",
+  "objective": "Make the GPU the renderer of record for the picture, the histogram, samples and export, with correctness a declared tolerance against a whole-frame CPU reference, so that an ordinary edit of a 16 to 60 MP photograph is one path at every zoom and the proxies, windows, point tiles, estimate stores, settle phases and fallbacks that made the CPU path fast enough can be deleted.",
+  "context_summary": "Owner decision of 2026-10-04 (docs/decisions.md, GPU-first rendering), after a four-minute freeze traced to the CPU point path and after an audit showed the remaining cost of an ordinary edit is the CPU renderer and the machinery around it: 29,850 lines of CPU render against 5,937 of GPU programs, 11 GPU and 18 window fallback reasons, 8 caches. Every module already has a GPU program. The plan converges in stages that each delete something: every zoom on the GPU; the picture at rest and the histogram on the GPU; per-frame estimates; samples and export through GPU tiles; portability, warm-up and the retirement of the CPU production paths; one qualification and measurement at the end. Constraints: textures are tiled past 8192 px, the GPU budgets stay, a machine without a GPU gets the reference renderer with a notice, and the tolerance per output kind is measured before any stage lands. The design is docs/design/gpu-first.md.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "status": "ready",
+      "dependencies": [],
+      "description": "Build the reference comparison harness, measure the tolerance per output kind on the corpus, and rewrite the rules and testing guidance for reference-buffer correctness.",
+      "extra_context": [
+        "The owner decided on 2026-10-04 that correctness is a declared tolerance against the CPU reference render for every output kind (docs/decisions.md, GPU-first rendering). Before any stage lands, one harness must render a stack on the reference and on the GPU and report, per output kind, the error against the proposed limits in the design: the preview error limit for the picture, 0.1% of the output pixel count for histogram bins and clipping counts, the display limit per pixel for export, equality by construction for samples.",
+        "Start from the existing qualification machinery (crates/luxforge-core/src/render/gpu qualification, the corpus and the error limit in docs/design/gpu-preview.md, xtask gpu_qualification) and extend it to the histogram reduction, export and the at-rest picture. The harness runs natively; on CI it runs the reference renderer's own tests and, on Linux, the software Vulkan adapter when TASK-008 lands.",
+        "Docs to rewrite with the measured limits: performance rule 4's exception and rule 11, rule 14's cache list, the review checklist's exactness items, docs/engineering/development.md's evidence rules (exact-buffer tests become reference-buffer tests with a declared tolerance), docs/design/architecture.md's renderer section. AGENTS.md's pillars already state the decision; keep them in step."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "GPU-first design",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "The decision, the contract and the stage this task lands.",
+          "locator": "The contract"
+        },
+        {
+          "kind": "file",
+          "label": "GPU previews design",
+          "target": "docs/design/gpu-preview.md",
+          "relevance": "The stage, programs, error limit and budgets the renderer of record grows from.",
+          "locator": "The preview error limit"
+        },
+        {
+          "kind": "file",
+          "label": "GPU qualification",
+          "target": "crates/luxforge-app/src/app/gpu_qualification.rs",
+          "relevance": "The corpus comparison to grow into the harness."
+        },
+        {
+          "kind": "file",
+          "label": "Performance measurements",
+          "target": "docs/specs/performance.md",
+          "relevance": "Measured figures the estimate rests on and where new figures are recorded.",
+          "locator": "GPU previews qualified on the M4"
+        },
+        {
+          "kind": "file",
+          "label": "Development guide",
+          "target": "docs/engineering/development.md",
+          "relevance": "Evidence rules to rewrite.",
+          "locator": "When to verify"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "The rules and known costs each stage rewrites, and the review checklist."
+        }
+      ],
+      "acceptance_criteria": [
+        "One command renders every corpus stack on the reference and on the GPU and reports, per output kind, the maximum and mean error against the recorded limit, failing when a limit is passed; the limits are recorded in the design with the measurement that set them.",
+        "Rules 4, 11 and 14, the review checklist, the development guide and the architecture document describe reference-buffer correctness and the renderer of record; nothing still promises bit identity of the GPU.",
+        "The harness is part of the rendered tier and named as the release gate."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the harness on the corpus natively and read its report; run the quick tier."
+        ],
+        "commands": [
+          "cargo run --release --locked --package xtask -- gpu-qualification --output NEW_DIR",
+          "cargo xtask check --quick"
+        ],
+        "expected_results": [
+          "Every corpus stack is within the recorded limit for every output kind the GPU already renders; the report names the limits."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "status": "ready",
+      "dependencies": [],
+      "description": "Draw a drag on the GPU at percentage zooms below 100%, planned at the displayed-size proxy exactly as Fit is (stage 1).",
+      "extra_context": [
+        "docs/design/gpu-preview.md: below 100% a percentage view plans no GPU preview and the status bar names `not-fit` (crates/luxforge-app/src/app/preview.rs, the percentage branch of the plan request). The CPU path then renders the displayed-size proxy of the whole stage, up to 8 MP, on every tick: roughly 80 to 300 ms at 33% of 60 MP with Detail, Presence and masks, estimated from the Fit figures with the preview off.",
+        "The Fit path already plans the preview at the display-bounded proxy and holds its boundary from the proxy phase; a percentage below 100% differs only in the proxy's size and the view's placement. Budgets, limits, the error limit and the other fallback reasons stay; `not-fit` goes.",
+        "Qualify at the percentage view's proxy size with the existing corpus (docs/design/gpu-preview.md, Qualifying a program)."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "GPU-first design",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "The decision, the contract and the stage this task lands.",
+          "locator": "Stages and what each deletes"
+        },
+        {
+          "kind": "file",
+          "label": "GPU previews design",
+          "target": "docs/design/gpu-preview.md",
+          "relevance": "The stage, programs, error limit and budgets the renderer of record grows from.",
+          "locator": "At 100% and above"
+        },
+        {
+          "kind": "file",
+          "label": "Desktop preview",
+          "target": "crates/luxforge-app/src/app/preview.rs",
+          "relevance": "The plan request per view."
+        },
+        {
+          "kind": "file",
+          "label": "GPU plan",
+          "target": "crates/luxforge-core/src/render/gpu/preview.rs",
+          "relevance": "Planning at a proxy and the fallback reasons."
+        },
+        {
+          "kind": "file",
+          "label": "Zoom scenario",
+          "target": "xtask/src/gpu_preview_zoom_smoke.rs",
+          "relevance": "The scenario to extend with a percentage below 100%."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "The rules and known costs each stage rewrites, and the review checklist."
+        }
+      ],
+      "acceptance_criteria": [
+        "A drag at 33% and at 50% draws on the GPU within the error limit on the corpus; `not-fit` no longer exists in code or docs; the CPU proxy remains the fallback with its reason reported.",
+        "The gpu-preview-zoom scenario captures a drag at a percentage below 100% drawn on the GPU with correlated state and events.",
+        "The GPU preview design, the user guide and feature status describe percentage views."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the GPU plan and surface tests, the qualification at the percentage proxy size, then the zoom scenario."
+        ],
+        "commands": [
+          "cargo test --locked -p luxforge-app -- gpu_plan gpu_preview",
+          "cargo test --locked -p luxforge-core --lib render::gpu",
+          "cargo run --release --locked --package xtask -- smoke --scenario gpu-preview-zoom --output NEW_DIR"
+        ],
+        "expected_results": [
+          "All pass; the percentage drag is drawn on the GPU within the limit."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001",
+        "TASK-002"
+      ],
+      "description": "Render the picture at rest on the GPU: commits, history, presets and Compare draw through the same programs as a drag, at Fit from the source mip chain and at 100% from the window, and the CPU proxy phase leaves the preview path (stage 2).",
+      "extra_context": [
+        "Today a commit requests a preview job whose proxy phase renders the Fit proxy on the CPU and whose exact phase renders the whole frame; the GPU draws only drags, over a boundary held from the CPU proxy (docs/design/gpu-preview.md, The held input boundary; docs/design/instant-preview.md, Fit proxy and exact phases). With the GPU as the renderer of record the picture at rest is the GPU's own frame of the committed stack, and the CPU proxy phase, the restoration-prefix cache (crates/luxforge-core/src/preview/restoration.rs) and Detail's settled-from-exact display (FitSettle::Exact, downscale_raster) are not needed on this path.",
+        "The at-rest picture must meet the display limit against the reference reduced to the view's size, on the corpus, at Fit, below 100% and at 100%; the label vocabulary changes: nothing at rest is called approximate, and the status bar's render figure is the GPU frame's.",
+        "Compare and history return draw the retained content on the GPU in one frame, so no retained-frame re-adoption is needed. The settle dissolve keeps its form, between two GPU frames.",
+        "Detail's exact-settle progress bar (the Detail plan's in-progress task) loses its subject on this path; keep its machinery for export and any job longer than a second, or retire it with the exact phase in stage 5, and say which in the Detail design."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "GPU-first design",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "The decision, the contract and the stage this task lands.",
+          "locator": "Stages and what each deletes"
+        },
+        {
+          "kind": "file",
+          "label": "GPU previews design",
+          "target": "docs/design/gpu-preview.md",
+          "relevance": "The stage, programs, error limit and budgets the renderer of record grows from.",
+          "locator": "The held input boundary"
+        },
+        {
+          "kind": "file",
+          "label": "Instant previews",
+          "target": "docs/design/instant-preview.md",
+          "relevance": "The proxy and exact phases this stage replaces.",
+          "locator": "Fit proxy and exact phases"
+        },
+        {
+          "kind": "file",
+          "label": "Preview worker",
+          "target": "crates/luxforge-core/src/preview/worker.rs",
+          "relevance": "The phases a job runs today."
+        },
+        {
+          "kind": "file",
+          "label": "Restoration prefix cache",
+          "target": "crates/luxforge-core/src/preview/restoration.rs",
+          "relevance": "The cache this stage removes from the preview path."
+        },
+        {
+          "kind": "file",
+          "label": "Detail design",
+          "target": "docs/design/detail.md",
+          "relevance": "Settled Fit and the prefix cache contracts to retire.",
+          "locator": "Expected costs"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "The rules and known costs each stage rewrites, and the review checklist."
+        }
+      ],
+      "acceptance_criteria": [
+        "After a commit, a history selection, a preset and Compare, the picture on screen is a GPU frame of the displayed stack at Fit, below 100% and at 100%, within the display limit against the reference on the corpus, with correlated state naming the frame's source.",
+        "The preview path requests no CPU proxy phase and reads no restoration-prefix cache; Detail's settled-from-exact display and its label are gone; the rendered scenarios whose frames change pass with updated expectations.",
+        "The GPU previews, instant previews and Detail designs, feature status and the user guide describe the picture at rest as the GPU's."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the preview, GPU preview and history tests, the reference harness for the at-rest picture, then the gpu-preview, detail-fit, basic and histogram scenarios."
+        ],
+        "commands": [
+          "cargo test --locked -p luxforge-app -- preview gpu_preview history compare",
+          "cargo test --locked -p luxforge-core --lib preview",
+          "cargo run --release --locked --package xtask -- gpu-qualification --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- smoke --scenario gpu-preview --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- smoke --scenario detail-fit --output NEW_DIR"
+        ],
+        "expected_results": [
+          "All pass; every at-rest frame is within the limit; no CPU proxy phase runs."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001",
+        "TASK-003"
+      ],
+      "description": "Compute the histogram and clipping counts on the GPU: a reduction over the full stage rendered in tiles after each commit and release, and over the displayed frame during motion, labelled updating; the CPU exact phase and the quiet-settle whole-frame render leave the preview path (stage 2).",
+      "extra_context": [
+        "Today every non-interactive job runs the exact phase for the histogram (crates/luxforge-core/src/preview/worker.rs; crates/luxforge-core/src/analysis.rs reduces the exact frame), and a 120 ms pause in a drag starts one too (crates/luxforge-app/src/app/preview.rs `quiet_refine`). Estimated at about 1 s at 24 MP and 3 s at 60 MP with Detail, Presence and three masked layers, per commit and per pause.",
+        "On the GPU the counts are a reduction over full-resolution tiles of the stack rendered with halos, inside the GPU budget, run after each commit and release; during motion the counts come from the displayed frame and the inspector says updating, as the accepted baseline already allows (docs/decisions.md, Interactive previews at 100%). The report keeps its shape, identity and the owner's cache so an API client's `analysis.request` is a hit.",
+        "Tolerance: the summed absolute bin difference and each clipping count within 0.1% of the output pixel count against the reference, measured by the harness on the corpus; the quiet timer stays for 100% region refinement only if stage 5 still needs it."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "GPU-first design",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "The decision, the contract and the stage this task lands.",
+          "locator": "The contract"
+        },
+        {
+          "kind": "file",
+          "label": "Analysis",
+          "target": "crates/luxforge-core/src/analysis.rs",
+          "relevance": "The reducer and the report shape to keep."
+        },
+        {
+          "kind": "file",
+          "label": "Preview worker",
+          "target": "crates/luxforge-core/src/preview/worker.rs",
+          "relevance": "The exact phase this stage removes."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop preview",
+          "target": "crates/luxforge-app/src/app/preview.rs",
+          "relevance": "The quiet settle.",
+          "locator": "quiet_refine"
+        },
+        {
+          "kind": "file",
+          "label": "Basic and histogram design",
+          "target": "docs/design/basic-and-histogram.md",
+          "relevance": "The histogram contract and its tolerance after the decision."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "The rules and known costs each stage rewrites, and the review checklist."
+        }
+      ],
+      "acceptance_criteria": [
+        "After a commit and after a release the inspector's counts come from a GPU reduction over the full stage and are within the recorded limit against the reference on the corpus; during motion they come from the displayed frame and are labelled updating.",
+        "No commit, pause or release runs a CPU whole-frame render in the preview path; the histogram scenario's counts check uses the recorded tolerance against an independent reference reduction.",
+        "The Basic and histogram design, the instant previews design and the user guide state the contract and the tolerance."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the analysis, preview and histogram tests and the reference harness, then the histogram and basic scenarios."
+        ],
+        "commands": [
+          "cargo test --locked -p luxforge-core --lib analysis",
+          "cargo test --locked -p luxforge-app -- histogram preview",
+          "cargo run --release --locked --package xtask -- gpu-qualification --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- smoke --scenario histogram --output NEW_DIR"
+        ],
+        "expected_results": [
+          "All pass; counts within the limit; no CPU exact phase in the preview path."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003"
+      ],
+      "description": "Compute global estimates on the GPU per frame from a reduced stage the GPU holds, and retire the estimate store, the reduced-grid store and the estimate fallbacks (stage 3).",
+      "extra_context": [
+        "Dehaze's atmospheric light is prepared from a 1/16-per-side block reduction of its input stage (crates/luxforge-core/src/modules/presence/dehaze.rs `prepare`); Clarity's reduced grid is a 4x block grid of encoded luminance. Both are anchored at the stage origin and independent of the unit's amount. The CPU keeps them in the estimate store (8 entries) and the reduced-grid store (64 MiB) and falls back when they are missing: `EstimateAfterSpatial` (crates/luxforge-core/src/render/compiled.rs), `region-estimate` and `window-estimate` (crates/luxforge-core/src/render/gpu/preview.rs).",
+        "On the GPU the drafted prefix's reduced stage is a mip-level render of the colour run over the reduced source planes, a fraction of a megapixel at 60 MP, computed per frame; the light and the grid follow from it on the GPU. For a Detail prefix the reduced stage is Detail's output reduced, which the design of Detail measured to barely move the light; the harness measures it against the reference's exact light on the corpus, and the display limit decides.",
+        "With estimates per frame the stores, their keys, their eviction tests and the three fallbacks go; the window planner no longer refuses the cut behind an estimating unit."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "GPU-first design",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "The decision, the contract and the stage this task lands.",
+          "locator": "Stages and what each deletes"
+        },
+        {
+          "kind": "file",
+          "label": "Dehaze",
+          "target": "crates/luxforge-core/src/modules/presence/dehaze.rs",
+          "relevance": "The light's preparation.",
+          "locator": "prepare"
+        },
+        {
+          "kind": "file",
+          "label": "Estimate store",
+          "target": "crates/luxforge-core/src/render/context.rs",
+          "relevance": "To retire.",
+          "locator": "EstimateStore"
+        },
+        {
+          "kind": "file",
+          "label": "GPU plan answers",
+          "target": "crates/luxforge-core/src/render/gpu/preview.rs",
+          "relevance": "The estimate fallbacks to retire.",
+          "locator": "RegionEstimate"
+        },
+        {
+          "kind": "file",
+          "label": "Compiled stack",
+          "target": "crates/luxforge-core/src/render/compiled.rs",
+          "relevance": "The windowed-path refusal to retire.",
+          "locator": "EstimateAfterSpatial"
+        },
+        {
+          "kind": "file",
+          "label": "Performance measurements",
+          "target": "docs/specs/performance.md",
+          "relevance": "Measured figures the estimate rests on and where new figures are recorded.",
+          "locator": "Dehaze behind Detail at 100%"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "The rules and known costs each stage rewrites, and the review checklist."
+        }
+      ],
+      "acceptance_criteria": [
+        "A Basic drag under Dehaze at 100%, a Detail stack with Dehaze and a masked Dehaze layer draw on the GPU every tick with the light and grid computed on the GPU, within the display limit against the reference on the corpus, with no whole-stage CPU reduction.",
+        "The estimate store, the reduced-grid store, `EstimateAfterSpatial`, `region-estimate` and `window-estimate` are removed with their tests, limits and docs; the GPU fallback table and the roadmap no longer list them.",
+        "The Presence and Detail designs describe per-frame estimates."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the Presence, GPU Dehaze and GPU plan tests and the reference harness, then the gpu-preview and presence scenarios."
+        ],
+        "commands": [
+          "cargo test --locked -p luxforge-core --lib modules::presence",
+          "cargo test --locked -p luxforge-app -- gpu_dehaze gpu_plan",
+          "cargo run --release --locked --package xtask -- gpu-qualification --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- smoke --scenario presence --output NEW_DIR"
+        ],
+        "expected_results": [
+          "All pass within the limit; the stores and fallbacks are gone."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003",
+        "TASK-005"
+      ],
+      "description": "Answer render.sample, mask.sample-input, the neutral picker and brush seeds from a GPU tile render, and retire the point worker and the point-tile cache (stage 4).",
+      "extra_context": [
+        "Today a sample through a spatial layer is planned on the owner and evaluated by the point worker through PointTiles (crates/luxforge-core/src/render/spatial.rs), serially, with deferred pixel-read rounds for mutations (crates/luxforge-core/src/editor/pixels.rs, crates/luxforge-core/src/api/owner/point.rs). On the GPU a sample is one tile of the stack rendered at full resolution with its halos and one pixel read back; a pick's 25 points share one tile set. The owner still plans in O(layers) and hands the read to a GPU worker that owns a device queue; the answer carries the same identity fields.",
+        "The sample equals the byte on screen at that pixel by construction when the view shows that tile at 100%, and otherwise the rendered tile's byte; against the reference it is within the display limit. The raw-panel and histogram scenarios already tie their pixels through `render.sample` as api steps.",
+        "Retire PointTiles, the point worker, the parked pixel-read rounds and the point-sample rows of the known costs; rule 4's exception becomes a sentence."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "GPU-first design",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "The decision, the contract and the stage this task lands.",
+          "locator": "The contract"
+        },
+        {
+          "kind": "file",
+          "label": "Point tiles",
+          "target": "crates/luxforge-core/src/render/spatial.rs",
+          "relevance": "To retire.",
+          "locator": "PointTiles"
+        },
+        {
+          "kind": "file",
+          "label": "Point worker",
+          "target": "crates/luxforge-core/src/api/owner/point.rs",
+          "relevance": "To retire."
+        },
+        {
+          "kind": "file",
+          "label": "Deferred pixel reads",
+          "target": "crates/luxforge-core/src/editor/pixels.rs",
+          "relevance": "The reads that move to the GPU tile."
+        },
+        {
+          "kind": "file",
+          "label": "Detail design",
+          "target": "docs/design/detail.md",
+          "relevance": "The off-owner read contracts to rewrite.",
+          "locator": "Pixel reads off the owner"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "The rules and known costs each stage rewrites, and the review checklist."
+        }
+      ],
+      "acceptance_criteria": [
+        "`render.sample`, `query.neutral-sample`, `mask.sample-input` and a colour-limited stroke's seed answer from a GPU tile render with the same identity fields, within the display limit against the reference on the corpus and equal to the on-screen byte at 100%; a three-segment sample on the supplied Air 2S DNG answers in under 100 ms warm, recorded.",
+        "The point worker, PointTiles and the pixel-read rounds are removed with their tests and docs; UI/API parity tests pass; the raw-panel and histogram scenarios pass.",
+        "The owner thread still reads no pixel (rule 5)."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the sample, owner and mask tests and the reference harness, then the histogram, raw-panel and mask-range scenarios."
+        ],
+        "commands": [
+          "cargo test --locked -p luxforge-core --lib render::sample",
+          "cargo test --locked -p luxforge-core --lib api::owner",
+          "cargo test --locked -p luxforge-app -- pointer masks",
+          "cargo run --release --locked --package xtask -- smoke --scenario histogram --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- smoke --scenario mask-range --output NEW_DIR"
+        ],
+        "expected_results": [
+          "All pass; samples come from GPU tiles; the point worker is gone."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003",
+        "TASK-005"
+      ],
+      "description": "Export through GPU tiles: export.jpeg renders full-resolution tiles on the GPU and encodes them, with the reference renderer as the export for machines without a GPU and as an explicit reference option (stage 4).",
+      "extra_context": [
+        "docs/design/export.md: the exporter renders the exact frame on the CPU and encodes it. On the GPU the stack renders in full-resolution tiles with halos inside the GPU budget and the tiles feed the encoder in order; the job, its progress, cancellation and the sidecar identity keep their shapes. On one machine and driver the export is identical run to run; across machines a last-digit difference is accepted (owner, 2026-10-04).",
+        "The reference export stays: the default on a machine without a usable GPU, and an explicit option (`reference: true`) a test or a person can ask for. The harness compares a GPU export with a reference export per corpus stack within the display limit."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "GPU-first design",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "The decision, the contract and the stage this task lands.",
+          "locator": "The contract"
+        },
+        {
+          "kind": "file",
+          "label": "Export design",
+          "target": "docs/design/export.md",
+          "relevance": "The exporter's contract to extend."
+        },
+        {
+          "kind": "file",
+          "label": "Export",
+          "target": "crates/luxforge-core/src/export.rs",
+          "relevance": "The CPU exporter."
+        },
+        {
+          "kind": "file",
+          "label": "GPU budgets",
+          "target": "docs/design/gpu-preview.md",
+          "relevance": "The budget the tiles run inside.",
+          "locator": "Bounds"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "The rules and known costs each stage rewrites, and the review checklist."
+        }
+      ],
+      "acceptance_criteria": [
+        "`export.jpeg` on a machine with a GPU renders through GPU tiles within the display limit of the reference export on the corpus, identical across two runs on the M4, with progress and cancellation as today; the reference option and the no-GPU fallback produce the reference export.",
+        "The export scenario passes, and the export design, feature status and user guide state the device policy and the cross-machine variance.",
+        "Source files are unchanged after every export (SHA-256)."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the export tests and the reference harness's export comparison, then the export scenario."
+        ],
+        "commands": [
+          "cargo test --locked -p luxforge-core --lib export",
+          "cargo run --release --locked --package xtask -- gpu-qualification --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- smoke --scenario export --output NEW_DIR"
+        ],
+        "expected_results": [
+          "All pass; GPU exports within the limit and identical run to run."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "description": "Make the renderer of record portable and testable without a native GPU: a software Vulkan adapter for Linux CI journeys, the reference renderer as the no-GPU fallback with a notice, and the native checks Windows and Linux need.",
+      "extra_context": [
+        "The pillars require Windows and Linux portability and distinguish VM functional checks from native GPU evidence. wgpu selects a software adapter (lavapipe) on Linux when no device is present; macOS has no software Metal, so a macOS VM proves the reference renderer and the owner thread, not the GPU.",
+        "A machine whose adapter is missing, refused or fails compilation gets the reference renderer: whole frames, slower, named in the status bar and the API's session; nothing silently approximates. CI runs the reference tests and, on Linux, the rendered journeys through the software adapter; the development guide's CI section records exactly what each lane proves."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "GPU-first design",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "The decision, the contract and the stage this task lands.",
+          "locator": "The contract"
+        },
+        {
+          "kind": "file",
+          "label": "Development guide",
+          "target": "docs/engineering/development.md",
+          "relevance": "CI lanes and what each proves.",
+          "locator": "When to verify"
+        },
+        {
+          "kind": "file",
+          "label": "Photo surface",
+          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview.rs",
+          "relevance": "Adapter and device handling."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "The rules and known costs each stage rewrites, and the review checklist."
+        }
+      ],
+      "acceptance_criteria": [
+        "Linux CI runs at least the histogram and gpu-preview scenarios through the software adapter and records that they ran on it; a run with no adapter at all passes the reference tests and the owner journeys.",
+        "A forced no-GPU launch shows the reference renderer's notice in the status bar and the session, and every output comes from the reference; a test proves the fallback and its label.",
+        "The development guide states what each CI lane and each native machine proves."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Run the Linux CI lane with the software adapter and a forced no-GPU launch of the editor."
+        ],
+        "commands": [
+          "cargo run --release --locked --package xtask -- smoke --scenario histogram --output NEW_DIR",
+          "cargo test --locked -p luxforge-app -- fallback"
+        ],
+        "expected_results": [
+          "The lanes pass and name their adapter; the no-GPU fallback is labelled."
+        ]
+      }
+    },
+    {
+      "id": "TASK-009",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003"
+      ],
+      "description": "Warm the GPU program set in the background at launch and open, so the first picture never waits on a cold shader cache, with the reference renderer labelled until then.",
+      "extra_context": [
+        "After an update a Presence drag's sequences took seconds to compile on a cold Metal cache and drags took the CPU path naming `compiling` (docs/specs/performance.md, Presence and Detail sequences in the editor). With the GPU as the renderer of record the picture at rest would wait on the same compilation.",
+        "Warm the programs the open stack needs first, then the rest, on the GPU compile thread, with the reference frame on screen and labelled until the GPU frame replaces it; record the warm-up's duration in the Performance section and the events."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "GPU-first design",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "The decision, the contract and the stage this task lands.",
+          "locator": "Constraints"
+        },
+        {
+          "kind": "file",
+          "label": "Performance measurements",
+          "target": "docs/specs/performance.md",
+          "relevance": "Measured figures the estimate rests on and where new figures are recorded.",
+          "locator": "GPU previews qualified on the M4"
+        },
+        {
+          "kind": "file",
+          "label": "GPU plan warm list",
+          "target": "crates/luxforge-core/src/render/gpu/preview.rs",
+          "relevance": "The existing warm list to extend.",
+          "locator": "plan_warm"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "The rules and known costs each stage rewrites, and the review checklist."
+        }
+      ],
+      "acceptance_criteria": [
+        "On a cold shader cache the first picture appears from the reference renderer, labelled, and is replaced by the GPU frame when its programs are compiled, with the duration recorded; no later drag or commit waits on compilation for the open stack.",
+        "A test proves the ordering and the label; the Performance section shows the warm-up."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the GPU preview tests, then a cold-cache launch through the harness on the M4."
+        ],
+        "commands": [
+          "cargo test --locked -p luxforge-app -- gpu_preview compile",
+          "cargo run --release --locked --package xtask -- smoke --scenario gpu-preview --output NEW_DIR"
+        ],
+        "expected_results": [
+          "The first picture is labelled reference and the GPU frame follows without a wait on a later edit."
+        ]
+      }
+    },
+    {
+      "id": "TASK-010",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004",
+        "TASK-005",
+        "TASK-006",
+        "TASK-007",
+        "TASK-008",
+        "TASK-009"
+      ],
+      "description": "Retire the CPU production paths and reduce the CPU renderer to the whole-frame reference: proxies, windows, regions, the settle phases and the spatial budget's render use go; the limits table shrinks to the GPU budgets and the prepared source (stage 5).",
+      "extra_context": [
+        "What remains of crates/luxforge-core/src/render after stages 2 to 4 is the whole-frame reference renderer (compile, one pass per segment, spatial tiles for memory alone) and the geometry mapping the owner uses for picks and crops. The proxy and exact phases, the windowed proxy and region paths, the restoration-prefix cache, PointTiles and the settle machinery in the preview worker are deleted with their tests; the reference keeps its exactness tests against frozen fixtures.",
+        "Docs to rewrite: architecture (layout and limits), performance rules (rules 4, 11, 14 and the known costs and anti-patterns), instant previews (now the GPU's contract), Detail, Presence and the user guide's rendering text. The Detail plan's open measurement of the settled Fit and the prefix cache was cancelled in favour of this plan's measurement.",
+        "Keep the diagnostics the stages added: the fallback notice, the warm-up record, the reference option."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "GPU-first design",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "The decision, the contract and the stage this task lands.",
+          "locator": "Stages and what each deletes"
+        },
+        {
+          "kind": "file",
+          "label": "Architecture",
+          "target": "docs/design/architecture.md",
+          "relevance": "Layout and limits to rewrite.",
+          "locator": "Limits"
+        },
+        {
+          "kind": "file",
+          "label": "Instant previews",
+          "target": "docs/design/instant-preview.md",
+          "relevance": "To rewrite as the GPU's contract."
+        },
+        {
+          "kind": "file",
+          "label": "CPU render",
+          "target": "crates/luxforge-core/src/render/pipeline.rs",
+          "relevance": "The pipeline to reduce to the reference."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "The rules and known costs each stage rewrites, and the review checklist."
+        }
+      ],
+      "acceptance_criteria": [
+        "The CPU renderer renders whole frames only, with no proxy, window, region, point-tile or settle code paths; its exactness tests against frozen fixtures pass; the preview worker runs GPU jobs only.",
+        "The architecture limits table lists the GPU budgets and the prepared source; the retired caches, fallbacks and rules are gone from code and docs; the quick and rendered tiers pass.",
+        "The reference renderer's line count and the fallback reasons are recorded in the design against the 2026-10-04 figures."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the core and app test suites, the reference harness and the rendered tier."
+        ],
+        "commands": [
+          "cargo xtask check --quick",
+          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Both pass; the deleted paths are gone."
+        ]
+      }
+    },
+    {
+      "id": "TASK-011",
+      "status": "pending",
+      "dependencies": [
+        "TASK-010"
+      ],
+      "description": "Qualify and measure the GPU-first editor on a quiet host: the corpus comparison per output kind as the release gate, and the latencies against the 2026-10-04 baseline.",
+      "extra_context": [
+        "Rule 13: release build, quiet host, 30 samples where a distribution is claimed, load recorded around every run. Measure: a tick and a commit on the 16 MP Air 2S stack of the design at Fit, 33% and 100%; the histogram after a commit; a three-segment sample warm and cold; an export at 24 and 60 MP; a cold-cache first picture; Compare toggle; a RAW white-balance release. Compare each with the baseline table in the design.",
+        "Run the harness on the M4 and on any Windows or Linux machine with a GPU the owner supplies; record what each machine proved. Update docs/specs/performance.md, the known costs, the roadmap and feature status; delete this plan when the outcome is recorded."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "GPU-first design",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "The decision, the contract and the stage this task lands.",
+          "locator": "The baseline this replaces"
+        },
+        {
+          "kind": "file",
+          "label": "Performance measurements",
+          "target": "docs/specs/performance.md",
+          "relevance": "Measured figures the estimate rests on and where new figures are recorded.",
+          "locator": "GPU previews qualified on the M4"
+        },
+        {
+          "kind": "file",
+          "label": "Editor latency harness",
+          "target": "xtask/src/editor_latency.rs",
+          "relevance": "Drag and viewport modes and their reports.",
+          "locator": "Options"
+        },
+        {
+          "kind": "file",
+          "label": "Development guide",
+          "target": "docs/engineering/development.md",
+          "relevance": "Evidence rules.",
+          "locator": "When to verify"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "The rules and known costs each stage rewrites, and the review checklist."
+        }
+      ],
+      "acceptance_criteria": [
+        "Every corpus stack is within the recorded limit for every output kind on the M4, recorded as the release gate's first run; any other machine's result is recorded with its hardware.",
+        "Every latency above is recorded with p50/p95, load, build and source identity against its baseline; the known costs, the roadmap and feature status state the measured costs and nothing unmeasured.",
+        "Source files are unchanged after every run."
+      ],
+      "test_strategy": {
+        "approach": "manual",
+        "steps": [
+          "Build release once, run the harness and each measurement sequentially on a quiet host, record and update the documents."
+        ],
+        "commands": [
+          "cargo run --release --locked --package xtask -- gpu-qualification --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- editor-latency --mode drag --source RAW --output NEW_DIR --samples 30",
+          "cargo run --release --locked --package xtask -- editor-performance --source fixtures/generated/24mp.jpg --output NEW_DIR --samples 30"
+        ],
+        "expected_results": [
+          "The gate passes; the baseline costs are gone or named with their new figures."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-003",
+        "TASK-008"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-004",
+        "TASK-005",
+        "TASK-009"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-006",
+        "TASK-007"
+      ]
+    },
+    {
+      "wave": 5,
+      "task_ids": [
+        "TASK-010"
+      ]
+    },
+    {
+      "wave": 6,
+      "task_ids": [
+        "TASK-011"
+      ]
+    }
+  ]
+}
