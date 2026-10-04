@@ -711,3 +711,80 @@ fn invalid_coordinates_and_buffers_fail_without_panicking() {
     };
     assert!(render(&registry, &malformed, snapshot.id, &Recipe::default()).is_err());
 }
+
+/// A segment without point replacements resolves each output pixel straight from its unmap, and
+/// that is what the full backward composition answers there; a segment with them still finds the
+/// replacement that wins. Every pixel of every segment, and one past each edge, under every
+/// orientation, two exact crops and a resample between them.
+#[test]
+fn resolve_without_replacements_is_the_full_composition() {
+    let registry = geometry_registry();
+    let crop = |x: f64, y: f64, width: f64, height: f64| {
+        crop_layer(CropPayload {
+            angle: 0.0,
+            x,
+            y,
+            width,
+            height,
+        })
+    };
+    let key = |resolved: Option<compiled::Resolved>| {
+        resolved.map(|resolved| (resolved.replacement, resolved.input_x, resolved.input_y))
+    };
+    for turns in 0..4 {
+        for mirror in [false, true] {
+            for pixels in [false, true] {
+                let pixel = |x, y, rgb| pixels.then(|| Layer::pixel(x, y, rgb));
+                let layers: Vec<Layer> = [
+                    pixel(4, 3, [10, 20, 30]),
+                    Some(crop(0.1, 0.2, 0.8, 0.7)),
+                    pixel(1, 1, [40, 50, 60]),
+                    Some(Layer::orientation(Orientation { mirror, turns })),
+                    pixel(0, 0, [70, 80, 90]),
+                    Some(scale_layer(0.8)),
+                    pixel(2, 1, [100, 110, 120]),
+                    Some(Layer::orientation(Orientation {
+                        mirror: !mirror,
+                        turns: 3 - turns,
+                    })),
+                    Some(crop(0.2, 0.0, 0.7, 0.9)),
+                    pixel(0, 2, [130, 140, 150]),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                let recipe = Recipe {
+                    format: crate::RECIPE_FORMAT,
+                    layers,
+                    masks: Vec::new(),
+                    ..Recipe::default()
+                };
+                let compiled = registry.compile(15, 11, &recipe).unwrap();
+                assert_eq!(compiled.segments.len(), 2, "the resample opens a segment");
+                let mut replaced = 0;
+                for (index, segment) in compiled.segments.iter().enumerate() {
+                    assert_eq!(segment.has_pixels, pixels, "segment {index}");
+                    for y in 0..=segment.height {
+                        for x in 0..=segment.width {
+                            let resolved = key(segment.resolve(x, y));
+                            assert_eq!(
+                                resolved,
+                                key(segment.resolve_composed(x, y)),
+                                "turns {turns}, mirror {mirror}, pixels {pixels}, segment \
+                                 {index}, ({x}, {y})"
+                            );
+                            replaced += usize::from(
+                                resolved.is_some_and(|(winner, _, _)| winner.is_some()),
+                            );
+                        }
+                    }
+                }
+                assert_eq!(
+                    replaced > 0,
+                    pixels,
+                    "a replacement wins somewhere when one exists"
+                );
+            }
+        }
+    }
+}

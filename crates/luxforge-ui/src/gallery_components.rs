@@ -525,3 +525,41 @@ pub(crate) fn gallery_ranges() -> Vec<Element<'static, ()>> {
         ),
     ]
 }
+
+/// The title bar's zoom stops on their dropped panel: resting on a stop, between two (Fit at 62%,
+/// whose label none is), and disabled.
+pub(crate) fn gallery_zoom_stops() -> Vec<Element<'static, ()>> {
+    let stops = NotchedSliderModel {
+        labels: [
+            "50%", "100%", "150%", "200%", "300%", "400%", "600%", "800%", "1200%",
+        ]
+        .map(String::from)
+        .to_vec(),
+        position: Some(1.0),
+        selected: Some(1),
+        keys: StepKeys::Off,
+        enabled: true,
+    };
+    vec![
+        notched_panel(&stops, |_| (), |_| ()),
+        notched_panel(
+            &NotchedSliderModel {
+                position: Some(0.31),
+                selected: None,
+                ..stops.clone()
+            },
+            |_| (),
+            |_| (),
+        ),
+        notched_panel(
+            &NotchedSliderModel {
+                position: None,
+                selected: None,
+                enabled: false,
+                ..stops
+            },
+            |_| (),
+            |_| (),
+        ),
+    ]
+}

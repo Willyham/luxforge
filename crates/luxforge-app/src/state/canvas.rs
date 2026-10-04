@@ -421,11 +421,12 @@ fn draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {
 }
 
 /// The bar over an open mask gesture: the mask in the accent, the component and its mode beside its
-/// kind's icon, then the kind's own readout. A painted gesture ends with Done, because each stroke
-/// already committed on release; its Apply refusal is not stated, because it offers no Apply.
+/// kind's icon, then the kind's own readout. Every mask gesture ends with Done, because each stroke
+/// and each gradient drag commits on its own release; its Apply refusal is not stated, because it
+/// offers no Apply.
 fn mask_draft_bar(inputs: &Inputs<'_>, draft: &MaskDraft) -> DraftBar {
     let names = gesture_names(draft, inputs.document.masks.as_ref());
-    let done = draft.paints();
+    let done = true;
     DraftBar {
         crop_ratios: Vec::new(),
         crop_enabled: false,

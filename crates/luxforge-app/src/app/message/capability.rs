@@ -58,8 +58,9 @@ pub(crate) enum CapabilityMessage {
     Consent(bool),
     /// An owner round trip the driver started has answered.
     Answered(Box<Answer>),
-    /// Read the tracked live jobs again; produced only while one is queued or running.
-    Poll,
-    /// What `job.read` answered for each polled job, by module and job.
+    /// What the capability reader read of tracked live jobs, by module and job: a job's first
+    /// record, a record that differs from the one sent before it, a job's end, or a read that
+    /// failed. The reader sends nothing for a job it finds as it did before, and each entry stands
+    /// alone, so a message holds only the entries that changed.
     Polled(Vec<(String, String, Result<JobRecord, String>)>),
 }

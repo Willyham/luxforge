@@ -800,7 +800,32 @@ fn downscale_linear(
         }
     }
 
-    LinearImage::with_fingerprint(width, height, planes, image.fingerprint())
+    // Every value is a weighted mean, with weights summing to one, of the finite values of a source
+    // that was scanned or validated when it was built, so none can be non-finite and the
+    // constructor's scan of the whole proxy is skipped.
+    debug_assert!(
+        planes.iter().all(|value| value.is_finite()),
+        "a proxy of finite planes is finite"
+    );
+    Ok(
+        LinearImage::from_validated_planes(width, height, planes, image.fingerprint().to_owned())?
+            .with_development(proxy_development(image, plan)),
+    )
+}
+
+/// The development a linear proxy of `image` at `plan` is: derived from `image`'s development and
+/// view and the plan's stage and window, which decide its pixels exactly, so a proxy is named the
+/// same whenever it is built and anything keyed by it — the estimate store — can be read without
+/// building it (`render::gpu::EstimateSource::Proxy`). The top bit keeps it apart from every
+/// adopted development, which counts up from one.
+pub(crate) fn proxy_development(image: &LinearImage, plan: ProxyPlan) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    (image.development(), image.view(), plan.width, plan.height).hash(&mut hasher);
+    plan.window
+        .map(|window| (window.x, window.y, window.width, window.height))
+        .hash(&mut hasher);
+    hasher.finish() | 1 << 63
 }
 
 #[cfg(test)]
@@ -1180,6 +1205,89 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// A RAW proxy is a weighted mean of a source whose values were all finite when it was built,
+    /// so it is adopted through the validated constructor and skips the scan of every value that
+    /// the public constructors make on untrusted input. Its planes, fingerprint, view and
+    /// development are exactly what `with_fingerprint` makes of the same planes (which does scan),
+    /// including at the largest finite values, whose mean must not overflow.
+    #[test]
+    fn a_raw_proxy_of_a_finite_source_skips_the_finiteness_scan_and_equals_the_scanned_one() {
+        use crate::source::finiteness_scans_during;
+        let (width, height) = (53u32, 41u32);
+        let ordinary: Vec<[f32; 3]> = (0..width * height)
+            .map(|index| {
+                let value = index as f32;
+                [
+                    (value * 0.031) % 1.4 - 0.1,
+                    (value * 0.047) % 1.2 - 3.0,
+                    1.0e6 - value,
+                ]
+            })
+            .collect();
+        let extreme: Vec<[f32; 3]> = (0..width * height)
+            .map(|index| match index % 3 {
+                0 => [f32::MAX, -f32::MAX, f32::MIN_POSITIVE],
+                1 => [f32::MAX, -f32::MAX, 0.0],
+                _ => [f32::MAX, -f32::MAX, -0.0],
+            })
+            .collect();
+        for pixels in [ordinary, extreme] {
+            let base = raw_source(width, height, &pixels)
+                .with_view([2, 1, 49, 38], 6)
+                .expect("a view");
+            let source = PreviewSource::Raw {
+                image: base,
+                settings: LinearSettings::default(),
+            };
+            let (source_width, source_height) = source.dimensions();
+            for plan in [
+                plan(source_width * 3 / 7, source_height * 5 / 9, (1, 1)),
+                plan(source_width, source_height, (1, 1)),
+                plan(1, 1, (1, 1)),
+            ] {
+                let (proxy, scans) = finiteness_scans_during(|| source.proxy(plan));
+                let proxy = proxy.expect("a proxy");
+                assert_eq!(scans, 0, "{}x{} proxy", plan.width, plan.height);
+                let image = raw_of(&proxy);
+
+                let (reference, scans) = finiteness_scans_during(|| {
+                    LinearImage::with_fingerprint(
+                        plan.width,
+                        plan.height,
+                        image.planes().to_vec(),
+                        image.fingerprint(),
+                    )
+                });
+                assert_eq!(scans, 1, "the public constructor scans the same planes");
+                let reference = reference
+                    .expect("the planes are finite")
+                    .with_development(image.development());
+                assert_eq!(image, &reference);
+                assert_eq!(image.planes().len(), reference.planes().len());
+                assert!(
+                    image
+                        .planes()
+                        .iter()
+                        .zip(reference.planes())
+                        .all(|(a, b)| a.to_bits() == b.to_bits() && a.is_finite()),
+                    "{}x{} proxy planes",
+                    plan.width,
+                    plan.height
+                );
+            }
+        }
+
+        // The public constructors still refuse what the proxy path never produces.
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut planes = vec![0.5_f32; 12];
+            planes[7] = bad;
+            let (image, scans) = finiteness_scans_during(|| LinearImage::new(2, 2, planes.clone()));
+            assert!(image.is_err(), "{bad} is refused by `new`");
+            assert_eq!(scans, 1);
+            assert!(LinearImage::with_fingerprint(2, 2, planes, "sha256:bad").is_err());
         }
     }
 

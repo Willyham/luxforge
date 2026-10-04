@@ -809,6 +809,8 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-core/src/latest.rs",
             "crates/luxforge-core/src/api/owner/point.rs",
             "crates/luxforge-core/src/previews/region.rs",
+            // Production RGBA handoff backpressure, not a test gate; keeps the overlay byte bound.
+            "crates/luxforge-app/src/app/mask_coverage.rs",
         ],
         mode: Match::Whole,
         tests: true,
@@ -890,8 +892,9 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-watch/src/windows.rs",
             // The desktop's diagnostics log writer.
             "crates/luxforge-app/src/diagnostics.rs",
-            // The widget crate's GPU retirement worker.
+            // The widget crate's GPU retirement worker, and its GPU preview's pipeline compiler.
             "crates/luxforge-ui/src/photo_surface.rs",
+            "crates/luxforge-ui/src/photo_surface/gpu_preview/compile.rs",
             // The test kit's process threads and the test base's server threads.
             "crates/luxforge-testkit/src/process.rs",
             "crates/luxforge-testbase/src/server.rs",
@@ -932,6 +935,7 @@ const SOURCE_RULES: &[SourceRule] = &[
             "\"--disable-module\"",
             "\"--proof-endpoint\"",
             "\"--window-size\"",
+            "\"--evidence-gpu-identity\"",
             "spawn_editor",
             "editor_args",
         ],
@@ -1215,14 +1219,15 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         reason: "luxforge-core may not name a crate that depends on it (luxforge-testkit, \
                  luxforge-net, luxforge-cli, luxforge-app or xtask), so its tests build it once",
     },
-    // The headless binary builds without the GUI stack: no window, renderer or dialog crate, and
-    // not the widget crate or the desktop that bring them.
+    // The headless binary builds without the GUI stack: no window, renderer, shader compiler or
+    // dialog crate, and not the widget crate or the desktop that bring them.
     DependencyRule {
         name: "headless-cli",
         refuses: Depends::Any(&[
             "iced",
             "iced_wgpu",
             "wgpu",
+            "naga",
             "rfd",
             "luxforge-ui",
             "luxforge-app",
@@ -1231,7 +1236,30 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         tables: &[Table::Normal],
         allowed: &[],
         reason: "luxforge-cli builds the headless luxforge-json binary and may not depend on the \
-                 GUI stack (iced, wgpu, rfd, luxforge-ui or luxforge-app)",
+                 GUI stack (iced, wgpu, naga, rfd, luxforge-ui or luxforge-app)",
+    },
+    // The core evaluates nothing on a GPU and draws nothing: a module's GPU program is WGSL text
+    // that the photo surface in luxforge-ui executes, so the core builds no GPU or GUI crate. Its
+    // tests validate that text through naga, a dev-dependency, which no build of a binary has.
+    DependencyRule {
+        name: "gpu-free-core",
+        refuses: Depends::Any(&[
+            "iced",
+            "iced_wgpu",
+            "wgpu",
+            "wgpu-core",
+            "wgpu-hal",
+            "wgpu-types",
+            "naga",
+            "rfd",
+            "luxforge-ui",
+        ]),
+        manifests: &["crates/luxforge-core"],
+        tables: &[Table::Normal, Table::Build],
+        allowed: &[],
+        reason: "luxforge-core may not depend on a GPU or GUI crate (iced, wgpu, naga, rfd or \
+                 luxforge-ui): its GPU programs are WGSL text the photo surface executes, and only \
+                 its tests may validate them, with naga as a dev-dependency",
     },
     // Skipping the disk flush is for tests: only a `[dev-dependencies]` table turns the feature on,
     // so no `cargo build` of a binary, whose dependencies are never dev-dependencies, has it.
@@ -1259,6 +1287,49 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         allowed: &[],
         reason: "only a [dev-dependencies] table may turn on luxforge-core's test-holds, so no \
                  build of a binary holds its work at a test's gate or links luxforge-testbase",
+    },
+    // Reading a GPU frame back is for qualification: only a `[dev-dependencies]` table turns the
+    // photo surface's `qualification` feature on, so no build of the desktop reads a GPU pixel
+    // back or waits on the GPU.
+    DependencyRule {
+        name: "gpu-qualification-only-in-tests",
+        refuses: Depends::Feature {
+            dependency: "luxforge-ui",
+            feature: "qualification",
+        },
+        manifests: &["", "crates/*", "xtask"],
+        tables: &[Table::Normal, Table::Build, Table::Workspace],
+        allowed: &[],
+        reason: "only a [dev-dependencies] table may turn on luxforge-ui's qualification feature, \
+                 so no build of the desktop reads a GPU pixel back",
+    },
+    // The CPU filters a GPU kernel is qualified against are for qualification: only a
+    // `[dev-dependencies]` table turns the core's `qualification` feature on.
+    DependencyRule {
+        name: "core-qualification-only-in-tests",
+        refuses: Depends::Feature {
+            dependency: "luxforge-core",
+            feature: "qualification",
+        },
+        manifests: &["", "crates/*", "xtask"],
+        tables: &[Table::Normal, Table::Build, Table::Workspace],
+        allowed: &[],
+        reason: "only a [dev-dependencies] table may turn on luxforge-core's qualification \
+                 feature, so no build of a binary exposes its qualification filters",
+    },
+    // Counting allocations is for tests: only a `[dev-dependencies]` table turns the process
+    // crate's `allocation-counter` feature on, so no binary can install the counting allocator.
+    DependencyRule {
+        name: "allocation-counter-only-in-tests",
+        refuses: Depends::Feature {
+            dependency: "luxforge-process",
+            feature: "allocation-counter",
+        },
+        manifests: &["", "crates/*", "xtask"],
+        tables: &[Table::Normal, Table::Build, Table::Workspace],
+        allowed: &[],
+        reason: "only a [dev-dependencies] table may turn on luxforge-process's \
+                 allocation-counter feature, so no binary counts its allocations",
     },
 ];
 
@@ -3308,6 +3379,138 @@ mod tests {
     }
 
     #[test]
+    fn only_tests_turn_on_the_photo_surfaces_gpu_qualification() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // A dev-dependency may turn it on; a dependency without it is the desktop's own.
+        write_all(
+            root,
+            &[(
+                "crates/luxforge-app/Cargo.toml",
+                "[dependencies]\nluxforge-ui = { path = \"../luxforge-ui\" }\n\n\
+                 [dev-dependencies]\nluxforge-ui = { path = \"../luxforge-ui\", \
+                 features = [\"qualification\"] }\n",
+            )],
+        );
+        let rules = ["gpu-qualification-only-in-tests"];
+        assert!(read(root, &rules).is_ok());
+        // A normal, build or workspace dependency that turns it on is refused.
+        for (path, text) in [
+            (
+                "crates/luxforge-cli/Cargo.toml",
+                "[dependencies]\nluxforge-ui = { path = \"../luxforge-ui\", \
+                 features = [\"qualification\"] }\n",
+            ),
+            (
+                "xtask/Cargo.toml",
+                "[build-dependencies.luxforge-ui]\npath = \"../crates/luxforge-ui\"\n\
+                 features = [\"qualification\"]\n",
+            ),
+            (
+                "Cargo.toml",
+                "[workspace.dependencies]\nluxforge-ui = { path = \"crates/luxforge-ui\", \
+                 features = [\"qualification\"] }\n",
+            ),
+        ] {
+            write_all(root, &[(path, text)]);
+            let error = refusal(root, &rules, path);
+            assert!(
+                error.contains(path) && error.contains("[dev-dependencies] table"),
+                "{path}: {error}"
+            );
+            fs::remove_file(root.join(path)).unwrap();
+        }
+    }
+
+    #[test]
+    fn only_tests_turn_on_the_allocation_counter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // A dev-dependency may turn it on; a dependency without it is the core's own.
+        write_all(
+            root,
+            &[(
+                "crates/luxforge-core/Cargo.toml",
+                "[dependencies]\nluxforge-process = { path = \"../luxforge-process\" }\n\n\
+                 [dev-dependencies]\nluxforge-process = { path = \"../luxforge-process\", \
+                 features = [\"allocation-counter\"] }\n",
+            )],
+        );
+        let rules = ["allocation-counter-only-in-tests"];
+        assert!(read(root, &rules).is_ok());
+        // A normal, build or workspace dependency that turns it on is refused.
+        for (path, text) in [
+            (
+                "crates/luxforge-app/Cargo.toml",
+                "[dependencies]\nluxforge-process = { path = \"../luxforge-process\", \
+                 features = [\"allocation-counter\"] }\n",
+            ),
+            (
+                "xtask/Cargo.toml",
+                "[build-dependencies.luxforge-process]\npath = \"../crates/luxforge-process\"\n\
+                 features = [\"allocation-counter\"]\n",
+            ),
+            (
+                "Cargo.toml",
+                "[workspace.dependencies]\nluxforge-process = { path = \"crates/luxforge-process\", \
+                 features = [\"allocation-counter\"] }\n",
+            ),
+        ] {
+            write_all(root, &[(path, text)]);
+            let error = refusal(root, &rules, path);
+            assert!(
+                error.contains(path) && error.contains("[dev-dependencies] table"),
+                "{path}: {error}"
+            );
+            fs::remove_file(root.join(path)).unwrap();
+        }
+    }
+
+    #[test]
+    fn only_tests_turn_on_the_cores_qualification_filters() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // A dev-dependency may turn it on; a dependency without it is the desktop's own.
+        write_all(
+            root,
+            &[(
+                "crates/luxforge-app/Cargo.toml",
+                "[dependencies]\nluxforge-core = { path = \"../luxforge-core\" }\n\n\
+                 [dev-dependencies]\nluxforge-core = { path = \"../luxforge-core\", \
+                 features = [\"test-skip-disk-flush\", \"qualification\"] }\n",
+            )],
+        );
+        let rules = ["core-qualification-only-in-tests"];
+        assert!(read(root, &rules).is_ok());
+        // A normal, build or workspace dependency that turns it on is refused.
+        for (path, text) in [
+            (
+                "crates/luxforge-cli/Cargo.toml",
+                "[dependencies]\nluxforge-core = { path = \"../luxforge-core\", \
+                 features = [\"qualification\"] }\n",
+            ),
+            (
+                "xtask/Cargo.toml",
+                "[build-dependencies.luxforge-core]\npath = \"../crates/luxforge-core\"\n\
+                 features = [\"qualification\"]\n",
+            ),
+            (
+                "Cargo.toml",
+                "[workspace.dependencies]\nluxforge-core = { path = \"crates/luxforge-core\", \
+                 features = [\"qualification\"] }\n",
+            ),
+        ] {
+            write_all(root, &[(path, text)]);
+            let error = refusal(root, &rules, path);
+            assert!(
+                error.contains(path) && error.contains("[dev-dependencies] table"),
+                "{path}: {error}"
+            );
+            fs::remove_file(root.join(path)).unwrap();
+        }
+    }
+
+    #[test]
     fn the_core_links_no_tls_http_or_keychain_crate() {
         let tmp = tempfile::tempdir().unwrap();
         let manifest = tmp.path().join("crates/luxforge-core/Cargo.toml");
@@ -4333,6 +4536,7 @@ mod tests {
             ("Iced", "iced.workspace = true\n"),
             ("Iced's renderer", "iced_wgpu.workspace = true\n"),
             ("wgpu", "wgpu = { version = \"27\" }\n"),
+            ("the shader compiler", "naga = \"27\"\n"),
             ("the dialog crate", "rfd.workspace = true\n"),
             (
                 "the widget crate",
@@ -4352,6 +4556,67 @@ mod tests {
             assert!(
                 error.contains("luxforge-cli/Cargo.toml:")
                     && error.contains("GUI stack")
+                    && error.contains("DEPENDENCY_RULES"),
+                "{what}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_core_builds_no_gpu_or_gui_crate_and_takes_naga_only_for_its_tests() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = tmp.path().join("crates/luxforge-core/Cargo.toml");
+        fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        let clean = "[package]\nname = \"luxforge-core\"\n\n[dependencies]\n\
+                     luxforge-raw = { path = \"../luxforge-raw\" }\n\
+                     serde_json.workspace = true\n";
+        fs::write(&manifest, clean).unwrap();
+        let rule = &["gpu-free-core"];
+        assert_eq!(read(tmp.path(), rule).unwrap(), (0, 1));
+        // Its tests validate the WGSL its modules own, and the widget crate executes it; neither
+        // is the core's build.
+        fs::write(
+            &manifest,
+            format!("{clean}\n[dev-dependencies]\nnaga = {{ version = \"27\", features = [\"wgsl-in\"] }}\n"),
+        )
+        .unwrap();
+        let ui = tmp.path().join("crates/luxforge-ui/Cargo.toml");
+        fs::create_dir_all(ui.parent().unwrap()).unwrap();
+        fs::write(
+            &ui,
+            "[dependencies]\nwgpu.workspace = true\niced.workspace = true\n",
+        )
+        .unwrap();
+        assert_eq!(read(tmp.path(), rule).unwrap(), (0, 1));
+        for (what, extra) in [
+            ("wgpu", "wgpu.workspace = true\n"),
+            ("wgpu's types", "wgpu-types = \"27\"\n"),
+            ("the shader compiler", "naga = \"27\"\n"),
+            (
+                "the shader compiler for a build script",
+                "\n[build-dependencies]\nnaga = \"27\"\n",
+            ),
+            (
+                "the shader compiler under a target",
+                "\n[target.'cfg(target_os = \"macos\")'.dependencies]\nnaga = \"27\"\n",
+            ),
+            ("Iced", "iced.workspace = true\n"),
+            ("Iced's renderer", "iced_wgpu.workspace = true\n"),
+            ("the dialog crate", "rfd.workspace = true\n"),
+            (
+                "the widget crate",
+                "luxforge-ui = { path = \"../luxforge-ui\" }\n",
+            ),
+            (
+                "wgpu under another name",
+                "gpu = { package = \"wgpu\", version = \"27\" }\n",
+            ),
+        ] {
+            fs::write(&manifest, format!("{clean}{extra}")).unwrap();
+            let error = refusal(tmp.path(), rule, what);
+            assert!(
+                error.contains("luxforge-core/Cargo.toml:")
+                    && error.contains("GPU or GUI crate")
                     && error.contains("DEPENDENCY_RULES"),
                 "{what}: {error}"
             );

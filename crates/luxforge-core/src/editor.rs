@@ -1,11 +1,11 @@
 //! The editor service: [`EditorService`], which owns one catalog, and the types its API speaks.
 //!
-//! One service, split by concern: `catalog` holds the schema, the format marker and the row
-//! storage; `history` the admission and the transactions that write history; `source` source
-//! preparation, the source cache and RAW settings; `evaluate` preview and analysis jobs, renders
-//! and samples; `plan` action planning and drafts; `masks` the `mask.*` commands and mask targets;
-//! `describe` the read-only views; `entries` the cache of hydrated entries and asset heads those
-//! reads are answered from; and `artifact_store` derived artifacts.
+//! One service, split by concern: `catalog` holds the lock and the journal, the schema, the format
+//! marker and the row storage; `history` the admission and the transactions that write history;
+//! `source` source preparation, the source cache and RAW settings; `evaluate` preview and analysis
+//! jobs, renders and samples; `plan` action planning and drafts; `masks` the `mask.*` commands and
+//! mask targets; `describe` the read-only views; `entries` the cache of hydrated entries and asset
+//! heads those reads are answered from; and `artifact_store` derived artifacts.
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
@@ -76,6 +76,14 @@ pub enum SourceKind {
 }
 
 impl SourceKind {
+    /// Source-stage colour capability, shared by API admission and the panel.
+    pub fn white_balance_available(&self) -> bool {
+        match self {
+            Self::Jpeg => true,
+            Self::Raw { metadata } => metadata.layout != luxforge_raw::RawLayout::Monochrome,
+        }
+    }
+
     /// The kind's tag, exactly as this value serializes it in `kind`.
     pub fn tag(&self) -> SourceTag {
         match self {
@@ -121,7 +129,8 @@ impl SourceTag {
 }
 
 /// What reads cost the catalog, counted per thread, for the tests that prove a cached read decodes
-/// and hashes nothing: every JSON decode of a stored value and every stroke address computed.
+/// and hashes nothing: every JSON decode of a stored value and every stroke address computed, and,
+/// asked for separately by `take_queried`, every stroke row looked up in the store.
 #[cfg(test)]
 pub(crate) mod read_counts {
     use std::cell::Cell;
@@ -129,6 +138,7 @@ pub(crate) mod read_counts {
     thread_local! {
         static DECODED: Cell<u64> = const { Cell::new(0) };
         static HASHED: Cell<u64> = const { Cell::new(0) };
+        static QUERIED: Cell<u64> = const { Cell::new(0) };
     }
 
     pub(crate) fn decoded() {
@@ -139,12 +149,21 @@ pub(crate) mod read_counts {
         HASHED.with(|count| count.set(count.get() + 1));
     }
 
+    pub(crate) fn queried() {
+        QUERIED.with(|count| count.set(count.get() + 1));
+    }
+
     /// The decodes and the stroke hashes this thread made since it last asked.
     pub(crate) fn take() -> (u64, u64) {
         (
             DECODED.with(|count| count.replace(0)),
             HASHED.with(|count| count.replace(0)),
         )
+    }
+
+    /// The stroke rows this thread looked up in the store since it last asked.
+    pub(crate) fn take_queried() -> u64 {
+        QUERIED.with(|count| count.replace(0))
     }
 }
 
@@ -634,30 +653,24 @@ impl EditorService {
         }
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_millis(100))?;
-        // A commit is durable (`synchronous=FULL`) wherever durable writes reach the drive
-        // (`atomic_file::FLUSHES`), which only a test build turns off.
-        connection.execute_batch(if crate::atomic_file::FLUSHES {
-            "PRAGMA foreign_keys=ON;
-             PRAGMA synchronous=FULL;
-             PRAGMA locking_mode=EXCLUSIVE;
-             BEGIN IMMEDIATE;
-             COMMIT;"
-        } else {
-            "PRAGMA foreign_keys=ON;
-             PRAGMA synchronous=OFF;
-             PRAGMA locking_mode=EXCLUSIVE;
-             BEGIN IMMEDIATE;
-             COMMIT;"
-        })?;
-        let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        // The format is checked under the lock and before the journal is set, so a refused file —
+        // an unsupported catalog, or a database that is not one — keeps every byte, its journal
+        // mode included.
+        let version = catalog::lock(&connection)?;
         match version {
-            0 => Self::create_schema(&mut connection, &uuid::Uuid::new_v4().simple().to_string())?,
+            0 => catalog::require_empty(&connection)?,
             CATALOG_FORMAT => {}
             other => {
                 return Err(Error::incompatible(format!(
                     "catalog format {other} is not supported; expected {CATALOG_FORMAT}; choose a new catalog path"
                 )));
             }
+        }
+        // A commit is durable wherever durable writes reach the drive (`atomic_file::FLUSHES`),
+        // which only a test build turns off.
+        catalog::configure(&connection, crate::atomic_file::FLUSHES)?;
+        if version == 0 {
+            Self::create_schema(&mut connection, &uuid::Uuid::new_v4().simple().to_string())?;
         }
         let catalog_id: Option<String> = connection
             .query_row(

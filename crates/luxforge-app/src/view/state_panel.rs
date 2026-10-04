@@ -124,13 +124,34 @@ pub(crate) fn performance(model: &PerformanceModel, enabled: bool) -> Element<'_
                 })
             }),
         ),
-        None => job_row(&JobRowModel {
-            label: job.label.clone(),
-            trailing: job.trailing.clone(),
-            detail: job.detail.clone(),
-            progress: job.progress,
-            running: job.running,
-        }),
+        None => {
+            let body = job_row(&JobRowModel {
+                label: job.label.clone(),
+                trailing: job.trailing.clone(),
+                detail: job.detail.clone(),
+                progress: job.progress,
+                running: job.running,
+            });
+            match &job.job_id {
+                Some(id) if job.running => row![
+                    container(body).width(Length::Fill),
+                    text_button(
+                        if job.cancelling {
+                            "Cancelling…"
+                        } else {
+                            "Cancel"
+                        },
+                        ButtonTone::Quiet,
+                        ButtonSize::Compact,
+                        (enabled && !job.cancelling)
+                            .then(|| Message::Performance(PerformanceMessage::Cancel(id.clone()))),
+                    ),
+                ]
+                .spacing(theme::SPACING)
+                .into(),
+                _ => body,
+            }
+        }
     }))
     .spacing(theme::SPACING)
     .width(Length::Fill);
@@ -369,6 +390,8 @@ mod tests {
             progress: Some(0.5),
             running: true,
             work: None,
+            job_id: Some(Default::default()),
+            cancelling: false,
         };
         let expanded = PerformanceModel {
             expanded: true,

@@ -1,0 +1,77 @@
+name: Extended camera corpus
+
+on:
+  schedule:
+    - cron: '23 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      qualified_only:
+        description: Test only sources with frozen qualification evidence
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sample-corpus-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  corpus:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Verify offline corpus tooling
+        run: python3 -m unittest discover -s tools -p 'test_sample_corpus.py' -v
+      - name: Pinned AWS CLI for R2
+        run: |
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+            --max-time 180 -o /tmp/luxforge-awscli.zip \
+            https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.35.16.zip
+          echo 'b5af85763d6d33b8f05c5e7488c0b1ed85f87a5a584b67ce583fe560bfeea086  /tmp/luxforge-awscli.zip' | sha256sum --check
+          unzip -q /tmp/luxforge-awscli.zip -d /tmp/luxforge-awscli
+          /tmp/luxforge-awscli/aws/install --install-dir "$GITHUB_WORKSPACE/.tools/aws-cli" --bin-dir "$GITHUB_WORKSPACE/.tools/bin"
+          echo "$GITHUB_WORKSPACE/.tools/bin" >> "$GITHUB_PATH"
+      - name: Pinned Rust toolchain
+        run: rustup toolchain install 1.94.0 --profile minimal
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/release
+          key: corpus-${{ runner.os }}-rust-1.94-${{ hashFiles('Cargo.lock', 'crates/luxforge-raw/**', 'crates/luxforge-testbase/**') }}
+      - name: Build headless authentic qualifier
+        run: cargo +1.94.0 build --release --locked -p luxforge-raw --example qualify_profiles
+      - name: Test R2 corpus in bounded chunks
+        env:
+          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+          R2_BUCKET: luxforge-samples
+          R2_READ_ACCESS_KEY_ID: ${{ secrets.R2_READ_ACCESS_KEY_ID }}
+          R2_READ_SECRET_ACCESS_KEY: ${{ secrets.R2_READ_SECRET_ACCESS_KEY }}
+          QUALIFIED_ONLY: ${{ inputs.qualified_only }}
+          CORPUS_SHARD: ${{ matrix.shard }}
+        run: |
+          set --
+          if [ "$QUALIFIED_ONLY" = true ]; then set -- --qualified-only; fi
+          python3 tools/sample_corpus.py test \
+            --shard "$CORPUS_SHARD/4" --chunk-size 8 --chunk-mib 1024 \
+            --transfer-jobs 2 \
+            --qualifier target/release/examples/qualify_profiles \
+            --output "artifacts/sample-corpus/shard-$CORPUS_SHARD" \
+            --cleanup "$@"
+      - name: Retain reports, never original photographs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sample-corpus-${{ matrix.shard }}
+          path: artifacts/sample-corpus/
+          if-no-files-found: warn
+          retention-days: 14

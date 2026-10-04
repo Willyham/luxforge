@@ -29,7 +29,7 @@ const PROFILE: &str = "Local proof";
 /// How long the endpoint holds the palette download and each generation, so a frame can be
 /// captured while the install or the task is still running. Well inside every transfer and adapter
 /// deadline.
-const DELAY: Duration = Duration::from_millis(1200);
+const DELAY: Duration = Duration::from_millis(4000);
 /// A captured tinted frame and the core's own render of the same stack may differ by this much per
 /// channel, in 8-bit codes, over the window's mean: linear filtering of the magnified photograph.
 const MEAN_TOLERANCE: f64 = 2.0;
@@ -68,11 +68,6 @@ pub fn plan(base: &str, key: &str, wrong: &str) -> Plan {
             script::Step::section("luxforge.basic", false),
         )
         .collapsed("luxforge.basic"),
-        layout(
-            "transform-collapsed",
-            script::Step::section("luxforge.transform", false),
-        )
-        .collapsed("luxforge.transform"),
         layout(
             "crop-collapsed",
             script::Step::section("luxforge.crop", false),
@@ -122,6 +117,14 @@ pub fn plan(base: &str, key: &str, wrong: &str) -> Plan {
         Step::new("applied", step(CapabilityAction::Apply))
             .commits(1)
             .label("Apply proof tint"),
+        // A second real task is cancelled through its displayed Performance row.
+        capability("cancel-running", step(task()).no_wait()),
+        layout("cancel-listed", script::Step::wait(1600)),
+        layout(
+            "cancel-requested",
+            script::Step::PerformanceCancel { row: 0 },
+        ),
+        gesture("cancelled", CapabilityAction::Settle),
         // A wrong key makes the endpoint refuse, and the failure is shown.
         secret("wrong-key", wrong),
         gesture("refused-task", task()),
@@ -438,6 +441,30 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         ),
     )?;
     // A wrong key makes the endpoint refuse, and the failure is shown.
+    let listed = &at("cancel-listed")?["state"]["performance"]["jobs"];
+    ensure(
+        listed.as_array().is_some_and(|jobs| {
+            jobs.iter()
+                .any(|job| job["running"] == true && job["job_id"].is_string())
+        }),
+        "No cancellable task was displayed in Performance",
+    )?;
+    let cancelled = at("cancelled")?;
+    let cancelled_id = &at("cancel-requested")?["step"]["job_id"];
+    ensure(
+        capability(cancelled)["tasks"][TASK]["error"]["code"] == "cancelled"
+            && capability(cancelled)["jobs"]
+                .as_array()
+                .is_some_and(|jobs| {
+                    jobs.iter()
+                        .any(|job| job["job_id"] == *cancelled_id && job["status"] == "cancelled")
+                }),
+        "The Performance button did not cancel the capability task",
+    )?;
+    ensure(
+        tint_layers(cancelled) == tint_layers(applied),
+        "Cancelling changed the accepted edit",
+    )?;
     ensure(
         profile("wrong-key")?["fields"]["api-key"]["secret_present"] == true,
         "The replaced key does not read set",
@@ -488,13 +515,14 @@ fn endpoint_checks(endpoint: &ProofEndpoint) -> Result<Value> {
         "The palette was not downloaded exactly once",
     )?;
     ensure(
-        generate.len() == 2
+        generate.len() == 3
             && generate[0].authorized
             && generate[0].status == 200
             && generate[0].samples.is_some()
-            && !generate[1].authorized
-            && generate[1].status == 401,
-        "The endpoint did not see one authorized and one refused generation",
+            && generate[1].authorized
+            && !generate[2].authorized
+            && generate[2].status == 401,
+        "The endpoint did not see the accepted, cancelled and refused generations",
     )?;
     Ok(json!({
         "palette_downloads": palette.len(),

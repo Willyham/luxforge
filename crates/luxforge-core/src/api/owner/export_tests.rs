@@ -1030,8 +1030,17 @@ fn a_raw_export_matches_the_exact_render() {
     let raw = PathBuf::from(std::env::var("LUXFORGE_RAW_FIXTURE").expect("LUXFORGE_RAW_FIXTURE"));
     let original = fs::read(&raw).unwrap();
     let mut harness = Harness::start("raw");
-    let asset = harness.opened(&raw)["asset"]["id"].clone();
-    let entry = harness.expose(&asset, 0.4);
+    let opened = harness.opened(&raw);
+    let asset = opened["asset"]["id"].clone();
+    let original_entry = opened["current_entry"]["id"].clone();
+    harness.expose(&asset, 1.0);
+    let revision = harness.ok("asset.state", json!({"asset_id": asset}))["revision"].clone();
+    harness.ok("edit.set-presence", json!({
+        "asset_id": asset, "texture": 30, "clarity": 25, "dehaze": 10,
+        "mutation": {"expected_revision": revision, "request_id": "raw-presence", "actor": "test"},
+    }));
+    let entry =
+        harness.ok("asset.state", json!({"asset_id": asset}))["current_entry"]["id"].clone();
     let out = destinations(&harness);
     let params = with_envelope(json!({
         "asset_id": asset, "destination": out.join("raw.jpg"), "keep_metadata": true,
@@ -1054,6 +1063,11 @@ fn a_raw_export_matches_the_exact_render() {
     harness.stop();
     let frame = reference(&harness.catalog, &asset, &entry);
     assert_encodes(&out.join("plain.jpg"), &frame, "the RAW export");
+    let before = reference(&harness.catalog, &asset, &original_entry);
+    assert_ne!(
+        frame.rgba, before.rgba,
+        "Basic and Presence change the exact RAW pixels"
+    );
     assert_eq!(
         fs::read(&raw).unwrap(),
         original,

@@ -387,23 +387,23 @@ impl EditorService {
             None => self.current_entry_id(asset_id)?,
         });
         let mut steps = Vec::new();
+        // Prepared once for the whole walk (and kept in the connection's statement cache for the
+        // next one), not once per step: a walk is up to `MAX_HISTORY_PAGE` steps after every undo,
+        // redo and restore.
+        let mut step = self.connection.prepare_cached(
+            "SELECT sequence,action_id,undo_parent_id FROM entries WHERE id=?1 AND asset_id=?2",
+        )?;
         while let Some(entry_id) = next.take() {
             if steps.len() == limit {
                 next = Some(entry_id);
                 break;
             }
-            let (sequence, action_id, parent): (i64, String, Option<String>) = self
-                .connection
-                .query_row(
-                    "SELECT sequence,action_id,undo_parent_id FROM entries WHERE id=?1 AND asset_id=?2",
-                    params![entry_id.as_str(), asset_id.as_str()],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )
+            let (sequence, action_id, parent): (i64, String, Option<String>) = step
+                .query_row(params![entry_id.as_str(), asset_id.as_str()], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })
                 .optional()?
-                .ok_or_else(|| {
-                    Error::validation(
-                        "history entry does not belong to this asset")
-                })?;
+                .ok_or_else(|| Error::validation("history entry does not belong to this asset"))?;
             let undo_parent = parent.map(EntryId::parse).transpose()?;
             next = undo_parent.clone();
             steps.push(LineageStep {
@@ -1027,8 +1027,18 @@ mod tests {
                 .unwrap()),
             [original]
         );
+        // A limit equal to the chain's length is not a cut: nothing is left to continue from.
+        let whole = service.lineage(&asset, None, 3).unwrap();
+        assert_eq!(whole.steps.len(), 3);
+        assert_eq!(whole.next_entry_id, None);
         assert!(service.lineage(&asset, None, 0).is_err());
-        assert!(service.lineage(&AssetId::new(), Some(&c), 5).is_err());
+        assert!(service.lineage(&asset, None, MAX_HISTORY_PAGE + 1).is_err());
+        // An entry that is not this asset's is refused by name.
+        let error = service
+            .lineage(&AssetId::new(), Some(&c), 5)
+            .expect_err("another asset's entry is not walkable");
+        assert_eq!(error.kind, crate::ErrorKind::Validation);
+        assert_eq!(error.detail, "history entry does not belong to this asset");
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }

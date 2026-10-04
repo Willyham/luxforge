@@ -10,8 +10,9 @@
 //! selected component's fields, a hover on a component row, the overlay control in each of its four
 //! modes and both tints, the New mask menu, the Brush section appearing when a brush is armed and
 //! disappearing when it is put down, the scope chip on the bound sections, and the draft bar for a
-//! stroke and for a radial. Its last frame, `radial-dragged`, is the board's own state: `Face` open,
-//! `Radial 1` reopened and its rotation handle dragged, the green tint on.
+//! stroke. Its last frame, `radial-dragged`, is the board's own state: `Face` open, `Radial 1`
+//! selected with its handles resting on the canvas, its rotation handle dragged and committed as one
+//! entry, the green tint on.
 //!
 //! Every frame's state is checked against what the plan put there — which masks are listed and in
 //! what order, the open mask, the selected component, the overlay setting and what the canvas draws,
@@ -99,7 +100,8 @@ fn entry(name: &str, step: impl Into<script::Step>, label: impl Into<String>) ->
         .mode(MASK_MODE)
 }
 
-/// A new mask of one drawn kind, swept, released, committed and renamed: five frames, two entries.
+/// A new mask of one drawn kind, swept, committed by its release and renamed: four frames, two
+/// entries.
 /// Once renamed it is listed after `before`, open, and holds its one drawn component.
 ///
 /// The host names a new mask with the first `Mask N` no mask holds, so once the one before it has
@@ -112,14 +114,13 @@ fn drawn(
     added: &str,
     listed: &[&str],
     component: &str,
-) -> [Step; 5] {
+) -> [Step; 4] {
     let [from, to] = sweep;
     let name = listed[listed.len() - 1];
     [
         quiet(&format!("{prefix}-new"), MaskStep::New(kind.into())),
         quiet(&format!("{prefix}-swept"), MaskStep::Sweep { from, to }),
-        quiet(&format!("{prefix}-released"), MaskStep::Release),
-        entry(&format!("{prefix}-applied"), MaskStep::Apply, added).no_draft(),
+        entry(&format!("{prefix}-applied"), MaskStep::Release, added).no_draft(),
         entry(
             &format!("{prefix}-renamed"),
             script::Step::call(
@@ -175,7 +176,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         // 1: Mask mode, through the same `workspace.set` the mode strip sends.
         quiet("mask-mode", WorkspaceStep::default().mode(MASK_MODE)),
     ];
-    // 2-6: Sky, a linear from the top of the photograph down over its upper third.
+    // 2-5: Sky, a linear from the top of the photograph down over its upper third.
     steps.extend(drawn(
         "sky",
         LINEAR,
@@ -184,8 +185,8 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         &[SKY],
         "Linear 1",
     ));
-    // 7-11: Face, a radial at the board's centre and radii, with no Brush section yet.
-    let [new, swept, released, applied, renamed] = drawn(
+    // 6-9: Face, a radial at the board's centre and radii, with no Brush section yet.
+    let [new, swept, applied, renamed] = drawn(
         "face",
         RADIAL,
         [RADIAL_AT, radial_to()],
@@ -193,20 +194,21 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         &[SKY, FACE],
         RADIAL_1,
     );
-    steps.extend([new, swept, released, applied, renamed.brush_section(false)]);
+    steps.extend([new, swept, applied, renamed.brush_section(false)]);
     let face_open = |step: Step| step.open_mask(Some(FACE));
     steps.extend([
-        // 12-14: a subtracting brush on Face. Arming it shows the Brush section, and putting it down
-        // before it has painted anything takes the section away again, with nothing selected.
+        // 10-12: a subtracting brush on Face. Arming it shows the Brush section, and putting it down
+        // before it has painted anything takes the section away again, leaving Radial 1 — selected
+        // when it was applied — as it was.
         quiet("subtract-mode", MaskStep::Mode("subtract".into())),
         face_open(quiet("brush-armed", MaskStep::Paint(PaintStep::NewBrush))).brush_section(true),
         face_open(quiet("brush-put-down", MaskStep::Cancel))
             .no_draft()
             .component_names(&[RADIAL_1])
             .components(&["add radial"])
-            .selected_component(None)
+            .selected_component(Some(RADIAL_1))
             .brush_section(false),
-        // 15-17: armed again, and two strokes, one entry each, taken out of the radial's lower part.
+        // 13-15: armed again, and two strokes, one entry each, taken out of the radial's lower part.
         quiet("brush-rearmed", MaskStep::Paint(PaintStep::NewBrush)),
         entry(
             "stroke-1",
@@ -222,26 +224,26 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         .components(&FACE_ROWS[..2])
         .selected_component(Some(BRUSH_1))
         .brush_section(true),
-        // 18: a third stroke held down: the draft bar for a stroke.
+        // 16: a third stroke held down: the draft bar for a stroke.
         quiet(
             "stroke-held",
             MaskStep::stroke([[0.55, 0.20], [0.62, 0.22]], false),
         ),
-        // 19: the brush put down, the held stroke with it. Put down after painting, the brush leaves
+        // 17: the brush put down, the held stroke with it. Put down after painting, the brush leaves
         // its section to the painted component the strokes selected, as the panel shows a brush
         // component's settings while it is selected.
         face_open(quiet("brush-down", MaskStep::Cancel))
             .no_draft()
             .selected_component(Some(BRUSH_1))
             .brush_section(true),
-        // 20-21: an intersecting luminance range, typed rather than drawn, so it commits at once.
+        // 18-19: an intersecting luminance range, typed rather than drawn, so it commits at once.
         quiet("intersect-mode", MaskStep::Mode("intersect".into())),
         entry(
             "luminance-added",
             MaskStep::Add(LUMINANCE.into()),
             "Face · Add intersect luminance range",
         ),
-        // 22: the name the board gives it, through the rename field's own request.
+        // 20: the name the board gives it, through the rename field's own request.
         face(through_face(
             "luminance-renamed",
             "mask.rename-component",
@@ -249,10 +251,10 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             &format!("Face · Rename {NEW_LUMINANCE} to {LUMINANCE_1}"),
         ))
         .mask_names(&[SKY, FACE]),
-        // 23: back to add, which a new mask's first component must be.
+        // 21: back to add, which a new mask's first component must be.
         quiet("add-mode", MaskStep::Mode("add".into())),
     ]);
-    // 24-28: Foreground, a linear from the bottom of the photograph up over its lower quarter.
+    // 22-25: Foreground, a linear from the bottom of the photograph up over its lower quarter.
     steps.extend(drawn(
         "foreground",
         LINEAR,
@@ -262,14 +264,14 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         "Linear 1",
     ));
     steps.extend([
-        // 29: Foreground's overlay hidden with its eye.
+        // 26: Foreground's overlay hidden with its eye.
         quiet(
             "foreground-hidden",
             MaskStep::Eye(Reference::name(FOREGROUND)),
         ),
-        // 30: Face open again, as clicking its row does.
+        // 27: Face open again, as clicking its row does.
         face(quiet("face-open", MaskStep::Select(Reference::name(FACE)))),
-        // 31-33: Face's amount, then Exposure and Clarity through it, each the request the panel's
+        // 28-30: Face's amount, then Exposure and Clarity through it, each the request the panel's
         // own controls send with the open mask as their target.
         through_face(
             "face-amount",
@@ -290,7 +292,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             "Face · Clarity +18",
         ))
         .mask_overlay("off", "green"),
-        // 34-35: Basic collapsed and Presence expanded, as the board lays the sections out.
+        // 31-32: Basic collapsed and Presence expanded, as the board lays the sections out.
         quiet(
             "basic-collapsed",
             script::Step::section(BASIC_MODULE, false),
@@ -302,7 +304,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         )
         .expanded(PRESENCE_MODULE)
         .collapsed(BASIC_MODULE),
-        // 36-37: the New mask menu, and Escape putting it away.
+        // 33-34: the New mask menu, and Escape putting it away.
         face(quiet(
             "new-mask-menu",
             MaskStep::Menu(KindMenuStep::NewMask),
@@ -315,14 +317,14 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             },
         ))
         .mask_menu(None),
-        // 38: Radial 1 selected: its fields open beneath its row, and no Brush section.
+        // 35: Radial 1 selected: its fields open beneath its row, and no Brush section.
         face(quiet(
             "radial-selected",
             MaskStep::SelectComponent(Some(Reference::name(RADIAL_1))),
         ))
         .selected_component(Some(RADIAL_1))
         .brush_section(false),
-        // 39-43: the overlay in each mode and both tints.
+        // 36-40: the overlay in each mode and both tints.
         overlay(
             quiet(
                 "overlay-green",
@@ -362,7 +364,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             "off",
             "white",
         ),
-        // 44: the board's own tint.
+        // 41: the board's own tint.
         overlay(
             quiet(
                 "overlay-tint",
@@ -373,7 +375,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             "tint",
             "green",
         ),
-        // 45-46: the pointer on Brush 1's row, which shows its own contribution, and off again.
+        // 42-43: the pointer on Brush 1's row, which shows its own contribution, and off again.
         overlay(
             quiet(
                 "hover-brush",
@@ -383,24 +385,31 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             "green",
         ),
         overlay(quiet("hover-off", MaskStep::Hover(None)), "tint", "green"),
-        // 47-48: Radial 1's shape reopened and its rotation grip swung to the board's angle: the
-        // draft bar for a radial, and the board's own state.
-        overlay(
-            quiet("shape-open", MaskStep::EditShape(Reference::name(RADIAL_1))),
-            "tint",
-            "green",
-        ),
+        // 44-45: Radial 1 selected, its handles resting on the canvas with no draft open, and its
+        // rotation grip swung to the board's angle: one entry, committed on release.
         overlay(
             quiet(
+                "radial-resting",
+                MaskStep::SelectComponent(Some(Reference::name(RADIAL_1))),
+            ),
+            "tint",
+            "green",
+        )
+        .no_draft(),
+        overlay(
+            entry(
                 "radial-dragged",
                 MaskStep::Drag {
                     handle: DragHandle::Rotation,
                     points: rotation(ANGLE),
+                    release: true,
                 },
+                format!("{FACE} · Update {RADIAL_1}"),
             ),
             "tint",
             "green",
-        ),
+        )
+        .no_draft(),
     ]);
     Plan::new(steps)
 }
@@ -583,22 +592,32 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         "A row is still hovered with the pointer off the list",
     )?;
 
-    // The draft bar for a radial: Radial 1 reopened on Face, and its grip swung to the board's
-    // angle with nothing else about it moved.
-    let opened_shape = launch.at("shape-open")?;
-    draft_bar(opened_shape, "Radial 1 · Add", RADIAL)?;
-    let bar = draft_bar(last, "Radial 1 · Add", RADIAL)?;
-    ensure(
-        bar["done"] == json!(false) && bar["can_apply"] == json!(true),
-        format!("The radial's draft bar cannot apply: {bar}"),
-    )?;
-    let shape = &last.state()["mask_draft"]["shape"];
-    let before = &opened_shape.state()["mask_draft"]["shape"];
+    // Radial 1's handles at rest on Face, holding no draft, and its grip swung to the board's
+    // angle and committed on release with nothing else about it moved. The handles rest again on
+    // what was committed.
+    let resting = launch.at("radial-resting")?;
+    let handles = |name: &str, frame: &Frame| -> Result<Value> {
+        let handles = &frame.state()["mask_handles"];
+        ensure(
+            handles["summary"]["kind"] == json!(RADIAL)
+                && handles["summary"]["op"] == json!("Update")
+                && handles["mapped"] == json!(true),
+            format!("{name}: Radial 1's handles are not resting: {handles}"),
+        )?;
+        ensure(
+            frame.state()["draft_bar"].is_null(),
+            format!("{name}: resting handles drew a draft bar"),
+        )?;
+        Ok(handles["summary"]["shape"].clone())
+    };
+    let before = handles("radial-resting", resting)?;
+    let shape = handles("radial-dragged", last)?;
     let angle = shape["angle"].as_f64().unwrap_or(f64::NAN);
     ensure(
         (angle - ANGLE).abs() < 0.5,
         format!("The grip turned the radial to {angle}°, expected about {ANGLE}°"),
     )?;
+    let fields = &last.component(0)?["fields"];
     for field in ["x", "y", "radius_x", "radius_y", "feather"] {
         ensure(
             shape[field] == before[field],
@@ -608,11 +627,15 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             ),
         )?;
     }
-    let status = names_face(last, RADIAL_1)?;
+    let stored = fields["angle"].as_f64().unwrap_or(f64::NAN);
+    ensure(
+        (stored - angle).abs() < 0.5,
+        format!("Radial 1's committed angle reads {stored}, its handles {angle}"),
+    )?;
     checks.note(
         last,
-        "the draft bar for Face's Radial 1 with its handle dragged: the mask-mode board's state",
-        json!({"bar": bar, "shape": shape, "status": status}),
+        "Face's Radial 1 with its resting rotation handle dragged and committed: the mask-mode board's state",
+        json!({"shape": shape, "before": before}),
     );
 
     checks.write(

@@ -1,10 +1,12 @@
 //! The development's sensor normalization and output scale, on the development executor.
 //!
-//! [`Normalization::run`] turns the retained integer mosaic into the float mosaic the native
-//! demosaic reads: each site's black level is subtracted, the result scaled so sensor white is
-//! [`SENSOR_SCALE`], and multiplied by its colour's white-balance gain. [`scale_planes`] divides
-//! the demosaiced planes by the same scale. [`BlackLevels`] is the one per-site black model,
-//! shared with the neutral picker.
+//! Each site's black level is subtracted, the result scaled so sensor white is [`SENSOR_SCALE`],
+//! and multiplied by its colour's white-balance gain. [`Normalization::sensor_sites`] gives the
+//! native demosaic the per-site tables to compute that as it reads each site of the retained
+//! mosaic; [`Normalization::run`] writes it into a float mosaic instead, for a development whose
+//! sensor stage rewrites the normalized values. [`scale_planes`] divides the demosaiced planes by
+//! the same scale. [`BlackLevels`] is the one per-site black model, shared with the neutral
+//! picker.
 
 use crate::{MosaicCorrection, RawError, RawMetadata, native_tiles};
 use std::{
@@ -60,6 +62,15 @@ impl<'a> BlackLevels<'a> {
         }
     }
 
+    pub(crate) fn at_channel(&self, x: usize, y: usize, channel: usize) -> f32 {
+        let mut black = self.base + self.channels[channel];
+        if self.repeat_width != 0 && self.repeat_height != 0 {
+            black +=
+                self.repeat[(y % self.repeat_height) * self.repeat_width + x % self.repeat_width];
+        }
+        black
+    }
+
     /// The calibration site ID of sensor site `(x, y)`.
     fn site(&self, x: usize, y: usize) -> u8 {
         self.black_cfa[(y % self.cfa_height) * self.cfa_width + x % self.cfa_width]
@@ -93,18 +104,27 @@ pub(crate) struct Normalization<'a> {
 }
 
 /// Every site's black level, white scale and gain over one period of the CFA and black patterns,
-/// each row repeated to at least 64 sites so a row's inner loop is long enough to vectorise.
-struct Sites {
-    width: usize,
-    height: usize,
-    black: Vec<f32>,
-    scale: Vec<f32>,
-    gain: Vec<f32>,
+/// each row repeated to at least 64 sites so a row's inner loop is long enough to vectorise. The
+/// period is anchored at sensor `(0, 0)` and its width and height are whole multiples of the
+/// CFA's. These are also the tables the native demosaic reads each site through when it takes the
+/// retained mosaic in place of a float mosaic ([`Normalization::sensor_sites`]).
+pub(crate) struct Sites {
+    pub width: usize,
+    pub height: usize,
+    pub black: Vec<f32>,
+    pub scale: Vec<f32>,
+    pub gain: Vec<f32>,
 }
 
 impl Sites {
     fn index(&self, x: usize, y: usize) -> usize {
         (y % self.height) * self.width + x % self.width
+    }
+
+    /// The bytes the three tables hold.
+    pub(crate) fn bytes(&self) -> usize {
+        (self.black.capacity() + self.scale.capacity() + self.gain.capacity())
+            * std::mem::size_of::<f32>()
     }
 }
 
@@ -176,6 +196,43 @@ impl Normalization<'_> {
     /// job has returned successfully.
     pub(crate) fn run(&self, lanes: usize, cancel: &AtomicBool) -> Result<Vec<f32>, RawError> {
         let n = self.samples.len();
+        let sites = self.checked_sites(cancel)?;
+        let mut mosaic = Vec::new();
+        mosaic
+            .try_reserve_exact(n)
+            .map_err(|_| RawError::ResourceLimit("normalized mosaic allocation"))?;
+        let jobs = mosaic.spare_capacity_mut()[..n]
+            .chunks_mut(self.width * JOB_ROWS)
+            .enumerate();
+        native_tiles::refill_each(lanes, jobs, |(job, rows)| {
+            self.rows(&sites, job * JOB_ROWS, rows, cancel)
+        })?;
+        if cancel.load(Ordering::Relaxed) {
+            return Err(RawError::Cancelled);
+        }
+        // SAFETY: the executor returned success, so every job ran to completion, and the jobs'
+        // disjoint slices cover the first `n` elements, each of which its job wrote.
+        unsafe { mosaic.set_len(n) };
+        Ok(mosaic)
+    }
+
+    /// The per-site tables of a development whose native demosaic reads each site from the
+    /// retained mosaic, through the native `rpNormalizedSite`, instead of from the float mosaic
+    /// [`run`](Self::run) writes: the same tables, so the same value at every site. The checks
+    /// and the cancellation check are `run`'s, before its allocation. A sparse repair replaces
+    /// its site's sample only in a float mosaic, so a development with repairs takes `run`.
+    pub(crate) fn sensor_sites(&self, cancel: &AtomicBool) -> Result<Sites, RawError> {
+        if !self.corrections.is_empty() {
+            return Err(RawError::InvalidInput(
+                "sparse mosaic corrections need the float mosaic",
+            ));
+        }
+        self.checked_sites(cancel)
+    }
+
+    /// The mosaic's shape and repairs checked, the per-site tables, and a cancellation check.
+    fn checked_sites(&self, cancel: &AtomicBool) -> Result<Sites, RawError> {
+        let n = self.samples.len();
         if self.width == 0 || !n.is_multiple_of(self.width) {
             return Err(RawError::InvalidInput("mosaic is not whole rows"));
         }
@@ -195,23 +252,7 @@ impl Normalization<'_> {
         if cancel.load(Ordering::Relaxed) {
             return Err(RawError::Cancelled);
         }
-        let mut mosaic = Vec::new();
-        mosaic
-            .try_reserve_exact(n)
-            .map_err(|_| RawError::ResourceLimit("normalized mosaic allocation"))?;
-        let jobs = mosaic.spare_capacity_mut()[..n]
-            .chunks_mut(self.width * JOB_ROWS)
-            .enumerate();
-        native_tiles::refill_each(lanes, jobs, |(job, rows)| {
-            self.rows(&sites, job * JOB_ROWS, rows, cancel)
-        })?;
-        if cancel.load(Ordering::Relaxed) {
-            return Err(RawError::Cancelled);
-        }
-        // SAFETY: the executor returned success, so every job ran to completion, and the jobs'
-        // disjoint slices cover the first `n` elements, each of which its job wrote.
-        unsafe { mosaic.set_len(n) };
-        Ok(mosaic)
+        Ok(sites)
     }
 
     /// Normalize the whole rows from `first_row` into `out`.

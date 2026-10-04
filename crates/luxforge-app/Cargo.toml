@@ -22,15 +22,25 @@ image.workspace = true
 rfd.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
+# A one-thread runtime with a clock, to poll a job reader's stream in a test (`rt` is already on
+# through Iced's `tokio` feature).
+tokio = { workspace = true, features = ["rt"] }
 # An independent JPEG decoder for the export tests.
 image = { workspace = true, features = ["jpeg"] }
+# The independent sRGB reference and preview-difference measure the GPU programs are qualified by.
+luxforge-reference = { path = "../luxforge-reference" }
+# The photo surface with its qualification readback, for the GPU programs' readback tests and the
+# corpus harness only (luxforge-ui's `qualification`).
+luxforge-ui = { path = "../luxforge-ui", features = ["qualification"] }
 luxforge-testbase = { path = "../luxforge-testbase" }
 luxforge-testkit = { path = "../luxforge-testkit" }
-# The core with the disk flush skipped and its index listings held at a test's gate, for this
-# crate's tests only (luxforge-core's `test-skip-disk-flush` and `test-holds`).
-luxforge-core = { path = "../luxforge-core", features = ["test-skip-disk-flush", "test-holds"] }
+# The core with the disk flush skipped, its index listings held at a test's gate and its Presence
+# CPU filters exposed, for this crate's tests only (luxforge-core's `test-skip-disk-flush`,
+# `test-holds` and `qualification`).
+luxforge-core = { path = "../luxforge-core", features = ["test-skip-disk-flush", "test-holds", "qualification"] }
 
 [lints]
 workspace = true

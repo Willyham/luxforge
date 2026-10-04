@@ -58,22 +58,28 @@ pub(crate) fn rebuild(job: &mut PreviewJob, change: impl FnOnce(&mut Parts)) {
 }
 
 pub(crate) fn boot() -> (Editor, PathBuf) {
+    let (editor, _, catalog) = boot_with(Config::default());
+    (editor, catalog)
+}
+
+/// An editor started from `config`, the startup task it asked the runtime for, and its catalog.
+pub(crate) fn boot_with(config: Config) -> (Editor, iced::Task<Message>, PathBuf) {
     let catalog = std::env::temp_dir().join(format!(
         "luxforge-desktop-{}-{}.sqlite",
         std::process::id(),
         REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
     ));
     let (owner, join) = luxforge_core::OwnerHandle::start(&catalog).unwrap();
-    let (editor, _) = Editor::new(Boot {
+    let (editor, startup) = Editor::new(Boot {
         owner,
         join,
         live_server: None,
-        config: Config::default(),
+        config,
         client: None,
         initial_import: None,
         window: (1440.0, 900.0),
     });
-    (editor, catalog)
+    (editor, startup, catalog)
 }
 
 /// An editor with every built-in discovered and one real photograph open, imported by a second
@@ -178,6 +184,35 @@ pub(crate) fn real_photo_at(
         editor.status.text
     );
     (editor, asset, agent)
+}
+
+/// The loop timing's last derive as [`mark_no_derive`] leaves it: a value no derive reports.
+const NO_DERIVE: f64 = 99_000.0;
+
+/// Set the loop timing's last derive to a value neither a derive nor a skipped one reports, so a
+/// later [`derive_ran`] says whether the next update derived.
+pub(crate) fn mark_no_derive(editor: &Editor) {
+    let mut timing = editor.log.loop_timing.get();
+    timing.last_rederive_ms = NO_DERIVE;
+    editor.log.loop_timing.set(timing);
+}
+
+/// The update after [`mark_no_derive`] ran a derive: a skipped one leaves the mark or the zero a
+/// fast path reports.
+pub(crate) fn derive_ran(editor: &Editor) -> bool {
+    let last = editor.log.loop_timing.get().last_rederive_ms;
+    last != NO_DERIVE && last != 0.0
+}
+
+/// The photograph's preview work is answered and nothing else is running, as it is a moment after a
+/// photograph opens: the one state in which a message that changes nothing skips the update.
+pub(crate) fn idle_workers(editor: &mut Editor) {
+    luxforge_testbase::wait_until("the workers going idle", || {
+        let _ = editor.update(Message::Preview(
+            crate::app::message::preview::PreviewMessage::Poll,
+        ));
+        !editor.workers_busy()
+    });
 }
 
 pub(crate) fn finish(mut editor: Editor, catalog: PathBuf) {
@@ -352,6 +387,7 @@ pub(crate) fn scripted_evidence(steps: &str) -> Evidence {
         frames: Vec::new(),
         capture_pending: false,
         view_idle: None,
+        idle: None,
         allow_unready_capture: false,
         capture_overlay: false,
         saving: false,
@@ -362,6 +398,7 @@ pub(crate) fn scripted_evidence(steps: &str) -> Evidence {
         tools_scroll: None,
         capability_wait: None,
         wait_until: None,
+        warm_wait: None,
         agent: None,
         agent_wait: None,
         long_work_wait: None,
@@ -369,6 +406,7 @@ pub(crate) fn scripted_evidence(steps: &str) -> Evidence {
         grid_scroll: None,
         sync: crate::app::evidence::CaptureSync::default(),
         recorded: Default::default(),
+        gpu_identity: None,
     }
 }
 
@@ -608,13 +646,15 @@ pub(crate) fn run_commit(editor: &mut Editor) -> bool {
         .expect("an open gesture")
         .asset
         .clone();
+    // The display bounds the desktop's own commit sends, so the committed stack's job is planned
+    // as it is in the editor.
     let result = crate::app::tasks::draft_commit_now(
         &editor.owner,
         editor.client,
         &draft.draft_id,
         asset,
         crate::app::tasks::mutation(draft.base_revision),
-        None,
+        editor.proxy_bounds(),
     );
     answer_commit(editor, result);
     true
@@ -876,4 +916,35 @@ pub(crate) fn incoming(
 ) -> Option<(Analysis, super::preview::ExactFrame)> {
     let frame = exact(analysis.generation, raster, 0.0);
     Some((analysis, frame))
+}
+
+/// A job reader's stream with the runtime that owns its timer, to follow it in a test. The stream
+/// makes its interval on its first poll, in whichever runtime polls it, so every poll of one
+/// stream goes through the one runtime.
+pub(crate) struct Followed<M> {
+    runtime: tokio::runtime::Runtime,
+    stream: iced::futures::stream::BoxStream<'static, M>,
+}
+
+impl<M> Followed<M> {
+    pub(crate) fn new(stream: iced::futures::stream::BoxStream<'static, M>) -> Self {
+        Self {
+            runtime: tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .expect("a one-thread runtime with a clock"),
+            stream,
+        }
+    }
+
+    /// What the reader sends next, waiting for it as long as the hang bound allows, and `None`
+    /// once the stream has ended. Reads that send nothing are made meanwhile, which is what a
+    /// test counts them for.
+    pub(crate) fn next(&mut self) -> Option<M> {
+        use iced::futures::StreamExt;
+        let stream = &mut self.stream;
+        self.runtime
+            .block_on(async { tokio::time::timeout(luxforge_testbase::HANG, stream.next()).await })
+            .expect("the reader sent or ended within the hang bound")
+    }
 }

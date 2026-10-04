@@ -6,6 +6,7 @@
 //! trait it holds are re-exported through this module's parent alongside everything here.
 use super::spatial::SpatialOperation;
 use crate::mask_field::MaskField;
+use crate::render::gpu::GpuDescription;
 use crate::render::map::{Mapping, WarpStep};
 use std::sync::Arc;
 
@@ -29,6 +30,12 @@ pub struct CompileStage {
     pub stage: Stage,
     pub full: Stage,
     pub scale: SamplingScale,
+    /// Compile the layer in its GPU shape: every unit it can hold, a neutral one as its own
+    /// identity, so its program sequence does not change as a value leaves or returns to neutral
+    /// during a gesture. Only a GPU plan's drafted layer is compiled so
+    /// (`crate::GpuPlanRequest::drafted`); every CPU compile leaves it unset, so no CPU frame,
+    /// sample or answer ever sees a unit the CPU shape omits.
+    pub(crate) gpu_shape: bool,
 }
 
 impl CompileStage {
@@ -37,7 +44,14 @@ impl CompileStage {
             stage,
             full: stage,
             scale: SamplingScale { x: 1.0, y: 1.0 },
+            gpu_shape: false,
         }
+    }
+
+    /// The same stage in the GPU shape ([`Self::gpu_shape`]) when `shaped`.
+    pub(crate) fn shaped(mut self, shaped: bool) -> Self {
+        self.gpu_shape = shaped;
+        self
     }
 
     pub(crate) fn sampled(stage: Stage, full: Stage) -> Self {
@@ -51,6 +65,7 @@ impl CompileStage {
                 x: f64::from(stage.width) / f64::from(full.width),
                 y: f64::from(stage.height) / f64::from(full.height),
             },
+            gpu_shape: false,
         }
     }
 }
@@ -108,6 +123,15 @@ pub trait PointwiseColor: Send + Sync {
     /// write every coefficient exactly, with the shortest round-trip form (`{}`), and never rounded
     /// to a display precision.
     fn describe(&self) -> String;
+    /// This unit's GPU program and the uniform words it reads, for a preview during a gesture
+    /// (`docs/design/gpu-preview.md`). The program is WGSL text the module keeps beside this unit;
+    /// the words are a pure function of the coefficients `describe` writes, so two units that
+    /// describe themselves identically answer identical descriptions. `None`, the default, sends
+    /// every stack holding this unit down the CPU path. Settled frames, samples, analysis and
+    /// export never read a GPU pixel, so a program changes no CPU byte.
+    fn gpu(&self) -> Option<GpuDescription> {
+        None
+    }
 }
 
 /// What one colour-stage layer compiles into: an ordered, bounded list of pointwise units evaluated

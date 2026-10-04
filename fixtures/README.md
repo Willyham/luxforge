@@ -49,7 +49,27 @@ Private originals for local diagnostics go in ignored `fixtures/jpg/`, `fixtures
 
 `modules/builtin-descriptors.json` is the one committed snapshot of what `ModuleRegistry::builtin()` publishes: `module.list` with its `host` array, and every method `schema.list` generates from those descriptors, with its parameters, source kinds and superseded fields. `crates/luxforge-core/tests/modules/descriptors.rs` compares a fresh listing with it byte for byte; after an intended descriptor change, regenerate it with `cargo test -p luxforge-core --test modules -- --ignored generate_builtin_descriptor_snapshot` and review the diff.
 
+[`preview/corpus.json`](preview/corpus.json) lists what the [GPU preview error limits](../docs/design/gpu-preview.md#the-preview-error-limit) are judged on: seven sources (the generated 24 MP and 60 MP JPEGs, a zone plate, the Presence fixture and the Z6, X100VI and Air 2S RAWs) and 25 recipes (full Basic, the Tone curve, the mixer, the vignette, each mask kind and their algebra, a straightened crop, a Perspective and lens warp, Presence combinations and Detail's parameter sets), each over the sources it applies to and at Fit and 100%. A source carries its SHA-256 or an explicit gap; a RAW is named by its id in the private RAW manifest. The zone plate is a gap: it was generated ad hoc and no generator or file was kept. `cargo xtask preview-corpus [--manifest FILE]` checks the file and re-hashes each source on the host; it records no measurement.
+
 ## RAW preparation fixtures
+
+The optional [extended corpus](../docs/design/sample-corpus.md) retains originals
+in private Cloudflare R2 rather than Git. Its [reviewed target list](sample-corpus-targets.json)
+contains 250 cameras and 46 recent flagship phone variants; its
+[source manifest](sample-corpus.json) pins 341 CC0 samples from
+[raw.pixls.us](https://raw.pixls.us/) by URL, SHA-256, exact size and immutable
+object key. Every retained sample has qualified source, unpacked-integer, metadata and
+development references; [independent unpack evidence](corpus-camera-evidence.json)
+backs the added sources.
+Missing devices are recorded alongside the available samples. Samples for a
+device do not establish editor support. The owner's Air 2S original is local-only
+and is not mirrored.
+
+[Developer commands](../docs/engineering/development.md#extended-camera-corpus)
+select manufacturers or deterministic shards, sync a verified local cache and
+run the authentic RAW adapter in bounded chunks, optionally cleaning downloads.
+Ordinary checks run only the offline tooling tests; the weekly/manual workflow
+uses a separate read-only credential. No photograph bytes are checked in.
 
 [Public provenance](raw-public.json) identifies four CC0 files from raw.pixls.us covering Z6 12/14-bit lossless and X100VI uncompressed/lossless capture: the provenance record of those files, which no command reads. No photograph bytes are checked in. `cargo xtask raw-camera-metadata --index FILE --ids 3582,3585,7300,7301 --output NEW_DIR` downloads them from the repository index, verifies their hashes and reads each with the RAW adapter. The owner originals have a separate ignored local manifest with explicit permission for local testing only.
 

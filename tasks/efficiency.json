@@ -1,0 +1,1284 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "efficiency",
+  "title": "CPU and memory efficiency",
+  "objective": "Spend less CPU time and hold less memory for byte-identical pictures, numbers and digests and the same or better latency, through the changes the owner accepted on 2026-10-03.",
+  "context_summary": "A read-only audit on 2026-10-03 found the idle path, uploads, subscriptions and the GPU preview's steady state already tight, and the remaining cost in per-pixel kernels (the 16-bit quantizer, spatial tile allocations and batches, Detail and Presence filters, RAW input reads), source preparation (software SHA-256 on aarch64, serial zero-fills, unsized reads), per-tick copying while painting, and build configuration. Owner decisions (docs/decisions.md, CPU and memory efficiency): every byte-identical finding accepted; RAW colour layers stay recomputed per spatial tile; a 64 MiB reduced-grid cache for Clarity and Dehaze; the float mosaic removed through a checked-in librtprocess patch, never by editing vendor/; the catalog in WAL with full flushes; a dist profile with LTO for packaging and timing, deferred by the owner until the timing runs other plans have outstanding are recorded, so this plan measures in release. Every estimate is unmeasured until the final task. The design is docs/design/efficiency.md.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Enable hardware SHA-256 on aarch64, JPEG XL DNG decoding on the shared Rayon pool, and runtime half-float conversion on x86_64.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "sha2 =0.10.9 compiles its aarch64 SHA-2 backend only with the `asm` feature (sha2-0.10.9/src/sha256.rs cfg_if); the workspace enables no feature and Cargo.lock has no sha2-asm, so every hash on the M4 is software. The aarch64 backend detects the CPU feature at run time (cpufeatures) and falls back to software. Enabling `asm` also pulls in sha2-asm, built with cc, which on x86 replaces only the software fallback. Choose between `features = [\"asm\"]` with a pinned sha2-asm and a notice, or a pinned sha2 release whose aarch64 backend needs no feature, if one exists and its API change is contained; record which and why in the design.",
+        "Consumers that gain: cold source preparation (editor/source.rs prepare_file, source.rs open_source_bytes), artifact verification (artifacts/store.rs), capability hashers, the restoration prefix hash and the analysis identity. Digests are identical; no stored value changes.",
+        "jxl-oxide =0.12.6 is declared with default-features = false (crates/luxforge-raw/Cargo.toml), which drops its default `rayon` feature, so JxlThreadPool::none() decodes serially and render_frame cannot be cancelled while it runs. With `rayon`, its default pool is the global Rayon pool, so no private pool is added (rule 9) and no new package enters the lock file. Re-run the Galaxy S22 JPEG XL exactness test.",
+        "half is built with default-features = false in luxforge-core and luxforge-ui; on x86_64 without `std` it cannot detect F16C at run time and converts every boundary texel (render/boundary.rs) in software. Enable `std`. aarch64 already uses the hardware conversion at compile time."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Efficiency design",
+          "target": "docs/design/efficiency.md",
+          "relevance": "The three changes, their scope and the notice rule.",
+          "locator": "Build and dependencies"
+        },
+        {
+          "kind": "file",
+          "label": "Dependency rules",
+          "target": "docs/engineering/dependencies.md",
+          "relevance": "Pinning, notices and the deny policy."
+        },
+        {
+          "kind": "file",
+          "label": "Workspace manifest",
+          "target": "Cargo.toml",
+          "relevance": "Pinned sha2 and half declarations."
+        },
+        {
+          "kind": "file",
+          "label": "RAW adapter manifest",
+          "target": "crates/luxforge-raw/Cargo.toml",
+          "relevance": "The jxl-oxide declaration."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Rules and the checklist each change answers.",
+          "locator": "Review checklist"
+        }
+      ],
+      "acceptance_criteria": [
+        "On aarch64 macOS the SHA-256 compression function used at run time is the SHA-2 hardware path, shown by a test or a recorded check that names the backend, and every existing digest fixture is unchanged.",
+        "A JPEG XL DNG decodes on the global Rayon pool with byte-identical mosaic output against the committed exactness fixture.",
+        "x86_64 builds enable half's runtime detection; aarch64 output is unchanged.",
+        "Cargo.lock pins every new package, cargo deny passes, and any new crate has its notice; no licence review is claimed complete."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the hashing, artifact and source-fingerprint tests.",
+          "Run the JPEG XL DNG exactness test.",
+          "Run the repository check including the dependency audit."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib fingerprint",
+          "cargo test -p luxforge-core --lib artifacts",
+          "cargo test -p luxforge-raw jxl",
+          "cargo xtask check"
+        ],
+        "expected_results": [
+          "All tests pass with unchanged digests and planes; the dependency audit passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Add a `dist` build profile with LTO and one codegen unit, and build packages and every timing command with it while the daily release build stays unchanged.",
+      "status": "blocked",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "Blocked: the owner deferred the dist profile on 2026-10-03 until the timing runs other feature plans have outstanding are recorded. Those runs, and every baseline docs/specs/performance.md records, build release, and a dist figure is never compared with a release one. It stays blocked until the owner reopens it; this plan's measurement task does not wait for it.",
+        "The root Cargo.toml has no [profile.release], so release is lto = false and codegen-units = 16. Release is the daily develop, smoke, quick and rendered build, so slowing it would slow the edit loop.",
+        "Add [profile.dist] with inherits = \"release\", codegen-units = 1 and lto set to \"thin\" or \"fat\". Build both once on the M4, run editor-performance on the 24 MP JPEG for each back to back, and keep the faster unless its build time makes the timing tier unreasonable; record build times and the choice in the design.",
+        "Switch `cargo xtask package` and the timing commands (editor-performance, editor-latency, measure, detail-performance, detail-grid-performance, editor-performance --lens-only and the `timing` tier's builds) to `--profile dist`, including the binary paths they resolve (target/dist/...). develop, smoke, quick and rendered keep release. Do not set panic = \"abort\": mozjpeg unwinds libjpeg errors into Rust.",
+        "Timing reports already record their profile; make sure they say `dist`, and never compare a dist figure with a release baseline. Update docs/engineering/development.md's command tables and the timing-tier description."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Efficiency design",
+          "target": "docs/design/efficiency.md",
+          "relevance": "The profile, which commands use it and the panic constraint.",
+          "locator": "Build profile"
+        },
+        {
+          "kind": "file",
+          "label": "Development commands",
+          "target": "docs/engineering/development.md",
+          "relevance": "Command tables and the timing tier that move to the new profile.",
+          "locator": "When to verify"
+        },
+        {
+          "kind": "file",
+          "label": "Packaging",
+          "target": "xtask/src/package.rs",
+          "relevance": "Builds the shipped binary."
+        },
+        {
+          "kind": "file",
+          "label": "Verify tiers",
+          "target": "xtask/src/verify.rs",
+          "relevance": "The timing tier's builds."
+        }
+      ],
+      "acceptance_criteria": [
+        "`cargo build --profile dist` builds every shipped binary; package and timing commands use it and their reports record the profile.",
+        "develop, smoke, quick and rendered still build release, with unchanged build time.",
+        "The thin-versus-fat choice, both build times and the 24 MP comparison are recorded in the design with host and load."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Build both LTO variants, run the comparison once, then run the package command and one timing command end to end."
+        ],
+        "commands": [
+          "cargo build --profile dist --locked -p luxforge-app -p luxforge-cli",
+          "cargo xtask package --output NEW_DIR",
+          "cargo xtask check"
+        ],
+        "expected_results": [
+          "dist binaries build and package; the timing commands launch the dist binary; check passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Stop scanning every process on the host at launch to report the graphics backend and adapter.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "crates/luxforge-app/src/app/mod.rs:558 calls iced::system::information(), which (with the workspace's `sysinfo` iced feature) runs System::new_all() and refresh_all() on a spawned thread, walking every process twice, during the startup decode. The result supplies only state.backend's graphics backend and adapter strings (evidence.rs:781).",
+        "Supply the same strings without a process scan: from the renderer's adapter information through a small hook, or by deferring the call until something reads state.backend. Drop the `sysinfo` feature if nothing else needs it. state.backend keeps answering every client with the same strings, and evidence checks that read it keep passing; an API reader must not see null where it saw a value before."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Efficiency design",
+          "target": "docs/design/efficiency.md",
+          "relevance": "The launch scan and the parity constraint on state.backend.",
+          "locator": "Build and dependencies"
+        },
+        {
+          "kind": "file",
+          "label": "Desktop application",
+          "target": "crates/luxforge-app/src/app/mod.rs",
+          "relevance": "Where the call is made."
+        },
+        {
+          "kind": "file",
+          "label": "Workspace manifest",
+          "target": "Cargo.toml",
+          "relevance": "The iced feature list."
+        }
+      ],
+      "acceptance_criteria": [
+        "A normal launch performs no host-wide process enumeration; a recorded check (sample of the launch, or a test seam) shows it.",
+        "state.backend reports the same backend and adapter as before in a background launch and in evidence runs."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the app's backend tests, then one background smoke run and inspect its state.json backend."
+        ],
+        "commands": [
+          "cargo test -p luxforge-app backend",
+          "cargo run --release --locked --package xtask -- smoke --scenario load --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Tests pass; state.json carries the backend and adapter; no process scan at launch."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Read originals with their size, let pooled writers fault in RAW development buffers instead of zero-filling them on one thread, and stop rescanning RAW proxies for non-finite values.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "crates/luxforge-core/src/source.rs:112 reads through file.take(limit + 1) into Vec::new(); Take hides File's size hint, so the buffer doubles and can hold up to twice the file through the unpack (64 MiB capacity for a 40 MB NEF). Reserve the metadata length (already checked against the limit) with try_reserve_exact before reading, keeping the over-limit refusal.",
+        "crates/luxforge-raw zero-fills with Vec::resize on one thread before a pooled pass writes every value: develop.rs:143 (RGB planes, 12 bytes per site; the spec measured a fresh serial 240 MB bzero at 10.8 to 12.5 ms), develop.rs:257 (direct development), lib.rs:810 (u16 mosaic) and dng.rs:1314 (Air 2S warp scratch). Add one fallible zeroed-allocation helper (alloc_zeroed behind a safe wrapper in luxforge-raw, which already permits unsafe, or an equivalent) and use it at each site, so fresh pages are faulted in by the writers as rule 2 asks. Keep the ResourceLimit errors.",
+        "crates/luxforge-core/src/proxy.rs:804 builds each RAW proxy through LinearImage::with_fingerprint, which scans every value for finiteness on one thread (source/linear.rs:167). A weighted mean of finite planes is finite; build it through the validated constructor with a debug assertion, and add a test that the proxy of a finite source is accepted without the scan and equals today's planes.",
+        "Warm benchmark loops can hide the zero-fill saving because the allocator reuses freed regions; the measurement task measures cold opens."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Efficiency design",
+          "target": "docs/design/efficiency.md",
+          "relevance": "The three changes and their constraints.",
+          "locator": "Source preparation"
+        },
+        {
+          "kind": "file",
+          "label": "Source reading",
+          "target": "crates/luxforge-core/src/source.rs",
+          "relevance": "The unsized read."
+        },
+        {
+          "kind": "file",
+          "label": "RAW development",
+          "target": "crates/luxforge-raw/src/develop.rs",
+          "relevance": "The serial plane zero-fill."
+        },
+        {
+          "kind": "file",
+          "label": "Proxy",
+          "target": "crates/luxforge-core/src/proxy.rs",
+          "relevance": "The RAW proxy constructor."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Rules and the checklist each change answers.",
+          "locator": "Rules"
+        }
+      ],
+      "acceptance_criteria": [
+        "No source read grows its buffer past the file's length plus the one probe byte, and an over-limit file is still refused.",
+        "No large development buffer is zero-filled by a serial pass before a pooled writer overwrites it; developed planes and digests are byte-identical on every RAW fixture.",
+        "RAW proxies skip the redundant finiteness scan with identical planes, and a test proves it."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run source, development and proxy tests."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib source",
+          "cargo test -p luxforge-core --lib proxy",
+          "cargo test -p luxforge-raw"
+        ],
+        "expected_results": [
+          "All pass with unchanged planes and fingerprints."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Replace the 16-bit quantizer's binary search with an exact index that returns the same code for every f32.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "Implemented as colour::srgb::Quantizer16 (crates/luxforge-core/src/colour.rs, quantizer16()): a 128 KiB index of the square root of [0, 1] in 65,536 bins, no bin holding more than two of the 65,535 thresholds, so a value is compared with at most two. Non-finite values, the signed zeros and the infinities keep the search's answers. Row passes take the index and the 16-bit decode table once rather than per pixel.",
+        "Evidence: slow_byte_quantize16_is_the_threshold_search_at_every_f32_in_the_unit_interval compares it with the threshold search at every f32 in [0, 1] and the special values; byte_quantize16_is_monotone_and_exact_at_every_threshold and the byte-domain tests pass unchanged. Its per-value cost and the integrated editor-performance figures are in docs/specs/performance.md; the index is listed in docs/design/architecture.md's limits."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Efficiency design",
+          "target": "docs/design/efficiency.md",
+          "relevance": "Behaviour, the lookup and the exactness proof.",
+          "locator": "The 16-bit quantizer"
+        },
+        {
+          "kind": "symbol",
+          "label": "quantize16",
+          "target": "crates/luxforge-core/src/colour.rs",
+          "relevance": "The function to replace.",
+          "locator": "quantize16"
+        },
+        {
+          "kind": "file",
+          "label": "Byte domain",
+          "target": "crates/luxforge-core/src/render/byte.rs",
+          "relevance": "Its callers."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Rules and the checklist each change answers.",
+          "locator": "Review checklist"
+        }
+      ],
+      "acceptance_criteria": [
+        "quantize16 performs no binary search and equals partition_point for every tested f32, proven by an exhaustive test.",
+        "All byte-domain render, sample and spatial exactness tests pass unchanged."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the colour and byte-domain tests, including the new exhaustive comparison in release mode if it is slow in the dev profile."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib colour",
+          "cargo test -p luxforge-core --lib render::byte",
+          "cargo test -p luxforge-core --release --lib quantize16"
+        ],
+        "expected_results": [
+          "All pass; the exhaustive comparison finds no difference."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Reuse each batch slot's tile planes instead of allocating fresh zeroed planes for every tile and unit.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "run_tile (crates/luxforge-core/src/render/spatial.rs:327; the allocations at :368, :377 and :406) does vec![0.0; regions[0].pixels() * 3] for the input and a fresh vec for each unit's output; only TileScratch is reused per slot. At 60 MP with all three Presence fields one tile allocates roughly 125 MB, about 8.8 GB of new zero pages per render; Clarity alone about 46 MB per tile.",
+        "Give each batch slot (run_batches keeps one TileScratch per concurrent tile) two plane buffers, ping-ponged between the input and even units and the odd units, grown to the largest request and never cleared. fill and PlanesMut already write every value, the same contract TileScratch documents. tile_output borrows instead of consuming; where a tile's planes must outlive the slot (the RAW frame write-back, the point query's tile cache) copy only the tile rectangle or keep owned buffers for the point path.",
+        "Keep the worst-case working set charged to the spatial budget unchanged or smaller (worst_case_working_set). The masked copy fast path (copies_exactly) and the coverage snapshot (cut_out) keep their semantics."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Efficiency design",
+          "target": "docs/design/efficiency.md",
+          "relevance": "Buffer reuse and its contract.",
+          "locator": "Spatial tiles"
+        },
+        {
+          "kind": "symbol",
+          "label": "run_tile",
+          "target": "crates/luxforge-core/src/render/spatial.rs",
+          "relevance": "The per-tile allocations.",
+          "locator": "run_tile"
+        },
+        {
+          "kind": "file",
+          "label": "Spatial units",
+          "target": "crates/luxforge-core/src/modules/spatial.rs",
+          "relevance": "PlanesMut and the unit contract."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Rules and the checklist each change answers.",
+          "locator": "Review checklist"
+        }
+      ],
+      "acceptance_criteria": [
+        "A render allocates its tile planes once per batch slot, not once per tile or unit; a test counts allocations or slot growth across a multi-tile render.",
+        "Every spatial exactness, sample-equals-render and masked-tile test passes unchanged in both pixel domains.",
+        "The spatial budget's high-water mark for a 60 MP Presence render does not rise."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the spatial, sample and mask tests in both domains."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib render::spatial",
+          "cargo test -p luxforge-core --lib render::sample",
+          "cargo test -p luxforge-core --lib render::mask"
+        ],
+        "expected_results": [
+          "All pass with identical bytes; allocation counts fall to one set per slot."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Replace the barrier between spatial batches with a rolling window under the same budget reservation.",
+      "status": "completed",
+      "dependencies": [
+        "TASK-006"
+      ],
+      "extra_context": [
+        "run_batches (crates/luxforge-core/src/render/spatial.rs:706) runs a batch of tiles, waits for all of them, then reserves and starts the next. When the spatial target admits a batch as wide as the pool, each tile runs serially on one worker, and on the M4 Pro (10 performance, 4 efficiency cores; the global pool has 14 threads) the batch waits for its slowest tile on an efficiency core. Recorded Presence renders reach about 800 to 1100% of 1400%.",
+        "Start a tile as soon as one finishes, within the same reservation and concurrency limit (RenderContext::concurrency). Tiles are written as they finish under one lock: they are disjoint, so the order changes no byte, and no reorder buffer is held. Keep the cancellation check between tiles and the narrow-window path where each tile's passes run on the pool. Results and their order of arithmetic per value are unchanged.",
+        "Do not resize the pool or add a private pool (rule 9)."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Efficiency design",
+          "target": "docs/design/efficiency.md",
+          "relevance": "The rolling window and its constraints.",
+          "locator": "Spatial tiles"
+        },
+        {
+          "kind": "symbol",
+          "label": "run_batches",
+          "target": "crates/luxforge-core/src/render/spatial.rs",
+          "relevance": "The batch loop.",
+          "locator": "run_batches"
+        },
+        {
+          "kind": "file",
+          "label": "Render context",
+          "target": "crates/luxforge-core/src/render/context.rs",
+          "relevance": "Budget reservation and concurrency."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Rules and the checklist each change answers.",
+          "locator": "Review checklist"
+        }
+      ],
+      "acceptance_criteria": [
+        "No tile waits for an unrelated tile of the same batch to finish before the next tile starts, within the same reservation.",
+        "Output bytes, cancellation behaviour and the spatial budget's high-water mark are unchanged; the cancellation tests pass."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run spatial and cancellation tests."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib render::spatial",
+          "cargo test -p luxforge-core --lib render::cancellation"
+        ],
+        "expected_results": [
+          "All pass with identical bytes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Read Sharpening's limiter and Detail's reconstruction over row slices in the interior, without per-pixel clamps and assertions.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "Already done: smoothing, noise reduction's shrinkage (each pixel's chroma energy and factor computed once for a and b) and its level planes run over whole rows, the interior through slices and only the stage-edge columns through the clamped read, with the halo checked once a pass (modules/detail/filters.rs, denoise.rs). modules/detail/exactness.rs holds frozen tap-by-tap references for them.",
+        "What remains on the clamped, release-asserted Geometry::index (filters.rs:128) per pixel: Sharpen::limited (sharpen.rs:57), which reads l and its blur at the pixel, the guide's four neighbours and l's 3 x 3 extrema, 14 indexed reads a pixel; and the reconstruction loops that end Denoise (denoise.rs:227) and Sharpen (sharpen.rs:184), which read lab, delta and input.sample per pixel.",
+        "Add an interior path over row slices for output pixels whose 3 x 3 reach lies inside the held region, with the clamped, asserted path kept for the band near the stage edge so the halo guard still applies there. Each value's own operations and order stay the same. exactness.rs uses Sharpen::limited as its reference; freeze a copy of today's limiter there before changing it.",
+        "Detail's GPU programs are unaffected."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Efficiency design",
+          "target": "docs/design/efficiency.md",
+          "relevance": "The two Detail changes.",
+          "locator": "Detail and Presence kernels"
+        },
+        {
+          "kind": "file",
+          "label": "Detail filters",
+          "target": "crates/luxforge-core/src/modules/detail/filters.rs",
+          "relevance": "Geometry::index and the row helpers the done passes use."
+        },
+        {
+          "kind": "file",
+          "label": "Sharpening",
+          "target": "crates/luxforge-core/src/modules/detail/sharpen.rs",
+          "relevance": "Sharpen::limited and the reconstruction loop."
+        },
+        {
+          "kind": "file",
+          "label": "Denoise",
+          "target": "crates/luxforge-core/src/modules/detail/denoise.rs",
+          "relevance": "The reconstruction loop."
+        },
+        {
+          "kind": "file",
+          "label": "Detail design",
+          "target": "docs/design/detail.md",
+          "relevance": "The frozen numerics."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Rules and the checklist each change answers.",
+          "locator": "Review checklist"
+        }
+      ],
+      "acceptance_criteria": [
+        "Interior taps of the limiter and both reconstruction loops do no clamp or assertion; edge-band taps keep both.",
+        "Detail's frozen references in modules/detail/exactness.rs, including a frozen copy of the limiter, and the f64 fixture tests pass unchanged in both domains."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the Detail module tests and the restoration render tests."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib modules::detail",
+          "cargo test -p luxforge-core --lib render::restoration"
+        ],
+        "expected_results": [
+          "All pass with identical bytes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Read Presence's box, guided and upsample passes over row slices in the interior, interleave independent running sums, and hoist upsample's per-column index and weight.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "In crates/luxforge-core/src/modules/presence/filters.rs, horizontal_mean (:425), vertical_strip (:491), the guided combines (:657, :774) and upsample (:823) read every tap through Plane::get or Planes::sample (modules/spatial.rs:344): two clamps, an index multiply and a bounds check, which also keeps vertical_strip's 64 independent accumulators from vectorizing. horizontal_mean's running sum is one dependent f64 add chain per row.",
+        "Read interior rows as slices and keep clamped reads for edge rows and columns; process two to four rows of horizontal_mean at once, each with its own sum in today's order; precompute upsample's (i0, fx) per column once per call instead of a division per pixel.",
+        "Each output value's own sequence of operations must stay identical (no reassociation). Presence's GPU programs are unaffected."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Efficiency design",
+          "target": "docs/design/efficiency.md",
+          "relevance": "The Presence changes.",
+          "locator": "Detail and Presence kernels"
+        },
+        {
+          "kind": "file",
+          "label": "Presence filters",
+          "target": "crates/luxforge-core/src/modules/presence/filters.rs",
+          "relevance": "The passes."
+        },
+        {
+          "kind": "file",
+          "label": "Presence design",
+          "target": "docs/design/presence-mixer-vignette.md",
+          "relevance": "Frozen numerics and the spatial primitive.",
+          "locator": "Presence, the spatial primitive"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Rules and the checklist each change answers.",
+          "locator": "Review checklist"
+        }
+      ],
+      "acceptance_criteria": [
+        "Interior taps of the four passes read slices without clamps; upsample does no per-pixel division.",
+        "Clarity, Texture and Dehaze exactness tests and the committed Presence fixtures pass unchanged in both domains."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the Presence and spatial tests."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib modules::presence",
+          "cargo test -p luxforge-core --lib render::spatial"
+        ],
+        "expected_results": [
+          "All pass with identical bytes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-010",
+      "description": "Read RAW render input by rows instead of per pixel, read portrait planes in blocks, skip per-pixel resolution in segments without replacements, and quantize f32 rows without the f64 guard.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "load_pulled (crates/luxforge-core/src/render/linear.rs:639) takes its (None, _) arms whenever geometry is not the identity (any exact crop or Orientation layer) or the entry is a spatial frame: per pixel geometry.unmap, entry_pixel, reader.pixel with View::map's orientation match and adjust_source_pixel, or frame_pixel with u64 plane arithmetic. region_in (render/pipeline.rs:715) collects a Vec<[f64; 3]> per row and Linear::colour_row (linear.rs:317) converts f64 to f32 to f64 with a per-pixel finish Result. For a signed-permutation geometry with no entry, compose geometry and view into a first index and stride per row (extend ViewReader::row with an x offset) and copy spans; for a spatial frame entry copy the three plane rows; keep f32 end to end where the value is f32; hoist white_balance.is_none() out of the loop. Keep the per-pixel white-balance overflow error that source_rows_keep_validation_fallback... checks.",
+        "ViewReader::row (source/linear.rs:408) walks orientations 5 to 8 with a stride of plus or minus base_width, touching a new row of all three planes per output pixel. Load each chunk as a blocked transpose: walk base rows in order and write the chunk's (up to 16) output rows from each contiguous span.",
+        "Segment::resolve (render/compiled.rs:631), called per pixel from pixel_in (pipeline.rs:612), composes ExactGeometry::then for every operation; return straight after unmap when the segment has no pixel replacements (!has_pixels).",
+        "The RAW terminal (terminal_srgb, linear.rs:157, and put/write for rows without colour or white balance) widens f32 to f64 and calls Quantizer::rounded with its 1e-12 guard. For an f32 input only a threshold and its next_down can fall in the guard band, which the_f32_thresholds_are_where_both_quantizers_change_code pins; use quantizer.pixel for f32 rows after the non-finite check.",
+        "This touches the files the RAW colour-per-tile decision covers; do not add a materialized frame or row-band cache (owner, 2026-10-03)."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Efficiency design",
+          "target": "docs/design/efficiency.md",
+          "relevance": "The four changes and their exactness arguments.",
+          "locator": "RAW rendering reads"
+        },
+        {
+          "kind": "file",
+          "label": "Linear domain",
+          "target": "crates/luxforge-core/src/render/linear.rs",
+          "relevance": "load_pulled, colour_row and the terminal."
+        },
+        {
+          "kind": "file",
+          "label": "Pipeline",
+          "target": "crates/luxforge-core/src/render/pipeline.rs",
+          "relevance": "region_in and fill_rows."
+        },
+        {
+          "kind": "file",
+          "label": "Linear source view",
+          "target": "crates/luxforge-core/src/source/linear.rs",
+          "relevance": "ViewReader::row."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Rules and the checklist each change answers.",
+          "locator": "Review checklist"
+        }
+      ],
+      "acceptance_criteria": [
+        "Exact RAW renders through crops, orientations and spatial frames read input by row spans; portrait orientations read base rows in order.",
+        "Every linear-domain exactness, orientation, window, sample-equals-render and validation-fallback test passes unchanged."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run linear-domain render, orientation, window and sample tests."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib render::linear",
+          "cargo test -p luxforge-core --lib render::sample",
+          "cargo test -p luxforge-core --lib render::window",
+          "cargo test -p luxforge-core --lib source::linear"
+        ],
+        "expected_results": [
+          "All pass with identical bytes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-011",
+      "description": "Reduce the histogram reducer's per-pixel work, stop deep-copying every API answer, prepare the lineage query once, and buffer the live-session writer.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "Bins::add_pixel (crates/luxforge-core/src/analysis.rs:202) increments r0..b255 per pixel although they equal r[0], r[255] and so on, then clip_class recomputes the same comparisons. Derive the per-channel extremes from the bins when building the report; classify with a 256-entry table e[v] = (v == 0) | (v == 255) << 1, counting e[r] | e[g] | e[b] into a four-way class count for any-channel and e[r] & e[g] & e[b] for all-channel; count in u32 per bounded chunk and widen on merge. It runs between the exact render and the settled frame (preview/worker.rs:417, :761), estimated 5 to 18 ms per settle. Delivering the frame before the report is a separate latency choice, not part of this task.",
+        "ApiResponse::success (crates/luxforge-core/src/api/mod.rs:57) calls serde_json::to_value on results that are usually already a Value, rebuilding every answer on the owner thread (largest for asset.state and brush draft.set). Add a constructor that moves a Value in and use it where the answer is one.",
+        "history.lineage (crates/luxforge-core/src/editor/history.rs:394) prepares its SELECT on every step of up to 100 after each undo, redo and restore. Use prepare_cached once outside the loop, or one recursive CTE with the same limit and error behaviour.",
+        "The TCP session writer (crates/luxforge-core/src/api/transport.rs:138, :200) serializes into a raw TcpStream, one write per JSON fragment, and never sets TCP_NODELAY. Wrap it in a BufWriter flushed at each line and set nodelay. The stdio path is already line-buffered."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Efficiency design",
+          "target": "docs/design/efficiency.md",
+          "relevance": "The four changes.",
+          "locator": "Analysis and the owner"
+        },
+        {
+          "kind": "file",
+          "label": "Analysis",
+          "target": "crates/luxforge-core/src/analysis.rs",
+          "relevance": "Bins and the report."
+        },
+        {
+          "kind": "file",
+          "label": "API responses",
+          "target": "crates/luxforge-core/src/api/mod.rs",
+          "relevance": "ApiResponse::success."
+        },
+        {
+          "kind": "file",
+          "label": "History",
+          "target": "crates/luxforge-core/src/editor/history.rs",
+          "relevance": "lineage."
+        },
+        {
+          "kind": "file",
+          "label": "Transport",
+          "target": "crates/luxforge-core/src/api/transport.rs",
+          "relevance": "The session writer."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Rules and the checklist each change answers.",
+          "locator": "Review checklist"
+        }
+      ],
+      "acceptance_criteria": [
+        "Histogram and clipping reports are identical on every analysis fixture, including all-channel and both-clip pixels and the overflow-bound test.",
+        "No answer is converted from Value to Value; API conformance and owner tests pass.",
+        "lineage prepares its statement at most once per call and answers identically, including limits and missing entries.",
+        "A live session's answer reaches the socket in one or few writes per line with nodelay set; transport tests pass."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run analysis, API, history and transport tests, and the field-patch conformance suite."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib analysis",
+          "cargo test -p luxforge-core --lib api::",
+          "cargo test -p luxforge-core --lib editor::history",
+          "cargo test -p luxforge-core --test modules field_patch"
+        ],
+        "expected_results": [
+          "All pass with identical reports and answers."
+        ]
+      }
+    },
+    {
+      "id": "TASK-012",
+      "description": "Open the catalog in WAL mode with full flushes, so a commit appends once and reaches the drive.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "EditorService::open (crates/luxforge-core/src/editor.rs:642) sets synchronous=FULL and locking_mode=EXCLUSIVE with the default rollback journal: each commit writes pages twice and syncs three to four times. Bundled SQLite's fullfsync is off by default, so on macOS those syncs are plain fsync and not F_FULLFSYNC, unlike atomic_file::flush, which every other durable write uses.",
+        "In the durable build set PRAGMA locking_mode=EXCLUSIVE first, then journal_mode=WAL (so no -shm file is used), synchronous=FULL, fullfsync=ON and checkpoint_fullfsync=ON, and check that journal_mode reports wal. Test builds (test-skip-disk-flush) keep synchronous=OFF and may keep their current journal.",
+        "Consequences to cover: the -wal file lives beside the catalog while it is open and after a crash; a clean close checkpoints and removes it; anything that copies or moves a catalog file (search xtask, tests and the desktop for catalog file copies) must include it or close first. The format marker and the explicit refusal of unsupported catalogs are unchanged. Catalog backup stays an open product question.",
+        "Update docs/design/versions-and-lineage.md's storage section and docs/design/architecture.md's persistence list to describe the journal and flushing."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Efficiency design",
+          "target": "docs/design/efficiency.md",
+          "relevance": "The pragmas, their consequences and the tests.",
+          "locator": "Catalog durability"
+        },
+        {
+          "kind": "file",
+          "label": "Catalog open",
+          "target": "crates/luxforge-core/src/editor.rs",
+          "relevance": "The pragmas."
+        },
+        {
+          "kind": "file",
+          "label": "Durable writes",
+          "target": "crates/luxforge-core/src/atomic_file.rs",
+          "relevance": "The crate's F_FULLFSYNC rule."
+        },
+        {
+          "kind": "file",
+          "label": "Storage",
+          "target": "docs/design/versions-and-lineage.md",
+          "relevance": "The catalog format section to update."
+        }
+      ],
+      "acceptance_criteria": [
+        "A durable catalog opens in WAL with fullfsync and checkpoint_fullfsync on, verified by a test reading the pragmas.",
+        "Recovery tests pass: an interrupted commit leaves the prior durable state, a catalog reopened after a simulated crash with a -wal file recovers every committed entry, and a clean close leaves no -wal file.",
+        "Unsupported-format refusal and reopen tests pass unchanged; the docs describe the journal."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run catalog, recovery and reopen tests, including a test built without test-skip-disk-flush for the pragma check."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib editor::",
+          "cargo test -p luxforge-core --lib reopen",
+          "cargo test -p luxforge-cli"
+        ],
+        "expected_results": [
+          "All pass; the pragma test reports wal and full flushes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-013",
+      "description": "Reuse strokes already held by cached entries of the same asset when hydrating a newly read entry.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "entry_from (crates/luxforge-core/src/editor/catalog.rs:515) calls hydrate_strokes and read_strokes (:378 to :397), which run a SQL lookup, a JSON parse and a SHA-256 check for every referenced stroke. After each commit, undo or redo the next read misses the entry cache and repeats this for strokes the asset's cached entries already hold: O(strokes) per commit and O(n^2) over a painting session (up to 8192 points per mask, 64 strokes per component).",
+        "Before querying, resolve stroke IDs from strokes held by cached entries of the same asset (editor/entries.rs), sharing their Arc<dyn StoredStroke>, and query only the rest. Strokes are immutable and content-addressed and those came from the catalog, so the cache's rule that it holds only what the catalog returned still holds. A missing or corrupt stroke still fails explicitly."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Efficiency design",
+          "target": "docs/design/efficiency.md",
+          "relevance": "Strokes shared on entry reads.",
+          "locator": "Analysis and the owner"
+        },
+        {
+          "kind": "file",
+          "label": "Catalog rows",
+          "target": "crates/luxforge-core/src/editor/catalog.rs",
+          "relevance": "entry_from and read_strokes."
+        },
+        {
+          "kind": "file",
+          "label": "Entry cache",
+          "target": "crates/luxforge-core/src/editor/entries.rs",
+          "relevance": "The hydrated entries."
+        },
+        {
+          "kind": "file",
+          "label": "Masking",
+          "target": "docs/design/masking.md",
+          "relevance": "Stroke storage.",
+          "locator": "Stroke storage"
+        }
+      ],
+      "acceptance_criteria": [
+        "Hydrating an entry whose strokes are held by a cached entry of the same asset reads, parses and hashes none of them; a test counts the queries.",
+        "A missing or corrupt stroke not held in the cache is still refused; brush history, undo and reopen tests pass."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the catalog, entry-cache and mask brush tests."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib editor::catalog",
+          "cargo test -p luxforge-core --lib editor::entries",
+          "cargo test -p luxforge-core --test mask brush"
+        ],
+        "expected_results": [
+          "All pass; query counts fall for shared strokes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-014",
+      "description": "Convert the lens warp grid once per held boundary, and copy and compare only the GPU preview blocks whose shared buffer changed.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "crates/luxforge-app/src/app/gpu_plan.rs (grid.nodes, about line 425) converts the warp grid's nodes (up to 262k, 2 MiB; about 880 KiB at Fit) through a temporary Vec into a new Arc<[u32]> on every tick, reached from gpu_preview.rs:498, although the grid is fixed for the draft. Convert it once when the boundary is held and pass the Arc each tick.",
+        "In crates/luxforge-ui/src/photo_surface/gpu_preview.rs, every prepare calls pack, concatenating every program's block into one Vec<u32>; then the slot and each spatial chain link (gpu_preview/chain.rs, write) compare the whole of it with their written_blocks through mask::changed_ranges and copy it again on any difference: 1 to 6 MiB per frame with a warp grid or a heavy brush mask (a brush block can reach GPU_BLOCK_WORDS_MAX = 316,034 words). Program blocks are already Arc<[u32]>: remember each step's (Arc pointer, offset, length), skip copying and comparing blocks whose pointer and offset are unchanged, and process only the steps that changed.",
+        "Uploaded words must be identical; the GPU preview's readback qualification and dissolve behaviour are unchanged.",
+        "The slot's shared scratch pool (docs/design/gpu-preview.md, Plane sharing and precision) restructures the same chains and slots; keep each link's own schedule."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Efficiency design",
+          "target": "docs/design/efficiency.md",
+          "relevance": "GPU preview blocks.",
+          "locator": "The desktop"
+        },
+        {
+          "kind": "file",
+          "label": "GPU plan",
+          "target": "crates/luxforge-app/src/app/gpu_plan.rs",
+          "relevance": "The grid conversion."
+        },
+        {
+          "kind": "file",
+          "label": "Surface GPU stage",
+          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview.rs",
+          "relevance": "pack and changed_ranges."
+        },
+        {
+          "kind": "file",
+          "label": "GPU previews",
+          "target": "docs/design/gpu-preview.md",
+          "relevance": "The stage's contract."
+        },
+        {
+          "kind": "file",
+          "label": "Chain links",
+          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview/chain.rs",
+          "relevance": "Each link's block write."
+        },
+        {
+          "kind": "file",
+          "label": "Shared scratch pool",
+          "target": "docs/design/gpu-preview.md",
+          "locator": "Plane sharing and precision",
+          "relevance": "The slot's one scratch pool, which restructures the same chains."
+        }
+      ],
+      "acceptance_criteria": [
+        "A tick with an unchanged grid allocates no grid buffer; a prepare with unchanged block Arcs copies and compares none of them; tests prove both.",
+        "The buffer written to the GPU is byte-identical to today's for the same plan.",
+        "The gpu-preview and gpu-preview-zoom scenarios pass."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the surface and plan tests, then the two background GPU preview scenarios."
+        ],
+        "commands": [
+          "cargo test -p luxforge-ui gpu_preview",
+          "cargo test -p luxforge-app gpu_plan",
+          "cargo run --release --locked --package xtask -- smoke --scenario gpu-preview --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- smoke --scenario gpu-preview-zoom --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Tests and scenarios pass with identical uploads."
+        ]
+      }
+    },
+    {
+      "id": "TASK-015",
+      "description": "Build control models only for tool sections that show them, and let export and capability job polls skip the full update when their read changed nothing.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "section (crates/luxforge-app/src/state/tools.rs:814) builds every section's controls on every message, collapsed or not; the view skips collapsed bodies (view/tools_panel.rs:226) but the derive does not. Control::Presets calls presets_model (state/presets.rs:451), which per preset clones its settings into apply_fields, four to five strings and two lowercase strings, and presettable_groups re-walks every module's control tree: roughly 1 ms per message with a large library, on every drag tick.",
+        "Build controls only when SectionModel::shows_controls() would be true. Before gating, find every reader of section control models outside the view (evidence summaries and outcome checks, query_choice.rs, request_visible_curve_samples in app/controls.rs, capabilities::after_derive) and keep each correct, deriving what it needs directly where necessary. Optionally keep a preset row's apply as a flag and build the fields in the handler.",
+        "export_poll_subscription and capability_poll_subscription (app/export.rs:330, app/capabilities.rs:429) use time::every(100 ms); each tick yields a Poll then a Read/Polled message, each running every after_message hook, a full derive and a view rebuild. Extend update_inner's fast path (app/mod.rs:620) to a poll read that changed nothing (a non-final export_read, a capability_polled with an equal JobRecord), or wake on job change from the owner as the event waker does. The timer stays gated on a live job."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Efficiency design",
+          "target": "docs/design/efficiency.md",
+          "relevance": "Collapsed sections and job polls.",
+          "locator": "The desktop"
+        },
+        {
+          "kind": "file",
+          "label": "Tools state",
+          "target": "crates/luxforge-app/src/state/tools.rs",
+          "relevance": "section and control_model."
+        },
+        {
+          "kind": "file",
+          "label": "Presets state",
+          "target": "crates/luxforge-app/src/state/presets.rs",
+          "relevance": "presets_model."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop update",
+          "target": "crates/luxforge-app/src/app/mod.rs",
+          "relevance": "update_inner's fast path."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Rules and the checklist each change answers.",
+          "locator": "Anti-patterns already removed"
+        }
+      ],
+      "acceptance_criteria": [
+        "A collapsed section builds no control models, and every out-of-view reader still sees correct values; tests cover the presets section collapsed and expanded.",
+        "An export or capability poll that changes nothing runs no derive or view rebuild; a finished or failed job still updates the panel and status.",
+        "The presets, export, capabilities and workspace scenarios pass."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the app state tests, then the affected background scenarios."
+        ],
+        "commands": [
+          "cargo test -p luxforge-app state::",
+          "cargo run --release --locked --package xtask -- smoke --scenario presets --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- smoke --scenario export --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- smoke --scenario capabilities --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Tests and scenarios pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-016",
+      "description": "Remove the normalized float mosaic from RAW development's peak through a checked-in librtprocess patch that reads each site from the u16 mosaic, without editing vendored sources.",
+      "status": "completed",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "extra_context": [
+        "During development the u16 mosaic (2 bytes per site), the normalized f32 mosaic (4) and the RGB planes (12) coexist: 18 bytes per site, about 1.08 GB at 60 MP, 30 per site while the second development is held. Normalization::run (crates/luxforge-raw/src/normalize.rs) writes ((s - black) * scale) * gain per site; RCD reads it only in its tile fill as LIM01(rawData / 65536) (vendor rcd.cc:124), Markesteijn reads it likewise without a clamp, and border.cc fills the border band from it.",
+        "Add crates/luxforge-raw/patches/librtprocess-mosaic.patch, applied by build.rs's apply_patch after librtprocess-local.patch with exact context matching and an allowed-file list, plus its cargo:rerun-if-changed line. Through it rcd.cc, markesteijn.cc and border.cc read each site through one inline function computing the same f32 expression, in the same operations and order, from the u16 mosaic and per-site black, scale and gain tables the adapter passes. No file under vendor/ changes.",
+        "Keep today's float-mosaic path for any development whose sensor stage rewrites the float mosaic: DNG sensor-stage corrections (apply_sensor: Pixel 7/8 Pro GainMaps, Leica, Ricoh GR II) and sparse sensor repairs (MAX_CORRECTIONS). Select the path once per development.",
+        "Exactness: planes must be bit-identical against the float-mosaic path on every committed Bayer and X-Trans fixture and every RAW-manifest source available on the host, including the Bayer clip at sensor white and X-Trans's unclamped values (bayer_input_clips_at_sensor_white_after_gain_and_x_trans_does_not). Update the luxforge-raw README and THIRD_PARTY notes on local patches, and docs/design/native-demosaic-parallelism.md or initial-raw.md where they describe the peak."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Efficiency design",
+          "target": "docs/design/efficiency.md",
+          "relevance": "The patch, the retained path and the exactness proof.",
+          "locator": "The RAW float mosaic"
+        },
+        {
+          "kind": "file",
+          "label": "Native build",
+          "target": "crates/luxforge-raw/build.rs",
+          "relevance": "apply_patch and the existing librtprocess patch."
+        },
+        {
+          "kind": "file",
+          "label": "Existing local patch",
+          "target": "crates/luxforge-raw/patches/librtprocess-local.patch",
+          "relevance": "The pattern to follow and the context the new patch stacks on."
+        },
+        {
+          "kind": "file",
+          "label": "Normalization",
+          "target": "crates/luxforge-raw/src/normalize.rs",
+          "relevance": "The expression the patch must reproduce."
+        },
+        {
+          "kind": "file",
+          "label": "Development",
+          "target": "crates/luxforge-raw/src/develop.rs",
+          "relevance": "Where the float mosaic is built and handed to the demosaic."
+        }
+      ],
+      "acceptance_criteria": [
+        "vendor/ is unchanged; the build applies the new patch reproducibly and fails on context drift.",
+        "For developments without sensor-stage rewrites, no float mosaic is allocated; the peak falls by 4 bytes per site, shown by the development's allocation diagnostics.",
+        "Planes are bit-identical to the float-mosaic path on every committed fixture and every available manifest source, for Bayer RCD and X-Trans Markesteijn, including the border band.",
+        "Sources with sensor-stage corrections or repairs still take and pass the float-mosaic path."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the RAW adapter's tests, the authentic RAW tests over the owner's manifest when present, and one raw-editor journey."
+        ],
+        "commands": [
+          "cargo test -p luxforge-raw",
+          "cargo test -p luxforge-core --lib raw",
+          "cargo run --release --locked --package xtask -- smoke --scenario raw-editor --source RAW --manifest FILE --output NEW_DIR"
+        ],
+        "expected_results": [
+          "All pass with bit-identical planes and a lower development peak."
+        ]
+      }
+    },
+    {
+      "id": "TASK-017",
+      "description": "Make a brush tick's cost independent of the stroke's length on the desktop and the owner by building, copying and cloning the points only when they change and are sent.",
+      "status": "completed",
+      "dependencies": [
+        "TASK-011"
+      ],
+      "extra_context": [
+        "Desktop, per path-growing move: BrushStroke::push (crates/luxforge-app/src/mask_draft/brush.rs:192) drops the memoized decimation; offer_mask (app/masks.rs:1673) calls capture_error, which runs PathCapture::stroke (core path.rs:532, Ramer-Douglas-Peucker over up to 16,384 positions); MaskGesture::fields builds extra_fields (brush.rs:315), cloning points() and json!(points) (one Value per point, up to 1024); app/draft.rs:196 overwrites pending even when a round trip is in flight (draft.rs:287), discarding that work; advance (draft.rs:296) deep-clones the fields into sent; app/gesture.rs:745 clones the set into the session again.",
+        "Owner, per tick: api/owner.rs:1483 deep-clones the session including the draft; api/methods.rs:2074 clones the draft; :2083 builds next.request() only to test contains_key; editor/plan.rs:608 builds draft.request() again; the answer repeats the draft.",
+        "Fix: build fields only when they will be sent (dirty while in flight, built in advance or on Event::Set); hold decimated points as Arc<[[f64; 2]]> with a cached Value; keep a revision instead of the sent clone; test keys on fields and target directly; snapshot the session only for handlers that can park a pixel read, or share the draft behind an Arc; avoid the second request(). The wire protocol is unchanged; append-only points are an API change outside this task.",
+        "Frozen coverage, draft identities, evidence semantics (frame_pending, drained) and one entry per stroke are unchanged."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Efficiency design",
+          "target": "docs/design/efficiency.md",
+          "relevance": "Both halves and the unchanged contracts.",
+          "locator": "Painting"
+        },
+        {
+          "kind": "file",
+          "label": "Brush shape",
+          "target": "crates/luxforge-app/src/mask_draft/brush.rs",
+          "relevance": "push, points and extra_fields."
+        },
+        {
+          "kind": "file",
+          "label": "Draft round trip",
+          "target": "crates/luxforge-app/src/app/draft.rs",
+          "relevance": "pending, advance and sent."
+        },
+        {
+          "kind": "file",
+          "label": "Owner dispatch",
+          "target": "crates/luxforge-core/src/api/owner.rs",
+          "relevance": "The per-call session snapshot."
+        },
+        {
+          "kind": "file",
+          "label": "Draft methods",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "relevance": "draft.set."
+        },
+        {
+          "kind": "file",
+          "label": "Mask performance",
+          "target": "docs/design/mask-performance.md",
+          "relevance": "The paint path's existing contract."
+        }
+      ],
+      "acceptance_criteria": [
+        "While a round trip is in flight, a move builds no fields and runs no decimation beyond what the next send needs; a test proves it.",
+        "Per tick, the owner clones the points at most once; a test counts clones or allocations for a long stroke.",
+        "Brush coverage, history, undo and evidence tests pass unchanged; the mask-brush scenario passes."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run brush, draft and owner tests, then the background brush scenario."
+        ],
+        "commands": [
+          "cargo test -p luxforge-app mask_draft",
+          "cargo test -p luxforge-app draft",
+          "cargo test -p luxforge-core --lib api::owner",
+          "cargo test -p luxforge-core --test mask brush",
+          "cargo run --release --locked --package xtask -- smoke --scenario mask-brush --output NEW_DIR"
+        ],
+        "expected_results": [
+          "All pass with identical strokes and coverage."
+        ]
+      }
+    },
+    {
+      "id": "TASK-018",
+      "description": "Add the reduced-grid cache for Clarity's and Dehaze's stage-anchored reductions under rule 14, and read tiles and point samples from it.",
+      "status": "completed",
+      "dependencies": [
+        "TASK-006",
+        "TASK-007",
+        "TASK-009"
+      ],
+      "extra_context": [
+        "Clarity's encoded-luminance 4x block grid (crates/luxforge-core/src/modules/presence/clarity.rs) and Dehaze's reduced grid (dehaze.rs) are anchored at the stage origin and independent of the unit's amount, but every tile rebuilds them over its halo: about 2.7x the stage in encodes for Clarity at 60 MP, and again on every amount change. Owner decision 2026-10-03: cache them.",
+        "Only a unit that runs first in its operation is cached (Dehaze whenever present, Clarity when it runs alone): Presence's box filters keep running f64 sums that start at each rectangle's edge, so a later unit's input can differ in its last bits from tile to tile and no shared plane reproduces it byte for byte. Dehaze caches its guide and its dark channel's input, which reads the f64 block mean, with the atmospheric light recorded in the entry.",
+        "Contract (rule 14, docs/design/efficiency.md, The reduced-grid cache): the key mirrors EstimateKey (source fingerprint, the domain's input prefix over the prefix hash, stage dimensions, the unit's reduction key), not the amount or the mask. One store in RenderContext beside EstimateStore, 64 MiB in total, named in docs/design/architecture.md's limits; evict least recently used before adding past the budget; refuse an entry larger than the budget.",
+        "Filled by the render's own tiles: a tile that computes the planes hands back the cells whose first pixel it holds, the render publishes them when it completes, and a cancelled render publishes nothing. A served tile's input is the first unit's output rectangle; later units keep their rectangles. A point sample reads covering planes and never fills; windowed renders neither read nor fill.",
+        "Each masked Presence layer reads its own input, so each has its own entry, and at 60 MP 64 MiB holds about two Dehaze entries. A recipe may hold 16 masked spatial layers (docs/decisions.md, GPU previews), so include a stack of several masked Clarity and Dehaze layers at 60 MP in the adoption measurement and report its hit rate across an amount drag after a settle."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Efficiency design",
+          "target": "docs/design/efficiency.md",
+          "relevance": "The full contract and the owner's decision.",
+          "locator": "The reduced-grid cache"
+        },
+        {
+          "kind": "file",
+          "label": "Render context",
+          "target": "crates/luxforge-core/src/render/context.rs",
+          "relevance": "EstimateKey and EstimateStore to mirror."
+        },
+        {
+          "kind": "file",
+          "label": "Clarity",
+          "target": "crates/luxforge-core/src/modules/presence/clarity.rs",
+          "relevance": "The reduction."
+        },
+        {
+          "kind": "file",
+          "label": "Dehaze",
+          "target": "crates/luxforge-core/src/modules/presence/dehaze.rs",
+          "relevance": "The reduction."
+        },
+        {
+          "kind": "file",
+          "label": "Decisions",
+          "target": "docs/decisions.md",
+          "relevance": "The owner's cache decision.",
+          "locator": "CPU and memory efficiency"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Rules and the checklist each change answers.",
+          "locator": "Rules"
+        }
+      ],
+      "acceptance_criteria": [
+        "Tiles and samples read a first unit's reduced planes (Dehaze's, and Clarity's when it runs alone) from the cache; an amount-only change hits it; Clarity behind another unit runs as before.",
+        "Every Presence exactness, sample-equals-render, window and masked test passes unchanged in both domains, with and without a cache hit.",
+        "The cache is keyed, budgeted at 64 MiB, evicting and disposable as rule 14 requires, with a test for each key part; architecture.md lists the limit."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run Presence, spatial, sample, window and context tests."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib modules::presence",
+          "cargo test -p luxforge-core --lib render::spatial",
+          "cargo test -p luxforge-core --lib render::sample",
+          "cargo test -p luxforge-core --lib render::context"
+        ],
+        "expected_results": [
+          "All pass with identical bytes; key, budget and eviction tests pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-019",
+      "description": "Measure the finished efficiency work against its base on the M4 and record what each change saved, reverting any change that does not pay for itself.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001",
+        "TASK-003",
+        "TASK-004",
+        "TASK-005",
+        "TASK-006",
+        "TASK-007",
+        "TASK-008",
+        "TASK-009",
+        "TASK-010",
+        "TASK-011",
+        "TASK-012",
+        "TASK-013",
+        "TASK-014",
+        "TASK-015",
+        "TASK-016",
+        "TASK-017",
+        "TASK-018"
+      ],
+      "extra_context": [
+        "Timing waits for every feature task (rule 13). Build the base commit and the integrated branch, both in the release profile (the dist profile is deferred), back to back; run each workload alternately base/branch and reversed, on a quiet host, recording load, host, profile and cache state.",
+        "Workloads: editor-performance on the generated 24 MP and 60 MP JPEGs (Basic then Presence, Detail, Presence after Detail, masked stacks); cold open and committed white balance for each RAW-manifest source with peak RSS and the development's peak; editor-latency drag, paint (long stroke) and settle at 24 and 60 MP, and --presence and --detail drags; a Clarity amount drag for the reduced-grid cache's hit rate, rebuild cost and retained bytes; measure for launch and idle; commit latency with the WAL catalog.",
+        "Where the desktop and owner tasks' savings show: the launch scan is skipped only in a normal launch, so measure's empty, 24mp and 60mp workloads (evidence launches) still ask for system information and only its idle row is a normal launch; a brush tick's owner copies are counted by tests/draft_tick (one copy of the path on an unplanned tick, three over a spatial stack) and its latency by editor-latency --mode paint; a collapsed section's saving is per message, largest with a large preset library; the WAL catalog's is commit latency (an import, a slider commit and a stroke commit).",
+        "Record results in docs/specs/performance.md under a section of their own, update docs/engineering/performance-rules.md (anti-patterns removed: the serial zero-fills and per-tile planes), docs/features.md and the design's status. A change whose measured saving is nil or negative on its own workload is reverted and recorded as tried."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Efficiency design",
+          "target": "docs/design/efficiency.md",
+          "relevance": "The measurement list and the revert rule.",
+          "locator": "Acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Performance spec",
+          "target": "docs/specs/performance.md",
+          "relevance": "Where results are recorded."
+        },
+        {
+          "kind": "file",
+          "label": "Development",
+          "target": "docs/engineering/development.md",
+          "relevance": "Timing commands and the timing lock.",
+          "locator": "When to verify"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Rules and the checklist each change answers.",
+          "locator": "Known remaining costs"
+        }
+      ],
+      "acceptance_criteria": [
+        "quick, rendered and full (with the owner's manifest) pass on the integrated branch.",
+        "Each feature task's workload has a recorded base/branch distribution with its scope; the cache's hit rate, rebuild cost and retained bytes are recorded.",
+        "Docs describe current behaviour only; any reverted change is recorded as tried and not kept."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the verification tiers, then the timing workloads back to back in alternating order."
+        ],
+        "commands": [
+          "cargo xtask verify --tier full --manifest FILE --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- editor-performance --source fixtures/generated/24mp.jpg --output NEW_DIR --samples 30",
+          "cargo run --release --locked --package xtask -- editor-performance --source fixtures/generated/60mp.jpg --output NEW_DIR --samples 30",
+          "cargo run --release --locked --package xtask -- editor-latency --source JPEG --output NEW_DIR --mode paint",
+          "cargo xtask measure --binary PATH --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Tiers pass; distributions are recorded with scope; documentation is current."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-003",
+        "TASK-004",
+        "TASK-005",
+        "TASK-006",
+        "TASK-008",
+        "TASK-009",
+        "TASK-010",
+        "TASK-011",
+        "TASK-012",
+        "TASK-013",
+        "TASK-014",
+        "TASK-015"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-002",
+        "TASK-007",
+        "TASK-016",
+        "TASK-017"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-018"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-019"
+      ]
+    }
+  ]
+}

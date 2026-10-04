@@ -33,10 +33,15 @@ use crate::Error;
 #[cfg(test)]
 use crate::{EFFECT_FORMAT, ErrorKind};
 use colour::ColourAdjust;
+/// The Basic units' GPU programs, which [`super::GPU_PROGRAMS`] lists.
+pub(crate) use colour::PROGRAM as COLOUR_ADJUST_PROGRAM;
 use exposure::Exposure;
+pub(crate) use exposure::PROGRAM as EXPOSURE_PROGRAM;
 use serde_json::{Map, Value};
 use std::sync::Arc;
+pub(crate) use tone::PROGRAM as TONE_PROGRAM;
 use tone::Tone;
+pub(crate) use white_balance::PROGRAM as WHITE_BALANCE_PROGRAM;
 use white_balance::{PARAMETER_RANGE, WhiteBalance};
 
 /// The one colour-stage effect of the Basic module: every implemented Basic parameter of a stack
@@ -234,18 +239,21 @@ impl FieldPatch for Basic {
 
     /// Only a layer with a moved field reaches here; the shared field patch compiles a neutral one
     /// to no units.
-    fn compile(&self, values: &Values<'_>, _: crate::CompileStage) -> Result<Processing, Error> {
+    fn compile(&self, values: &Values<'_>, at: crate::CompileStage) -> Result<Processing, Error> {
         // The frozen internal order: white balance, then exposure, then the tonal curve, then
         // vibrance and saturation. Each unit is added only when its own field is not neutral, so a
-        // layer that moves one slider costs one unit.
+        // layer that moves one slider costs one unit. In the GPU shape every unit is added, a
+        // neutral one as its identity, so a drag that leaves or returns to neutral keeps one
+        // program sequence (`CompileStage::gpu_shape`); no CPU compile asks for it.
+        let every = at.gpu_shape;
         let mut units: Vec<Arc<dyn PointwiseColor>> = Vec::new();
         let temperature = values.number(TEMPERATURE);
         let tint = values.number(TINT);
-        if temperature != NEUTRAL || tint != NEUTRAL {
+        if every || temperature != NEUTRAL || tint != NEUTRAL {
             units.push(Arc::new(WhiteBalance::new(temperature, tint)));
         }
         let exposure = values.number(EXPOSURE);
-        if exposure != NEUTRAL {
+        if every || exposure != NEUTRAL {
             units.push(Arc::new(Exposure::new(exposure)));
         }
         let contrast = values.number(CONTRAST);
@@ -253,7 +261,7 @@ impl FieldPatch for Basic {
         let shadows = values.number(SHADOWS);
         let whites = values.number(WHITES);
         let blacks = values.number(BLACKS);
-        if [contrast, highlights, shadows, whites, blacks] != [NEUTRAL; 5] {
+        if every || [contrast, highlights, shadows, whites, blacks] != [NEUTRAL; 5] {
             units.push(Arc::new(Tone::new(
                 contrast, highlights, shadows, whites, blacks,
             )));
@@ -264,7 +272,7 @@ impl FieldPatch for Basic {
         // unit rather than two.
         let vibrance = values.number(VIBRANCE);
         let saturation = values.number(SATURATION);
-        if vibrance != NEUTRAL || saturation != NEUTRAL {
+        if every || vibrance != NEUTRAL || saturation != NEUTRAL {
             units.push(Arc::new(ColourAdjust::new(vibrance, saturation)));
         }
         Ok(Processing::Color(ColorOperation::new(units)))
@@ -1014,7 +1022,7 @@ mod tests {
     /// A module that declares no queries says so rather than answering one.
     #[test]
     fn a_module_without_queries_refuses_the_call() {
-        let module = crate::modules::TransformModule::new();
+        let module = crate::modules::CropModule::new();
         assert!(module.descriptor().queries.is_empty());
         let error = module
             .query(

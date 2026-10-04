@@ -63,7 +63,10 @@ standalone probe recorded historical peak RSS of approximately 425 MiB for
 not current editor limits). Scratch generally scales with implementation and
 working tiles rather than only final pixel count, so a 128 MP value cannot be
 extrapolated as a release guarantee. The adapter sets LibRaw's
-`max_raw_memory_mb = 512`; that is a LibRaw internal allocation ceiling.
+`max_raw_memory_mb = 512` normally and `1024` only for the owner-approved
+Sony ARW6 Compressed HQ decoder; those are LibRaw working-space ceilings.
+The [corpus support measurement](corpus-camera-support.md) records Sony HQ
+at about 1.15 GiB peak process RSS for decode/two developments.
 It can reject a large source before Luxforge's own u16/float accounting is
 reached, and it does not make a 512 MiB process budget true.
 

@@ -29,7 +29,7 @@ const CANCELLED: &str = "superseded by a newer request";
 ///
 /// A token may also carry a `RenderProgress` meter (`Cancel::with_progress`), because it is the
 /// one per-render handle every pass already reads: a whole-frame render plans its spatial tiles on
-/// it and advances it per finished batch. A token without one reports nothing and costs nothing.
+/// it and advances it per finished tile. A token without one reports nothing and costs nothing.
 #[derive(Clone, Debug, Default)]
 pub struct Cancel {
     cancelled: Arc<AtomicBool>,
@@ -72,7 +72,7 @@ impl Cancel {
 
     /// `Err(ErrorKind::Cancelled)` when cancelled, for the passes to call per chunk.
     #[inline]
-    pub(crate) fn check(&self) -> Result<(), Error> {
+    pub fn check(&self) -> Result<(), Error> {
         if self.is_cancelled() {
             Err(Error::cancelled(CANCELLED))
         } else {
@@ -90,8 +90,9 @@ impl Cancel {
 /// How far one render has got through the spatial tiles it planned: the extent a whole-frame
 /// render can report truthfully, since its tiles are counted before the first one runs and every
 /// spatial operation's cost is in them. The render adds what it plans ([`Self::plan`]) and what it
-/// finishes ([`Self::advance`]), and calls the meter's `notify` once per finished batch, on the
-/// thread that runs the batches; whoever holds a clone reads both counts. Stages without spatial
+/// finishes ([`Self::advance`]), and calls the meter's `notify` once per finished tile, under the
+/// lock its tiles are written under, on the thread that finished it; whoever holds a clone reads
+/// both counts. Stages without spatial
 /// tiles (decode, colour, resample, reduction) are not counted, so a render with none plans zero.
 #[derive(Clone)]
 pub(crate) struct RenderProgress(Arc<Meter>);

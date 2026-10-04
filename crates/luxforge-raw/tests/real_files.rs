@@ -107,9 +107,9 @@ fn verify_authentic_modes(cases: &[(&str, &str, &str, u32, u32, &str)]) {
             (raw.metadata().sensor_width, raw.metadata().sensor_height),
             (w, h)
         );
-        assert_eq!(raw.mosaic().len(), w as usize * h as usize);
+        assert_eq!(raw.source_samples().len(), w as usize * h as usize);
         assert_eq!(
-            mosaic_hash(raw.mosaic()),
+            mosaic_hash(raw.source_samples()),
             expected_mosaic,
             "{file} full sensor pixels"
         );
@@ -196,7 +196,7 @@ fn required_dji_opcodes_are_applied_to_fc3411() {
     // This DNG's one uncompressed 16-bit strip independently hashes to this
     // value when read directly from TIFF bytes, before LibRaw touches it.
     assert_eq!(
-        mosaic_hash(raw.mosaic()),
+        mosaic_hash(raw.source_samples()),
         "b681fbbb7c5f06c64525e675535119335b43c11dcb24493c5ace8e023d7fb888"
     );
     assert_eq!(
@@ -446,7 +446,7 @@ fn nikon_high_efficiency_is_refused_and_lossless_controls_decode() {
         let raw = RawSource::decode(bytes, &cancel).unwrap_or_else(|e| panic!("{id}: {e}"));
         assert_eq!(raw.metadata().mode.id(), entry["mode"]);
         assert_eq!(
-            mosaic_hash(raw.mosaic()),
+            mosaic_hash(raw.source_samples()),
             entry["mosaic_sha256"],
             "{id} full sensor pixels"
         );

@@ -12,6 +12,7 @@ use crate::{
     format::{DngOpcode, Endian, f64_at, u32_at},
     native_tiles,
     opcodes::Opcode,
+    zeroed::zeroed_vec,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -89,6 +90,9 @@ pub(crate) struct DngCorrection {
     active: RawRect,
     stages: Vec<Stage3>,
     sensor_repair: Option<SensorRepair>,
+    repair_active_only: bool,
+    sensor_gains: Vec<GainMap>,
+    sensor_vignette: Option<VignetteRadial>,
 }
 
 #[derive(Debug, Clone)]
@@ -168,6 +172,10 @@ fn checked_rect(
 
 impl GainMap {
     fn parse(data: &[u8], active: RawRect) -> Result<Self, RawError> {
+        Self::parse_for(data, active, false)
+    }
+
+    fn parse_for(data: &[u8], active: RawRect, sensor: bool) -> Result<Self, RawError> {
         // AreaSpec: t,l,b,r,plane,planes,rowPitch,colPitch (8 x uint32).
         // GainMap: pointsV/H, spacingV/H, originV/H, mapPlanes, float entries.
         if data.len() < 76 {
@@ -191,14 +199,18 @@ impl GainMap {
         let origin = [be_f64(data, 56)?, be_f64(data, 64)?];
         let map_planes = be_u32(data, 72)? as usize;
         if plane != 0
-            || planes != 3
-            || row_pitch != 1
-            || col_pitch != 1
+            || if sensor {
+                planes != 1
+                    || map_planes != 1
+                    || !(1..=2).contains(&row_pitch)
+                    || !(1..=2).contains(&col_pitch)
+            } else {
+                planes != 3 || map_planes != 3 || row_pitch != 1 || col_pitch != 1
+            }
             || rows == 0
             || cols == 0
             || rows > 256
             || cols > 256
-            || map_planes != 3
             || !spacing.iter().all(|v| v.is_finite() && *v > 0.0)
             || !origin
                 .iter()
@@ -313,7 +325,9 @@ impl GainMap {
         let (y0, y1, wy) = (row.near, row.far, row.weight);
         let (x0, x1, wx) = (column.near, column.far, column.weight);
         let at = |row: usize, col: usize| -> f64 {
-            self.values[(row * self.cols + col) * self.map_planes + channel] as f64
+            self.values
+                [(row * self.cols + col) * self.map_planes + channel.min(self.map_planes - 1)]
+                as f64
         };
         (at(y0, x0) * (1.0 - wx) + at(y0, x1) * wx) * (1.0 - wy)
             + (at(y1, x0) * (1.0 - wx) + at(y1, x1) * wx) * wy
@@ -706,6 +720,7 @@ fn bad_pixel_constant_replacements(
         .map(|(patches, _)| patches)
 }
 
+#[cfg(test)]
 fn bad_pixel_constant_replacements_with_unresolved(
     source: &[u16],
     width: usize,
@@ -713,6 +728,30 @@ fn bad_pixel_constant_replacements_with_unresolved(
     constant: u32,
     phase: u32,
 ) -> Result<(Vec<(usize, u16)>, usize), RawError> {
+    bad_pixel_constant_replacements_in_area(
+        source,
+        width,
+        height,
+        constant,
+        phase,
+        RawRect {
+            x: 0,
+            y: 0,
+            width: width as u32,
+            height: height as u32,
+        },
+    )
+}
+
+fn bad_pixel_constant_replacements_in_area(
+    source: &[u16],
+    width: usize,
+    height: usize,
+    constant: u32,
+    phase: u32,
+    active: RawRect,
+) -> Result<(Vec<(usize, u16)>, usize), RawError> {
+    crate::checked_rect(active, width as u32, height as u32)?;
     if constant > u16::MAX as u32
         || width == 0
         || height == 0
@@ -723,8 +762,8 @@ fn bad_pixel_constant_replacements_with_unresolved(
     let bad = constant as u16;
     let mut out = Vec::new();
     let mut unresolved = 0;
-    for y in 0..height {
-        for x in 0..width {
+    for y in active.y as usize..(active.y + active.height) as usize {
+        for x in active.x as usize..(active.x + active.width) as usize {
             if source[y * width + x] == bad {
                 if let Some(value) =
                     bad_pixel_constant_replacement(source, width, height, y, x, constant, phase)?
@@ -921,10 +960,16 @@ impl DngCorrection {
             .collect();
         let mut stages = Vec::new();
         let mut sensor_repair = None;
+        let mut sensor_gains = Vec::new();
+        let mut sensor_vignette = None;
         for op in &required {
             match Opcode::implemented(op.list, op.id) {
                 Some(Opcode::GainMap) => {
-                    stages.push(Stage3::Gain(GainMap::parse(&op.data, active)?))
+                    if op.list == crate::opcodes::OPCODE_LIST2 {
+                        sensor_gains.push(GainMap::parse_for(&op.data, active, true)?);
+                    } else {
+                        stages.push(Stage3::Gain(GainMap::parse(&op.data, active)?));
+                    }
                 }
                 Some(Opcode::WarpRectilinear) => {
                     let warp = Warp::parse(&op.data, active)?;
@@ -943,9 +988,22 @@ impl DngCorrection {
                     stages.push(Stage3::Warp(warp))
                 }
                 Some(Opcode::FixVignetteRadial) => {
-                    stages.push(Stage3::Vignette(parse_vignette_radial(&op.data)?))
+                    let radial = parse_vignette_radial(&op.data)?;
+                    if op.list == crate::opcodes::OPCODE_LIST1 {
+                        if sensor_vignette.replace(radial).is_some() || sensor_repair.is_some() {
+                            return Err(RawError::UnsupportedMode(
+                                "DNG repeated/mixed stage-one vignette".into(),
+                            ));
+                        }
+                    } else {
+                        stages.push(Stage3::Vignette(radial));
+                    }
                 }
-                Some(repair) if repair.repairs_sensor() && sensor_repair.is_none() => {
+                Some(repair)
+                    if repair.repairs_sensor()
+                        && sensor_repair.is_none()
+                        && sensor_vignette.is_none() =>
+                {
                     sensor_repair = Some(if repair == Opcode::FixBadPixelsConstant {
                         let (constant, phase) = parse_bad_pixels_constant(&op.data)?;
                         SensorRepair::Constant(constant, phase)
@@ -960,6 +1018,13 @@ impl DngCorrection {
             active,
             stages,
             sensor_repair,
+            repair_active_only: matches!(
+                settings.container,
+                crate::profiles::DngContainer::IntegerCfaSegments
+                    | crate::profiles::DngContainer::IntegerLinearSegments
+            ),
+            sensor_gains,
+            sensor_vignette,
             metadata: DngCorrectionMetadata {
                 interpretation: settings.interpretation.to_string(),
                 applied: required.into_iter().map(provenance).collect(),
@@ -967,6 +1032,93 @@ impl DngCorrection {
                 calibration,
             },
         })
+    }
+
+    /// Stage-one radial correction and stage-two CFA maps run before demosaic.
+    /// The retained integer data is immutable; only this development's float mosaic changes.
+    pub(crate) fn apply_sensor(
+        &self,
+        pixels: &mut [f32],
+        raw: &crate::RawSource,
+        gains: [f32; 3],
+        cancel: &AtomicBool,
+        lanes: usize,
+    ) -> Result<(), RawError> {
+        if self.sensor_gains.is_empty() && self.sensor_vignette.is_none() {
+            return Ok(());
+        }
+        if raw.metadata.layout != crate::RawLayout::Mosaic {
+            return Err(RawError::UnsupportedMode(
+                "CFA correction requires a sensor mosaic".into(),
+            ));
+        }
+        let width = raw.metadata.sensor_width as usize;
+        let black = crate::normalize::BlackLevels::of(&raw.metadata);
+        correction_rows(pixels, width, lanes, cancel, |y, row| {
+            for (x, pixel) in row.iter_mut().enumerate() {
+                if x < self.active.x as usize
+                    || y < self.active.y as usize
+                    || x >= (self.active.x + self.active.width) as usize
+                    || y >= (self.active.y + self.active.height) as usize
+                {
+                    continue;
+                }
+                if let Some(radial) = &self.sensor_vignette {
+                    let v = radial.gain(
+                        (x - self.active.x as usize) as f64,
+                        (y - self.active.y as usize) as f64,
+                        self.active.width as usize,
+                        self.active.height as usize,
+                    )?;
+                    let b = black.at(x, y);
+                    let channel = raw.metadata.cfa[(y % raw.metadata.cfa_height as usize)
+                        * raw.metadata.cfa_width as usize
+                        + x % raw.metadata.cfa_width as usize]
+                        as usize;
+                    *pixel = ((raw.mosaic[y * width + x] as f64 * v - b as f64)
+                        * (crate::normalize::SENSOR_SCALE / (raw.metadata.sensor_white - b)) as f64
+                        * gains[channel] as f64) as f32;
+                }
+                for map in &self.sensor_gains {
+                    *pixel = (*pixel as f64 * map.gain(x as f64, y as f64, 0, self.active)?) as f32;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// The same pre-WB stage-one and stage-two interpretation at one retained sensor sample.
+    /// The picker supplies its nearest same-colour CFA site after the stage-three warp.
+    pub(crate) fn sensor_normalized(
+        &self,
+        x: u32,
+        y: u32,
+        sample: f64,
+        black: f64,
+        white: f64,
+    ) -> Result<f64, RawError> {
+        let radial = self
+            .sensor_vignette
+            .as_ref()
+            .map(|v| {
+                v.gain(
+                    x as f64 - self.active.x as f64,
+                    y as f64 - self.active.y as f64,
+                    self.active.width as usize,
+                    self.active.height as usize,
+                )
+            })
+            .transpose()?
+            .unwrap_or(1.0);
+        let mut value = (sample * radial - black) / (white - black);
+        for map in &self.sensor_gains {
+            value *= map.gain(x as f64, y as f64, 0, self.active)?;
+        }
+        Ok(value)
+    }
+
+    pub(crate) fn changes_normalization(&self) -> bool {
+        !self.sensor_gains.is_empty() || self.sensor_vignette.is_some()
     }
 
     pub(crate) fn mosaic_corrections(
@@ -995,11 +1147,23 @@ impl DngCorrection {
         }
         let (patches, unresolved) = match &self.sensor_repair {
             None => return Ok((Vec::new(), 0)),
-            Some(SensorRepair::Constant(value, phase)) => {
-                bad_pixel_constant_replacements_with_unresolved(
-                    source, width, height, *value, *phase,
-                )
-            }
+            Some(SensorRepair::Constant(value, phase)) => bad_pixel_constant_replacements_in_area(
+                source,
+                width,
+                height,
+                *value,
+                *phase,
+                if self.repair_active_only {
+                    self.active
+                } else {
+                    RawRect {
+                        x: 0,
+                        y: 0,
+                        width: width as u32,
+                        height: height as u32,
+                    }
+                },
+            ),
             Some(SensorRepair::Listed(list)) => {
                 list.replacements_with_unresolved(source, width, height)
             }
@@ -1145,10 +1309,7 @@ impl DngCorrection {
                             let len = area_w
                                 .checked_mul(area_h)
                                 .ok_or(RawError::ResourceLimit("DNG warp plane overflow"))?;
-                            scratch.try_reserve_exact(len).map_err(|_| {
-                                RawError::ResourceLimit("DNG warp scratch allocation")
-                            })?;
-                            scratch.resize(len, 0.0_f32);
+                            scratch = zeroed_vec::<f32>(len, "DNG warp scratch allocation")?;
                         }
                         correction_rows(&mut scratch, area_w, lanes, cancel, |yy, row| {
                             for (xx, pixel) in row.iter_mut().enumerate() {
@@ -1234,6 +1395,282 @@ fn bicubic(plane: &[f32], width: usize, active: RawRect, x: f64, y: f64) -> f64 
 mod tests {
     use super::*;
     use serde_json::Value;
+
+    #[test]
+    fn sensor_maps_apply_to_their_cfa_parity_before_demosaic_and_share_picker_math() {
+        let mut raw = crate::layout_tests::source(crate::RawLayout::Mosaic, vec![576; 16], 4, 4);
+        raw.metadata.cfa_width = 2;
+        raw.metadata.cfa_height = 2;
+        raw.metadata.cfa = vec![0, 1, 1, 2];
+        raw.metadata.black_cfa = vec![0, 1, 3, 2];
+        let map = GainMap {
+            area: RawRect {
+                x: 1,
+                y: 0,
+                width: 3,
+                height: 4,
+            },
+            plane: 0,
+            planes: 1,
+            row_pitch: 2,
+            col_pitch: 2,
+            rows: 1,
+            cols: 1,
+            spacing: [1.0; 2],
+            origin: [0.0; 2],
+            map_planes: 1,
+            values: vec![2.0],
+        };
+        let correction = DngCorrection {
+            active: raw.metadata.active_area,
+            stages: vec![],
+            sensor_repair: None,
+            repair_active_only: true,
+            sensor_gains: vec![map],
+            sensor_vignette: None,
+            metadata: DngCorrectionMetadata {
+                interpretation: "test".into(),
+                applied: vec![],
+                skipped_optional: vec![],
+                calibration: DngCalibrationMetadata {
+                    illuminants: [17, 21],
+                    color_matrix1_sha256: String::new(),
+                    color_matrix2_sha256: String::new(),
+                    selected: "test".into(),
+                },
+            },
+        };
+        let mut normalized = raw
+            .normalization([1.0; 3])
+            .run(1, &AtomicBool::new(false))
+            .unwrap();
+        correction
+            .apply_sensor(&mut normalized, &raw, [1.0; 3], &AtomicBool::new(false), 1)
+            .unwrap();
+        for y in 0..4 {
+            for x in 0..4 {
+                let expected = if y % 2 == 0 && x % 2 == 1 { 1.0 } else { 0.5 };
+                assert_eq!(
+                    normalized[y * 4 + x],
+                    expected * crate::normalize::SENSOR_SCALE
+                );
+                assert_eq!(
+                    correction
+                        .sensor_normalized(x as u32, y as u32, 576.0, 128.0, 1024.0)
+                        .unwrap(),
+                    expected as f64
+                );
+            }
+        }
+        assert_eq!(raw.source_samples(), &[576; 16]);
+        assert!(matches!(
+            correction.apply_sensor(&mut normalized, &raw, [1.0; 3], &AtomicBool::new(true), 1),
+            Err(RawError::Cancelled)
+        ));
+    }
+
+    /// A sensor-stage correction, a stage-two gain map or a stage-one radial vignette, rewrites
+    /// the normalized mosaic, so its developments keep the float mosaic and apply it there. A
+    /// correction only after the demosaic leaves the sensor stage alone: its developments read
+    /// the sensor sites, to the float mosaic's bits.
+    #[test]
+    fn only_sensor_stage_corrections_keep_the_float_mosaic() {
+        use crate::develop::{DemosaicInput, DevelopDiagnostics, DevelopOptions, develop_with};
+        let (width, height) = (64_u32, 48_u32);
+        let samples = (0..width * height)
+            .map(|index| (200 + index * 37 % 800) as u16)
+            .collect();
+        let mut raw = crate::layout_tests::source(crate::RawLayout::Mosaic, samples, width, height);
+        raw.metadata.cfa_width = 2;
+        raw.metadata.cfa_height = 2;
+        raw.metadata.cfa = vec![0, 1, 1, 2];
+        raw.metadata.black_cfa = vec![0, 1, 3, 2];
+        raw.shape.width = width;
+        raw.shape.height = height;
+        raw.shape.cfa_width = 2;
+        raw.shape.cfa_height = 2;
+        raw.shape.cfa[..4].copy_from_slice(&[0, 1, 1, 2]);
+        let active = raw.metadata.active_area;
+        let map = GainMap {
+            area: active,
+            plane: 0,
+            planes: 1,
+            row_pitch: 1,
+            col_pitch: 1,
+            rows: 1,
+            cols: 1,
+            spacing: [1.0; 2],
+            origin: [0.0; 2],
+            map_planes: 1,
+            values: vec![1.25],
+        };
+        let radial = VignetteRadial {
+            coefficients: [0.5, 0.0, 0.0, 0.0, 0.0],
+            center: [0.5, 0.5],
+        };
+        let correction = |stages, sensor_gains, sensor_vignette| DngCorrection {
+            active,
+            stages,
+            sensor_repair: None,
+            repair_active_only: true,
+            sensor_gains,
+            sensor_vignette,
+            metadata: DngCorrectionMetadata {
+                interpretation: "test".into(),
+                applied: vec![],
+                skipped_optional: vec![],
+                calibration: DngCalibrationMetadata {
+                    illuminants: [17, 21],
+                    color_matrix1_sha256: String::new(),
+                    color_matrix2_sha256: String::new(),
+                    selected: "test".into(),
+                },
+            },
+        };
+        let cancel = AtomicBool::new(false);
+        let gains = [1.5, 1.0, 1.2];
+        let plain = develop_with(&raw, gains, &cancel, DevelopOptions::default())
+            .unwrap()
+            .data;
+        for (case, correction, input) in [
+            ("no correction", None, DemosaicInput::SensorSites),
+            (
+                "a stage-three gain map",
+                Some(correction(vec![Stage3::Gain(map.clone())], vec![], None)),
+                DemosaicInput::SensorSites,
+            ),
+            (
+                "a stage-two gain map",
+                Some(correction(vec![], vec![map.clone()], None)),
+                DemosaicInput::FloatMosaic,
+            ),
+            (
+                "a stage-one vignette",
+                Some(correction(vec![], vec![], Some(radial.clone()))),
+                DemosaicInput::FloatMosaic,
+            ),
+        ] {
+            raw.dng_correction = correction;
+            assert_eq!(DemosaicInput::of(&raw), input, "{case}");
+            let mut read = DevelopDiagnostics::default();
+            let chosen = develop_with(
+                &raw,
+                gains,
+                &cancel,
+                DevelopOptions {
+                    diagnostics: Some(&mut read),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .data;
+            assert_eq!(read.input, Some(input), "{case}");
+            let float = develop_with(
+                &raw,
+                gains,
+                &cancel,
+                DevelopOptions {
+                    float_mosaic: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .data;
+            assert!(
+                chosen
+                    .iter()
+                    .zip(&float)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "{case}"
+            );
+            // The sensor stage changed the developed planes exactly when it keeps the float
+            // mosaic.
+            let unchanged = chosen
+                .iter()
+                .zip(&plain)
+                .all(|(a, b)| a.to_bits() == b.to_bits());
+            assert_eq!(unchanged, input == DemosaicInput::SensorSites, "{case}");
+        }
+    }
+
+    #[test]
+    fn stage_one_vignette_precedes_black_subtraction_at_a_point() {
+        let radial = VignetteRadial {
+            coefficients: [1.0, 0.0, 0.0, 0.0, 0.0],
+            center: [0.5, 0.5],
+        };
+        // At a corner the radius is one and gain is two. This distinguishes pre-black correction.
+        let active = RawRect {
+            x: 0,
+            y: 0,
+            width: 5,
+            height: 5,
+        };
+        let mut correction = DngCorrection {
+            active,
+            stages: vec![],
+            sensor_repair: None,
+            repair_active_only: true,
+            sensor_gains: vec![],
+            sensor_vignette: Some(radial),
+            metadata: DngCorrectionMetadata {
+                interpretation: "test".into(),
+                applied: vec![],
+                skipped_optional: vec![],
+                calibration: DngCalibrationMetadata {
+                    illuminants: [17, 21],
+                    color_matrix1_sha256: String::new(),
+                    color_matrix2_sha256: String::new(),
+                    selected: "test".into(),
+                },
+            },
+        };
+        assert_eq!(
+            correction
+                .sensor_normalized(0, 0, 256.0, 128.0, 1024.0)
+                .unwrap(),
+            3.0 / 7.0
+        );
+        assert_eq!(
+            correction
+                .sensor_normalized(2, 2, 256.0, 128.0, 1024.0)
+                .unwrap(),
+            1.0 / 7.0
+        );
+        correction.sensor_vignette = None;
+        assert_eq!(
+            correction
+                .sensor_normalized(0, 0, 256.0, 128.0, 1024.0)
+                .unwrap(),
+            1.0 / 7.0
+        );
+    }
+
+    #[test]
+    fn constant_bad_pixel_repair_ignores_masked_padding_and_keeps_sparse_bound() {
+        let mut pixels = vec![0; 512 * 256];
+        for y in 0..256 {
+            pixels[y * 512..y * 512 + 8].fill(100);
+        }
+        pixels[10 * 512 + 4] = 0;
+        let (patches, unresolved) = bad_pixel_constant_replacements_in_area(
+            &pixels,
+            512,
+            256,
+            0,
+            0,
+            RawRect {
+                x: 0,
+                y: 0,
+                width: 8,
+                height: 256,
+            },
+        )
+        .unwrap();
+        assert_eq!(patches, vec![(10 * 512 + 4, 100)]);
+        assert_eq!(unresolved, 0);
+        assert_eq!(pixels[10 * 512 + 4], 0);
+    }
 
     fn reference() -> Value {
         serde_json::from_str(include_str!("../../../fixtures/raw-dng-reference.json")).unwrap()
@@ -1389,6 +1826,9 @@ mod tests {
                 },
             },
             sensor_repair: None,
+            repair_active_only: false,
+            sensor_gains: Vec::new(),
+            sensor_vignette: None,
             stages: vec![
                 Stage3::Gain(gain),
                 Stage3::Warp(warp),
@@ -1615,6 +2055,9 @@ mod tests {
                 active,
                 metadata: metadata.clone(),
                 sensor_repair: None,
+                repair_active_only: false,
+                sensor_gains: Vec::new(),
+                sensor_vignette: None,
                 stages: if gains_first {
                     vec![Stage3::Gain(gain.clone()), Stage3::Warp(warp.clone())]
                 } else {

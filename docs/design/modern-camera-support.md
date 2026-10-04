@@ -2,11 +2,11 @@
 
 ## Scope
 
-Expand the data-driven RAW path to a practical set of 100 widely used modern
-camera/drone models across brands, including the three existing models. This is
-a coverage selection, not a measured sales ranking. The owner selected broad
-usage across brands rather than newest-first coverage and requested Luna
-subagents. Maintain exact make/model identities and recording-mode evidence.
+The data-driven RAW path covers the available files from the curated
+250-camera selection and five flagship phone generations, including older
+cameras still in use. This is a coverage selection, not a measured sales
+ranking or a 99% active-device claim. Maintain exact make/model identities and
+recording-mode evidence; see [corpus support](corpus-camera-support.md).
 
 ## Behavior and constraints
 
@@ -19,7 +19,8 @@ Do not invent full-sensor dimensions from advertised megapixels.
 
 Use a selected subset of CC0 authentic files from raw.pixls.us, with URL,
 SHA-256, license and observed decoder metadata recorded. Downloads and rendered
-photos stay ignored, bounded and local. Do not mirror the whole corpus. Validate
+photos stay ignored and bounded. The curated CC0 originals are retained in
+private R2 storage ([sample corpus](sample-corpus.md)). Validate
 source preservation, mosaic/float correctness, calibrated dimensions and crop,
 then representative background editor/history/reopen workflows. Separate each
 mode's demonstrated evidence from outstanding controlled color/scene coverage.
@@ -31,21 +32,37 @@ with guessed entries or bypass required corrections to admit a model.
 
 ## Current evidence
 
-The catalog contains 107 camera profiles and 126 recording modes, including the
-original modes and the [popular camera modes](popular-camera-support.md). The
-authentic adapter evidence has 130 samples covering 123 modes: 129 CC0 public
-sources and the existing owner Air 2S source. The three modes without an entry,
-the Z6's 12-bit and 14-bit lossless NEF and the X100VI's lossless RAF, are
-covered by the crate's authentic owner and public-fixture tests. Each
-qualification checks source hashes before/after, full mosaic retention, usable
-calibration, and finite as-shot and perturbed-white-balance development.
-Per-source metadata and hashes, including each full mosaic's SHA-256 from the
-LibRaw-only path, are in
-[the evidence manifest](../../fixtures/modern-camera-evidence.json);
-[the selection](../../fixtures/modern-camera-selection.json) lists each model's
-samples with the mode each evidences, its source URL, hash and license. Float
-hashes record this build's output; they are not independent color-reference
-ground truth.
+The catalog contains 259 exact camera/phone profiles and 316 recording modes.
+All 341 retained CC0 samples pass source preservation, full unpacked integer
+hashes, metadata and finite as-shot/development checks. They cover 258 exact
+identities and 315 modes; the owner Air 2S original supplies the remaining
+profile/mode. Two monochrome sources develop identical R/G/B planes and refuse
+colour-changing white balance. Their second development reference repeats unity gains.
+
+The [corpus manifest](../../fixtures/sample-corpus.json) pins source URLs,
+licenses, metadata and M4 development hashes. The
+[independent unpack evidence](../../fixtures/corpus-camera-evidence.json)
+records references for the 209 added sources, from the LibRaw-only path or,
+for the Galaxy S22 JPEG XL DNG, libjxl 0.11.2. The existing focused
+[evidence](../../fixtures/modern-camera-evidence.json) and
+[selection](../../fixtures/modern-camera-selection.json) remain valid for their
+130-source scope. Development hashes are regressions, not independent
+photographic colour ground truth. The complete frozen repeat takes 670.067
+seconds on the M4, including source hashing and two developments per source;
+this is a functional trial, not an isolated performance distribution.
+
+Sony A7 V Compressed HQ (8846) uses the staged upstream ARW6 backport and a
+format-only 1 GiB decoder working-space budget. The native decode/two-development
+trial takes 2.24 seconds and peaks at 1,233,829,888 bytes of process RSS (about
+1.15 GiB). This is a single trial, not a total-process memory bound. Phone linear
+RGB DNGs bypass demosaic; the S22 JPEG XL sample matches independent libjxl
+integer output exactly. Selected phones without licensed files, including all
+selected iPhones, remain acquisition gaps.
+
+Eleven background Metal editor journeys cover new phone/layout/correction
+families and both monochrome cameras, with exact reopen and source-preservation
+checks; the [corpus design](corpus-camera-support.md#native-editor-evidence)
+lists their scope.
 
 ### Popular recording modes
 
@@ -109,9 +126,8 @@ These stay refused, each for a concrete reason:
 | Files | Refusal | Reason |
 | --- | --- | --- |
 | Nikon High Efficiency and High Efficiency★ NEF (Z9 5147, Z8 6618, Zf 6886, Z6III 7815, Z50II 7763, Z5II 7743) | Unsupported compression, before unpack | JPEG XS payload that neither LibRaw 0.22.2 nor RawSpeed decodes; the owner waits for upstream LibRaw support. The message says to record Lossless compressed RAW |
-| Sony A7 V compressed ARW (8846) | LibRaw open fails | A new compressed format neither library decodes |
-| APS-C crop sizes on full-frame bodies (R6 4661 at 3584×2386, R6 Mark II 6404 at 3936×2612, A7R V 6239 at 6304×4180, A7C II 6869 and A7 IV 6936 at 4736×3132) | Unsupported recording mode | The stored frame is smaller than the catalogued sensor. A mode's frame may only pad the sensor, never crop it, and no crop mode has its own qualified geometry |
-| Small and medium RAW sizes | Unsupported recording mode | As for crop sizes: they differ from the catalogued sensor and are not qualified |
+| APS-C crop sizes on full-frame bodies (R6 4661 at 3584×2386, R6 Mark II 6404 at 3936×2612, A7R V 6239 at 6304×4180, A7C II 6869 and A7 IV 6936 at 4736×3132) | Unsupported recording mode | These particular shapes have no qualified catalog selector; exact sampled alternate frames can be admitted, but a listed camera does not admit every crop setting |
+| Small and medium RAW sizes | Unsupported recording mode | Unsampled recording sizes remain unqualified; the retained corpus includes observed reduced/converted DNG modes with their own exact frame selectors |
 
 The high-resolution profiles use the approved RAW-only resource contract in
 [the resource ledger](modern-camera-resource-ledger.md). For DNGs whose decoder
@@ -141,7 +157,7 @@ qualification remain separate work.
 
 ### RawSpeed-routed modes
 
-64 of the 67 catalog modes whose LibRaw decoder is in the [replaceable table](rawspeed-unpack.md#routed-modes) have `"unpacker": "rawspeed"`: RawSpeed fills their mosaic inside LibRaw's unpack, and `backend` reads `LibRaw 0.22.2 + RawSpeed c835b05a + librtprocess 9a858270`. A candidate is routed when it is exact on every local authentic sample of it and its adapter unpack is at least 1.3× faster through RawSpeed than through LibRaw. Every exact candidate passed the speed gate, so none was moved back to LibRaw: the lowest ratio is the Panasonic S5's 1.50×, and every other mode is 1.84× or more. The last column is each sample's median `RawSource::decode` time (identify, unpack and the mosaic copy, bytes in memory, nothing developed) with LibRaw forced and with RawSpeed, and their ratio, from 16 alternating observations per unpacker ([performance](../specs/performance.md#rawspeed-unpacking)). Each sample was decoded through both unpackers by the crate's `replaceable_catalog_modes_match_libraw_on_every_local_sample`: the mosaic, every metadata field but `backend`, and the as-shot and perturbed-white-balance developments are identical, and LibRaw's results equal what was recorded before routing: the evidence manifest's mosaic and development hashes, or for a sample marked (pin), the mosaic hash in `tests/real_files.rs` (the modes with no evidence entry). A sample marked (no record) has neither and is compared with LibRaw only. After routing, the qualifier reproduced all 130 evidence entries exactly.
+64 previously measured catalog modes have `"unpacker": "rawspeed"`: RawSpeed fills their mosaic inside LibRaw's unpack, and `backend` reads `LibRaw 0.22.2 + RawSpeed c835b05a + librtprocess 9a858270`. A candidate is routed when it is exact on every local authentic sample of it and its adapter unpack is at least 1.3× faster through RawSpeed than through LibRaw. Every exact candidate passed the speed gate, so none was moved back to LibRaw: the lowest ratio is the Panasonic S5's 1.50×, and every other mode is 1.84× or more. The last column is each sample's median `RawSource::decode` time (identify, unpack and the mosaic copy, bytes in memory, nothing developed) with LibRaw forced and with RawSpeed, and their ratio, from 16 alternating observations per unpacker ([performance](../specs/performance.md#rawspeed-unpacking)). Each sample was decoded through both unpackers by the crate's `replaceable_catalog_modes_match_libraw_on_every_local_sample`: the mosaic, every metadata field but `backend`, and the as-shot and perturbed-white-balance developments are identical, and LibRaw's results equal what was recorded before routing: the evidence manifest's mosaic and development hashes, or for a sample marked (pin), the mosaic hash in `tests/real_files.rs` (the modes with no evidence entry). A sample marked (no record) has neither and is compared with LibRaw only. The full corpus regression preserves those modes' frozen references. Newly added modes retain LibRaw unless separately shown exact and faster through RawSpeed; membership of the decoder table alone does not route them.
 
 | Mode | Decoder | Samples (raw.pixls.us id) | Routed | Unpack p50, LibRaw → RawSpeed |
 | --- | --- | --- | --- | --- |

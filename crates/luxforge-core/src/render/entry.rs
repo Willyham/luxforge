@@ -85,7 +85,7 @@ impl RenderPhase {
 #[derive(Clone, Debug)]
 pub struct RenderOptions {
     pub(crate) phase: RenderPhase,
-    /// Read once per row or chunk by every rasterizing pass and once per batch of spatial tiles. A
+    /// Read once per row or chunk by every rasterizing pass and once per spatial tile. A
     /// token already cancelled when a frame is asked for costs no frame.
     pub cancel: Cancel,
     /// How each spatial operation is cut into tiles: [`Tiling::Halo`] everywhere but in the tests
@@ -158,6 +158,12 @@ impl ProxyStage {
     /// the stack reads when it reads less than the whole stage.
     pub(crate) fn plan(&self) -> ProxyPlan {
         self.plan
+    }
+
+    /// The stack's compilation at the whole proxy stage, before any window cuts it, or why it
+    /// does not compile there.
+    pub(crate) fn compiled(&self) -> Result<&Compiled, Error> {
+        self.compiled.as_ref().map_err(Clone::clone)
     }
 }
 
@@ -415,6 +421,130 @@ impl<'a> Render<'a> {
             full_stage: stage,
             approximation: ProxyApproximation::default(),
         }))
+    }
+
+    /// The input of the layer that begins at `position` — a segment and an operation index of this
+    /// render's compilation — held over the window of its received stage that the output stage's
+    /// `rect` reads at full scale: the visible region and every margin the boundaries after it
+    /// need on the GPU, through the windowed planner ([`WindowPlan::of_gpu_rect`]). The segments
+    /// up to the layer's are cut as the CPU cuts them, and those after it are left whole, since the
+    /// GPU evaluates them.
+    ///
+    /// - A spatial operation the boundary is rendered through reads the same whole-stage
+    ///   estimates the exact region uses: from the store, or one reduction of its stage.
+    /// - One behind an earlier spatial operation reads the store alone, since no window can reduce
+    ///   its stage, and one the store does not hold is an error. The catalog owner checks the store
+    ///   before it asks for such a boundary (`gpu::preview`).
+    ///
+    /// A stack the planner cannot cut answers its reason as an error, as a region the boundary
+    /// cannot hold is no frame of it.
+    pub(crate) fn region_boundary(
+        &self,
+        rect: Region,
+        position: (usize, usize),
+        format: super::BoundaryFormat,
+    ) -> Result<super::BoundaryFrame, Error> {
+        let (width, height) = self.stage();
+        let Some(rect) = clipped(rect, StageSize { width, height }) else {
+            return Err(Error::validation(
+                "the GPU preview's region lies outside the output stage",
+            ));
+        };
+        let source_size = self.source.dimensions();
+        let windows = WindowPlan::of_gpu_rect(&self.compiled, source_size, rect, position.0)
+            .map_err(|reason| {
+                Error::validation(format!(
+                    "the GPU preview's region boundary: {}",
+                    reason.reason()
+                ))
+            })?;
+        let globals = |index: usize| -> Result<Vec<Option<Global>>, Error> {
+            if !self.compiled.spatial_before(index) {
+                return self.spatial_globals(index);
+            }
+            self.held_spatial_globals(index)?.ok_or_else(|| {
+                Error::validation(format!(
+                    "the GPU preview's region boundary: the estimate store does not hold the \
+                     global estimate of the spatial operation entering segment {index}, which \
+                     lies behind an earlier spatial layer that no window can reduce"
+                ))
+            })
+        };
+        self.options.cancel.check()?;
+        let source = match self.source {
+            RenderSource::Byte(image) => RegionSource::Byte(
+                if windows.source
+                    == Region::whole(Stage {
+                        width: image.width,
+                        height: image.height,
+                    })
+                {
+                    image.clone()
+                } else {
+                    image.window(windows.source, &self.options.cancel)?
+                },
+            ),
+            RenderSource::Linear { image, settings } => RegionSource::Linear {
+                image: image.window(windows.source)?,
+                settings,
+            },
+        };
+        let cut = windows.apply_through(
+            Compiled::clone(&self.compiled),
+            source_size,
+            position.0,
+            globals,
+        )?;
+        // A spatial operation before the boundary is cut on its tile grid, and the boundary keeps
+        // only what the region reads of its output.
+        Render::compiled(source.input(), cut, self.options.clone(), self.context)?.boundary_kept(
+            &self.compiled,
+            Stage {
+                width: source_size.0,
+                height: source_size.1,
+            },
+            windows.source,
+            position,
+            format,
+            None,
+            Some(windows.reads(position.0)),
+        )
+    }
+
+    /// [`Self::region_boundary`] over the whole output stage: the input of the layer that begins at
+    /// `position`, held over the window of its received stage that the whole output reads — what
+    /// a crop, a straightening and a warp read, with their taps — which a Fit frame drawn at the
+    /// exact stage starts from.
+    pub(crate) fn output_boundary(
+        &self,
+        position: (usize, usize),
+        format: super::BoundaryFormat,
+    ) -> Result<super::BoundaryFrame, Error> {
+        let (width, height) = self.stage();
+        self.region_boundary(
+            Region {
+                x0: 0,
+                y0: 0,
+                width,
+                height,
+            },
+            position,
+            format,
+        )
+    }
+
+    /// [`Self::region_boundary`] of layer `layer`, wherever it begins in this render's
+    /// compilation: the boundary a percentage zoom's GPU preview of a drag from that layer holds.
+    #[cfg(feature = "qualification")]
+    pub(crate) fn layer_region_boundary(
+        &self,
+        rect: Region,
+        layer: usize,
+        format: super::BoundaryFormat,
+    ) -> Result<super::BoundaryFrame, Error> {
+        let position = super::gpu::position(&self.compiled, layer)
+            .ok_or_else(|| Error::validation(format!("layer {layer} is past the stack")))?;
+        self.region_boundary(rect, position, format)
     }
 
     /// Plan the first moving viewport phase against a source stage roughly half the exact size on
@@ -848,6 +978,78 @@ impl<'a> Render<'a> {
     /// evaluation, so no frame is materialized for it.
     pub(crate) fn spatial_globals(&self, index: usize) -> Result<Vec<Option<Global>>, Error> {
         self.spatial_globals_with_cancel(index, &self.options.cancel)
+    }
+
+    /// [`Self::spatial_globals`] from the estimate store alone, under the key a frame of this render
+    /// asks with: `None` when the store does not hold every one, which this never reduces.
+    /// `O(units)`, and reads no pixel.
+    pub(crate) fn held_spatial_globals(
+        &self,
+        index: usize,
+    ) -> Result<Option<Vec<Option<Global>>>, Error> {
+        Ok(match self.source {
+            RenderSource::Byte(image) => self
+                .evaluation(Byte(image), SpatialMode::Point)?
+                .held_globals_of(index),
+            RenderSource::Linear { image, settings } => self
+                .evaluation(Linear::new(image, settings)?, SpatialMode::Point)?
+                .held_globals_of(index),
+        })
+    }
+
+    /// Qualification only: hold `globals` in this render's estimate store for the spatial
+    /// operation entering segment `index`, under the keys a frame of this render asks with.
+    #[cfg(feature = "qualification")]
+    pub(crate) fn hold_spatial_globals(
+        &self,
+        index: usize,
+        globals: &[Option<Global>],
+    ) -> Result<(), Error> {
+        match self.source {
+            RenderSource::Byte(image) => self
+                .evaluation(Byte(image), SpatialMode::Point)?
+                .hold_globals(index, globals),
+            RenderSource::Linear { image, settings } => self
+                .evaluation(Linear::new(image, settings)?, SpatialMode::Point)?
+                .hold_globals(index, globals),
+        }
+    }
+
+    /// Qualification only: the first spatial unit of this render's compilation that prepares a
+    /// global estimate.
+    #[cfg(feature = "qualification")]
+    pub(crate) fn estimating_unit(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::modules::SpatialUnit>> {
+        self.compiled
+            .segments
+            .iter()
+            .find_map(|segment| match &segment.entry {
+                Some(super::Entry::Spatial(entry)) => entry
+                    .operation
+                    .units()
+                    .iter()
+                    .find(|unit| unit.estimate_key().is_some())
+                    .cloned(),
+                _ => None,
+            })
+    }
+
+    /// Qualification only: the segment whose entry is layer `layer`'s spatial operation, when it
+    /// has one in this render's compilation.
+    #[cfg(feature = "qualification")]
+    pub(crate) fn spatial_segment_of(&self, layer: usize) -> Option<usize> {
+        let (segment, operation) = super::gpu::position(&self.compiled, layer)?;
+        let next = segment + 1;
+        (operation == self.compiled.segments[segment].operations.len()
+            && matches!(
+                self.compiled
+                    .segments
+                    .get(next)
+                    .and_then(|s| s.entry.as_ref()),
+                Some(super::Entry::Spatial(_))
+            ))
+        .then_some(next)
     }
 
     /// Resolve a proxy's exact-stage estimate under the proxy token, independently of the

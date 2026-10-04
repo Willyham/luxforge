@@ -1,14 +1,15 @@
 //! The byte domain: a JPEG's decoded 8-bit sRGB, its rows and its driver.
 
 use super::{
-    ColorRun, Compiled, PixelDomain, Raster, RenderContext, RowScratch, Segment, SegmentRows,
-    SpatialEntry, apply_units, bilinear, frame_mut, segment_pass, spatial, spatial::fill_planes,
-    spatial_entry, zeroed_frame,
+    ColorRun, Compiled, MaskedInput, PixelDomain, Raster, RenderContext, RowScratch, Segment,
+    SegmentRows, SpatialEntry, apply_units, bilinear, frame_mut, segment_pass, spatial,
+    spatial::fill_planes, spatial_entry, zeroed_frame,
 };
 use crate::{
     Cancel, Error, SnapshotId, SourceImage,
     colour::srgb::{
-        decode_pixel_in, decode_table, decode16_table, quantize_pixel, quantize16, quantizer,
+        Quantizer, Quantizer16, decode_pixel_in, decode_table, decode16_table, quantize_pixel,
+        quantizer, quantizer16,
     },
     modules::{ExactGeometry, Parallelism, Region, Stage},
 };
@@ -115,13 +116,42 @@ impl ByteFrame {
 
 fn encoded(rgb: [f32; 3], wide: bool) -> [u16; 3] {
     if wide {
-        rgb.map(quantize16)
+        quantizer16().pixel(rgb)
     } else {
         quantize_pixel(rgb).map(|v| u16::from(v) * 257)
     }
 }
+
+/// [`encoded`] through the quantizers a pass took once, rather than once a pixel: every
+/// dereference of a lazy static is an atomic load the compiler cannot merge.
+#[inline]
+fn encoded_in(quantizers: (&Quantizer, &Quantizer16), rgb: [f32; 3], wide: bool) -> [u16; 3] {
+    if wide {
+        quantizers.1.pixel(rgb)
+    } else {
+        quantizers.0.pixel(rgb).map(|v| u16::from(v) * 257)
+    }
+}
+
+/// The estimate prefix of a byte source of `width` × `height` stored at `orientation`: what its
+/// estimates are keyed by, and a proxy not yet built is named by
+/// (`render::gpu::EstimateSource::Proxy`).
+pub(crate) fn estimate_prefix(
+    prefix_hash: &str,
+    width: u32,
+    height: u32,
+    orientation: u8,
+) -> String {
+    format!("{prefix_hash}+byte:{width}x{height}:orientation:{orientation}")
+}
+
 fn decoded(rgb: [u16; 3]) -> [f32; 3] {
-    let table = decode16_table();
+    decoded_in(decode16_table(), rgb)
+}
+
+/// [`decoded`] through the 16-bit table a pass took once.
+#[inline]
+fn decoded_in(table: &[f32; 65536], rgb: [u16; 3]) -> [f32; 3] {
     rgb.map(|code| table[usize::from(code)])
 }
 
@@ -134,9 +164,11 @@ impl PixelDomain for Byte<'_> {
         &self.0.fingerprint
     }
     fn estimate_prefix<'p>(&self, prefix_hash: &'p str) -> Cow<'p, str> {
-        Cow::Owned(format!(
-            "{prefix_hash}+byte:{}x{}:orientation:{}",
-            self.0.width, self.0.height, self.0.orientation
+        Cow::Owned(estimate_prefix(
+            prefix_hash,
+            self.0.width,
+            self.0.height,
+            self.0.orientation,
         ))
     }
     fn source_pixel(&self, x: u32, y: u32) -> Result<Self::Pixel, Error> {
@@ -153,7 +185,7 @@ impl PixelDomain for Byte<'_> {
         y: u32,
         wide: bool,
     ) -> Result<Self::Pixel, Error> {
-        let mut snapshot = [[0.0; 3]; 1];
+        let mut snapshot = [MaskedInput::default(); 1];
         for run in runs {
             let mut rgb = [decoded(pixel)];
             apply_units(&run, y, x, &mut rgb, &mut snapshot)?;
@@ -170,13 +202,15 @@ impl PixelDomain for Byte<'_> {
         wide: bool,
     ) -> Result<(), Error> {
         let RowScratch { linear, snapshot } = scratch;
-        snapshot.resize(pixels.len().max(1), [0.0; 3]);
+        snapshot.resize(pixels.len().max(1), MaskedInput::default());
+        let (table, quantizers) = (decode16_table(), (quantizer(), quantizer16()));
         for run in runs {
             linear.clear();
-            linear.extend(pixels.iter().copied().map(decoded));
+            linear.extend(pixels.iter().map(|pixel| decoded_in(table, *pixel)));
             apply_units(&run, y, x0, linear, snapshot)?;
+            let wide = wide && !run.followed_by_replace();
             for (pixel, rgb) in pixels.iter_mut().zip(linear.iter()) {
-                *pixel = encoded(*rgb, wide && !run.followed_by_replace());
+                *pixel = encoded_in(quantizers, *rgb, wide);
             }
         }
         Ok(())
@@ -231,7 +265,7 @@ impl PixelDomain for Byte<'_> {
     }
     fn tile_output(
         region: Region,
-        values: Vec<f32>,
+        values: &[f32],
         tile: Region,
         parallelism: Parallelism,
         wide: bool,
@@ -246,9 +280,10 @@ impl PixelDomain for Byte<'_> {
         };
         if wide {
             let mut pixels = vec![0u16; tile.pixels() as usize * 3];
+            let quantizer = quantizer16();
             let row = |(r, pixels): (usize, &mut [u16])| {
                 for (column, p) in pixels.chunks_exact_mut(3).enumerate() {
-                    p.copy_from_slice(&encoded(fill(r, column), true));
+                    p.copy_from_slice(&quantizer.pixel(fill(r, column)));
                 }
             };
             match parallelism {
@@ -387,7 +422,7 @@ impl SegmentRows for ByteRows<'_> {
         run: &ColorRun<'_>,
         y0: u32,
         rows: std::ops::Range<usize>,
-        snapshot: &mut [[f32; 3]],
+        snapshot: &mut [MaskedInput],
     ) -> Result<(), Error> {
         let row_bytes = self.width * 4;
         colour_byte_rows(
@@ -411,7 +446,7 @@ impl SegmentRows for ByteRows<'_> {
 /// every row handed to the run's units at its own coordinates, and quantized back in place, alpha
 /// untouched. It is the byte domain's one row arithmetic, which a rendered chunk
 /// ([`ByteRows::run`]) and a pulled row ([`Byte::colour_row`]) share; `snapshot` is a masked
-/// operation's scratch for its own input.
+/// operation's scratch for its own input and its coverage.
 fn colour_byte_rows(
     run: &ColorRun<'_>,
     bytes: &mut [u8],
@@ -419,7 +454,7 @@ fn colour_byte_rows(
     y0: u32,
     x0: u32,
     linear: &mut Vec<[f32; 3]>,
-    snapshot: &mut [[f32; 3]],
+    snapshot: &mut [MaskedInput],
 ) -> Result<(), Error> {
     // The tables are taken once for the rows, not once per pixel.
     let (table, quantizer) = (decode_table(), quantizer());
@@ -555,7 +590,7 @@ pub(super) fn frames(
                     context.scratch(),
                 )?,
                 ByteFrame::Wide(pixels) => segment_pass(
-                    &FloatRows::<u16>::new(segment, None),
+                    &FloatRows::<Wide>::new(segment, None),
                     segment,
                     super::raster::frame_mut16(pixels),
                     band,
@@ -576,7 +611,7 @@ pub(super) fn frames(
                     context.scratch(),
                 )?,
                 (_, ByteFrame::Narrow(output)) => segment_pass(
-                    &FloatRows::<u8>::new(segment, Some((&frame, stage))),
+                    &FloatRows::<Narrow>::new(segment, Some((&frame, stage))),
                     segment,
                     frame_mut(output),
                     band,
@@ -584,7 +619,7 @@ pub(super) fn frames(
                     context.scratch(),
                 )?,
                 (_, ByteFrame::Wide(output)) => segment_pass(
-                    &FloatRows::<u16>::new(segment, Some((&frame, stage))),
+                    &FloatRows::<Wide>::new(segment, Some((&frame, stage))),
                     segment,
                     super::raster::frame_mut16(output),
                     band,
@@ -600,28 +635,75 @@ pub(super) fn frames(
     Ok((frame, stage))
 }
 
-trait SampleStore: Copy + Send + Sync {
+/// How a float row pass stores its pixels: the narrow 8-bit frame, the wide RGB16 frame a spatial
+/// chain reads, or the half floats a GPU preview's boundary holds. Each converts a whole chunk, so
+/// it takes its table once for the chunk.
+trait SampleStore: Send + Sync {
+    type Sample: Copy + Send + Sync;
     const SAMPLES: usize;
-    fn load(pixel: &[Self]) -> [f32; 3];
-    fn store(pixel: &mut [Self], rgb: [f32; 3]);
+    /// Every pixel of `samples`, appended to `rgb`.
+    fn load(samples: &[Self::Sample], rgb: &mut Vec<[f32; 3]>);
+    /// Every pixel of `rgb`, written over `samples`.
+    fn store(samples: &mut [Self::Sample], rgb: &[[f32; 3]]);
 }
-impl SampleStore for u8 {
+/// Opaque 8-bit sRGB, four bytes a pixel.
+struct Narrow;
+impl SampleStore for Narrow {
+    type Sample = u8;
     const SAMPLES: usize = 4;
-    fn load(p: &[Self]) -> [f32; 3] {
-        decode_pixel_in(decode_table(), [p[0], p[1], p[2]])
+    fn load(samples: &[u8], rgb: &mut Vec<[f32; 3]>) {
+        let table = decode_table();
+        rgb.extend(
+            samples
+                .chunks_exact(4)
+                .map(|p| decode_pixel_in(table, [p[0], p[1], p[2]])),
+        );
     }
-    fn store(p: &mut [Self], rgb: [f32; 3]) {
-        p[..3].copy_from_slice(&quantize_pixel(rgb));
-        p[3] = 255;
+    fn store(samples: &mut [u8], rgb: &[[f32; 3]]) {
+        let quantizer = quantizer();
+        for (p, rgb) in samples.chunks_exact_mut(4).zip(rgb) {
+            p[..3].copy_from_slice(&quantizer.pixel(*rgb));
+            p[3] = 255;
+        }
     }
 }
-impl SampleStore for u16 {
+/// Encoded RGB16, three samples a pixel.
+struct Wide;
+impl SampleStore for Wide {
+    type Sample = u16;
     const SAMPLES: usize = 3;
-    fn load(p: &[Self]) -> [f32; 3] {
-        decoded([p[0], p[1], p[2]])
+    fn load(samples: &[u16], rgb: &mut Vec<[f32; 3]>) {
+        let table = decode16_table();
+        rgb.extend(
+            samples
+                .chunks_exact(3)
+                .map(|p| decoded_in(table, [p[0], p[1], p[2]])),
+        );
     }
-    fn store(p: &mut [Self], rgb: [f32; 3]) {
-        p.copy_from_slice(&encoded(rgb, true));
+    fn store(samples: &mut [u16], rgb: &[[f32; 3]]) {
+        let quantizer = quantizer16();
+        for (p, rgb) in samples.chunks_exact_mut(3).zip(rgb) {
+            p.copy_from_slice(&quantizer.pixel(*rgb));
+        }
+    }
+}
+/// Linear light as a JPEG's GPU preview boundary holds it ([`super::boundary`]): four
+/// little-endian half floats a pixel, eight bytes, with the value unclamped and opaque alpha.
+pub(super) struct Half;
+impl SampleStore for Half {
+    type Sample = u8;
+    const SAMPLES: usize = super::boundary::BoundaryFormat::Half.texel_bytes();
+    fn load(samples: &[u8], rgb: &mut Vec<[f32; 3]>) {
+        rgb.extend(
+            samples
+                .chunks_exact(Self::SAMPLES)
+                .map(|p| super::boundary::read_texel(super::boundary::BoundaryFormat::Half, p)),
+        );
+    }
+    fn store(samples: &mut [u8], rgb: &[[f32; 3]]) {
+        for (p, rgb) in samples.chunks_exact_mut(Self::SAMPLES).zip(rgb) {
+            super::boundary::write_texel(super::boundary::BoundaryFormat::Half, p, *rgb);
+        }
     }
 }
 struct FloatRows<'a, S> {
@@ -639,7 +721,7 @@ impl<'a, S> FloatRows<'a, S> {
     }
 }
 impl<S: SampleStore> SegmentRows for FloatRows<'_, S> {
-    type Sample = S;
+    type Sample = S::Sample;
     type Scratch = Vec<[f32; 3]>;
     fn samples_per_pixel(&self) -> usize {
         S::SAMPLES
@@ -647,27 +729,33 @@ impl<S: SampleStore> SegmentRows for FloatRows<'_, S> {
     fn scratch_bytes(&self, width: usize, rows: usize, _: usize) -> usize {
         width * rows * 12
     }
-    fn load(&self, scratch: &mut Self::Scratch, y0: u32, chunk: &mut [S]) -> Result<(), Error> {
+    fn load(
+        &self,
+        scratch: &mut Self::Scratch,
+        y0: u32,
+        chunk: &mut [S::Sample],
+    ) -> Result<(), Error> {
         scratch.clear();
         match self.input {
             Some((input, stage)) => {
                 let width = self.segment.width as usize;
+                let table = decode16_table();
                 scratch.extend((0..chunk.len() / S::SAMPLES).map(|offset| {
                     let (x, y) = self
                         .segment
                         .geometry
                         .unmap((offset % width) as u32, y0 + (offset / width) as u32);
-                    decoded(input.pixel(stage, x, y))
+                    decoded_in(table, input.pixel(stage, x, y))
                 }));
             }
-            None => scratch.extend(chunk.chunks_exact(S::SAMPLES).map(S::load)),
+            None => S::load(chunk, scratch),
         }
         Ok(())
     }
     fn replace(
         &self,
         scratch: &mut Self::Scratch,
-        _: &mut [S],
+        _: &mut [S::Sample],
         offset: usize,
         rgb: [u8; 3],
     ) -> Result<(), Error> {
@@ -677,30 +765,57 @@ impl<S: SampleStore> SegmentRows for FloatRows<'_, S> {
     fn run(
         &self,
         scratch: &mut Self::Scratch,
-        _: &mut [S],
+        _: &mut [S::Sample],
         run: &ColorRun<'_>,
         y0: u32,
         rows: std::ops::Range<usize>,
-        snapshot: &mut [[f32; 3]],
+        snapshot: &mut [MaskedInput],
     ) -> Result<(), Error> {
         let width = self.segment.width as usize;
+        let (table, quantizer) = (decode_table(), quantizer());
         for row in rows {
             let pixels = &mut scratch[row * width..(row + 1) * width];
             apply_units(run, y0 + row as u32, 0, pixels, snapshot)?;
             if run.followed_by_replace() {
                 for pixel in pixels {
-                    *pixel = decode_pixel_in(decode_table(), quantize_pixel(*pixel));
+                    *pixel = decode_pixel_in(table, quantizer.pixel(*pixel));
                 }
             }
         }
         Ok(())
     }
-    fn store(&self, scratch: &mut Self::Scratch, chunk: &mut [S]) -> Result<(), Error> {
-        for (pixel, rgb) in chunk.chunks_exact_mut(S::SAMPLES).zip(scratch) {
-            S::store(pixel, *rgb);
-        }
+    fn store(&self, scratch: &mut Self::Scratch, chunk: &mut [S::Sample]) -> Result<(), Error> {
+        S::store(chunk, scratch);
         Ok(())
     }
+}
+
+/// One segment's pass into the GPU preview's boundary ([`super::boundary`]): `segment`'s rows read
+/// from `input`, the `stage` frame entering it, through its exact geometry and colour runs, and
+/// stored as half floats without quantizing, so a boundary inside a colour run holds the value
+/// the run hands the next layer.
+pub(super) fn boundary_pass(
+    segment: &Segment,
+    input: &ByteFrame,
+    stage: Stage,
+    cancel: &Cancel,
+    context: &RenderContext,
+) -> Result<Vec<u8>, Error> {
+    let len = super::boundary::frame_len(
+        segment.width,
+        segment.height,
+        super::boundary::BoundaryFormat::Half,
+    )?;
+    let mut texels = vec![0u8; len];
+    segment_pass(
+        &FloatRows::<Half>::new(segment, Some((input, stage))),
+        segment,
+        &mut texels,
+        0..segment.height as usize,
+        cancel,
+        context.scratch(),
+    )?;
+    Ok(texels)
 }
 
 /// The rows of segment `index`'s frame its colour runs reach: those the boundary after it reads
@@ -740,9 +855,7 @@ pub(super) fn spatial_frame(
 ) -> Result<ByteFrame, Error> {
     let table = decode16_table();
     let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
-        Ok(input
-            .pixel(stage, x, y)
-            .map(|code| table[usize::from(code)]))
+        Ok(decoded_in(table, input.pixel(stage, x, y)))
     };
     spatial_entry(
         domain,
@@ -809,7 +922,10 @@ mod tests {
             ),
         ];
         for (segments, expected) in cases {
-            let compiled = Compiled { segments };
+            let compiled = Compiled {
+                segments,
+                layers: Box::new([]),
+            };
             let actual: Vec<_> = byte_frame_widths(&compiled)
                 .into_iter()
                 .map(|w| (w.input, w.output))
@@ -823,9 +939,12 @@ mod tests {
             output_height: 10,
         }));
         assert!(
-            byte_frame_widths(&Compiled { segments })
-                .iter()
-                .all(|w| !w.input && !w.output)
+            byte_frame_widths(&Compiled {
+                segments,
+                layers: Box::new([])
+            })
+            .iter()
+            .all(|w| !w.input && !w.output)
         );
     }
     #[test]

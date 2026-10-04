@@ -1,8 +1,10 @@
 //! Rendering: a recipe compiled into segments and evaluated over one source, by concept.
 //!
 //! - [`entry`]: the one way in, [`render`], and the [`Render`] it returns.
+//! - [`boundary`]: a GPU preview's held input boundary, rendered once per draft.
 //! - [`compiled`]: the compiled IR, segments separated by stage boundaries, and [`Entry`], the
 //!   one dispatch over the boundary kinds.
+//! - [`gpu`]: the GPU programs modules own and the plan a gesture's preview is drawn from.
 //! - [`geometry`]: exact geometry, a resample's mapping and read rectangle, and the byte
 //!   domain's bilinear pass.
 //! - [`colour_runs`]: colour runs and their masked blend.
@@ -13,12 +15,14 @@
 //! - [`mod@locate`]: the public locate and transform types.
 //! - [`context`] and [`parallel`]: the render context's budgets and the one parallel gate.
 
+mod boundary;
 mod byte;
 mod colour_runs;
 mod compiled;
 mod context;
 mod entry;
 mod geometry;
+pub(crate) mod gpu;
 mod input_grid;
 pub(crate) mod linear;
 mod locate;
@@ -26,12 +30,15 @@ pub(crate) mod map;
 pub(crate) mod parallel;
 mod pipeline;
 mod raster;
+pub(crate) mod reduced;
 mod restoration;
 pub(crate) mod spatial;
 #[cfg(test)]
 pub(crate) mod testing;
 mod window;
 
+#[cfg(test)]
+mod boundary_tests;
 #[cfg(test)]
 mod cancellation_tests;
 #[cfg(test)]
@@ -49,8 +56,9 @@ pub(crate) mod tests;
 #[cfg(test)]
 mod warp_tests;
 
+pub use boundary::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 use byte::{Byte, check_source, rasterize};
-use colour_runs::{ColorRun, apply_units, color_chunk_rows, color_runs};
+use colour_runs::{ColorRun, MaskedInput, apply_units, color_chunk_rows, color_runs};
 use compiled::ResampleEntry;
 use compiled::mapped_replacements;
 pub(crate) use compiled::{Compiled, Entry, Segment};

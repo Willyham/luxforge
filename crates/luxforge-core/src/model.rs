@@ -219,7 +219,7 @@ pub(crate) struct PixelReplace {
     pub rgb: [u8; 3],
 }
 
-/// The action vocabulary of the transform module: what a person or a client asks for. The stack
+/// The action vocabulary of the crop module: what a person or a client asks for. The stack
 /// stores the resulting [`Orientation`], not the gestures that reached it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

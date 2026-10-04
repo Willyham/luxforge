@@ -75,12 +75,20 @@ const MUTATIONS: [&str; 9] = [
 ];
 
 /// The edit launch's plan over a source whose neutral point is `[x, y]`.
-fn journey([x, y]: [u32; 2]) -> Plan {
+fn journey([x, y]: [u32; 2], monochrome: bool, [width, height]: [u32; 2]) -> Plan {
+    let crop_aspect = if height * 3 == width * 4 {
+        "1:1"
+    } else {
+        "4:3"
+    };
     // Each call commits one entry with its own label.
     let call = |name: &str, method: &str, params: Value, label: &str| {
-        Step::new(name, script::Step::call(method, params))
-            .commits(1)
-            .label(label)
+        let step = Step::new(name, script::Step::call(method, params));
+        if monochrome && [RED_GAIN, BLUE_GAIN, TEMPERATURE, TINT, NEUTRAL].contains(&name) {
+            step.commits(0).refused("validation")
+        } else {
+            step.commits(1).label(label)
+        }
     };
     Plan::new(vec![
         // The opened entry is the Original, or the import's first-open Lens entry; verify checks which.
@@ -125,8 +133,8 @@ fn journey([x, y]: [u32; 2]) -> Plan {
         call(
             CROP,
             "edit.crop-fit",
-            json!({"aspect":"4:3","angle":0.0}),
-            "Crop 4:3",
+            json!({"aspect":crop_aspect,"angle":0.0}),
+            &format!("Crop {crop_aspect}"),
         ),
         // Undo is one more revision, back at the rotation's entry.
         Step::new(UNDO, script::Step::api("history.undo"))
@@ -150,7 +158,7 @@ const LISTED_POINT: [u32; 2] = [123, 456];
 
 /// The edit launch's plan as the table lists it.
 pub fn edit_plan(_: &[PathBuf]) -> Plan {
-    journey(LISTED_POINT)
+    journey(LISTED_POINT, false, [6000, 4000])
 }
 
 /// The reopen launch: the open alone, at the undo's committed entry.
@@ -163,7 +171,14 @@ pub fn reopen_plan(_: &[PathBuf]) -> Plan {
 pub fn run(run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> Result {
     smoke::launch_planned(run, scenario, sources, |run, sources| {
         let (listed, _) = listed(run)?;
-        Ok(vec![journey(listed.neutral_point), reopen_plan(sources)])
+        Ok(vec![
+            journey(
+                listed.neutral_point,
+                listed.mode.is_monochrome(),
+                listed.source_dimensions,
+            ),
+            reopen_plan(sources),
+        ])
     })
 }
 
@@ -225,7 +240,10 @@ fn catalog(path: &Path, entry: &EditorSource, source: &Path) -> Result<Catalogue
     )?;
     let listed = service.state(&assets[0])?;
     let asset = &listed.asset;
-    ensure(asset.locator == source, "RAW catalog locator changed")?;
+    ensure(
+        asset.locator.canonicalize()? == source.canonicalize()?,
+        "RAW catalog locator changed",
+    )?;
     ensure(
         [asset.width, asset.height] == entry.source_dimensions,
         "RAW catalog source dimensions differ from manifest",
@@ -272,8 +290,9 @@ fn catalog(path: &Path, entry: &EditorSource, source: &Path) -> Result<Catalogue
                     .applied
                     .iter()
                     .all(|opcode| opcode.flags == 0 && is_sha256(&opcode.payload_sha256))
-                    && is_sha256(&calibration.color_matrix1_sha256)
-                    && is_sha256(&calibration.color_matrix2_sha256),
+                    && (entry.mode.is_monochrome()
+                        || (is_sha256(&calibration.color_matrix1_sha256)
+                            && is_sha256(&calibration.color_matrix2_sha256))),
                 "DNG correction or calibration provenance is incomplete",
             )?;
         }
@@ -333,13 +352,24 @@ fn displayed_tolerance(action: &str, parameter: &str) -> Result<f64> {
 
 /// The frame is a ready render of the entry it displays, and Basic's Exposure, Temperature and Tint
 /// show the displayed recipe: exposure from Basic's global layer, the rest from the RAW layer.
-fn ready_raw_frame(frame: &Frame) -> Result {
+fn ready_raw_frame(frame: &Frame, refused: bool) -> Result {
     let state = frame.state();
+    // A refused mutation advances the request generation but preserves the previous photo.
+    // Its unchanged pixels/entry are checked below; there is no replacement render to await.
+    let expected_refusal = refused
+        && state["phase"] == "error"
+        && state["error_code"] == "validation"
+        && state["displayed_generation"].as_u64().is_some_and(|shown| {
+            state["requested_generation"]
+                .as_u64()
+                .is_some_and(|requested| shown < requested)
+        });
     ensure(
-        state["phase"] == "ready"
-            && state["displayed_generation"] == state["requested_generation"]
+        (expected_refusal
+            || (state["phase"] == "ready"
+                && state["displayed_generation"] == state["requested_generation"]))
             && state["render_error"].is_null()
-            && state["error_code"].is_null(),
+            && (state["error_code"].is_null() || (refused && state["error_code"] == "validation")),
         "not a ready rendered RAW image",
     )?;
     displayed_entry(frame)?;
@@ -411,7 +441,7 @@ fn moved(before: &Frame, after: &Frame) -> Result<f64> {
 /// Each mutation's request-to-display time, and each other step's request-to-capture time, from
 /// the edit launch's log: one functional run's observations. Every mutation must present a render
 /// before the next step starts.
-fn step_times(edit: &Checked) -> Result<Vec<Value>> {
+fn step_times(edit: &Checked, monochrome: bool) -> Result<Vec<Value>> {
     let starts: Vec<f64> = edit
         .events
         .iter()
@@ -446,7 +476,10 @@ fn step_times(edit: &Checked) -> Result<Vec<Value>> {
             .ok_or_else(|| format!("Step {name:?} has no correlated frame capture event"))?;
         let displayed = first("preview_displayed").or_else(|| first("render_ready"));
         ensure(
-            !MUTATIONS.contains(&name.as_str()) || displayed.is_some(),
+            !MUTATIONS.contains(&name.as_str())
+                || (monochrome
+                    && [RED_GAIN, BLUE_GAIN, TEMPERATURE, TINT, NEUTRAL].contains(&name.as_str()))
+                || displayed.is_some(),
             format!("Step {name:?} has no correlated display event"),
         )?;
         times.push(json!({
@@ -478,14 +511,40 @@ fn open_times(launch: &Checked) -> Value {
 /// The scenario's own checks over both launches once their plans have held.
 pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let (entry, source) = listed(run)?;
+    let monochrome = entry.mode.is_monochrome();
     let [edit, reopen] = launches else {
         return Err(format!("Expected two launches, found {}", launches.len()).into());
     };
     for launch in launches {
         for (name, frame) in launch.names().iter().zip(&launch.frames) {
-            ready_raw_frame(frame).map_err(|error| {
+            let refused = monochrome
+                && [RED_GAIN, BLUE_GAIN, TEMPERATURE, TINT, NEUTRAL].contains(&name.as_str());
+            ready_raw_frame(frame, refused).map_err(|error| {
                 format!("{}: step {name:?}: {error}", launch.evidence.display())
             })?;
+        }
+    }
+    if monochrome {
+        for launch in launches {
+            for frame in &launch.frames {
+                let rgb = frame.window_rgb()?;
+                ensure(
+                    (rgb[0] - rgb[1]).abs() <= SAME && (rgb[1] - rgb[2]).abs() <= SAME,
+                    "Monochrome rendered photograph is not grayscale",
+                )?;
+                let groups = frame.state()["section_controls"]["luxforge.basic"]
+                    .as_array()
+                    .ok_or("Basic controls missing")?;
+                ensure(
+                    groups.iter().any(|group| {
+                        group["kind"] == "group"
+                            && group["label"] == "White balance"
+                            && group["enabled"] == false
+                            && group["unavailable"] == "Monochrome original"
+                    }),
+                    "Monochrome white-balance group is not disabled",
+                )?;
+            }
         }
     }
     let Catalogued {
@@ -501,8 +560,8 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     // A RAW whose detected lens profile applies opens on its first-open entry, one revision on.
     let imported = u64::from(first_open.is_some());
     ensure(
-        revision == 9 + imported,
-        "RAW history did not retain nine mutations after its import",
+        revision == (if monochrome { 4 } else { 9 }) + imported,
+        "RAW history did not retain exactly the accepted mutations after import",
     )?;
 
     let opened = edit.at(OPENED)?;
@@ -581,7 +640,11 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             &format!("The {what} edit's move of the photograph"),
             moved(edit.at(before)?, after)?,
             0.0,
-            Tolerance::Above(CHANGED),
+            if monochrome && what != "exposure" {
+                Tolerance::Within(SAME)
+            } else {
+                Tolerance::Above(CHANGED)
+            },
         )?;
     }
     for (what, before, after) in [
@@ -616,7 +679,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
                 "note":"One functional run's times, not a distribution.",
                 "edit_open_ms":open_times(edit),
                 "reopen_open_ms":open_times(reopen),
-                "steps":step_times(edit)?,
+                "steps":step_times(edit,monochrome)?,
             },
             "scope": "The largest move of a mean channel of the central window of the photograph the editor records drawing, read back from the renderer",
         }),
@@ -630,7 +693,7 @@ mod tests {
     /// The journey's script is its steps in order, over the source's own neutral point.
     #[test]
     fn the_journey_picks_the_sources_own_neutral_point() {
-        let plan = journey([1609, 2419]);
+        let plan = journey([1609, 2419], false, [6000, 4000]);
         assert!(plan.validate().is_ok());
         assert_eq!(plan.len(), 1 + MUTATIONS.len() + 6);
         let script = plan.script();

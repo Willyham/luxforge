@@ -13,10 +13,10 @@
 //! every rule can be tested with made-up samples.
 use crate::state::{
     Inputs,
-    long_work::{Rates, WorkInfo, followed, work_info, work_label},
+    long_work::{LongWorkState, Rates, WorkInfo, followed, work_info, work_label},
 };
 use luxforge_core::{
-    ActivitySnapshot,
+    ActivitySnapshot, JobId,
     activity::{ActiveActivity, Outcome, RecentActivity},
     resources::{MemoryKind, ResourceReport},
 };
@@ -115,6 +115,11 @@ pub(crate) struct MetricRow {
 /// One job row as the section shows it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct JobRow {
+    /// The job a running row's Cancel stops, when the row has one: none for a finished job, for
+    /// work without a job and for catalog work, whose work row has its own Cancel.
+    pub(crate) job_id: Option<luxforge_core::JobId>,
+    /// A cancellation of `job_id` is in flight, so its Cancel is disabled.
+    pub(crate) cancelling: bool,
     /// What the work is doing; for catalog work, with the place or file it works on
     /// (`Indexing ~/Pictures`).
     pub(crate) label: String,
@@ -188,9 +193,23 @@ impl PerformanceModel {
     /// expanded, a read of the board. Every other message — most of them, a drag sends dozens a
     /// second — leaves the model and its sparklines' version exactly as they were.
     pub(crate) fn refresh(&mut self, inputs: &Inputs<'_>) {
-        let expanded = inputs.performance_expanded;
-        let history = inputs.performance;
-        let long_work = inputs.long_work;
+        self.refresh_sample(
+            inputs.performance_expanded,
+            inputs.performance,
+            inputs.long_work,
+            inputs.select.home.as_deref(),
+        );
+    }
+
+    /// [`Self::refresh`] from the parts it reads, as an idle sample's scoped refresh calls it
+    /// without deriving the rest of the screen.
+    pub(crate) fn refresh_sample(
+        &mut self,
+        expanded: bool,
+        history: &PerformanceHistory,
+        long_work: &LongWorkState,
+        home: Option<&Path>,
+    ) {
         if self.expanded == expanded
             && self.version == history.version()
             && (!expanded || self.board == long_work.version)
@@ -200,7 +219,7 @@ impl PerformanceModel {
         let work = Work {
             board: long_work.board.as_ref(),
             rates: &long_work.rates,
-            home: inputs.select.home.as_deref(),
+            home,
         };
         *self = derive(expanded, history, work);
         self.board = long_work.version;
@@ -589,6 +608,8 @@ fn running(job: &ActiveActivity, work: Work<'_>) -> JobRow {
     let entry = &job.entry;
     if let Some(info) = work_info(job, work.rates) {
         return JobRow {
+            job_id: None,
+            cancelling: false,
             label: work_label(entry, work.home),
             trailing: format_elapsed(job.elapsed_ms),
             detail: None,
@@ -609,6 +630,11 @@ fn running(job: &ActiveActivity, work: Work<'_>) -> JobRow {
         .chain(entry.phase.iter().map(|phase| format!("{phase} phase")))
         .collect();
     JobRow {
+        job_id: entry
+            .job_id
+            .as_ref()
+            .and_then(|id| JobId::parse(id.clone()).ok()),
+        cancelling: false,
         label: entry.label.to_string(),
         trailing: format_elapsed(job.elapsed_ms),
         detail: (!parts.is_empty()).then(|| parts.join(" \u{b7} ")),
@@ -638,6 +664,8 @@ fn finished(job: &RecentActivity, work: Work<'_>) -> JobRow {
         job.entry.label.to_string()
     };
     JobRow {
+        job_id: None,
+        cancelling: false,
         label,
         trailing: format_elapsed(job.duration_ms),
         detail: Some(format!("{how} {} s ago", ago.max(1))),
@@ -700,6 +728,7 @@ mod tests {
             budgets: BudgetsReport {
                 colour_scratch: budget,
                 spatial: budget,
+                reduced_planes: None,
             },
         }
     }
@@ -1112,7 +1141,7 @@ mod tests {
                     detail: Some("DSC_0412.NEF".into()),
                     progress: None,
                     running: true,
-                    work: None,
+                    ..JobRow::default()
                 },
                 JobRow {
                     label: "Rendering preview".into(),
@@ -1120,7 +1149,7 @@ mod tests {
                     detail: Some("exact phase".into()),
                     progress: None,
                     running: true,
-                    work: None,
+                    ..JobRow::default()
                 },
                 JobRow {
                     label: "Preparing original".into(),
@@ -1128,7 +1157,7 @@ mod tests {
                     detail: Some("a.jpg \u{b7} decode phase".into()),
                     progress: None,
                     running: true,
-                    work: None,
+                    ..JobRow::default()
                 },
             ],
             "the finished job is not shown while long work runs"
@@ -1203,7 +1232,7 @@ mod tests {
                 detail: Some("Finished 4 s ago".into()),
                 progress: None,
                 running: false,
-                work: None,
+                ..JobRow::default()
             }]
         );
         for (outcome, word) in [

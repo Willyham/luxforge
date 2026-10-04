@@ -98,6 +98,7 @@ impl Message {
                 message,
                 V::TogglePanel(_)
                     | V::ToggleThirds
+                    | V::ToggleGpuPreview
                     | V::SetMode(_)
                     | V::Gallery(_)
                     | V::OpenMenu(_)
@@ -119,7 +120,11 @@ impl Message {
                 matches!(message, overlay::OverlayMessage::ToggleClipping(_))
             }
             Self::Performance(message) => {
-                matches!(message, performance::PerformanceMessage::Toggle)
+                matches!(
+                    message,
+                    performance::PerformanceMessage::Toggle
+                        | performance::PerformanceMessage::Cancel(_)
+                )
             }
             Self::Preset(message) => matches!(
                 message,

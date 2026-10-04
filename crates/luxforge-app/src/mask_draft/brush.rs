@@ -7,7 +7,7 @@
 use super::editor::{DISTANCE_DECIMALS, DrawnShape, Pen, ShapeEditor, WHOLE, compact};
 use luxforge_core::mask::commands::GeometryOp;
 use serde_json::{Map, Value, json};
-use std::cell::RefCell;
+use std::{cell::RefCell, sync::Arc};
 
 /// The kind token this editor draws: the one kind whose geometry is painted, from the host's own
 /// kind table.
@@ -123,8 +123,8 @@ impl Brush {
 /// bound. It is **decimated only when it is posted**, at the host's own tolerance, which is
 /// idempotent — so what the desktop sends and what an agent would send arrive at the same stored
 /// stroke. Coverage is drawn by the production evaluator; the canvas draws only the cursor. One
-/// decimation is cached per capture/brush size, so fields and evidence summaries never repeat that
-/// work for the same input.
+/// decimation is cached per held path and brush size, so fields and evidence summaries never repeat
+/// that work for the same input, and a position that snaps into the cell before it keeps it.
 #[derive(Clone, Debug)]
 pub(crate) struct BrushStroke {
     /// The brush this stroke was begun with. `erase` is frozen for the stroke's whole life, which is
@@ -156,7 +156,36 @@ impl PartialEq for BrushStroke {
 #[derive(Clone, Debug, PartialEq)]
 struct CachedPoints {
     size: u64,
-    points: Vec<[f64; 2]>,
+    /// Shared, so building the fields reads the path without copying it.
+    points: Arc<[[f64; 2]]>,
+}
+
+/// How many times this thread decimated a captured path and serialized a posted one, for the tests
+/// that hold a stroke's moves to the sends they make.
+#[cfg(test)]
+pub(crate) mod counts {
+    use std::cell::Cell;
+
+    thread_local! {
+        static DECIMATED: Cell<u64> = const { Cell::new(0) };
+        static SERIALIZED: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(super) fn decimated() {
+        DECIMATED.with(|count| count.set(count.get() + 1));
+    }
+
+    pub(super) fn serialized() {
+        SERIALIZED.with(|count| count.set(count.get() + 1));
+    }
+
+    /// The decimations and the posted paths serialized on this thread since it last asked.
+    pub(crate) fn take() -> (u64, u64) {
+        (
+            DECIMATED.with(|count| count.replace(0)),
+            SERIALIZED.with(|count| count.replace(0)),
+        )
+    }
 }
 
 impl BrushStroke {
@@ -193,10 +222,15 @@ impl BrushStroke {
     }
 
     fn push(&mut self, point: [f64; 2]) {
+        let held = self.grid.held();
         self.grid.push(point);
         self.last = Some(point);
         self.captured = self.captured.saturating_add(1);
-        *self.points.get_mut() = None;
+        // A position that snapped into the cell before it is not held and changes no posted path;
+        // a new cell or a refusal does.
+        if self.grid.held() != held || self.grid.capture_error().is_some() {
+            *self.points.get_mut() = None;
+        }
     }
 
     /// The pointer came up. The path it drew stays; committing it is a separate decision.
@@ -216,8 +250,8 @@ impl BrushStroke {
     /// The path this stroke posts: the host's own stored stroke of the captured path at this
     /// stroke's size ([`luxforge_core::path::PathCapture::stroke`]). Deterministic, so the same
     /// captured path at the same size is always the same stored stroke and therefore the same
-    /// content address.
-    pub(crate) fn points(&self) -> Result<Vec<[f64; 2]>, luxforge_core::Error> {
+    /// content address. Shared with the cache, so reading it copies nothing.
+    pub(crate) fn posted(&self) -> Result<Arc<[[f64; 2]]>, luxforge_core::Error> {
         self.prepare_points()?;
         Ok(self
             .points
@@ -228,17 +262,24 @@ impl BrushStroke {
             .clone())
     }
 
-    /// Reduce only after a capture/size change. A request clones its at-most-1024 posted
-    /// positions once.
+    /// [`Self::posted`] as a list of its own.
+    #[cfg(test)]
+    pub(crate) fn points(&self) -> Result<Vec<[f64; 2]>, luxforge_core::Error> {
+        self.posted().map(|points| points.to_vec())
+    }
+
+    /// Reduce only after a change of the held path or the size.
     fn prepare_points(&self) -> Result<(), luxforge_core::Error> {
         let mut cached = self.points.borrow_mut();
         if cached
             .as_ref()
             .is_none_or(|points| points.size != self.brush.size.to_bits())
         {
+            #[cfg(test)]
+            counts::decimated();
             *cached = Some(CachedPoints {
                 size: self.brush.size.to_bits(),
-                points: self.grid.stroke(self.brush.size)?,
+                points: self.grid.stroke(self.brush.size)?.into(),
             });
         }
         Ok(())
@@ -315,8 +356,10 @@ impl ShapeEditor for BrushEditor {
     fn extra_fields(&self, fields: &mut Map<String, Value>) {
         // Controller checks preserve and show capture failures before a request is built. An
         // errored capture has no successful posted path and must never become an empty stroke.
-        if let Ok(points) = self.stroke.points() {
-            fields.insert("points".to_owned(), json!(points));
+        if let Ok(points) = self.stroke.posted() {
+            #[cfg(test)]
+            counts::serialized();
+            fields.insert("points".to_owned(), json!(&*points));
         }
         fields.insert("erase".to_owned(), json!(self.stroke.brush.erase));
         // The flag, and never a colour: the host reads the pixel the masked operation receives at

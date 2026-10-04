@@ -130,6 +130,7 @@ pub enum Flag {
     Catalog,
     Disable,
     Evidence,
+    GpuIdentity,
     Developer,
     Endpoint,
     Open,
@@ -138,11 +139,12 @@ pub enum Flag {
 }
 
 /// The order a launch assembles its flags in unless it names another with [`Launch::order`].
-pub const ORDER: [Flag; 9] = [
+pub const ORDER: [Flag; 10] = [
     Flag::DataRoot,
     Flag::Catalog,
     Flag::Disable,
     Flag::Evidence,
+    Flag::GpuIdentity,
     Flag::Developer,
     Flag::Endpoint,
     Flag::Open,
@@ -163,20 +165,21 @@ enum Evidence {
 /// One editor launch: what it opens and with which flags, where its evidence, data and log go, the
 /// evidence script it runs, how long it may take and how it is watched. Its arguments are
 /// assembled in [`ORDER`] — `--data-root`, `--catalog`, each `--disable-module`,
-/// `--evidence-dir`, `--developer`, `--proof-endpoint`, each `--open`, `--evidence-script` and
-/// `--window-size` — unless it names another order.
+/// `--evidence-dir`, `--evidence-gpu-identity`, `--developer`, `--proof-endpoint`, each `--open`,
+/// `--evidence-script` and `--window-size` — unless it names another order.
 pub struct Launch {
     evidence: Evidence,
     log: String,
     data_root: Option<PathBuf>,
     catalog: Option<PathBuf>,
     disabled: Vec<String>,
+    gpu_identity: bool,
     developer: bool,
     endpoint: Option<String>,
     sources: Vec<PathBuf>,
     script: Option<(Value, ScriptFile)>,
     window: Option<[String; 2]>,
-    order: [Flag; 9],
+    order: [Flag; 10],
     deadline: Option<Duration>,
     exit: Option<i32>,
     watch: Option<Watcher>,
@@ -191,6 +194,7 @@ impl Launch {
             data_root: None,
             catalog: None,
             disabled: Vec::new(),
+            gpu_identity: false,
             developer: false,
             endpoint: None,
             sources: Vec::new(),
@@ -244,6 +248,13 @@ impl Launch {
         self
     }
 
+    /// Draw the photograph at Fit through the GPU preview stage's identity program, the evidence
+    /// run's test hook for that stage.
+    pub fn gpu_identity(mut self) -> Self {
+        self.gpu_identity = true;
+        self
+    }
+
     pub fn developer(mut self) -> Self {
         self.developer = true;
         self
@@ -280,7 +291,7 @@ impl Launch {
     }
 
     /// Assemble the arguments in `order`, every flag named once, instead of [`ORDER`].
-    pub fn order(mut self, order: [Flag; 9]) -> Self {
+    pub fn order(mut self, order: [Flag; 10]) -> Self {
         assert!(
             ORDER.iter().all(|flag| order.contains(flag)),
             "A launch order names every flag once: {order:?}"
@@ -385,6 +396,11 @@ impl Launch {
                     Evidence::At(dir) => args.extend(["--evidence-dir".into(), dir.into()]),
                     Evidence::None => {}
                 },
+                Flag::GpuIdentity => {
+                    if self.gpu_identity {
+                        args.push("--evidence-gpu-identity".into());
+                    }
+                }
                 Flag::Developer => {
                     if self.developer {
                         args.push("--developer".into());
@@ -1038,7 +1054,7 @@ mod tests {
         assert_eq!(refused.listed(out), json!("file/evidence"));
         assert_eq!(refused.dir(out).unwrap(), Path::new("/out/file/evidence"));
         // The same flags in another order: the script before the photograph, the catalog after
-        // the evidence directory and the developer flag last.
+        // the evidence directory, then the developer flag and the GPU identity hook last.
         let order = [
             Flag::Evidence,
             Flag::Catalog,
@@ -1049,9 +1065,11 @@ mod tests {
             Flag::Disable,
             Flag::Endpoint,
             Flag::Window,
+            Flag::GpuIdentity,
         ];
         let held = Launch::named("hold")
             .developer()
+            .gpu_identity()
             .open_all(std::slice::from_ref(&fixture))
             .catalog(Path::new("/out/held.sqlite"))
             .order(order);
@@ -1066,8 +1084,14 @@ mod tests {
                 "/out/hold-script.json",
                 "--open",
                 "/f/photo.jpg",
-                "--developer"
+                "--developer",
+                "--evidence-gpu-identity"
             ]
+        );
+        // In the default order the hook follows the evidence directory it needs.
+        assert_eq!(
+            strings(Launch::app().gpu_identity().arguments(out, None)),
+            ["--evidence-dir", "/out/app", "--evidence-gpu-identity"]
         );
     }
 

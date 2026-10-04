@@ -10,6 +10,8 @@ pub(crate) enum EvidenceMessage {
     Tick,
     /// The one gated deadline of a `view_idle` step, before any evidence capture can redraw.
     ViewIdleDeadline,
+    /// The end of an `idle` step's settle or of its window.
+    IdleDeadline,
     /// One tick of a paced evidence slider step: send its next value. Exists only while a paced
     /// step has values left to send, which is also when the subscription that produces it exists.
     PacedSliderTick,
@@ -41,4 +43,7 @@ pub(crate) enum EvidenceMessage {
     GridScrollFrame(std::time::Instant),
     /// The graphics backend, recorded with every captured frame.
     Info(iced::system::Information),
+    /// The GPU identity hook's boundary, held from the frame on screen off the UI thread, or
+    /// `None` when that frame could not be held; see `app/gpu_identity.rs`.
+    GpuBoundary(Option<luxforge_ui::photo_surface::GpuBoundary>),
 }

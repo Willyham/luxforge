@@ -197,6 +197,16 @@ impl ModuleRegistry {
         }
     }
 
+    /// The label a recipe row gives a layer of `effect_id`: its module's title, or the effect's
+    /// identity where no module describes it, as a client reads `title` and `effect` from
+    /// [`Self::describe_recipe`].
+    pub(crate) fn layer_label(&self, effect_id: &str) -> String {
+        self.effect(effect_id).map_or_else(
+            || effect_id.to_owned(),
+            |(provider, _)| provider.descriptor().title.clone(),
+        )
+    }
+
     /// One stored layer as its available provider describes it ([`crate::ToolModule::describe`]),
     /// or, as the summary its recipe row shows instead, why nothing can: `no provider`,
     /// `unavailable: <reason>` or `unreadable payload: <detail>`. Such a layer is not neutral,
@@ -293,14 +303,14 @@ mod tests {
                     true
                 ),
                 (
-                    Some("luxforge.transform"),
-                    Some("Transforms"),
+                    Some("luxforge.crop"),
+                    Some("Crop, transform, straighten"),
                     "Rotate 180°",
                     true
                 ),
                 (
                     Some("luxforge.crop"),
-                    Some("Crop and straighten"),
+                    Some("Crop, transform, straighten"),
                     "50% × 50%",
                     true
                 ),

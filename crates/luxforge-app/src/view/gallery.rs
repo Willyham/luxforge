@@ -136,7 +136,7 @@ mod tests {
             assert_eq!((info.title, info.state_count), (*title, names.len()));
             let _ = gallery(index);
         }
-        assert_eq!(page_count(), 18);
+        assert_eq!(page_count(), 19);
         assert!(page_info(page_count()).is_none());
     }
 }

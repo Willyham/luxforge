@@ -187,6 +187,23 @@ impl Entry {
         }
     }
 
+    /// [`Self::plan_window`] for a boundary a GPU preview evaluates rather than the CPU
+    /// ([`super::window::WindowPlan::of_gpu_rect`]): a resample's taps as the CPU reads them, which
+    /// the geometry tail clamps to, and a spatial operation's halo with no tile grid
+    /// ([`SpatialEntry::halo_reads`]). A global estimate is never prepared from the window: the
+    /// GPU reads the whole stage's from the estimate store, or takes it from the stage it holds
+    /// and says so, so an estimate behind an earlier spatial layer cuts like any other.
+    pub(crate) fn plan_gpu_window(
+        &self,
+        read: Region,
+        received: Stage,
+    ) -> Result<Region, RegionFallback> {
+        match self {
+            Self::Resample(_) => self.plan_window(read, received, false),
+            Self::Spatial(entry) => Ok(entry.halo_reads(read, received)),
+        }
+    }
+
     /// Cut this boundary for a windowed proxy ([`super::window::WindowPlan::apply`]): `read` is the
     /// rectangle of its whole output stage `whole` that its segment reads, and `previous` the
     /// rectangle of the whole stage it receives that the cut frame before it holds. Answers the
@@ -346,7 +363,7 @@ impl Entry {
     }
 
     /// The bytes one worker of the linear rows reserves to load this boundary: a resample's block
-    /// of taps, and nothing for a boundary whose pixels are pulled one at a time.
+    /// of taps, and nothing for a spatial frame, whose values go straight into the chunk.
     pub(super) fn linear_scratch(&self) -> usize {
         match self {
             Self::Resample(_) => TAP_BLOCK_PIXELS as usize * std::mem::size_of::<[f64; 3]>(),
@@ -355,8 +372,9 @@ impl Entry {
     }
 
     /// Load one chunk of the linear rows of a segment that enters through this boundary: a
-    /// resample's taps block by block ([`LinearRows::load_resampled`]), or each pixel pulled
-    /// through [`Self::pixel`] ([`LinearRows::load_pulled`]).
+    /// resample's taps block by block ([`LinearRows::load_resampled`]), or a spatial frame's rows
+    /// walked through the segment's geometry, each pixel pulled through [`Self::pixel`] where the
+    /// evaluation holds no frame ([`LinearRows::load_pulled`]).
     pub(super) fn load_linear(
         &self,
         rows: &LinearRows<'_, '_, '_>,
@@ -429,6 +447,17 @@ impl Segment {
         }
     }
 
+    /// Its resample entry took one more warp or resample into its map, which now writes an
+    /// `output` stage: the segment's frame is that stage, and its geometry the identity over it.
+    /// A segment only fuses while its geometry is the identity, so nothing else changes; keeping
+    /// the stage it had before would map its frame onto a stage it no longer reads, which a
+    /// windowed proxy's cut refuses.
+    pub(crate) fn fused(&mut self, output: Stage) {
+        self.width = output.width;
+        self.height = output.height;
+        self.geometry = ExactGeometry::identity(output.width, output.height);
+    }
+
     /// Whether this pass writes anything into its frame. An identity pass that does not shares the
     /// source allocation instead of copying it.
     pub(super) fn writes_pixels(&self) -> bool {
@@ -445,6 +474,13 @@ impl Segment {
 #[derive(Clone)]
 pub(crate) struct Compiled {
     pub(crate) segments: Vec<Segment>,
+    /// Where each layer of the compiled stack begins, in stack order: the segment that was being
+    /// filled when the layer compiled and how many operations it held then. A layer's operation,
+    /// when it compiled to one, is at that position, and a boundary it opened is the next
+    /// segment's entry; a neutral layer, or a warp fused into the entry before it, holds the
+    /// position of the layer after it. What a GPU plan reads to find the input of a named layer
+    /// ([`super::gpu`]). `O(layers)`, like the rest of the compilation.
+    pub(crate) layers: Box<[(usize, usize)]>,
 }
 
 impl Compiled {
@@ -593,11 +629,29 @@ pub(super) struct Resolved {
 }
 
 impl Segment {
+    /// Where output pixel `(x, y)` comes from, or `None` outside the output stage. A segment
+    /// without point replacements has none to find, so it answers straight from the unmap; one
+    /// with them walks its operations backwards, composing the geometry each replacement is
+    /// carried through, as [`mapped_replacements`] does.
     pub(super) fn resolve(&self, x: u32, y: u32) -> Option<Resolved> {
         if x >= self.width || y >= self.height {
             return None;
         }
         let (input_x, input_y) = self.geometry.unmap(x, y);
+        if !self.has_pixels {
+            return Some(Resolved {
+                replacement: None,
+                input_x,
+                input_y,
+            });
+        }
+        self.replacement_at(x, y, input_x, input_y)
+    }
+
+    /// The walk [`Self::resolve`] takes for a segment with replacements: every operation's
+    /// geometry composed backwards from the output, and the last replacement that lands on
+    /// `(x, y)`, if any.
+    fn replacement_at(&self, x: u32, y: u32, input_x: u32, input_y: u32) -> Option<Resolved> {
         let mut suffix = ExactGeometry::identity(self.width, self.height);
         for (index, operation) in self.operations.iter().enumerate().rev() {
             match operation {
@@ -629,6 +683,17 @@ impl Segment {
             input_x,
             input_y,
         })
+    }
+
+    /// [`Self::resolve`] by the full composition whatever the segment holds: the reference the
+    /// shortcut for a segment without replacements is held to.
+    #[cfg(test)]
+    pub(super) fn resolve_composed(&self, x: u32, y: u32) -> Option<Resolved> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        let (input_x, input_y) = self.geometry.unmap(x, y);
+        self.replacement_at(x, y, input_x, input_y)
     }
 }
 

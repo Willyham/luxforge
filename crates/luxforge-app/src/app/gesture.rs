@@ -256,6 +256,21 @@ impl Kind {
         !matches!(self, Self::Crop(_))
     }
 
+    /// The fields a changed gesture sends ([`Event::Changed`]), built once its draft can send them:
+    /// a mask shape's, after its capture is checked, since a capture that failed — refused as it
+    /// was painted, or too long once decimated — has no posted path and must never become an empty
+    /// stroke. The refusal is left in `refused`. A slider and the crop frame offer theirs.
+    pub(crate) fn build(&self, refused: &mut Option<luxforge_core::Error>) -> Option<Value> {
+        let Self::Mask(mask) = self else {
+            return None;
+        };
+        if let Some(error) = mask.shape.capture_error() {
+            *refused = Some(error);
+            return None;
+        }
+        Some(mask.fields())
+    }
+
     /// End the pointer gesture in progress: a drag must not carry on into a draft that can no
     /// longer be committed as it is.
     fn interrupt(&mut self) {
@@ -377,13 +392,15 @@ impl Editor {
             }
             (Kind::Mask(mask), Starting::Mode) => {
                 return Some(format!(
-                    "Apply or Cancel the {} gesture before leaving Mask mode",
+                    "Finish or cancel the {} gesture before leaving Mask mode",
                     mask.shape.op.label().to_lowercase()
                 ));
             }
             (Kind::Crop(_), Starting::Mode) => {
                 return Some("Apply or Cancel the crop draft before leaving this mode".into());
             }
+            // A mask gesture is finished by its release, or by Done for a brush; a crop by Apply.
+            (Kind::Mask(_), _) => format!("Finish or cancel the {}", gesture.kind.noun()),
             (kind, _) => format!("Apply or Cancel the {}", kind.noun()),
         };
         Some(format!("{held} {}", starting.clause()))
@@ -485,12 +502,18 @@ impl Editor {
         tasks::draft_cancel_now(&self.owner, self.client, draft_id, reseed)
     }
 
-    /// Feed the open core gesture one event and run whatever it calls for.
+    /// Feed the open core gesture one event and run whatever it calls for. Fields a mask gesture
+    /// changed ([`Event::Changed`]) are built here, when its draft can send them; a capture that
+    /// cannot be posted builds none and says why on the status line.
     pub(crate) fn drive(&mut self, event: Event) -> Task<Message> {
-        let Some(gesture) = self.core_gesture_mut() else {
+        let Some(CoreGesture { draft, kind, .. }) = self.gesture.as_deref_mut() else {
             return Task::none();
         };
-        let step = gesture.draft.handle(event);
+        let mut refused = None;
+        let step = draft.handle_with(event, &mut || kind.build(&mut refused));
+        if let Some(error) = refused {
+            self.status.text = error.to_string();
+        }
         self.run(step)
     }
 
@@ -575,13 +598,6 @@ impl Editor {
     /// open, Done, Enter, Cancel and Escape put the brush down ([`Editor::put_brush_down`]).
     pub(crate) fn draft_message(&mut self, message: DraftMessage) -> Task<Message> {
         match message {
-            DraftMessage::Commit if self.mask_shape().is_some_and(MaskDraft::unplaced) => {
-                self.status.text = self
-                    .mask_shape()
-                    .and_then(MaskDraft::placement_refusal)
-                    .expect("unplaced reason");
-                Task::none()
-            }
             DraftMessage::Commit | DraftMessage::Cancel
                 if self.gesture.is_none() && self.armed.is_some() =>
             {
@@ -732,7 +748,10 @@ impl Editor {
             return self.draft_set(result);
         }
         let preview = previews.then(|| (asset, self.proxy_bounds()));
-        let result = tasks::draft_set_now(&self.owner, self.client, draft_id, fields, preview);
+        // The GPU preview is planned with the tick's job at Fit and at 100% or more, where the
+        // surface draws it.
+        let gpu = self.gpu_ask();
+        let result = tasks::draft_set_now(&self.owner, self.client, draft_id, fields, preview, gpu);
         self.draft_set(result)
     }
 
@@ -755,22 +774,54 @@ impl Editor {
             return Task::none();
         }
         match result {
-            Ok((set, job, round_trip)) => {
-                self.session.draft = Some(set.clone());
-                if let Some(job) = job {
+            Ok((answered, job, round_trip)) => {
+                // The answer moves into the session, which keeps it whole; what the tick reads of
+                // it below is its identity and revisions, so a brush stroke's path is not copied.
+                let set = identity(&answered);
+                self.session.draft = Some(answered);
+                let mut drawn_on_gpu = false;
+                if let Some(mut job) = job {
                     if self.view_plan.released_draft.as_ref() != Some(&set.draft_id) {
                         self.note_view_motion();
                     }
-                    let (generation, requested_at) =
-                        if self.log.diagnostics.is_some() && self.mask_gesture().is_some() {
-                            self.request_mask_preview_timed(job)
-                        } else {
-                            (self.request_preview(job), None)
-                        };
-                    self.presentation.preview_generation = generation;
-                    self.set_previewed(set.draft_revision, round_trip, requested_at);
+                    // A tick the surface draws from the GPU plan the answer carries makes no
+                    // preview job and no upload ([`super::gpu_preview`]); any other takes the
+                    // CPU path as before.
+                    let (tick, boundary) = self.gpu_tick(&set, job.gpu.take());
+                    match tick {
+                        super::gpu_preview::Tick::Gpu => {
+                            // The mask overlay's coverage follows the tick through its own
+                            // worker, as on the CPU path, over the frame on screen, whose
+                            // geometry a colour or mask draft does not change.
+                            let content = self.presentation.presented_content;
+                            self.request_mask_coverage(&job, content);
+                            self.gpu_ticked(&set);
+                            drawn_on_gpu = true;
+                        }
+                        super::gpu_preview::Tick::Cpu => {
+                            job.boundary = boundary;
+                            let boundary = job.boundary.is_some();
+                            let (generation, requested_at) = if self.log.diagnostics.is_some()
+                                && self.mask_gesture().is_some()
+                            {
+                                self.request_mask_preview_timed(job)
+                            } else {
+                                (self.request_preview(job), None)
+                            };
+                            if boundary {
+                                self.gpu_boundary_requested(generation);
+                            }
+                            self.gpu_cpu_tick(&set, generation);
+                            self.presentation.preview_generation = generation;
+                            self.set_previewed(set.draft_revision, round_trip, requested_at);
+                        }
+                    }
                 }
-                self.drive(Event::Set(Ok(set)))
+                let task = self.drive(Event::Set(Ok(set)));
+                if drawn_on_gpu {
+                    self.gpu_tick_presented();
+                }
+                task
             }
             Err(error) => {
                 self.set_unpreviewed(&error);
@@ -805,12 +856,11 @@ impl Editor {
         let Some(gesture) = self.gesture.as_deref_mut() else {
             return;
         };
-        let sent = gesture.draft.sent().cloned();
+        let value = sent_value(gesture);
         match &mut gesture.kind {
             Kind::Slider(slider) => {
                 slider.unpreviewed = false;
                 let label = slider.label.clone();
-                let value = sent.and_then(|fields| fields.get(&slider.parameter).cloned());
                 let now = std::time::Instant::now();
                 let legs = round_trip.legs_ms(now);
                 let timing = self.log.loop_timing.get();
@@ -862,7 +912,7 @@ impl Editor {
             return;
         };
         let draft_revision = gesture.draft.draft_revision;
-        let sent = gesture.draft.sent().cloned();
+        let value = sent_value(gesture);
         match &mut gesture.kind {
             Kind::Slider(slider) => {
                 // No frame of its own is coming. A drafted RAW temperature or tint is not this: the
@@ -874,7 +924,6 @@ impl Editor {
                 // bar says so instead of showing the error code.
                 slider.unpreviewed = true;
                 let label = slider.label.clone();
-                let value = sent.and_then(|fields| fields.get(&slider.parameter).cloned());
                 self.status.text = if error.starts_with(ErrorKind::PreparationRequired.code()) {
                     format!(
                         "{label} cannot be previewed until the RAW development is ready; it shows on release"
@@ -1069,4 +1118,42 @@ impl Editor {
         self.report_crop_stage();
         Task::batch([task, transform])
     }
+}
+
+/// What a `draft.set` tick reads of the draft it answered with — its identity, revisions, target
+/// and conflict state — without the fields, which the session keeps.
+fn identity(answered: &Draft) -> Draft {
+    let Draft {
+        draft_id,
+        action,
+        asset_id,
+        base_revision,
+        draft_revision,
+        fields: _,
+        target,
+        conflicted,
+    } = answered;
+    Draft {
+        draft_id: draft_id.clone(),
+        action: action.clone(),
+        asset_id: asset_id.clone(),
+        base_revision: *base_revision,
+        draft_revision: *draft_revision,
+        fields: serde_json::Map::new(),
+        target: target.clone(),
+        conflicted: *conflicted,
+    }
+}
+
+/// The value a slider gesture's last `draft.set` carried for its one field. Only a slider reads back
+/// what it sent, and only that field: a mask gesture's sent fields hold a whole stroke's path.
+fn sent_value(gesture: &CoreGesture) -> Option<Value> {
+    let Kind::Slider(slider) = &gesture.kind else {
+        return None;
+    };
+    gesture
+        .draft
+        .sent()
+        .and_then(|fields| fields.get(&slider.parameter))
+        .cloned()
 }

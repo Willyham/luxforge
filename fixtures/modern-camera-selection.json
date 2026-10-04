@@ -1194,7 +1194,7 @@
           "sha256": "85bfec149261ffbae90797e45caae5e204e1e61ac62b92783925b5ee0f267d76",
           "license": "CC0-1.0",
           "status": "adapter_verified",
-          "encoded_bytes": 61514368
+          "encoded_bytes": 61940429
         },
         {
           "sample_id": "983",
@@ -1225,7 +1225,7 @@
           "sha256": "712815b910fa473f7aaeb97c0804292d996b16dd6b974a3ab9a7195a2e41d90c",
           "license": "CC0-1.0",
           "status": "adapter_verified",
-          "encoded_bytes": 37169152
+          "encoded_bytes": 37892396
         }
       ]
     },

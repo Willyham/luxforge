@@ -46,6 +46,18 @@ pub mod srgb {
     srgb_transfer!(decode, encode, f64);
     srgb_transfer!(decode_f32, encode_f32, f32);
 
+    /// The `f32` encode's constants by the names a GPU program that restates the encode gives them
+    /// (`<entry>_linear_end` and so on), for the tests that hold those programs to them. A test
+    /// below holds this table to [`encode_f32`] itself.
+    #[cfg(test)]
+    pub(crate) const ENCODE_F32: [(&str, f32); 5] = [
+        ("linear_end", 0.003_130_8),
+        ("slope", 12.92),
+        ("scale", 1.055),
+        ("offset", 0.055),
+        ("exponent", 1.0 / 2.4),
+    ];
+
     /// One 8-bit channel code decoded to linear light at `f64` precision: the same transfer
     /// function the `f32` table below is built from, without that table's storage rounding. A
     /// caller that reasons about colour off the per-pixel path — the neutral picker averages 25
@@ -68,15 +80,19 @@ pub mod srgb {
 
     /// The table itself, [`TO_LINEAR`], indexed by code, for a pass that decodes many pixels: it
     /// takes the table once and hands it to [`decode_pixel_in`], since every dereference of the
-    /// lazy static is an atomic load the compiler cannot merge.
+    /// lazy static is an atomic load the compiler cannot merge. The desktop's evidence runs read
+    /// it too, to hold a displayed frame as a GPU boundary.
     #[inline]
-    pub(crate) fn decode_table() -> &'static [f32; 256] {
+    pub fn decode_table() -> &'static [f32; 256] {
         &TO_LINEAR
     }
 
-    static TO_LINEAR16: LazyLock<Box<[f32]>> = LazyLock::new(|| {
+    /// The sRGB transfer function over the 65,536 16-bit channel values (256 KiB), in which a wide
+    /// byte frame holds its pixels: each 8-bit code's multiple of 257 holds [`TO_LINEAR`]'s entry,
+    /// so a narrow value reads the same through either table.
+    static TO_LINEAR16: LazyLock<Box<[f32; 65536]>> = LazyLock::new(|| {
         let narrow = decode_table();
-        (0..=u16::MAX)
+        let table: Box<[f32]> = (0..=u16::MAX)
             .map(|code| {
                 if code % 257 == 0 {
                     narrow[usize::from(code / 257)]
@@ -84,31 +100,127 @@ pub mod srgb {
                     decode(f64::from(code) / 65535.0) as f32
                 }
             })
-            .collect()
+            .collect();
+        table.try_into().expect("one entry for every 16-bit code")
     });
 
-    pub(crate) fn decode16_table() -> &'static [f32] {
+    /// [`TO_LINEAR16`], indexed by code, for a pass to take once rather than per pixel.
+    #[inline]
+    pub(crate) fn decode16_table() -> &'static [f32; 65536] {
         &TO_LINEAR16
     }
 
-    static CODE_THRESHOLDS16: LazyLock<Box<[f32]>> = LazyLock::new(|| {
-        (0..65535)
-            .map(|index| {
-                let threshold = decode((f64::from(index) + 0.5) / 65535.0);
-                let rounded = threshold as f32;
-                // First representable f32 in the upper code's exact interval.
-                if f64::from(rounded) < threshold {
-                    rounded.next_up()
-                } else {
-                    rounded
-                }
-            })
-            .collect()
+    /// The bins of [`Quantizer16`]'s index: the square root of a value in `[0, 1]` in 65,536 equal
+    /// steps, with one more bin for `1` itself.
+    pub(crate) const CODE_BINS16: usize = 1 << 16;
+
+    /// The bin of a value in `[0, 1]`: the whole part of `sqrt(value) × 65536`. The square root is
+    /// the correctly rounded one and the scale a power of two, so the bin never decreases as the
+    /// value grows, which is all the index relies on: it is built from the bins of the thresholds
+    /// themselves, through this same function.
+    #[inline]
+    fn code_bin16(value: f32) -> usize {
+        ((value.sqrt() * CODE_BINS16 as f32) as usize).min(CODE_BINS16)
+    }
+
+    /// The 16-bit output quantizer, the wide byte frame's boundary: a linear value's code is the
+    /// number of the 65,535 code thresholds at or below it, clamped to `[0, 1]` with NaN taken to
+    /// 0. Each threshold is the first `f32` in its upper code's exact interval, `decode((k − 0.5) /
+    /// 65535)` computed in `f64` for code `k`, so the code is `round(65535 · encode(v))` without a
+    /// power function per value. Tests below hold it to a search of the thresholds at and beside
+    /// every threshold and bin edge, and at every `f32` in `[0, 1]`.
+    ///
+    /// It finds the code through an exact index into those thresholds, not an approximation of the
+    /// transfer function. The square root spreads them almost evenly: they lie at least `1.05e-5`
+    /// apart in it, at the junction of sRGB's linear and power segments, against a bin of
+    /// `1.53e-5`, so at most two thresholds share a bin, and a value is compared with the first two
+    /// at or after its bin's lower code. The thresholds hold two `+∞` past their end for the top
+    /// bins.
+    ///
+    /// Its bound under [performance rule 6](../../../docs/engineering/performance-rules.md#rules) is
+    /// its size: the index is 65,537 `u16` codes (128 KiB) beside the 65,537 thresholds (256 KiB),
+    /// built once per process, and nothing an image or a history holds changes either.
+    ///
+    /// A pass that quantizes many values takes it once through [`quantizer16`], since every
+    /// dereference of the lazy static is an atomic load the compiler cannot merge.
+    pub(crate) struct Quantizer16 {
+        lower_codes: Box<[u16; CODE_BINS16 + 1]>,
+        thresholds: Box<[f32; 65537]>,
+    }
+
+    static QUANTIZER16: LazyLock<Quantizer16> = LazyLock::new(|| {
+        let mut thresholds = vec![f32::INFINITY; 65537];
+        for (index, slot) in thresholds[..65535].iter_mut().enumerate() {
+            let threshold = decode((index as f64 + 0.5) / 65535.0);
+            let rounded = threshold as f32;
+            // First representable f32 in the upper code's exact interval.
+            *slot = if f64::from(rounded) < threshold {
+                rounded.next_up()
+            } else {
+                rounded
+            };
+        }
+        let codes = &thresholds[..65535];
+        assert!(codes.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(
+            codes
+                .windows(3)
+                .all(|run| code_bin16(run[0]) < code_bin16(run[2]))
+        );
+        // The lower code of a bin counts the thresholds in the bins before it.
+        let mut lower_codes = vec![0u16; CODE_BINS16 + 1];
+        let mut code = 0;
+        for (bin, slot) in lower_codes.iter_mut().enumerate() {
+            while code < codes.len() && code_bin16(codes[code]) < bin {
+                code += 1;
+            }
+            *slot = code as u16;
+        }
+        Quantizer16 {
+            lower_codes: lower_codes
+                .into_boxed_slice()
+                .try_into()
+                .expect("one lower code for every bin"),
+            thresholds: thresholds
+                .into_boxed_slice()
+                .try_into()
+                .expect("every threshold and two past the end"),
+        }
     });
 
+    /// The 16-bit output quantizer, for a pass to take once rather than per value.
     #[inline]
+    pub(crate) fn quantizer16() -> &'static Quantizer16 {
+        &QUANTIZER16
+    }
+
+    impl Quantizer16 {
+        /// The 16-bit code of one linear value: clamped to `[0, 1]`, then the number of thresholds
+        /// at or below it.
+        #[inline]
+        pub(crate) fn channel(&self, value: f32) -> u16 {
+            // NaN, either zero and every negative value take code 0, a value at or past 1 code
+            // 65535: every threshold lies strictly between 0 and 1, so the clamp changes no code.
+            let value = if value > 0.0 { value.min(1.0) } else { 0.0 };
+            let lower = self.lower_codes[code_bin16(value)];
+            let first = usize::from(lower);
+            // A threshold in a later bin is above the value, and so is a `+∞` past the end.
+            lower
+                + u16::from(self.thresholds[first] <= value)
+                + u16::from(self.thresholds[first + 1] <= value)
+        }
+
+        /// [`Self::channel`] of each channel of one pixel.
+        #[inline]
+        pub(crate) fn pixel(&self, rgb: [f32; 3]) -> [u16; 3] {
+            rgb.map(|value| self.channel(value))
+        }
+    }
+
+    /// [`Quantizer16::channel`], for a test that quantizes one value.
+    #[cfg(test)]
     pub(crate) fn quantize16(value: f32) -> u16 {
-        CODE_THRESHOLDS16.partition_point(|threshold| *threshold <= value) as u16
+        quantizer16().channel(value)
     }
 
     /// One 8-bit pixel decoded into linear sRGB through a table the caller already holds.
@@ -139,6 +251,26 @@ pub mod srgb {
         }
         thresholds
     });
+
+    /// The first `f32` at or above each of [`CODE_THRESHOLDS`]: an `f32` value's output code is the
+    /// number of these at or below it, clamped to `[0, 1]` with NaN taken to 0, which is the code
+    /// [`Quantizer::pixel`] and [`Quantizer::rounded`] give it — a test below holds both to that at
+    /// every threshold. A program that quantizes in `f32` on the GPU compares against these.
+    static CODE_THRESHOLDS_F32: LazyLock<[f32; 255]> = LazyLock::new(|| {
+        CODE_THRESHOLDS.map(|threshold| {
+            let narrowed = threshold as f32;
+            if f64::from(narrowed) < threshold {
+                narrowed.next_up()
+            } else {
+                narrowed
+            }
+        })
+    });
+
+    /// [`CODE_THRESHOLDS_F32`], for the desktop to hand the GPU preview's output encoding.
+    pub fn output_thresholds() -> &'static [f32; 255] {
+        &CODE_THRESHOLDS_F32
+    }
 
     pub(crate) const CODE_BINS: usize = 4096;
 
@@ -238,6 +370,47 @@ pub mod srgb {
     #[inline]
     pub(crate) fn quantize_pixel(rgb: [f32; 3]) -> [u8; 3] {
         quantizer().pixel(rgb)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// An `f32` needs no guard band: [`Quantizer::rounded`] departs from its threshold search
+        /// only within [`ROUNDING_GUARD`] of a threshold, and within that distance of each of the
+        /// 255 thresholds there are at most two `f32` values, the first at or above it and the
+        /// one below that. `the_f32_thresholds_are_where_both_quantizers_change_code` holds both
+        /// quantizers to the same code at exactly those two. Every other `f32`, including every
+        /// one below 0 or above 1, which both clamp, lies farther than the guard from every
+        /// threshold, where `rounded` answers [`Quantizer::channel`], which [`Quantizer::pixel`]
+        /// answers too. So the two give every finite `f32` the same code, and a row of `f32`
+        /// values quantizes through `pixel` exactly as through `rounded` widened to `f64`.
+        #[test]
+        fn only_the_f32_threshold_and_the_value_below_it_lie_in_the_guard_band() {
+            let quantizer = quantizer();
+            for (threshold, first) in CODE_THRESHOLDS.iter().zip(CODE_THRESHOLDS_F32.iter()) {
+                let (threshold, first) = (*threshold, *first);
+                assert!(f64::from(first) >= threshold, "{threshold}");
+                assert!(f64::from(first.next_down()) < threshold, "{threshold}");
+                for outside in [first.next_up(), first.next_down().next_down()] {
+                    let wide = f64::from(outside);
+                    assert!((wide - threshold).abs() > ROUNDING_GUARD, "{threshold}");
+                    assert_eq!(
+                        quantizer.rounded(wide),
+                        quantizer.channel(wide),
+                        "{outside}"
+                    );
+                    assert_eq!(
+                        quantizer.pixel([outside; 3]),
+                        [quantizer.rounded(wide); 3],
+                        "{outside}"
+                    );
+                }
+            }
+            // Both ends of the clamp are far from the first and the last threshold.
+            assert!(CODE_THRESHOLDS[0] > ROUNDING_GUARD);
+            assert!(1.0 - CODE_THRESHOLDS[254] > ROUNDING_GUARD);
+        }
     }
 }
 
@@ -365,6 +538,16 @@ pub(crate) mod oklab {
     const M2: [[f32; 3]; 3] = as_f32(M2_F64);
     const M2_INV: [[f32; 3]; 3] = as_f32(M2_INV_F64);
     const M1_INV: [[f32; 3]; 3] = as_f32(M1_INV_F64);
+
+    /// The four `f32` matrices by the names a GPU program that restates the conversion gives their
+    /// rows (`<entry>_m1_0` and so on), for the tests that hold those programs to them.
+    #[cfg(test)]
+    pub(crate) const MATRICES: [(&str, [[f32; 3]; 3]); 4] = [
+        ("m1", M1),
+        ("m2", M2),
+        ("m2_inv", M2_INV),
+        ("m1_inv", M1_INV),
+    ];
 
     /// Linear sRGB to Oklab `[L, a, b]` at one working precision: `M2 · cbrt(M1 · rgb)`, with the
     /// signed cube root that stays finite for the negative LMS component a linear value preserved
@@ -601,7 +784,58 @@ pub(crate) mod cct {
 
 #[cfg(test)]
 mod tests {
+    /// The encode's constants a GPU program is held to are the ones the `f32` encode evaluates:
+    /// the table reproduces it bit for bit on both branches and at the branch point.
+    #[test]
+    fn the_encode_table_is_the_f32_transfer_function() {
+        let constant = |name: &str| {
+            super::srgb::ENCODE_F32
+                .iter()
+                .find(|(held, _)| *held == name)
+                .map(|(_, value)| *value)
+                .unwrap()
+        };
+        let (end, slope) = (constant("linear_end"), constant("slope"));
+        let (scale, offset, exponent) =
+            (constant("scale"), constant("offset"), constant("exponent"));
+        for index in 0..=4096 {
+            let linear = index as f32 / 2048.0 - 0.25;
+            for value in [linear, end, end.next_up(), end.next_down()] {
+                let table = if value <= end {
+                    slope * value
+                } else {
+                    scale * value.powf(exponent) - offset
+                };
+                assert_eq!(
+                    table.to_bits(),
+                    super::srgb::encode_f32(value).to_bits(),
+                    "{value}"
+                );
+            }
+        }
+    }
+
     use super::*;
+
+    /// Both output quantizers change code at exactly the `f32` thresholds: each threshold takes
+    /// the upper code and the `f32` below it the lower, and both are monotonic, so counting the
+    /// thresholds at or below an `f32` is their code for every `f32` in `[0, 1]`.
+    #[test]
+    fn the_f32_thresholds_are_where_both_quantizers_change_code() {
+        let quantizer = srgb::quantizer();
+        let count = |value: f32| {
+            srgb::output_thresholds().partition_point(|threshold| *threshold <= value) as u8
+        };
+        for (index, threshold) in srgb::output_thresholds().iter().copied().enumerate() {
+            let code = index as u8 + 1;
+            for (value, expected) in [(threshold, code), (threshold.next_down(), code - 1)] {
+                let wide = f64::from(value);
+                assert_eq!(quantizer.pixel([value; 3]), [expected; 3], "{value}");
+                assert_eq!(quantizer.rounded(wide), expected, "{value}");
+                assert_eq!(count(value), expected, "{value}");
+            }
+        }
+    }
 
     #[test]
     fn srgb_round_trip_is_the_identity_across_the_byte_range() {
@@ -678,8 +912,80 @@ mod tests {
         }
     }
 
+    /// The 65,535 thresholds the 16-bit quantizer searched before its index, built as it built
+    /// them: the first `f32` at or above `decode((k + 0.5) / 65535)` for `k` in `0..65535`.
+    fn thresholds16_reference() -> Vec<f32> {
+        (0..65535)
+            .map(|index| {
+                let threshold = srgb::decode((f64::from(index) + 0.5) / 65535.0);
+                let rounded = threshold as f32;
+                if f64::from(rounded) < threshold {
+                    rounded.next_up()
+                } else {
+                    rounded
+                }
+            })
+            .collect()
+    }
+
+    /// The search the 16-bit quantizer made before its index, independent of the index and its
+    /// bins: the number of thresholds at or below the value.
+    fn quantize16_search(thresholds: &[f32], value: f32) -> u16 {
+        thresholds.partition_point(|threshold| *threshold <= value) as u16
+    }
+
+    /// NaNs, infinities, signed zeros and the extremes, 100,000 bit patterns from the whole of
+    /// `f32` and `[-1, 2]` in steps of `1e-5`: the values the slow test does not walk one by one,
+    /// and a sample of those it does.
+    fn quantize16_edge_values() -> Vec<f32> {
+        let mut values = vec![
+            f32::NAN,
+            -f32::NAN,
+            f32::from_bits(0x7f80_0001),
+            f32::from_bits(0xffc0_1234),
+            f32::NEG_INFINITY,
+            f32::MIN,
+            -1.0,
+            -f32::MIN_POSITIVE,
+            -f32::from_bits(1),
+            -0.0,
+            0.0,
+            f32::from_bits(1),
+            f32::MIN_POSITIVE,
+            1.0f32.next_down(),
+            1.0,
+            1.0f32.next_up(),
+            65535.0,
+            f32::MAX,
+            f32::INFINITY,
+        ];
+        let mut bits = 0x2545_f491_u32;
+        for _ in 0..100_000 {
+            bits ^= bits << 13;
+            bits ^= bits >> 17;
+            bits ^= bits << 5;
+            values.push(f32::from_bits(bits));
+        }
+        values.extend((0..=300_000).map(|step| step as f32 / 100_000.0 - 1.0));
+        values
+    }
+
+    /// The 16-bit quantizer is the nearest-code rounding of the forward transfer function at every
+    /// threshold and beside it, and it is the search of the thresholds it replaced at every
+    /// threshold, beside each, at and beside every edge of its index's bins, and on the clamped,
+    /// non-finite and signed-zero values.
     #[test]
     fn byte_quantize16_is_monotone_and_exact_at_every_threshold() {
+        let thresholds = thresholds16_reference();
+        let quantizer = srgb::quantizer16();
+        let check = |value: f32| {
+            assert_eq!(
+                quantizer.channel(value),
+                quantize16_search(&thresholds, value),
+                "{value:?}, bits {:#010x}",
+                value.to_bits()
+            );
+        };
         for code in 0..65535 {
             let threshold = srgb::decode((f64::from(code) + 0.5) / 65535.0) as f32;
             for value in [threshold.next_down(), threshold, threshold.next_up()] {
@@ -688,9 +994,80 @@ mod tests {
                 assert_eq!(srgb::quantize16(value), expected, "{code}: {value}");
             }
         }
+        for threshold in thresholds.iter().copied() {
+            let mut value = threshold;
+            for _ in 0..3 {
+                value = value.next_down();
+            }
+            for _ in 0..7 {
+                check(value);
+                value = value.next_up();
+            }
+        }
+        // A bin's lower edge, `(bin / 65536)²`, and the `f32`s beside it, where the square root's
+        // rounding decides the bin.
+        for bin in 0..=srgb::CODE_BINS16 {
+            let edge = (bin as f64 / srgb::CODE_BINS16 as f64).powi(2) as f32;
+            let mut value = edge;
+            for _ in 0..3 {
+                value = value.next_down();
+            }
+            for _ in 0..7 {
+                check(value);
+                value = value.next_up();
+            }
+        }
+        for value in quantize16_edge_values() {
+            check(value);
+        }
         assert_eq!(srgb::quantize16(f32::NAN), 0);
         assert_eq!(srgb::quantize16(f32::NEG_INFINITY), 0);
+        assert_eq!(srgb::quantize16(-0.0), 0);
         assert_eq!(srgb::quantize16(f32::INFINITY), 65535);
+        assert_eq!(srgb::quantize16(1.0f32.next_up()), 65535);
+        assert_eq!(
+            srgb::quantizer16().pixel([f32::NAN, 0.5, 2.0]),
+            [0, srgb::quantize16(0.5), 65535]
+        );
+    }
+
+    /// The 16-bit quantizer is the search of the thresholds it replaced at every `f32` from `0` to
+    /// `1`, one by one, and at the sampled and edge values beyond them. The search over ascending
+    /// values is a walk along the thresholds, which the search itself starts at each chunk.
+    #[test]
+    fn slow_byte_quantize16_is_the_threshold_search_at_every_f32_in_the_unit_interval() {
+        use rayon::prelude::*;
+        let thresholds = thresholds16_reference();
+        let quantizer = srgb::quantizer16();
+        let one = 1.0f32.to_bits();
+        let chunk = 1 << 20;
+        (0..=one / chunk).into_par_iter().for_each(|index| {
+            let first = index * chunk;
+            let last = (first + chunk - 1).min(one);
+            let mut code = usize::from(quantize16_search(&thresholds, f32::from_bits(first)));
+            for bits in first..=last {
+                let value = f32::from_bits(bits);
+                while code < thresholds.len() && thresholds[code] <= value {
+                    code += 1;
+                }
+                assert_eq!(
+                    usize::from(quantizer.channel(value)),
+                    code,
+                    "{value:?}, bits {bits:#010x}"
+                );
+            }
+            assert_eq!(
+                usize::from(quantize16_search(&thresholds, f32::from_bits(last))),
+                code
+            );
+        });
+        for value in quantize16_edge_values() {
+            assert_eq!(
+                quantizer.channel(value),
+                quantize16_search(&thresholds, value),
+                "{value:?}"
+            );
+        }
     }
 
     #[test]

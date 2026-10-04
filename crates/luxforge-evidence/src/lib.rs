@@ -30,6 +30,10 @@ pub const MAX_SCRIPT_STEPS: usize = 64;
 
 /// The longest one `wait` step may idle, so a script cannot spend its deadline doing nothing.
 pub const MAX_WAIT_MS: u64 = 10_000;
+/// The longest one `gpu_warmed` step may wait for the GPU preview's compile thread: a cold shader
+/// cache on a loaded host compiles a Presence sequence in seconds, and a committed stack's warm
+/// list holds several.
+pub const MAX_WARM_MS: u64 = 60_000;
 /// The one named key a `key` step presses; every other is a single letter or digit.
 pub const KEY_ESCAPE: &str = "Escape";
 
@@ -128,6 +132,9 @@ pub enum Step {
     /// Change zoom, then inspect the already drawn photo after an idle interval with evidence
     /// ticks and frame-capture subscriptions suspended for that interval.
     ViewIdle(ViewIdleStep),
+    /// Leave the editor alone with evidence's own timers and redraws suspended, then check that
+    /// nothing drew: see [`IdleStep`].
+    Idle(IdleStep),
     Workspace(WorkspaceStep),
     Preview(PreviewStep),
     /// Move the comparison divider, or release a backslash hold through the keymap.
@@ -167,10 +174,23 @@ pub enum Step {
     Performance {
         expanded: bool,
     },
+    /// Press Cancel on one displayed running job row (zero-based, at most four rows).
+    PerformanceCancel {
+        row: usize,
+    },
     /// Ask nothing of the editor for at least this many milliseconds, then capture. The evidence
     /// tick keeps rebuilding the view meanwhile, as the editor's own event sync does while a
     /// photograph is open, so the frame shows what idling did to the screen.
     Wait {
+        ms: u64,
+    },
+    /// Ask nothing of the editor for at least `quiet_ms`, then until the GPU preview's compile
+    /// thread has compiled everything handed to it — the desktop's newest warm list taken, and no
+    /// sequence queued or compiling — or until `ms` from the step's start, then capture: what a
+    /// committed stack's warming means before the next gesture. The step's record says whether it
+    /// finished and how long it waited.
+    GpuWarmed {
+        quiet_ms: u64,
         ms: u64,
     },
     /// One key pressed with no text field focused, answered by the desktop's own key table exactly
@@ -307,8 +327,16 @@ impl Step {
             Self::View(step) => step.validate(),
             Self::Pinch(step) => step.validate(),
             Self::ViewIdle(step) => step.validate(),
+            Self::Idle(step) => step.validate(),
             Self::Workspace(step) => step.validate(),
             Self::Preview(_) | Self::Palette(_) | Self::Performance { .. } => Ok(()),
+            Self::PerformanceCancel { row } => {
+                if *row < 4 {
+                    Ok(())
+                } else {
+                    Err("performance_cancel row must be below 4".into())
+                }
+            }
             Self::Compare(CompareStep::Position(position)) => {
                 unit(f64::from(*position), "compare position")
             }
@@ -318,6 +346,16 @@ impl Step {
             Self::Preset(pick) | Self::PresetDelete(pick) => pick.validate(),
             Self::PresetCreate(step) => step.validate(),
             Self::PresetImport { path } => text(path, "preset_import path"),
+            Self::GpuWarmed { quiet_ms, ms } => {
+                if *quiet_ms <= MAX_WAIT_MS && (1..=MAX_WARM_MS).contains(ms) && quiet_ms <= ms {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "gpu_warmed takes a quiet_ms of at most {MAX_WAIT_MS} and an ms from it to \
+                         {MAX_WARM_MS}"
+                    ))
+                }
+            }
             Self::Wait { ms } => {
                 if (1..=MAX_WAIT_MS).contains(ms) {
                     Ok(())
@@ -1189,6 +1227,29 @@ impl ViewIdleStep {
     }
 }
 
+/// A native idle check: with evidence's own timers and redraws suspended, `settle_ms` for whatever
+/// is still running, such as a settle's dissolve, to end, then a window of `ms` over which the
+/// photo surface may draw no frame of its own and the desktop run no update but the one the
+/// window's start itself ran. Captured once the window has passed.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IdleStep {
+    pub settle_ms: u64,
+    pub ms: u64,
+}
+
+impl IdleStep {
+    fn validate(&self) -> Result<(), String> {
+        if (1..=MAX_WAIT_MS).contains(&self.settle_ms) && (1..=MAX_WAIT_MS).contains(&self.ms) {
+            Ok(())
+        } else {
+            Err(format!(
+                "idle settle_ms and ms each take an integer from 1 to {MAX_WAIT_MS}"
+            ))
+        }
+    }
+}
+
 /// Any of the panels, mode or thirds; every field is optional, exactly as `workspace.set` takes
 /// them. At least one field is required.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1518,8 +1579,9 @@ fn optional_reference(reference: Option<&Reference>) -> Result<(), String> {
 pub enum MaskStep {
     /// Open one mask, as clicking its row does.
     Select(Reference),
-    /// Select one component of the open mask, which shows its handles and its number fields, or
-    /// clear the selection with `null`.
+    /// Select one component of the open mask, which shows its number fields and, for a gradient,
+    /// rests its handles on the canvas for a `drag`, or clear the selection with `null`. A
+    /// gradient's step waits for the content map its handles are drawn and placed by.
     SelectComponent(Option<Reference>),
     /// Put the pointer on that component's row, or take it off the list with `null`. While a row
     /// is hovered the overlay shows that component's own contribution instead of the composed mask.
@@ -1530,8 +1592,6 @@ pub enum MaskStep {
     /// Open the New mask or the Add component kind menu, as its button does. An `Escape` key step
     /// puts it away again; a kind from it is the `new`, `add` or `paint` step the choice starts.
     Menu(KindMenuStep),
-    /// Reopen one component's geometry as a canvas gesture, so its handles are drawn.
-    EditShape(Reference),
     /// The mode the next Add gesture will use, chosen before the gesture as the Add row does.
     Mode(String),
     /// Begin a gesture that creates a mask whose first component is of this kind.
@@ -1563,17 +1623,26 @@ pub enum MaskStep {
         settle_between: bool,
     },
     /// A whole shape drawn in one stroke: the press at `from`, the pointer at `to`. The pointer is
-    /// still down afterwards, exactly as it is mid-drag, so the release is a step of its own.
+    /// still down afterwards, exactly as it is mid-drag, so the release that commits it is a step of
+    /// its own.
     Sweep { from: [f64; 2], to: [f64; 2] },
-    /// The pointer lifted. The shape it drew stays; committing it is a separate decision.
+    /// The pointer lifted, which commits a gradient's drag as one history entry. A release that
+    /// placed nothing sends nothing.
     #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
     Release,
-    /// A press on one drawn handle, the points it is dragged through, and its release.
+    /// A press on one drawn handle, the points it is dragged through, and its release: the open
+    /// gesture's handle, or the selected gradient's resting one, whose release commits the drag
+    /// as one history entry.
     Drag {
         handle: DragHandle,
         points: Vec<[f64; 2]>,
+        /// Leave the pointer down after the last point, so the drag's drafted frames are captured
+        /// while it is held; an `apply` commits it, or a later drag continues it.
+        #[serde(default = "yes", skip_serializing_if = "is_true")]
+        release: bool,
     },
-    /// Commit the open gesture: one history entry.
+    /// The draft bar's Done: commit a drag still held down as one history entry, or put the tool in
+    /// hand down.
     #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
     Apply,
     /// Discard the open gesture.
@@ -1605,9 +1674,7 @@ impl MaskStep {
 
     fn validate(&self) -> Result<(), String> {
         match self {
-            Self::Select(reference) | Self::EditShape(reference) | Self::Eye(reference) => {
-                reference.validate()
-            }
+            Self::Select(reference) | Self::Eye(reference) => reference.validate(),
             Self::Menu(_) => Ok(()),
             Self::SelectComponent(reference) | Self::Hover(reference) => {
                 optional_reference(reference.as_ref())

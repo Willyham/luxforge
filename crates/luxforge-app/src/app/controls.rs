@@ -254,14 +254,7 @@ impl Editor {
                 // The reset the group's header shows, exactly as the view model resolved it for
                 // the photo and the target: on a RAW photo's global target White balance's reset
                 // is the development's As shot.
-                let Some(reset) = self
-                    .workspace
-                    .tools
-                    .all()
-                    .find(|section| section.module_id == module_id)
-                    .and_then(|section| section.group_reset(&path))
-                    .cloned()
-                else {
+                let Some(reset) = self.group_reset_of(&module_id, &path) else {
                     self.status.text = format!("{module_id} declares no reset for that group");
                     return Task::none();
                 };
@@ -272,6 +265,24 @@ impl Editor {
             }
         }
         Task::none()
+    }
+
+    /// The reset of the group at `path` in the module's section, as the view model resolved it.
+    /// A section that draws no controls holds none, so a group named in one is resolved from the
+    /// controls its module would show, built now by the function the derive uses.
+    fn group_reset_of(&self, module_id: &str, path: &[usize]) -> Option<tools::ResetRef> {
+        let section = self
+            .workspace
+            .tools
+            .all()
+            .find(|section| section.module_id == module_id)?;
+        section.group_reset(path).cloned().or_else(|| {
+            if section.shows_controls() {
+                return None;
+            }
+            let controls = tools::controls_of(section, &self.inputs());
+            tools::group_reset_in(&controls, path).cloned()
+        })
     }
 
     /// Ask for one missing displayed curve at a time. The query channel carries no timer and one

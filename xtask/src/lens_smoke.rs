@@ -141,7 +141,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
                 to: [0.7, 0.7],
             },
         ),
-        Step::new("radial-committed", MaskStep::Apply)
+        Step::new("radial-committed", MaskStep::Release)
             .commits(1)
             .masks(1),
         Step::new(

@@ -15,7 +15,7 @@ use crate::{
         outcome::Outcome,
         tasks::{Refresh, mutation},
     },
-    mask_draft::{ContentMap, MaskDraft, MaskDraftOp, painted_kind},
+    mask_draft::{ContentMap, MaskDraft, MaskDraftOp, MaskHandle, painted_kind},
 };
 use iced::Task;
 use luxforge_core::{
@@ -39,6 +39,37 @@ pub(crate) struct ArmedBrush {
     pub(crate) mask: MaskGesture,
     /// The displayed entry the map was asked for: a new one asks for the map again.
     pub(crate) entry: Option<EntryId>,
+}
+
+/// The selected gradient's handles at rest: this desktop's view state and nothing else.
+///
+/// In Mask mode, with nothing held and a linear or radial component selected, that component's
+/// handles are drawn from its stored payload so it can be moved and reshaped again, as Lightroom's
+/// are. It holds no core draft and owns no control: a press on a handle opens the draft
+/// ([`Editor::grab_resting`]), the release commits it as one entry, and the handles come back to
+/// rest on what was committed.
+#[derive(Clone, Debug)]
+pub(crate) struct RestingHandles {
+    /// The identity its `render.transform` answer names.
+    pub(crate) id: GestureId,
+    /// The component's shape at exactly its stored payload, and the content map it is drawn by.
+    pub(crate) mask: MaskGesture,
+    /// The payload the shape was opened from: a commit, an undo or a typed field that changes it
+    /// reopens the shape.
+    payload: Value,
+    /// The displayed entry the map was asked for: a new one asks for the map again.
+    entry: Option<EntryId>,
+    /// The map was asked for an older entry and a fresh one is on its way. The handles are still
+    /// drawn by the old one so they do not blink after every drag, but a press waits for the
+    /// fresh one, since a press is placed by the map of the stack on screen and never an older one.
+    stale: bool,
+}
+
+impl RestingHandles {
+    /// A content map of the stack on screen has been asked for and has not answered yet.
+    pub(crate) fn stale(&self) -> bool {
+        self.stale
+    }
 }
 
 impl Editor {
@@ -201,7 +232,11 @@ impl Editor {
             self.mask_panel.selected_mask = reports.first().map(|report| report.id.clone());
         }
         if self.mask_panel.selected_mask != before {
-            self.mask_panel.selected_component = None;
+            self.mask_panel.selected_component = self
+                .mask_panel
+                .selected_mask
+                .as_ref()
+                .and_then(|mask| self.opening_component(mask));
             self.mask_panel.hovered_component = None;
             return true;
         }
@@ -386,6 +421,161 @@ impl Editor {
         crate::app::tasks::transform_task(self.owner.clone(), self.client, id, asset, entry, None)
     }
 
+    /// The selected gradient's handles follow the selection and the stack, once per update: they rest
+    /// on the selected linear or radial component while nothing else is held, reopen from its payload
+    /// when that changes, and ask for the content map again when the displayed entry moves. While a
+    /// core gesture is open they are left as they are, so a drag's own handles come back to rest on
+    /// the map they left with.
+    pub(crate) fn follow_resting_handles(&mut self) -> Task<Message> {
+        if self.core_gesture().is_some() {
+            return Task::none();
+        }
+        let entry = self.displayed_entry();
+        // The common case, every pointer move: the same component, payload and entry, compared in
+        // place so nothing is cloned.
+        let Some((mask, component, kind, payload)) = self.resting_target() else {
+            self.resting = None;
+            return Task::none();
+        };
+        if self.resting.as_ref().is_some_and(|resting| {
+            resting.mask.shape.mask.as_ref() == Some(mask)
+                && resting.mask.shape.component.as_ref() == Some(component)
+                && &resting.payload == payload
+                && resting.entry == entry
+        }) {
+            return Task::none();
+        }
+        let (mask, component, kind, payload) = (
+            mask.clone(),
+            component.clone(),
+            kind.to_owned(),
+            payload.clone(),
+        );
+        if self.resting.as_ref().is_some_and(|resting| {
+            resting.mask.shape.mask.as_ref() != Some(&mask)
+                || resting.mask.shape.component.as_ref() != Some(&component)
+        }) {
+            self.resting = None;
+        }
+        if self
+            .resting
+            .as_ref()
+            .is_none_or(|resting| resting.payload != payload)
+        {
+            let brush = self.painting_brush();
+            let Some(mut shape) = MaskDraft::editing(mask, component, &kind, &payload, brush)
+            else {
+                self.resting = None;
+                return Task::none();
+            };
+            match &mut self.resting {
+                Some(resting) => {
+                    if let Some(map) = &resting.mask.map {
+                        shape.set_aspect(map.aspect());
+                    }
+                    resting.mask.shape = shape;
+                    resting.payload = payload;
+                }
+                None => {
+                    let id = self.next_gesture();
+                    self.event(
+                        "mask_handles_resting",
+                        || json!({"summary": shape.summary()}),
+                    );
+                    self.resting = Some(RestingHandles {
+                        id,
+                        mask: MaskGesture {
+                            shape,
+                            map: None,
+                            map_draft: None,
+                        },
+                        payload,
+                        entry: None,
+                        stale: true,
+                    });
+                }
+            }
+        }
+        let (Some(asset), Some(resting)) = (
+            self.document
+                .state
+                .as_ref()
+                .map(|state| state.asset.id.clone()),
+            self.resting.as_ref(),
+        ) else {
+            return Task::none();
+        };
+        if resting.entry == entry {
+            return Task::none();
+        }
+        let id = self.next_gesture();
+        let resting = self.resting.as_mut().expect("the resting handles");
+        resting.id = id;
+        resting.entry = entry.clone();
+        resting.stale = true;
+        crate::app::tasks::transform_task(self.owner.clone(), self.client, id, asset, entry, None)
+    }
+
+    /// The component whose handles rest on the canvas: the open mask's selected component, when it
+    /// is a gradient this build draws, the listing describes the photograph on screen, Mask mode is
+    /// showing it at the current state and nothing else is held or compared.
+    fn resting_target(&self) -> Option<(&MaskId, &ComponentId, &str, &Value)> {
+        if self.armed.is_some()
+            || !self.mask_mode_active()
+            || self.document.compare_return.is_some()
+            || self.compare_key.is_down()
+            || crate::state::editable_refusal(self.document.state.as_ref(), &self.session).is_some()
+        {
+            return None;
+        }
+        let listing = self.document.masks.as_ref()?;
+        if Some(&listing.entry_id) != self.document.display_entry.as_ref() {
+            return None;
+        }
+        let report = self.open_mask()?;
+        let selected = self.mask_panel.selected_component.as_ref()?;
+        let component = report
+            .components
+            .iter()
+            .find(|component| &component.id == selected)?;
+        (component.available
+            && crate::mask_draft::drawable(&component.kind)
+            && !crate::mask_draft::paintable(&component.kind))
+        .then_some((
+            &report.id,
+            &component.id,
+            component.kind.as_str(),
+            &component.payload,
+        ))
+    }
+
+    /// The mask figure the canvas draws: the held gesture's, or else the selected gradient's
+    /// resting handles.
+    pub(crate) fn drawn_mask(&self) -> Option<&MaskGesture> {
+        self.held_mask()
+            .or_else(|| self.resting.as_ref().map(|resting| &resting.mask))
+    }
+
+    /// The component a mask opens on: its first gradient, so opening a mask shows that gradient's
+    /// handles on the canvas, ready to drag, as Lightroom shows an opened mask's. A mask with no
+    /// gradient opens with nothing selected.
+    pub(crate) fn opening_component(&self, mask: &MaskId) -> Option<ComponentId> {
+        self.document
+            .masks
+            .as_ref()?
+            .masks
+            .iter()
+            .find(|report| &report.id == mask)?
+            .components
+            .iter()
+            .find(|component| {
+                component.available
+                    && crate::mask_draft::drawable(&component.kind)
+                    && !crate::mask_draft::paintable(&component.kind)
+            })
+            .map(|component| component.id.clone())
+    }
+
     /// The kind of the component the panel has selected, as the listing reports it.
     fn selected_component_kind(&self) -> Option<String> {
         let component = self.mask_panel.selected_component.as_ref()?;
@@ -478,8 +668,9 @@ impl Editor {
                         return Task::none();
                     }
                     self.put_brush_down();
+                    self.mask_panel.selected_component =
+                        id.as_ref().and_then(|mask| self.opening_component(mask));
                     self.mask_panel.selected_mask = id;
-                    self.mask_panel.selected_component = None;
                     self.mask_panel.hovered_component = None;
                     self.presentation.presenter.clear_coverage();
                     // The sections below the list are bound to the newly opened mask, so their
@@ -561,7 +752,6 @@ impl Editor {
                     }
                 }
             }
-            MaskMessage::EditShape(component) => self.edit_shape(component),
             // The brush's own route. The Add row is built from the kinds whose geometry is declared
             // as numbers, and a brush declares none, so a Brush button there would be a button with
             // no command behind it; painting is reached from the Brush section instead.
@@ -583,7 +773,7 @@ impl Editor {
                         }
                     }
                 }
-                PaintTarget::Component(component) => self.edit_shape(component),
+                PaintTarget::Component(component) => self.paint_component(component),
             },
             MaskMessage::Brush(edit) => self.brush_edit(edit),
             MaskMessage::Handle(handle) => self.mask_handle(handle),
@@ -1060,8 +1250,8 @@ impl Editor {
         self.mask_command(command.method, target, fields)
     }
 
-    /// Open a gesture that patches one existing component's geometry.
-    fn edit_shape(&mut self, component: String) -> Task<Message> {
+    /// Put the brush in hand on one existing brush component, so the next press is its next stroke.
+    fn paint_component(&mut self, component: String) -> Task<Message> {
         if let Some(reason) = self.gesture_refusal(Starting::Mask) {
             self.status.text = reason;
             return Task::none();
@@ -1084,11 +1274,13 @@ impl Editor {
             self.status.text = luxforge_core::mask::rules::unknown_kind(&found.kind).detail;
             return Task::none();
         }
-        // The shape starts at exactly the stored payload, so reopening a gesture shows what was
-        // committed rather than a shape reconstructed from the drawn handles. A painted component
-        // has no shape to reopen — its strokes are already drawn and are objects in their own right
-        // — so reopening it is the next stroke on it, which is one more entry and not a patch. A
-        // kind this build draws no editor for, or a payload its editor cannot read, opens nothing.
+        // A brush's strokes are already drawn and are objects in their own right, so painting on it
+        // again is the next stroke, which is one more entry and not a patch. A gradient is moved by
+        // its resting handles instead, and is not painted on.
+        if !crate::mask_draft::paintable(&found.kind) {
+            self.status.text = format!("{} is not a brush", found.name);
+            return Task::none();
+        }
         let brush = self.painting_brush();
         let Some(draft) = MaskDraft::editing(
             mask,
@@ -1097,7 +1289,6 @@ impl Editor {
             &found.payload,
             brush,
         ) else {
-            self.status.text = format!("{} has no handles in this build", found.name);
             return Task::none();
         };
         self.mask_panel.overlay_manual = false;
@@ -1177,6 +1368,20 @@ impl Editor {
         gesture: GestureId,
         result: Result<MappingDescriptor, String>,
     ) -> Task<Message> {
+        if let Some(resting) = self
+            .resting
+            .as_mut()
+            .filter(|resting| resting.id == gesture)
+        {
+            resting.stale = false;
+            resting.mask.map = result.ok().and_then(ContentMap::from_descriptor);
+            if let Some(aspect) = resting.mask.map.as_ref().map(ContentMap::aspect) {
+                resting.mask.shape.set_aspect(aspect);
+            }
+            let available = resting.mask.map.is_some();
+            self.outcome(Outcome::MaskMap { available });
+            return Task::none();
+        }
         let asked = match (self.core_gesture(), &self.armed) {
             (Some(open), _) => open.draft.gesture == gesture && open.mask().is_some(),
             (None, Some(armed)) => armed.id == gesture,
@@ -1252,6 +1457,13 @@ impl Editor {
         if let MaskPointer::PaintBegin { x, y } = handle {
             return self.paint_press((x, y));
         }
+        // With nothing held, a press on a resting handle is the other one.
+        if self.held_mask().is_none() {
+            return match handle {
+                MaskPointer::Begin { handle, x, y } => self.grab_resting(handle, (x, y)),
+                _ => Task::none(),
+            };
+        }
         if self
             .armed
             .as_ref()
@@ -1306,9 +1518,15 @@ impl Editor {
                 shape.drag((x, y));
                 self.offer_mask()
             }
+            // A gradient's drag is one draft and one history entry, as Lightroom's is, so its
+            // release commits: the one that places a new gradient creates it, and one on an
+            // existing gradient's handles patches it.
             MaskPointer::End => {
                 shape.end();
-                self.offer_mask()
+                if shape.direct() {
+                    return self.release_direct();
+                }
+                self.release()
             }
             MaskPointer::PaintBegin { .. } => Task::none(),
             // The path is extended and the canvas redraws it immediately; the round trip below is
@@ -1330,6 +1548,52 @@ impl Editor {
                 self.release()
             }
         }
+    }
+
+    /// A press on a resting handle: the drag's core draft opens here, with `draft.begin` and the
+    /// first `draft.set` carrying the stored shape, in this update, exactly as a brush press opens
+    /// its stroke. It answers to the one refusal every mask gesture's start does, and waits for a
+    /// content map of the stack on screen.
+    fn grab_resting(&mut self, handle: MaskHandle, point: (f64, f64)) -> Task<Message> {
+        if let Some(reason) = self.gesture_refusal(Starting::Mask) {
+            self.status.text = reason;
+            return Task::none();
+        }
+        let Some(resting) = &self.resting else {
+            return Task::none();
+        };
+        if resting.stale || resting.mask.map.is_none() {
+            self.status.text = "Waiting for mask coordinates".into();
+            return Task::none();
+        }
+        let mut grabbed = resting.mask.clone();
+        grabbed.shape.begin(handle, point);
+        self.event(
+            "mask_draft_begin",
+            || json!({"method":grabbed.shape.method(),"summary":grabbed.shape.summary()}),
+        );
+        self.status.text = self.mask_gesture_line(&grabbed.shape);
+        let fields = grabbed.fields();
+        let gesture = self.next_gesture();
+        self.open_core(gesture, Kind::Mask(grabbed), Some(fields))
+    }
+
+    /// The release of an existing gradient's drag commits it. A press that moved nothing is not an
+    /// edit, so its draft is discarded rather than written as an entry that changes nothing.
+    fn release_direct(&mut self) -> Task<Message> {
+        let unchanged =
+            self.mask_gesture()
+                .zip(self.resting.as_ref())
+                .is_some_and(|(gesture, resting)| {
+                    gesture.shape.component == resting.mask.shape.component
+                        && gesture.fields() == resting.mask.fields()
+                });
+        if unchanged {
+            let discarded = self.discard();
+            self.status.text = String::new();
+            return discarded;
+        }
+        self.release()
     }
 
     /// A press with the brush in hand: the stroke starts at the press's position, drawn with the
@@ -1401,20 +1665,17 @@ impl Editor {
         discarded
     }
 
-    /// Offer the gesture's current geometry to its core draft. The shared driver sends it with its
-    /// one preview job the moment nothing is in flight — synchronously, on this thread, in the
-    /// update that produced it, as a slider's value is — and keeps only the newest while a round
-    /// trip is in flight. That job's evaluation also supplies the live coverage grid
-    /// ([`Editor::request_mask_coverage`]).
+    /// Tell the gesture's core draft its geometry changed. The shared driver builds the fields —
+    /// a stroke's path decimated once, its capture checked first ([`Kind::build`]) — and sends
+    /// them with its one preview job the moment nothing is in flight, synchronously, on this
+    /// thread, in the update that produced them, as a slider's value is; a change while a round
+    /// trip is in flight is built once that trip has answered. That job's evaluation also supplies
+    /// the live coverage grid ([`Editor::request_mask_coverage`]).
     pub(crate) fn offer_mask(&mut self) -> Task<Message> {
-        if let Some(error) = self.mask_shape().and_then(MaskDraft::capture_error) {
-            self.status.text = error.to_string();
+        if self.mask_gesture().is_none() {
             return Task::none();
         }
-        match self.mask_gesture().map(MaskGesture::fields) {
-            Some(fields) => self.drive(Event::Offer(fields)),
-            None => Task::none(),
-        }
+        self.drive(Event::Changed)
     }
 
     /// A mask gesture's commit landed: merge it, open what it created and put the brush back in the
@@ -1428,6 +1689,27 @@ impl Editor {
     ) -> Task<Message> {
         let created = refresh.masks.masks.last().map(|report| report.id.clone());
         let was_create = shape.mask.is_none();
+        // The components the mask held before, so a gradient this commit created or added can be
+        // told apart from them below.
+        let known: Vec<ComponentId> = shape
+            .mask
+            .as_ref()
+            .and_then(|id| {
+                self.document
+                    .masks
+                    .as_ref()?
+                    .masks
+                    .iter()
+                    .find(|report| &report.id == id)
+            })
+            .map(|report| {
+                report
+                    .components
+                    .iter()
+                    .map(|component| component.id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
         // A stroke committed: which component it landed on is what the next stroke appends to, so
         // painting carries on without a second gesture.
         let painted = shape
@@ -1437,11 +1719,40 @@ impl Editor {
         self.accept(refresh);
         // A gesture that created a mask opens it, so the adjustments below the list are already
         // bound to what was just drawn.
-        if was_create && let Some(id) = created {
-            self.mask_panel.selected_mask = Some(id);
+        let target = if was_create {
+            created
+        } else {
+            shape.mask.clone()
+        };
+        if was_create && let Some(id) = &target {
+            self.mask_panel.selected_mask = Some(id.clone());
             self.mask_panel.selected_component = None;
             self.mask_panel.hovered_component = None;
             self.seed_values();
+        }
+        // A gradient this commit drew is selected, so its handles stay on the canvas to be dragged
+        // again, as Lightroom's do.
+        if painted.is_none()
+            && shape.component.is_none()
+            && let Some(id) = target
+        {
+            let fresh = self
+                .document
+                .masks
+                .as_ref()
+                .and_then(|listing| listing.masks.iter().find(|report| report.id == id))
+                .and_then(|report| {
+                    report
+                        .components
+                        .iter()
+                        .find(|component| !known.contains(&component.id))
+                })
+                .map(|component| component.id.clone());
+            if let Some(component) = fresh {
+                self.mask_panel.selected_mask = Some(id);
+                self.mask_panel.selected_component = Some(component);
+                self.seed_mask_fields();
+            }
         }
         self.status.text = "Mask committed".into();
         match painted {
@@ -1560,19 +1871,31 @@ pub(crate) mod mask_overlay {
     ///
     /// `off` paints nothing, which is `None` rather than a transparent buffer: an overlay that is off
     /// costs no texture at all.
+    #[cfg(test)]
     pub(crate) fn paint(
         grid: &MaskOverlay,
         mode: MaskOverlayMode,
         tint: MaskOverlayColour,
     ) -> Option<Vec<u8>> {
+        paint_cancellable(grid, mode, tint, &luxforge_core::Cancel::never()).unwrap()
+    }
+
+    pub(crate) fn paint_cancellable(
+        grid: &MaskOverlay,
+        mode: MaskOverlayMode,
+        tint: MaskOverlayColour,
+        cancel: &luxforge_core::Cancel,
+    ) -> Result<Option<Vec<u8>>, luxforge_core::Error> {
+        cancel.check()?;
         if mode == MaskOverlayMode::Off {
-            return None;
+            return Ok(None);
         }
         let wash = colour(tint);
-        let mut rgba = vec![0u8; grid.coverage.len() * 4];
-        for (cell, pixel) in grid.coverage.iter().zip(rgba.chunks_exact_mut(4)) {
-            let coverage = f32::from(*cell) / f32::from(MASK_COVERAGE_FULL);
-            pixel.copy_from_slice(&match mode {
+        // Each quantized cell has only 256 possible colours. Freeze the exact former arithmetic
+        // once per value instead of repeating its float conversion and rounding for every cell.
+        let palette: [[u8; 4]; 256] = std::array::from_fn(|value| {
+            let coverage = value as f32 / f32::from(MASK_COVERAGE_FULL);
+            match mode {
                 MaskOverlayMode::Off => [0, 0, 0, 0],
                 MaskOverlayMode::Tint => [
                     channel(wash.r),
@@ -1585,9 +1908,78 @@ pub(crate) mod mask_overlay {
                     [grey, grey, grey, 255]
                 }
                 MaskOverlayMode::ImageOnBlack => [0, 0, 0, channel(1.0 - coverage)],
-            });
+            }
+        });
+        let mut rgba = vec![0u8; grid.coverage.len() * 4];
+        for (cells, pixels) in grid.coverage.chunks(4096).zip(rgba.chunks_mut(4096 * 4)) {
+            cancel.check()?;
+            for (cell, pixel) in cells.iter().zip(pixels.chunks_exact_mut(4)) {
+                pixel.copy_from_slice(&palette[usize::from(*cell)]);
+            }
         }
-        Some(rgba)
+        Ok(Some(rgba))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn every_overlay_code_matches_the_frozen_float_painter_and_cancellation_returns_no_pixels()
+        {
+            let grid = MaskOverlay {
+                mask: luxforge_core::MaskId::new(),
+                component: None,
+                cells_w: 256,
+                cells_h: 1,
+                coverage: (0..=255).collect(),
+            };
+            for tint in [MaskOverlayColour::Green, MaskOverlayColour::White] {
+                for mode in [
+                    MaskOverlayMode::Tint,
+                    MaskOverlayMode::MaskOnBlack,
+                    MaskOverlayMode::ImageOnBlack,
+                ] {
+                    let wash = colour(tint);
+                    let expected: Vec<u8> = grid
+                        .coverage
+                        .iter()
+                        .flat_map(|cell| {
+                            let coverage = f32::from(*cell) / 255.0;
+                            let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                            match mode {
+                                MaskOverlayMode::Tint => [
+                                    byte(wash.r),
+                                    byte(wash.g),
+                                    byte(wash.b),
+                                    byte(coverage * 0.55),
+                                ],
+                                MaskOverlayMode::MaskOnBlack => {
+                                    [byte(coverage), byte(coverage), byte(coverage), 255]
+                                }
+                                MaskOverlayMode::ImageOnBlack => [0, 0, 0, byte(1.0 - coverage)],
+                                MaskOverlayMode::Off => unreachable!(),
+                            }
+                        })
+                        .collect();
+                    assert_eq!(paint(&grid, mode, tint).unwrap(), expected);
+                }
+            }
+            assert!(paint(&grid, MaskOverlayMode::Off, MaskOverlayColour::Green).is_none());
+            let cancel = luxforge_core::Cancel::new();
+            cancel.cancel();
+            assert_eq!(
+                paint_cancellable(
+                    &grid,
+                    MaskOverlayMode::Tint,
+                    MaskOverlayColour::Green,
+                    &cancel
+                )
+                .unwrap_err()
+                .kind,
+                luxforge_core::ErrorKind::Cancelled
+            );
+        }
     }
 }
 
@@ -1599,21 +1991,42 @@ impl Editor {
     /// never changing the photograph, in the next redraw. It is kept with its generation and drawn
     /// only while that frame is the one on screen — an overlay drawn over another image would claim
     /// a selection covers pixels it does not.
+    #[cfg(test)]
     pub(crate) fn present_mask_overlay(
         &mut self,
         generation: u64,
         grid: luxforge_core::analysis::MaskOverlay,
     ) -> bool {
-        let workspace = &self.session.workspace;
         let mode = self.effective_mask_overlay();
-        let Some(rgba) = mask_overlay::paint(&grid, mode, workspace.mask_overlay_colour) else {
+        let Some(rgba) =
+            mask_overlay::paint(&grid, mode, self.session.workspace.mask_overlay_colour)
+        else {
             self.presentation.presenter.clear_coverage();
             return false;
         };
-        let (width, height) = (grid.cells_w, grid.cells_h);
+        self.present_painted_mask_overlay(
+            generation,
+            &grid.mask,
+            grid.component.as_ref(),
+            (grid.cells_w, grid.cells_h),
+            std::sync::Arc::new(rgba),
+        )
+    }
+
+    pub(crate) fn present_painted_mask_overlay(
+        &mut self,
+        generation: u64,
+        mask: &MaskId,
+        component: Option<&ComponentId>,
+        cells: (u32, u32),
+        rgba: std::sync::Arc<Vec<u8>>,
+    ) -> bool {
+        let workspace = &self.session.workspace;
+        let mode = self.effective_mask_overlay();
+        let (width, height) = cells;
         self.event(
             "mask_overlay",
-            || json!({"generation":generation,"mask":grid.mask.as_str(),"component":grid.component.as_ref().map(luxforge_core::ComponentId::as_str),"cells":[width,height],"mode":mode.as_str(),"setting":workspace.mask_overlay.as_str(),"colour":workspace.mask_overlay_colour.as_str()}),
+            || json!({"generation":generation,"mask":mask.as_str(),"component":component.map(ComponentId::as_str),"cells":[width,height],"mode":mode.as_str(),"setting":workspace.mask_overlay.as_str(),"colour":workspace.mask_overlay_colour.as_str()}),
         );
         let shown = match self
             .presentation

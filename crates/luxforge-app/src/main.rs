@@ -44,6 +44,9 @@ struct Config {
     /// The base URL of a capability proof endpoint a harness started; registers the developer
     /// capability proof module against it. Developer mode only.
     proof_endpoint: Option<String>,
+    /// Draw the photograph at Fit through the photo surface's GPU stage with the identity program,
+    /// for a rendered check of the stage. Evidence runs only; see `app/gpu_identity.rs`.
+    gpu_identity: bool,
 }
 
 impl Config {
@@ -113,6 +116,7 @@ fn arguments() -> Result<Config, String> {
                 );
             }
             Some("--hidden-window") => config.hidden = true,
+            Some("--evidence-gpu-identity") => config.gpu_identity = true,
             Some("--disable-module") => {
                 let id = args
                     .next()
@@ -132,7 +136,7 @@ fn arguments() -> Result<Config, String> {
             }
             Some("--help") => {
                 println!(
-                    "Luxforge: [--open IMAGE]... [--catalog CATALOG] [--data-root DIRECTORY] [--developer] [--proof-endpoint URL] [--disable-module MODULE_ID]... [--evidence-dir NEW_DIRECTORY] [--evidence-script FILE] [--window-size WIDTH HEIGHT] [--hidden-window]\n--developer serves the test modules (the pixel and controls proofs) and shows the components gallery (automatic in debug builds); --proof-endpoint registers the capability proof module against a proof endpoint a test harness started, and only in developer mode; --disable-module registers a built-in as unavailable, so a stack that uses it reports the unavailable effect instead of rendering without it.\n--hidden-window creates the window invisible: it renders and captures as usual but is never placed on screen, which is what automated launches use.\nEvidence mode imports each --open in order into an isolated catalog, captures a frame after each, runs any evidence script with a frame per step and exits."
+                    "Luxforge: [--open IMAGE]... [--catalog CATALOG] [--data-root DIRECTORY] [--developer] [--proof-endpoint URL] [--disable-module MODULE_ID]... [--evidence-dir NEW_DIRECTORY] [--evidence-script FILE] [--evidence-gpu-identity] [--window-size WIDTH HEIGHT] [--hidden-window]\n--developer serves the test modules (the pixel and controls proofs) and shows the components gallery (automatic in debug builds); --proof-endpoint registers the capability proof module against a proof endpoint a test harness started, and only in developer mode; --disable-module registers a built-in as unavailable, so a stack that uses it reports the unavailable effect instead of rendering without it.\n--hidden-window creates the window invisible: it renders and captures as usual but is never placed on screen, which is what automated launches use.\nEvidence mode imports each --open in order into an isolated catalog, captures a frame after each, runs any evidence script with a frame per step and exits. --evidence-gpu-identity, in evidence mode only, draws the photograph at Fit through the GPU preview stage with the identity program, for a rendered check of that stage."
                 );
                 std::process::exit(0)
             }
@@ -150,6 +154,10 @@ fn arguments() -> Result<Config, String> {
     // A script exists to produce captured frames, so it is meaningless without an evidence run.
     if !config.script.is_empty() && config.evidence.is_none() {
         return Err("--evidence-script requires --evidence-dir".into());
+    }
+    // A test hook: an ordinary launch never draws through a forced GPU plan.
+    if config.gpu_identity && config.evidence.is_none() {
+        return Err("--evidence-gpu-identity requires --evidence-dir".into());
     }
     if let Some(path) = &config.evidence {
         if path.exists() {

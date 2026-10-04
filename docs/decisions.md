@@ -49,7 +49,7 @@ Decided on 2026-09-21:
 Decided on 2026-09-23:
 
 - The state panel's [Performance section](design/performance-panel.md#decisions) starts open on every launch. Memory is shown in binary units with Activity Monitor's MB and GB labels, and CPU as a percentage of one core, so it passes 100% whenever more than one core is busy.
-- A module whose controls are a single group shows them without a sub-group header: a header naming the module's only group, such as RAW's "RAW development" or Transforms' "Exact transforms", repeats the band above it. The band keeps the module's reset. Descriptors and the API are unchanged.
+- A module whose controls are a single group shows them without a sub-group header: a header naming the module's only group, such as Presence's "Presence" or Vignette's "Vignette", repeats the band above it. The band keeps the module's reset. Descriptors and the API are unchanged.
 
 Decided on 2026-09-26, aligning the shell with the boards:
 
@@ -232,6 +232,7 @@ The owner requests [interaction repairs](design/masking-interactions.md): unplac
 - The panel is the design's: rows at the module-panel density, a Masks band, one overlay row, New mask and Add component as kind menus, the Brush section only while a brush is armed or selected, and an accent scope chip on each band bound to the open mask.
 - Each component row carries its own `+ − ∩` mode control; the first component's shows `+` alone, dimmed, with the host's reason.
 - Tool starts over Off show Tint automatically, including new gradients and brushes; explicit O/Off during the tool is honoured. Existing visible presentations are kept.
+- Gradients work as Lightroom's do (decided 2026-10-03): each gradient drag, including the one that places it, commits on release as one entry with no Apply; a committed gradient's handles [rest on the canvas](design/masking-interactions.md#resting-handles) while it is selected; a drawn gradient is selected, and opening a mask selects its first gradient. `⌫` on a mask's only component deletes the mask.
 - Renames happen in place, from the row's menu. A component rename is a host command, `mask.rename-component`, with `mask.rename`'s rules.
 - `mask.list` reports each stroke's settings so a stroke row can say what it painted.
 - The luminance range is drawn with a generic `range` control kind above its four fields.
@@ -297,6 +298,36 @@ Decided by the owner on 2026-10-01, after the Lens correction panel listed every
 - A single click on the plot away from every point adds a point, and a double-click on a point removes it; the plot fills the panel's width up to a maximum and is centred beyond it (owner, 2026-10-01). A double-click on empty plot therefore adds one point and never removes it.
 - Below black the curve uses a floor-subtracted luminance ratio (owner, 2026-09-30): with `L_floor` the linear output of the curve at encoded zero, `rgb_out = L_floor + rgb·(L_out − L_floor)/L`, which equals Basic's frozen ratio rule whenever the curve keeps black at zero. A lifted black then fades the deepest shadows toward grey instead of turning their noise into coloured speckle. Basic's Blacks keeps its frozen rule; changing it is a separate follow-up.
 
+## GPU previews
+
+Decided by the owner on 2026-10-01, after a review of where the CPU spends its time ([design](design/gpu-preview.md)):
+
+- **Speed comes first for interactive previews**, provided settling causes no large, noticeable jump in the image. Generous preview error limits are acceptable, especially with interface affordances that soften the hand-off.
+- **GPU arithmetic is for previews only.** The CPU stays the reference for settled frames, the histogram and clipping counts, point samples, mask grids, export and history; no GPU pixel reaches them.
+- **Order of work:** measurable error limits first, then the Fit colour stage, then Presence and Detail, with mipmapped minification alongside.
+- **Interactive speed comes before the memory and performance rules** (owner, 2026-10-03): painting and drawing masks over Clarity, Texture and sharpening must keep pace as Lightroom does with tens of masks, and memory may be spent where it buys that. Under it **the GPU-preview budget is 2 GiB**, up from the 640 MiB the owner set on 2026-10-02, so a plan's chain of intermediates, a painted mask's planes held across ticks and the heaviest spatial slots draw on the GPU: painting at Fit over three masked Presence layers peaks at 0.56 GB, a RAW with Detail beside them at 0.97 GB, and ten masks at 100% at 1.47 GB. GPU memory counts toward the process's footprint on Apple silicon, so the provisional 1 GiB peak for one 60 MP photograph no longer bounds a gesture; the native qualification measures the high-water mark.
+- **A recipe may hold 16 masked spatial layers** (owner, 2026-10-03), up from four. That is the figure for masks and for masked colour layers, so tens of masks can hold Clarity, Texture and Detail as in Lightroom.
+  - Each layer is still a sequential full frame in the settled render and in export: about 0.8 s for a whole-frame layer at 60 MP.
+  - The GPU preview shares scratch planes across its chain so that most such stacks draw on the GPU. A slot past the 2 GiB budget, which 16 layers reach at 100% on a RAW, takes the CPU path.
+  - That work and the limit of 16 are implemented ([GPU previews](design/gpu-preview.md#plane-sharing-and-precision)).
+- **A preview drawn on the CPU says why** (owner, 2026-10-03). When the GPU preview is on but a gesture is drawn on the slower CPU path for a reason that lasts, such as a slot past the budget, the desktop tells the person why, so a slower drag is explained.
+- **A held GPU-preview boundary may be up to 256 MiB** (owner, 2026-10-02), up from 128 MiB, so RAW drags at 100% whose spatial margins need a larger full-precision boundary draw on the GPU. The desktop releases its CPU copy once the surface holds the boundary, and the upload is spread so the arrival's overlap of render buffer, staging and texture stays near twice the boundary rather than three times.
+- **A stack that settles from the exact render is judged against the CPU preview it stands in for** (owner, 2026-10-02). For an effect that declares `FitSettle::Exact` (Detail), the GPU frame is held to its class's limits against the CPU's moving proxy, the frame the gesture would otherwise show, not against the exact reduction that replaces it on settle. The proxy's own jump to the exact reduction is unchanged by the GPU and stays as Detail defines it ([design](design/gpu-preview.md#the-preview-error-limit)).
+
+The specific limits (CIEDE2000, in a pointwise and a spatial class), the 150 ms settle dissolve, the "GPU preview" label, and the `workspace.set` preference are proposals with recorded defaults in the [design](design/gpu-preview.md#proposals-with-recorded-defaults); the editor runs on them until the owner revises them. The CPU fallback notice's place, timing and wording are proposals with recorded defaults in the same [design](design/gpu-preview.md#proposals-with-recorded-defaults).
+
+## CPU and memory efficiency
+
+Decided by the owner on 2026-10-03, after a read-only audit of the workspace ([design](design/efficiency.md)):
+
+- Every byte-identical finding the plan lists is accepted: kernels, source preparation, owner and desktop copying, and build features.
+- The RAW colour layers before a spatial layer stay recomputed for every tile's halo, about 2.7 times the stage under Clarity. Neither a materialized frame nor a row-band cache is added for now ([known remaining costs](engineering/performance-rules.md#known-remaining-costs)).
+- Clarity's and Dehaze's stage-anchored reductions get a disposable cache under rule 14, at about 15 to 45 MB per entry at 60 MP within 64 MiB in total ([the reduced-grid cache](design/efficiency.md#the-reduced-grid-cache)).
+- The normalized float mosaic is removed from RAW development's peak through a checked-in librtprocess patch that the build applies reproducibly; vendored sources are never edited.
+- The catalog uses WAL with `synchronous=FULL`, `fullfsync` and `checkpoint_fullfsync` on, so a commit reaches the drive with one full flush ([catalog durability](design/efficiency.md#catalog-durability)).
+- Packaging and timing build with a separate `dist` profile with LTO and one codegen unit; the daily release build is unchanged. Deferred the same day until the timing runs other plans have outstanding are recorded, since they and every recorded baseline build `release`.
+- Not adopted: DCT-scaled JPEG decode for proxies, parallel restart-marker JPEG export, cropping masked sensor margins, `target-cpu=apple-m4` and `panic = "abort"`.
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/product-decisions.json).
@@ -309,7 +340,7 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
 - For the proposed [Corrections module](design/corrections.md), should AI Remove enter the accepted scope, and should a changed RAW source-development prefix require regeneration of a saved AI patch? Remote-photo consent is per asset by the [module capabilities](#module-capabilities) default.
 - Which measured workloads and responsiveness budgets become acceptance requirements?
-- For interactive previews, which additional measured quality levels and approximation error bounds are acceptable beyond the authorized viewport baseline? Temporary softness, the updating histogram, and viewport-bounded clipping are accepted above.
+- For interactive previews, which additional measured quality levels and approximation error bounds are acceptable beyond the authorized viewport baseline? Temporary softness, the updating histogram, and viewport-bounded clipping are accepted above. For GPU previews the owner chose speed first ([above](#gpu-previews)); do the [proposed limits](design/gpu-preview.md#the-preview-error-limit) stand?
 - Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand? RAW white balance import converts values without calibration ([source-kind controls](#source-kind-controls)).
 - Which of the [Tone curve proposals](design/tone-curve.md#proposals-with-recorded-defaults) stand — a luminance composite with the luminance-ratio reconstruction rather than Lightroom's per-channel composite, one channel, order 5 after Basic and before the mixer, free endpoints, the unit-slope tail past white, sixteen points, the Lightroom `ToneCurvePV2012` transfer including an identity curve, a double-click add that snaps to the drawn curve, end points the desktop does not remove, and the delivered point rows? The module is implemented on these defaults.
 - Which of the [Presence, colour mixer and vignette proposals](design/presence-mixer-vignette.md#proposals-with-recorded-defaults) (section names, stage order, mixer layout, vignette style, spatial gesture latency, sample cost) stand? Implementation was authorized on 2026-09-22 on the recorded defaults and is delivered; the owner refines the defaults after review, including whether spatial sliders should draft at a bounded resolution now that the measured misses are recorded.

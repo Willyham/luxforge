@@ -4,14 +4,16 @@
 //!
 //! [`segmented`] builds the whole control from its options. [`segment`] and [`segment_track`] are
 //! its two parts, for a control whose last segment is sometimes something other than a label (the
-//! title bar's typed zoom field). [`keyed_segment`] is a segment with the key that selects it after
-//! its label, as the workspace switch draws Select `G` and Develop `D`.
+//! title bar's typed zoom field). [`chevron_segment`] is a segment that has more behind it (the
+//! title bar's percentage, which drops the zoom stops). [`keyed_segment`] is a segment with the key
+//! that selects it after its label, as the workspace switch draws Select `G` and Develop `D`.
 //!
 //! The Select workspace's filter bar draws a smaller control of the same kind (`.fseg`):
 //! [`filter_segment`] on a [`filter_segment_track`], [`theme::FILTER_SEGMENT_HEIGHT`] tall in
 //! [`theme::SIZE_FILTER`] text, each segment with an optional count in the accent after its label.
 
 use crate::theme;
+use crate::widgets::icon_button::{Icon, icon};
 use iced::widget::text::{LineHeight, Wrapping};
 use iced::widget::{Row, button, container, row, text};
 use iced::{Alignment, Element, Length};
@@ -52,12 +54,32 @@ pub fn segment<'a, M: Clone + 'a>(
     selected: bool,
     on_press: Option<M>,
 ) -> Element<'a, M> {
-    button(container(segment_label(label, theme::SIZE_CONTROL)).center_y(Length::Fill))
-        .padding([0.0, theme::SEGMENT_PADDING])
-        .height(Length::Fixed(theme::SEGMENT_HEIGHT))
-        .style(theme::segment(selected))
-        .on_press_maybe(on_press)
-        .into()
+    segment_with(
+        segment_label(label, theme::SIZE_CONTROL).into(),
+        selected,
+        on_press,
+    )
+}
+
+/// A [`segment`] with a small chevron after its label, in the label's own ink, for a segment that
+/// has more behind it.
+pub fn chevron_segment<'a, M: Clone + 'a>(
+    label: String,
+    selected: bool,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let ink = match (on_press.is_some(), selected) {
+        (false, _) => theme::TEXT_TERTIARY,
+        (true, true) => theme::TEXT_BRIGHT,
+        (true, false) => theme::TEXT_SECONDARY,
+    };
+    let content = row![
+        segment_label(label, theme::SIZE_CONTROL),
+        icon(Icon::ChevronDown, theme::SEGMENT_CHEVRON_SIZE, ink),
+    ]
+    .spacing(theme::SEGMENT_CHEVRON_SPACING)
+    .align_y(Alignment::Center);
+    segment_with(content.into(), selected, on_press)
 }
 
 /// A [`segment`] with the key that selects it after its label, in 10.5 pt tertiary ink
@@ -78,12 +100,7 @@ pub fn keyed_segment<'a, M: Clone + 'a>(
     ]
     .spacing(theme::SWITCH_HINT_SPACING)
     .align_y(Alignment::Center);
-    button(container(content).center_y(Length::Fill))
-        .padding([0.0, theme::SEGMENT_PADDING])
-        .height(Length::Fixed(theme::SEGMENT_HEIGHT))
-        .style(theme::segment(selected))
-        .on_press_maybe(on_press)
-        .into()
+    segment_with(content.into(), selected, on_press)
 }
 
 /// One filter segment (`.fseg button`): its label in [`theme::SIZE_FILTER`] text and, when given,
@@ -129,6 +146,19 @@ pub fn filter_segment_track<'a, M: 'a>(segments: Vec<Element<'a, M>>) -> Element
     .into()
 }
 
+fn segment_with<'a, M: Clone + 'a>(
+    content: Element<'a, M>,
+    selected: bool,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    button(container(content).center_y(Length::Fill))
+        .padding([0.0, theme::SEGMENT_PADDING])
+        .height(Length::Fixed(theme::SEGMENT_HEIGHT))
+        .style(theme::segment(selected))
+        .on_press_maybe(on_press)
+        .into()
+}
+
 /// A segment's label: one line at `size` that takes the button's ink, so the selected segment's
 /// label is bright and the others secondary.
 fn segment_label<'a>(label: String, size: f32) -> iced::widget::Text<'a> {
@@ -170,6 +200,8 @@ mod tests {
         let _: Element<'_, ()> = segment_track(vec![
             segment("Fit".into(), true, Some(())),
             segment("18%".into(), false, None),
+            chevron_segment("18%".into(), true, Some(())),
+            chevron_segment("18%".into(), false, None),
         ]);
         // The workspace switch's keyed segments.
         let _: Element<'_, ()> = segment_track(vec![

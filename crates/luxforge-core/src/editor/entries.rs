@@ -36,9 +36,11 @@
 //! What is cached is only ever what the catalog returned — the entry decoded from its stored JSON,
 //! the head read from its rows — and never a value a write built in memory, which could differ
 //! from its stored spelling in the last bit of a float. The first read after a commit therefore
-//! decodes the new entry once, and every read after it decodes nothing.
+//! decodes the new entry once, and every read after it decodes nothing. The strokes it resolves are
+//! the catalog's too: those a cached entry of the same asset already holds are shared, and the rest
+//! are read from the store ([`EditorService::shared_entry`]).
 use super::{AssetRecord, EditorService, catalog};
-use crate::{AssetId, EntryId, Error, HistoryEntry};
+use crate::{AssetId, EntryId, Error, HistoryEntry, path::StrokeTable};
 use std::sync::Arc;
 
 /// Hydrated entries kept, least recently read first out.
@@ -83,6 +85,19 @@ impl EntryCache {
         let entry = found.1.clone();
         self.entries.push(found);
         Some(entry)
+    }
+
+    /// The stroke tables of this asset's cached entries, most recently read first, for a read of the
+    /// asset's next entry to share strokes from. Listing them leaves the order alone. Only this
+    /// asset's entries are listed: sharing across assets is not asked for, and an asset's own
+    /// entries are the ones that repeat the strokes it painted.
+    fn strokes_of(&self, asset_id: &AssetId) -> Vec<StrokeTable> {
+        self.entries
+            .iter()
+            .rev()
+            .filter(|(asset, _)| asset == asset_id)
+            .map(|(_, entry)| entry.snapshot.recipe.strokes.clone())
+            .collect()
     }
 
     fn keep_entry(&mut self, asset_id: &AssetId, entry: Arc<HistoryEntry>) {
@@ -175,6 +190,20 @@ impl EditorService {
 
     /// One hydrated entry, shared: from the cache, or decoded and resolved once and kept.
     ///
+    /// A read that misses resolves the entry's strokes from the strokes the cache already holds for
+    /// the same asset's other entries, sharing each one's `Arc`, and queries the store only for the
+    /// rest. Every commit, undo and redo reads an entry the cache has not seen, and nearly all the
+    /// strokes it references are ones the entry before it referenced too, so without this a painting
+    /// session would read, parse and hash every stroke again at each step: quadratic in the strokes
+    /// it paints.
+    ///
+    /// The cache still holds only what the catalog returned. Every stroke a cached entry holds was
+    /// resolved by [`catalog::entry_from_sharing`] from the store, never built by a write in memory;
+    /// a stored stroke is immutable and addressed by its content; and this service is the catalog's
+    /// only writer. So a stroke shared from a cached entry is the stroke a read of the store would
+    /// return, and it was already checked against its address. An entry that was returned but not
+    /// kept is never a source, because the cache does not hold it.
+    ///
     /// An entry with a stroke the store does not hold is returned but not kept, because storing
     /// that stroke later would change what a fresh read resolves; it is broken data and rare, and it
     /// is read again each time rather than answered from a resolution that may have gone stale.
@@ -183,10 +212,19 @@ impl EditorService {
         asset_id: &AssetId,
         entry_id: &EntryId,
     ) -> Result<Arc<HistoryEntry>, Error> {
-        if let Some(entry) = self.entries.borrow_mut().entry(asset_id, entry_id) {
-            return Ok(entry);
-        }
-        let entry = Arc::new(catalog::entry_from(&self.connection, asset_id, entry_id)?);
+        let held = {
+            let mut cache = self.entries.borrow_mut();
+            if let Some(entry) = cache.entry(asset_id, entry_id) {
+                return Ok(entry);
+            }
+            cache.strokes_of(asset_id)
+        };
+        let entry = Arc::new(catalog::entry_from_sharing(
+            &self.connection,
+            asset_id,
+            entry_id,
+            &held,
+        )?);
         if !entry.snapshot.recipe.strokes.has_missing() {
             self.entries
                 .borrow_mut()
@@ -744,5 +782,284 @@ mod tests {
         assert_eq!(read_counts::take(), (0, 0), "complete now, and kept");
         drop(service);
         std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A brush target for the stroke the first `paint` made: its mask and its one component.
+    fn brush_of(recipe: &crate::Recipe) -> MaskTarget {
+        MaskTarget {
+            mask: Some(recipe.masks[0].id.clone()),
+            component: Some(recipe.masks[0].components[0].id.clone()),
+            ..MaskTarget::default()
+        }
+    }
+
+    /// An entry the cache has not seen resolves the strokes a cached entry of its asset holds by
+    /// sharing them, and queries the store for the others: a stroke added since is read, parsed and
+    /// hashed once, and a commit that paints nothing reads no stroke at all. The shared strokes are
+    /// the same allocations and are known stored, so a commit built on the entry writes none.
+    #[test]
+    fn an_entry_reads_only_the_strokes_no_cached_entry_of_its_asset_holds() {
+        let dir = temp("entry-cache-shared-queries");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut service = EditorService::open_with(
+            &dir.join("catalog.sqlite"),
+            Arc::new(ModuleRegistry::developer()),
+        )
+        .unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        paint(
+            &mut service,
+            &asset,
+            "paint-1",
+            MaskTarget::default(),
+            json!([[0.2, 0.2], [0.4, 0.4]]),
+        );
+        // The first stroke's entry, read and kept: it holds that one stroke.
+        let one = service.state(&asset).unwrap().current_entry;
+        let first = strokes(&one)[0].0.clone();
+        assert_eq!(strokes(&one).len(), 1);
+        paint(
+            &mut service,
+            &asset,
+            "paint-2",
+            brush_of(&one.snapshot.recipe),
+            json!([[0.6, 0.6], [0.7, 0.5]]),
+        );
+        // The commit does not cache the entry it wrote.
+        let two = service.current_entry_id(&asset).unwrap();
+        assert_ne!(two, one.id);
+        assert_eq!(
+            service.cached(),
+            (2, 1),
+            "the original entry and the first stroke's"
+        );
+
+        read_counts::take();
+        read_counts::take_queried();
+        let read = service.entry(&asset, &two).unwrap();
+        assert_eq!(
+            read_counts::take_queried(),
+            1,
+            "the stroke added since is queried once; the first is shared"
+        );
+        assert_eq!(
+            read_counts::take(),
+            (2, 1),
+            "the entry, and the new stroke parsed and hashed once"
+        );
+        assert_eq!(strokes(&read).len(), 2);
+        let shared = service.shared_entry(&asset, &one.id).unwrap();
+        assert!(std::ptr::eq(
+            read.snapshot.recipe.strokes.get::<Stroke>(&first).unwrap(),
+            shared
+                .snapshot
+                .recipe
+                .strokes
+                .get::<Stroke>(&first)
+                .unwrap(),
+        ));
+        for (id, _) in strokes(&read) {
+            assert!(read.snapshot.recipe.strokes.is_known_stored(&id));
+        }
+
+        // A commit that paints nothing: the entry after it holds only strokes the entry it was
+        // built on holds, so reading it queries, parses and hashes none, and the commit itself
+        // writes no stroke row.
+        crate::editor::stroke_writes::take();
+        let revision = service.revision(&asset).unwrap();
+        service
+            .apply_pixel(&asset, mutation(revision, "pixel"), 0, 0, [1, 2, 3])
+            .unwrap();
+        let three = service.current_entry_id(&asset).unwrap();
+        read_counts::take();
+        read_counts::take_queried();
+        let after = service.entry(&asset, &three).unwrap();
+        assert_eq!(
+            read_counts::take_queried(),
+            0,
+            "every stroke is held by a cached entry"
+        );
+        assert_eq!(read_counts::take(), (1, 0), "the entry, and no stroke");
+        assert_eq!(
+            crate::editor::stroke_writes::take(),
+            0,
+            "the shared strokes are known stored"
+        );
+        // What was shared is what the rows hold.
+        let stored = catalog::entry_from(&service.connection, &asset, &three).unwrap();
+        assert_eq!(after, stored);
+        assert_eq!(strokes(&after), strokes(&stored));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Only an entry of the same asset is a source: two assets painted with the same stroke share
+    /// one address in the store, and the second asset's entry still queries it though the first
+    /// asset's cached entry holds it.
+    #[test]
+    fn another_assets_cached_strokes_are_not_shared() {
+        let dir = temp("entry-cache-other-asset-strokes");
+        std::fs::create_dir_all(&dir).unwrap();
+        let catalog = dir.join("catalog.sqlite");
+        let second_source = dir.join("second.jpg");
+        std::fs::copy(fixture(), &second_source).unwrap();
+        let registry = Arc::new(ModuleRegistry::developer());
+        let mut service = EditorService::open_with(&catalog, registry.clone()).unwrap();
+        let first = service.import(&fixture()).unwrap().asset.id;
+        let second = service.import(&second_source).unwrap().asset.id;
+        for (asset, request) in [(&first, "paint-first"), (&second, "paint-second")] {
+            paint(
+                &mut service,
+                asset,
+                request,
+                MaskTarget::default(),
+                json!([[0.2, 0.2], [0.4, 0.4]]),
+            );
+        }
+        let entries = [
+            service.current_entry_id(&first).unwrap(),
+            service.current_entry_id(&second).unwrap(),
+        ];
+        drop(service);
+
+        let service = EditorService::open_with(&catalog, registry).unwrap();
+        read_counts::take_queried();
+        let one = service.entry(&first, &entries[0]).unwrap();
+        assert_eq!(read_counts::take_queried(), 1);
+        let two = service.entry(&second, &entries[1]).unwrap();
+        assert_eq!(
+            strokes(&one),
+            strokes(&two),
+            "the same stroke, at the same address"
+        );
+        assert_eq!(
+            read_counts::take_queried(),
+            1,
+            "queried for the second asset, though the first asset's cached entry holds it"
+        );
+        assert!(
+            !one.snapshot
+                .recipe
+                .strokes
+                .shares(&two.snapshot.recipe.strokes)
+        );
+        let id = &strokes(&two)[0].0;
+        assert!(std::ptr::eq(
+            one.snapshot.recipe.strokes.get::<Stroke>(id).unwrap(),
+            service
+                .shared_entry(&first, &entries[0])
+                .unwrap()
+                .snapshot
+                .recipe
+                .strokes
+                .get::<Stroke>(id)
+                .unwrap()
+        ));
+        assert!(
+            !std::ptr::eq(
+                two.snapshot.recipe.strokes.get::<Stroke>(id).unwrap(),
+                one.snapshot.recipe.strokes.get::<Stroke>(id).unwrap()
+            ),
+            "the second asset's stroke is its own read"
+        );
+        drop(service);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A stroke no cached entry holds that is missing or corrupt in the store is refused as it is
+    /// with nothing shared, beside a stroke that is shared: the entry resolves the held stroke, is
+    /// not kept when the other is missing, and asks the store for the other each time it is read.
+    #[test]
+    fn a_missing_or_corrupt_stroke_no_cached_entry_holds_is_still_refused() {
+        for corrupt in [false, true] {
+            let dir = temp("entry-cache-shared-broken-stroke");
+            std::fs::create_dir_all(&dir).unwrap();
+            let catalog = dir.join("catalog.sqlite");
+            let registry = Arc::new(ModuleRegistry::developer());
+            let mut service = EditorService::open_with(&catalog, registry.clone()).unwrap();
+            let asset = service.import(&fixture()).unwrap().asset.id;
+            paint(
+                &mut service,
+                &asset,
+                "paint-1",
+                MaskTarget::default(),
+                json!([[0.2, 0.2], [0.4, 0.4]]),
+            );
+            let one = service.state(&asset).unwrap().current_entry;
+            paint(
+                &mut service,
+                &asset,
+                "paint-2",
+                brush_of(&one.snapshot.recipe),
+                json!([[0.6, 0.6], [0.7, 0.5]]),
+            );
+            let two = service.current_entry_id(&asset).unwrap();
+            let held = strokes(&one)[0].0.clone();
+            let added = strokes(&service.entry(&asset, &two).unwrap())
+                .into_iter()
+                .map(|(id, _)| id)
+                .find(|id| *id != held)
+                .unwrap();
+            drop(service);
+
+            let connection = Connection::open(&catalog).unwrap();
+            connection
+                .execute("DELETE FROM strokes WHERE id=?1", params![added.as_str()])
+                .unwrap();
+            if corrupt {
+                connection
+                    .execute(
+                        "INSERT INTO strokes (id,stroke_json) VALUES (?1,?2)",
+                        params![
+                            added.as_str(),
+                            r#"{"points":[[1,1]],"size":819,"feather":0.0,"flow":100.0,"erase":false}"#
+                        ],
+                    )
+                    .unwrap();
+            }
+            drop(connection);
+
+            let service = EditorService::open_with(&catalog, registry).unwrap();
+            read_counts::take_queried();
+            service.entry(&asset, &one.id).unwrap();
+            assert_eq!(read_counts::take_queried(), 1, "the held stroke, read once");
+            let read = service.entry(&asset, &two).unwrap();
+            assert_eq!(
+                read_counts::take_queried(),
+                1,
+                "only the broken stroke; the held one is shared"
+            );
+            let recipe = &read.snapshot.recipe;
+            assert!(recipe.strokes.get::<Stroke>(&held).is_some());
+            assert!(recipe.strokes.get::<Stroke>(&added).is_none());
+            assert_eq!(recipe.strokes.has_missing(), !corrupt);
+            let reference = recipe
+                .stroke_references()
+                .unwrap()
+                .into_iter()
+                .find(|reference| reference.id == added)
+                .unwrap();
+            assert_eq!(
+                recipe
+                    .strokes
+                    .check_reference(&reference)
+                    .unwrap_err()
+                    .detail,
+                format!(
+                    "stroke {added} of entry {two} {}",
+                    if corrupt {
+                        "does not match its stored content address"
+                    } else {
+                        "is not in the stroke store"
+                    }
+                )
+            );
+            // A missing stroke keeps the entry out of the cache, so it asks the store again; a
+            // corrupt one cannot be repaired by a later write, so the entry is kept.
+            assert_eq!(service.cached().0, if corrupt { 2 } else { 1 });
+            service.entry(&asset, &two).unwrap();
+            assert_eq!(read_counts::take_queried(), if corrupt { 0 } else { 1 });
+            drop(service);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 }

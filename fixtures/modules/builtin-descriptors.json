@@ -1836,6 +1836,30 @@
       {
         "actions": [
           {
+            "id": "transform",
+            "notes": "exact quarter turns and reflections; integer mappings with no interpolation",
+            "parameters": [
+              {
+                "default": null,
+                "kind": "enum",
+                "name": "transform",
+                "notes": "the exact transform to compose into the stack's orientation",
+                "options": [
+                  "rotate-left",
+                  "rotate-right",
+                  "mirror-horizontal",
+                  "flip-vertical"
+                ],
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              }
+            ],
+            "patch": false,
+            "title": "Transform"
+          },
+          {
             "id": "crop",
             "notes": "sets the straightening angle and the crop rectangle of the stack's one crop layer, updating it in place or appending it; a rectangle that would need an empty corner is rejected",
             "parameters": [
@@ -2007,6 +2031,7 @@
           "action": "crop",
           "angle": "angle",
           "aspect": "aspect",
+          "effect": "luxforge.geometry.crop",
           "fit_action": "crop-fit",
           "height": "height",
           "icon": "crop",
@@ -2018,9 +2043,59 @@
           "y": "y"
         },
         "collapsed": true,
-        "controls": [],
+        "controls": [
+          {
+            "controls": [
+              {
+                "action": "transform",
+                "icon": "rotate-left",
+                "kind": "action",
+                "label": "Rotate 90° left",
+                "preset": {
+                  "transform": "rotate-left"
+                }
+              },
+              {
+                "action": "transform",
+                "icon": "rotate-right",
+                "kind": "action",
+                "label": "Rotate 90° right",
+                "preset": {
+                  "transform": "rotate-right"
+                }
+              },
+              {
+                "action": "transform",
+                "icon": "mirror",
+                "kind": "action",
+                "label": "Mirror horizontal",
+                "preset": {
+                  "transform": "mirror-horizontal"
+                }
+              },
+              {
+                "action": "transform",
+                "icon": "flip",
+                "kind": "action",
+                "label": "Flip vertical",
+                "preset": {
+                  "transform": "flip-vertical"
+                }
+              }
+            ],
+            "kind": "group",
+            "label": "Transform",
+            "reset": null
+          }
+        ],
         "developer": false,
         "effects": [
+          {
+            "format": 1,
+            "id": "luxforge.geometry.orientation",
+            "order": 0,
+            "stage": "geometry"
+          },
           {
             "format": 1,
             "id": "luxforge.geometry.crop",
@@ -2029,7 +2104,7 @@
             "stage": "geometry"
           }
         ],
-        "hint": "Frame, ratio and angle",
+        "hint": "Frame, rotate, mirror and angle",
         "id": "luxforge.crop",
         "layout": "stacked",
         "queries": [],
@@ -2037,7 +2112,7 @@
           "action": "crop-reset",
           "preset": {}
         },
-        "title": "Crop and straighten"
+        "title": "Crop, transform, straighten"
       },
       {
         "actions": [
@@ -4150,99 +4225,6 @@
           "preset": {}
         },
         "title": "Colour mixer"
-      },
-      {
-        "actions": [
-          {
-            "id": "transform",
-            "notes": "exact quarter turns and reflections; integer mappings with no interpolation",
-            "parameters": [
-              {
-                "default": null,
-                "kind": "enum",
-                "name": "transform",
-                "notes": "the exact transform to compose into the stack's orientation",
-                "options": [
-                  "rotate-left",
-                  "rotate-right",
-                  "mirror-horizontal",
-                  "flip-vertical"
-                ],
-                "precision": null,
-                "required": true,
-                "step": null,
-                "unit": null
-              }
-            ],
-            "patch": false,
-            "title": "Transform"
-          }
-        ],
-        "availability": {
-          "kind": "available"
-        },
-        "canvas": null,
-        "collapsed": true,
-        "controls": [
-          {
-            "controls": [
-              {
-                "action": "transform",
-                "icon": "rotate-left",
-                "kind": "action",
-                "label": "Rotate left",
-                "preset": {
-                  "transform": "rotate-left"
-                }
-              },
-              {
-                "action": "transform",
-                "icon": "rotate-right",
-                "kind": "action",
-                "label": "Rotate right",
-                "preset": {
-                  "transform": "rotate-right"
-                }
-              },
-              {
-                "action": "transform",
-                "icon": "mirror",
-                "kind": "action",
-                "label": "Mirror horizontal",
-                "preset": {
-                  "transform": "mirror-horizontal"
-                }
-              },
-              {
-                "action": "transform",
-                "icon": "flip",
-                "kind": "action",
-                "label": "Flip vertical",
-                "preset": {
-                  "transform": "flip-vertical"
-                }
-              }
-            ],
-            "kind": "group",
-            "label": "Exact transforms",
-            "reset": null
-          }
-        ],
-        "developer": false,
-        "effects": [
-          {
-            "format": 1,
-            "id": "luxforge.geometry.orientation",
-            "order": 0,
-            "stage": "geometry"
-          }
-        ],
-        "hint": "Rotate, mirror and flip",
-        "id": "luxforge.transform",
-        "layout": "stacked",
-        "queries": [],
-        "reset": null,
-        "title": "Transforms"
       },
       {
         "actions": [
