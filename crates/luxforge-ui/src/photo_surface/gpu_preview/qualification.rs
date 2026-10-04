@@ -949,3 +949,26 @@ pub fn boundary_as(
 pub fn held(value: f32) -> f32 {
     half::f16::from_f32(value).to_f32()
 }
+
+/// The links of `plan`'s chain, by their place in it, whose sequence no plan of `warm` holds: what
+/// the compile thread has yet to compile when a gesture that draws `plan` begins over a cache that
+/// holds the warm list. Each link is keyed as the compile cache keys it, its program sequence and
+/// the format its last pass writes ([`super::link_sequences`]). Empty when every link is warmed.
+pub fn unwarmed_links(warm: &super::GpuWarm, plan: &GpuPlan) -> Vec<usize> {
+    let warmed: Vec<_> = warm
+        .sequences()
+        .iter()
+        .flat_map(|(steps, format)| {
+            super::link_sequences(steps, *format)
+                .map(|(link, written)| (super::compile::signature(link), written))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    super::link_sequences(&plan.steps, plan.boundary.format())
+        .enumerate()
+        .filter(|(_, (link, written))| {
+            !warmed.contains(&(super::compile::signature(link), *written))
+        })
+        .map(|(index, _)| index)
+        .collect()
+}

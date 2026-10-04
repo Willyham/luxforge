@@ -1410,6 +1410,114 @@ fn the_pools_generation_rebinds_a_link_once_a_texture_goes() {
     }
 }
 
+/// How many links the long chain below holds: more than sixteen, each a sequence of its own.
+const LONG_CHAIN: usize = 20;
+
+/// A colour program that returns its input under an entry of its own, so the link it ends is a
+/// sequence no other link shares.
+fn link_end(link: usize) -> GpuProgram {
+    let entry: &'static str = Box::leak(format!("lf_test_link_{link}").into_boxed_str());
+    GpuProgram::new(
+        entry,
+        format!(
+            "fn {entry}(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> {{\n    \
+             return rgb;\n}}\n"
+        ),
+    )
+}
+
+/// A chain of [`LONG_CHAIN`] links over `boundary`, each the test step, the first at the mean's
+/// radius `radius`, then a colour step that ends that link alone.
+fn long_chain(boundary: &GpuBoundary, ends: &[GpuProgram], radius: u32) -> GpuPlan {
+    GpuPlan {
+        boundary: boundary.clone(),
+        texels: TexelMap::IDENTITY,
+        steps: ends
+            .iter()
+            .enumerate()
+            .flat_map(|(link, end)| {
+                let mean = if link == 0 { radius } else { RADIUS };
+                [
+                    GpuStep::Spatial(Box::new(worded(mean, SCALE))),
+                    GpuStep::colour(end.clone()),
+                ]
+            })
+            .collect(),
+        region: None,
+    }
+}
+
+/// A plan whose chain needs more distinct sequences than sixteen, through the slot's own prepare
+/// path and the compile thread: its first frame hands every link's sequence to the thread and
+/// draws the CPU frame, naming `compiling`; once they are compiled, every tick, though it asks for
+/// every link's sequence, draws on the GPU what a fresh slot draws, bit for bit, and nothing
+/// compiles again. The cache holds every link's sequence at once, within its bound.
+#[test]
+fn a_chain_of_more_than_sixteen_sequences_compiles_once_then_draws_every_tick() {
+    let test = "a_chain_of_more_than_sixteen_sequences_compiles_once_then_draws_every_tick";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let (boundary, _) = boundary_values();
+    let ends: Vec<GpuProgram> = (0..LONG_CHAIN).map(link_end).collect();
+    let ticks: Vec<GpuPlan> = [3, 2, 1, 2, 3, 1, 2, 3, 2]
+        .into_iter()
+        .map(|radius| long_chain(&boundary, &ends, radius))
+        .collect();
+    let sequences = super::super::chain::chain(&ticks[0].steps).links.len() + 1;
+    assert_eq!(sequences, LONG_CHAIN);
+    assert!(sequences > 16 && sequences <= PIPELINE_CACHE);
+    let mut reference = own_pipeline(&device, &queue);
+    let expected: Vec<Vec<u8>> = ticks
+        .iter()
+        .map(|plan| fresh(&device, &queue, &mut reference, plan))
+        .collect();
+    let mut pipeline = own_pipeline(&device, &queue);
+    let figures = Arc::clone(&pipeline.figures);
+    assert_cpu_frame(&paint_prepared(
+        &device,
+        &queue,
+        &mut pipeline,
+        &primitive(ID, Some(ticks[0].clone())),
+    ));
+    let first = diagnostics(&pipeline, ID);
+    assert_eq!(first.gpu_fallback, Some(GpuFallback::Compiling));
+    assert_eq!(
+        first.gpu_preview_compiles, LONG_CHAIN as u64,
+        "every link's sequence is handed to the thread at once"
+    );
+    wait_until("every link's sequence to compile", || {
+        figures.preview.compile_us().0 == LONG_CHAIN as u64
+    });
+    for (number, (plan, expected)) in ticks.iter().zip(&expected).enumerate() {
+        let drawn = paint_prepared(
+            &device,
+            &queue,
+            &mut pipeline,
+            &primitive(ID, Some(plan.clone())),
+        );
+        let seen = diagnostics(&pipeline, ID);
+        assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu), "tick {number}");
+        assert_eq!(seen.gpu_fallback, None, "tick {number}");
+        assert_eq!(&drawn, expected, "tick {number}: a fresh slot's frame");
+        assert_eq!(
+            (seen.gpu_preview_compiles, seen.gpu_preview_compiled),
+            (LONG_CHAIN as u64, LONG_CHAIN as u64),
+            "tick {number}: nothing compiles again"
+        );
+    }
+    assert_eq!(pipeline.gpu.pipelines.len(), LONG_CHAIN);
+    eprintln!(
+        "{test}: {LONG_CHAIN} sequences compiled once, {} ticks on the GPU, {} pass pipelines",
+        ticks.len(),
+        pipeline
+            .gpu
+            .support
+            .as_ref()
+            .map_or(0, |support| support.passes.created())
+    );
+}
+
 // ---- The pool's layout, without a device ------------------------------------------------------
 
 /// The boundary the layout tests cover, and the stage pixel of its first texel: a window whose
