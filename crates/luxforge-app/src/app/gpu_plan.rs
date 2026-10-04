@@ -16,6 +16,9 @@
 //! - [`geometry_steps`]: the geometry tail, through its affine matrix or a warp's coordinate grid,
 //!   and after it the output operations, at the output pixel;
 //!
+//! A lens warp's coordinate grid is converted to the words its tail reads once, when the boundary
+//! it was computed with is held ([`WarpGrid`]), and every tick's tail shares them.
+//!
 //! A part the surface cannot run yet answers the reason ([`Unrunnable`]), and the gesture keeps
 //! the CPU path.
 //!
@@ -108,12 +111,12 @@ pub(crate) fn surface_plan(
 /// stage its output reads, at that window's origin. A boundary inside a colour run
 /// (`plan.boundary.continues_run`) must hold that run's unclamped value; the half floats of a
 /// [`GpuBoundary`] do. A warp's tail is drawn through `grid`, the coordinate grid the boundary's
-/// job computed for the plan's geometry.
+/// job computed for the plan's geometry, converted once ([`WarpGrid`]).
 pub(crate) fn surface_plan_at(
     plan: &luxforge_core::GpuPlan,
     boundary: GpuBoundary,
     origin: (u32, u32),
-    grid: Option<&CoordinateGrid>,
+    grid: Option<&WarpGrid>,
 ) -> Result<GpuPlan, Unrunnable> {
     surface_plan_over(plan, boundary, origin, grid, None)
 }
@@ -126,7 +129,7 @@ pub(crate) fn surface_plan_over(
     plan: &luxforge_core::GpuPlan,
     boundary: GpuBoundary,
     origin: (u32, u32),
-    grid: Option<&CoordinateGrid>,
+    grid: Option<&WarpGrid>,
     region: Option<Region>,
 ) -> Result<GpuPlan, Unrunnable> {
     let texels = boundary_map(plan.boundary.stage, &boundary, origin)?;
@@ -170,11 +173,41 @@ pub(crate) fn surface_plan_over(
     })
 }
 
+/// A lens warp's coordinate grid as the tail reads it: where its nodes sit, and every node's
+/// `(u, v)` as `f32` bits, row by row. Converted once, when the boundary the grid was computed with
+/// is held, and shared by every tick's tail ([`GpuTail::grid`]), so a tick converts and allocates
+/// nothing for it: the words take the place of the core grid's nodes, the same 8 bytes a node.
+#[derive(Clone, Debug)]
+pub(crate) struct WarpGrid {
+    origin: (u32, u32),
+    spacing: u32,
+    size: (u32, u32),
+    nodes: Arc<[u32]>,
+}
+
+impl WarpGrid {
+    /// `grid` as its tail's words, collected into one allocation of exactly their length.
+    pub(crate) fn new(grid: &CoordinateGrid) -> Self {
+        let nodes = &grid.nodes;
+        // A range's map knows its length, so `Arc<[u32]>` is filled in place, with no `Vec`
+        // before it.
+        let words = (0..2 * nodes.len())
+            .map(|word| nodes[word / 2][word % 2].to_bits())
+            .collect();
+        Self {
+            origin: grid.origin,
+            spacing: grid.spacing,
+            size: (grid.columns, grid.rows),
+            nodes: words,
+        }
+    }
+}
+
 /// Where a warp's tail takes its coordinate grid from.
 #[derive(Clone, Copy)]
 pub(crate) enum Grid<'a> {
-    /// The grid the boundary's job computed, when it computed one.
-    Held(Option<&'a CoordinateGrid>),
+    /// The grid the boundary's job computed, converted when it was held, if it computed one.
+    Held(Option<&'a WarpGrid>),
     /// No grid at all: the steps only name the pipeline, whose key the grid's nodes are not part
     /// of, as a warm list does.
     Sequence,
@@ -378,8 +411,8 @@ pub(crate) fn coverage(mask: &GpuMask) -> Option<Coverage> {
 /// The geometry tail's steps, appended to `steps`: none for a tail that is the identity over the
 /// whole boundary stage with nothing clamped, which leaves the output stage the boundary's and no
 /// output operation after it; otherwise the tail ([`GpuTail`]), through the plan's affine matrix,
-/// a perspective warp's homography or a lens warp's coordinate `grid`, quantizing where the CPU's
-/// segment boundary does, then each
+/// a perspective warp's homography or a lens warp's coordinate `grid`, its words shared, quantizing
+/// where the CPU's segment boundary does, then each
 /// output operation's steps at the output pixel ([`operation_steps`]). The tail draws `output`
 /// pixels when given — a percentage zoom's region, offset by the surface — and the whole output
 /// stage otherwise.
@@ -421,11 +454,8 @@ pub(crate) fn geometry_steps(
             geometry.clamps,
             grid.origin,
             grid.spacing,
-            (grid.columns, grid.rows),
-            grid.nodes
-                .iter()
-                .flat_map(|node| node.map(f32::to_bits))
-                .collect(),
+            grid.size,
+            Arc::clone(&grid.nodes),
         ),
         (None, None, Grid::Held(None)) => return Err(Unrunnable::Grid),
         (None, None, Grid::Sequence) => GpuTail::grid(
@@ -492,4 +522,108 @@ pub(crate) fn position_map(position: GpuPosition) -> Option<PositionMap> {
         d: narrow(d)?,
         ty: narrow(ty)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use luxforge_core::{
+        BASIC_EFFECT, GpuAnswer, GpuPlanRequest, Layer, ModuleRegistry, Recipe, qualification,
+    };
+
+    /// A lens warp's tail draws through the grid converted once, as the boundary it was computed
+    /// with is held: two ticks of a drag over it — plans whose words differ — hand their tails the
+    /// one allocation of the held grid's words, so a tick converts and allocates nothing for it,
+    /// and those words are what each tick's own conversion wrote: every node's `(u, v)` as `f32`
+    /// bits, row by row.
+    #[test]
+    fn gpu_plan_a_warp_grid_is_converted_once_and_every_tick_shares_it() {
+        let (width, height) = (360, 240);
+        let registry = ModuleRegistry::builtin();
+        let tick = |exposure: f64| {
+            let recipe = Recipe {
+                layers: vec![
+                    Layer::new(BASIC_EFFECT, serde_json::json!({"exposure": exposure})),
+                    qualification::lens_layer(-0.06, (width, height)),
+                ],
+                ..Recipe::default()
+            };
+            let request = GpuPlanRequest::exact(0, Stage { width, height }).qualifying();
+            match luxforge_core::gpu_plan(&registry, &recipe, request).expect("a stack") {
+                GpuAnswer::Plan(plan) => *plan,
+                GpuAnswer::Fallback(reason) => panic!("{reason}"),
+            }
+        };
+        let plans = [tick(0.2), tick(0.45)];
+        let geometry = &plans[0].geometry;
+        assert!(geometry.needs_grid(), "a lens warp's tail");
+        let output = geometry.output();
+        let core = geometry
+            .grid(
+                Region {
+                    x0: 0,
+                    y0: 0,
+                    width: output.width,
+                    height: output.height,
+                },
+                1.0,
+            )
+            .expect("a grid")
+            .expect("a lens warp's grid");
+        let held = WarpGrid::new(&core);
+        // Each tick converted the nodes so before.
+        let converted: Vec<u32> = core
+            .nodes
+            .iter()
+            .flat_map(|node| node.map(f32::to_bits))
+            .collect();
+        assert_eq!(held.nodes.len(), 2 * core.nodes.len());
+        assert_eq!(
+            *held.nodes, *converted,
+            "bit for bit the per-tick conversion"
+        );
+        let stage = plans[0].boundary.stage;
+        let boundary = || {
+            let texels = Arc::new(vec![0u8; (stage.width * stage.height * 8) as usize]);
+            let format = luxforge_ui::photo_surface::BoundaryFormat::Half;
+            GpuBoundary::new(texels, stage.width, stage.height, 1, format).expect("a boundary")
+        };
+        let tails: Vec<GpuTail> = plans
+            .iter()
+            .map(|plan| {
+                surface_plan_at(plan, boundary(), (0, 0), Some(&held))
+                    .expect("a runnable plan")
+                    .steps
+                    .into_iter()
+                    .find_map(|step| match step {
+                        GpuStep::Geometry(tail) => Some(tail),
+                        _ => None,
+                    })
+                    .expect("the warp's tail")
+            })
+            .collect();
+        for tail in &tails {
+            assert!(
+                Arc::ptr_eq(tail.block(), &held.nodes),
+                "the tail holds the held grid's words"
+            );
+        }
+        // The tail is the one each tick built from its own conversion, in every word.
+        let reads = plans[0].geometry.reads;
+        let rebuilt = GpuTail::grid(
+            (output.width, output.height),
+            [
+                reads.x0,
+                reads.y0,
+                reads.x0 + reads.width,
+                reads.y0 + reads.height,
+            ],
+            plans[0].geometry.clamps,
+            core.origin,
+            core.spacing,
+            (core.columns, core.rows),
+            Arc::from(converted),
+        );
+        assert_eq!(tails[0], rebuilt);
+    }
 }
