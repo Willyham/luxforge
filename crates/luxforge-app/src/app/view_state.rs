@@ -65,6 +65,7 @@ impl Editor {
                 self.outcome(Outcome::SessionAnswered);
             }
             ViewMessage::WorkspaceUpdated(result) => {
+                let before = super::remembered::remembered_workspace(&self.session.workspace);
                 match result {
                     Ok(session) => {
                         self.adopt(session);
@@ -78,6 +79,7 @@ impl Editor {
                     Err(error) => self.status.text = error,
                 }
                 self.outcome(Outcome::SessionAnswered);
+                return self.remember_workspace(before);
             }
             ViewMessage::PanSynced(result) => {
                 self.view_state.pan.answered();
