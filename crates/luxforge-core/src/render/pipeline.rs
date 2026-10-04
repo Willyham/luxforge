@@ -189,6 +189,39 @@ pub(crate) trait PixelDomain: Sync {
 
     /// One pixel of a spatial frame of `stage`.
     fn frame_pixel(frame: &Self::SpatialFrame, stage: Stage, x: u32, y: u32) -> Self::Pixel;
+
+    /// [`Evaluation::region_in`] read by the domain itself, for a segment whose rows it reads
+    /// without pulling each pixel through [`Evaluation::pixel_in`]: exactly the values the pull
+    /// answers, appended to `out`, which the caller has cleared. `None` when it does not read
+    /// segment `index` that way, and the region is pulled; the default.
+    fn region_rows(
+        _evaluation: &Evaluation<'_, Self>,
+        _index: usize,
+        _region: Region,
+        _out: &mut Vec<Self::Pixel>,
+        _scratch: &mut RowScratch,
+    ) -> Option<Result<(), Error>>
+    where
+        Self: Sized,
+    {
+        None
+    }
+
+    /// [`Evaluation::fill_rows`] read by the domain itself, as [`Self::region_rows`] is: exactly
+    /// the planes the pull fills, or `None` when it does not read segment `index` that way, and
+    /// the region is pulled; the default.
+    fn fill_rows(
+        _evaluation: &Evaluation<'_, Self>,
+        _index: usize,
+        _region: Region,
+        _planes: &mut [f32],
+        _parallelism: Parallelism,
+    ) -> Option<Result<(), Error>>
+    where
+        Self: Sized,
+    {
+        None
+    }
 }
 
 /// Identify the pixels of a recipe prefix in this domain. This only builds metadata: it neither
@@ -712,12 +745,29 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     }
 
     /// Segment `index`'s output over `region`, row-major, into `out`: exactly the values
-    /// [`Self::pixel_in`] answers there, for a caller that reads a neighbourhood of them. A
-    /// segment with colour and no replacement pulls each row's entry through its geometry and
-    /// runs its colour over the row at once ([`PixelDomain::colour_row`]), which is the same
-    /// arithmetic as one pixel at a time; any other segment is pulled pixel by pixel. `region`
-    /// must lie inside the segment's output stage.
+    /// [`Self::pixel_in`] answers there, for a caller that reads a neighbourhood of them. A domain
+    /// that reads the segment's rows itself does ([`PixelDomain::region_rows`]: the linear
+    /// source or spatial frame of a segment without replacements); otherwise the region is
+    /// pulled ([`Self::region_pulled`]). `region` must lie inside the segment's output stage.
     pub(super) fn region_in(
+        &self,
+        index: usize,
+        region: Region,
+        out: &mut Vec<D::Pixel>,
+        scratch: &mut RowScratch,
+    ) -> Result<(), Error> {
+        out.clear();
+        match D::region_rows(self, index, region, out, scratch) {
+            Some(read) => read,
+            None => self.region_pulled(index, region, out, scratch),
+        }
+    }
+
+    /// [`Self::region_in`] pulled through the evaluation: a segment with colour and no
+    /// replacement pulls each row's entry through its geometry and runs its colour over the row
+    /// at once ([`PixelDomain::colour_row`]), which is the same arithmetic as one pixel at a time;
+    /// any other segment is pulled pixel by pixel.
+    pub(super) fn region_pulled(
         &self,
         index: usize,
         region: Region,
@@ -752,14 +802,31 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         Ok(())
     }
 
-    /// Segment `index`'s output over `region`, as the three planes a spatial operation reads: one
-    /// [`Self::region_in`] per row, on the pool under [`Parallelism::Pool`], for a segment whose
-    /// colour runs over rows. Any other segment is read pixel by pixel straight into the planes,
-    /// since a row buffer would only copy what a pull already answers.
+    /// Segment `index`'s output over `region`, as the three planes a spatial operation reads:
+    /// read row by row by a domain that reads the segment's rows itself
+    /// ([`PixelDomain::fill_rows`]: the linear source or spatial frame of a segment without
+    /// replacements), and otherwise pulled ([`Self::fill_pulled`]).
     ///
     /// This is how the stage a spatial entry reads is read everywhere: a tile's input, in a frame
     /// and in a point query, and the reduction its global estimates are prepared from.
     fn fill_rows(
+        &self,
+        index: usize,
+        region: Region,
+        planes: &mut [f32],
+        parallelism: Parallelism,
+    ) -> Result<(), Error> {
+        match D::fill_rows(self, index, region, planes, parallelism) {
+            Some(filled) => filled,
+            None => self.fill_pulled(index, region, planes, parallelism),
+        }
+    }
+
+    /// [`Self::fill_rows`] pulled through the evaluation: one [`Self::region_pulled`] per row, on
+    /// the pool under [`Parallelism::Pool`], for a segment whose colour runs over rows. Any other
+    /// segment is read pixel by pixel straight into the planes, since a row buffer would only copy
+    /// what a pull already answers.
+    pub(super) fn fill_pulled(
         &self,
         index: usize,
         region: Region,
@@ -792,7 +859,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
                 width: region.width,
                 height: 1,
             };
-            self.region_in(index, line, pixels, scratch)?;
+            self.region_pulled(index, line, pixels, scratch)?;
             for (column, pixel) in pixels.iter().enumerate() {
                 let [r, g, b] = D::spatial_input(*pixel);
                 red[column] = r;
@@ -888,7 +955,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
 }
 
 /// One row of three planes being filled, with its index in the region.
-type PlaneRow<'p> = (usize, ((&'p mut [f32], &'p mut [f32]), &'p mut [f32]));
+pub(super) type PlaneRow<'p> = (usize, ((&'p mut [f32], &'p mut [f32]), &'p mut [f32]));
 
 /// The float rows a domain runs one row's colour through, reused by every row one worker takes.
 #[derive(Default)]
