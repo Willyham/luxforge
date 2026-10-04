@@ -544,8 +544,15 @@ impl ViewReader<'_> {
     }
 
     /// Every pixel of `walk`, handed to `visit` with its row-major offset in the rectangle and the
-    /// values [`Self::pixel`] reads there, row by row. A row whose pixels are adjacent in the
-    /// planes is read as three slices. The first error `visit` returns stops the walk.
+    /// values [`Self::pixel`] reads there, in an order that reads each base-plane row it touches
+    /// once, as one contiguous span. A rectangle whose rows lie along base rows (an upright or
+    /// flipped view) is read row by row. One whose rows step down a base column, as every
+    /// portrait view's do, is read as a blocked transpose: each of its columns is one span of a
+    /// base row, so the base rows it covers are read in order, and every row of the rectangle
+    /// takes one value from each, instead of every pixel of a row touching a new base row of all
+    /// three planes. A span one value apart is read as three slices. The first error `visit`
+    /// returns stops the walk; the order decides which pixel reports it, never which values land
+    /// where.
     pub(crate) fn visit<E>(
         &self,
         walk: Walk,
@@ -553,6 +560,27 @@ impl ViewReader<'_> {
     ) -> Result<(), E> {
         let (red, rest) = self.planes.split_at(self.plane_len);
         let (green, blue) = rest.split_at(self.plane_len);
+        if walk.rows > 1 && walk.across.unsigned_abs() != 1 && walk.down.unsigned_abs() == 1 {
+            // Columns in the order their base rows lie in the planes.
+            for column in 0..walk.columns {
+                let column = if walk.across < 0 {
+                    walk.columns - 1 - column
+                } else {
+                    column
+                };
+                let start = walk
+                    .first
+                    .wrapping_add_signed(column as isize * walk.across);
+                line(
+                    [red, green, blue],
+                    start,
+                    walk.down,
+                    walk.rows,
+                    |row, rgb| visit(row * walk.columns + column, rgb),
+                )?;
+            }
+            return Ok(());
+        }
         for row in 0..walk.rows {
             let start = walk.first.wrapping_add_signed(row as isize * walk.down);
             let offset = row * walk.columns;
@@ -755,6 +783,71 @@ mod tests {
                 assert!(reader.walk((0, 0), (1, 0), (0, 1), 1, 0).is_none());
             }
         }
+    }
+
+    /// Every walk of more than one row and column, over every orientation and crop, reads each
+    /// base row it touches once, as one span of adjacent values; a walk whose rows step down a
+    /// base column, as a portrait view's chunks do, reads those base rows in the order the planes
+    /// hold them. Each value names its base index, so the visits show the order of the reads.
+    #[test]
+    fn a_walk_reads_each_base_row_once_and_a_portrait_walk_reads_them_in_order() {
+        let source = indexed(9, 7);
+        let mut transposed = 0;
+        for orientation in 1..=8 {
+            for crop in [[0, 0, 9, 7], [1, 2, 7, 4], [2, 0, 7, 7]] {
+                let view = source.with_view(crop, orientation).unwrap();
+                let reader = view.reader();
+                let (width, height) = reader.dimensions();
+                for (across, down) in STEPS {
+                    for (columns, rows) in [(width, height), (height, width), (3, 2), (2, 5)] {
+                        for at in [
+                            (0, 0),
+                            (width - 1, height - 1),
+                            (width - 1, 0),
+                            (0, height - 1),
+                        ] {
+                            let Some(walk) = reader.walk(at, across, down, columns, rows) else {
+                                continue;
+                            };
+                            if columns < 2 || rows < 2 {
+                                continue;
+                            }
+                            let mut indices = Vec::new();
+                            reader
+                                .visit(walk, |_, rgb| {
+                                    indices.push(rgb[0] as usize);
+                                    Ok::<(), ()>(())
+                                })
+                                .unwrap();
+                            let what = format!(
+                                "orientation {orientation}, crop {crop:?}, steps {across:?} \
+                                 {down:?}, {columns}x{rows} at {at:?}"
+                            );
+                            // The base rows, one entry per contiguous span of adjacent values.
+                            let mut spans: Vec<usize> = Vec::new();
+                            for pair in indices.windows(2) {
+                                let adjacent =
+                                    pair[0].abs_diff(pair[1]) == 1 && pair[0] / 9 == pair[1] / 9;
+                                if !adjacent {
+                                    spans.push(pair[0] / 9);
+                                }
+                            }
+                            spans.push(indices[indices.len() - 1] / 9);
+                            let mut sorted = spans.clone();
+                            sorted.sort_unstable();
+                            sorted.dedup();
+                            assert_eq!(sorted.len(), spans.len(), "{what}: {indices:?}");
+                            if walk.across.unsigned_abs() != 1 {
+                                transposed += 1;
+                                assert_eq!(sorted, spans, "{what}: {indices:?}");
+                                assert_eq!(spans.len(), columns as usize, "{what}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(transposed > 0, "some walk steps down a base column");
     }
 
     /// A visit stops at the first error its visitor returns and hands that error back.
