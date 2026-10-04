@@ -3167,11 +3167,21 @@ impl PhotoPipeline {
 pub(super) fn slot_charge(device: &wgpu::Device, plan: &GpuPlan) -> Result<u64, GpuFallback> {
     let shape = Shape::of(plan);
     let limit = device.limits().max_texture_dimension_2d;
-    let chain = chain::chain(&plan.steps);
     let origin = (
         plan.texels.origin[0].max(0.0) as u32,
         plan.texels.origin[1].max(0.0) as u32,
     );
+    Ok(shape.texture_bytes(limit)
+        + slot_buffers(device, plan)?.iter().sum::<u64>()
+        + chain_charge(&plan.steps, shape.boundary, origin, shape.format).total())
+}
+
+/// Each link's words and blocks buffers together, at the capacities a slot holding `plan` gives
+/// them on `device`, in chain order, the last link's last: the part of [`slot_charge`] beside the
+/// textures and the chain's charge.
+#[cfg(any(test, feature = "qualification"))]
+pub(super) fn slot_buffers(device: &wgpu::Device, plan: &GpuPlan) -> Result<Vec<u64>, GpuFallback> {
+    let chain = chain::chain(&plan.steps);
     let buffers = |steps: &[GpuStep], offset: (u32, u32)| {
         let (mut words, mut blocks) = (Vec::new(), Vec::new());
         chain::pack_steps(plan.texels, offset, steps, &mut words, &mut blocks);
@@ -3180,13 +3190,12 @@ pub(super) fn slot_charge(device: &wgpu::Device, plan: &GpuPlan) -> Result<u64, 
                 + buffer_capacity(device, (blocks.len() * 4) as u64)?,
         )
     };
-    let mut total = shape.texture_bytes(limit)
-        + buffers(chain.last, output_offset(plan))?
-        + chain_charge(&plan.steps, shape.boundary, origin, shape.format).total();
-    for link in &chain.links {
-        total += buffers(link, (0, 0))?;
-    }
-    Ok(total)
+    chain
+        .links
+        .iter()
+        .map(|link| buffers(link, (0, 0)))
+        .chain(std::iter::once(buffers(chain.last, output_offset(plan))))
+        .collect()
 }
 
 /// What a chain's planes and intermediates take of the GPU-preview budget with its links' scratch
