@@ -378,7 +378,9 @@ impl Workspace {
         self.tools = tools::derive(inputs);
         self.histogram = histogram::derive(inputs, &self.histogram);
         self.status = status::derive(inputs);
-        self.palette = palette::derive(inputs);
+        // The panel draws sections unless Mask mode's list has no mask open to bind them to.
+        let sections_shown = !(self.canvas.mask_panel && self.masks.selected.is_none());
+        self.palette = palette::derive(inputs, &self.tools, sections_shown);
         self.settings = settings::derive(inputs.settings);
     }
 

@@ -3809,6 +3809,11 @@ impl Editor {
             | PaletteAction::HundredPercent => self.await_step(Settle::Session),
             PaletteAction::TogglePerformance => self.arm_performance_settle(),
             PaletteAction::Settings(_) => self.arm_settings_settle(),
+            // A reveal is local view state, unless it has to show the tools panel first.
+            PaletteAction::Reveal(_) if !self.session.workspace.tools_panel => {
+                self.await_step(Settle::Session)
+            }
+            PaletteAction::Reveal(_) => self.capture_next_frame(),
             // An evidence run opens no save dialog, so the entry only closes the palette.
             PaletteAction::Export { .. } => self.capture_next_frame(),
         }
