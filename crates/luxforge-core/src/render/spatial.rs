@@ -122,13 +122,14 @@ impl SpatialPlan {
             )));
         }
         let tile = tiling.tile(operation, stage);
-        let working_set = worst_case_working_set(operation, stage, &halos, summed_halo, tile);
+        let regions = largest_regions(stage, tile, &halos, summed_halo);
+        let working_set = worst_case_working_set(operation, stage, &regions, tile);
         if working_set == u64::MAX {
             return Err(Error::resource_limit(
                 "spatial working-set byte length overflow",
             ));
         }
-        let largest = largest_slot_values(operation, stage, &halos, summed_halo, tile);
+        let largest = largest_slot_values(operation, stage, &regions, tile);
         Ok(Self {
             stage,
             halos,
@@ -214,54 +215,53 @@ impl SpatialPlan {
 }
 
 /// The upper bound on one tile's live bytes: the input region, every intermediate plane, the last
-/// unit's output and the largest scratch any unit asks for, all sized for the largest tile of the
-/// stage. It is an upper bound in two ways — the chain holds at most two plane buffers at a time,
-/// and an edge tile's regions are smaller — which is what makes a batch reservation taken up front
-/// enough for every tile in it.
+/// unit's output and the largest scratch any unit asks for, each region at the largest it is over
+/// the plan's tiles ([`largest_regions`]). It is an upper bound in two ways — a tile's slot holds
+/// two of those regions at a time, and most tiles' regions are smaller than the largest — which is
+/// what makes a reservation taken before a tile runs enough for whichever tile it is.
+///
+/// Each region is the tiles' own rectangle, grown and shrunk by the rule [`SpatialPlan::regions`]
+/// follows, rather than `tile + 2 × remaining halo` on a side: beside a partial edge tile narrower
+/// than the summed halo, a tile's input region reaches the stage edge, no unit's rectangle shrinks
+/// on that side, and the units' rectangles are wider than that. Wherever the stage has a tile clear
+/// of both edges on each side and no such partial tile, the two are the same.
 ///
 /// A **masked** operation adds exactly one tile-sized plane buffer on top of that: the snapshot of
 /// the tile's own input the blend is against. The blend itself is in place in the last unit's
 /// planes, which the chain already counted. One tile does not scale with the frame, and an unmasked
-/// operation adds nothing at all, so its working set, its concurrency and therefore its batching are
-/// byte for byte what they were before masks existed.
+/// operation adds nothing at all, so its working set and its concurrency are byte for byte what they
+/// were before masks existed.
 fn worst_case_working_set(
     operation: &SpatialOperation,
     stage: Stage,
-    halos: &[u32],
-    summed_halo: u32,
+    regions: &[Region],
     tile: u32,
 ) -> u64 {
-    let tile_width = tile.min(stage.width);
-    let tile_height = tile.min(stage.height);
-    let mut remaining = summed_halo;
     let mut planes = 0_u64;
     let mut scratch = 0_u64;
-    for step in 0..=halos.len() {
-        let region = Region {
-            x0: 0,
-            y0: 0,
-            width: (tile_width.saturating_add(2 * remaining)).min(stage.width),
-            height: (tile_height.saturating_add(2 * remaining)).min(stage.height),
-        };
+    for (step, region) in regions.iter().enumerate() {
         planes = planes.saturating_add(region.plane_bytes());
-        if let (Some(unit), Some(halo)) = (operation.units().get(step), halos.get(step)) {
+        if let Some(unit) = operation.units().get(step) {
             scratch = scratch.max(unit.scratch_bytes(Stage {
                 width: region.width,
                 height: region.height,
             }));
-            remaining = remaining.saturating_sub(*halo);
         }
     }
     if operation.mask().is_some() {
-        let tile = Region {
-            x0: 0,
-            y0: 0,
-            width: tile_width,
-            height: tile_height,
-        };
-        planes = planes.saturating_add(tile.plane_bytes());
+        planes = planes.saturating_add(largest_tile(stage, tile).plane_bytes());
     }
     planes.saturating_add(scratch)
+}
+
+/// The largest tile of the stage, which is its first.
+fn largest_tile(stage: Stage, tile: u32) -> Region {
+    Region {
+        x0: 0,
+        y0: 0,
+        width: tile.min(stage.width),
+        height: tile.min(stage.height),
+    }
 }
 
 /// How many `f32` values each buffer of a slot holds at most for one plan's tiles: plane buffer 0
@@ -271,12 +271,8 @@ fn worst_case_working_set(
 ///
 /// Each is the largest request any tile of the plan makes ([`largest_slot_values`]), so a slot
 /// built for the plan grows each buffer once. [`worst_case_working_set`] charges a tile every
-/// rectangle of its chain, `tile + 2 × remaining halo` on a side, and a slot holds two of them, so a
-/// slot holds less than the working set its tile is charged, except in one geometry the charge has
-/// always missed. Beside a partial edge tile narrower than the summed halo, a tile's input region
-/// reaches the stage edge, so no unit's rectangle shrinks on that side and the units' rectangles
-/// are wider than the charge counts them. The chain held those rectangles before slots were reused
-/// too, one tile at a time; a slot keeps the widest.
+/// region of its chain at the same largest sizes and a slot holds two of them, so a slot holds less
+/// than the working set its tile is charged.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct SlotValues {
     planes: [usize; 2],
@@ -295,52 +291,52 @@ impl SlotValues {
 }
 
 /// The largest request of each buffer of a slot over the tiles of a plan: region `k` of the chain
-/// (the input region at `k = 0`, unit `k - 1`'s output after it) lives in plane buffer `k % 2`.
-///
-/// A region's width depends only on its tile's column and its height only on its tile's row, and
-/// the tiles are a grid, so the largest region `k` is the widest region `k` of any column by the
-/// tallest of any row ([`widest_regions`]), and a unit's largest scratch is its request for that
-/// rectangle, as the charge assumes too. `O(units)` per tile along each side of the stage.
+/// (the input region at `k = 0`, unit `k - 1`'s output after it) lives in plane buffer `k % 2`, and
+/// a unit's largest scratch is its request for its largest input region, as the charge assumes.
 fn largest_slot_values(
     operation: &SpatialOperation,
     stage: Stage,
-    halos: &[u32],
-    summed_halo: u32,
+    regions: &[Region],
     tile: u32,
 ) -> SlotValues {
     let values = |bytes: u64| {
         usize::try_from(bytes.div_ceil(std::mem::size_of::<f32>() as u64)).unwrap_or(usize::MAX)
     };
+    let mut largest = SlotValues::default();
+    for (step, region) in regions.iter().enumerate() {
+        let planes = &mut largest.planes[step % 2];
+        *planes = (*planes).max(values(region.plane_bytes()));
+        if let Some(unit) = operation.units().get(step) {
+            largest.scratch = largest.scratch.max(values(unit.scratch_bytes(Stage {
+                width: region.width,
+                height: region.height,
+            })));
+        }
+    }
+    if operation.mask().is_some() {
+        largest.snapshot = values(largest_tile(stage, tile).plane_bytes());
+    }
+    largest
+}
+
+/// The largest each region of a tile's chain is over the plan's tiles, in chain order: the input
+/// region, then each unit's output. A region's width depends only on its tile's column and its
+/// height only on its tile's row, and the tiles are a grid, so the largest region `k` is the widest
+/// region `k` of any column by the tallest of any row ([`widest_regions`]). `O(units)` per tile
+/// along each side of the stage.
+fn largest_regions(stage: Stage, tile: u32, halos: &[u32], summed_halo: u32) -> Vec<Region> {
     let widths = widest_regions(stage.width, tile, halos, summed_halo);
     let heights = widest_regions(stage.height, tile, halos, summed_halo);
-    let mut largest = SlotValues::default();
-    for (step, (width, height)) in widths.into_iter().zip(heights).enumerate() {
-        let region = Region {
+    widths
+        .into_iter()
+        .zip(heights)
+        .map(|(width, height)| Region {
             x0: 0,
             y0: 0,
             width,
             height,
-        };
-        let planes = &mut largest.planes[step % 2];
-        *planes = (*planes).max(values(region.plane_bytes()));
-        if let Some(unit) = operation.units().get(step) {
-            largest.scratch = largest
-                .scratch
-                .max(values(unit.scratch_bytes(Stage { width, height })));
-        }
-    }
-    if operation.mask().is_some() {
-        largest.snapshot = values(
-            Region {
-                x0: 0,
-                y0: 0,
-                width: tile.min(stage.width),
-                height: tile.min(stage.height),
-            }
-            .plane_bytes(),
-        );
-    }
-    largest
+        })
+        .collect()
 }
 
 /// The widest each region of the chain is over the tiles along one side of the stage, `length`
@@ -472,9 +468,10 @@ impl TileScratch {
         values as u64 * std::mem::size_of::<f32>() as u64
     }
 
-    /// The claim [`SlotValues`] makes, checked on every tile a test runs: no tile of the plan asks
+    /// The claims [`SlotValues`] makes, checked on every tile a test runs: no tile of the plan asks
     /// a buffer for more than the plan's largest request, so a slot built for the plan never grows
-    /// a second time and a slot that runs one tile never holds more than one built for the plan.
+    /// a second time and a slot that runs one tile never holds more than one built for the plan;
+    /// and what a slot holds never passes the working set its tile is charged.
     #[cfg(test)]
     fn check_held(&self, plan: &SpatialPlan) {
         let largest = plan.largest;
@@ -489,6 +486,12 @@ impl TileScratch {
             "a tile slot's buffers {held:?} pass the plan's largest requests"
         );
         assert!(self.bytes() <= largest.bytes());
+        assert!(
+            self.bytes() <= plan.working_set,
+            "a tile slot holds {} bytes, past its {} byte working set",
+            self.bytes(),
+            plan.working_set
+        );
     }
 }
 
@@ -3487,6 +3490,151 @@ mod tests {
     // -----------------------------------------------------------------------------------------
     // The budget is a target.
     // -----------------------------------------------------------------------------------------
+
+    /// Every spatial operation the production stacks compile to at 24 and 60 MP, with the stage it
+    /// runs at: all three Presence units, and Detail's sharpening and noise reduction, each alone
+    /// and under a mask, through the registry's own compilation.
+    fn production_operations() -> Vec<(String, Stage, SpatialOperation)> {
+        use crate::render::Entry;
+        let registry = ModuleRegistry::builtin();
+        let mask = point_mask("Gradient", 0.2, 0.8);
+        let presence = json!({"texture": 100.0, "clarity": 100.0, "dehaze": 100.0});
+        let detail = json!({"sharpening": 100.0, "radius": 3.0, "luminance": 100.0,
+                            "colour": 100.0});
+        let mut operations = Vec::new();
+        for (width, height) in [(6000_u32, 4000_u32), (10_000, 6000)] {
+            for (name, effect, payload) in [
+                ("presence", crate::PRESENCE_EFFECT, &presence),
+                ("detail", crate::DETAIL_EFFECT, &detail),
+            ] {
+                for masked in [false, true] {
+                    let stack = Recipe {
+                        format: crate::RECIPE_FORMAT,
+                        layers: vec![Layer {
+                            mask: masked.then(|| mask.id.clone()),
+                            ..Layer::new(effect, payload.clone())
+                        }],
+                        masks: if masked {
+                            vec![mask.clone()]
+                        } else {
+                            Vec::new()
+                        },
+                        ..Recipe::default()
+                    };
+                    let compiled = registry.compile(width, height, &stack).unwrap();
+                    let operation = compiled
+                        .segments
+                        .iter()
+                        .find_map(|segment| segment.entry.as_ref().and_then(Entry::point_tiles))
+                        .expect("a spatial segment")
+                        .clone();
+                    assert_eq!(operation.mask().is_some(), masked);
+                    operations.push((
+                        format!("{name} {width}x{height} masked {masked}"),
+                        Stage { width, height },
+                        operation,
+                    ));
+                }
+            }
+        }
+        operations
+    }
+
+    /// The charge at the production sizes is byte for byte the figure the halo-bounded charge
+    /// (`tile + 2 × remaining halo` a side) gave before it was made honest, so the budget's
+    /// concurrency and high-water mark there are unchanged: all three Presence units, and Detail's
+    /// sharpening and noise reduction, at 6000 × 4000 and 10000 × 6000, masked and not.
+    #[test]
+    fn the_charge_at_the_production_sizes_is_what_it_was() {
+        let before: [(&str, u64); 8] = [
+            ("presence 6000x4000 masked false", 157_487_264),
+            ("presence 6000x4000 masked true", 170_070_176),
+            ("detail 6000x4000 masked false", 28_946_224),
+            ("detail 6000x4000 masked true", 32_091_952),
+            ("presence 10000x6000 masked false", 218_667_104),
+            ("presence 10000x6000 masked true", 231_250_016),
+            ("detail 10000x6000 masked false", 28_946_224),
+            ("detail 10000x6000 masked true", 32_091_952),
+        ];
+        let operations = production_operations();
+        assert_eq!(operations.len(), before.len());
+        for ((name, stage, operation), (expected_name, expected)) in operations.iter().zip(before) {
+            assert_eq!(name, expected_name);
+            let plan = SpatialPlan::new(operation, *stage, Tiling::Halo).unwrap();
+            assert_eq!(plan.working_set(), expected, "{name}");
+            assert!(plan.slot_bytes() < plan.working_set(), "{name}");
+        }
+    }
+
+    /// The charge covers every tile's own chain, and the slot that runs it, on stages whose last
+    /// partial tile is narrower than the summed halo. There the tile beside it keeps an unshrunk
+    /// side: one 4 px blur in 37 px tiles over 150 rows leaves a 2 px last row, so the row before
+    /// it writes 37 × 39 pixels where the halo-bounded charge counted 37 × 37, 65,028 bytes for a
+    /// chain and a slot that hold 65,916.
+    #[test]
+    fn the_charge_covers_a_tile_beside_a_partial_tile_narrower_than_the_halo() {
+        use crate::{mask_field::MaskSampling, path::StrokeTable};
+
+        let blur = |radius| Arc::new(BoxBlur { radius }) as Arc<dyn SpatialUnit>;
+        let one = SpatialOperation::new(vec![blur(4)]).unwrap();
+        let stage = Stage {
+            width: 200,
+            height: 150,
+        };
+        let plan = SpatialPlan::new(&one, stage, Tiling::Fixed(37)).unwrap();
+        assert_eq!(plan.working_set(), 65_916, "was 65,028");
+        assert_eq!(plan.slot_bytes(), 65_916);
+        let (_, mask) = zero_coverage_masks().swap_remove(0);
+        let three = SpatialOperation::new(vec![
+            blur(3),
+            Arc::new(Counted::default()) as Arc<dyn SpatialUnit>,
+            blur(2),
+        ])
+        .unwrap();
+        for (operation, width, height, tile) in [
+            (&one, 200, 150, 37),
+            (&one, 200, 150, 64),
+            (&one, 41, 30, 8),
+            (&three, 243, 162, 16),
+            (&three, 250, 170, 16),
+            (&three, 40, 30, 4),
+        ] {
+            let stage = Stage { width, height };
+            let field =
+                MaskField::compile(&mask, stage, &StrokeTable::default(), MaskSampling::Point)
+                    .unwrap();
+            for operation in [operation.clone(), operation.clone().with_mask(field)] {
+                let case = format!("{operation:?} at {width}x{height} in {tile} px tiles");
+                let plan = SpatialPlan::new(&operation, stage, Tiling::Fixed(tile)).unwrap();
+                assert!(plan.slot_bytes() <= plan.working_set(), "{case}");
+                for tile in plan.tiles() {
+                    let regions = plan.regions(tile);
+                    let planes: u64 = regions.iter().map(|region| region.plane_bytes()).sum();
+                    let scratch = operation
+                        .units()
+                        .iter()
+                        .zip(&regions)
+                        .map(|(unit, region)| {
+                            unit.scratch_bytes(Stage {
+                                width: region.width,
+                                height: region.height,
+                            })
+                        })
+                        .max()
+                        .unwrap_or(0);
+                    let snapshot = if operation.mask().is_some() {
+                        tile.plane_bytes()
+                    } else {
+                        0
+                    };
+                    assert!(
+                        planes + scratch + snapshot <= plan.working_set(),
+                        "{case}: {tile:?}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn a_reservation_takes_what_fits_and_never_less_than_one_tile() {
