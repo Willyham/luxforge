@@ -8,7 +8,8 @@
 
 use super::{
     ColorRun, Compiled, Entry, Evaluation, MaskedInput, PixelDomain, Raster, RenderContext,
-    ResampleEntry, RowScratch, Segment, SegmentRows, Taps, apply_units, segment_pass, spatial,
+    ResampleEntry, RowScratch, Segment, SegmentRows, Taps, apply_units, color_runs,
+    pipeline::PlaneRow, segment_pass, spatial,
 };
 #[cfg(test)]
 use crate::ErrorKind;
@@ -18,6 +19,7 @@ use crate::{
     modules::{ExactGeometry, Parallelism, Region, Stage},
     source::{ViewReader, Walk, layout},
 };
+use rayon::prelude::*;
 use std::borrow::Cow;
 
 const MAX_RESAMPLES: usize = 1;
@@ -358,6 +360,45 @@ impl EntryPlanes<'_> {
         self.reader
             .walk(at, across, down, block.width, block.height)
     }
+
+    /// The values of `walk`, row-major into `row`, as a colour run reads them: the planes' own
+    /// `f32` values, or each source pixel's [`WhiteBalanceApproximation::adjust`] narrowed to
+    /// `f32`, exactly as [`Linear::colour`] narrows the pixel it is handed.
+    fn read_f32(&self, walk: Walk, row: &mut Vec<[f32; 3]>) -> Result<(), Error> {
+        row.clear();
+        match &self.white_balance {
+            None => self.reader.visit(walk, |_, rgb| {
+                row.push(rgb);
+                Ok(())
+            }),
+            Some(balance) => self.reader.visit(walk, |_, rgb| {
+                row.push(
+                    balance
+                        .adjust(rgb.map(f64::from))?
+                        .map(|value| value as f32),
+                );
+                Ok(())
+            }),
+        }
+    }
+
+    /// Each value of `walk`, with its row-major offset, as [`Evaluation::entry_pixel`] answers it
+    /// there: the plane's `f32` widened, or the source pixel's
+    /// [`WhiteBalanceApproximation::adjust`].
+    fn visit_f64(
+        &self,
+        walk: Walk,
+        mut visit: impl FnMut(usize, [f64; 3]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        match &self.white_balance {
+            None => self
+                .reader
+                .visit(walk, |offset, rgb| visit(offset, rgb.map(f64::from))),
+            Some(balance) => self.reader.visit(walk, |offset, rgb| {
+                visit(offset, balance.adjust(rgb.map(f64::from))?)
+            }),
+        }
+    }
 }
 
 impl PixelDomain for Linear<'_> {
@@ -460,6 +501,113 @@ impl PixelDomain for Linear<'_> {
         } else {
             Err(Error::render(NON_FINITE_PIXEL))
         }
+    }
+
+    /// A segment without replacements whose entry is planes ([`Linear::entry_planes`]) reads each
+    /// row of `region` by walking them: a colour segment's row as `f32` straight into the colour
+    /// scratch, through its runs and the finite check, then widened once; one without colour each
+    /// value as its entry pixel and [`Self::finish`]. Row by row, so each row's entry, colour and
+    /// check run in the order the pull runs them and the first error is the pull's.
+    fn region_rows(
+        evaluation: &Evaluation<'_, Self>,
+        index: usize,
+        region: Region,
+        out: &mut Vec<[f64; 3]>,
+        scratch: &mut RowScratch,
+    ) -> Option<Result<(), Error>> {
+        let segment = &evaluation.compiled.segments[index];
+        if segment.has_pixels {
+            return None;
+        }
+        let planes = Self::entry_planes(evaluation, index)?;
+        let walk = planes.walk(segment.geometry, region)?;
+        Some((0..walk.rows()).try_for_each(|row| {
+            let line = walk.row(row);
+            if segment.has_color {
+                let RowScratch { linear, snapshot } = &mut *scratch;
+                planes.read_f32(line, linear)?;
+                let y = region.y0 + row as u32;
+                Self::colour_f32(linear, color_runs(segment), y, region.x0, snapshot)?;
+                out.extend(linear.iter().map(|value| value.map(f64::from)));
+                Ok(())
+            } else {
+                planes.visit_f64(line, |_, pixel| {
+                    out.push(Self::finish(pixel)?);
+                    Ok(())
+                })
+            }
+        }))
+    }
+
+    /// A segment without replacements whose entry is planes ([`Linear::entry_planes`]) fills each
+    /// row of the planes a spatial operation reads by walking them, in `f32` from the planes to
+    /// the spatial input: a colour segment's row through its runs and the finite check, one
+    /// without colour each value checked as [`Self::finish`] checks it and narrowed as
+    /// [`Self::spatial_input`] narrows it. Row by row, on the pool under [`Parallelism::Pool`].
+    fn fill_rows(
+        evaluation: &Evaluation<'_, Self>,
+        index: usize,
+        region: Region,
+        planes: &mut [f32],
+        parallelism: Parallelism,
+    ) -> Option<Result<(), Error>> {
+        let segment = &evaluation.compiled.segments[index];
+        if segment.has_pixels {
+            return None;
+        }
+        let entry = Self::entry_planes(evaluation, index)?;
+        let walk = entry.walk(segment.geometry, region)?;
+        let len = region.pixels() as usize;
+        let width = region.width as usize;
+        let (red, rest) = planes[..3 * len].split_at_mut(len);
+        let (green, blue) = rest.split_at_mut(len);
+        let row = |scratch: &mut RowScratch,
+                   (row, ((red, green), blue)): PlaneRow<'_>|
+         -> Result<(), Error> {
+            let line = walk.row(row);
+            let mut put = |column: usize, [r, g, b]: [f32; 3]| {
+                red[column] = r;
+                green[column] = g;
+                blue[column] = b;
+            };
+            if segment.has_color {
+                let RowScratch { linear, snapshot } = scratch;
+                entry.read_f32(line, linear)?;
+                let y = region.y0 + row as u32;
+                Self::colour_f32(linear, color_runs(segment), y, region.x0, snapshot)?;
+                for (column, rgb) in linear.iter().enumerate() {
+                    put(column, *rgb);
+                }
+                Ok(())
+            } else if entry.white_balance.is_none() {
+                entry.reader.visit(line, |column, rgb| {
+                    finite_f32(&[rgb], NON_FINITE_PIXEL)?;
+                    put(column, rgb);
+                    Ok(())
+                })
+            } else {
+                entry.visit_f64(line, |column, pixel| {
+                    put(column, Self::spatial_input(Self::finish(pixel)?));
+                    Ok(())
+                })
+            }
+        };
+        Some(match parallelism {
+            Parallelism::Pool => red
+                .par_chunks_mut(width)
+                .zip(green.par_chunks_mut(width))
+                .zip(blue.par_chunks_mut(width))
+                .enumerate()
+                .try_for_each_init(RowScratch::default, row),
+            Parallelism::Serial => {
+                let mut scratch = RowScratch::default();
+                red.chunks_mut(width)
+                    .zip(green.chunks_mut(width))
+                    .zip(blue.chunks_mut(width))
+                    .enumerate()
+                    .try_for_each(|item| row(&mut scratch, item))
+            }
+        })
     }
 
     #[inline(always)]
@@ -1516,11 +1664,88 @@ mod tests {
         }
     }
 
+    /// For every segment of `evaluation` whose entry is read by rows, the rows a neighbourhood
+    /// read and a spatial operation's input take from the planes ([`Linear::region_rows`],
+    /// [`Linear::fill_rows`]) against the same reads pulled pixel by pixel
+    /// ([`Evaluation::region_pulled`], [`Evaluation::fill_pulled`]), over the whole stage, a
+    /// corner pixel, edge strips and an interior rectangle, serially and on the pool: bit for bit
+    /// the same.
+    fn regions_read_as_pulled(evaluation: &Evaluation<'_, Linear<'_>>, what: &str) {
+        let mut read = 0;
+        for (index, segment) in evaluation.compiled.segments.iter().enumerate() {
+            if segment.has_pixels || Linear::entry_planes(evaluation, index).is_none() {
+                continue;
+            }
+            read += 1;
+            let (width, height) = (segment.width, segment.height);
+            let regions = [
+                Region::whole(segment.stage()),
+                Region {
+                    x0: width - 1,
+                    y0: height - 1,
+                    width: 1,
+                    height: 1,
+                },
+                Region {
+                    x0: 0,
+                    y0: 0,
+                    width,
+                    height: height.min(3),
+                },
+                Region {
+                    x0: width - width.min(2),
+                    y0: 0,
+                    width: width.min(2),
+                    height,
+                },
+                Region {
+                    x0: width / 4,
+                    y0: height / 3,
+                    width: (width / 2).max(1),
+                    height: (height / 3).max(1),
+                },
+            ];
+            for region in regions {
+                let what = format!("{what}: segment {index}, {region:?}");
+                let (mut walked, mut pulled) = (Vec::new(), Vec::new());
+                let mut scratch = RowScratch::default();
+                Linear::region_rows(evaluation, index, region, &mut walked, &mut scratch)
+                    .expect("read by rows")
+                    .unwrap();
+                evaluation
+                    .region_pulled(index, region, &mut pulled, &mut scratch)
+                    .unwrap();
+                let bits = |pixels: &[[f64; 3]]| -> Vec<[u64; 3]> {
+                    pixels.iter().map(|pixel| pixel.map(f64::to_bits)).collect()
+                };
+                assert!(bits(&walked) == bits(&pulled), "{what}: region");
+                for parallelism in [Parallelism::Serial, Parallelism::Pool] {
+                    let len = 3 * region.pixels() as usize;
+                    let (mut walked, mut pulled) = (vec![1.5_f32; len], vec![-2.5_f32; len]);
+                    Linear::fill_rows(evaluation, index, region, &mut walked, parallelism)
+                        .expect("filled by rows")
+                        .unwrap();
+                    evaluation
+                        .fill_pulled(index, region, &mut pulled, parallelism)
+                        .unwrap();
+                    let bits = |values: &[f32]| -> Vec<u32> {
+                        values.iter().map(|value| value.to_bits()).collect()
+                    };
+                    assert!(
+                        bits(&walked) == bits(&pulled),
+                        "{what}: planes, {parallelism:?}"
+                    );
+                }
+            }
+        }
+        assert!(read > 0, "{what}: some segment is read by rows");
+    }
+
     /// The rows read from the developed planes through every source orientation and view crop,
     /// every recipe orientation, exact crops touching each edge and crops between turns, with and
     /// without colour and with and without an approximate white balance, are what the per-pixel
-    /// pull reads: the rendered frame is the point evaluator's at every pixel, and each chunk's
-    /// rows are bit for bit the pulled ones.
+    /// pull reads: the rendered frame is the point evaluator's at every pixel, each chunk's rows
+    /// are bit for bit the pulled ones, and so are a neighbourhood read and a spatial input.
     #[test]
     fn rows_through_every_view_and_exact_geometry_are_the_pulled_pixels() {
         let registry = ModuleRegistry::developer();
@@ -1562,6 +1787,7 @@ mod tests {
                             )
                             .unwrap();
                             rows_load_as_pulled(&evaluation, &what);
+                            regions_read_as_pulled(&evaluation, &what);
                         }
                     }
                 }
@@ -1570,7 +1796,8 @@ mod tests {
     }
 
     /// A spatial frame followed by exact geometry, with and without colour after it, is read by
-    /// rows as the per-pixel pull reads it, under portrait and landscape source views.
+    /// rows as the per-pixel pull reads it, in the frame's rows and in a neighbourhood or spatial
+    /// input read from it, under portrait and landscape source views.
     #[test]
     fn rows_from_a_spatial_frame_through_exact_geometry_are_the_pulled_pixels() {
         let registry = ModuleRegistry::developer();
@@ -1614,6 +1841,7 @@ mod tests {
                         "{what}"
                     );
                     rows_load_as_pulled(&evaluation, &what);
+                    regions_read_as_pulled(&evaluation, &what);
                 }
             }
         }

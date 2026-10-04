@@ -432,6 +432,23 @@ pub(crate) struct Walk {
     rows: usize,
 }
 
+impl Walk {
+    /// How many rows the rectangle has.
+    pub(crate) fn rows(self) -> usize {
+        self.rows
+    }
+
+    /// Row `row` of the rectangle on its own.
+    pub(crate) fn row(self, row: usize) -> Self {
+        assert!(row < self.rows, "a walk's row lies inside it");
+        Self {
+            first: self.first.wrapping_add_signed(row as isize * self.down),
+            rows: 1,
+            ..self
+        }
+    }
+}
+
 impl<'a> ViewReader<'a> {
     /// Three planes laid out as a source's, `width` × `height` each, read through the identity
     /// view: a spatial operation's output frame, which the linear path holds that way.
@@ -710,6 +727,24 @@ mod tests {
                                                 what()
                                             );
                                         }
+                                    }
+                                    for row in 0..rows as usize {
+                                        let single = walk.row(row);
+                                        assert_eq!(single.rows(), 1);
+                                        let mut values = Vec::new();
+                                        reader
+                                            .visit(single, |_, rgb| {
+                                                values.push(rgb.map(f32::to_bits));
+                                                Ok::<(), ()>(())
+                                            })
+                                            .unwrap();
+                                        let start = row * columns as usize;
+                                        let expected: Vec<_> = seen
+                                            [start..start + columns as usize]
+                                            .iter()
+                                            .map(|value| value.unwrap())
+                                            .collect();
+                                        assert_eq!(values, expected, "{}: row {row}", what());
                                     }
                                 }
                             }
