@@ -393,7 +393,8 @@ fn write_fresh_strokes(
     Ok(())
 }
 
-/// Resolve this recipe's stroke references against the store, one lookup and one hash each.
+/// Resolve this recipe's stroke references against the store, one lookup and one hash each, except
+/// the strokes `shared` already holds.
 ///
 /// Nothing is replayed and no earlier entry is read: an entry is a complete snapshot, and this is
 /// the lookup that turns its addresses back into the strokes they name. A reference the store does
@@ -411,28 +412,41 @@ fn hydrate_strokes(
     connection: &Connection,
     recipe: &mut Recipe,
     origin: &str,
+    shared: &[crate::path::StrokeTable],
 ) -> Result<(), Error> {
     let references = recipe.stroke_references()?;
     if references.is_empty() {
         return Ok(());
     }
-    recipe.strokes = read_strokes(connection, references, origin)?;
+    recipe.strokes = read_strokes(connection, references, origin, shared)?;
     Ok(())
 }
 
 /// [`hydrate_strokes`] over a list of references, whichever consumer's strokes they are: each
-/// address is read once and decoded as the type its reference declares.
+/// address is resolved once and decoded as the type its reference declares.
+///
+/// A reference one of the `shared` tables holds as that type is resolved by sharing that stroke,
+/// with no lookup, parse or hash ([`crate::path::StrokeTable::load_shared`]); every other reference
+/// is read from the store. The statement is prepared only when a reference needs it.
 fn read_strokes(
     connection: &Connection,
     references: Vec<crate::path::StrokeReference>,
     origin: &str,
+    shared: &[crate::path::StrokeTable],
 ) -> Result<crate::path::StrokeTable, Error> {
     let mut table = crate::path::StrokeTable::new(origin);
-    let mut statement = connection.prepare("SELECT stroke_json FROM strokes WHERE id=?1")?;
+    let mut prepared = None;
     for reference in references {
-        if table.knows(&reference.id) {
+        if table.knows(&reference.id) || table.load_shared(&reference, shared) {
             continue;
         }
+        let statement = match &mut prepared {
+            Some(statement) => statement,
+            unprepared => unprepared
+                .insert(connection.prepare("SELECT stroke_json FROM strokes WHERE id=?1")?),
+        };
+        #[cfg(test)]
+        super::read_counts::queried();
         let stored: Option<String> = statement
             .query_row(params![reference.id.as_str()], |row| row.get(0))
             .optional()?;
@@ -540,10 +554,25 @@ pub(super) fn stored_revision(connection: &Connection, asset_id: &AssetId) -> Re
         .ok_or_else(|| Error::validation("unknown asset"))
 }
 
+/// One entry as the rows hold it, every stroke it references read from the store: what the tests
+/// compare the owner's cache against. The owner itself reads through [`entry_from_sharing`].
+#[cfg(test)]
 pub(super) fn entry_from(
     connection: &Connection,
     asset_id: &AssetId,
     entry_id: &EntryId,
+) -> Result<HistoryEntry, Error> {
+    entry_from_sharing(connection, asset_id, entry_id, &[])
+}
+
+/// [`entry_from`], resolving the strokes `shared` holds without reading them: the tables of cached
+/// entries of this same asset, which came out of this catalog. The entry is the same either way;
+/// only the lookups differ.
+pub(super) fn entry_from_sharing(
+    connection: &Connection,
+    asset_id: &AssetId,
+    entry_id: &EntryId,
+    shared: &[crate::path::StrokeTable],
 ) -> Result<HistoryEntry, Error> {
     let json: String = connection
         .query_row(
@@ -554,12 +583,12 @@ pub(super) fn entry_from(
         .optional()?
         .ok_or_else(|| Error::validation("history entry does not belong to this asset"))?;
     let mut entry: HistoryEntry = decode("invalid history entry", json)?;
-    // One lookup per referenced stroke, here and nowhere else: every path that evaluates an entry —
-    // state, preview, undo, redo, Restore, export — reads it through this function, once, and then
-    // from the owner's entry cache; a listing, which never draws anything, keeps the stored
-    // addresses and pays nothing.
+    // One lookup per referenced stroke the caller does not already hold, here and nowhere else:
+    // every path that evaluates an entry — state, preview, undo, redo, Restore, export — reads it
+    // through this function, once, and then from the owner's entry cache; a listing, which never
+    // draws anything, keeps the stored addresses and pays nothing.
     let origin = format!("entry {}", entry.id);
-    hydrate_strokes(connection, &mut entry.snapshot.recipe, &origin)?;
+    hydrate_strokes(connection, &mut entry.snapshot.recipe, &origin, shared)?;
     Ok(entry)
 }
 
@@ -1191,7 +1220,8 @@ mod tests {
         assert_eq!(stored_strokes(&catalog), 3);
 
         let connection = Connection::open(&catalog).unwrap();
-        let read = super::read_strokes(&connection, references.clone(), "the read back").unwrap();
+        let read =
+            super::read_strokes(&connection, references.clone(), "the read back", &[]).unwrap();
         assert_eq!(read.get::<crate::mask::Stroke>(&brush_id), Some(&brush));
         assert_eq!(read.get::<RepairStroke>(&first.id()), Some(&first));
         assert_eq!(read.get::<RepairStroke>(&second.id()), Some(&second));
@@ -1225,6 +1255,124 @@ mod tests {
             "only the stroke captured after the read"
         );
         assert_eq!(stored_strokes(&catalog), 4);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A read queries the store only for the strokes it is not given. A stroke a given table holds
+    /// as the declared type, known stored, is shared with no lookup, parse or hash and is known
+    /// stored in the new table; a stroke not in the store still faults as missing; and a stroke the
+    /// table holds as another type is not shared, so the store reads its bytes as the declared type
+    /// and finds them corrupt, exactly as with nothing given.
+    #[test]
+    fn a_read_queries_only_the_strokes_it_is_not_given() {
+        use crate::editor::read_counts::take_queried;
+        use crate::path::{
+            StrokeKind, StrokeReference, StrokeTable, StrokeType, tests::RepairStroke,
+        };
+        let catalog = temp("shared-stroke-reads.sqlite");
+        drop(EditorService::open(&catalog).unwrap());
+        let held = RepairStroke::capture(&[[0.2, 0.2], [0.5, 0.3]], 0.05, [0.1, 0.0]).unwrap();
+        let fresh = RepairStroke::capture(&[[0.6, 0.6], [0.7, 0.8]], 0.02, [0.0, -0.1]).unwrap();
+        let gone = RepairStroke::capture(&[[0.3, 0.9]], 0.3, [0.0, 0.0]).unwrap();
+        let mut written = StrokeTable::new("the written");
+        written.insert(held.clone());
+        written.insert(fresh.clone());
+        let mut connection = Connection::open(&catalog).unwrap();
+        let tx = connection.transaction().unwrap();
+        super::write_fresh_strokes(
+            &tx,
+            &[held.reference("repair 1"), fresh.reference("repair 2")],
+            &written,
+        )
+        .unwrap();
+        tx.commit().unwrap();
+
+        // What a cached entry holds: read from the store, so known stored.
+        take_queried();
+        let source = super::read_strokes(
+            &connection,
+            vec![held.reference("repair 1")],
+            "the source",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(take_queried(), 1);
+
+        let references = vec![
+            held.reference("repair 1"),
+            fresh.reference("repair 2"),
+            gone.reference("repair 3"),
+            held.reference("repair 4"),
+        ];
+        crate::editor::read_counts::take();
+        let read = super::read_strokes(
+            &connection,
+            references.clone(),
+            "the read",
+            std::slice::from_ref(&source),
+        )
+        .unwrap();
+        assert_eq!(
+            take_queried(),
+            2,
+            "the fresh stroke and the missing one; the held stroke is shared and its repeat is known"
+        );
+        assert_eq!(
+            crate::editor::read_counts::take(),
+            (1, 1),
+            "the fresh stroke parsed and hashed once; the held stroke neither"
+        );
+        assert!(std::ptr::eq(
+            read.get::<RepairStroke>(&held.id()).unwrap(),
+            source.get::<RepairStroke>(&held.id()).unwrap()
+        ));
+        assert!(read.is_known_stored(&held.id()));
+        assert_eq!(read.get::<RepairStroke>(&fresh.id()), Some(&fresh));
+        assert!(read.is_known_stored(&fresh.id()));
+        assert!(read.has_missing());
+        assert!(!read.is_known_stored(&gone.id()));
+
+        // With nothing given, every distinct stroke is queried and the outcome is the same.
+        let alone = super::read_strokes(&connection, references.clone(), "the read", &[]).unwrap();
+        assert_eq!(take_queried(), 3);
+        for reference in &references {
+            assert_eq!(
+                read.check_reference(reference)
+                    .map_err(|error| error.detail),
+                alone
+                    .check_reference(reference)
+                    .map_err(|error| error.detail),
+            );
+            assert_eq!(
+                read.is_known_stored(&reference.id),
+                alone.is_known_stored(&reference.id)
+            );
+        }
+
+        // The held stroke's address declared as the brush's type is not the held stroke: it is read
+        // from the store, whose bytes are not a brush stroke, and is corrupt.
+        let as_brush = StrokeReference {
+            what: "component Brush 1 of mask Mask 1".to_owned(),
+            id: held.id(),
+            kind: StrokeType::of::<crate::mask::Stroke>(),
+        };
+        let mismatched = super::read_strokes(
+            &connection,
+            vec![as_brush.clone()],
+            "the read",
+            std::slice::from_ref(&source),
+        )
+        .unwrap();
+        assert_eq!(take_queried(), 1, "a stroke of another type is not shared");
+        assert_eq!(
+            mismatched.check_reference(&as_brush).unwrap_err().detail,
+            format!(
+                "stroke {} of the read does not match its stored content address",
+                held.id()
+            )
+        );
+        assert!(!mismatched.is_known_stored(&held.id()));
+        drop(connection);
         std::fs::remove_file(catalog).unwrap();
     }
 

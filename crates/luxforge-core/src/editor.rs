@@ -116,7 +116,8 @@ impl SourceTag {
 }
 
 /// What reads cost the catalog, counted per thread, for the tests that prove a cached read decodes
-/// and hashes nothing: every JSON decode of a stored value and every stroke address computed.
+/// and hashes nothing: every JSON decode of a stored value and every stroke address computed, and,
+/// asked for separately by `take_queried`, every stroke row looked up in the store.
 #[cfg(test)]
 pub(crate) mod read_counts {
     use std::cell::Cell;
@@ -124,6 +125,7 @@ pub(crate) mod read_counts {
     thread_local! {
         static DECODED: Cell<u64> = const { Cell::new(0) };
         static HASHED: Cell<u64> = const { Cell::new(0) };
+        static QUERIED: Cell<u64> = const { Cell::new(0) };
     }
 
     pub(crate) fn decoded() {
@@ -134,12 +136,21 @@ pub(crate) mod read_counts {
         HASHED.with(|count| count.set(count.get() + 1));
     }
 
+    pub(crate) fn queried() {
+        QUERIED.with(|count| count.set(count.get() + 1));
+    }
+
     /// The decodes and the stroke hashes this thread made since it last asked.
     pub(crate) fn take() -> (u64, u64) {
         (
             DECODED.with(|count| count.replace(0)),
             HASHED.with(|count| count.replace(0)),
         )
+    }
+
+    /// The stroke rows this thread looked up in the store since it last asked.
+    pub(crate) fn take_queried() -> u64 {
+        QUERIED.with(|count| count.replace(0))
     }
 }
 
