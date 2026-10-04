@@ -131,6 +131,7 @@ pub enum Flag {
     Disable,
     Evidence,
     GpuIdentity,
+    NoGpuRender,
     Developer,
     Endpoint,
     Open,
@@ -139,12 +140,13 @@ pub enum Flag {
 }
 
 /// The order a launch assembles its flags in unless it names another with [`Launch::order`].
-pub const ORDER: [Flag; 10] = [
+pub const ORDER: [Flag; 11] = [
     Flag::DataRoot,
     Flag::Catalog,
     Flag::Disable,
     Flag::Evidence,
     Flag::GpuIdentity,
+    Flag::NoGpuRender,
     Flag::Developer,
     Flag::Endpoint,
     Flag::Open,
@@ -165,8 +167,9 @@ enum Evidence {
 /// One editor launch: what it opens and with which flags, where its evidence, data and log go, the
 /// evidence script it runs, how long it may take and how it is watched. Its arguments are
 /// assembled in [`ORDER`] — `--data-root`, `--catalog`, each `--disable-module`,
-/// `--evidence-dir`, `--evidence-gpu-identity`, `--developer`, `--proof-endpoint`, each `--open`,
-/// `--evidence-script` and `--window-size` — unless it names another order.
+/// `--evidence-dir`, `--evidence-gpu-identity`, `--no-gpu-render`, `--developer`,
+/// `--proof-endpoint`, each `--open`, `--evidence-script` and `--window-size` — unless it names
+/// another order.
 pub struct Launch {
     evidence: Evidence,
     log: String,
@@ -174,12 +177,13 @@ pub struct Launch {
     catalog: Option<PathBuf>,
     disabled: Vec<String>,
     gpu_identity: bool,
+    no_gpu_render: bool,
     developer: bool,
     endpoint: Option<String>,
     sources: Vec<PathBuf>,
     script: Option<(Value, ScriptFile)>,
     window: Option<[String; 2]>,
-    order: [Flag; 10],
+    order: [Flag; 11],
     deadline: Option<Duration>,
     exit: Option<i32>,
     watch: Option<Watcher>,
@@ -195,6 +199,7 @@ impl Launch {
             catalog: None,
             disabled: Vec::new(),
             gpu_identity: false,
+            no_gpu_render: false,
             developer: false,
             endpoint: None,
             sources: Vec::new(),
@@ -255,6 +260,13 @@ impl Launch {
         self
     }
 
+    /// Refuse the editor's GPU stage for the launch, as on a machine whose adapter cannot run it:
+    /// every frame is the reference renderer's.
+    pub fn no_gpu_render(mut self) -> Self {
+        self.no_gpu_render = true;
+        self
+    }
+
     pub fn developer(mut self) -> Self {
         self.developer = true;
         self
@@ -291,7 +303,7 @@ impl Launch {
     }
 
     /// Assemble the arguments in `order`, every flag named once, instead of [`ORDER`].
-    pub fn order(mut self, order: [Flag; 10]) -> Self {
+    pub fn order(mut self, order: [Flag; 11]) -> Self {
         assert!(
             ORDER.iter().all(|flag| order.contains(flag)),
             "A launch order names every flag once: {order:?}"
@@ -399,6 +411,11 @@ impl Launch {
                 Flag::GpuIdentity => {
                     if self.gpu_identity {
                         args.push("--evidence-gpu-identity".into());
+                    }
+                }
+                Flag::NoGpuRender => {
+                    if self.no_gpu_render {
+                        args.push("--no-gpu-render".into());
                     }
                 }
                 Flag::Developer => {
@@ -745,6 +762,7 @@ impl Run {
         // An editor the watcher is done with is ended before the launch counts as over.
         drop(child);
         drop(scratch);
+        self.launches[index]["adapter"] = recorded_adapter(&dir);
         let Some(status) = status else {
             self.launches[index]["stopped"] = json!(true);
             return Ok(Launched { dir, watched });
@@ -858,6 +876,20 @@ impl Run {
         }
         Ok(text)
     }
+}
+
+/// The adapter a launch recorded drawing its window with: its last frame's `state.backend`, which
+/// an evidence run identifies from Iced's name for the adapter and an enumeration of its backend,
+/// with the device type that tells a software rasterizer from a GPU. Null for a launch that
+/// captured no frame or is no evidence run.
+fn recorded_adapter(dir: &Path) -> Value {
+    read_json(&dir.join("result.json"))
+        .ok()
+        .and_then(|app| {
+            let frame = app["frames"].as_array()?.last()?;
+            Some(frame["state"]["backend"].clone())
+        })
+        .unwrap_or(Value::Null)
 }
 
 /// Write a [`Run::provenance`] header's fields into a report.
@@ -1054,7 +1086,8 @@ mod tests {
         assert_eq!(refused.listed(out), json!("file/evidence"));
         assert_eq!(refused.dir(out).unwrap(), Path::new("/out/file/evidence"));
         // The same flags in another order: the script before the photograph, the catalog after
-        // the evidence directory, then the developer flag and the GPU identity hook last.
+        // the evidence directory, then the developer flag, the GPU identity hook and the GPU
+        // stage's refusal last.
         let order = [
             Flag::Evidence,
             Flag::Catalog,
@@ -1066,10 +1099,12 @@ mod tests {
             Flag::Endpoint,
             Flag::Window,
             Flag::GpuIdentity,
+            Flag::NoGpuRender,
         ];
         let held = Launch::named("hold")
             .developer()
             .gpu_identity()
+            .no_gpu_render()
             .open_all(std::slice::from_ref(&fixture))
             .catalog(Path::new("/out/held.sqlite"))
             .order(order);
@@ -1085,13 +1120,19 @@ mod tests {
                 "--open",
                 "/f/photo.jpg",
                 "--developer",
-                "--evidence-gpu-identity"
+                "--evidence-gpu-identity",
+                "--no-gpu-render"
             ]
         );
-        // In the default order the hook follows the evidence directory it needs.
+        // In the default order the hook follows the evidence directory it needs, and the GPU
+        // stage's refusal follows the hook.
         assert_eq!(
             strings(Launch::app().gpu_identity().arguments(out, None)),
             ["--evidence-dir", "/out/app", "--evidence-gpu-identity"]
+        );
+        assert_eq!(
+            strings(Launch::app().no_gpu_render().arguments(out, None)),
+            ["--evidence-dir", "/out/app", "--no-gpu-render"]
         );
     }
 

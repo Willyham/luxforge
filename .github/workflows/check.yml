@@ -5,8 +5,10 @@ on:
 permissions:
   contents: read
 jobs:
+  # What each lane proves, and what it never proves, is the development guide's CI section
+  # (docs/engineering/development.md#ci). No lane here is native GPU evidence.
   native-build:
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -20,12 +22,31 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev
       - name: Pinned toolchain
         run: rustup toolchain install 1.94.0 --profile minimal --component rustfmt --component clippy
-      - name: Headless checks, slow tests and doctests included
+      - name: Headless checks, slow tests and doctests included (macOS, on the hosted VM's own adapter)
+        if: runner.os != 'Linux'
         run: cargo xtask check
+      # The no-adapter lane: every Vulkan and EGL driver is hidden from the loaders, so the
+      # reference renderer's tests and the owner journeys run with no graphics adapter at all and
+      # the GPU tests skip, saying so. The lane's own record of having no adapter is below.
+      - name: Headless checks with no graphics adapter (Linux, every driver hidden), slow tests and doctests included
+        if: runner.os == 'Linux'
+        run: cargo xtask check
+        env:
+          VK_DRIVER_FILES: /nonexistent/vulkan-icd.json
+          VK_ICD_FILENAMES: /nonexistent/vulkan-icd.json
+          __EGL_VENDOR_LIBRARY_FILENAMES: /nonexistent/egl-vendor.json
       - name: Offline sample corpus tooling
         run: python3 -m unittest discover -s tools -p 'test_sample_corpus.py' -v
-      - name: Editor acceptance in release
+      - name: Editor acceptance in release (macOS)
+        if: runner.os != 'Linux'
         run: cargo run --release --locked --package xtask -- editor-acceptance --output artifacts/editor-acceptance
+      - name: Editor acceptance in release with no graphics adapter (Linux, every driver hidden)
+        if: runner.os == 'Linux'
+        run: cargo run --release --locked --package xtask -- editor-acceptance --output artifacts/editor-acceptance
+        env:
+          VK_DRIVER_FILES: /nonexistent/vulkan-icd.json
+          VK_ICD_FILENAMES: /nonexistent/vulkan-icd.json
+          __EGL_VENDOR_LIBRARY_FILENAMES: /nonexistent/egl-vendor.json
       - name: Optimized native build
         run: cargo xtask build --release
       - name: Local development artifact and notices
@@ -33,17 +54,45 @@ jobs:
       - name: Linux runtime imports
         if: runner.os == 'Linux'
         run: ldd artifacts/package/Luxforge/luxforge | tee artifacts/package/runtime-imports.txt
-      - name: Headless Linux renderer smoke (software Vulkan, not native acceptance)
+      - name: Graphics adapters the hosted VM exposes (macOS, recorded; not native GPU evidence)
+        if: runner.os != 'Linux'
+        run: |
+          target/release/luxforge --gpu-adapters > artifacts/gpu-adapters.jsonl
+          cat artifacts/gpu-adapters.jsonl
+      # The no-adapter lane's record: the editor's own enumeration, with the same drivers hidden,
+      # finds no adapter. A runner that offers one fails here rather than passing as no-adapter.
+      - name: No graphics adapter with every driver hidden (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          artifacts/package/Luxforge/luxforge --gpu-adapters > artifacts/gpu-adapters-none.jsonl
+          cat artifacts/gpu-adapters-none.jsonl
+          test ! -s artifacts/gpu-adapters-none.jsonl
+        env:
+          VK_DRIVER_FILES: /nonexistent/vulkan-icd.json
+          VK_ICD_FILENAMES: /nonexistent/vulkan-icd.json
+          __EGL_VENDOR_LIBRARY_FILENAMES: /nonexistent/egl-vendor.json
+      # The software-adapter lane: rendered journeys under Xvfb through Mesa's lavapipe, a Vulkan
+      # rasterizer on the CPU. Functional evidence only, never native GPU evidence.
+      - name: Linux rendered journeys through the software Vulkan adapter (lavapipe), each run's adapter recorded and checked
         if: runner.os == 'Linux'
         run: |
           sudo apt-get install -y xvfb mesa-vulkan-drivers libxkbcommon-x11-0
+          # The adapters the editor's renderer chooses among on this lane: lavapipe alone, a CPU one.
+          artifacts/package/Luxforge/luxforge --gpu-adapters > artifacts/gpu-adapters-lavapipe.jsonl
+          cat artifacts/gpu-adapters-lavapipe.jsonl
+          jq -e -s 'length > 0 and all(.[]; .device_type == "Cpu")' artifacts/gpu-adapters-lavapipe.jsonl
           cargo xtask generate-fixtures
-          # The eight scenarios of the original renderer smoke, kept explicit: `smoke --list` marks
-          # what needs a supplied RAW ("not in rendered") but not what runs on software Vulkan,
-          # and only these eight are run here. A name `smoke --list` does not have
-          # fails the step.
-          for scenario in empty load replacement invalid repeated alternating large24 large60; do
+          # Kept explicit: `smoke --list` marks what needs a supplied RAW ("not in rendered") but not
+          # what runs on software Vulkan, and only these are run here: the original renderer smoke,
+          # the histogram, the GPU stage's identity frame, gestures drawn on the GPU stage, and a
+          # launch with the GPU stage refused. A name `smoke --list` does not have fails the step.
+          for scenario in empty load replacement invalid repeated alternating large24 large60 histogram gpu-identity gpu-preview no-gpu-render; do
             xvfb-run -a cargo xtask smoke --binary artifacts/package/Luxforge/luxforge --scenario "$scenario" --output "artifacts/headless-$scenario"
+          done
+          # Every launch's result.json records the adapter that drew it; on this lane each must be
+          # the software one.
+          for result in artifacts/headless-*/result.json; do
+            jq -e '(.launches | length) > 0 and all(.launches[]; .adapter.device_type == "Cpu")' "$result"
           done
         env:
           WGPU_BACKEND: vulkan

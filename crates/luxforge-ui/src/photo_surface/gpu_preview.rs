@@ -691,6 +691,10 @@ impl CompileFigures {
 /// What one pipeline counts of its GPU-preview work, beside its photo-texture figures.
 #[derive(Default)]
 pub(super) struct Figures {
+    /// What the stage's capability check answered ([`GpuStageState`]), and the device's lost flag,
+    /// which the stage's lost callback sets: both read live.
+    stage: stage::StageFigure,
+    lost: Arc<AtomicBool>,
     budget: AtomicU64,
     in_use: AtomicU64,
     peak: AtomicU64,
@@ -722,6 +726,11 @@ pub(super) struct Figures {
 }
 
 impl Figures {
+    /// Whether the stage can draw at all on this pipeline's device, read live.
+    pub(super) fn stage_state(&self) -> GpuStageState {
+        self.stage.state(&self.lost)
+    }
+
     pub(super) fn budget(&self) -> u64 {
         self.budget.load(Ordering::Acquire)
     }
@@ -1472,20 +1481,27 @@ fn device_lost(lost: &AtomicBool) {
 
 impl GpuStage {
     /// The stage for a pipeline on `device`, drawing to `format`, counting into `figures`. Its lost
-    /// flag is the device's lost callback.
+    /// flag, which the device's lost callback sets, is the figures' own. `refused` is the launch's
+    /// refusal of the stage ([`refuse_gpu_stage`]): the capability check then answers unavailable
+    /// and nothing of the stage is created. What the check answered is published in `figures`, and
+    /// the desktop woken to read it.
     pub(super) fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         figures: &Figures,
+        refused: bool,
     ) -> Self {
         figures.budget.store(GPU_PREVIEW_BUDGET, Ordering::Release);
         figures
             .upload_per_frame
             .store(UPLOAD_PER_FRAME, Ordering::Release);
-        let lost = Arc::new(AtomicBool::new(false));
+        let lost = Arc::clone(&figures.lost);
         let signal = Arc::clone(&lost);
         device.set_device_lost_callback(move |_reason, _message| device_lost(&signal));
-        let support = supported(&device.limits(), format).then(|| Arc::new(Support::new(device)));
+        let support = (!refused && supported(&device.limits(), format))
+            .then(|| Arc::new(Support::new(device)));
+        figures.stage.checked(support.is_some(), refused);
+        wake_surface();
         Self {
             support,
             lost,
@@ -3306,7 +3322,10 @@ mod blocks;
 mod chain;
 mod compile;
 pub(super) use compile::GpuOptions;
+mod stage;
 pub use compile::{GpuWarm, PIPELINE_CACHE};
+pub(super) use stage::gpu_stage_refused;
+pub use stage::{GpuStageState, refuse_gpu_stage};
 mod tail;
 pub use tail::{GpuTail, OutputEncoding, install_output_encoding, output_encoding};
 mod mask;

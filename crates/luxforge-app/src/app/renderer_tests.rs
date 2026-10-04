@@ -1,0 +1,211 @@
+//! The reference renderer as the fallback of a desktop whose GPU stage cannot draw
+//! (`docs/design/gpu-first.md`, "Headless and portability"), end to end against a real owner and
+//! photograph: a launch that refused the stage (`--no-gpu-render`) and a surface whose stage cannot
+//! run or whose device is lost hand the surface no plan, draw every tick from the CPU path naming
+//! the stage's reason, and report the reference renderer with that reason in every client's
+//! session; the status bar says so beside its render slot.
+//!
+//! No unit test has a pipeline to check a device, so a test stands in for the stage's answer as
+//! the surface publishes it (`renderer.stage`); the photo surface's own tests prove that a refused
+//! pipeline answers `no-adapter` and draws the CPU frame on a real device.
+use super::{
+    gpu_preview_tests::{catalog, deliver_until},
+    message::{preview::PreviewMessage, renderer::RendererMessage},
+    tasks::call,
+    testing::{finish, let_go, real_photo_launched, run_commit, slide},
+    *,
+};
+use crate::state::status::CpuReason;
+use luxforge_core::Renderer;
+use luxforge_ui::photo_surface::GpuStageState;
+
+const ACTION: &str = "set-basic";
+const FIELD: &str = "exposure";
+
+fn fixture() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg")
+}
+
+/// The renderer `client`'s `session.state` reports, as an independent JSON client reads it.
+fn session_renderer(editor: &Editor, client: ClientId) -> Value {
+    call(&editor.owner, client, "session.state", json!({}))
+        .expect("session.state answers")
+        .0["renderer"]
+        .clone()
+}
+
+/// The next update finds the surface's answer changed and starts a report: run it through the
+/// owner as its task does and hand the answer back as the runtime does.
+fn report(editor: &mut Editor) {
+    let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    assert!(editor.renderer.in_flight(), "a report on its way");
+    let renderer = editor.renderer.reported();
+    assert_eq!(renderer, editor.renderer_now());
+    let answer = editor
+        .owner
+        .report_renderer(editor.client, renderer)
+        .map_err(|error| error.to_string());
+    let _ = editor.update(Message::Renderer(RendererMessage::Reported(answer)));
+    assert!(!editor.renderer.in_flight());
+}
+
+/// `--no-gpu-render`: the owner reports the reference renderer for `no-adapter` from the start, to
+/// every client, before the surface has checked its stage and after it answers as a refused stage
+/// does, so the desktop never reports another. No plan reaches the surface and no boundary is asked
+/// for: every tick of a drag takes the CPU path naming `no-adapter`, as the snapshot records, and
+/// the release commits on the CPU. The status bar says so beside its render slot in the No GPU
+/// class's words, at rest as well as during the drag. No request lets an agent claim another
+/// renderer.
+#[test]
+fn fallback_a_forced_no_gpu_launch_is_the_reference_in_the_session_and_every_tick_is_the_cpus() {
+    let catalog = catalog("fallback-forced");
+    let config = crate::Config {
+        no_gpu_render: true,
+        ..crate::Config::default()
+    };
+    let (mut editor, _, agent) = real_photo_launched(&catalog, &fixture(), config);
+    let forced = json!({"record": "reference", "reason": "no-adapter"});
+    assert_eq!(editor.gpu_stage(), GpuStageState::Unchecked);
+    assert_eq!(editor.gpu_preview_allowed(), Err("no-adapter"));
+    assert_eq!(session_renderer(&editor, agent), forced);
+    assert_eq!(session_renderer(&editor, editor.client), forced);
+    // The refused stage's own answer once a photograph is drawn is the same renderer.
+    editor.renderer.stage = Some(GpuStageState::NoAdapter { refused: true });
+    deliver_until(&mut editor, "the first frame", |editor| {
+        editor.presentation.dimensions.is_some() && !editor.presentation.queue.is_busy()
+    });
+    assert!(!editor.renderer.in_flight(), "nothing new to report");
+    assert_eq!(editor.renderer.reported(), editor.renderer_now());
+    assert_eq!(
+        serde_json::to_value(editor.session.renderer).unwrap(),
+        forced
+    );
+
+    let notice = CpuReason {
+        code: "no-adapter",
+        layer: None,
+        compiling_for: None,
+    }
+    .notice();
+    assert!(notice.is_some(), "the No GPU class says it");
+    for value in [0.1, 0.2, 0.3] {
+        let _ = slide(&mut editor, ACTION, FIELD, value);
+        assert_eq!(editor.gpu.summary()["drag"]["reason"], json!("no-adapter"));
+        assert!(
+            editor
+                .gpu_plan(editor.presentation.presenter.photo())
+                .is_none(),
+            "no plan reaches the surface"
+        );
+        assert_eq!(editor.workspace.status.fallback, notice);
+    }
+    assert_eq!(
+        editor.gpu.ticks(),
+        (0, 3, 0),
+        "every tick on the CPU, no boundary asked for"
+    );
+    let snapshot = editor.snapshot();
+    assert_eq!(snapshot["renderer"], forced);
+    assert_eq!(
+        snapshot["surface"]["gpu"]["plan_fallback"],
+        json!({"reason": "no-adapter"})
+    );
+    assert_eq!(
+        snapshot["surface"]["gpu"]["stage"],
+        json!({"state": "no-adapter", "refused": true})
+    );
+    assert!(!snapshot["status_bar"]["fallback"].is_null());
+    assert_eq!(
+        snapshot["status_bar"]["fallback"],
+        snapshot["surface"]["gpu"]["fallback_notice"]
+    );
+
+    // The release commits on the CPU, and the frame that replaces the drafted one is the CPU's.
+    let _ = let_go(&mut editor, ACTION, FIELD);
+    assert!(run_commit(&mut editor));
+    deliver_until(&mut editor, "the committed frame", |editor| {
+        !editor.gpu.has_drag()
+    });
+    let at_rest = editor.snapshot();
+    assert_eq!(
+        at_rest["stack"]["layers"][0]["effect"],
+        json!(luxforge_core::BASIC_EFFECT),
+        "the release committed"
+    );
+    assert_eq!(
+        at_rest["surface"]["gpu"]["plan_fallback"],
+        json!({"reason": "no-adapter"})
+    );
+    assert_eq!(editor.workspace.status.fallback, notice, "said at rest too");
+
+    // An agent cannot claim another renderer.
+    let claim = call(
+        &editor.owner,
+        agent,
+        "workspace.set",
+        json!({"renderer": {"record": "gpu", "reason": null}}),
+    );
+    assert!(claim.is_err(), "{claim:?}");
+    assert_eq!(session_renderer(&editor, agent), forced);
+    finish(editor, catalog);
+}
+
+/// An ordinary launch: the owner reports `surface-pending` until the surface has checked its stage,
+/// which is no reason to refuse a plan; the surface's answer is reported to every client as it
+/// comes — the GPU — and as it changes — the device lost, when the gate refuses with that reason and
+/// evidence names it. A report goes only when the answer changes.
+#[test]
+fn fallback_the_surfaces_answer_reaches_every_session_as_it_comes_and_changes() {
+    let catalog = catalog("fallback-reported");
+    let (mut editor, _, agent) =
+        real_photo_launched(&catalog, &fixture(), crate::Config::default());
+    assert_eq!(
+        session_renderer(&editor, agent),
+        json!({"record": "reference", "reason": "surface-pending"})
+    );
+    assert_eq!(editor.gpu_preview_allowed(), Ok(()));
+
+    editor.renderer.stage = Some(GpuStageState::Available);
+    report(&mut editor);
+    let gpu = json!({"record": "gpu", "reason": null});
+    assert_eq!(session_renderer(&editor, agent), gpu);
+    assert_eq!(editor.session.renderer, Renderer::gpu());
+    assert_eq!(editor.snapshot()["renderer"], gpu);
+    assert_eq!(editor.gpu_preview_allowed(), Ok(()));
+
+    editor.renderer.stage = Some(GpuStageState::DeviceLost);
+    report(&mut editor);
+    let lost = json!({"record": "reference", "reason": "device-lost"});
+    assert_eq!(session_renderer(&editor, agent), lost);
+    assert_eq!(editor.snapshot()["renderer"], lost);
+    assert_eq!(editor.gpu_preview_allowed(), Err("device-lost"));
+    assert_eq!(
+        editor.snapshot()["surface"]["gpu"]["plan_fallback"],
+        json!({"reason": "device-lost"})
+    );
+
+    let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    assert!(!editor.renderer.in_flight(), "no change, no report");
+    finish(editor, catalog);
+}
+
+/// A device that cannot run the stage on an ordinary launch: the reference for `no-adapter`, as
+/// the forced launch is, but not refused by the launch.
+#[test]
+fn fallback_a_device_that_cannot_run_the_stage_is_the_reference_for_no_adapter() {
+    let catalog = catalog("fallback-incapable");
+    let (mut editor, _, agent) =
+        real_photo_launched(&catalog, &fixture(), crate::Config::default());
+    editor.renderer.stage = Some(GpuStageState::NoAdapter { refused: false });
+    report(&mut editor);
+    assert_eq!(
+        session_renderer(&editor, agent),
+        json!({"record": "reference", "reason": "no-adapter"})
+    );
+    assert_eq!(editor.gpu_preview_allowed(), Err("no-adapter"));
+    assert_eq!(
+        editor.snapshot()["surface"]["gpu"]["stage"],
+        json!({"state": "no-adapter", "refused": false})
+    );
+    finish(editor, catalog);
+}

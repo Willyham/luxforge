@@ -11,8 +11,8 @@ use crate::{
     mask_brush_smoke as mask_brush, mask_combine_smoke as mask_combine,
     mask_interactions_smoke as mask_interactions, mask_panel_smoke as mask_panel,
     mask_range_smoke as mask_range, mask_smoke as mask, minify_smoke as minify,
-    mixer_smoke as mixer, performance_smoke as performance, presence_smoke as presence,
-    presets_smoke as presets, raw_panel_smoke as raw_panel,
+    mixer_smoke as mixer, no_gpu_render_smoke as no_gpu_render, performance_smoke as performance,
+    presence_smoke as presence, presets_smoke as presets, raw_panel_smoke as raw_panel,
     scenario::{Checked, Checks, Fixture, Launch, Plan, Run, Step, launch::Guard},
     settings_smoke as settings, viewport_smoke as viewport, vignette_smoke as vignette,
     workspace_smoke as workspace, zoom_smoke as zoom, *,
@@ -65,6 +65,8 @@ pub struct LaunchSpec {
     pub disable: &'static [&'static str],
     /// Draw the photograph at Fit through the GPU preview stage's identity program.
     pub gpu_identity: bool,
+    /// Refuse the editor's GPU stage, as a machine whose adapter cannot run it does.
+    pub no_gpu_render: bool,
     pub developer: bool,
     /// A watcher to wait with, and the file what it records is kept in.
     pub watch: Option<(&'static str, Watch)>,
@@ -80,6 +82,7 @@ pub const APP: LaunchSpec = LaunchSpec {
     catalog: None,
     disable: &[],
     gpu_identity: false,
+    no_gpu_render: false,
     developer: false,
     watch: None,
     deadline: None,
@@ -389,6 +392,26 @@ pub static SCENARIOS: &[Scenario] = &[
              each step's tick and job events, the visible region and the plan's region recorded \
              with each frame, or below 100% the proxy the boundary holds against the view's bounds \
              and the CPU frame, and compare each GPU frame with the CPU frame its release commits.",
+        ),
+        own: None,
+    },
+    Scenario {
+        name: no_gpu_render::SCENARIO,
+        about: "The editor launched with --no-gpu-render: the session names the reference renderer for no-adapter, every frame of an open, a Basic drag and its release is drawn on the CPU path with no plan handed to the surface, and the status bar says why",
+        launches: &[LaunchSpec {
+            plan: no_gpu_render::plan,
+            no_gpu_render: true,
+            ..APP
+        }],
+        verify: no_gpu_render::verify,
+        source: Source::Fixtures(&[no_gpu_render::FIXTURE]),
+        window: Some(PANELLED),
+        note: Some(
+            "The launch passes `--no-gpu-render`, which refuses the photo surface's GPU stage before \
+             the window opens, as a machine whose adapter cannot run it does: the stage's \
+             capability check answers unavailable, the desktop hands it no plan, and every frame \
+             is the reference renderer's. The window itself is still drawn by the adapter each \
+             frame identifies.",
         ),
         own: None,
     },
@@ -1114,13 +1137,20 @@ pub fn launch_planned(
         }
         (scenario.verify)(run, &checked)?;
         run.sources_unchanged()?;
-        run.record(
-            "backend",
-            checked
-                .last()
-                .and_then(|launch| launch.frames.last())
-                .map_or(Value::Null, |frame| frame.state()["backend"].clone()),
-        );
+        // The adapter that drew the run, identified as wgpu describes it: its device type tells a
+        // software rasterizer (`Cpu`, lavapipe on Linux CI) from a GPU, so the run says which it
+        // ran on. Each launch's own is in `launches`.
+        let backend = checked
+            .last()
+            .and_then(|launch| launch.frames.last())
+            .map_or(Value::Null, |frame| frame.state()["backend"].clone());
+        ensure(
+            backend["device_type"]
+                .as_str()
+                .is_some_and(|kind| !kind.is_empty()),
+            format!("The run recorded no identified adapter: {backend}"),
+        )?;
+        run.record("backend", backend);
         Ok(())
     })
 }
@@ -1146,6 +1176,9 @@ fn launch_of(
     }
     if spec.gpu_identity {
         launch = launch.gpu_identity();
+    }
+    if spec.no_gpu_render {
+        launch = launch.no_gpu_render();
     }
     if spec.developer {
         launch = launch.developer();

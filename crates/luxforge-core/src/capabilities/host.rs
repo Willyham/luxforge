@@ -73,6 +73,11 @@ pub struct HostConfig {
     /// What the desktop's launch resolved for each launch flag, which `flags.list` reports as
     /// `active`. Any other host resolves none.
     pub launch_flags: crate::flags::LaunchFlags,
+    /// Which renderer draws the host's picture, which every client's session reports until the
+    /// host reports another ([`crate::OwnerHandle::report_renderer`]): the desktop's launch says
+    /// what it knows before its window opens; a host that draws nothing keeps the reference with
+    /// no reason ([`crate::Renderer::headless`]).
+    pub renderer: crate::Renderer,
 }
 
 impl HostConfig {
@@ -89,6 +94,7 @@ impl HostConfig {
             )),
             resource_quota_bytes: DEFAULT_RESOURCE_QUOTA_BYTES,
             launch_flags: Default::default(),
+            renderer: crate::Renderer::headless(),
         }
     }
 }
@@ -103,6 +109,7 @@ impl std::fmt::Debug for HostConfig {
             .field("transport", &self.transport)
             .field("resource_quota_bytes", &self.resource_quota_bytes)
             .field("launch_flags", &self.launch_flags)
+            .field("renderer", &self.renderer)
             .finish()
     }
 }
@@ -290,6 +297,11 @@ impl CapabilityHost {
     /// What the desktop's launch resolved for each launch flag.
     pub(crate) fn launch_flags(&self) -> &crate::flags::LaunchFlags {
         &self.config.launch_flags
+    }
+
+    /// The renderer the host said it draws with when it started ([`HostConfig::renderer`]).
+    pub(crate) fn launch_renderer(&self) -> crate::Renderer {
+        self.config.renderer
     }
 
     fn not_configured() -> Error {

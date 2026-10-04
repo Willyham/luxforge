@@ -85,3 +85,27 @@ fn an_evidence_run_keeps_module_state_in_its_directory_and_memory() {
         "choosing directories creates none"
     );
 }
+
+/// What a launch knows of its renderer reaches the owner before the window opens: `--no-gpu-render`
+/// is the reference renderer for `no-adapter` from the start, and an ordinary launch the reference
+/// until its photo surface has checked the GPU stage.
+#[test]
+fn fallback_a_forced_launch_tells_the_owner_the_reference_before_its_window_opens() {
+    use luxforge_core::{Renderer, RendererReason};
+    let evidence = std::env::temp_dir().join("luxforge-evidence-renderer");
+    let launch = |no_gpu_render| {
+        let mut config = Config {
+            evidence: Some(evidence.clone()),
+            no_gpu_render,
+            ..Config::default()
+        };
+        config.paths = config.resolve_paths();
+        host_config(&config).renderer
+    };
+    assert_eq!(launch(true), Renderer::reference(RendererReason::NoAdapter));
+    assert_eq!(
+        launch(false),
+        Renderer::reference(RendererReason::SurfacePending)
+    );
+    assert!(!evidence.exists(), "choosing creates nothing");
+}

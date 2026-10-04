@@ -1238,6 +1238,49 @@ fn without_an_adapter_for_the_stage_the_frame_is_the_cpus_and_says_so() {
     assert_eq!(pipeline.figures.preview.compiles.load(Ordering::Relaxed), 0);
 }
 
+/// A launch that refused the stage (`--no-gpu-render`): the capability check answers unavailable
+/// on a device that can run the stage, the figures say so and that the launch refused it, nothing
+/// of the stage is created, and every frame handed a plan is the CPU's naming `no-adapter`,
+/// exactly as on a device that cannot run it. A pipeline on the same device that the launch did not
+/// refuse is available and draws the plan; once its device is lost, it says that instead.
+#[test]
+fn a_refused_stage_answers_unavailable_and_every_frame_is_the_cpus() {
+    let test = "a_refused_stage_answers_unavailable_and_every_frame_is_the_cpus";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let target = wgpu::TextureFormat::Bgra8UnormSrgb;
+    let mut refused = PhotoPipeline::with_stage(&device, &queue, target, Arc::default(), true);
+    assert!(refused.gpu.support.is_none(), "nothing of the stage exists");
+    let (boundary, codes) = boundary_with_codes(1);
+    let gesture = primitive(ID, Some(plan(&boundary, vec![identity()])));
+    for _ in 0..2 {
+        assert_cpu_frame(&paint(&device, &queue, &mut refused, &gesture));
+        let seen = diagnostics(&refused, ID);
+        assert_eq!(seen.gpu_stage, GpuStageState::NoAdapter { refused: true });
+        assert_eq!(seen.drawn_path, Some(DrawingPath::Cpu));
+        assert_eq!(seen.gpu_fallback, Some(GpuFallback::NoAdapter));
+        assert_eq!(seen.drawn_full_version, Some(1));
+        assert_eq!(seen.gpu_preview_in_use_bytes, 0);
+    }
+    assert_eq!(refused.figures.preview.compiles.load(Ordering::Relaxed), 0);
+    let mut allowed = own_pipeline(&device, &queue);
+    assert_eq!(
+        allowed.figures.preview.stage_state(),
+        GpuStageState::Available
+    );
+    assert_codes(&paint(&device, &queue, &mut allowed, &gesture), &codes);
+    assert_eq!(
+        diagnostics(&allowed, ID).gpu_stage,
+        GpuStageState::Available
+    );
+    allowed.simulate_device_loss();
+    assert_eq!(
+        diagnostics(&allowed, ID).gpu_stage,
+        GpuStageState::DeviceLost
+    );
+}
+
 /// A device lost during a gesture: the next frame is the CPU's and names the loss, the slot goes,
 /// and nothing waits for the device to come back.
 #[test]

@@ -42,7 +42,8 @@ pub use activity::ActivitySnapshot;
 pub use api::{
     ApiEvent, ApiFailure, ApiRequest, ApiResponse, ClientAuthority, ClientId, ClientSession,
     EventWake, EventsResult, LocalServer, MASK_MODE, MaskOverlayColour, MaskOverlayMode,
-    OwnerHandle, POINTER_MODE, PreviewRequest, WorkspaceState, schemas, serve_json_lines_with,
+    OwnerHandle, POINTER_MODE, PreviewRequest, Renderer, RendererReason, RendererRecord,
+    WorkspaceState, schemas, serve_json_lines_with,
 };
 pub use artifacts::{ArtifactId, ArtifactTable, PreparedArtifact};
 pub use cancel::{Cancel, ProgressCounts};

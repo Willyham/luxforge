@@ -244,6 +244,42 @@ pub const MODE: &str = if cfg!(target_os = "macos") {
 /// run cannot flash over whatever the owner is doing. Renderer readbacks are unaffected.
 const HIDDEN_WINDOW: &str = "--hidden-window";
 
+/// The editor's diagnostic that prints the graphics adapters wgpu offers its renderer and exits,
+/// before any window.
+const GPU_ADAPTERS: &str = "--gpu-adapters";
+
+/// The graphics adapters the built release editor sees, one record each as `--gpu-adapters` prints
+/// them: the adapters wgpu offers the backends its renderer chooses among (`WGPU_BACKEND` when
+/// set), with each one's backend, device type, vendor, device and driver. `None` while no release
+/// editor is built. The editor opens no window for it, and runs from a background bundle as every
+/// other automated launch does.
+pub fn gpu_adapters(root: &Path) -> Result<Option<Vec<Value>>> {
+    let bin = crate::binary(root)?;
+    if !bin.is_file() {
+        return Ok(None);
+    }
+    let launch = Background::new(&bin)?;
+    let out = Command::new(&launch.executable)
+        .arg(GPU_ADAPTERS)
+        .current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .output()?;
+    ensure(
+        out.status.success(),
+        format!(
+            "{} {GPU_ADAPTERS} exited {}: {}",
+            bin.display(),
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    )?;
+    String::from_utf8(out.stdout)?
+        .lines()
+        .map(|line| Ok(serde_json::from_str(line)?))
+        .collect::<Result<Vec<Value>>>()
+        .map(Some)
+}
+
 /// The arguments an automated editor launch runs with: the runner's own, behind the hidden-window
 /// flag. Every harness launch of the editor goes through this, so the flag has one home and the
 /// recorded command array shows exactly what ran.

@@ -34,8 +34,17 @@ pub(crate) enum EvidenceMessage {
     HostAnswered(Result<Box<HostAnswer>, String>),
     /// The edit an `agent` step sent through the run's second client answered.
     AgentAnswered(Result<Value, String>),
-    /// The graphics backend, recorded with every captured frame.
+    /// Iced's name for the adapter that draws the window and its backend, which an enumeration of
+    /// that backend, off the update loop, identifies further.
     Info(iced::system::Information),
+    /// The adapter that draws the window as the enumeration found it, or `None` where it found no
+    /// adapter of that backend and name: recorded with every captured frame.
+    Adapter(
+        Box<(
+            iced::system::Information,
+            Option<luxforge_ui::adapters::Adapter>,
+        )>,
+    ),
     /// The GPU identity hook's boundary, held from the frame on screen off the UI thread, or
     /// `None` when that frame could not be held; see `app/gpu_identity.rs`.
     GpuBoundary(Option<luxforge_ui::photo_surface::GpuBoundary>),

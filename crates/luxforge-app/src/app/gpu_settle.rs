@@ -1,12 +1,15 @@
-//! The GPU preview's hand-off on the desktop: the `gpu_preview` preference every GPU plan is gated
-//! on, and the status bar's figure for a GPU frame on screen.
+//! The GPU preview's hand-off on the desktop: the gate every GPU plan passes — the GPU stage able
+//! to draw at all, and the `gpu_preview` preference — and the status bar's figure for a GPU frame
+//! on screen.
 //!
 //! The preference is per-client workspace state the owner holds (`workspace.set {gpu_preview}`, on
 //! by default). The palette's toggle sends the same request an API client sends, and the desktop
 //! keeps no copy of it outside the session it adopts back. [`Editor::gpu_preview_allowed`] is the
 //! one question the desktop asks before it hands the photo surface a plan, and [`Editor::gpu_plan`]
-//! the one place a plan is handed from: with the preference off it hands none, every frame is the
-//! CPU's, and evidence names [`PREFERENCE_OFF`].
+//! the one place a plan is handed from: while the surface's GPU stage cannot draw on its device, or
+//! the launch refused it (`--no-gpu-render`), it hands none and evidence names the stage's reason
+//! (`no-adapter` or `device-lost`, [`super::renderer`]); with the preference off it hands none,
+//! every frame is the CPU's, and evidence names [`PREFERENCE_OFF`].
 //!
 //! The status bar's render slot reads "GPU preview · N ms" while the surface draws the GPU stage's
 //! output for the plan the desktop handed it ([`Editor::gpu_frame_us`]). Iced's compositor creates
@@ -77,10 +80,15 @@ pub(crate) fn marked(
 }
 
 impl Editor {
-    /// Whether the desktop may hand the photo surface a GPU plan at all: `Err` with
-    /// [`PREFERENCE_OFF`] while this client's `gpu_preview` preference is off, so every frame is
-    /// the CPU's. Every route that hands the surface a plan asks this first.
+    /// Whether the desktop may hand the photo surface a GPU plan at all: `Err` with the stage's
+    /// reason while the surface's GPU stage cannot draw on its device or the launch refused it
+    /// ([`Editor::gpu_stage_refusal`]), and with [`PREFERENCE_OFF`] while this client's
+    /// `gpu_preview` preference is off, so every frame is the CPU's. Every route that hands the
+    /// surface a plan asks this first.
     pub(crate) fn gpu_preview_allowed(&self) -> Result<(), &'static str> {
+        if let Some(reason) = self.gpu_stage_refusal() {
+            return Err(reason);
+        }
         if self.session.workspace.gpu_preview {
             Ok(())
         } else {
@@ -88,9 +96,9 @@ impl Editor {
         }
     }
 
-    /// The GPU plan the photograph `photo` is drawn from in place of its frame: none while the
-    /// preference is off. An evidence run's GPU identity hook gives one; otherwise the open
-    /// gesture's plan does ([`Editor::gesture_gpu_plan`]).
+    /// The GPU plan the photograph `photo` is drawn from in place of its frame: none while the gate
+    /// refuses ([`Editor::gpu_preview_allowed`]). An evidence run's GPU identity hook gives one;
+    /// otherwise the open gesture's plan does ([`Editor::gesture_gpu_plan`]).
     pub(crate) fn gpu_plan<'a>(&'a self, photo: Option<&'a Frame>) -> Option<&'a GpuPlan> {
         self.gpu_preview_allowed().ok()?;
         if let Some(hook) = self
