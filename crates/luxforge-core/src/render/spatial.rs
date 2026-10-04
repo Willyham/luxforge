@@ -8,7 +8,7 @@
 //! sampled byte is the byte a render of that tile produces.
 
 use super::context::{EstimateKey, EstimateStore, SpatialBudget, SpatialReservation};
-use super::reduced::ReducedEntry;
+use super::reduced::{ReducedEntry, ReducedStore};
 use crate::Cancel;
 #[cfg(test)]
 use crate::ErrorKind;
@@ -1521,6 +1521,9 @@ const POINT_TILES_FLOOR: usize = 16;
 /// through this cache itself and its global estimate may reduce a stage on the pool.
 pub(crate) struct PointTiles<'a> {
     budget: &'a SpatialBudget,
+    /// The store a segment's first unit reads its reduced planes from when it holds them, which a
+    /// point query never fills.
+    reduced: &'a ReducedStore,
     tiling: Tiling,
     state: Mutex<PointState<'a>>,
     /// Every (segment, tile) this query evaluated, in order.
@@ -1542,6 +1545,10 @@ struct Prepared {
     segment: usize,
     plan: SpatialPlan,
     globals: Vec<Option<Global>>,
+    /// The entry of the first unit's reduced planes the store held when the segment was first
+    /// read, `Some(None)` when it held none, and `None` for a segment whose planes are never read
+    /// (a window, or no unit that runs first declares a grid).
+    planes: Option<Option<Arc<ReducedEntry>>>,
 }
 
 /// One evaluated tile of one spatial segment: exactly the tile's three planes, taken out of the
@@ -1568,9 +1575,14 @@ impl PointState<'_> {
 impl<'a> PointTiles<'a> {
     /// An empty cache for one query whose segments are cut into tiles by `tiling`, holding at most
     /// what `budget`'s target has bytes for.
-    pub(crate) fn new(tiling: Tiling, budget: &'a SpatialBudget) -> Self {
+    pub(crate) fn new(
+        tiling: Tiling,
+        budget: &'a SpatialBudget,
+        reduced: &'a ReducedStore,
+    ) -> Self {
         Self {
             budget,
+            reduced,
             tiling,
             state: Mutex::default(),
             #[cfg(test)]
@@ -1601,8 +1613,12 @@ impl<'a> PointTiles<'a> {
 
     /// One pixel of the output of spatial segment `segment`, whose operation reads and writes
     /// `stage`: from the held tile that contains it, or else from that tile evaluated now. `globals`
-    /// resolves the operation's estimates once for the segment's first tile, and `fill` reads one
-    /// rectangle of the stage the operation reads into three planes, on this thread.
+    /// resolves the operation's estimates once for the segment's first tile, and `planes` then
+    /// looks up the store's entry of its first unit's reduced planes for those estimates, `None`
+    /// for a segment that never reads one ([`Prepared::planes`]). A tile reads the entry when it
+    /// covers the unit's reach and otherwise computes the planes as a render does, handing nothing
+    /// back: both give the same values. `fill` reads one rectangle of the stage the operation
+    /// reads into three planes, on this thread.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn pixel(
         &self,
@@ -1613,6 +1629,7 @@ impl<'a> PointTiles<'a> {
         y: u32,
         cancel: &Cancel,
         globals: impl FnOnce() -> Result<Vec<Option<Global>>, Error>,
+        planes: impl FnOnce(&[Option<Global>]) -> Option<Option<Arc<ReducedEntry>>>,
         fill: impl Fn(Region, &mut [f32]) -> Result<(), Error>,
     ) -> Result<[f32; 3], Error> {
         let prepared = {
@@ -1629,10 +1646,14 @@ impl<'a> PointTiles<'a> {
         let prepared = match prepared {
             Some(prepared) => prepared,
             None => {
+                let plan = SpatialPlan::new(operation, stage, self.tiling)?;
+                let globals = globals()?;
+                let planes = planes(&globals);
                 let prepared = Arc::new(Prepared {
                     segment,
-                    plan: SpatialPlan::new(operation, stage, self.tiling)?,
-                    globals: globals()?,
+                    plan,
+                    globals,
+                    planes,
                 });
                 let mut state = self.lock();
                 state.largest = state.largest.max(prepared.plan.tile);
@@ -1640,14 +1661,26 @@ impl<'a> PointTiles<'a> {
                 prepared
             }
         };
-        let Prepared { plan, globals, .. } = &*prepared;
+        let Prepared {
+            plan,
+            globals,
+            planes,
+            ..
+        } = &*prepared;
         let tile = plan.tile_containing(x, y);
+        let planes = match planes {
+            Some(held) => TilePlanes::Store {
+                held: held.as_deref(),
+                hand: false,
+            },
+            None => TilePlanes::None,
+        };
         // The tile runs in a slot of its own, whose buffers fit what this tile asks, and the tile's
         // planes are taken out of it, all under the tile's working set.
         let values = {
             let _reservation = self.budget.reserve(plan.working_set, 1);
             let mut slot = TileScratch::default();
-            let (region, held, _) = run_tile_in(
+            let (region, held, used) = run_tile_in(
                 plan,
                 operation,
                 globals,
@@ -1655,9 +1688,14 @@ impl<'a> PointTiles<'a> {
                 Parallelism::Serial,
                 &mut slot,
                 cancel,
-                TilePlanes::None,
+                planes,
                 &fill,
             )?;
+            match used {
+                PlaneUse::Served => self.reduced.note_point(true),
+                PlaneUse::Computed(_) => self.reduced.note_point(false),
+                PlaneUse::None => {}
+            }
             slot.into_tile(held, region, tile)
         };
         let value = plane_pixel(tile, &values, x, y);

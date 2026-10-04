@@ -528,6 +528,16 @@ impl ReducedStore {
         Counters::add(&self.counters.cells_handed_back, cells);
     }
 
+    /// Count one tile a point query evaluated, `served` from held planes or not.
+    pub(crate) fn note_point(&self, served: bool) {
+        let counter = if served {
+            &self.counters.point_hits
+        } else {
+            &self.counters.point_misses
+        };
+        Counters::add(counter, 1);
+    }
+
     /// Every figure, read now, as `resources.read` reports it.
     pub(crate) fn counts(&self) -> ReducedPlanesReport {
         let (retained_bytes, entries) = {

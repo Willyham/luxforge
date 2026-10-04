@@ -1,6 +1,7 @@
 //! The reduced-grid cache (`render::reduced`) through Presence's units and the render: the planes a
 //! unit hands back and reads are the planes it computes, a warm render writes the cold render's
-//! bytes, and the store keys, bounds and publishes only what it should.
+//! bytes, samples equal the rendered byte with and without held planes, and the store keys,
+//! bounds and publishes only what it should.
 //!
 //! The stages are small and the tiles narrow, sides that are not multiples of the grid's factor
 //! included, so every render runs many tiles on the calling thread, edge and corner tiles
@@ -18,7 +19,7 @@ use crate::{
     },
     render::{
         reduced::ReducedEntry,
-        testing::{frame_in, linear},
+        testing::{frame_in, linear, sample_in},
     },
 };
 use serde_json::{Value, json};
@@ -355,6 +356,54 @@ fn a_cancelled_render_publishes_nothing() {
             assert_eq!((counts.publishes, counts.entries), (0, 0), "{name}");
             frame(&context, sources.input(linear_path), &stack, 16);
             assert_eq!(context.reduced().counts().publishes, 1, "{name}");
+        }
+    }
+}
+
+/// A sample equals the rendered byte whether the store holds the planes, which it reads, or not,
+/// when it computes them as a render does; a sample never fills the store.
+#[test]
+fn a_sample_equals_the_rendered_byte_with_and_without_the_held_planes() {
+    let sources = Sources::new();
+    let mask = centre_mask();
+    let registry = ModuleRegistry::builtin();
+    let points = [(0, 0), (149, 109), (75, 55), (17, 93), (140, 3), (64, 48)];
+    for linear_path in [false, true] {
+        let input = || sources.input(linear_path);
+        for (name, payload, _, _) in stacks() {
+            for masked in [false, true] {
+                let case = format!("{name}, linear {linear_path}, masked {masked}");
+                let stack = recipe(payload.clone(), masked.then_some(&mask));
+                let held = RenderContext::new();
+                let rendered = frame(&held, input(), &stack, 16);
+                let empty = RenderContext::new();
+                for (x, y) in points {
+                    for context in [&held, &empty] {
+                        let sampled =
+                            sample_in(context, &registry, input(), &stack, options(16), x, y)
+                                .unwrap();
+                        assert_eq!(sampled.rgba, rendered.pixel(x, y), "{case} at ({x}, {y})");
+                    }
+                }
+                let (read, computed) = (held.reduced().counts(), empty.reduced().counts());
+                if !masked {
+                    assert!(
+                        read.point_hits > 0,
+                        "{case}: the samples read the held planes"
+                    );
+                    assert_eq!(read.point_misses, 0, "{case}");
+                }
+                assert_eq!(computed.point_hits, 0, "{case}");
+                assert!(
+                    computed.point_misses > 0,
+                    "{case}: the samples computed them"
+                );
+                assert_eq!(
+                    (computed.publishes, computed.entries, read.publishes),
+                    (0, 0, 1),
+                    "{case}: a sample never fills"
+                );
+            }
         }
     }
 }
