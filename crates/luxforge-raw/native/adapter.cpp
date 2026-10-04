@@ -570,15 +570,22 @@ extern "C" int lf_raw_curve(void *handle, uint16_t *dest, size_t length) noexcep
 extern "C" long lf_raw_live_handles(void) noexcept { return live_handles; }
 extern "C" unsigned long long lf_raw_unpack_calls(void) noexcept { return unpack_calls; }
 
-// Demosaic Rust's normalized float mosaic, in which sensor white is 65535, into
-// three planes at the same scale. Rust owns the mosaic and planes, normalizes
-// before this call and divides the planes by 65535 after it.
-extern "C" int lf_raw_develop(const float *mosaic,size_t count,const LfDemosaicShape *shape,
-                               float *red,float *green,float *blue,
-                               rpTileExecutor executor,void *executor_context,
-                               LfCancel cancel,void *cancel_context,
-                               char *err,size_t err_len) noexcept {
-  if(!mosaic||!shape||!red||!green||!blue||!shape->width||!shape->height||
+// The demosaic input as librtprocess reads it: the float rows' row table, or
+// the sensor sites themselves.
+static const float *const *demosaic_input(const std::vector<const float*> &rows) { return rows.data(); }
+static const rpMosaicSites &demosaic_input(const rpMosaicSites &sites) { return sites; }
+
+// Demosaic the input `make_input` builds, in which sensor white is 65535, into
+// three planes at the same scale. Rust owns the input and planes, and divides
+// the planes by 65535 after the call. Both entry points check their own input
+// pointers first; the frame, planes and geometry checks are this one's.
+template <typename MakeInput>
+static int develop_planes(size_t count,const LfDemosaicShape *shape,
+                          float *red,float *green,float *blue,
+                          rpTileExecutor executor,void *executor_context,
+                          LfCancel cancel,void *cancel_context,
+                          char *err,size_t err_len,MakeInput make_input) noexcept {
+  if(!shape||!red||!green||!blue||!shape->width||!shape->height||
      count!=uint64_t(shape->width)*shape->height||count>LF_MAX_PIXELS||
      count>LF_MAX_RGB_BYTES/(3*sizeof(float))) {
     error(err,err_len,"invalid or oversized develop buffers");return LF_STATUS_INVALID_INPUT;
@@ -597,7 +604,6 @@ extern "C" int lf_raw_develop(const float *mosaic,size_t count,const LfDemosaicS
   if(cancel&&cancel(cancel_context)){error(err,err_len,"cancelled");return LF_STATUS_CANCELLED;}
   try{
     const size_t w=shape->width,h=shape->height;
-    std::vector<const float*> input_rows(h);
     std::vector<float*> rrows(h),grows(h),brows(h);
     unsigned bayer[2][2]{},xtrans[6][6]{};
     if(shape->cfa_width==2&&shape->cfa_height==2){
@@ -606,18 +612,19 @@ extern "C" int lf_raw_develop(const float *mosaic,size_t count,const LfDemosaicS
       for(size_t y=0;y<6;++y)for(size_t x=0;x<6;++x)xtrans[y][x]=shape->cfa[y*6+x];
     }else{error(err,err_len,"unsupported CFA");return LF_STATUS_UNSUPPORTED_CFA;}
     for(size_t y=0;y<h;++y){
-      input_rows[y]=mosaic+y*w;rrows[y]=red+y*w;grows[y]=green+y*w;brows[y]=blue+y*w;
+      rrows[y]=red+y*w;grows[y]=green+y*w;brows[y]=blue+y*w;
     }
+    const auto input=make_input(w,h);
     LfCancelState cancel_state{cancel,cancel_context};
     // librtprocess ignores this progress return; both demosaics check
     // cancel_state between tiles instead.
     auto no_cancel=[](double){return false;};
     rpError code=RP_WRONG_CFA;
     if(shape->cfa_width==2)
-      code=rcd_demosaic(w,h,input_rows.data(),rrows.data(),grows.data(),brows.data(),bayer,no_cancel,2,false,false,executor,executor_context,lf_tile_cancel,&cancel_state);
+      code=rcd_demosaic(w,h,demosaic_input(input),rrows.data(),grows.data(),brows.data(),bayer,no_cancel,2,false,false,executor,executor_context,lf_tile_cancel,&cancel_state);
     else{
       float cam[3][4]{};for(size_t i=0;i<12;++i)cam[i/4][i%4]=shape->rgb_cam[i];
-      code=markesteijn_demosaic(w,h,input_rows.data(),rrows.data(),grows.data(),brows.data(),xtrans,cam,no_cancel,1,false,2,false,executor,executor_context,lf_tile_cancel,&cancel_state);
+      code=markesteijn_demosaic(w,h,demosaic_input(input),rrows.data(),grows.data(),brows.data(),xtrans,cam,no_cancel,1,false,2,false,executor,executor_context,lf_tile_cancel,&cancel_state);
     }
     if(code!=RP_NO_ERROR){
       error(err,err_len,"float demosaic failed");
@@ -628,4 +635,52 @@ extern "C" int lf_raw_develop(const float *mosaic,size_t count,const LfDemosaicS
   }catch(const std::bad_alloc&){error(err,err_len,"native allocation failed");return LF_STATUS_ALLOCATION;}
    catch(const std::exception&e){error(err,err_len,e.what());return LF_STATUS_FAILED;}
    catch(...){error(err,err_len,"unknown native develop failure");return LF_STATUS_FAILED;}
+}
+
+// Demosaic Rust's normalized float mosaic, `count` values, in which sensor
+// white is 65535. Rust normalizes it before this call.
+extern "C" int lf_raw_develop(const float *mosaic,size_t count,const LfDemosaicShape *shape,
+                               float *red,float *green,float *blue,
+                               rpTileExecutor executor,void *executor_context,
+                               LfCancel cancel,void *cancel_context,
+                               char *err,size_t err_len) noexcept {
+  if(!mosaic){error(err,err_len,"invalid or oversized develop buffers");return LF_STATUS_INVALID_INPUT;}
+  return develop_planes(count,shape,red,green,blue,executor,executor_context,cancel,cancel_context,err,err_len,
+                        [mosaic](size_t w,size_t h){
+                          std::vector<const float*> rows(h);
+                          for(size_t y=0;y<h;++y)rows[y]=mosaic+y*w;
+                          return rows;
+                        });
+}
+
+// What the sensor-site input reads: the retained u16 mosaic and three tables,
+// the black level, white scale and gain of every site of one period of the CFA
+// and black patterns (period_width * period_height entries each, anchored at
+// sensor (0, 0)). Rust's SensorSites has the same layout.
+struct LfSensorSites {
+  const uint16_t *samples;
+  const float *black, *scale, *gain;
+  uint32_t period_width, period_height;
+};
+static_assert(sizeof(LfSensorSites) == 4 * sizeof(void *) + 8, "LfSensorSites layout differs from Rust");
+
+// Demosaic the retained mosaic, `count` samples, reading each site as its
+// normalized value (rpNormalizedSite), with no float mosaic. Its planes are
+// those lf_raw_develop gives for the mosaic Rust normalizes with the same
+// tables.
+extern "C" int lf_raw_develop_sites(const LfSensorSites *sites,size_t count,const LfDemosaicShape *shape,
+                                     float *red,float *green,float *blue,
+                                     rpTileExecutor executor,void *executor_context,
+                                     LfCancel cancel,void *cancel_context,
+                                     char *err,size_t err_len) noexcept {
+  if(!sites||!sites->samples||!sites->black||!sites->scale||!sites->gain||!shape||
+     !shape->cfa_width||!shape->cfa_height||!sites->period_width||!sites->period_height||
+     sites->period_width%shape->cfa_width||sites->period_height%shape->cfa_height){
+    error(err,err_len,"invalid or oversized develop buffers");return LF_STATUS_INVALID_INPUT;
+  }
+  return develop_planes(count,shape,red,green,blue,executor,executor_context,cancel,cancel_context,err,err_len,
+                        [sites](size_t w,size_t){
+                          return rpMosaicSites{sites->samples,w,sites->black,sites->scale,sites->gain,
+                                               sites->period_width,sites->period_height};
+                        });
 }
