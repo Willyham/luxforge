@@ -1490,9 +1490,8 @@ fn class(format: PlaneFormat, size: PlaneSize) -> super::super::spatial::Class {
 /// Each shape's kept textures and parameter slices: seven passes each.
 const KEPT_A: u64 = 4 * FULL + 8 * QUARTER + 7 * 256;
 const KEPT_B: u64 = 4 * FULL + 4 * QUARTER + 7 * 256;
-/// Each shape's scratch, each plane in a texture of its own.
+/// Shape a's scratch, each plane in a texture of its own.
 const SCRATCH_A: u64 = 8 * FULL + 2 * 4 * FULL + 16 * QUARTER + 16;
-const SCRATCH_B: u64 = 2 * 8 * FULL + 2 * 8 * FULL + 16;
 
 /// Every link of `steps`' chain lays out its planes by the pool's rules, and the pool serves each
 /// of them: a plane an apply reads is the link's own kept texture and never a pool texture, every
@@ -1790,17 +1789,5 @@ fn the_pool_holds_for_each_class_the_most_any_one_link_holds() {
         PlanesKey::of(&chain.links[0][..1], LAID, LAID_AT),
         alone,
         "the colour step after it adds no plane"
-    );
-}
-
-/// The desktop's figure for a plan's spatial steps before its boundary exists holds every step's
-/// planes in textures of their own, with every pass's parameters: each link's kept planes and
-/// scratch, where the slot holds the scratch once for every link.
-#[test]
-fn plane_bytes_holds_every_steps_planes_in_textures_of_their_own() {
-    let steps = [shape_a(), shape_b(), shape_a()];
-    assert_eq!(
-        super::super::spatial::plane_bytes(&steps, LAID, LAID_AT),
-        2 * (KEPT_A + SCRATCH_A) + KEPT_B + SCRATCH_B
     );
 }

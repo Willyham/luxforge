@@ -1176,10 +1176,9 @@ impl Shape {
 /// geometry tail's intermediate of the same size when there is a tail, `tail` saying whether it
 /// quantizes and whether it keeps `f32` values ([`GpuTail::preserve_f32`]), and the output of
 /// `output` pixels in its size bucket, a region's when `region`, with its placement uniform. What
-/// the desktop holds a plan to before its boundary exists, beside its spatial planes
-/// ([`spatial::plane_bytes`]): for a plan of one link the slot adds only its words and blocks
-/// buffers, and a chain adds each earlier link's intermediate and buffers once the slot holds it,
-/// its links' scratch planes in one pool ([`chain_charge`]). It creates nothing.
+/// the desktop holds a plan to before its boundary exists, beside its chain's charge
+/// ([`chain_charge`]): the slot adds only every link's words and blocks buffers once it holds it.
+/// It creates nothing.
 pub fn texture_charge(
     boundary: (u32, u32),
     format: BoundaryFormat,

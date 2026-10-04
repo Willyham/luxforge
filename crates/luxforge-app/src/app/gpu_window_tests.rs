@@ -15,6 +15,9 @@
 //! - **At Fit.** A tight crop of a photograph that fits the display is drawn at its exact stage:
 //!   the tick asks for the window its output reads, the boundary held is that window, and a slot
 //!   over the budget asks for no boundary and names it.
+//! - **A chain's charge.** Before its boundary exists, a chained masked plan is held to the slot's
+//!   own charge, each link's intermediate and the shared scratch pool counted, over a 100% region
+//!   and at Fit's exact stage; the budget reads that pooled figure.
 //!
 //! A GPU test with no adapter prints that it was skipped and asserts nothing.
 use super::{
@@ -522,18 +525,32 @@ fn committed(
     asset: luxforge_core::AssetId,
     agent: luxforge_core::ClientId,
     method: &str,
-    mut params: Value,
+    params: Value,
 ) -> Editor {
+    answered(&mut editor, &asset, agent, method, params);
+    editor
+}
+
+/// Another client commits `method` with `params` over `editor`'s photograph, which then shows it as
+/// the desktop does: the method's answer.
+fn answered(
+    editor: &mut Editor,
+    asset: &luxforge_core::AssetId,
+    agent: luxforge_core::ClientId,
+    method: &str,
+    mut params: Value,
+) -> Value {
     let revision = editor.document.state.as_ref().unwrap().revision;
     params["asset_id"] = serde_json::json!(asset);
     params["mutation"] = serde_json::json!({
-        "expected_revision": revision, "request_id": "window-crop", "actor": "agent"
+        "expected_revision": revision, "request_id": format!("window-{revision}"), "actor": "agent"
     });
-    crate::app::tasks::call(&editor.owner, agent, method, params).expect("the edit is accepted");
+    let (answer, _) = crate::app::tasks::call(&editor.owner, agent, method, params)
+        .expect("the edit is accepted");
     let refreshed = crate::app::tasks::refresh(
         &editor.owner,
         editor.client,
-        asset,
+        asset.clone(),
         crate::app::tasks::Scope::Open,
         None,
     )
@@ -541,7 +558,7 @@ fn committed(
     let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
         refreshed,
     )))));
-    editor
+    answer
 }
 
 /// A Fit drag over a tight crop drawn at its exact stage asks for the window its output reads,
@@ -702,4 +719,292 @@ fn gpu_window_a_raw_straightened_crop_drag_at_fit_draws_on_the_gpu() {
             finish(editor, catalog);
         }
     }
+}
+
+// ---- A chain's charge before its boundary exists ------------------------------------------------
+
+/// Commit, as another client, a Basic layer, then three Presence layers of Texture and Clarity, each
+/// through a radial mask of its own, then a global Presence layer, over `editor`'s photograph.
+fn masked_chain(
+    editor: &mut Editor,
+    asset: &luxforge_core::AssetId,
+    agent: luxforge_core::ClientId,
+) {
+    let basic = serde_json::json!({"exposure": 0.3});
+    answered(editor, asset, agent, "edit.set-basic", basic);
+    for x in [0.25, 0.5, 0.75] {
+        let radial = serde_json::json!({"x": x, "y": 0.5, "radius_x": 0.15, "radius_y": 0.25,
+                                        "angle": 0.0, "feather": 40.0});
+        let mask = answered(editor, asset, agent, "mask.create-radial", radial)["mask"].clone();
+        let presence = serde_json::json!({"mask": mask, "texture": 40.0, "clarity": 30.0});
+        answered(editor, asset, agent, "edit.set-presence", presence);
+    }
+    let global = serde_json::json!({"texture": 20.0, "clarity": 15.0});
+    answered(editor, asset, agent, "edit.set-presence", global);
+}
+
+/// Set `editor`'s view to 100% over its photograph once its first frame is in, as the zoom control
+/// does.
+fn at_100(editor: &mut Editor) {
+    deliver_until(editor, "the first frame", |editor| {
+        editor.presentation.dimensions.is_some() && !editor.presentation.queue.is_busy()
+    });
+    editor.session.preview.view.zoom = luxforge_core::Zoom::Percent { value: 100.0 };
+}
+
+/// A chained masked plan is held, before its boundary exists, to what the slot drawing it charges.
+/// A Basic layer, three masked Presence layers of Texture and Clarity and a global one make a chain
+/// of five links: Basic's, then each Presence layer's. Over a 100% region and at Fit's exact stage
+/// under a tight crop, the desktop's figure (`region_charge`) is the surface's `slot_charge` for
+/// the plan converted over the held boundary (`Qualifier::charged_bytes`) less what only the slot
+/// knows: every link's words and blocks buffers, each at its 1 KiB least. Both count the boundary,
+/// a tail's intermediate, and the output in its size bucket with its uniform alike
+/// (`texture_charge`). The chain's own charge is the same over the steps the desktop converts with
+/// no boundary as over those the surface is handed.
+#[test]
+fn gpu_window_a_chained_masked_plan_is_held_to_the_slots_own_charge() {
+    use luxforge_ui::photo_surface::gpu_preview::chain_charge;
+    let test = "gpu_window_a_chained_masked_plan_is_held_to_the_slots_own_charge";
+    let Some(qualifier) = headless(test) else {
+        return;
+    };
+    for at in ["100%", "Fit"] {
+        let catalog = catalog(&format!("chain-{}", at.trim_end_matches('%')));
+        let (mut editor, asset, agent) = real_photo(&catalog);
+        if at == "Fit" {
+            let crop = serde_json::json!({"angle": 7.0, "x": 0.3, "y": 0.3, "width": 0.35,
+                                          "height": 0.35});
+            answered(&mut editor, &asset, agent, "edit.crop", crop);
+        }
+        masked_chain(&mut editor, &asset, agent);
+        if at == "100%" {
+            at_100(&mut editor);
+        }
+        editor.gpu.surface = Some(SurfaceReport::default());
+        let _ = slide(&mut editor, "set-basic", "exposure", 0.4);
+        deliver_until(&mut editor, "the boundary", |editor| {
+            editor.gpu.holds_boundary()
+        });
+        // The next tick converts its plan over the held boundary and hands it to the surface.
+        let _ = slide(&mut editor, "set-basic", "exposure", 0.5);
+        let (_, desktop) = editor
+            .gpu
+            .region_charge()
+            .expect("held to the bound and budget");
+        let (core, request) = editor.gpu.planned().expect("the tick's plan");
+        assert_eq!(core.spatial.len(), 4, "{at}: an operation a Presence layer");
+        assert_eq!(request.key.region().is_some(), at == "100%", "{at}");
+        let (plan, _) = editor
+            .gpu
+            .surface_plan()
+            .expect("the plan over the held boundary");
+        let size = plan.boundary.size();
+        let origin = plan.texels.origin.map(|value| value.max(0.0) as u32);
+        let chain = chain_charge(
+            &plan.steps,
+            size,
+            (origin[0], origin[1]),
+            plan.boundary.format(),
+        );
+        assert_eq!(chain.kept.len(), 5, "{at}: five links");
+        let window = Region {
+            x0: origin[0],
+            y0: origin[1],
+            width: size.0,
+            height: size.1,
+        };
+        assert_eq!(
+            super::gpu_preview::chain_charge(core, window, request.format),
+            chain.total(),
+            "{at}: the chain's charge over the steps converted with no boundary"
+        );
+        let slot = qualifier.charged_bytes(plan).expect("a charge");
+        let buffers = chain.kept.len() as u64 * 2 * 1024;
+        eprintln!(
+            "{test}: {at}: a {}x{} boundary at {origin:?}, the desktop {desktop} B, the slot \
+             {slot} B, the chain {} B (intermediates {:?}, kept {:?}, pool {} B), buffers \
+             {buffers} B",
+            size.0,
+            size.1,
+            chain.total(),
+            chain.intermediates,
+            chain.kept,
+            chain.pool
+        );
+        assert!(desktop <= slot, "{at}: {desktop} B of {slot} B");
+        assert_eq!(desktop + buffers, slot, "{at}");
+        let _ = editor.update(Message::Draft(
+            crate::app::message::draft::DraftMessage::Cancel,
+        ));
+        finish(editor, catalog);
+    }
+}
+
+/// The budget a chained masked plan's boundary is held to before it is asked for reads the pooled
+/// figure. Over a 100% region, a budget the slot fits to the byte asks for the boundary, though the
+/// figure the desktop held a plan to before the pool — every plane of every spatial step in a
+/// texture of its own, with the passes' parameters and no link's intermediate — passes it, and so
+/// does that figure with the intermediates, what each link holding its own scratch charged. A byte
+/// less names `budget-exceeded`, with the pooled figure and the budget in `over_budget`.
+#[test]
+fn gpu_window_a_chained_masked_plan_asks_for_its_boundary_when_its_pooled_slot_fits() {
+    use luxforge_ui::photo_surface::gpu_preview::chain_charge;
+    let catalog = catalog("chain-budget");
+    let (mut editor, asset, agent) = real_photo(&catalog);
+    masked_chain(&mut editor, &asset, agent);
+    at_100(&mut editor);
+    // No slot fits a budget of one byte: the first tick names the figure.
+    editor.gpu.budget = Some(1);
+    let _ = slide(&mut editor, "set-basic", "exposure", 0.4);
+    let (_, pooled) = editor.gpu.region_charge().expect("a region plan");
+    let (unshared, intermediates) = {
+        let (plan, request) = editor.gpu.planned().expect("the tick's plan");
+        let window = request.window.expect("the region's window");
+        let (origin, size) = ((window.x0, window.y0), (window.width, window.height));
+        let steps = super::gpu_plan::plan_steps(plan).expect("convertible steps");
+        let format = super::gpu_plan::boundary_format(request.format);
+        let chain = chain_charge(&steps, size, origin, format);
+        assert_eq!(chain.intermediates.len(), 4, "five links");
+        // Each pass's 256-byte parameter slice, as the old figure counted them.
+        let parameters: u64 = plan
+            .spatial
+            .iter()
+            .map(|spatial| 256 * spatial.passes.len() as u64)
+            .sum();
+        let planes: u64 = plan
+            .spatial
+            .iter()
+            .map(|spatial| spatial.plane_bytes(origin, size))
+            .sum();
+        (
+            pooled - chain.total() + planes + parameters,
+            chain.intermediates.iter().sum::<u64>(),
+        )
+    };
+    eprintln!(
+        "gpu_window budget: pooled {pooled} B, every plane apart {unshared} B, with the \
+         intermediates {} B",
+        unshared + intermediates
+    );
+    assert!(pooled < unshared, "{pooled} B, {unshared} B apart");
+    // A byte less than the pooled figure.
+    editor.gpu.budget = Some(pooled - 1);
+    let log = attach_log(&mut editor);
+    let _ = slide(&mut editor, "set-basic", "exposure", 0.5);
+    let records = logged(&mut editor, &log);
+    let ticks = events(&records, "gpu_preview_tick");
+    assert!(
+        !ticks.is_empty()
+            && ticks
+                .iter()
+                .all(|tick| tick["path"] == "cpu" && tick["reason"] == "budget-exceeded"),
+        "{ticks:?}"
+    );
+    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is asked for");
+    assert_eq!(
+        editor.gpu.summary()["drag"]["over_budget"],
+        serde_json::json!({"requested": pooled, "budget": pooled - 1})
+    );
+    // The pooled figure exactly, which the old figure and the slot of unshared links both pass.
+    editor.gpu.budget = Some(pooled);
+    let _ = slide(&mut editor, "set-basic", "exposure", 0.6);
+    let summary = editor.gpu.summary();
+    assert_eq!(editor.gpu.ticks().2, 1, "the boundary is asked for");
+    assert_eq!(summary["drag"]["reason"], "boundary-pending");
+    assert_eq!(summary["drag"]["over_budget"], Value::Null);
+    let _ = editor.update(Message::Draft(
+        crate::app::message::draft::DraftMessage::Cancel,
+    ));
+    finish(editor, catalog);
+}
+
+/// A plan whose steps cannot be converted is charged every plane of its spatial operations in a
+/// texture of its own and an intermediate for each (`unconverted_chain_charge`), which is not an
+/// upper bound on the charge of the same plan converted (`chain_charge`). Over a 480 × 320 stage of
+/// a JPEG, for a Presence layer of Texture and Clarity after a Basic layer, which shares nothing, it
+/// is below by the 13 passes' 256-byte parameter slices alone; with three more such layers before
+/// the last, each through a mask, it is above by the scratch the pool holds once for all four
+/// links, less every pass's slice.
+#[test]
+fn gpu_window_an_unconverted_plan_is_charged_every_plane_apart() {
+    use luxforge_ui::photo_surface::gpu_preview::{ChainCharge, chain_charge};
+    let registry = ModuleRegistry::builtin();
+    let (width, height) = (480u32, 320u32);
+    let window = Region {
+        x0: 0,
+        y0: 0,
+        width,
+        height,
+    };
+    let basic = Layer::new(BASIC_EFFECT, serde_json::json!({"exposure": 0.3}));
+    let presence = |mask: Option<&luxforge_core::Mask>| Layer {
+        mask: mask.map(|mask| mask.id.clone()),
+        ..Layer::new(
+            luxforge_core::PRESENCE_EFFECT,
+            serde_json::json!({"texture": 40, "clarity": 30}),
+        )
+    };
+    let charges = |recipe: &Recipe| -> (u64, ChainCharge, usize) {
+        let request = GpuPlanRequest::exact(0, Stage { width, height });
+        let plan = match gpu_plan(&registry, recipe, request).expect("the stack compiles") {
+            GpuAnswer::Plan(plan) => *plan,
+            GpuAnswer::Fallback(reason) => panic!("{reason}"),
+        };
+        let steps = super::gpu_plan::plan_steps(&plan).expect("convertible steps");
+        let format = super::gpu_plan::boundary_format(BoundaryFormat::Half);
+        let converted = chain_charge(&steps, (width, height), (0, 0), format);
+        assert_eq!(
+            super::gpu_preview::chain_charge(&plan, window, BoundaryFormat::Half),
+            converted.total()
+        );
+        let passes = plan
+            .spatial
+            .iter()
+            .map(|spatial| spatial.passes.len())
+            .sum();
+        (
+            super::gpu_preview::unconverted_chain_charge(&plan, window, BoundaryFormat::Half),
+            converted,
+            passes,
+        )
+    };
+    let (alone, converted, passes) = charges(&Recipe {
+        layers: vec![basic.clone(), presence(None)],
+        ..Recipe::default()
+    });
+    assert_eq!((converted.intermediates.len(), passes), (1, 13));
+    assert_eq!(alone + 13 * 256, converted.total(), "below by the slices");
+    let mut chained = Recipe {
+        layers: vec![basic],
+        ..Recipe::default()
+    };
+    for x in [0.25, 0.5, 0.75] {
+        let mut mask = luxforge_core::Mask::new(format!("Mask {x}"));
+        mask.components.push(luxforge_core::Component::new(
+            "Radial 1",
+            luxforge_core::ComponentMode::Add,
+            "radial",
+            serde_json::json!({"x": x, "y": 0.5, "radius_x": 0.15, "radius_y": 0.25,
+                               "angle": 0.0, "feather": 40.0}),
+        ));
+        chained.layers.push(presence(Some(&mask)));
+        chained.masks.push(mask);
+    }
+    chained.layers.push(presence(None));
+    let (apart, converted, passes) = charges(&chained);
+    assert_eq!((converted.intermediates.len(), passes), (4, 4 * 13));
+    eprintln!(
+        "gpu_window unconverted: one layer {alone} B, four {apart} B against {} B converted, \
+         the pool {} B",
+        converted.total(),
+        converted.pool
+    );
+    // Every link holds the same scratch, so the pool is one link's, which the figure apart counts
+    // for each of the four.
+    assert_eq!(
+        apart + 4 * 13 * 256,
+        converted.total() + 3 * converted.pool,
+        "above by the shared scratch, less the slices"
+    );
+    assert!(apart > converted.total());
 }
