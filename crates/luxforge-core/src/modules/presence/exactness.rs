@@ -1,14 +1,15 @@
 //! The Presence passes against the code they replaced, bit for bit.
 //!
 //! The functions at the top are the passes as they were before they read row slices, frozen as the
-//! reference: every tap of the box passes read through the clamped, index-checked [`Plane::get`],
-//! one row's running sum at a time and the vertical strip written one value at a time. The tests
-//! hold the production passes to them with `to_bits` over planes of distinct values whose exponents
-//! span eighty binary orders, so a sum taken in another order rounds differently, on odd and
+//! reference: every tap of the box passes and every read of the guided filters' pointwise loops
+//! through the clamped, index-checked [`Plane::get`], one row's running sum at a time and the
+//! vertical strip written one value at a time. The tests hold the production passes to them with
+//! `to_bits` over planes of distinct values whose exponents span eighty binary orders, so a sum
+//! taken in another order rounds differently, and of values in the unit interval, on odd and
 //! degenerate frames, radii from 1 to past the frame, output rectangles on every frame edge and on
 //! none, held rectangles larger than a pass needs, and both parallelisms.
-use super::filters::{self, Geometry, Plane, PlaneMut, Rect};
-use crate::modules::Parallelism;
+use super::filters::{self, Geometry, Plane, PlaneMut, Rect, Scratch, for_rows_of};
+use crate::{Error, modules::Parallelism};
 use luxforge_reference::SplitMix64;
 
 // ---------------------------------------------------------------------------------------------
@@ -106,6 +107,197 @@ fn vertical_strip(
     }
 }
 
+fn box_mean(
+    src: &Plane<'_>,
+    r: i64,
+    dst: &mut PlaneMut<'_>,
+    temp: &mut [f32],
+    parallelism: Parallelism,
+) -> Result<(), Error> {
+    let geometry = dst.geometry();
+    let mid = dst.rect().expand_y(r).clip(geometry.frame());
+    let mut horizontal = PlaneMut::over(temp, geometry, mid)?;
+    horizontal_mean(src, r, &mut horizontal, parallelism);
+    vertical_mean(&horizontal.as_plane(), r, dst, parallelism);
+    Ok(())
+}
+
+fn guided_self(
+    src: &Plane<'_>,
+    r: i64,
+    eps: f32,
+    dst: &mut PlaneMut<'_>,
+    scratch: &mut Scratch<'_>,
+    parallelism: Parallelism,
+) -> Result<(), Error> {
+    let geometry = dst.geometry();
+    let frame = geometry.frame();
+    let out = dst.rect();
+    if out.is_empty() {
+        return Ok(());
+    }
+    let inner = out.expand(r).clip(frame);
+    let source = inner.expand(r).clip(frame);
+
+    let mut scratch = scratch.branch();
+    let squared_buffer = scratch.take(source.pixels())?;
+    let mean_buffer = scratch.take(inner.pixels())?;
+    let mean_squared_buffer = scratch.take(inner.pixels())?;
+    let coefficient_buffer = scratch.take(out.pixels())?;
+    let temp_buffer = scratch.take(inner.expand_y(r).clip(frame).pixels())?;
+
+    let mut squared = PlaneMut::over(squared_buffer, geometry, source)?;
+    squared.for_rows(parallelism, |y, row| {
+        for x in source.x0..source.x1 {
+            let value = src.get(x, y);
+            row[(x - source.x0) as usize] = value * value;
+        }
+    });
+
+    let mut mean = PlaneMut::over(mean_buffer, geometry, inner)?;
+    box_mean(src, r, &mut mean, temp_buffer, parallelism)?;
+    let mut mean_squared = PlaneMut::over(mean_squared_buffer, geometry, inner)?;
+    box_mean(
+        &squared.as_plane(),
+        r,
+        &mut mean_squared,
+        temp_buffer,
+        parallelism,
+    )?;
+
+    for_rows_of(parallelism, [&mut mean, &mut mean_squared], |_, rows| {
+        let [mean, mean_squared] = rows;
+        for column in 0..mean.len() {
+            let m = mean[column];
+            let variance = (mean_squared[column] - m * m).max(0.0);
+            let a = variance / (variance + eps);
+            mean_squared[column] = a;
+            mean[column] = (1.0 - a) * m;
+        }
+    });
+
+    box_mean(&mean.as_plane(), r, dst, temp_buffer, parallelism)?;
+    let mut mean_a = PlaneMut::over(coefficient_buffer, geometry, out)?;
+    box_mean(
+        &mean_squared.as_plane(),
+        r,
+        &mut mean_a,
+        temp_buffer,
+        parallelism,
+    )?;
+    let mean_a = mean_a.as_plane();
+    dst.for_rows(parallelism, |y, row| {
+        for x in out.x0..out.x1 {
+            let column = (x - out.x0) as usize;
+            row[column] += mean_a.get(x, y) * src.get(x, y);
+        }
+    });
+    Ok(())
+}
+
+fn guided_filter(
+    guide: &Plane<'_>,
+    input: &Plane<'_>,
+    r: i64,
+    eps: f32,
+    dst: &mut PlaneMut<'_>,
+    scratch: &mut Scratch<'_>,
+    parallelism: Parallelism,
+) -> Result<(), Error> {
+    let geometry = dst.geometry();
+    let frame = geometry.frame();
+    let out = dst.rect();
+    if out.is_empty() {
+        return Ok(());
+    }
+    let inner = out.expand(r).clip(frame);
+    let source = inner.expand(r).clip(frame);
+
+    let mut scratch = scratch.branch();
+    let guide_squared_buffer = scratch.take(source.pixels())?;
+    let guide_input_buffer = scratch.take(source.pixels())?;
+    let mean_guide_buffer = scratch.take(inner.pixels())?;
+    let mean_input_buffer = scratch.take(inner.pixels())?;
+    let mean_guide_squared_buffer = scratch.take(inner.pixels())?;
+    let mean_guide_input_buffer = scratch.take(inner.pixels())?;
+    let coefficient_buffer = scratch.take(out.pixels())?;
+    let temp_buffer = scratch.take(inner.expand_y(r).clip(frame).pixels())?;
+
+    let mut guide_squared = PlaneMut::over(guide_squared_buffer, geometry, source)?;
+    let mut guide_input = PlaneMut::over(guide_input_buffer, geometry, source)?;
+    for_rows_of(
+        parallelism,
+        [&mut guide_squared, &mut guide_input],
+        |y, rows| {
+            let [guide_squared, guide_input] = rows;
+            for x in source.x0..source.x1 {
+                let column = (x - source.x0) as usize;
+                let g = guide.get(x, y);
+                guide_squared[column] = g * g;
+                guide_input[column] = g * input.get(x, y);
+            }
+        },
+    );
+
+    let mut mean_guide = PlaneMut::over(mean_guide_buffer, geometry, inner)?;
+    box_mean(guide, r, &mut mean_guide, temp_buffer, parallelism)?;
+    let mut mean_input = PlaneMut::over(mean_input_buffer, geometry, inner)?;
+    box_mean(input, r, &mut mean_input, temp_buffer, parallelism)?;
+    let mut mean_guide_squared = PlaneMut::over(mean_guide_squared_buffer, geometry, inner)?;
+    box_mean(
+        &guide_squared.as_plane(),
+        r,
+        &mut mean_guide_squared,
+        temp_buffer,
+        parallelism,
+    )?;
+    let mut mean_guide_input = PlaneMut::over(mean_guide_input_buffer, geometry, inner)?;
+    box_mean(
+        &guide_input.as_plane(),
+        r,
+        &mut mean_guide_input,
+        temp_buffer,
+        parallelism,
+    )?;
+
+    let (mean_guide, mean_guide_squared) = (mean_guide.as_plane(), mean_guide_squared.as_plane());
+    for_rows_of(
+        parallelism,
+        [&mut mean_guide_input, &mut mean_input],
+        |y, rows| {
+            let [mean_guide_input, mean_input] = rows;
+            for x in inner.x0..inner.x1 {
+                let column = (x - inner.x0) as usize;
+                let mg = mean_guide.get(x, y);
+                let mi = mean_input[column];
+                let variance = (mean_guide_squared.get(x, y) - mg * mg).max(0.0);
+                let covariance = mean_guide_input[column] - mg * mi;
+                let a = covariance / (variance + eps);
+                mean_guide_input[column] = a;
+                mean_input[column] = mi - a * mg;
+            }
+        },
+    );
+
+    box_mean(&mean_input.as_plane(), r, dst, temp_buffer, parallelism)?;
+    let mut mean_a = PlaneMut::over(coefficient_buffer, geometry, out)?;
+    box_mean(
+        &mean_guide_input.as_plane(),
+        r,
+        &mut mean_a,
+        temp_buffer,
+        parallelism,
+    )?;
+    let mean_a = mean_a.as_plane();
+    dst.for_rows(parallelism, |y, row| {
+        for x in out.x0..out.x1 {
+            let column = (x - out.x0) as usize;
+            row[column] += mean_a.get(x, y) * guide.get(x, y);
+        }
+    });
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------------------------
 // Planes and rectangles to compare them over.
 // ---------------------------------------------------------------------------------------------
@@ -149,16 +341,19 @@ fn value(rng: &mut SplitMix64) -> f32 {
     }
 }
 
-/// `len` values of one of three kinds: distinct values from [`value`], all negative zero (a sum
-/// seeded anywhere but `0.0` keeps its sign), or one value in a field of negative zeros.
+/// `len` values of one of four kinds: distinct values from [`value`], distinct values in the unit
+/// interval (the encoded domain the guided filters smooth), all negative zero (a sum seeded
+/// anywhere but `0.0` keeps its sign), or one value in a field of negative zeros.
 fn values(rng: &mut SplitMix64, len: usize) -> Vec<f32> {
     match rng.next_u32(8) {
+        _ if len == 0 => Vec::new(),
         0 => vec![-0.0; len],
         1 => {
             let mut values = vec![-0.0; len];
             values[rng.next_usize(len)] = value(rng);
             values
         }
+        2 | 3 => (0..len).map(|_| rng.next_range(0.0, 1.0) as f32).collect(),
         _ => (0..len).map(|_| value(rng)).collect(),
     }
 }
@@ -289,4 +484,93 @@ fn the_vertical_mean_matches_the_tap_by_tap_reference_bit_for_bit() {
         }
     }
     assert!(compared > 1000, "{compared} comparisons");
+}
+
+// ---------------------------------------------------------------------------------------------
+// The guided filters.
+// ---------------------------------------------------------------------------------------------
+
+/// The three units' regularizations, and one far below and one far above them.
+const EPSILONS: [f32; 5] = [1.0e-2, 2.5e-3, 1.0e-4, 1.0e-9, 4.0];
+
+/// The frozen filters run serially: their serial and pooled outputs are equal, as the box tests
+/// above and `slow_a_tile_evaluated_on_the_pool_is_bit_identical_to_a_serial_one` hold them, and
+/// the production filters are held to them under both parallelisms.
+#[test]
+fn the_guided_filters_match_the_tap_by_tap_reference_bit_for_bit() {
+    let mut rng = SplitMix64(0x6E1D_ED00);
+    let mut compared = 0;
+    for (width, height) in FRAMES {
+        let frame = Rect::frame(width, height);
+        let geometry = Geometry::new(width, height, frame);
+        for out in rects(&mut rng, width, height) {
+            for r in radii(width, height) {
+                let eps = EPSILONS[rng.next_usize(EPSILONS.len())];
+                let mut held = || {
+                    let extra = [0, 0, 1, 3][rng.next_usize(4)];
+                    grown(out, 2 * r + extra, 2 * r + extra, frame)
+                };
+                let (guide_held, input_held) = (held(), held());
+                let mut guide = values(&mut rng, guide_held.pixels());
+                let guide = PlaneMut::over(&mut guide, geometry, guide_held).expect("the guide");
+                let guide = guide.as_plane();
+                let mut input = values(&mut rng, input_held.pixels());
+                let input = PlaneMut::over(&mut input, geometry, input_held).expect("the input");
+                let input = input.as_plane();
+                let before = values(&mut rng, out.pixels());
+                // Scratch the passes find holding values, as a reused tile slot's does.
+                let scratch = values(&mut rng, frame.pixels() * filters::GUIDED_PLANES);
+                let smoothed = written(geometry, out, &before, |dst| {
+                    let mut scratch = scratch.clone();
+                    let mut scratch = Scratch::new(&mut scratch);
+                    guided_self(&guide, r, eps, dst, &mut scratch, Parallelism::Serial)
+                        .expect("the reference smoother")
+                });
+                let filtered = written(geometry, out, &before, |dst| {
+                    let mut scratch = scratch.clone();
+                    let mut scratch = Scratch::new(&mut scratch);
+                    guided_filter(
+                        &guide,
+                        &input,
+                        r,
+                        eps,
+                        dst,
+                        &mut scratch,
+                        Parallelism::Serial,
+                    )
+                    .expect("the reference guided filter")
+                });
+                for parallelism in PARALLELISMS {
+                    let context = format!(
+                        "{width}x{height} {out:?} guide {guide_held:?} input {input_held:?} \
+                         radius {r} eps {eps} {parallelism:?}"
+                    );
+                    let actual = written(geometry, out, &before, |dst| {
+                        let mut scratch = scratch.clone();
+                        let mut scratch = Scratch::new(&mut scratch);
+                        filters::guided_self(&guide, r, eps, dst, &mut scratch, parallelism)
+                            .expect("the smoother")
+                    });
+                    assert_eq!(actual, smoothed, "self-guided {context}");
+                    let actual = written(geometry, out, &before, |dst| {
+                        let mut scratch = scratch.clone();
+                        let mut scratch = Scratch::new(&mut scratch);
+                        filters::guided_filter(
+                            &guide,
+                            &input,
+                            r,
+                            eps,
+                            dst,
+                            &mut scratch,
+                            parallelism,
+                        )
+                        .expect("the guided filter")
+                    });
+                    assert_eq!(actual, filtered, "guided {context}");
+                    compared += 2;
+                }
+            }
+        }
+    }
+    assert!(compared > 2000, "{compared} comparisons");
 }
