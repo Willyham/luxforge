@@ -371,6 +371,47 @@ pub mod srgb {
     pub(crate) fn quantize_pixel(rgb: [f32; 3]) -> [u8; 3] {
         quantizer().pixel(rgb)
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// An `f32` needs no guard band: [`Quantizer::rounded`] departs from its threshold search
+        /// only within [`ROUNDING_GUARD`] of a threshold, and within that distance of each of the
+        /// 255 thresholds there are at most two `f32` values, the first at or above it and the
+        /// one below that. `the_f32_thresholds_are_where_both_quantizers_change_code` holds both
+        /// quantizers to the same code at exactly those two. Every other `f32`, including every
+        /// one below 0 or above 1, which both clamp, lies farther than the guard from every
+        /// threshold, where `rounded` answers [`Quantizer::channel`], which [`Quantizer::pixel`]
+        /// answers too. So the two give every finite `f32` the same code, and a row of `f32`
+        /// values quantizes through `pixel` exactly as through `rounded` widened to `f64`.
+        #[test]
+        fn only_the_f32_threshold_and_the_value_below_it_lie_in_the_guard_band() {
+            let quantizer = quantizer();
+            for (threshold, first) in CODE_THRESHOLDS.iter().zip(CODE_THRESHOLDS_F32.iter()) {
+                let (threshold, first) = (*threshold, *first);
+                assert!(f64::from(first) >= threshold, "{threshold}");
+                assert!(f64::from(first.next_down()) < threshold, "{threshold}");
+                for outside in [first.next_up(), first.next_down().next_down()] {
+                    let wide = f64::from(outside);
+                    assert!((wide - threshold).abs() > ROUNDING_GUARD, "{threshold}");
+                    assert_eq!(
+                        quantizer.rounded(wide),
+                        quantizer.channel(wide),
+                        "{outside}"
+                    );
+                    assert_eq!(
+                        quantizer.pixel([outside; 3]),
+                        [quantizer.rounded(wide); 3],
+                        "{outside}"
+                    );
+                }
+            }
+            // Both ends of the clamp are far from the first and the last threshold.
+            assert!(CODE_THRESHOLDS[0] > ROUNDING_GUARD);
+            assert!(1.0 - CODE_THRESHOLDS[254] > ROUNDING_GUARD);
+        }
+    }
 }
 
 /// Rec. 709 relative luminance of a linear-sRGB triple at one working precision. Not

@@ -150,17 +150,33 @@ fn decode_rgb(value: [u8; 3]) -> [f64; 3] {
     value.map(srgb::decode_u8)
 }
 
+/// What the terminal boundary refuses a non-finite value with.
+const NON_FINITE_TERMINAL: &str = "linear evaluation produced a non-finite value";
+
 /// The terminal boundary for one channel: a finite value's forward rounding,
 /// `round(255 · encode(v))`, through the guarded threshold search of [`srgb::Quantizer::rounded`]
 /// (the byte resample's contract as well), and a render error for a non-finite one.
 #[inline]
 fn terminal_srgb(quantizer: &srgb::Quantizer, linear: f64) -> Result<u8, Error> {
     if !linear.is_finite() {
-        return Err(Error::render(
-            "linear evaluation produced a non-finite value",
-        ));
+        return Err(Error::render(NON_FINITE_TERMINAL));
     }
     Ok(quantizer.rounded(linear))
+}
+
+/// [`terminal_pixel_in`] for a pixel whose values are `f32` — a colour segment's rows, and the
+/// planes and spatial frames a segment without colour or white balance copies — without widening
+/// it to `f64`: the same refusal of a non-finite value, then [`srgb::Quantizer::pixel`]. For an
+/// `f32` the guard band [`srgb::Quantizer::rounded`] keeps around each threshold holds only the
+/// threshold's own `f32` and the one below it, where the two quantizers give the same code, so
+/// every byte is the one [`terminal_pixel_in`] writes (the `colour::srgb` tests prove it).
+#[inline]
+fn terminal_f32(quantizer: &srgb::Quantizer, pixel: [f32; 3]) -> Result<[u8; 4], Error> {
+    if !pixel.iter().all(|value| value.is_finite()) {
+        return Err(Error::render(NON_FINITE_TERMINAL));
+    }
+    let [red, green, blue] = quantizer.pixel(pixel);
+    Ok([red, green, blue, 255])
 }
 
 /// Refuse a stack the linear path cannot evaluate: more than one resample stage.
@@ -654,6 +670,23 @@ impl LinearRows<'_, '_, '_> {
                         *value = pixel.map(|value| value as f32);
                     }
                 }
+                // The developed planes exactly: `f32` to the terminal, without widening.
+                (Some(reader), false) if domain.white_balance.is_none() => {
+                    let source = Self::source_row(reader, y)?;
+                    match self.output {
+                        LinearOutput::Terminal(quantizer) => {
+                            for (pixel, rgba) in source.zip(bytes.chunks_exact_mut(4)) {
+                                rgba.copy_from_slice(&terminal_f32(quantizer, pixel)?);
+                            }
+                        }
+                        LinearOutput::Boundary => {
+                            let format = super::boundary::BoundaryFormat::Float;
+                            for (pixel, texel) in source.zip(bytes.chunks_exact_mut(pixel_bytes)) {
+                                super::boundary::write_texel(format, texel, pixel);
+                            }
+                        }
+                    }
+                }
                 (Some(reader), false) => {
                     for (pixel, rgba) in
                         Self::source_row(reader, y)?.zip(bytes.chunks_exact_mut(pixel_bytes))
@@ -833,7 +866,7 @@ impl SegmentRows for LinearRows<'_, '_, '_> {
             match self.output {
                 LinearOutput::Terminal(quantizer) => {
                     for (rgba, pixel) in chunk.chunks_exact_mut(4).zip(scratch.rows.iter()) {
-                        rgba.copy_from_slice(&terminal_pixel_in(quantizer, pixel.map(f64::from))?);
+                        rgba.copy_from_slice(&terminal_f32(quantizer, *pixel)?);
                     }
                 }
                 LinearOutput::Boundary => {
@@ -1246,6 +1279,60 @@ mod tests {
                 error.detail,
                 "linear evaluation produced a non-finite value"
             );
+        }
+    }
+
+    /// The terminal of an `f32` pixel is the `f64` terminal of the same values, byte for byte and
+    /// error for error: at, below and above every output threshold's `f32`, across `[-1, 2]`, at
+    /// the edges of `f32`, and for each non-finite value in each channel.
+    #[test]
+    fn the_f32_terminal_is_the_f64_terminal_of_the_same_values() {
+        let quantizer = srgb::quantizer();
+        let mut values = vec![
+            f32::MIN,
+            -1.0,
+            -f32::MIN_POSITIVE,
+            -f32::from_bits(1),
+            -0.0,
+            0.0,
+            f32::from_bits(1),
+            f32::MIN_POSITIVE,
+            0.003_130_8,
+            1.0_f32.next_down(),
+            1.0,
+            1.0_f32.next_up(),
+            32.0,
+            f32::MAX,
+        ];
+        for threshold in srgb::output_thresholds() {
+            let mut value = threshold.next_down().next_down();
+            for _ in 0..5 {
+                values.push(value);
+                value = value.next_up();
+            }
+        }
+        values.extend((0..=30_000).map(|step| step as f32 / 10_000.0 - 1.0));
+        for (index, &value) in values.iter().enumerate() {
+            // Beside two other values, so a channel taken for another shows.
+            let pixel = [
+                value,
+                values[(index + 1) % values.len()],
+                values[(index + 7) % values.len()],
+            ];
+            assert_eq!(
+                terminal_f32(quantizer, pixel).unwrap(),
+                terminal_pixel_in(quantizer, pixel.map(f64::from)).unwrap(),
+                "{pixel:?}"
+            );
+        }
+        for bad in [f32::NAN, -f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for channel in 0..3 {
+                let mut pixel = [0.5; 3];
+                pixel[channel] = bad;
+                let narrow = terminal_f32(quantizer, pixel).unwrap_err();
+                let wide = terminal_pixel_in(quantizer, pixel.map(f64::from)).unwrap_err();
+                assert_eq!((narrow.kind, narrow.detail), (wide.kind, wide.detail));
+            }
         }
     }
 
