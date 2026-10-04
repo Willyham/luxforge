@@ -1017,6 +1017,14 @@ pub(super) fn downsample(
 /// reduced coordinate `u = (x + 0.5)/s - 0.5`, blending reduced indices `floor(u)` and
 /// `floor(u) + 1`, each clamped to the reduced frame, so a full pixel reaches at most one reduced
 /// index beyond its own block.
+///
+/// Each output column's reduced index and weights are computed once per call, not once per pixel,
+/// into a table as wide as the output rectangle (16 bytes a column, so tens of KiB at most for the
+/// widest tile rectangle; it is a small heap allocation of its own, not part of the tile's
+/// declared scratch). The columns whose two reduced indices both lie inside the reduced frame read
+/// them from the two reduced rows as slices, one pair per reduced index; the columns at the frame
+/// edges, where an index clamps, read through [`Plane::get`]. Every value is the same products and
+/// sums of the same weights in the same order.
 pub(super) fn upsample(
     reduced: &Plane<'_>,
     reduction: i64,
@@ -1024,22 +1032,98 @@ pub(super) fn upsample(
     parallelism: Parallelism,
 ) {
     let out = dst.rect();
+    if out.is_empty() {
+        return;
+    }
     let s = reduction as f32;
+    let columns: Vec<Sample> = (out.x0..out.x1)
+        .map(|x| {
+            let u = ((x as f32) + 0.5) / s - 0.5;
+            let i0 = u.floor();
+            let fx = u - i0;
+            Sample {
+                i0: i0 as i64,
+                fx,
+                gx: 1.0 - fx,
+            }
+        })
+        .collect();
+    // The interior: the run of columns whose indices `i0` and `i0 + 1` need no clamp. `i0` never
+    // decreases along a row, so it is one run; it ends early, leaving the rest to the clamped
+    // reads, should it ever decrease. `runs[k]` counts its columns whose `i0` is `first + k`.
+    let reduced_width = reduced.geometry.width;
+    let inside = |sample: &Sample| sample.i0 >= 0 && sample.i0 + 1 < reduced_width;
+    let start = columns.iter().position(inside).unwrap_or(columns.len());
+    let mut end = start;
+    while end < columns.len()
+        && inside(&columns[end])
+        && (end == start || columns[end].i0 >= columns[end - 1].i0)
+    {
+        end += 1;
+    }
+    let (first, runs) = if start < end {
+        let first = columns[start].i0;
+        let mut runs = vec![0_usize; (columns[end - 1].i0 - first + 1) as usize];
+        for sample in &columns[start..end] {
+            runs[(sample.i0 - first) as usize] += 1;
+        }
+        (reduced.geometry.column(first), runs)
+    } else {
+        (0, Vec::new())
+    };
     dst.for_rows(parallelism, |y, row| {
         let v = ((y as f32) + 0.5) / s - 0.5;
         let j0 = v.floor();
         let fy = v - j0;
+        let gy = 1.0 - fy;
         let j0 = j0 as i64;
-        for x in out.x0..out.x1 {
-            let u = ((x as f32) + 0.5) / s - 0.5;
-            let i0 = u.floor();
-            let fx = u - i0;
-            let i0 = i0 as i64;
-            let top = reduced.get(i0, j0) * (1.0 - fx) + reduced.get(i0 + 1, j0) * fx;
-            let bottom = reduced.get(i0, j0 + 1) * (1.0 - fx) + reduced.get(i0 + 1, j0 + 1) * fx;
-            row[(x - out.x0) as usize] = top * (1.0 - fy) + bottom * fy;
+        let clamped = |sample: &Sample| {
+            let (i0, fx, gx) = (sample.i0, sample.fx, sample.gx);
+            let top = reduced.get(i0, j0) * gx + reduced.get(i0 + 1, j0) * fx;
+            let bottom = reduced.get(i0, j0 + 1) * gx + reduced.get(i0 + 1, j0 + 1) * fx;
+            top * gy + bottom * fy
+        };
+        let (head, rest) = row.split_at_mut(start);
+        let (body, tail) = rest.split_at_mut(end - start);
+        for (value, sample) in head.iter_mut().zip(&columns[..start]) {
+            *value = clamped(sample);
+        }
+        for (value, sample) in tail.iter_mut().zip(&columns[end..]) {
+            *value = clamped(sample);
+        }
+        if runs.is_empty() {
+            return;
+        }
+        let count = runs.len();
+        // The interior's reduced indices, from its first column's `i0` to one past its last
+        // column's, in rows `j0` and `j0 + 1` (the rows clamped to the frame as `get` clamps
+        // them): run `k` blends the values at `k` and `k + 1` of the two.
+        let upper = &reduced.row(j0)[first..first + count + 1];
+        let lower = &reduced.row(j0 + 1)[first..first + count + 1];
+        let mut pixels = body.iter_mut().zip(&columns[start..end]);
+        for ((((&run, &a), &b), &c), &d) in runs
+            .iter()
+            .zip(&upper[..count])
+            .zip(&upper[1..])
+            .zip(&lower[..count])
+            .zip(&lower[1..])
+        {
+            for (value, sample) in pixels.by_ref().take(run) {
+                let top = a * sample.gx + b * sample.fx;
+                let bottom = c * sample.gx + d * sample.fx;
+                *value = top * gy + bottom * fy;
+            }
         }
     });
+}
+
+/// Where one output column of [`upsample`] samples the reduced grid: the reduced index its sample
+/// falls after, unclamped, and the weights of that index's right neighbour (`fx`) and of the index
+/// itself (`gx = 1 - fx`).
+struct Sample {
+    i0: i64,
+    fx: f32,
+    gx: f32,
 }
 
 // ---------------------------------------------------------------------------------------------
