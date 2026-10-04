@@ -13,6 +13,7 @@
 //! it holds no authoritative editing state and wakes the desktop when resources retire or a photo
 //! draw enters or leaves a temporary stale state.
 
+pub mod adapters;
 pub mod geometry;
 pub mod photo_surface;
 pub mod theme;
