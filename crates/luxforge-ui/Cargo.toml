@@ -14,9 +14,10 @@ path = "src/lib.rs"
 iced.workspace = true
 iced_wgpu.workspace = true
 wgpu.workspace = true
-# Half floats for the GPU stage's rgba16float boundary. Already in the build through naga, pinned to
-# that version, so it adds no package; no feature is asked for.
-half = { version = "=2.7.1", default-features = false }
+# Half floats for the GPU stage's rgba16float boundary. Already in the build through Iced and naga,
+# pinned to that version, so it adds no package. `std` lets x86_64 detect F16C at run time, as in
+# `luxforge-core`; Iced's graphics crate turns it on too, and this keeps it on whatever Iced does.
+half = { version = "=2.7.1", default-features = false, features = ["std"] }
 
 [features]
 # Qualification only: `photo_surface::gpu_preview::qualification`, which evaluates a GPU plan on a
