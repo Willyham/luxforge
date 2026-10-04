@@ -276,16 +276,12 @@ impl ViewState {
     }
 }
 
-/// The pixel under the pointer: where it is over the photograph and what `render.sample` last
-/// answered there. A pick commits nothing.
+/// The pointer over the photograph: where it is, in image pixels. Nothing is read there; a pick
+/// commits nothing.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Hover {
     /// The last pointer position over the photo in image pixels.
     pub(crate) pointer: Option<(u32, u32)>,
-    /// The pixel `render.sample` last answered for the pointer's position.
-    pub(crate) readout: Option<histogram::Readout>,
-    /// One sample in flight at a time, with only the newest position waiting for it.
-    pub(crate) sample: Coalesce<(u32, u32)>,
 }
 
 /// Everything the models are derived from, borrowed for one derivation.
@@ -348,7 +344,7 @@ pub(crate) struct Inputs<'a> {
     pub(crate) compare_held: bool,
     /// This desktop's own view state: window, zoom, menu.
     pub(crate) view_state: &'a ViewState,
-    /// The pixel under the pointer and what `render.sample` last answered for it.
+    /// The pointer's position over the photograph.
     pub(crate) hover: &'a Hover,
     /// The command palette.
     pub(crate) palette: &'a palette::Palette,
@@ -2767,34 +2763,6 @@ mod tests {
         assert_eq!(
             workspace.title.zoom_percent, "%",
             "nothing gives Fit a size yet"
-        );
-    }
-
-    /// The pointer readout is the status bar's, and only the status bar's: moving the pointer onto
-    /// the photograph changes nothing in the histogram inspector, so no control in the tools panel
-    /// can move, and nothing else in the bar changes either.
-    #[test]
-    fn the_pointer_readout_is_in_the_status_bar_and_leaves_the_inspector_unchanged() {
-        let mut scene = Scene::new(vec![crop_descriptor()]).opened(Vec::new());
-        let without = scene.derive();
-        assert_eq!(without.status.readout, None);
-        scene.hover.readout = Some(histogram::Readout {
-            x: 360,
-            y: 240,
-            rgba: [0, 128, 255, 255],
-        });
-        let with = scene.derive();
-        assert_eq!(
-            with.status.readout.as_deref(),
-            Some("R 0 \u{b7} G 128 \u{b7} B 255 \u{b7} 360, 240")
-        );
-        assert_eq!(with.histogram, without.histogram);
-        assert_eq!(
-            status::StatusBarModel {
-                readout: None,
-                ..with.status.clone()
-            },
-            without.status
         );
     }
 

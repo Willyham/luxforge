@@ -133,14 +133,8 @@ pub enum Step {
     /// Move the comparison divider, or release a backslash hold through the keymap.
     Compare(CompareStep),
     Palette(PaletteStep),
-    /// Move the pointer to one pixel of the displayed raster, exactly as the canvas reports a
-    /// hover, and wait for the readout `render.sample` answers with.
-    Hover {
-        x: u32,
-        y: u32,
-    },
     /// Route a cursor move through the window's actual laid-out widgets, including the mask
-    /// canvas and surrounding readout mouse area. Fractions address the visible photograph;
+    /// canvas and surrounding pointer mouse area. Fractions address the visible photograph;
     /// the captured frame and trace measure cursor geometry submission, never display scanout.
     CanvasHover {
         x: f32,
@@ -287,9 +281,7 @@ impl Step {
             }
             Self::Tab(step) => text(&step.module, "tab module"),
             Self::Section(step) => text(&step.module, "section module"),
-            Self::Gallery { .. } | Self::Hover { .. } | Self::Pick(_) | Self::SliderDraft(_) => {
-                Ok(())
-            }
+            Self::Gallery { .. } | Self::Pick(_) | Self::SliderDraft(_) => Ok(()),
             Self::CanvasHover { x, y } => {
                 unit(f64::from(*x), "canvas_hover x")?;
                 unit(f64::from(*y), "canvas_hover y")

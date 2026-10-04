@@ -2815,10 +2815,10 @@ fn run_hover(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
         let coalesced = probe["coalesced"].as_u64().ok_or("Probe records no coalescing count")?;
         ensure(traces.len() + coalesced as usize == options.samples, "Hover lost input without naming coalescing")?;
         for (index, trace) in traces.iter().enumerate() {
-            ensure(trace["epoch"] == json!(index+1) && trace["readout_position"].is_array()
+            ensure(trace["epoch"] == json!(index+1) && trace["pointer_position"].is_array()
                 && trace["input_to_cursor_geometry_ms"].as_f64().is_some()
                 && trace["editor_update_ms"].as_f64().is_some(),
-                format!("Hover {} has no real mask cursor and readout route: {trace}",index+1))?;
+                format!("Hover {} has no real mask cursor and pointer route: {trace}",index+1))?;
         }
         let shown = frame_at(frames, hovers[0], "hover")?;
         ensure(shown["state"]["masks"]["masks"].as_array().is_some_and(|masks| masks.len()==1),
@@ -2829,14 +2829,10 @@ fn run_hover(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
         let photo_jobs = hover_events.iter().filter(|event| event["event"] == "preview_job_requested").count();
         let draft_sets = hover_events.iter().filter(|event| event["event"] == "mask_draft_set").count();
         ensure(photo_jobs == 0 && draft_sets == 0, "Hover queued photograph work or altered a mask")?;
+        // Nothing is read under the pointer: a move publishes its position and asks the owner for
+        // nothing, so a regression to per-move point queries cannot pass.
         let point_queries = hover_events.iter().filter(|event| event["event"] == "pointer_sample_requested").count();
-        let retained_reads = hover_events.iter().filter(|event| event["event"] == "pointer_retained_readout").count();
-        // At Fit over a settled frame every readout comes from the retained exact raster, so a
-        // regression back to per-move point queries cannot pass.
-        if options.zoom.is_none() {
-            ensure(point_queries == 0 && retained_reads > 0,
-                format!("Hover asked {point_queries} point queries and read {retained_reads} retained pixels at Fit"))?;
-        }
+        ensure(point_queries == 0, format!("Hover asked {point_queries} point queries"))?;
         let mut rows = Vec::new();
         for (metric,field) in [("input_to_cursor_geometry","input_to_cursor_geometry_ms"),
             ("native_widget_update","widget_update_ms"),("cursor_geometry","cursor_geometry_ms"),
@@ -2861,7 +2857,7 @@ fn run_hover(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
             "scope":"input to CPU brush cursor geometry construction/submission; no GPU completion or display scanout claim",
             "rows":rows,"traces":traces,"load":launch::load(load_start),
             "load_average_1m_end":launch::load_average(root),
-            "hover_work":{"point_queries":point_queries,"retained_exact_reads":retained_reads,"photograph_jobs":photo_jobs,"draft_sets":draft_sets,"emitted":traces.len(),"coalesced":coalesced,"interval_ms":16},
+            "hover_work":{"point_queries":point_queries,"photograph_jobs":photo_jobs,"draft_sets":draft_sets,"emitted":traces.len(),"coalesced":coalesced,"interval_ms":16},
             "resources":{"rss_samples":usage["rss_samples"]},
             "checks":["Each move emitted its real surrounding pointer message and built brush cursor geometry",
                 "No hover queued a photograph job, posted a mask draft or committed a second mask","Source SHA-256 is unchanged"]

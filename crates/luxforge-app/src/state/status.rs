@@ -1,9 +1,9 @@
-//! The status bar model: the last message, the pointer readout, who else is connected and what the
+//! The status bar model: the last message, who else is connected and what the
 //! renderer is doing, and the wording of the sentence that says what last happened.
 //!
 //! The message is a plain sentence. It names an entry by the sequence number its history row
 //! carries and never by its identity, its snapshot or its source hash: those stay with the API.
-use crate::state::{ACTOR, Inputs, histogram, title};
+use crate::state::{ACTOR, Inputs, title};
 use luxforge_core::{EditorState, Zoom};
 use std::time::Duration;
 
@@ -366,10 +366,6 @@ pub(crate) fn mask_gesture(
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct StatusBarModel {
     pub(crate) message: String,
-    /// The three output codes under the pointer and their pixel, while the pointer is over the
-    /// photograph; `None` otherwise. The view keeps a fixed slot for it either way, so nothing else
-    /// in the bar moves as it comes and goes.
-    pub(crate) readout: Option<String>,
     /// How many other clients are connected, or why the count is unknown.
     pub(crate) clients: String,
     /// Another client is connected, so the dot beside the count is lit.
@@ -427,7 +423,6 @@ pub(crate) fn view_text(zoom: &Zoom, effective: Option<f32>, scale: f32) -> Stri
 pub(crate) fn derive(inputs: &Inputs<'_>) -> StatusBarModel {
     StatusBarModel {
         message: inputs.status.to_owned(),
-        readout: inputs.hover.readout.as_ref().map(histogram::readout_text),
         clients: clients_text(inputs.clients),
         agents_connected: inputs.clients.is_some_and(|count| count > 0),
         // A GPU frame on screen names itself first: the CPU frame behind it, and any render still

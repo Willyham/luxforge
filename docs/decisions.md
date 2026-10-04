@@ -53,7 +53,7 @@ Decided on 2026-09-23:
 
 Decided on 2026-09-26, aligning the shell with the boards:
 
-- The histogram has no caption at all, neither a row under the plot nor a hover tooltip; the pointer readout stays in the status bar.
+- The histogram has no caption at all, neither a row under the plot nor a hover tooltip. The pointer readout the status bar carried was removed on 2026-10-04 (owner): one `render.sample` per pointer move cost the point worker minutes through Detail, Presence and masks, and the window froze with it. Nothing is read under the pointer; `render.sample` stays the API's exact point query.
 - The status bar leads with a plain sentence of what last happened. Entry, snapshot and source identifiers are not shown or copied there; they remain available through the API.
 - On macOS the app's title bar is the window's title bar: a transparent, full-size-content native bar with the traffic lights inside the app's own. Windows and Linux keep their native frames.
 - The state panel has no Recipe section. The layer stack stays readable through `recipe.describe`.
@@ -352,6 +352,15 @@ Decided by the owner on 2026-10-04, choosing from a list of proposed settings ([
 
 The field shapes, the three canvas colours, the four interface sizes, the catalog as a folder holding `catalog.sqlite` applied at the next launch with a fallback to the default catalog when its folder is missing, and the other details are proposals with recorded defaults in the [design](design/preferences.md#decisions).
 
+## GPU-first rendering
+
+Decided by the owner on 2026-10-04 after the hover-readout freeze and the audit that followed it ([design](design/gpu-first.md)):
+
+- The GPU is the renderer of record for the picture at every zoom, the histogram and clipping counts, `render.sample` and the other pixel reads, and export. The CPU kernels stay as the whole-frame reference renderer and as the renderer for a machine without a usable GPU, with a notice.
+- Image correctness is a declared tolerance against the reference render for every output kind, measured on the qualification corpus before each stage lands. Bit identity is not required of the GPU; on one machine and driver the GPU is deterministic, and across machines an export or a histogram may differ in the last digit.
+- The convergence is staged, each stage deleting a cache, a phase or a fallback; the tolerance numbers, the no-GPU fallback, the export device policy and the counts' cadence during motion run on the design's recorded defaults until recorded here.
+- Settled pixels and reports from the reference keep their exactness tests against frozen fixtures; the pillars' exact-buffer wording now reads reference-buffer within a declared tolerance.
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/product-decisions.json).
@@ -366,6 +375,7 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 - For interactive previews, which additional measured quality levels and approximation error bounds are acceptable beyond the authorized viewport baseline? Temporary softness, the updating histogram, and viewport-bounded clipping are accepted above. For GPU previews the owner chose speed first ([above](#gpu-previews)); do the [proposed limits](design/gpu-preview.md#the-preview-error-limit) stand?
 - Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand? RAW white balance import converts values without calibration ([source-kind controls](#source-kind-controls)).
 - Which of the [Tone curve proposals](design/tone-curve.md#proposals-with-recorded-defaults) stand — a luminance composite with the luminance-ratio reconstruction rather than Lightroom's per-channel composite, one channel, order 5 after Basic and before the mixer, free endpoints, the unit-slope tail past white, sixteen points, the Lightroom `ToneCurvePV2012` transfer including an identity curve, a double-click add that snaps to the drawn curve, end points the desktop does not remove, and the delivered point rows? The module is implemented on these defaults.
+- Which of the [GPU-first proposals](design/gpu-first.md#proposals-with-recorded-defaults) stand: the tolerance per output kind once measured, the reference renderer as the no-GPU fallback, the export device policy, the counts' cadence during motion, and owner tasks on the runtime's blocking pool at one frame per answer (adopted 2026-10-04 in place of the update loop, where a wait froze the window)?
 - Which of the [Presence, colour mixer and vignette proposals](design/presence-mixer-vignette.md#proposals-with-recorded-defaults) (section names, stage order, mixer layout, vignette style, spatial gesture latency, sample cost) stand? Implementation was authorized on 2026-09-22 on the recorded defaults and is delivered; the owner refines the defaults after review, including whether spatial sliders should draft at a bounded resolution now that the measured misses are recorded.
 
 The Basic and histogram product choices were decided on 2026-09-21 and implementation was authorized the same day; see [Basic adjustments and histogram](#basic-adjustments-and-histogram).

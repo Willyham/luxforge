@@ -1,13 +1,15 @@
-//! The pointer over the photograph: the hover readout, one `render.sample` in flight at a time, and
-//! canvas picks, located through the core and answered by the mode on screen.
+//! The pointer over the photograph: its position, and canvas picks located through the core and
+//! answered by the mode on screen. Nothing is read under the pointer as it moves: a `render.sample`
+//! through a spatial stack can cost the point worker minutes, so the one read the canvas makes is a
+//! pick, which a person asks for.
 use super::{
     Editor,
     gesture::Starting,
     message::{Message, pointer::PointerMessage, view::ViewMessage},
     outcome::Outcome,
-    tasks::{locate_task, query_task, sample_task},
+    tasks::{locate_task, query_task},
 };
-use crate::state::{histogram::Readout, tools};
+use crate::state::tools;
 use iced::Task;
 use luxforge_core::ModuleDescriptor;
 use serde_json::{Map, Value, json};
@@ -85,67 +87,17 @@ impl Editor {
     /// One message about the pointer over the photograph.
     pub(super) fn pointer_update(&mut self, message: PointerMessage) -> Task<Message> {
         if self.presentation.compare_after.is_some() {
-            if matches!(message, PointerMessage::Sampled { .. }) {
-                self.hover.sample.answered();
-            }
-            self.hover.readout = None;
-            self.hover.sample.drop_pending();
             return Task::none();
         }
         match message {
-            PointerMessage::Sampled {
-                entry,
-                draft,
-                result,
-            } => {
-                self.hover.sample.answered();
-                // Both identities matter: a slow spatial sample may finish after the pointer has
-                // moved, or after the newest coordinate was answered from the retained raster.
-                // Such an answer must not replace the current readout with an older position.
-                let current_entry = self.displayed_entry() == Some(entry)
-                    && self.presentation.displayed_draft_id == draft;
-                let answered = match result {
-                    Ok(readout)
-                        if current_entry && self.hover.pointer == Some((readout.x, readout.y)) =>
-                    {
-                        self.hover.readout = Some(readout);
-                        true
-                    }
-                    Err(_)
-                        if current_entry
-                            && self.hover.sample.pending().is_none()
-                            && self.hover.readout.is_none() =>
-                    {
-                        true
-                    }
-                    _ => false,
-                };
-                if answered {
-                    self.outcome(Outcome::ReadoutAnswered);
-                }
-                if let Some(&(x, y)) = self.hover.sample.pending() {
-                    return self.sample(x, y);
-                }
-            }
             PointerMessage::Moved(point) => {
                 let measured = self
                     .evidence
                     .as_ref()
                     .and_then(|evidence| evidence.sync.cursor.pointer_started(point));
-                let task = if self.hover.pointer == point {
-                    Task::none()
-                } else {
-                    // The readout is cleared rather than left naming a pixel the pointer has left.
-                    self.hover.pointer = point;
-                    self.hover.readout = None;
-                    match point {
-                        Some((x, y)) => self.sample(x, y),
-                        None => {
-                            self.hover.sample.drop_pending();
-                            Task::none()
-                        }
-                    }
-                };
+                // The position is kept for a pick and for the evidence cursor sync; nothing is
+                // read for it.
+                self.hover.pointer = point;
                 if let Some(started) = measured
                     && let Some(evidence) = &self.evidence
                 {
@@ -154,7 +106,7 @@ impl Editor {
                         .cursor
                         .pointer_updated(point, started.elapsed().as_secs_f64() * 1000.0);
                 }
-                return task;
+                return Task::none();
             }
             PointerMessage::Picked { x, y } => {
                 // The widget hands over a pixel of the raster on screen. Which content pixel that
@@ -494,81 +446,5 @@ impl Editor {
             .unwrap_or_else(|| luxforge_core::POINTER_MODE.to_owned());
         let leave = self.view_update(ViewMessage::SetMode(leave));
         Task::batch([command, leave])
-    }
-
-    /// Read one exact byte from the already retained settled output when its entry, content and
-    /// coordinate domain match the displayed composition. The content serial, not the generation,
-    /// is what proves the pixels equal, so a percentage view's newer region frame still reads the
-    /// whole exact raster behind it. This shares the raster used by the histogram and clipping; it
-    /// allocates and processes no photograph.
-    pub(super) fn retained_readout(&self, x: u32, y: u32) -> Option<Readout> {
-        if self.core_gesture().is_some()
-            || self.crop_stage_owns_view()
-            || self.presentation.displayed_draft_id.is_some()
-            || self.presentation.displayed_draft_revision.is_some()
-            || self.presentation.preview_generation != self.presentation.presented_generation
-            || self.presentation.render_error.is_some()
-            || !self.presentation.has_picture()
-            || self.displayed_entry().as_ref() != self.presentation.presented_entry.as_ref()
-        {
-            return None;
-        }
-        let exact = self.presentation.exact.as_ref()?;
-        if exact.approximate_white_balance
-            || self.presentation.presented_approximate_white_balance
-            || exact.content != Some(self.presentation.presented_content)
-            || self.presentation.dimensions != Some((exact.raster.width, exact.raster.height))
-        {
-            return None;
-        }
-        Some(Readout {
-            x,
-            y,
-            rgba: exact.raster.pixel(x, y)?,
-        })
-    }
-
-    /// Answer from the exact retained output when possible, otherwise ask `render.sample`, with
-    /// one request in flight and one newest position waiting. The API's exact point query remains
-    /// the fallback for missing/stale full frames, displayed drafts and approximate RAW previews.
-    pub(super) fn sample(&mut self, x: u32, y: u32) -> Task<Message> {
-        if let Some(readout) = self.retained_readout(x, y) {
-            self.hover.sample.drop_pending();
-            self.hover.readout = Some(readout);
-            // Per-move events are evidence only: an ordinary session's bounded log keeps its room
-            // for warnings and failures.
-            if self.evidence.is_some() {
-                self.event("pointer_retained_readout", || json!({"x":x,"y":y,
-                    "generation":self.presentation.presented_generation,"content":self.presentation.presented_content}));
-            }
-            self.outcome(Outcome::ReadoutAnswered);
-            return Task::none();
-        }
-        self.hover.sample.offer((x, y));
-        let Some(state) = &self.document.state else {
-            return Task::none();
-        };
-        let Some(entry) = self.displayed_entry() else {
-            return Task::none();
-        };
-        let Some((x, y)) = self.hover.sample.start() else {
-            return Task::none();
-        };
-        if self.evidence.is_some() {
-            self.event(
-                "pointer_sample_requested",
-                || json!({"entry":entry,"x":x,"y":y}),
-            );
-        }
-        // An open draft's frame is read from that draft, as `render.sample` answers it.
-        sample_task(
-            self.owner.clone(),
-            self.client,
-            state.asset.id.clone(),
-            entry,
-            self.presentation.displayed_draft_id.clone(),
-            x,
-            y,
-        )
     }
 }

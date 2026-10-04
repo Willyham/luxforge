@@ -1,6 +1,5 @@
 //! The histogram inspector's model: the plotted bins, the endpoint counters, the two clipping
-//! triangles and their tooltips, the pointer readout's wording and the arithmetic that sizes the
-//! clipping overlay.
+//! triangles and their tooltips, and the arithmetic that sizes the clipping overlay.
 //!
 //! Everything here is a pure function of a [`Report`] the preview worker already produced. Nothing
 //! reduces a raster, asks the owner for anything or draws: the plot's shared vertical scale, the
@@ -13,8 +12,8 @@
 //! re-analysed. Everything that varies lives where it cannot move a control. A status with no report
 //! behind it is drawn inside the plot's own area ([`HistogramModel::notice`]); the endpoint counts
 //! are the triangles' tooltips ([`HistogramModel::shadow_tooltip`],
-//! [`HistogramModel::highlight_tooltip`]); and the pointer readout is in the status bar
-//! ([`readout_text`]). The plot carries no caption, on hover or otherwise (owner, 2026-09-26).
+//! [`HistogramModel::highlight_tooltip`]). The plot carries no caption, on hover or otherwise
+//! (owner, 2026-09-26), and nothing is read under the pointer.
 //!
 //! The described domain is fixed by the [histogram and clipping
 //! contract](../../../../docs/design/basic-and-histogram.md#histogram-and-clipping-contract): the
@@ -38,16 +37,6 @@ pub(crate) struct Analysis {
     pub(crate) generation: u64,
     pub(crate) identity: AnalysisIdentity,
     pub(crate) report: Report,
-}
-
-/// One sampled pixel of the displayed stack, as `render.sample` answered it. An answer that arrives
-/// after the canvas moved to another entry is dropped rather than shown against another image. The
-/// status bar shows it, in [`readout_text`]'s words.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Readout {
-    pub(crate) x: u32,
-    pub(crate) y: u32,
-    pub(crate) rgba: [u8; 4],
 }
 
 /// What the inspector can say about the displayed frame right now.
@@ -267,14 +256,6 @@ impl HistogramModel {
             self.both_text()
         )
     }
-}
-
-/// One sampled pixel as the status bar words it: the three output codes and where they came from.
-pub(crate) fn readout_text(readout: &Readout) -> String {
-    format!(
-        "R {} \u{b7} G {} \u{b7} B {} \u{b7} {}, {}",
-        readout.rgba[0], readout.rgba[1], readout.rgba[2], readout.x, readout.y
-    )
 }
 
 /// Normalize three channels against one shared linear scale, and report the scale. The maximum is
@@ -549,18 +530,6 @@ mod tests {
             "255 \u{b7} R 1 G 1 B 2 \u{b7} any 2 \u{b7} all 1"
         );
         assert_eq!(counters.both_text(), "both 1");
-    }
-
-    #[test]
-    fn the_readout_names_the_three_output_codes_and_the_pixel() {
-        assert_eq!(
-            readout_text(&Readout {
-                x: 12,
-                y: 34,
-                rgba: [128, 64, 255, 255],
-            }),
-            "R 128 \u{b7} G 64 \u{b7} B 255 \u{b7} 12, 34"
-        );
     }
 
     /// A report never changes within one generation, so the derivation that follows a pointer move
