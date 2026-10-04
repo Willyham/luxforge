@@ -38,6 +38,7 @@ mod mask_range_smoke;
 mod mask_smoke;
 mod minify_smoke;
 mod mixer_smoke;
+mod no_gpu_render_smoke;
 mod package;
 mod performance_smoke;
 mod policy;
@@ -359,8 +360,31 @@ fn main_result() -> Result {
                     "No graphical session for smoke (headless check/build still available)",
                 )?;
             }
+            // The adapters the built editor sees, as an evidence run identifies the one that drew
+            // it: a GPU, a software rasterizer (device type Cpu, lavapipe on Linux CI) or none.
+            let backends = std::env::var("WGPU_BACKEND")
+                .map(|value| format!("WGPU_BACKEND={value}"))
+                .unwrap_or_else(|_| "every backend".into());
+            match launch::gpu_adapters(&root)? {
+                None => println!(
+                    "Graphics adapters: not listed until the release editor is built (cargo xtask build --release)"
+                ),
+                Some(adapters) if adapters.is_empty() => println!(
+                    "Graphics adapters ({backends}): none; the editor cannot open its window here and the GPU tests run nothing"
+                ),
+                Some(adapters) => {
+                    for adapter in adapters {
+                        println!(
+                            "Graphics adapter ({backends}): {} on {}, device type {}: {adapter}",
+                            adapter["adapter"].as_str().unwrap_or_default(),
+                            adapter["backend"].as_str().unwrap_or_default(),
+                            adapter["device_type"].as_str().unwrap_or_default(),
+                        );
+                    }
+                }
+            }
             println!(
-                "Native graphics driver, SDK/runtime libraries and an unlocked graphical session are required for UI checks; not proven by Doctor."
+                "Native graphics driver, SDK/runtime libraries and an unlocked graphical session are required for UI checks; not proven by Doctor. A Cpu adapter is a software rasterizer: functional evidence, never GPU evidence."
             );
         }
         "fixtures" => {
