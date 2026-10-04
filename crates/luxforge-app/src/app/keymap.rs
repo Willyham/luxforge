@@ -5,8 +5,8 @@ use crate::app::Editor;
 use crate::app::message::{
     Message, crop::CropMessage, draft::DraftMessage, export::ExportMessage,
     history::HistoryMessage, mask::BrushEdit, mask::KindMenu, mask::MaskKey, mask::MaskMessage,
-    mask::TypingEdit, overlay::OverlayMessage, palette::PaletteMessage, sync::SyncMessage,
-    view::ViewMessage,
+    mask::TypingEdit, overlay::OverlayMessage, palette::PaletteMessage, settings::SettingsMessage,
+    sync::SyncMessage, view::ViewMessage,
 };
 use crate::state::palette::Panel;
 use iced::{
@@ -112,6 +112,9 @@ pub(crate) struct KeyContext {
     pub(crate) mask_brush: bool,
     /// The command palette is open, so Escape closes it rather than reaching a draft.
     pub(crate) palette_open: bool,
+    /// The Settings sheet is open: it is modal, so the workspace behind it takes no key but the
+    /// ones that close the sheet.
+    pub(crate) settings_open: bool,
     /// The title bar's Export menu is open, so Escape closes it.
     pub(crate) export_menu_open: bool,
     /// A module's canvas mode is active, so Escape leaves it. A mode that owns a draft answers
@@ -175,6 +178,22 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     {
         return Some(Message::History(HistoryMessage::CompareKeyReleased));
     }
+    // The Settings sheet is modal: Escape and its own shortcut close it, and no other key reaches
+    // the workspace behind it. Its fields still receive their own typing.
+    if context.settings_open {
+        return match keyboard {
+            Keys::KeyPressed {
+                key: Key::Named(Named::Escape),
+                ..
+            } => Some(Message::Settings(SettingsMessage::Close)),
+            Keys::KeyPressed { key, modifiers, .. }
+                if modifiers.command() && character(key, ",") =>
+            {
+                Some(Message::Settings(SettingsMessage::Close))
+            }
+            _ => None,
+        };
+    }
     // The slider guard emits one release for keyboard stepping. The window keymap must not send a
     // second commit for the same key-up; it only handles Escape for an open gesture below.
     // The modifier the canvas reads lives in the app, so it follows every change while drafting.
@@ -222,6 +241,9 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         }
         if character(key, "k") {
             return Some(Message::Palette(PaletteMessage::Open));
+        }
+        if character(key, ",") {
+            return Some(Message::Settings(SettingsMessage::Toggle));
         }
         // Zoom in and out a stop at a time. `=` is the plus key unshifted; a layout that reports
         // the shifted `+` reaches the same step. Held, they repeat, as stepping a zoom does.
@@ -663,6 +685,7 @@ mod tests {
             slider_drafting: false,
             mask_brush: false,
             palette_open: false,
+            settings_open: false,
             export_menu_open: false,
             mode_active: false,
             leave_to: None,

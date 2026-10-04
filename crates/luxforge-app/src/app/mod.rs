@@ -117,6 +117,9 @@ mod preview_tests;
 #[cfg(test)]
 mod proof_controls_tests;
 mod query_choice;
+mod settings;
+#[cfg(test)]
+mod settings_tests;
 pub(crate) mod slider;
 #[cfg(test)]
 mod slider_tests;
@@ -341,6 +344,8 @@ pub(crate) struct Editor {
     pub(crate) coverage_worker: mask_coverage::CoverageWorker,
     /// The command palette.
     pub(crate) palette: state::palette::Palette,
+    /// The Settings sheet: its tab, the flags it last read and the writes waiting.
+    pub(crate) settings: state::settings::Settings,
     /// The version chip row's naming form.
     pub(crate) version_form: state::VersionForm,
     /// The Presets section: the library and its create form.
@@ -530,6 +535,7 @@ impl Editor {
             thumbnailer: Default::default(),
             coverage_worker: Default::default(),
             palette: Default::default(),
+            settings: Default::default(),
             version_form: Default::default(),
             presets: Default::default(),
             capabilities: Default::default(),
@@ -568,8 +574,10 @@ impl Editor {
         if editor.live_server.is_none() {
             editor.status.text = "Editor ready; live API unavailable on this host".into();
         }
+        // The launch flags and the Performance preference share one file, so one sentence covers
+        // both: every flag took its default for this launch and the section starts open.
         if let Err(reason) = preferences {
-            editor.status.text = format!("Could not read Performance preference: {reason}");
+            editor.status.text = format!("Could not read preferences; using defaults: {reason}");
         }
         editor.event(
             "startup",
@@ -801,6 +809,7 @@ impl Editor {
             view_state: &self.view_state,
             hover: &self.hover,
             palette: &self.palette,
+            settings: &self.settings,
             version_form: &self.version_form,
             dimensions: self.presentation.dimensions,
             photo: self.presentation.has_picture(),
@@ -856,6 +865,7 @@ impl Editor {
             Message::Preset(message) => self.preset_update(message),
             Message::Capability(message) => self.capability_update(message),
             Message::Performance(message) => self.performance_update(message),
+            Message::Settings(message) => self.settings_update(message),
             Message::Export(message) => self.export_update(message),
             Message::Evidence(message) => self.evidence_update(message),
             Message::Close => self.close(),
@@ -988,6 +998,7 @@ impl Editor {
             slider_drafting: self.slider_gesture().is_some(),
             mask_brush: self.mask_mode_active(),
             palette_open: self.palette.open,
+            settings_open: self.settings.open.is_some(),
             export_menu_open: matches!(self.view_state.menu, Some(MenuTarget::Export)),
             mode_active: self.session.workspace.mode != POINTER_MODE,
             leave_to: self.leave_to(),

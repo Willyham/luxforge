@@ -94,6 +94,7 @@ impl Fixture {
             secrets: self.secrets.clone(),
             transport: self.transport.clone(),
             resource_quota_bytes: self.quota,
+            launch_flags: Default::default(),
         }
     }
 

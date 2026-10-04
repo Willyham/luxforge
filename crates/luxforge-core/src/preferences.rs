@@ -2,20 +2,26 @@
 //! The existing bounded, format-marked and locked JSON writer preserves unsupported documents.
 use crate::{Error, capabilities::document::JsonDocument};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use serde_json::Value;
+use std::{collections::BTreeMap, path::PathBuf};
 
-const MAX_BYTES: u64 = 4096;
+const MAX_BYTES: u64 = 16 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Preferences {
     pub(crate) performance_expanded: bool,
+    /// The feature flags the person chose, by identity, exactly as stored: a value no flag claims,
+    /// or one that does not fit its flag, is kept for [`crate::flags`] to report.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) flags: BTreeMap<String, Value>,
 }
 
 impl Default for Preferences {
     fn default() -> Self {
         Self {
             performance_expanded: true,
+            flags: BTreeMap::new(),
         }
     }
 }
@@ -41,6 +47,22 @@ impl PreferenceStore {
             .transact(|preferences| {
                 preferences.performance_expanded = performance_expanded;
                 Ok(preferences.clone())
+            })
+    }
+
+    /// Store one flag's value, or remove it for `None`, leaving every other stored flag as it
+    /// was. Returns whether the stored value changed; an unchanged one writes nothing.
+    pub(crate) fn set_flag(&self, id: &str, value: Option<Value>) -> Result<bool, Error> {
+        self.0
+            .as_ref()
+            .ok_or_else(|| Error::not_ready("no user preference directory is configured"))?
+            .transact(|preferences| {
+                let before = preferences.flags.get(id).cloned();
+                match &value {
+                    Some(value) => preferences.flags.insert(id.to_owned(), value.clone()),
+                    None => preferences.flags.remove(id),
+                };
+                Ok(before != value)
             })
     }
 }

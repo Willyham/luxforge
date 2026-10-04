@@ -1,6 +1,6 @@
 //! The title bar: the file's identity and Open at the leading edge, the view control, Compare and
-//! Clipping centred on the window, and Undo, Redo and the two panel-visibility toggles at the
-//! trailing edge.
+//! Clipping centred on the window, and Undo, Redo, the two panel-visibility toggles and Settings at
+//! the trailing edge.
 //!
 //! Open sits beside the file's identity, as the default board draws it: the editor has no library
 //! to open a photograph from, and without it a fresh launch could reach no photograph at all.
@@ -12,13 +12,13 @@ use crate::state::palette::Panel;
 use crate::{
     app::message::{
         Message, export::ExportMessage, history::HistoryMessage, overlay::OverlayMessage,
-        sync::SyncMessage, view::ViewMessage,
+        settings::SettingsMessage, sync::SyncMessage, view::ViewMessage,
     },
     state::{
         Workspace,
         title::{
             EXPORT_ITEMS, EXPORT_TOOLTIP, SEGMENT_FIT, SEGMENT_HUNDRED, SEGMENT_PERCENT,
-            TitleBarModel, ZOOM_STOPS, percent_text,
+            SETTINGS_TOOLTIP, TitleBarModel, ZOOM_STOPS, percent_text,
         },
     },
     window_frame,
@@ -229,7 +229,8 @@ fn compare(held: bool, can_view: bool) -> Element<'static, Message> {
     )
 }
 
-/// Undo and Redo, a short rule, then the two panel-visibility toggles, at the bar's trailing edge.
+/// Undo and Redo, a short rule, then the two panel-visibility toggles and Settings, at the bar's
+/// trailing edge.
 fn actions(model: &TitleBarModel) -> Element<'_, Message> {
     let rule = container(
         container(Space::new())
@@ -286,6 +287,15 @@ fn actions(model: &TitleBarModel) -> Element<'_, Message> {
             model
                 .can_toggle_panels
                 .then_some(Message::View(ViewMessage::TogglePanel(Panel::Tools))),
+        ),
+        title_bar_icon_button(
+            &IconButtonModel {
+                icon: Icon::Settings,
+                tooltip: SETTINGS_TOOLTIP.into(),
+                enabled: true,
+                selected: model.settings_open,
+            },
+            Some(Message::Settings(SettingsMessage::Toggle)),
         ),
     ]
     .spacing(theme::TITLE_ACTION_SPACING)

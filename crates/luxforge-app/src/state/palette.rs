@@ -59,6 +59,8 @@ pub(crate) enum PaletteAction {
     Export {
         keep_metadata: bool,
     },
+    /// Open the Settings sheet at a tab.
+    Settings(crate::state::settings::SettingsTab),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -202,6 +204,12 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
             gpu_preview_label(workspace.gpu_preview).to_owned(),
             "workspace.set".to_owned(),
             PaletteAction::ToggleGpuPreview,
+        ),
+        // One entry per tab, named for both, so "settings" and "experiments" each find it.
+        (
+            "Settings \u{b7} Experiments".to_owned(),
+            "flags.list \u{b7} flags.set".to_owned(),
+            PaletteAction::Settings(crate::state::settings::SettingsTab::Experiments),
         ),
     ]);
     entries
