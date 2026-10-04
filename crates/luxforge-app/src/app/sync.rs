@@ -491,6 +491,12 @@ impl Editor {
         if refresh.original.is_some() {
             self.document.original_entry = refresh.original;
         }
+        if refresh.capture.is_some()
+            || self.document.state.as_ref().map(|state| &state.asset.id)
+                != Some(&refresh.state.asset.id)
+        {
+            self.document.capture = refresh.capture;
+        }
         self.document.current_recipe = Some(
             refresh
                 .current_recipe

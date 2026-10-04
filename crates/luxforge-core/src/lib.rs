@@ -57,7 +57,7 @@ pub use editor::{
     SkippedSetting, SourceKind, SourceTag, Version,
 };
 pub use error::{Error, ErrorKind, Preparation, PreparationNeeds};
-pub use export::CaptureMetadata;
+pub use export::{CaptureInfo, CaptureMetadata};
 pub use mask::MASK_GPU_PROGRAMS;
 pub use model::{
     AssetId, COMPONENTS_PER_MASK, Component, ComponentId, ComponentMode, DraftId, EFFECT_FORMAT,

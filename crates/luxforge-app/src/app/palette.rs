@@ -56,6 +56,9 @@ impl Editor {
                     Some(PaletteAction::ToggleThirds) => {
                         self.dispatch(Message::View(ViewMessage::ToggleThirds))
                     }
+                    Some(PaletteAction::ToggleInformation) => {
+                        self.dispatch(Message::View(ViewMessage::ToggleInformation))
+                    }
                     Some(PaletteAction::ToggleGpuPreview) => {
                         self.dispatch(Message::View(ViewMessage::ToggleGpuPreview))
                     }

@@ -46,6 +46,7 @@ pub(crate) enum PaletteAction {
     /// Open or close the state panel's Performance section.
     TogglePerformance,
     ToggleThirds,
+    ToggleInformation,
     /// Turn the GPU preview off or on: this client's `gpu_preview` preference.
     ToggleGpuPreview,
     Fit,
@@ -137,6 +138,11 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
             toggle_label(workspace.thirds, "thirds"),
             "workspace.set".to_owned(),
             PaletteAction::ToggleThirds,
+        ),
+        (
+            toggle_label(workspace.information, "information"),
+            "workspace.set".to_owned(),
+            PaletteAction::ToggleInformation,
         ),
         ("Fit".to_owned(), "view.set".to_owned(), PaletteAction::Fit),
         (
