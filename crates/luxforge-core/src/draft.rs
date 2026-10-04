@@ -120,4 +120,64 @@ impl Draft {
         }
         self.draft_revision = self.draft_revision.saturating_add(1);
     }
+
+    /// This draft with accepted fields merged in, exactly as [`Self::merge`] leaves a copy of it,
+    /// copying only the fields `fields` leaves as they were. A brush tick replaces its whole path,
+    /// which is moved in rather than copied twice. Every caller validates first.
+    pub fn merged(&self, fields: Map<String, Value>) -> Self {
+        let Self {
+            draft_id,
+            action,
+            asset_id,
+            base_revision,
+            draft_revision,
+            fields: held,
+            target,
+            conflicted,
+        } = self;
+        let mut next = Self {
+            draft_id: draft_id.clone(),
+            action: action.clone(),
+            asset_id: asset_id.clone(),
+            base_revision: *base_revision,
+            draft_revision: *draft_revision,
+            fields: held
+                .iter()
+                .filter(|(name, _)| !fields.contains_key(*name))
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect(),
+            target: target.clone(),
+            conflicted: *conflicted,
+        };
+        next.merge(fields);
+        next
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn merged_is_a_merged_copy() {
+        let mut held = Draft::new("mask.add-stroke", AssetId::new(), 3);
+        held.target.insert("mask".into(), "m".into());
+        held.merge(Map::from_iter([
+            ("points".to_owned(), json!([[0.1, 0.2], [0.3, 0.4]])),
+            ("size".to_owned(), json!(0.1)),
+            ("flow".to_owned(), json!(80.0)),
+        ]));
+        held.conflicted = true;
+        let posted = Map::from_iter([
+            (
+                "points".to_owned(),
+                json!([[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]]),
+            ),
+            ("feather".to_owned(), json!(40.0)),
+        ]);
+        let mut copied = held.clone();
+        copied.merge(posted.clone());
+        assert_eq!(held.merged(posted), copied);
+    }
 }
