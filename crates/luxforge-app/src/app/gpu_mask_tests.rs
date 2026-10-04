@@ -15,7 +15,7 @@
 //! A test with no adapter prints that it was skipped and asserts nothing: the skip is the report,
 //! and `cargo test` counting it as passed does not make it GPU evidence.
 use super::gpu_plan::{coverage, surface_plan};
-use super::gpu_qualification::{corpus_at_fit, figures, grid, worst};
+use super::gpu_qualification::{corpus_at_fit, figures, grid, held_to_whole, worst};
 use luxforge_core::{
     BASIC_EFFECT, Cancel, Component, ComponentMode, GPU_PROGRAMS, GpuAnswer, GpuPlanRequest,
     GpuProgramKind, Layer, MASK_GPU_PROGRAMS, Mask, ModuleRegistry, Recipe, RenderContext,
@@ -1123,7 +1123,9 @@ fn gpu_mask_corpus_at_fit() {
 /// through an identity tail, at a Fit stage's thin-feature scale. The stroke is painted to its
 /// end, taken back over half of it and painted to its end again, so the brushed mask grows,
 /// shrinks and grows again. Every tick's frame is the frame a whole evaluation of the same plan
-/// draws, bit for bit, and the rectangles are a small part of the stage.
+/// draws, bit for bit, and the rectangles are a small part of the stage. So it is again with the
+/// poison on, every link's passes starting from NaN in every texture of the pool the links share
+/// ([`held_to_whole`]).
 #[test]
 fn gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it() {
     let test = "gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it";
@@ -1261,22 +1263,16 @@ fn gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it() {
                 (converted, inside)
             })
             .collect();
-        let incremental = qualifier
-            .evaluate_sequence(&ticks)
-            .expect("a readback of every tick");
-        for (number, ((plan, inside), drawn)) in ticks.iter().zip(&incremental).enumerate() {
-            let whole = qualifier.evaluate(plan).expect("a readback");
-            let largest = drawn
-                .iter()
-                .zip(&whole)
-                .flat_map(|(a, b)| (0..3).map(move |channel| (a[channel] - b[channel]).abs()))
-                .fold(0.0_f32, f32::max);
-            assert!(
-                largest == 0.0,
-                "tick {number} (stroke position {}): {largest} over {inside:?}",
-                order[number].1
-            );
-        }
+        let whole: Vec<_> = ticks
+            .iter()
+            .map(|(plan, _)| qualifier.evaluate(plan).expect("a readback"))
+            .collect();
+        held_to_whole(&qualifier, &ticks, &whole, &|number| {
+            format!(
+                "tick {number} (stroke position {}) over {:?}",
+                order[number].1, ticks[number].1
+            )
+        });
     }
     let mean = areas.iter().sum::<f64>() / areas.len() as f64;
     eprintln!(
@@ -1293,8 +1289,9 @@ fn gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it() {
 /// as one slot draws them, through a masked Basic and a masked Presence layer of the radial and a
 /// global Presence layer after them, at a Fit stage's thin-feature scale, and its amount and an
 /// inversion changed by the same rule, the inverted mask's bounds the whole stage. Every tick's
-/// frame is the frame a whole evaluation of the same plan draws, bit for bit, and a moved
-/// radial's change is the part of the stage the two positions cover.
+/// frame is the frame a whole evaluation of the same plan draws, bit for bit, with the poison on
+/// too ([`held_to_whole`]), and a moved radial's change is the part of the stage the two positions
+/// cover.
 #[test]
 fn gpu_mask_a_moved_radial_is_evaluated_where_its_bounds_were_and_are() {
     let test = "gpu_mask_a_moved_radial_is_evaluated_where_its_bounds_were_and_are";
@@ -1361,22 +1358,16 @@ fn gpu_mask_a_moved_radial_is_evaluated_where_its_bounds_were_and_are() {
             (converted, inside)
         })
         .collect();
-    let incremental = qualifier
-        .evaluate_sequence(&ticks)
-        .expect("a readback of every tick");
-    for (number, ((plan, inside), drawn)) in ticks.iter().zip(&incremental).enumerate() {
-        let whole = qualifier.evaluate(plan).expect("a readback");
-        let largest = drawn
-            .iter()
-            .zip(&whole)
-            .flat_map(|(a, b)| (0..3).map(move |channel| (a[channel] - b[channel]).abs()))
-            .fold(0.0_f32, f32::max);
-        assert!(
-            largest == 0.0,
-            "tick {number} {:?}: {largest} over {inside:?}",
-            order[number]
-        );
-    }
+    let whole: Vec<_> = ticks
+        .iter()
+        .map(|(plan, _)| qualifier.evaluate(plan).expect("a readback"))
+        .collect();
+    held_to_whole(&qualifier, &ticks, &whole, &|number| {
+        format!(
+            "tick {number} {:?} over {:?}",
+            order[number], ticks[number].1
+        )
+    });
     let mean = moved.iter().sum::<f64>() / moved.len() as f64;
     eprintln!(
         "{test}: {} moves, each changing on average {:.1}% of the stage",
@@ -1391,8 +1382,8 @@ fn gpu_mask_a_moved_radial_is_evaluated_where_its_bounds_were_and_are() {
 /// the Basic stroke changes the Presence layer's input between its mask and the edge, then the
 /// Presence layer's own mask is painted toward the edge, inside the rectangle it already had, as
 /// one slot draws the ticks. Every tick's frame is the frame a whole evaluation of the same plan
-/// draws, bit for bit: where the mask grew, its apply reads the Presence values of the input the
-/// Basic stroke left, not of the one before it.
+/// draws, bit for bit, with the poison on too ([`held_to_whole`]): where the mask grew, its apply
+/// reads the Presence values of the input the Basic stroke left, not of the one before it.
 #[test]
 fn gpu_mask_a_mask_grown_toward_the_edge_reads_its_inputs_latest_values() {
     let test = "gpu_mask_a_mask_grown_toward_the_edge_reads_its_inputs_latest_values";
@@ -1502,22 +1493,16 @@ fn gpu_mask_a_mask_grown_toward_the_edge_reads_its_inputs_latest_values() {
         last_bounds.x0 < first_bounds.x0,
         "the mask grew toward the edge: {first_bounds:?} to {last_bounds:?}"
     );
-    let incremental = qualifier
-        .evaluate_sequence(&ticks)
-        .expect("a readback of every tick");
-    for (number, ((plan, inside), drawn)) in ticks.iter().zip(&incremental).enumerate() {
-        let whole = qualifier.evaluate(plan).expect("a readback");
-        let largest = drawn
-            .iter()
-            .zip(&whole)
-            .flat_map(|(a, b)| (0..3).map(move |channel| (a[channel] - b[channel]).abs()))
-            .fold(0.0_f32, f32::max);
-        assert!(
-            largest == 0.0,
-            "tick {number} {:?}: {largest} over {inside:?}",
-            order[number]
-        );
-    }
+    let whole: Vec<_> = ticks
+        .iter()
+        .map(|(plan, _)| qualifier.evaluate(plan).expect("a readback"))
+        .collect();
+    held_to_whole(&qualifier, &ticks, &whole, &|number| {
+        format!(
+            "tick {number} {:?} over {:?}",
+            order[number], ticks[number].1
+        )
+    });
 }
 
 /// What a painted stroke's ticks cost the GPU, evaluated incrementally and whole: the stroke the

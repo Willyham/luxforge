@@ -133,6 +133,11 @@ pub struct GpuPreview {
     /// need, from the same boundary. Over the region's window the GPU shape charges the planes of
     /// its units at zero too, so the desktop draws this one when only it fits the budget.
     pub cpu_shape: Option<Box<GpuPlan>>,
+    /// The label the recipe list gives the layer [`Self::answer`]'s fallback names, when it names
+    /// one ([`ModuleRegistry::layer_label`]). The reason's index is into the stack the plan was
+    /// made from, which holds the neutral layer a drafted layer's first commit would add, so the
+    /// label travels with the answer rather than being read back from the committed stack's rows.
+    pub layer: Option<String>,
 }
 
 /// Whether a layer at `stage` has a GPU shape (`CompileStage::gpu_shape`): a colour or finish
@@ -509,6 +514,7 @@ pub(crate) fn plan_preview(
             answer: GpuAnswer::Fallback(GpuFallback::Unchanged),
             boundary: None,
             cpu_shape: None,
+            layer: None,
         });
     };
     // Every gesture is planned from the stack's first layer past its source layers, whatever it
@@ -696,10 +702,16 @@ fn planned_preview(
             warp: plan.geometry.needs_grid().then(|| plan.geometry.clone()),
         }),
     };
+    let layer = answer
+        .fallback()
+        .and_then(GpuFallback::layer)
+        .and_then(|layer| planned.layers.get(layer))
+        .map(|layer| registry.layer_label(&layer.effect_id));
     Ok(GpuPreview {
         answer,
         boundary: boundary_request,
         cpu_shape,
+        layer,
     })
 }
 
