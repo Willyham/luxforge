@@ -913,8 +913,11 @@ impl PhotoSurface {
     /// The frame the surface was built with stays its fallback: a frame the stage cannot draw
     /// draws that one and names why in [`SurfaceDiagnostics::gpu_fallback`]. Without a plan the
     /// surface's GPU-preview slot is released. A whole-frame photograph ([`photo_surface`]) runs a
-    /// whole frame's plan, and a percentage view a region's ([`GpuPlan::region`]) of its own stage,
-    /// drawn as that region of the photograph; a crop stage ignores a plan.
+    /// whole frame's plan, at Fit and as the percentage view below 100% that draws its display
+    /// proxy filling the view's box, through the placement that frame has; a percentage view of
+    /// retained full and region frames ([`viewport_surface`]) runs a region's plan
+    /// ([`GpuPlan::region`]) of its own stage, drawn as that region of the photograph; a crop stage
+    /// ignores a plan.
     pub fn gpu_preview(mut self, plan: Option<&GpuPlan>) -> Self {
         self.gpu = plan.cloned();
         self
@@ -1025,6 +1028,47 @@ impl PhotoSurface {
             visible.clip = clip;
         }
         Some(visible)
+    }
+
+    /// The primitive `draw` hands the renderer for the visible part `visible`: the frames, where
+    /// the picture goes relative to that part, and the GPU plan the surface runs, if it runs one.
+    fn primitive(&self, visible: Visible) -> PhotoPrimitive {
+        let (angle, snap) = match self.base {
+            // The photograph is snapped as the image widget snaps it.
+            Base::Photo(_) => (0.0, true),
+            // The stage is placed where the crop canvas drew it, unsnapped, as the canvas's images
+            // were drawn.
+            Base::Stage(turn) => (turn.angle, false),
+        };
+        PhotoPrimitive {
+            surface: self.id,
+            layers: self.layers.clone(),
+            viewport: self.viewport.clone(),
+            region_overlays: self.region_overlays.clone(),
+            // A whole frame's plan draws a whole-frame photograph, at Fit or below 100% filling the
+            // view's box, through the same placement as the frame it stands in for; a region's
+            // draws the percentage view of the same stage; a crop stage runs none.
+            gpu: match self.base {
+                Base::Photo(_) => {
+                    self.gpu
+                        .clone()
+                        .filter(|plan| match (&self.viewport, plan.region) {
+                            (None, None) => true,
+                            (Some(view), Some(region)) => region.stage == view.full_stage,
+                            _ => false,
+                        })
+                }
+                _ => None,
+            },
+            gpu_options: self.gpu_options.clone(),
+            dissolve: self.dissolving(self.clock.unwrap_or_else(Instant::now)),
+            offset: visible.offset,
+            size: visible.size,
+            clip_size: visible.clip.size(),
+            bright: visible.bright,
+            angle,
+            snap,
+        }
     }
 }
 
@@ -1164,44 +1208,7 @@ where
         let Some(visible) = self.visible(layout.bounds(), *viewport) else {
             return;
         };
-        let (angle, snap) = match self.base {
-            // The photograph is snapped as the image widget snaps it.
-            Base::Photo(_) => (0.0, true),
-            // The stage is placed where the crop canvas drew it, unsnapped, as the canvas's images
-            // were drawn.
-            Base::Stage(turn) => (turn.angle, false),
-        };
-        renderer.draw_primitive(
-            visible.clip,
-            PhotoPrimitive {
-                surface: self.id,
-                layers: self.layers.clone(),
-                viewport: self.viewport.clone(),
-                region_overlays: self.region_overlays.clone(),
-                // A whole frame's plan draws the photograph at Fit, a region's at a percentage zoom
-                // of the same stage; a crop stage runs none.
-                gpu: match self.base {
-                    Base::Photo(_) => {
-                        self.gpu
-                            .clone()
-                            .filter(|plan| match (&self.viewport, plan.region) {
-                                (None, None) => true,
-                                (Some(view), Some(region)) => region.stage == view.full_stage,
-                                _ => false,
-                            })
-                    }
-                    _ => None,
-                },
-                gpu_options: self.gpu_options.clone(),
-                dissolve: self.dissolving(self.clock.unwrap_or_else(Instant::now)),
-                offset: visible.offset,
-                size: visible.size,
-                clip_size: visible.clip.size(),
-                bright: visible.bright,
-                angle,
-                snap,
-            },
-        );
+        renderer.draw_primitive(visible.clip, self.primitive(visible));
     }
 
     /// Each redraw's own time is the dissolve's clock: the widget keeps it for its draw and asks

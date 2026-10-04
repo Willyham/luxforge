@@ -582,7 +582,12 @@ fn same_pixels_at(gpu: &Frame, cpu: &Frame, patches: &[[f64; 2]]) -> Result<Valu
 /// The frame `name`, once the drag `release` ended has settled: the photograph the CPU's, no drag
 /// open, and the boundary `version` the drag drew from kept on the GPU as the resident one, its
 /// slot within the budget, handed over when the drag ended.
-fn resident_kept(launch: &Checked, release: &str, name: &str, version: &Value) -> Result<Value> {
+pub(crate) fn resident_kept(
+    launch: &Checked,
+    release: &str,
+    name: &str,
+    version: &Value,
+) -> Result<Value> {
     let gpu = &launch.at(name)?.state()["surface"]["gpu"];
     let figure = |key: &str| gpu[key].as_u64().unwrap_or(0);
     let handed = named(span_events(launch, release, name)?, "gpu_boundary_resident")
@@ -1070,7 +1075,7 @@ fn idle_passed(launch: &Checked, name: &str) -> Result<Value> {
 
 /// The jump a person sees at settle: the GPU frame on screen against the CPU frame that replaced
 /// it, over the photograph, held to the pointwise limits.
-fn jump(gpu: &Frame, cpu: &Frame) -> Result<Value> {
+pub(crate) fn jump(gpu: &Frame, cpu: &Frame) -> Result<Value> {
     let rect = gpu.visible_photo()?;
     ensure(
         cpu.visible_photo()? == rect,

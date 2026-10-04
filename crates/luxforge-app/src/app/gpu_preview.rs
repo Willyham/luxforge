@@ -8,7 +8,7 @@
 //!   reply, never an API result, and a tick adds no hop for it (performance rule 12).
 //! - **The boundary job.** While the draft's boundary is not held, each tick takes the CPU path as
 //!   today and its preview job carries the boundary request, so the preview worker renders the
-//!   boundary once after that job's Fit frame. A request in flight on the active job is not asked
+//!   boundary once after that job's whole frame. A request in flight on the active job is not asked
 //!   again; one still pending rides the job that replaces it. The boundary arrives as one more
 //!   result of that job and is held here, its texels shared with the surface, which uploads them
 //!   once.
@@ -27,16 +27,23 @@
 //!   falls back to an older drafted frame and the next gesture over the stack starts from it. A
 //!   tick whose plan names another key releases it; so does another photograph.
 //! - **The resident boundary.** A committed stack's preview job carries the stack's own plan and
-//!   the boundary every gesture over it starts from (its `gpu_resident` field): at Fit, and for a
-//!   view settled at 100% or more over its region. The job asks for the boundary when no held one
-//!   has its key; it is held as the resident one when it arrives, or taken by a drag still waiting
-//!   for it, so a gesture's first tick draws on the GPU.
+//!   the boundary every gesture over it starts from (its `gpu_resident` field): at the job's
+//!   bounds, at Fit and below 100%, and for a view settled at 100% or more over its region. The
+//!   job asks for the boundary when no held one has its key; it is held as the resident one when
+//!   it arrives, or taken by a drag still waiting for it, so a gesture's first tick draws on the
+//!   GPU.
 //! - **Incremental ticks.** Every plan handed to the surface carries a serial and what changed
 //!   since a plan of the last 16 handed that the surface evaluated (`Stamps::hand`, from the core's
 //!   `GpuPlan::changes_since`): a painted tick's rectangle, so the surface evaluates each link of
 //!   the chain only where that change reaches.
 //! - **Warming.** A committed stack's preview job carries the plans its gestures are likely to draw
 //!   (its `gpu_warm` field), and the surface compiles their sequences before a drag begins.
+//! - **Below 100%.** A percentage view below 100% draws the displayed-size proxy of the whole
+//!   stage, as Fit draws the display-bounded one, so a tick asks for Fit's plan at the job's bounds
+//!   ([`GpuAsk::Fit`]), which there are the stage's displayed size: the boundary, the resident
+//!   boundary and the warm list are that proxy's, held, keyed and bounded as Fit's, and a pan, which
+//!   leaves the proxy as it is, keeps them. The surface draws the plan's whole frame in place of
+//!   the CPU proxy frame, through its placement, snapping and filter.
 //! - **At 100% and above.** A tick asks for the plan over the visible region of the output stage
 //!   at full scale ([`GpuAsk::Region`]), or over the region its drag already asked for while that
 //!   still holds the view, so a pan inside it keeps the boundary. The boundary is that region's
@@ -233,7 +240,8 @@ struct Drag {
     layer: Option<String>,
     /// The run of ticks that have named `compiling`, while the latest does.
     compiling: Option<Compiling>,
-    /// The percentage zoom the latest tick's region was asked at; `None` at Fit.
+    /// The percentage zoom the latest tick was planned at, over its region at 100% or more and at
+    /// the displayed-size proxy below; `None` at Fit.
     zoom: Option<f32>,
     /// What a region's boundary or slot would take, and the bound on a boundary or the budget it
     /// passes, when the latest tick asked for no boundary because of them ([`region_charge`]).
@@ -332,9 +340,11 @@ pub(crate) struct GpuPreviews {
 /// What a tick asks the owner to plan its GPU preview for, with its preview job.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum GpuAsk {
-    /// No GPU preview: a zoom below 100%, where the surface draws none.
+    /// Nothing planned: a view job that does not settle, or a view at 100% or more whose visible
+    /// region is not known yet, as before the photograph's stage is.
     Off,
-    /// At Fit, at the job's display bounds.
+    /// A whole frame at the job's display bounds: at Fit, and at a percentage zoom below 100%,
+    /// whose bounds are the displayed size of the whole stage, the proxy the CPU path draws there.
     Fit,
     /// At a percentage zoom of 100% or more: this region of the output stage at full scale, drawn
     /// at this many physical pixels an output pixel.
@@ -440,6 +450,16 @@ pub(super) fn unconverted_chain_charge(
         .sum()
 }
 
+/// The proxy a boundary is held for, as evidence names it: the whole proxy stage and the display
+/// bounds it was fitted to, which at a percentage zoom below 100% are the stage's displayed size;
+/// `null` for a boundary of the exact stage, at Fit or over a region.
+fn proxy_evidence(key: &BoundaryKey) -> Value {
+    key.plan().map_or(Value::Null, |plan| {
+        json!({"width": plan.width, "height": plan.height,
+            "bounds": [plan.bounds.width, plan.bounds.height]})
+    })
+}
+
 /// A surface region's rectangle of its stage, as the core's.
 fn rect_of(region: surface::GpuRegion) -> Region {
     let [x0, y0, x1, y1] = region.rect;
@@ -518,7 +538,8 @@ impl GpuPreviews {
     /// The open drag's figures, as evidence and the tests read them.
     pub(crate) fn summary(&self) -> Value {
         let resident = self.resident.as_ref().map(|resident| {
-            json!({"version": resident.held.boundary.version(), "layer": resident.held.key.layer()})
+            json!({"version": resident.held.boundary.version(), "layer": resident.held.key.layer(),
+                "proxy": proxy_evidence(&resident.held.key)})
         });
         let Some(drag) = &self.drag else {
             return json!({"drag": null, "resident": resident,
@@ -543,6 +564,7 @@ impl GpuPreviews {
                     "region": held.key.region().map(|rect| {
                         [rect.x0, rect.y0, rect.width, rect.height]
                     }),
+                    "proxy": proxy_evidence(&held.key),
                 })),
                 "zoom": drag.zoom,
                 "over_budget": drag.over_budget.map(|(requested, budget)| {
@@ -703,7 +725,9 @@ impl Editor {
                 None,
                 &mut released,
             ),
-            None => unplanned(drag, "not-fit", None, &mut released),
+            // The job was planned at no view: its bounds, or its region at 100% or more, were not
+            // known yet, so nothing could be planned for it.
+            None => unplanned(drag, "unplannable", None, &mut released),
             Some(luxforge_core::GpuPreview {
                 answer: GpuAnswer::Fallback(reason),
                 layer,
@@ -752,7 +776,7 @@ impl Editor {
                 drag.wanted = Some(request.clone());
                 drag.plan = Some((plan, revision));
                 drag.base = Some(set.base_revision);
-                drag.zoom = request.key.region().and(zoom);
+                drag.zoom = zoom;
                 drag.over_budget = over_budget;
                 match &drag.held {
                     None if over_budget.is_some() => {
@@ -1260,14 +1284,15 @@ impl Editor {
         self.gpu.warm = Some(GpuWarm::new(version, sequences));
     }
 
-    /// What the next tick asks the owner to plan its GPU preview for: at Fit, the job's bounds; at
-    /// 100% or more, the visible region of the output stage — or the region the open drag asked
-    /// for at this zoom while it still holds the view, so a pan inside it keeps its boundary.
+    /// What the next tick asks the owner to plan its GPU preview for: at Fit and below 100%, a
+    /// whole frame at the job's bounds, which below 100% are the stage's displayed size and do not
+    /// change with a pan; at 100% or more, the visible region of the output stage — or the region
+    /// the open drag asked for at this zoom while it still holds the view, so a pan inside it keeps
+    /// its boundary.
     pub(crate) fn gpu_ask(&self) -> GpuAsk {
         let value = match self.session.preview.view.zoom {
-            luxforge_core::Zoom::Fit => return GpuAsk::Fit,
             luxforge_core::Zoom::Percent { value } if value >= 100.0 => value,
-            luxforge_core::Zoom::Percent { .. } => return GpuAsk::Off,
+            luxforge_core::Zoom::Fit | luxforge_core::Zoom::Percent { .. } => return GpuAsk::Fit,
         };
         let Some(wanted) = self
             .presentation
@@ -1300,8 +1325,8 @@ impl Editor {
     }
 
     /// The open gesture's converted plan and the draft revision it draws, where the surface runs
-    /// it, with no comparison on screen: a whole frame's plan at Fit, and at 100% or more a
-    /// region's while its region holds the view.
+    /// it, with no comparison on screen: a whole frame's plan at Fit and below 100%, and at 100% or
+    /// more a region's while its region holds the view.
     pub(crate) fn gesture_gpu_plan(&self) -> Option<(&surface::GpuPlan, u64)> {
         if self.presentation.compare_after.is_some() {
             return None;
@@ -1309,6 +1334,12 @@ impl Editor {
         let (plan, revision) = self.gpu.surface_plan()?;
         let shown = match (&self.session.preview.view.zoom, plan.region) {
             (luxforge_core::Zoom::Fit, None) => true,
+            // Below 100% the view draws the photograph's frame alone, the displayed-size proxy, as
+            // Fit does, and a whole frame's plan stands in for it; an exact frame or a region the
+            // view still holds from a zoom of 100% or more is the view's own to draw.
+            (luxforge_core::Zoom::Percent { value }, None) if *value < 100.0 => {
+                self.presentation.surfaces(None).whole_frame()
+            }
             (luxforge_core::Zoom::Percent { value }, Some(region)) if *value >= 100.0 => self
                 .presentation
                 .dimensions

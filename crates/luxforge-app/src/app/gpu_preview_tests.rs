@@ -1,7 +1,8 @@
 //! A gesture drawn on the GPU, end to end against a real owner and preview worker: one boundary
 //! job at draft begin and no preview job per tick once the boundary is held and the surface has
 //! evaluated it; CPU frames until then and whenever the surface cannot draw; the boundary released
-//! at commit, cancel and a key change; and an ineligible stack's reason.
+//! at commit, cancel and a key change; at Fit, below 100% over the displayed-size proxy, and at
+//! 100% and above over the visible region.
 use super::{
     gpu_preview::SurfaceReport,
     message::{draft::DraftMessage, preview::PreviewMessage, sync::SyncMessage, view::ViewMessage},
@@ -301,23 +302,235 @@ fn gpu_preview_the_boundary_is_released_at_cancel_and_on_a_key_change() {
     finish(editor, catalog);
 }
 
-/// An ineligible drag takes the CPU path and says why: at a percentage zoom below 100% no GPU
-/// preview is planned at all.
+/// The photograph at `value`%, below 100%, once its first frame is on screen: the session's zoom
+/// on the owner, as the zoom field sets it, and as the desktop adopts it. Answers the bounds the
+/// desktop's jobs carry there, the displayed size of the whole stage.
+pub(super) fn zoomed_out(editor: &mut Editor, value: f32) -> luxforge_core::ProxyBounds {
+    deliver_until(editor, "the first frame", |editor| {
+        editor.presentation.dimensions.is_some() && !editor.presentation.queue.is_busy()
+    });
+    luxforge_testkit::client::call(
+        &editor.owner,
+        editor.client,
+        "view.set",
+        json!({"zoom": {"mode": "percent", "value": value}}),
+    )
+    .expect("the zoom");
+    editor.session.preview.view.zoom = luxforge_core::Zoom::Percent { value };
+    editor
+        .proxy_bounds()
+        .expect("a view below 100% is bounded by its displayed size")
+}
+
+/// Below 100% the view draws the displayed-size proxy of the whole stage, and a drag there is
+/// planned as at Fit, at the job's bounds, which are that displayed size: its first tick takes the
+/// CPU path and its job carries the one boundary request, for that proxy, the frame the view
+/// draws; once the boundary is held and the surface has evaluated it, every tick is drawn on the
+/// GPU from a whole frame's plan with no preview job, and the status bar says nothing of the zoom.
+/// A pan leaves the proxy as it is, and keeps the boundary. The release commits; the committed
+/// stack's job, planned at the view's bounds, keeps the drag's boundary as the resident one and
+/// plans its warm list at the same proxy, so the next drag at that zoom is drawn on the GPU from
+/// its first tick.
 #[test]
-fn gpu_preview_an_ineligible_drag_names_its_reason() {
-    let catalog = catalog("ineligible");
+fn gpu_preview_a_drag_below_100_percent_draws_its_proxy_with_no_job_per_tick() {
+    for value in [50.0, 33.0] {
+        let catalog = catalog(&format!("below-{value}"));
+        let (mut editor, asset, _) = real_photo(&catalog);
+        editor.gpu.surface = Some(SurfaceReport::default());
+        let bounds = zoomed_out(&mut editor, value);
+        let log = attach_log(&mut editor);
+        let _ = slide(&mut editor, ACTION, FIELD, 0.1);
+        let records = logged(&mut editor, &log);
+        assert_eq!(jobs(&records), 1, "{value}%");
+        let ticks = events(&records, "gpu_preview_tick");
+        assert_eq!(ticks[0]["path"], "cpu", "{value}%");
+        assert_eq!(ticks[0]["reason"], "boundary-pending", "{value}%");
+        assert_eq!(ticks[0]["boundary_requested"], true, "{value}%");
+        assert_eq!(
+            editor.workspace.status.fallback, None,
+            "{value}%: it passes"
+        );
+        deliver_until(&mut editor, "the proxy's boundary", |editor| {
+            editor.gpu.holds_boundary()
+        });
+        // The boundary is the view's proxy, the CPU frame the view draws, whole.
+        let drag = editor.gpu.summary()["drag"].clone();
+        let boundary = &drag["boundary"];
+        let (width, height) = editor
+            .presentation
+            .presenter
+            .photo()
+            .expect("the proxy frame")
+            .size();
+        assert_eq!(
+            boundary["proxy"],
+            json!({"width": width, "height": height, "bounds": [bounds.width, bounds.height]}),
+            "{value}%: the view's proxy"
+        );
+        assert_eq!(
+            (&boundary["width"], &boundary["height"], &boundary["region"]),
+            (&json!(width), &json!(height), &Value::Null),
+            "{value}%: the whole proxy stage"
+        );
+        assert_eq!(drag["zoom"], json!(value));
+        surface_ready(&mut editor);
+        let version = editor.gpu.held_version();
+        let log = attach_log(&mut editor);
+        for tick in [0.2, 0.3, 0.45] {
+            let _ = slide(&mut editor, ACTION, FIELD, tick);
+            let revision = editor.session.draft.as_ref().unwrap().draft_revision;
+            let surfaces = editor.surfaces();
+            let plan = surfaces.gpu.expect("the plan is drawn");
+            assert_eq!(plan.region, None, "{value}%: a whole frame's plan");
+            assert_eq!(Some(plan.boundary.version()), version);
+            assert_eq!(surfaces.gpu_tag, Some(revision), "tagged with its tick");
+            assert!(!surfaces.gpu_hold);
+            assert_eq!(editor.gpu_plan_fallback(), None);
+            assert_eq!(
+                editor.workspace.status.fallback, None,
+                "{value}%: nothing is said of the zoom"
+            );
+        }
+        let records = logged(&mut editor, &log);
+        assert_eq!(jobs(&records), 0, "{value}%: no preview job per tick");
+        let ticks = events(&records, "gpu_preview_tick");
+        assert_eq!(ticks.len(), 3);
+        assert!(ticks.iter().all(|tick| tick["path"] == "gpu"), "{value}%");
+        assert_eq!(editor.gpu.ticks(), (3, 1, 1), "{value}%");
+        // A pan moves the view over the proxy, which stays as it is: the next tick draws from the
+        // same boundary and asks for nothing.
+        let (x, y) = editor.view_state.local_pan;
+        let _ = editor.update(Message::View(ViewMessage::Panned(x + 120.0, y + 40.0)));
+        assert_eq!(editor.proxy_bounds(), Some(bounds), "{value}%");
+        let log = attach_log(&mut editor);
+        let _ = slide(&mut editor, ACTION, FIELD, 0.5);
+        let records = logged(&mut editor, &log);
+        assert!(
+            events(&records, "gpu_boundary_released").is_empty(),
+            "{value}%: the pan keeps the boundary"
+        );
+        assert_eq!(jobs(&records), 0, "{value}%");
+        assert_eq!(editor.gpu.ticks(), (4, 1, 1), "{value}%");
+        assert_eq!(editor.gpu.held_version(), version);
+        // The release commits, and the committed frame is the view's proxy again.
+        let log = attach_log(&mut editor);
+        let _ = let_go(&mut editor, ACTION, FIELD);
+        assert!(run_commit(&mut editor));
+        deliver_until(&mut editor, "the committed frame", |editor| {
+            !editor.gpu.has_drag() && !editor.presentation.queue.is_busy()
+        });
+        let records = logged(&mut editor, &log);
+        assert!(events(&records, "gpu_boundary_released").is_empty());
+        assert!(
+            events(&records, "gpu_boundary").is_empty(),
+            "{value}%: the committed stack's job asks for no other boundary"
+        );
+        assert!(
+            events(&records, "gpu_boundary_resident")
+                .iter()
+                .any(|event| event["why"] == "draft-ended" && event["version"] == json!(version)),
+            "{value}%: {records:?}"
+        );
+        let resident = &editor.gpu.summary()["resident"];
+        assert_eq!(resident["version"], json!(version));
+        assert_eq!(
+            resident["proxy"]["bounds"],
+            json!([bounds.width, bounds.height])
+        );
+        let surfaces = editor.surfaces();
+        assert!(
+            surfaces.gpu.is_some() && surfaces.gpu_hold,
+            "{value}%: held behind the CPU frame between drafts"
+        );
+        // The committed stack's job at the view's bounds: its resident plan is the proxy's, and so
+        // is every plan of its warm list.
+        let refreshed = crate::app::tasks::refresh(
+            &editor.owner,
+            editor.client,
+            asset.clone(),
+            crate::app::tasks::Scope::Open,
+            Some(bounds),
+        )
+        .unwrap();
+        let key = refreshed
+            .job
+            .gpu_resident
+            .as_ref()
+            .and_then(|resident| resident.boundary.as_ref())
+            .map(|request| request.key.clone())
+            .expect("the resident boundary's request");
+        let proxy = key.plan().expect("a proxy");
+        assert_eq!(proxy.bounds, bounds, "{value}%");
+        assert_eq!((proxy.width, proxy.height), (width, height), "{value}%");
+        let warm = refreshed.job.gpu_warm.expect("a warm list");
+        assert!(
+            !warm.is_empty()
+                && warm.iter().all(|plan| plan.boundary.stage
+                    == luxforge_core::Stage {
+                        width: proxy.width,
+                        height: proxy.height
+                    }),
+            "{value}%: every warmed plan addresses the view's proxy"
+        );
+        // The next drag at this zoom starts from the resident boundary.
+        surface_ready(&mut editor);
+        let log = attach_log(&mut editor);
+        let _ = slide(&mut editor, ACTION, FIELD, 0.3);
+        let records = logged(&mut editor, &log);
+        assert_eq!(jobs(&records), 0, "{value}%: the first tick needs no job");
+        assert_eq!(
+            editor.gpu.ticks(),
+            (1, 0, 0),
+            "{value}%: and asks for nothing"
+        );
+        let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+        finish(editor, catalog);
+    }
+}
+
+/// A zoom from one percentage below 100% to another changes the proxy, so the next drag asks for
+/// that proxy's boundary once, letting the other go, and then draws on the GPU.
+#[test]
+fn gpu_preview_each_view_below_100_percent_holds_its_own_proxys_boundary() {
+    let catalog = catalog("below-zooms");
     let (mut editor, _, _) = real_photo(&catalog);
-    // The session the owner answered a 50% zoom with.
-    editor.session.preview.view.zoom = luxforge_core::Zoom::Percent { value: 50.0 };
-    let log = attach_log(&mut editor);
-    let _ = slide(&mut editor, ACTION, FIELD, 0.1);
-    let records = logged(&mut editor, &log);
-    assert_eq!(jobs(&records), 1);
-    let ticks = events(&records, "gpu_preview_tick");
-    assert_eq!(ticks[0]["path"], "cpu");
-    assert_eq!(ticks[0]["reason"], "not-fit");
-    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is asked for");
-    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    editor.gpu.surface = Some(SurfaceReport::default());
+    let mut held = Vec::new();
+    for value in [50.0, 33.0] {
+        let bounds = zoomed_out(&mut editor, value);
+        let log = attach_log(&mut editor);
+        let _ = slide(&mut editor, ACTION, FIELD, 0.1);
+        deliver_until(&mut editor, "the boundary", |editor| {
+            editor.gpu.holds_boundary()
+        });
+        surface_ready(&mut editor);
+        let _ = slide(&mut editor, ACTION, FIELD, 0.2);
+        let records = logged(&mut editor, &log);
+        assert_eq!(
+            editor.gpu.ticks(),
+            (1, 1, 1),
+            "{value}%: one request, then the GPU"
+        );
+        let released: Vec<&Value> = events(&records, "gpu_boundary_released")
+            .into_iter()
+            .filter(|event| event["why"] == "key-changed")
+            .collect();
+        assert_eq!(
+            released.len(),
+            held.len().min(1),
+            "{value}%: the other view's boundary goes"
+        );
+        assert_eq!(
+            editor.gpu.summary()["drag"]["boundary"]["proxy"]["bounds"],
+            json!([bounds.width, bounds.height])
+        );
+        held.push(editor.gpu.held_version());
+        let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+        deliver_until(&mut editor, "the frame read back", |editor| {
+            !editor.gpu.has_drag() && !editor.presentation.queue.is_busy()
+        });
+    }
+    assert_ne!(held[0], held[1], "each proxy its own boundary");
     finish(editor, catalog);
 }
 

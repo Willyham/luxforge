@@ -69,10 +69,10 @@ pub(crate) struct Surfaces<'a> {
     pub(crate) mask_draft: Option<&'a crate::mask_draft::MaskDraft>,
     pub(crate) mask_map: Option<&'a crate::mask_draft::ContentMap>,
     pub(crate) draft: Option<&'a CropDraft>,
-    /// A GPU plan the photograph at Fit is drawn from in place of its frame, which stays the
-    /// surface's fallback: an open gesture's ([`crate::app::gpu_preview`]), or an evidence run's GPU
-    /// identity hook's. None is given while this client's `gpu_preview` preference is off
-    /// (`Editor::gpu_plan`).
+    /// A GPU plan the photograph is drawn from in place of its frame, which stays the surface's
+    /// fallback: a whole frame's at Fit and below 100%, a region's at 100% or more. An open
+    /// gesture's ([`crate::app::gpu_preview`]), or an evidence run's GPU identity hook's. None is
+    /// given while this client's `gpu_preview` preference is off (`Editor::gpu_plan`).
     pub(crate) gpu: Option<&'a luxforge_ui::photo_surface::GpuPlan>,
     /// Keep the plan's slot but draw the frame: the CPU frame of the plan's revision is presented.
     pub(crate) gpu_hold: bool,
@@ -85,6 +85,16 @@ pub(crate) struct Surfaces<'a> {
     /// A settle's dissolve from the GPU frame on screen to the CPU frame that replaces it
     /// ([`crate::app::gpu_settle`]).
     pub(crate) dissolve: Option<luxforge_ui::photo_surface::Dissolve>,
+}
+
+impl Surfaces<'_> {
+    /// Whether a percentage view draws the photograph as a whole frame, as Fit does: no region and
+    /// no exact frame is held for the view's own surface to draw, so the photograph's frame alone
+    /// fills the view's box. Below 100% that frame is the displayed-size proxy, which a whole
+    /// frame's GPU plan stands in for.
+    pub(crate) fn whole_frame(&self) -> bool {
+        self.region.is_none() && self.photo_content.is_none()
+    }
 }
 
 pub(crate) fn workspace<'a>(model: &'a Workspace, surfaces: Surfaces<'a>) -> Element<'a, Message> {
