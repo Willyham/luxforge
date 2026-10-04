@@ -7,6 +7,7 @@ pub(crate) mod control_tree;
 pub(crate) mod document;
 pub(crate) mod fields;
 pub(crate) mod histogram;
+pub(crate) mod information;
 pub(crate) mod masks;
 pub(crate) mod number;
 pub(crate) mod palette;
@@ -993,6 +994,61 @@ mod tests {
             Some("disabled by --disable-module")
         );
         assert!(!disabled.enabled);
+    }
+
+    #[test]
+    fn information_follows_selected_recipe_and_live_crop_instead_of_proxy_dimensions() {
+        let mut scene = Scene::new(Vec::new()).opened(Vec::new()).sized(6000, 4000);
+        assert!(information::derive(&scene.inputs()).is_none());
+        scene.session.workspace.information = true;
+        let full = information::derive(&scene.inputs()).unwrap();
+        assert_eq!(full.dimensions, Some((6000, 4000)));
+        assert!(full.rows.contains(&("Aperture", "Unavailable".into())));
+        assert!(!full.rows.iter().any(|(label, _)| *label == "Original"));
+        // A selected historical crop is the recipe's own output, independent of the preview proxy.
+        scene.document.recipe.as_mut().unwrap().output_stage = Some(luxforge_core::StageSize {
+            width: 3000,
+            height: 2000,
+        });
+        let cropped = information::derive(&scene.inputs()).unwrap();
+        assert_eq!(cropped.dimensions, Some((3000, 2000)));
+        assert!(
+            cropped
+                .rows
+                .contains(&("Original", "6000 × 4000 px".into()))
+        );
+        scene.draft = Some(CropDraft::from_layer(
+            luxforge_core::CropStage {
+                width: 6000,
+                height: 4000,
+                angle: 0.0,
+            },
+            luxforge_core::CropPayload {
+                x: 0.25,
+                y: 0.25,
+                width: 0.25,
+                height: 0.5,
+                angle: 0.0,
+            },
+            luxforge_core::LayerId::new(),
+            0,
+            &[],
+        ));
+        let draft = information::derive(&scene.inputs()).unwrap();
+        assert_eq!(draft.dimensions, Some((1500, 2000)));
+        assert_eq!(draft.rows[0], ("Crop", "1500 × 2000 px".into()));
+        scene.document.capture = Some(luxforge_core::CaptureInfo {
+            aperture: Some(2.8),
+            exposure_seconds: Some(1.0 / 250.0),
+            iso: Some(400),
+            ..Default::default()
+        });
+        let metadata = information::derive(&scene.inputs()).unwrap();
+        assert!(metadata.rows.contains(&("Aperture", "f/2.8".into())));
+        assert!(metadata.rows.contains(&("Shutter", "1/250 s".into())));
+        assert!(metadata.rows.contains(&("ISO", "400".into())));
+        scene.document.state = None;
+        assert!(information::derive(&scene.inputs()).is_none());
     }
 
     fn crop_model(workspace: &Workspace, id: &str) -> tools::CropSectionModel {

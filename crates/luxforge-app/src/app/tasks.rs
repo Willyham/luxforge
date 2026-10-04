@@ -47,6 +47,8 @@ pub(crate) use crate::state::ACTOR;
 #[derive(Clone, Debug)]
 pub(crate) struct Refresh {
     pub(crate) state: EditorState,
+    /// Original capture metadata on open; other refreshes keep the per-photo readout.
+    pub(crate) capture: Option<luxforge_core::CaptureInfo>,
     /// The newest page of history rows, read when an asset opens or changed elsewhere. `None`
     /// merges the current entry's row into the loaded page.
     pub(crate) history: Option<HistoryPage>,
@@ -673,15 +675,23 @@ pub(crate) fn refresh(
     let job = ready_preview_job(
         owner,
         proxied(
-            PreviewRequest::new(client, asset_id)
+            PreviewRequest::new(client, asset_id.clone())
                 .entry(Some(displayed))
                 .analyse()
                 .gpu(),
             proxy,
         ),
     )?;
+    let capture = if matches!(scope, Scope::Open) {
+        parse::<Option<luxforge_core::CaptureInfo>>(
+            fetch("source.inspect", json!({"asset_id":asset_id}))?["capture"].take(),
+        )?
+    } else {
+        None
+    };
     Ok(Refresh {
         state,
+        capture,
         history,
         versions,
         lineage,
@@ -2099,6 +2109,7 @@ mod tests {
                 "recipe.describe",
                 "mask.list",
                 "preview_job",
+                "source.inspect",
             ],
             "an open finds the Original on the page it read"
         );

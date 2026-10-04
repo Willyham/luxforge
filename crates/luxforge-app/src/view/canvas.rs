@@ -28,7 +28,7 @@ use iced::{
     Alignment, ContentFit, Element, Length, Padding, Point, Rectangle, Renderer, Size, Theme,
     alignment::{Horizontal, Vertical},
     mouse::{self, Cursor},
-    widget::{Column, canvas, container, mouse_area, responsive, scrollable, stack, text},
+    widget::{Column, Row, canvas, container, mouse_area, responsive, scrollable, stack, text},
 };
 use luxforge_ui::{
     ChipModel, ControlKey, ControlKeyEvent, DraftBarModel, DraftFinish, DraftSubject, Icon,
@@ -82,6 +82,9 @@ pub(crate) fn surface<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Ele
     if let Some(top) = top_chrome(model) {
         layers.push(top);
     }
+    if let Some(information) = information(model) {
+        layers.push(information);
+    }
     layers.push(strip(model));
     stack(layers)
         .width(Length::Fill)
@@ -133,18 +136,31 @@ fn strip<'a>(model: &'a CanvasModel) -> Element<'a, Message> {
             enabled: mode.enabled,
         })
         .collect();
-    let toggles = [ToggleEntry {
-        label: "Thirds".into(),
-        icon: Some(Icon::Thirds),
-        shortcut: Some("O".into()),
-        on: model.thirds,
-    }];
+    let toggles = [
+        ToggleEntry {
+            label: "Thirds".into(),
+            icon: Some(Icon::Thirds),
+            shortcut: Some("O".into()),
+            on: model.thirds,
+        },
+        ToggleEntry {
+            label: "Information".into(),
+            icon: Some(Icon::Information),
+            shortcut: Some("I".into()),
+            on: model.information_on,
+        },
+    ];
     let ids: Vec<String> = model.modes.iter().map(|mode| mode.id.clone()).collect();
     let bar = mode_strip(
         &modes,
         move |index| Message::View(ViewMessage::SetMode(ids[index].clone())),
         &toggles,
-        |_| Message::View(ViewMessage::ToggleThirds),
+        |index| {
+            Message::View(match index {
+                0 => ViewMessage::ToggleThirds,
+                _ => ViewMessage::ToggleInformation,
+            })
+        },
     );
     container(bar)
         .width(Length::Fill)
@@ -153,6 +169,47 @@ fn strip<'a>(model: &'a CanvasModel) -> Element<'a, Message> {
         .align_x(Horizontal::Center)
         .align_y(Vertical::Bottom)
         .into()
+}
+
+/// The readout floats over the photograph, independent of zoom and the side panels. Text receives
+/// no photo gestures; metadata and size are already formatted in the pure view model.
+fn information(model: &CanvasModel) -> Option<Element<'_, Message>> {
+    let information = model.information.as_ref()?;
+    let mut content = Column::new().spacing(5);
+    content = content.push(text("Information").size(12).color(theme::TEXT_BRIGHT));
+    for (label, value) in &information.rows {
+        content = content.push(
+            Row::new()
+                .spacing(10)
+                .push(text(*label).size(11).color(theme::TEXT_SECONDARY).width(80))
+                .push(
+                    text(value)
+                        .size(11)
+                        .color(theme::TEXT_PRIMARY)
+                        .width(Length::Fill),
+                ),
+        );
+    }
+    let card = container(content)
+        .padding(12)
+        .width(320)
+        .style(|_: &Theme| theme::chrome_surface(theme::CHROME_BORDER, theme::CHROME_RADIUS));
+    Some(
+        container(card)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(Padding {
+                top: if model.draft_bar.is_some() {
+                    96.0
+                } else {
+                    theme::CHROME_INSET
+                },
+                ..Padding::new(theme::CHROME_INSET)
+            })
+            .align_x(Horizontal::Left)
+            .align_y(Vertical::Top)
+            .into(),
+    )
 }
 
 /// The draft bar and the notices under it, at the top centre of the canvas: the bar first and each

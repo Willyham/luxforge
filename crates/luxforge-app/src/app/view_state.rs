@@ -120,6 +120,13 @@ impl Editor {
                     json!({"thirds": !self.session.workspace.thirds}),
                 );
             }
+            ViewMessage::ToggleInformation => {
+                return workspace_task(
+                    self.owner.clone(),
+                    self.client,
+                    json!({"information": !self.session.workspace.information}),
+                );
+            }
             ViewMessage::ToggleGpuPreview => {
                 // The same `workspace.set` an API client sends; the desktop holds no copy of the
                 // preference outside the session it adopts back.

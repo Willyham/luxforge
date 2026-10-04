@@ -3731,6 +3731,10 @@ impl Editor {
         let status = iced::event::Status::Ignored;
         match crate::app::keymap::keymap(&event, status, &self.key_context()) {
             None => self.fail_step(format!("the key {key} does nothing here")),
+            Some(Message::View(ViewMessage::ToggleInformation)) => {
+                self.await_step(Settle::Session);
+                self.dispatch(Message::Key(event, status))
+            }
             Some(Message::View(ViewMessage::SetMode(mode)))
                 if mode != self.session.workspace.mode =>
             {
@@ -3799,6 +3803,7 @@ impl Editor {
             PaletteAction::Mode(_)
             | PaletteAction::TogglePanel(_)
             | PaletteAction::ToggleThirds
+            | PaletteAction::ToggleInformation
             | PaletteAction::ToggleGpuPreview
             | PaletteAction::Fit
             | PaletteAction::HundredPercent => self.await_step(Settle::Session),
