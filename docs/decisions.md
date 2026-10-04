@@ -328,6 +328,17 @@ Decided by the owner on 2026-10-03, after a read-only audit of the workspace ([d
 - Packaging and timing build with a separate `dist` profile with LTO and one codegen unit; the daily release build is unchanged. Deferred the same day until the timing runs other plans have outstanding are recorded, since they and every recorded baseline build `release`.
 - Not adopted: DCT-scaled JPEG decode for proxies, parallel restart-marker JPEG export, cropping masked sensor margins, `target-cpu=apple-m4` and `panic = "abort"`.
 
+## Settings and feature flags
+
+Decided by the owner on 2026-10-04, asking for a feature-flag system with a UI ([design](design/settings-and-flags.md)):
+
+- Flags live in a **Settings surface with an Experiments tab**, rather than a beaker popover in the title bar.
+- The Settings entry is **always visible**, in every build.
+- **Developer mode becomes the first flag**; `--developer` stays, forcing it on for a launch.
+- **A flag never changes how a photo renders or exports.** An experiment that changes pixels is a module the recipe records.
+
+The gear button and Cmd+,, launch flags applying at the next launch, storing only explicit choices, `luxforge-json` reading no flag at launch and the two developer-only proof flags are proposals with recorded defaults in the [design](design/settings-and-flags.md#decisions).
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/product-decisions.json).

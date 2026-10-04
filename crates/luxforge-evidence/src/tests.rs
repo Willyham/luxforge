@@ -244,6 +244,9 @@ fn api_draft_view_workspace_preview_palette_and_hover_round_trip() {
         {"gallery":{"page":null}},
         {"tools_scroll":1.0},
         {"agent":{"method":"edit.transform","params":{"transform":"rotate-right"}}},
+        {"settings":{"open":true}},
+        {"flag":{"id":"proof.number","value":75}},
+        {"flag":{"id":"proof.choice","value":null}},
     ]));
     assert_eq!(steps[1], Step::api("history.undo"));
     assert_eq!(steps[2], Step::Draft(DraftStep::Start));
@@ -268,6 +271,9 @@ fn api_draft_view_workspace_preview_palette_and_hover_round_trip() {
         steps[34],
         Step::agent("edit.transform", json!({"transform":"rotate-right"}))
     );
+    assert_eq!(steps[35], Step::settings(true));
+    assert_eq!(steps[36], Step::flag("proof.number", Some(json!(75))));
+    assert_eq!(steps[37], Step::flag("proof.choice", None));
     // An integer where a number is expected is the same number.
     assert_eq!(
         parse(r#"[{"draft":{"rect":[10,20,300,200]}},{"view":{"zoom":100}}]"#).unwrap(),
@@ -381,6 +387,15 @@ fn api_draft_view_workspace_preview_palette_and_hover_round_trip() {
             "unknown field `module`",
         ),
         (json!({"performance":true}), "invalid type: boolean"),
+        (json!({"settings":{}}), "missing field `open`"),
+        (
+            json!({"flag":{"id":"proof.number"}}),
+            "missing field `value`",
+        ),
+        (
+            json!({"flag":{"id":" ","value":true}}),
+            "flag id takes a non-empty string",
+        ),
         (json!({"gallery":{}}), "missing field `page`"),
         (json!({"gallery":{"page":-1}}), "expected usize"),
         (json!({"tools_scroll":1.5}), "fraction from 0 to 1"),

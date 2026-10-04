@@ -150,6 +150,8 @@ pub(crate) struct SyncResult {
     /// The listing and the event sequence it was read at.
     pub(crate) presets: Option<(Vec<PresetSummary>, u64)>,
     pub(crate) capabilities: bool,
+    /// A `flags.set` changed the person's flags, which an open Settings sheet reads again.
+    pub(crate) flags: bool,
     /// This desktop's own requests whose events the poll read and skipped, because the answer to
     /// each had already read its change back.
     pub(crate) own: Vec<String>,
@@ -165,6 +167,7 @@ impl SyncResult {
             refresh: Some(Box::new(refresh)),
             presets: None,
             capabilities: false,
+            flags: false,
             own: Vec::new(),
         }
     }
@@ -1649,6 +1652,12 @@ pub(crate) fn sync_now(
             .events
             .iter()
             .any(|event| capability_event(&event.method));
+    // A flag change touches no asset, so it alone reads only the flags, and only while shown.
+    let flags = events.gap
+        || events
+            .events
+            .iter()
+            .any(|event| event.method.starts_with("flags."));
     let asset = events.gap
         || events.events.iter().any(|event| {
             event.asset_id.as_ref() == Some(&asset_id)
@@ -1675,6 +1684,7 @@ pub(crate) fn sync_now(
         refresh,
         presets,
         capabilities,
+        flags,
         own: read.into_iter().map(|event| event.request_id).collect(),
     })
 }
@@ -2405,6 +2415,7 @@ mod tests {
             refresh: None,
             presets: None,
             capabilities: false,
+            flags: false,
             own: Vec::new(),
         };
         let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(stale))));
