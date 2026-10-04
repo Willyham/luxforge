@@ -475,6 +475,8 @@ pub(super) fn take<'a>(scratch: &mut &'a mut [f32], len: usize) -> Result<&'a mu
     Ok(front)
 }
 
+/// The Oklab of `input` over the held rectangle into `buffer`, planar L, a and b. The held rectangle
+/// lies inside the stage, so each row of the input is read as slices with no clamp.
 pub(super) fn lab(
     input: &Planes<'_>,
     buffer: &mut [f32],
@@ -483,14 +485,18 @@ pub(super) fn lab(
     cancel: &Cancel,
 ) -> Result<(), Error> {
     cancel.check()?;
-    let mut planes = PlanesMut::new(geometry.stage, geometry.held, buffer)?;
+    let held = geometry.held;
+    let columns = input_columns(input, held.x0, held.x1());
+    let mut planes = PlanesMut::new(geometry.stage, held, buffer)?;
     planes.for_rows(parallelism, |y, lightness, a, b| {
         if cancel.is_cancelled() {
             return;
         }
-        for column in 0..geometry.held.width as usize {
-            let x = geometry.held.x0 + column as u32;
-            let lab = oklab::to_oklab(input.sample(i64::from(x), i64::from(y)));
+        let n = lightness.len();
+        let rgb = input_row(input, i64::from(y), &columns, n);
+        let (a, b) = (&mut a[..n], &mut b[..n]);
+        for column in 0..n {
+            let lab = oklab::to_oklab([rgb[0][column], rgb[1][column], rgb[2][column]]);
             [lightness[column], a[column], b[column]] = [lab.l, lab.a, lab.b];
         }
     });
