@@ -200,12 +200,6 @@ pub(crate) enum Cell {
         /// At a percentage zoom, the shape a restoration or spatial layer is drawn in: `gpu`,
         /// every unit, or `cpu`, the units its values need, when only that one fits the budget.
         shape: Option<&'static str>,
-        /// The codes the stage draws and the CPU frame's, three bytes a pixel, row by row, at
-        /// `stage`.
-        gpu: Vec<u8>,
-        cpu: Vec<u8>,
-        /// What the figures cannot say, such as a mask that selects nothing on the source.
-        notes: Vec<String>,
     },
     Gap(String),
 }
@@ -405,26 +399,18 @@ impl Drop for Opened {
     }
 }
 
-/// What a cell writes and how it treats what it cannot judge.
+/// What a cell writes.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CellOptions<'a> {
     /// The name the cell's frames are written under as PNGs in the output directory, or `None`
     /// to write none.
     pub(crate) frames: Option<&'a str>,
-    /// Whether a cell whose first mask selects nothing on its source is measured, with a note,
-    /// rather than named a gap: its picture is still a picture, though it says nothing about the
-    /// mask's coverage.
-    pub(crate) empty_mask: bool,
 }
 
 impl<'a> CellOptions<'a> {
-    /// The program qualification's cells: frames written under `name`, and a mask that selects
-    /// nothing a gap.
+    /// The program qualification's cells: frames written under `name`.
     pub(crate) fn qualifying(name: &'a str) -> Self {
-        Self {
-            frames: Some(name),
-            empty_mask: false,
-        }
+        Self { frames: Some(name) }
     }
 }
 
@@ -694,16 +680,12 @@ pub(crate) fn proxy_cell(
         // A mask that selects nothing on this source measures nothing about its coverage: the
         // program qualification names such a cell a gap, not a pass. Its first operation's mask is
         // read back over the boundary it reads.
-        let mut notes = Vec::new();
         if let Some(GpuStep::Masked(masked)) = converted.steps.first()
             && selects_nothing(qualifier, &converted.boundary, masked)?
         {
-            if !options.empty_mask {
-                return Ok(Cell::Gap(
-                    "the mask selects nothing on this source".to_owned(),
-                ));
-            }
-            notes.push(EMPTY_MASK.to_owned());
+            return Ok(Cell::Gap(
+                "the mask selects nothing on this source".to_owned(),
+            ));
         }
         let charged = qualifier
             .charged_bytes(&converted)
@@ -762,9 +744,6 @@ pub(crate) fn proxy_cell(
             program,
             charged,
             shape: None,
-            gpu,
-            cpu: reference,
-            notes,
         })
     }
 }
@@ -965,16 +944,7 @@ pub(crate) fn region_cell_in(
         &context,
     )
     .map_err(|error| error.to_string())?;
-    let drawn = draw_region(
-        qualifier,
-        &evaluation,
-        &exact,
-        opened.raw,
-        rect,
-        zoom,
-        options,
-        true,
-    )?;
+    let drawn = draw_region(qualifier, &evaluation, &exact, opened.raw, rect, zoom)?;
     // A stack whose region the worker cannot cut, an estimate behind an earlier spatial layer,
     // is drawn from the exact whole frame at a percentage zoom: its GPU frame is measured
     // against that frame's region, the frame the view settles to. Its region plan reads the
@@ -1029,7 +999,7 @@ pub(crate) fn region_cell_in(
     let frame = |bytes| Rgb8::new(width, height, bytes);
     let rect_px = [0, 0, width, height];
     let statistics = preview_error::compare(frame(&drawn.gpu)?, frame(&reference)?, rect_px)?;
-    let program = drawn.program.as_deref().ok_or("the program's own output")?;
+    let program = drawn.program.as_slice();
     let program = preview_error::compare(frame(program)?, frame(&reference)?, rect_px)?;
     Ok(Cell::Measured {
         stage: (width, height),
@@ -1040,9 +1010,6 @@ pub(crate) fn region_cell_in(
         program,
         charged: drawn.charged,
         shape: drawn.shape,
-        gpu: drawn.gpu,
-        cpu: reference,
-        notes: drawn.notes,
     })
 }
 
@@ -1060,17 +1027,12 @@ pub(crate) enum RegionDraw {
 pub(crate) struct DrawnRegion {
     /// The codes the stage draws over the region, three bytes a pixel, row by row.
     pub(crate) gpu: Vec<u8>,
-    /// The plan's `f32` output through the reference quantizer, when it was asked for.
-    pub(crate) program: Option<Vec<u8>>,
+    /// The plan's `f32` output through the reference quantizer.
+    pub(crate) program: Vec<u8>,
     /// What the slot charges the GPU-preview budget, and the shape a restoration or spatial
     /// layer is drawn in.
     pub(crate) charged: u64,
     pub(crate) shape: Option<&'static str>,
-    pub(crate) notes: Vec<String>,
-    /// The harness's own clock: rendering the region's boundary on the CPU, and drawing and
-    /// reading back its codes on the device. Not timing measurements.
-    pub(crate) boundary_time: std::time::Duration,
-    pub(crate) draw_time: std::time::Duration,
 }
 
 /// The plan a drag from `evaluation`'s first pixel layer draws over `rect` of its output stage at
@@ -1079,9 +1041,8 @@ pub(crate) struct DrawnRegion {
 /// global estimate its light link's from the whole stage ([`lit`]). A RAW photograph's (`linear`)
 /// plan is the linear path's over an `f32` boundary. A
 /// restoration or spatial layer's drag draws its GPU shape, every unit, while that slot fits the
-/// budget, and its CPU shape when only that one does (`GpuPreview::cpu_shape`). `program` also reads
-/// the plan's `f32` output back.
-#[allow(clippy::too_many_arguments)]
+/// budget, and its CPU shape when only that one does (`GpuPreview::cpu_shape`). The plan's `f32`
+/// output is read back too.
 pub(crate) fn draw_region(
     qualifier: &Qualifier,
     evaluation: &luxforge_core::Evaluation,
@@ -1089,8 +1050,6 @@ pub(crate) fn draw_region(
     linear: bool,
     rect: luxforge_core::Region,
     zoom: f32,
-    options: CellOptions<'_>,
-    program: bool,
 ) -> Result<RegionDraw, String> {
     let (recipe, registry) = (evaluation.recipe(), evaluation.registry());
     // The boundary: the input of the first layer that processes pixels, whatever runs before
@@ -1102,7 +1061,6 @@ pub(crate) fn draw_region(
     } else {
         luxforge_core::BoundaryFormat::Half
     };
-    let started = std::time::Instant::now();
     let frame = match luxforge_core::qualification::region_boundary(
         exact,
         boundary_layer,
@@ -1112,7 +1070,6 @@ pub(crate) fn draw_region(
         Ok(frame) => frame,
         Err(error) => return Ok(RegionDraw::NoBoundary(error)),
     };
-    let boundary_time = started.elapsed();
     // The plan from that layer at the exact stage, over the whole stage the layer receives.
     let request = GpuPlanRequest::exact(boundary_layer, frame.stage).qualifying();
     let request = if linear { request.linear() } else { request };
@@ -1170,16 +1127,12 @@ pub(crate) fn draw_region(
                 )));
             }
         };
-        let mut notes = Vec::new();
         if let Some(GpuStep::Masked(masked)) = converted.steps.first()
             && selects_nothing(qualifier, &converted.boundary, masked)?
         {
-            if !options.empty_mask {
-                return Ok(RegionDraw::Gap(
-                    "the mask selects nothing on this source".to_owned(),
-                ));
-            }
-            notes.push(EMPTY_MASK.to_owned());
+            return Ok(RegionDraw::Gap(
+                "the mask selects nothing on this source".to_owned(),
+            ));
         }
         let charged = qualifier
             .charged_bytes(&converted)
@@ -1201,40 +1154,31 @@ pub(crate) fn draw_region(
             };
             continue;
         }
-        chosen = Some((converted, charged, shape, notes));
+        chosen = Some((converted, charged, shape));
         break;
     }
-    let Some((converted, charged, shape, notes)) = chosen else {
+    let Some((converted, charged, shape)) = chosen else {
         return Ok(RegionDraw::Gap(format!(
             "{over} of the {budget} B GPU-preview budget, so the drag takes the CPU path"
         )));
     };
     lit(qualifier, evaluation.source(), &converted)?;
-    let started = std::time::Instant::now();
     let gpu: Vec<u8> = qualifier
         .evaluate_codes(&converted)?
         .iter()
         .flat_map(|code| [code[0], code[1], code[2]])
         .collect();
-    let draw_time = started.elapsed();
-    let program = if program {
-        Some(codes(
-            qualifier
-                .evaluate(&converted)?
-                .iter()
-                .map(|texel| [texel[0], texel[1], texel[2]]),
-        ))
-    } else {
-        None
-    };
+    let program = codes(
+        qualifier
+            .evaluate(&converted)?
+            .iter()
+            .map(|texel| [texel[0], texel[1], texel[2]]),
+    );
     Ok(RegionDraw::Drawn(DrawnRegion {
         gpu,
         program,
         charged,
         shape,
-        notes,
-        boundary_time,
-        draw_time,
     }))
 }
 

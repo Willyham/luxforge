@@ -69,20 +69,12 @@ pub(crate) mod gpu_qualification;
 mod gpu_rest_tests;
 #[cfg(test)]
 mod gpu_source_tests;
-// The GPU tile worker, built and not yet wired: no catalog owner or export lane is handed it.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the catalog owner and the export lane are handed the tile worker once stage 4 \
-                  is wired"
-    )
-)]
 pub(crate) mod gpu_tiles;
 #[cfg(test)]
 mod gpu_tiles_tests;
 #[cfg(test)]
 mod gpu_tiles_worker_tests;
+pub(crate) mod gpu_warm;
 #[cfg(test)]
 mod gpu_window_tests;
 // The one conversion Fit drags will hand the photo surface its GPU plan through; the desktop does
@@ -915,11 +907,15 @@ impl Editor {
             dimensions: self.presentation.dimensions,
             photo: self.presentation.has_picture(),
             clients: self.live_server.as_ref().map(LocalServer::connected),
-            rendering: self.presentation.queue.is_busy() || self.surface_photo_updating(),
+            // The picture at rest's tiles still to land are rendering too.
+            rendering: self.presentation.queue.is_busy()
+                || self.surface_photo_updating()
+                || self.gpu_rest_landing(),
             render: self.activity.render,
             gpu_frame_us: self.gpu_frame_us(),
             gpu_at_rest: self.gpu_at_rest(),
             cpu_reason: self.gpu_cpu_reason(),
+            rest_compiling: self.gpu_rest_compiling(),
             render_bar: self.activity.render_bar,
             render_error: self.presentation.render_error.as_ref(),
             analysis: self.presentation.analysis.as_ref(),

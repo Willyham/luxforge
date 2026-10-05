@@ -1210,10 +1210,16 @@ fn owner_loop(
     service.set_auto_collapse(preferences.auto_collapse_history());
     service.set_auto_lens_profile(preferences.auto_lens_profile());
     let renderer = host.launch_renderer();
+    // The host's GPU provider of the tile contract, or the reference renderer's service, which
+    // starts nothing until it is asked: every export streams through it.
+    let tiles = host
+        .tiles()
+        .unwrap_or_else(|| Arc::new(crate::tiles::ReferenceTiles::new()));
     let mut owner = Owner {
         service,
         host,
         renderer,
+        tiles,
         jobs,
         #[cfg(test)]
         export_hold: None,
@@ -1494,6 +1500,9 @@ pub(super) struct Owner {
     /// Which renderer draws the host's picture, which every client's session carries
     /// ([`OwnerHandle::report_renderer`]).
     renderer: Renderer,
+    /// The tile service the export lane streams each export through: the host's GPU provider, or
+    /// the reference renderer's service for a host without one ([`HostConfig::tiles`]).
+    pub(super) tiles: Arc<dyn crate::tiles::TileService>,
     /// Every job this owner runs, of every kind, and the lanes that run capability work and export.
     pub(super) jobs: Jobs,
     /// What every export accepted from now on calls as it begins each phase.
@@ -2053,9 +2062,9 @@ impl Owner {
             // from the source, which every stack has.
             if let (true, None, Some(view), None) = (request.gpu, draft, view, request.layer_count)
             {
-                job.gpu_warm = crate::render::gpu::plan_warm(&job.evaluation, view)
-                    .ok()
-                    .map(Into::into);
+                if let Ok(warm) = crate::render::gpu::plan_warm_list(&job.evaluation, view) {
+                    job.gpu_warm = Some(std::sync::Arc::new(warm));
+                }
                 job.gpu_rest = crate::render::gpu::plan_rest(&job.evaluation, view)
                     .ok()
                     .map(Box::new);

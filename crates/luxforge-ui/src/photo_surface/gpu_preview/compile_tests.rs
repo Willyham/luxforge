@@ -142,6 +142,87 @@ fn a_warmed_sequence_draws_on_its_first_frame() {
     assert_eq!(diagnostics(&pipeline, ID).gpu_preview_compiles, 1);
 }
 
+/// One frame that draws a plan and hands a warm list: the compile thread takes the frame's own
+/// sequence first — the picture on screen, as a picture at rest's view plan is — then the warm
+/// list's open stack's part, then the rest, and the warm-up it records runs from the list until
+/// the queue drains, its open part done before its end. A second list with nothing new to compile
+/// is a warm-up that ends at once.
+#[test]
+fn the_picture_on_screen_compiles_first_then_the_open_stack_then_the_rest() {
+    let test = "the_picture_on_screen_compiles_first_then_the_open_stack_then_the_rest";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let (boundary, codes) = boundary_with_codes(8);
+    let picture = plan_of(&boundary, named("order_picture"));
+    let list: Vec<Vec<GpuStep>> = ["order_open_1", "order_open_2", "order_rest"]
+        .into_iter()
+        .map(|entry| plan_of(&boundary, named(entry)).steps)
+        .collect();
+    let warm = GpuWarm::new(1, half(&list)).with_open(2);
+    let drawn = with_options(
+        primitive(ID, Some(picture.clone())),
+        GpuOptions {
+            warm: Some(warm),
+            ..GpuOptions::default()
+        },
+    );
+    assert_cpu_frame(&paint_prepared(&device, &queue, &mut pipeline, &drawn));
+    assert_eq!(
+        diagnostics(&pipeline, ID).gpu_fallback,
+        Some(GpuFallback::Compiling),
+        "the reference frame until the picture's programs compile"
+    );
+    let figures = Arc::clone(&pipeline.figures);
+    wait_until("the warm-up to end", || {
+        figures
+            .preview
+            .warm_up()
+            .is_some_and(|warm_up| !warm_up.running())
+    });
+    assert_eq!(
+        pipeline.gpu.pipelines.taken(),
+        [
+            "order_picture",
+            "order_open_1",
+            "order_open_2",
+            "order_rest"
+        ],
+        "the picture, then the open stack, then the rest"
+    );
+    let warm_up = diagnostics(&pipeline, ID)
+        .gpu_warm_up
+        .expect("the warm-up's figures");
+    assert_eq!(
+        (warm_up.period, warm_up.version, warm_up.sequences),
+        (1, 1, 3)
+    );
+    assert_eq!(warm_up.open_sequences, 2);
+    let (open, all) = (
+        warm_up.open_us.expect("the open part"),
+        warm_up.us.expect("the end"),
+    );
+    assert!(open <= all, "{open} µs before {all} µs");
+    assert_eq!(diagnostics(&pipeline, ID).gpu_preview_compile_pending, 0);
+    // The picture's GPU frame replaces the reference frame at the next draw.
+    assert_codes(
+        &paint_prepared(&device, &queue, &mut pipeline, &drawn),
+        &codes,
+    );
+    assert_eq!(
+        diagnostics(&pipeline, ID).drawn_path,
+        Some(DrawingPath::Gpu)
+    );
+    // A list naming only compiled sequences begins and ends a warm-up at once.
+    pipeline.warm_gpu(&device, Some(&GpuWarm::new(2, half(&list))));
+    let again = figures.preview.warm_up().expect("a second warm-up");
+    assert_eq!((again.period, again.version, again.sequences), (2, 2, 0));
+    assert!(!again.running());
+    assert_eq!(again.open_us, Some(0));
+    eprintln!("{test}: the open stack's part in {open} µs, the whole warm-up in {all} µs");
+}
+
 /// Holding draws the CPU frame while the slot, and its boundary, stay: the next frame without
 /// the hold draws the GPU output again with no upload and no new allocation.
 #[test]

@@ -2,6 +2,7 @@
 //! catalog ownership and the Iced application, and the shutdown that releases them.
 use super::{
     Editor,
+    gpu_tiles::GpuTiles,
     message::{Message, view::ViewMessage},
     tasks,
 };
@@ -39,8 +40,10 @@ pub(crate) struct Boot {
 /// resolved paths, and the secret store and network transport it uses. An evidence run keeps all
 /// of it inside its evidence directory with an in-memory store, so it never touches the person's
 /// configuration or login keychain. Nothing is created here: the host creates a directory on its
-/// first write, and the transport builds its TLS configuration on its first request.
-pub(super) fn host_config(config: &Config) -> HostConfig {
+/// first write, and the transport builds its TLS configuration on its first request. `tiles` is
+/// the launch's GPU tile worker, which the owner's export lane streams every export through and
+/// which starts nothing until the first export asks it.
+pub(super) fn host_config(config: &Config, tiles: Arc<GpuTiles>) -> HostConfig {
     let secrets: Arc<dyn SecretStore> = match &config.evidence {
         Some(_) => Arc::new(MemorySecretStore::new()),
         None => platform_secret_store(),
@@ -56,6 +59,7 @@ pub(super) fn host_config(config: &Config) -> HostConfig {
         // What the launch knows of its renderer before the window opens, which every client's
         // session reports until the photo surface has checked its GPU stage.
         renderer: super::renderer::launched(config.no_gpu_render),
+        tiles: Some(tiles),
         ..HostConfig::unconfigured()
     }
 }
@@ -76,13 +80,19 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
         .path
         .clone();
     let registry = Arc::new(ModuleRegistry::assemble(&config.registry_options())?);
-    let (owner, join) = OwnerHandle::start_with_host(&catalog, registry, host_config(&config))
-        .map_err(|error| match error.kind {
-            ErrorKind::Conflict => format!(
-                "another Luxforge instance owns the catalog {}; close it or pass --catalog",
-                catalog.display()
-            ),
-            _ => format!("cannot open catalog {}: {error}", catalog.display()),
+    // The launch's one GPU tile worker, refused with the GPU stage: the owner's export lane
+    // streams through it, and the renderer report names it the window's adapter once known.
+    let tiles = super::gpu_tiles::launch(config.no_gpu_render);
+    let host = host_config(&config, tiles);
+    let (owner, join) =
+        OwnerHandle::start_with_host(&catalog, registry, host).map_err(|error| {
+            match error.kind {
+                ErrorKind::Conflict => format!(
+                    "another Luxforge instance owns the catalog {}; close it or pass --catalog",
+                    catalog.display()
+                ),
+                _ => format!("cannot open catalog {}: {error}", catalog.display()),
+            }
         })?;
     let session_file = catalog.with_extension("live-session.json");
     // Owning the catalog proves any same-catalog session file from an earlier process is stale.

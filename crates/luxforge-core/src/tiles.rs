@@ -20,8 +20,10 @@
 //! served by [`ReferenceTiles`], the reference renderer's service, whose reads ([`ReferenceReads`])
 //! are also what a GPU provider answers with when it cannot render a read.
 //!
-//! No owner submits a call here yet: samples, queries and pixel reads are still answered on the
-//! catalog owner and by its point worker, until stage 4 wires this contract in their place.
+//! The catalog owner holds the host's service, or [`ReferenceTiles`] when the host gives none, and
+//! its export lane asks it for each export's bands (`docs/design/export.md`). No owner submits a
+//! call here yet: samples, queries and pixel reads are still answered on the catalog owner and by
+//! its point worker, until stage 4 wires this contract in their place.
 //!
 //! # Bounds
 //!
@@ -34,10 +36,10 @@
 //! [performance rule 5]: ../../../docs/engineering/performance-rules.md#rules
 
 use crate::{
-    Cancel, ClientId, Error, Evaluation, GpuFallback, Region, RendererRecord, Stage,
-    editor::pixels::PixelAnswer,
+    Cancel, ClientId, Error, Evaluation, GpuFallback, Region, RendererReason, RendererRecord,
+    Stage, editor::pixels::PixelAnswer,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
@@ -91,7 +93,8 @@ pub trait TileService: Send + Sync {
     /// Render `evaluation`'s output stage for an export, under `cancel`, as bands in order, which
     /// the export lane encodes as they arrive; or say why the reference renders it instead, and
     /// the lane renders its own reference frame. The provider renders on its own thread, so this
-    /// never waits for the render.
+    /// never waits for the render. A provider that cannot go on drawing a stream ends it naming
+    /// why ([`BandSender::fall_back`]), and the lane renders the export again with the reference.
     fn stream(&self, evaluation: &Evaluation, cancel: &Cancel) -> Result<BandStream, TileFallback>;
 
     /// Stop: cancel the call being answered, drop the waiting calls unanswered, and return once
@@ -143,9 +146,31 @@ impl TileFallback {
     }
 }
 
-/// Why a provider cannot render on its GPU at all.
+/// The reason an export's result names for the reference rendering it, in the session's shape: the
+/// provider's own unavailability by its reason, its budget as `tiles-budget`, and a plan the GPU
+/// cannot draw by the plan's or the stage's code.
+impl From<&TileFallback> for RendererReason {
+    fn from(fallback: &TileFallback) -> Self {
+        match fallback {
+            TileFallback::Unavailable(reason) => match reason {
+                TileUnavailable::Pending => Self::SurfacePending,
+                TileUnavailable::NoAdapter => Self::NoAdapter,
+                TileUnavailable::Refused => Self::Refused,
+                TileUnavailable::DeviceLost => Self::DeviceLost,
+                TileUnavailable::AdapterMismatch => Self::AdapterMismatch,
+            },
+            TileFallback::Budget { .. } => Self::Budget,
+            TileFallback::Plan(_) | TileFallback::Stage(_) => Self::Plan(fallback.code()),
+        }
+    }
+}
+
+/// Why a provider cannot render on its GPU at all, or not yet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TileUnavailable {
+    /// The provider has not been told which adapter the picture is drawn with yet, so it opens
+    /// nothing until it is: the desktop names it once its photo surface has checked its GPU stage.
+    Pending,
     /// No adapter on this host can run the provider's programs.
     NoAdapter,
     /// The launch refused the GPU (`--no-gpu-render`).
@@ -161,6 +186,7 @@ impl TileUnavailable {
     /// A stable kebab-case name for the reason.
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Pending => "surface-pending",
             Self::NoAdapter => "no-adapter",
             Self::Refused => "refused",
             Self::DeviceLost => "device-lost",
@@ -463,14 +489,17 @@ pub struct Band {
 /// An export's output stage as its provider renders it: bands received in order, top to bottom,
 /// at most [`EXPORT_BANDS_IN_FLIGHT`] of them waiting for the encoder, with the renderer that drew
 /// them. Dropping it abandons the stream: its provider's next send fails, and it renders nothing
-/// more for it.
+/// more for it. A stream its provider could not go on drawing says why ([`Self::fallback`]).
 pub struct BandStream {
-    bands: Receiver<Result<Band, Error>>,
+    bands: Receiver<Result<Band, Ended>>,
     width: u32,
     height: u32,
     /// The first row of the band expected next; the stage's height once the stream has ended.
     next: u32,
     answered: Answered,
+    /// Why the provider stopped drawing the stream, once it ended for a reason the reference
+    /// renders the export for instead.
+    fallback: Option<TileFallback>,
     /// Called each time the stream hands a band to its encoder, which leaves room for one more,
     /// and once when it is dropped ([`Self::waking`]).
     wake: Option<Box<dyn Fn() + Send>>,
@@ -480,8 +509,15 @@ pub struct BandStream {
 
 /// A provider's end of a [`BandStream`].
 pub struct BandSender {
-    sender: SyncSender<Result<Band, Error>>,
+    sender: SyncSender<Result<Band, Ended>>,
     abandoned: Arc<AtomicBool>,
+}
+
+/// What ends a stream before its last row: the error its encoder reads, and, when the provider
+/// could not go on drawing it, why, for the reference to render the export instead.
+struct Ended {
+    error: Error,
+    fallback: Option<TileFallback>,
 }
 
 impl BandStream {
@@ -520,6 +556,7 @@ impl BandStream {
             height,
             next: 0,
             answered,
+            fallback: None,
             wake,
             abandoned: Arc::clone(&abandoned),
         };
@@ -529,6 +566,13 @@ impl BandStream {
     /// The renderer that drew the bands, and why the reference did.
     pub fn answered(&self) -> &Answered {
         &self.answered
+    }
+
+    /// Why the provider stopped drawing the stream, once it has ended for a reason the reference
+    /// renders the export for instead ([`BandSender::fall_back`]): `None` while it goes on, once
+    /// it is whole, and after a cancellation or an error of its own.
+    pub fn fallback(&self) -> Option<&TileFallback> {
+        self.fallback.as_ref()
     }
 }
 
@@ -553,7 +597,10 @@ impl Iterator for BandStream {
         }
         let band = match received {
             Ok(Ok(band)) => band,
-            Ok(Err(error)) => return Some(Err(error)),
+            Ok(Err(Ended { error, fallback })) => {
+                self.fallback = fallback;
+                return Some(Err(error));
+            }
             Err(_) => {
                 return Some(Err(Error::internal(format!(
                     "the tile stream ended at row {row} of {}",
@@ -588,7 +635,26 @@ impl BandSender {
     /// [`EXPORT_BANDS_IN_FLIGHT`] bands wait in it. `false` once the stream has been dropped: its
     /// export was abandoned, and the provider renders nothing more for it.
     pub fn send(&self, band: Result<Band, Error>) -> bool {
+        let band = band.map_err(|error| Ended {
+            error,
+            fallback: None,
+        });
         self.sender.send(band).is_ok()
+    }
+
+    /// End the stream because the GPU cannot go on drawing it, for `fallback`, as [`Self::send`]
+    /// ends it with an error: its encoder reads an error naming the reason in its data
+    /// (`fallback`, the reason's code; `unavailable` for a provider that cannot draw; `requested`
+    /// and `budget` for a stage no side's tiles fit; `detail` for the plan's own reason), and the
+    /// stream says why ([`BandStream::fallback`]), so the export lane renders the export again
+    /// with the reference, naming it: GPU and reference bands are never mixed in one export.
+    pub fn fall_back(&self, fallback: TileFallback) -> bool {
+        let error = ended(&fallback);
+        let ended = Ended {
+            error,
+            fallback: Some(fallback),
+        };
+        self.sender.send(Err(ended)).is_ok()
     }
 
     /// Whether the stream has been dropped: its export was abandoned, and the provider renders
@@ -605,4 +671,24 @@ impl Drop for BandStream {
             wake();
         }
     }
+}
+
+/// The error that ends a stream the GPU cannot go on drawing, naming why in its data
+/// ([`BandSender::fall_back`]).
+fn ended(fallback: &TileFallback) -> Error {
+    let mut data = json!({ "fallback": fallback.code() });
+    match fallback {
+        TileFallback::Unavailable(reason) => data["unavailable"] = json!(reason.as_str()),
+        TileFallback::Budget { requested, budget } => {
+            data["requested"] = json!(requested);
+            data["budget"] = json!(budget);
+        }
+        TileFallback::Plan(reason) => data["detail"] = json!(reason.to_string()),
+        TileFallback::Stage(_) => {}
+    }
+    Error::render(format!(
+        "the GPU stopped drawing the export's tiles: {}",
+        fallback.code()
+    ))
+    .with_data(data)
 }

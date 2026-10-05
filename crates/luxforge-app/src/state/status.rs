@@ -73,6 +73,10 @@ enum Say {
     Layer { unnamed: &'static str },
     /// Once the ticks that named it have done so for [`COMPILING_AFTER`].
     Delayed,
+    /// At rest, at once, for as long as the photograph is the reference renderer's frame because
+    /// the GPU's picture at rest is compiling its programs ([`rest_compiling_notice`]); never from
+    /// a gesture's tick.
+    Rest,
 }
 
 /// One class of reason a gesture, or every frame, is drawn on the CPU path: the codes
@@ -91,8 +95,9 @@ struct Class {
 /// (`boundary-pending`, `source-uploading`, `source-missing` and `surface-pending`, which is also
 /// the session's renderer before the photo surface has checked its GPU stage), the preference
 /// turned off (`preference-off`), and the two the table does not name (`unchanged` and
-/// `unplannable`).
-const CLASSES: [Class; 5] = [
+/// `unplannable`). The last is the picture at rest's while its programs compile, said at rest
+/// alone.
+const CLASSES: [Class; 6] = [
     Class {
         codes: &["no-adapter", "device-lost"],
         phrase: "Reference renderer",
@@ -144,6 +149,13 @@ const CLASSES: [Class; 5] = [
                   the CPU until it is ready.",
         say: Say::Delayed,
     },
+    Class {
+        codes: &["compiling"],
+        phrase: "Preparing GPU render",
+        tooltip: "The GPU renderer is compiling its programs for this photo, so the reference \
+                  renderer draws it on the CPU until they are ready.",
+        say: Say::Rest,
+    },
 ];
 
 /// Why a gesture's latest tick took the CPU path while the GPU preview is on, as the desktop's
@@ -179,7 +191,7 @@ impl CpuReason<'_> {
             .iter()
             .find(|class| class.codes.contains(&self.code))?;
         let (phrase, tooltip) = match (class.say, self.layer) {
-            (Say::Renderer, _) => return None,
+            (Say::Renderer | Say::Rest, _) => return None,
             (Say::Lasting, _) => (class.phrase.to_owned(), class.tooltip),
             (Say::Layer { .. }, Some(layer)) => {
                 (format!("{}: {layer}", class.phrase), class.tooltip)
@@ -217,6 +229,20 @@ pub(crate) fn renderer_notice(renderer: Renderer) -> Option<Fallback> {
         phrase: class.phrase.to_owned(),
         tooltip: class.tooltip.to_owned(),
     })
+}
+
+/// What the notice says while the photograph at rest is the reference renderer's frame because the
+/// GPU's picture at rest, its view plan or its tiles, is still compiling its programs: said at
+/// once, since nothing at rest decides it later, and gone with the GPU frame that replaces it.
+pub(crate) fn rest_compiling_notice() -> Fallback {
+    let class = CLASSES
+        .iter()
+        .find(|class| matches!(class.say, Say::Rest))
+        .expect("the picture at rest's class");
+    Fallback {
+        phrase: class.phrase.to_owned(),
+        tooltip: class.tooltip.to_owned(),
+    }
 }
 
 /// A time as the render slot gives it. A frame faster than half a millisecond says so rather than
@@ -475,6 +501,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatusBarModel {
         } else {
             renderer_notice(inputs.session.renderer)
                 .or_else(|| inputs.cpu_reason.as_ref().and_then(CpuReason::notice))
+                .or_else(|| inputs.rest_compiling.then(rest_compiling_notice))
         },
         // The display's own scale: the interface size is a choice of its own, not the display's.
         view: view_text(

@@ -661,6 +661,28 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         at_open["source"]["version"].is_u64() && resident.is_u64(),
         format!("The photograph opened with no source or resident boundary on the GPU: {at_open}"),
     )?;
+    // The launch's first warm-up, the photograph's: its open stack's programs, then the rest of the
+    // program set, compiled in the background and recorded once with how long each part took.
+    let warm_ups = named(&launch.events, "gpu_warm_up");
+    let first_warm_up = warm_ups.first().map(|event| &event["detail"]);
+    checks.note(
+        opened,
+        "the launch's first GPU warm-up, recorded once it ended",
+        json!({"gpu_warm_up": first_warm_up, "warm_ups": warm_ups.len()}),
+    );
+    ensure(
+        first_warm_up.is_some_and(|warm_up| {
+            warm_up["first"] == true
+                && warm_up["ms"].as_f64().is_some_and(|all| {
+                    warm_up["open_ms"]
+                        .as_f64()
+                        .is_some_and(|open| open <= all + 0.001)
+                })
+        }),
+        format!(
+            "The launch's first GPU warm-up was not recorded with its figures: {first_warm_up:?}"
+        ),
+    )?;
 
     // The drag's first tick, from the resident boundary: the drag derives none. It is drawn on the
     // GPU once the surface has evaluated its plan, and until then on the CPU, naming a reason that

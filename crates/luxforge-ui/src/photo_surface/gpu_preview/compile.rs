@@ -17,7 +17,13 @@
 //!   the thread sleeps on its channel, which each queued sequence signals: no timer and no poll, so
 //!   an idle editor stays asleep.
 //! - **Warming.** The desktop names the sequences a gesture is likely to need when the stack
-//!   changes ([`super::super::PhotoSurface::gpu_warm`]), so they compile before a drag begins.
+//!   changes ([`super::super::PhotoSurface::gpu_warm`]), so they compile before a drag begins: the
+//!   open stack's first, then the rest of the program set. A frame asks for its own sequences
+//!   before it hands a warm list, so the picture on screen compiles ahead of both. A new list lets
+//!   go of the warmed sequences an older one left waiting and queues its own in its order.
+//! - **The warm-up.** From a warm list handed to an idle thread until its queue drains, with when
+//!   the open stack's part had compiled ([`WarmUpFigures`]): the figures the desktop records, and
+//!   one wake of the surface at its start and one at its end, so the desktop sees both.
 //! - **Bounds.** At most [`PIPELINE_CACHE`] compiled sequences are kept, ready and failed ones
 //!   together, the least recently asked for or warmed evicted first when a compile ends, and at
 //!   most as many wait in the queue; a warmed sequence that finds the queue full is not queued, and
@@ -69,19 +75,37 @@ pub struct GpuWarm {
     version: u64,
     sequences: Arc<[(Vec<GpuStep>, BoundaryFormat)]>,
     lights: Arc<[Vec<GpuStep>]>,
+    /// How many of the sequences, from the first, are the open stack's.
+    open: usize,
 }
 
 impl GpuWarm {
+    /// A warm list whose every sequence is the open stack's.
     pub fn new(version: u64, sequences: Vec<(Vec<GpuStep>, BoundaryFormat)>) -> Self {
+        let open = sequences.len();
         Self {
             version,
             sequences: sequences.into(),
             lights: Arc::from([]),
+            open,
         }
     }
 
+    /// The list with only its first `open` sequences the open stack's: the rest of the program
+    /// set follows them.
+    pub fn with_open(mut self, open: usize) -> Self {
+        self.open = open.min(self.sequences.len());
+        self
+    }
+
+    /// How many of the sequences, from the first, are the open stack's.
+    pub fn open(&self) -> usize {
+        self.open
+    }
+
     /// The warm list with the steps of the light links its plans compute beside it, each warmed as
-    /// the sequence a light link compiles ([`super::light::GpuLight::steps`]).
+    /// the sequence a light link compiles ([`super::light::GpuLight::steps`]), with the open
+    /// stack's sequences.
     pub fn with_lights(self, lights: Vec<Vec<GpuStep>>) -> Self {
         Self {
             lights: lights.into(),
@@ -170,12 +194,60 @@ struct Entry {
     asked: bool,
 }
 
+/// The warm-up the compile thread is running, or ran last ([`WarmUpFigures`]).
+struct WarmUp {
+    figures: WarmUpFigures,
+    /// When it began: a warm list handed to an idle thread.
+    started: Instant,
+    /// When the newest warm list was handed.
+    handed: Instant,
+    /// The sequence whose compile ends the newest list's open part: the last one waiting once its
+    /// open part was queued.
+    open_after: Option<u64>,
+}
+
+/// One warm-up of the compile thread: from a warm list handed to an idle thread until its queue
+/// has drained, every sequence a frame asked for meanwhile included.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WarmUpFigures {
+    /// Which warm-up of the pipeline's, from 1: the launch's first is the first photograph's.
+    pub period: u64,
+    /// The newest warm list's version it compiles.
+    pub version: u64,
+    /// The sequences its lists queued, and of them the newest list's open stack's.
+    pub sequences: u64,
+    pub open_sequences: u64,
+    /// From the newest list's handing until its open stack's part, and everything a frame had
+    /// asked for before it, had compiled; `None` until then.
+    pub open_us: Option<u64>,
+    /// From its start until the queue drained; `None` while it runs.
+    pub us: Option<u64>,
+}
+
+impl WarmUpFigures {
+    /// Whether the compile thread is still compiling it.
+    pub fn running(&self) -> bool {
+        self.us.is_none()
+    }
+}
+
+fn micros(elapsed: std::time::Duration) -> u64 {
+    u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX)
+}
+
 /// What the UI thread and the compile thread share: every known sequence, and the queue of those
 /// waiting, in compile order.
 #[derive(Default)]
 struct Shared {
     entries: Vec<Entry>,
     queue: VecDeque<u64>,
+    /// The sequence on the compile thread.
+    compiling: Option<u64>,
+    /// The warm-up running, or the last one.
+    warm_up: Option<WarmUp>,
+    /// Tests only: each sequence's first entry, in the order the thread took them.
+    #[cfg(test)]
+    taken: Vec<String>,
     clock: u64,
     /// How many warmed sequences a frame's has taken the place of in a full queue: dropped
     /// unqueued, never compiled.
@@ -248,15 +320,109 @@ impl Shared {
             if let Some(entry) = entry
                 && let State::Queued(steps) = std::mem::replace(&mut entry.state, State::Compiling)
             {
+                #[cfg(test)]
+                self.taken
+                    .extend(entry.signature.first().map(|step| step.1.clone()));
+                self.compiling = Some(id);
                 return Some((id, steps, entry.format));
             }
         }
         None
     }
 
+    /// Let go of every warmed sequence still waiting, which a newer warm list queues again in its
+    /// own order if it names it: how many.
+    fn unqueue_warmed(&mut self) -> u64 {
+        let warmed: Vec<u64> = self
+            .queue
+            .iter()
+            .copied()
+            .filter(|id| {
+                self.entries
+                    .iter()
+                    .any(|entry| entry.id == *id && !entry.asked)
+            })
+            .collect();
+        self.queue.retain(|id| !warmed.contains(id));
+        self.entries.retain(|entry| !warmed.contains(&entry.id));
+        warmed.len() as u64
+    }
+
+    /// Warm list `version` handed now, having queued `sequences`, of them `open_sequences` the
+    /// open stack's, the last of everything then waiting `open_after`: begin a warm-up, or carry on
+    /// the one running. Its figures, and whether it began.
+    fn warm_up(
+        &mut self,
+        version: u64,
+        sequences: u64,
+        open_sequences: u64,
+        open_after: Option<u64>,
+    ) -> (WarmUpFigures, bool) {
+        let now = Instant::now();
+        let busy = self.compiling.is_some() || !self.queue.is_empty();
+        let running = self
+            .warm_up
+            .as_ref()
+            .is_some_and(|warm_up| warm_up.figures.running());
+        let period = self
+            .warm_up
+            .as_ref()
+            .map_or(1, |warm_up| warm_up.figures.period + 1);
+        let warm_up = match self.warm_up.as_mut().filter(|_| running) {
+            Some(warm_up) => {
+                warm_up.figures.sequences += sequences;
+                warm_up
+            }
+            None => self.warm_up.insert(WarmUp {
+                figures: WarmUpFigures {
+                    period,
+                    sequences,
+                    ..WarmUpFigures::default()
+                },
+                started: now,
+                handed: now,
+                open_after: None,
+            }),
+        };
+        warm_up.handed = now;
+        warm_up.open_after = open_after;
+        warm_up.figures.version = version;
+        warm_up.figures.open_sequences = open_sequences;
+        warm_up.figures.open_us = open_after.is_none().then_some(0);
+        if !busy {
+            warm_up.figures.us = Some(micros(now - warm_up.started));
+        }
+        (warm_up.figures, !running)
+    }
+
     /// Keep the compile of `id`, evicting the least recently asked for or warmed compiled sequence
-    /// when the cache is full; `true` when a frame waits for it.
-    fn finish(&mut self, id: u64, state: State) -> bool {
+    /// when the cache is full: whether a frame waits for it, and the running warm-up's figures
+    /// when this compile changed them — its open part done, or its queue drained.
+    fn finish(&mut self, id: u64, state: State) -> (bool, Option<WarmUpFigures>) {
+        if self.compiling == Some(id) {
+            self.compiling = None;
+        }
+        let drained = self.queue.is_empty();
+        let warm_up = self
+            .warm_up
+            .as_mut()
+            .filter(|warm_up| warm_up.figures.running())
+            .and_then(|warm_up| {
+                let open = warm_up.open_after == Some(id) || drained;
+                let changed = open && warm_up.figures.open_us.is_none();
+                if changed {
+                    warm_up.figures.open_us = Some(micros(warm_up.handed.elapsed()));
+                }
+                if drained {
+                    warm_up.figures.us = Some(micros(warm_up.started.elapsed()));
+                }
+                (changed || drained).then_some(warm_up.figures)
+            });
+        (self.keep(id, state), warm_up)
+    }
+
+    /// [`Self::finish`]'s keeping of the compile of `id`; `true` when a frame waits for it.
+    fn keep(&mut self, id: u64, state: State) -> bool {
         let compiled = self
             .entries
             .iter()
@@ -326,11 +492,15 @@ impl Worker {
                         Err(error) => State::Failed(Arc::from(error)),
                     };
                     let elapsed = started.elapsed();
-                    let asked = lock_shared(&thread).finish(id, state);
+                    let (asked, warm_up) = lock_shared(&thread).finish(id, state);
                     // Counted once its pipeline is kept, so nothing waits on a sequence the
                     // figures call done.
                     figures.finished(elapsed);
-                    if asked {
+                    let ended = warm_up.is_some_and(|warm_up| !warm_up.running());
+                    if let Some(warm_up) = warm_up {
+                        figures.warm_up(warm_up);
+                    }
+                    if asked || ended {
                         wake_surface();
                     }
                 }
@@ -428,21 +598,30 @@ impl Pipelines {
         Err(GpuFallback::Compiling)
     }
 
-    /// Queue every sequence of `sequences` this pipeline does not know, after any a frame asked
-    /// for, while the queue has room, so a gesture that needs one later finds it ready. One it
-    /// knows is wanted again: it counts as used now, so a compile that ends evicts what an older
-    /// warm list named before it.
+    /// Queue every sequence of `sequences`, warm list `version`'s, this pipeline does not know,
+    /// after any a frame asked for, in the list's order — its first `open` the open stack's —
+    /// while the queue has room, so a gesture that needs one later finds it ready. The warmed
+    /// sequences an older list left waiting are let go first, so this list's are taken next. One
+    /// it knows is wanted again: it counts as used now, so a compile that ends evicts what an
+    /// older warm list named before it. Begins a warm-up, or carries on the one running, and wakes
+    /// the surface when one begins or ends here.
     pub(super) fn warm(
         &mut self,
         device: &wgpu::Device,
         support: &Arc<Support>,
         sequences: &[Sequence],
+        (version, open): (u64, usize),
         figures: &Figures,
     ) {
         let worker = self.worker(device, support, figures);
         let mut shared = worker.lock();
-        let mut queued = 0;
-        for (steps, format) in sequences {
+        let dropped = shared.unqueue_warmed();
+        let (mut queued, mut open_queued, mut open_after) = (0, None, None);
+        for (index, (steps, format)) in sequences.iter().enumerate() {
+            if index == open {
+                open_after = shared.queue.back().copied().or(shared.compiling);
+                open_queued = Some(queued);
+            }
             if steps.is_empty() || shared.warmed_again(steps, *format) {
                 continue;
             }
@@ -451,13 +630,31 @@ impl Pipelines {
             }
             queued += 1;
         }
+        let open_queued = open_queued.unwrap_or_else(|| {
+            open_after = shared.queue.back().copied().or(shared.compiling);
+            queued
+        });
+        let (warm_up, began) = shared.warm_up(version, queued, open_queued, open_after);
         // Counted under the lock, before the thread can take one and count its end.
+        figures.compile.leave(dropped);
         figures.compile.queued(queued);
+        figures.compile.warm_up(warm_up);
         drop(shared);
         figures.compiles.fetch_add(queued, Ordering::Relaxed);
         if queued > 0 {
             worker.notify();
         }
+        if began || !warm_up.running() {
+            wake_surface();
+        }
+    }
+
+    /// The sequences' first entries in the order the compile thread took them.
+    #[cfg(test)]
+    pub(super) fn taken(&self) -> Vec<String> {
+        self.worker
+            .as_ref()
+            .map_or_else(Vec::new, |worker| worker.lock().taken.clone())
     }
 
     /// The known entry for `steps` writing `format`, read under the lock.
@@ -603,6 +800,58 @@ mod tests {
         assert!(kept(named[0]), "warmed again, so kept");
         assert!(!kept(named[1]), "the oldest no list named since");
         assert!(kept(named[PIPELINE_CACHE]));
+    }
+
+    /// A new warm list lets go of the warmed sequences an older one left waiting, so its own are
+    /// taken next, and keeps every sequence a frame asked for.
+    #[test]
+    fn a_new_warm_list_lets_go_of_an_older_lists_waiting_sequences() {
+        let mut shared = Shared::default();
+        let format = super::super::OUTPUT_FORMAT;
+        for entry in ["older_1", "older_2"] {
+            assert!(shared.queue(&steps(entry), format, false));
+        }
+        assert!(shared.queue(&steps("asked"), format, true));
+        assert_eq!(shared.unqueue_warmed(), 2);
+        assert_eq!(order(&shared), ["asked"]);
+        assert_eq!(
+            shared.entries.len(),
+            1,
+            "forgotten, so a newer list queues them again"
+        );
+        assert!(shared.queue(&steps("older_2"), format, false));
+        assert_eq!(order(&shared), ["asked", "older_2"]);
+    }
+
+    /// A warm-up runs from its list until the queue drains, a frame's sequence taken before it
+    /// included: its open part is done when the last sequence waiting as that part was queued
+    /// compiles, and it ends when nothing waits. A list handed to an idle thread with nothing to
+    /// compile is a warm-up of its own that ends at once.
+    #[test]
+    fn a_warm_up_runs_from_its_list_until_the_queue_drains() {
+        let mut shared = Shared::default();
+        let format = super::super::OUTPUT_FORMAT;
+        assert!(shared.queue(&steps("picture"), format, true));
+        assert!(shared.queue(&steps("open"), format, false));
+        let open = shared.queue.back().copied();
+        assert!(shared.queue(&steps("rest"), format, false));
+        let (figures, began) = shared.warm_up(7, 2, 1, open);
+        assert!(began && figures.running());
+        assert_eq!((figures.period, figures.version), (1, 7));
+        let finish = |shared: &mut Shared| {
+            let (id, ..) = shared.next().expect("queued");
+            shared.finish(id, State::Failed(Arc::from("kept"))).1
+        };
+        assert_eq!(finish(&mut shared), None, "the picture: neither part done");
+        let opened = finish(&mut shared).expect("the open part done");
+        assert!(opened.open_us.is_some() && opened.running());
+        let ended = finish(&mut shared).expect("the queue drained");
+        assert!(!ended.running());
+        assert_eq!(ended.open_us, opened.open_us);
+        let (idle, began) = shared.warm_up(8, 0, 0, None);
+        assert!(began, "a warm-up of its own");
+        assert_eq!((idle.period, idle.open_us), (2, Some(0)));
+        assert!(!idle.running(), "ended at once");
     }
 
     /// A full queue of requested sequences rejects another request and keeps both bounds intact.

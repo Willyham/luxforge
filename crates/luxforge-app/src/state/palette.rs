@@ -9,6 +9,10 @@ use crate::state::{
 use luxforge_core::{MASK_MODE, POINTER_MODE};
 use serde_json::{Map, Value};
 
+/// The palette's entry for the reference renderer's export, which the title bar's Export menu does
+/// not offer.
+pub(crate) const REFERENCE_EXPORT: &str = "Export reference render\u{2026}";
+
 /// The command palette's own state: whether it is open, the query typed and the entry selected.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Palette {
@@ -86,9 +90,11 @@ pub(crate) enum PaletteAction {
     ReturnCurrent,
     Restore,
     Compare,
-    /// Export the displayed entry as a JPEG, choosing where in the save dialog.
+    /// Export the displayed entry as a JPEG, choosing where in the save dialog; through the
+    /// reference renderer, `export.jpeg`'s `reference: true`, when `reference` asks for it.
     Export {
         keep_metadata: bool,
+        reference: bool,
     },
     /// Open the Settings sheet at a tab.
     Settings(crate::state::settings::SettingsTab),
@@ -228,10 +234,21 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
                     "export.jpeg".to_owned(),
                     PaletteAction::Export {
                         keep_metadata: *keep_metadata,
+                        reference: false,
                     },
                 )
             }),
     );
+    // The reference renderer's export, which only the palette offers: `export.jpeg` with
+    // `reference: true`, as an API client asks for it.
+    entries.push((
+        REFERENCE_EXPORT.to_owned(),
+        "export.jpeg".to_owned(),
+        PaletteAction::Export {
+            keep_metadata: false,
+            reference: true,
+        },
+    ));
     entries.extend([
         (
             "Compare Before / After".to_owned(),

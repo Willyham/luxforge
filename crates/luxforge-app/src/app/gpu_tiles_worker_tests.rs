@@ -18,6 +18,12 @@
 //! - **Streams.** A stream's bands, stitched, are the whole stage the surface draws, bit for bit;
 //!   two streams, on one device and on two, are byte-identical; a cancelled stream stops between
 //!   tiles and lets go of what it held.
+//! - **Exports.** Through a catalog owner's export lane, as the desktop's launch hands it the
+//!   worker: a GPU export, decoded, is within its class's display limit of the reference export
+//!   decoded, over every pixel, on generated photographs and the corpus's Presence fixture; two
+//!   GPU exports, through one device and through two, are the same bytes; the original is never
+//!   changed; and a launch that refused the GPU, or has not named its window's adapter yet, exports
+//!   the reference's file naming why.
 //!
 //! A GPU test with no adapter prints that it was skipped and asserts nothing: it is not GPU
 //! evidence.
@@ -26,12 +32,14 @@ use super::{
     gpu_tiles::GpuTiles,
     gpu_tiles_tests::{families, gpu_source, host_adapter},
     gpu_window_tests::{HEIGHT, WIDTH, source},
-    testing::{entry, fresh_stack},
+    tasks::call as owner_call,
+    testing::{entry, fresh_stack, import_and_adopt},
 };
 use luxforge_core::{
     AssetId, BASIC_EFFECT, BoundaryFormat, Cancel, ClientId, DETAIL_EFFECT, EffectStage, Error,
-    Evaluation, GpuFallback, Layer, ModuleRegistry, OwnerHandle, PRESENCE_EFFECT, PreviewSource,
-    Recipe, Region, RenderContext, RenderOptions, SnapshotId, TilePlan, plan_read, render,
+    Evaluation, GpuFallback, HostConfig, Layer, ModuleRegistry, OwnerHandle, PRESENCE_EFFECT,
+    PreviewSource, Recipe, Region, RenderContext, RenderOptions, SnapshotId, TilePlan, plan_read,
+    render,
     tiles::{
         Answered, BandStream, EXPORT_BANDS_IN_FLIGHT, MaskInputMode, ReadAnswer, ReadPixels,
         ReadStage, ReadValues, ReferenceTiles, TileCall, TileFallback, TileService, TileStatus,
@@ -1171,4 +1179,345 @@ fn a_disconnect_drops_a_clients_waiting_reads() {
         "cancelled"
     );
     assert_eq!(third_answer.recv_timeout(HANG).unwrap().unwrap(), json!(3));
+}
+
+/// The side the exports of these tests are streamed at: several bands of several tiles each.
+const EXPORT_SIDE: u32 = 256;
+
+/// A catalog owner whose export lane streams through `tiles`, as the desktop's launch starts it,
+/// over a photograph written as a JPEG into a directory of its own and imported.
+struct Exports {
+    owner: OwnerHandle,
+    join: Option<std::thread::JoinHandle<()>>,
+    client: ClientId,
+    dir: std::path::PathBuf,
+    original: std::path::PathBuf,
+    asset: AssetId,
+}
+
+impl Exports {
+    fn new(name: &str, tiles: Arc<GpuTiles>, photograph: &image::RgbImage) -> Self {
+        let dir = paths::temp_dir(&format!("gpu-export-{name}"));
+        let original = dir.join("original.jpg");
+        let file = std::io::BufWriter::new(std::fs::File::create(&original).unwrap());
+        image::codecs::jpeg::JpegEncoder::new_with_quality(file, 95)
+            .encode_image(photograph)
+            .expect("the photograph is written");
+        let (owner, join) = OwnerHandle::start_with_host(
+            &dir.join("catalog.sqlite"),
+            Arc::new(ModuleRegistry::builtin()),
+            HostConfig {
+                tiles: Some(tiles),
+                ..HostConfig::unconfigured()
+            },
+        )
+        .expect("a catalog owner");
+        let client = owner.register();
+        let asset = import_and_adopt(&owner, client, &original);
+        Self {
+            owner,
+            join: Some(join),
+            client,
+            dir,
+            original,
+            asset,
+        }
+    }
+
+    /// Commit `method` with `params` as the asset's next entry.
+    fn edit(&self, method: &str, mut params: Value) {
+        let (state, _) = owner_call(
+            &self.owner,
+            self.client,
+            "asset.state",
+            json!({"asset_id": self.asset}),
+        )
+        .expect("the asset's state");
+        let revision = state["revision"].clone();
+        params["asset_id"] = json!(self.asset);
+        params["mutation"] = json!({
+            "expected_revision": revision,
+            "request_id": format!("{method}-{revision}"),
+            "actor": "test",
+        });
+        owner_call(&self.owner, self.client, method, params)
+            .unwrap_or_else(|error| panic!("{method}: {error}"));
+    }
+
+    /// Export the current entry to `name`, through the reference renderer when `reference` asks
+    /// for it, and wait for its job to end ready: its result, and the file's bytes.
+    fn export(&self, name: &str, reference: bool) -> (Value, Vec<u8>) {
+        let destination = self.dir.join(name);
+        let mut params = json!({
+            "asset_id": self.asset,
+            "destination": destination,
+            "mutation": {"request_id": format!("export-{name}"), "actor": "test"},
+        });
+        if reference {
+            params["reference"] = json!(true);
+        }
+        let (queued, _) = owner_call(&self.owner, self.client, "export.jpeg", params)
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+        let job = queued["job_id"].clone();
+        let read = luxforge_testbase::wait_for("an export to end", || {
+            let (read, _) =
+                owner_call(&self.owner, self.client, "job.read", json!({"job_id": job}))
+                    .expect("the job");
+            (!matches!(read["status"].as_str(), Some("queued" | "running"))).then_some(read)
+        });
+        assert_eq!(read["status"], "ready", "{name}: {read}");
+        let bytes = std::fs::read(&destination).expect("the written file");
+        (read["result"].clone(), bytes)
+    }
+
+    /// The original's bytes as they are now.
+    fn original(&self) -> Vec<u8> {
+        std::fs::read(&self.original).expect("the original")
+    }
+}
+
+impl Drop for Exports {
+    fn drop(&mut self) {
+        self.owner.stop();
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// A worker on this host's adapter `adapter` streaming at [`EXPORT_SIDE`].
+fn exporter(adapter: &(String, String)) -> Arc<GpuTiles> {
+    let worker = Arc::new(GpuTiles::new(Some(adapter.clone()), false));
+    worker.draw_streams_at(vec![EXPORT_SIDE]);
+    worker
+}
+
+/// A generated photograph of `width` × `height`: smooth gradients in every channel, a hard
+/// diagonal edge, fine sinusoidal texture and a flat grey patch, so every kind of step of a stack
+/// has something to act on.
+fn generated(width: u32, height: u32) -> image::RgbImage {
+    image::RgbImage::from_fn(width, height, |x, y| {
+        if x < width / 6 && y > height * 2 / 3 {
+            return image::Rgb([128, 128, 128]);
+        }
+        let (u, v) = (x as f32 / width as f32, y as f32 / height as f32);
+        let texture = 18.0 * ((x as f32 * 0.9).sin() * (y as f32 * 0.7).cos());
+        let edge = if u > 0.6 + (v - 0.5) * 0.4 { 40.0 } else { 0.0 };
+        let code = |base: f32| (base + texture + edge).clamp(0.0, 255.0).round() as u8;
+        image::Rgb([
+            code(30.0 + 190.0 * u),
+            code(40.0 + 170.0 * v),
+            code(200.0 - 150.0 * u * v),
+        ])
+    })
+}
+
+/// The corpus's Presence fixture as its generator draws it (`cargo xtask generate-fixtures`): a
+/// smooth gradient, a hard step edge, a low-amplitude checker and a flat grey, one in each
+/// quadrant.
+fn presence_fixture() -> image::RgbImage {
+    let (width, height) = (1440u32, 960u32);
+    let (hw, hh) = (width / 2, height / 2);
+    image::RgbImage::from_fn(width, height, |x, y| {
+        let level = match (x < hw, y < hh) {
+            (true, true) => (40.0 + x as f32 / hw as f32 * (255.0 - 40.0)).round() as u8,
+            (false, true) if x - hw < hw / 2 => 70,
+            (false, true) => 210,
+            (true, false) if (x / 4 + (y - hh) / 4).is_multiple_of(2) => 118,
+            (true, false) => 138,
+            (false, false) => 128,
+        };
+        image::Rgb([level; 3])
+    })
+}
+
+/// `candidate` against `reference`, two JPEG files each decoded independently, by the preview
+/// error statistics over every pixel.
+fn decoded_against(
+    candidate: &[u8],
+    reference: &[u8],
+) -> luxforge_reference::preview_error::Statistics {
+    let decode = |bytes: &[u8]| {
+        image::load_from_memory_with_format(bytes, image::ImageFormat::Jpeg)
+            .expect("an export decodes")
+            .to_rgb8()
+    };
+    let (candidate, reference) = (decode(candidate), decode(reference));
+    assert_eq!(candidate.dimensions(), reference.dimensions());
+    let (width, height) = reference.dimensions();
+    let rgb = luxforge_reference::preview_error::Rgb8::new;
+    luxforge_reference::preview_error::compare(
+        rgb(width, height, candidate.as_raw()).unwrap(),
+        rgb(width, height, reference.as_raw()).unwrap(),
+        [0, 0, width, height],
+    )
+    .expect("the statistics")
+}
+
+/// A GPU export through the export lane, its tiles streamed by the worker on this host's adapter,
+/// is within its class's display limit of the reference export, both files decoded independently
+/// and compared over every pixel: a colour stack by the pointwise limits and Presence by the
+/// spatial limits, on a generated photograph and on the corpus's Presence fixture. A Dehaze light
+/// no render has stored yet is answered by the reference, naming `region-estimate`, and is the
+/// reference's own file; once a render of the stack has stored it, as a settled frame does, the
+/// GPU exports the stack.
+#[test]
+fn a_gpu_export_is_within_the_display_limit_of_the_reference_export() {
+    let test = "a_gpu_export_is_within_the_display_limit_of_the_reference_export";
+    let Some(adapter) = host_adapter(test) else {
+        return;
+    };
+    let gpu = json!({"record": "gpu", "reason": null});
+    for (name, photograph) in [
+        ("generated", generated(1200, 800)),
+        ("presence", presence_fixture()),
+    ] {
+        let exports = Exports::new(name, exporter(&adapter), &photograph);
+        let original = exports.original();
+        exports.edit(
+            "edit.set-basic",
+            json!({"exposure": 0.6, "contrast": 25, "saturation": 15}),
+        );
+        let (asked, reference) = exports.export("basic-reference.jpg", true);
+        assert_eq!(
+            asked["renderer"],
+            json!({"record": "reference", "reason": "requested"})
+        );
+        let (drawn, file) = exports.export("basic-gpu.jpg", false);
+        assert_eq!(drawn["renderer"], gpu, "{name}: {drawn}");
+        assert_eq!(
+            (drawn["width"].clone(), drawn["height"].clone()),
+            (asked["width"].clone(), asked["height"].clone())
+        );
+        let statistics = decoded_against(&file, &reference);
+        eprintln!("{test}: {name}, Basic, against the reference export: {statistics:?}");
+        let verdict = luxforge_reference::preview_error::verdict(&statistics, Class::Pointwise);
+        assert!(verdict.passed(), "{name}, Basic: {statistics:?}");
+
+        exports.edit(
+            "edit.set-presence",
+            json!({"texture": 30, "clarity": 25, "dehaze": 20}),
+        );
+        let (unheld, unheld_file) = exports.export("presence-unheld.jpg", false);
+        assert_eq!(
+            unheld["renderer"],
+            json!({"record": "reference", "reason": "region-estimate"}),
+            "{name}: a light no render has stored"
+        );
+        let (_, reference) = exports.export("presence-reference.jpg", true);
+        assert!(unheld_file == reference, "{name}: the reference's own file");
+        let (drawn, file) = exports.export("presence-gpu.jpg", false);
+        assert_eq!(drawn["renderer"], gpu, "{name}: {drawn}");
+        let statistics = decoded_against(&file, &reference);
+        eprintln!("{test}: {name}, Presence, against the reference export: {statistics:?}");
+        let verdict = luxforge_reference::preview_error::verdict(&statistics, Class::Spatial);
+        assert!(verdict.passed(), "{name}, Presence: {statistics:?}");
+        assert!(exports.original() == original, "{name}: the original");
+    }
+}
+
+/// Two GPU exports of one stack through the export lane are the same bytes: twice through one
+/// worker, and once through a second worker's own device on the same adapter, under another
+/// owner, over the same photograph.
+#[test]
+fn two_gpu_exports_are_byte_identical() {
+    let test = "two_gpu_exports_are_byte_identical";
+    let Some(adapter) = host_adapter(test) else {
+        return;
+    };
+    let photograph = generated(1200, 800);
+    let (one, two) = (
+        Exports::new("identical-one", exporter(&adapter), &photograph),
+        Exports::new("identical-two", exporter(&adapter), &photograph),
+    );
+    for exports in [&one, &two] {
+        exports.edit("edit.set-basic", json!({"exposure": 0.4, "contrast": 20}));
+        exports.edit(
+            "edit.set-presence",
+            json!({"texture": 30, "clarity": 25, "dehaze": 20}),
+        );
+        // The light a settled frame would store.
+        exports.export("stored.jpg", true);
+    }
+    let gpu = json!({"record": "gpu", "reason": null});
+    let (first, file) = one.export("first.jpg", false);
+    let (again, repeat) = one.export("again.jpg", false);
+    let (other, elsewhere) = two.export("other.jpg", false);
+    for result in [&first, &again, &other] {
+        assert_eq!(result["renderer"], gpu, "{result}");
+    }
+    assert!(file == repeat, "twice through one device");
+    assert!(file == elsewhere, "through a second device");
+    eprintln!("{test}: {} bytes, the same three times", file.len());
+}
+
+/// No export changes the original: GPU exports with and without metadata, the reference export,
+/// and an export to a name already taken, which is refused and replaces nothing. The original's
+/// folder holds nothing new but the exports.
+#[test]
+fn a_gpu_export_leaves_the_original_unchanged() {
+    let test = "a_gpu_export_leaves_the_original_unchanged";
+    let Some(adapter) = host_adapter(test) else {
+        return;
+    };
+    let exports = Exports::new("original", exporter(&adapter), &generated(900, 600));
+    let original = exports.original();
+    exports.edit("edit.set-basic", json!({"exposure": -0.3, "contrast": 15}));
+    let (stripped, file) = exports.export("stripped.jpg", false);
+    assert_eq!(stripped["renderer"]["record"], "gpu", "{stripped}");
+    let kept = json!({
+        "asset_id": exports.asset, "destination": exports.dir.join("kept.jpg"),
+        "keep_metadata": true, "mutation": {"request_id": "export-kept", "actor": "test"},
+    });
+    owner_call(&exports.owner, exports.client, "export.jpeg", kept).expect("an export");
+    let (_, reference) = exports.export("reference.jpg", true);
+    let refused = owner_call(
+        &exports.owner,
+        exports.client,
+        "export.jpeg",
+        json!({
+            "asset_id": exports.asset, "destination": exports.dir.join("stripped.jpg"),
+            "mutation": {"request_id": "export-taken", "actor": "test"},
+        }),
+    );
+    assert!(refused.is_err(), "a name already taken is refused");
+    luxforge_testbase::wait_until("the kept export", || exports.dir.join("kept.jpg").exists());
+    assert!(exports.original() == original, "the original");
+    assert!(std::fs::read(exports.dir.join("stripped.jpg")).unwrap() == file);
+    assert!(file != reference, "the GPU's file and the reference's");
+    let mut names: Vec<String> = std::fs::read_dir(&exports.dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".jpg"))
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        ["kept.jpg", "original.jpg", "reference.jpg", "stripped.jpg"]
+    );
+}
+
+/// A launch that refused the GPU (`--no-gpu-render`) exports the reference's file, naming
+/// `refused`, and one whose window has not named its adapter yet names `surface-pending`; neither
+/// worker starts a thread or opens a device. Neither needs an adapter on this host.
+#[test]
+fn a_no_gpu_launch_exports_the_reference_naming_why() {
+    let photograph = generated(240, 160);
+    for (refused, reason) in [(true, "refused"), (false, "surface-pending")] {
+        let worker = Arc::new(GpuTiles::pending(refused));
+        let exports = Exports::new(reason, Arc::clone(&worker), &photograph);
+        let original = exports.original();
+        exports.edit("edit.set-basic", json!({"exposure": 0.5}));
+        let (result, file) = exports.export("default.jpg", false);
+        assert_eq!(
+            result["renderer"],
+            json!({"record": "reference", "reason": reason})
+        );
+        let (_, reference) = exports.export("reference.jpg", true);
+        assert!(file == reference, "{reason}: the reference's own file");
+        assert!(!worker.started(), "{reason}: nothing started");
+        assert_eq!(worker.figures().adapter, None, "{reason}: nothing opened");
+        assert!(exports.original() == original, "{reason}: the original");
+    }
 }
