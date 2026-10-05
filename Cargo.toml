@@ -69,6 +69,11 @@ serde_json = { version = "=1.0.149", features = ["float_roundtrip"] }
 # x86 uses SHA-NI without it, and the `sha2-asm` crate it pulls in refuses to build for Windows. See
 # docs/design/efficiency.md#build-and-dependencies.
 sha2 = "=0.10.9"
+# Reads an Omarchy theme's `colors.toml` and `alacritty.toml` as data. Already in the lockfile
+# through `proc-macro-crate`, pinned to that version with its parser only (no `display`, whose
+# writer is not in the lockfile), so it adds no package. It enters the shipped binary, and the
+# package inventory keeps its licence with every other crate's.
+toml_edit = { version = "=0.25.15", default-features = false, features = ["parse"] }
 url = "=2.5.8"
 uuid = { version = "=1.26.1", features = ["v4"] }
 # Zeroes a module secret's buffer when the value is dropped.
