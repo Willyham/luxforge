@@ -5,7 +5,7 @@ use crate::{
     decode::{guarded, panic_message},
     icc,
 };
-use mozjpeg::{ColorSpace, Compress, Marker};
+use mozjpeg::{ColorSpace, Compress, Marker, PixelDensity, PixelDensityUnit};
 use std::{
     any::Any,
     cell::RefCell,
@@ -17,6 +17,9 @@ use std::{
 pub struct Settings<'a> {
     pub quality: u8,
     pub chroma: (u8, u8),
+    /// The JFIF header's density in pixels per inch, the same both ways, or `None` for libjpeg's
+    /// default, which names no unit and a 1:1 pixel aspect ratio.
+    pub pixels_per_inch: Option<u16>,
     /// APPn segments written after libjpeg's JFIF header, in order: `(n, payload)`, each payload
     /// at most [`MAX_SEGMENT_PAYLOAD`] bytes.
     pub segments: &'a [(u8, &'a [u8])],
@@ -113,6 +116,13 @@ pub fn encode<W: Write, E: From<JpegError>>(
         compress.set_quality(f32::from(settings.quality));
         let (h, v) = settings.chroma;
         compress.set_chroma_sampling_pixel_sizes((h, v), (h, v));
+        if let Some(density) = settings.pixels_per_inch {
+            compress.set_pixel_density(PixelDensity {
+                unit: PixelDensityUnit::Inches,
+                x: density,
+                y: density,
+            });
+        }
         compress.start_compress(writer)
     })
     .map_err(&failure)?

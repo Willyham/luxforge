@@ -210,6 +210,7 @@ Accepted on 2026-09-27 for the delivered [JPEG export](design/export.md#decision
 - JPEG import stays strict (owner, 2026-09-27): extraneous bytes after a scan, an unknown Adobe colour transform, non-sequential scans and any data after the end-of-image marker are refused. Accepting trailing data (for example the video a Motion Photo appends) would mean reading past the image, a denial-of-service and parsing surface the owner does not want now; each relaxation is added deliberately, with its own review, only when a real file needs it.
 - The methods are `export.plan`, `export.jpeg`, `export.read` and `export.cancel`; the export lane is its own instance of the lane runner until one job table exists.
 - The earlier state-panel export proposal (presets, resizing, unique names by default, durable export records) is not adopted.
+- The desktop's export records 72 pixels per inch for each physical pixel of a point on the window's display, 144 on Retina, on macOS only (owner, 2026-10-05), so Preview's Actual Size matches the editor's 100%; `export.jpeg` takes the density as an optional parameter and the core never reads a display.
 
 ## Source-kind controls
 

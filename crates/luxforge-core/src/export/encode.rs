@@ -2,8 +2,10 @@
 //! (`luxforge-jpeg`, libjpeg-turbo).
 //!
 //! Contract (`docs/design/export.md#behavior`, step 3):
-//! - `encode_jpeg(out, frame, exif, progress, cancel)` encodes the RGBA8 sRGB `frame` (alpha is
-//!   ignored; it is always 255) at [`super::QUALITY`], writes the JFIF header, the optional EXIF
+//! - `encode_jpeg(out, frame, exif, pixels_per_inch, progress, cancel)` encodes the RGBA8 sRGB
+//!   `frame` (alpha is ignored; it is always 255) at [`super::QUALITY`], writes the JFIF header
+//!   (with `pixels_per_inch` as its density when given, a unitless 1:1 aspect ratio otherwise), the
+//!   optional EXIF
 //!   APP1 payload (`exif` excludes the `Exif\0\0` header) and the ICC profile, and streams the
 //!   output into `out` without building the whole file in memory. `progress` receives the encoded
 //!   fraction in `0..=1`, at most about once per 1% of rows; `cancel` is checked about as often, and
@@ -27,6 +29,7 @@ pub(crate) fn encode_jpeg<W: Write>(
     out: W,
     frame: &Raster,
     exif: Option<&[u8]>,
+    pixels_per_inch: Option<u16>,
     progress: &mut dyn FnMut(f64),
     cancel: &dyn Fn() -> Result<(), Error>,
 ) -> Result<(), Error> {
@@ -35,6 +38,7 @@ pub(crate) fn encode_jpeg<W: Write>(
     let settings = Settings {
         quality: super::QUALITY,
         chroma: (1, 1),
+        pixels_per_inch,
         segments: &segments,
         icc: Some(srgb_profile()),
     };
@@ -114,6 +118,7 @@ mod tests {
             &mut out,
             frame,
             exif,
+            None,
             &mut |fraction| progress_calls.push(fraction),
             &|| Ok(()),
         )
@@ -337,7 +342,7 @@ mod tests {
         let exif = vec![0u8; MAX_SEGMENT_PAYLOAD - EXIF_HEADER.len() + 1];
         let mut out = Vec::new();
         let error =
-            encode_jpeg(&mut out, &frame, Some(&exif), &mut |_| {}, &|| Ok(())).unwrap_err();
+            encode_jpeg(&mut out, &frame, Some(&exif), None, &mut |_| {}, &|| Ok(())).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Internal);
         assert!(out.is_empty());
     }
@@ -381,7 +386,7 @@ mod tests {
         let frame = gradient_frame(257, 131);
         let mut out = Vec::new();
         let calls = Cell::new(0u32);
-        let result = encode_jpeg(&mut out, &frame, None, &mut |_| {}, &|| {
+        let result = encode_jpeg(&mut out, &frame, None, None, &mut |_| {}, &|| {
             calls.set(calls.get() + 1);
             if calls.get() > 2 {
                 Err(Error::cancelled("stop"))
@@ -413,7 +418,8 @@ mod tests {
         for (width, height) in [(0u32, 0u32), (65_536, 1)] {
             let frame = gradient_frame(width, height);
             let mut out = Vec::new();
-            let error = encode_jpeg(&mut out, &frame, None, &mut |_| {}, &|| Ok(())).unwrap_err();
+            let error =
+                encode_jpeg(&mut out, &frame, None, None, &mut |_| {}, &|| Ok(())).unwrap_err();
             assert_eq!(error.kind, ErrorKind::Render, "{width}x{height}: {error:?}");
             assert!(
                 error.detail.contains("libjpeg"),
@@ -439,7 +445,7 @@ mod tests {
             }
         }
         let frame = gradient_frame(257, 131);
-        let error = encode_jpeg(Full, &frame, None, &mut |_| {}, &|| Ok(())).unwrap_err();
+        let error = encode_jpeg(Full, &frame, None, None, &mut |_| {}, &|| Ok(())).unwrap_err();
         assert_eq!(error.kind, ErrorKind::FileAccess, "{error:?}");
         assert!(error.detail.contains("the disk is full"), "{error:?}");
     }
