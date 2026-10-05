@@ -1254,9 +1254,10 @@ impl ViewIdleStep {
 }
 
 /// A native idle check: with evidence's own timers and redraws suspended, `settle_ms` for whatever
-/// is still running, such as a settle's dissolve, to end, then a window of `ms` over which the
-/// photo surface may draw no frame of its own and the desktop run no update but the one the
-/// window's start itself ran. Captured once the window has passed.
+/// is still running, such as a settle's dissolve, to end — drawn out, by at most a minute, while
+/// the GPU stage still compiles, a warm-up in the background among it — then a window of `ms`
+/// over which the photo surface may draw no frame of its own and the desktop run no update but the
+/// one the window's start itself ran. Captured once the window has passed.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IdleStep {
