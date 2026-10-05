@@ -856,6 +856,9 @@ pub(crate) struct GpuPreviews {
     /// Compare waits for the reference's frame of a content the GPU presented without one, its
     /// After side.
     pub(crate) compare_waits: bool,
+    /// The Fit bounds the displayed stack's picture at rest was planned at by its job's owner
+    /// task: a refit plans it again once they are not the view's ([`Editor::refit_proxy`]).
+    pub(crate) rest_planned_at: Option<luxforge_core::ProxyBounds>,
     /// The compile thread's warm-up as the desktop follows it ([`super::gpu_warm`]).
     pub(crate) warm_up: super::gpu_warm::WarmUpFollow,
     /// What a test reports for the surface, which no test draws.

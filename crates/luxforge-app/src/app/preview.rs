@@ -2339,6 +2339,9 @@ impl Editor {
                 };
             }
         }
+        // The bounds the owner planned the job's GPU picture at rest at, which the display scale's
+        // arrival or a resize since can have left behind the bounds its frame is drawn at now.
+        let planned_at = job.proxy;
         job.proxy = if job.viewport.is_some() {
             None
         } else if job.layer_count.is_some() {
@@ -2366,6 +2369,7 @@ impl Editor {
         if committed && let Some(rest) = job.gpu_rest.as_mut() {
             let tiles = rest.tiles.take().and_then(Result::ok);
             self.gpu_rest_from(tiles);
+            self.gpu.rest_planned_at = planned_at.filter(|_| job.viewport.is_none());
         }
         self.gpu_resident_from(job.gpu_rest.take(), job.viewport.is_some(), committed);
         // Reusing pixels cannot complete work the viewport still owes. A moving region is
@@ -2535,7 +2539,14 @@ impl Editor {
         let Some(bounds) = self.proxy_bounds() else {
             return Task::none();
         };
-        if self.presentation.presented_bounds == Some(bounds) {
+        // The GPU's picture at rest is planned for the bounds its job was planned at, which the
+        // frame's own bounds, replaced when the job was requested, do not show.
+        let gpu_stale = self.gpu_at_rest()
+            && self
+                .gpu
+                .rest_planned_at
+                .is_some_and(|planned| planned != bounds);
+        if self.presentation.presented_bounds == Some(bounds) && !gpu_stale {
             return Task::none();
         }
         self.presentation.refit_pending = true;
@@ -3094,6 +3105,25 @@ mod reduction_tests {
         );
         assert!(!editor.presentation.refit_pending);
         assert_eq!(editor.presentation.presented_bounds, Some(bounds));
+
+        // A frame at the window's bounds whose picture at rest its job planned at others — an
+        // open planned before the display scale arrived — is refitted too, once.
+        editor.gpu.rest_planned_at = Some(ProxyBounds {
+            width: bounds.width / 2,
+            height: bounds.height / 2,
+        });
+        let _ = editor.refit_proxy();
+        assert!(
+            editor.presentation.refit_pending,
+            "the picture at rest is planned again for the window's bounds"
+        );
+        editor.presentation.refit_pending = false;
+        editor.gpu.rest_planned_at = Some(bounds);
+        let _ = editor.refit_proxy();
+        assert!(
+            !editor.presentation.refit_pending,
+            "planned for these bounds"
+        );
 
         editor.presentation.presented_bounds = None;
         editor.session.workspace.gpu_preview = false;
