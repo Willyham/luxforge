@@ -52,6 +52,8 @@ pub(crate) mod gpu_counts;
 mod gpu_dehaze_tests;
 #[cfg(test)]
 mod gpu_detail_tests;
+#[cfg(test)]
+mod gpu_drag_bench;
 pub(crate) mod gpu_identity;
 #[cfg(test)]
 mod gpu_light_tests;
