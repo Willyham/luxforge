@@ -646,6 +646,36 @@ impl Editor {
         // change of drawing path wakes the desktop, whose next update derives the label again.
         let label_current = self.workspace.status.gpu_us == self.gpu_frame_us();
         let surfaces = self.surfaces();
+        let compare_ready = surfaces.comparison.is_none_or(|(after, _)| {
+            // Compare's After side: the retained GPU picture once drawn — its picture at
+            // rest in tiles, else its view plan's frame once evaluated — or the retained frame.
+            let drawn = luxforge_ui::surface_diagnostics(crate::view::canvas::COMPARE_SURFACE);
+            if let Some(rest) = surfaces.compare_rest
+                && !drawn.gpu_rest.is_some_and(|figures| {
+                    figures.version == rest.version && figures.fallback.is_some()
+                })
+            {
+                return drawn.drawn_rest == Some(rest.version)
+                    && drawn.drawn_rest_dissolve.is_none();
+            }
+            if let Some(plan) = surfaces.compare_gpu
+                && drawn.gpu_ready_boundary == Some(plan.boundary.version())
+            {
+                return photo_drawn(
+                    ExpectedPhotoDraw::Gpu {
+                        boundary: plan.boundary.version(),
+                    },
+                    drawn,
+                );
+            }
+            photo_drawn(
+                ExpectedPhotoDraw::Full {
+                    version: after.version(),
+                    content: None,
+                },
+                drawn,
+            )
+        });
         // The committed stack at rest, which the GPU draws: its picture at rest in tiles once
         // its last tile is in and its dissolve has run, where the whole-frame photograph has one
         // the surface did not refuse; otherwise its view plan's frame once the surface has
@@ -662,6 +692,7 @@ impl Editor {
                 })
             {
                 return label_current
+                    && compare_ready
                     && drawn.drawn_rest == Some(rest.version)
                     && drawn.drawn_rest_dissolve.is_none();
             }
@@ -669,6 +700,7 @@ impl Editor {
                 && drawn.gpu_ready_boundary == Some(plan.boundary.version())
             {
                 return label_current
+                    && compare_ready
                     && photo_drawn(
                         ExpectedPhotoDraw::Gpu {
                             boundary: plan.boundary.version(),
@@ -753,15 +785,7 @@ impl Editor {
                     luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE),
                 )
             })
-            && self.surfaces().comparison.is_none_or(|(after, _)| {
-                photo_drawn(
-                    ExpectedPhotoDraw::Full {
-                        version: after.version(),
-                        content: None,
-                    },
-                    luxforge_ui::surface_diagnostics(crate::view::canvas::COMPARE_SURFACE),
-                )
-            })
+            && compare_ready
     }
 
     /// Evidence with clipping enabled must show the requested mask over the current photograph,

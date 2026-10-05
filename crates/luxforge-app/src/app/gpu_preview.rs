@@ -714,6 +714,14 @@ struct AtRest {
     handed: Handed,
 }
 
+/// The GPU picture of the stack on screen when Compare began, retained while Compare is shown:
+/// drawn as its After side, and handed back to the photograph when Compare ends, so that stack is
+/// drawn again at once, before its own job plans it.
+struct Retained {
+    at_rest: Option<AtRest>,
+    rest: Option<HeldRest>,
+}
+
 /// The desktop's GPU previews: the source the surface holds, the open draft's, the boundary held
 /// between drafts and the warm list of the committed stack.
 #[derive(Default)]
@@ -722,6 +730,8 @@ pub(crate) struct GpuPreviews {
     resident: Option<Resident>,
     /// The committed stack's view plan, drawn at rest.
     at_rest: Option<AtRest>,
+    /// The stack on screen when Compare began, its GPU picture retained while Compare is shown.
+    compare: Option<Retained>,
     /// The prepared source of the photograph on screen, which every boundary is derived from.
     source: Option<HeldSource>,
     /// The displayed stack's picture at rest, drawn in tiles at Fit and below 100%.
@@ -1700,8 +1710,9 @@ impl Editor {
     }
 
     /// Whether the photograph is the committed stack at rest, which the GPU draws in place of its
-    /// frame: the gate lets the GPU stage draw, no gesture's draft is open or its plan still drawn,
-    /// no crop draft or comparison is shown, and no evidence hook hands a plan of its own.
+    /// frame — Compare's Before side among them: the gate lets the GPU stage draw, no gesture's
+    /// draft is open or its plan still drawn, no crop draft is shown, and no evidence hook hands a
+    /// plan of its own.
     pub(crate) fn gpu_at_rest(&self) -> bool {
         #[cfg(test)]
         if self.gpu.rest_off {
@@ -1711,7 +1722,6 @@ impl Editor {
             && self.core_gesture().is_none()
             && self.gpu.drag.is_none()
             && !self.drafting()
-            && self.presentation.compare_after.is_none()
             && self
                 .evidence
                 .as_ref()
@@ -1809,9 +1819,9 @@ impl Editor {
 
     /// The picture at rest in tiles the surfaces are handed: the committed stack's, while no
     /// gesture's draft is open — a released gesture's last plan may still be drawn, beside which
-    /// the tiles are drawn, to dissolve in over it — and no crop draft, comparison or clipping
-    /// overlay is shown, the overlay's marks being the view plan's; none while the gate refuses
-    /// the GPU stage or an evidence hook hands a plan of its own.
+    /// the tiles are drawn, to dissolve in over it — and no crop draft or clipping overlay is shown,
+    /// the overlay's marks being the view plan's; Compare's Before side among them. None while the
+    /// gate refuses the GPU stage or an evidence hook hands a plan of its own.
     pub(crate) fn gpu_rest_handed(&self) -> Option<&surface::GpuRest> {
         self.gpu_preview_allowed().ok()?;
         #[cfg(test)]
@@ -1820,7 +1830,6 @@ impl Editor {
         }
         if self.core_gesture().is_some()
             || self.drafting()
-            || self.presentation.compare_after.is_some()
             || super::gpu_settle::clip_flags(&self.session.workspace).is_some()
             || self
                 .evidence
@@ -1830,6 +1839,75 @@ impl Editor {
             return None;
         }
         self.gpu.rest.as_ref()?.gpu.as_ref()
+    }
+
+    /// Compare begins: the GPU picture of the stack on screen — its view plan and its picture at
+    /// rest in tiles — is retained, to be drawn as Compare's After side, and the photograph's
+    /// surface waits for the Before's own committed job to plan its own.
+    pub(crate) fn gpu_compare_begin(&mut self) {
+        if self.gpu.compare.is_some() {
+            return;
+        }
+        let retained = Retained {
+            at_rest: self.gpu.at_rest.take(),
+            rest: self.gpu.rest.take(),
+        };
+        let detail = json!({
+            "view_boundary": retained.at_rest.as_ref().map(|at_rest| at_rest.boundary.version()),
+            "rest": retained.rest.as_ref().map(|rest| rest.version),
+        });
+        self.gpu.compare = Some(retained);
+        self.event("gpu_compare_retained", || detail);
+    }
+
+    /// Compare ends: the stack it began over is on screen again, its retained GPU picture handed
+    /// back to the photograph at once, which that stack's own job then plans again.
+    pub(crate) fn gpu_compare_end(&mut self) {
+        let Some(retained) = self.gpu.compare.take() else {
+            return;
+        };
+        let detail = json!({
+            "view_boundary": retained.at_rest.as_ref().map(|at_rest| at_rest.boundary.version()),
+            "rest": retained.rest.as_ref().map(|rest| rest.version),
+        });
+        self.gpu.at_rest = retained.at_rest;
+        self.gpu.rest = retained.rest;
+        self.event("gpu_compare_restored", || detail);
+    }
+
+    /// Compare's After side on the GPU: the retained view plan, with its serial, where the view
+    /// draws it as a whole frame — at Fit and below 100% — and the retained picture at rest in
+    /// tiles; nothing while the gate refuses the GPU stage, or no Compare runs.
+    pub(crate) fn gpu_compare_after(
+        &self,
+    ) -> (
+        Option<(&surface::GpuPlan, surface::GpuChange)>,
+        Option<&surface::GpuRest>,
+    ) {
+        let Some(retained) = self
+            .gpu
+            .compare
+            .as_ref()
+            .filter(|_| self.presentation.compare_after.is_some())
+            .filter(|_| self.gpu_preview_allowed().is_ok())
+        else {
+            return (None, None);
+        };
+        let whole = match self.session.preview.view.zoom {
+            luxforge_core::Zoom::Fit => true,
+            luxforge_core::Zoom::Percent { value } => value < 100.0,
+        };
+        let plan = retained
+            .at_rest
+            .as_ref()
+            .filter(|at_rest| whole && at_rest.handed.plan.region.is_none())
+            .map(|at_rest| (&at_rest.handed.plan, at_rest.handed.change));
+        let rest = retained
+            .rest
+            .as_ref()
+            .filter(|_| whole && super::gpu_settle::clip_flags(&self.session.workspace).is_none())
+            .and_then(|rest| rest.gpu.as_ref());
+        (plan, rest)
     }
 
     /// Whose picture of the displayed content the surface is handed to draw, as `preview_displayed`
@@ -2074,6 +2152,7 @@ pub(super) fn after_message(editor: &mut Editor, _: &super::Before) -> iced::Tas
     // view plan and its tiles.
     if let Some(source) = editor.gpu.source.take_if(|source| source.asset != asset) {
         editor.gpu.at_rest = None;
+        editor.gpu.compare = None;
         let version = source.gpu.version();
         editor.event(
             "gpu_source_released",
@@ -2094,6 +2173,7 @@ pub(super) fn after_message(editor: &mut Editor, _: &super::Before) -> iced::Tas
     if editor.gpu_preview_allowed().is_err() {
         editor.gpu.at_rest = None;
         editor.gpu.rest = None;
+        editor.gpu.compare = None;
     }
     editor.gpu_mark_at_rest();
     editor.gpu_follow_rest_drawn();

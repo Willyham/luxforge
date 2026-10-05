@@ -769,6 +769,9 @@ fn comparison<'a>(
 ) -> Element<'a, Message> {
     let surfaces = *surfaces;
     let layers = move |size: Size, placement, rect: Rectangle, percent: bool| {
+        // The Before side is the displayed stack, drawn at rest on the GPU as any displayed entry
+        // is: its view plan, its region's at a percentage zoom of 100% or more, and its picture at
+        // rest in tiles where a whole frame is drawn.
         let before: Element<'a, Message> = if percent {
             luxforge_ui::viewport_surface(
                 DEVELOP_SURFACE,
@@ -780,6 +783,10 @@ fn comparison<'a>(
                 Length::Fixed(size.width),
                 Length::Fixed(size.height),
             )
+            .gpu_preview(surfaces.gpu)
+            .gpu_hold(surfaces.gpu_hold)
+            .gpu_tag(surfaces.gpu_tag)
+            .gpu_change(surfaces.gpu_change)
             .gpu_source(surfaces.gpu_source)
             .into()
         } else {
@@ -792,12 +799,19 @@ fn comparison<'a>(
                     Length::Fixed(size.height),
                 )
                 .exact_stage(dimensions)
+                .gpu_preview(surfaces.gpu)
+                .gpu_hold(surfaces.gpu_hold)
+                .gpu_tag(surfaces.gpu_tag)
+                .gpu_change(surfaces.gpu_change)
                 .gpu_source(surfaces.gpu_source)
+                .gpu_rest(surfaces.gpu_rest)
                 .into(),
                 None => empty("Rendering Before…"),
             }
         };
         // Both sides hand the source, so the pipeline keeps it on the GPU while Compare is shown.
+        // The After side draws the GPU picture of the stack Compare began over, retained, in
+        // place of its retained frame where the view draws a whole frame.
         let after: Element<'a, Message> = luxforge_ui::photo_surface(
             COMPARE_SURFACE,
             after,
@@ -807,7 +821,10 @@ fn comparison<'a>(
         )
         .exact_stage(dimensions)
         .reveal_from(if position == 1.0 { 0.0 } else { position })
+        .gpu_preview(surfaces.compare_gpu)
+        .gpu_change(surfaces.compare_change)
         .gpu_source(surfaces.gpu_source)
+        .gpu_rest(surfaces.compare_rest)
         .into();
         let divider = canvas(super::compare_canvas::CompareCanvas {
             photo: rect,
@@ -1368,6 +1385,9 @@ mod tests {
             gpu_warm: None,
             gpu_source: None,
             gpu_rest: None,
+            compare_gpu: None,
+            compare_change: None,
+            compare_rest: None,
         };
         let model = CanvasModel {
             photo: PhotoView::Plain,

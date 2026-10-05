@@ -744,6 +744,9 @@ impl Presentation {
             gpu_warm: None,
             gpu_source: None,
             gpu_rest: None,
+            compare_gpu: None,
+            compare_change: None,
+            compare_rest: None,
         }
     }
 

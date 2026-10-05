@@ -7,7 +7,9 @@
 //! (`GpuPreviews::surface`).
 use super::{
     gpu_preview::SurfaceReport,
-    message::{draft::DraftMessage, preview::PreviewMessage, view::ViewMessage},
+    message::{
+        draft::DraftMessage, history::HistoryMessage, preview::PreviewMessage, view::ViewMessage,
+    },
     testing::{attach_log, events, finish, let_go, logged, real_photo, run_commit, slide},
     *,
 };
@@ -198,6 +200,89 @@ fn gpu_settle_at_rest_the_gpu_draws_the_committed_stack_with_no_dissolve() {
     let records = logged(&mut editor, &log);
     assert!(
         events(&records, "gpu_dissolve_started").is_empty(),
+        "{records:?}"
+    );
+    finish(editor, catalog);
+}
+
+/// Compare draws both sides on the GPU at Fit: the GPU picture of the stack it began over is
+/// retained as its After side, and the Before — the original entry — is drawn at rest by its own
+/// committed job's view plan. Ending Compare hands the retained picture back at once, before the
+/// stack's own job plans it again, so the photograph is the stack's GPU picture in the next frame.
+#[test]
+fn gpu_settle_compare_draws_both_sides_on_the_gpu_and_hands_after_back() {
+    let catalog = catalog("compare");
+    let (mut editor, asset, _) = real_photo(&catalog);
+    gpu_drag(&mut editor, &[0.4]);
+    let _ = let_go(&mut editor, ACTION, FIELD);
+    assert!(run_commit(&mut editor));
+    deliver_until(&mut editor, "the committed frame", |editor| {
+        !editor.gpu.has_drag() && !editor.presentation.queue.is_busy()
+    });
+    let (current, _) = editor
+        .gpu_rest_plan()
+        .expect("the current stack's view plan");
+    let current = (current.boundary.version(), current.steps.len());
+    let log = attach_log(&mut editor);
+    let _ = editor.update(Message::History(HistoryMessage::CompareToggle));
+    assert!(
+        editor.presentation.compare_after.is_some(),
+        "{}",
+        editor.status.text
+    );
+    let after = {
+        let surfaces = editor.surfaces();
+        let after = surfaces
+            .compare_gpu
+            .expect("the After side's retained view plan");
+        (after.boundary.version(), after.steps.clone())
+    };
+    assert_eq!(
+        (after.0, after.1.len()),
+        current,
+        "the GPU picture of the stack Compare began over"
+    );
+    // The Before's committed job, as Compare's own preview task plans it at the view's bounds.
+    let refreshed = tasks::refresh(
+        &editor.owner,
+        editor.client,
+        asset,
+        tasks::Scope::Open,
+        editor.proxy_bounds(),
+    )
+    .expect("the Before's job");
+    let _ = editor.update(Message::Preview(PreviewMessage::Loaded(Ok(Box::new(
+        tasks::PreviewPayload {
+            job: refreshed.job,
+            session: refreshed.session,
+        },
+    )))));
+    let (before, _) = editor.gpu_rest_plan().expect("the Before's view plan");
+    assert_ne!(
+        before.steps, after.1,
+        "the original entry's own plan, not the current stack's"
+    );
+    let surfaces = editor.surfaces();
+    assert!(
+        surfaces.gpu.is_some() && !surfaces.gpu_hold && surfaces.compare_gpu.is_some(),
+        "both sides drawn by the GPU"
+    );
+    // Ending Compare hands the retained picture back to the photograph at once.
+    let _ = editor.update(Message::History(HistoryMessage::CompareExit));
+    let (back, _) = editor
+        .gpu_rest_plan()
+        .expect("the stack's view plan, at once");
+    assert_eq!((back.boundary.version(), back.steps.len()), current);
+    assert!(editor.surfaces().compare_gpu.is_none());
+    let records = logged(&mut editor, &log);
+    assert_eq!(
+        events(&records, "gpu_compare_retained").len(),
+        1,
+        "{records:?}"
+    );
+    assert_eq!(
+        events(&records, "gpu_compare_restored").len(),
+        1,
         "{records:?}"
     );
     finish(editor, catalog);

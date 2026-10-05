@@ -370,6 +370,21 @@ impl Editor {
                     "dissolving":rest.dissolving,"prepare_ms":rest.prepare_us as f64 / 1000.0,
                     "fallback":rest.fallback.map(gpu_fallback)})),
                 "drawn_rest":gpu.drawn_rest,
+                // Compare's After side while Compare is shown: `rest` or `view` for the GPU picture
+                // of the stack Compare began over, retained, `retained` for its retained frame.
+                "compare":self.presentation.compare_after.as_ref().map(|_| {
+                    let after = luxforge_ui::surface_diagnostics(crate::view::canvas::COMPARE_SURFACE);
+                    let picture = match after.drawn_path {
+                        None => Value::Null,
+                        Some(luxforge_ui::photo_surface::DrawingPath::Cpu) => json!("retained"),
+                        Some(_) if after.drawn_rest.is_some() => json!("rest"),
+                        Some(_) => json!("view"),
+                    };
+                    json!({"picture":picture,"drawn_rest":after.drawn_rest,
+                        "drawn_gpu_boundary":after.drawn_gpu_boundary,
+                        "rest":after.gpu_rest.map(|rest| json!({"version":rest.version,
+                            "done":rest.done,"tiles":rest.tiles}))})
+                }),
                 "rest_dissolve":gpu.drawn_rest_dissolve.map(|dissolve| json!({"from":dissolve.from,
                     "to":dissolve.to,"progress":dissolve.progress()})),
                 "gpu_preview_budget_bytes":gpu.gpu_preview_budget_bytes,
