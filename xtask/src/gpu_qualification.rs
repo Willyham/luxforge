@@ -1372,6 +1372,26 @@ pub fn markdown(report: &Value) -> String {
                 result["verdict"].as_str().unwrap_or("?"),
             ));
         }
+        for result in others.iter().filter(|result| result["kind"] == "sample") {
+            let samples = &result["samples"];
+            let largest = |name: &str| {
+                let held = &samples[format!("largest_{name}")];
+                match held["value"].as_f64() {
+                    Some(value) => format!("{value:.4} ({})", held["cell"].as_str().unwrap_or("?")),
+                    None => "—".to_owned(),
+                }
+            };
+            text.push_str(&format!(
+                "\nSamples: {} points read by the GPU, {} with a byte on screen, {} unequal to it; the largest stack's mean ΔE00 {}, p99 ΔE00 {}, signed mean ΔL\\* magnitude {} and single ΔE00 {} against the reference.\n",
+                samples["points"],
+                samples["on_screen"],
+                samples["unequal_to_the_screen"],
+                largest("mean"),
+                largest("p99"),
+                largest("mean_delta_l"),
+                largest("max"),
+            ));
+        }
     }
     let missed = report["missed"].as_array().cloned().unwrap_or_default();
     if !missed.is_empty() {

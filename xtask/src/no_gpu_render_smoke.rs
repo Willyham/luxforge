@@ -11,9 +11,9 @@
 //! among them. Every tick of the drag takes the CPU path naming `no-adapter` and asks for no
 //! boundary; no dissolve starts, and the desktop reports no other renderer. The adapter that drew
 //! the window is identified in every frame: the window is still composited by it, and only the
-//! photograph's pixels are the reference renderer's. An export, which asks for no renderer, is the
-//! reference renderer's too: its result names the reference for `refused`, and the GPU tile worker
-//! opened no device and drew nothing.
+//! photograph's pixels are the reference renderer's. A `render.sample` and an export, which asks
+//! for no renderer, are the reference renderer's too: each names the reference for `refused`, and
+//! the GPU tile worker opened no device and drew nothing.
 use crate::{
     gpu_preview_smoke::{named, step_events},
     scenario::{Checked, Checks, Plan, Run, Step, plan::only},
@@ -56,6 +56,12 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         Step::new("settled", script::Step::Wait { ms: 500 })
             .commits(0)
             .no_draft(),
+        Step::new(
+            "sampled",
+            script::Step::call("render.sample", json!({"x": 120, "y": 60})),
+        )
+        .commits(0)
+        .no_draft(),
         Step::new("exported", script::Step::export(EXPORTED, false))
             .commits(0)
             .no_draft(),
@@ -180,12 +186,25 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         json!({"ticks": ticks.len(), "drag": drag.state()["surface"]["gpu"]["gpu_preview"]["drag"]}),
     );
 
+    // A sample: the reference renderer's, for the launch's refusal.
+    let sampled = launch.at("sampled")?;
+    let answer = &sampled["step"]["result"];
+    let refused = json!({"record": "reference", "reason": "refused"});
+    ensure(
+        answer["renderer"] == refused && answer["rgba"].is_array(),
+        format!("The sample is not the reference renderer's for refused: {answer}"),
+    )?;
+    checks.note(
+        sampled,
+        "render.sample is the reference renderer's, for the launch's refusal",
+        json!({"sample": answer}),
+    );
+
     // The export: the reference renderer's, for the launch's refusal, its file written, and the
     // GPU tile worker refused, having opened and drawn nothing.
     let exported = launch.at("exported")?;
     let export = &exported["step"]["export"];
     let result = &export["record"]["result"];
-    let refused = json!({"record": "reference", "reason": "refused"});
     ensure(
         export["record"]["status"] == "ready" && result["renderer"] == refused,
         format!("The export is not the reference renderer's for refused: {export}"),

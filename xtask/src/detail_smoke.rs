@@ -592,6 +592,10 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     let listed = &launch.at("brush-list")?["step"]["result"]["masks"][0]["components"][1]["strokes"]
         [1]["settings"]["colour"];
     let input = &launch.at("brush-input")?["step"]["result"];
+    ensure(
+        input["renderer"] == json!({"record": "gpu", "reason": null}),
+        format!("mask.sample-input through Detail is not the GPU's: {input}"),
+    )?;
     let mut expected = [0_u8; 3];
     for (code, channel) in expected.iter_mut().zip(["r", "g", "b"]) {
         *code = luxforge_reference::srgb::code(
