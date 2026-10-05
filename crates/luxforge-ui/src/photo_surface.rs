@@ -1068,7 +1068,8 @@ impl PhotoSurface {
         });
         // A picture at rest whose tiles remain, the next one ready to draw: one a frame until the
         // last, and then each frame of its dissolve. A tile that waits for its sequence to compile
-        // asks for nothing, the compile's end waking the desktop.
+        // or for a retirement asks for nothing, the compile's or the retirement's end waking the
+        // desktop.
         let rest = self.rest_drawn().is_some_and(|rest| {
             diagnostics.gpu_stage == GpuStageState::Available
                 && diagnostics.gpu_rest.is_none_or(|figures| {

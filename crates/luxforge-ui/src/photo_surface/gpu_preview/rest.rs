@@ -134,8 +134,8 @@ pub struct RestFigures {
     pub drawn: u32,
     /// Every tile is reduced and the rest output quantized: the photograph can be drawn from it.
     pub done: bool,
-    /// The next tile waits for its sequence to compile, or its source to upload: no frame is asked
-    /// for it until then.
+    /// The next tile waits for its sequence to compile, its source to upload, or the slots released
+    /// before it to retire: no frame is asked for it until then.
     pub waiting: bool,
     /// The rest output, its last tile just in, is dissolving in over the plan's output the surface
     /// drew before it: frames are asked for until the dissolve ends.
@@ -356,7 +356,7 @@ pub(in super::super) struct RestSlot {
     bytes: u64,
     /// The rest output holds every tile's reduction, quantized.
     done: bool,
-    /// The last frame found the next tile waiting for its sequence or its source.
+    /// The last frame found the next tile waiting for its sequence, its source or a retirement.
     waiting: bool,
     /// The interface thread's time its tiles and quantization took so far.
     prepare_us: u64,
@@ -543,6 +543,19 @@ impl PhotoPipeline {
             match self.evaluate(&mut slot.tile, device, queue, &plan, None) {
                 Ok(_) => {}
                 Err(GpuFallback::Compiling | GpuFallback::SourceUploading { .. }) => {
+                    slot.waiting = true;
+                    return;
+                }
+                // The budget holds this tile once what the tiles before it released has retired,
+                // their slots refitted to another window's size: it is drawn a frame later, as a
+                // tick waits for the slot it replaces.
+                Err(GpuFallback::BudgetExceeded { .. })
+                    if self
+                        .figures
+                        .retirement_pending
+                        .load(std::sync::atomic::Ordering::Acquire)
+                        > 0 =>
+                {
                     slot.waiting = true;
                     return;
                 }
