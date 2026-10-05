@@ -38,7 +38,7 @@ use super::super::PhotoPipeline;
 use super::{
     BLOCK_CHUNK, BoundaryFormat, Charged, Compiled, GpuFallback, GpuStep, Held, TexelMap,
     blocks::{self, WrittenBlocks},
-    chain,
+    buffer_capacity, chain,
     source::Derivation,
     spatial::{self, GpuSpatial, Place, PlaneSize, Pool, PoolTexture, Rect},
     storage_buffer,
@@ -168,6 +168,20 @@ struct Shape {
 }
 
 impl Shape {
+    /// Whether a link made for `self` holds what a light of `other` needs: everything but its
+    /// blocks' words, which a stroke on a mask before the light grows every tick and which the
+    /// link's blocks buffer grows to in place, as a chain's links grow theirs.
+    fn holds(&self, other: &Self) -> bool {
+        (self.stage, self.format, self.side, self.block, self.words)
+            == (
+                other.stage,
+                other.format,
+                other.side,
+                other.block,
+                other.words,
+            )
+    }
+
     fn of(light: &GpuLight, format: BoundaryFormat, limit: u32) -> Option<Self> {
         let block = light.block()?;
         let mut words = Vec::new();
@@ -430,13 +444,31 @@ impl PhotoPipeline {
         let limit = device.limits().max_texture_dimension_2d;
         let shape =
             Shape::of(light, source.kind().boundary(), limit).ok_or(GpuFallback::PipelineFailed)?;
-        if link.as_ref().is_none_or(|held| held.shape != shape) {
+        if link.as_ref().is_none_or(|held| !held.shape.holds(&shape)) {
             if let Some(old) = link.take() {
                 self.retire_light(old);
             }
-            *link = Some(self.light_link(device, shape)?);
+            *link = Some(self.light_link(device, shape.clone())?);
         }
         let held = link.as_mut().expect("a fitted light link");
+        // Blocks past what its buffer holds: a larger buffer, charged before it is created, the
+        // old one retiring with its charge, every chunk written again.
+        let need = (shape.blocks * 4) as u64;
+        if need > held.block_words.bytes {
+            let capacity = buffer_capacity(device, need)?;
+            self.figures.preview.charge(capacity)?;
+            let old = std::mem::replace(
+                &mut held.block_words,
+                Charged {
+                    buffer: storage_buffer(device, "luxforge.gpu_light.blocks", capacity),
+                    bytes: capacity,
+                },
+            );
+            held.buffer_bytes = held.buffer_bytes - old.bytes + capacity;
+            self.retire_preview(Held::Buffer(old.buffer), old.bytes);
+            held.written_blocks.forget();
+        }
+        held.shape.blocks = shape.blocks;
         // The steps' blocks first, whose key the light's is made of.
         let update =
             held.written_blocks
@@ -914,8 +946,15 @@ mod bench {
             change: Option<GpuChange>,
         ) -> Result<Vec<[u8; 4]>, GpuFallback> {
             if let Some(light) = light {
-                // The slot's pool holds the light plane once the slot is fitted to the plan.
-                if self.surface.gpu.is_none() {
+                // The slot's pool holds the light plane once the slot is fitted to a plan of this
+                // one's shape and boundary that reads it: the slot a plan's own tick keeps.
+                let k = light.index().ok_or(GpuFallback::PipelineFailed)?;
+                let fitted = self.surface.gpu.as_ref().is_some_and(|slot| {
+                    slot.shape == super::super::Shape::of(plan)
+                        && slot.boundary_version == Some(plan.boundary.version())
+                        && slot.pool.light_view(k).is_some()
+                });
+                if !fitted {
                     self.evaluate(source, plan, None)?;
                 }
                 self.encode(source, light, true)?;
