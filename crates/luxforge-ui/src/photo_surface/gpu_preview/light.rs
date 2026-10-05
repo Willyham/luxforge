@@ -709,10 +709,6 @@ mod bench {
     use super::super::{GpuChange, GpuFallback, GpuPlan, GpuSource, Held, spatial};
     use super::{GpuLight, LightLink};
     use std::sync::Arc;
-    use std::time::{Duration, Instant};
-
-    /// How long a draw waits for its sequences to compile, or its source to upload.
-    const PATIENCE: Duration = Duration::from_secs(300);
 
     /// A light read back: its value, `[r, g, b, 1]`, and the stage's block means beside each
     /// block's channel minimum, row by row, `grid` of them.
@@ -806,31 +802,28 @@ mod bench {
         }
 
         /// `light` over `source`, encoded into `pool`'s light plane and submitted, waiting out a
-        /// compile and the upload; its key.
+        /// compile and the upload; its key. The fallback that stops it, or the one that kept it
+        /// waiting past the test base's hang bound.
         fn encode(
             &mut self,
             source: &GpuSource,
             light: &GpuLight,
             into_slot: bool,
         ) -> Result<u64, GpuFallback> {
-            let started = Instant::now();
-            loop {
+            let mut waited = GpuFallback::Compiling;
+            // One frame a look, through the one hang-bounded wait, while the light's sequence
+            // compiles or its source's rows are written.
+            luxforge_testbase::try_wait_for("a light link's passes", || {
                 self.hand(source);
                 let mut encoder =
                     self.device
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                             label: Some("luxforge.gpu_light.bench"),
                         });
-                let pool = match into_slot {
-                    true => {
-                        &mut self
-                            .surface
-                            .gpu
-                            .as_mut()
-                            .ok_or(GpuFallback::PipelineFailed)?
-                            .pool
-                    }
-                    false => &mut self.pool,
+                let pool = match (into_slot, self.surface.gpu.as_mut()) {
+                    (true, Some(slot)) => &mut slot.pool,
+                    (true, None) => return Some(Err(GpuFallback::PipelineFailed)),
+                    (false, _) => &mut self.pool,
                 };
                 let outcome = self.pipeline.encode_light(
                     &mut self.link,
@@ -846,14 +839,13 @@ mod bench {
                     Err(
                         waiting @ (GpuFallback::Compiling | GpuFallback::SourceUploading { .. }),
                     ) => {
-                        if started.elapsed() > PATIENCE {
-                            return Err(waiting);
-                        }
-                        std::thread::sleep(Duration::from_millis(2));
+                        waited = waiting;
+                        None
                     }
-                    other => return other,
+                    other => Some(other),
                 }
-            }
+            })
+            .unwrap_or(Err(waited))
         }
 
         /// `light` over `source` alone, into a pool of the bench's own holding its light plane,
@@ -903,8 +895,10 @@ mod bench {
             plan: &GpuPlan,
             change: Option<GpuChange>,
         ) -> Result<(), GpuFallback> {
-            let started = Instant::now();
-            loop {
+            let mut waited = GpuFallback::Compiling;
+            // One frame a look, through the one hang-bounded wait, while its sequences compile or
+            // its source's rows are written.
+            luxforge_testbase::try_wait_for("a plan's evaluation", || {
                 self.hand(source);
                 let outcome = self.pipeline.evaluate(
                     &mut self.surface,
@@ -918,18 +912,17 @@ mod bench {
                 }
                 self.trim();
                 match outcome {
-                    Ok(_) => return Ok(()),
+                    Ok(_) => Some(Ok(())),
                     Err(
                         waiting @ (GpuFallback::Compiling | GpuFallback::SourceUploading { .. }),
                     ) => {
-                        if started.elapsed() > PATIENCE {
-                            return Err(waiting);
-                        }
-                        std::thread::sleep(Duration::from_millis(2));
+                        waited = waiting;
+                        None
                     }
-                    Err(fallback) => return Err(fallback),
+                    Err(fallback) => Some(Err(fallback)),
                 }
-            }
+            })
+            .unwrap_or(Err(waited))
         }
 
         /// `plan` drawn over `source` through the surface's own slot, reading `light`, when given,
@@ -1018,17 +1011,13 @@ mod bench {
             for (textures, bytes) in retired {
                 self.pipeline.retire_preview(Held::Pool(textures), bytes);
             }
-            let started = Instant::now();
-            while self
-                .pipeline
-                .figures
-                .retirement_pending
-                .load(std::sync::atomic::Ordering::Acquire)
-                > 0
-                && started.elapsed() < PATIENCE
-            {
-                std::thread::sleep(Duration::from_millis(2));
-            }
+            let figures = &self.pipeline.figures;
+            luxforge_testbase::wait_until("the bench's retirements", || {
+                figures
+                    .retirement_pending
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    == 0
+            });
         }
     }
 
