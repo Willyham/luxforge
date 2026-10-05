@@ -791,10 +791,11 @@ const SOURCE_RULES: &[SourceRule] = &[
         allowed: &[
             "crates/luxforge-testbase",
             // The core's production blocking points: the source worker's plane gate, the
-            // latest-job worker and the point-query worker.
+            // latest-job worker, the point-query worker and the reference tile worker.
             "crates/luxforge-core/src/source.rs",
             "crates/luxforge-core/src/latest.rs",
             "crates/luxforge-core/src/api/owner/point.rs",
+            "crates/luxforge-core/src/tiles/reference.rs",
             // Production RGBA handoff backpressure, not a test gate; keeps the overlay byte bound.
             "crates/luxforge-app/src/app/mask_coverage.rs",
         ],
@@ -860,13 +861,14 @@ const SOURCE_RULES: &[SourceRule] = &[
         types: &["rs"],
         allowed: &[
             // The core: the source worker and the owner loop, the point-query worker, the API
-            // transport's accept and connection threads, the job table's lanes and the
-            // latest-job worker.
+            // transport's accept and connection threads, the job table's lanes, the latest-job
+            // worker and the reference tile worker.
             "crates/luxforge-core/src/api/owner.rs",
             "crates/luxforge-core/src/api/owner/point.rs",
             "crates/luxforge-core/src/api/transport.rs",
             "crates/luxforge-core/src/jobs.rs",
             "crates/luxforge-core/src/latest.rs",
+            "crates/luxforge-core/src/tiles/reference.rs",
             // The desktop's diagnostics log writer.
             "crates/luxforge-app/src/diagnostics.rs",
             // The widget crate's GPU retirement worker, and its GPU preview's pipeline compiler.
@@ -3075,6 +3077,10 @@ mod tests {
                     "crates/luxforge-core/src/latest.rs",
                     "let worker = thread::Builder::new().spawn(run);\n",
                 ),
+                (
+                    "crates/luxforge-core/src/tiles/reference.rs",
+                    "let started = std::thread::Builder::new().name(name).spawn(work);\n",
+                ),
                 ("xtask/src/verify.rs", "std::thread::scope(|scope| {});\n"),
                 (
                     "crates/luxforge-core/src/render/linear.rs",
@@ -3100,6 +3106,11 @@ mod tests {
                 (
                     "crates/luxforge-core/src/render/spatial.rs",
                     "let worker = std::thread::spawn(move || {});\n",
+                ),
+                // The tile contract beside the reference worker is not a home of its own.
+                (
+                    "crates/luxforge-core/src/tiles.rs",
+                    "let worker = std::thread::Builder::new();\n",
                 ),
                 ("xtask/src/main.rs", "let t = thread::Builder::new();\n"),
                 (
@@ -4207,12 +4218,16 @@ mod tests {
                     "    changed: Condvar,\n",
                 ),
                 (
+                    "crates/luxforge-core/src/tiles/reference.rs",
+                    "    queued: Condvar,\n",
+                ),
+                (
                     "crates/luxforge-core/src/preview/tests.rs",
                     "    wait_until(\"the frame\", || queue.poll().is_some());\n",
                 ),
             ],
         );
-        assert_eq!(read(root, rules).unwrap(), (5, 0));
+        assert_eq!(read(root, rules).unwrap(), (6, 0));
         // A test's own sleep, spin or gate anywhere else, test code and comments included, and a
         // sleep in the proof module, which has no delay of its own to wait out.
         refuses_each(
@@ -4250,6 +4265,10 @@ mod tests {
                     "crates/luxforge-testkit/src/proof.rs",
                     "    wake: Condvar,\n",
                 ),
+                (
+                    "crates/luxforge-core/src/tiles/reference_tests.rs",
+                    "    let held: Condvar = Condvar::new();\n",
+                ),
             ],
             "luxforge_testbase::Gate",
         );
@@ -4268,7 +4287,7 @@ mod tests {
             "{error}"
         );
         write_all(root, &[(surface, worker)]);
-        assert_eq!(read(root, rules).unwrap(), (5, 0));
+        assert_eq!(read(root, rules).unwrap(), (6, 0));
     }
 
     #[test]
