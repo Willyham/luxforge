@@ -403,6 +403,10 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     if character(key, "1") {
         return Some(Message::View(ViewMessage::HundredPercent));
     }
+    if character(key, "i") {
+        return (!context.palette_open && modifiers.is_empty())
+            .then_some(Message::View(ViewMessage::ToggleInformation));
+    }
     // O is the mask overlay in Mask mode and the thirds guide elsewhere; modified, it is neither.
     if character(key, "o") {
         if modifiers.alt() || modifiers.control() || modifiers.shift() || modifiers.logo() {
@@ -822,6 +826,66 @@ mod tests {
             keymap(&escape, Status::Captured, &typing),
             Some(Message::Mask(MaskMessage::Typing(TypingEdit::Cancel)))
         ));
+    }
+
+    #[test]
+    fn information_key_respects_fields_modifiers_modal_surfaces_and_repeats() {
+        let plain = context();
+        assert!(matches!(
+            keymap(
+                &pressed(letter("i"), Modifiers::empty()),
+                Status::Ignored,
+                &plain
+            ),
+            Some(Message::View(ViewMessage::ToggleInformation))
+        ));
+        for modifiers in [
+            Modifiers::SHIFT,
+            Modifiers::ALT,
+            Modifiers::COMMAND,
+            Modifiers::CTRL,
+        ] {
+            assert!(keymap(&pressed(letter("i"), modifiers), Status::Ignored, &plain).is_none());
+        }
+        assert!(
+            keymap(
+                &pressed(letter("i"), Modifiers::empty()),
+                Status::Captured,
+                &plain
+            )
+            .is_none()
+        );
+        assert!(
+            keymap(
+                &held(letter("i"), Modifiers::empty(), true),
+                Status::Ignored,
+                &plain
+            )
+            .is_none()
+        );
+        for modal in [
+            KeyContext {
+                palette_open: true,
+                ..context()
+            },
+            KeyContext {
+                settings_open: true,
+                ..context()
+            },
+            KeyContext {
+                gallery_open: true,
+                ..context()
+            },
+        ] {
+            assert!(
+                keymap(
+                    &pressed(letter("i"), Modifiers::empty()),
+                    Status::Ignored,
+                    &modal
+                )
+                .is_none()
+            );
+        }
     }
 
     #[test]

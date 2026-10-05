@@ -48,7 +48,7 @@ Decided on 2026-09-21:
 
 Decided on 2026-09-23:
 
-- The state panel's [Performance section](design/performance-panel.md#decisions) starts open on every launch. Memory is shown in binary units with Activity Monitor's MB and GB labels, and CPU as a percentage of one core, so it passes 100% whenever more than one core is busy.
+- The state panel's [Performance section](design/performance-panel.md#decisions) starts open on first use and then remembers whether it was left open (owner, 2026-10-02). Memory is shown in binary units with Activity Monitor's MB and GB labels, and CPU as a percentage of one core, so it passes 100% whenever more than one core is busy.
 - A module whose controls are a single group shows them without a sub-group header: a header naming the module's only group, such as Presence's "Presence" or Vignette's "Vignette", repeats the band above it. The band keeps the module's reset. Descriptors and the API are unchanged.
 
 Decided on 2026-09-26, aligning the shell with the boards:
@@ -340,6 +340,17 @@ Decided by the owner on 2026-10-04, asking for a feature-flag system with a UI (
 Settings gained a **General** tab for the person's preferences, which are not experiments, with Auto collapse history as its first (owner, 2026-10-04).
 
 The gear button and Cmd+,, launch flags applying at the next launch, storing only explicit choices, `luxforge-json` reading no flag at launch and the two developer-only proof flags are proposals with recorded defaults in the [design](design/settings-and-flags.md#decisions).
+
+## Preferences
+
+Decided by the owner on 2026-10-04, choosing from a list of proposed settings ([design](design/preferences.md)):
+
+- **Remembered across launches, with no Settings row:** panel visibility, the thirds and clipping overlays, the brush's size, feather and flow, the window's frame and the last export folder.
+- **Settings › General gains** the mask overlay colour, the canvas background, a switch for automatic lens correction of new RAW photos, an interface size and the catalog location.
+- **The GPU preview stays a per-session switch**, not a preference.
+- **Export defaults** (JPEG quality, Keep metadata) wait for the export work.
+
+The field shapes, the three canvas colours, the four interface sizes, the catalog as a folder holding `catalog.sqlite` applied at the next launch with a fallback to the default catalog when its folder is missing, and the other details are proposals with recorded defaults in the [design](design/preferences.md#decisions).
 
 ## GPU-first rendering
 

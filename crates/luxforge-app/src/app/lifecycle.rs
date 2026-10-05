@@ -1,6 +1,10 @@
 //! Starting and stopping the desktop: the registry this run serves, the capability host's paths,
 //! catalog ownership and the Iced application, and the shutdown that releases them.
-use super::{Editor, message::Message, tasks};
+use super::{
+    Editor,
+    message::{Message, view::ViewMessage},
+    tasks,
+};
 use crate::Config;
 use iced::Task;
 use luxforge_cli::Paths;
@@ -25,8 +29,9 @@ pub(crate) struct Boot {
     /// Unit fixtures leave this unset and register when constructing the editor.
     pub(crate) client: Option<ClientId>,
     pub(crate) initial_import: Option<tasks::StartupImport>,
-    /// The window's logical size at launch, before any resize event. The clipping overlay's cell
-    /// grid is sized against the photo surface, which this and the panel flags give.
+    /// The window's size at launch in the system's points, before any resize event; the view state
+    /// takes it to logical pixels by the interface size. The clipping overlay's cell grid is sized
+    /// against the photo surface, which this and the panel flags give.
     pub(crate) window: (f32, f32),
 }
 
@@ -63,16 +68,13 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
         luxforge_ui::photo_surface::refuse_gpu_stage();
     }
     // Evidence runs never touch a real catalog: theirs lives inside the new evidence directory.
-    let catalog = match (&config.catalog, &config.evidence) {
-        (Some(catalog), _) => catalog.clone(),
-        (None, Some(evidence)) => evidence.join("catalog.sqlite"),
-        (None, None) => config
-            .paths
-            .as_ref()
-            .ok_or("no usable application data directory; pass --data-root")?
-            .config
-            .join("catalog.sqlite"),
-    };
+    // Nothing here moves, copies or deletes a catalog: the one chosen is opened, or created.
+    let catalog = config
+        .launch_catalog
+        .as_ref()
+        .ok_or("no usable application data directory; pass --data-root")?
+        .path
+        .clone();
     let registry = Arc::new(ModuleRegistry::assemble(&config.registry_options())?);
     let (owner, join) = OwnerHandle::start_with_host(&catalog, registry, host_config(&config))
         .map_err(|error| match error.kind {
@@ -97,6 +99,14 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
         .front()
         .map(|path| tasks::start_import(&owner, client, path));
     let hidden = config.hidden;
+    let position = config.opening.map(|opening| opening.position());
+    // Iced opens the window at its settings' size times the application's scale factor, the
+    // interface size; `size` is in the system's points whatever the interface size.
+    let points = crate::window_frame::interface_scale(
+        config
+            .interface_size
+            .unwrap_or(luxforge_core::preferences::DEFAULT_INTERFACE_SIZE),
+    );
     let boot = Mutex::new(Some(Boot {
         owner,
         join,
@@ -121,7 +131,14 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
     .title("Luxforge")
     // An invisible window still owns a real surface and renders through it, so a hidden launch
     // captures the same renderer readbacks; it is simply never placed on the desktop.
-    .window(crate::window_frame::settings(size, !hidden))
+    .window(crate::window_frame::settings(
+        (size.0 / points, size.1 / points),
+        position,
+        !hidden,
+    ))
+    // The interface size scales everything Iced draws. Every physical-pixel computation reads the
+    // view state's combined factor, so 100% zoom stays one source pixel per display pixel.
+    .scale_factor(Editor::interface_scale)
     .theme(luxforge_ui::theme::theme())
     .subscription(Editor::subscription);
     // The bundled typeface is registered once, before the first frame, from bytes compiled into
@@ -138,11 +155,24 @@ impl Editor {
     /// The window closed: stop the live server and the owner, finish the log and exit once the
     /// owner thread has joined.
     pub(super) fn close(&mut self) -> Task<Message> {
-        if !self.performance.saving.idle() {
-            self.performance.closing = true;
+        // The window's frame is asked for once and stored through the writer, which the close
+        // then waits for like any other write.
+        let memory = &mut self.view_state.memory;
+        if memory.remember && !memory.asked {
+            memory.asked = true;
+            memory.waiting = true;
+            return crate::window_frame::report()
+                .map(|report| Message::View(ViewMessage::ClosingFrame(report)));
+        }
+        if memory.waiting {
             return Task::none();
         }
-        // So does a flag change: closing waits for the last one to be stored.
+        // A preference change is stored before the owner stops: closing waits for the last write.
+        if !self.preferences.idle() {
+            self.preferences.closing = true;
+            return Task::none();
+        }
+        // So does a flag change.
         if !self.settings.idle() {
             self.settings.closing = true;
             return Task::none();

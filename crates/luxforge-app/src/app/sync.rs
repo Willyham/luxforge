@@ -227,11 +227,7 @@ impl Editor {
                                 .own_requests
                                 .retain(|request| !sync.own.contains(request));
                         }
-                        let flags = if sync.flags {
-                            self.flags_changed_elsewhere()
-                        } else {
-                            Task::none()
-                        };
+                        let flags = self.settings_changed_elsewhere(sync.flags, sync.preferences);
                         if sync.capabilities {
                             return Task::batch([flags, self.reload_capabilities()]);
                         }
@@ -490,6 +486,12 @@ impl Editor {
         }
         if refresh.original.is_some() {
             self.document.original_entry = refresh.original;
+        }
+        if refresh.capture.is_some()
+            || self.document.state.as_ref().map(|state| &state.asset.id)
+                != Some(&refresh.state.asset.id)
+        {
+            self.document.capture = refresh.capture;
         }
         self.document.current_recipe = Some(
             refresh

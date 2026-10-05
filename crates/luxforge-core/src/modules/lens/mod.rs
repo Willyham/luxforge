@@ -19,6 +19,9 @@ use crate::{EFFECT_FORMAT, Error, Layer, SourceOptics};
 use serde_json::{Map, Value, json};
 
 pub const LENS_EFFECT: &str = "luxforge.lens.distortion";
+/// The lens module's identity, by which the host skips its first-open action when the person
+/// turned off lens correction for new RAW photos ([`crate::EditorService::set_auto_lens_profile`]).
+pub(crate) const LENS_MODULE: &str = "luxforge.lens";
 const SELECT: &str = "select-lens-profile";
 const RESET: &str = "reset-lens-profile";
 const QUERY: &str = "lens-profiles";
@@ -50,7 +53,7 @@ impl LensModule {
         index::load_in_background();
         Self {
             descriptor: ModuleDescriptor {
-                id: "luxforge.lens".into(),
+                id: LENS_MODULE.into(),
                 title: "Lens correction".into(),
                 hint: Some("Profile distortion correction".into()),
                 collapsed: true,
