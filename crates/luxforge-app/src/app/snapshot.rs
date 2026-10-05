@@ -570,13 +570,15 @@ fn gpu_fallback(fallback: luxforge_ui::photo_surface::GpuFallback) -> Value {
         GpuFallback::BufferLimit { bytes, limit } => {
             json!({"reason":fallback.as_str(),"bytes":bytes,"limit_bytes":limit})
         }
-        GpuFallback::BoundaryUploading { uploaded, bytes } => {
+        GpuFallback::BoundaryUploading { uploaded, bytes }
+        | GpuFallback::SourceUploading { uploaded, bytes } => {
             json!({"reason":fallback.as_str(),"uploaded_bytes":uploaded,"bytes":bytes})
         }
         GpuFallback::NoAdapter
         | GpuFallback::DeviceLost
         | GpuFallback::PipelineFailed
         | GpuFallback::Compiling
-        | GpuFallback::BoundaryReleased => json!({"reason":fallback.as_str()}),
+        | GpuFallback::BoundaryReleased
+        | GpuFallback::SourceMissing => json!({"reason":fallback.as_str()}),
     }
 }

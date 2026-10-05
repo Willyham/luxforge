@@ -173,6 +173,46 @@ impl ProxyPlan {
             ..self
         }
     }
+
+    /// The weights this plan's build averages a `source`-sized source with, across and then down
+    /// ([`Coverage`]), for the GPU's reduction of the source it holds, which averages with the
+    /// build's own weights (`docs/design/gpu-preview.md`, "The GPU source"). `O(source + output)`,
+    /// and reads no pixel; a plan that does not fit the source is refused as its build refuses it.
+    pub fn coverage(&self, source: (u32, u32)) -> Result<[ProxyCoverage; 2], Error> {
+        check_plan(*self, source.0, source.1)?;
+        let of = |coverage: Coverage| ProxyCoverage {
+            first: coverage.first,
+            offsets: coverage
+                .offsets
+                .into_iter()
+                .map(|offset| offset as u32)
+                .collect(),
+            weights: coverage.weights,
+        };
+        Ok([
+            of(Coverage::new(source.0, self.width)),
+            of(Coverage::new(source.1, self.height)),
+        ])
+    }
+
+    /// The rectangle `[x, y, width, height]` of the whole proxy stage the proxy source holds: the
+    /// window, or the whole stage.
+    pub fn held(&self) -> [u32; 4] {
+        let window = window_of(*self);
+        [window.x, window.y, window.width, window.height]
+    }
+}
+
+/// One axis of a proxy's area average, as its build weighs it: for each output index the first
+/// source index it reads, and the half-open range of `weights` that belongs to it — each weight
+/// the share of the output's interval `[i·S/o, (i+1)·S/o)` its source sample covers, over the
+/// interval's length — so an output is the exact mean over its source interval.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProxyCoverage {
+    pub first: Vec<u32>,
+    /// One more than the output's length: output `i`'s weights are `offsets[i]..offsets[i + 1]`.
+    pub offsets: Vec<u32>,
+    pub weights: Vec<f64>,
 }
 
 /// What identifies a prepared source's pixels for cache purposes.
