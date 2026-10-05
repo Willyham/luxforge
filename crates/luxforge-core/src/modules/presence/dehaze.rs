@@ -568,6 +568,17 @@ impl SpatialUnit for Dehaze {
         Some(super::gpu::dehaze(self, global))
     }
 
+    /// The atmospheric light from the whole input stage at full resolution: the 16-pixel block
+    /// means and the selection [`Self::prepare`] makes from them. It reads no amount.
+    fn gpu_light(&self, stage: Stage) -> Option<crate::render::gpu::GpuLightPasses> {
+        Some(super::gpu::dehaze_light(stage))
+    }
+
+    /// The light read from the plane the light link writes.
+    fn gpu_reading_light(&self) -> Option<GpuSpatialUnit> {
+        Some(super::gpu::dehaze_reading_light(self))
+    }
+
     fn is_finite(&self) -> bool {
         self.amount.is_finite() && self.omega.is_finite() && self.veil.is_finite()
     }
