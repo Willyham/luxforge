@@ -55,7 +55,7 @@ impl Editor {
         if let Some(figures) = self.gpu.warm_up.figures {
             return Some(figures);
         }
-        luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE).gpu_warm_up
+        luxforge_ui::photo_surface::gpu_warm_up()
     }
 
     /// After every message: a warm-up the compile thread runs is listed on the activity board
