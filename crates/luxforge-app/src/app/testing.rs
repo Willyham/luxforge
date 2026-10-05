@@ -175,6 +175,17 @@ pub(crate) fn real_photo_launched(
     config: Config,
 ) -> (Editor, AssetId, luxforge_core::ClientId) {
     let (owner, join) = start_owner(catalog, &config);
+    real_photo_on(owner, join, fixture, config)
+}
+
+/// [`real_photo_at`] on an owner the test started its own way, such as with a tile service of its
+/// own ([`luxforge_core::HostConfig::tiles`]).
+pub(crate) fn real_photo_on(
+    owner: luxforge_core::OwnerHandle,
+    join: std::thread::JoinHandle<()>,
+    fixture: &std::path::Path,
+    config: Config,
+) -> (Editor, AssetId, luxforge_core::ClientId) {
     let agent = owner.register();
     let asset = import_and_adopt(&owner, agent, fixture);
     let (mut editor, _) = Editor::new(Boot {

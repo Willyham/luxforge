@@ -344,7 +344,7 @@ anywhere else the stroke passes over — if a strip of the same sky shows throug
 roof and your stroke reaches it, it is painted too, and the remedy is to subtract a brush over what it
 caught. The colour is sampled once, where the stroke starts, and stored with the stroke: later edits
 never move it, and nothing is re-read when the picture is drawn. It is read from the GPU's picture,
-so the first moment of a limited stroke waits for that one read; a stroke painted through the JSON
+so the first moment of a limited stroke draws once that one read lands, while the window stays responsive; a stroke painted through the JSON
 API without the desktop reads it from the reference, which may differ by a code. Because the stroke then reads pixels,
 it inherits what the range selections say below — what it holds follows the adjustment's own input, so
 a layer ahead of the mask changes it, and its overlay is read on that input rather than on the finished

@@ -207,7 +207,7 @@ Every boundary a plan is drawn from is derived on the GPU from the photograph's 
 
 ### A tick
 
-1. The input updates the draft on the owner synchronously, as today. The answer carries the draft's GPU preview: its plan and the boundary it starts from, or the reason there is none.
+1. The input updates the draft on the owner synchronously, as today. The answer carries the draft's GPU preview: its plan and the boundary it starts from, or the reason there is none. The one tick whose plan reads a pixel — a colour-limited stroke's first, which reads its seed from a GPU tile — is never waited for on the interface thread: the owner refuses it at once, changing nothing, and the desktop sends it again on the blocking pool, so that tick's plan arrives a hop later with its answer and the moves meanwhile are coalesced behind it ([draft memo](detail.md#pixel-reads-off-the-owner)).
 2. With the boundary held and the surface having evaluated it, nothing goes to the preview worker for that tick: no proxy job and no upload (`Editor::gpu_tick`, `crates/luxforge-app/src/app/gpu_preview.rs`). The desktop converts the plan over the held boundary and hands it to the surface tagged with the tick's draft revision. In Mask mode the overlay's coverage still follows the tick through its own worker, over the frame on screen.
 3. In the next `prepare`, the surface writes the words and the changed blocks and encodes the passes:
    - a spatial step's compute passes the tick changes;
