@@ -10,7 +10,7 @@
 //!   output into `out` without building the whole file in memory. `progress` receives the encoded
 //!   fraction in `0..=1`, at most about once per 1% of rows; `cancel` is checked before every strip
 //!   of 16 rows, and a cancelled encode returns its error and writes nothing more.
-//! - `encode_jpeg_rows(out, width, height, bands, exif, pixels_per_inch, progress, cancel)` is the same encode for a
+//! - `encode_jpeg_rows(out, (width, height), bands, exif, pixels_per_inch, progress, cancel)` is the same encode for a
 //!   frame that arrives in bands of whole rows, in order from the top, pulled one at a time: the
 //!   same bytes, progress and checks whatever the bands, and `encode_jpeg` is it given the whole
 //!   frame as one band. A band the source fails to produce stops the encode with its error.
@@ -42,8 +42,7 @@ pub(crate) fn encode_jpeg<W: Write>(
     let whole = std::iter::once(Ok((frame.height, frame.rgba.as_slice())));
     encode_jpeg_rows(
         out,
-        frame.width,
-        frame.height,
+        (frame.width, frame.height),
         whole,
         exif,
         pixels_per_inch,
@@ -62,8 +61,7 @@ pub(crate) fn encode_jpeg<W: Write>(
 /// still buffers is discarded and `out` receives nothing more.
 pub(crate) fn encode_jpeg_rows<W: Write, B: AsRef<[u8]>>(
     out: W,
-    width: u32,
-    height: u32,
+    (width, height): (u32, u32),
     bands: impl IntoIterator<Item = Result<(u32, B), Error>>,
     exif: Option<&[u8]>,
     pixels_per_inch: Option<u16>,
@@ -489,8 +487,7 @@ mod tests {
             let mut progress = Vec::new();
             encode_jpeg_rows(
                 &mut out,
-                frame.width,
-                frame.height,
+                (frame.width, frame.height),
                 bands(&frame, size),
                 Some(&exif),
                 None,
@@ -531,8 +528,7 @@ mod tests {
             let mut out = Vec::new();
             let error = encode_jpeg_rows(
                 &mut out,
-                frame.width,
-                frame.height,
+                (frame.width, frame.height),
                 source,
                 None,
                 None,
