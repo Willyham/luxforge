@@ -350,6 +350,12 @@ impl Editor {
                 "gpu_preview_compile_pending":gpu.gpu_preview_compile_pending,
                 "gpu_preview_warmed":gpu.gpu_preview_warmed,
                 "gpu_preview_warm":self.gpu.warm().map(luxforge_ui::photo_surface::GpuWarm::version),
+                // The compile thread's warm-up running, or its last: its lists' sequences, when
+                // the open stack's part and the whole had compiled.
+                "warm_up":super::gpu_warm::evidence(self.gpu_warm_up_figures()),
+                // The photograph at rest is the reference frame while the GPU's picture at rest
+                // compiles its programs, which the status bar's notice says.
+                "rest_compiling":self.gpu_rest_compiling(),
                 "gpu_preview_frame_us":gpu.gpu_preview_frame_us,
                 "gpu_preview_done_us":gpu.gpu_preview_done_us,
                 // The clipping marks the GPU frame drawn carried, which stand for the overlay over it:

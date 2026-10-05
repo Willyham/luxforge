@@ -420,3 +420,131 @@ fn gpu_preview_the_notice_says_the_reference_renderer_from_the_session_at_rest_a
     assert_says(&editor, "device-lost", Some(REFERENCE));
     finish(editor, catalog);
 }
+
+const REST_COMPILING: (&str, &str) = (
+    "Preparing GPU render",
+    "The GPU renderer is compiling its programs for this photo, so the reference renderer draws \
+     it on the CPU until they are ready.",
+);
+
+/// The photograph just opened is the reference renderer's frame while the GPU's picture at rest
+/// compiles its programs, and the status bar says so at once, with no gesture open and no reason
+/// of a tick's; the GPU frame that replaces it, once they are compiled, takes the notice away.
+#[test]
+fn gpu_preview_the_picture_at_rest_is_labelled_the_reference_while_its_programs_compile() {
+    let catalog = catalog("notice-rest-compiling");
+    let (mut editor, _, _) = real_photo(&catalog);
+    deliver_until(&mut editor, "the first frame", |editor| {
+        editor.presentation.dimensions.is_some() && !editor.presentation.queue.is_busy()
+    });
+    assert!(
+        editor.gpu_rest_plan().is_some(),
+        "the picture at rest is planned"
+    );
+    // The surface's first frame of the picture at rest finds its programs compiling, and draws the
+    // reference frame.
+    editor.gpu.surface = Some(SurfaceReport {
+        fallback: Some(SurfaceFallback::Compiling),
+        ..SurfaceReport::default()
+    });
+    let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    let said = json!({"phrase": REST_COMPILING.0, "tooltip": REST_COMPILING.1});
+    let snapshot = editor.snapshot();
+    let gpu = &snapshot["surface"]["gpu"];
+    assert_eq!(gpu["rest_compiling"], json!(true));
+    assert_eq!(gpu["plan_fallback"], Value::Null, "no gesture's reason");
+    assert_eq!(gpu["fallback_notice"], said, "the evidence");
+    assert_eq!(
+        snapshot["status_bar"]["fallback"], said,
+        "beside the render slot"
+    );
+    assert!(
+        !editor.workspace.status.render.starts_with("GPU"),
+        "the render slot names the reference frame: {}",
+        editor.workspace.status.render
+    );
+    // Its programs compiled, the surface draws the GPU's picture at rest: nothing more is said.
+    editor.gpu.surface = Some(SurfaceReport {
+        drawn: Some((1, 0)),
+        ..SurfaceReport::default()
+    });
+    let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    let snapshot = editor.snapshot();
+    assert_eq!(snapshot["surface"]["gpu"]["rest_compiling"], json!(false));
+    assert_eq!(snapshot["status_bar"]["fallback"], Value::Null);
+    assert_eq!(editor.workspace.status.fallback, None);
+    // A gesture's own `compiling` is the gesture's, said after half a second, never this notice.
+    editor.gpu.surface = Some(SurfaceReport {
+        fallback: Some(SurfaceFallback::Compiling),
+        ..SurfaceReport::default()
+    });
+    let _ = slide(&mut editor, ACTION, FIELD, 0.1);
+    assert!(!editor.gpu_rest_compiling(), "a drag is open");
+    assert_eq!(
+        editor.workspace.status.fallback, None,
+        "not half a second yet"
+    );
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    finish(editor, catalog);
+}
+
+/// A warm-up the compile thread runs is listed on the owner's activity board while it runs, which
+/// the Performance section and `activity.list` read, and ends when the warm-up does; each ended
+/// warm-up is recorded once as the `gpu_warm_up` event with its figures, the launch's first
+/// marked so.
+#[test]
+fn gpu_preview_a_warm_up_is_listed_while_it_runs_and_recorded_once_it_ends() {
+    use super::gpu_warm::{KIND, LABEL};
+    use luxforge_ui::photo_surface::WarmUpFigures;
+    let catalog = catalog("warm-up");
+    let (mut editor, _, _) = real_photo(&catalog);
+    let log = super::testing::attach_log(&mut editor);
+    let listed = |editor: &Editor| -> Vec<Value> {
+        let (answer, _) =
+            super::tasks::call(&editor.owner, editor.client, "activity.list", json!({}))
+                .expect("activity.list");
+        answer["active"]
+            .as_array()
+            .expect("active")
+            .iter()
+            .filter(|entry| entry["kind"] == json!(KIND))
+            .map(|entry| entry["label"].clone())
+            .collect()
+    };
+    let running = WarmUpFigures {
+        period: 1,
+        version: 3,
+        sequences: 7,
+        open_sequences: 2,
+        open_us: None,
+        us: None,
+    };
+    editor.gpu.warm_up.figures = Some(running);
+    let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    assert_eq!(listed(&editor), [json!(LABEL)], "listed while it runs");
+    let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    assert_eq!(listed(&editor).len(), 1, "listed once");
+    assert_eq!(
+        editor.snapshot()["surface"]["gpu"]["warm_up"]["running"],
+        json!(true)
+    );
+    let ended = WarmUpFigures {
+        open_us: Some(1_200_000),
+        us: Some(4_500_000),
+        ..running
+    };
+    editor.gpu.warm_up.figures = Some(ended);
+    for _ in 0..2 {
+        let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    }
+    assert!(listed(&editor).is_empty(), "ended with the warm-up");
+    let records = super::testing::logged(&mut editor, &log);
+    let recorded = super::testing::events(&records, "gpu_warm_up");
+    assert_eq!(recorded.len(), 1, "recorded once");
+    assert_eq!(
+        *recorded[0],
+        json!({"period": 1, "version": 3, "sequences": 7, "open_sequences": 2,
+            "open_ms": 1200.0, "ms": 4500.0, "running": false, "first": true})
+    );
+    finish(editor, catalog);
+}
