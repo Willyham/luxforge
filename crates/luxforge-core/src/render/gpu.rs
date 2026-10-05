@@ -7,6 +7,8 @@
 //! - [`grid`]: a lens or perspective warp's coordinate grid.
 //! - [`preview`]: a draft's GPU preview, planned with its preview job, and the boundary it starts
 //!   from.
+//! - [`tiles`]: the tile a pixel read renders and an export's output stage in tiles, which the
+//!   desktop's tile worker draws.
 //!
 //! The core names no GPU crate: a program is WGSL text, a plan plain data the desktop hands the
 //! photo surface. The CPU stays the only reference, and nothing here changes a CPU byte.
@@ -16,6 +18,7 @@ mod plan;
 mod preview;
 mod program;
 mod spatial;
+pub(crate) mod tiles;
 
 #[cfg(test)]
 mod grid_tests;
@@ -52,3 +55,4 @@ pub use spatial::{
     GpuPlane, GpuPlaneFormat, GpuPlaneSize, GpuSpatial, GpuSpatialUnit,
 };
 pub(crate) use spatial::{Word, Words};
+pub use tiles::{STREAM_TILE_SIDES, StreamPlan, TilePlan, plan_read, plan_stream};

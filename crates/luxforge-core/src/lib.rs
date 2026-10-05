@@ -113,7 +113,8 @@ pub use render::gpu::{
     GpuMask, GpuOperation, GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest, GpuPlane,
     GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuRest,
     GpuSpatial, GpuSpatialUnit, GpuView, REST_TILE_BYTES, REST_TILE_SIDES, RestTile, RestTiles,
-    SourceBoundary, anchored, gpu_plan, gpu_plan_with,
+    STREAM_TILE_SIDES, SourceBoundary, StreamPlan, TilePlan, anchored, gpu_plan, gpu_plan_with,
+    plan_read, plan_stream,
 };
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{
