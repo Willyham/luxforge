@@ -150,7 +150,7 @@
     },
     {
       "id": "TASK-003",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002"
@@ -161,7 +161,8 @@
         "The at-rest picture must meet the display limit against the reference reduced to the view's size, on the corpus, at Fit, below 100% and at 100%; the label vocabulary changes: nothing at rest is called approximate, and the status bar's render figure is the GPU frame's.",
         "Compare and history return draw the retained content on the GPU in one frame, so no retained-frame re-adoption is needed. The settle dissolve keeps its form, between two GPU frames.",
         "Detail's exact-settle progress bar (the Detail plan's in-progress task) loses its subject on this path; keep its machinery for export and any job longer than a second, or retire it with the exact phase in stage 5, and say which in the Detail design.",
-        "Recorded default since the gate's first run (2026-10-04, docs/design/gpu-first.md, Proposals with recorded defaults): a frame processed over a source reduced to the view's size misses the limit against the reference on 475 of 744 cells below 100%, so the picture at rest at Fit and below 100% is process-first, the stack at full resolution in tiles reduced to the view's size, which met every limit; the source's reduction (a box pass over the GPU-resident source, or its mip chain) serves the drag's boundary, whose frame is held to the at-rest frame it settles to."
+        "Recorded default since the gate's first run (2026-10-04, docs/design/gpu-first.md, Proposals with recorded defaults): a frame processed over a source reduced to the view's size misses the limit against the reference on 475 of 744 cells below 100%, so the picture at rest at Fit and below 100% is process-first, the stack at full resolution in tiles reduced to the view's size, which met every limit; the source's reduction (a box pass over the GPU-resident source, or its mip chain) serves the drag's boundary, whose frame is held to the at-rest frame it settles to.",
+        "Delivered 2026-10-05: with no gesture open the GPU draws the committed stack after a commit, a history selection, a preset, Compare and an open, its view plan at once and at Fit and below 100% its tiles at full resolution reduced to the view, dissolving in; every boundary is derived on the GPU from the source it holds; the proxy phase, the restoration-prefix cache and Detail's settled-from-exact display are gone. The release gate draws the editor's own frames and gates the picture at rest within its limit on all 1,000 cells; the picture in motion is reported, past a limit on 481 of 750 cells below 100% against either the picture at rest or the reference (artifacts/gpu-first/task-003/gate in the lane's worktree), the owner's open question in tasks/product-decisions.json TASK-008."
       ],
       "context_links": [
         {
@@ -176,7 +177,7 @@
           "label": "GPU previews design",
           "target": "docs/design/gpu-preview.md",
           "relevance": "The stage, programs, error limit and budgets the renderer of record grows from.",
-          "locator": "The held input boundary"
+          "locator": "The GPU source"
         },
         {
           "kind": "file",
@@ -311,7 +312,7 @@
     },
     {
       "id": "TASK-005",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-003"
       ],
