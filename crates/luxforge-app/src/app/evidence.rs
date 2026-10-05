@@ -239,7 +239,13 @@ pub(crate) struct IdleWindow {
     pub(crate) drawn: u64,
     pub(crate) views: u64,
     pub(crate) cpu_ns: Option<u64>,
+    /// How long past its settle the window waited for the GPU stage's compiles to end.
+    pub(crate) compile_wait_ms: f64,
 }
+
+/// The most an idle check's settle is drawn out while the GPU stage still compiles: a warm-up in
+/// the background is work, whose end wakes the editor once, so the window opens after it.
+const IDLE_COMPILE_WAIT: Duration = Duration::from_secs(60);
 
 impl Evidence {
     /// Whether evidence's own tick and capture streams are suspended for a native idle probe.
@@ -862,9 +868,11 @@ impl Editor {
                 // Iced names the adapter and its backend; the rest of the adapter's identity — its
                 // device type above all, which tells a software rasterizer from a GPU — comes from
                 // an enumeration of that backend, which creates a graphics instance, so it runs on
-                // the blocking pool and the capture waits for it.
+                // the blocking pool and the capture waits for it. The GPU tile worker is named the
+                // same adapter, as any launch names it once its photo surface has checked its stage.
                 let (backend, name) =
                     (info.graphics_backend.clone(), info.graphics_adapter.clone());
+                self.window_adapter_named(backend.clone(), name.clone());
                 return super::tasks::owner_task(
                     move || super::renderer::identify(&backend, &name),
                     move |adapter| {
@@ -1294,7 +1302,11 @@ impl Editor {
                 let dir = std::path::absolute(&dir).unwrap_or(dir);
                 self.note_step(json!({"destination":file.name}));
                 self.await_step(Settle::Export);
-                let task = self.export_start(file.keep_metadata, Some(dir.join(&file.name)));
+                let task = self.export_start(
+                    file.keep_metadata,
+                    file.reference,
+                    Some(dir.join(&file.name)),
+                );
                 if !self.export.active() {
                     return self
                         .fail_step(format!("the export was not started: {}", self.status.text));
@@ -3559,13 +3571,22 @@ impl Editor {
         let gpu = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
         let views = self.log.loop_timing.get().views;
         let Some(window) = observation.window else {
-            if now >= observation.settle_until {
+            // The settle lasts until the GPU stage has nothing left to compile too, at most
+            // [`IDLE_COMPILE_WAIT`] more.
+            let compiling = gpu.gpu_preview_compile_pending > 0
+                || self
+                    .gpu_warm_up_figures()
+                    .is_some_and(|warm_up| warm_up.running());
+            let settle_until = observation.settle_until;
+            if now >= settle_until && (!compiling || now >= settle_until + IDLE_COMPILE_WAIT) {
                 let window = IdleWindow {
                     started: now,
                     until: now + Duration::from_millis(observation.ms),
                     drawn: gpu.drawn_frames,
                     views,
                     cpu_ns: luxforge_core::resources::process_cpu_time_ns(),
+                    compile_wait_ms: now.saturating_duration_since(settle_until).as_secs_f64()
+                        * 1000.0,
                 };
                 if let Some(idle) = self.evidence.as_mut().and_then(|e| e.idle.as_mut()) {
                     idle.window = Some(window);
@@ -3591,6 +3612,7 @@ impl Editor {
         let detail = json!({
             "passed": passed,
             "settle_ms": observation.settle_ms,
+            "compile_wait_ms": window.compile_wait_ms,
             "window_ms": observation.ms,
             "drawn_frames_delta": drawn_delta,
             "views_delta": views_delta,

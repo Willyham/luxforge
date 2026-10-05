@@ -1,12 +1,25 @@
 //! JPEG export through the catalog owner and the JSON methods: the exported bytes against an
 //! independent exact render, the frozen target, retries, both metadata modes, every refusal, the
-//! lane's bound and cancellation, and shutdown.
+//! lane's bound and cancellation, and shutdown; and an export streamed through a tile service
+//! standing in for the desktop's GPU worker ([`StubTiles`]): its bands encoded in order, the
+//! reference option never asking it, a stream it stops drawing rendered again by the reference
+//! naming why, and a cancel between its tiles.
 use super::*;
-use crate::{AssetId, api::ApiFailure};
-use luxforge_testbase::paths::{jpeg as fixture, temp_dir};
+use crate::{
+    AssetId, Cancel, Evaluation, GpuFallback, SnapshotId,
+    api::ApiFailure,
+    tiles::{
+        Answered, Band, BandStream, TileCall, TileFallback, TileService, TileStatus,
+        TileUnavailable,
+    },
+};
+use luxforge_testbase::{
+    Gate,
+    paths::{jpeg as fixture, temp_dir},
+};
 use std::{
     fs,
-    sync::{Mutex, mpsc},
+    sync::{Mutex, atomic::AtomicUsize, mpsc},
     time::Duration,
 };
 
@@ -36,6 +49,29 @@ impl Harness {
             Arc::new(ModuleRegistry::developer()),
             HostConfig {
                 preferences_dir: Some(dir.join("config")),
+                ..HostConfig::unconfigured()
+            },
+        )
+        .unwrap();
+        let client = owner.register();
+        Self {
+            owner,
+            join: Some(join),
+            client,
+            dir,
+            catalog,
+        }
+    }
+
+    /// [`Self::start`] on a host whose GPU provider is `tiles`.
+    fn with_tiles(name: &str, tiles: Arc<dyn TileService>) -> Self {
+        let dir = temp_dir(&format!("export-{name}")).canonicalize().unwrap();
+        let catalog = dir.join("catalog.sqlite");
+        let (owner, join) = OwnerHandle::start_with_host(
+            &catalog,
+            Arc::new(ModuleRegistry::developer()),
+            HostConfig {
+                tiles: Some(tiles),
                 ..HostConfig::unconfigured()
             },
         )
@@ -224,8 +260,8 @@ fn with_envelope(mut params: Value) -> Value {
     params
 }
 
-/// The renderer a written export's result names: the reference renderer, with no reason, since it
-/// renders every export.
+/// The renderer a written export's result names on an owner with no GPU provider: the reference
+/// renderer, with no reason, since it is the only one there.
 fn reference_renderer() -> Value {
     json!({"record": "reference", "reason": null})
 }
@@ -677,10 +713,11 @@ fn a_retried_export_is_answered_from_the_first_and_writes_one_file() {
 
 /// `schema.list` lists `reference` as an optional boolean, default false, whose notes say what it
 /// asks for, and a value of another kind is refused. The answer echoes it, and a written export's
-/// result names the renderer that wrote the file: the reference renderer, which renders every
-/// export, so asking for it writes the same file as not asking. Request deduplication hashes it as
-/// it does every parameter: the same request again is answered from the first answer, and the same
-/// request id with another value is a conflict. The original is unchanged throughout.
+/// result names the renderer that wrote the file: on an owner with no GPU provider the reference
+/// renderer either way, for no reason without the option and as `requested` with it, so asking for
+/// it writes the same file as not asking. Request deduplication hashes it as it does every
+/// parameter: the same request again is answered from the first answer, and the same request id
+/// with another value is a conflict. The original is unchanged throughout.
 #[test]
 fn the_reference_option_is_listed_echoed_and_hashed() {
     let harness = Harness::start("reference");
@@ -709,7 +746,7 @@ fn the_reference_option_is_listed_echoed_and_hashed() {
     );
     let notes = parameter["notes"].as_str().unwrap();
     assert!(
-        notes.contains("reference renderer") && notes.contains("every export"),
+        notes.contains("reference renderer") && notes.contains("requested"),
         "{notes}"
     );
     assert_eq!(listed["optional"]["reference"], json!(notes));
@@ -731,10 +768,16 @@ fn the_reference_option_is_listed_echoed_and_hashed() {
     }));
     assert_eq!(default["reference"], json!(false));
     assert_eq!(asked["reference"], json!(true));
-    for job in [&default, &asked] {
+    for (job, renderer) in [
+        (&default, reference_renderer()),
+        (
+            &asked,
+            json!({"record": "reference", "reason": "requested"}),
+        ),
+    ] {
         let read = harness.settle(&job["job_id"]);
         assert_eq!(read["status"], "ready", "{read}");
-        assert_eq!(read["result"]["renderer"], reference_renderer());
+        assert_eq!(read["result"]["renderer"], renderer);
     }
     assert!(
         fs::read(out.join("asked.jpg")).unwrap() == fs::read(out.join("default.jpg")).unwrap(),
@@ -1429,4 +1472,398 @@ fn export_refuses_forged_lens_payload_before_publication() {
     assert_eq!(refused.code, "validation");
     assert!(!destination.exists());
     assert_eq!(fs::read(&original).unwrap(), original_bytes);
+}
+
+/// What the stub tile service does with the next stream it is asked for.
+#[derive(Clone)]
+enum Behaviour {
+    /// Draw the output stage in bands of this many rows; with `stop`, end the stream after that
+    /// many bands, naming why the GPU cannot go on or with an error of its own.
+    Bands {
+        rows: u32,
+        stop: Option<(usize, Stop)>,
+    },
+    /// Refuse the stream at once, for this reason.
+    Refuse(TileFallback),
+}
+
+#[derive(Clone)]
+enum Stop {
+    Fallback(TileFallback),
+    Error(Error),
+}
+
+/// A tile service standing in for the desktop's GPU worker. On a thread of its own it renders an
+/// export's output stage with the reference renderer, each code's lowest bit flipped so a file it
+/// drew is told apart from the reference renderer's ([`marked`]), and hands the stage over in
+/// bands, checking the stream's cancellation before each and passing [`Self::gate`] before the band
+/// [`Self::hold_before`] names; or it does what its [`Behaviour`] says.
+struct StubTiles {
+    behaviour: Mutex<Behaviour>,
+    gate: Arc<Gate>,
+    hold_before: Mutex<Option<usize>>,
+    /// Streams asked for, and bands sent.
+    streams: AtomicUsize,
+    sent: Arc<AtomicUsize>,
+}
+
+impl StubTiles {
+    fn new(behaviour: Behaviour) -> Arc<Self> {
+        Arc::new(Self {
+            behaviour: Mutex::new(behaviour),
+            gate: Arc::new(Gate::new()),
+            hold_before: Mutex::new(None),
+            streams: AtomicUsize::new(0),
+            sent: Arc::new(AtomicUsize::new(0)),
+        })
+    }
+
+    fn behave(&self, behaviour: Behaviour) {
+        *self.behaviour.lock().unwrap() = behaviour;
+    }
+
+    /// Hold the next streams before band `band`, at the shut gate.
+    fn hold_before(&self, band: usize) {
+        self.gate.shut();
+        *self.hold_before.lock().unwrap() = Some(band);
+    }
+
+    fn streams(&self) -> usize {
+        self.streams.load(Ordering::SeqCst)
+    }
+
+    fn sent(&self) -> usize {
+        self.sent.load(Ordering::SeqCst)
+    }
+}
+
+impl TileService for StubTiles {
+    fn status(&self) -> TileStatus {
+        TileStatus::Gpu
+    }
+
+    fn submit(&self, call: TileCall) {
+        call.refuse(Error::internal("the stub reads no pixels"));
+    }
+
+    fn disconnect(&self, _: ClientId) {}
+
+    fn stream(&self, evaluation: &Evaluation, cancel: &Cancel) -> Result<BandStream, TileFallback> {
+        self.streams.fetch_add(1, Ordering::SeqCst);
+        let (rows, stop) = match self.behaviour.lock().unwrap().clone() {
+            Behaviour::Refuse(reason) => return Err(reason),
+            Behaviour::Bands { rows, stop } => (rows, stop),
+        };
+        let identity = evaluation.identity().expect("the export's identity");
+        let width = identity.width;
+        let (sender, stream) = BandStream::channel(width, identity.height, Answered::gpu());
+        let (evaluation, cancel) = (evaluation.clone(), cancel.clone());
+        let (gate, hold, sent) = (
+            Arc::clone(&self.gate),
+            *self.hold_before.lock().unwrap(),
+            Arc::clone(&self.sent),
+        );
+        std::thread::spawn(move || {
+            let frame = match evaluation
+                .exact(&Cancel::never())
+                .and_then(|render| render.frame(SnapshotId::new()))
+            {
+                Ok(frame) => marked(&frame),
+                Err(error) => {
+                    sender.send(Err(error));
+                    return;
+                }
+            };
+            drop(evaluation);
+            let stride = width as usize * 4;
+            for (index, rgba) in frame.rgba.chunks(rows as usize * stride).enumerate() {
+                if let Some((after, stop)) = &stop
+                    && index == *after
+                {
+                    match stop {
+                        Stop::Fallback(fallback) => sender.fall_back(fallback.clone()),
+                        Stop::Error(error) => sender.send(Err(error.clone())),
+                    };
+                    return;
+                }
+                if hold == Some(index) {
+                    gate.pass();
+                }
+                if let Err(cancelled) = cancel.check() {
+                    sender.send(Err(cancelled));
+                    return;
+                }
+                let band = Band {
+                    y0: index as u32 * rows,
+                    rows: (rgba.len() / stride) as u32,
+                    rgba: rgba.to_vec(),
+                };
+                if !sender.send(Ok(band)) {
+                    return;
+                }
+                sent.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        Ok(stream)
+    }
+
+    fn stop(&self) {}
+}
+
+/// `frame` with every code's lowest bit flipped: what the stub draws for it, so a file it drew is
+/// never the reference renderer's.
+fn marked(frame: &crate::Raster) -> crate::Raster {
+    let rgba: Vec<u8> = frame
+        .rgba
+        .chunks_exact(4)
+        .flat_map(|pixel| [pixel[0] ^ 1, pixel[1] ^ 1, pixel[2] ^ 1, 255])
+        .collect();
+    crate::Raster {
+        rgba: Arc::new(rgba),
+        ..frame.clone()
+    }
+}
+
+/// The names in `dir` that are temporary export files.
+fn staged_files(dir: &Path) -> Vec<String> {
+    listing(dir)
+        .into_iter()
+        .filter(|name| name.starts_with('.'))
+        .collect()
+}
+
+/// A stream feeds the encoder its bands in order: the file is exactly the encoding of the frame the
+/// provider drew, in bands of seven rows that never meet the encoder's strips of sixteen, whatever
+/// metadata it carries, and its result names the GPU. While it is encoding its progress is the
+/// share of the rows encoded. The original is unchanged.
+#[test]
+fn a_stream_feeds_the_encoder_in_order_and_names_the_gpu() {
+    let stub = StubTiles::new(Behaviour::Bands {
+        rows: 7,
+        stop: None,
+    });
+    let mut harness = Harness::with_tiles("stream", stub.clone());
+    let state = harness.import("stream.jpg");
+    let asset = state["asset"]["id"].clone();
+    let original = harness.dir.join("stream.jpg");
+    let original_digest = digest(&original);
+    let entry = harness.expose(&asset, 0.6);
+    let out = destinations(&harness);
+
+    // Held before its sixth band, the export has encoded the rows it has: 35 of them, two whole
+    // strips, the second's start reported as the rows encoded before it over the stage's height.
+    stub.hold_before(5);
+    let held = harness.export(json!({"asset_id": asset, "destination": out.join("gpu.jpg")}));
+    stub.gate.wait_reached(1, "the stub's sixth band");
+    let encoding = luxforge_testbase::wait_for("the encoder's progress", || {
+        let read = harness.ok("job.read", json!({"job_id": held["job_id"]}));
+        (read["progress"]["fraction"].as_f64().unwrap_or(0.0) > 0.0).then_some(read)
+    });
+    assert_eq!(encoding["status"], "running", "{encoding}");
+    assert_eq!(encoding["progress"]["message"], "encoding", "{encoding}");
+    let fraction = encoding["progress"]["fraction"].as_f64().unwrap();
+    assert!(
+        (fraction - 16.0 / 320.0).abs() < 1e-6,
+        "16 of 320 rows encoded: {fraction}"
+    );
+    assert_eq!(staged_files(&out).len(), 1, "one temporary file");
+    *stub.hold_before.lock().unwrap() = None;
+    stub.gate.open();
+    let read = harness.settle(&held["job_id"]);
+    assert_eq!(read["status"], "ready", "{read}");
+    let bytes = fs::metadata(out.join("gpu.jpg")).unwrap().len();
+    assert_eq!(
+        read["result"],
+        json!({
+            "path": out.join("gpu.jpg"), "bytes": bytes, "width": 480, "height": 320,
+            "metadata": [], "renderer": {"record": "gpu", "reason": null},
+        })
+    );
+    let kept = harness.export(json!({
+        "asset_id": asset, "destination": out.join("kept.jpg"), "keep_metadata": true,
+    }));
+    let read = harness.settle(&kept["job_id"]);
+    assert_eq!(read["status"], "ready", "{read}");
+    assert_eq!(read["result"]["renderer"]["record"], "gpu");
+    assert!(has_app1(&fs::read(out.join("kept.jpg")).unwrap()));
+    assert_eq!(stub.streams(), 2);
+    assert_eq!(
+        listing(&out),
+        ["gpu.jpg", "kept.jpg"],
+        "nothing else written"
+    );
+    harness.stop();
+    let frame = reference(&harness.catalog, &asset, &entry);
+    assert_encodes(&out.join("gpu.jpg"), &marked(&frame), "the stub's bands");
+    assert_eq!(digest(&original), original_digest, "the original");
+}
+
+/// `reference: true` never asks the service for a stream: the reference renderer renders the file,
+/// which is the encoding of its frame, and the result names it as requested.
+#[test]
+fn reference_true_never_asks_the_service() {
+    let stub = StubTiles::new(Behaviour::Bands {
+        rows: 16,
+        stop: None,
+    });
+    let mut harness = Harness::with_tiles("asked", stub.clone());
+    let state = harness.import("asked.jpg");
+    let asset = state["asset"]["id"].clone();
+    let original = harness.dir.join("asked.jpg");
+    let original_digest = digest(&original);
+    let entry = harness.expose(&asset, 0.4);
+    let out = destinations(&harness);
+    let asked = harness.export(json!({
+        "asset_id": asset, "destination": out.join("asked.jpg"), "reference": true,
+    }));
+    let read = harness.settle(&asked["job_id"]);
+    assert_eq!(read["status"], "ready", "{read}");
+    assert_eq!(
+        read["result"]["renderer"],
+        json!({"record": "reference", "reason": "requested"})
+    );
+    assert_eq!(stub.streams(), 0, "the service was never asked");
+    harness.stop();
+    let frame = reference(&harness.catalog, &asset, &entry);
+    assert_encodes(&out.join("asked.jpg"), &frame, "the reference export");
+    assert_eq!(digest(&original), original_digest, "the original");
+}
+
+/// A stream the provider stops drawing part-way, a device lost, is dropped with its temporary file
+/// and the export starts again on the reference renderer, from `rendering`: the file is the
+/// reference's frame alone, and the result names why. A stream refused at once is rendered by the
+/// reference for the reason given: a Dehaze light the store lacks, the budget, an adapter not named
+/// yet. A stream that ends for an error of its own fails the export with it, writing nothing.
+#[test]
+fn a_stream_the_gpu_stops_drawing_is_rendered_again_by_the_reference_naming_why() {
+    let lost = TileFallback::Unavailable(TileUnavailable::DeviceLost);
+    let stub = StubTiles::new(Behaviour::Bands {
+        rows: 16,
+        stop: Some((2, Stop::Fallback(lost))),
+    });
+    let mut harness = Harness::with_tiles("stopped", stub.clone());
+    let state = harness.import("stopped.jpg");
+    let asset = state["asset"]["id"].clone();
+    let original = harness.dir.join("stopped.jpg");
+    let original_digest = digest(&original);
+    let entry = harness.expose(&asset, -0.5);
+    let out = destinations(&harness);
+    let phases = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&phases);
+    harness.owner.hold_exports(Some(Arc::new(move |phase| {
+        recorded.lock().unwrap().push(phase)
+    })));
+
+    let export = |name: &str| {
+        phases.lock().unwrap().clear();
+        let job = harness.export(json!({"asset_id": asset, "destination": out.join(name)}));
+        let read = harness.settle(&job["job_id"]);
+        (read, phases.lock().unwrap().clone())
+    };
+    let (read, phases_of) = export("lost.jpg");
+    assert_eq!(read["status"], "ready", "{read}");
+    assert_eq!(
+        read["result"]["renderer"],
+        json!({"record": "reference", "reason": "device-lost"})
+    );
+    assert_eq!(
+        phases_of,
+        ["rendering", "encoding", "rendering", "encoding", "writing"]
+    );
+    assert_eq!(stub.sent(), 2, "two bands before the device was lost");
+
+    for (refusal, reason) in [
+        (
+            TileFallback::Plan(GpuFallback::Unplannable(
+                "a plan the planner cannot cut".into(),
+            )),
+            "unplannable",
+        ),
+        (
+            TileFallback::Budget {
+                requested: 2 << 30,
+                budget: 768 << 20,
+            },
+            "tiles-budget",
+        ),
+        (
+            TileFallback::Unavailable(TileUnavailable::Pending),
+            "surface-pending",
+        ),
+    ] {
+        stub.behave(Behaviour::Refuse(refusal));
+        let (read, phases_of) = export(&format!("{reason}.jpg"));
+        assert_eq!(read["status"], "ready", "{read}");
+        assert_eq!(
+            read["result"]["renderer"],
+            json!({"record": "reference", "reason": reason})
+        );
+        assert_eq!(phases_of, ["rendering", "encoding", "writing"], "{reason}");
+    }
+
+    stub.behave(Behaviour::Bands {
+        rows: 16,
+        stop: Some((1, Stop::Error(Error::internal("the stub's own failure")))),
+    });
+    let (read, _) = export("failed.jpg");
+    assert_eq!(read["status"], "failed", "{read}");
+    assert_eq!(read["error"]["code"], "internal", "{read}");
+    assert!(
+        read["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("the stub's own failure")),
+        "{read}"
+    );
+    assert_eq!(
+        listing(&out),
+        [
+            "lost.jpg",
+            "surface-pending.jpg",
+            "tiles-budget.jpg",
+            "unplannable.jpg"
+        ],
+        "no temporary file and nothing of the failed export"
+    );
+    harness.owner.hold_exports(None);
+    harness.stop();
+    let frame = reference(&harness.catalog, &asset, &entry);
+    for name in [
+        "lost.jpg",
+        "unplannable.jpg",
+        "tiles-budget.jpg",
+        "surface-pending.jpg",
+    ] {
+        assert_encodes(&out.join(name), &frame, name);
+    }
+    assert_eq!(digest(&original), original_digest, "the original");
+}
+
+/// A cancel while the stream is held between its tiles stops it there: the provider sends nothing
+/// more, the export ends cancelled, and its temporary file is removed. The original is unchanged.
+#[test]
+fn a_cancel_between_tiles_writes_nothing_more_and_removes_the_staged_file() {
+    let stub = StubTiles::new(Behaviour::Bands {
+        rows: 16,
+        stop: None,
+    });
+    let harness = Harness::with_tiles("cancelled-stream", stub.clone());
+    let state = harness.import("cancelled.jpg");
+    let asset = state["asset"]["id"].clone();
+    let original = harness.dir.join("cancelled.jpg");
+    let original_digest = digest(&original);
+    harness.expose(&asset, 0.3);
+    let out = destinations(&harness);
+    stub.hold_before(2);
+    let job = harness.export(json!({"asset_id": asset, "destination": out.join("never.jpg")}));
+    stub.gate.wait_reached(1, "the stub's third band");
+    assert_eq!(staged_files(&out).len(), 1, "staged while it streams");
+    let requested = harness.ok("job.cancel", json!({"job_id": job["job_id"]}));
+    assert_eq!(requested["status"], "running", "it stops at its next tile");
+    stub.gate.open();
+    let read = harness.settle(&job["job_id"]);
+    assert_eq!(read["status"], "cancelled", "{read}");
+    assert_eq!(read["error"]["message"], "the export was cancelled");
+    assert_eq!(stub.sent(), 2, "nothing drawn after the cancel");
+    assert!(listing(&out).is_empty(), "{:?}", listing(&out));
+    assert_eq!(digest(&original), original_digest, "the original");
 }

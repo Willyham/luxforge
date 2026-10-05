@@ -1,63 +1,69 @@
 //! The reference comparison harness, which the release gate runs (`docs/design/gpu-first.md`,
 //! "Tolerance by output kind"; `cargo xtask gpu-qualification`). For every stack of the
 //! qualification corpus on every source this host has, it renders the reference renderer's exact
-//! whole frame — the frame export renders — and, at each view the corpus lists, the GPU frame of
-//! the stack's plan from its first pixel layer (the frame a drag draws) over the boundary the
-//! desktop holds at that view: **Fit**, at the bounds of an evidence run's window ([`fit_bounds`]);
-//! **33%** and **50%**, whose proxy is planned at the displayed size as Fit's is, with other bounds
-//! ([`percent_bounds`]); and **100%**, the visible region of the largest window the owner's display
-//! holds ([`super::largest_view`]). The reference at a view is the reference frame reduced to the
-//! view's size by an independent area-weighted average of its linear light
-//! ([`tolerance::reduce_srgb8`]), or at 100% its visible region, unreduced.
+//! whole frame — the frame export renders — and, at each view the corpus lists, the editor's GPU
+//! frames of the stack, drawn by the photo surface's own drawing on a headless device
+//! ([`HeadlessSurface`]) from the photograph's source held on the GPU as the editor holds it:
+//! **Fit**, at the bounds of an evidence run's window ([`fit_bounds`]); **33%** and **50%**, whose
+//! view is planned at the displayed size as Fit's is, with other bounds ([`percent_bounds`]); and
+//! **100%**, the visible region of the largest window the owner's display holds
+//! ([`super::largest_view`]). The reference at a view is the reference frame reduced to the view's
+//! size by an independent area-weighted average of its linear light ([`tolerance::reduce_srgb8`]),
+//! or at 100% its visible region, unreduced.
 //!
 //! It records the picture as the design's two kinds, by its recorded default of 2026-10-05:
 //!
-//! - **The picture in motion**, the frame a drag draws, against the frame it settles to: today the
-//!   CPU frame it stands in for (the proxy at Fit and below 100%, the exact visible region at 100%).
-//!   Its distance from the reference is recorded beside it, which the gate judges instead on
-//!   request, and so is the CPU frame of the view against the reference.
-//! - **The picture at rest**, against the reference. The GPU draws no picture at rest yet, so the
-//!   kind is recorded as not rendered by it ([`at_rest_kind`] takes the GPU's frame once a stage
-//!   renders one), with its candidate's figures beside it: at Fit, 33% and 50% **process-first**
-//!   ([`process_first`]), the whole output stage drawn on the GPU at full resolution as 100% region
-//!   plans over a grid of tiles, each over its own boundary and reading the exact stage's
-//!   estimates, stitched and reduced to the view's size as the reference is; at 100% the region plan
-//!   over the visible window, which is the frame a drag draws there.
+//! - **The picture at rest**, against the reference: the stack's picture at rest as the editor
+//!   plans and draws it — at Fit, 33% and 50% its tiles at full resolution, each over its window
+//!   cut from the source, reduced to the view's size as they are drawn; where the view draws the
+//!   stage at its own size, at 100%, or where the tiles cannot be drawn, its view plan over the
+//!   window the view reads.
+//! - **The picture in motion**, the frame a drag draws — the view plan over the boundary the
+//!   surface derives from the source, the source reduced to the view's proxy at Fit and below 100%
+//!   and a window of it cut at full scale at 100% — against the picture at rest it settles to. Its
+//!   distance from the reference is recorded beside it, which the gate judges instead on request.
 //!
-//! The other output kinds — the histogram and clipping counts, samples and export — are computed on
-//! the reference and recorded as not rendered by the GPU: their comparisons ([`histogram_kind`],
-//! [`sample_kind`], [`export_kind`]) take the GPU's output once the stage that renders it supplies
-//! it.
+//! **Export** is the GPU's ([`export_kind`]): each stack's output stage streamed in tiles by the
+//! desktop's GPU tile worker on this host's adapter, as the export lane streams an export, after
+//! the reference frame's render has stored the stack's global estimates, as a settled frame
+//! stores them; its codes, which the encoder reads, against the reference frame's, which the
+//! reference export encodes, by the display limit of the stack's class over every pixel; and the
+//! same stream drawn again by a second worker on a device of its own, which must be the same bytes.
+//! A stream the GPU refuses or stops drawing is a gap naming why, and a stack whose export the
+//! export lane would hand the reference before any render had stored its Dehaze light says so.
+//!
+//! The histogram and clipping counts and samples are computed on the reference and recorded as not
+//! rendered by the GPU: their comparisons ([`histogram_kind`], [`sample_kind`]) take the GPU's
+//! output once the stage that renders it supplies it.
 //!
 //! It writes `cells.json` to `LUXFORGE_GPU_CORPUS_OUTPUT`, rewritten after every stack, and judges
 //! nothing: `cargo xtask gpu-qualification` holds every cell to its limit and writes the report. A
 //! cell's frames are written as PNGs under `frames/` only when a frame the gate judges passes a
-//! limit (with `LUXFORGE_GPU_QUALIFICATION_MOTION=reference`, the motion frame against the
-//! reference), or the at-rest candidate does, or for every cell with
+//! limit — the picture at rest, and the motion frame where the owner gates it
+//! (`LUXFORGE_GPU_QUALIFICATION_MOTION=rest` or `reference`) — or for every cell with
 //! `LUXFORGE_GPU_QUALIFICATION_FRAMES=all`.
-use super::{
-    Cell, CellOptions, CorpusSource, Opened, RegionDraw, corpus_sources, draw_region, fit_bounds,
-    headless, proxy_cell, region_cell_in, write_png,
+use super::{CorpusSource, EMPTY_MASK, Opened, corpus_sources, fit_bounds, headless, write_png};
+use crate::app::gpu_tiles::GpuTiles;
+use crate::app::{
+    gpu_plan::surface_plan_over,
+    gpu_preview::{derived_now, gpu_source_of, rest_now},
 };
 use luxforge_core::{
-    Cancel, Evaluation, PreviewRequest, ProxyBounds, Raster, Render, RenderOptions,
+    Cancel, Evaluation, GpuAnswer, GpuPreview, GpuView, PreviewRequest, ProxyBounds, Raster,
+    RenderOptions, RendererReason,
     analysis::Report,
+    tiles::{TileFallback, TileService},
 };
 use luxforge_reference::{
     preview_error::{self, Class, Rgb8, Statistics},
     tolerance::{self, Kind},
 };
-use luxforge_ui::photo_surface::gpu_preview::qualification::Qualifier;
-use serde_json::{Value, json};
-use std::{
-    path::{Path, PathBuf},
-    time::{Duration, Instant},
+use luxforge_ui::photo_surface::{
+    GpuPlan, GpuProgram, GpuSource, GpuStep, MaskedColour, TexelMap,
+    gpu_preview::{headless::HeadlessSurface, qualification::Qualifier},
 };
-
-/// Why the picture at rest is not compared on this branch.
-const AT_REST_NOT_RENDERED: &str = "the GPU does not draw the picture at rest yet: drawing it \
-    process-first, the stack at full resolution reduced to the view's size, is stage 2's, and until \
-    it lands the picture at rest is the CPU's";
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
 /// Why the histogram and clipping counts are not compared on this branch.
 const HISTOGRAM_NOT_RENDERED: &str = "the GPU does not render the histogram and clipping counts \
     yet: a GPU reduction over the full stage is stage 2's, and until it lands the counts come from \
@@ -65,9 +71,120 @@ const HISTOGRAM_NOT_RENDERED: &str = "the GPU does not render the histogram and 
 /// Why samples are not compared on this branch.
 const SAMPLE_NOT_RENDERED: &str = "the GPU does not answer samples yet: a sample from a GPU tile \
     render is stage 4's, and until it lands samples come from the reference renderer";
-/// Why export is not compared on this branch.
-const EXPORT_NOT_RENDERED: &str = "the GPU does not export yet: export through GPU tiles is stage \
-    4's, and until it lands export is the reference renderer's";
+
+/// The two GPU tile workers the export kind streams each stack's output stage through, as the
+/// export lane streams an export, each on a device of its own on this host's adapter: the second
+/// draws every stream again, which must be the same bytes.
+struct Exporters {
+    /// The adapter's backend and name.
+    adapter: (String, String),
+    workers: [GpuTiles; 2],
+}
+
+impl Exporters {
+    /// Two workers on this host's adapter, or none without one.
+    fn new(test: &str) -> Option<Self> {
+        let adapter = crate::app::gpu_tiles_tests::host_adapter(test)?;
+        let worker = || GpuTiles::new(Some(adapter.clone()), false);
+        Some(Self {
+            workers: [worker(), worker()],
+            adapter,
+        })
+    }
+}
+
+/// The GPU's export of a stack: the codes of its output stage, three bytes a pixel, as the first
+/// worker's stream handed them to the encoder, whether the second's were the same bytes, and the
+/// bands and tiles the first drew it in; or why the GPU did not export it.
+enum Exported {
+    Drawn {
+        codes: Vec<u8>,
+        repeatable: bool,
+        bands: u64,
+        tiles: u64,
+    },
+    Gap(String),
+}
+
+/// `evaluation`'s output stage streamed through each of `exporters`' workers in turn, the second
+/// compared band by band with the first.
+fn exported(exporters: &Exporters, evaluation: &Evaluation) -> Exported {
+    let [one, two] = &exporters.workers;
+    let before = one.figures();
+    let (mut codes, mut taken) = (Vec::new(), 0);
+    if let Err(reason) = streamed(one, evaluation, |rgba| {
+        taken += 1;
+        codes.extend(rgb_of(rgba));
+    }) {
+        return Exported::Gap(reason);
+    }
+    // A stream ends as its last row arrives, which can be before the worker publishes the band it
+    // sent: its figures are read once they count every band taken.
+    let after = luxforge_testbase::wait_for("the worker's figures of the first stream", || {
+        let after = one.figures();
+        (after.bands - before.bands >= taken).then_some(after)
+    });
+    let (mut at, mut repeatable) = (0, true);
+    let again = streamed(two, evaluation, |rgba| {
+        let band: Vec<u8> = rgb_of(rgba).collect();
+        repeatable &= codes.get(at..at + band.len()) == Some(band.as_slice());
+        at += band.len();
+    });
+    if let Err(reason) = again {
+        return Exported::Gap(format!("the second worker: {reason}"));
+    }
+    Exported::Drawn {
+        repeatable: repeatable && at == codes.len(),
+        codes,
+        bands: after.bands - before.bands,
+        tiles: after.tiles - before.tiles,
+    }
+}
+
+/// The three codes of each pixel of `rgba`.
+fn rgb_of(rgba: &[u8]) -> impl Iterator<Item = u8> + '_ {
+    rgba.chunks_exact(4)
+        .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
+}
+
+/// Stream `evaluation`'s output stage through `worker`, handing each band's codes to `take`; why
+/// the reference renders the export instead when the worker refuses the stream or stops drawing
+/// it, as the export's result names it, or why the stream failed.
+fn streamed(
+    worker: &GpuTiles,
+    evaluation: &Evaluation,
+    mut take: impl FnMut(&[u8]),
+) -> Result<(), String> {
+    let mut stream = worker
+        .stream(evaluation, &Cancel::new())
+        .map_err(|fallback| refused(&fallback))?;
+    while let Some(band) = stream.next() {
+        match band {
+            Ok(band) => take(&band.rgba),
+            Err(error) => {
+                return Err(match stream.fallback() {
+                    Some(fallback) => refused(fallback),
+                    None => format!("the stream failed: {error}"),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Why the reference renders an export, as its result names it, with what the GPU said.
+fn refused(fallback: &TileFallback) -> String {
+    let reason = RendererReason::from(fallback).as_str();
+    match fallback {
+        TileFallback::Plan(plan) => format!("the reference renders it: {reason} ({plan})"),
+        TileFallback::Budget { requested, budget } => format!(
+            "the reference renders it: {reason} ({requested} bytes for one tile, past {budget})"
+        ),
+        TileFallback::Unavailable(_) | TileFallback::Stage(_) => {
+            format!("the reference renders it: {reason}")
+        }
+    }
+}
 
 /// One view of the corpus: Fit, or a percentage of the output stage.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -127,9 +244,18 @@ struct Settings {
     sources: Option<Vec<String>>,
     /// Write every measured cell's frames, not only those past a limit.
     all_frames: bool,
-    /// The gate judges the picture in motion against the reference rather than against the frame
-    /// it settles to, which decides which misses have their frames written.
-    motion_to_reference: bool,
+    /// What the gate holds the picture in motion to, where the owner gates it: its misses have
+    /// their frames written. `None` while it is reported ungated.
+    motion_gated: Option<MotionGate>,
+}
+
+/// What the picture in motion is gated against, where the owner asks for it to be.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MotionGate {
+    /// The GPU's picture at rest it settles to.
+    Rest,
+    /// The reference frame at the view's size.
+    Reference,
 }
 
 /// A comma-separated list in the environment variable `name`, when it is set.
@@ -151,9 +277,9 @@ fn list(name: &str) -> Option<Vec<String>> {
 /// `LUXFORGE_GPU_QUALIFICATION_VIEWS` (view ids), `LUXFORGE_GPU_QUALIFICATION_KINDS` (output kinds),
 /// `LUXFORGE_GPU_CORPUS_FAMILIES`, `LUXFORGE_GPU_CORPUS_RECIPES` and `LUXFORGE_GPU_CORPUS_SOURCES`;
 /// with `LUXFORGE_GPU_QUALIFICATION_FRAMES=all` it writes every cell's frames, and with
-/// `LUXFORGE_GPU_QUALIFICATION_MOTION=reference` it writes the frames of a motion frame past a limit
-/// against the reference, which the gate then judges. Without an adapter it records that it was
-/// skipped and measures nothing.
+/// `LUXFORGE_GPU_QUALIFICATION_MOTION=rest` or `reference` it writes the frames of a motion frame past
+/// a limit against that frame, which the gate then judges. Without an adapter it records that it
+/// was skipped and measures nothing.
 pub(crate) fn against_reference(test: &str) {
     let output = PathBuf::from(
         std::env::var("LUXFORGE_GPU_CORPUS_OUTPUT").expect("LUXFORGE_GPU_CORPUS_OUTPUT"),
@@ -212,8 +338,11 @@ pub(crate) fn against_reference(test: &str) {
         recipes: list("LUXFORGE_GPU_CORPUS_RECIPES"),
         sources: list("LUXFORGE_GPU_CORPUS_SOURCES"),
         all_frames: std::env::var("LUXFORGE_GPU_QUALIFICATION_FRAMES").as_deref() == Ok("all"),
-        motion_to_reference: std::env::var("LUXFORGE_GPU_QUALIFICATION_MOTION").as_deref()
-            == Ok("reference"),
+        motion_gated: match std::env::var("LUXFORGE_GPU_QUALIFICATION_MOTION").as_deref() {
+            Ok("rest") => Some(MotionGate::Rest),
+            Ok("reference") => Some(MotionGate::Reference),
+            _ => None,
+        },
     };
     let bounds = fit_bounds();
     let mut document = json!({
@@ -234,7 +363,11 @@ pub(crate) fn against_reference(test: &str) {
         "families": settings.families,
         "recipes": settings.recipes,
         "selected_sources": settings.sources,
-        "motion_judged_against": if settings.motion_to_reference { "reference" } else { "settled" },
+        "motion_gated": match settings.motion_gated {
+            None => Value::Null,
+            Some(MotionGate::Rest) => json!("rest"),
+            Some(MotionGate::Reference) => json!("reference"),
+        },
         "sources": [],
         "pairs": [],
         "complete": false,
@@ -254,6 +387,16 @@ pub(crate) fn against_reference(test: &str) {
         settings.views,
         settings.kinds
     );
+    // The export kind's two GPU tile workers, on this host's adapter.
+    let exporters = settings
+        .kinds
+        .contains(&Kind::Export)
+        .then(|| Exporters::new(test))
+        .flatten();
+    if let Some(exporters) = &exporters {
+        let (backend, name) = &exporters.adapter;
+        document["export_adapter"] = json!({"backend": backend, "adapter": name});
+    }
     let sources = corpus_sources(&corpus, &generated, manifest.as_ref());
     document["sources"] = corpus["sources"]
         .as_array()
@@ -295,7 +438,18 @@ pub(crate) fn against_reference(test: &str) {
             }
             let record = match sources.iter().find(|found| found.id == source_id) {
                 Some(source) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    pair(&qualifier, &settings, recipe, source)
+                    // The editor's surface on the qualifier's device, a pipeline of its own for
+                    // each stack, as the editor's holds one photograph's resources at a time:
+                    // nothing one stack holds or charges reaches the next.
+                    let mut surface = qualifier.surface();
+                    pair(
+                        &qualifier,
+                        &mut surface,
+                        &settings,
+                        exporters.as_ref(),
+                        recipe,
+                        source,
+                    )
                 }))
                 .unwrap_or_else(|panic| {
                     let reason = panic
@@ -343,7 +497,9 @@ fn write(output: &Path, document: &Value) {
 /// as one record of `cells.json`.
 fn pair(
     qualifier: &Qualifier,
+    surface: &mut HeadlessSurface,
     settings: &Settings,
+    exporters: Option<&Exporters>,
     recipe: &Value,
     source: &CorpusSource,
 ) -> Value {
@@ -361,7 +517,8 @@ fn pair(
     });
     let steps = recipe["steps"].as_array().expect("steps");
     match measure(
-        qualifier,
+        (qualifier, exporters),
+        surface,
         settings,
         class,
         steps,
@@ -380,8 +537,10 @@ fn pair(
 }
 
 /// [`pair`]'s measurements, recorded in `record`.
+#[allow(clippy::too_many_arguments)]
 fn measure(
-    qualifier: &Qualifier,
+    (qualifier, exporters): (&Qualifier, Option<&Exporters>),
+    surface: &mut HeadlessSurface,
     settings: &Settings,
     class: Class,
     steps: &[Value],
@@ -396,7 +555,8 @@ fn measure(
     let opened = Opened::new(source, steps, &catalog)?;
     // The reference renderer's frame of the stack: its exact whole frame, as export renders it,
     // rendered through the evaluation's own context so that its store holds the whole stage's
-    // global estimates, which the process-first tiles read as a settled view's plans do.
+    // global estimates, which the picture at rest's plans read as the editor's do once the stack's
+    // exact phase has stored them.
     let job = crate::app::tasks::ready_preview_job(
         &opened.owner,
         PreviewRequest::new(opened.client, opened.asset.clone()),
@@ -416,46 +576,18 @@ fn measure(
     let stage = (reference.width, reference.height);
     record["reference"] = json!({"stage": [stage.0, stage.1]});
     if settings.kinds.iter().any(|kind| kind.picture()) {
-        let at_rest = settings.kinds.contains(&Kind::PictureAtRest);
-        let reduced = settings
-            .views
-            .iter()
-            .any(|(_, view)| !matches!(view, View::Percent(zoom) if *zoom >= 100.0));
-        let second = if at_rest && reduced {
-            Some(process_first(
-                qualifier,
-                &evaluation,
-                &exact,
-                opened.raw,
-                stage,
-            )?)
-        } else {
-            None
-        };
-        record["process_first"] = match &second {
-            Some(Ok(frame)) => json!({
-                "status": "drawn",
-                "tile": TILE,
-                "tiles": frame.tiles,
-                "charged_bytes_max": frame.charged,
-                "clock": {
-                    "note": CLOCK,
-                    "total_s": frame.total.as_secs_f64(),
-                    "boundaries_s": frame.boundaries.as_secs_f64(),
-                    "draws_s": frame.draws.as_secs_f64(),
-                },
-            }),
-            Some(Err(reason)) => json!({"status": "gap", "reason": reason}),
-            None => Value::Null,
-        };
-        eprintln!("{cell}: process-first frame: {}", record["process_first"]);
+        // The photograph's source as the editor holds it on the GPU, which every frame of the
+        // stack is derived from.
+        let gpu = gpu_source_of(1, evaluation.source())
+            .ok_or("the photograph's source cannot be held on the GPU")?;
         for (id, view) in &settings.views {
             let measured = picture(
                 qualifier,
+                surface,
                 settings,
-                &opened,
+                &evaluation,
+                &gpu,
                 &reference,
-                at_rest.then_some(second.as_ref()),
                 *view,
                 class,
                 cell,
@@ -470,7 +602,15 @@ fn measure(
             Kind::PictureAtRest | Kind::PictureInMotion => continue,
             Kind::Histogram => histogram_kind(&reference, None)?,
             Kind::Sample => sample_kind(&reference, None, class)?,
-            Kind::Export => export_kind(&reference, None, class)?,
+            Kind::Export => {
+                let drawn = match exporters {
+                    Some(exporters) => exported(exporters, &evaluation),
+                    None => Exported::Gap("no adapter for the GPU tile workers".to_owned()),
+                };
+                let measured = export_kind(&reference, drawn, class)?;
+                eprintln!("{cell}: export: {measured}");
+                measured
+            }
         };
         record["kinds"][kind.name()] = measured;
     }
@@ -490,22 +630,13 @@ fn summary(measured: &Value) -> String {
                     s["mean_delta_l"].as_f64().unwrap_or(f64::NAN)
                 )
             };
-            let candidate = &measured["at_rest"]["candidate"];
-            let second = match candidate["status"].as_str() {
-                Some("measured") => format!(
-                    " | at rest ({}) against the reference {}",
-                    candidate["renderer"].as_str().unwrap_or("?"),
-                    figures(&candidate["against_reference"])
-                ),
-                Some(_) => " | at rest: a gap".to_owned(),
-                None => String::new(),
-            };
             format!(
-                "motion against the frame it settles to {} | motion against the reference {} | \
-                 CPU against the reference {}{second}",
+                "at rest ({}) against the reference {} | motion against the picture at rest {} | \
+                 motion against the reference {}",
+                measured["at_rest"]["renderer"].as_str().unwrap_or("?"),
+                figures(&measured["at_rest"]["against_reference"]),
                 figures(&measured["in_motion"]["against_settled"]),
                 figures(&measured["in_motion"]["against_reference"]),
-                figures(&measured["cpu_against_reference"])
             )
         }
         Some(status) => format!("{status}: {}", measured["reason"].as_str().unwrap_or("")),
@@ -513,146 +644,180 @@ fn summary(measured: &Value) -> String {
     }
 }
 
-/// The side of the tiles a process-first frame is drawn in: within the 8192 px texture limit, and
-/// below the 100% corpus's largest region (3024 × 1964 in the owner's largest window), which every
-/// stack of the corpus draws within the 256 MiB bound on a boundary and the 2 GiB GPU-preview
-/// budget.
-const TILE: u32 = 2048;
-
-/// What a process-first frame's clock is, and is not.
-const CLOCK: &str = "the harness's own clock on a loaded host, each tile's boundary rendered on \
-    the CPU and its codes read back to the CPU, programs compiled on first use: an order of \
-    magnitude, not a timing measurement";
-
-/// Candidate 2 for the picture at rest: the whole output stage drawn on the GPU at full resolution.
-struct ProcessFirst {
-    /// The whole output frame's codes, three bytes a pixel, row by row.
-    codes: Vec<u8>,
-    tiles: usize,
-    /// The largest charge of any tile's slot against the GPU-preview budget.
-    charged: u64,
-    /// The harness's own clock ([`CLOCK`]): the whole frame, its tiles' boundaries rendered on the
-    /// CPU, and their draws and readbacks on the device.
-    total: Duration,
-    boundaries: Duration,
-    draws: Duration,
+/// A view that is not drawn here, and why.
+fn gap(reason: impl Into<String>) -> Value {
+    json!({"status": "gap", "reason": reason.into()})
 }
 
-/// Candidate 2 for the picture at rest, process-first: `evaluation`'s whole output stage of `stage`
-/// drawn on the GPU at full resolution as 100% region plans over a grid of [`TILE`]-sided tiles,
-/// each over its own boundary from `exact` and reading the global estimates `evaluation`'s context
-/// holds for the whole stage, their codes stitched into one frame. `Err` inside names the first
-/// tile the GPU path does not draw, and why: the frame is then a gap.
-fn process_first(
-    qualifier: &Qualifier,
-    evaluation: &Evaluation,
-    exact: &Render<'_>,
-    linear: bool,
-    (width, height): (u32, u32),
-) -> Result<Result<ProcessFirst, String>, String> {
-    let started = Instant::now();
-    let mut frame = ProcessFirst {
-        codes: vec![0; width as usize * height as usize * 3],
-        tiles: 0,
-        charged: 0,
-        total: Duration::ZERO,
-        boundaries: Duration::ZERO,
-        draws: Duration::ZERO,
-    };
-    let options = CellOptions {
-        frames: None,
-        empty_mask: true,
-    };
-    for y0 in (0..height).step_by(TILE as usize) {
-        for x0 in (0..width).step_by(TILE as usize) {
-            let rect = luxforge_core::Region {
-                x0,
-                y0,
-                width: TILE.min(width - x0),
-                height: TILE.min(height - y0),
-            };
-            let drawn = match draw_region(
-                qualifier, evaluation, exact, linear, rect, 100.0, options, false,
-            )? {
-                RegionDraw::Drawn(drawn) => drawn,
-                RegionDraw::Gap(reason) => {
-                    return Ok(Err(format!("the tile at ({x0}, {y0}): {reason}")));
-                }
-                RegionDraw::NoBoundary(error) => {
-                    return Ok(Err(format!(
-                        "the tile at ({x0}, {y0}) has no boundary: {}",
-                        error.detail
-                    )));
-                }
-            };
-            let row = rect.width as usize * 3;
-            for (y, codes) in drawn.gpu.chunks_exact(row).enumerate() {
-                let start = ((y0 as usize + y) * width as usize + x0 as usize) * 3;
-                frame.codes[start..start + row].copy_from_slice(codes);
-            }
-            frame.tiles += 1;
-            frame.charged = frame.charged.max(drawn.charged);
-            frame.boundaries += drawn.boundary_time;
-            frame.draws += drawn.draw_time;
-        }
-    }
-    frame.total = started.elapsed();
-    Ok(Ok(frame))
+/// A drawn frame's codes, three bytes a pixel.
+fn rgb_codes(codes: &[[u8; 4]]) -> Vec<u8> {
+    codes
+        .iter()
+        .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
+        .collect()
 }
 
-/// The picture at `view`: in motion, the GPU frame the desktop's plan draws there against the frame
-/// it settles to and against the reference frame at the view's size; at rest, when `at_rest` asks
-/// for it, the kind's comparison and its candidate's figures, `at_rest` holding the process-first
-/// frame where the reference is reduced; and the CPU frame of the view against the reference.
+/// Whether the mask of `plan`'s first operation, a masked colour step, selects nothing on its
+/// boundary: the plan drawn with that step's units replaced by one that moves every value at
+/// least half the range, against its boundary drawn with no step, every code alike. A coverage
+/// below one code's share of the range is read as none. `None` when the first operation is not a
+/// masked colour step.
+fn selects_nothing(
+    surface: &mut HeadlessSurface,
+    gpu: &GpuSource,
+    plan: &GpuPlan,
+) -> Result<Option<bool>, String> {
+    let Some(GpuStep::Masked(masked)) = plan.steps.first() else {
+        return Ok(None);
+    };
+    let flip = GpuProgram::new(
+        "lf_test_flip",
+        "fn lf_test_flip(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) \
+         -> vec3<f32> {\n    return select(vec3<f32>(1.0), vec3<f32>(0.0), rgb > \
+         vec3<f32>(0.5));\n}\n",
+    );
+    // Over the boundary alone, with no region or geometry tail: the mask's own field.
+    let covered = GpuPlan {
+        boundary: plan.boundary.clone(),
+        texels: TexelMap::IDENTITY,
+        steps: vec![GpuStep::Masked(MaskedColour {
+            units: vec![flip],
+            ..masked.clone()
+        })],
+        region: None,
+        lights: Vec::new(),
+    };
+    let input = GpuPlan {
+        steps: Vec::new(),
+        ..covered.clone()
+    };
+    let drawn = |surface: &mut HeadlessSurface, plan: &GpuPlan| {
+        surface
+            .draw(gpu, plan)
+            .map(|drawn| drawn.codes)
+            .map_err(|fallback| format!("the mask's coverage: {fallback:?}"))
+    };
+    let (covered, input) = (drawn(surface, &covered)?, drawn(surface, &input)?);
+    Ok(Some(covered == input))
+}
+
+/// The picture at `view`, drawn by `surface` from `gpu`, the photograph's source held on the GPU,
+/// as the editor draws it: the picture at rest the stack's job plans there — its tiles at full
+/// resolution reduced to the view's size at Fit and below 100%, else its view plan over the
+/// window the view reads — against the reference at the view's size; and the frame a drag draws,
+/// the view plan over the boundary the surface derives from the source, against the picture at
+/// rest it settles to and against the reference. A view the editor would not draw on the GPU — a
+/// plan the surface cannot run, or a boundary or slot past the budget the editor holds them to —
+/// is a gap naming why.
 #[allow(clippy::too_many_arguments)]
 fn picture(
     qualifier: &Qualifier,
+    surface: &mut HeadlessSurface,
     settings: &Settings,
-    opened: &Opened,
+    evaluation: &Evaluation,
+    gpu: &GpuSource,
     reference: &Raster,
-    at_rest: Option<Option<&Result<ProcessFirst, String>>>,
     view: View,
     class: Class,
     cell: &str,
 ) -> Result<Value, String> {
     let stage = (reference.width, reference.height);
     let output = &settings.output;
-    let options = CellOptions {
-        frames: None,
-        empty_mask: true,
-    };
-    let drawn = match view {
-        View::Fit => proxy_cell(qualifier, opened, fit_bounds(), output, options, class)?,
+    // The view as the desktop asks the owner to plan the stack's picture at rest for it.
+    let gpu_view = match view {
+        View::Fit => GpuView::Fit(fit_bounds()),
         View::Percent(zoom) if zoom < 100.0 => match percent_bounds(stage, zoom) {
-            Some(bounds) => proxy_cell(qualifier, opened, bounds, output, options, class)?,
+            Some(bounds) => GpuView::Fit(bounds),
             None => {
-                return Ok(json!({
-                    "status": "gap",
-                    "reason": format!("at {zoom}% the photograph is not drawn below its size"),
-                }));
+                return Ok(gap(format!(
+                    "at {zoom}% the photograph is not drawn below its size"
+                )));
             }
         },
-        View::Percent(zoom) => region_cell_in(qualifier, opened, zoom, output, options, class)?,
+        View::Percent(zoom) => GpuView::Region {
+            rect: super::largest_view(stage, zoom).ok_or("no visible region")?,
+            magnification: f64::from(zoom) / 100.0,
+        },
     };
-    let (size, proxy, region, drag, program, charged, shape, gpu, cpu, notes) = match drawn {
-        Cell::Measured {
-            stage,
-            proxy,
-            region,
-            statistics,
-            program,
-            charged,
-            shape,
-            gpu,
-            cpu,
-            notes,
+    let rest = luxforge_core::qualification::rest_plan(evaluation, gpu_view)
+        .map_err(|error| error.to_string())?;
+    let (plan, request) = match rest.view {
+        GpuPreview {
+            answer: GpuAnswer::Plan(plan),
+            boundary: Some(request),
             ..
-        } => (
-            stage, proxy, region, statistics, program, charged, shape, gpu, cpu, notes,
-        ),
-        Cell::Gap(reason) => return Ok(json!({"status": "gap", "reason": reason})),
+        } => (*plan, request),
+        GpuPreview {
+            answer: GpuAnswer::Fallback(reason),
+            ..
+        } => {
+            return Ok(gap(format!(
+                "{}: the GPU stage does not draw this stack",
+                reason.code()
+            )));
+        }
+        GpuPreview { .. } => return Ok(gap("the view plan has no boundary")),
     };
-    let (width, height) = size;
+    // The motion frame: the view plan over its boundary derived from the source, as a drag and the
+    // stack at rest hold it.
+    let (boundary, origin, grid) = match derived_now(gpu, &plan, &request, 1) {
+        Ok(derived) => derived,
+        Err(reason) => return Ok(gap(reason)),
+    };
+    let region = request.key.region();
+    let derived = match request.key.plan() {
+        Some(_) => "reduce",
+        None => "cut",
+    };
+    let held = boundary.size();
+    let converted = match surface_plan_over(&plan, boundary, origin, grid.as_ref(), region) {
+        Ok(converted) => converted,
+        Err(unrunnable) => {
+            return Ok(gap(format!(
+                "{}: the surface cannot run {unrunnable:?} yet",
+                unrunnable.code()
+            )));
+        }
+    };
+    let charged = qualifier
+        .charged_bytes(&converted)
+        .map_err(|reason| format!("{reason:?}"))?;
+    let (motion, size) = match surface.draw(gpu, &converted) {
+        Ok(drawn) => (rgb_codes(&drawn.codes), drawn.size),
+        Err(fallback) => return Ok(gap(format!("the view plan is not drawn: {fallback:?}"))),
+    };
+    // A mask that selects nothing on this source says nothing about its coverage: noted.
+    let mut notes = Vec::new();
+    if selects_nothing(surface, gpu, &converted)? == Some(true) {
+        notes.push(EMPTY_MASK.to_owned());
+    }
+    // The picture at rest: its tiles reduced to the view where the job plans them, else the view
+    // plan, the motion frame's own.
+    let (at_rest, renderer, tiles) = match (rest.tiles, region) {
+        (Some(Ok(tiles)), None) => {
+            let handed = rest_now(gpu, &tiles, 1)?;
+            if handed.view != size {
+                return Err(format!(
+                    "the tiles are reduced to {:?}, the view plan draws {size:?}",
+                    handed.view
+                ));
+            }
+            let drawn = surface
+                .rest(gpu, &handed)
+                .map_err(|fallback| format!("the picture at rest in tiles: {fallback:?}"))?;
+            (
+                rgb_codes(&drawn.codes),
+                "the picture at rest in tiles".to_owned(),
+                Some(handed.tiles.len()),
+            )
+        }
+        (Some(Err(reason)), _) => (
+            motion.clone(),
+            format!("the view plan, the tiles not drawn: {}", reason.code()),
+            None,
+        ),
+        _ => (motion.clone(), "the view plan".to_owned(), None),
+    };
     // The reference at the view: its visible region at 100%, the whole frame reduced elsewhere.
     let expected = match region {
         Some(rect) => tolerance::region_srgb8(
@@ -663,115 +828,72 @@ fn picture(
         )?,
         None => reduce(&reference.rgba, 4, stage, size)?,
     };
-    let against = compare(&gpu, &expected, size)?;
-    let cpu_against = compare(&cpu, &expected, size)?;
-    // The frame the gate judges the motion frame by, the frame it settles to or on request the
-    // reference, past a limit: its frames are written, with the reference and the CPU frame.
-    let judged = if settings.motion_to_reference {
-        &against
-    } else {
-        &drag
+    let rest_against = compare(&at_rest, &expected, size)?;
+    let motion_against_rest = compare(&motion, &at_rest, size)?;
+    let motion_against = compare(&motion, &expected, size)?;
+    let at_rest_value = at_rest_kind(&rest_against, renderer, tiles, class);
+    // What the gate judges, past a limit: the frames are written. The picture in motion is
+    // judged only where the owner gates it.
+    let motion_missed = match settings.motion_gated {
+        None => false,
+        Some(MotionGate::Rest) => !preview_error::verdict(&motion_against_rest, class).passed(),
+        Some(MotionGate::Reference) => !preview_error::verdict(&motion_against, class).passed(),
     };
+    let (width, height) = size;
     let mut frames = Vec::new();
-    if settings.all_frames || !preview_error::verdict(judged, class).passed() {
+    if settings.all_frames
+        || motion_missed
+        || !preview_error::verdict(&rest_against, class).passed()
+    {
         let name = format!("{cell}--{}", view.token());
-        for (suffix, bytes) in [("gpu", &gpu), ("reference", &expected), ("cpu", &cpu)] {
+        for (suffix, bytes) in [
+            ("motion", &motion),
+            ("rest", &at_rest),
+            ("reference", &expected),
+        ] {
             let file = format!("{name}-{suffix}");
             write_png(&output.join("frames"), &file, (width, height), bytes)?;
             frames.push(format!("frames/{file}.png"));
         }
     }
-    let mut value = json!({
+    Ok(json!({
         "status": "measured",
         "stage": [width, height],
-        "proxy": proxy,
         "region": region.map(|rect| [rect.x0, rect.y0, rect.width, rect.height]),
+        "boundary": {"derived": derived, "size": [held.0, held.1], "origin": [origin.0, origin.1]},
         "reference": match region {
             Some(_) => "the reference frame's visible region",
             None if size == stage => "the reference frame",
             None => "the reference frame reduced to the view's size",
         },
+        "at_rest": at_rest_value,
         "in_motion": {
-            "settles_to": match region {
-                Some(_) => "the CPU's exact visible region",
-                None if proxy => "the CPU's proxy frame",
-                None => "the CPU's exact frame",
-            },
-            "against_settled": statistics(&drag),
-            "program_against_settled": statistics(&program),
-            "against_reference": statistics(&against),
+            "settles_to": "the GPU's picture at rest",
+            "against_settled": statistics(&motion_against_rest),
+            "against_reference": statistics(&motion_against),
         },
-        "cpu_against_reference": statistics(&cpu_against),
         "charged_bytes": charged,
-        "shape": shape,
         "notes": notes,
         "frames": frames,
-    });
-    // The picture at rest: the kind, which the GPU does not draw yet, and its candidate. At a view
-    // the reference is reduced for, the process-first frame reduced as the reference is, against
-    // it, and the jump the motion frame makes to it; at 100% the region plan over the visible
-    // window, which is the motion frame's own.
-    if let Some(second) = at_rest {
-        let mut kind = at_rest_kind(&expected, None, size, class)?;
-        kind["candidate"] = match (region, second) {
-            (Some(_), _) => json!({
-                "renderer": "the region plan over the visible window",
-                "status": "measured",
-                "against_reference": statistics(&against),
-                "jump_from_motion": statistics(&compare(&gpu, &gpu, size)?),
-            }),
-            (None, Some(Ok(frame))) => {
-                let reduced = reduce(&frame.codes, 3, stage, size)?;
-                let candidate = compare(&reduced, &expected, size)?;
-                let jump = compare(&gpu, &reduced, size)?;
-                if settings.all_frames || !preview_error::verdict(&candidate, class).passed() {
-                    let file = format!("{cell}--{}-process-first", view.token());
-                    write_png(&output.join("frames"), &file, (width, height), &reduced)?;
-                    value["frames"]
-                        .as_array_mut()
-                        .expect("frames")
-                        .push(json!(format!("frames/{file}.png")));
-                }
-                json!({
-                    "renderer": "process-first",
-                    "status": "measured",
-                    "against_reference": statistics(&candidate),
-                    "jump_from_motion": statistics(&jump),
-                })
-            }
-            (None, Some(Err(reason))) => {
-                json!({"renderer": "process-first", "status": "gap", "reason": reason})
-            }
-            (None, None) => json!({
-                "renderer": "process-first",
-                "status": "gap",
-                "reason": "no process-first frame was drawn for this stack",
-            }),
-        };
-        value["at_rest"] = kind;
-    }
-    Ok(value)
+    }))
 }
 
-/// The picture at rest at one view: the reference frame at the view's size, `expected`, and the
-/// GPU's frame at rest, `gpu`, against it by `class`'s limits when a stage supplies one, both
-/// `size` frames of three bytes a pixel. Without it the kind is not rendered by the GPU, which is
-/// neither a pass nor a failure.
+/// The picture at rest at one view: the GPU's frame at rest against the reference frame at the
+/// view's size, `against`, held to `class`'s limits, with the renderer that drew it and the tiles
+/// it was drawn in.
 fn at_rest_kind(
-    expected: &[u8],
-    gpu: Option<&[u8]>,
-    size: (u32, u32),
+    against: &Statistics,
+    renderer: String,
+    tiles: Option<usize>,
     class: Class,
-) -> Result<Value, String> {
-    let Some(gpu) = gpu else {
-        return Ok(json!({"status": "not-rendered", "reason": AT_REST_NOT_RENDERED}));
-    };
-    let against = compare(gpu, expected, size)?;
-    Ok(json!({
+) -> Value {
+    json!({
         "status": "measured",
-        "against_reference": statistics(&against),
-        "passed": preview_error::verdict(&against, class).passed(),
-    }))
+        "renderer": renderer,
+        "tiles": tiles,
+        "against_reference": statistics(against),
+        "passed": preview_error::verdict(against, class).passed(),
+    })
 }
 
 /// The four statistics and the largest difference, as a cell records them.
@@ -998,30 +1120,48 @@ fn sample_kind(
     }))
 }
 
-/// Export: the reference export, the exact whole frame, and the GPU's export and a second export of
-/// the same stack, `gpu`, against it and against each other when a stage supplies them, by the
-/// display limit of `class` over every pixel. Without them the kind is not rendered by the GPU.
-fn export_kind(
-    reference: &Raster,
-    gpu: Option<(&Raster, &Raster)>,
-    class: Class,
-) -> Result<Value, String> {
-    let Some((export, repeat)) = gpu else {
-        return Ok(json!({
-            "status": "not-rendered",
-            "reason": EXPORT_NOT_RENDERED,
-            "reference": {"stage": [reference.width, reference.height]},
-        }));
+/// Export: the GPU's export of the stack, `exported`, against the reference export, by the display
+/// limit of `class` over every pixel of the codes each encodes — the GPU's stream's and the
+/// reference's exact whole frame, `reference` — and repeatable, its second stream the same bytes;
+/// or a gap naming why the GPU did not export it, never a pass.
+fn export_kind(reference: &Raster, exported: Exported, class: Class) -> Result<Value, String> {
+    let stage = [reference.width, reference.height];
+    let (codes, repeatable, bands, tiles) = match exported {
+        Exported::Gap(reason) => {
+            return Ok(json!({
+                "status": "gap",
+                "reason": reason,
+                "reference": {"stage": stage},
+            }));
+        }
+        Exported::Drawn {
+            codes,
+            repeatable,
+            bands,
+            tiles,
+        } => (codes, repeatable, bands, tiles),
     };
-    let (expected, export, repeat) = (rgb(reference), rgb(export), rgb(repeat));
-    let (width, height) = (reference.width, reference.height);
-    let error = tolerance::export(
-        Rgb8::new(width, height, &export)?,
-        Rgb8::new(width, height, &repeat)?,
-        Rgb8::new(width, height, &expected)?,
-    )?;
+    let expected = rgb(reference);
+    if codes.len() != expected.len() {
+        return Err(format!(
+            "the GPU's export holds {} codes where the reference's {} × {} stage holds {}",
+            codes.len(),
+            stage[0],
+            stage[1],
+            expected.len()
+        ));
+    }
+    let error = tolerance::ExportError {
+        statistics: compare(&codes, &expected, (reference.width, reference.height))?,
+        repeatable,
+    };
     Ok(json!({
         "status": "measured",
+        "renderer": "gpu",
+        "against": "the reference export's codes: the exact whole frame its encoder reads",
+        "stage": stage,
+        "bands": bands,
+        "tiles": tiles,
         "statistics": statistics(&error.statistics),
         "repeatable": error.repeatable,
         "passed": error.passed(class),
@@ -1148,38 +1288,125 @@ fn the_sample_comparison_reads_the_reference_at_its_points_and_judges_a_gpus_ans
 #[test]
 fn the_export_comparison_holds_an_export_to_the_reference_and_to_itself() {
     let reference = raster(40, 30, |x, y| [x as u8 * 5, y as u8 * 7, 30]);
-    let unrendered = export_kind(&reference, None, Class::Pointwise).unwrap();
-    assert_eq!(unrendered["status"], "not-rendered");
-    assert_eq!(unrendered["reference"]["stage"], json!([40, 30]));
-    let judged = export_kind(&reference, Some((&reference, &reference)), Class::Pointwise).unwrap();
+    let gap = export_kind(
+        &reference,
+        Exported::Gap("the reference renders it: region-estimate".into()),
+        Class::Pointwise,
+    )
+    .unwrap();
+    assert_eq!(gap["status"], "gap", "never a pass");
+    assert_eq!(gap["reason"], "the reference renders it: region-estimate");
+    assert_eq!(gap["reference"]["stage"], json!([40, 30]));
+    let drawn = |codes: Vec<u8>, repeatable| Exported::Drawn {
+        codes,
+        repeatable,
+        bands: 2,
+        tiles: 4,
+    };
+    let judged = export_kind(&reference, drawn(rgb(&reference), true), Class::Pointwise).unwrap();
     assert_eq!(
         (judged["passed"].clone(), judged["repeatable"].clone()),
         (json!(true), json!(true))
     );
-    let other = raster(40, 30, |x, y| [x as u8 * 5, y as u8 * 7, 31]);
-    let judged = export_kind(&reference, Some((&reference, &other)), Class::Pointwise).unwrap();
     assert_eq!(
-        (judged["passed"].clone(), judged["repeatable"].clone()),
-        (json!(false), json!(false))
+        (judged["bands"].clone(), judged["tiles"].clone()),
+        (json!(2), json!(4))
     );
+    // Within the limit but not the same bytes twice: not a pass.
+    let judged = export_kind(&reference, drawn(rgb(&reference), false), Class::Pointwise).unwrap();
+    assert_eq!(judged["passed"], false);
+    let far = rgb(&raster(40, 30, |x, y| [x as u8 * 5, y as u8 * 7, 90]));
+    let judged = export_kind(&reference, drawn(far, true), Class::Spatial).unwrap();
+    assert_eq!(judged["passed"], false, "{judged}");
+    assert!(export_kind(&reference, drawn(vec![0; 9], true), Class::Pointwise).is_err());
+}
+
+/// The GPU's export of a stack streamed through two workers on this host's adapter, as the export
+/// lane streams it: the second the same bytes as the first, and each band's codes in order.
+#[test]
+fn an_exported_stack_is_streamed_twice_and_compared_band_by_band() {
+    let test = "an_exported_stack_is_streamed_twice_and_compared_band_by_band";
+    let Some(exporters) = Exporters::new(test) else {
+        return;
+    };
+    for worker in &exporters.workers {
+        worker.draw_streams_at(vec![64]);
+    }
+    let (_, recipe) = crate::app::gpu_tiles_tests::families()
+        .into_iter()
+        .find(|(family, _)| *family == "Presence after Detail")
+        .expect("the family");
+    let source = crate::app::gpu_window_tests::source(luxforge_core::BoundaryFormat::Half);
+    let registry = std::sync::Arc::new(luxforge_core::ModuleRegistry::builtin());
+    let context = luxforge_core::RenderContext::new();
+    let frame = luxforge_core::render(
+        &registry,
+        &source,
+        &recipe,
+        RenderOptions::exact(&Cancel::never()),
+        &context,
+    )
+    .unwrap()
+    .frame(luxforge_core::SnapshotId::new())
+    .unwrap();
+    let evaluation = Evaluation::new(
+        registry,
+        context,
+        source,
+        crate::app::testing::entry(&luxforge_core::AssetId::new(), 1, None),
+        recipe,
+        None,
+    );
+    let Exported::Drawn {
+        codes,
+        repeatable,
+        bands,
+        tiles,
+    } = exported(&exporters, &evaluation)
+    else {
+        panic!("{test}: the stream was refused");
+    };
+    assert!(repeatable, "two devices, the same bytes");
+    assert_eq!(codes.len(), rgb(&frame).len());
+    assert_eq!(bands, u64::from(frame.height.div_ceil(64)));
+    assert!(tiles >= bands);
+    let judged = export_kind(
+        &frame,
+        Exported::Drawn {
+            codes,
+            repeatable,
+            bands,
+            tiles,
+        },
+        Class::Spatial,
+    )
+    .unwrap();
+    eprintln!("{test}: {judged}");
+    assert_eq!(judged["passed"], true, "{judged}");
 }
 
 #[test]
-fn the_at_rest_comparison_is_not_rendered_until_a_frame_is_supplied_then_judged() {
+fn the_at_rest_comparison_judges_the_gpus_frame_against_the_reference() {
     let reference = raster(40, 30, |x, y| [x as u8 * 5, y as u8 * 7, 30]);
     let expected = rgb(&reference);
-    let unrendered = at_rest_kind(&expected, None, (40, 30), Class::Pointwise).unwrap();
-    assert_eq!(unrendered["status"], "not-rendered");
-    assert_eq!(unrendered["reason"], AT_REST_NOT_RENDERED);
-    let judged = at_rest_kind(&expected, Some(&expected), (40, 30), Class::Pointwise).unwrap();
+    let same = compare(&expected, &expected, (40, 30)).unwrap();
+    let judged = at_rest_kind(&same, "the view plan".into(), None, Class::Pointwise);
     assert_eq!(
         (judged["status"].clone(), judged["passed"].clone()),
         (json!("measured"), json!(true))
     );
+    assert_eq!(judged["renderer"], "the view plan");
     let far = rgb(&raster(40, 30, |x, y| [x as u8 * 5, y as u8 * 7, 90]));
-    let judged = at_rest_kind(&expected, Some(&far), (40, 30), Class::Spatial).unwrap();
+    let apart = compare(&far, &expected, (40, 30)).unwrap();
+    let judged = at_rest_kind(
+        &apart,
+        "the picture at rest in tiles".into(),
+        Some(6),
+        Class::Spatial,
+    );
     assert_eq!(judged["passed"], false, "{judged}");
-    assert!(at_rest_kind(&expected, Some(&far[3..]), (40, 30), Class::Spatial).is_err());
+    assert_eq!(judged["tiles"], 6);
+    assert!(compare(&far[3..], &expected, (40, 30)).is_err());
 }
 
 #[test]

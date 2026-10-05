@@ -32,7 +32,7 @@ luxforge-testbase = { path = "../luxforge-testbase", optional = true }
 # headless device and reads its output back, for the desktop's per-program readback tests and the
 # GPU preview corpus harness. Only a `[dev-dependencies]` table may turn it on (`cargo xtask
 # check-repository`'s `gpu-qualification-only-in-tests` rule), so no build of the desktop reads a
-# GPU pixel back.
+# GPU pixel back but through the tile runner (`gpu_preview::tiles`) its GPU tile worker owns.
 qualification = ["dep:luxforge-testbase"]
 
 [dev-dependencies]

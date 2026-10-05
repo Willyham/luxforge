@@ -3091,6 +3091,8 @@ Release `luxforge-json` on the owner's M4 Pro, 27 September 2026, warm file cach
 
 Peak memory was measured with the `image` encoder only: `/usr/bin/time -l`'s maximum resident set size of two separate processes per source, one stopping after the edit and one exporting once. One export raised the process peak from 173 to 285 MiB at 24 MP and from 416 to 661 MiB at 60 MP, and by 1 to 8 MiB for the three RAWs, whose frame fits under the peak RAW development already reached. Each difference is how far one export raises the process's peak, not the export's own allocation. The libjpeg-turbo encoder streams 16 rows at a time into the file, as the `image` encoder streamed blocks, so it adds no whole-frame buffer; its peak has not been re-measured.
 
+Every figure here is the reference renderer's export. The GPU export ([export](../design/export.md#behavior), stage 4 of [GPU-first](../design/gpu-first.md)), whose tiles the desktop's tile worker draws, has not been timed: its wall time and peak memory against the reference's at 24 and 60 MP and on the supplied RAWs, on a trivial and a heavy stack, are outstanding.
+
 ### JPEG decode: libjpeg-turbo against zune-jpeg
 
 Import decodes JPEG with libjpeg-turbo, through the same codec (`luxforge-jpeg`) as export, instead of `image` 0.25.9's zune-jpeg 0.5.15. Decode only, on the owner's M4 Pro, 27 September 2026, release test build, warm file cache, the file read once outside the clock and neither hashing nor capture metadata timed: `source::jpeg_tests::decode_timing`. The previous path is replayed as the import ran it (the header walk, `image`'s reader with its limits, its ICC and orientation reads, the decode to RGB, `apply_orientation` and the copy into the RGBA frame); the adapter path is `decode_upright`. Median of 7 after one warm-up, run twice back to back, the previous path first in each pair and then the adapter first; the two orders agreed within 0.6 ms. The host was shared: one-minute load 16 to 18, five-minute 30, from other sessions, so the absolute figures are indicative and the ratio is the result.
@@ -3776,6 +3778,23 @@ What each program sequence the `gpu-preview` scenario compiles costs the editor'
 
 
 
+### Warming at launch and open
+
+The warm-up's own duration as the editor records it (`gpu_warm_up`, [GPU previews](../design/gpu-preview.md#warming-at-launch-and-open)): from a warm list handed to the idle compile thread until its queue drained, and when the newest list's open stack's part, with the frame's own sequences, had compiled. Release editor of `claude/gpu-first-task-009`, the `gpu-preview` scenario on the M4 Pro (Metal), 5 October 2026: one run per row, functional figures, not a timing gate.
+
+| Run | Shader cache | First warm-up | Open stack's part | Reference frame on screen before the GPU's |
+| --- | --- | ---: | ---: | ---: |
+| `LUXFORGE_BACKGROUND_BUNDLE_SUFFIX=task009-cold-1`, the first launch of the new build | A bundle identifier of its own, its Metal cache empty | 4,389 ms, 11 sequences over two lists (the release's list joined it) | 1,510 ms (the second list's) | not recorded: the idle check, then still unaware of warm-ups, failed the run |
+| `task009-cold-2`, the next launch | Its own, empty | 1,525 ms, 6 sequences | 41 ms | 38 ms (`surface_frame_drawn` `cpu` at 957 ms, `gpu` at 995 ms) |
+| The shared background bundle | Warm | 37 ms, 6 sequences | 2 ms | |
+
+The second cold run is faster than the first although its bundle's cache was empty too: macOS also keeps a compiler cache outside the bundle's, which the first run filled and which was not cleared, so neither row is a whole-system cold cache. Later warm-ups in both cold runs, as each commit warmed its stack, took 0.3 to 0.7 s and compiled only what the stack added.
+
+```sh
+cargo build --release --locked -p luxforge-app
+LUXFORGE_BACKGROUND_BUNDLE_SUFFIX=NEW_SUFFIX cargo run --release --locked --package xtask -- smoke --scenario gpu-preview --output NEW_DIR
+```
+
 ### Compacted pass modules
 
 Every spatial pass's module reaches wgpu as the `naga` module the surface validated, compacted to its entry point ([GPU previews](../design/gpu-preview.md#where-the-code-lives)): `naga` leaves a module of one entry point uncompacted, so the driver compiled the whole spatial program, every kernel and apply, for every pass. `gpu_preview_spatial_compile_cost_on_a_cold_cache` compiles, in one process and in the order the editor's warm lists do, the links of seven Presence and Detail sequences — a Presence drag's own, drags of colour layers under it and a Detail drag with Presence after it — which create 20 pass pipelines in all, the links sharing the rest. Every kernel and apply opens with a test of its words against the process's own constant, so the driver's shader cache holds none of them; a second run handed the first run's constant measures them warm. The headless `test` profile build of the chain of links, one binary compacting and one handing wgpu the WGSL text, alternated three times each on the `Apple M4 Pro` adapter (Metal), 3 October 2026, at a one-minute load of 2.5 to 2.7. Cold, milliseconds:
@@ -4375,68 +4394,50 @@ p50 / p95 over five launches (ten opens of the 24 MP JPEG). The launch figure is
 
 ## GPU qualification against the reference
 
-The release gate ([GPU-first](../design/gpu-first.md#the-contract)): `cargo xtask gpu-qualification` over the whole [corpus](../../fixtures/preview/corpus.json), every stack rendered on the reference renderer and on the GPU at Fit, 33%, 50% and 100%, all 1,000 cells measured. It measured the frame a drag draws at each view against the frame it settles to and against the reference frame at the view's size, and, at Fit and below 100%, a process-first frame, the candidate for the picture at rest, against the reference. A measurement of pixels, not of time. By the [recorded default](../design/gpu-first.md#proposals-with-recorded-defaults) of 2026-10-05, which judges the picture in motion against the frame it settles to and the picture at rest against the reference, the gate passed: every motion frame within its limit, and the picture at rest not rendered by the GPU yet. Held to the reference instead (`--hold-motion-to-reference`), it failed on 481 of the 750 motion cells at Fit, 33% and 50%. The limits stand under either reading.
+The release gate ([GPU-first](../design/gpu-first.md#the-contract)): `cargo xtask gpu-qualification` over the whole [corpus](../../fixtures/preview/corpus.json), every stack rendered on the reference renderer and on the GPU at Fit, 33%, 50% and 100%, all 1,000 cells measured with no gap and no error. The GPU's frames are the editor's own, drawn by the photo surface's own drawing on a headless device from the photograph's source held on the GPU as the editor holds it ([GPU previews](../design/gpu-preview.md#the-gpu-source)): the picture at rest, and the frame a drag draws. A measurement of pixels, not of time. By the [recorded default](../design/gpu-first.md#proposals-with-recorded-defaults), which gates the picture at rest against the reference and reports the picture in motion, the gate passed: the picture at rest within its limits on every cell. The picture in motion is within its limits at 100% and past them on 481 of the 750 cells at Fit, 33% and 50%, against the picture at rest it settles to and against the reference alike. The limits stand under every reading.
 
 ### Scope
 
-- **What was compared.** At each view the GPU frame of the plan a drag draws there, over the boundary the desktop holds: at Fit the display-bounded proxy of an evidence run's 1440 × 900 window at 2× (1716 × 1508 bounds), at 33% and 50% the proxy at the displayed size of the whole output stage within the display bounds (4096 px a side, 8 MP), planned as Fit's is with other bounds, and at 100% the visible region of the owner's largest window (1512 × 982 logical at 2×, panels closed) at full scale. Its comparisons: the frame it settles to, which until the GPU draws the picture at rest is the CPU frame it stands in for (the proxy at Fit and below 100%, the exact visible region at 100%); and the reference, the reference renderer's exact whole frame, as export renders it, reduced to the GPU frame's size by an area-weighted average of its linear light (`luxforge_reference::tolerance`), or at 100% its visible region, unreduced. Each is the four statistics of the [preview error measure](../design/gpu-preview.md#the-preview-error-limit), each recipe held to its class's limits (pointwise 0.5 / 1.0 / 2.0 / ±0.25, spatial 1.0 / 2.5 / 5.0 / ±0.5).
-- **The picture at rest's candidate.** At Fit, 33% and 50%, process-first: the whole output stage drawn on the GPU at full resolution as 100% region plans over 2048 px tiles, each over its own boundary and reading the exact stage's estimates, stitched and reduced as the reference is; at 100%, the region plan over the visible window, which is the motion frame's own. Held to the same limits, against the reference, and not judged by the gate while the GPU draws no picture at rest.
-- **Host and build.** Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal; the harness built in release from `0961d235` (binary SHA-256 `8868584f…`), 2026-10-05, run once by each reading. The two runs gave the same figures on all 1,000 cells; an earlier pair at `07551e85` and `7d0c80be` gave the same figures on the 994 cells they measured and byte-identical GPU frames for the cells past a limit. On one machine and driver the pixels are deterministic, so the host's load, shared with other agents' builds at one-minute loads of 6 to 70 across the runs, does not bear on them.
-- **Corpus.** `fixtures/preview/corpus.json` at SHA-256 `561ea7aa…`: 39 recipes, 250 stacks, each at four views, over the generated 24 MP and 60 MP JPEGs, the zone plate, the zone plate with a lens identity and the Presence fixture, and the Z6 NEF, X100VI RAF and Air 2S DNG through the private RAW manifest, all eight verified by `cargo xtask preview-corpus` and their SHA-256s unchanged after each run. The vignette after a RAW's lens warp on the Z6 and Air 2S, whose boundary at Fit and below 100% only the worker's proxy phase holds, is drawn over the boundary that phase reads.
+- **What was compared.** At each view two GPU frames. The picture at rest: at Fit, 33% and 50% the editor's picture at rest in tiles, the whole output stage drawn at full resolution in tiles of 2048 px or smaller, each cut from the source, reduced to the view's size by the area-weighted average the reference is reduced by and quantized (1 to 240 tiles a stack, the most for Detail beside Presence, masked, on the 60 MP JPEG at Fit); and where the view draws the output at its own size or larger, as at Fit for the Presence fixture and the tight crop (40 cells), and at 100%, the view plan over the visible window, cut from the source at full scale. The frame a drag draws: the plan from the source over the boundary the surface derives, the source reduced to the view's proxy at Fit and below 100% and cut at 100%. Fit is the display-bounded proxy of an evidence run's 1440 × 900 window at 2× (1716 × 1508 bounds), 33% and 50% the displayed size of the whole output stage within the display bounds (4096 px a side, 8 MP), and 100% the visible region of the owner's largest window (1512 × 982 logical at 2×, panels closed) at full scale. The reference is the reference renderer's exact whole frame, as export renders it, reduced to the GPU frame's size by an area-weighted average of its linear light (`luxforge_reference::tolerance`), or at 100% its visible region, unreduced. Each comparison is the four statistics of the [preview error measure](../design/gpu-preview.md#the-preview-error-limit), each recipe held to its class's limits (pointwise 0.5 / 1.0 / 2.0 / ±0.25, spatial 1.0 / 2.5 / 5.0 / ±0.5).
+- **Host and build.** Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal; the harness built in release from `747dde95`, the working tree's changes documentation alone (harness SHA-256 `cb4c9d05…`), 2026-10-05, one run on a host shared with other agents' builds. On one machine and driver the pixels are deterministic, so the host's load does not bear on them.
+- **Corpus.** `fixtures/preview/corpus.json` at SHA-256 `561ea7aa…`: 39 recipes, 250 stacks, each at four views, over the generated 24 MP and 60 MP JPEGs, the zone plate, the zone plate with a lens identity and the Presence fixture, and the Z6 NEF, X100VI RAF and Air 2S DNG through the private RAW manifest, all eight verified by `cargo xtask preview-corpus` and their SHA-256s unchanged after the run.
+- **Memory.** Every tile and every drag's slot fit the 2 GiB budget beside the source: the heaviest, a drag's slot at 100% of Detail then all three Presence fields on the Air 2S over its anchored 3970 × 2782 window, charges 1,398.8 MB, beside the Air 2S's 240 MB source.
 - **Output kinds.** The picture at rest and in motion. The histogram and clipping counts, samples and export are not rendered by the GPU yet, so the gate reports them as such, neither passed nor failed; it computes their references, and their comparisons are in place for the stages that render them.
 
-### The picture in motion against the frame it settles to
+### The picture at rest against the reference
 
-What the gate judges by the recorded default; mean ΔE00 / worst 16 × 16 block / p99 ΔE00 / signed mean ΔL\*, the largest magnitude over a view's cells of a class and their mean.
-
-| View | Class | Measured | Within the limits | Past them | Largest: mean / worst block / p99 / \|ΔL\*\| | Mean over the cells |
-| --- | --- | ---: | ---: | ---: | --- | --- |
-| Fit | pointwise | 106 | 106 | 0 | 0.051 / 0.251 / 0.871 / 0.009 | 0.007 / 0.050 / 0.221 / 0.000 |
-| Fit | spatial | 144 | 144 | 0 | 0.061 / 0.509 / 0.973 / 0.049 | 0.011 / 0.084 / 0.273 / 0.001 |
-| 33% | pointwise | 106 | 106 | 0 | 0.061 / 0.227 / 0.928 / 0.006 | 0.007 / 0.047 / 0.234 / 0.000 |
-| 33% | spatial | 144 | 144 | 0 | 0.057 / 0.308 / 0.950 / 0.007 | 0.010 / 0.071 / 0.262 / 0.000 |
-| 50% | pointwise | 106 | 106 | 0 | 0.085 / 0.330 / 0.911 / 0.004 | 0.007 / 0.050 / 0.219 / -0.000 |
-| 50% | spatial | 144 | 144 | 0 | 0.068 / 0.397 / 0.835 / 0.058 | 0.009 / 0.073 / 0.245 / 0.001 |
-| 100% | pointwise | 106 | 106 | 0 | 0.051 / 0.252 / 0.851 / 0.009 | 0.009 / 0.066 / 0.235 / 0.000 |
-| 100% | spatial | 144 | 144 | 0 | 0.084 / 0.514 / 0.948 / 0.049 | 0.012 / 0.099 / 0.289 / 0.001 |
-
-- **Every cell is within its limits**, 33% and 50% included, the largest a worst block of 0.514 and a p99 of 0.973: the frame a drag draws stands in for the CPU frame it settles to as each program's own qualification holds it to.
-- **With the per-frame light** (a run at `b092e1e0`, 2026-10-05, the same host, corpus and limits, report under `artifacts/gpu-first/task-005/gate/`), the gate fails on 148 cells, every one a Dehaze recipe's spatial cell at Fit, 33% or 50% (45, 54 and 49): a drag's frame there reads the whole stage's light, where the CPU proxy it is still held to as the frame it settles to reads its own proxy's, up to 21.2 / 36.7 / 33.7 / −14.6 apart. Every pointwise cell and every 100% cell is within its limits, and the process-first candidate within them on all 1,000 cells, Dehaze behind Detail drawn with Detail left out included. Held to the reference instead, the spatial cells within the limits rise from 57, 49 and 54 to 67, 64 and 69 at Fit, 33% and 50%. The cells pass once the frame a drag settles to is the GPU's picture at rest; the limits are not widened.
-- **The settle jump** at Fit, for a stack that settles from the exact render (Detail), is the CPU path's own and reported, not judged: its proxy against the exact reduction it settles to moves by up to 7.76 / 15.0 / 28.8 / 8.46, the GPU frame alike.
-
-### The picture in motion against the reference
-
-Reported beside the judged comparison by the recorded default; what `--hold-motion-to-reference` judges.
+What the gate judges; mean ΔE00 / worst 16 × 16 block / p99 ΔE00 / signed mean ΔL\*, the largest magnitude over a view's cells of a class and their mean.
 
 | View | Class | Measured | Within the limits | Past them | Largest: mean / worst block / p99 / \|ΔL\*\| | Mean over the cells |
 | --- | --- | ---: | ---: | ---: | --- | --- |
-| Fit | pointwise | 106 | 46 | 60 | 11.3 / 28.1 / 38.0 / 9.11 | 0.784 / 2.89 / 3.27 / 0.493 |
-| Fit | spatial | 144 | 57 | 87 | 27.3 / 48.6 / 59.3 / 31.6 | 2.71 / 7.55 / 7.76 / -2.03 |
-| 33% | pointwise | 106 | 29 | 77 | 12.0 / 29.7 / 52.1 / 8.73 | 0.928 / 3.37 / 4.07 / 0.526 |
-| 33% | spatial | 144 | 49 | 95 | 26.4 / 54.6 / 59.3 / 31.4 | 3.01 / 9.38 / 9.59 / -1.94 |
-| 50% | pointwise | 106 | 34 | 72 | 11.7 / 23.1 / 39.0 / 5.69 | 0.826 / 2.98 / 3.61 / 0.382 |
-| 50% | spatial | 144 | 54 | 90 | 17.9 / 44.8 / 64.1 / 15.4 | 2.08 / 6.89 / 7.95 / -0.992 |
-| 100% | pointwise | 106 | 106 | 0 | 0.051 / 0.252 / 0.851 / 0.009 | 0.009 / 0.066 / 0.235 / 0.000 |
-| 100% | spatial | 144 | 144 | 0 | 0.084 / 0.514 / 0.948 / 0.049 | 0.012 / 0.099 / 0.289 / 0.001 |
+| Fit | pointwise | 106 | 106 | 0 | 0.042 / 0.251 / 0.851 / 0.009 | 0.005 / 0.038 / 0.190 / 0.000 |
+| Fit | spatial | 144 | 144 | 0 | 0.058 / 0.514 / 0.861 / 0.049 | 0.007 / 0.058 / 0.222 / 0.001 |
+| 33% | pointwise | 106 | 106 | 0 | 0.041 / 0.135 / 0.857 / 0.010 | 0.005 / 0.033 / 0.190 / 0.000 |
+| 33% | spatial | 144 | 144 | 0 | 0.056 / 0.397 / 0.863 / 0.049 | 0.007 / 0.056 / 0.216 / 0.001 |
+| 50% | pointwise | 106 | 106 | 0 | 0.080 / 0.234 / 0.862 / 0.008 | 0.006 / 0.045 / 0.191 / -0.000 |
+| 50% | spatial | 144 | 144 | 0 | 0.057 / 0.397 / 0.872 / 0.049 | 0.007 / 0.075 / 0.235 / 0.001 |
+| 100% | pointwise | 106 | 106 | 0 | 0.046 / 0.251 / 0.851 / 0.009 | 0.005 / 0.049 / 0.184 / 0.000 |
+| 100% | spatial | 144 | 144 | 0 | 0.058 / 0.514 / 0.809 / 0.049 | 0.008 / 0.075 / 0.243 / 0.001 |
 
-- **At 100%** every cell is within its limits. The CPU's exact visible region equals the reference frame's region byte for byte on every cell, so the frame a drag draws there is as far from the reference as from the frame it settles to.
-- **At Fit, 33% and 50%** 481 of the 750 cells pass a limit: 209 of 318 pointwise cells, each past the worst block at least, and 272 of 432 spatial ones, in every family. The CPU's own proxy, which the frame a drag stands in for, is as far from the reference: on every cell the two frames' figures agree within 0.07 / 0.51 / 0.85 / 0.06, their own difference. Both process a source reduced to the view's size, where the reference reduces the processed frame, so detail beyond the view's resolution, and every neighbourhood and estimate a spatial unit takes, meets the stack's arithmetic after the reduction in one and before it in the other. Every source has cells past the limits; the Presence fixture none at Fit, where it is drawn at its own size and the reference is not reduced. The generated JPEGs pass by the worst block alone, by 1.0 to 2.4 under colour edits and masks and 1.6 to 4.1 under straightened crops, with means below 0.2, but for the tight crop on the 24 MP at 33%, which passes the p99 too (5.7); the Z6 and Air 2S, whose RAW proxies differ from the exact reduction before any edit ([baseline](#preview-error-baseline)), pass 44 of their 45 pointwise cells each, all but the tight crop at Fit, which is drawn at its exact stage (up to 2.2 / 9.4 / 10.9 / 0.54), and the X100VI 11 of its 45; the zone plates, whose chirp reaches half a cycle a pixel, the most, under crops, warps and the luminance range (up to 12.0 / 29.7 / 52.1 / 9.1); and Dehaze the most of the spatial units, its estimate taken over the reduced stage (up to 27.3 / 54.6 / 64.1 / 31.6 on the zone plates and the Presence fixture). Held to the reference, these 481 cells fail the gate.
+- **Every cell is within its limits**, the largest a mean of 0.080, a worst block of 0.514 and a p99 of 0.872: the stack processed at full resolution and reduced after, as the reference is, leaves only the GPU's arithmetic and storage between the two.
 
-### The picture at rest: its candidate
+### The picture in motion
 
-| View | Class | Candidate | Within the limits | Largest: mean / worst block / p99 / \|ΔL\*\| | CPU frame against the reference: largest |
-| --- | --- | --- | ---: | --- | --- |
-| Fit | pointwise | process-first | 106 of 106 | 0.042 / 0.251 / 0.851 / 0.009 | 11.3 / 28.1 / 38.0 / 9.10 |
-| Fit | spatial | process-first | 144 of 144 | 0.058 / 0.514 / 0.887 / 0.049 | 27.3 / 48.6 / 59.3 / 31.6 |
-| 33% | pointwise | process-first | 106 of 106 | 0.044 / 0.138 / 0.857 / 0.010 | 12.0 / 29.7 / 52.1 / 8.72 |
-| 33% | spatial | process-first | 144 of 144 | 0.056 / 0.397 / 0.885 / 0.049 | 26.4 / 54.6 / 59.3 / 31.4 |
-| 50% | pointwise | process-first | 106 of 106 | 0.089 / 0.209 / 0.862 / 0.008 | 11.7 / 23.1 / 39.0 / 5.69 |
-| 50% | spatial | process-first | 144 of 144 | 0.057 / 0.397 / 0.891 / 0.049 | 17.9 / 44.8 / 64.1 / 15.4 |
-| 100% | pointwise | the region plan | 106 of 106 | 0.051 / 0.252 / 0.851 / 0.009 | 0.000 / 0.000 / 0.000 / 0.000 |
-| 100% | spatial | the region plan | 144 of 144 | 0.084 / 0.514 / 0.948 / 0.049 | 0.000 / 0.000 / 0.000 / 0.000 |
+Reported, not gated; the frame a drag draws at each view against the picture at rest it settles to and against the reference, the largest magnitude over a view's cells of a class.
 
-- **The candidate is within every limit on all 1,000 cells**, no tile past the 2 GiB budget or the 256 MiB bound on a boundary, its figures at Fit and below 100% those of the 100% plans it is drawn from. Since it is nearly the reference, the motion frame's jump to it there is about the motion frame's distance from the reference, within 0.06 / 0.40 / 0.85 / 0.05.
-- **Its cost**, on the harness's own clock with each tile's boundary rendered on the CPU and its codes read back to the CPU, programs compiled on first use, on a loaded host: an order of magnitude, not a timing measurement. A whole process-first frame of the full stage took up to 0.47 s at 24 MP (6 tiles), 1.1 s at 60 MP (15 tiles), 0.85 s on the X100VI (12 tiles) and 0.56 and 0.40 s on the Z6 and Air 2S (6 tiles each), the slowest stacks Detail beside Presence or masked; a tight crop's single tile took 6 to 23 ms.
+| View | Class | Measured | Against the picture at rest: within / past | Largest | Against the reference: within / past | Largest |
+| --- | --- | ---: | --- | --- | --- | --- |
+| Fit | pointwise | 106 | 46 / 60 | 11.3 / 28.2 / 38.0 / 9.11 | 46 / 60 | 11.3 / 28.1 / 38.0 / 9.11 |
+| Fit | spatial | 144 | 57 / 87 | 27.3 / 48.6 / 59.3 / 31.6 | 57 / 87 | 27.3 / 48.6 / 59.3 / 31.6 |
+| 33% | pointwise | 106 | 29 / 77 | 12.0 / 29.7 / 52.1 / 8.73 | 29 / 77 | 12.0 / 29.7 / 52.1 / 8.73 |
+| 33% | spatial | 144 | 49 / 95 | 26.4 / 54.6 / 59.3 / 31.4 | 49 / 95 | 26.4 / 54.6 / 59.3 / 31.4 |
+| 50% | pointwise | 106 | 34 / 72 | 11.7 / 23.1 / 39.0 / 5.69 | 34 / 72 | 11.7 / 23.1 / 39.0 / 5.69 |
+| 50% | spatial | 144 | 54 / 90 | 17.9 / 44.8 / 64.1 / 15.4 | 54 / 90 | 17.9 / 44.8 / 64.1 / 15.4 |
+| 100% | pointwise | 106 | 106 / 0 | 0.000 / 0.000 / 0.000 / 0.000 | 106 / 0 | 0.046 / 0.251 / 0.851 / 0.009 |
+| 100% | spatial | 144 | 144 / 0 | 0.000 / 0.000 / 0.000 / 0.000 | 144 / 0 | 0.058 / 0.514 / 0.809 / 0.049 |
+
+- **At 100%** every cell is within its limits, and the drag's frame is the picture at rest's to the bit, both the region plan over the same window cut from the source.
+- **At Fit, 33% and 50%** 481 of the 750 cells are past a limit, the same cells against the picture at rest and against the reference: 209 of 318 pointwise cells, each past the worst block at least, and 272 of 432 spatial ones, in every family. The drag's frame processes a source reduced to the view's size, where the picture at rest and the reference reduce the processed frame, so detail beyond the view's resolution, and every neighbourhood and estimate a spatial unit takes, meets the stack's arithmetic after the reduction in one and before it in the other. Every source has cells past the limits; the Presence fixture none at Fit, where it is drawn at its own size and the reference is not reduced. The generated JPEGs pass by the worst block alone, by 1.0 to 2.4 under colour edits and masks and 1.6 to 4.1 under straightened crops, with means below 0.2, but for the tight crop on the 24 MP at 33%, which passes the p99 too (5.7); the Z6 and Air 2S, whose RAW proxies differ from the exact reduction before any edit ([baseline](#preview-error-baseline)), pass 44 of their 45 pointwise cells each, all but the tight crop at Fit, which is drawn at its exact stage (up to 2.2 / 9.4 / 10.9 / 0.54), and the X100VI 11 of its 45; the zone plates, whose chirp reaches half a cycle a pixel, the most, under crops, warps and the luminance range (up to 12.0 / 29.7 / 52.1 / 9.1); and Dehaze the most of the spatial units, its estimate taken over the reduced stage (up to 27.3 / 54.6 / 64.1 / 31.6 on the zone plates and the Presence fixture). Gated by either `--gate-motion` reading, these 481 cells fail it. The CPU's own proxy, measured beside the drag's frame against the reference on 2026-10-05 at `0961d235`, was as far: on every cell the two frames' figures agreed within 0.07 / 0.51 / 0.85 / 0.06.
 
 ### Reproducing it
 
@@ -4445,10 +4446,10 @@ cargo xtask preview-corpus --manifest /path/to/raw-manifest.json
 cargo run --release --locked --package xtask -- gpu-qualification --output NEW_DIR \
   --manifest /path/to/raw-manifest.json
 cargo run --release --locked --package xtask -- gpu-qualification --output NEW_DIR \
-  --manifest /path/to/raw-manifest.json --hold-motion-to-reference
+  --manifest /path/to/raw-manifest.json --gate-motion against-rest
 ```
 
-Each run writes `report.json` (every cell's figures and verdict, the reading, the limits, the build and corpus identity and the sources' hashes before and after), `summary.md`, `harness.log`, the harness's own `run/cells.json` and the frames of every judged cell past a limit under `run/frames/`. Without `--manifest` the RAW stacks are gaps, so a run within every limit would still be incomplete; `--zoom`, `--kind`, `--families`, `--recipes` and `--sources` measure a selection, which is incomplete too.
+Each run writes `report.json` (every cell's figures and verdict, the reading, the limits, the build and corpus identity and the sources' hashes before and after), `summary.md`, `harness.log`, the harness's own `run/cells.json` and the frames of every judged cell past a limit under `run/frames/` (`--frames all` for every cell). Without `--manifest` the RAW stacks are gaps, so a run within every limit would still be incomplete; `--zoom`, `--kind`, `--families`, `--recipes` and `--sources` measure a selection, which is incomplete too.
 
 ## The per-frame light's reduction factor
 

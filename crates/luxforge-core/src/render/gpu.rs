@@ -39,6 +39,8 @@ pub use plan::{
 };
 #[cfg(any(test, feature = "qualification"))]
 pub(crate) use preview::plan_rest_tiles;
+#[cfg(test)]
+pub(crate) use preview::plan_warm;
 #[cfg(feature = "qualification")]
 pub(crate) use preview::position;
 pub use preview::{
@@ -47,7 +49,7 @@ pub use preview::{
 };
 #[cfg(test)]
 pub(crate) use preview::{light_link, output_window, warm_links, warm_sequence};
-pub(crate) use preview::{plan_preview, plan_rest, plan_warm};
+pub(crate) use preview::{plan_preview, plan_rest, plan_warm_list};
 #[cfg(test)]
 pub(crate) use program::testing;
 pub use program::{GpuDescription, GpuProgram, GpuProgramKind};

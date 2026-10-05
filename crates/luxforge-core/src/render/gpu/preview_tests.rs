@@ -251,7 +251,7 @@ fn the_resident_plan_and_warm_list_follow_a_view_below_100_percent() {
             Some(key),
             "{percent}%: the drag starts from the resident boundary"
         );
-        let warm = plan_warm(&stack, GpuView::Fit(bounds)).unwrap().plans;
+        let warm = plan_warm(&stack, GpuView::Fit(bounds)).unwrap();
         assert!(!warm.is_empty(), "{percent}%: drags to warm");
         assert!(
             warm.iter().all(|plan| plan.boundary.stage == stage),

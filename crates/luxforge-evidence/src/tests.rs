@@ -1013,10 +1013,12 @@ fn export_steps_round_trip_and_take_a_bare_file_name() {
         {"export":{"menu":true}},
         {"export":{"file":{"name":"a.jpg"}}},
         {"export":{"file":{"name":"b.jpeg","keep_metadata":true}}},
+        {"export":{"file":{"name":"c.jpg","reference":true}}},
     ]));
     assert_eq!(steps[0], Step::export_menu());
     assert_eq!(steps[1], Step::export("a.jpg", false));
     assert_eq!(steps[2], Step::export("b.jpeg", true));
+    assert_eq!(steps[3], Step::export_reference("c.jpg"));
     for (script, expected) in [
         (json!({"export":{"menu":false}}), "takes true"),
         (json!({"export":{"file":{}}}), "missing field `name`"),

@@ -150,7 +150,7 @@
     },
     {
       "id": "TASK-003",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002"
@@ -161,7 +161,8 @@
         "The at-rest picture must meet the display limit against the reference reduced to the view's size, on the corpus, at Fit, below 100% and at 100%; the label vocabulary changes: nothing at rest is called approximate, and the status bar's render figure is the GPU frame's.",
         "Compare and history return draw the retained content on the GPU in one frame, so no retained-frame re-adoption is needed. The settle dissolve keeps its form, between two GPU frames.",
         "Detail's exact-settle progress bar (the Detail plan's in-progress task) loses its subject on this path; keep its machinery for export and any job longer than a second, or retire it with the exact phase in stage 5, and say which in the Detail design.",
-        "Recorded default since the gate's first run (2026-10-04, docs/design/gpu-first.md, Proposals with recorded defaults): a frame processed over a source reduced to the view's size misses the limit against the reference on 475 of 744 cells below 100%, so the picture at rest at Fit and below 100% is process-first, the stack at full resolution in tiles reduced to the view's size, which met every limit; the source's reduction (a box pass over the GPU-resident source, or its mip chain) serves the drag's boundary, whose frame is held to the at-rest frame it settles to."
+        "Recorded default since the gate's first run (2026-10-04, docs/design/gpu-first.md, Proposals with recorded defaults): a frame processed over a source reduced to the view's size misses the limit against the reference on 475 of 744 cells below 100%, so the picture at rest at Fit and below 100% is process-first, the stack at full resolution in tiles reduced to the view's size, which met every limit; the source's reduction (a box pass over the GPU-resident source, or its mip chain) serves the drag's boundary, whose frame is held to the at-rest frame it settles to.",
+        "Delivered 2026-10-05: with no gesture open the GPU draws the committed stack after a commit, a history selection, a preset, Compare and an open, its view plan at once and at Fit and below 100% its tiles at full resolution reduced to the view, dissolving in; every boundary is derived on the GPU from the source it holds; the proxy phase, the restoration-prefix cache and Detail's settled-from-exact display are gone. The release gate draws the editor's own frames and gates the picture at rest within its limit on all 1,000 cells; the picture in motion is reported, past a limit on 481 of 750 cells below 100% against either the picture at rest or the reference (artifacts/gpu-first/task-003/gate in the lane's worktree), the owner's open question in tasks/product-decisions.json TASK-008."
       ],
       "context_links": [
         {
@@ -176,7 +177,7 @@
           "label": "GPU previews design",
           "target": "docs/design/gpu-preview.md",
           "relevance": "The stage, programs, error limit and budgets the renderer of record grows from.",
-          "locator": "The held input boundary"
+          "locator": "The GPU source"
         },
         {
           "kind": "file",
@@ -311,7 +312,7 @@
     },
     {
       "id": "TASK-005",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-003"
       ],
@@ -478,7 +479,8 @@
       "description": "Export through GPU tiles: export.jpeg renders full-resolution tiles on the GPU and encodes them, with the reference renderer as the export for machines without a GPU and as an explicit reference option (stage 4).",
       "extra_context": [
         "docs/design/export.md: the exporter renders the exact frame on the CPU and encodes it. On the GPU the stack renders in full-resolution tiles with halos inside the GPU budget and the tiles feed the encoder in order; the job, its progress, cancellation and the sidecar identity keep their shapes. On one machine and driver the export is identical run to run; across machines a last-digit difference is accepted (owner, 2026-10-04).",
-        "The reference export stays: the default on a machine without a usable GPU, and an explicit option (`reference: true`) a test or a person can ask for. The harness compares a GPU export with a reference export per corpus stack within the display limit."
+        "The reference export stays: the default on a machine without a usable GPU, and an explicit option (`reference: true`) a test or a person can ask for. The harness compares a GPU export with a reference export per corpus stack within the display limit.",
+        "Delivered 2026-10-05: export.jpeg streams the GPU's bands into the encoder through the owner's tile service, the reference renders when asked, without a GPU provider or when the provider stops part-way (the export starts again from nothing), and the result names the renderer and its reason; the release gate's export kind is within its limit on all 250 corpus stacks and byte-identical on a second device, and the export and no-gpu-render scenarios pass (artifacts/gpu-first/task-007 in the lane's worktree). The export timing at 24 and 60 MP is TASK-011's."
       ],
       "context_links": [
         {
@@ -595,14 +597,15 @@
     },
     {
       "id": "TASK-009",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
       "description": "Warm the GPU program set in the background at launch and open, so the first picture never waits on a cold shader cache, with the reference renderer labelled until then.",
       "extra_context": [
         "After an update a Presence drag's sequences took seconds to compile on a cold Metal cache and drags took the CPU path naming `compiling` (docs/specs/performance.md, Presence and Detail sequences in the editor). With the GPU as the renderer of record the picture at rest would wait on the same compilation.",
-        "Warm the programs the open stack needs first, then the rest, on the GPU compile thread, with the reference frame on screen and labelled until the GPU frame replaces it; record the warm-up's duration in the Performance section and the events."
+        "Warm the programs the open stack needs first, then the rest, on the GPU compile thread, with the reference frame on screen and labelled until the GPU frame replaces it; record the warm-up's duration in the Performance section and the events.",
+        "Delivered 2026-10-05: each committed job compiles the picture on screen first, then the open stack's drags, then every module's first drag, Detail and Presence included; while the picture at rest compiles the reference frame is on screen and the status bar says Preparing GPU render; the warm-up is listed on the activity board as gpu.warm and recorded as the gpu_warm_up event. On a fresh bundle's Metal cache the first warm-up took 1.53 s and the picture at rest's own programs 41 ms (docs/specs/performance.md, Warming at launch and open; the system compiler cache was not cleared). A release that changes which units a layer uses still compiles one link of its picture at rest, recorded in docs/design/gpu-first.md as a proposal with a default."
       ],
       "context_links": [
         {

@@ -709,6 +709,8 @@ pub(super) struct CompileFigures {
     pending: AtomicU64,
     /// The newest warm list's version the pipeline has queued, plus one; zero before any.
     warmed: AtomicU64,
+    /// The compile thread's warm-up running, or its last ([`compile::WarmUpFigures`]).
+    warm_up: std::sync::Mutex<Option<compile::WarmUpFigures>>,
 }
 
 impl CompileFigures {
@@ -719,6 +721,14 @@ impl CompileFigures {
         self.max_us.fetch_max(micros, Ordering::AcqRel);
         self.last_us.store(micros, Ordering::Release);
         self.leave(1);
+    }
+
+    /// The warm-up's figures as they stand now.
+    fn warm_up(&self, figures: compile::WarmUpFigures) {
+        *self
+            .warm_up
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(figures);
     }
 
     /// `count` sequences queued.
@@ -825,6 +835,15 @@ impl Figures {
             compile.max_us.load(Ordering::Acquire),
             compile.last_us.load(Ordering::Acquire),
         )
+    }
+
+    /// The compile thread's warm-up running, or its last.
+    pub(super) fn warm_up(&self) -> Option<compile::WarmUpFigures> {
+        *self
+            .compile
+            .warm_up
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Sequences queued or compiling, and the newest warm list's version queued.
@@ -1695,10 +1714,18 @@ impl GpuStage {
         }
     }
 
-    /// Hand `sequences` the stage does not hold yet to the compile thread.
-    fn warm(&mut self, device: &wgpu::Device, sequences: &[compile::Sequence], figures: &Figures) {
+    /// Hand `sequences`, warm list `version`'s, its first `open` the open stack's, that the stage
+    /// does not hold yet to the compile thread.
+    fn warm(
+        &mut self,
+        device: &wgpu::Device,
+        sequences: &[compile::Sequence],
+        list: (u64, usize),
+        figures: &Figures,
+    ) {
         if let Some(support) = &self.support {
-            self.pipelines.warm(device, support, sequences, figures);
+            self.pipelines
+                .warm(device, support, sequences, list, figures);
         }
     }
 
@@ -2329,20 +2356,36 @@ impl PhotoPipeline {
             && self.gpu.warmed != Some(warm.version())
         {
             self.gpu.warmed = Some(warm.version());
-            // Each link of each plan's chain is a sequence of its own.
-            let sequences: Vec<compile::Sequence> = warm
-                .sequences()
-                .iter()
-                .flat_map(|(steps, format)| {
-                    link_sequences(steps, *format).map(|(link, format)| (link.to_vec(), format))
-                })
-                .chain(
-                    warm.lights()
-                        .iter()
-                        .map(|steps| (steps.clone(), light::LIGHT_FORMAT)),
-                )
-                .collect();
-            self.gpu.warm(device, &sequences, &self.figures.preview);
+            // Each link of each plan's chain is a sequence of its own; the open stack's plans' links
+            // come first, then the light links they compute, then the rest.
+            let lights = || {
+                warm.lights()
+                    .iter()
+                    .map(|steps| (steps.clone(), light::LIGHT_FORMAT))
+            };
+            let mut open = 0;
+            let mut sequences: Vec<compile::Sequence> = Vec::new();
+            if warm.open() == 0 {
+                sequences.extend(lights());
+                open = sequences.len();
+            }
+            for (index, (steps, format)) in warm.sequences().iter().enumerate() {
+                sequences.extend(
+                    link_sequences(steps, *format).map(|(link, format)| (link.to_vec(), format)),
+                );
+                if index + 1 == warm.open() {
+                    sequences.extend(lights());
+                }
+                if index < warm.open() {
+                    open = sequences.len();
+                }
+            }
+            self.gpu.warm(
+                device,
+                &sequences,
+                (warm.version(), open),
+                &self.figures.preview,
+            );
             self.figures
                 .preview
                 .compile
@@ -3630,7 +3673,7 @@ pub(super) use compile::GpuOptions;
 pub use source::{AxisCoverage, Derivation, GpuSource, Reduction, SourceFigures, SourceKind};
 use source::{Layouts as SourceLayouts, SourceSlot};
 mod stage;
-pub use compile::{GpuWarm, PIPELINE_CACHE};
+pub use compile::{GpuWarm, PIPELINE_CACHE, WarmUpFigures};
 pub(super) use stage::gpu_stage_refused;
 pub use stage::{GpuStageState, refuse_gpu_stage};
 mod tail;

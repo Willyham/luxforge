@@ -45,6 +45,7 @@ pub(super) fn report(editor: &mut Editor) {
     let answer = editor
         .owner
         .report_renderer(editor.client, renderer)
+        .map(Box::new)
         .map_err(|error| error.to_string());
     let _ = editor.update(Message::Renderer(RendererMessage::Reported(answer)));
     assert!(!editor.renderer.in_flight());
@@ -260,5 +261,98 @@ fn fallback_a_device_lost_mid_gesture_lets_the_held_boundary_go() {
             .is_none()
     );
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    finish(editor, catalog);
+}
+
+/// The desktop names the adapter its window draws with to its GPU tile worker once the photo
+/// surface has checked its GPU stage, and once: until then the worker answers the reference as
+/// `surface-pending`. A launch that is not an evidence run asks Iced for the adapter's name only
+/// then, and the worker takes Iced's answer; an evidence run's name, from the system information it
+/// asked for at launch, is taken the same way once the stage is checked. A later name changes
+/// nothing, and a launch that refused the stage names nothing.
+#[test]
+fn the_tile_worker_is_named_the_windows_adapter_once_the_stage_is_checked() {
+    use super::{gpu_tiles::GpuTiles, renderer::WindowAdapter};
+    use luxforge_core::tiles::{TileFallback, TileService, TileStatus, TileUnavailable};
+    let pending = TileStatus::Reference(Some(TileFallback::Unavailable(TileUnavailable::Pending)));
+    let poll = |editor: &mut Editor| {
+        let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    };
+    let catalog = catalog("tile-adapter");
+    let (mut editor, _, _) = real_photo_launched(&catalog, &fixture(), crate::Config::default());
+    let worker = Arc::new(GpuTiles::pending(false));
+    editor.renderer.tiles = Some(Arc::clone(&worker));
+    editor.renderer.stage = Some(GpuStageState::Unchecked);
+    poll(&mut editor);
+    assert_eq!(
+        editor.renderer.adapter(),
+        &WindowAdapter::Unknown,
+        "not yet"
+    );
+    assert_eq!(worker.status(), pending);
+    editor.renderer.stage = Some(GpuStageState::Available);
+    poll(&mut editor);
+    assert_eq!(editor.renderer.adapter(), &WindowAdapter::Asked);
+    poll(&mut editor);
+    assert_eq!(
+        editor.renderer.adapter(),
+        &WindowAdapter::Asked,
+        "asked once"
+    );
+    assert_eq!(worker.status(), pending, "until Iced answers");
+    let named = |backend: &str, name: &str| {
+        Message::Renderer(RendererMessage::Adapter {
+            backend: backend.into(),
+            name: name.into(),
+        })
+    };
+    let _ = editor.update(named("Metal", "Apple M4 Pro"));
+    assert_eq!(editor.renderer.adapter(), &WindowAdapter::Told);
+    assert_eq!(worker.status(), TileStatus::Gpu);
+    let _ = editor.update(named("Vulkan", "llvmpipe"));
+    assert_eq!(
+        editor.renderer.adapter(),
+        &WindowAdapter::Told,
+        "named once"
+    );
+    assert!(!worker.started(), "nothing opened until an export asks");
+    finish(editor, catalog);
+
+    // An evidence run's name, which comes with its launch, before the stage is checked.
+    let catalog = super::gpu_preview_tests::catalog("tile-adapter-named");
+    let (mut editor, _, _) = real_photo_launched(&catalog, &fixture(), crate::Config::default());
+    let worker = Arc::new(GpuTiles::pending(false));
+    editor.renderer.tiles = Some(Arc::clone(&worker));
+    editor.renderer.stage = Some(GpuStageState::Unchecked);
+    editor.window_adapter_named("Metal".into(), "Apple M4 Pro".into());
+    poll(&mut editor);
+    assert_eq!(worker.status(), pending, "not before the stage is checked");
+    editor.renderer.stage = Some(GpuStageState::NoAdapter { refused: false });
+    poll(&mut editor);
+    assert_eq!(
+        editor.renderer.adapter(),
+        &WindowAdapter::Told,
+        "asked nothing"
+    );
+    assert_eq!(worker.status(), TileStatus::Gpu, "its own device decides");
+    finish(editor, catalog);
+
+    // A launch that refused the stage names nothing, whatever it hears.
+    let catalog = super::gpu_preview_tests::catalog("tile-adapter-refused");
+    let config = crate::Config {
+        no_gpu_render: true,
+        ..crate::Config::default()
+    };
+    let (mut editor, _, _) = real_photo_launched(&catalog, &fixture(), config);
+    let worker = Arc::new(GpuTiles::pending(true));
+    editor.renderer.tiles = Some(Arc::clone(&worker));
+    editor.renderer.stage = Some(GpuStageState::NoAdapter { refused: true });
+    let _ = editor.update(named("Metal", "Apple M4 Pro"));
+    poll(&mut editor);
+    assert_ne!(editor.renderer.adapter(), &WindowAdapter::Told);
+    assert_eq!(
+        worker.status(),
+        TileStatus::Reference(Some(TileFallback::Unavailable(TileUnavailable::Refused)))
+    );
     finish(editor, catalog);
 }

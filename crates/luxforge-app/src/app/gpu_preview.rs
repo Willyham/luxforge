@@ -185,12 +185,27 @@ fn rest_of(
             Ok(Some(grid)) => Some(grid),
         },
     };
+    rest_over(&source.gpu, stage.as_deref(), tiles, versions, version).map(Some)
+}
+
+/// `tiles` over the source `gpu` as the surfaces draw them under `version`, through `stage`, the
+/// whole output stage's grid of their lens warp when they draw through one: each tile's plan over
+/// its window cut from the source under a version of its own from `versions`, with no clipping
+/// marks. The reason when a tile's plan is one the surface cannot run. `O(tiles × steps)`, no
+/// pixel.
+fn rest_over(
+    gpu: &GpuSource,
+    stage: Option<&CoordinateGrid>,
+    tiles: &luxforge_core::RestTiles,
+    versions: &mut u64,
+    version: u64,
+) -> Result<surface::GpuRest, &'static str> {
     let mut plans = Vec::with_capacity(tiles.tiles.len());
     for tile in &tiles.tiles {
         let window = tile.window;
         *versions += 1;
         let boundary = GpuBoundary::derived(
-            &source.gpu,
+            gpu,
             Derivation::Cut {
                 origin: (window.x0, window.y0),
             },
@@ -199,7 +214,7 @@ fn rest_of(
             *versions,
         )
         .ok_or("boundary-size")?;
-        let grid = match &stage {
+        let grid = match stage {
             None => None,
             Some(stage) => Some(gpu_plan::WarpGrid::new(
                 &stage.part(tile.rect).ok_or("warp-grid")?,
@@ -216,13 +231,66 @@ fn rest_of(
             .map_err(|unrunnable| unrunnable.code())?,
         );
     }
-    Ok(Some(surface::GpuRest {
+    Ok(surface::GpuRest {
         version,
         tiles: plans.into(),
         view: tiles.view,
         across: axis(tiles.across.clone()),
         down: axis(tiles.down.clone()),
-    }))
+    })
+}
+
+/// For the release gate's harness: `tiles` over the source `gpu` as the surfaces draw them, the
+/// whole output stage's grid of a lens warp computed here rather than off the interface thread.
+#[cfg(test)]
+pub(crate) fn rest_now(
+    gpu: &GpuSource,
+    tiles: &luxforge_core::RestTiles,
+    version: u64,
+) -> Result<surface::GpuRest, String> {
+    let stage = tiles
+        .warp()
+        .map(|warp| grid_of(&GridKey::stage(warp)))
+        .transpose()?;
+    let mut versions = version;
+    rest_over(gpu, stage.as_deref(), tiles, &mut versions, version).map_err(str::to_owned)
+}
+
+/// A boundary derived for the release gate's harness, where its texels lie in the plan's boundary
+/// stage, and its lens warp's grid.
+#[cfg(test)]
+pub(crate) type DerivedNow = (GpuBoundary, (u32, u32), Option<gpu_plan::WarpGrid>);
+
+/// For the release gate's harness: the boundary `request` names derived from the source `gpu`, as
+/// a drag or the stack at rest holds it, under `version`, with where its texels lie in the plan's
+/// boundary stage and a lens warp's grid, computed here rather than off the interface thread; or
+/// the budget it would pass, as the editor refuses it ([`over_budget`]), naming `budget-exceeded`.
+#[cfg(test)]
+pub(crate) fn derived_now(
+    gpu: &GpuSource,
+    plan: &CorePlan,
+    request: &SourceBoundary,
+    version: u64,
+) -> Result<DerivedNow, String> {
+    let budget = surface::gpu_preview::GPU_PREVIEW_BUDGET;
+    if let Some((requested, bound)) = over_budget(plan, request, budget) {
+        return Err(format!(
+            "budget-exceeded: {requested} B past the {bound} B the editor holds a boundary and its \
+             slot to"
+        ));
+    }
+    let grid = GridKey::of(request)
+        .map(|key| grid_of(&key))
+        .transpose()?
+        .map(|grid| gpu_plan::WarpGrid::new(&grid));
+    let Derived {
+        derivation,
+        size,
+        origin,
+    } = derivation_of(request, gpu.stage())?;
+    let boundary =
+        GpuBoundary::derived(gpu, derivation, size.0, size.1, version).ok_or("boundary-size")?;
+    Ok((boundary, origin, grid))
 }
 
 /// A RAW development's planes as the GPU source uploads them, borrowed through a clone of the image,
@@ -761,6 +829,8 @@ pub(crate) struct GpuPreviews {
     /// The last boundary version handed out: each held boundary is derived once.
     versions: u64,
     warm: Option<GpuWarm>,
+    /// The compile thread's warm-up as the desktop follows it ([`super::gpu_warm`]).
+    pub(crate) warm_up: super::gpu_warm::WarmUpFollow,
     /// What a test reports for the surface, which no test draws.
     #[cfg(test)]
     pub(crate) surface: Option<SurfaceReport>,
@@ -1776,11 +1846,23 @@ impl Editor {
             .then_some((&at_rest.handed.plan, at_rest.handed.change))
     }
 
-    /// The displayed stack's picture at rest in tiles, from its job or from its exact phase, which
-    /// planned them again once it stored the global estimates they read: held for the surfaces to
-    /// draw ([`surface::GpuRest`]), under a new version unless they are the tiles held. `None` lets
-    /// the one held go: a view that draws the stack at its own size or larger, or tiles still
-    /// waiting for their estimates. Nothing with the preference off.
+    /// Whether the picture at rest in tiles handed to the surface has not been drawn whole yet:
+    /// while it is still to land, the photograph is marked rendering.
+    pub(crate) fn gpu_rest_landing(&self) -> bool {
+        let Some(rest) = self.gpu_rest_handed() else {
+            return false;
+        };
+        let drawn = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
+        drawn.drawn_rest != Some(rest.version)
+            && !drawn.gpu_rest.is_some_and(|figures| {
+                figures.version == rest.version && figures.fallback.is_some()
+            })
+    }
+
+    /// The displayed stack's picture at rest in tiles, from its job: held for the surfaces to draw
+    /// ([`surface::GpuRest`]), under a new version unless they are the tiles held. `None` lets the
+    /// one held go: a view that draws the stack at its own size or larger, or tiles the GPU cannot
+    /// draw. Nothing with the preference off.
     pub(crate) fn gpu_rest_from(&mut self, tiles: Option<Box<luxforge_core::RestTiles>>) {
         if self.gpu_preview_allowed().is_err() {
             self.gpu.rest = None;
@@ -1982,8 +2064,10 @@ impl Editor {
         });
     }
 
-    /// A committed stack's job carries the plans its gestures are likely to draw: hand their
-    /// sequences to the surface to compile before a drag begins.
+    /// A committed stack's job carries the plans its gestures are likely to draw, the first `open`
+    /// of them the open stack's and then the rest of the program set, and the light links the open
+    /// stack's ticks compute: hand their sequences to the surface to compile, in that order, before
+    /// a drag begins.
     pub(crate) fn gpu_warm_from(&mut self, warm: Option<&luxforge_core::GpuWarmList>) {
         let Some(warm) = warm else {
             return;
@@ -1991,17 +2075,19 @@ impl Editor {
         let plans = &warm.plans;
         // While a clipping overlay is shown the gestures' plans carry its marks.
         let clip = super::gpu_settle::clip_flags(&self.session.workspace);
-        let sequences: Vec<(Vec<GpuStep>, surface::BoundaryFormat)> = plans
-            .iter()
-            .filter_map(|plan| {
-                gpu_plan::plan_steps(plan).ok().map(|steps| {
-                    (
-                        super::gpu_settle::marked_steps(steps, plan, clip),
-                        gpu_plan::boundary_format(luxforge_core::BoundaryFormat::of(plan.linear)),
-                    )
-                })
-            })
-            .collect();
+        let mut open_sequences = 0;
+        let mut sequences: Vec<(Vec<GpuStep>, surface::BoundaryFormat)> = Vec::new();
+        for (index, plan) in plans.iter().enumerate() {
+            if let Ok(steps) = gpu_plan::plan_steps(plan) {
+                sequences.push((
+                    super::gpu_settle::marked_steps(steps, plan, clip),
+                    gpu_plan::boundary_format(luxforge_core::BoundaryFormat::of(plan.linear)),
+                ));
+            }
+            if index < warm.open {
+                open_sequences = sequences.len();
+            }
+        }
         // The light links the list warms, each writing the light plane its plans read.
         let lights: Vec<Vec<GpuStep>> = warm
             .lights
@@ -2013,17 +2099,23 @@ impl Editor {
             .map(|light| light.steps)
             .collect();
         let same = self.gpu.warm.as_ref().is_some_and(|warm| {
-            warm.sequences() == sequences.as_slice() && warm.lights() == lights.as_slice()
+            warm.sequences() == sequences.as_slice()
+                && warm.lights() == lights.as_slice()
+                && warm.open() == open_sequences
         });
         if same || sequences.is_empty() {
             return;
         }
         let version = self.gpu.warm.as_ref().map_or(1, |warm| warm.version() + 1);
-        self.event(
-            "gpu_preview_warm",
-            || json!({"version": version, "sequences": sequences.len(), "lights": lights.len()}),
+        self.event("gpu_preview_warm", || {
+            json!({"version": version, "sequences": sequences.len(),
+                "open": open_sequences, "lights": lights.len()})
+        });
+        self.gpu.warm = Some(
+            GpuWarm::new(version, sequences)
+                .with_open(open_sequences)
+                .with_lights(lights),
         );
-        self.gpu.warm = Some(GpuWarm::new(version, sequences).with_lights(lights));
     }
 
     /// What the next tick asks the owner to plan its GPU preview for: at Fit and below 100%, a
@@ -2222,6 +2314,7 @@ pub(super) fn after_message(editor: &mut Editor, _: &super::Before) -> iced::Tas
     }
     editor.gpu_mark_at_rest();
     editor.gpu_follow_rest_drawn();
+    editor.gpu_follow_warm_up();
     editor.gpu_compute_grids()
 }
 

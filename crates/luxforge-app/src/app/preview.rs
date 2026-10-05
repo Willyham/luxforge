@@ -2191,8 +2191,7 @@ impl Editor {
         self.gpu_hold_source(job.evaluation.source());
         let committed = job.layer_count.is_none() && job.evaluation.draft_revision().is_none();
         // The displayed stack's picture at rest in tiles: held for the surfaces to draw, or let go
-        // where its view draws the stack at its own size or larger, or where its tiles wait for
-        // the global estimates the job's exact phase stores, which then plans them again.
+        // where its view draws the stack at its own size or larger or the GPU cannot draw them.
         if committed && let Some(rest) = job.gpu_rest.as_mut() {
             let tiles = rest.tiles.take().and_then(Result::ok);
             self.gpu_rest_from(tiles);

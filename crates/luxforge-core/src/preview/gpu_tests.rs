@@ -699,9 +699,8 @@ fn an_exact_fit_boundary_keeps_the_whole_stage_only_where_its_output_reads_it() 
 fn the_warmed_plans_hold_every_first_drags_sequence() {
     let crop = crop();
     let (job, _) = draft_job("set-basic", vec![crop.clone()], vec![crop.clone()], 0);
-    let plans = crate::render::gpu::plan_warm(&job.evaluation, crate::GpuView::Fit(bounds()))
-        .unwrap()
-        .plans;
+    let plans =
+        crate::render::gpu::plan_warm(&job.evaluation, crate::GpuView::Fit(bounds())).unwrap();
     let warmed: Vec<Vec<&'static str>> = plans.iter().map(sequence).collect();
     let keys: Vec<Vec<String>> = plans.iter().map(pipelines).collect();
     for (index, one) in keys.iter().enumerate() {
@@ -761,16 +760,15 @@ fn the_warmed_plans_tell_a_masked_layer_from_an_unmasked_one() {
             stack(masked),
             0,
         );
-        let plans = crate::render::gpu::plan_warm(&job.evaluation, crate::GpuView::Fit(bounds()))
-            .unwrap()
-            .plans;
-        // The Presence layer's own drag is the last plan: the committed stack and the first
-        // drags of the colour and finish modules come before it.
+        let plans =
+            crate::render::gpu::plan_warm(&job.evaluation, crate::GpuView::Fit(bounds())).unwrap();
+        // The Presence layer's own drag: the committed stack and the drags of the colour and
+        // finish modules hold more, and Detail's first drag holds Detail beside it.
         plans
             .into_iter()
             .rev()
             .find(|plan| {
-                plan.content.is_empty() && !plan.spatial.is_empty() && plan.output.is_empty()
+                plan.content.is_empty() && plan.spatial.len() == 1 && plan.output.is_empty()
             })
             .expect("the Presence layer's drag")
     };
@@ -1070,15 +1068,15 @@ fn the_warmed_plans_hold_a_spatial_layers_drags() {
             )
         };
         let (job, _) = job_of(entry.clone(), 0);
-        let plans = crate::render::gpu::plan_warm(&job.evaluation, crate::GpuView::Fit(bounds()))
-            .unwrap()
-            .plans;
+        let plans =
+            crate::render::gpu::plan_warm(&job.evaluation, crate::GpuView::Fit(bounds())).unwrap();
         // The plans that draft the layer itself; the colour candidates before it, and the
-        // vignette's first drag after it, hold it too.
+        // vignette's first drag after it, hold it too, and the other spatial module's first drag
+        // holds it beside its own.
         let own: Vec<&GpuPlan> = plans
             .iter()
             .filter(|plan| {
-                !plan.spatial.is_empty() && plan.content.is_empty() && plan.output.is_empty()
+                plan.spatial.len() == 1 && plan.content.is_empty() && plan.output.is_empty()
             })
             .collect();
         assert_eq!(
@@ -1308,7 +1306,6 @@ fn the_warmed_plans_hold_a_drag_of_each_of_two_spatial_layers() {
     let warmed: Vec<Vec<&'static str>> =
         crate::render::gpu::plan_warm(&job.evaluation, crate::GpuView::Fit(bounds()))
             .unwrap()
-            .plans
             .iter()
             .map(sequence)
             .collect();
