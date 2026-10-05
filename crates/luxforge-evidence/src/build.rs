@@ -132,7 +132,19 @@ impl Step {
 
     /// Choose a theme by its id, as its Appearance row does.
     pub fn theme(id: impl Into<String>) -> Self {
-        Self::Theme { id: id.into() }
+        Self::Theme(ThemePick {
+            id: Some(id.into()),
+            name: None,
+        })
+    }
+
+    /// Choose a theme by its name, as its Appearance row does: an imported theme's id is new on
+    /// every run.
+    pub fn theme_named(name: impl Into<String>) -> Self {
+        Self::Theme(ThemePick {
+            id: None,
+            name: Some(name.into()),
+        })
     }
 
     /// Import one Luxforge theme document through the Appearance tab's import task.
