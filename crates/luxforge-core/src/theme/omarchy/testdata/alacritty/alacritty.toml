@@ -1,0 +1,34 @@
+# A theme from before colors.toml: only its Alacritty configuration.
+[font]
+size = 12
+
+[terminal.shell]
+program = "/bin/sh"
+
+[colors.primary]
+background = '#1E1E2E'
+foreground = "0xcdd6f4"
+dim_foreground = "#7f849c"
+
+[colors.cursor]
+text = "#1e1e2e"
+cursor = "#f5e0dc"
+
+[colors.selection]
+text = "CellBackground"
+background = "CellForeground"
+
+[colors.normal]
+black = "#45475a"
+red = "#f38ba8"
+green = "#a6e3a1"
+yellow = "#f9e2af"
+blue = "#89b4fa"
+magenta = "#f5c2e7"
+cyan = "#94e2d5"
+white = "#bac2de"
+
+[colors.bright]
+red = "#f37799"
+green = 0x89d88b
+blue = "#74a8fc"

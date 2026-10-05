@@ -13,6 +13,7 @@
 //!
 //! A theme never changes a photograph: nothing here reads an asset, a recipe or a catalog.
 mod document;
+pub mod omarchy;
 mod report;
 mod resolve;
 mod rgba;

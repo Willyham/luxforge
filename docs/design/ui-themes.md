@@ -194,8 +194,8 @@ Every theme keeps its own accent (owner, 2026-10-05), so an imported theme looks
   - Omarchy 3.3 to 3.8 used a terminal form: `accent`, `cursor`, `foreground`, `background`, `selection_foreground`, `selection_background` and `color0` to `color15`.
   - Before 3.3 there was no palette file. Omarchy still derives one from a theme's `alacritty.toml`, taking the terminal's normal blue as the accent.
 
-  Omarchy's resolver, `bin/omarchy-theme-color`, accepts all three forms. It also takes short and ANSI aliases, and fills missing keys by fixed mixes.
-- **Light or dark** comes from the first of these that is present: the `mode` key; the legacy `theme_type` key; a `light.mode` file beside the palette; the background's brightness.
+  Omarchy's resolver, `bin/omarchy-theme-color`, reads both `colors.toml` forms; `bin/omarchy-theme-colors-from-alacritty` first writes a `colors.toml` for a theme with only `alacritty.toml`. The resolver also takes short and ANSI aliases, and fills missing keys by fixed mixes. It has no fallback for the accent.
+- **Light or dark** comes from the first of these that is present: the `mode` key; the legacy `theme_type` key; a `light.mode` file beside the palette; the background's brightness, light when its three 8-bit channels sum to more than 382.
 - **The format carries no version.** Keys are added over time. Named colours do not always hold the colour they name: Matte Black's `yellow` is a red and its `green` an amber, and Lumon's `red` is a blue.
 - **Community themes.** omarchy.org lists 146. Of the 145 reachable, 108 ship `colors.toml` (every one with an `accent`) and 37 ship only `alacritty.toml`. About half carry no licence.
 
@@ -207,7 +207,14 @@ Luxforge reads three files, as data, and runs nothing a theme ships:
 - `alacritty.toml`, when there is no `colors.toml`;
 - the `light.mode` marker.
 
-It resolves them as Omarchy's resolver does at the pinned commit (aliases, ANSI fallbacks, the mode's precedence, and the fallback mixes with Omarchy's rounding), so a theme reads the same in Luxforge as in Omarchy. Every value must be `#rrggbb`. Hyprland's gradient strings, and keys the reader does not know, are listed in the report and not used. Wallpapers, the icon theme and per-application files are never read.
+It resolves them as Omarchy's resolver does at the pinned commit (aliases, ANSI fallbacks, the mode's precedence, and the fallback mixes with Omarchy's rounding), so a theme reads the same in Luxforge as in Omarchy. The port is `luxforge_core::theme::omarchy`, with tests that hold it to the values Omarchy's resolver gives for its 22 built-in themes and for synthetic themes in each form. Where it differs from Omarchy, it is stricter or says so:
+
+- It parses strict TOML, where Omarchy reads `key = value` lines.
+- Every colour a `colors.toml` gives a key the resolver reads must be `#rrggbb`. Hyprland's gradient strings, and keys the reader does not know, are listed in the report and not used. An empty value is no value, as in Omarchy, and is listed.
+- In `alacritty.toml`, a colour Omarchy reads that is not hex, such as `CellForeground`, is skipped as Omarchy skips it, so its fallback applies, and listed. The other keys under `colors` are listed; the rest of the file is the terminal's configuration and is not.
+- A fallback mix of a colour the theme does not have leaves that key out. Omarchy's awk would mix an empty string, into a colour that depends on the awk.
+
+Wallpapers, the icon theme and per-application files are never read.
 
 Six resolved values become roles. Luxforge derives everything else by its own rules, because Omarchy's named colours cannot be relied on for meaning.
 
@@ -218,7 +225,7 @@ Six resolved values become roles. Luxforge derives everything else by its own ru
 | `dark_background` | `surround` | Held to the chroma bound. When a theme leaves it out, Omarchy's resolver makes it the background mixed 25% with black |
 | `lighter_background` | `control` | Omarchy's raised surface: lighter in a dark theme, darker in a light one. Derived instead when it equals the background, as it does for an Omarchy 3 palette |
 | `foreground` | `text` | |
-| `accent` | `accent` | The terminal's normal blue for an `alacritty.toml` theme, as in Omarchy. If neither is present the import is refused by name |
+| `accent` | `accent` | The terminal's normal blue for an `alacritty.toml` theme, as in Omarchy. A `colors.toml` without an accent is refused by name, since Omarchy's resolver gives it none; so is an `alacritty.toml` missing any of its eight normal colours, for which Omarchy writes no palette |
 
 The theme's name is its folder's slug title-cased, as Omarchy lists it, with a cloned repository's `omarchy-` prefix and `-theme` suffix removed. The person can give another name on import. The report records:
 

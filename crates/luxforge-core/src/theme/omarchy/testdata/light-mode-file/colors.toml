@@ -1,0 +1,4 @@
+# No mode key and a dark background: the light.mode marker decides.
+accent = "#4078f2"
+background = "#383a42"
+foreground = "#fafafa"
