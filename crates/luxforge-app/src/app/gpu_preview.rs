@@ -185,12 +185,27 @@ fn rest_of(
             Ok(Some(grid)) => Some(grid),
         },
     };
+    rest_over(&source.gpu, stage.as_deref(), tiles, versions, version).map(Some)
+}
+
+/// `tiles` over the source `gpu` as the surfaces draw them under `version`, through `stage`, the
+/// whole output stage's grid of their lens warp when they draw through one: each tile's plan over
+/// its window cut from the source under a version of its own from `versions`, with no clipping
+/// marks. The reason when a tile's plan is one the surface cannot run. `O(tiles × steps)`, no
+/// pixel.
+fn rest_over(
+    gpu: &GpuSource,
+    stage: Option<&CoordinateGrid>,
+    tiles: &luxforge_core::RestTiles,
+    versions: &mut u64,
+    version: u64,
+) -> Result<surface::GpuRest, &'static str> {
     let mut plans = Vec::with_capacity(tiles.tiles.len());
     for tile in &tiles.tiles {
         let window = tile.window;
         *versions += 1;
         let boundary = GpuBoundary::derived(
-            &source.gpu,
+            gpu,
             Derivation::Cut {
                 origin: (window.x0, window.y0),
             },
@@ -199,7 +214,7 @@ fn rest_of(
             *versions,
         )
         .ok_or("boundary-size")?;
-        let grid = match &stage {
+        let grid = match stage {
             None => None,
             Some(stage) => Some(gpu_plan::WarpGrid::new(
                 &stage.part(tile.rect).ok_or("warp-grid")?,
@@ -216,13 +231,66 @@ fn rest_of(
             .map_err(|unrunnable| unrunnable.code())?,
         );
     }
-    Ok(Some(surface::GpuRest {
+    Ok(surface::GpuRest {
         version,
         tiles: plans.into(),
         view: tiles.view,
         across: axis(tiles.across.clone()),
         down: axis(tiles.down.clone()),
-    }))
+    })
+}
+
+/// For the release gate's harness: `tiles` over the source `gpu` as the surfaces draw them, the
+/// whole output stage's grid of a lens warp computed here rather than off the interface thread.
+#[cfg(test)]
+pub(crate) fn rest_now(
+    gpu: &GpuSource,
+    tiles: &luxforge_core::RestTiles,
+    version: u64,
+) -> Result<surface::GpuRest, String> {
+    let stage = tiles
+        .warp()
+        .map(|warp| grid_of(&GridKey::stage(warp)))
+        .transpose()?;
+    let mut versions = version;
+    rest_over(gpu, stage.as_deref(), tiles, &mut versions, version).map_err(str::to_owned)
+}
+
+/// A boundary derived for the release gate's harness, where its texels lie in the plan's boundary
+/// stage, and its lens warp's grid.
+#[cfg(test)]
+pub(crate) type DerivedNow = (GpuBoundary, (u32, u32), Option<gpu_plan::WarpGrid>);
+
+/// For the release gate's harness: the boundary `request` names derived from the source `gpu`, as
+/// a drag or the stack at rest holds it, under `version`, with where its texels lie in the plan's
+/// boundary stage and a lens warp's grid, computed here rather than off the interface thread; or
+/// the budget it would pass, as the editor refuses it ([`over_budget`]), naming `budget-exceeded`.
+#[cfg(test)]
+pub(crate) fn derived_now(
+    gpu: &GpuSource,
+    plan: &CorePlan,
+    request: &SourceBoundary,
+    version: u64,
+) -> Result<DerivedNow, String> {
+    let budget = surface::gpu_preview::GPU_PREVIEW_BUDGET;
+    if let Some((requested, bound)) = over_budget(plan, request, budget) {
+        return Err(format!(
+            "budget-exceeded: {requested} B past the {bound} B the editor holds a boundary and its \
+             slot to"
+        ));
+    }
+    let grid = GridKey::of(request)
+        .map(|key| grid_of(&key))
+        .transpose()?
+        .map(|grid| gpu_plan::WarpGrid::new(&grid));
+    let Derived {
+        derivation,
+        size,
+        origin,
+    } = derivation_of(request, gpu.stage())?;
+    let boundary =
+        GpuBoundary::derived(gpu, derivation, size.0, size.1, version).ok_or("boundary-size")?;
+    Ok((boundary, origin, grid))
 }
 
 /// A RAW development's planes as the GPU source uploads them, borrowed through a clone of the image,
@@ -237,7 +305,7 @@ impl AsRef<[f32]> for DevelopedPlanes {
 
 /// `source` as the photo surface holds it on the GPU, under `version`: a JPEG's upright codes, or a
 /// RAW development's planes through its view, each shared with the preview job, never copied.
-fn gpu_source_of(version: u64, source: &PreviewSource) -> Option<GpuSource> {
+pub(crate) fn gpu_source_of(version: u64, source: &PreviewSource) -> Option<GpuSource> {
     match source {
         PreviewSource::Jpeg(image) => {
             GpuSource::codes(version, Arc::clone(&image.rgba), image.width, image.height)
@@ -1730,14 +1798,45 @@ impl Editor {
 
     /// The committed stack's view plan the surface draws at rest ([`AtRest`]), where the view
     /// shows it: its whole frame at Fit and below 100%, its region at 100% and above while that
-    /// region holds the view.
+    /// region holds the view. Never an approximate one ([`Editor::gpu_rest_held_back`]).
     pub(crate) fn gpu_rest_plan(&self) -> Option<(&surface::GpuPlan, surface::GpuChange)> {
         if !self.gpu_at_rest() {
             return None;
         }
-        let at_rest = self.gpu.at_rest.as_ref()?;
+        let at_rest = self
+            .gpu
+            .at_rest
+            .as_ref()
+            .filter(|at_rest| !at_rest.core.approximate())?;
         self.gpu_plan_shown(&at_rest.handed.plan)
             .then_some((&at_rest.handed.plan, at_rest.handed.change))
+    }
+
+    /// Whether the committed stack's view plan is held back from being drawn at rest because it is
+    /// approximate: it takes a global estimate, Dehaze's light, on the GPU from the stage it holds
+    /// rather than reading the whole stage's from the store, which the stack's exact phase fills.
+    /// Nothing at rest is drawn approximate: the frame on screen stays, marked rendering, until
+    /// the picture at rest in tiles, planned again once the estimates are stored, is in.
+    pub(crate) fn gpu_rest_held_back(&self) -> bool {
+        self.gpu_at_rest()
+            && self
+                .gpu
+                .at_rest
+                .as_ref()
+                .is_some_and(|at_rest| at_rest.core.approximate())
+    }
+
+    /// Whether the picture at rest in tiles handed to the surface has not been drawn whole yet:
+    /// while it is still to land, the photograph is marked rendering.
+    pub(crate) fn gpu_rest_landing(&self) -> bool {
+        let Some(rest) = self.gpu_rest_handed() else {
+            return false;
+        };
+        let drawn = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
+        drawn.drawn_rest != Some(rest.version)
+            && !drawn.gpu_rest.is_some_and(|figures| {
+                figures.version == rest.version && figures.fallback.is_some()
+            })
     }
 
     /// The displayed stack's picture at rest in tiles, from its job or from its exact phase, which
@@ -1897,10 +1996,13 @@ impl Editor {
             luxforge_core::Zoom::Fit => true,
             luxforge_core::Zoom::Percent { value } => value < 100.0,
         };
+        // An approximate view plan is never drawn at rest, Compare's After side included.
         let plan = retained
             .at_rest
             .as_ref()
-            .filter(|at_rest| whole && at_rest.handed.plan.region.is_none())
+            .filter(|at_rest| {
+                whole && at_rest.handed.plan.region.is_none() && !at_rest.core.approximate()
+            })
             .map(|at_rest| (&at_rest.handed.plan, at_rest.handed.change));
         let rest = retained
             .rest

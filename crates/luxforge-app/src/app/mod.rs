@@ -906,7 +906,11 @@ impl Editor {
             dimensions: self.presentation.dimensions,
             photo: self.presentation.has_picture(),
             clients: self.live_server.as_ref().map(LocalServer::connected),
-            rendering: self.presentation.queue.is_busy() || self.surface_photo_updating(),
+            // The picture at rest still to land is rendering too: its tiles, and an approximate
+            // view plan held back until they are in.
+            rendering: self.presentation.queue.is_busy()
+                || self.surface_photo_updating()
+                || self.gpu_rest_landing(),
             render: self.activity.render,
             gpu_frame_us: self.gpu_frame_us(),
             gpu_at_rest: self.gpu_at_rest(),
