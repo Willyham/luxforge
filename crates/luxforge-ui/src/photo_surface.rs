@@ -1175,7 +1175,7 @@ impl PhotoSurface {
     }
 }
 
-impl<'a, Message: 'a> From<PhotoSurface> for Element<'a, Message> {
+impl<'a, Message: 'a> From<PhotoSurface> for crate::Element<'a, Message> {
     fn from(surface: PhotoSurface) -> Self {
         Element::new(surface)
     }

@@ -87,6 +87,23 @@ fn bundled_font_notices(root: &Path, out: &Path) -> Result {
     Ok(())
 }
 
+/// Copies the bundled Omarchy themes' notice and Omarchy's MIT licence beside the other notices;
+/// the palettes themselves are compiled into the core.
+fn bundled_theme_notices(root: &Path, out: &Path) -> Result {
+    let source = root.join("crates/luxforge-core/src/theme/omarchy/bundled");
+    for name in ["NOTICE.md", "LICENSE"] {
+        let input = source.join(name);
+        ensure(
+            input.is_file(),
+            format!("Missing bundled theme notice: {}", input.display()),
+        )?;
+        let destination = out.join("themes/omarchy").join(name);
+        fs::create_dir_all(destination.parent().ok_or("Notice parent")?)?;
+        fs::copy(input, destination)?;
+    }
+    Ok(())
+}
+
 const LENS_FILES: &[&str] = &[
     "index.json",
     "provenance.json",
@@ -158,6 +175,7 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
     native_raw_notices(root, out)?;
     native_jpeg_notices(root, out)?;
     bundled_font_notices(root, out)?;
+    bundled_theme_notices(root, out)?;
     lens_resources(root, &out.join("data/lensfun"))?;
     write_json(
         &out.join("dependencies.json"),
@@ -228,6 +246,15 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
                 "notices":"data/lensfun",
                 "provenance":"data/lensfun/provenance.json",
                 "modifications":"Filtered version-1 XML converted to an offline rectilinear distortion index"
+            },{
+                "name":"Omarchy themes (Tokyo Night, Catppuccin, Catppuccin Latte, Gruvbox, Nord, Everforest)",
+                "version":"quattro",
+                "revision":"035ce29f03bdd97a09af80ef5f2d22d7a98930d6",
+                "license":"MIT",
+                "files":["colors.toml of each theme, compiled into the binary"],
+                "notices":"themes/omarchy",
+                "provenance":"themes/omarchy/NOTICE.md",
+                "modifications":"None"
             }],
             "review_status":"Inventory only; manual license, native and asset reviews deferred"
         }),
@@ -354,6 +381,16 @@ mod tests {
                 .join("fonts/luxforge-ui/THIRD_PARTY.md")
                 .is_file()
         );
+    }
+    #[test]
+    fn copies_the_bundled_theme_licence() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        bundled_theme_notices(root, tmp.path()).unwrap();
+        let licence = fs::read_to_string(tmp.path().join("themes/omarchy/LICENSE")).unwrap();
+        assert!(licence.contains("Copyright (c) David Heinemeier Hansson"));
+        let notice = fs::read_to_string(tmp.path().join("themes/omarchy/NOTICE.md")).unwrap();
+        assert!(notice.contains("035ce29f03bdd97a09af80ef5f2d22d7a98930d6"));
     }
     #[test]
     fn package_copies_lens_index_and_its_notices() {

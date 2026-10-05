@@ -17,8 +17,9 @@
 
 use super::POPOVER_GAP;
 use super::decorator::{Decoration, decorate};
+use crate::{Element, Theme};
 use iced::advanced::{Clipboard, Layout, Shell, layout, mouse, overlay, renderer, widget::Tree};
-use iced::{Element, Event, Point, Rectangle, Size, Vector, window};
+use iced::{Event, Point, Rectangle, Size, Vector, window};
 use std::time::{Duration, Instant};
 
 /// How long the pointer rests on the anchor before the panel drops, so passing over the anchor on
@@ -146,7 +147,7 @@ impl Hover {
     }
 }
 
-impl<'a, M> Decoration<'a, M, iced::Theme, iced::Renderer> for HoverPanel<'a, M> {
+impl<'a, M> Decoration<'a, M, Theme, iced::Renderer> for HoverPanel<'a, M> {
     type State = Hover;
 
     fn children(&self, anchor: &Element<'a, M>) -> Vec<Tree> {
@@ -219,7 +220,7 @@ impl<'a, M> Decoration<'a, M, iced::Theme, iced::Renderer> for HoverPanel<'a, M>
         renderer: &iced::Renderer,
         viewport: &Rectangle,
         translation: Vector,
-    ) -> Option<overlay::Element<'b, M, iced::Theme, iced::Renderer>> {
+    ) -> Option<overlay::Element<'b, M, Theme, iced::Renderer>> {
         let Tree {
             state, children, ..
         } = tree;
@@ -270,7 +271,7 @@ fn place(anchor: Rectangle, size: Size, bounds: Size) -> Point {
     Point::new(x, y)
 }
 
-impl<M> overlay::Overlay<M, iced::Theme, iced::Renderer> for Panel<'_, '_, M> {
+impl<M> overlay::Overlay<M, Theme, iced::Renderer> for Panel<'_, '_, M> {
     fn layout(&mut self, renderer: &iced::Renderer, bounds: Size) -> layout::Node {
         let node = self.panel.as_widget_mut().layout(
             self.tree,
@@ -284,7 +285,7 @@ impl<M> overlay::Overlay<M, iced::Theme, iced::Renderer> for Panel<'_, '_, M> {
     fn draw(
         &self,
         renderer: &mut iced::Renderer,
-        theme: &iced::Theme,
+        theme: &Theme,
         style: &renderer::Style,
         layout: Layout<'_>,
         cursor: mouse::Cursor,

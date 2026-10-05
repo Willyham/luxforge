@@ -2,10 +2,11 @@
 //! normalized input and keeps whether its pointer is currently down.
 use crate::app::message::{Message, history::HistoryMessage};
 use iced::{
-    Color, Point, Rectangle, Renderer, Theme,
+    Color, Point, Rectangle, Renderer,
     mouse::{self, Cursor},
     widget::canvas::{self, Action, Event, Frame, Geometry, Path, Stroke, Text},
 };
+use luxforge_ui::Theme;
 use luxforge_ui::theme;
 
 pub(crate) struct CompareCanvas {
@@ -31,7 +32,7 @@ impl CompareCanvas {
     }
 }
 
-impl canvas::Program<Message> for CompareCanvas {
+impl canvas::Program<Message, Theme> for CompareCanvas {
     type State = Drag;
 
     fn update(
@@ -83,19 +84,23 @@ impl canvas::Program<Message> for CompareCanvas {
         frame.stroke(
             &line,
             Stroke::default()
-                .with_color(theme::THUMB_OUTLINE)
+                .with_color(theme::PHOTO_HANDLE_OUTLINE)
                 .with_width(4.0),
         );
         frame.stroke(
             &line,
-            Stroke::default().with_color(theme::THUMB).with_width(2.0),
+            Stroke::default()
+                .with_color(theme::PHOTO_HANDLE)
+                .with_width(2.0),
         );
         let centre = Point::new(x, rect.center_y());
         let grip = Path::circle(centre, 14.0);
-        frame.fill(&grip, theme::BAR);
+        frame.fill(&grip, theme::PHOTO_GRIP);
         frame.stroke(
             &grip,
-            Stroke::default().with_color(theme::THUMB).with_width(1.5),
+            Stroke::default()
+                .with_color(theme::PHOTO_HANDLE)
+                .with_width(1.5),
         );
         for direction in [-1.0, 1.0] {
             let arrow = Path::new(|path| {
@@ -106,7 +111,7 @@ impl canvas::Program<Message> for CompareCanvas {
             frame.stroke(
                 &arrow,
                 Stroke::default()
-                    .with_color(theme::TEXT_PRIMARY)
+                    .with_color(theme::PHOTO_LABEL)
                     .with_width(1.5),
             );
         }
@@ -131,7 +136,7 @@ impl canvas::Program<Message> for CompareCanvas {
                 frame.fill_text(Text {
                     content: label.into(),
                     position: Point::new(left + 7.0, origin.y + 4.0),
-                    color: theme::TEXT_PRIMARY,
+                    color: theme::PHOTO_LABEL,
                     size: theme::SIZE_CAPTION.into(),
                     font: theme::FONT,
                     ..Text::default()

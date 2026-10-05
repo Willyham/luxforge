@@ -1,6 +1,7 @@
 //! The command palette model. Every entry reveals a section or control of the tools panel, or is a
-//! declared control action, a module reset, a canvas mode, a library preset or a host command, so
-//! the palette can reach nothing the panels and the title bar cannot.
+//! declared control action, a module reset, a canvas mode, a library preset, a theme or a host
+//! command, so the palette can reach nothing the panels, the title bar and the Settings sheet
+//! cannot.
 use crate::state::{
     Inputs,
     tools::{RevealKey, ToolsModel, palette_entries, reveal_entries},
@@ -91,6 +92,8 @@ pub(crate) enum PaletteAction {
     },
     /// Open the Settings sheet at a tab.
     Settings(crate::state::settings::SettingsTab),
+    /// Choose a theme, by its id, as its Appearance row does.
+    Theme(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -263,11 +266,18 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
             PaletteAction::Settings(crate::state::settings::SettingsTab::General),
         ),
         (
+            "Settings \u{b7} Appearance".to_owned(),
+            "theme.list \u{b7} preferences.set".to_owned(),
+            PaletteAction::Settings(crate::state::settings::SettingsTab::Appearance),
+        ),
+        (
             "Settings \u{b7} Experiments".to_owned(),
             "flags.list \u{b7} flags.set".to_owned(),
             PaletteAction::Settings(crate::state::settings::SettingsTab::Experiments),
         ),
     ]);
+    // One entry per theme the library lists, which chooses it as its row does.
+    entries.extend(crate::state::themes::palette_entries(inputs.themes));
     entries
 }
 

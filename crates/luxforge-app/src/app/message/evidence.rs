@@ -34,6 +34,9 @@ pub(crate) enum EvidenceMessage {
     HostAnswered(Result<Box<HostAnswer>, String>),
     /// The edit an `agent` step sent through the run's second client answered.
     AgentAnswered(Result<Value, String>),
+    /// The host method an `agent` step sent through the run's second client answered, with the
+    /// event sequence it was answered at.
+    AgentHostAnswered(Result<(Value, u64), String>),
     /// Iced's name for the adapter that draws the window and its backend, which an enumeration of
     /// that backend, off the update loop, identifies further.
     Info(iced::system::Information),

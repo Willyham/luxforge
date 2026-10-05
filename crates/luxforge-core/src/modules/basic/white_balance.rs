@@ -15,6 +15,7 @@
 use crate::{
     colour::{
         cct::{planckian_locus_xy, uv_to_xy, xy_to_uv},
+        cielab::RGB_TO_XYZ,
         mat3::{self, matvec_f32, matvec_f64},
         srgb::decode_u8,
     },
@@ -36,13 +37,6 @@ pub(crate) static PROGRAM: GpuProgram = GpuProgram {
 // ---------------------------------------------------------------------------------------------
 // Constants, verbatim from the design document.
 // ---------------------------------------------------------------------------------------------
-
-/// Linear sRGB (D65) to CIE XYZ, the IEC 61966-2-1 primaries and white point.
-const RGB_TO_XYZ: Mat3 = [
-    [0.4124564, 0.3575761, 0.1804375],
-    [0.2126729, 0.7151522, 0.0721750],
-    [0.0193339, 0.1191920, 0.9503041],
-];
 
 /// CIE XYZ to Bradford cone-response space, the 1985 Bradford matrix.
 const XYZ_TO_LMS: Mat3 = [

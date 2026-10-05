@@ -7,8 +7,10 @@
 //! removes a stored value. Every stored value is checked by the same rules a write is, so a file
 //! holding a value this build cannot use is refused without being rewritten.
 use crate::{
-    Error, MaskOverlayColour, WorkspaceState, capabilities::document::JsonDocument,
+    Error, MaskOverlayColour, WorkspaceState,
+    capabilities::document::JsonDocument,
     mask::commands::ADD_STROKE,
+    theme::{LUXFORGE_DARK_ID, LaunchTheme, MAX_THEME_ID},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -30,30 +32,33 @@ pub const WINDOW_SIZE_RANGE: std::ops::RangeInclusive<f32> = 320.0..=16_384.0;
 
 /// The colour around the photograph on the canvas.
 ///
-/// A name, not a colour, as [`MaskOverlayColour`] is: the value each name resolves to is a design
-/// token in `crates/luxforge-ui/src/theme.rs`. It changes what the workspace draws, never a
-/// rendered or exported byte.
+/// A name, not a colour, as [`MaskOverlayColour`] is: Dark, Black and Grey resolve to fixed greys
+/// in `crates/luxforge-ui/src/theme.rs` whatever the theme, and Theme to the active theme's
+/// surround. It changes what the workspace draws, never a rendered or exported byte.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CanvasBackground {
-    /// The workspace's own dark canvas.
-    #[default]
+    /// Luxforge Dark's canvas, `#19191b`, in every theme.
     Dark,
     Black,
     /// An 18% grey, for judging tone the way a print is judged.
     Grey,
+    /// The active theme's surround, held neutral; Luxforge Dark's is Dark's `#19191b`.
+    #[default]
+    Theme,
 }
 
 impl CanvasBackground {
     /// Every choice, in the order the General row offers them. The accepted vocabulary is read
     /// from here, so a choice and its spelling cannot drift apart.
-    pub const ALL: [Self; 3] = [Self::Dark, Self::Black, Self::Grey];
+    pub const ALL: [Self; 4] = [Self::Dark, Self::Black, Self::Grey, Self::Theme];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Dark => "dark",
             Self::Black => "black",
             Self::Grey => "grey",
+            Self::Theme => "theme",
         }
     }
 
@@ -149,6 +154,10 @@ pub(crate) struct Preferences {
     /// or one that does not fit its flag, is kept for [`crate::flags`] to report.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) flags: BTreeMap<String, Value>,
+    /// The active theme's id; Luxforge Dark when absent. `preferences.set` stores only an id the
+    /// theme library holds, and Luxforge Dark's as absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) theme: Option<String>,
 }
 
 /// What the Settings sheet's General rows show, compared before and after a write to decide
@@ -189,6 +198,11 @@ impl Preferences {
 
     pub(crate) fn workspace(&self) -> WorkspacePreference {
         self.workspace.unwrap_or_default()
+    }
+
+    /// The active theme's id, Luxforge Dark's when none is stored.
+    pub(crate) fn theme(&self) -> &str {
+        self.theme.as_deref().unwrap_or(LUXFORGE_DARK_ID)
     }
 
     /// The values the General rows show, defaults filled in.
@@ -238,6 +252,15 @@ impl Preferences {
                     return Err(format!("window.{name} must be a finite number"));
                 }
             }
+        }
+        if let Some(theme) = &self.theme
+            && (theme.is_empty()
+                || theme.len() > MAX_THEME_ID
+                || theme.chars().any(char::is_control))
+        {
+            return Err(format!(
+                "theme must be a theme id of 1..={MAX_THEME_ID} printable characters"
+            ));
         }
         for (name, path) in [
             ("catalog", &self.catalog),
@@ -297,6 +320,7 @@ pub(crate) struct PreferenceChange {
     pub(crate) brush: Option<Option<BrushPreference>>,
     pub(crate) window: Option<Option<WindowFrame>>,
     pub(crate) export_folder: Option<Option<PathBuf>>,
+    pub(crate) theme: Option<Option<String>>,
 }
 
 impl PreferenceChange {
@@ -326,6 +350,7 @@ impl PreferenceChange {
         put(&mut preferences.brush, self.brush);
         put(&mut preferences.window, self.window);
         put(&mut preferences.export_folder, self.export_folder);
+        put(&mut preferences.theme, self.theme);
     }
 }
 
@@ -381,8 +406,8 @@ impl PreferenceStore {
 }
 
 /// The preferences the desktop needs before its catalog owner starts: which catalog to open, the
-/// window's frame and the interface size. Read once at launch, beside
-/// [`crate::flags::LaunchFlags::resolve`].
+/// window's frame, the interface size and the theme it draws from its first frame. Read once at
+/// launch, beside [`crate::flags::LaunchFlags::resolve`].
 #[derive(Clone, Debug)]
 pub struct LaunchPreferences {
     /// The stored catalog file, or `None` for the default catalog. Whether its folder exists is
@@ -392,6 +417,10 @@ pub struct LaunchPreferences {
     pub window: Option<WindowFrame>,
     /// The stored interface size, or [`DEFAULT_INTERFACE_SIZE`].
     pub interface_size: u16,
+    /// The active theme, from `themes.json` beside the preferences: Luxforge Dark when none is
+    /// chosen, and in place of a chosen one that is missing or unreadable, whose own problem
+    /// names it. The stored choice is not changed.
+    pub theme: LaunchTheme,
     /// Why the preferences could not be read, when they could not: every field took its default,
     /// and nothing was written.
     pub problem: Option<Error>,
@@ -400,12 +429,14 @@ pub struct LaunchPreferences {
 impl LaunchPreferences {
     /// Read the launch preferences from `preferences.json` under `preferences_dir`, if any. A file
     /// that cannot be read leaves every field at its default and is kept as [`Self::problem`].
+    /// `themes.json` is read only when a theme other than Luxforge Dark is chosen.
     pub fn read(preferences_dir: Option<PathBuf>) -> Self {
-        let (preferences, problem) = match PreferenceStore::new(preferences_dir).read() {
+        let (preferences, problem) = match PreferenceStore::new(preferences_dir.clone()).read() {
             Ok(preferences) => (preferences, None),
             Err(error) => (Preferences::default(), Some(error)),
         };
         Self {
+            theme: LaunchTheme::read(preferences_dir, preferences.theme.as_deref()),
             interface_size: preferences.interface_size(),
             catalog: preferences.catalog,
             window: preferences.window,
@@ -448,8 +479,13 @@ mod tests {
                 y: 25.0,
             })),
             export_folder: Some(Some(PathBuf::from("/Users/someone/Exports"))),
+            theme: Some(Some(STORED_THEME.to_owned())),
         }
     }
+
+    /// A stored theme's id; the store checks its shape, and `preferences.set` that the library
+    /// holds it.
+    const STORED_THEME: &str = "theme-0123456789abcdef";
 
     #[test]
     fn preferences_survive_reopen_and_refuse_unsupported_data_without_rewriting_it() {
@@ -496,6 +532,7 @@ mod tests {
             b"{\"format\":1,\"brush\":{\"size\":0.1,\"feather\":101,\"flow\":100}}",
             b"{\"format\":1,\"window\":{\"width\":100,\"height\":800,\"x\":0,\"y\":0}}",
             b"{\"format\":1,\"workspace\":{\"thirds\":true}}",
+            b"{\"format\":1,\"theme\":\"\"}",
             b"not json",
         ] {
             std::fs::write(&path, bytes).unwrap();
@@ -561,11 +598,28 @@ mod tests {
             reopened.export_folder.as_deref(),
             Some(Path::new("/Users/someone/Exports"))
         );
+        assert_eq!(reopened.theme(), STORED_THEME);
         let launch = LaunchPreferences::read(Some(root.clone()));
         assert!(launch.problem.is_none());
         assert_eq!(launch.catalog, reopened.catalog);
         assert_eq!(launch.window, reopened.window);
         assert_eq!(launch.interface_size, 125);
+        // The chosen theme is not in the library, so Luxforge Dark is drawn and the problem
+        // names the choice, which stays stored.
+        assert_eq!(launch.theme.id, LUXFORGE_DARK_ID);
+        let problem = launch.theme.problem.unwrap();
+        assert!(
+            problem.detail.contains(STORED_THEME) && problem.detail.contains("unknown theme"),
+            "{}",
+            problem.detail
+        );
+        assert_eq!(
+            PreferenceStore::new(Some(root.clone()))
+                .read()
+                .unwrap()
+                .theme(),
+            STORED_THEME
+        );
 
         // An absent field is left as it is; null removes every stored value, so each follows its
         // default again, and the file holds nothing but its marker.
@@ -581,9 +635,11 @@ mod tests {
             brush: Some(None),
             window: Some(None),
             export_folder: Some(None),
+            theme: Some(None),
         };
         let (_, after) = store.set(reset).unwrap();
         assert_eq!(after, Preferences::default());
+        assert_eq!(after.theme(), LUXFORGE_DARK_ID);
         assert_eq!(
             serde_json::from_slice::<Value>(&std::fs::read(root.join("preferences.json")).unwrap())
                 .unwrap(),
@@ -594,9 +650,15 @@ mod tests {
             (launch.catalog, launch.window, launch.interface_size),
             (None, None, DEFAULT_INTERFACE_SIZE)
         );
+        assert_eq!(launch.theme.id, LUXFORGE_DARK_ID);
+        assert!(launch.theme.problem.is_none());
         std::fs::remove_dir_all(root).unwrap();
         let unconfigured = LaunchPreferences::read(None);
         assert!(unconfigured.problem.is_none() && unconfigured.catalog.is_none());
+        assert_eq!(
+            unconfigured.theme.resolved.tokens,
+            crate::theme::Palette::luxforge_dark()
+        );
     }
 
     #[test]
@@ -700,6 +762,20 @@ mod tests {
                 },
                 "export_folder must not be empty",
             ),
+            (
+                PreferenceChange {
+                    theme: Some(Some(String::new())),
+                    ..PreferenceChange::default()
+                },
+                "theme must be a theme id of 1..=96 printable characters",
+            ),
+            (
+                PreferenceChange {
+                    theme: Some(Some("theme-\n".into())),
+                    ..PreferenceChange::default()
+                },
+                "theme must be a theme id",
+            ),
         ] {
             let error = store.set(change).unwrap_err();
             assert_eq!(error.kind, ErrorKind::Validation, "{}", error.detail);
@@ -797,6 +873,6 @@ mod tests {
             );
         }
         assert_eq!(CanvasBackground::parse("white"), None);
-        assert_eq!(CanvasBackground::default(), CanvasBackground::Dark);
+        assert_eq!(CanvasBackground::default(), CanvasBackground::Theme);
     }
 }

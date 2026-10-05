@@ -1,0 +1,10 @@
+# Dotted keys under [colors], no primary colours, and a light.mode marker beside it.
+[colors]
+normal.black = "0x24273a"
+normal.red = "0xd20f39"
+normal.green = "0x40a02b"
+normal.yellow = "0xdf8e1d"
+normal.blue = "0x1e66f5"
+normal.magenta = "0xea76cb"
+normal.cyan = "0x179299"
+normal.white = "0x4c4f69"

@@ -7,9 +7,10 @@ use crate::{
     state::query_choice::{NoticeLevel, QueryChoiceCard, QueryChoiceModel},
 };
 use iced::{
-    Element, Length,
+    Length,
     widget::{button, checkbox, column, row, text_input},
 };
+use luxforge_ui::Element;
 use luxforge_ui::{
     ButtonSize, ButtonTone, Tone, caption, error_caption, inline_notice, label, text_button, theme,
 };

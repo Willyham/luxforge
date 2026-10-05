@@ -32,9 +32,9 @@ use iced::{Element, Event, Point, Rectangle};
 /// The wrapper has no size, layout, styling or interaction of its own: everything is delegated to
 /// the content, so wrapping a widget never changes how it looks or how it is measured.
 pub(crate) fn double_click<'a, M: Clone + 'a>(
-    content: impl Into<Element<'a, M>>,
+    content: impl Into<crate::Element<'a, M>>,
     on_double_click: M,
-) -> Element<'a, M> {
+) -> crate::Element<'a, M> {
     double_click_when(content, on_double_click, true)
 }
 
@@ -47,10 +47,10 @@ pub(crate) fn double_click<'a, M: Clone + 'a>(
 /// the flip would read as two single clicks. While disabled every press goes to the content
 /// unclassified and unrecorded, so a press the control ignored never counts as a first click.
 pub fn double_click_when<'a, M: Clone + 'a>(
-    content: impl Into<Element<'a, M>>,
+    content: impl Into<crate::Element<'a, M>>,
     on_double_click: M,
     enabled: bool,
-) -> Element<'a, M> {
+) -> crate::Element<'a, M> {
     decorate(
         content,
         DoubleClick {

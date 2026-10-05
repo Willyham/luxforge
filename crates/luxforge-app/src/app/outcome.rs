@@ -81,6 +81,15 @@ pub(crate) enum Outcome<'a> {
     FlagsWritten,
     /// The preference writer's last outstanding `preferences.set` answered, or was refused.
     PreferencesWritten,
+    /// The theme on screen changed to answer for the preferences' choice: drawn, or Luxforge Dark
+    /// in place of one that cannot be shown.
+    ThemeDrawn,
+    /// A theme library call and the listing after it answered, or the call was refused.
+    ThemesAnswered { failure: Option<&'a str> },
+    /// An Omarchy folder's themes were imported one by one: the chosen folder and what each
+    /// theme's `theme.import` answered, or why it was not imported. A [`Self::ThemesAnswered`]
+    /// follows.
+    ThemeFolderImported(&'a Value),
     /// `export.plan` answered for the export in progress.
     ExportPlanned(&'a Value),
     /// `export.jpeg` queued the export in progress.
@@ -152,6 +161,9 @@ impl Outcome<'_> {
             Self::FlagsRead => "flags_read",
             Self::FlagsWritten => "flags_written",
             Self::PreferencesWritten => "preferences_written",
+            Self::ThemeDrawn => "theme_drawn",
+            Self::ThemesAnswered { .. } => "themes_answered",
+            Self::ThemeFolderImported(_) => "theme_folder_imported",
             Self::ExportPlanned(_) => "export_planned",
             Self::ExportQueued(_) => "export_queued",
             Self::ExportEnded { .. } => "export_ended",

@@ -11,9 +11,10 @@ use crate::{
     },
 };
 use iced::{
-    Alignment, Element, Length,
+    Alignment, Length,
     widget::{Column, Space, button, container, mouse_area, row},
 };
+use luxforge_ui::Element;
 use luxforge_ui::{
     NumberFieldModel, SegmentedModel, ToggleModel, ValueEdit, caption, error_caption, inline_menu,
     label, number_field, segmented, theme, toggle, value_input,

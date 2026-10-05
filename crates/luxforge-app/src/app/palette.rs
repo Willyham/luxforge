@@ -1,11 +1,12 @@
 //! The command palette: its query, its selection and running one entry, which is always an
-//! existing message, so the palette reaches nothing the panels and the title bar cannot.
+//! existing message, so the palette reaches nothing the panels, the title bar and the Settings
+//! sheet cannot.
 use super::{
     Editor,
     message::{
         Message, action::ActionMessage, export::ExportMessage, history::HistoryMessage,
         palette::PaletteMessage, performance::PerformanceMessage, settings::SettingsMessage,
-        view::ViewMessage,
+        theme::ThemeMessage, view::ViewMessage,
     },
 };
 use crate::state::palette::{PaletteAction, Panel, RevealTarget, Revealed};
@@ -93,6 +94,9 @@ impl Editor {
                     }
                     Some(PaletteAction::Settings(tab)) => {
                         self.dispatch(Message::Settings(SettingsMessage::Open(tab)))
+                    }
+                    Some(PaletteAction::Theme(id)) => {
+                        self.dispatch(Message::Theme(ThemeMessage::Choose(id)))
                     }
                     None => Task::none(),
                 };
