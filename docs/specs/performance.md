@@ -4401,6 +4401,7 @@ What the gate judges by the recorded default; mean ΔE00 / worst 16 × 16 block 
 | 100% | spatial | 144 | 144 | 0 | 0.084 / 0.514 / 0.948 / 0.049 | 0.012 / 0.099 / 0.289 / 0.001 |
 
 - **Every cell is within its limits**, 33% and 50% included, the largest a worst block of 0.514 and a p99 of 0.973: the frame a drag draws stands in for the CPU frame it settles to as each program's own qualification holds it to.
+- **With the per-frame light** (a run at `b092e1e0`, 2026-10-05, the same host, corpus and limits, report under `artifacts/gpu-first/task-005/gate/`), the gate fails on 148 cells, every one a Dehaze recipe's spatial cell at Fit, 33% or 50% (45, 54 and 49): a drag's frame there reads the whole stage's light, where the CPU proxy it is still held to as the frame it settles to reads its own proxy's, up to 21.2 / 36.7 / 33.7 / −14.6 apart. Every pointwise cell and every 100% cell is within its limits, and the process-first candidate within them on all 1,000 cells, Dehaze behind Detail drawn with Detail left out included. Held to the reference instead, the spatial cells within the limits rise from 57, 49 and 54 to 67, 64 and 69 at Fit, 33% and 50%. The cells pass once the frame a drag settles to is the GPU's picture at rest; the limits are not widened.
 - **The settle jump** at Fit, for a stack that settles from the exact render (Detail), is the CPU path's own and reported, not judged: its proxy against the exact reduction it settles to moves by up to 7.76 / 15.0 / 28.8 / 8.46, the GPU frame alike.
 
 ### The picture in motion against the reference
