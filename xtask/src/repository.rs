@@ -318,7 +318,10 @@ const SOURCE_RULES: &[SourceRule] = &[
     // source's developed planes hold the source worker's memory gate, so one kept in the desktop's
     // state keeps the next development — a white-balance change, a history selection, another
     // photograph — from ever starting. A stack reaches the desktop only inside the preview job that
-    // carries it to a worker; each coverage worker's job type is the one line that names it.
+    // carries it to a worker; each coverage worker's job type is the one line that names it. The
+    // GPU tile worker answers the core's tile contract, whose reads and streams are handed the
+    // stack they read: its one line names the stack it holds only while it answers a call or
+    // draws a stream.
     SourceRule {
         name: "desktop-keeps-no-stack",
         tokens: &["Evaluation"],
@@ -327,13 +330,15 @@ const SOURCE_RULES: &[SourceRule] = &[
         allowed: &[
             "crates/luxforge-app/src/app/thumbnails.rs",
             "crates/luxforge-app/src/app/mask_coverage.rs",
+            "crates/luxforge-app/src/app/gpu_tiles.rs",
         ],
         mode: Match::Whole,
         tests: false,
         once: true,
         reason: "the desktop keeps no evaluation between messages: it holds its source, and a RAW \
                  development's planes hold the source worker's memory gate; only the thumbnail \
-                 and mask coverage workers' job types name one",
+                 and mask coverage workers' job types, and the GPU tile worker's stack, held for \
+                 the call or stream it answers, name one",
     },
     // Nor a planned preview job, which carries its stack. The desktop names `PreviewJob` only in
     // the files that pass one straight through: the message files that carry it (app/message.rs
@@ -798,6 +803,8 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-core/src/tiles/reference.rs",
             // Production RGBA handoff backpressure, not a test gate; keeps the overlay byte bound.
             "crates/luxforge-app/src/app/mask_coverage.rs",
+            // The desktop's GPU tile worker, asleep while no call or export tile waits for it.
+            "crates/luxforge-app/src/app/gpu_tiles.rs",
         ],
         mode: Match::Whole,
         tests: true,
@@ -869,8 +876,9 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-core/src/jobs.rs",
             "crates/luxforge-core/src/latest.rs",
             "crates/luxforge-core/src/tiles/reference.rs",
-            // The desktop's diagnostics log writer.
+            // The desktop's diagnostics log writer and its GPU tile worker.
             "crates/luxforge-app/src/diagnostics.rs",
+            "crates/luxforge-app/src/app/gpu_tiles.rs",
             // The widget crate's GPU retirement worker, and its GPU preview's pipeline compiler.
             "crates/luxforge-ui/src/photo_surface.rs",
             "crates/luxforge-ui/src/photo_surface/gpu_preview/compile.rs",
@@ -2461,12 +2469,16 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         let alias = "pub(crate) type ThumbnailJob = luxforge_core::Evaluation;\n";
-        // The thumbnail worker's job type, a test file, a test item, a comment and a longer name
-        // may.
+        // The thumbnail worker's job type, the GPU tile worker's stack, a test file, a test item,
+        // a comment and a longer name may.
         write_all(
             root,
             &[
                 ("crates/luxforge-app/src/app/thumbnails.rs", alias),
+                (
+                    "crates/luxforge-app/src/app/gpu_tiles.rs",
+                    "type Stack = luxforge_core::Evaluation;\n",
+                ),
                 (
                     "crates/luxforge-app/src/app/preview_tests.rs",
                     "let stack: Evaluation = evaluation();\n",
@@ -2478,7 +2490,7 @@ mod tests {
                 ),
             ],
         );
-        assert_eq!(read(root, &["desktop-keeps-no-stack"]).unwrap(), (2, 0));
+        assert_eq!(read(root, &["desktop-keeps-no-stack"]).unwrap(), (3, 0));
         // A second line in the worker's own file, or any other desktop file, is refused.
         refuses_each(
             root,
@@ -3081,6 +3093,10 @@ mod tests {
                     "crates/luxforge-core/src/tiles/reference.rs",
                     "let started = std::thread::Builder::new().name(name).spawn(work);\n",
                 ),
+                (
+                    "crates/luxforge-app/src/app/gpu_tiles.rs",
+                    "let started = std::thread::Builder::new().name(name).spawn(work);\n",
+                ),
                 ("xtask/src/verify.rs", "std::thread::scope(|scope| {});\n"),
                 (
                     "crates/luxforge-core/src/render/linear.rs",
@@ -3107,10 +3123,15 @@ mod tests {
                     "crates/luxforge-core/src/render/spatial.rs",
                     "let worker = std::thread::spawn(move || {});\n",
                 ),
-                // The tile contract beside the reference worker is not a home of its own.
+                // The tile contract beside the reference worker is not a home of its own, nor is the
+                // plan conversion beside the GPU tile worker.
                 (
                     "crates/luxforge-core/src/tiles.rs",
                     "let worker = std::thread::Builder::new();\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/gpu_plan.rs",
+                    "let worker = std::thread::spawn(move || {});\n",
                 ),
                 ("xtask/src/main.rs", "let t = thread::Builder::new();\n"),
                 (
@@ -4200,7 +4221,8 @@ mod tests {
         let surface = "crates/luxforge-ui/src/photo_surface.rs";
         let worker = "fn worker() {\n    std::thread::sleep(STEP);\n}\n";
         // The shared crate's one wait and its gate, the production home's one sleep, the core's
-        // production blocking points, and tests that wait through the shared crate may.
+        // and the desktop's production blocking points, and tests that wait through the shared
+        // crate may.
         write_all(
             root,
             &[
@@ -4222,12 +4244,16 @@ mod tests {
                     "    queued: Condvar,\n",
                 ),
                 (
+                    "crates/luxforge-app/src/app/gpu_tiles.rs",
+                    "    wake: Condvar,\n",
+                ),
+                (
                     "crates/luxforge-core/src/preview/tests.rs",
                     "    wait_until(\"the frame\", || queue.poll().is_some());\n",
                 ),
             ],
         );
-        assert_eq!(read(root, rules).unwrap(), (6, 0));
+        assert_eq!(read(root, rules).unwrap(), (7, 0));
         // A test's own sleep, spin or gate anywhere else, test code and comments included, and a
         // sleep in the proof module, which has no delay of its own to wait out.
         refuses_each(
@@ -4269,6 +4295,10 @@ mod tests {
                     "crates/luxforge-core/src/tiles/reference_tests.rs",
                     "    let held: Condvar = Condvar::new();\n",
                 ),
+                (
+                    "crates/luxforge-app/src/app/gpu_tiles_worker_tests.rs",
+                    "    let held: Condvar = Condvar::new();\n",
+                ),
             ],
             "luxforge_testbase::Gate",
         );
@@ -4287,7 +4317,7 @@ mod tests {
             "{error}"
         );
         write_all(root, &[(surface, worker)]);
-        assert_eq!(read(root, rules).unwrap(), (6, 0));
+        assert_eq!(read(root, rules).unwrap(), (7, 0));
     }
 
     #[test]
