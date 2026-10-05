@@ -425,6 +425,7 @@ fn measure(
             mask: converted,
         })],
         region: None,
+        lights: Vec::new(),
     };
     let drawn = qualifier.evaluate(&readback).expect("a qualification pass");
     let gpu: Vec<f64> = drawn

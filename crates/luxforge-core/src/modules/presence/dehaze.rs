@@ -454,15 +454,6 @@ impl SpatialUnit for Dehaze {
         Some(Cow::Borrowed("presence dehaze atmospheric light"))
     }
 
-    /// Detail's filters barely move the block means the light is chosen from, so removing a veil
-    /// with the light of Detail's input stays within the spatial limits over the corpus at 100%.
-    /// Adding one lays the light itself over the picture, which follows its error: sharpen stress
-    /// on the zone plate under −100 moves the picture's lightness by 1.15 (`docs/specs/
-    /// performance.md`, "Dehaze behind Detail at 100%"). So an amount below zero holds none.
-    fn holds_restored_estimate(&self) -> bool {
-        self.amount >= 0.0
-    }
-
     /// The atmospheric light: the pointwise channel minimum of the host's 1/16-per-side reduction,
     /// the brightest [`ATMOSPHERE_FRACTION`] of those pixels (at least [`ATMOSPHERE_MIN_COUNT`]),
     /// their per-channel mean, floored at [`A_FLOOR`]. Three `f64`, 24 bytes.
@@ -562,21 +553,15 @@ impl SpatialUnit for Dehaze {
         cancel.check()
     }
 
-    /// The stored atmospheric light when the plan found one for this stage's content, else the
-    /// GPU takes it from the stage it holds.
-    fn gpu(&self, global: Option<&Global>) -> Option<GpuSpatialUnit> {
-        Some(super::gpu::dehaze(self, global))
+    /// Dehaze reading its atmospheric light from the plane its light link writes.
+    fn gpu(&self) -> Option<GpuSpatialUnit> {
+        Some(super::gpu::dehaze(self))
     }
 
     /// The atmospheric light from the whole input stage at full resolution: the 16-pixel block
     /// means and the selection [`Self::prepare`] makes from them. It reads no amount.
     fn gpu_light(&self, stage: Stage) -> Option<crate::render::gpu::GpuLightPasses> {
         Some(super::gpu::dehaze_light(stage))
-    }
-
-    /// The light read from the plane the light link writes.
-    fn gpu_reading_light(&self) -> Option<GpuSpatialUnit> {
-        Some(super::gpu::dehaze_reading_light(self))
     }
 
     fn is_finite(&self) -> bool {

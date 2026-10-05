@@ -210,9 +210,8 @@ pub(super) fn check_resamples(compiled: &Compiled) -> Result<(), Error> {
 }
 
 /// The estimate prefix of a development `development` seen through `view` under an approximate
-/// `white_balance`: what the linear domain's estimates are keyed by, and a proxy not yet built is
-/// named by (`render::gpu::EstimateSource::Proxy`).
-pub(crate) fn estimate_prefix(
+/// `white_balance`: what the linear domain's estimates are keyed by.
+fn estimate_prefix(
     prefix_hash: &str,
     development: u64,
     view: ([u32; 4], u8),

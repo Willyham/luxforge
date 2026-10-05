@@ -4,7 +4,7 @@
 //!
 //! - **What is warmed, and in what order.** Every committed stack's job carries its warm list, the
 //!   open stack's drags first and then the first drags of every module it does not hold
-//!   (`PreviewJob::gpu_warm`, `gpu_warm_open`), which [`Editor::gpu_warm_from`] hands the surface.
+//!   (`PreviewJob::gpu_warm`), which [`Editor::gpu_warm_from`] hands the surface.
 //!   The surface asks for the picture on screen's own sequences — the picture at rest's view plan
 //!   and its tiles — before it queues the list, so its compile thread takes them first.
 //! - **Labelled until then.** While the photograph at rest is the reference renderer's frame

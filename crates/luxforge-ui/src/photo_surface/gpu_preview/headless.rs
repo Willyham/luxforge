@@ -180,7 +180,7 @@ impl HeadlessSurface {
             self.hand(source);
             match self
                 .pipeline
-                .evaluate(&mut slots, &self.device, &self.queue, plan, None)
+                .evaluate_lit(&mut slots, &self.device, &self.queue, plan, None)
             {
                 Ok(_) => Some(Ok(())),
                 Err(waiting @ (GpuFallback::Compiling | GpuFallback::SourceUploading { .. })) => {

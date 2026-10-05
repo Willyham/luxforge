@@ -1,6 +1,8 @@
-//! Native viewport journeys. The first two preserve the review's once-uncommitted functional
-//! scripts as replayable smoke scenarios; the third observes a Fit refit before evidence is
-//! allowed to tick or capture again. A missing GPU draw counter is an error, never a zero.
+//! Native viewport journeys. The first preserves the review's once-uncommitted functional script
+//! as a replayable smoke scenario; the second holds a global estimate behind an earlier spatial
+//! layer at 100%, which a drag draws on the GPU and the exact region refines with the layers
+//! before it kept whole; the third observes a Fit refit before evidence is allowed to tick or
+//! capture again. A missing GPU draw counter is an error, never a zero.
 use crate::{
     scenario::{Checked, Checks, Frame, Plan, Run, Step, plan::only},
     *,
@@ -8,11 +10,11 @@ use crate::{
 use luxforge_evidence::{self as script, ViewIdleStep, ViewStep, WorkspaceStep};
 
 pub const REGION: &str = "viewport-region";
-pub const FALLBACK: &str = "viewport-fallback";
+pub const CHAINED: &str = "viewport-chained-estimate";
 pub const IDLE: &str = "viewport-idle-fit";
 
 const REGION_SCRIPT: &str = include_str!("../scenarios/viewport-region-mask-crop.json");
-const FALLBACK_SCRIPT: &str = include_str!("../scenarios/viewport-estimate-after-spatial.json");
+const CHAINED_SCRIPT: &str = include_str!("../scenarios/viewport-chained-estimate.json");
 const REGION_NAMES: [&str; 29] = [
     "panel-hidden",
     "performance-expanded",
@@ -44,7 +46,7 @@ const REGION_NAMES: [&str; 29] = [
     "history-current",
     "final-pause",
 ];
-const FALLBACK_NAMES: [&str; 12] = [
+const CHAINED_NAMES: [&str; 13] = [
     "panel-hidden",
     "performance-expanded",
     "linear-mask",
@@ -55,6 +57,7 @@ const FALLBACK_NAMES: [&str; 12] = [
     "draft",
     "pan",
     "pan-pause",
+    "gpu-tick",
     "release",
     "release-pause",
 ];
@@ -85,8 +88,8 @@ pub fn region_plan(_: &[PathBuf]) -> Plan {
         step.workspace("state_panel", json!(false))
     })
 }
-pub fn fallback_plan(_: &[PathBuf]) -> Plan {
-    scripted(FALLBACK_SCRIPT, &FALLBACK_NAMES, |step| step)
+pub fn chained_plan(_: &[PathBuf]) -> Plan {
+    scripted(CHAINED_SCRIPT, &CHAINED_NAMES, |step| step)
 }
 
 pub fn idle_plan(_: &[PathBuf]) -> Plan {
@@ -465,7 +468,12 @@ pub fn verify_region(run: &mut Run, launches: &[Checked]) -> Result {
     checks.write(run.out(), REGION, json!({"gpu": all_draws(launch)?}))
 }
 
-pub fn verify_fallback(run: &mut Run, launches: &[Checked]) -> Result {
+/// Two separately masked Presence layers, Dehaze on the second, at 100%: a tick of the drag after
+/// the pan's pause, once the surface has evaluated its plan, is drawn on the GPU, the second
+/// layer's light computed from the whole stage by its stand-in with the first layer left out; nothing names a global estimate as a reason to refuse the view's region;
+/// and once released the exact visible region is rendered, the layers before Dehaze kept whole so
+/// it reduces its own input, with exact full histogram counts.
+pub fn verify_chained(run: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
     let layers = launch.at("second-presence")?.state()["stack"]["layers"]
         .as_array()
@@ -479,35 +487,64 @@ pub fn verify_fallback(run: &mut Run, launches: &[Checked]) -> Result {
         "Two separately masked Presence layers are required",
     )?;
     ensure(
-        event(&launch.events, "preview_view_fallback").any(|e| {
+        !event(&launch.events, "preview_view_fallback").any(|e| {
             e["detail"]["reason"]
                 .as_str()
-                .is_some_and(|s| s.contains("global estimate behind an earlier spatial layer"))
+                .is_some_and(|s| s.contains("global estimate"))
         }),
-        "Viewport refusal did not name estimate-after-spatial fallback",
+        "A view's region was refused for a global estimate",
     )?;
+    let ticks: Vec<_> = event(&launch.events, "gpu_preview_tick").collect();
+    let gpu_ticks = ticks
+        .iter()
+        .filter(|tick| tick["detail"]["path"] == "gpu")
+        .count();
     ensure(
-        !event(&launch.events, "preview_displayed")
-            .any(|e| e["detail"]["path"] == "region" && !e["detail"]["draft_revision"].is_null()),
-        "Declined draft masqueraded as a viewport region",
+        gpu_ticks >= 1,
+        format!(
+            "The drag drew no tick on the GPU: {:?}",
+            ticks
+                .iter()
+                .map(|tick| (&tick["detail"]["path"], &tick["detail"]["reason"]))
+                .collect::<Vec<_>>()
+        ),
     )?;
-    let revision = launch.at("draft")?.state()["displayed_draft_revision"]
-        .as_u64()
+    let lights = &launch.at("gpu-tick")?.state()["surface"]["gpu"]["gpu_preview"]["drag"]["lights"];
+    let refined = event(&launch.events, "preview_displayed")
+        .any(|e| e["detail"]["path"] == "region" && e["detail"]["draft_revision"].is_null());
+    ensure(
+        refined,
+        "The released view's exact region was never displayed",
+    )?;
+    // The draft's first frame: its region now renders the first Presence layer over its whole
+    // stage before Dehaze, so it may land after the draft step's own capture.
+    let (shown, revision) = ["draft", "pan", "pan-pause"]
+        .into_iter()
+        .find_map(|name| {
+            let revision = launch.at(name).ok()?.state()["displayed_draft_revision"].as_u64()?;
+            Some((name, revision))
+        })
         .ok_or("The draft had no displayed revision")?;
-    let draft_histogram = drafted_histogram(launch, "draft", revision)?;
+    let draft_histogram = drafted_histogram(launch, shown, revision)?;
     ensure(
         launch.at("release-pause")?.state()["histogram"]["stale"] == false
             && launch.at("release-pause")?.state()["histogram"]["identity"]["draft_revision"]
                 .is_null(),
-        "Fallback did not settle exact full histogram counts",
+        "The release did not settle exact full histogram counts",
     )?;
     let mut checks = Checks::new();
     checks.note(
-        launch.at("draft")?,
+        launch.at(shown)?,
         "the draft's histogram: updating, or settled for its own revision by the quiet policy",
-        draft_histogram,
+        json!({"step": shown, "histogram": draft_histogram}),
     );
-    checks.write(run.out(), FALLBACK, json!({"gpu": all_draws(launch)?}))
+    checks.note(
+        launch.at("gpu-tick")?,
+        "the drag on the GPU, its lights, and the exact region after the release",
+        json!({"gpu_ticks": gpu_ticks, "ticks": ticks.len(), "lights": lights,
+            "exact_region_displayed": refined}),
+    );
+    checks.write(run.out(), CHAINED, json!({"gpu": all_draws(launch)?}))
 }
 
 pub fn verify_idle(run: &mut Run, launches: &[Checked]) -> Result {
@@ -595,7 +632,7 @@ mod tests {
     #[test]
     fn committed_journeys_have_valid_named_steps() {
         region_plan(&[]).validate().unwrap();
-        fallback_plan(&[]).validate().unwrap();
+        chained_plan(&[]).validate().unwrap();
         idle_plan(&[]).validate().unwrap();
     }
 }

@@ -269,6 +269,7 @@ fn run_step(
         texels: TexelMap::IDENTITY,
         steps: vec![GpuStep::Spatial(Box::new(spatial))],
         region: None,
+        lights: Vec::new(),
     };
     qualifier.evaluate(&plan).expect("a qualification readback")
 }

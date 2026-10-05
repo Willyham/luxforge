@@ -321,7 +321,7 @@ pub enum RendererReason {
     /// The export's tiles would hold more than the tile worker's budget (`tiles-budget`).
     Budget,
     /// The GPU cannot draw the stack's plan, for the code named: the plan's own fallback, such as
-    /// `region-estimate` for a Dehaze light the store does not hold, or the GPU stage's, such as
+    /// `pixel-stage` for a layer no GPU program replaces, or the GPU stage's, such as
     /// `pipeline-failed`.
     Plan(&'static str),
 }

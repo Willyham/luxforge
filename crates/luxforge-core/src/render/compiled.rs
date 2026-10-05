@@ -162,7 +162,10 @@ impl Entry {
     /// One step of a windowed proxy's plan ([`super::window::WindowPlan::of_rect`]), against the
     /// uncut compilation: the rectangle of the stage before it, a `received` stage, that `read`, a
     /// rectangle of its output stage, needs. `tiled_before` says whether a point query reaches the
-    /// stage it reads through an earlier boundary's tiles.
+    /// stage it reads through an earlier boundary's tiles: a spatial operation that prepares a
+    /// global estimate there reads the whole stage, so every segment before it is kept whole and it
+    /// reduces its own input as a frame does, since no window can hand it the estimate of a stage
+    /// behind another spatial operation.
     pub(crate) fn plan_window(
         &self,
         read: Region,
@@ -174,14 +177,10 @@ impl Entry {
                 .resample
                 .reads((0, 0), read, received)
                 .ok_or(RegionFallback::UnplannableGeometry),
-            Self::Spatial(entry) => {
-                // A window cannot hold a whole-stage reduction, and a stage behind another spatial
-                // operation cannot be handed one without that operation's whole output.
-                if entry.prepares_estimates() && tiled_before {
-                    return Err(RegionFallback::EstimateAfterSpatial);
-                }
-                Ok(entry.reads(read, received))
+            Self::Spatial(entry) if entry.prepares_estimates() && tiled_before => {
+                Ok(Region::whole(received))
             }
+            Self::Spatial(entry) => Ok(entry.reads(read, received)),
         }
     }
 
@@ -189,8 +188,8 @@ impl Entry {
     /// ([`super::window::WindowPlan::of_gpu_rect`]): a resample's taps as the CPU reads them, which
     /// the geometry tail clamps to, and a spatial operation's halo with no tile grid
     /// ([`SpatialEntry::halo_reads`]). A global estimate is never prepared from the window: the
-    /// GPU reads the whole stage's from the estimate store, or takes it from the stage it holds
-    /// and says so, so an estimate behind an earlier spatial layer cuts like any other.
+    /// GPU computes the whole stage's from the source by its light link, so an estimate behind an
+    /// earlier spatial layer cuts like any other.
     pub(crate) fn plan_gpu_window(
         &self,
         read: Region,
@@ -206,7 +205,7 @@ impl Entry {
     /// rectangle of its whole output stage `whole` that its segment reads, and `previous` the
     /// rectangle of the whole stage it receives that the cut frame before it holds. Answers the
     /// rectangle of `whole` its own cut frame holds. `globals` answers the estimates it is handed
-    /// when it prepares one; it is asked nothing otherwise.
+    /// when it prepares one over a stage that is cut; it is asked nothing otherwise.
     pub(crate) fn cut(
         &mut self,
         read: Region,

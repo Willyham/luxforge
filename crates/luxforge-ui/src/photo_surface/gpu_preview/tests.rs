@@ -66,6 +66,7 @@ pub(super) fn plan(boundary: &GpuBoundary, programs: Vec<GpuProgram>) -> GpuPlan
         texels: TexelMap::IDENTITY,
         steps: programs.into_iter().map(GpuStep::colour).collect(),
         region: None,
+        lights: Vec::new(),
     }
 }
 

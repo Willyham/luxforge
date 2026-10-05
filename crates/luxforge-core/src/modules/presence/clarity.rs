@@ -335,7 +335,7 @@ impl SpatialUnit for Clarity {
         cancel.check()
     }
 
-    fn gpu(&self, _: Option<&Global>) -> Option<GpuSpatialUnit> {
+    fn gpu(&self) -> Option<GpuSpatialUnit> {
         Some(super::gpu::clarity(self))
     }
 

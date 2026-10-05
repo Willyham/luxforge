@@ -437,6 +437,19 @@ fn derivation_name(boundary: &GpuBoundary) -> &'static str {
     }
 }
 
+/// Each light `plan` reads, as evidence names it: its layer, and `source` for a light the slot
+/// computes from the source through the prefix's colour, or `stand-in` for one behind a spatial
+/// layer, which the slot computes with that layer left out.
+fn light_evidence(plan: &CorePlan) -> Value {
+    plan.lights
+        .iter()
+        .map(|light| {
+            json!({"layer": light.layer,
+                "computed": if light.over_source() { "source" } else { "stand-in" }})
+        })
+        .collect()
+}
+
 /// The evidence of a boundary derived from the source, for a drag or, `resident`, a committed
 /// stack's job.
 fn derived_evidence(held: &Held, resident: bool) -> Value {
@@ -855,10 +868,11 @@ pub(crate) enum GpuAsk {
 /// in its size bucket, a region's or a whole frame's, with its placement uniform
 /// ([`surface::gpu_preview::texture_charge`]); and the chain's charge over the window
 /// ([`chain_charge`]): each link's intermediate before the last, every link's kept planes and
-/// parameters, and the pool of scratch planes the links take in turn, once. The surface adds only
-/// every link's words and blocks buffers once it is held. At Fit at the exact stage the frame is
-/// the whole output stage and the boundary the window it reads, or the whole boundary stage.
-/// `None` at a Fit proxy, which the display bounds bound.
+/// parameters, and the pool of scratch planes the links take in turn, once; and each light link
+/// the slot runs before its chain ([`light_charge`]). The surface adds only every link's words and
+/// blocks buffers once it is held. At Fit at the exact stage the frame is the whole output stage
+/// and the boundary the window it reads, or the whole boundary stage. `None` at a Fit proxy, which
+/// the display bounds bound.
 pub(crate) fn region_charge(plan: &CorePlan, request: &SourceBoundary) -> Option<(u64, u64)> {
     let whole = |width, height| Region {
         x0: 0,
@@ -888,8 +902,28 @@ pub(crate) fn region_charge(plan: &CorePlan, request: &SourceBoundary) -> Option
     );
     Some((
         boundary,
-        textures + chain_charge(plan, window, request.format),
+        textures + chain_charge(plan, window, request.format) + light_charge(plan, request.format),
     ))
+}
+
+/// What the light links of `plan` take of the GPU-preview budget, as the surface charges each one
+/// it creates ([`surface::gpu_preview::light::light_charge`]): its tile of the source, the whole
+/// stage's block plane and its buffers, whatever window the plan draws over. Lights the surface
+/// cannot run are charged nothing; the tick that converts the plan refuses them.
+fn light_charge(plan: &CorePlan, format: luxforge_core::BoundaryFormat) -> u64 {
+    gpu_plan::surface_lights(plan).map_or(0, |lights| {
+        lights
+            .iter()
+            .filter_map(|light| {
+                surface::gpu_preview::light::light_charge(
+                    light,
+                    gpu_plan::boundary_format(format),
+                    super::compare_after::DEVICE_TEXTURE_LIMIT,
+                    super::compare_after::DEVICE_STORAGE_BINDING,
+                )
+            })
+            .sum()
+    })
 }
 
 /// A region's boundary, or one at the exact stage at Fit, that would pass the bound on a
@@ -1074,8 +1108,10 @@ impl GpuPreviews {
             "drag": {
                 "draft_id": drag.draft.as_str(),
                 "plan_revision": drag.plan.as_ref().map(|(_, revision)| *revision),
-                // A global estimate taken on the GPU rather than read from the store.
-                "approximate": drag.plan.as_ref().map(|(plan, _)| plan.approximate()),
+                // Each light the plan reads: its layer, and whether the slot computes it from the
+                // source through the prefix's colour, or by its stand-in with the spatial layers
+                // before it left out.
+                "lights": drag.plan.as_ref().map(|(plan, _)| light_evidence(plan)),
                 "surface_revision": drag.surface.as_ref().map(|handed| handed.revision),
                 "boundary": drag.held.as_ref().map(|held| json!({
                     "version": held.boundary.version(),
@@ -1800,32 +1836,14 @@ impl Editor {
 
     /// The committed stack's view plan the surface draws at rest ([`AtRest`]), where the view
     /// shows it: its whole frame at Fit and below 100%, its region at 100% and above while that
-    /// region holds the view. Never an approximate one ([`Editor::gpu_rest_held_back`]).
+    /// region holds the view.
     pub(crate) fn gpu_rest_plan(&self) -> Option<(&surface::GpuPlan, surface::GpuChange)> {
         if !self.gpu_at_rest() {
             return None;
         }
-        let at_rest = self
-            .gpu
-            .at_rest
-            .as_ref()
-            .filter(|at_rest| !at_rest.core.approximate())?;
+        let at_rest = self.gpu.at_rest.as_ref()?;
         self.gpu_plan_shown(&at_rest.handed.plan)
             .then_some((&at_rest.handed.plan, at_rest.handed.change))
-    }
-
-    /// Whether the committed stack's view plan is held back from being drawn at rest because it is
-    /// approximate: it takes a global estimate, Dehaze's light, on the GPU from the stage it holds
-    /// rather than reading the whole stage's from the store, which the stack's exact phase fills.
-    /// Nothing at rest is drawn approximate: the frame on screen stays, marked rendering, until
-    /// the picture at rest in tiles, planned again once the estimates are stored, is in.
-    pub(crate) fn gpu_rest_held_back(&self) -> bool {
-        self.gpu_at_rest()
-            && self
-                .gpu
-                .at_rest
-                .as_ref()
-                .is_some_and(|at_rest| at_rest.core.approximate())
     }
 
     /// Whether the picture at rest in tiles handed to the surface has not been drawn whole yet:
@@ -1841,11 +1859,10 @@ impl Editor {
             })
     }
 
-    /// The displayed stack's picture at rest in tiles, from its job or from its exact phase, which
-    /// planned them again once it stored the global estimates they read: held for the surfaces to
-    /// draw ([`surface::GpuRest`]), under a new version unless they are the tiles held. `None` lets
-    /// the one held go: a view that draws the stack at its own size or larger, or tiles still
-    /// waiting for their estimates. Nothing with the preference off.
+    /// The displayed stack's picture at rest in tiles, from its job: held for the surfaces to draw
+    /// ([`surface::GpuRest`]), under a new version unless they are the tiles held. `None` lets the
+    /// one held go: a view that draws the stack at its own size or larger, or tiles the GPU cannot
+    /// draw. Nothing with the preference off.
     pub(crate) fn gpu_rest_from(&mut self, tiles: Option<Box<luxforge_core::RestTiles>>) {
         if self.gpu_preview_allowed().is_err() {
             self.gpu.rest = None;
@@ -1998,13 +2015,10 @@ impl Editor {
             luxforge_core::Zoom::Fit => true,
             luxforge_core::Zoom::Percent { value } => value < 100.0,
         };
-        // An approximate view plan is never drawn at rest, Compare's After side included.
         let plan = retained
             .at_rest
             .as_ref()
-            .filter(|at_rest| {
-                whole && at_rest.handed.plan.region.is_none() && !at_rest.core.approximate()
-            })
+            .filter(|at_rest| whole && at_rest.handed.plan.region.is_none())
             .map(|at_rest| (&at_rest.handed.plan, at_rest.handed.change));
         let rest = retained
             .rest
@@ -2051,12 +2065,14 @@ impl Editor {
     }
 
     /// A committed stack's job carries the plans its gestures are likely to draw, the first `open`
-    /// of them the open stack's and then the rest of the program set: hand their sequences to the
-    /// surface to compile, in that order, before a drag begins.
-    pub(crate) fn gpu_warm_from(&mut self, plans: Option<&[luxforge_core::GpuPlan]>, open: usize) {
-        let Some(plans) = plans else {
+    /// of them the open stack's and then the rest of the program set, and the light links the open
+    /// stack's ticks compute: hand their sequences to the surface to compile, in that order, before
+    /// a drag begins.
+    pub(crate) fn gpu_warm_from(&mut self, warm: Option<&luxforge_core::GpuWarmList>) {
+        let Some(warm) = warm else {
             return;
         };
+        let plans = &warm.plans;
         // While a clipping overlay is shown the gestures' plans carry its marks.
         let clip = super::gpu_settle::clip_flags(&self.session.workspace);
         let mut open_sequences = 0;
@@ -2068,24 +2084,38 @@ impl Editor {
                     gpu_plan::boundary_format(luxforge_core::BoundaryFormat::of(plan.linear)),
                 ));
             }
-            if index < open {
+            if index < warm.open {
                 open_sequences = sequences.len();
             }
         }
-        let same = self
-            .gpu
-            .warm
-            .as_ref()
-            .is_some_and(|warm| warm.sequences() == sequences.as_slice());
+        // The light links the list warms, each writing the light plane its plans read.
+        let lights: Vec<Vec<GpuStep>> = warm
+            .lights
+            .iter()
+            .filter_map(|(k, light)| {
+                let k = u32::try_from(*k).ok()?;
+                gpu_plan::surface_light(light, k).ok()
+            })
+            .map(|light| light.steps)
+            .collect();
+        let same = self.gpu.warm.as_ref().is_some_and(|warm| {
+            warm.sequences() == sequences.as_slice()
+                && warm.lights() == lights.as_slice()
+                && warm.open() == open_sequences
+        });
         if same || sequences.is_empty() {
             return;
         }
         let version = self.gpu.warm.as_ref().map_or(1, |warm| warm.version() + 1);
-        self.event(
-            "gpu_preview_warm",
-            || json!({"version": version, "sequences": sequences.len(), "open": open_sequences}),
+        self.event("gpu_preview_warm", || {
+            json!({"version": version, "sequences": sequences.len(),
+                "open": open_sequences, "lights": lights.len()})
+        });
+        self.gpu.warm = Some(
+            GpuWarm::new(version, sequences)
+                .with_open(open_sequences)
+                .with_lights(lights),
         );
-        self.gpu.warm = Some(GpuWarm::new(version, sequences).with_open(open_sequences));
     }
 
     /// What the next tick asks the owner to plan its GPU preview for: at Fit and below 100%, a

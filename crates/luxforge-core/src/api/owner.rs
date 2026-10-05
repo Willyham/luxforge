@@ -2063,23 +2063,11 @@ impl Owner {
             if let (true, None, Some(view), None) = (request.gpu, draft, view, request.layer_count)
             {
                 if let Ok(warm) = crate::render::gpu::plan_warm_list(&job.evaluation, view) {
-                    job.gpu_warm_open = warm.open;
-                    job.gpu_warm = Some(warm.plans.into());
+                    job.gpu_warm = Some(std::sync::Arc::new(warm));
                 }
                 job.gpu_rest = crate::render::gpu::plan_rest(&job.evaluation, view)
                     .ok()
                     .map(Box::new);
-                // Tiles that wait for a global estimate the job's exact phase stores are planned
-                // again by the worker once it has.
-                if let (
-                    crate::GpuView::Fit(bounds),
-                    Some(Err(crate::GpuFallback::RegionEstimate { .. })),
-                ) = (
-                    view,
-                    job.gpu_rest.as_ref().and_then(|rest| rest.tiles.as_ref()),
-                ) {
-                    job.rest_bounds = Some(bounds);
-                }
             }
             if let (true, Some(draft), Some(view), None) =
                 (request.gpu, draft, view, request.layer_count)

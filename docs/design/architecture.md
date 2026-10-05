@@ -278,7 +278,7 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | A picture at rest's view | 8 MP, its accumulator 16 bytes a pixel, one tile drawn a frame | `REST_VIEW_PIXELS` and `REST_TILES_PER_FRAME`, `crates/luxforge-ui/src/photo_surface/gpu_preview/rest.rs` |
 | GPU-preview textures and buffers, every photo surface's together, resident or retiring | 2 GiB, one slot per surface | `GPU_PREVIEW_BUDGET`, `crates/luxforge-ui/src/photo_surface/gpu_preview.rs` |
 | Compiled GPU-preview program sequences per photo pipeline, failed ones included | 64, every link of the largest plan beside a whole warm list, and as many waiting to compile | `PIPELINE_CACHE`, `crates/luxforge-ui/src/photo_surface/gpu_preview/compile.rs` |
-| Link sequences one GPU-preview warm list holds | 45, the compile cache less the largest plan's 19 links | `GPU_WARM_LINKS` and `GPU_PLAN_LINKS`, `crates/luxforge-core/src/render/gpu/preview.rs` |
+| Link sequences one GPU-preview warm list holds | 44, the compile cache less the largest plan's 20 links, its light link among them | `GPU_WARM_LINKS` and `GPU_PLAN_LINKS`, `crates/luxforge-core/src/render/gpu/preview.rs` |
 
 **Catalog and API**
 

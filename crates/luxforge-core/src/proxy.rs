@@ -872,10 +872,9 @@ fn downscale_linear(
 
 /// The development a linear proxy of `image` at `plan` is: derived from `image`'s development and
 /// view and the plan's stage and window, which decide its pixels exactly, so a proxy is named the
-/// same whenever it is built and anything keyed by it — the estimate store — can be read without
-/// building it (`render::gpu::EstimateSource::Proxy`). The top bit keeps it apart from every
-/// adopted development, which counts up from one.
-pub(crate) fn proxy_development(image: &LinearImage, plan: ProxyPlan) -> u64 {
+/// same whenever it is built and anything keyed by it — the estimate store — finds it again. The
+/// top bit keeps it apart from every adopted development, which counts up from one.
+fn proxy_development(image: &LinearImage, plan: ProxyPlan) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::hash::DefaultHasher::new();
     (image.development(), image.view(), plan.width, plan.height).hash(&mut hasher);

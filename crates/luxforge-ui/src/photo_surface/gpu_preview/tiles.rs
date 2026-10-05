@@ -25,12 +25,23 @@
 //!   its own device once (`poll(Wait)`), maps the copy and unpads its rows. It blocks only its
 //!   caller, never touches Iced's device or queue, and starts no thread: it compiles on its
 //!   caller's thread, which is never the interface thread.
+//! - **Lights.** A plan whose spatial steps read a global estimate ([`GpuPlan::lights`], Dehaze's
+//!   atmospheric light) is drawn as the photo surface draws it, each light computed by its light
+//!   link from the whole stage at full resolution: the runner runs the link once for the source
+//!   and keeps the light it reads back ([`light::read_light`]), cutting each of the link's tiles
+//!   from a window of the source of its own, so it never holds the whole source; every tile of
+//!   the plan then reads that light from its light plane, written before its passes
+//!   ([`super::spatial::Pool::write_light`]). The runner keeps the last [`TILE_LIGHTS`] lights it
+//!   computed, keyed by the source's version and the link's steps, words and blocks, so a stream's
+//!   tiles and a call's reads compute each light once.
 //! - **Bounds.** Everything a run creates is charged to [`GPU_TILE_BUDGET`], beside and apart from
 //!   the photo surface's GPU-preview budget, before anything is created: the window of the source,
 //!   the boundary, each link's intermediate, words and blocks, every link's kept planes and the
 //!   pool once ([`super::chain_charge`]), a geometry tail's intermediate, the output and its
-//!   readback copy ([`TileRunner::charge`]). A run past it is refused (`tiles-budget`) having
-//!   created and compiled nothing. Between runs the runner holds the window of the source its last
+//!   readback copy ([`TileRunner::charge`]); a light computed for it is charged on its own before,
+//!   its link, the largest window of the source one of its tiles is cut from and its readback
+//!   ([`light::read_light_charge`]), beside the window the runner keeps. A run past it is refused
+//!   (`tiles-budget`) having created and compiled nothing. Between runs the runner holds the window of the source its last
 //!   run read, which the next run of the same window reads again ([`TileRunner::release`] lets it
 //!   go), and at most [`TILE_PIPELINE_CACHE`] compiled sequences beside its spatial passes' own
 //!   cache of 64 modules. Everything else a run created goes before its wait, and the device frees
@@ -48,7 +59,7 @@ use super::{
     BLOCK_CHUNK, Charged, Compiled, Derivation, GpuFallback, GpuPlan, GpuSource, GpuStep,
     MIN_BUFFER, OUTPUT_FORMAT, SAMPLED_FORMAT, Shape, SourceLayouts, SourceSlot, SpatialSlot,
     Support, answered, blocks, buffer_capacity, chain, chain_charge, compile, encode_pass_over,
-    gpu_stage_refused, intermediate_bytes, intermediate_format, le_bytes, output_offset,
+    gpu_stage_refused, intermediate_bytes, intermediate_format, le_bytes, light, output_offset,
     region_drawable, spatial, storage_buffer, supported,
 };
 use crate::adapters::{self, Adapter, Unopened};
@@ -73,6 +84,10 @@ pub const GPU_TILE_BUDGET: u64 = 1 << 30;
 /// which holds every link of the largest plan a tile draws, a link for the colour steps before its
 /// first spatial step and one for each of up to 18 spatial steps, with room for both ends of each.
 pub const TILE_PIPELINE_CACHE: usize = 64;
+
+/// How many lights a tile runner keeps, the least recently computed let go first: a stream's or a
+/// call's plan reads at most one for each estimating layer, and every tile of it reads the same.
+pub const TILE_LIGHTS: usize = 8;
 
 /// What a run reads back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -185,6 +200,8 @@ pub struct TileFigures {
     pub compiles: u64,
     /// Tiles it has drawn and read back.
     pub runs: u64,
+    /// Lights it has computed and read back, each once for every tile that reads it.
+    pub lights: u64,
 }
 
 /// One tile of a stack drawn on a device of its own and read back, on its caller's thread (the
@@ -194,6 +211,8 @@ pub struct TileRunner {
     /// of the same window.
     window: Option<(SourceSlot, u64)>,
     sequences: Lru<Key, Sequence>,
+    /// The lights it computed last, each under its key ([`light_key`]).
+    lights: Lru<u64, [f32; 4]>,
     support: Support,
     /// The passes that cut a boundary from the window; none while the core's output encoding,
     /// whose decode table a JPEG's cut reads, is not installed, so a run makes them once it is.
@@ -312,6 +331,7 @@ impl TileRunner {
         Ok(Self {
             window: None,
             sequences: Lru::new(TILE_PIPELINE_CACHE),
+            lights: Lru::new(TILE_LIGHTS),
             support,
             layouts,
             lost,
@@ -359,7 +379,22 @@ impl TileRunner {
         end: TileEnd,
     ) -> Result<u64, TileFailure> {
         let held = self.checked(plan, source, window)?;
-        Ok(held.bytes() + self.slot_bytes(plan, end)?)
+        let run = held.bytes() + self.slot_bytes(plan, end)?;
+        // A light is computed on its own before the run, beside the window kept between runs.
+        let mut most = run;
+        for light in &plan.lights {
+            most = most.max(held.bytes() + self.light_charge(source, light)?);
+        }
+        Ok(most)
+    }
+
+    /// What computing `light` from `source` holds ([`light::read_light_charge`]).
+    fn light_charge(
+        &self,
+        source: &GpuSource,
+        light: &light::GpuLight,
+    ) -> Result<u64, TileFailure> {
+        light::read_light_charge(&self.device, source, light).map_err(TileFailure::Plan)
     }
 
     /// `plan` drawn over a boundary cut from `window` (`[x, y, width, height]` of the content
@@ -388,6 +423,7 @@ impl TileRunner {
             self.layouts = SourceLayouts::new(&self.device).ok();
         }
         let held = self.checked(plan, source, window)?;
+        let lights = self.lit(&plan.lights, source)?;
         let requested = held.bytes() + self.slot_bytes(plan, end)?;
         if requested > GPU_TILE_BUDGET {
             return Err(TileFailure::Budget {
@@ -416,7 +452,7 @@ impl TileRunner {
             self.device.push_error_scope(filter);
         }
         let waited = self
-            .submit(plan, &held, end, &pipelines)
+            .submit(plan, &held, end, &pipelines, &lights)
             .map(|submitted| self.wait(submitted));
         // Every scope is popped, whatever the first one answers.
         let answers: Vec<_> = (0..3)
@@ -442,6 +478,86 @@ impl TileRunner {
         let read = Self::read(&submitted, end);
         self.figures.runs += 1;
         Ok(read)
+    }
+
+    /// Tests only: `light` computed from `source` as a run computes each light its plan reads, or
+    /// the one the runner keeps: `[r, g, b, 1]`, read back.
+    #[cfg(any(test, feature = "qualification"))]
+    pub fn light(
+        &mut self,
+        source: &GpuSource,
+        light: &light::GpuLight,
+    ) -> Result<[f32; 4], TileFailure> {
+        if self.layouts.is_none() {
+            self.layouts = SourceLayouts::new(&self.device).ok();
+        }
+        let lit = self.lit(std::slice::from_ref(light), source)?;
+        Ok(lit[0])
+    }
+
+    /// Every light of `computed`, a plan's lights, light `k` the `k`-th: each the runner keeps for
+    /// `source`, or computed now from it on the runner's device and kept ([`light::read_light`]),
+    /// charged to [`GPU_TILE_BUDGET`] before anything is created beside the window the runner
+    /// keeps, which goes first when only that makes room. Blocks its caller until the device is
+    /// done.
+    fn lit(
+        &mut self,
+        computed: &[light::GpuLight],
+        source: &GpuSource,
+    ) -> Result<Vec<[f32; 4]>, TileFailure> {
+        let mut lights = Vec::with_capacity(computed.len());
+        for computed in computed {
+            let key = light_key(source, computed);
+            if let Some(kept) = self.lights.find(|held| *held == key) {
+                lights.push(*kept);
+                continue;
+            }
+            let charge = self.light_charge(source, computed)?;
+            if charge > GPU_TILE_BUDGET {
+                return Err(TileFailure::Budget {
+                    requested: charge,
+                    budget: GPU_TILE_BUDGET,
+                });
+            }
+            if self.figures.in_use + charge > GPU_TILE_BUDGET {
+                self.release();
+            }
+            let (compiled, _) = self.sequence(&computed.steps, light::LIGHT_FORMAT)?;
+            let layouts = self.layouts.as_ref().ok_or(TileFailure::PIPELINE_FAILED)?;
+            let requested = self.figures.in_use + charge;
+            self.figures.peak = self.figures.peak.max(requested);
+            for filter in [
+                wgpu::ErrorFilter::Validation,
+                wgpu::ErrorFilter::OutOfMemory,
+                wgpu::ErrorFilter::Internal,
+            ] {
+                self.device.push_error_scope(filter);
+            }
+            let read = light::read_light(
+                (&self.device, &self.queue),
+                (&compiled, &self.support, layouts),
+                source,
+                computed,
+            );
+            let answers: Vec<_> = (0..3)
+                .map(|_| answered(self.device.pop_error_scope()))
+                .collect();
+            if self.lost() {
+                self.release();
+                return Err(TileFailure::Unavailable(TileUnavailable::DeviceLost));
+            }
+            if answers.iter().any(|answer| !matches!(answer, Some(None))) {
+                return Err(TileFailure::PIPELINE_FAILED);
+            }
+            let value = read.map_err(|fallback| match fallback {
+                GpuFallback::DeviceLost => TileFailure::Unavailable(TileUnavailable::DeviceLost),
+                other => TileFailure::Plan(other),
+            })?;
+            self.figures.lights += 1;
+            self.lights.insert(key, value);
+            lights.push(value);
+        }
+        Ok(lights)
     }
 
     /// While `poisoned`, every later run starts each link's passes from NaN bits in every texture
@@ -593,24 +709,34 @@ impl TileRunner {
             .chain(std::iter::once((chain.last, end.format())));
         let mut ready = Vec::new();
         for (steps, format) in sequences {
-            let found = self
-                .sequences
-                .find(|key| holds(key, steps, format))
-                .cloned();
-            let (compiled, id) = match found {
-                Some(found) => found,
-                None => {
-                    self.figures.compiles += 1;
-                    let id = self.figures.compiles;
-                    let compiled =
-                        compile(&self.device, &self.support, steps, format).map_err(Arc::from);
-                    let key = (compile::signature(steps), format);
-                    self.sequences.insert(key, (compiled, id)).clone()
-                }
-            };
-            ready.push((compiled.map_err(|_| TileFailure::PIPELINE_FAILED)?, id));
+            ready.push(self.sequence(steps, format)?);
         }
         Ok(ready)
+    }
+
+    /// The compiled sequence of `steps` writing `format`: the runner's, or compiled now on the
+    /// calling thread through the stage's one `compile`, and kept, failed or not.
+    fn sequence(
+        &mut self,
+        steps: &[GpuStep],
+        format: wgpu::TextureFormat,
+    ) -> Result<(Compiled, u64), TileFailure> {
+        let found = self
+            .sequences
+            .find(|key| holds(key, steps, format))
+            .cloned();
+        let (compiled, id) = match found {
+            Some(found) => found,
+            None => {
+                self.figures.compiles += 1;
+                let id = self.figures.compiles;
+                let compiled =
+                    compile(&self.device, &self.support, steps, format).map_err(Arc::from);
+                let key = (compile::signature(steps), format);
+                self.sequences.insert(key, (compiled, id)).clone()
+            }
+        };
+        Ok((compiled.map_err(|_| TileFailure::PIPELINE_FAILED)?, id))
     }
 
     /// The run's work, encoded and submitted with its mapping asked for: the window of the source
@@ -624,6 +750,7 @@ impl TileRunner {
         held: &GpuSource,
         end: TileEnd,
         pipelines: &[(Compiled, u64)],
+        lights: &[[f32; 4]],
     ) -> Result<Submitted, TileFailure> {
         let layouts = self.layouts.as_ref().ok_or(TileFailure::PIPELINE_FAILED)?;
         if self.window.is_none() {
@@ -710,6 +837,10 @@ impl TileRunner {
         )?;
         #[cfg(any(test, feature = "qualification"))]
         pool.set_poisoned(self.poisoned);
+        // Every light the plan reads, in its light plane before any pass reads it.
+        for (k, light) in (0u32..).zip(lights) {
+            pool.write_light(queue, k, *light);
+        }
         // Each link before the last, from the boundary, into its intermediate.
         let mut links: Vec<chain::LinkSlot> = Vec::with_capacity(chain.links.len());
         let mut input = chain::boundary_key(plan.boundary.version());
@@ -971,6 +1102,23 @@ fn texel_origin(plan: &GpuPlan) -> (u32, u32) {
         plan.texels.origin[0].max(0.0) as u32,
         plan.texels.origin[1].max(0.0) as u32,
     )
+}
+
+/// What a light the runner computed is kept under: the source's version, the light's stage, and its
+/// steps' programs, words and blocks.
+fn light_key(source: &GpuSource, light: &light::GpuLight) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut words = Vec::new();
+    chain::pack_words(super::TexelMap::IDENTITY, (0, 0), &light.steps, &mut words);
+    let mut hasher = std::hash::DefaultHasher::new();
+    (source.version(), light.stage, words).hash(&mut hasher);
+    for step in &light.steps {
+        step.each_block(&mut |block| block.hash(&mut hasher));
+    }
+    for (kind, entry, _) in light.steps.iter().flat_map(GpuStep::signature) {
+        (format!("{kind:?}"), entry).hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 /// A row of `bytes` padded to a texture copy's row alignment.
