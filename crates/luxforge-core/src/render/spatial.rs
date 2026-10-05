@@ -2707,7 +2707,6 @@ mod tests {
                 title: "Test spatial".into(),
                 hint: None,
                 effects: vec![EffectDescriptor {
-                    fit_settle: Default::default(),
                     id: TEST_SPATIAL_EFFECT.into(),
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Spatial,

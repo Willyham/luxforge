@@ -163,7 +163,6 @@ impl GeometryTestModule {
             ]
             .into_iter()
             .map(|id| EffectDescriptor {
-                fit_settle: Default::default(),
                 id: id.into(),
                 format: EFFECT_FORMAT,
                 stage: EffectStage::Geometry,
@@ -591,7 +590,6 @@ impl ColorTestModule {
                 title: "Test colour".into(),
                 hint: None,
                 effects: vec![EffectDescriptor {
-                    fit_settle: Default::default(),
                     id: TEST_COLOR_EFFECT.into(),
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Color,

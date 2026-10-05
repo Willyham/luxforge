@@ -108,7 +108,6 @@ fn review_probe_new_draft_region_is_not_fenced_by_an_older_drafts_revision() {
     editor.presentation.preview_generation = 8;
     ticket(&mut editor, 8, 2);
     let (_, shown) = editor.preview_ready(luxforge_core::PreviewResult {
-        restoration_prefix: None,
         generation: 8,
         entry_id: analysis.identity.entry_id.clone(),
         identity: analysis.identity,
@@ -139,7 +138,6 @@ fn review_probe_new_draft_region_is_not_fenced_by_an_older_drafts_revision() {
     );
     let (analysis, raster) = drafted(&editor, 9, &draft_b.draft_id, 0, &[[40, 50, 60, 255]], 1, 1);
     let (_, shown) = editor.preview_ready(luxforge_core::PreviewResult {
-        restoration_prefix: None,
         generation: 9,
         entry_id: analysis.identity.entry_id.clone(),
         identity: analysis.identity,
@@ -205,7 +203,6 @@ fn fit_withholds_an_old_whole_photo_after_new_content_region_arrives() {
     editor.presentation.preview_generation = 8;
     ticket(&mut editor, 8, 2);
     let (_, shown) = editor.preview_ready(luxforge_core::PreviewResult {
-        restoration_prefix: None,
         generation: 8,
         entry_id: analysis.identity.entry_id.clone(),
         identity: analysis.identity,
@@ -285,7 +282,6 @@ fn an_interactive_region_does_not_settle_a_history_preview_step() {
     editor.presentation.preview_generation = 8;
     ticket(&mut editor, 8, 2);
     let (_, shown) = editor.preview_ready(luxforge_core::PreviewResult {
-        restoration_prefix: None,
         generation: 8,
         entry_id: analysis.identity.entry_id.clone(),
         identity: analysis.identity,
@@ -1269,7 +1265,6 @@ fn an_exact_only_refit_replaces_an_undersized_proxy() {
     let (analysis, raster) = analysed(&editor, 8, &[[17, 42, 93, 255]], 1, 1);
     let before = editor.presentation.presenter.photo_version();
     let (task, shown) = editor.preview_ready(luxforge_core::PreviewResult {
-        restoration_prefix: None,
         generation: 8,
         entry_id: analysis.identity.entry_id.clone(),
         identity: analysis.identity,
@@ -1325,7 +1320,7 @@ fn a_settled_step_waits_for_the_refit_its_view_asked_for() {
 }
 
 #[test]
-fn restoration_settled_fit_presents_reduction_and_keeps_exact_pixels_for_zoom() {
+fn a_reduced_fit_presents_the_reduction_and_keeps_exact_pixels_for_zoom() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
     editor.view_state.window = (1440.0, 900.0);
     editor.session.preview.view.zoom = Zoom::Fit;
@@ -1344,7 +1339,6 @@ fn restoration_settled_fit_presents_reduction_and_keeps_exact_pixels_for_zoom() 
         snapshot_id: exact.snapshot_id.clone(),
     };
     let (_, shown) = editor.preview_ready(luxforge_core::PreviewResult {
-        restoration_prefix: None,
         generation: 8,
         entry_id: analysis.identity.entry_id.clone(),
         identity: analysis.identity,
@@ -1363,7 +1357,7 @@ fn restoration_settled_fit_presents_reduction_and_keeps_exact_pixels_for_zoom() 
         queue_wait_ms: None,
     });
     assert!(shown);
-    assert!(editor.presentation.presented_settled);
+    assert!(editor.presentation.presented_reduced);
     assert!(
         !editor.activity.render.unwrap().proxy,
         "exact-derived display does not say approximate render"
@@ -1372,7 +1366,7 @@ fn restoration_settled_fit_presents_reduction_and_keeps_exact_pixels_for_zoom() 
     assert_eq!(
         editor
             .presentation
-            .settled_frame
+            .reduced_frame
             .as_ref()
             .unwrap()
             .raster
@@ -1392,7 +1386,7 @@ fn restoration_settled_fit_presents_reduction_and_keeps_exact_pixels_for_zoom() 
 }
 
 #[test]
-fn restoration_settled_fit_rejects_a_reduction_for_previous_bounds() {
+fn a_reduced_fit_rejects_a_reduction_for_previous_bounds() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
     editor.view_state.window = (1440.0, 900.0);
     editor.presentation.preview_generation = 8;
@@ -1413,7 +1407,6 @@ fn restoration_settled_fit_rejects_a_reduction_for_previous_bounds() {
         snapshot_id: exact.snapshot_id.clone(),
     };
     let _ = editor.preview_ready(luxforge_core::PreviewResult {
-        restoration_prefix: None,
         generation: 8,
         entry_id: analysis.identity.entry_id.clone(),
         identity: analysis.identity,
@@ -1431,8 +1424,8 @@ fn restoration_settled_fit_rejects_a_reduction_for_previous_bounds() {
         render_ms: 1.0,
         queue_wait_ms: None,
     });
-    assert!(!editor.presentation.presented_settled);
-    assert!(editor.presentation.settled_frame.is_none());
+    assert!(!editor.presentation.presented_reduced);
+    assert!(editor.presentation.reduced_frame.is_none());
     finish(editor, catalog);
 }
 

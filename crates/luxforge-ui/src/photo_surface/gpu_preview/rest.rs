@@ -8,8 +8,10 @@
 //! - **Tiles a frame.** A surface handed a picture at rest ([`GpuRest`]) draws its tiles in their
 //!   order, row by row, [`REST_TILES_PER_FRAME`] each frame, through a slot of its own, the chain a
 //!   gesture's frame runs, each tile a fresh evaluation of its own boundary, its pool's records
-//!   forgotten. The widget asks for the next frame while tiles remain, and for nothing after the
-//!   last, so an idle editor sleeps once the picture is drawn.
+//!   forgotten, whatever else the frame draws: the desktop hands a picture at rest only while no
+//!   draft is open, so the frames a tile shares are at most a released gesture's last. The widget
+//!   asks for the next frame while tiles remain, and for nothing after the last, so an idle editor
+//!   sleeps once the picture is drawn.
 //! - **The reduction.** After each tile one compute pass adds, for every view pixel the tile
 //!   reaches, the tile's codes decoded through the output's table and weighted by the reduction's
 //!   coverage across and down, into an `f32` accumulator of the view's size. Each view pixel is
@@ -23,8 +25,9 @@
 //!   reduction of the tile, the area average's and any other, before the slot draws the next tile
 //!   into the same texture.
 //! - **Abandoned, never stale.** A surface handed another picture at rest, or none, lets the one it
-//!   draws go and starts over from its first tile; a frame that draws a gesture's plan draws no
-//!   tile, and the rest output is drawn only once its last tile is in it.
+//!   draws go and starts over from its first tile, and the rest output is drawn only once its last
+//!   tile is in it: in place of the photograph's frame and of a plan's output alike, dissolving in
+//!   over the plan's output the frame before ([`RestFigures::dissolving`]).
 //! - **Bounds.** The accumulator takes sixteen bytes a view pixel, 128 MiB at the 8-megapixel
 //!   display bounds ([`REST_VIEW_PIXELS`]); the rest output four; the coverage tables a few words
 //!   a view row and column; the tile slot what a 100% region's slot over the tile's window takes.
@@ -134,9 +137,12 @@ pub struct RestFigures {
     /// The next tile waits for its sequence to compile, or its source to upload: no frame is asked
     /// for it until then.
     pub waiting: bool,
-    /// The last frame drew a gesture's plan, or a dissolve from one, and no tile: no frame is asked
-    /// for the tiles until a frame draws neither, which the gesture's end brings.
-    pub paused: bool,
+    /// The rest output, its last tile just in, is dissolving in over the plan's output the surface
+    /// drew before it: frames are asked for until the dissolve ends.
+    pub dissolving: bool,
+    /// The interface thread's time, in microseconds, its frames' `prepare` spent drawing its tiles
+    /// and quantizing them: what the status bar names as the picture at rest's render.
+    pub prepare_us: u64,
     /// Why a tile, or the rest's own textures, could not be drawn: the picture at rest is then the
     /// caller's to draw otherwise.
     pub fallback: Option<GpuFallback>,
@@ -352,8 +358,8 @@ pub(in super::super) struct RestSlot {
     done: bool,
     /// The last frame found the next tile waiting for its sequence or its source.
     waiting: bool,
-    /// The last frame drew a gesture's plan or a dissolve, and so no tile.
-    paused: bool,
+    /// The interface thread's time its tiles and quantization took so far.
+    prepare_us: u64,
 }
 
 impl RestSlot {
@@ -369,7 +375,8 @@ impl RestSlot {
             drawn: self.next as u32,
             done: self.done,
             waiting: self.waiting,
-            paused: self.paused,
+            prepare_us: self.prepare_us,
+            dissolving: false,
             fallback: self.fallback,
         }
     }
@@ -464,17 +471,16 @@ fn le_bytes(words: &[u32]) -> Vec<u8> {
 
 impl PhotoPipeline {
     /// Draw `surface`'s picture at rest, `rest`: another version than the one it holds starts over,
-    /// none lets it go. Tiles are drawn only while `idle`, no gesture's plan drawn this frame, at
-    /// most [`REST_TILES_PER_FRAME`] of them, and the last quantizes the rest output. A tile the
-    /// stage cannot draw yet — its sequence compiling, its source uploading — waits for a later
-    /// frame; any other fallback stops the picture at rest, naming why.
+    /// none lets it go. At most [`REST_TILES_PER_FRAME`] tiles are drawn a frame, and the last
+    /// quantizes the rest output. A tile the stage cannot draw yet — its sequence compiling, its
+    /// source uploading — waits for a later frame; any other fallback stops the picture at rest,
+    /// naming why.
     pub(in super::super) fn prepare_rest(
         &mut self,
         surface: &mut SurfaceSlots,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         rest: Option<&GpuRest>,
-        idle: bool,
     ) {
         let Some(rest) = rest else {
             self.release_rest(surface);
@@ -502,10 +508,7 @@ impl PhotoPipeline {
         let Some(slot) = surface.rest.as_deref_mut() else {
             return;
         };
-        // A frame that draws a gesture's plan, or a dissolve from one, draws no tile and asks for
-        // none: the gesture's frames are its own, and the first frame after it draws the next tile.
-        slot.paused = !idle && slot.pending();
-        if !idle || !slot.pending() {
+        if !slot.pending() {
             return;
         }
         let Some(Ok(passes)) = self.gpu.rest_passes(device) else {
@@ -513,6 +516,20 @@ impl PhotoPipeline {
             return;
         };
         let passes = Arc::clone(passes);
+        let started = std::time::Instant::now();
+        self.draw_rest(slot, device, queue, &passes);
+        slot.prepare_us += started.elapsed().as_micros() as u64;
+    }
+
+    /// The tiles `slot` draws this frame, and after its last the quantization: what one frame's
+    /// `prepare` spends on a picture at rest.
+    fn draw_rest(
+        &mut self,
+        slot: &mut RestSlot,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        passes: &RestPasses,
+    ) {
         for _ in 0..REST_TILES_PER_FRAME {
             let Some(plan) = slot.tiles.get(slot.next).cloned() else {
                 break;
@@ -552,7 +569,7 @@ impl PhotoPipeline {
             if slot.next == 0 {
                 encoder.clear_buffer(&slot.parts.sums.buffer, 0, None);
             }
-            slot.tile_drawn(device, &mut encoder, &passes, &texture, &plan);
+            slot.tile_drawn(device, &mut encoder, passes, &texture, &plan);
             queue.submit([encoder.finish()]);
             slot.next += 1;
         }
@@ -743,7 +760,7 @@ impl PhotoPipeline {
             bytes,
             done: false,
             waiting: false,
-            paused: false,
+            prepare_us: 0,
         })
     }
 }

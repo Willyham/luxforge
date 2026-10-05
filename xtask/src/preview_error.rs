@@ -248,7 +248,7 @@ fn frame_account(frame: &Frame) -> Value {
         "render_approximate": state["status_bar"]["render_approximate"],
         "render_proxy": state["status_bar"]["render_proxy"],
         "proxy_presented": state["proxy"]["presented"],
-        "settled_from_exact": state["proxy"]["settled_from_exact"],
+        "reduced": state["proxy"]["reduced"],
         "drawn_region_quality": state["surface"]["gpu"]["drawn_region_quality"],
         "view": state["surface"]["view"],
     })
@@ -532,7 +532,7 @@ mod tests {
                         "backend": {"backend": "Metal", "adapter": "test"},
                         "stack": {"revision": 3},
                         "status_bar": {"render": "Approximate render · 9 ms", "render_approximate": true, "render_proxy": true},
-                        "proxy": {"presented": true, "settled_from_exact": false},
+                        "proxy": {"presented": true, "reduced": false},
                         "surface": {"gpu": {"drawn_region_quality": null}, "view": {"zoom": {"mode": "fit"}}},
                     },
                 });

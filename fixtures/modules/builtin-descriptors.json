@@ -3065,7 +3065,6 @@
         "developer": false,
         "effects": [
           {
-            "fit_settle": "exact",
             "format": 1,
             "id": "luxforge.detail.adjust",
             "maskable": true,

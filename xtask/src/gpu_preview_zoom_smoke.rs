@@ -40,8 +40,9 @@
 use crate::{
     gpu_preview_smoke::{
         BASIC, CLARITY, CLARITY_DRAG, DEHAZE, EXPOSURE, Held, PRESENCE, PRESENCE_QUIET_MS, Settled,
-        TEXTURE_DRAG, UNDER_DRAG, dissolve_from, drag_steps, gpu_drawn, jump, named,
-        presence_drag_checks, quiet, quiet_for, resident_kept, same_pixels, step_events, ticks,
+        TEXTURE_DRAG, UNDER_DRAG, at_rest_after, drag_steps, gpu_drawn, named,
+        presence_drag_checks, quiet, quiet_for, resident_kept, same_pixels, settle_report,
+        span_events, step_events, ticks,
     },
     scenario::{Checked, Checks, Frame, Plan, Run, Step},
     *,
@@ -404,48 +405,22 @@ fn holds(outer: [u64; 4], inner: [u64; 4]) -> bool {
     outer[0] <= inner[0] && outer[1] <= inner[1] && outer[2] >= inner[2] && outer[3] >= inner[3]
 }
 
-/// The release's dissolve, from the drag's GPU frame `gpu` into the committed frame of the view:
-/// exactly one began, with the GPU frame's revision and boundary, and none was cancelled or cut
-/// during the release; it may follow a newer frame of the same content. The release's capture shows it running at its own progress, or, when the
-/// capture came after its 150 ms, its end is recorded: never a timing it must meet.
-fn settled_through_a_dissolve(launch: &Checked, release: &str, gpu: &Frame) -> Result<Value> {
-    let events = step_events(launch, release)?;
-    let started = dissolve_from(events, gpu, release)?;
-    let interrupted: Vec<&Value> = ["gpu_dissolve_cancelled", "gpu_dissolve_cut"]
-        .iter()
-        .flat_map(|name| named(events, name))
-        .collect();
+/// The release `release` starts no dissolve into a CPU frame: the committed stack at rest is
+/// drawn by the GPU, its view plan over the region the view shows, as the drag's frame was, and
+/// the release's own frame, whichever path drew it, holds the view it was captured with.
+fn released_with_no_dissolve(launch: &Checked, release: &str) -> Result<Value> {
+    let started = named(step_events(launch, release)?, "gpu_dissolve_started");
     ensure(
-        interrupted.is_empty(),
-        format!("{release}: its dissolve was interrupted: {interrupted:?}"),
+        started.is_empty(),
+        format!(
+            "{release} dissolved into a CPU frame: {:?}",
+            started
+                .iter()
+                .map(|event| &event["detail"])
+                .collect::<Vec<_>>()
+        ),
     )?;
-    // The dissolve follows a newer frame of the same content: the exact region, then the whole
-    // exact frame of the committed entry.
-    let targets: Vec<&Value> = std::iter::once(&started["to"])
-        .chain(
-            named(events, "gpu_dissolve_retargeted")
-                .into_iter()
-                .map(|event| &event["detail"]["to"]),
-        )
-        .collect();
-    let captured = launch.at(release)?;
-    let drawn = &captured.state()["surface"]["gpu"]["dissolve"];
-    let outcome = if drawn.is_null() {
-        json!({"captured": "after it ended",
-            "ended": named(events, "gpu_dissolve_ended")
-                .first()
-                .map(|event| event["detail"].clone())})
-    } else {
-        ensure(
-            drawn["from"] == started["from"] && targets.contains(&&drawn["to"]),
-            format!(
-                "{} drew the dissolve {drawn}, not the one that began, {started}, to {targets:?}",
-                captured["file"]
-            ),
-        )?;
-        json!({"captured": "while it ran", "drawn": drawn, "targets": targets})
-    };
-    Ok(json!({"started": started, "outcome": outcome}))
+    never_mixed(launch.at(release)?)
 }
 
 /// A frame at a percentage zoom drawn on the GPU drew a region holding the view it was captured
@@ -613,9 +588,35 @@ fn drawn_on_the_gpu_below_100(launch: &Checked, checks: &mut Checks) -> Result {
         }
         let repeated = same_bytes(dragged, again)?;
         let settled = launch.at(settled_name)?;
-        let dissolved = settled_through_a_dissolve(launch, release_name, again)?;
+        let dissolved = at_rest_after(
+            span_events(launch, release_name, settled_name)?,
+            settled,
+            release_name,
+        )?;
         let compared = same_pixels(again, launch.at(release_name)?)?;
-        let jumped = jump(again, settled)?;
+        // Below 100% the picture at rest is process-first, the stack at full resolution in tiles
+        // reduced to the view, and the drag's frame processes the source reduced first: the
+        // settle from one to the other is the drag's distance from the frame it settles to, which
+        // the gate measures on the corpus; here the picture at rest dissolves in over the frame
+        // before it, and the distance is recorded.
+        let jumped = settle_report(again, settled)?;
+        let rested = named(
+            span_events(launch, release_name, settled_name)?,
+            "gpu_rest_drawn",
+        );
+        ensure(
+            rested
+                .iter()
+                .any(|event| !event["detail"]["dissolve"].is_null()),
+            format!(
+                "At {zoom}% the picture at rest did not dissolve in over the frame before it: \
+                 {:?}",
+                rested
+                    .iter()
+                    .map(|event| &event["detail"])
+                    .collect::<Vec<_>>()
+            ),
+        )?;
         let version =
             &again.state()["surface"]["gpu"]["gpu_preview"]["drag"]["boundary"]["version"];
         let kept = resident_kept(launch, release_name, settled_name, version)?;
@@ -657,7 +658,14 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         ..
     } in ZOOMED
     {
-        let [_, first_name, held_name, gpu_name, release_name, _] = names;
+        let [
+            _,
+            first_name,
+            held_name,
+            gpu_name,
+            release_name,
+            settled_name,
+        ] = names;
         let first = launch.at(first_name)?;
         let events = step_events(launch, first_name)?;
         let (gpu_ticks, cpu_ticks, _) = ticks(events);
@@ -725,7 +733,11 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             ),
         )?;
         let view = never_mixed(dragged)?;
-        let settled = settled_through_a_dissolve(launch, release_name, dragged)?;
+        let settled = at_rest_after(
+            span_events(launch, release_name, settled_name)?,
+            launch.at(settled_name)?,
+            release_name,
+        )?;
         let compared = same_pixels(dragged, launch.at(release_name)?)?;
         checks.note(
             dragged,
@@ -770,7 +782,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         .into_iter()
         .map(never_mixed)
         .collect::<Result<Vec<Value>>>()?;
-    let settled = settled_through_a_dissolve(launch, "pan-release", moved)?;
+    let settled = released_with_no_dissolve(launch, "pan-release")?;
     // Back at 100%: the view is the whole stage, whatever offset the pan at 800% left, and the
     // drag there is drawn on the GPU over it.
     let back = launch.at("back-100")?;

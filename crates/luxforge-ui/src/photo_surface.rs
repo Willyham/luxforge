@@ -184,6 +184,7 @@ impl SurfaceFigures {
         overall.gpu_preview_frame_us = drawn.gpu_preview_frame_us;
         overall.drawn_dissolve = drawn.drawn_dissolve;
         overall.drawn_rest = drawn.drawn_rest;
+        overall.drawn_rest_dissolve = drawn.drawn_rest_dissolve;
         overall.gpu_rest = drawn.gpu_rest;
         overall.drawn_clipping_marks = drawn.drawn_clipping_marks;
         overall.first_drawn = drawn.first_drawn;
@@ -455,6 +456,9 @@ pub struct SurfaceDiagnostics {
     pub gpu_rest: Option<RestFigures>,
     /// The version of the picture at rest the last draw drew in place of the photograph's frame.
     pub drawn_rest: Option<u64>,
+    /// The picture at rest's dissolve the last draw drew, from the plan's output under it to the
+    /// rest output its last tile completed: `from` the plan's boundary, `to` the rest's version.
+    pub drawn_rest_dissolve: Option<DrawnDissolve>,
 }
 
 /// Aggregate resource counters with the requested surface's own last draw identity.
@@ -1063,17 +1067,14 @@ impl PhotoSurface {
                     .is_none_or(|(version, _)| version != source.version())
         });
         // A picture at rest whose tiles remain, the next one ready to draw: one a frame until the
-        // last. A tile that waits for its sequence to compile asks for nothing, the compile's end
-        // waking the desktop; nor does a frame a gesture's plan drew, the gesture's end bringing
-        // the frame that draws the next tile.
+        // last, and then each frame of its dissolve. A tile that waits for its sequence to compile
+        // asks for nothing, the compile's end waking the desktop.
         let rest = self.rest_drawn().is_some_and(|rest| {
             diagnostics.gpu_stage == GpuStageState::Available
                 && diagnostics.gpu_rest.is_none_or(|figures| {
                     figures.version != rest.version
-                        || (!figures.done
-                            && !figures.waiting
-                            && !figures.paused
-                            && figures.fallback.is_none())
+                        || figures.dissolving
+                        || (!figures.done && !figures.waiting && figures.fallback.is_none())
                 })
         });
         boundary || source || rest
@@ -1741,10 +1742,23 @@ impl shader::Primitive for PhotoPrimitive {
             surface.dissolving = None;
         }
         surface.gpu_hold = self.gpu_options.hold;
-        // The picture at rest draws its tiles only while no gesture's plan, and no dissolve from
-        // one, is drawn this frame.
-        let idle = surface.gpu_output().is_none() && surface.dissolving.is_none();
-        pipeline.prepare_rest(&mut surface, device, queue, self.rest.as_ref(), idle);
+        // The picture at rest draws its next tile whatever else the frame draws. The frame its last
+        // tile comes in starts its dissolve over the plan's output drawn now, if one is; a later
+        // frame, or another picture at rest, ends it.
+        let was_done = surface.rest_output().map(|output| output.version);
+        pipeline.prepare_rest(&mut surface, device, queue, self.rest.as_ref());
+        let done = surface.rest_output().map(|output| output.version);
+        let now = Instant::now();
+        surface.rest_dissolve = match (done, surface.gpu_output()) {
+            (Some(version), Some(output)) if was_done != Some(version) => {
+                Some(gpu_preview::Dissolve::start(output.version, version))
+            }
+            (Some(version), _) => surface.rest_dissolve.filter(|dissolve| {
+                dissolve.to == version && surface.rest_dissolving(now).is_some()
+            }),
+            (None, _) => None,
+        };
+        surface.rest_frame = surface.rest_dissolving(now);
         surface.gpu_tag = self.gpu.as_ref().and(self.gpu_options.tag);
         surface.gpu_marks = self.gpu.as_ref().and_then(|plan| match plan.steps.last() {
             Some(GpuStep::Clipping(marks)) => Some([marks.shadows, marks.highlights]),
@@ -1760,7 +1774,12 @@ impl shader::Primitive for PhotoPrimitive {
             write_uniforms(queue, output, viewport, destination, [x0, y0, x1, y1], turn);
         }
         if let Some(output) = surface.rest_output() {
-            write_uniforms(queue, output, viewport, destination, [x0, y0, x1, y1], turn);
+            // Over the plan's output it dissolves in from, at the dissolve's share.
+            let (bright, rest_turn) = match surface.rest_frame {
+                Some(frame) => gpu_preview::photo_uniform(frame.share),
+                None => ([x0, y0, x1, y1], turn),
+            };
+            write_uniforms(queue, output, viewport, destination, bright, rest_turn);
         }
         for (layer, _) in &self.layers {
             if let Some(picture) = &surface.slots[layer.index()] {
@@ -1869,6 +1888,7 @@ impl shader::Primitive for PhotoPrimitive {
         let mut drawn_clipping_marks = None;
         let mut drawn_dissolve = None;
         let mut drawn_rest = None;
+        let mut drawn_rest_dissolve = None;
         let mut drew_photo = false;
         let mut stale_photo = false;
         // At a percentage zoom, a region plan's GPU frame is the photograph: drawn alone, so no
@@ -1886,6 +1906,7 @@ impl shader::Primitive for PhotoPrimitive {
             drawn_gpu_boundary = Some(output.version);
             gpu_frame_us = surface.gpu_frame_us();
             gpu_clock = surface.gpu_clock();
+            drawn_clipping_marks = surface.gpu_marks;
             // The mask's coverage over the view's region, which the coverage worker computes for
             // each of the gesture's ticks, laid over the GPU frame as over a CPU region. The plan's
             // own marks are its clipping overlay.
@@ -2057,7 +2078,28 @@ impl shader::Primitive for PhotoPrimitive {
                 }
                 // The CPU frame's clipping overlay marks that frame's pixels: over the GPU output
                 // drawn in place of it, the plan's own marks are the overlay.
-                if *layer == Layer::Clipping && surface.gpu_output().is_some() {
+                if *layer == Layer::Clipping
+                    && (surface.gpu_output().is_some() || surface.rest_output().is_some())
+                {
+                    continue;
+                }
+                // The picture at rest, once its last tile is in, in place of the photograph's
+                // frame and of a plan's output, unless the desktop's dissolve into the CPU frame
+                // runs; its own dissolve lays it over the plan's output it replaces, at the share.
+                if *layer == Layer::Photo
+                    && surface.dissolving.is_none()
+                    && let Some(rest) = surface.rest_output()
+                {
+                    if let Some(frame) = surface.rest_frame
+                        && let Some(output) = surface.gpu_output()
+                    {
+                        draw_picture(render_pass, output);
+                        drawn_gpu_boundary = Some(output.version);
+                        drawn_rest_dissolve = Some(frame.drawn(output.version));
+                    }
+                    draw_picture(render_pass, rest);
+                    drew_photo = true;
+                    drawn_rest = Some(rest.version);
                     continue;
                 }
                 if *layer == Layer::Photo
@@ -2069,17 +2111,6 @@ impl shader::Primitive for PhotoPrimitive {
                     gpu_frame_us = surface.gpu_frame_us();
                     gpu_clock = surface.gpu_clock();
                     drawn_clipping_marks = surface.gpu_marks;
-                    continue;
-                }
-                // The picture at rest, once its last tile is in, in place of the photograph's
-                // frame, unless a dissolve from a gesture's frame runs.
-                if *layer == Layer::Photo
-                    && surface.dissolving.is_none()
-                    && let Some(output) = surface.rest_output()
-                {
-                    draw_picture(render_pass, output);
-                    drew_photo = true;
-                    drawn_rest = Some(output.version);
                     continue;
                 }
                 // A dissolve draws the GPU frame it starts from first; the photograph's own draw
@@ -2131,7 +2162,8 @@ impl shader::Primitive for PhotoPrimitive {
         let drawn_gpu_tag = drawn_gpu_boundary.and(surface.gpu_tag);
         let first_drawn = drawn_path.map(|path| {
             let (picture, boundary, tag) = match path {
-                DrawingPath::Gpu => (None, drawn_gpu_boundary, drawn_gpu_tag),
+                // A picture at rest is told by its version, a plan's output by its boundary.
+                DrawingPath::Gpu => (drawn_rest, drawn_gpu_boundary, drawn_gpu_tag),
                 DrawingPath::Cpu => (drawn_full_version.or(drawn_region_version), None, None),
             };
             let previous = pipeline
@@ -2156,7 +2188,8 @@ impl shader::Primitive for PhotoPrimitive {
         });
         // Each surface compares against its own last draw, so two surfaces in different states
         // do not wake each other every frame. A change of drawing path, a new fallback, a
-        // dissolve's start or end, or a boundary upload's, wakes the desktop once too.
+        // dissolve's start or end, a boundary upload's, or a picture at rest drawn or dissolving in,
+        // wakes the desktop once too.
         let status = u8::from(blank_photo)
             | (u8::from(stale_photo) << 1)
             | (u8::from(drawn_path == Some(DrawingPath::Gpu)) << 2)
@@ -2165,7 +2198,9 @@ impl shader::Primitive for PhotoPrimitive {
             | (u8::from(matches!(
                 gpu_fallback,
                 Some(GpuFallback::BoundaryUploading { .. })
-            )) << 5);
+            )) << 5)
+            | (u8::from(drawn_rest.is_some()) << 6)
+            | (u8::from(drawn_rest_dissolve.is_some()) << 7);
         let status_changed = surface.drawn_status.swap(status, Ordering::Relaxed) != status;
         diagnostic.drawn_path = drawn_path;
         diagnostic.gpu_fallback = gpu_fallback;
@@ -2181,6 +2216,7 @@ impl shader::Primitive for PhotoPrimitive {
         diagnostic.drawn_clipping_marks = drawn_clipping_marks;
         diagnostic.drawn_dissolve = drawn_dissolve;
         diagnostic.drawn_rest = drawn_rest;
+        diagnostic.drawn_rest_dissolve = drawn_rest_dissolve;
         diagnostic.gpu_rest = surface.rest_figures();
         diagnostic.drawn_content = drawn_content;
         diagnostic.drawn_full_version = drawn_full_version;
@@ -2467,6 +2503,11 @@ struct SurfaceSlots {
     rest: Option<Box<gpu_preview::RestSlot>>,
     /// The version of a picture at rest whose own parts could not be created, and why.
     rest_refused: Option<(u64, GpuFallback)>,
+    /// The picture at rest dissolving in over the plan's output drawn when its last tile came in:
+    /// from that output's boundary to the rest's version.
+    rest_dissolve: Option<gpu_preview::Dissolve>,
+    /// That dissolve as this frame draws it, while its share is short of one.
+    rest_frame: Option<gpu_preview::DissolveFrame>,
 }
 
 impl SurfaceSlots {
@@ -2475,10 +2516,22 @@ impl SurfaceSlots {
         self.rest.as_ref().and_then(|rest| rest.output())
     }
 
+    /// The picture at rest's dissolve as a frame at `now` draws it, from the plan's output under
+    /// it: running while its share is short of one and that output is still drawn.
+    fn rest_dissolving(&self, now: Instant) -> Option<gpu_preview::DissolveFrame> {
+        let dissolve = self.rest_dissolve?;
+        self.gpu_output()?;
+        let share = dissolve.share(now);
+        (share < 1.0).then_some(gpu_preview::DissolveFrame { dissolve, share })
+    }
+
     /// What the surface's diagnostics say of its picture at rest.
     fn rest_figures(&self) -> Option<RestFigures> {
         match (&self.rest, self.rest_refused) {
-            (Some(rest), _) => Some(rest.figures()),
+            (Some(rest), _) => Some(RestFigures {
+                dissolving: self.rest_dissolve.is_some(),
+                ..rest.figures()
+            }),
             (None, Some((version, fallback))) => Some(RestFigures {
                 version,
                 fallback: Some(fallback),
@@ -2676,7 +2729,9 @@ impl PhotoPipeline {
             | (u8::from(matches!(
                 diagnostic.gpu_fallback,
                 Some(GpuFallback::BoundaryUploading { .. })
-            )) << 5);
+            )) << 5)
+            | (u8::from(diagnostic.drawn_rest.is_some()) << 6)
+            | (u8::from(diagnostic.drawn_rest_dissolve.is_some()) << 7);
         SurfaceSlots {
             slots: [None, None, None, None],
             regions: [None, None],
@@ -2694,6 +2749,8 @@ impl PhotoPipeline {
             gpu_marks: None,
             rest: None,
             rest_refused: None,
+            rest_dissolve: None,
+            rest_frame: None,
         }
     }
 

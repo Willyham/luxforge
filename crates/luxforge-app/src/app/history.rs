@@ -129,6 +129,7 @@ impl Editor {
                     return Task::none();
                 }
                 self.document.compare_return = None;
+                self.gpu_compare_end();
                 return self.comparison_preview();
             }
             HistoryMessage::VersionName(value) => self.version_form.name = value,
@@ -295,6 +296,7 @@ impl Editor {
             return Task::none();
         }
         self.document.compare_return = Some(previous);
+        self.gpu_compare_begin();
         self.status.text = "Comparing with the original…".into();
         self.comparison_preview()
     }
@@ -388,6 +390,7 @@ impl Editor {
         self.document.compare_return = Some(previous);
         self.presentation.compare_after = Some(after);
         self.document.compare_hold = false;
+        self.gpu_compare_begin();
         self.status.text = "Drag to compare Before and After · tap \\ or Escape to exit".into();
         self.comparison_preview()
     }
@@ -399,6 +402,7 @@ impl Editor {
         self.document.compare_return = None;
         self.presentation.compare_after = None;
         self.document.compare_hold = false;
+        self.gpu_compare_end();
         self.comparison_preview()
     }
 
