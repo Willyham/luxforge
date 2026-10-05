@@ -398,7 +398,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: no_gpu_render::SCENARIO,
-        about: "The editor launched with --no-gpu-render: the session names the reference renderer for no-adapter, every frame of an open, a Basic drag and its release is drawn on the CPU path with no plan handed to the surface, and the status bar says why",
+        about: "The editor launched with --no-gpu-render: the session names the reference renderer for no-adapter, every frame of an open, a Basic drag and its release is drawn on the CPU path with no plan handed to the surface, and the status bar says the reference renderer draws, at rest too",
         launches: &[LaunchSpec {
             plan: no_gpu_render::plan,
             no_gpu_render: true,

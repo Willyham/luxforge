@@ -1,9 +1,10 @@
-//! The status bar's notice of a gesture drawn on the CPU path while the GPU preview is on
-//! (`docs/design/gpu-preview.md`, "Labels and overlays during motion"), end to end against a real
-//! owner: what `workspace.status` and the snapshot say of each class of reason, held against the
-//! reason the evidence records in the same frame; reasons that pass, and the preference turned off,
-//! say nothing; `compiling` waits for half a second and is decided by a tick, never by the clock;
-//! and the notice clears at the next GPU tick and when the gesture's settle ends.
+//! The status bar's notice of a gesture drawn on the CPU path while the GPU preview is on, and of
+//! the reference renderer drawing every frame (`docs/design/gpu-preview.md`, "Labels and overlays
+//! during motion"), end to end against a real owner: what `workspace.status` and the snapshot say of
+//! each class of reason, held against the reason the evidence records in the same frame; reasons
+//! that pass, and the preference turned off, say nothing; `compiling` waits for half a second and
+//! is decided by a tick, never by the clock; the notice clears at the next GPU tick and when the
+//! gesture's settle ends; and the reference renderer's notice is the session's, said at rest.
 use super::{
     gpu_preview::SurfaceReport,
     gpu_preview_tests::{catalog, commit, deliver_until, surface_ready, zoomed, zoomed_out},
@@ -31,6 +32,11 @@ const DEHAZE: (&str, &str) = (
     "Dehaze on the CPU",
     "Dehaze needs the haze estimate a settled frame stores for this view; until then this drag is \
      drawn on the CPU.",
+);
+const REFERENCE: (&str, &str) = (
+    "Reference renderer",
+    "This graphics device cannot run the GPU renderer, or this launch turned it off, so every \
+     frame is drawn by the reference renderer on the CPU, which is slower.",
 );
 const COMPILING: (&str, &str) = (
     "Preparing GPU preview",
@@ -351,5 +357,53 @@ fn gpu_preview_the_notice_says_compiling_once_it_has_lasted_half_a_second() {
     let _ = slide(&mut editor, ACTION, FIELD, 0.7);
     assert_says(&editor, "compiling", None);
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    finish(editor, catalog);
+}
+
+/// The reference renderer's notice is the session's. Before the surface has checked its stage
+/// (`surface-pending`) and once it draws on the GPU nothing is said; once the desktop reports a
+/// lost device, the bar says the reference renderer at rest, before any gesture, through a drag
+/// whose every tick names `device-lost`, and still once the release has settled, beside the reason
+/// the evidence records.
+#[test]
+fn gpu_preview_the_notice_says_the_reference_renderer_from_the_session_at_rest_and_in_a_drag() {
+    use super::renderer_tests::report;
+    use luxforge_core::{Renderer, RendererReason};
+    use luxforge_ui::photo_surface::GpuStageState;
+    let catalog = catalog("notice-reference");
+    let (mut editor, _, _) = real_photo(&catalog);
+    deliver_until(&mut editor, "the first frame", |editor| {
+        editor.presentation.dimensions.is_some() && !editor.presentation.queue.is_busy()
+    });
+    assert_eq!(
+        editor.session.renderer,
+        Renderer::reference(RendererReason::SurfacePending)
+    );
+    assert_eq!(
+        editor.workspace.status.fallback, None,
+        "the stage is not checked yet"
+    );
+    editor.renderer.stage = Some(GpuStageState::Available);
+    report(&mut editor);
+    assert_eq!(editor.session.renderer, Renderer::gpu());
+    assert_eq!(
+        editor.workspace.status.fallback, None,
+        "the GPU says nothing"
+    );
+
+    editor.renderer.stage = Some(GpuStageState::DeviceLost);
+    report(&mut editor);
+    assert_says(&editor, "device-lost", Some(REFERENCE));
+    for value in [0.1, 0.2] {
+        let _ = slide(&mut editor, ACTION, FIELD, value);
+        assert_eq!(latest_reason(&editor), json!("device-lost"));
+        assert_says(&editor, "device-lost", Some(REFERENCE));
+    }
+    let _ = let_go(&mut editor, ACTION, FIELD);
+    assert!(run_commit(&mut editor));
+    deliver_until(&mut editor, "the committed frame", |editor| {
+        !editor.gpu.has_drag()
+    });
+    assert_says(&editor, "device-lost", Some(REFERENCE));
     finish(editor, catalog);
 }

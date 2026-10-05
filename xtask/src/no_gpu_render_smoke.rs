@@ -6,8 +6,9 @@
 //! release, and the settled frame after it. Every frame records the session's renderer as the
 //! reference for `no-adapter`, the surface's stage as refused by the launch, the photograph drawn
 //! on the CPU path with no plan handed to the surface and nothing charged to the GPU-preview
-//! budget, and the desktop's reason for handing no plan, which the status bar says beside its
-//! render slot. Every tick of the drag takes the CPU path naming `no-adapter` and asks for no
+//! budget, and the desktop's reason for handing no plan. The status bar says the reference
+//! renderer's notice beside its render slot in every frame, the opened and settled ones at rest
+//! among them. Every tick of the drag takes the CPU path naming `no-adapter` and asks for no
 //! boundary; no dissolve starts, and the desktop reports no other renderer. The adapter that drew
 //! the window is identified in every frame: the window is still composited by it, and only the
 //! photograph's pixels are the reference renderer's.
@@ -22,6 +23,12 @@ use luxforge_evidence::{self as script, SliderStep};
 pub const SCENARIO: &str = "no-gpu-render";
 /// Four flat quadrants, as the GPU preview scenario opens.
 pub const FIXTURE: &str = "fixtures/s0/orientation-1.jpg";
+
+/// The reference renderer's notice, as the status bar's table words it.
+const REFERENCE_PHRASE: &str = "Reference renderer";
+const REFERENCE_TOOLTIP: &str = "This graphics device cannot run the GPU renderer, or this launch \
+                                 turned it off, so every frame is drawn by the reference renderer \
+                                 on the CPU, which is slower.";
 
 const BASIC: &str = "set-basic";
 const EXPOSURE: &str = "exposure";
@@ -110,12 +117,12 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             ),
         )?;
         ensure(
-            !bar["fallback"].is_null()
+            bar["fallback"] == json!({"phrase": REFERENCE_PHRASE, "tooltip": REFERENCE_TOOLTIP})
                 && bar["fallback"] == gpu["fallback_notice"]
                 && bar["gpu_ms"].is_null(),
             format!(
-                "{}: the status bar does not say why the reference draws: notice {}, evidence {}, \
-                 GPU figure {}",
+                "{}: the status bar does not say the reference renderer draws: notice {}, \
+                 evidence {}, GPU figure {}",
                 frame["file"], bar["fallback"], gpu["fallback_notice"], bar["gpu_ms"]
             ),
         )?;

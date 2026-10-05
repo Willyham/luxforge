@@ -657,7 +657,8 @@ impl Editor {
     ) -> (Tick, Option<BoundaryRequest>) {
         let mut boundary_request = None;
         let now = Instant::now();
-        // With the preference off the plan is never handed over, so nothing is asked for it.
+        // With the gate refusing — the preference off, or a GPU stage that cannot draw at all — the
+        // plan is never handed over, so nothing is asked for it.
         let allowed = self.gpu_preview_allowed();
         // The clipping overlay is derived from the CPU's frames, so over a GPU frame the plan marks
         // its own clipped pixels instead.
@@ -700,8 +701,10 @@ impl Editor {
             }
         };
         // A tick with no plan draws nothing of its own; the boundary stays held, behind the CPU
-        // frame, for the next tick or draft that plans from it. Only the preference turned off,
-        // which hands the surface no plan at all, lets it go.
+        // frame, for the next tick or draft that plans from it. Only the gate's refusal lets it go:
+        // the preference turned off, or a GPU stage that cannot draw at all — a lost device, an
+        // adapter that cannot run it, a launch that refused it — hands the surface no plan, so
+        // nothing would ever draw from it.
         let unplanned =
             |drag: &mut Drag, reason: &str, layer: Option<String>, released: &mut Option<u64>| {
                 if let Some(handed) = drag.surface.take() {
@@ -709,7 +712,7 @@ impl Editor {
                 }
                 drag.plan = None;
                 drag.wanted = None;
-                if reason == super::gpu_settle::PREFERENCE_OFF
+                if allowed.is_err()
                     && let Some(held) = drag.held.take()
                 {
                     *released = Some(held.boundary.version());
@@ -845,7 +848,9 @@ impl Editor {
             Tick::Cpu => drag.cpu_ticks += 1,
         }
         if let Some(version) = released {
-            self.log_release(version, "key-changed");
+            // The gate's refusal names itself; any other release is a plan that needs another
+            // boundary.
+            self.log_release(version, allowed.err().unwrap_or("key-changed"));
         }
         if let Some(version) = lost {
             self.log_release(version, "slot-released");
