@@ -41,6 +41,8 @@ pub(crate) enum ViewMessage {
     TogglePanel(Panel),
     /// Show or hide the thirds overlay.
     ToggleThirds,
+    /// Show or hide the image-information overlay through the owner's workspace preference.
+    ToggleInformation,
     /// Turn the GPU preview off or on; the owner holds the preference.
     ToggleGpuPreview,
     /// Enter the pointer mode or a module's canvas mode.
@@ -77,4 +79,12 @@ pub(crate) enum ViewMessage {
     ScaleFactor(f32),
     /// Whether the window fills the screen, asked after every resize.
     Fullscreen(bool),
+    /// Where a window opened at its remembered frame is, checked against its display; `on_main`
+    /// once it has been moved to the main display.
+    Placed {
+        report: Option<crate::window_frame::WindowReport>,
+        on_main: bool,
+    },
+    /// Where the window is as it closes, for the frame the close stores.
+    ClosingFrame(Option<crate::window_frame::WindowReport>),
 }

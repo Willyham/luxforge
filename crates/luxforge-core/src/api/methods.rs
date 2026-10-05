@@ -281,13 +281,13 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "preferences.read",
         NoParams,
         |owner, _, _| Ok(preference_values(&owner.host.preferences.read()?)),
-        "user preferences outside the catalog: {performance_expanded, auto_collapse_history}; the Performance section defaults to expanded and history to collapsing; reads no pixels, changes no history and creates no file; malformed or unsupported preferences are refused without rewriting them"
+        "user preferences outside the catalog, each with its default filled in where the person chose nothing: {performance_expanded (default true), auto_collapse_history (default true), auto_lens_profile (default true), mask_overlay_colour (green or white, default green), canvas_background (dark, black or grey, default dark), interface_size (100, 110, 125 or 150 percent, default 100), catalog (the absolute path of the catalog file the desktop opens at its next launch, or null for the default catalog), workspace ({state_panel, tools_panel, thirds, clip_shadows, clip_highlights}, default the workspace's defaults), brush ({size, feather, flow}, or null for the neutral brush), window ({width, height, x, y} in the system's points, or null for the default frame), export_folder (the absolute path of the folder export.plan suggests while it exists, or null for the original's folder)}; reads no pixels, changes no history and creates no file; malformed or unsupported preferences are refused without rewriting them"
     ),
     owner!(
         "preferences.set",
         owner::PreferencesSet,
         owner::preferences_set,
-        "persist the preferences named through one bounded atomic user-settings write, leaving the others as they were: performance_expanded, the Performance section's expanded state, and auto_collapse_history, whether an edit that sets the same control as the entry before it, by the same actor, collapses that entry so history keeps one row for the chain, or none when the control returns to where the chain began; collapsed entries are kept and history.list lists them on request; the change applies to edits from now on and rewrites no history; returns every preference as preferences.read does; needs a configured application preference directory"
+        "persist the preferences named through one bounded atomic user-settings write, leaving the others as they were; null removes a stored value so the preference follows its default: performance_expanded, the Performance section's expanded state; auto_collapse_history, whether an edit that sets the same control as the entry before it, by the same actor, collapses that entry so history keeps one row for the chain, or none when the control returns to where the chain began, with collapsed entries kept and listed by history.list on request, applying to edits from now on and rewriting no history; auto_lens_profile, whether an import commits a new RAW photo's detected lens profile as its first-open entry, applying to imports from now on and never changing a photo already in the catalog; mask_overlay_colour, green or white; canvas_background, dark, black or grey; interface_size, 100, 110, 125 or 150 percent; catalog, the absolute path of the catalog file the desktop opens at its next launch, which moves no file; workspace, the remembered {state_panel, tools_panel, thirds, clip_shadows, clip_highlights}; brush, the remembered {size, feather, flow} within the ranges mask.add-stroke declares; window, the remembered {width, height, x, y} in the system's points, width and height within 320..=16384; export_folder, the absolute path of the folder export.plan suggests while it exists; a path need not exist; a bad value is refused by name and writes nothing; a change to auto_collapse_history, auto_lens_profile, mask_overlay_colour, canvas_background, interface_size or catalog is announced; no preference changes a rendered or exported byte; returns every preference as preferences.read does; needs a configured application preference directory"
     ),
     owner!(
         "flags.list",
@@ -359,7 +359,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "source.inspect",
         SourceInspect,
         |service, _, p| service.inspect_source(&p.asset_id, p.entry_id.as_ref()),
-        "persisted source identity, RAW interpretation, crop, backend and preparation readiness without decoding"
+        "persisted source identity, RAW interpretation, dimensions and preparation readiness without decoding; capture is null until the verified source is prepared, then {make, model, lens_make, lens_model, aperture, exposure_seconds, iso, focal_mm, focal_35mm, captured_at}, with null for missing or invalid EXIF fields; recipe.describe supplies the selected entry's output dimensions"
     ),
     service!(
         "history.list",
@@ -825,7 +825,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "export.plan",
         owner::export::ExportPlanParams,
         owner::export::plan,
-        "{asset_id, entry_id, snapshot_id, width, height, suggested}: the output stage of a saved entry's compiled recipe, the current entry unless entry_id names another, and suggested, an absolute path <original stem>-edited.jpg (or -edited-2.jpg ...) beside the original that does not exist yet, or null; renders and prepares nothing; a stack the host cannot evaluate is refused with its reason"
+        "{asset_id, entry_id, snapshot_id, width, height, suggested}: the output stage of a saved entry's compiled recipe, the current entry unless entry_id names another, and suggested, an absolute path <original stem>-edited.jpg (or -edited-2.jpg ...) that does not exist yet, in the remembered export_folder preference while that folder exists and beside the original otherwise, or null; renders and prepares nothing; a stack the host cannot evaluate is refused with its reason"
     ),
     owner!(
         "export.jpeg",
@@ -1450,8 +1450,17 @@ host_params! {
 /// Every preference as `preferences.read` and `preferences.set` answer them.
 pub(super) fn preference_values(preferences: &crate::preferences::Preferences) -> Value {
     json!({
-        "performance_expanded": preferences.performance_expanded,
-        "auto_collapse_history": preferences.auto_collapse_history,
+        "performance_expanded": preferences.performance_expanded(),
+        "auto_collapse_history": preferences.auto_collapse_history(),
+        "auto_lens_profile": preferences.auto_lens_profile(),
+        "mask_overlay_colour": preferences.mask_overlay_colour(),
+        "canvas_background": preferences.canvas_background(),
+        "interface_size": preferences.interface_size(),
+        "catalog": preferences.catalog,
+        "workspace": preferences.workspace(),
+        "brush": preferences.brush,
+        "window": preferences.window,
+        "export_folder": preferences.export_folder,
     })
 }
 
@@ -1461,6 +1470,7 @@ host_params! {
         tools_panel: Option<bool> = boolean(),
         mode: Option<String> = name().notes("pointer or an available module id that declares a canvas interaction"),
         thirds: Option<bool> = boolean(),
+        information: Option<bool> = boolean().notes("show the image-information overlay; off by default; changes no history or frame"),
         clip_shadows: Option<bool> = boolean().notes("show the shadow clipping overlay"),
         clip_highlights: Option<bool> = boolean().notes("show the highlight clipping overlay"),
         // Each spelling is declared as an option, so a client reads the vocabulary from the schema
@@ -1956,6 +1966,9 @@ fn workspace_set(
     }
     if let Some(thirds) = p.thirds {
         session.workspace.thirds = thirds;
+    }
+    if let Some(information) = p.information {
+        session.workspace.information = information;
     }
     // Overlay settings are per-client view state: they change no raster, recipe or histogram.
     if let Some(clip_shadows) = p.clip_shadows {
@@ -4153,6 +4166,7 @@ mod tests {
                 "tools_panel": true,
                 "mode": "pointer",
                 "thirds": false,
+                "information": false,
                 "clip_shadows": false,
                 "clip_highlights": false,
                 "mask_overlay": "off",
@@ -4165,7 +4179,7 @@ mod tests {
             &mut service,
             &mut session,
             "workspace.set",
-            json!({"state_panel": false, "mode": "luxforge.crop", "thirds": true}),
+            json!({"state_panel": false, "mode": "luxforge.crop", "thirds": true, "information": true}),
         );
         assert_eq!(
             set["workspace"],
@@ -4174,6 +4188,7 @@ mod tests {
                 "tools_panel": true,
                 "mode": "luxforge.crop",
                 "thirds": true,
+                "information": true,
                 "clip_shadows": false,
                 "clip_highlights": false,
                 "mask_overlay": "off",
@@ -4207,6 +4222,11 @@ mod tests {
                 "the wrong type",
                 json!({"thirds": "yes"}),
                 "parameter thirds must be a boolean",
+            ),
+            (
+                "information wrong type",
+                json!({"information": "yes"}),
+                "parameter information must be a boolean",
             ),
         ] {
             let error = call(&mut service, &mut session, "workspace.set", params)
