@@ -51,8 +51,9 @@ pub(crate) use preview::{plan_preview, plan_rest, plan_rest_tiles, plan_warm};
 pub(crate) use program::testing;
 pub use program::{GpuDescription, GpuProgram, GpuProgramKind};
 pub use spatial::{
-    GPU_PASS_INPUTS, GPU_SHARED_VALUES, GPU_WORKGROUP_LANES, GpuApply, GpuPass, GpuPassShape,
-    GpuPlane, GpuPlaneFormat, GpuPlaneSize, GpuSpatial, GpuSpatialUnit,
+    GPU_PASS_INPUTS, GPU_SHARED_VALUES, GPU_WORKGROUP_LANES, GpuApply, GpuLight, GpuLightPasses,
+    GpuLightRestoration, GpuPass, GpuPassShape, GpuPlane, GpuPlaneFormat, GpuPlaneSize, GpuSpatial,
+    GpuSpatialUnit, gpu_lights, gpu_plan_reading_lights,
 };
 pub(crate) use spatial::{Word, Words};
 pub use tiles::{STREAM_TILE_SIDES, StreamPlan, TilePlan, plan_read, plan_stream};

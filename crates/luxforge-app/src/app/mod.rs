@@ -53,6 +53,8 @@ mod gpu_dehaze_tests;
 mod gpu_detail_tests;
 pub(crate) mod gpu_identity;
 #[cfg(test)]
+mod gpu_light_tests;
+#[cfg(test)]
 mod gpu_mask_tests;
 #[cfg(test)]
 mod gpu_notice_tests;
