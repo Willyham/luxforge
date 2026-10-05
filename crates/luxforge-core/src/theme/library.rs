@@ -429,9 +429,9 @@ fn read_omarchy(
         }
         .with_data(data)
     })?;
-    let name = folder
-        .and_then(omarchy::theme_name)
-        .or_else(|| name.map(str::to_owned))
+    let name = name
+        .map(str::to_owned)
+        .or_else(|| folder.and_then(omarchy::theme_name))
         .ok_or_else(|| {
             Error::validation(match folder {
                 Some(folder) => {
