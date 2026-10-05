@@ -129,6 +129,16 @@ impl Step {
         }
     }
 
+    /// Change General rows through their own controls: each field with the value to set.
+    pub fn preference<K: Into<String>>(fields: impl IntoIterator<Item = (K, Value)>) -> Self {
+        Self::Preference(
+            fields
+                .into_iter()
+                .map(|(field, value)| (field.into(), value))
+                .collect(),
+        )
+    }
+
     pub fn preset(name: impl Into<String>) -> Self {
         Self::Preset(PresetPick {
             name: name.into(),
