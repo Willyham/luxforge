@@ -8,7 +8,8 @@
 //! rows at a time, the tiles drawn [`REST_TILES_PER_FRAME`](super::REST_TILES_PER_FRAME) a frame
 //! through the rest's own slot, each a fresh evaluation, reduced as it is drawn, the accumulator
 //! quantized after the last — and reads the rest output back. [`HeadlessSurface::tile`] draws one
-//! tile's plan as the rest draws each, through a slot of its own, and reads the tile's codes back.
+//! tile's plan as the rest draws each, through a slot of its own, and reads the tile's codes back;
+//! [`HeadlessSurface::draw`] draws any plan so, a gesture's or a picture at rest's view plan.
 //! A source may be a window of a larger one ([`GpuSource::window`]), so a caller drawing tile by
 //! tile need hold only each tile's window.
 //!
@@ -50,6 +51,13 @@ pub fn device(
 pub struct RestDrawn {
     pub codes: Vec<[u8; 4]>,
     pub frames: u32,
+}
+
+/// A plan drawn headless: its output's codes, RGBA row by row, and its size.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Drawn {
+    pub codes: Vec<[u8; 4]>,
+    pub size: (u32, u32),
 }
 
 /// One surface of a pipeline of its own on a headless device, drawing as the desktop's does.
@@ -112,14 +120,22 @@ impl HeadlessSurface {
             }
             Some(Ok(()))
         });
-        drawn.map_err(|_| GpuFallback::Compiling)??;
-        let output = self
-            .surface
-            .rest_output()
-            .ok_or(GpuFallback::PipelineFailed)?;
-        let codes = self.read(&output.tiles[0].texture, (output.width, output.height))?;
+        let codes = drawn
+            .map_err(|_| GpuFallback::Compiling)
+            .and_then(|drawn| drawn)
+            .and_then(|()| {
+                let output = self
+                    .surface
+                    .rest_output()
+                    .ok_or(GpuFallback::PipelineFailed)?;
+                self.read(&output.tiles[0].texture, (output.width, output.height))
+            });
+        // Whatever stopped it, the rest's slot goes with its charge.
         self.pipeline.release_rest(&mut self.surface);
-        Ok(RestDrawn { codes, frames })
+        Ok(RestDrawn {
+            codes: codes?,
+            frames,
+        })
     }
 
     /// `plan`, a region plan whose boundary is derived from `source`, drawn as a picture at rest
@@ -131,8 +147,15 @@ impl HeadlessSurface {
         source: &GpuSource,
         plan: &GpuPlan,
     ) -> Result<Vec<[u8; 4]>, GpuFallback> {
-        let region = plan.region.ok_or(GpuFallback::PipelineFailed)?;
-        let [x0, y0, x1, y1] = region.rect;
+        plan.region.ok_or(GpuFallback::PipelineFailed)?;
+        self.draw(source, plan).map(|drawn| drawn.codes)
+    }
+
+    /// `plan`, whose boundary is derived from `source`, drawn as the surface draws a gesture's
+    /// plan or a picture at rest's view plan — a fresh evaluation through a slot of its own, its
+    /// codes at the output's first texels — and read back: the output's codes, RGBA row by row,
+    /// and its size, the region's for a region plan.
+    pub fn draw(&mut self, source: &GpuSource, plan: &GpuPlan) -> Result<Drawn, GpuFallback> {
         let mut slots = self.pipeline.new_surface();
         let mut waited = GpuFallback::Compiling;
         // One frame a look, through the one hang-bounded wait, while its sequence compiles or its
@@ -154,7 +177,18 @@ impl HeadlessSurface {
         .unwrap_or(Err(waited));
         let codes = drawn.and_then(|()| {
             let slot = slots.gpu.as_ref().ok_or(GpuFallback::PipelineFailed)?;
-            self.read(&slot.output().tiles[0].texture, (x1 - x0, y1 - y0))
+            let output = slot.output();
+            let size = plan.region.map_or((output.width, output.height), |region| {
+                let [x0, y0, x1, y1] = region.rect;
+                (x1 - x0, y1 - y0)
+            });
+            let [tile] = output.tiles.as_slice() else {
+                return Err(GpuFallback::PipelineFailed);
+            };
+            Ok(Drawn {
+                codes: self.read(&tile.texture, size)?,
+                size,
+            })
         });
         self.pipeline.release_gpu(&mut slots);
         codes
