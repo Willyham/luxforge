@@ -5068,7 +5068,7 @@ mod tests {
     /// not divide the block is refused.
     #[test]
     fn qualification_cells_are_the_stages_exact_means_at_each_factor() {
-        let factors = [16, 8, 4, 2];
+        let factors = [16, 8, 4, 2, 1];
         for (width, height) in [(1, 1), (37, 23), (200, 131), (2100, 40)] {
             let stage = Stage { width, height };
             let fetch = |x: u32, y: u32| -> Result<[f32; 3], Error> {
