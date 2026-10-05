@@ -11,7 +11,7 @@
 //! cargo test -p luxforge-app gpu_presence_near_black -- --ignored --nocapture
 //! ```
 use super::super::gpu_plan::surface_plan;
-use super::super::gpu_qualification::{apply_steps, codes, corpus_sources, figures, fit_size};
+use super::super::gpu_qualification::{apply_steps, codes, corpus_sources, figures, fit_size, lit};
 use luxforge_core::{
     Cancel, CompileStage, EffectStage, GpuAnswer, GpuPlanRequest, Layer, LinearImage,
     LinearSettings, ModuleRegistry, PreviewRequest, PreviewSource, Processing, Recipe,
@@ -106,12 +106,14 @@ fn guarded(plan: &GpuPlan, rule: Option<&str>) -> Result<GpuPlan, String> {
     Ok(plan)
 }
 
-/// One frame to measure: the CPU's codes, the boundary's `f32` pixels and the plan over them.
+/// One frame to measure: the CPU's codes, the boundary's `f32` pixels, the plan over them and the
+/// photograph both were drawn from, whose lights the plan's light links compute ([`lit`]).
 struct Frame {
     size: (u32, u32),
     cpu: Vec<u8>,
     texels: Vec<[f32; 3]>,
     plan: GpuPlan,
+    source: PreviewSource,
 }
 
 /// What one variant drew against the CPU.
@@ -125,6 +127,7 @@ struct Measured {
 fn measure(qualifier: &Qualifier, frame: &Frame, variant: &Variant) -> Result<Measured, String> {
     let (width, height) = frame.size;
     let plan = guarded(&frame.plan, variant.rule)?;
+    lit(qualifier, &frame.source, &plan)?;
     let (drawn, values) = if variant.float {
         (
             qualifier.evaluate_codes_over(&plan, &frame.texels)?,
@@ -405,6 +408,7 @@ fn frame_of(
     size: (u32, u32),
     texels: Vec<[f32; 3]>,
     cpu: Vec<u8>,
+    source: PreviewSource,
 ) -> Result<Frame, String> {
     let plan = match gpu_plan(registry, recipe, request).map_err(|e| e.to_string())? {
         GpuAnswer::Plan(plan) => *plan,
@@ -417,6 +421,7 @@ fn frame_of(
         cpu,
         texels,
         plan,
+        source,
     })
 }
 
@@ -484,6 +489,10 @@ fn own_photograph(
         size,
         texels,
         rgb_of(&raster.rgba),
+        PreviewSource::Raw {
+            image: image.clone(),
+            settings: *settings,
+        },
     )
 }
 
@@ -698,6 +707,7 @@ fn gpu_presence_near_black_pixels() {
     let (frame, ..) =
         fit(&source.path, &steps, &output.join("cell.sqlite")).expect("the Fit frame");
     let width = frame.size.0 as usize;
+    lit(&qualifier, &frame.source, &frame.plan).expect("the plan's lights");
     let half_codes = qualifier.evaluate_codes(&frame.plan).expect("half codes");
     let float_codes = qualifier
         .evaluate_codes_over(&frame.plan, &frame.texels)
