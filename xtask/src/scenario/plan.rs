@@ -214,6 +214,10 @@ pub struct Expect {
     /// How many revisions the committed stack moved on from the frame before: `0` commits nothing
     /// (the same revision and the same current entry), `n` makes `n` new entries.
     pub commits: Option<u64>,
+    /// The `commits` were one run of edits of one control that returned it to where the run began,
+    /// which auto-collapse history writes no entry for: the revision moved on, and the current
+    /// entry is the frame before's again.
+    pub collapses_back: bool,
     /// The current history entry's label.
     pub label: Option<String>,
     /// The stack's first layer of each effect: its stored payload, or `None` for no such layer.
@@ -249,6 +253,9 @@ impl Expect {
         let mut record = serde_json::Map::new();
         if let Some(commits) = self.commits {
             record.insert("commits".into(), json!(commits));
+        }
+        if self.collapses_back {
+            record.insert("collapses_back".into(), json!(true));
         }
         if let Some(label) = &self.label {
             record.insert("label".into(), json!(label));
@@ -400,6 +407,15 @@ impl Step {
     /// `n` revisions committed since the frame before: `0` for none.
     pub fn commits(mut self, n: u64) -> Self {
         self.expect.commits = Some(n);
+        self
+    }
+
+    /// `n` revisions committed since the frame before by a run of one control that returned it
+    /// to where the run began: auto-collapse history, on by default, wrote no entry for it and
+    /// moved the current entry back to the frame before's.
+    pub fn commits_collapsing_back(mut self, n: u64) -> Self {
+        self.expect.commits = Some(n);
+        self.expect.collapses_back = true;
         self
     }
 
@@ -877,6 +893,13 @@ impl Plan {
                     is == was,
                     format!(
                         "nothing was to be committed, but the current entry moved from {was} to {is}"
+                    ),
+                )?;
+            } else if expect.collapses_back {
+                ensure(
+                    is == was,
+                    format!(
+                        "the run was to collapse back to entry {was}, but the current entry is {is}"
                     ),
                 )?;
             } else {

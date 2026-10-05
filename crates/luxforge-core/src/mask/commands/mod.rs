@@ -60,6 +60,7 @@ pub use list::{
     StrokeSettings,
 };
 pub(crate) use list::{RemovedLayer, listing};
+pub use plan::asks_colour_limit_value;
 pub(crate) use plan::{
     MaskOutcome, asks_colour_limit, colour_limit_request, input_layer_index, plan,
 };
