@@ -1,8 +1,9 @@
 //! A small outlined tag beside a row's label, with the detail it stands for in a tooltip.
 
 use crate::theme;
+use crate::{Element, Theme, Token};
+use iced::Border;
 use iced::widget::{container, text, tooltip};
-use iced::{Border, Element, Theme};
 
 /// Plain data for one badge: a short word and, optionally, what it summarizes.
 #[derive(Debug, Clone, PartialEq)]
@@ -17,16 +18,16 @@ pub fn badge<'a, M: 'a>(model: &BadgeModel) -> Element<'a, M> {
     let tag = container(
         text(model.label.clone())
             .size(theme::SIZE_CAPTION)
-            .color(theme::TEXT_SECONDARY),
+            .style(theme::ink(Token::TextSecondary)),
     )
     .padding([1.0, 6.0])
-    .style(|_theme: &Theme| {
+    .style(|theme: &Theme| {
         container::Style::default()
-            .background(theme::CONTROL)
+            .background(theme.palette().control)
             .border(Border {
                 radius: theme::RADIUS.into(),
                 width: theme::BORDER_WIDTH,
-                color: theme::BORDER,
+                color: theme.palette().border,
             })
     });
     match &model.tooltip {
@@ -35,7 +36,7 @@ pub fn badge<'a, M: 'a>(model: &BadgeModel) -> Element<'a, M> {
             container(
                 text(detail.clone())
                     .size(theme::SIZE_CAPTION)
-                    .color(theme::TEXT_PRIMARY),
+                    .style(theme::ink(Token::Text)),
             )
             .padding(6.0)
             .style(theme::bar_surface),

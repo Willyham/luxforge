@@ -57,6 +57,9 @@ mod preferences_tests;
 #[cfg(test)]
 mod renderer_tests;
 mod requests;
+#[cfg(test)]
+mod theme_tests;
+pub(super) mod themes;
 
 const EVENT_CAPACITY: usize = 256;
 /// The longest an `events.wait` may be asked to wait, and what it waits when it names no time.
@@ -2457,20 +2460,22 @@ host_params! {
         auto_collapse_history: Option<Option<bool>> = boolean().notes("null resets it to on"),
         auto_lens_profile: Option<Option<bool>> = boolean().notes("null resets it to on"),
         mask_overlay_colour: Option<Option<MaskOverlayColour>> = enumeration(MaskOverlayColour::ALL.map(MaskOverlayColour::as_str)).notes("null resets it to green"),
-        canvas_background: Option<Option<CanvasBackground>> = enumeration(CanvasBackground::ALL.map(CanvasBackground::as_str)).notes("null resets it to dark"),
+        canvas_background: Option<Option<CanvasBackground>> = enumeration(CanvasBackground::ALL.map(CanvasBackground::as_str)).notes("theme draws the active theme's surround; null resets it to theme"),
         interface_size: Option<Option<u16>> = integer(100, 150).notes("percent: one of 100, 110, 125 or 150; null resets it to 100"),
         catalog: Option<Option<PathBuf>> = path().notes("the absolute path of the catalog file the desktop opens at its next launch, which need not exist; null resets it to the default catalog"),
         workspace: Option<Option<Value>> = json("{state_panel, tools_panel, thirds, clip_shadows, clip_highlights}, all booleans; null resets it to the workspace's defaults"),
         brush: Option<Option<Value>> = json("{size, feather, flow}, each within the range mask.add-stroke declares for it; null resets it to the neutral brush"),
         window: Option<Option<Value>> = json("{width, height, x, y} in the system's points: width and height within 320..=16384 and a finite position; null resets it to the default frame"),
         export_folder: Option<Option<PathBuf>> = path().notes("the absolute path of the folder export.plan suggests while it exists, which need not exist now; null resets it to the original's folder"),
+        theme: Option<Option<String>> = string(crate::theme::MAX_THEME_ID).notes("the id of a theme theme.list answers; null resets it to Luxforge Dark"),
     }
 }
 
 /// `preferences.set`: one checked write of the preferences named, where `null` removes a stored
 /// value. The lens and auto-collapse switches reach the catalog writer at once, for the next
-/// import and edit. A change to anything the Settings sheet's General rows show is announced, so
-/// a client showing them reads them again; the desktop's remembered state announces nothing.
+/// import and edit. A theme must be one the library holds, read before the write. A change to
+/// anything the Settings sheet's General rows show, or to the theme, is announced, so a client
+/// showing them reads them again; the desktop's remembered state announces nothing.
 pub(super) fn preferences_set(
     owner: &mut Owner,
     call: &Call<'_>,
@@ -2500,6 +2505,15 @@ pub(super) fn preferences_set(
         brush: decoded("brush", params.brush)?,
         window: decoded("window", params.window)?,
         export_folder: params.export_folder,
+        theme: match params.theme {
+            // Luxforge Dark is the default, so choosing it removes the stored choice.
+            Some(Some(id)) if id == crate::theme::LUXFORGE_DARK_ID => Some(None),
+            Some(Some(id)) => {
+                owner.host.themes.theme(&id)?;
+                Some(Some(id))
+            }
+            theme => theme,
+        },
     };
     let (before, stored) = owner.host.preferences.set(change)?;
     owner
@@ -2508,7 +2522,7 @@ pub(super) fn preferences_set(
     owner
         .service
         .set_auto_lens_profile(stored.auto_lens_profile());
-    if before.general() != stored.general() {
+    if before.general() != stored.general() || before.theme() != stored.theme() {
         announce_once(&mut owner.announced, &call.origin);
     }
     Ok(methods::preference_values(&stored))

@@ -45,6 +45,9 @@ struct Config {
     /// The stored interface size the window opens at, read with the catalog and the frame; the
     /// default size until [`Config::resolve_launch`] reads it.
     interface_size: Option<u16>,
+    /// The active theme the first frame is drawn in, read with the catalog and the frame, and
+    /// taken by the editor as it is built; `None` until [`Config::resolve_launch`] reads it.
+    launch_theme: Option<luxforge_core::theme::LaunchTheme>,
     diagnostics: Option<Diagnostics>,
     run_id: String,
     /// Serve the test modules and show the components gallery; the default workspace stays a photo
@@ -101,8 +104,8 @@ impl Config {
         self.developer = self.launch_flags.toggle(DEVELOPER);
     }
 
-    /// Read the launch preferences once, from this run's preferences: the catalog to open and the
-    /// window's remembered frame. `--catalog` and an evidence run's own catalog take precedence
+    /// Read the launch preferences once, from this run's preferences: the catalog to open, the
+    /// window's remembered frame and the active theme. `--catalog` and an evidence run's own catalog take precedence
     /// over the stored location, and a stored catalog whose folder is missing opens the default.
     /// `--window-size` and a hidden or evidence launch open at their own size, placed by the
     /// system. Reading creates nothing, and a file that cannot be read leaves the defaults.
@@ -122,6 +125,7 @@ impl Config {
             .filter(|_| self.remember_window && self.size.is_none())
             .map(window_frame::Opening::new);
         self.interface_size = Some(stored.interface_size);
+        self.launch_theme = Some(stored.theme);
     }
 
     /// The window's size at launch in the system's points: `--window-size`, the remembered
@@ -542,6 +546,31 @@ mod tests {
             assert_eq!(config.opening, None);
             assert!(!config.remember_window);
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The launch reads the active theme with the catalog and the frame: Luxforge Dark with nothing
+    /// stored, and in place of a stored choice the library cannot show, with the problem naming it.
+    #[test]
+    fn the_launch_reads_the_active_theme_with_the_other_launch_preferences() {
+        let root = luxforge_testbase::paths::temp_path("launch-theme");
+        let launch = || Config {
+            data_root: Some(root.clone()),
+            ..Config::default()
+        };
+        let theme = resolved(launch()).launch_theme.expect("read at launch");
+        assert_eq!(theme.id, luxforge_core::theme::LUXFORGE_DARK_ID);
+        assert!(theme.problem.is_none());
+
+        store(&root, r#"{"format":1,"theme":"theme-0123456789abcdef"}"#);
+        let theme = resolved(launch()).launch_theme.expect("read at launch");
+        assert_eq!(theme.id, luxforge_core::theme::LUXFORGE_DARK_ID);
+        let problem = theme.problem.expect("the chosen theme cannot be shown");
+        assert!(
+            problem.detail.contains("theme-0123456789abcdef"),
+            "{}",
+            problem.detail
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -2,9 +2,10 @@
 //! switch at the right, as the crop section's Straighten guide draws it.
 
 use crate::theme;
+use crate::{Element, Theme, Token};
 use iced::widget::text::Wrapping;
 use iced::widget::{button, canvas, row, text};
-use iced::{Alignment, Color, Element, Length, Point, Rectangle, Renderer, Theme};
+use iced::{Alignment, Color, Length, Point, Rectangle, Renderer};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToggleModel {
@@ -40,7 +41,7 @@ pub fn compact_toggle<'a, M: Clone + 'a>(
             text(hint)
                 .size(theme::SIZE_SMALL_CAPTION)
                 .wrapping(Wrapping::None)
-                .color(theme::TEXT_TERTIARY),
+                .style(theme::ink(Token::TextTertiary)),
         );
     }
     row![labelled, switch(model, on_toggle)]
@@ -49,14 +50,14 @@ pub fn compact_toggle<'a, M: Clone + 'a>(
         .into()
 }
 
-fn label<'a>(model: &ToggleModel) -> iced::widget::Text<'a> {
+fn label<'a>(model: &ToggleModel) -> iced::widget::Text<'a, crate::Theme> {
     text(model.label.clone())
         .size(theme::SIZE_CONTROL)
-        .color(if model.enabled {
-            theme::TEXT_LABEL
+        .style(theme::ink(if model.enabled {
+            Token::TextLabel
         } else {
-            theme::TEXT_TERTIARY
-        })
+            Token::TextTertiary
+        }))
 }
 
 /// The [`toggle`]'s switch alone, for a row that lays out its own label, such as a Settings row
@@ -91,22 +92,22 @@ struct Switch {
     enabled: bool,
 }
 
-impl<M> canvas::Program<M> for Switch {
+impl<M> canvas::Program<M, Theme> for Switch {
     type State = ();
 
     fn draw(
         &self,
         _state: &Self::State,
         renderer: &Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         bounds: Rectangle,
         _cursor: iced::mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         let (track, knob): (Color, Color) = match (self.enabled, self.on) {
-            (false, _) => (theme::CONTROL, theme::TEXT_TERTIARY),
-            (true, false) => (theme::RAIL, theme::TEXT_SECONDARY),
-            (true, true) => (theme::ACCENT, theme::THUMB),
+            (false, _) => (theme.palette().control, theme.palette().text_tertiary),
+            (true, false) => (theme.palette().rail, theme.palette().text_secondary),
+            (true, true) => (theme.palette().accent, theme.palette().thumb),
         };
         let radius = bounds.height / 2.0;
         frame.fill(

@@ -69,6 +69,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered Performance section: open and sampling from the launch, a filled window, a straighten and a commit of all three Presence fields whose render is listed as long work and then as finished, collapsed and asleep, then reopened on a fresh window, over the generated 60 MP JPEG, with the editor's memory read by the runner from outside the process; `--source RAW` runs the same over a RAW photograph, outside `rendered` | `cargo xtask smoke --scenario performance --output NEW_DIR [--source RAW]` |
 | Rendered Basic section over a supplied RAW file, in place of a RAW section, which no frame lists: the White balance group's four controls in the JPEG's order, each the RAW development's (Temperature in K and Tint over `set-raw`, the Neutral picker entering the sensor pick, As shot sending `set-raw {white-balance: as-shot}`); a Temperature drag left open and then released, at Fit and at 100%, whose drafted frame differs from the one before, is labelled approximate and adopts no histogram, and whose release's exact frame is the first drawn after the commit and carries its own report; at Fit its moving approximate frame is within 10% of the drag's own change and within one code on average, each averaged over the photograph alone, while at 100% the 10% gate compares the held approximate draft after full-detail refinement under the shared 120 ms quiet policy and before release (the quiet interval runs from the drag's last input, so the refinement can begin while the drag's frame is still being written: the moving checks read the drag's events up to its settle, and the held checks read the rest with the wait's); moving 100% separately verifies viewport identity, approximate label, visible response and refinement, and records softness without a numeric threshold; a highlight-clipped Bayer scene (at least 1% of its Bayer sites at 0.99 of sensor white or above under the drags' gains, with no DNG correction after the demosaic) records a missed white-balance accuracy limit with the exception, its clip share and the limit instead of failing, while every other check stays a gate; each drag keeping the tint in force (the first, from As shot, the core's as-shot tint) in the committed payload and in the Tint field throughout; then a double-click on Temperature, Tint and Exposure: the first press's committed jump and the reset that follows it, each checked as two entries with the reset sent against the jump's revision and never refused — Temperature and Tint back to As shot (`set-raw {white-balance: as-shot}`, the entry labelled Reset White balance, both fields showing the core's as-shot equivalent, checked back through the forward map), Exposure back to 0 EV; Basic's dot, absent on the untouched photograph, present after the committed custom temperature and absent again at As shot and 0 EV; `W` entering the RAW development's sensor pick with Basic's Neutral picker selected, and Escape leaving it; then a crop drafted on the RAW's whole input stage, 16:9 and straightened by 7°, whose draft is one picture (an 80 × 60 grid of stage points is compared with the unstraightened draft at the same points; of the at least 1,200 whose scene is 8 codes or more from the canvas colour there, after the draft's dimming outside the crop rectangle, under 0.5% may show the canvas, so dark scene content the canvas's colour is never taken for a gap; `STRAIGHTENED_RECORDED=DIR cargo test -p xtask straightened_drafts_recorded -- --ignored` judges the straightened draft of each recorded `DIR/raw-panel*` run this way, whatever an earlier check found), applied at Fit, read at 100% through two `render.sample` calls and replaced by a −12° 3:2 `edit.crop-fit` at 100%: no step logs a failure, every committed frame shows the current entry at the output its payload declares, placed and centred at Fit within 4 px, and each sample's codes are the canvas's own at that stage pixel within one code; not in `rendered`, because no RAW photograph is checked in | `cargo xtask smoke --scenario raw-panel --source RAW --output NEW_DIR` |
 | Rendered module capabilities: settings, a profile, its key, a download grant and install through `api` steps, the photo-data consent denied then allowed, a task with progress, Apply and a refused task through the desktop, against a loopback proof endpoint | `cargo xtask smoke --scenario capabilities --output NEW_DIR` |
+| Rendered UI themes at 1440 × 900: the synthetic Omarchy set (`fixtures/themes/omarchy`) imported through the Appearance tab's Import Omarchy theme… with each theme's outcome listed, a folder imported again listed as already imported; Luxforge Dark, the bundled Nord and both imports drawn, the panels, title bar, a control and the canvas sampled against each frame's recorded tokens, the surround within 0.010 OKLCh chroma, the photograph's pixels and an export's SHA-256 the same under every theme, the Grey canvas kept under a light theme, and a second client switching back with `preferences.set` | `cargo xtask smoke --scenario theme --output NEW_DIR` |
 | Rendered Masks panel over the photograph the design boards use: Sky, Face (a radial, a subtracting brush of two strokes and an intersecting luminance range) and Foreground built through the panel and renamed through `mask.rename` and `mask.rename-component`, Foreground's overlay hidden with its eye, Face's amount, Exposure and Clarity through it; then the Brush section armed and put down, a held stroke's draft bar, the New mask menu and Escape, Radial 1's fields, the overlay in each mode and both tints, a hovered row, and Radial 1 selected with its handles resting and no draft, then its rotation grip swung to −12° and committed as one entry on release, the mask-mode board's own state. Every frame's list, open mask, selected component, overlay and mode are checked against the plan, and the draft bar, scope chips, dot and bound layers by state | `cargo xtask smoke --scenario mask-panel --output NEW_DIR` |
 | Native masking interaction regressions: unplaced creation, selected/armed targets, live and committed brush flow/feather, deliberate hiding and analytic live-gradient coverage under rotated crop at Fit/100% | `cargo xtask smoke --scenario mask-interactions --output NEW_DIR` |
 | The capability framework's own costs (registration, capability reads, a task, artifact publish, cancellation), release only | `cargo test --release --locked -p luxforge-core --lib capability_timing -- --ignored --nocapture` |
@@ -341,7 +342,7 @@ it; the tiers above `quick` run the whole `check` in place of its quick subset:
 | Tier | What it runs |
 | --- | --- |
 | `quick` | `check --quick`: every check and test but the [slow tests](#how-check-runs-the-tests) and the doctests. It builds nothing in release and launches no editor |
-| `rendered` | the whole `check`, `editor-acceptance` and every checkout smoke scenario, including `detail`, `detail-fit`, `detail-zoom`, `zoom`, `presets`, `export`, `settings`, `gallery`, `controls`, `capabilities`, `performance`, `curve`, `lens-perspective`, `no-gpu-render`, the three viewport scenarios and the six `mask-*` ones, through a bounded pool, then `gpu-qualification`, the release gate, alone, given `--manifest` when the run has one |
+| `rendered` | the whole `check`, `editor-acceptance` and every checkout smoke scenario, including `detail`, `detail-fit`, `detail-zoom`, `zoom`, `presets`, `export`, `settings`, `theme`, `gallery`, `controls`, `capabilities`, `performance`, `curve`, `lens-perspective`, `no-gpu-render`, the three viewport scenarios and the six `mask-*` ones, through a bounded pool, then `gpu-qualification`, the release gate, alone, given `--manifest` when the run has one |
 | `timing` | the whole `check`, `editor-acceptance`, then `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
 | `full` | rendered plus timing plus `hardening`, plus, with `--manifest FILE`, a `smoke --scenario raw-editor` run per manifest source (`raw-editor-<id>`), the owner-supplied authentic RAW tests via `raw-authentic`, a `smoke --scenario raw-panel` run and a `smoke --scenario raw-detail` run per manifest source and one `smoke --scenario performance` run over the first manifest source |
 
@@ -878,15 +879,20 @@ Each step is an object with exactly one key.
   The client is registered on the desktop's own owner at the run's first `agent` step and
   disconnected when the run ends. The desktop fills `asset_id` and the `mutation` envelope as an
   `api` edit's, with the revision it holds, a fresh request id and the actor `evidence-agent`, resolves name
-  references the same way, and rejects a script that sets either; a method that is not an edit of
-  the open asset fails the step. The desktop sends nothing itself: the owner wakes its event sync
+  references the same way, and rejects a script that sets either. The desktop sends nothing itself: the owner wakes its event sync
   for the other client's change, the sync reads it back as a change made elsewhere, and the frame
   is captured once the agent has its answer and the frame of the entry that request committed has
   been presented (`waited_for` `agent`), so an open draft is conflicted exactly as another client's
   commit conflicts it. An answer that commits nothing is captured on the next frame, and a refused
   one is recorded as failed. The event sync runs in every evidence run as it does in a session; it
   reads only what the owner wakes it for, which is another client's change or a job of the
-  desktop's own that ended (an import, an export, a module task).
+  desktop's own that ended (an import, an export, a module task). An `agent` step may also send a
+  host method, such as `{"agent": {"method": "preferences.set", "params": {"theme":
+  "luxforge.dark"}}}`: as written, with `asset_id` when the method names one and a request
+  envelope with the agent's actor when its schema names one (a module settings write is refused).
+  It is captured once the agent has its answer, the event sync has read past the event that answer
+  was given at, and nothing the sync started reading — the preferences, the theme library, the
+  flags, a theme to draw — is still in flight (`waited_for` `agent_host`).
 - `draft` drives the crop draft: `start`, `reapply`, `angle` (typed into the angle's box and
   submitted), `nudge` (`-1` or `1`: one press of the angle's − or + button), `angle_rail` (a drag
   through rail fractions, then its release), `preset` (a declared aspect option, by name), `rect` (`[x, y, width, height]` in box pixels, applied as two corner gestures,
@@ -992,9 +998,11 @@ Each step is an object with exactly one key.
   shows figures rather than dashes; closing it, opening it under a hidden panel and asking for the
   state it is already in are captured on the next frame. The section is open at every launch, so
   every scripted run samples once a second unless its script closes the section.
-- `settings` opens the Settings sheet at Experiments, as its title bar button does, or closes it:
-  `{"open": true}` or `{"open": false}`. Opening is captured once `flags.list` has answered;
-  closing, and asking for the state it is already in, on the next frame.
+- `settings` opens the Settings sheet at a tab, as its title bar button and tab rail do, or closes
+  it: `{"open": true, "tab": "appearance"}`, where `tab` is `general`, `appearance` or
+  `experiments` and Experiments when left out, or `{"open": false}`. Opening is captured once
+  `flags.list` has answered; closing, moving an open sheet to another tab and asking for the state
+  it is already in, on the next frame.
 - `flag` changes one flag through its row's own control while the sheet is open:
   `{"id": "proof.number", "value": 75}`, or `"value": null` for Reset. A toggle takes a boolean and a
   choice one of its options; a number is typed into its field and Enter pressed. A change the row
@@ -1003,6 +1011,20 @@ Each step is an object with exactly one key.
   value its control does not offer and a Reset with nothing stored fail the step. `state.json`
   carries a `settings` summary: the tab, the flags as last listed, every row as drawn and the writes
   outstanding.
+- `theme` chooses a theme as its Appearance row does, by id or, for an import whose id is new on
+  every run, by name: `{"id": "omarchy.nord"}` or `{"name": "Linen"}`. It is captured once the
+  theme is drawn, or Luxforge Dark in its place with the reason in the status bar, and the
+  preference writer has stored the choice; a theme the library does not list fails the step.
+- `theme_import` imports one Luxforge theme document through Import theme file…'s own task,
+  bypassing only the dialog: `{"path": "fixtures/themes/paper.lftheme"}`. `theme_import_omarchy`
+  imports an Omarchy theme folder, or a folder of them, through Import Omarchy theme…'s task:
+  `{"path": "fixtures/themes/omarchy"}`. Both are captured once every `theme.import` and the
+  listing after them have answered; the Omarchy step records what each theme became
+  (`folder_import`, with each import's report) and fails only when the folder is refused as a
+  whole, since a conflict or a theme that fails is the import's own outcome. Every frame's
+  `state.json` carries a `theme` summary: the theme drawn and the choice it answers for, its mode,
+  why a choice is not drawn, its generation, its surround, background, surface, control and text
+  tokens, the library as last listed and the last folder import's outcomes.
 
 - `capability` drives one gesture on a module's task control or the consent notice through the message that control sends: `{"module", <one of>, "wait"?: false}` with `task` (`{task}`), `consent` (`"allow"` or `"deny"`), `apply` or `settle`. A module's settings, profiles, secrets, grants and resources are set with `api` steps. A step is captured once its round trips have answered and the jobs it started have finished; `"wait": false` captures as soon as a started job reports progress, and a later `settle` captures once the module's jobs are done. `state.json` carries a redacted `capabilities` summary per module — the settings as `module.settings.read` answers them (a secret only as `secret_present`), each resource's state, the jobs, each task's newest run, the permission counts, the open consent and the block's status line — and stack layers carry their `artifacts`.
 

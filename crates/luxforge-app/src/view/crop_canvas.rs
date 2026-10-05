@@ -14,10 +14,11 @@ use crate::{
     view::canvas_view::CanvasView,
 };
 use iced::{
-    Color, Point, Rectangle, Renderer, Size, Theme,
+    Color, Point, Rectangle, Renderer, Size,
     mouse::{self, Cursor},
     widget::canvas::{self, Action, Event, Frame, Geometry, Path, Stroke},
 };
+use luxforge_ui::Theme;
 
 /// The hit radius of a handle in logical pixels: a corner answers inside a 16 pt square, larger than
 /// its drawn 9 pt square, and an edge along its whole length.
@@ -113,7 +114,7 @@ fn local(cursor: Cursor, bounds: Rectangle) -> Option<Point> {
         .map(|point| Point::new(point.x - bounds.x, point.y - bounds.y))
 }
 
-impl canvas::Program<Message> for CropCanvas<'_> {
+impl canvas::Program<Message, Theme> for CropCanvas<'_> {
     type State = Interaction;
 
     fn update(

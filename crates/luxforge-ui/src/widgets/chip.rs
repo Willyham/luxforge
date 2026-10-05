@@ -2,15 +2,16 @@
 //! holds a set of them.
 //!
 //! A chip is [`theme::CHIP_HEIGHT`] tall on the Control surface; a selected chip is tinted with the
-//! accent ([`theme::SELECTED_FILL`]) and its label is in the accent, as the crop reference draws
+//! accent ([`Token::SelectedFill`]) and its label is in the accent, as the crop reference draws
 //! the chosen ratio.
 
 use super::button_row::RowPlacement;
 use super::text::caption;
 use crate::theme;
+use crate::{Element, Theme, Token};
 use iced::widget::text::{LineHeight, Wrapping};
 use iced::widget::{Row, button, container, mouse_area, row, text};
-use iced::{Alignment, Element, Length, Padding};
+use iced::{Alignment, Length, Padding};
 
 /// Plain data for one chip.
 #[derive(Debug, Clone, PartialEq)]
@@ -34,16 +35,16 @@ pub fn chip<'a, M: Clone + 'a>(
         theme::button_control
     };
     let ink = match (model.enabled, model.selected) {
-        (false, _) => theme::TEXT_TERTIARY,
-        (true, true) => theme::ACCENT,
-        (true, false) => theme::CHIP_LABEL,
+        (false, _) => Token::TextTertiary,
+        (true, true) => Token::Accent,
+        (true, false) => Token::ChipLabel,
     };
     let mut content = row![
         text(model.label.clone())
             .size(theme::SIZE_CONTROL)
             .line_height(LineHeight::Absolute(theme::SLIDER_LABEL_HEIGHT.into()))
             .wrapping(Wrapping::None)
-            .color(ink)
+            .style(theme::ink(ink))
     ]
     .spacing(theme::CHIP_TRAILING_SPACING)
     .align_y(Alignment::Center)
@@ -86,9 +87,9 @@ pub fn compact_chip<'a, M: Clone + 'a>(
         theme::button_control
     };
     let ink = match (model.enabled, model.selected) {
-        (false, _) => theme::TEXT_TERTIARY,
-        (true, true) => theme::ACCENT,
-        (true, false) => theme::CHIP_LABEL,
+        (false, _) => Token::TextTertiary,
+        (true, true) => Token::Accent,
+        (true, false) => Token::ChipLabel,
     };
     let label = match &model.trailing {
         Some(trailing) => format!("{} \u{b7} {trailing}", model.label),
@@ -100,13 +101,13 @@ pub fn compact_chip<'a, M: Clone + 'a>(
                 .size(theme::SIZE_CAPTION)
                 .line_height(LineHeight::Absolute(theme::CAPTION_LINE_HEIGHT.into()))
                 .wrapping(Wrapping::None)
-                .color(ink),
+                .style(theme::ink(ink)),
         )
         .center_y(Length::Fill),
     )
     .padding([0.0, theme::VERSION_CHIP_PADDING])
     .height(Length::Fixed(theme::VERSION_CHIP_HEIGHT))
-    .style(move |iced_theme: &iced::Theme, status| {
+    .style(move |iced_theme: &Theme, status| {
         let mut style = style(iced_theme, status);
         style.border.radius = theme::VERSION_CHIP_RADIUS.into();
         style
@@ -155,7 +156,10 @@ mod tests {
     fn chips_match_the_crop_reference() {
         assert_eq!(theme::CHIP_HEIGHT, 22.0);
         assert_eq!(theme::CHIP_SPACING, 4.0);
-        assert_eq!(theme::SELECTED_FILL, iced::Color::from_rgb8(62, 55, 46));
+        assert_eq!(
+            crate::Palette::luxforge_dark().selected_fill,
+            iced::Color::from_rgb8(62, 55, 46)
+        );
         for selected in [false, true] {
             let _: Element<'_, ()> = chip_row(
                 vec![chip(

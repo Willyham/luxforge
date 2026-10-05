@@ -10,9 +10,10 @@ use super::focus_control::{ControlKey, ControlKeyEvent, focus_control};
 use super::icon_button::{Icon, IconButtonModel, header_icon_button};
 use super::section_header::accent_dot;
 use crate::theme;
+use crate::{Element, Theme, Token};
 use iced::widget::text::Wrapping;
 use iced::widget::{Row, button, container, row, text};
-use iced::{Alignment, Border, Element, Length, Padding, Theme};
+use iced::{Alignment, Border, Length, Padding};
 
 /// One tab.
 #[derive(Debug, Clone, PartialEq)]
@@ -54,11 +55,11 @@ pub fn tab_row<'a, M: Clone + 'a>(
                 .size(theme::SIZE_CONTROL)
                 .font(theme::FONT_SEMIBOLD)
                 .wrapping(Wrapping::None)
-                .color(if selected {
-                    theme::TEXT_PRIMARY
+                .style(theme::ink(if selected {
+                    Token::Text
                 } else {
-                    theme::TEXT_SECONDARY
-                })
+                    Token::TextSecondary
+                }))
         ]
         .spacing(theme::MODULE_HEADER_SPACING)
         .align_y(Alignment::Center);
@@ -93,9 +94,9 @@ pub fn tab_row<'a, M: Clone + 'a>(
         .padding(theme::TAB_INSET)
         .width(Length::Fill)
         .height(Length::Fixed(theme::TAB_ROW_HEIGHT))
-        .style(|_theme: &Theme| {
+        .style(|theme: &Theme| {
             container::Style::default()
-                .background(theme::TAB_TRACK)
+                .background(theme.palette().tab_track)
                 .border(Border {
                     radius: theme::RADIUS.into(),
                     width: 0.0,
@@ -127,10 +128,10 @@ pub fn tab_row<'a, M: Clone + 'a>(
         .into()
 }
 
-fn tab_selected(_theme: &Theme, _status: button::Status) -> button::Style {
+fn tab_selected(theme: &Theme, _status: button::Status) -> button::Style {
     button::Style {
-        background: Some(iced::Background::Color(theme::TAB_SELECTED)),
-        text_color: theme::TEXT_PRIMARY,
+        background: Some(iced::Background::Color(theme.palette().tab_selected)),
+        text_color: theme.palette().text,
         border: Border {
             radius: (theme::RADIUS - theme::TAB_INSET).into(),
             width: 0.0,

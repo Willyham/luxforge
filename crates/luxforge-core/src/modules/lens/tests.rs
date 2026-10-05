@@ -898,11 +898,7 @@ fn integrated_recipe_with_masks_lens_perspective_crop_and_finish_in_both_domains
             .rgba
             .unwrap();
             let start = ((y * raster.width + x) * 4) as usize;
-            assert_eq!(
-                &point,
-                raster.rgba[start..start + 4].as_ref(),
-                "raw={raw}, {x},{y}"
-            );
+            assert_eq!(&point, &raster.rgba[start..start + 4], "raw={raw}, {x},{y}");
         }
         let cancel = crate::Cancel::never();
         cancel.cancel();

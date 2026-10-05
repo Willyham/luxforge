@@ -3,6 +3,7 @@
 //! Kept out of the `widgets` module (and thus out of `pub use widgets::*`) so it never becomes
 //! part of the public widget API; [`crate::gallery_states`] is the only path to it.
 
+use crate::Element;
 use crate::{
     BINS, ChipModel, ClipTriangleModel, DraftBarModel, DraftFinish, DraftSubject, HistogramChannel,
     HistogramModel, Icon, IconButtonModel, ListRowModel, Marker, ModeEntry, NoticeCardModel,
@@ -13,8 +14,8 @@ use crate::{
     section_label, segment, segment_track, segmented, slider, sub_group_header, theme, title,
     value_text,
 };
+use iced::Length;
 use iced::widget::container;
-use iced::{Element, Length};
 
 /// The width the board frames a state at when the state depends on its width: narrow enough that
 /// a long hint, label or detail ends in its ellipsis. It frames the examples only; every row fills

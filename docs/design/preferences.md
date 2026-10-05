@@ -23,7 +23,8 @@ The person's preferences live outside every catalog, in the host's `preferences.
 | `auto_collapse_history` | boolean | `true` | General: **Auto collapse history** (today) | next edit |
 | `auto_lens_profile` | boolean | `true` | General: **Correct lens distortion on new RAW photos** | next import |
 | `mask_overlay_colour` | `green` or `white` | `green` | General: **Mask overlay colour**, and the Masks panel's colour control | at once |
-| `canvas_background` | `dark`, `black` or `grey` | `dark` | General: **Canvas background** | at once |
+| `canvas_background` | `theme`, `dark`, `black` or `grey` | `theme` | General: **Canvas background** | at once |
+| `theme` | a theme id, or `null` | `null`: Luxforge Dark | Settings › Appearance ([UI themes](ui-themes.md)) | at once |
 | `interface_size` | `100`, `110`, `125` or `150` | `100` | General: **Interface size** | at once |
 | `catalog` | absolute path of a catalog file, or `null` | `null`: `catalog.sqlite` in the configuration directory | General: **Catalog** | next launch |
 | `workspace` | `{state_panel, tools_panel, thirds, clip_shadows, clip_highlights}` | the workspace's defaults | remembered | next launch |
@@ -53,14 +54,17 @@ A path is not required to exist, since a drive can be unplugged. Its use checks 
 - `interface_size`
 - `catalog`
 
-An open Settings sheet reads them again. The desktop applies the canvas background, the interface size and the mask overlay colour from what it reads, so an agent's change shows at once. Remembered state is the desktop's own bookkeeping and announces nothing.
+and whenever `theme` changes.
+
+An open Settings sheet reads them again. The desktop applies the theme, the canvas background, the interface size and the mask overlay colour from what it reads, so an agent's change shows at once. Remembered state is the desktop's own bookkeeping and announces nothing.
 
 ## Behaviour
 
 - **Correct lens distortion on new RAW photos.** On by default: the [first-open lens action](lens-and-perspective.md) is committed as it is today. Off, an import does not ask the lens module for a first-open action. The Lens section offers the detected profile with Apply, as it does for any photo without one. The change applies to imports from then on; it never adds or removes an entry on a photo already in the catalog. This is a core preference, so every client's imports follow it.
 - **Mask overlay colour.** The colour the Tint overlay is drawn in. The General row and the Masks panel's control both set this desktop's session colour (`workspace.set {mask_overlay_colour}`) and store the preference.
 - **Canvas background.** The colour around the photograph:
-  - `dark`, today's `#19191b`;
+  - `theme`, the active theme's surround, held neutral ([UI themes](ui-themes.md#rules)); for Luxforge Dark the same `#19191b` as `dark`;
+  - `dark`, `#19191b`;
   - `black`, `#000000`;
   - `grey`, an 18% grey (L\* 50, `#777777`), for judging tone the way a print is judged.
 
@@ -150,7 +154,7 @@ Decided by the owner on 2026-10-04:
 Recorded defaults, proposals the owner can revise:
 
 - The field names and shapes above.
-- **Canvas background:** three choices, with grey at L\* 50.
+- **Canvas background:** four choices, Theme the default, with grey at L\* 50.
 - **Interface size:** four sizes, 100, 110, 125 and 150%.
 - **Catalog:** a folder holding `catalog.sqlite`, applied at the next launch, falling back to the default catalog when its folder is missing.
 - **Window:** the frame is not remembered in fullscreen.

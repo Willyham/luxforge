@@ -3,8 +3,9 @@
 
 use super::decorator::{Decoration, decorate};
 use crate::theme;
+use crate::{Element, Theme};
 use iced::{
-    Background, Border, Color, Element, Event, Rectangle, Renderer, Shadow, Theme,
+    Background, Border, Color, Event, Rectangle, Renderer, Shadow,
     advanced::{
         Clipboard, Layout, Shell, renderer,
         widget::{Operation, Tree, operation},
@@ -189,7 +190,7 @@ impl<'a, M: Clone> Decoration<'a, M, Theme, Renderer> for FocusControl<'a, M> {
                 renderer::Quad {
                     bounds: layout.bounds(),
                     border: Border {
-                        color: theme::ACCENT,
+                        color: theme.palette().accent,
                         width: 1.0,
                         radius: theme::RADIUS.into(),
                     },

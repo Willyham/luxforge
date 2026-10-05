@@ -297,6 +297,7 @@ fn export_to(editor: &mut Editor, asset: &AssetId, destination: PathBuf) {
         entry_id: entry,
         destination,
         keep_metadata: false,
+        pixels_per_inch: None,
         plan,
     };
     let queued = super::export::send_now(&editor.owner, editor.client, &choice);
@@ -402,6 +403,7 @@ fn remembered_export_folder_is_not_stored_for_a_cancelled_or_failed_export() {
         entry_id: entry.clone(),
         destination: folder.join("taken.jpg"),
         keep_metadata: false,
+        pixels_per_inch: None,
         plan: plan_now(&editor.owner, editor.client, &asset, &entry).unwrap(),
     };
     let queued = super::export::send_now(&editor.owner, editor.client, &choice);

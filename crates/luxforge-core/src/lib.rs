@@ -36,6 +36,8 @@ mod proxy;
 mod render;
 pub mod resources;
 mod source;
+/// The interface's themes: roles, derived tokens, the neutral surround and the contrast floors.
+pub mod theme;
 /// The service that answers every pixel read off the catalog owner and renders an export's bands:
 /// the contract a host's GPU provider implements, and the reference renderer's own service.
 pub mod tiles;

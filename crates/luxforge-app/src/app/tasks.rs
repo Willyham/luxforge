@@ -161,6 +161,9 @@ pub(crate) struct SyncResult {
     /// A `preferences.set` changed a preference a General row shows, which the desktop reads
     /// again whether or not the sheet is open.
     pub(crate) preferences: bool,
+    /// A `theme.*` method changed the theme library, which the desktop lists again whether or not
+    /// the sheet is open.
+    pub(crate) themes: bool,
     /// This desktop's own requests whose events the poll read and skipped, because the answer to
     /// each had already read its change back.
     pub(crate) own: Vec<String>,
@@ -178,6 +181,7 @@ impl SyncResult {
             capabilities: false,
             flags: false,
             preferences: false,
+            themes: false,
             own: Vec::new(),
         }
     }
@@ -389,9 +393,19 @@ pub(crate) fn call_own(
     method: &str,
     params: Value,
 ) -> Result<(Value, String), String> {
+    call_own_detailed(owner, client, method, params).map_err(|error| error.to_string())
+}
+
+/// [`call_own`] with the failure's structured data kept, for a caller that tells one refusal from
+/// another by its code.
+pub(crate) fn call_own_detailed(
+    owner: &OwnerHandle,
+    client: ClientId,
+    method: &str,
+    params: Value,
+) -> Result<(Value, String), CallError> {
     let id = api_request_id();
-    let (answer, _) =
-        send(owner, client, id.clone(), method, params).map_err(|error| error.to_string())?;
+    let (answer, _) = send(owner, client, id.clone(), method, params)?;
     Ok((answer, id))
 }
 
@@ -1605,7 +1619,7 @@ pub(crate) fn versions_task(
 pub(crate) fn sync_task(
     owner: OwnerHandle,
     client: ClientId,
-    held: (AssetId, u64),
+    held: Option<(AssetId, u64)>,
     after: u64,
     own: Vec<String>,
     proxy: Drawn,
@@ -1666,7 +1680,8 @@ fn is_library_event(method: &str) -> bool {
 /// reads nothing else, and a preset event from another client costs one `preset.list` and no asset
 /// refresh or preview.
 ///
-/// `held` is the asset on screen and the revision the desktop holds of it. Only an event that names
+/// `held` is the asset on screen and the revision the desktop holds of it, or `None` with no
+/// photograph open, when no event is read back as an asset's. Only an event that names
 /// that asset is read back, and one naming a revision at or below the held one is skipped: the
 /// desktop already shows it. A change to another photograph, an import of one, or an artifact
 /// collection costs the poll nothing. A version names the asset and no revision, since it moves
@@ -1680,7 +1695,7 @@ fn is_library_event(method: &str) -> bool {
 pub(crate) fn sync_now(
     owner: &OwnerHandle,
     client: ClientId,
-    (asset_id, held): (AssetId, u64),
+    held: Option<(AssetId, u64)>,
     after: u64,
     own: &[String],
     proxy: impl Into<Drawn>,
@@ -1716,26 +1731,33 @@ pub(crate) fn sync_now(
             .events
             .iter()
             .any(|event| event.method.starts_with("preferences."));
-    let asset = events.gap
-        || events.events.iter().any(|event| {
-            event.asset_id.as_ref() == Some(&asset_id)
-                && event.revision.is_none_or(|revision| revision > held)
-        });
+    // A theme event changes the library, never an asset: it alone lists the themes again.
+    let themes = events.gap
+        || events
+            .events
+            .iter()
+            .any(|event| event.method.starts_with("theme."));
+    let asset = held.as_ref().is_some_and(|(asset_id, held)| {
+        events.gap
+            || events.events.iter().any(|event| {
+                event.asset_id.as_ref() == Some(asset_id)
+                    && event.revision.is_none_or(|revision| revision > *held)
+            })
+    });
     let presets = if library {
         Some(list_presets(owner, client)?)
     } else {
         None
     };
-    let refresh = if asset {
-        Some(Box::new(refresh(
+    let refresh = match held.filter(|_| asset) {
+        Some((asset_id, _)) => Some(Box::new(refresh(
             owner,
             client,
             asset_id,
             Scope::Elsewhere,
             proxy,
-        )?))
-    } else {
-        None
+        )?)),
+        None => None,
     };
     Ok(SyncResult {
         sequence,
@@ -1744,6 +1766,7 @@ pub(crate) fn sync_now(
         capabilities,
         flags,
         preferences,
+        themes,
         own: read.into_iter().map(|event| event.request_id).collect(),
     })
 }
@@ -2253,7 +2276,7 @@ mod tests {
             let polled = sync_now(
                 &opened.owner,
                 opened.client,
-                (opened.asset.clone(), held),
+                Some((opened.asset.clone(), held)),
                 after,
                 &[],
                 None,
@@ -2391,7 +2414,7 @@ mod tests {
             let polled = sync_now(
                 &owner,
                 client,
-                (asset.clone(), revision),
+                Some((asset.clone(), revision)),
                 editor.sync.sequence,
                 &own,
                 None,
@@ -2477,6 +2500,7 @@ mod tests {
             capabilities: false,
             flags: false,
             preferences: false,
+            themes: false,
             own: Vec::new(),
         };
         let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(stale))));
