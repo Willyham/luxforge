@@ -51,8 +51,8 @@ use std::{
 /// draws together, or a compile that ends would evict one of the plan's own and the drag would
 /// never draw on the GPU. The largest plan is a link for the colour steps before its first spatial
 /// step and one for each of up to 18 spatial steps, Detail and Presence globally and 16 masked
-/// layers (the core's `GPU_PLAN_LINKS`); the warm list holds at most the rest (`GPU_WARM_LINKS`),
-/// so both fit at once. A compiled sequence holds its render pipeline and its passes' compute
+/// layers, and the light link its lights are computed with (the core's `GPU_PLAN_LINKS`); the warm
+/// list holds at most the rest (`GPU_WARM_LINKS`), so both fit at once. A compiled sequence holds its render pipeline and its passes' compute
 /// pipelines, which sequences that run the same pass share through the pass cache
 /// ([`super::spatial::PASS_CACHE`]), so a sequence of a new shape adds little more than its render
 /// pipeline.
@@ -61,12 +61,14 @@ pub const PIPELINE_CACHE: usize = 64;
 /// The program sequences a gesture is likely to need, which the desktop names when the stack
 /// changes so they compile before a drag begins ([`super::super::PhotoSurface::gpu_warm`]). Each
 /// sequence is a plan's steps and the format its boundary will be held in, which its chain's
-/// intermediates take ([`super::chain`]); only the steps' kinds and programs matter, never their
-/// words. A new `version` is warmed once, so handing the same one to every frame costs nothing.
+/// intermediates take ([`super::chain`]); beside them each light link's steps, one sequence of its
+/// own ([`super::light`]). Only the steps' kinds and programs matter, never their words. A new
+/// `version` is warmed once, so handing the same one to every frame costs nothing.
 #[derive(Clone, Debug)]
 pub struct GpuWarm {
     version: u64,
     sequences: Arc<[(Vec<GpuStep>, BoundaryFormat)]>,
+    lights: Arc<[Vec<GpuStep>]>,
 }
 
 impl GpuWarm {
@@ -74,7 +76,21 @@ impl GpuWarm {
         Self {
             version,
             sequences: sequences.into(),
+            lights: Arc::from([]),
         }
+    }
+
+    /// The warm list with the steps of the light links its plans compute beside it, each warmed as
+    /// the sequence a light link compiles ([`super::light::GpuLight::steps`]).
+    pub fn with_lights(self, lights: Vec<Vec<GpuStep>>) -> Self {
+        Self {
+            lights: lights.into(),
+            ..self
+        }
+    }
+
+    pub fn lights(&self) -> &[Vec<GpuStep>] {
+        &self.lights
     }
 
     pub fn version(&self) -> u64 {

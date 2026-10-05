@@ -118,16 +118,29 @@ fn warmed(stack: &Recipe, context: &RenderContext) -> (Vec<GpuPlan>, Vec<Vec<Str
         stack.clone(),
         0,
     );
-    let plans = plan_warm(&job.evaluation, crate::GpuView::Fit(bounds())).unwrap();
+    let warm = plan_warm(&job.evaluation, crate::GpuView::Fit(bounds())).unwrap();
+    // Every link of each plan's chain, then the light links the list warms.
     let mut links: Vec<Vec<String>> = Vec::new();
-    for plan in &plans {
+    for plan in &warm.plans {
         for link in warm_links(plan) {
-            if !links.contains(&link) {
+            if !is_light(&link) && !links.contains(&link) {
                 links.push(link);
             }
         }
     }
-    (plans, links)
+    for (_, light) in &warm.lights {
+        let link = crate::render::gpu::light_link(light);
+        if !links.contains(&link) {
+            links.push(link);
+        }
+    }
+    (warm.plans, links)
+}
+
+/// Whether `link` is a light link's, which [`warmed`] counts by the list's own lights.
+fn is_light(link: &[String]) -> bool {
+    link.first()
+        .is_some_and(|first| first.starts_with("light link"))
 }
 
 /// The links a drag of `stack`'s layer `index` through `action` draws, `fields` moved; or, with no

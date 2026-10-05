@@ -9,19 +9,19 @@
 //!   reductions, the bilinear upsample, the soft clip and the atmospheric light. The box means'
 //!   running sums are measured at several run lengths.
 //! - **Per unit**, on synthetic images: every Presence combination's plan against the CPU frame of
-//!   the same stack, judged by the spatial limits, with the atmospheric light both stored and taken
-//!   on the GPU.
+//!   the same stack, judged by the spatial limits, Dehaze's atmospheric light its light link's,
+//!   computed from the whole stage.
 //!
 //! A test with no adapter prints that it was skipped and asserts nothing: the skip is the report,
 //! and `cargo test` counting it as passed does not make it GPU evidence.
 use super::gpu_plan::surface_plan;
 use super::gpu_qualification::{
-    Stream, codes, corpus_at_fit, differing, drafted_against_cpu, figures, worst,
+    Stream, codes, corpus_at_fit, differing, drafted_against_cpu, figures, lit, lit_fixed, worst,
 };
 use luxforge_core::{
-    Cancel, GPU_PROGRAMS, GpuAnswer, GpuEstimates, GpuPlanRequest, GpuProgramKind, Layer,
-    LinearImage, LinearSettings, ModuleRegistry, PRESENCE_EFFECT, Recipe, RenderContext,
-    RenderOptions, RenderSource, SnapshotId, SourceImage, Stage, gpu_plan, gpu_plan_with,
+    Cancel, GPU_PROGRAMS, GpuAnswer, GpuPlanRequest, GpuProgramKind, Layer, LinearImage,
+    LinearSettings, ModuleRegistry, PRESENCE_EFFECT, PreviewSource, Recipe, RenderContext,
+    RenderOptions, RenderSource, SnapshotId, SourceImage, Stage, gpu_plan,
     qualification::presence as cpu, render,
 };
 use luxforge_reference::preview_error::{self, Class, Rgb8, Statistics};
@@ -241,8 +241,7 @@ const FINISH_SELF: u32 = 1;
 const FINISH_GUIDED: u32 = 2;
 const FINISH_SMOOTH_PLANE: u32 = 4;
 const REDUCE_ENCODED: u32 = 0;
-const REDUCE_DARK: u32 = 2;
-const REDUCE_NONE: u32 = 3;
+const REDUCE_BLOCKS: u32 = 4;
 
 /// A plan of one spatial step over a boundary of `values`, its program the core's text with the
 /// test kernels, read back as `f32`.
@@ -269,6 +268,7 @@ fn run_step(
         texels: TexelMap::IDENTITY,
         steps: vec![GpuStep::Spatial(Box::new(spatial))],
         region: None,
+        lights: Vec::new(),
     };
     qualifier.evaluate(&plan).expect("a qualification readback")
 }
@@ -622,7 +622,7 @@ fn gpu_presence_block_reductions_match_the_cpu() {
         &qualifier,
         (width, height),
         &values,
-        vec![REDUCE_DARK, 16],
+        vec![REDUCE_BLOCKS, 16, width, height],
         vec![reduced(PlaneFormat::Quad, 16)],
         vec![pass("lf_presence_reduce", &[], 0, 0, EACH)],
         show(0),
@@ -730,10 +730,10 @@ fn gpu_presence_soft_clip_matches_the_cpu() {
     assert!(difference < 2.0e-6 && zeros == 0);
 }
 
-/// The atmospheric light the GPU takes from the stage it holds: the 16x reduction, then one
-/// workgroup's selection of the brightest dark-channel blocks, ties at the threshold taken in
-/// row-major order. Against the CPU's preparation from the host's reduction of the same stage. A
-/// light the CPU stored goes through the same passes and is written exactly as given.
+/// The atmospheric light a light link computes from the whole stage: the 16x reduction into the
+/// stage's block plane, then one workgroup's selection of the brightest dark-channel blocks, ties
+/// at the threshold taken in row-major order. Against the CPU's preparation from the host's
+/// reduction of the same stage.
 #[test]
 fn gpu_presence_atmospheric_light_matches_the_cpu() {
     let test = "gpu_presence_atmospheric_light_matches_the_cpu";
@@ -764,24 +764,20 @@ fn gpu_presence_atmospheric_light_matches_the_cpu() {
             .collect();
         let planar: Vec<f32> = channels.concat();
         let cpu = cpu::atmosphere(width, height, &planar);
-        // The words of the reduction and of the atmosphere's pass, then whether a light is given
-        // and the light.
-        let run = |reduce: u32, given: Option<[f32; 3]>| {
-            let light = given.unwrap_or_default().map(f32::to_bits);
+        // The words of the reduction over the whole stage's grid and of the atmosphere's pass.
+        let run = || {
             run_step(
                 &qualifier,
                 (width, height),
                 &values,
                 vec![
-                    reduce,
+                    REDUCE_BLOCKS,
                     16,
+                    width,
+                    height,
                     1000,
                     16,
                     1.0e-3_f32.to_bits(),
-                    u32::from(given.is_some()),
-                    light[0],
-                    light[1],
-                    light[2],
                 ],
                 vec![
                     reduced(PlaneFormat::Quad, 16),
@@ -795,7 +791,7 @@ fn gpu_presence_atmospheric_light_matches_the_cpu() {
                 ],
                 vec![
                     pass("lf_presence_reduce", &[], 0, 0, EACH),
-                    pass("lf_presence_atmosphere", &[0], 1, 2, PassShape::Workgroup),
+                    pass("lf_presence_atmosphere", &[0], 1, 4, PassShape::Workgroup),
                 ],
                 GpuApply {
                     function: Cow::Borrowed("lf_presence_test_show"),
@@ -805,18 +801,7 @@ fn gpu_presence_atmospheric_light_matches_the_cpu() {
                 },
             )
         };
-        // A light the CPU stored is written as given, through the same passes, which reduce
-        // nothing.
-        let stored = [0.61_f32, 0.83, 1.75];
-        assert_eq!(
-            run(REDUCE_NONE, Some(stored))[0][..3]
-                .iter()
-                .map(|value| value.to_bits())
-                .collect::<Vec<_>>(),
-            stored.map(f32::to_bits),
-            "{case}: the given light"
-        );
-        let gpu = run(REDUCE_DARK, None);
+        let gpu = run();
         let light = gpu[0];
         let difference = (0..3)
             .map(|channel| (f64::from(light[channel]) - cpu[channel]).abs())
@@ -865,19 +850,17 @@ struct Measured {
     drawn: Statistics,
     passed: bool,
     non_finite: usize,
-    approximate: bool,
     planes: u64,
 }
 
 /// `stack` over `pixels` on the linear path: the CPU frame against the GPU plan's, its atmospheric
-/// light stored by the CPU frame's render when `stored`, else taken on the GPU.
+/// light its light link's, computed from the whole stage by the surface's own link.
 fn measure_unit(
     qualifier: &Qualifier,
     registry: &ModuleRegistry,
     stack: &Recipe,
     (width, height): (u32, u32),
     pixels: &[[f32; 3]],
-    stored: bool,
 ) -> Measured {
     let len = pixels.len();
     let mut planes = vec![0.0_f32; 3 * len];
@@ -902,25 +885,18 @@ fn measure_unit(
     )
     .and_then(|render| render.frame(SnapshotId::new()))
     .expect("the CPU frame");
-    let fresh = RenderContext::new();
-    let estimates = GpuEstimates {
-        context: if stored { &context } else { &fresh },
-        source: source.into(),
-    };
-    let plan = match gpu_plan_with(
+    let plan = match gpu_plan(
         registry,
         stack,
         GpuPlanRequest::exact(0, stage(width, height))
             .qualifying()
             .linear(),
-        Some(estimates),
     )
     .expect("the stack compiles")
     {
         GpuAnswer::Plan(plan) => *plan,
         GpuAnswer::Fallback(reason) => panic!("{reason}"),
     };
-    let approximate = plan.approximate();
     let planes = plan
         .spatial
         .iter()
@@ -928,6 +904,11 @@ fn measure_unit(
         .sum::<u64>();
     let held_boundary = boundary(width, height, 1, pixels).expect("a boundary");
     let converted = surface_plan(&plan, held_boundary).expect("a runnable plan");
+    let preview = PreviewSource::Raw {
+        image: image.clone(),
+        settings: LinearSettings::default(),
+    };
+    lit(qualifier, &preview, &converted).expect("the plan's lights");
     let gpu = qualifier.evaluate(&converted).expect("a readback");
     let drawn = qualifier.evaluate_codes(&converted).expect("a readback");
     let non_finite = gpu
@@ -956,7 +937,6 @@ fn measure_unit(
         drawn: compare(&candidate),
         program,
         non_finite,
-        approximate,
         planes,
     }
 }
@@ -964,8 +944,8 @@ fn measure_unit(
 /// Every Presence combination at both ends, unmasked and masked by a feathered radial, over a
 /// synthetic photograph at two sizes, against the CPU frame of the same stack: the program's `f32`
 /// output through the reference quantizer held to the spatial limits and the finiteness rule, the
-/// drawn codes reported beside it. Dehaze is run with the light the CPU stored and with the one
-/// the GPU takes from the stage it holds, which on a whole stage is the same selection.
+/// drawn codes reported beside it. Dehaze reads the light its light link computes from the whole
+/// stage.
 #[test]
 fn gpu_presence_units_meet_the_spatial_limits() {
     let test = "gpu_presence_units_meet_the_spatial_limits";
@@ -990,48 +970,28 @@ fn gpu_presence_units_meet_the_spatial_limits() {
             .iter()
             .flat_map(|payload| [(payload, false), (payload, true)])
         {
-            let dehaze = payload.get("dehaze").is_some();
             let stack = if masking {
                 masked(recipe(payload.clone()), &radial())
             } else {
                 recipe(payload.clone())
             };
-            for stored in if dehaze {
-                vec![true, false]
-            } else {
-                vec![true]
-            } {
-                let measured = measure_unit(
-                    &qualifier,
-                    &registry,
-                    &stack,
-                    (width, height),
-                    &pixels,
-                    stored,
-                );
-                let name = format!(
-                    "{payload}{} at {width}x{height}{}",
-                    if masking { " masked" } else { "" },
-                    match (dehaze, stored) {
-                        (true, true) => ", light stored",
-                        (true, false) => ", light taken on the GPU",
-                        _ => "",
-                    }
-                );
-                assert_eq!(measured.approximate, dehaze && !stored, "{name}");
-                eprintln!(
-                    "{name}: program {} | drawn {} | non-finite {} | planes {} B{}",
-                    figures(&measured.program),
-                    figures(&measured.drawn),
-                    measured.non_finite,
-                    measured.planes,
-                    if measured.passed { "" } else { " MISS" }
-                );
-                programs.push(measured.program);
-                drawn.push(measured.drawn);
-                if !measured.passed {
-                    missed.push(name);
-                }
+            let measured = measure_unit(&qualifier, &registry, &stack, (width, height), &pixels);
+            let name = format!(
+                "{payload}{} at {width}x{height}",
+                if masking { " masked" } else { "" },
+            );
+            eprintln!(
+                "{name}: program {} | drawn {} | non-finite {} | planes {} B{}",
+                figures(&measured.program),
+                figures(&measured.drawn),
+                measured.non_finite,
+                measured.planes,
+                if measured.passed { "" } else { " MISS" }
+            );
+            programs.push(measured.program);
+            drawn.push(measured.drawn);
+            if !measured.passed {
+                missed.push(name);
             }
         }
     }
@@ -1095,22 +1055,19 @@ fn gpu_presence_on_the_byte_path_meets_the_spatial_limits() {
         )
         .and_then(|render| render.frame(SnapshotId::new()))
         .expect("the CPU frame");
-        let plan = match gpu_plan_with(
+        let plan = match gpu_plan(
             &registry,
             &stack,
             GpuPlanRequest::exact(0, stage(width, height)).qualifying(),
-            Some(GpuEstimates {
-                context: &context,
-                source: RenderSource::Byte(&image).into(),
-            }),
         )
         .unwrap()
         {
             GpuAnswer::Plan(plan) => *plan,
             GpuAnswer::Fallback(reason) => panic!("{reason}"),
         };
-        assert!(plan.spatial.first().unwrap().clamps && !plan.approximate());
+        assert!(plan.spatial.first().unwrap().clamps && plan.reads_lights());
         let converted = surface_plan(&plan, boundary(width, height, 1, &texels).unwrap()).unwrap();
+        lit(&qualifier, &PreviewSource::Jpeg(image.clone()), &converted).unwrap();
         let gpu = qualifier.evaluate(&converted).unwrap();
         let reference: Vec<u8> = cpu
             .rgba
@@ -1133,9 +1090,7 @@ fn gpu_presence_on_the_byte_path_meets_the_spatial_limits() {
 }
 
 /// Presence's pass pipelines are their kernels and shapes: all three units compile fewer pipelines
-/// than they run passes, a drag that changes only amounts compiles none, and the plan whose light
-/// is taken on the GPU runs the passes of the plan whose light was stored, compiling none either.
-/// A step before Presence is a link of its own, whose output Presence's link reads as its
+/// than they run passes, and a drag that changes only amounts compiles none. A step before Presence is a link of its own, whose output Presence's link reads as its
 /// boundary, so a plan with Basic before it compiles none of Presence's passes again, and one with
 /// Detail before it only Detail's own.
 #[test]
@@ -1156,33 +1111,20 @@ fn gpu_presence_pass_pipelines_are_shared_across_plans() {
     }
     let image = LinearImage::with_fingerprint(width, height, planes, "sha256:gpu-presence-passes")
         .expect("a linear image");
-    let source = RenderSource::Linear {
-        image: &image,
+    let source = PreviewSource::Raw {
+        image,
         settings: LinearSettings::default(),
     };
     let stack = recipe(json!({"texture": 40, "clarity": 30, "dehaze": 25}));
-    let stored = RenderContext::new();
-    render(
-        &registry,
-        source,
-        &stack,
-        RenderOptions::exact(&Cancel::never()),
-        &stored,
-    )
-    .and_then(|render| render.frame(SnapshotId::new()))
-    .expect("the CPU frame, which stores the light");
-    let fresh = RenderContext::new();
-    let converted = |stack: &Recipe, context: &RenderContext| {
-        let plan = match gpu_plan_with(
+    // Each plan with its light, which a light link computes from the whole stage on a pipeline of
+    // its own: only the plan's passes are this qualifier's.
+    let converted = |stack: &Recipe| {
+        let plan = match gpu_plan(
             &registry,
             stack,
             GpuPlanRequest::exact(0, stage(width, height))
                 .qualifying()
                 .linear(),
-            Some(GpuEstimates {
-                context,
-                source: source.into(),
-            }),
         )
         .expect("the stack compiles")
         {
@@ -1195,34 +1137,23 @@ fn gpu_presence_pass_pipelines_are_shared_across_plans() {
             .map(|spatial| spatial.passes.len())
             .sum::<usize>();
         let held = boundary(width, height, 1, &pixels).expect("a boundary");
-        (surface_plan(&plan, held).expect("a runnable plan"), passes)
+        let converted = surface_plan(&plan, held).expect("a runnable plan");
+        lit(&qualifier, &source, &converted).expect("the plan's light");
+        (converted, passes)
     };
-    let (plan, passes) = converted(&stack, &stored);
+    let (plan, passes) = converted(&stack);
     qualifier.evaluate(&plan).expect("a readback");
     let first = qualifier.pass_pipelines_created();
-    eprintln!("{test}: all three, light stored: {passes} passes, {first} pipelines");
+    eprintln!("{test}: all three: {passes} passes, {first} pipelines");
     assert!(first < passes as u64);
     // A drag moves amounts: its words change, its modules do not.
     let mut dragged = stack.clone();
     dragged.layers[0].payload = json!({"texture": 75, "clarity": -10, "dehaze": 60});
     qualifier
-        .evaluate(&converted(&dragged, &stored).0)
+        .evaluate(&converted(&dragged).0)
         .expect("a readback");
-    assert_eq!(
-        qualifier.pass_pipelines_created(),
-        first,
-        "a drag compiles nothing"
-    );
-    // The light taken on the GPU: the same passes, which reduce the stage and find the light
-    // where the stored plan's wrote the light given.
-    let (plan, estimated) = converted(&stack, &fresh);
-    qualifier.evaluate(&plan).expect("a readback");
     let second = qualifier.pass_pipelines_created();
-    eprintln!(
-        "{test}: all three, light taken on the GPU: {estimated} passes, {} more pipelines",
-        second - first
-    );
-    assert_eq!((estimated, second), (passes, first));
+    assert_eq!(second, first, "a drag compiles nothing");
     // Basic before Presence: Presence's link reads what Basic's wrote, so every one of its passes
     // runs a pipeline above.
     let mut lifted = stack.clone();
@@ -1230,7 +1161,7 @@ fn gpu_presence_pass_pipelines_are_shared_across_plans() {
         0,
         Layer::new(luxforge_core::BASIC_EFFECT, json!({"exposure": 0.3})),
     );
-    let (plan, lifted_passes) = converted(&lifted, &fresh);
+    let (plan, lifted_passes) = converted(&lifted);
     qualifier.evaluate(&plan).expect("a readback");
     let third = qualifier.pass_pipelines_created();
     eprintln!(
@@ -1247,7 +1178,7 @@ fn gpu_presence_pass_pipelines_are_shared_across_plans() {
             json!({"luminance": 40, "colour": 40, "sharpening": 50}),
         ),
     );
-    let (plan, detailed_passes) = converted(&detailed, &fresh);
+    let (plan, detailed_passes) = converted(&detailed);
     qualifier.evaluate(&plan).expect("a readback");
     let fourth = qualifier.pass_pipelines_created();
     eprintln!(
@@ -1302,6 +1233,8 @@ fn gpu_presence_passes_that_read_only_planes_read_no_input() {
             }
         }
     }
+    // Both read one light, whichever it is.
+    lit_fixed(&qualifier, &described);
     let drawn = qualifier.evaluate(&described).expect("a readback");
     let read = qualifier.evaluate(&reading).expect("a readback");
     let differing = drawn
@@ -1368,6 +1301,7 @@ fn gpu_presence_texture_band_in_one_channel_draws_what_two_did() {
                 let band = &mut spatial.planes[band as usize];
                 assert_eq!(band.format, PlaneFormat::HalfScalar);
                 band.format = PlaneFormat::HalfPair;
+                lit_fixed(&qualifier, &one);
                 let (left, right) = (
                     qualifier.evaluate(&one).expect("a readback"),
                     qualifier.evaluate(&two).expect("a readback"),
@@ -1416,9 +1350,9 @@ fn gpu_presence_corpus_at_fit() {
 
 /// A tick runs only the passes whose words or inputs changed: after the plan a drag started from,
 /// a change to an amount reruns only the passes that read it, directly or through a unit's input,
-/// and draws exactly what a slot that ran every pass draws. Of all three units' 22 passes, a
-/// Clarity drag runs none, a Texture drag 5 and a Dehaze drag 19, the light stored or taken on the
-/// GPU: one link alone wrote its scratch last, so the pool it takes it from changes no count.
+/// and draws exactly what a slot that ran every pass draws. Of all three units' 20 passes, a
+/// Clarity drag runs none, a Texture drag 5 and a Dehaze drag 19, the light read from its plane:
+/// one link alone wrote its scratch last, so the pool it takes it from changes no count.
 #[test]
 fn gpu_presence_a_drag_reruns_only_the_passes_it_changes() {
     let test = "gpu_presence_a_drag_reruns_only_the_passes_it_changes";
@@ -1437,36 +1371,21 @@ fn gpu_presence_a_drag_reruns_only_the_passes_it_changes() {
     }
     let image = LinearImage::with_fingerprint(width, height, planes, "sha256:gpu-presence-drag")
         .expect("a linear image");
-    let source = RenderSource::Linear {
-        image: &image,
+    let source = PreviewSource::Raw {
+        image,
         settings: LinearSettings::default(),
     };
     let start = json!({"texture": 40, "clarity": 30, "dehaze": 25});
-    let stored = RenderContext::new();
-    render(
-        &registry,
-        source,
-        &recipe(start.clone()),
-        RenderOptions::exact(&Cancel::never()),
-        &stored,
-    )
-    .and_then(|render| render.frame(SnapshotId::new()))
-    .expect("the CPU frame, which stores the light");
-    let fresh = RenderContext::new();
     let mut stack = recipe(start.clone());
-    let mut converted = |payload: &Value, context: &RenderContext| {
+    let mut converted = |payload: &Value| {
         // One recipe, its payload changed in place, as a drag changes it.
         stack.layers[0].payload = payload.clone();
-        let plan = match gpu_plan_with(
+        let plan = match gpu_plan(
             &registry,
             &stack,
             GpuPlanRequest::exact(0, stage(width, height))
                 .qualifying()
                 .linear(),
-            Some(GpuEstimates {
-                context,
-                source: source.into(),
-            }),
         )
         .expect("the stack compiles")
         {
@@ -1481,61 +1400,41 @@ fn gpu_presence_a_drag_reruns_only_the_passes_it_changes() {
         let held = boundary(width, height, 1, &pixels).expect("a boundary");
         (surface_plan(&plan, held).expect("a runnable plan"), passes)
     };
-    // Each drag: what it starts from, where it goes, the light, and how many passes it runs.
+    // Each drag: where it goes from the start, and how many passes it runs.
     let drags = [
         (
             "Clarity",
             json!({"texture": 40, "clarity": -10, "dehaze": 25}),
-            &stored,
             0,
         ),
         (
             "Texture",
             json!({"texture": 75, "clarity": 30, "dehaze": 25}),
-            &stored,
             5,
         ),
         (
             "Dehaze",
             json!({"texture": 40, "clarity": 30, "dehaze": 60}),
-            &stored,
             19,
         ),
         (
             "all three",
             json!({"texture": 75, "clarity": -10, "dehaze": 60}),
-            &stored,
             19,
         ),
-        ("nothing", start.clone(), &stored, 0),
-        (
-            "Clarity, light on the GPU",
-            json!({"texture": 40, "clarity": -10, "dehaze": 25}),
-            &fresh,
-            0,
-        ),
-        (
-            "Texture, light on the GPU",
-            json!({"texture": 75, "clarity": 30, "dehaze": 25}),
-            &fresh,
-            5,
-        ),
-        (
-            "Dehaze, light on the GPU",
-            json!({"texture": 40, "clarity": 30, "dehaze": 60}),
-            &fresh,
-            19,
-        ),
+        ("nothing", start.clone(), 0),
     ];
-    for (drag, payload, context, wanted) in drags {
-        let (first, all) = converted(&start, context);
-        let (then, _) = converted(&payload, context);
+    for (drag, payload, wanted) in drags {
+        let (first, all) = converted(&start);
+        // The light depends on the stage alone, which no drag here moves: one light for both.
+        lit(&qualifier, &source, &first).expect("the plan's light");
+        let (then, _) = converted(&payload);
         let (after, ran) = qualifier
             .evaluate_after(&first, &then)
             .expect("a readback after the first");
         let whole = qualifier.evaluate(&then).expect("a readback of every pass");
         eprintln!("{test}: {drag}: {ran} of {all} passes");
-        assert_eq!((ran, all), (wanted, 22), "{drag}");
+        assert_eq!((ran, all), (wanted, 20), "{drag}");
         assert_eq!(
             differing(&after, &whole),
             0,
@@ -1550,8 +1449,8 @@ fn gpu_presence_a_drag_reruns_only_the_passes_it_changes() {
 /// Texture drag with Clarity at zero none. Within one drag, a unit leaving zero runs, in that tick,
 /// every pass whose input moved while it was neutral, or every one when it has never run; one
 /// returning to a value its planes still hold runs none. Every tick draws, bit for bit, what a run
-/// of every pass draws, the atmospheric light stored and taken on the GPU, and so it does with the
-/// poison on, the scratch pool's textures holding NaN before each tick's passes.
+/// of every pass draws, and so it does with the poison on, the scratch pool's textures holding NaN
+/// before each tick's passes.
 #[test]
 fn gpu_presence_a_neutral_unit_runs_no_pass_until_it_leaves_zero() {
     let test = "gpu_presence_a_neutral_unit_runs_no_pass_until_it_leaves_zero";
@@ -1570,48 +1469,29 @@ fn gpu_presence_a_neutral_unit_runs_no_pass_until_it_leaves_zero() {
     }
     let image = LinearImage::with_fingerprint(width, height, planes, "sha256:gpu-presence-neutral")
         .expect("a linear image");
-    let source = RenderSource::Linear {
-        image: &image,
+    let source = PreviewSource::Raw {
+        image,
         settings: LinearSettings::default(),
     };
-    let stored = RenderContext::new();
-    render(
-        &registry,
-        source,
-        &recipe(json!({"texture": 40, "clarity": 30, "dehaze": 25})),
-        RenderOptions::exact(&Cancel::never()),
-        &stored,
-    )
-    .and_then(|render| render.frame(SnapshotId::new()))
-    .expect("the CPU frame, which stores the light");
-    let fresh = RenderContext::new();
     // One recipe, its payload changed in place, as a drag changes it; drafted, the layer holds
     // every unit, an amount-0 one the identity.
     let stack = std::cell::RefCell::new(recipe(json!({})));
-    let plan = |payload: &Value, context: &RenderContext, drafted: bool| {
+    let plan = |payload: &Value, drafted: bool| {
         let mut stack = stack.borrow_mut();
         stack.layers[0].payload = payload.clone();
         let request = GpuPlanRequest::exact(0, stage(width, height))
             .qualifying()
             .linear();
         let request = if drafted { request.drafted(0) } else { request };
-        let plan = match gpu_plan_with(
-            &registry,
-            &stack,
-            request,
-            Some(GpuEstimates {
-                context,
-                source: source.into(),
-            }),
-        )
-        .expect("the stack compiles")
-        {
+        let plan = match gpu_plan(&registry, &stack, request).expect("the stack compiles") {
             GpuAnswer::Plan(plan) => *plan,
             GpuAnswer::Fallback(reason) => panic!("{reason}"),
         };
         let held = boundary(width, height, 1, &pixels).expect("a boundary");
         surface_plan(&plan, held).expect("a runnable plan")
     };
+    // The light depends on the stage alone, which no tick here moves: one light for every plan.
+    lit(&qualifier, &source, &plan(&json!({"dehaze": 25}), true)).expect("the light");
     let passes = |plan: &GpuPlan| {
         plan.steps
             .iter()
@@ -1641,12 +1521,12 @@ fn gpu_presence_a_neutral_unit_runs_no_pass_until_it_leaves_zero() {
         json!({"texture": 40}),
         json!({"clarity": 30}),
     ]
-    .map(|payload| passes(&plan(&payload, &stored, false)));
+    .map(|payload| passes(&plan(&payload, false)));
     let all = dehaze + texture + clarity;
     let (_, moved) = qualifier
         .evaluate_after(
-            &plan(&json!({"dehaze": 25}), &stored, false),
-            &plan(&json!({"dehaze": 60}), &stored, false),
+            &plan(&json!({"dehaze": 25}), false),
+            &plan(&json!({"dehaze": 60}), false),
         )
         .expect("a readback of Dehaze alone");
     eprintln!(
@@ -1658,7 +1538,6 @@ fn gpu_presence_a_neutral_unit_runs_no_pass_until_it_leaves_zero() {
     let drags = [
         (
             "Dehaze, Texture and Clarity at zero",
-            &stored,
             vec![
                 (json!({"dehaze": 25}), dehaze),
                 (json!({"dehaze": 60}), moved),
@@ -1666,7 +1545,6 @@ fn gpu_presence_a_neutral_unit_runs_no_pass_until_it_leaves_zero() {
         ),
         (
             "Texture, Clarity at zero",
-            &stored,
             vec![
                 (json!({"texture": 40, "dehaze": 25}), dehaze + texture),
                 (json!({"texture": 75, "dehaze": 25}), 0),
@@ -1674,7 +1552,6 @@ fn gpu_presence_a_neutral_unit_runs_no_pass_until_it_leaves_zero() {
         ),
         (
             "across zero",
-            &stored,
             vec![
                 (json!({"texture": 40, "dehaze": 25}), dehaze + texture),
                 (json!({"texture": 0, "dehaze": 25}), 0),
@@ -1691,8 +1568,7 @@ fn gpu_presence_a_neutral_unit_runs_no_pass_until_it_leaves_zero() {
             ],
         ),
         (
-            "Dehaze across zero, light on the GPU",
-            &fresh,
+            "Dehaze across zero",
             vec![
                 (json!({"texture": 40}), texture),
                 (json!({"texture": 40, "dehaze": 30}), dehaze + texture),
@@ -1700,10 +1576,10 @@ fn gpu_presence_a_neutral_unit_runs_no_pass_until_it_leaves_zero() {
             ],
         ),
     ];
-    for (drag, context, ticks) in drags {
+    for (drag, ticks) in drags {
         let plans: Vec<GpuPlan> = ticks
             .iter()
-            .map(|(payload, _)| plan(payload, context, true))
+            .map(|(payload, _)| plan(payload, true))
             .collect();
         for (index, (payload, wanted)) in ticks.iter().enumerate() {
             let drawn: Vec<&GpuPlan> = plans[..=index].iter().collect();
@@ -1881,6 +1757,7 @@ fn gpu_presence_a_masked_layer_runs_its_passes_over_its_mask_alone() {
                 if rect != spatial.pass_rect(whole.texels, (width, height)) {
                     restricted += 1;
                 }
+                lit_fixed(&qualifier, &bounded);
                 let (left, right) = (
                     qualifier.evaluate(&bounded).expect("a readback"),
                     qualifier.evaluate(&whole).expect("a readback"),

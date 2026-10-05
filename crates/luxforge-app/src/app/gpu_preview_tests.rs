@@ -483,8 +483,8 @@ fn gpu_preview_a_drag_below_100_percent_draws_its_proxy_with_no_job_per_tick() {
         assert_eq!((proxy.width, proxy.height), (width, height), "{value}%");
         let warm = refreshed.job.gpu_warm.expect("a warm list");
         assert!(
-            !warm.is_empty()
-                && warm.iter().all(|plan| plan.boundary.stage
+            !warm.plans.is_empty()
+                && warm.plans.iter().all(|plan| plan.boundary.stage
                     == luxforge_core::Stage {
                         width: proxy.width,
                         height: proxy.height
@@ -627,9 +627,9 @@ pub(super) fn commit(editor: &mut Editor, action: &str, field: &str, value: f64)
 
 /// A Presence drag, and a Basic drag under Presence, at Fit: each opens with one CPU tick, until
 /// the surface has evaluated its plan, then draws every tick on the GPU from a plan holding
-/// Presence's spatial step, with no preview job. The Presence drag's plan reads Dehaze's light from the store
-/// the committed frame filled; the Basic drag changes the input the light is estimated from, so
-/// its plan takes the light on the GPU and says it is approximate.
+/// Presence's spatial step, with no preview job. Each reads Dehaze's light from its light link over
+/// the source: the Presence drag the light at rest, the Basic drag, which changes the light's
+/// input, one computed every tick through its drafted exposure.
 #[test]
 fn gpu_preview_presence_drags_draw_on_the_gpu_with_no_job_per_tick() {
     let catalog = catalog("presence");
@@ -641,28 +641,29 @@ fn gpu_preview_presence_drags_draw_on_the_gpu_with_no_job_per_tick() {
         PRESENCE,
         "clarity",
         &[20.0, 30.0, 45.0, 60.0, 75.0],
-        false,
+        &["source"],
     );
     gpu_drag(
         &mut editor,
         ACTION,
         FIELD,
         &[0.1, 0.2, 0.3, 0.45, 0.6],
-        true,
+        &["source"],
     );
     finish(editor, catalog);
 }
 
 /// One drag drawn on the GPU through a plan holding Presence's spatial step, then committed: its
 /// first tick holds the boundary and its job goes to the worker, and once the surface has
-/// evaluated the plan every later tick is drawn on the GPU with no preview job, the plan's light
-/// stored or taken on the GPU as `approximate` says. Answers the last tick's plan.
+/// evaluated the plan every later tick is drawn on the GPU with no preview job, each light the
+/// plan reads computed as `lights` says, in order: from the source, or by its stand-in with the
+/// spatial layers before it left out. Answers the last tick's plan.
 fn gpu_drag(
     editor: &mut Editor,
     action: &str,
     field: &str,
     values: &[f64],
-    approximate: bool,
+    lights: &[&str],
 ) -> luxforge_ui::photo_surface::GpuPlan {
     editor.gpu.surface = Some(SurfaceReport::default());
     let log = attach_log(editor);
@@ -700,10 +701,16 @@ fn gpu_drag(
             .any(|step| matches!(step, luxforge_ui::photo_surface::GpuStep::Spatial(_))),
         "{field}: Presence is in the plan"
     );
+    let computed: Vec<Value> = editor.gpu.summary()["drag"]["lights"]
+        .as_array()
+        .expect("the plan's lights")
+        .iter()
+        .map(|light| light["computed"].clone())
+        .collect();
     assert_eq!(
-        editor.gpu.summary()["drag"]["approximate"],
-        json!(approximate),
-        "{field}: where the light comes from"
+        computed,
+        json!(lights).as_array().unwrap().clone(),
+        "{field}: the lights"
     );
     let _ = let_go(editor, action, field);
     assert!(run_commit(editor));
@@ -1309,7 +1316,8 @@ fn gpu_preview_a_percentage_spatial_drag_draws_the_shape_the_budget_holds() {
 
 /// A Detail drag with Presence in the stack, at Fit: the plan chains Detail's operation and
 /// Presence's from the Detail layer, and once the boundary is held every tick is drawn on the GPU
-/// with no preview job.
+/// with no preview job, reading the light the stack it started from draws with, which no Detail
+/// layer reads.
 #[test]
 fn gpu_preview_a_detail_drag_under_presence_draws_on_the_gpu() {
     let catalog = catalog("detail-presence");
@@ -1322,7 +1330,7 @@ fn gpu_preview_a_detail_drag_under_presence_draws_on_the_gpu() {
         "set-detail",
         "sharpening",
         &[20.0, 35.0, 50.0, 65.0],
-        true,
+        &["source"],
     );
     let spatial = plan
         .steps
@@ -1333,11 +1341,11 @@ fn gpu_preview_a_detail_drag_under_presence_draws_on_the_gpu() {
     finish(editor, catalog);
 }
 
-/// At 100% a Presence drag over a committed Dehaze reads the light the exact frames stored, so it
-/// is drawn on the GPU over the visible region with no preview job per tick. A Basic drag under
-/// that Presence changes the light's input, which the region alone cannot give, so it keeps the CPU
-/// path and names `region-estimate`, asking for no boundary; with Dehaze back at neutral, a Basic
-/// drag under Presence is drawn on the GPU too.
+/// At 100% a Presence drag over a committed Dehaze reads the light at rest, computed from the whole
+/// stage, so it is drawn on the GPU over the visible region with no preview job per tick. A Basic
+/// drag under that Presence changes the light's input and computes it every tick from the whole
+/// stage over the source, drawn on the GPU over the region too; with Dehaze back at neutral a Basic
+/// drag under Presence reads no light.
 #[test]
 fn gpu_preview_presence_drags_at_100_percent() {
     let catalog = catalog("presence-100");
@@ -1359,50 +1367,39 @@ fn gpu_preview_presence_drags_at_100_percent() {
     at_100(&mut editor);
     commit(&mut editor, PRESENCE, "dehaze", 40.0);
     let wanted = at_100(&mut editor);
-    let plan = gpu_drag(&mut editor, PRESENCE, "clarity", &[20.0, 30.0, 45.0], false);
+    let plan = gpu_drag(
+        &mut editor,
+        PRESENCE,
+        "clarity",
+        &[20.0, 30.0, 45.0],
+        &["source"],
+    );
+    let corners = Some([wanted.x0, wanted.y0, wanted.x1(), wanted.y1()]);
     assert_eq!(
         plan.region.map(|region| region.rect),
-        Some([wanted.x0, wanted.y0, wanted.x1(), wanted.y1()]),
+        corners,
         "the visible region"
     );
-    // Under Presence with Dehaze: the CPU path, named, and no boundary asked for.
+    // Under Presence with Dehaze: the light computed every tick, over the visible region too.
     at_100(&mut editor);
-    let log = attach_log(&mut editor);
-    let _ = slide(&mut editor, ACTION, FIELD, 0.1);
-    let _ = slide(&mut editor, ACTION, FIELD, 0.2);
-    let records = logged(&mut editor, &log);
-    assert_eq!(jobs(&records), 2, "each tick has its region job");
-    let ticks = events(&records, "gpu_preview_tick");
-    assert!(
-        ticks
-            .iter()
-            .all(|tick| tick["path"] == "cpu" && tick["reason"] == "region-estimate"),
-        "{ticks:?}"
-    );
-    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is derived");
-    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
-    deliver_until(&mut editor, "the cancelled drag's frame", |editor| {
-        !editor.gpu.has_drag() && !editor.presentation.queue.is_busy()
-    });
+    let plan = gpu_drag(&mut editor, ACTION, FIELD, &[0.1, 0.2, 0.3], &["source"]);
+    assert_eq!(plan.region.map(|region| region.rect), corners);
     // Dehaze at neutral: Presence holds no global estimate.
     at_100(&mut editor);
     commit(&mut editor, PRESENCE, "dehaze", 0.0);
     at_100(&mut editor);
-    let plan = gpu_drag(&mut editor, ACTION, FIELD, &[0.1, 0.2, 0.3], false);
+    let plan = gpu_drag(&mut editor, ACTION, FIELD, &[0.4, 0.5, 0.6], &[]);
     assert!(plan.region.is_some(), "a region plan");
     finish(editor, catalog);
 }
 
-/// At a percentage zoom with Dehaze behind Detail, the CPU cannot cut the view's region: it draws
-/// the whole frame's proxy while a drag moves and the whole exact frame once the view settles, which
-/// stores the light. A Presence drag then reads that light, the drafted stack's own, and is drawn on
-/// the GPU over the visible region with no preview job per tick, its plan running Detail's
-/// operation, then Presence's, from the photograph — the boundary every gesture over the view
-/// starts from — which is rendered after the first tick's declined region job; and a Detail drag
-/// reads the light the stack it started from stored, held for the drag, and is drawn on the GPU
-/// too, its plan approximate. (A store that holds
-/// no light, which this photograph's exact Fit frames never leave, keeps the drag on the CPU path:
-/// `behind_detail_a_region_plan_holds_dehazes_stored_light` in the core.)
+/// At a percentage zoom with Dehaze behind Detail, a Presence drag reads the light at rest, which
+/// reads Detail's output, and is drawn on the GPU over the visible region with no preview job per
+/// tick, its plan running Detail's operation, then Presence's, from the photograph — the boundary
+/// every gesture over the view starts from — the slot computing the light by its stand-in, with
+/// Detail left out, until it holds the picture at rest's; and a Detail drag reads the light of the
+/// stack it started from and is drawn on the GPU too
+/// (`behind_detail_a_region_plan_reads_the_light_at_rest_or_its_stand_in` in the core).
 #[test]
 fn gpu_preview_dehaze_behind_detail_draws_its_region_on_the_gpu() {
     let catalog = catalog("dehaze-detail");
@@ -1432,7 +1429,13 @@ fn gpu_preview_dehaze_behind_detail_draws_its_region_on_the_gpu() {
             .count()
     };
     let corners = Some([wanted.x0, wanted.y0, wanted.x1(), wanted.y1()]);
-    let plan = gpu_drag(&mut editor, PRESENCE, "clarity", &[20.0, 30.0, 45.0], false);
+    let plan = gpu_drag(
+        &mut editor,
+        PRESENCE,
+        "clarity",
+        &[20.0, 30.0, 45.0],
+        &["stand-in"],
+    );
     assert_eq!(region(&plan), corners, "the visible region");
     assert_eq!(
         spatial(&plan),
@@ -1445,7 +1448,7 @@ fn gpu_preview_dehaze_behind_detail_draws_its_region_on_the_gpu() {
         "set-detail",
         "sharpening",
         &[50.0, 60.0, 70.0],
-        true,
+        &["stand-in"],
     );
     assert_eq!(region(&plan), corners, "the visible region");
     assert_eq!(spatial(&plan), 2, "Detail's operation, then Presence's");

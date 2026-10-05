@@ -19,10 +19,10 @@ use super::{
     gpu_window_tests::{HEIGHT, WIDTH, source},
 };
 use luxforge_core::{
-    BASIC_EFFECT, BoundaryFormat, CURVE_EFFECT, Cancel, DETAIL_EFFECT, EstimateSource, GpuAnswer,
-    GpuEstimates, GpuPlanRequest, Layer, LinearImage, MIXER_EFFECT, ModuleRegistry,
-    PERSPECTIVE_EFFECT, PRESENCE_EFFECT, PreviewSource, Recipe, Region, RenderContext,
-    RenderOptions, SnapshotId, Stage, VIGNETTE_EFFECT, anchored, gpu_plan_with, render,
+    BASIC_EFFECT, BoundaryFormat, CURVE_EFFECT, Cancel, DETAIL_EFFECT, GpuAnswer, GpuPlanRequest,
+    Layer, LinearImage, MIXER_EFFECT, ModuleRegistry, PERSPECTIVE_EFFECT, PRESENCE_EFFECT,
+    PreviewSource, Recipe, Region, RenderContext, RenderOptions, Stage, VIGNETTE_EFFECT, anchored,
+    gpu_plan, render,
 };
 use luxforge_ui::{
     adapters,
@@ -170,12 +170,13 @@ pub(super) fn families() -> Vec<(&'static str, Recipe)> {
                 vec![(1, radial()), (2, gradient())],
             ),
         ),
+        // Presence without Dehaze here and below: Dehaze's light is computed from the whole stage,
+        // which the tile runner holds a window of, so a plan that reads a light is the reference's
+        // (`luxforge_core::plan_read`).
         (
             "Presence",
             recipe(
-                vec![presence(
-                    json!({"texture": 35.0, "clarity": 30.0, "dehaze": 20.0}),
-                )],
+                vec![presence(json!({"texture": 35.0, "clarity": 30.0}))],
                 Vec::new(),
             ),
         ),
@@ -225,10 +226,7 @@ pub(super) fn families() -> Vec<(&'static str, Recipe)> {
         (
             "a masked Presence after Basic",
             recipe(
-                vec![
-                    basic,
-                    presence(json!({"texture": 30.0, "clarity": 40.0, "dehaze": 15.0})),
-                ],
+                vec![basic, presence(json!({"texture": 30.0, "clarity": 40.0}))],
                 vec![(1, radial())],
             ),
         ),
@@ -277,7 +275,7 @@ fn cases() -> Vec<Case> {
         let gpu = gpu_source(version, &source);
         for (family, recipe) in families() {
             let name = format!("{family} on {path}");
-            // The exact render, whose frame stores the global estimates every tile's plan reads.
+            // The exact render, whose boundaries name every tile's window.
             let context = RenderContext::new();
             let exact = render(
                 &registry,
@@ -287,23 +285,16 @@ fn cases() -> Vec<Case> {
                 &context,
             )
             .expect("the exact render");
-            exact.frame(SnapshotId::new()).expect("the exact frame");
             let request = GpuPlanRequest::exact(0, stage).from_source();
             let request = match format {
                 BoundaryFormat::Float => request.linear(),
                 BoundaryFormat::Half => request,
             };
-            let estimates = GpuEstimates {
-                context: &context,
-                source: EstimateSource::Render((&source).into()),
-            };
-            let plan = match gpu_plan_with(&registry, &recipe, request, Some(estimates))
-                .expect("a stack")
-            {
+            let plan = match gpu_plan(&registry, &recipe, request).expect("a stack") {
                 GpuAnswer::Plan(plan) => *plan,
                 GpuAnswer::Fallback(reason) => panic!("{name}: {reason}"),
             };
-            assert!(!plan.approximate(), "{name}: the stored estimates");
+            assert!(!plan.reads_lights(), "{name}: the runner computes no light");
             let anchor = plan.anchor();
             let output = plan.geometry.output();
             let stage_grid = plan.geometry.stage_grid(1.0).expect("a stage grid");

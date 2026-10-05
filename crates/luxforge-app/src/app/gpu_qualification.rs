@@ -577,21 +577,9 @@ pub(crate) fn proxy_cell(
             PreviewSource::Raw { .. } => request.linear(),
             PreviewSource::Jpeg(_) => request,
         };
-        // A windowed proxy's spatial operations are handed the exact stage's estimates, which the
-        // job's exact phase stored: the plan reads them, as a drag's does once its committed frame
-        // is drawn. Any other proxy takes them over the stage it holds, as its CPU frame does.
-        let estimates = (origin != (0, 0) || (width, height) != (stage_width, stage_height))
-            .then(|| luxforge_core::GpuEstimates {
-                context: evaluation.context(),
-                source: luxforge_core::EstimateSource::Whole {
-                    source: evaluation.source().into(),
-                    stage: stage(full.0, full.1),
-                },
-            })
-            .filter(|_| is_proxy);
-        let plan = match luxforge_core::gpu_plan_with(&registry, &recipe, request, estimates)
-            .map_err(|e| e.to_string())?
-        {
+        // Every global estimate is its light link's, computed from the whole stage at full
+        // resolution whatever stage the plan draws ([`lit`]).
+        let plan = match gpu_plan(&registry, &recipe, request).map_err(|e| e.to_string())? {
             GpuAnswer::Plan(plan) => *plan,
             GpuAnswer::Fallback(reason) => {
                 return Ok(Cell::Gap(format!("{}: {reason}", reason.code())));
@@ -612,16 +600,13 @@ pub(crate) fn proxy_cell(
             )));
         }
         // At the exact stage a Fit drag's boundary holds the window of its stage the whole output
-        // reads, as the worker renders it, unless the plan takes a global estimate on the GPU,
-        // which keeps the whole stage; a proxy's is the window the proxy source holds. One past
+        // reads, as the worker renders it; a proxy's is the window the proxy source holds. One past
         // the bound on a boundary is the CPU path, as the desktop finds before it asks.
         let core_format = match format {
             BoundaryFormat::Float => luxforge_core::BoundaryFormat::Float,
             BoundaryFormat::Half => luxforge_core::BoundaryFormat::Half,
         };
-        let (held, origin) = if through_prefix
-            || (!is_proxy && !plan.spatial.iter().any(|spatial| spatial.estimated))
-        {
+        let (held, origin) = if through_prefix || !is_proxy {
             let context = RenderContext::new();
             let exact = render(
                 &registry,
@@ -740,6 +725,7 @@ pub(crate) fn proxy_cell(
                 converted.boundary.size().1
             )));
         }
+        lit(qualifier, evaluation.source(), &converted)?;
         let drawn = qualifier.evaluate_codes(&converted)?;
         let gpu: Vec<u8> = drawn
             .iter()
@@ -1045,16 +1031,6 @@ pub(crate) fn region_cell_in(
     let statistics = preview_error::compare(frame(&drawn.gpu)?, frame(&reference)?, rect_px)?;
     let program = drawn.program.as_deref().ok_or("the program's own output")?;
     let program = preview_error::compare(frame(program)?, frame(&reference)?, rect_px)?;
-    // A spatial estimate the store does not hold, which the GPU would take from the region
-    // alone, is the CPU's path at a percentage zoom (`region-estimate`): measured, so the
-    // reason stands on figures.
-    if drawn.approximate {
-        return Ok(Cell::Gap(format!(
-            "region-estimate: the GPU takes the global estimate from the region alone, so the \
-             drag takes the CPU path; measured over the region: {}",
-            figures(&statistics)
-        )));
-    }
     Ok(Cell::Measured {
         stage: (width, height),
         proxy: false,
@@ -1086,9 +1062,6 @@ pub(crate) struct DrawnRegion {
     pub(crate) gpu: Vec<u8>,
     /// The plan's `f32` output through the reference quantizer, when it was asked for.
     pub(crate) program: Option<Vec<u8>>,
-    /// The plan takes a global estimate from the region alone, which the store did not hold
-    /// (`region-estimate`).
-    pub(crate) approximate: bool,
     /// What the slot charges the GPU-preview budget, and the shape a restoration or spatial
     /// layer is drawn in.
     pub(crate) charged: u64,
@@ -1102,9 +1075,9 @@ pub(crate) struct DrawnRegion {
 
 /// The plan a drag from `evaluation`'s first pixel layer draws over `rect` of its output stage at
 /// `zoom` percent, drawn on `qualifier`'s device: over the boundary the worker renders for that
-/// region at full scale from `exact` (a render of `evaluation`'s stack at the exact phase), reading
-/// the global estimates `evaluation`'s context holds, as a drag's plan reads them once the view has
-/// settled. A RAW photograph's (`linear`) plan is the linear path's over an `f32` boundary. A
+/// region at full scale from `exact` (a render of `evaluation`'s stack at the exact phase), each
+/// global estimate its light link's from the whole stage ([`lit`]). A RAW photograph's (`linear`)
+/// plan is the linear path's over an `f32` boundary. A
 /// restoration or spatial layer's drag draws its GPU shape, every unit, while that slot fits the
 /// budget, and its CPU shape when only that one does (`GpuPreview::cpu_shape`). `program` also reads
 /// the plan's `f32` output back.
@@ -1143,10 +1116,6 @@ pub(crate) fn draw_region(
     // The plan from that layer at the exact stage, over the whole stage the layer receives.
     let request = GpuPlanRequest::exact(boundary_layer, frame.stage).qualifying();
     let request = if linear { request.linear() } else { request };
-    let estimates = luxforge_core::GpuEstimates {
-        context: evaluation.context(),
-        source: luxforge_core::EstimateSource::Render(evaluation.source().into()),
-    };
     let spatial = matches!(
         registry
             .effect(&recipe.layers[boundary_layer].effect_id)
@@ -1165,9 +1134,7 @@ pub(crate) fn draw_region(
     let mut over = String::new();
     let mut chosen = None;
     for (request, shape) in shapes {
-        let plan = match luxforge_core::gpu_plan_with(registry, recipe, request, Some(estimates))
-            .map_err(|e| e.to_string())?
-        {
+        let plan = match gpu_plan(registry, recipe, request).map_err(|e| e.to_string())? {
             GpuAnswer::Plan(plan) => *plan,
             GpuAnswer::Fallback(reason) => {
                 return Ok(RegionDraw::Gap(format!("{}: {reason}", reason.code())));
@@ -1234,14 +1201,15 @@ pub(crate) fn draw_region(
             };
             continue;
         }
-        chosen = Some((plan, converted, charged, shape, notes));
+        chosen = Some((converted, charged, shape, notes));
         break;
     }
-    let Some((plan, converted, charged, shape, notes)) = chosen else {
+    let Some((converted, charged, shape, notes)) = chosen else {
         return Ok(RegionDraw::Gap(format!(
             "{over} of the {budget} B GPU-preview budget, so the drag takes the CPU path"
         )));
     };
+    lit(qualifier, evaluation.source(), &converted)?;
     let started = std::time::Instant::now();
     let gpu: Vec<u8> = qualifier
         .evaluate_codes(&converted)?
@@ -1262,7 +1230,6 @@ pub(crate) fn draw_region(
     Ok(RegionDraw::Drawn(DrawnRegion {
         gpu,
         program,
-        approximate: plan.approximate(),
         charged,
         shape,
         notes,
@@ -1320,6 +1287,7 @@ fn selects_nothing(
             ..masked.clone()
         })],
         region: None,
+        lights: Vec::new(),
     };
     let input = GpuPlan {
         steps: Vec::new(),
@@ -1330,6 +1298,77 @@ fn selects_nothing(
         .iter()
         .zip(&held)
         .all(|(out, input)| out[1] == input[1]))
+}
+
+/// The lights `plan` reads, each computed from `source` as the photo surface's own light link
+/// computes it on `qualifier`'s device (`Qualifier::light_bench`), read back, and given to
+/// `qualifier` for its next evaluations (`Qualifier::set_lights`): the light planes a slot's light
+/// links write before its chain runs. Each light is computed once for its source and steps and
+/// kept for the harness's run, at most [`LIT`] of them.
+pub(crate) fn lit(
+    qualifier: &Qualifier,
+    source: &luxforge_core::PreviewSource,
+    plan: &GpuPlan,
+) -> Result<(), String> {
+    use std::hash::{Hash, Hasher};
+    static KEPT: std::sync::Mutex<Vec<(u64, [f32; 4])>> = std::sync::Mutex::new(Vec::new());
+    let (width, height) = source.dimensions();
+    let identity = {
+        let mut hasher = std::hash::DefaultHasher::new();
+        (format!("{:?}", source.identity()), width, height).hash(&mut hasher);
+        hasher.finish()
+    };
+    let mut lights = Vec::with_capacity(plan.lights.len());
+    for light in &plan.lights {
+        let key = {
+            let mut hasher = std::hash::DefaultHasher::new();
+            identity.hash(&mut hasher);
+            format!("{:?}", light.steps).hash(&mut hasher);
+            hasher.finish()
+        };
+        let kept = KEPT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .find(|(held, _)| *held == key)
+            .map(|(_, light)| *light);
+        let value = match kept {
+            Some(value) => value,
+            None => {
+                let gpu = super::gpu_preview::gpu_source_of(identity, source)
+                    .ok_or("the source as the surface holds it")?;
+                let value = qualifier
+                    .light_bench()
+                    .light(&gpu, light)
+                    .map_err(|fallback| format!("the light: {fallback:?}"))?
+                    .light;
+                let mut kept = KEPT
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if kept.len() >= LIT {
+                    kept.remove(0);
+                }
+                kept.push((key, value));
+                value
+            }
+        };
+        lights.push(value);
+    }
+    qualifier.set_lights(lights);
+    Ok(())
+}
+
+/// The most lights [`lit`] keeps across cells, the oldest let go first.
+const LIT: usize = 256;
+
+/// The light [`lit_fixed`] gives every light plane: a plausible atmospheric light, `[r, g, b, 1]`.
+pub(crate) const FIXED_LIGHT: [f32; 4] = [0.82, 0.86, 0.91, 1.0];
+
+/// [`FIXED_LIGHT`] for every light `plan` reads, given to `qualifier`: for a test that holds GPU
+/// frames to one another, never to the CPU's, where any light the planes hold is the one both
+/// read.
+pub(crate) fn lit_fixed(qualifier: &Qualifier, plan: &GpuPlan) {
+    qualifier.set_lights(vec![FIXED_LIGHT; plan.lights.len()]);
 }
 
 /// A headless qualifier, with the core's output encoding installed for its passes. `None`, having
@@ -1435,6 +1474,8 @@ pub(crate) fn drafted_against_cpu(
         };
         let input = boundary(width, height, 1, pixels).expect("a boundary");
         let plan = super::gpu_plan::surface_plan(&plan, input).expect("a runnable plan");
+        // Both shapes read one light, whichever it is: neither is held to the CPU's here.
+        lit_fixed(qualifier, &plan);
         (
             qualifier.evaluate(&plan).expect("a readback"),
             qualifier.evaluate_codes(&plan).expect("a readback"),

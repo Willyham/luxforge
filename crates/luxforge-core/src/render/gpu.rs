@@ -44,11 +44,11 @@ pub(crate) use preview::plan_rest_tiles;
 #[cfg(feature = "qualification")]
 pub(crate) use preview::position;
 pub use preview::{
-    BoundaryKey, GPU_PLAN_LINKS, GPU_WARM_LINKS, GpuPreview, GpuRest, GpuView, REST_TILE_BYTES,
-    REST_TILE_SIDES, RestLight, RestLights, RestTile, RestTiles, SourceBoundary,
+    BoundaryKey, GPU_PLAN_LINKS, GPU_WARM_LINKS, GpuPreview, GpuRest, GpuView, GpuWarmList,
+    REST_TILE_BYTES, REST_TILE_SIDES, RestLight, RestLights, RestTile, RestTiles, SourceBoundary,
 };
 #[cfg(test)]
-pub(crate) use preview::{output_window, warm_links, warm_sequence};
+pub(crate) use preview::{light_link, output_window, warm_links, warm_sequence};
 pub(crate) use preview::{plan_preview, plan_rest, plan_warm};
 #[cfg(test)]
 pub(crate) use program::testing;

@@ -566,7 +566,8 @@ impl TexelMap {
 }
 
 /// What the surface evaluates on the GPU: the held boundary, where its texels are in the stage,
-/// and the steps after it, in order.
+/// and the steps after it, in order; and the light links whose lights its steps read, which the
+/// slot runs before them ([`light`]).
 #[derive(Clone, Debug)]
 pub struct GpuPlan {
     pub boundary: GpuBoundary,
@@ -575,6 +576,10 @@ pub struct GpuPlan {
     /// At a percentage zoom of 100% or more, the rectangle of the output stage the plan's frame
     /// holds, drawn as a region of the photograph; `None` for a whole frame, at Fit and below 100%.
     pub region: Option<GpuRegion>,
+    /// The light links writing the slot's light planes its steps read ([`PlaneSize::Light`]), light
+    /// `k` the `k`-th: each computed from the source the pipeline holds before the steps run, and
+    /// again only when its content changes. Empty for a plan that reads no light.
+    pub lights: Vec<light::GpuLight>,
 }
 
 /// The rectangle of a plan's output stage its frame holds at a percentage zoom of 100% or more:
@@ -2297,7 +2302,7 @@ impl PhotoPipeline {
             }
             return;
         };
-        let outcome = self.evaluate(surface, device, queue, plan, change);
+        let outcome = self.evaluate_lit(surface, device, queue, plan, change);
         // A sequence still compiling leaves the slot as it was, its boundary included, for the
         // frame that finds the pipeline ready, and a boundary still uploading leaves it for the
         // frame that writes the next chunks; any other fallback lets the slot go.
@@ -2331,6 +2336,11 @@ impl PhotoPipeline {
                 .flat_map(|(steps, format)| {
                     link_sequences(steps, *format).map(|(link, format)| (link.to_vec(), format))
                 })
+                .chain(
+                    warm.lights()
+                        .iter()
+                        .map(|steps| (steps.clone(), light::LIGHT_FORMAT)),
+                )
                 .collect();
             self.gpu.warm(device, &sequences, &self.figures.preview);
             self.figures
@@ -2341,11 +2351,12 @@ impl PhotoPipeline {
         }
     }
 
-    /// Retire `surface`'s GPU-preview slot, if it holds one.
+    /// Retire `surface`'s GPU-preview slot, if it holds one, and its light links.
     pub(super) fn release_gpu(&self, surface: &mut SurfaceSlots) {
         if let Some(slot) = surface.gpu.take() {
             self.retire_slot(slot);
         }
+        self.retire_lights(&mut surface.gpu_lights, 0);
     }
 
     /// Make the pipeline hold `source`, which a surface hands this frame ([`source`]): another
@@ -3465,19 +3476,27 @@ impl PhotoPipeline {
 /// `fit_pool`, `fit_link` and `fit_spatial` charge it: the chain's charge ([`chain_charge`]) —
 /// each earlier link's intermediate, every link's kept planes and parameters and the pool once —
 /// beside what needs the device: the boundary, the output in its size bucket and its placement
-/// uniform, and every link's words and blocks buffers at their capacities. For a report and the
-/// tests that hold it to the slot's own figure.
+/// uniform, and every link's words and blocks buffers at their capacities; and each light link the
+/// slot runs before them ([`light::light_charge`]). For a report and the tests that hold it to the
+/// slot's own figure.
 #[cfg(any(test, feature = "qualification"))]
 pub(super) fn slot_charge(device: &wgpu::Device, plan: &GpuPlan) -> Result<u64, GpuFallback> {
     let shape = Shape::of(plan);
     let limit = device.limits().max_texture_dimension_2d;
+    let binding = u64::from(device.limits().max_storage_buffer_binding_size);
     let origin = (
         plan.texels.origin[0].max(0.0) as u32,
         plan.texels.origin[1].max(0.0) as u32,
     );
+    let mut lights = 0;
+    for light in &plan.lights {
+        lights += light::light_charge(light, shape.format, limit, binding)
+            .ok_or(GpuFallback::PipelineFailed)?;
+    }
     Ok(shape.texture_bytes(limit)
         + slot_buffers(device, plan)?.iter().sum::<u64>()
-        + chain_charge(&plan.steps, shape.boundary, origin, shape.format).total())
+        + chain_charge(&plan.steps, shape.boundary, origin, shape.format).total()
+        + lights)
 }
 
 /// Each link's words and blocks buffers together, at the capacities a slot holding `plan` gives

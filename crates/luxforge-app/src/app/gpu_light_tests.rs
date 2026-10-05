@@ -16,7 +16,8 @@
 //!   Detail: the light is the light of the stack without its Detail layer, bit for bit, and the
 //!   CPU's for the prefix without Detail.
 //! - **The plane.** The Presence link reading its light from the slot's light plane draws what the
-//!   same link draws with that light in its words, bit for bit.
+//!   qualification harness draws with that light read back and written into its own plane, bit for
+//!   bit.
 //! - **The global rule.** A light that changes redraws the link reading it whole, whatever the
 //!   tick's own change, every scratch plane starting from NaN.
 //! - **Bounds.** The light link and the light plane are charged to the GPU-preview budget and
@@ -24,20 +25,18 @@
 //!
 //! A GPU test with no adapter prints that it was skipped and asserts nothing: the skip is the
 //! report, and `cargo test` counting it as passed does not make it GPU evidence.
-use super::gpu_plan::{install_output_encoding, operation_steps, spatial_step, surface_plan};
+use super::gpu_plan::{install_output_encoding, surface_light, surface_plan};
 use super::gpu_qualification::{Stream, headless as qualifier};
 use luxforge_core::{
-    BASIC_EFFECT, CURVE_EFFECT, Cancel, Component, ComponentMode, DETAIL_EFFECT, EstimateSource,
-    GpuAnswer, GpuEstimates, GpuLightRestoration, GpuPlanRequest, Layer, LinearImage,
-    LinearSettings, Mask, ModuleRegistry, PRESENCE_EFFECT, Recipe, RenderContext, RenderOptions,
-    RenderSource, SnapshotId, SourceImage, Stage, gpu_lights, gpu_plan_reading_lights,
-    gpu_plan_with, qualification, render,
+    BASIC_EFFECT, CURVE_EFFECT, Cancel, Component, ComponentMode, DETAIL_EFFECT, GpuAnswer,
+    GpuLightRestoration, GpuPlanRequest, Layer, LinearImage, LinearSettings, Mask, ModuleRegistry,
+    PRESENCE_EFFECT, Recipe, RenderContext, RenderOptions, RenderSource, SnapshotId, SourceImage,
+    Stage, gpu_lights, gpu_plan, qualification, render,
 };
 use luxforge_reference::srgb;
 use luxforge_ui::photo_surface::{
-    BoundaryFormat, Derivation, GpuBoundary, GpuChange, GpuPlan, GpuSource, GpuStep, TexelMap,
+    BoundaryFormat, Derivation, GpuBoundary, GpuChange, GpuPlan, GpuSource, TexelMap,
     gpu_preview::{
-        PlaneSize,
         light::{GpuLight, LightBench, Lit, light_charge},
         qualification::Qualifier,
     },
@@ -257,28 +256,6 @@ fn masked(mut recipe: Recipe, layer: usize, components: &[Component]) -> Recipe 
     recipe
 }
 
-/// The core's light link as the surface's, writing the slot's light `k`: each colour operation's
-/// steps, as the desktop converts a plan's, then its step, its light plane the slot's light `k`, as
-/// the conversion will name it once the editor plans light links.
-fn surface_light(light: &luxforge_core::GpuLight, k: u32) -> GpuLight {
-    assert!(light.over_source(), "a light link over the source");
-    let mut steps = Vec::new();
-    for operation in &light.content {
-        operation_steps(operation, &mut steps).expect("a runnable operation");
-    }
-    let mut step = spatial_step(&light.light).expect("a runnable step");
-    let GpuStep::Spatial(spatial) = &mut step else {
-        unreachable!("a light's step is spatial");
-    };
-    let written = spatial.passes.last().expect("the selection").output as usize;
-    spatial.planes[written].size = PlaneSize::Light(k);
-    steps.push(step);
-    GpuLight {
-        stage: (light.stage.width, light.stage.height),
-        steps,
-    }
-}
-
 /// The one light link of `recipe` for `request`, the core's and the surface's.
 fn light_of(
     registry: &ModuleRegistry,
@@ -290,32 +267,23 @@ fn light_of(
     let [light] = &lights[..] else {
         panic!("one light link, not {}", lights.len());
     };
-    (light.clone(), surface_light(light, 0))
+    let surface = surface_light(light, 0).expect("a light the surface runs");
+    (light.clone(), surface)
 }
 
 /// The plan of `recipe` reading its light, as the surface's over `boundary`: its reading
-/// operation's light plane the slot's light 0.
+/// operation's light plane the slot's light 0, its light link the one it reads.
 fn reading_plan(
     registry: &ModuleRegistry,
     recipe: &Recipe,
     request: GpuPlanRequest,
     boundary: GpuBoundary,
 ) -> GpuPlan {
-    let plan = match gpu_plan_reading_lights(registry, recipe, request).expect("a stack") {
+    let plan = match gpu_plan(registry, recipe, request).expect("a stack") {
         GpuAnswer::Plan(plan) => *plan,
         GpuAnswer::Fallback(reason) => panic!("{reason}"),
     };
-    let mut converted = surface_plan(&plan, boundary).expect("a runnable plan");
-    let mut operations = plan.spatial.iter();
-    for step in &mut converted.steps {
-        if let GpuStep::Spatial(spatial) = step {
-            let operation = operations.next().expect("the plan's operation");
-            if let Some(light) = operation.light {
-                spatial.planes[light].size = PlaneSize::Light(0);
-            }
-        }
-    }
-    converted
+    surface_plan(&plan, boundary).expect("a runnable plan")
 }
 
 /// The cut of `source`'s whole stage the plans here start from.
@@ -402,6 +370,7 @@ fn over_held_stage(
             texels: TexelMap::IDENTITY,
             steps: colour,
             region: None,
+            lights: Vec::new(),
         })
         .expect("the colour run");
     let len = values.len();
@@ -729,22 +698,23 @@ fn gpu_light_a_light_with_detail_left_out_is_the_cpus_for_the_prefix_without_det
 }
 
 /// The Presence link reading its light from the slot's light plane, which a light link wrote,
-/// draws what the same link draws with that light in its words — the store holding the light the
-/// link computed — bit for bit: every Presence unit with Dehaze removing a veil, and Dehaze adding
-/// one alone, on both paths.
+/// draws what the qualification harness draws with that light read back and written into its own
+/// light plane, bit for bit: every Presence unit with Dehaze removing a veil, and Dehaze adding one
+/// alone, on both paths. So a frame the harness measures with a light it is given is the frame the
+/// slot draws with the light its link computes.
 #[test]
-fn gpu_light_a_dehaze_pass_reading_the_light_plane_draws_what_the_words_form_draws() {
-    let test = "gpu_light_a_dehaze_pass_reading_the_light_plane_draws_what_the_words_form_draws";
-    let Some((mut words_bench, adapter)) = on_device(test, None) else {
+fn gpu_light_a_dehaze_pass_reading_the_light_plane_draws_what_the_harness_draws() {
+    let test = "gpu_light_a_dehaze_pass_reading_the_light_plane_draws_what_the_harness_draws";
+    let Some((mut bench, adapter)) = on_device(test, None) else {
+        return;
+    };
+    let Some(qualifier) = qualifier(test) else {
         return;
     };
     eprintln!("{test}: adapter {adapter}");
-    let mut light_bench = words_bench.another();
     let registry = ModuleRegistry::builtin();
     let photo = Photo::synthetic(640, 432, 0x44);
     for (version, path) in [(1, Path::Byte), (2, Path::Linear)] {
-        let (jpeg, linear) = (photo.jpeg(), photo.linear());
-        let source = cpu_source(path, &jpeg, &linear);
         let gpu = photo.gpu(path, version);
         for payload in [
             json!({"dehaze": 70, "texture": 30, "clarity": -20}),
@@ -753,55 +723,33 @@ fn gpu_light_a_dehaze_pass_reading_the_light_plane_draws_what_the_words_form_dra
             let recipe = stack(&[(PRESENCE_EFFECT, payload.clone())]);
             let request = request(&photo, path);
             let (_, light) = light_of(&registry, &recipe, request, GpuLightRestoration::LeftOut);
-            let lit = light_bench.light(&gpu, &light).expect("the light");
-            // The words form, its light the store's: the one the light link computed.
-            let context = RenderContext::new();
-            let rendered = render(
-                &registry,
-                source,
-                &recipe,
-                RenderOptions::exact(&Cancel::never()),
-                &context,
-            )
-            .expect("a render");
-            let stored: Vec<f64> = lit.light[..3]
-                .iter()
-                .map(|value| f64::from(*value))
-                .collect();
-            qualification::hold_estimates(&rendered, 0, &vec![Some(stored); 4])
-                .expect("the light held");
-            let words = match gpu_plan_with(
-                &registry,
-                &recipe,
-                request,
-                Some(GpuEstimates {
-                    context: &context,
-                    source: EstimateSource::Render(source),
-                }),
-            )
-            .expect("a stack")
-            {
-                GpuAnswer::Plan(plan) => *plan,
-                GpuAnswer::Fallback(reason) => panic!("{reason}"),
-            };
-            assert!(
-                !words.approximate(),
-                "{payload}: the words form reads the store"
-            );
-            let boundary = whole_cut(&gpu, version);
-            let words = surface_plan(&words, boundary.clone()).expect("a runnable plan");
-            let reading = reading_plan(&registry, &recipe, request, boundary);
-            let drawn_words = words_bench
-                .draw(&gpu, None, &words, None)
-                .expect("the words form");
-            let drawn_light = light_bench
+            let lit = bench.light(&gpu, &light).expect("the light");
+            let reading = reading_plan(&registry, &recipe, request, whole_cut(&gpu, version));
+            let drawn = bench
                 .draw(&gpu, Some(&light), &reading, None)
                 .expect("the light read from the plane");
-            assert_eq!(drawn_light.len(), (photo.width * photo.height) as usize);
-            let differing = drawn_light
+            // The harness over the same cut, its light plane holding the light read back.
+            let cut = qualifier.derive(&gpu, &reading.boundary).expect("the cut");
+            let held = GpuBoundary::new(
+                Arc::new(cut),
+                photo.width,
+                photo.height,
+                version,
+                gpu.kind().boundary(),
+            )
+            .expect("the held stage");
+            qualifier.set_lights(vec![lit.light]);
+            let given = qualifier
+                .evaluate_codes(&GpuPlan {
+                    boundary: held,
+                    ..reading.clone()
+                })
+                .expect("the harness's frame");
+            assert_eq!(drawn.len(), (photo.width * photo.height) as usize);
+            let differing = drawn
                 .iter()
-                .zip(&drawn_words)
-                .filter(|(light, words)| light != words)
+                .zip(&given)
+                .filter(|(slot, harness)| slot != harness)
                 .count();
             eprintln!("{path:?}, {payload}: {differing} pixels differ");
             assert_eq!(differing, 0, "{path:?}, {payload}");
@@ -939,6 +887,126 @@ fn gpu_light_the_light_planes_are_charged_and_released() {
             "{path:?}: the light plane and the link's textures"
         );
         bench.release();
+        assert_eq!(bench.charged(), (0, 0), "{path:?}: everything released");
+    }
+}
+
+/// The desktop's slot runs a plan's light links before its chain, every frame
+/// (`PhotoPipeline::prepare_gpu`): a Presence plan reading its light draws what the harness draws
+/// with the light its link computes, bit for bit; drawn again unchanged, it runs no pass and
+/// encodes no light; a tick whose light changes, its own change a small rectangle, draws what a
+/// fresh slot draws whole; and the slot's light link is charged with it and released with it. On
+/// both paths.
+#[test]
+fn gpu_light_the_slot_runs_its_plans_light_links_before_its_chain() {
+    let test = "gpu_light_the_slot_runs_its_plans_light_links_before_its_chain";
+    let Some((mut bench, adapter)) = on_device(test, None) else {
+        return;
+    };
+    let Some(qualifier) = qualifier(test) else {
+        return;
+    };
+    eprintln!("{test}: adapter {adapter}");
+    let mut lights = bench.another();
+    let registry = ModuleRegistry::builtin();
+    let photo = Photo::synthetic(640, 432, 0x77);
+    let presence = json!({"dehaze": 70, "clarity": 30});
+    let reader = stack(&[(PRESENCE_EFFECT, presence.clone())]);
+    let brighter = stack(&[
+        (BASIC_EFFECT, json!({"exposure": 1.0})),
+        (PRESENCE_EFFECT, presence),
+    ]);
+    let rect = [16, 16, 48, 48];
+    for (version, path) in [(1, Path::Byte), (2, Path::Linear)] {
+        let mut fresh = bench.another();
+        let gpu = photo.gpu(path, version);
+        let request = request(&photo, path);
+        let plan = reading_plan(&registry, &reader, request, whole_cut(&gpu, version));
+        assert_eq!(
+            plan.lights.len(),
+            1,
+            "{path:?}: the plan carries its light link"
+        );
+        let drawn = bench
+            .prepare(
+                &gpu,
+                &plan,
+                Some(GpuChange {
+                    serial: 1,
+                    since: None,
+                }),
+            )
+            .expect("the frame");
+        let lit = lights.light(&gpu, &plan.lights[0]).expect("the light");
+        let cut = qualifier.derive(&gpu, &plan.boundary).expect("the cut");
+        let held = GpuBoundary::new(
+            Arc::new(cut),
+            photo.width,
+            photo.height,
+            version,
+            gpu.kind().boundary(),
+        )
+        .expect("the held stage");
+        qualifier.set_lights(vec![lit.light]);
+        let given = qualifier
+            .evaluate_codes(&GpuPlan {
+                boundary: held,
+                ..plan.clone()
+            })
+            .expect("the harness's frame");
+        let differing = drawn.iter().zip(&given).filter(|(a, b)| a != b).count();
+        assert_eq!(differing, 0, "{path:?}: the slot's frame is the harness's");
+        assert_eq!(bench.surface_lights().0, 1, "{path:?}: one light link");
+        // The same plan again: the light holds its key, and nothing runs.
+        let passes = bench.spatial_passes();
+        let again = bench
+            .prepare(
+                &gpu,
+                &plan,
+                Some(GpuChange {
+                    serial: 2,
+                    since: Some((1, [0, 0, 0, 0])),
+                }),
+            )
+            .expect("the frame again");
+        assert_eq!(again, drawn, "{path:?}");
+        assert_eq!(bench.spatial_passes(), passes, "{path:?}: no pass ran");
+        // A brighter prefix's light, the tick's own change a small rectangle: drawn whole.
+        let (_, second) = light_of(&registry, &brighter, request, GpuLightRestoration::LeftOut);
+        let changed = GpuPlan {
+            lights: vec![second],
+            ..plan.clone()
+        };
+        let after = bench
+            .prepare(
+                &gpu,
+                &changed,
+                Some(GpuChange {
+                    serial: 3,
+                    since: Some((2, rect)),
+                }),
+            )
+            .expect("the new light");
+        let whole = fresh.prepare(&gpu, &changed, None).expect("a fresh slot");
+        let outside = drawn
+            .iter()
+            .zip(&after)
+            .enumerate()
+            .filter(|(index, (old, new))| {
+                let (x, y) = (*index as u32 % photo.width, *index as u32 / photo.width);
+                old != new && !(rect[0] <= x && x < rect[2] && rect[1] <= y && y < rect[3])
+            })
+            .count();
+        let differing = after.iter().zip(&whole).filter(|(a, b)| a != b).count();
+        eprintln!(
+            "{path:?}: {outside} pixels outside the change moved with the light; {differing} \
+             differ from a fresh slot's"
+        );
+        assert!(outside > 0, "{path:?}: the light changed the frame");
+        assert_eq!(differing, 0, "{path:?}: the tick drew the link whole");
+        fresh.release();
+        bench.release();
+        assert_eq!(bench.surface_lights(), (0, 0), "{path:?}: let go");
         assert_eq!(bench.charged(), (0, 0), "{path:?}: everything released");
     }
 }
