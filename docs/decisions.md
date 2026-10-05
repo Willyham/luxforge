@@ -39,7 +39,7 @@ Accepted on 2026-09-20 for the [Develop workspace](design/develop-workspace.md) 
 - Modules render as stacked collapsible sections in registry order. A build lists only registered modules; nothing is drawn for modules that do not exist.
 - A history row shows the action title plus a one-value summary supplied by the module; the host stores the rendered label with the entry. The module supplies it through `label()` since the [post-consolidation review](#post-consolidation-review), which replaced declared `summary` templates.
 - Test modules (pixel proof) live in a Developer section that is hidden unless the desktop is launched with `--developer`; the registry marks them `developer: true`, and since the [post-consolidation review](#post-consolidation-review) they register only in developer mode, so a normal build's API lists none of their methods.
-- Compare is hold-`\` for the Original entry framed by the displayed entry's geometry (`preview.select` with `keep_geometry`), and Shift+`\` for the uncropped Original, released through `preview.return-current` or the previous selection. A tap of `\` (release within 200 ms) or a click of Compare toggles an aligned Before/After divider, with another tap of `\` or Escape to exit; `preview.compare` owns its fixed After entry, prior selection and divider position. Holding `\` during the slider temporarily shows Before across the photograph. Dark theme only; a light theme is not planned.
+- Compare is hold-`\` for the Original entry framed by the displayed entry's geometry (`preview.select` with `keep_geometry`), and Shift+`\` for the uncropped Original, released through `preview.return-current` or the previous selection. A tap of `\` (release within 200 ms) or a click of Compare toggles an aligned Before/After divider, with another tap of `\` or Escape to exit; `preview.compare` owns its fixed After entry, prior selection and divider position. Holding `\` during the slider temporarily shows Before across the photograph. Dark theme only; a light theme is not planned. Superseded on 2026-10-05 by [UI themes](#ui-themes).
 - Basic, histogram, export, Locate, heal and mask are outside this work. Their sections, buttons and notices are left out of the build entirely rather than drawn as placeholders. The generated tools panel must accept a `number` slider module without desktop changes, which is how Basic lands later.
 
 Decided on 2026-09-21:
@@ -361,6 +361,17 @@ Decided by the owner on 2026-10-04 after the hover-readout freeze and the audit 
 - The convergence is staged, each stage deleting a cache, a phase or a fallback; the tolerance numbers, the no-GPU fallback, the export device policy and the counts' cadence during motion run on the design's recorded defaults until recorded here.
 - Settled pixels and reports from the reference keep their exactness tests against frozen fixtures; the pillars' exact-buffer wording now reads reference-buffer within a declared tolerance.
 
+## UI themes
+
+Decided by the owner on 2026-10-05, on the [UI themes](design/ui-themes.md) proposal of 2026-10-04:
+
+- **Themes replace dark only, light ones included.** Luxforge Dark, today's palette, stays the default. The principle that the photograph is the only colour on screen now holds for it alone, so other themes may tint the chrome.
+- **The photograph's surround stays neutral** in every theme. A theme chooses its lightness, never its hue.
+- **Each theme keeps its own accent**, even near the clipping or mask colours. The import report notes an accent within 15 ΔE00 of one of them.
+- **A few popular Omarchy themes are bundled** for now, beside themes imported from a folder.
+
+The rest are proposals with recorded defaults in the [design](design/ui-themes.md#proposals-with-recorded-defaults): which themes are bundled (Tokyo Night, Catppuccin, Catppuccin Latte, Gruvbox, Nord and Everforest), the contrast floors, which Omarchy forms are read, a Theme choice for the canvas background as its default, the Appearance tab, and leaving Omarchy's current theme and the system appearance for later.
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/product-decisions.json).
@@ -370,6 +381,7 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 - Masking is authorized (2026-09-23) and is being implemented. Decided the same day: brush strokes are held in a **content-addressed stroke store** keyed by a hash of their contents, because every history entry stores a complete recipe and embedded strokes grow quadratically — about 37.5 MB across history for 200 strokes against 1.08 MB addressed. Entries stay full snapshots and pure deltas are rejected; a missing or corrupt stroke fails explicitly. It lands in phase C before the first brush ships, in the [current catalog format](design/versions-and-lineage.md#storage-catalog-format-12). The `points` kind, the stroke list and the `brush-paint` interaction are host primitives shared with the corrections proposal, not mask-private ones. See [masking](design/masking.md#stroke-storage).
 - Do masking's remaining recorded defaults stand — masks as a target for the delivered modules rather than a local-adjustment module of their own, the idempotent component algebra, a radial that selects inside, one stroke amount instead of Flow and Density, and the A-to-D phase order with brushes before range selections?
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
+- Which of the [UI themes proposals](design/ui-themes.md#proposals-with-recorded-defaults) stand? They are the six bundled Omarchy themes; the contrast floors, with an imported theme's own text or accent moved to meet them; the Omarchy forms read; a Theme choice for the canvas background as its default; the Appearance tab; and leaving Omarchy's current theme and the system appearance for later.
 - For the proposed [Corrections module](design/corrections.md), should AI Remove enter the accepted scope, and should a changed RAW source-development prefix require regeneration of a saved AI patch? Remote-photo consent is per asset by the [module capabilities](#module-capabilities) default.
 - Which measured workloads and responsiveness budgets become acceptance requirements?
 - For interactive previews, which additional measured quality levels and approximation error bounds are acceptable beyond the authorized viewport baseline? Temporary softness, the updating histogram, and viewport-bounded clipping are accepted above. For GPU previews the owner chose speed first ([above](#gpu-previews)); do the [proposed limits](design/gpu-preview.md#the-preview-error-limit) stand?
