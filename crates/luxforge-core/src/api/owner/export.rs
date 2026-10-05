@@ -4,9 +4,13 @@
 //! lane of the owner's one job table: one running and four waiting, never superseded, read with
 //! `job.read` and cancelled only by `job.cancel` or the owner stopping. A client disconnecting
 //! leaves its exports running, as it leaves capability jobs.
+//!
+//! Every export renders through the reference renderer, and a written file's result names it.
+//! `reference: true` asks for that renderer explicitly, which changes nothing until the GPU renders
+//! exports (`docs/design/gpu-first.md`, stage 4).
 use super::{Call, Owner};
 use crate::{
-    AssetId, EntryId, Error, JobId, JobStatus,
+    AssetId, EntryId, Error, JobId, JobStatus, Renderer,
     activity::ActivitySpec,
     api::announce_once,
     api::params::host_params,
@@ -49,6 +53,7 @@ host_params! {
         mutation: MutationRequest,
         entry_id: Option<EntryId> = entry().notes("a saved entry of the asset; default its current entry"),
         keep_metadata: Option<bool> = boolean().default(false).notes("write the original's supported EXIF fields"),
+        reference: Option<bool> = boolean().default(false).notes("render through the reference renderer rather than the GPU; today every export is the reference renderer's, so the file is the same either way"),
     }
 }
 
@@ -94,7 +99,9 @@ pub(in crate::api) fn plan(
 /// `export.jpeg`: check the destination, freeze the entry and queue one job on the export lane.
 /// An obvious refusal — a destination's shape or an existing file, an unknown asset or entry, a
 /// stack the host cannot evaluate, a missing original — is answered now and queues nothing; an
-/// unprepared source is `preparation-required` with the source job the owner queued for it.
+/// unprepared source is `preparation-required` with the source job the owner queued for it. The
+/// answer echoes `keep_metadata` and `reference` as the job was accepted with them; the job reads
+/// no `reference`, because the reference renderer renders every export.
 pub(in crate::api) fn jpeg(
     owner: &mut Owner,
     call: &Call<'_>,
@@ -105,6 +112,7 @@ pub(in crate::api) fn jpeg(
         .service
         .export_plan(&params.asset_id, params.entry_id.as_ref())?;
     let keep_metadata = params.keep_metadata.unwrap_or(false);
+    let reference = params.reference.unwrap_or(false);
     let job_id = JobId::new();
     let control = JobControl::new();
     let identity = plan.identity.clone();
@@ -150,6 +158,7 @@ pub(in crate::api) fn jpeg(
         "width": identity.width,
         "height": identity.height,
         "keep_metadata": keep_metadata,
+        "reference": reference,
     }))
 }
 
@@ -237,6 +246,9 @@ impl ExportJob {
             "width": width,
             "height": height,
             "metadata": metadata,
+            // The renderer that rendered the file: the reference renderer, with no reason because
+            // it is the only renderer an export has until the GPU renders exports.
+            "renderer": Renderer::headless(),
         }))
     }
 }
