@@ -1,6 +1,6 @@
 //! The independent f64 references the core's tests and xtask's acceptance check production
 //! against: the sRGB transfer function in [`srgb`], exposure here, and one module per study
-//! (colour, the Tone curve, the DNG corrections, mask, mixer, Presence, the preview error
+//! (colour, the Tone curve, the DNG corrections, the RAW look, mask, mixer, Presence, the preview error
 //! measure, range, tone, vignette, white balance).
 //!
 //! Every reference is written directly from its study's formulas — the standard sRGB transfer
@@ -21,6 +21,7 @@ pub mod curve;
 pub mod detail;
 pub mod dng;
 pub mod geometry;
+pub mod look;
 pub mod mask;
 pub mod mixer;
 pub mod presence;
