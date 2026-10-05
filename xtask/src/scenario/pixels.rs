@@ -136,7 +136,8 @@ pub fn fixture(img: &RgbImage, expect: &Fixture) -> Result<Value> {
 }
 
 /// The canvas surface's own colour, `#19191b`, which is all the canvas shows where no photograph is
-/// drawn.
+/// drawn: Luxforge Dark's surround, which every scenario but `theme` draws, since an evidence run
+/// keeps its own preferences and so the default theme.
 pub const CANVAS: [u8; 3] = [0x19, 0x19, 0x1b];
 
 impl Frame {
@@ -165,6 +166,12 @@ impl Frame {
     /// other than the canvas surface, so a blank or missing render fails here rather than being
     /// measured.
     pub fn photo(&self) -> Result<[u32; 4]> {
+        self.photo_on(CANVAS)
+    }
+
+    /// [`Frame::photo`] over a canvas of the colour `surround`: the theme scenario's, whose canvas
+    /// is the surround its frame records rather than Luxforge Dark's.
+    pub fn photo_on(&self, surround: [u8; 3]) -> Result<[u32; 4]> {
         let rect = self.photo_rect()?;
         let (width, height) = self.image()?.dimensions();
         let [left, top, right, bottom] = rect;
@@ -179,7 +186,7 @@ impl Frame {
                 "The photograph's rectangle {rect:?} is not inside the {width} × {height} capture"
             ),
         )?;
-        self.drawn(rect.map(|edge| edge as u32))
+        self.drawn(rect.map(|edge| edge as u32), surround)
     }
 
     /// The part of the photograph on screen: [`Frame::photo_rect`] clipped to the canvas region the
@@ -199,12 +206,12 @@ impl Frame {
             left < right && top < bottom,
             format!("The photograph's rectangle {rect:?} is off the canvas {canvas:?}"),
         )?;
-        self.drawn([left, top, right, bottom].map(|edge| edge as u32))
+        self.drawn([left, top, right, bottom].map(|edge| edge as u32), CANVAS)
     }
 
     /// `bounds`, once at least a quarter of an 8 × 8 grid of samples over it reads something other
-    /// than the canvas surface.
-    fn drawn(&self, bounds: [u32; 4]) -> Result<[u32; 4]> {
+    /// than the canvas surface, `surround`.
+    fn drawn(&self, bounds: [u32; 4], surround: [u8; 3]) -> Result<[u32; 4]> {
         let image = self.image()?;
         let drawn = (0..8)
             .flat_map(|row| (0..8).map(move |column| (column, row)))
@@ -217,7 +224,7 @@ impl Frame {
                     ],
                 );
                 let pixel = image.get_pixel(x as u32, y as u32).0;
-                pixel.iter().zip(CANVAS).any(|(a, b)| a.abs_diff(b) > 3)
+                pixel.iter().zip(surround).any(|(a, b)| a.abs_diff(b) > 3)
             })
             .count();
         ensure(
@@ -232,7 +239,16 @@ impl Frame {
     /// with nothing drawn over the photograph's edges, which is what makes a placement claim about
     /// the rectangle a claim about the pixels too.
     pub fn photo_edges(&self, lit: impl Fn([u8; 3]) -> bool) -> Result<[u32; 4]> {
-        let [left, top, right, bottom] = self.photo()?;
+        self.photo_edges_on(CANVAS, lit)
+    }
+
+    /// [`Frame::photo_edges`] over a canvas of the colour `surround`.
+    pub fn photo_edges_on(
+        &self,
+        surround: [u8; 3],
+        lit: impl Fn([u8; 3]) -> bool,
+    ) -> Result<[u32; 4]> {
+        let [left, top, right, bottom] = self.photo_on(surround)?;
         let image = self.image()?;
         let (mid_x, mid_y) = ((left + right) / 2, (top + bottom) / 2);
         for (name, inside, outside) in [
@@ -250,7 +266,7 @@ impl Frame {
                 .filter(|(x, y)| *x < image.width() && *y < image.height())
                 .map(pixel);
             ensure(
-                lit(pixel(inside)) && background.is_some_and(|p| p == CANVAS),
+                lit(pixel(inside)) && background.is_some_and(|p| p == surround),
                 format!(
                     "The photograph's {name} edge is not where its pixels end: {:?} inside, {background:?} outside",
                     pixel(inside)
@@ -286,7 +302,12 @@ impl Frame {
 /// end: at least 120 × 80, at the fixture's 3:2, and with four interior points showing the
 /// orientation-1 image's own colours.
 pub fn identity_photo(frame: &Frame) -> Result<Value> {
-    let bounds = frame.photo_edges(|pixel| pixel != CANVAS)?;
+    identity_photo_on(frame, CANVAS)
+}
+
+/// [`identity_photo`] over a canvas of the colour `surround`, found by that colour.
+pub fn identity_photo_on(frame: &Frame, surround: [u8; 3]) -> Result<Value> {
+    let bounds = frame.photo_edges_on(surround, |pixel| pixel != surround)?;
     let [left, top, right, bottom] = bounds;
     ensure(
         right > left + 120 && bottom > top + 80,
