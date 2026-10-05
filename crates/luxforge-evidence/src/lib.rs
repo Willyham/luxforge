@@ -177,12 +177,10 @@ pub enum Step {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tab: Option<String>,
     },
-    /// Choose a theme by its id, as its Appearance row does, and wait until it is drawn — or
-    /// Luxforge Dark in its place, with the reason in the status bar — and the preference writer
-    /// has stored the choice. The theme must be in the library the desktop lists.
-    Theme {
-        id: String,
-    },
+    /// Choose a theme, as its Appearance row does, and wait until it is drawn — or Luxforge Dark in
+    /// its place, with the reason in the status bar — and the preference writer has stored the
+    /// choice. The theme must be in the library the desktop lists.
+    Theme(ThemePick),
     /// Import one Luxforge theme document through the Appearance tab's own import task, bypassing
     /// only the native dialog, and wait for `theme.import` and the listing after it. The path is as
     /// the script wrote it, relative to the editor's working directory.
@@ -344,7 +342,7 @@ impl Step {
                 )),
                 _ => Ok(()),
             },
-            Self::Theme { id } => text(id, "theme id"),
+            Self::Theme(pick) => pick.validate(),
             Self::ThemeImport { path } => text(path, "theme_import path"),
             Self::Flag { id, .. } => text(id, "flag id"),
             Self::Preference(fields) => {
@@ -1391,6 +1389,27 @@ impl PresetPick {
     fn validate(&self) -> Result<(), String> {
         text(&self.name, "preset name")?;
         optional_text(self.group.as_deref(), "preset group")
+    }
+}
+
+/// The theme a `theme` step chooses: by its id, which a built-in theme's is known ahead, or by its
+/// name, which an imported theme's id is not. Exactly one is given.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThemePick {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl ThemePick {
+    fn validate(&self) -> Result<(), String> {
+        match (&self.id, &self.name) {
+            (Some(id), None) => text(id, "theme id"),
+            (None, Some(name)) => text(name, "theme name"),
+            _ => Err("theme takes exactly one of id and name".into()),
+        }
     }
 }
 

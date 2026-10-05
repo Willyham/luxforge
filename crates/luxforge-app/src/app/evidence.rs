@@ -418,7 +418,7 @@ pub(crate) use luxforge_evidence::{
     DraftStep, DragHandle, ExportStep, FieldStep, GroupStep, IdleStep, KindMenuStep, MaskRow,
     MaskStep, PaintStep, PaletteStep, PickStep, PickerStep, PresetCreateStep, PresetPick,
     PreviewStep, Reference, ResetStep, RowStep, SectionStep, SliderDraftStep, SliderEnd,
-    SliderStep, Step, TabStep, ViewIdleStep, ViewStep, WorkspaceStep,
+    SliderStep, Step, TabStep, ThemePick, ViewIdleStep, ViewStep, WorkspaceStep,
 };
 
 #[derive(Clone, Copy)]
@@ -1168,7 +1168,7 @@ impl Editor {
                 self.update(Message::Performance(PerformanceMessage::Cancel(job_id)))
             }
             Step::Settings { open, tab } => self.settings_step(open, tab),
-            Step::Theme { id } => self.theme_step(id),
+            Step::Theme(pick) => self.theme_step(pick),
             Step::ThemeImport { path } => self.theme_import_step(path),
             Step::Flag { id, value } => self.flag_step(id, value),
             Step::Preference(fields) => self.preference_step(fields),
@@ -3899,20 +3899,27 @@ impl Editor {
         self.update(Message::Settings(SettingsMessage::Open(tab)))
     }
 
-    /// Choose one theme through its Appearance row's own message, and wait until the theme it
-    /// names is drawn — or Luxforge Dark with the reason in the status bar — and the preference
-    /// writer has stored it. The theme must be one the library lists; a theme already chosen and
-    /// drawn sends nothing and is captured on the next frame.
-    fn theme_step(&mut self, id: String) -> Task<Message> {
-        if self
-            .themes
-            .list
-            .as_ref()
-            .and_then(|list| list.find(&id))
-            .is_none()
-        {
-            return self.fail_step(format!("the theme library lists no theme {id}"));
-        }
+    /// Choose one theme, by its id or its name, through its Appearance row's own message, and wait
+    /// until the theme it names is drawn — or Luxforge Dark with the reason in the status bar —
+    /// and the preference writer has stored it. The theme must be one the library lists; a theme
+    /// already chosen and drawn sends nothing and is captured on the next frame.
+    fn theme_step(&mut self, pick: ThemePick) -> Task<Message> {
+        let themes = self.themes.list.iter().flat_map(|list| &list.themes);
+        let found = match (&pick.id, &pick.name) {
+            (Some(id), _) => themes
+                .filter(|theme| &theme.id == id)
+                .map(|theme| theme.id.clone())
+                .next(),
+            (None, Some(name)) => themes
+                .filter(|theme| &theme.name == name)
+                .map(|theme| theme.id.clone())
+                .next(),
+            (None, None) => None,
+        };
+        let Some(id) = found else {
+            let named = pick.id.or(pick.name).unwrap_or_default();
+            return self.fail_step(format!("the theme library lists no theme {named}"));
+        };
         self.note_step(json!({"theme_id": id}));
         let task = self.update(Message::Theme(ThemeMessage::Choose(id)));
         self.arm_theme_settle_now();

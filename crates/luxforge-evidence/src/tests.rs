@@ -249,6 +249,7 @@ fn api_draft_view_workspace_preview_palette_and_pick_round_trip() {
         {"settings":{"open":true,"tab":"appearance"}},
         {"theme":{"id":"omarchy.nord"}},
         {"theme_import":{"path":"fixtures/themes/paper.lftheme"}},
+        {"theme":{"name":"Paper"}},
     ]));
     assert_eq!(steps[1], Step::api("history.undo"));
     assert_eq!(steps[2], Step::Draft(DraftStep::Start));
@@ -282,6 +283,7 @@ fn api_draft_view_workspace_preview_palette_and_pick_round_trip() {
         steps[39],
         Step::theme_import("fixtures/themes/paper.lftheme")
     );
+    assert_eq!(steps[40], Step::theme_named("Paper"));
     // A step with no tab is written without one, as before tabs were named.
     assert_eq!(
         Step::settings(true).to_value(),
@@ -409,11 +411,23 @@ fn api_draft_view_workspace_preview_palette_and_pick_round_trip() {
             json!({"settings":{"open":false,"tab":"general"}}),
             "only an opening settings step names a tab",
         ),
-        (json!({"theme":{}}), "missing field `id`"),
+        (
+            json!({"theme":{}}),
+            "theme takes exactly one of id and name",
+        ),
+        (
+            json!({"theme":{"id":"luxforge.dark","name":"Luxforge Dark"}}),
+            "theme takes exactly one of id and name",
+        ),
         (
             json!({"theme":{"id":" "}}),
             "theme id takes a non-empty string",
         ),
+        (
+            json!({"theme":{"name":""}}),
+            "theme name takes a non-empty string",
+        ),
+        (json!({"theme":{"mode":"light"}}), "unknown field `mode`"),
         (
             json!({"theme_import":{"path":""}}),
             "theme_import path takes a non-empty string",

@@ -606,8 +606,8 @@ fn another_clients_theme_change_reaches_a_window_with_no_photograph() {
 
 /// The evidence steps drive the Appearance tab's own messages: the sheet opened at the tab, a
 /// theme document imported through its import task, a theme chosen by id waiting for its read and
-/// its write, a theme already drawn captured on the next frame and an id the library does not
-/// list failing the step; each frame records the theme drawn and its tokens.
+/// its write, the same theme named and already drawn captured on the next frame, and an id the
+/// library does not list failing the step; each frame records the theme drawn and its tokens.
 #[test]
 fn the_theme_steps_drive_the_appearance_tabs_own_messages() {
     let mut host = Host::start("themes-steps");
@@ -620,7 +620,7 @@ fn the_theme_steps_drive_the_appearance_tabs_own_messages() {
             r#"[{{"settings":{{"open":true,"tab":"appearance"}}}},
                 {{"theme_import":{{"path":{path}}}}},
                 {{"theme":{{"id":"{id}"}}}},
-                {{"theme":{{"id":"{id}"}}}},
+                {{"theme":{{"name":"Paper"}}}},
                 {{"theme":{{"id":"theme-nowhere"}}}}]"#,
             path = json!(paper()),
         ),
