@@ -625,9 +625,8 @@ impl<'a> Render<'a> {
         })
     }
 
-    /// Render a planned half-detail viewport from the worker's cached/built source proxy. The
+    /// Render a planned half-detail viewport from the worker's cached or built source proxy. The
     /// whole exact `Render` supplies pan-independent exact global estimates when needed.
-    #[cfg(test)]
     pub(crate) fn render_proxy_region(
         &self,
         registry: &ModuleRegistry,
@@ -704,121 +703,6 @@ impl<'a> Render<'a> {
             full_stage: plan.full_stage,
             approximation,
         }))
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn render_proxy_region_cached(
-        &self,
-        registry: &ModuleRegistry,
-        source: RenderSource<'_>,
-        recipe: &Recipe,
-        plan: ProxyRegionPlan,
-        snapshot_id: SnapshotId,
-        context: &RenderContext,
-        key: &crate::ProxyKey,
-        cache: &mut super::RestorationPrefixCache,
-    ) -> Result<(RegionRenderOutcome, Option<super::PrefixUse>), Error> {
-        let result = self.proxy_region_cached(
-            registry,
-            source,
-            recipe,
-            plan,
-            snapshot_id,
-            context,
-            key,
-            cache,
-        );
-        if !matches!(&result, Ok((RegionRenderOutcome::Rendered(_), _))) {
-            cache.clear();
-        }
-        result
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn proxy_region_cached(
-        &self,
-        registry: &ModuleRegistry,
-        source: RenderSource<'_>,
-        recipe: &Recipe,
-        plan: ProxyRegionPlan,
-        snapshot_id: SnapshotId,
-        context: &RenderContext,
-        key: &crate::ProxyKey,
-        cache: &mut super::RestorationPrefixCache,
-    ) -> Result<(RegionRenderOutcome, Option<super::PrefixUse>), Error> {
-        self.options.cancel.check()?;
-        if source.dimensions() != plan.proxy.source_dimensions() {
-            return Ok((
-                RegionRenderOutcome::Declined(RegionFallback::SegmentMismatch),
-                None,
-            ));
-        }
-        let compiled = registry.compile_sampled(
-            plan.proxy.width,
-            plan.proxy.height,
-            self.source.dimensions().0,
-            self.source.dimensions().1,
-            recipe,
-            RenderPhase::Proxy.sampling(),
-        )?;
-        if !same_segments(&compiled, &self.compiled) {
-            return Ok((
-                RegionRenderOutcome::Declined(RegionFallback::SegmentMismatch),
-                None,
-            ));
-        }
-        let windows = match WindowPlan::of_rect(
-            &compiled,
-            (plan.proxy.width, plan.proxy.height),
-            plan.output,
-        ) {
-            Ok(windows) => windows,
-            Err(reason) => return Ok((RegionRenderOutcome::Declined(reason), None)),
-        };
-        let expected = plan.proxy.window.map_or(
-            Region::whole(Stage {
-                width: plan.proxy.width,
-                height: plan.proxy.height,
-            }),
-            |window| Region {
-                x0: window.x,
-                y0: window.y,
-                width: window.width,
-                height: window.height,
-            },
-        );
-        if windows.source != expected {
-            return Ok((
-                RegionRenderOutcome::Declined(RegionFallback::SegmentMismatch),
-                None,
-            ));
-        }
-        let compiled = windows.apply(compiled, (plan.proxy.width, plan.proxy.height), |index| {
-            self.spatial_globals(index)
-        })?;
-        let approximation = {
-            let mut approximation = compiled.approximation();
-            approximation.reduced_detail = true;
-            approximation
-        };
-        let (raster, prefix_use) = Render::compiled(
-            source,
-            compiled,
-            RenderOptions::proxy(&self.options.cancel),
-            context,
-        )?
-        .frame_with_restoration_cache(snapshot_id, registry, recipe, key, cache)?;
-        Ok((
-            RegionRenderOutcome::Rendered(RegionFrame {
-                raster,
-                rect: plan.output,
-                stage: plan.stage,
-                full_rect: plan.full_rect,
-                full_stage: plan.full_stage,
-                approximation,
-            }),
-            prefix_use,
-        ))
     }
 
     /// One output pixel without rasterizing a frame: `O(layers)`, and through a spatial layer the
@@ -982,10 +866,6 @@ impl<'a> Render<'a> {
     /// compilation the frame itself uses, so what is reported and what is drawn cannot disagree:
     /// a spatial operation, whose neighbourhoods scale with the stage, and a mask the proxy phase
     /// supersampled. `O(layers + components)`, no pixel read.
-    pub(crate) fn settles_from_exact(&self) -> bool {
-        self.compiled.settles_from_exact()
-    }
-
     pub(crate) fn approximation(&self) -> ProxyApproximation {
         self.compiled.approximation()
     }

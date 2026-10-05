@@ -122,11 +122,9 @@ impl Entry {
         operation: SpatialOperation,
         prefix_hash: String,
         stage: crate::EffectStage,
-        fit_settle: crate::FitSettle,
     ) -> Self {
         let mut entry = SpatialEntry::new(operation, prefix_hash);
         entry.stage = stage;
-        entry.fit_settle = fit_settle;
         Self::Spatial(entry)
     }
 
@@ -554,13 +552,6 @@ impl Compiled {
         }
     }
 
-    pub(crate) fn settles_from_exact(&self) -> bool {
-        self.segments.iter().any(|s| {
-            matches!(&s.entry,
-            Some(Entry::Spatial(e)) if e.fit_settle == crate::FitSettle::Exact)
-        })
-    }
-
     /// The width the full recipe demands at the sampled prefix's last spatial boundary.
     /// Cutting off later units must not change that earlier hand-off's precision.
     pub(crate) fn prefix_spatial_input_wide(&self, prefix: &Compiled) -> bool {
@@ -576,7 +567,9 @@ impl Compiled {
             .unwrap_or(false)
     }
 
-    /// Segment whose input holds the last boundary of the leading restoration run.
+    /// Segment whose input holds the last boundary of the leading restoration run: where a test
+    /// reads the width the restoration run hands its colour run.
+    #[cfg(test)]
     pub(crate) fn restoration_boundary(&self) -> Option<usize> {
         let mut boundary = None;
         for (index, segment) in self.segments.iter().enumerate() {

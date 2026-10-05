@@ -3682,7 +3682,6 @@ mod tests {
                 title: "Angle".into(),
                 hint: None,
                 effects: vec![EffectDescriptor {
-                    fit_settle: Default::default(),
                     id: "test.angle.effect".into(),
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Geometry,
@@ -3775,7 +3774,6 @@ mod tests {
                 title: "Mark".into(),
                 hint: None,
                 effects: vec![EffectDescriptor {
-                    fit_settle: Default::default(),
                     id: MARK_EFFECT.into(),
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Geometry,

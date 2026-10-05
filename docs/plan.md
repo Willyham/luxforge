@@ -64,9 +64,9 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 **Detail** (implemented; qualification in progress, [design](design/detail.md), [plan](../tasks/detail.json)). Manual noise reduction and capture sharpening before tone, on RAW and JPEG.
 - Bounded numerical kernels and shared restoration/scale contracts
-- Off-owner pixel queries and mutations behind a spatial prefix, the 16-bit JPEG hand-off (which also changes Presence), a restoration-prefix proxy cache and an input-grid overlay cache
+- Off-owner pixel queries and mutations behind a spatial prefix, the 16-bit JPEG hand-off (which also changes Presence) and an input-grid overlay cache
 - Generated controls/API, masks, native presets and history
-- Approximate motion, exact-derived settled Fit and 100% inspection
+- Approximate motion, the picture at rest on the GPU and 100% inspection
 - Photographic quality and native M4 cost qualification; output sharpening remains export follow-up scope
 
 **Lens and perspective correction** (implemented; qualification in progress, [design](design/lens-and-perspective.md), [plan](../tasks/lens-and-perspective.json)). Offline Lensfun profile distortion and manual two-axis perspective, with a fixed covered canvas, shared nonlinear mapping for crop and masks, and explicit prevention of duplicate embedded DNG correction. Functional implementation is verified; performance and photographic qualification remain outstanding. Coverage and read bounds are closed forms; the pinned index ships as a separate resource; Perspective is not presettable and strong minification is refused. Qualification needs authentic photographs for the qualified camera, lens and focal combinations.

@@ -93,46 +93,48 @@ pub(crate) struct ExactFrame {
 #[derive(Clone)]
 pub(crate) enum Retained {
     Proxy(ProxyFrame),
-    Settled(ProxyFrame),
+    /// The exact frame reduced to the view's bounds: the reference frame of a whole stack at rest
+    /// where the view draws it smaller than it is.
+    Reduced(ProxyFrame),
     Exact(ExactFrame),
 }
 
 impl Retained {
     pub(crate) fn generation(&self) -> u64 {
         match self {
-            Self::Proxy(frame) | Self::Settled(frame) => frame.generation,
+            Self::Proxy(frame) | Self::Reduced(frame) => frame.generation,
             Self::Exact(frame) => frame.generation,
         }
     }
 
     pub(crate) fn raster(&self) -> &Arc<Raster> {
         match self {
-            Self::Proxy(frame) | Self::Settled(frame) => &frame.raster,
+            Self::Proxy(frame) | Self::Reduced(frame) => &frame.raster,
             Self::Exact(frame) => &frame.raster,
         }
     }
 
     pub(crate) fn approximate_white_balance(&self) -> bool {
         match self {
-            Self::Proxy(frame) | Self::Settled(frame) => frame.approximate_white_balance,
+            Self::Proxy(frame) | Self::Reduced(frame) => frame.approximate_white_balance,
             Self::Exact(frame) => frame.approximate_white_balance,
         }
     }
 
     pub(crate) fn render_ms(&self) -> f64 {
         match self {
-            Self::Proxy(frame) | Self::Settled(frame) => frame.render_ms,
+            Self::Proxy(frame) | Self::Reduced(frame) => frame.render_ms,
             Self::Exact(frame) => frame.render_ms,
         }
     }
 
-    fn settled(&self) -> bool {
-        matches!(self, Self::Settled(_))
+    fn reduced(&self) -> bool {
+        matches!(self, Self::Reduced(_))
     }
 
     fn proxy(&self) -> Option<&ProxyFrame> {
         match self {
-            Self::Proxy(frame) | Self::Settled(frame) => Some(frame),
+            Self::Proxy(frame) | Self::Reduced(frame) => Some(frame),
             Self::Exact(_) => None,
         }
     }
@@ -177,7 +179,8 @@ pub(crate) enum Presented {
     Region(Box<(Delivery, RegionOutcome)>),
     /// The display-size frame, already retained for a zoom back to Fit.
     Proxy(Box<(Delivery, ProxyFrame)>),
-    Settled(Box<(Delivery, ProxyFrame)>),
+    /// The exact phase's frame reduced to the view's bounds, its exact frame already received.
+    Reduced(Box<(Delivery, ProxyFrame)>),
     /// The exact phase — its frame, already received as the retained exact raster or with its
     /// report, or its failure.
     Exact(Box<(Delivery, Result<ExactFrame, luxforge_core::Error>)>),
@@ -250,10 +253,13 @@ pub(crate) struct Presentation {
     pub(crate) dimensions: Option<(u32, u32)>,
     /// The proxy frame of the newest job that had a proxy phase.
     pub(crate) proxy_frame: Option<ProxyFrame>,
-    pub(crate) settled_frame: Option<ProxyFrame>,
+    /// The exact frame of the newest whole stack at rest, reduced to its view's bounds.
+    pub(crate) reduced_frame: Option<ProxyFrame>,
+    /// The newest whole stack's job, whose retained exact frame a Fit resize reduces again with no
+    /// render where the reference renderer draws the picture at rest.
     reduction_job: Option<PreviewJob>,
-    pub(crate) presented_settled: bool,
-    pub(crate) restoration_prefix: Option<luxforge_core::PrefixUse>,
+    /// Whether the frame on screen is the reduced one.
+    pub(crate) presented_reduced: bool,
     /// The exact frame of the newest job whose exact phase landed.
     pub(crate) exact: Option<ExactFrame>,
     /// The visible pixels the region slot owns.
@@ -336,7 +342,6 @@ impl Presentation {
         if key.is_none() || self.content_key != key {
             self.content_serial = self.content_serial.saturating_add(1);
             self.content_key = key;
-            self.restoration_prefix = None;
         }
         let content = self.content_serial;
         if self.viewport_disabled_content == Some(content) && job.viewport.is_some() {
@@ -352,7 +357,6 @@ impl Presentation {
     /// bounds it was given, and its content and intent. The job still waiting in the pending slot
     /// is replaced and forgotten.
     pub(crate) fn request(&mut self, job: PreviewJob, content: u64, timed: bool) -> Requested {
-        self.remember_reduction_job(&job);
         let bounds = job.proxy;
         let intent = job.intent;
         let viewport = job.viewport;
@@ -388,19 +392,20 @@ impl Presentation {
         let generation = self.queue.cancel();
         self.reused = None;
         self.reduction_job = None;
-        self.restoration_prefix = None;
         self.pending_bounds.clear();
         self.pending_content.clear();
         self.pending_intent.clear();
         generation
     }
 
-    /// Retain only the whole-image plan whose exact pixels may service a later Fit resize.
-    /// Crop input stages do not replace that plan; a new whole stack does, including a stack
-    /// without restoration. A reused recipe still needs the new entry and draft identity.
-    pub(crate) fn remember_reduction_job(&mut self, job: &PreviewJob) {
+    /// Retain the whole-image plan whose exact pixels a later Fit resize reduces again where the
+    /// reference renderer draws the picture at rest (`reference`). Crop input stages do not
+    /// replace that plan; every new whole stack does, and where the GPU draws the picture at rest
+    /// none is kept, since a resize plans that picture again. A reused recipe still needs the new
+    /// entry and draft identity.
+    pub(crate) fn remember_reduction_job(&mut self, job: &PreviewJob, reference: bool) {
         if job.layer_count.is_none() && job.intent != PreviewIntent::Reduce {
-            self.reduction_job = job.evaluation.settles_from_exact().then(|| job.clone());
+            self.reduction_job = reference.then(|| job.clone());
         }
     }
 
@@ -445,11 +450,7 @@ impl Presentation {
             approximate_white_balance,
             render_ms,
             queue_wait_ms: _,
-            restoration_prefix,
         } = result;
-        if restoration_prefix.is_some() {
-            self.restoration_prefix = restoration_prefix;
-        }
         let delivery = Delivery {
             generation,
             stage: (identity.width, identity.height),
@@ -474,7 +475,7 @@ impl Presentation {
                     render_ms,
                 };
                 self.proxy_frame = Some(frame.clone());
-                self.settled_frame = None;
+                self.reduced_frame = None;
                 Presented::Proxy(Box::new((delivery, frame)))
             }
             PhaseOutcome::Exact(outcome) => {
@@ -511,7 +512,7 @@ impl Presentation {
                     }
                 }
                 if let Some(raster) = display {
-                    let settled = ProxyFrame {
+                    let reduced = ProxyFrame {
                         generation,
                         dimensions: (raster.width, raster.height),
                         raster: Arc::new(raster),
@@ -521,8 +522,8 @@ impl Presentation {
                         render_ms,
                     };
                     self.proxy_frame = None;
-                    self.settled_frame = Some(settled.clone());
-                    Presented::Settled(Box::new((delivery, settled)))
+                    self.reduced_frame = Some(reduced.clone());
+                    Presented::Reduced(Box::new((delivery, reduced)))
                 } else {
                     Presented::Exact(Box::new((delivery, frame)))
                 }
@@ -603,8 +604,8 @@ impl Presentation {
         // raster is drawn. Nothing but a new frame moves it.
         self.presenter.clear_region();
         self.region_raster = None;
-        if frame.settled() {
-            self.presenter.show_settled(frame.raster(), content);
+        if frame.reduced() {
+            self.presenter.show_reduced(frame.raster(), content);
         } else if proxy {
             self.presenter.show_proxy(frame.raster(), content);
         } else {
@@ -614,7 +615,7 @@ impl Presentation {
         self.presented_generation = generation;
         self.presented_content = content;
         self.presented_proxy = proxy;
-        self.presented_settled = frame.settled();
+        self.presented_reduced = frame.reduced();
         self.presented_approximate_white_balance = frame.approximate_white_balance();
         if let Some(bounds) = self.pending_bounds.get(&generation).copied() {
             self.presented_bounds = bounds;
@@ -666,7 +667,7 @@ impl Presentation {
         // `presented_proxy` means a whole-output display proxy for Fit/50% hand-over. A
         // half-detail viewport is a different slot and must not enter that zoom rule.
         self.presented_proxy = false;
-        self.presented_settled = false;
+        self.presented_reduced = false;
         self.presented_approximate_white_balance = delivery.approximate_white_balance;
         self.refit_pending = false;
         self.render_error = None;
@@ -683,11 +684,11 @@ impl Presentation {
             return Zoomed::Withdrawn;
         }
         let held = if wants_proxy {
-            self.settled_frame
+            self.reduced_frame
                 .as_ref()
                 .filter(|f| f.generation == self.presented_generation)
                 .cloned()
-                .map(Retained::Settled)
+                .map(Retained::Reduced)
                 .or_else(|| self.proxy().cloned().map(Retained::Proxy))
         } else {
             self.exact().cloned().map(Retained::Exact)
@@ -702,16 +703,15 @@ impl Presentation {
         self.presenter.withdraw_photo();
         self.region_raster = None;
         self.proxy_frame = None;
-        self.settled_frame = None;
+        self.reduced_frame = None;
         self.reduction_job = None;
-        self.restoration_prefix = None;
         self.exact = None;
         self.incoming = None;
         self.analysis = None;
         self.analysis_content = None;
         self.held_by_proxy = None;
         self.presented_proxy = false;
-        self.presented_settled = false;
+        self.presented_reduced = false;
         self.presented_approximate_white_balance = false;
         self.displayed_draft_revision = None;
         self.displayed_draft_id = None;
@@ -795,7 +795,7 @@ impl Presentation {
 
     /// The proxy frame retained for the generation on screen, when there is one.
     pub(crate) fn proxy(&self) -> Option<&ProxyFrame> {
-        self.settled_frame
+        self.reduced_frame
             .as_ref()
             .filter(|frame| frame.generation == self.presented_generation)
             .or_else(|| {
@@ -1017,7 +1017,7 @@ impl Editor {
         }
         for frame in [
             &mut self.presentation.proxy_frame,
-            &mut self.presentation.settled_frame,
+            &mut self.presentation.reduced_frame,
         ]
         .into_iter()
         .flatten()
@@ -1565,9 +1565,9 @@ impl Editor {
                 let (delivery, region) = *region;
                 self.region_ready(delivery, region)
             }
-            Presented::Settled(settled) => {
-                let (delivery, frame) = *settled;
-                self.frame_ready(delivery, Ok(Retained::Settled(frame)))
+            Presented::Reduced(reduced) => {
+                let (delivery, frame) = *reduced;
+                self.frame_ready(delivery, Ok(Retained::Reduced(frame)))
             }
             Presented::Proxy(proxy) => {
                 let (delivery, frame) = *proxy;
@@ -2095,12 +2095,13 @@ impl Editor {
             Zoomed::Kept | Zoomed::Withdrawn => Task::none(),
             Zoomed::Missing if wants_proxy => {
                 // Nothing to hand over: the frame on screen is a full-resolution render with no
-                // display-size frame beside it. Restoration reduces the retained exact allocation;
-                // other stacks ask for the proxy this zoom wants.
+                // display-size frame beside it. The retained exact allocation is reduced again
+                // where the reference renderer draws the picture; where the GPU does, a job plans
+                // its picture at the bounds this zoom wants.
                 self.event("preview_proxy_requested", || json!({ "zoom": zoom }));
                 self.outcome(Outcome::FrameRequested(outcome::Requested::Photo));
                 if let Some(bounds) = self.proxy_bounds()
-                    && self.reduce_retained(bounds)
+                    && self.reduce_for_reference(bounds)
                 {
                     Task::none()
                 } else {
@@ -2226,9 +2227,42 @@ impl Editor {
             || !job.analyse
             || (self.presentation.analysis_content == Some(content)
                 && self.presentation.analysis.is_some());
+        // An exact frame of this stack on screen at Fit, where the job's bounds draw the stage
+        // smaller than it is — an open whose reduction the display scale's arrival made stale, or
+        // a return from a percentage view: its retained raster is reduced to the bounds on the
+        // preview worker, with no render, for the reference frame behind the GPU's picture at
+        // rest planned for them above.
+        let reduces_exact = self
+            .presentation
+            .exact
+            .as_ref()
+            .filter(|frame| {
+                job.layer_count.is_none()
+                    && job.viewport.is_none()
+                    && job.intent != PreviewIntent::Interactive
+                    && content == self.presentation.presented_content
+                    && !self.presentation.presented_proxy
+                    && self.presentation.region_raster.is_none()
+                    && job.proxy.is_some_and(|bounds| {
+                        job.identity.width > bounds.width || job.identity.height > bounds.height
+                    })
+                    && frame.content == Some(content)
+                    && !frame.approximate_white_balance
+                    && frame.raster.snapshot_id == job.identity.snapshot_id
+                    && frame.raster.source_fingerprint == job.identity.source_fingerprint
+                    && (frame.raster.width, frame.raster.height)
+                        == (job.identity.width, job.identity.height)
+            })
+            .map(|frame| Arc::clone(&frame.raster));
+        if let Some(raster) = reduces_exact.clone() {
+            job.reduce = Some(raster);
+            job.intent = PreviewIntent::Reduce;
+            job.analyse = false;
+        }
         // Photograph bytes can be reused for an unbound candidate or a mask-only commit. Bound
         // mask edits have a different pixel key and still use the ordinary rendering path.
-        let reusable = job.layer_count.is_none()
+        let reusable = reduces_exact.is_none()
+            && job.layer_count.is_none()
             && content == self.presentation.presented_content
             && self.presentation.has_picture()
             && self.presentation.render_error.is_none()
@@ -2255,8 +2289,16 @@ impl Editor {
                 }
             };
         self.note_thumbnail_source(&job);
+        let reference = !self.gpu_at_rest();
         if reusable {
-            self.presentation.remember_reduction_job(&job);
+            // The frame on screen serves this job's bounds — an exact frame whose stage they fit,
+            // or a reduction made for them — and the GPU's picture at rest was planned for them
+            // above, so a refit it answers has landed.
+            if job.viewport.is_none() {
+                self.presentation.presented_bounds = job.proxy;
+                self.presentation.refit_pending = false;
+            }
+            self.presentation.remember_reduction_job(&job, reference);
             self.presentation.reused = Some(job.identity.clone());
             self.presentation.preview_generation = self.presentation.presented_generation;
             self.view_plan.dirty = false;
@@ -2272,6 +2314,7 @@ impl Editor {
         // it in the same step, because the worker takes a pending job by itself the moment the
         // active one ends: a job it took up meanwhile is running, and ends through `poll_preview`.
         let layer_count = job.layer_count;
+        self.presentation.remember_reduction_job(&job, reference);
         let Requested {
             generation,
             replaced,
@@ -2300,14 +2343,16 @@ impl Editor {
     }
 
     /// Re-render the proxy on screen once when the bounds it was made for no longer match the
-    /// window: a resize, a panel toggle or the display scale arriving. The queue coalesces a
-    /// storm of these into one active and one pending job, and nothing is asked for while a
+    /// window: a resize, a panel toggle or the display scale arriving. Where the GPU draws the
+    /// picture at rest, its plans were made for the bounds of the job that planned them, so they
+    /// are refitted whatever frame stands behind them, an exact one included. The queue coalesces
+    /// a storm of these into one active and one pending job, and nothing is asked for while a
     /// gesture or a crop draft owns the preview, or while a refit is already on its way.
     pub(super) fn refit_proxy(&mut self) -> Task<Message> {
         if self.document.state.is_none()
             || self.proxy_refit_deferred()
             || self.presentation.presented_generation == 0
-            || !self.presentation.presented_proxy
+            || !(self.presentation.presented_proxy || self.gpu_at_rest())
             || self.presentation.refit_pending
         {
             return Task::none();
@@ -2324,11 +2369,18 @@ impl Editor {
             || json!({"reason":"bounds","bounds":{"width":bounds.width,"height":bounds.height}}),
         );
         self.outcome(Outcome::FrameRequested(outcome::Requested::Photo));
-        if self.reduce_retained(bounds) {
+        if self.reduce_for_reference(bounds) {
             Task::none()
         } else {
             self.request_current_preview()
         }
+    }
+
+    /// Reduce the retained exact frame to `bounds` where the reference renderer draws the picture
+    /// at rest. Where the GPU draws it its plans are made for the view a job is planned at, so
+    /// this is `false` and the caller asks for a job that plans them for this one.
+    fn reduce_for_reference(&mut self, bounds: ProxyBounds) -> bool {
+        !self.gpu_at_rest() && self.reduce_retained(bounds)
     }
 
     /// Schedule only reduction when this exact frame still describes the displayed content.
@@ -2371,12 +2423,13 @@ impl Editor {
         self.gesture_refusal(Starting::Refit).is_some()
     }
 
-    /// Evidence of a displayed proxy waits for the current layout when a refit is permitted.
-    /// The exact phase of an open can arm a capture while its display-scale refit is rendering.
-    /// Drafts deliberately defer such refits, and can supersede a queued one; their settled frame
-    /// can be captured as shown even if that abandoned request left `refit_pending` set.
+    /// Evidence of a displayed proxy, or of the GPU's picture at rest, waits for the current
+    /// layout when a refit is permitted. The exact phase of an open can arm a capture while its
+    /// display-scale refit is rendering. Drafts deliberately defer such refits, and can supersede a
+    /// queued one; their settled frame can be captured as shown even if that abandoned request
+    /// left `refit_pending` set.
     pub(super) fn capture_proxy_ready(&self) -> bool {
-        if !self.presentation.presented_proxy
+        if !(self.presentation.presented_proxy || self.gpu_at_rest())
             || self.presentation.render_error.is_some()
             || self.proxy_refit_deferred()
         {
@@ -2467,7 +2520,7 @@ impl Editor {
         // zoom hand-over or a refit presents long after.
         self.activity.render = Some(state::status::RenderTime {
             ms: frame.render_ms(),
-            proxy: proxy.is_some() && !frame.settled(),
+            proxy: proxy.is_some() && !frame.reduced(),
             approximate: frame.approximate_white_balance(),
         });
         let raster = frame.raster();
@@ -2484,7 +2537,7 @@ impl Editor {
                 "draft_revision":draft_revision,
                 "dimensions":[stage.0,stage.1],
                 "path":"surface",
-                "settled_from_exact":frame.settled(),
+                "reduced":frame.reduced(),
                 "proxy":proxy.is_some(),
                 "proxy_dimensions":proxy.map(|frame| json!([frame.dimensions.0,frame.dimensions.1])),
                 "proxy_built":proxy.is_some_and(|frame| frame.built),
@@ -2514,7 +2567,7 @@ impl Editor {
             None => outcome::Presented::Photo,
         };
         if proxy.is_some()
-            && !frame.settled()
+            && !frame.reduced()
             && self.presentation.intent(generation) != Some(PreviewIntent::Interactive)
         {
             // The photograph is on screen, but every number a captured frame reports — the
@@ -2599,9 +2652,7 @@ impl Editor {
             }
             (None, None) => String::new(),
         };
-        let sentence = if self.presentation.presented_settled {
-            format!("{sentence} · Settled from exact · display reduced")
-        } else if self
+        let sentence = if self
             .presentation
             .proxy()
             .is_some_and(|f| f.approximation.restoration)
@@ -2688,7 +2739,7 @@ mod reduction_tests {
     }
 
     #[test]
-    fn restoration_reduction_plan_releases_source_on_plain_stack_and_cancel() {
+    fn the_reduction_plan_is_the_newest_whole_stacks_and_cancel_releases_it() {
         let (mut editor, catalog, _, _) = opened(
             vec![Layer::new(
                 luxforge_core::DETAIL_EFFECT,
@@ -2699,20 +2750,24 @@ mod reduction_tests {
         let mut active = job(&editor);
         let (stack, held) = testing::fresh_stack(&active.evaluation);
         active.evaluation = stack;
-        editor.presentation.remember_reduction_job(&active);
+        editor.presentation.remember_reduction_job(&active, true);
         drop(active);
         assert!(held.upgrade().is_some());
         let mut plain = job(&editor);
         testing::rebuild(&mut plain, |parts| parts.recipe.layers.clear());
-        editor.presentation.remember_reduction_job(&plain);
+        editor.presentation.remember_reduction_job(&plain, true);
         assert!(
             held.upgrade().is_none(),
-            "a non-restoration stack releases the preceding source"
+            "a new whole stack releases the preceding source"
+        );
+        assert!(
+            editor.presentation.reduction_job.is_some(),
+            "a stack without restoration is retained as well"
         );
         let mut active = job(&editor);
         let (stack, held) = testing::fresh_stack(&active.evaluation);
         active.evaluation = stack;
-        editor.presentation.remember_reduction_job(&active);
+        editor.presentation.remember_reduction_job(&active, true);
         drop(active);
         assert!(held.upgrade().is_some());
         editor.presentation.cancel();
@@ -2720,11 +2775,21 @@ mod reduction_tests {
             held.upgrade().is_none(),
             "cancellation releases its retained reduction plan"
         );
+        // Where the GPU draws the picture at rest none is kept: a resize plans that picture again.
+        let mut active = job(&editor);
+        let (stack, held) = testing::fresh_stack(&active.evaluation);
+        active.evaluation = stack;
+        editor.presentation.remember_reduction_job(&active, false);
+        drop(active);
+        assert!(
+            held.upgrade().is_none() && editor.presentation.reduction_job.is_none(),
+            "no plan is retained behind the GPU's picture at rest"
+        );
         finish(editor, catalog);
     }
 
     #[test]
-    fn restoration_reused_pixels_resize_with_new_snapshot_without_copying_pixels() {
+    fn reused_pixels_resize_with_new_snapshot_without_copying_pixels() {
         let (mut editor, catalog, _, _) = opened(
             vec![Layer::new(
                 luxforge_core::DETAIL_EFFECT,
@@ -2735,6 +2800,8 @@ mod reduction_tests {
         // `opened` queues its fixture's preview. This test installs a completed presentation
         // directly, so retire that fixture job before exercising the idle reuse path.
         editor.presentation.queue = luxforge_core::PreviewQueue::default();
+        // The reference renderer draws the picture at rest, so a resize reduces its exact frame.
+        editor.session.workspace.gpu_preview = false;
         let mut original = job(&editor);
         let content = editor.presentation.admit(&mut original);
         editor.presentation.pending_content.insert(8, content);
@@ -2757,7 +2824,7 @@ mod reduction_tests {
             },
         );
         editor.presentation.exact = Some(frame);
-        editor.presentation.remember_reduction_job(&original);
+        editor.presentation.remember_reduction_job(&original, true);
         let mut changed = original.clone();
         testing::rebuild(&mut changed, |parts| {
             parts.entry.id = luxforge_core::EntryId::new();
@@ -2798,10 +2865,143 @@ mod reduction_tests {
         finish(editor, catalog);
     }
 
+    /// Where the GPU draws the picture at rest its plans were made for the bounds of the job that
+    /// planned them, so an exact frame behind it at Fit is refitted when the bounds change, as a
+    /// proxy is — the display scale arriving after an open whose frame was planned without it —
+    /// and the job that answers reuses the exact pixels on screen and ends the refit. Where the
+    /// reference renderer draws the picture, the exact frame serves any bounds and asks for none.
+    #[test]
+    fn an_exact_frame_behind_the_gpus_picture_at_rest_is_refitted() {
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+        editor.presentation.queue = luxforge_core::PreviewQueue::default();
+        editor.session.preview.view.zoom = Zoom::Fit;
+        let mut original = job(&editor);
+        let content = editor.presentation.admit(&mut original);
+        editor.presentation.pending_content.insert(8, content);
+        let raster = Arc::new(Raster {
+            width: 2,
+            height: 1,
+            rgba: Arc::new(vec![20, 40, 60, 255, 40, 60, 80, 255]),
+            source_fingerprint: original.identity.source_fingerprint.clone(),
+            snapshot_id: original.identity.snapshot_id.clone(),
+        });
+        let mut frame = testing::exact(8, raster, 1.0);
+        frame.content = Some(content);
+        editor.present(
+            Retained::Exact(frame.clone()),
+            Arrival::Rendered {
+                stage: (2, 1),
+                entry: original.identity.entry_id.clone(),
+                draft_revision: None,
+            },
+        );
+        editor.presentation.exact = Some(frame);
+        editor.presentation.presented_bounds = None;
+        assert!(!editor.presentation.presented_proxy && editor.gpu_at_rest());
+        let bounds = editor.proxy_bounds().expect("Fit's bounds");
+
+        let _ = editor.refit_proxy();
+        assert!(
+            editor.presentation.refit_pending,
+            "the GPU's picture at rest is planned again for the window's bounds"
+        );
+        assert_eq!(
+            editor.request_preview(original.clone()),
+            8,
+            "the exact pixels on screen answer the refit"
+        );
+        assert!(!editor.presentation.refit_pending);
+        assert_eq!(editor.presentation.presented_bounds, Some(bounds));
+
+        editor.presentation.presented_bounds = None;
+        editor.session.workspace.gpu_preview = false;
+        let _ = editor.refit_proxy();
+        assert!(
+            !editor.presentation.refit_pending,
+            "the reference renderer's exact frame serves any bounds"
+        );
+        finish(editor, catalog);
+    }
+
+    /// Where the GPU draws the picture at rest, a job of the stack whose exact frame is on screen
+    /// at Fit, at bounds that draw the stage smaller than it is, renders nothing: its retained
+    /// raster is reduced to them on the preview worker, sharing the allocation, and the reduction
+    /// becomes the reference frame behind the GPU's picture, made for those bounds.
+    #[test]
+    fn a_job_over_an_exact_frame_at_fit_reduces_its_retained_raster() {
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+        editor.presentation.queue = luxforge_core::PreviewQueue::default();
+        let completed_generation = editor.presentation.queue.cancel();
+        editor.view_state.window = (800.0, 600.0);
+        editor.view_state.scale_factor = 1.0;
+        editor.session.preview.view.zoom = Zoom::Fit;
+        let mut original = job(&editor);
+        testing::rebuild(&mut original, |parts| {
+            parts.source = PreviewSource::Jpeg(SourceImage {
+                width: 640,
+                height: 480,
+                rgba: vec![40; 640 * 480 * 4].into(),
+                fingerprint: "exact-at-fit-test".into(),
+                orientation: 1,
+                capture: Default::default(),
+            });
+        });
+        let content = editor.presentation.admit(&mut original);
+        editor
+            .presentation
+            .pending_content
+            .insert(completed_generation, content);
+        let pixels = Arc::new(vec![40; 640 * 480 * 4]);
+        let raster = Arc::new(Raster {
+            width: 640,
+            height: 480,
+            rgba: pixels.clone(),
+            source_fingerprint: original.identity.source_fingerprint.clone(),
+            snapshot_id: original.identity.snapshot_id.clone(),
+        });
+        let mut frame = testing::exact(completed_generation, raster, 1.0);
+        frame.content = Some(content);
+        editor.present(
+            Retained::Exact(frame.clone()),
+            Arrival::Rendered {
+                stage: (640, 480),
+                entry: original.identity.entry_id.clone(),
+                draft_revision: None,
+            },
+        );
+        editor.presentation.exact = Some(frame);
+        assert!(!editor.presentation.presented_proxy && editor.gpu_at_rest());
+        let bounds = editor
+            .proxy_bounds()
+            .filter(|bounds| bounds.width < 640 || bounds.height < 480)
+            .expect("Fit draws this stage smaller than it is");
+
+        let generation = editor.request_preview(original.clone());
+        editor.presentation.preview_generation = generation;
+        assert_ne!(generation, completed_generation, "a job was queued");
+        assert_eq!(
+            editor.presentation.intent(generation),
+            Some(PreviewIntent::Reduce),
+            "the exact pixels on screen are reduced rather than rendered again"
+        );
+        let result =
+            luxforge_testbase::wait_for("the reduction", || editor.presentation.queue.poll());
+        assert_eq!(result.generation, generation);
+        assert!(Arc::ptr_eq(
+            &result.exact().unwrap().result.as_ref().unwrap().rgba,
+            &pixels
+        ));
+        let (_, shown) = editor.preview_ready(result);
+        assert!(shown && editor.presentation.presented_reduced);
+        assert_eq!(editor.presentation.presented_bounds, Some(bounds));
+        assert!(!editor.presentation.refit_pending);
+        finish(editor, catalog);
+    }
+
     /// Returning from a percentage view after a reused commit must schedule reduction before the
     /// ordinary same-content shortcut can accept its exact pixels as the requested Fit display.
     #[test]
-    fn restoration_reused_commit_zoom_to_fit_reduces_retained_exact_pixels() {
+    fn a_reused_commit_zoom_to_fit_reduces_retained_exact_pixels() {
         let (mut editor, catalog, _, _) = opened(
             vec![Layer::new(
                 luxforge_core::DETAIL_EFFECT,
@@ -2811,6 +3011,9 @@ mod reduction_tests {
         );
         editor.presentation.queue = luxforge_core::PreviewQueue::default();
         let completed_generation = editor.presentation.queue.cancel();
+        // The reference renderer draws the picture at rest: with the GPU preview off, a resize or
+        // a zoom to Fit reduces the retained exact frame rather than planning a GPU picture.
+        editor.session.workspace.gpu_preview = false;
         editor.view_state.window = (800.0, 600.0);
         editor.view_state.scale_factor = 1.0;
         editor.session.preview.view.zoom = Zoom::Percent { value: 200.0 };
@@ -2861,7 +3064,7 @@ mod reduction_tests {
             )
             .unwrap(),
         });
-        editor.presentation.remember_reduction_job(&original);
+        editor.presentation.remember_reduction_job(&original, true);
 
         let mut committed = original.clone();
         testing::rebuild(&mut committed, |parts| {
@@ -2890,7 +3093,7 @@ mod reduction_tests {
         );
         assert!(
             editor.presentation.proxy_frame.is_none()
-                && editor.presentation.settled_frame.is_none()
+                && editor.presentation.reduced_frame.is_none()
         );
         let report = editor
             .presentation
@@ -2926,7 +3129,7 @@ mod reduction_tests {
             &pixels
         ));
         let (_, shown) = editor.preview_ready(result);
-        assert!(shown && editor.presentation.presented_settled);
+        assert!(shown && editor.presentation.presented_reduced);
         assert_eq!(editor.presentation.presented_bounds, Some(bounds));
         assert_eq!(editor.presentation.presenter.full_content(), None);
         assert!(Arc::ptr_eq(

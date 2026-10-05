@@ -259,7 +259,6 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
         title: "Crop".into(),
         hint: Some("Frame, ratio and angle".into()),
         effects: vec![luxforge_core::EffectDescriptor {
-            fit_settle: Default::default(),
             id: CROP_EFFECT.into(),
             format: 1,
             stage: EffectStage::Geometry,

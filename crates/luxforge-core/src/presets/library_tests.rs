@@ -1127,7 +1127,6 @@ fn capture_refuses_a_field_with_no_value_and_no_default() {
         title: "Sketch".into(),
         hint: None,
         effects: vec![EffectDescriptor {
-            fit_settle: Default::default(),
             id: "test.sketch.effect".into(),
             format: EFFECT_FORMAT,
             stage: EffectStage::Pixel,

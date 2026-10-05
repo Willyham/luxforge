@@ -459,8 +459,7 @@ impl Editor {
                 .map(|frame| json!([frame.dimensions.0, frame.dimensions.1])),
             "bounds": bounds.map(|bounds| json!({"width":bounds.width,"height":bounds.height})),
             "presented": self.presentation.presented_proxy,
-            "settled_from_exact": self.presentation.presented_settled,
-            "restoration_prefix": self.presentation.restoration_prefix,
+            "reduced": self.presentation.presented_reduced,
         })
     }
 
