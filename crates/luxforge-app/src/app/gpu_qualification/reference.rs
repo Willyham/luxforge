@@ -613,7 +613,16 @@ fn measure(
                     .as_ref()
                     .ok_or_else(|| "no source held on the GPU".to_owned())
                     .and_then(|gpu| gpu_counts(surface, &evaluation, gpu));
-                let measured = histogram_kind(&reference, Some(counted))?;
+                let gpu_report = counted.as_ref().ok().map(|(report, _)| report.clone());
+                let mut measured = histogram_kind(&reference, Some(counted))?;
+                // Beside the gated figure, never gated: how far the counts moved, and the codes
+                // of the frame they came from against the reference frame's.
+                if let (Some(gpu_report), Some(gpu)) = (gpu_report, gpu.as_ref()) {
+                    let frame = gpu_frame(surface, &evaluation, gpu);
+                    let failing = measured["passed"] == false;
+                    measured["diagnostics"] =
+                        histogram_diagnostics(&reference, &gpu_report, frame, failing)?;
+                }
                 eprintln!("{cell}: histogram: {measured}");
                 measured
             }
@@ -1075,6 +1084,115 @@ fn gpu_counts(
     )
     .map_err(|error| error.detail)?;
     Ok((report, handed.tiles.len()))
+}
+
+/// The frame the GPU's counts of `evaluation`'s stack come from, at full resolution: each tile of
+/// the picture at rest the editor plans, drawn as a picture at rest draws it and read back, laid at
+/// its place in the output stage; RGBA row by row. For the histogram's diagnostics alone.
+fn gpu_frame(
+    surface: &mut HeadlessSurface,
+    evaluation: &Evaluation,
+    gpu: &GpuSource,
+) -> Result<Vec<u8>, String> {
+    let rest = luxforge_core::qualification::rest_plan(evaluation, GpuView::Fit(fit_bounds()))
+        .map_err(|error| error.to_string())?;
+    let tiles = match rest.tiles {
+        Some(Ok(tiles)) => tiles,
+        Some(Err(reason)) => return Err(reason.code().to_owned()),
+        None => return Err("no tiles planned".to_owned()),
+    };
+    let handed = rest_now(gpu, &tiles, 1)?;
+    let (width, height) = (tiles.output.width as usize, tiles.output.height as usize);
+    let mut frame = vec![0u8; width * height * 4];
+    for plan in handed.tiles.iter() {
+        let region = plan.region.ok_or("a tile with no region")?;
+        let [x0, y0, x1, y1] = region.rect;
+        let (x0, y0, x1, y1) = (x0 as usize, y0 as usize, x1 as usize, y1 as usize);
+        let codes = surface
+            .tile(gpu, plan)
+            .map_err(|fallback| format!("the tile at ({x0}, {y0}): {fallback:?}"))?;
+        let across = x1 - x0;
+        if codes.len() != across * (y1 - y0) {
+            return Err(format!(
+                "the tile at ({x0}, {y0}) read back {} pixels, not {}",
+                codes.len(),
+                across * (y1 - y0)
+            ));
+        }
+        for (row, line) in codes.chunks_exact(across).enumerate() {
+            let start = ((y0 + row) * width + x0) * 4;
+            frame[start..start + across * 4].copy_from_slice(line.as_flattened());
+        }
+    }
+    Ok(frame)
+}
+
+/// The histogram's diagnostics, reported beside the gated summed bin difference and never gated:
+/// per channel, and for luminance from the two frames, the earth mover's distance in codes, the
+/// signed mean shift and the summed bin difference at bins of 2 and 4 codes, each a share of the
+/// pixel count as the gated figure is; the shares of pixels of the GPU's frame, `frame`, whose
+/// code differs from the reference frame's by exactly one, by two and by more, in any channel, and
+/// whether that frame's own counts are the GPU's counts, `gpu`; and, for a stack past its limit
+/// (`failing`), both sides' 256 bins.
+fn histogram_diagnostics(
+    reference: &Raster,
+    gpu: &Report,
+    frame: Result<Vec<u8>, String>,
+    failing: bool,
+) -> Result<Value, String> {
+    let expected = luxforge_core::analysis::reduce(
+        &reference.rgba,
+        reference.width,
+        reference.height,
+        &Cancel::never(),
+    )
+    .map_err(|error| error.to_string())?;
+    let pixels = (u64::from(reference.width) * u64::from(reference.height)) as f64;
+    let figures = |candidate: &[u64; 256], against: &[u64; 256]| {
+        json!({
+            "emd_codes": tolerance::histogram_emd(candidate, against),
+            "mean_shift_codes": tolerance::histogram_mean_shift(candidate, against),
+            "bins_at_2": tolerance::histogram_binned(candidate, against, 2) as f64 / pixels,
+            "bins_at_4": tolerance::histogram_binned(candidate, against, 4) as f64 / pixels,
+        })
+    };
+    let sides = [
+        (gpu.r, expected.r),
+        (gpu.g, expected.g),
+        (gpu.b, expected.b),
+    ];
+    let mut value = json!({
+        "r": figures(&sides[0].0, &sides[0].1),
+        "g": figures(&sides[1].0, &sides[1].1),
+        "b": figures(&sides[2].0, &sides[2].1),
+    });
+    match frame {
+        Ok(frame) => {
+            let drawn = tolerance::Counts::of(&frame, 4);
+            value["frame_is_the_counts"] = json!(drawn.bins == [gpu.r, gpu.g, gpu.b]);
+            let luma = tolerance::luma_bins(&frame, 4);
+            let luma_reference = tolerance::luma_bins(&reference.rgba, 4);
+            value["luminance"] = figures(&luma, &luma_reference);
+            let shifts = tolerance::code_shifts(&frame, &reference.rgba, 4)?;
+            value["pixels_differing"] = json!({
+                "by_1": shifts[1] as f64 / pixels,
+                "by_2": shifts[2] as f64 / pixels,
+                "by_more": shifts[3] as f64 / pixels,
+            });
+            if failing {
+                value["luminance_bins"] =
+                    json!({"gpu": luma.to_vec(), "reference": luma_reference.to_vec()});
+            }
+        }
+        Err(reason) => value["frame_gap"] = json!(reason),
+    }
+    if failing {
+        value["bins"] = json!({
+            "gpu": {"r": gpu.r.to_vec(), "g": gpu.g.to_vec(), "b": gpu.b.to_vec()},
+            "reference": {"r": expected.r.to_vec(), "g": expected.g.to_vec(), "b": expected.b.to_vec()},
+        });
+    }
+    Ok(value)
 }
 
 /// Why the histogram and clipping counts are not compared, where nothing counted them on the GPU.

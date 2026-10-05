@@ -600,6 +600,10 @@ struct CountsWorst {
     bins: Option<(f64, String)>,
     clipping: Option<(f64, String, String)>,
     exact: usize,
+    /// Diagnostics, never gated: the largest earth mover's distance in codes over the channels
+    /// and luminance, with its cell, and how many stacks pass half a code by it.
+    emd: Option<(f64, String)>,
+    emd_past_half: usize,
 }
 
 impl CountsWorst {
@@ -626,6 +630,21 @@ impl CountsWorst {
         if bins == 0.0 && clipping == 0.0 {
             self.exact += 1;
         }
+        let diagnostics = &measured["diagnostics"];
+        let emd = ["r", "g", "b", "luminance"]
+            .iter()
+            .filter_map(|side| diagnostics[side]["emd_codes"].as_f64())
+            .fold(None, |worst: Option<f64>, emd| {
+                Some(worst.map_or(emd, |worst| worst.max(emd)))
+            });
+        if let Some(emd) = emd {
+            if emd > 0.5 {
+                self.emd_past_half += 1;
+            }
+            if self.emd.as_ref().is_none_or(|(worst, _)| emd > *worst) {
+                self.emd = Some((emd, cell.to_owned()));
+            }
+        }
     }
 
     fn value(&self) -> Value {
@@ -635,6 +654,8 @@ impl CountsWorst {
                 json!({"share": share, "counter": counter, "cell": cell})
             }),
             "exact": self.exact,
+            "worst_emd": self.emd.as_ref().map(|(codes, cell)| json!({"codes": codes, "cell": cell})),
+            "emd_past_half_a_code": self.emd_past_half,
         })
     }
 }
@@ -1372,6 +1393,14 @@ pub fn markdown(report: &Value) -> String {
                     counts["worst_clipping"]["cell"].as_str().unwrap_or("?"),
                     counts["exact"],
                     histogram["measured"],
+                ));
+            }
+            if counts["worst_emd"].is_object() {
+                text.push_str(&format!(
+                    "\nHistogram diagnostics, not gated: largest earth mover's distance {:.4} codes ({}); {} stack(s) past half a code. Each stack's figures, and the bins of those past the limit, are in the run's cells.\n",
+                    counts["worst_emd"]["codes"].as_f64().unwrap_or(f64::NAN),
+                    counts["worst_emd"]["cell"].as_str().unwrap_or("?"),
+                    counts["emd_past_half_a_code"],
                 ));
             }
         }
