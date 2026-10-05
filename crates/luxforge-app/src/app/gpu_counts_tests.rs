@@ -214,8 +214,11 @@ fn counts_that_fail_send_the_content_to_the_reference_renderer() {
 fn a_gestures_ticks_plot_the_counts_of_the_frame_on_screen_as_updating() {
     let (mut editor, catalog) = opened_on_the_gpu("counts-motion");
     let _ = slide(&mut editor, ACTION, FIELD, 0.2);
+    // The boundary, and the first tick's own frame landed, so no report arrives under the next.
     deliver_until(&mut editor, "the boundary", |editor| {
         editor.gpu.holds_boundary()
+            && !editor.presentation.queue.is_busy()
+            && !editor.presentation.queue.ready()
     });
     surface_ready(&mut editor);
     let _ = slide(&mut editor, ACTION, FIELD, 0.3);
@@ -281,5 +284,42 @@ fn before_the_surface_has_checked_its_stage_the_reference_renders_the_commit() {
         editor.presentation.analysis.as_ref().unwrap().source,
         AnalysisSource::Reference
     );
+    finish(editor, catalog);
+}
+
+/// Compare over a content the GPU presented waits for the reference's frame of it: the photograph
+/// under the GPU's picture is an earlier content's and is never taken as the After side.
+#[test]
+fn compare_over_a_content_the_gpu_presented_waits_for_the_references_frame_of_it() {
+    let (mut editor, catalog) = opened_on_the_gpu("compare");
+    commit(&mut editor, 0.4);
+    deliver_until(&mut editor, "the committed stack presented", |editor| {
+        editor.presentation.gpu_presented == Some(editor.presentation.content_serial)
+    });
+    let content = editor.presentation.content_serial;
+    drop(editor.compare_toggle());
+    assert!(editor.presentation.compare_after.is_none(), "no After yet");
+    assert!(editor.gpu.compare_waits);
+    // The current preview, planned as the runtime's executor would, is the reference's.
+    let asset = editor.document.state.as_ref().unwrap().asset.id.clone();
+    let payload = crate::app::tasks::current_preview_now(
+        &editor.owner,
+        editor.client,
+        asset,
+        editor.displayed_entry(),
+        editor.drawn(),
+    )
+    .unwrap();
+    let _ = editor.update(Message::Preview(PreviewMessage::Loaded(Ok(Box::new(
+        payload,
+    )))));
+    deliver_until(
+        &mut editor,
+        "Compare begun over the reference's frame",
+        |editor| editor.presentation.compare_after.is_some(),
+    );
+    assert!(!editor.gpu.compare_waits);
+    assert_eq!(editor.presentation.gpu_presented, None);
+    assert_eq!(editor.presentation.presented_content, content);
     finish(editor, catalog);
 }

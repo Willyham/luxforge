@@ -1243,8 +1243,10 @@ impl Editor {
                         let entry = payload.job.evaluation.entry().id.clone();
                         self.outcome(Outcome::EntryRequested(payload.job.evaluation.entry()));
                         self.show_entry(entry.clone());
-                        self.presentation.preview_generation = self.request_preview(payload.job);
+                        // Said before the request, which a picture the GPU presents at once
+                        // answers with what is on screen.
                         self.status.text = "Rendering selected history state…".into();
+                        self.presentation.preview_generation = self.request_preview(payload.job);
                         // The recipe rows follow the displayed entry: one payload read, no render.
                         if let Some(state) = &self.document.state {
                             return recipe_task(
@@ -1842,6 +1844,15 @@ impl Editor {
         );
         // A zoom that changed while this frame was rendering is picked up by `present_retained`.
         self.present_retained();
+        // Compare waited for a frame of the content the GPU presented, its After side.
+        if self.gpu.compare_waits
+            && self.presentation.gpu_presented != Some(self.presentation.presented_content)
+        {
+            self.gpu.compare_waits = false;
+            if self.presentation.compare_after.is_none() {
+                return (self.compare_toggle(), true);
+            }
+        }
         (Task::none(), true)
     }
 
@@ -2433,6 +2444,9 @@ impl Editor {
             && self.presentation.held_by_proxy.is_none()
             && settled_pixels
             && complete_analysis
+            // The GPU presented this content with no CPU frame and the reference is asked for one.
+            && !(self.presentation.gpu_presented == Some(content)
+                && self.gpu.refused_content == Some(content))
             && match job.viewport {
                 Some(wanted) => {
                     self.presentation.presenter.full_content() == Some(content)

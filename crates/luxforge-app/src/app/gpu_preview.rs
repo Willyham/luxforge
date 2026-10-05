@@ -840,6 +840,9 @@ pub(crate) struct GpuPreviews {
     pub(crate) refused_content: Option<u64>,
     /// The last tick whose counts are shown in motion, by boundary and revision.
     pub(crate) motion_tick: Option<(u64, u64)>,
+    /// Compare waits for the reference's frame of a content the GPU presented without one, its
+    /// After side.
+    pub(crate) compare_waits: bool,
     /// What a test reports for the surface, which no test draws.
     #[cfg(test)]
     pub(crate) surface: Option<SurfaceReport>,
@@ -2108,7 +2111,9 @@ impl Editor {
             .rest
             .as_ref()
             .filter(|_| whole && super::gpu_settle::clip_flags(&self.session.workspace).is_none())
-            .and_then(|rest| rest.gpu.as_ref());
+            .and_then(|rest| rest.gpu.as_ref())
+            // Tiles with no reduction are the counts' alone: they draw no After side.
+            .filter(|rest| rest.reduction.is_some());
         (plan, rest)
     }
 
