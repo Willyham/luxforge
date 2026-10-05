@@ -723,8 +723,12 @@ impl Editor {
                     && drawn.drawn_rest == Some(rest.version)
                     && drawn.drawn_rest_dissolve.is_none();
             }
+            // Where the GPU presents the content with no CPU frame of it, its view plan's frame is
+            // the only picture of it there is: the frame under it is an earlier content's.
+            let gpu_presented =
+                self.presentation.gpu_presented == Some(self.presentation.presented_content);
             if let Some((plan, _)) = self.gpu_rest_plan()
-                && drawn.gpu_ready_boundary == Some(plan.boundary.version())
+                && (gpu_presented || drawn.gpu_ready_boundary == Some(plan.boundary.version()))
             {
                 return label_current
                     && compare_ready
@@ -3830,7 +3834,11 @@ impl Editor {
             let frame = self.refresh_mask_coverage();
             return Task::batch([session, frame]);
         }
-        self.await_step(if overlay {
+        // Over a picture the GPU presents with no CPU frame of it, no overlay is derived: the
+        // view plan carries the overlay's marks, which the capture waits for after the session.
+        let derived = self.presentation.gpu_presented != Some(self.presentation.presented_content)
+            || !self.gpu_at_rest();
+        self.await_step(if overlay && derived {
             Settle::Overlay
         } else {
             Settle::Session
@@ -3951,7 +3959,13 @@ impl Editor {
         let status = iced::event::Status::Ignored;
         match crate::app::keymap::keymap(&event, status, &self.key_context()) {
             None => self.fail_step(format!("the key {key} does nothing here")),
-            Some(Message::View(ViewMessage::ToggleInformation)) => {
+            // A per-client view setting goes through `workspace.set`: the step is the session the
+            // owner answers, not the next frame, which a picture at rest the GPU presents at once
+            // can draw before that answer arrives.
+            Some(Message::View(ViewMessage::ToggleInformation))
+            | Some(Message::Overlay(
+                crate::app::message::overlay::OverlayMessage::ToggleClipping(_),
+            )) => {
                 self.await_step(Settle::Session);
                 self.dispatch(Message::Key(event, status))
             }

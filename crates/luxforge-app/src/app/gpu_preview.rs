@@ -1453,7 +1453,6 @@ impl Editor {
     /// Whether the photograph on screen is the GPU's frame of the open draft's newest revision,
     /// `revision`: the surface is handed that tick's plan, not held behind a CPU frame, and its
     /// last frame drew it.
-    #[cfg(test)]
     pub(crate) fn gpu_shows_revision(&self, revision: u64) -> bool {
         self.gpu_draws_newest_tick()
             && self

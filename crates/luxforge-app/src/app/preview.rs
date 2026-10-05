@@ -1045,6 +1045,17 @@ impl Editor {
         let Some(wanted) = self.desired_view_for(stage) else {
             return false;
         };
+        // The GPU's picture at rest of the content on screen holds the view at full detail, once
+        // the surface has evaluated it.
+        if self.gpu_holds_view(wanted)
+            && self.gpu_rest_plan().is_some_and(|(plan, _)| {
+                luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE)
+                    .gpu_ready_boundary
+                    == Some(plan.boundary.version())
+            })
+        {
+            return false;
+        }
         if self.presentation.presenter.full_content() == Some(self.presentation.presented_content)
             && self.presentation.exact_content() == Some(self.presentation.presented_content)
         {
@@ -1194,10 +1205,16 @@ impl Editor {
                         self.presentation.preview_generation = generation;
                         self.view_plan.request_generation = Some(generation);
                         self.view_plan.dirty = false;
-                        self.event("preview_view_requested", || json!({
-                            "generation":generation,
-                            "intent":if intent == PreviewIntent::Settle {"settle"} else {"interactive"},
-                        }));
+                        self.event("preview_view_requested", || {
+                            json!({
+                                "generation":generation,
+                                "intent":match intent {
+                                    PreviewIntent::Settle => "settle",
+                                    PreviewIntent::Refine => "refine",
+                                    _ => "interactive",
+                                },
+                            })
+                        });
                     }
                     Err(error) => {
                         self.status.text = error;
@@ -1387,13 +1404,12 @@ impl Editor {
         })
     }
 
-    /// The shared quiet policy's settle: once a pan at a percentage zoom of 100% or more has paused
-    /// for [`QUIET_INTERVAL`], the view asked for is planned at rest, its GPU picture where the GPU
-    /// draws the stack and the reference renderer's frame where it cannot. A pause in a gesture
-    /// settles nothing: its frame is the GPU's of the drafted settings, or the reference's proxy
-    /// where the GPU cannot draw them, and the histogram is the frame in motion's, or the last
-    /// report marked updating, until the release (`docs/design/gpu-first.md`, stage 2). Nothing
-    /// renders a whole frame on a pause.
+    /// The shared quiet policy's settle, after [`QUIET_INTERVAL`] without new input: a pan at a
+    /// percentage zoom of 100% or more is planned at rest, its GPU picture where the GPU draws the
+    /// stack and the reference renderer's frame where it cannot; and at 100% and above a draft the
+    /// reference draws at half scale in motion is refined to its exact visible region. Nothing
+    /// renders a whole frame on a pause: a draft's histogram is the frame in motion's, or the last
+    /// report marked updating, until the release (`docs/design/gpu-first.md`, stage 2).
     fn quiet_refine(&mut self) -> Task<Message> {
         let Some(since) = self.view_plan.quiet_since else {
             return Task::none();
@@ -1410,18 +1426,35 @@ impl Editor {
         {
             return Task::none();
         }
-        if self.session.draft.is_some() || self.view_settled() {
+        let settled = match self.session.draft.as_ref() {
+            // A gesture's pause renders no whole frame. At 100% and above a draft the reference
+            // draws at half scale in motion is refined to its exact visible region, the full
+            // detail the owner asked for on a pause; one the GPU draws is at full detail already,
+            // and below 100% there is nothing to refine.
+            Some(draft) => {
+                self.gpu_shows_revision(draft.draft_revision)
+                    || !self.draft_region_unsettled(draft.draft_revision)
+            }
+            None => self.view_settled(),
+        };
+        if settled {
             self.view_plan.quiet_since = None;
             return Task::none();
         }
         self.view_plan.quiet_settle_requested = true;
+        let draft = self.session.draft.is_some();
         self.event("preview_quiet_refine", || {
             json!({
                 "elapsed_ms":since.elapsed().as_secs_f64()*1000.0,
                 "interval_ms":QUIET_INTERVAL.as_millis(),
+                "draft":draft,
             })
         });
-        self.view_plan(PreviewIntent::Settle)
+        self.view_plan(if draft {
+            PreviewIntent::Refine
+        } else {
+            PreviewIntent::Settle
+        })
     }
 
     /// Whether the picture on screen is of the content asked for and settled: where the GPU
@@ -1445,6 +1478,28 @@ impl Editor {
         }
         self.presentation.analysis_content == Some(content)
             && self.presentation.exact_content() == Some(content)
+    }
+
+    /// Whether a draft at `revision` shown at 100% or above still has its visible region to refine:
+    /// the region on screen is not an exact region of that revision holding the view.
+    fn draft_region_unsettled(&self, revision: u64) -> bool {
+        let Some(wanted) = self
+            .presentation
+            .dimensions
+            .and_then(|stage| self.desired_view_for(stage))
+        else {
+            return false;
+        };
+        !self
+            .presentation
+            .region_raster
+            .as_ref()
+            .is_some_and(|region| {
+                region.content == self.presentation.content_serial
+                    && region.quality == luxforge_ui::RegionQuality::Exact
+                    && contains_region(region.rect, wanted)
+                    && self.presentation.displayed_draft_revision == Some(revision)
+            })
     }
 
     /// Whether the GPU presents the content asked for and its view plan at rest, a region's at
@@ -1574,8 +1629,10 @@ impl Editor {
         while let Some(result) = self.poll_preview() {
             let generation = result.generation;
             let terminal = result.phase() == PreviewPhase::Exact
-                || (result.intent == PreviewIntent::Interactive
-                    && result.phase() != PreviewPhase::Exact);
+                || (matches!(
+                    result.intent,
+                    PreviewIntent::Interactive | PreviewIntent::Refine
+                ) && result.phase() != PreviewPhase::Exact);
             let (task, presented) = self.preview_ready(result);
             if terminal {
                 self.presentation.forget(generation);
@@ -1920,13 +1977,14 @@ impl Editor {
         if self.view_plan.request_generation == Some(generation) {
             self.view_plan.request_generation = None;
         }
-        if intent == PreviewIntent::Interactive && self.activity.pending {
+        let moving = matches!(intent, PreviewIntent::Interactive | PreviewIntent::Refine);
+        if moving && self.activity.pending {
             self.activity.pending = false;
             self.activity.displayed = self.activity.requested;
             self.activity.phase = "ready";
             self.outcome(Outcome::RequestEnded { failed: false });
         }
-        if intent == PreviewIntent::Interactive {
+        if moving {
             // A draft's region is its newest once the draft has drained and nothing newer was
             // asked for. With no draft open the region is only the pixels in view: history
             // selection, Return to current and committed edits are shown whole once the
@@ -2313,7 +2371,7 @@ impl Editor {
         // intentionally half detail and carries no whole-image report; Settle must refine it
         // and retain exact pixels. A non-interactive request for analysis also needs its exact
         // report, even when a mask-only recipe change leaves photograph content unchanged.
-        let settled_pixels = job.intent != PreviewIntent::Settle
+        let settled_pixels = !matches!(job.intent, PreviewIntent::Settle | PreviewIntent::Refine)
             || (!self.presentation.presented_approximate_white_balance
                 && self.presentation.exact.as_ref().is_some_and(|frame| {
                     frame.content == Some(content) && !frame.approximate_white_balance
@@ -2325,8 +2383,10 @@ impl Editor {
                     .is_none_or(|region| {
                         region.quality == luxforge_ui::RegionQuality::Exact && !region.approximate
                     }));
-        let complete_analysis = job.intent == PreviewIntent::Interactive
-            || !job.analyse
+        let complete_analysis = matches!(
+            job.intent,
+            PreviewIntent::Interactive | PreviewIntent::Refine
+        ) || !job.analyse
             || (self.presentation.analysis_content == Some(content)
                 && self.presentation.analysis.is_some());
         // An exact frame of this stack on screen at Fit, where the job's bounds draw the stage
