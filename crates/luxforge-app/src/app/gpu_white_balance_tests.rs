@@ -92,7 +92,7 @@ fn at_rest(
 
 /// Measurement, not a gate: on every RAW the manifest names, the moving GPU white-balance frame
 /// against the release at Fit and at 100%, printed and written to `LUXFORGE_WB_OUTPUT` when set.
-/// `LUXFORGE_RAW_MANIFEST=~/projects/lightwell/private/raw-manifest.json cargo test --release -p
+/// `LUXFORGE_RAW_MANIFEST=MANIFEST cargo test --release -p
 /// luxforge-app gpu_white_balance_on_the_raw_corpus -- --ignored --nocapture`.
 #[test]
 #[ignore = "the corpus RAWs: set LUXFORGE_RAW_MANIFEST to the private RAW manifest"]
