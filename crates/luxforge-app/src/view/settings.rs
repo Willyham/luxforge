@@ -9,7 +9,7 @@ use crate::{
         MenuTarget,
         preferences::{GeneralControl, GeneralRow, GeneralValue},
         settings::{FlagControl, FlagRow, SettingsModel, SettingsTab},
-        themes::ThemeRow,
+        themes::{FolderLine, ThemeRow},
     },
 };
 use iced::{
@@ -133,20 +133,24 @@ fn tab_icon(tab: SettingsTab) -> Icon {
     }
 }
 
-/// The Appearance tab: Import theme file…, then one row per theme, Luxforge Dark first, and the
-/// stored themes this build cannot read at the end with their reasons.
+/// The Appearance tab: Import Omarchy theme… and Import theme file…, what the last folder import
+/// made of each theme it found, then one row per theme, Luxforge Dark first, and the stored themes
+/// this build cannot read at the end with their reasons.
 fn appearance(model: &SettingsModel) -> Element<'_, Message> {
     let tab = &model.appearance;
+    let import = |label: &'static str, message: ThemeMessage| {
+        text_button(
+            label,
+            ButtonTone::Control,
+            ButtonSize::Compact,
+            tab.can_import.then_some(Message::Theme(message)),
+        )
+    };
     let header = row![
         title("Appearance"),
         Space::new().width(Length::Fill),
-        text_button(
-            "Import theme file\u{2026}",
-            ButtonTone::Control,
-            ButtonSize::Compact,
-            tab.can_import
-                .then_some(Message::Theme(ThemeMessage::Import)),
-        ),
+        import("Import Omarchy theme\u{2026}", ThemeMessage::ImportOmarchy),
+        import("Import theme file\u{2026}", ThemeMessage::Import),
     ]
     .spacing(theme::SPACING)
     .align_y(Alignment::Center);
@@ -158,6 +162,9 @@ fn appearance(model: &SettingsModel) -> Element<'_, Message> {
     }
     if let Some(refusal) = &tab.refusal {
         content = content.push(error_caption(refusal.clone()));
+    }
+    if let Some((summary, lines)) = &tab.folder {
+        content = content.push(folder_report(summary, lines));
     }
     if tab.loading {
         content = content.push(caption("Reading the themes\u{2026}"));
@@ -176,6 +183,24 @@ fn appearance(model: &SettingsModel) -> Element<'_, Message> {
         }
     }
     content.into()
+}
+
+/// What the last Omarchy folder import made of each theme: its summary, a line per outcome naming
+/// the themes it holds, and each failure with its reason.
+fn folder_report<'a>(summary: &'a str, lines: &'a [FolderLine]) -> Element<'a, Message> {
+    lines
+        .iter()
+        .fold(
+            column![label(summary)].spacing(theme::ROW_SPACING),
+            |report, line| {
+                report.push(if line.failed {
+                    error_caption(line.text.clone())
+                } else {
+                    caption(line.text.clone())
+                })
+            },
+        )
+        .into()
 }
 
 /// One theme: its five swatches, its name over its mode and origin, an Adjusted badge and the

@@ -31,7 +31,7 @@ use std::{
     sync::Arc,
 };
 
-fn fixture(path: &str) -> PathBuf {
+pub(super) fn fixture(path: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join(path)
@@ -47,15 +47,15 @@ fn paper_text() -> String {
 }
 
 /// A host over a preferences directory of its own, and a second client standing in for an agent.
-struct Host {
-    owner: OwnerHandle,
+pub(super) struct Host {
+    pub(super) owner: OwnerHandle,
     join: Option<std::thread::JoinHandle<()>>,
-    agent: ClientId,
+    pub(super) agent: ClientId,
     root: PathBuf,
 }
 
 impl Host {
-    fn start(name: &str) -> Self {
+    pub(super) fn start(name: &str) -> Self {
         let root = luxforge_testbase::paths::temp_path(name);
         let (owner, join) = OwnerHandle::start_with_host(
             &root.join("catalog.sqlite"),
@@ -73,6 +73,15 @@ impl Host {
             agent,
             root,
         }
+    }
+
+    /// Stop a host no editor was launched over, and remove its directory.
+    pub(super) fn stop(mut self) {
+        self.owner.stop();
+        if let Some(join) = self.join.take() {
+            join.join().unwrap();
+        }
+        std::fs::remove_dir_all(&self.root).unwrap();
     }
 
     fn config(&self) -> PathBuf {
@@ -94,7 +103,7 @@ impl Host {
 
     /// The editor as a launch builds it: the launch preferences read from the directory first, as
     /// `Config::resolve_launch` reads them, then the editor over them.
-    fn launch(&mut self) -> Editor {
+    pub(super) fn launch(&mut self) -> Editor {
         let config = crate::Config {
             launch_theme: Some(LaunchPreferences::read(Some(self.config())).theme),
             ..crate::Config::default()
@@ -112,7 +121,7 @@ impl Host {
     }
 }
 
-fn finish(mut editor: Editor, host: Host) {
+pub(super) fn finish(mut editor: Editor, host: Host) {
     editor.owner.stop();
     if let Some(join) = editor.owner_join.take() {
         join.join().unwrap();
@@ -122,14 +131,14 @@ fn finish(mut editor: Editor, host: Host) {
 }
 
 /// Answer the library's listing in flight as its task would.
-fn answer_list(editor: &mut Editor) {
+pub(super) fn answer_list(editor: &mut Editor) {
     assert!(editor.themes.listing.in_flight(), "a listing in flight");
     let listed = list_now(&editor.owner, editor.client);
     let _ = editor.update(Message::Theme(ThemeMessage::Listed(listed)));
 }
 
 /// Answer the theme read in flight as its task would.
-fn answer_read(editor: &mut Editor) {
+pub(super) fn answer_read(editor: &mut Editor) {
     let id = editor
         .themes
         .reading
@@ -150,7 +159,7 @@ fn colour(value: luxforge_core::theme::Rgba) -> Color {
 }
 
 /// The request without its fresh request id, which is new on every call.
-fn without_request_id(mut params: Value) -> Value {
+pub(super) fn without_request_id(mut params: Value) -> Value {
     params["mutation"]
         .as_object_mut()
         .expect("a mutation envelope")

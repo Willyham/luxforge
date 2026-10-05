@@ -99,6 +99,156 @@ pub(crate) fn fallback_note(chosen: &str, reason: &str) -> String {
     format!("The theme {chosen} cannot be shown, so {LUXFORGE_DARK_NAME} is: {reason}")
 }
 
+/// What became of one theme of an Omarchy folder import.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum FolderOutcome {
+    /// Stored under this id and name.
+    Imported { id: String, name: String },
+    /// A theme the library already holds has this name: one built in, or one imported before. It
+    /// is never renamed or replaced.
+    Conflict { name: String, built_in: bool },
+    /// Not imported, for this reason: a file the desktop could not read, or the host's refusal.
+    Failed(String),
+}
+
+impl FolderOutcome {
+    /// The outcome's name as a frame's state records it.
+    pub(crate) fn kind(&self) -> &'static str {
+        match self {
+            Self::Imported { .. } => "imported",
+            Self::Conflict { built_in: true, .. } => "built-in",
+            Self::Conflict {
+                built_in: false, ..
+            } => "already-imported",
+            Self::Failed(_) => "failed",
+        }
+    }
+}
+
+/// One theme folder of an import and what became of it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FolderTheme {
+    /// The theme folder's own name, which names the theme.
+    pub(crate) folder: String,
+    pub(crate) outcome: FolderOutcome,
+}
+
+/// One Import Omarchy theme…: the folder chosen and each theme it held, in folder-name order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FolderReport {
+    /// The chosen folder's own name.
+    pub(crate) chosen: String,
+    pub(crate) themes: Vec<FolderTheme>,
+}
+
+impl FolderReport {
+    /// The one line the status bar and the tab say of the import.
+    pub(crate) fn summary(&self) -> String {
+        if let [theme] = self.themes.as_slice() {
+            return match &theme.outcome {
+                FolderOutcome::Imported { name, .. } => {
+                    format!("Imported the Omarchy theme \u{201c}{name}\u{201d}")
+                }
+                FolderOutcome::Conflict { name, built_in } => format!(
+                    "\u{201c}{name}\u{201d} is {}, so it was not imported",
+                    already(*built_in)
+                ),
+                FolderOutcome::Failed(reason) => format!(
+                    "Could not import the Omarchy theme {}: {reason}",
+                    theme.folder
+                ),
+            };
+        }
+        let count = |kind: &str| {
+            self.themes
+                .iter()
+                .filter(|theme| theme.outcome.kind() == kind)
+                .count()
+        };
+        let mut summary = format!(
+            "Imported {} of {} Omarchy themes from \u{201c}{}\u{201d}",
+            count("imported"),
+            self.themes.len(),
+            self.chosen
+        );
+        let rest: Vec<String> = [
+            ("built-in", "already built in"),
+            ("already-imported", "already imported"),
+            ("failed", "failed"),
+        ]
+        .into_iter()
+        .filter_map(|(kind, label)| {
+            let n = count(kind);
+            (n > 0).then(|| format!("{n} {label}"))
+        })
+        .collect();
+        if !rest.is_empty() {
+            summary.push_str(": ");
+            summary.push_str(&rest.join(", "));
+        }
+        summary
+    }
+
+    /// The tab's lines under the summary: the imported themes, those already built in and those
+    /// already imported, each group named once, then one line per failure with its reason. A
+    /// folder of one theme has none, since its summary says it all.
+    pub(crate) fn lines(&self) -> Vec<FolderLine> {
+        if self.themes.len() == 1 {
+            return Vec::new();
+        }
+        let names = |built_in: Option<bool>| -> Vec<&str> {
+            self.themes
+                .iter()
+                .filter_map(|theme| match (&theme.outcome, built_in) {
+                    (FolderOutcome::Imported { name, .. }, None) => Some(name.as_str()),
+                    (FolderOutcome::Conflict { name, built_in }, Some(wanted))
+                        if *built_in == wanted =>
+                    {
+                        Some(name.as_str())
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut lines: Vec<FolderLine> = [
+            ("Imported", names(None)),
+            ("Already built in", names(Some(true))),
+            ("Already imported", names(Some(false))),
+        ]
+        .into_iter()
+        .filter(|(_, names)| !names.is_empty())
+        .map(|(label, names)| FolderLine {
+            text: format!("{label}: {}", names.join(", ")),
+            failed: false,
+        })
+        .collect();
+        lines.extend(self.themes.iter().filter_map(|theme| match &theme.outcome {
+            FolderOutcome::Failed(reason) => Some(FolderLine {
+                text: format!("{}: {reason}", theme.folder),
+                failed: true,
+            }),
+            _ => None,
+        }));
+        lines
+    }
+}
+
+fn already(built_in: bool) -> &'static str {
+    if built_in {
+        "already built in"
+    } else {
+        "already imported"
+    }
+}
+
+/// One line the Appearance tab shows of the last folder import.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FolderLine {
+    pub(crate) text: String,
+    /// A theme that failed, drawn as an error.
+    pub(crate) failed: bool,
+}
+
 /// The library and the theme on screen.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Themes {
@@ -119,6 +269,9 @@ pub(crate) struct Themes {
     pub(crate) pending: bool,
     /// Why the last import or delete was refused, shown in the tab until the next one is made.
     pub(crate) refusal: Option<String>,
+    /// What the last Import Omarchy theme… made of each theme it found, shown in the tab until the
+    /// next import or delete.
+    pub(crate) folder: Option<FolderReport>,
 }
 
 /// One theme as the Appearance tab draws it.
@@ -151,7 +304,10 @@ pub(crate) struct AppearanceModel {
     pub(crate) loading: bool,
     pub(crate) error: Option<String>,
     pub(crate) refusal: Option<String>,
-    /// Import theme file… can start: nothing else is in flight and no dialog is open.
+    /// The last Omarchy folder import: its summary, then its lines.
+    pub(crate) folder: Option<(String, Vec<FolderLine>)>,
+    /// Import Omarchy theme… and Import theme file… can start: nothing else is in flight and no
+    /// dialog is open.
     pub(crate) can_import: bool,
 }
 
@@ -209,6 +365,10 @@ pub(crate) fn appearance(
         loading: themes.list.is_none() && themes.error.is_none(),
         error: themes.error.clone(),
         refusal: themes.refusal.clone(),
+        folder: themes
+            .folder
+            .as_ref()
+            .map(|report| (report.summary(), report.lines())),
         can_import: !themes.pending && !picker_open,
     }
 }
@@ -425,6 +585,91 @@ mod tests {
         assert_eq!(entries[2].2, PaletteAction::Theme("theme-a".into()));
         assert_eq!(entries[2].1, "preferences.set");
         assert!(palette_entries(&Themes::default()).is_empty());
+    }
+
+    #[test]
+    fn a_folder_import_is_said_in_a_line_and_listed_by_outcome() {
+        let theme = |folder: &str, outcome| FolderTheme {
+            folder: folder.into(),
+            outcome,
+        };
+        let one = |outcome| FolderReport {
+            chosen: "nord".into(),
+            themes: vec![theme("nord", outcome)],
+        };
+        let summaries = [
+            FolderOutcome::Imported {
+                id: "theme-a".into(),
+                name: "Nord".into(),
+            },
+            FolderOutcome::Conflict {
+                name: "Nord".into(),
+                built_in: true,
+            },
+            FolderOutcome::Conflict {
+                name: "Nord".into(),
+                built_in: false,
+            },
+            FolderOutcome::Failed("unsupported-input: colors.toml has no accent".into()),
+        ]
+        .map(|outcome| {
+            let report = one(outcome);
+            assert!(report.lines().is_empty(), "the summary says it all");
+            report.summary()
+        });
+        assert_eq!(
+            summaries,
+            [
+                "Imported the Omarchy theme \u{201c}Nord\u{201d}",
+                "\u{201c}Nord\u{201d} is already built in, so it was not imported",
+                "\u{201c}Nord\u{201d} is already imported, so it was not imported",
+                "Could not import the Omarchy theme nord: unsupported-input: colors.toml has no \
+                 accent",
+            ]
+        );
+        let set = FolderReport {
+            chosen: "themes".into(),
+            themes: vec![
+                theme(
+                    "a",
+                    FolderOutcome::Conflict {
+                        name: "A".into(),
+                        built_in: false,
+                    },
+                ),
+                theme(
+                    "b",
+                    FolderOutcome::Imported {
+                        id: "theme-b".into(),
+                        name: "B".into(),
+                    },
+                ),
+                theme(
+                    "c",
+                    FolderOutcome::Imported {
+                        id: "theme-c".into(),
+                        name: "C".into(),
+                    },
+                ),
+            ],
+        };
+        assert_eq!(
+            set.summary(),
+            "Imported 2 of 3 Omarchy themes from \u{201c}themes\u{201d}: 1 already imported"
+        );
+        assert_eq!(
+            set.lines(),
+            [
+                FolderLine {
+                    text: "Imported: B, C".into(),
+                    failed: false
+                },
+                FolderLine {
+                    text: "Already imported: A".into(),
+                    failed: false
+                },
+            ]
+        );
     }
 
     #[test]

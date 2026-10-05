@@ -1,0 +1,22 @@
+# A synthetic light Omarchy 4 palette for the theme scenario, with no mode key: the light.mode
+# marker beside it makes it light. Its folder is named as a cloned theme repository's is, so the
+# theme is named Linen.
+accent = "#2f6f5e"
+selection = "#d9d4c8"
+muted = "#8d877a"
+
+background = "#efebe2"
+dark_background = "#e2ded6"
+lighter_background = "#e4dfd3"
+
+foreground = "#2b2925"
+dark_foreground = "#6b665c"
+light_foreground = "#45423b"
+bright_foreground = "#14130f"
+
+red = "#b3473f"
+yellow = "#9a7a1c"
+green = "#4f7a2a"
+cyan = "#2f7a80"
+blue = "#3a5f9a"
+magenta = "#8a4f8a"

@@ -85,10 +85,11 @@ pub enum Step {
         #[serde(default, skip_serializing_if = "Map::is_empty")]
         params: Map<String, Value>,
     },
-    /// One edit of the open photograph sent by a second client registered on the same owner: an
-    /// agent editing beside the person. The desktop fills `asset_id` and the mutation envelope
-    /// with the revision it holds, and the change reaches the screen only through the desktop's
-    /// event sync, as any other client's change does.
+    /// One request sent by a second client registered on the same owner: an agent beside the
+    /// person. An edit of the open photograph has `asset_id` and the mutation envelope filled with
+    /// the revision the desktop holds; a host method, such as `preferences.set`, is sent as
+    /// written, with a request envelope when its schema names one. Either change reaches the
+    /// screen only through the desktop's event sync, as any other client's change does.
     Agent {
         method: String,
         #[serde(default, skip_serializing_if = "Map::is_empty")]
@@ -185,6 +186,13 @@ pub enum Step {
     /// only the native dialog, and wait for `theme.import` and the listing after it. The path is as
     /// the script wrote it, relative to the editor's working directory.
     ThemeImport {
+        path: String,
+    },
+    /// Import an Omarchy theme folder, or a folder of them, through the Appearance tab's own
+    /// Import Omarchy theme… task, bypassing only the native folder dialog, and wait for each
+    /// theme's `theme.import` and the listing after them. The path is as the script wrote it,
+    /// relative to the editor's working directory.
+    ThemeImportOmarchy {
         path: String,
     },
     /// Change one flag as its row's control does, and wait for `flags.set` to answer: a value the
@@ -344,6 +352,7 @@ impl Step {
             },
             Self::Theme(pick) => pick.validate(),
             Self::ThemeImport { path } => text(path, "theme_import path"),
+            Self::ThemeImportOmarchy { path } => text(path, "theme_import_omarchy path"),
             Self::Flag { id, .. } => text(id, "flag id"),
             Self::Preference(fields) => {
                 if fields.is_empty() {

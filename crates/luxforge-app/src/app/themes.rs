@@ -15,17 +15,19 @@
 //!
 //! The library calls — import, export, delete, the report — are host methods any client calls; they
 //! go one at a time under the library's `pending` flag, and an import or delete lists the library
-//! again before it answers.
+//! again before it answers. An Omarchy folder's themes are imported by [`super::theme_folder`], one
+//! `theme.import` each, under the same flag.
 use super::{
     Before, Editor,
     message::{Message, theme::ThemeMessage},
     outcome::Outcome,
     tasks::{call, call_detailed, call_own, owner_task, owner_work, request},
+    theme_folder::{FolderImport, import_folder_now, picker_start},
 };
 use crate::state::{
     MenuTarget,
     preferences::PreferenceChange,
-    themes::{DrawnTheme, ThemeList, fallback_note, parse_list},
+    themes::{DrawnTheme, FolderOutcome, ThemeList, fallback_note, parse_list},
 };
 use iced::{Color, Task};
 use luxforge_core::{
@@ -384,6 +386,43 @@ impl Editor {
                     Err(error) => self.theme_refused(error),
                 }
             }
+            ThemeMessage::ImportOmarchy => {
+                if self.view_state.picker_open || self.themes.pending || self.evidence.is_some() {
+                    return Task::none();
+                }
+                self.view_state.picker_open = true;
+                // Where it opens is looked up off the update loop too: on Linux it stats Omarchy's
+                // theme folders.
+                return owner_work(picker_start).then(|start| {
+                    Task::perform(
+                        async move {
+                            let mut dialog =
+                                rfd::AsyncFileDialog::new().set_title("Import Omarchy Theme");
+                            if let Some(start) = start {
+                                dialog = dialog.set_directory(start);
+                            }
+                            dialog
+                                .pick_folder()
+                                .await
+                                .map(|folder| folder.path().to_path_buf())
+                        },
+                        |folder| Message::Theme(ThemeMessage::OmarchyPicked(folder)),
+                    )
+                });
+            }
+            ThemeMessage::OmarchyPicked(folder) => {
+                self.view_state.picker_open = false;
+                if let Some(folder) = folder {
+                    return self.theme_import_folder(folder);
+                }
+            }
+            ThemeMessage::OmarchyImported(result) => {
+                self.themes.pending = false;
+                match result {
+                    Ok(import) => return self.adopt_folder_import(*import),
+                    Err(error) => self.theme_refused(error),
+                }
+            }
             ThemeMessage::Export(id) => {
                 self.view_state.menu = None;
                 if self.evidence.is_some() {
@@ -421,6 +460,7 @@ impl Editor {
                 }
                 self.themes.pending = true;
                 self.themes.refusal = None;
+                self.themes.folder = None;
                 self.status.text = "Deleting the theme\u{2026}".into();
                 let (owner, client) = (self.owner.clone(), self.client);
                 return owner_task(
@@ -457,12 +497,63 @@ impl Editor {
         }
         self.themes.pending = true;
         self.themes.refusal = None;
+        self.themes.folder = None;
         self.status.text = "Importing the theme\u{2026}".into();
         let (owner, client) = (self.owner.clone(), self.client);
         owner_task(
             move || import_now(&owner, client, &path),
             |result| Message::Theme(ThemeMessage::Imported(result.map(Box::new))),
         )
+    }
+
+    /// Import every Omarchy theme a folder holds, chosen in the dialog or named by an evidence
+    /// step: the same task either way, which classifies the folder, reads each theme's files and
+    /// imports them one by one off the update loop ([`import_folder_now`]).
+    pub(crate) fn theme_import_folder(&mut self, folder: PathBuf) -> Task<Message> {
+        if self.themes.pending {
+            self.theme_refused("Waiting for the last theme request".into());
+            return Task::none();
+        }
+        self.themes.pending = true;
+        self.themes.refusal = None;
+        self.themes.folder = None;
+        self.status.text = "Importing Omarchy themes\u{2026}".into();
+        let (owner, client) = (self.owner.clone(), self.client);
+        owner_task(
+            move || import_folder_now(&owner, client, &folder),
+            |result| Message::Theme(ThemeMessage::OmarchyImported(result.map(Box::new))),
+        )
+    }
+
+    /// A folder's themes were imported or refused one by one: the tab lists what became of each,
+    /// the status bar says it in a line whose Copy copies every theme's answer, and the library
+    /// is the one listed after the last import, or is listed again when that listing failed.
+    fn adopt_folder_import(&mut self, import: FolderImport) -> Task<Message> {
+        for request in import.requests {
+            self.read_back(request);
+        }
+        let listed = match import.list {
+            Ok((list, sequence)) => {
+                self.adopt_theme_list(list, sequence);
+                Task::none()
+            }
+            Err(error) => {
+                self.themes.error = Some(error);
+                self.list_themes()
+            }
+        };
+        let summary = import.report.summary();
+        self.status.text = summary.clone();
+        self.status.copy = Some((
+            summary,
+            serde_json::to_string_pretty(&import.answers).unwrap_or_default(),
+        ));
+        self.outcome(Outcome::ThemeFolderImported(
+            &json!({"chosen": import.report.chosen, "themes": import.answers}),
+        ));
+        self.themes.folder = Some(import.report);
+        self.outcome(Outcome::ThemesAnswered { failure: None });
+        listed
     }
 
     /// List the library again: at launch, when the sheet opens and on another client's theme
@@ -630,6 +721,19 @@ impl Editor {
                 "unrecognized": self.themes.list.as_ref().map_or(0, |list| list.unrecognized.len()),
                 "error": self.themes.error,
             },
+            "folder_import": self.themes.folder.as_ref().map(|report| json!({
+                "chosen": report.chosen,
+                "summary": report.summary(),
+                "themes": report.themes.iter().map(|theme| {
+                    let (name, id, reason) = match &theme.outcome {
+                        FolderOutcome::Imported { id, name } => (Some(name), Some(id), None),
+                        FolderOutcome::Conflict { name, .. } => (Some(name), None, None),
+                        FolderOutcome::Failed(reason) => (None, None, Some(reason)),
+                    };
+                    json!({"folder": theme.folder, "outcome": theme.outcome.kind(),
+                           "name": name, "id": id, "reason": reason})
+                }).collect::<Vec<_>>(),
+            })),
             "reading": self.themes.reading,
             "pending": self.themes.pending,
         })

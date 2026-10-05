@@ -356,9 +356,19 @@ pub(crate) fn call_own(
     method: &str,
     params: Value,
 ) -> Result<(Value, String), String> {
+    call_own_detailed(owner, client, method, params).map_err(|error| error.to_string())
+}
+
+/// [`call_own`] with the failure's structured data kept, for a caller that tells one refusal from
+/// another by its code.
+pub(crate) fn call_own_detailed(
+    owner: &OwnerHandle,
+    client: ClientId,
+    method: &str,
+    params: Value,
+) -> Result<(Value, String), CallError> {
     let id = api_request_id();
-    let (answer, _) =
-        send(owner, client, id.clone(), method, params).map_err(|error| error.to_string())?;
+    let (answer, _) = send(owner, client, id.clone(), method, params)?;
     Ok((answer, id))
 }
 
