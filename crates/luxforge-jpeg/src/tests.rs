@@ -483,6 +483,7 @@ fn encode_with(icc: Option<&[u8]>, segments: &[(u8, &[u8])]) -> Result<Vec<u8>, 
     let settings = Settings {
         quality: 90,
         chroma: (1, 1),
+        pixels_per_inch: None,
         segments,
         icc,
     };
@@ -531,6 +532,39 @@ fn an_icc_profile_is_written_as_chunks_numbered_from_one() {
         let error = encode_with(Some(&profile), &[]).unwrap_err();
         assert!(matches!(error, JpegError::Internal(_)), "{what}: {error:?}");
     }
+}
+
+/// The JFIF header names a density in pixels per inch when one is asked for, and libjpeg's
+/// unitless 1:1 aspect ratio otherwise: units, then the horizontal and vertical densities.
+#[test]
+fn the_jfif_header_carries_the_density_asked_for() {
+    let jfif = |pixels_per_inch| {
+        let settings = Settings {
+            quality: 90,
+            chroma: (1, 1),
+            pixels_per_inch,
+            segments: &[],
+            icc: None,
+        };
+        let mut out = Vec::new();
+        encode(
+            &mut out,
+            16,
+            16,
+            &[128; 16 * 16 * 4],
+            &settings,
+            &mut |_| Ok::<_, JpegError>(()),
+        )
+        .unwrap();
+        let app0 = segments(&out)
+            .map(Result::unwrap)
+            .find(|segment| segment.marker == 0xe0)
+            .expect("a JFIF header");
+        assert_eq!(&app0.payload[..5], b"JFIF\0");
+        app0.payload[7..12].to_vec()
+    };
+    assert_eq!(jfif(None), [0, 0, 1, 0, 1]);
+    assert_eq!(jfif(Some(144)), [1, 0, 144, 0, 144]);
 }
 
 /// libjpeg-turbo's integer IDCT, fancy upsampling and colour conversion are specified to give the
@@ -610,6 +644,7 @@ fn an_encode_stops_where_its_step_says() {
     let settings = Settings {
         quality: 90,
         chroma: (1, 1),
+        pixels_per_inch: None,
         segments: &[],
         icc: None,
     };
