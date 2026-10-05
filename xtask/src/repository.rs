@@ -4243,7 +4243,10 @@ mod tests {
                     "crates/luxforge-core/src/tiles/reference.rs",
                     "    queued: Condvar,\n",
                 ),
-                ("crates/luxforge-app/src/app/gpu_tiles.rs", "    wake: Condvar,\n"),
+                (
+                    "crates/luxforge-app/src/app/gpu_tiles.rs",
+                    "    wake: Condvar,\n",
+                ),
                 (
                     "crates/luxforge-core/src/preview/tests.rs",
                     "    wait_until(\"the frame\", || queue.poll().is_some());\n",
