@@ -10,9 +10,10 @@ use super::segmented::segment_track;
 use super::swatch_slots::{Chip, chip_spacing};
 use super::text::section_label;
 use crate::theme;
+use crate::{Element, Ink, Token};
 use iced::widget::text::Wrapping;
 use iced::widget::{Row, Space, button, container, row, text, tooltip};
-use iced::{Alignment, Color, Element, Length, Size};
+use iced::{Alignment, Color, Length, Size};
 
 /// How the selected mask is shown over the canvas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,7 +160,7 @@ pub fn overlay_control<'a, M: Clone + 'a>(
         content = content.push(
             text(hint.clone())
                 .size(theme::SIZE_SMALL_CAPTION)
-                .color(theme::TEXT_TERTIARY)
+                .style(theme::ink(Token::TextTertiary))
                 .wrapping(Wrapping::None),
         );
     }
@@ -174,7 +175,7 @@ pub fn overlay_control<'a, M: Clone + 'a>(
 /// A mode glyph's ink. The off ring takes the segment's text colour; the tint square shows the
 /// green tint at the board's 60%; the two black squares keep their own colours, and the ink only
 /// dims them while the control is disabled.
-fn glyph_ink(mode: OverlayMode, selected: bool, enabled: bool) -> Color {
+fn glyph_ink(mode: OverlayMode, selected: bool, enabled: bool) -> Ink {
     let dim = |color: Color| Color {
         a: if enabled {
             color.a
@@ -185,15 +186,17 @@ fn glyph_ink(mode: OverlayMode, selected: bool, enabled: bool) -> Color {
     };
     match mode {
         OverlayMode::Off => match (enabled, selected) {
-            (false, _) => theme::TEXT_TERTIARY,
-            (true, true) => theme::TEXT_BRIGHT,
-            (true, false) => theme::TEXT_SECONDARY,
-        },
+            (false, _) => Token::TextTertiary,
+            (true, true) => Token::TextBright,
+            (true, false) => Token::TextSecondary,
+        }
+        .into(),
         OverlayMode::Tint => dim(Color {
             a: theme::OVERLAY_TINT_GLYPH_OPACITY,
             ..theme::MASK_OVERLAY_GREEN
-        }),
-        OverlayMode::Mask | OverlayMode::Image => dim(Color::WHITE),
+        })
+        .into(),
+        OverlayMode::Mask | OverlayMode::Image => dim(Color::WHITE).into(),
     }
 }
 

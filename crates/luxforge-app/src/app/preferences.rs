@@ -50,6 +50,11 @@ impl Editor {
         self.view_state.interface_scale()
     }
 
+    /// Iced's application theme: the one the editor holds. A clone is one reference count.
+    pub(crate) fn theme(&self) -> luxforge_ui::Theme {
+        self.theme.clone()
+    }
+
     /// Send the waiting change, once nothing is in flight.
     fn write_preferences(&mut self) -> Task<Message> {
         let Some(change) = self.preferences.start() else {

@@ -8,8 +8,9 @@
 //! anchor's own, which is how the control that opened the menu closes it again. The widget holds no
 //! state: whether the menu is open is the caller's.
 use super::decorator::{Decoration, decorate};
+use crate::{Element, Theme};
 use iced::advanced::{Clipboard, Layout, Shell, layout, mouse, overlay, renderer, widget::Tree};
-use iced::{Element, Event, Point, Rectangle, Size, Vector, touch};
+use iced::{Event, Point, Rectangle, Size, Vector, touch};
 
 /// The space between the anchor's bottom edge and the menu's top edge.
 pub(crate) const POPOVER_GAP: f32 = 4.0;
@@ -41,7 +42,7 @@ struct Popover<'a, M> {
     on_dismiss: M,
 }
 
-impl<'a, M: Clone> Decoration<'a, M, iced::Theme, iced::Renderer> for Popover<'a, M> {
+impl<'a, M: Clone> Decoration<'a, M, Theme, iced::Renderer> for Popover<'a, M> {
     type State = ();
 
     fn children(&self, anchor: &Element<'a, M>) -> Vec<Tree> {
@@ -60,7 +61,7 @@ impl<'a, M: Clone> Decoration<'a, M, iced::Theme, iced::Renderer> for Popover<'a
         renderer: &iced::Renderer,
         viewport: &Rectangle,
         translation: Vector,
-    ) -> Option<overlay::Element<'b, M, iced::Theme, iced::Renderer>> {
+    ) -> Option<overlay::Element<'b, M, Theme, iced::Renderer>> {
         let [anchor_tree, menu_tree] = tree.children.as_mut_slice() else {
             return None;
         };
@@ -105,7 +106,7 @@ fn place(anchor: Rectangle, size: Size, bounds: Size) -> Point {
     Point::new(x, y)
 }
 
-impl<M: Clone> overlay::Overlay<M, iced::Theme, iced::Renderer> for Menu<'_, '_, M> {
+impl<M: Clone> overlay::Overlay<M, Theme, iced::Renderer> for Menu<'_, '_, M> {
     fn layout(&mut self, renderer: &iced::Renderer, bounds: Size) -> layout::Node {
         let node = self.menu.as_widget_mut().layout(
             self.tree,
@@ -119,7 +120,7 @@ impl<M: Clone> overlay::Overlay<M, iced::Theme, iced::Renderer> for Menu<'_, '_,
     fn draw(
         &self,
         renderer: &mut iced::Renderer,
-        theme: &iced::Theme,
+        theme: &Theme,
         style: &renderer::Style,
         layout: Layout<'_>,
         cursor: mouse::Cursor,

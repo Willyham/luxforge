@@ -98,9 +98,9 @@ impl Editor {
                 if self.open_generation.load(Ordering::Acquire) != generation {
                     return Task::none();
                 }
-                // The event sync polls only while a photograph is open, so a library change
-                // another client made while none was reaches the screen with the photo rather
-                // than a poll later: list the library again beside it.
+                // The poll that brought a preset change made while no photograph was open listed
+                // the library then; list it again beside the photo all the same, so the section
+                // a newly opened photograph shows is the library as it stands.
                 let opened = result.is_ok();
                 let refreshed = self.dispatch(Message::Sync(SyncMessage::Refreshed(result)));
                 if !opened {
@@ -227,7 +227,11 @@ impl Editor {
                                 .own_requests
                                 .retain(|request| !sync.own.contains(request));
                         }
-                        let flags = self.settings_changed_elsewhere(sync.flags, sync.preferences);
+                        let flags = self.settings_changed_elsewhere(
+                            sync.flags,
+                            sync.preferences,
+                            sync.themes,
+                        );
                         if sync.capabilities {
                             return Task::batch([flags, self.reload_capabilities()]);
                         }
@@ -364,24 +368,22 @@ impl Editor {
     }
 
     /// Start the event sync's one poll when one is wanted and nothing stands in its way: none in
-    /// flight, no request of this desktop's in flight — its answer reads its own change back and
-    /// names the event the poll then skips — and a photograph open. Called after every message, so
-    /// a wake that arrived during a request is read as soon as the request is answered. With
-    /// nothing wanted it does nothing: the sync costs nothing until the owner wakes it. An evidence
-    /// run syncs exactly as a session does, which is how its `agent` step's change reaches the
-    /// screen.
+    /// flight, and no request of this desktop's in flight — its answer reads its own change back
+    /// and names the event the poll then skips. Called after every message, so a wake that arrived
+    /// during a request is read as soon as the request is answered. With nothing wanted it does
+    /// nothing: the sync costs nothing until the owner wakes it. With no photograph open it reads
+    /// the events all the same, so another client's preference or theme change reaches the window
+    /// wherever the person is; it then reads no asset back. An evidence run syncs exactly as a
+    /// session does, which is how its `agent` step's change reaches the screen.
     pub(crate) fn sync_when_wanted(&mut self) -> Task<Message> {
         if self.busy {
             return Task::none();
         }
-        let Some(held) = self
+        let held = self
             .document
             .state
             .as_ref()
-            .map(|state| (state.asset.id.clone(), state.revision))
-        else {
-            return Task::none();
-        };
+            .map(|state| (state.asset.id.clone(), state.revision));
         if self.sync.poll.start().is_none() {
             return Task::none();
         }
@@ -619,12 +621,10 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
 }
 
 /// The owner's wake for another client's change. The event sync needs no timer: the owner posts a
-/// signal when another client's change reaches its log, and this carries it in as a `Changed`. An
-/// open photograph with nothing happening to it wakes nothing, and a signal posted while no
-/// photograph is open is buffered and read once one is. An evidence run is woken the same way.
-pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
-    if editor.document.state.is_none() {
-        return Subscription::none();
-    }
+/// signal when another client's change reaches its log, and this carries it in as a `Changed`.
+/// Nothing happening wakes nothing. It runs whether or not a photograph is open, so another
+/// client's preference or theme change reaches the window wherever the person is. An evidence run
+/// is woken the same way.
+pub(super) fn subscription(_: &Editor) -> Subscription<Message> {
     waker::events_subscription()
 }

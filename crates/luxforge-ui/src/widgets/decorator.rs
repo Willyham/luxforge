@@ -132,17 +132,17 @@ pub(super) trait Decoration<'a, M, Theme, Renderer: renderer::Renderer> {
 }
 
 /// `content` with `decoration` applied: the one widget every decoration is drawn through.
-pub(super) struct Decorated<'a, M, D, Theme = iced::Theme, Renderer = iced::Renderer> {
+pub(super) struct Decorated<'a, M, D, Theme = crate::Theme, Renderer = iced::Renderer> {
     pub(super) content: Element<'a, M, Theme, Renderer>,
     pub(super) decoration: D,
 }
 
 /// `content` wrapped in `decoration`, as an element.
-pub(super) fn decorate<'a, M: 'a, D: Decoration<'a, M, iced::Theme, iced::Renderer> + 'a>(
-    content: impl Into<Element<'a, M>>,
+pub(super) fn decorate<'a, M: 'a, D: Decoration<'a, M, crate::Theme, iced::Renderer> + 'a>(
+    content: impl Into<crate::Element<'a, M>>,
     decoration: D,
-) -> Element<'a, M> {
-    Element::new(Decorated {
+) -> crate::Element<'a, M> {
+    crate::Element::new(Decorated {
         content: content.into(),
         decoration,
     })

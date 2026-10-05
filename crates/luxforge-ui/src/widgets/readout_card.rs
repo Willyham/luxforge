@@ -4,10 +4,11 @@
 
 use super::button_row::RowPlacement;
 use crate::theme;
+use crate::{Element, Token};
 use iced::alignment::Horizontal;
 use iced::widget::text::{LineHeight, Wrapping};
 use iced::widget::{Column, container, row, text};
-use iced::{Element, Length, Padding};
+use iced::{Length, Padding};
 
 /// The card's height for `rows` rows, its padding included.
 #[cfg(test)]
@@ -27,12 +28,12 @@ pub fn readout_card<'a, M: 'a>(
             .line_height(LineHeight::Absolute(theme::READOUT_LINE_HEIGHT.into()))
             .wrapping(Wrapping::None)
             .align_x(align)
-            .color(color)
+            .style(theme::ink(color))
     };
     let body = Column::with_children(rows.iter().map(|(name, value)| {
         row![
-            line(name, theme::TEXT_TERTIARY, Horizontal::Left),
-            line(value, theme::TEXT_SECONDARY, Horizontal::Right).width(Length::Fill),
+            line(name, Token::TextTertiary, Horizontal::Left),
+            line(value, Token::TextSecondary, Horizontal::Right).width(Length::Fill),
         ]
         .spacing(theme::SPACING)
         .into()

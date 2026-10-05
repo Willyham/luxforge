@@ -781,7 +781,7 @@ fn gpu_preview_a_commit_elsewhere_withdraws_the_drags_plan_until_it_plans_again(
     let polled = tasks::sync_now(
         &editor.owner,
         client,
-        (asset.clone(), revision),
+        Some((asset.clone(), revision)),
         editor.sync.sequence,
         &own,
         editor.proxy_bounds(),

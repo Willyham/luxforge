@@ -20,6 +20,7 @@ pub(crate) mod settings;
 pub(crate) mod status;
 #[cfg(test)]
 pub(crate) mod testing;
+pub(crate) mod themes;
 pub(crate) mod title;
 pub(crate) mod tools;
 
@@ -85,6 +86,9 @@ pub(crate) enum MenuTarget {
     Stroke { component: String, stroke: String },
     /// The title bar's Export button: Export JPEG and Export JPEG, keep metadata.
     Export,
+    /// A theme's row in the Settings sheet's Appearance tab, by its id: Export…, Copy import
+    /// report and, for a stored theme, Delete.
+    Theme(String),
 }
 
 /// Why a start that needs the editable state is refused with no photograph open.
@@ -353,6 +357,8 @@ pub(crate) struct Inputs<'a> {
     pub(crate) settings: &'a settings::Settings,
     /// The person's preferences and the writes outstanding.
     pub(crate) preferences: &'a preferences::PreferenceWriter,
+    /// The theme library and the theme on screen.
+    pub(crate) themes: &'a themes::Themes,
     /// The version chip row's naming form.
     pub(crate) version_form: &'a VersionForm,
     pub(crate) dimensions: Option<(u32, u32)>,
@@ -437,7 +443,12 @@ impl Workspace {
         // The panel draws sections unless Mask mode's list has no mask open to bind them to.
         let sections_shown = !(self.canvas.mask_panel && self.masks.selected.is_none());
         self.palette = palette::derive(inputs, &self.tools, sections_shown);
-        self.settings = settings::derive(inputs.settings, inputs.preferences);
+        self.settings = settings::derive(
+            inputs.settings,
+            inputs.preferences,
+            inputs.themes,
+            inputs.view_state,
+        );
     }
 
     /// Every picker control the panel derived, by the module whose pick mode it selects, with the
@@ -619,6 +630,7 @@ mod tests {
         palette: palette::Palette,
         settings: settings::Settings,
         preferences: preferences::PreferenceWriter,
+        themes: themes::Themes,
         version_form: VersionForm,
     }
 
@@ -662,6 +674,7 @@ mod tests {
                 palette: palette::Palette::default(),
                 settings: settings::Settings::default(),
                 preferences: preferences::PreferenceWriter::default(),
+                themes: themes::Themes::default(),
                 version_form: VersionForm::default(),
             }
         }
@@ -755,6 +768,7 @@ mod tests {
                 palette: &self.palette,
                 settings: &self.settings,
                 preferences: &self.preferences,
+                themes: &self.themes,
                 version_form: &self.version_form,
                 dimensions: Some((480, 320)),
                 photo: true,

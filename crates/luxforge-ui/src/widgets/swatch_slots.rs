@@ -9,9 +9,10 @@
 use super::button_row::ButtonSize;
 use super::icon_button::{Icon, icon};
 use crate::theme;
+use crate::{Element, Theme, Token};
 use iced::widget::text::{LineHeight, Wrapping};
 use iced::widget::{Row, Space, button, canvas, row, text};
-use iced::{Alignment, Color, Element, Length, Padding, Point, Rectangle, Renderer, Size, Theme};
+use iced::{Alignment, Color, Length, Padding, Point, Rectangle, Renderer, Size};
 
 /// One chip: a colour, or an empty dashed slot when `fill` is `None`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -47,14 +48,14 @@ impl Chip {
     }
 }
 
-impl<M> canvas::Program<M> for Chip {
+impl<M> canvas::Program<M, Theme> for Chip {
     type State = ();
 
     fn draw(
         &self,
         _state: &Self::State,
         renderer: &Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         bounds: Rectangle,
         _cursor: iced::mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
@@ -71,7 +72,7 @@ impl<M> canvas::Program<M> for Chip {
                     bounds.size(),
                     (self.radius + ring).into(),
                 ),
-                fade(theme::ACCENT),
+                fade(theme.palette().accent),
             );
         }
         let origin = Point::new(ring, ring);
@@ -109,7 +110,7 @@ impl<M> canvas::Program<M> for Chip {
                             offset: 0,
                         },
                         ..canvas::Stroke::default()
-                            .with_color(fade(theme::TEXT_FAINT))
+                            .with_color(fade(theme.palette().text_faint))
                             .with_width(theme::BORDER_WIDTH)
                     },
                 );
@@ -196,9 +197,9 @@ pub fn swatch_slots<'a, M: Clone + 'a>(
 fn pick_button<'a, M: Clone + 'a>(model: &SwatchSlotsModel, on_pick: M) -> Element<'a, M> {
     let enabled = model.enabled && model.pick_enabled;
     let ink = match (enabled, model.picking) {
-        (false, _) => theme::TEXT_TERTIARY,
-        (true, true) => theme::ACCENT,
-        (true, false) => theme::TEXT_PRIMARY,
+        (false, _) => Token::TextTertiary,
+        (true, true) => Token::Accent,
+        (true, false) => Token::Text,
     };
     let content = row![
         icon(Icon::Picker, theme::DROPDOWN_ICON_SIZE, ink),
@@ -206,11 +207,11 @@ fn pick_button<'a, M: Clone + 'a>(model: &SwatchSlotsModel, on_pick: M) -> Eleme
             .size(theme::SIZE_CONTROL)
             .line_height(LineHeight::Absolute(theme::SLIDER_LABEL_HEIGHT.into()))
             .wrapping(Wrapping::None)
-            .color(ink),
+            .style(theme::ink(ink)),
         text(model.count.clone())
             .size(theme::SIZE_SMALL_CAPTION)
             .wrapping(Wrapping::None)
-            .color(theme::TEXT_TERTIARY),
+            .style(theme::ink(Token::TextTertiary)),
     ]
     .spacing(theme::BUTTON_ICON_SPACING)
     .align_y(Alignment::Center)
