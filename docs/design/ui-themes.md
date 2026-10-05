@@ -92,6 +92,66 @@ A derived text tier stops short of its fitted weight where it would miss its flo
 
 A theme may also set any token explicitly, which wins over its derivation. Luxforge Dark sets every token, so it draws exactly what the visual language specifies today, and the visual language's table becomes Luxforge Dark's document. The derivation is deterministic and has golden tests.
 
+### Tokens
+
+The token names are the API's, and the widget crate's palette has a field of the same name for each. The core and the widget crate cannot see each other, so each keeps the list, and a desktop test holds the two lists equal. A value is `#rrggbb`, or `#rrggbbaa` for the two tokens drawn with alpha. The first ten are the colour roles.
+
+| Token | Luxforge Dark | Today's constant | Drawn as |
+| --- | --- | --- | --- |
+| `surround` | `#19191b` | `CANVAS` | Behind the histogram plot; around the photograph when the canvas background is Theme |
+| `background` | `#202023` | `PANEL` | Side panels, status bar, Settings sheet |
+| `surface` | `#232326` | `BAR` | Title bar, floating strips, notices, module bands |
+| `control` | `#2c2c31` | `CONTROL` | Buttons, chips, text fields |
+| `text` | `#e8e8ea` | `TEXT_PRIMARY` | Primary text |
+| `text_secondary` | `#a8a8ae` | `TEXT_SECONDARY` | Secondary text |
+| `text_tertiary` | `#77777f` | `TEXT_TERTIARY` | Tertiary text, disabled controls |
+| `accent` | `#e2b46a` | `ACCENT` | State marks |
+| `accent_ink` | `#1a1408` | `PRIMARY_INK` | Ink on the accent |
+| `error` | `#e5534b` | `CLIPPING_HIGHLIGHT` where it marks an invalid value or failure | Invalid values, unavailable reasons |
+| `text_label` | `#c9c9ce` | `TEXT_LABEL` | Slider and field labels |
+| `text_faint` | `#55555c` | `TEXT_FAINT`, `CLIP_TRIANGLE_REST` | A finished job's duration; an empty clipping triangle |
+| `text_bright` | `#f0f0f2` | `TEXT_BRIGHT` | A notice's title, the file name |
+| `text_identity` | `#8a8a90` | `TEXT_IDENTITY` | The title bar's dimensions and format |
+| `text_current_row` | `#f2f2f4` | `TEXT_CURRENT_ROW` | The current history row's label |
+| `chip_label` | `#b0b0b6` | `CHIP_LABEL` | An unselected chip's label |
+| `strip_icon` | `#b9b9bf` | `STRIP_ICON` | A mode-strip tool's icon at rest |
+| `mode_fixed_ink` | `#99999c` | `MODE_FIXED_INK` | A fixed mode control's glyph |
+| `border` | `#ffffff0f` | `BORDER` (6% white) | Outlines |
+| `scrim` | `#00000059` | The palette's and the Settings sheet's 35% black | Behind a modal sheet |
+| `rule` | `#313134` | `RULE` | A group header's rule |
+| `band_border` | `#2f2f32` | `BAND_BORDER`, `DIVIDER` | Module band borders, the shell's dividers |
+| `chrome_border` | `#343437` | `CHROME_BORDER` | Floating chrome's outline |
+| `strip_rule` | `#39393c` | `STRIP_RULE`, `NOTICE_BORDER` | The mode strip's rule, a neutral notice's outline |
+| `notice_warning_border` | `#65553d` | `NOTICE_WARNING_BORDER` | A notice that needs a decision |
+| `notice_error_border` | `#713634` | `NOTICE_ERROR_BORDER` | A notice that reports a failure |
+| `histogram_border` | `#242426` | `HISTOGRAM_BORDER` | The histogram plot's outline |
+| `thumbnail_border` | `#212123` | `THUMBNAIL_BORDER` | A coverage thumbnail's outline |
+| `rail` | `#3a3a40` | `RAIL` | The empty slider rail |
+| `rail_fill` | `#a3a3aa` | `RAIL_FILL` | The rail's fill |
+| `rail_backdrop` | `#202023` | `PANEL` under a declared rail | The panel held to the surround's chroma bound, under a declared rail at 85% |
+| `zero_tick` | `#5a5a62` | `ZERO_TICK` | The zero tick |
+| `thumb` | `#ececee` | `THUMB` | The resting handle |
+| `thumb_outline` | `#111113` | `THUMB_OUTLINE` | The handle's ring |
+| `sparkline_area` | `#353539` | `SPARKLINE_AREA` | The area under a sparkline |
+| `tab_track` | `#28282c` | `TAB_TRACK`, `SEGMENT_TRACK` | Tab and segment tracks |
+| `tab_selected` | `#3b3b41` | `TAB_SELECTED`, `SEGMENT_SELECTED` | The selected tab or segment |
+| `row_hover` | `#29292c` | `ROW_HOVER` | A row under the pointer |
+| `list_row_current` | `#2f2f32` | `LIST_ROW_CURRENT` | The current row |
+| `icon_hover` | `#303033` | `ICON_HOVER` | An icon button under the pointer |
+| `selected_fill` | `#3e372e` | `SELECTED_FILL` | A selected chip |
+| `icon_selected_fill` | `#3e372f` | `ICON_SELECTED_FILL` | A selected icon button |
+| `strip_selected` | `#413a30` | `STRIP_SELECTED` | A selected mode-strip tool |
+| `mask_row_selected` | `#37322c` | `MASK_ROW_SELECTED` | The open mask's row |
+| `revealed_row` | `#5b4932` | `REVEALED_ROW` | A row the command palette has revealed |
+| `menu_surface` | `#2a2a2e` | `MENU_SURFACE` | A menu |
+| `menu_border` | `#3f3f43` | `MENU_BORDER` | A menu's outline |
+| `menu_item_hover` | `#37373b` | `MENU_ITEM_HOVER` | A menu item under the pointer |
+| `menu_separator` | `#3b3b3f` | `MENU_SEPARATOR` | A menu's separator |
+
+The fixed colours keep their constants and are not tokens: `CANVAS` as the canvas background's Dark choice, `CANVAS_BLACK` and `CANVAS_GREY`; the clipping colours, `CLIPPING_BOTH` and the overlay palette; the mask overlay tints; the histogram channels; `TEMPERATURE_RAIL`, `TINT_RAIL` and every declared rail; `GUIDE` and `RENDER_BAR_TRACK`, drawn over the photograph; `AGENT_CONNECTED`; `SWATCH_OUTLINE`; the coverage thumbnail's black `THUMBNAIL_BACKGROUND`, which is the mask's own zero; the mask glyphs' `MASK_GLYPH_OUTLINE` and `MASK_GLYPH_PHOTO`; and the black `CHROME_SHADOW` and `MENU_SHADOW`.
+
+Luxforge Dark's palette in the widget crate is built from today's values exactly, alpha included, so it draws what the constants draw. The desktop draws that palette whenever Luxforge Dark is active, and builds any other theme's palette from the core's resolved tokens. A desktop test holds the core's Luxforge Dark within one code per channel of the widget crate's.
+
 ### Legibility
 
 | Ink | Floor | Against | Luxforge Dark |
