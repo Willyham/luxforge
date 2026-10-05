@@ -64,6 +64,12 @@ pub struct GpuPlanRequest {
     /// unclamped in float, where the byte path clamps and quantizes it: a spatial operation's input
     /// and output, and a resample's input, are then not clamped.
     pub linear: bool,
+    /// Plan from the source itself rather than from layer `boundary`'s input: the boundary is the
+    /// first segment's input before its first operation, the content stage the source fills, so
+    /// every layer of the stack is in the plan — its colour and spatial layers over the boundary,
+    /// its geometry in the tail — and a stack with no content layer, or no layer at all, has one
+    /// too ([`Self::from_source`]). `boundary` is then 0, the layer it is reported under.
+    pub source: bool,
 }
 
 impl GpuPlanRequest {
@@ -77,6 +83,7 @@ impl GpuPlanRequest {
             qualifying: false,
             drafted: None,
             linear: false,
+            source: false,
         }
     }
 
@@ -90,7 +97,16 @@ impl GpuPlanRequest {
             qualifying: false,
             drafted: None,
             linear: false,
+            source: false,
         }
+    }
+
+    /// The same request planned from the source itself ([`Self::source`]): the boundary is the
+    /// content stage the source fills, before the stack's first operation, reported as layer 0.
+    pub fn from_source(mut self) -> Self {
+        self.source = true;
+        self.boundary = 0;
+        self
     }
 
     /// The same request with disabled programs planned, for the qualification corpus.
@@ -768,12 +784,18 @@ pub(crate) fn gpu_plan_holding(
             "a GPU plan's request names one path and its estimates' source the other",
         ));
     }
-    let Some(layer) = recipe.layers.get(request.boundary) else {
-        return Err(Error::validation(format!(
-            "layer {} is outside the {}-layer stack",
-            request.boundary,
-            recipe.layers.len()
-        )));
+    // A plan from the source starts before every layer, so it needs none: an empty stack, or one of
+    // source and geometry layers alone, is planned too.
+    let layer = match (request.source, recipe.layers.get(request.boundary)) {
+        (true, _) => None,
+        (false, Some(layer)) => Some(layer),
+        (false, None) => {
+            return Err(Error::validation(format!(
+                "layer {} is outside the {}-layer stack",
+                request.boundary,
+                recipe.layers.len()
+            )));
+        }
     };
     let sampling = if request.proxy {
         MaskSampling::ThinFeature
@@ -792,10 +814,11 @@ pub(crate) fn gpu_plan_holding(
     compiled.gpu_plan(
         request.boundary,
         request.stage,
-        registry.effect_stage(&layer.effect_id),
+        layer.and_then(|layer| registry.effect_stage(&layer.effect_id)),
         Planning {
             qualifying: request.qualifying,
             linear: request.linear,
+            source: request.source,
             estimates,
             held,
         },
@@ -803,11 +826,14 @@ pub(crate) fn gpu_plan_holding(
 }
 
 /// How one plan is walked: whether disabled programs are planned, which path's quantization the
-/// frame previews, and where stored estimates come from.
+/// frame previews, whether it starts from the source, and where stored estimates come from.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Planning<'a> {
     pub(crate) qualifying: bool,
     pub(crate) linear: bool,
+    /// The plan starts from the source, before the first segment's first operation, whatever
+    /// layer it is reported under ([`GpuPlanRequest::source`]).
+    pub(crate) source: bool,
     pub(crate) estimates: Option<GpuEstimates<'a>>,
     /// Where the stack the draft was opened over stored a spatial layer's estimates, read when
     /// the store holds none for the planned stack.
@@ -842,10 +868,14 @@ impl Compiled {
         planning: Planning<'_>,
     ) -> Result<Planned<GpuPlan>, Error> {
         let qualifying = planning.qualifying;
-        let &(first, start) = self
-            .layers
-            .get(boundary)
-            .ok_or_else(|| Error::internal(format!("layer {boundary} has no compiled position")))?;
+        // From the source, the boundary is the first segment's input before its first operation:
+        // the content stage the source fills.
+        let (first, start) = match planning.source {
+            true => (0, 0),
+            false => *self.layers.get(boundary).ok_or_else(|| {
+                Error::internal(format!("layer {boundary} has no compiled position"))
+            })?,
+        };
         // A stack-level reason first: a pixel-stage layer anywhere.
         for (index, segment) in self.segments.iter().enumerate() {
             if let Some(operation) = segment
@@ -858,7 +888,9 @@ impl Compiled {
                 }));
             }
         }
-        if let Some(stage @ (EffectStage::Source | EffectStage::Geometry)) = stage {
+        if let (false, Some(stage @ (EffectStage::Source | EffectStage::Geometry))) =
+            (planning.source, stage)
+        {
             return Ok(Err(GpuFallback::BoundaryStage {
                 layer: boundary,
                 stage,

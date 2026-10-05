@@ -158,7 +158,7 @@ impl Editor {
                 let asset = state.asset.id.clone();
                 self.busy = true;
                 self.status.text = "Selecting history state…".into();
-                let proxy = self.proxy_bounds();
+                let proxy = self.drawn();
                 return preview_task(
                     self.owner.clone(),
                     self.client,
@@ -185,7 +185,7 @@ impl Editor {
                 });
                 self.busy = true;
                 self.status.text = "Returning to current state…".into();
-                let proxy = self.proxy_bounds();
+                let proxy = self.drawn();
                 return preview_task(
                     self.owner.clone(),
                     self.client,
@@ -411,7 +411,7 @@ impl Editor {
             self.client,
             state.asset.id.clone(),
             self.session.clone(),
-            self.proxy_bounds(),
+            self.drawn(),
         )
     }
 }

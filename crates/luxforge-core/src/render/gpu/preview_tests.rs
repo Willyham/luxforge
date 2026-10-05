@@ -3,7 +3,7 @@
 //! displayed size of the whole stage. So the draft's plan, its boundary, the committed stack's
 //! resident plan and its warm list all address the proxy the CPU path draws at that zoom: Fit's
 //! plan, at another size.
-use super::{GpuAnswer, GpuPlan, GpuPreview, GpuView, plan_preview, plan_resident, plan_warm};
+use super::{GpuAnswer, GpuPlan, GpuPreview, GpuView, plan_preview, plan_rest, plan_warm};
 use crate::{
     AssetId, BASIC_EFFECT, Cancel, Draft, DraftStamp, EntryId, Evaluation, HistoryEntry, Layer,
     ModuleRegistry, PreviewSource, ProxyBounds, ProxyPlan, RECIPE_FORMAT, Recipe, RenderContext,
@@ -241,9 +241,7 @@ fn the_resident_plan_and_warm_list_follow_a_view_below_100_percent() {
             width: proxy.width,
             height: proxy.height,
         };
-        let resident = plan_resident(&stack, GpuView::Fit(bounds))
-            .unwrap()
-            .expect("a stack with a content layer");
+        let resident = plan_rest(&stack, GpuView::Fit(bounds)).unwrap().view;
         assert_eq!(planned(&resident).boundary.stage, stage, "{percent}%");
         let key = resident.boundary.expect("the resident boundary").key;
         assert_eq!(key.plan(), Some(proxy), "{percent}%");
@@ -260,4 +258,102 @@ fn the_resident_plan_and_warm_list_follow_a_view_below_100_percent() {
             "{percent}%: every warmed plan addresses the proxy stage"
         );
     }
+}
+
+/// The identity of an affine tail: the output pixel is the boundary's own.
+const IDENTITY: [f64; 6] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+
+/// Every stack has a picture at rest on the GPU, planned from the source: the empty stack, whose
+/// plan carries the source to the output untouched, and a stack of geometry alone, whose crop is
+/// the plan's tail. The boundary is the first segment's input before its first operation, the
+/// source itself, so Compare's Before and a photograph just opened draw on the GPU as any stack
+/// does.
+#[test]
+fn an_empty_stack_is_planned_from_the_source() {
+    let crop = Layer::crop(fitted_crop(WIDTH, HEIGHT, 4.0, [0.1, 0.12, 0.6, 0.55]));
+    for (name, layers) in [("empty", Vec::new()), ("geometry alone", vec![crop])] {
+        let stack = evaluation(layers.clone(), layers, None);
+        for view in [
+            GpuView::Fit(ProxyBounds {
+                width: 160,
+                height: 120,
+            }),
+            GpuView::Region {
+                rect: crate::modules::Region {
+                    x0: 20,
+                    y0: 10,
+                    width: 64,
+                    height: 48,
+                },
+                magnification: 1.0,
+            },
+        ] {
+            let rest = plan_rest(&stack, view).unwrap();
+            let plan = planned(&rest.view);
+            let request = rest.view.boundary.as_ref().expect("a boundary");
+            assert_eq!(request.position, (0, 0), "{name}, {view:?}: the source");
+            assert_eq!(plan.boundary.layer, 0, "{name}, {view:?}");
+            assert!(!plan.boundary.continues_run, "{name}, {view:?}");
+            assert!(
+                plan.content.is_empty() && plan.spatial.is_empty() && plan.output.is_empty(),
+                "{name}, {view:?}: no operation over the source"
+            );
+            let tail = plan.geometry.affine();
+            if name == "empty" {
+                assert_eq!(
+                    tail,
+                    Some(IDENTITY),
+                    "{name}, {view:?}: the source is the output"
+                );
+            } else {
+                assert!(
+                    tail.is_some_and(|map| map != IDENTITY),
+                    "{name}, {view:?}: the crop is the tail"
+                );
+            }
+        }
+    }
+}
+
+/// The picture at rest and every drag over it are planned from the source, so they hold one
+/// boundary key whatever the stack holds: the stack's own plan and a Basic drag over it start from
+/// the same key at one view, and another stack over the same source at that view holds that key
+/// too. Each plan holds every layer of its stack, its geometry in the tail.
+#[test]
+fn every_rest_plan_starts_at_the_source() {
+    let view = GpuView::Fit(ProxyBounds {
+        width: 160,
+        height: 120,
+    });
+    let crop = Layer::crop(fitted_crop(WIDTH, HEIGHT, 4.0, [0.1, 0.12, 0.6, 0.55]));
+    let committed = vec![basic(json!({"exposure": 0.3})), crop.clone()];
+    let stack = evaluation(committed.clone(), committed.clone(), None);
+    let rest = plan_rest(&stack, view).unwrap();
+    let request = rest.view.boundary.as_ref().expect("a boundary");
+    assert_eq!(request.position, (0, 0), "the source");
+    assert_eq!(request.key.layer(), 0, "reported under the first layer");
+    let plan = planned(&rest.view);
+    assert_eq!(plan.content.len(), 1, "the Basic layer over the source");
+    assert!(
+        plan.geometry.affine().is_some_and(|map| map != IDENTITY),
+        "the crop is the tail"
+    );
+    let (dragged, draft) = drag(
+        committed,
+        vec![basic(json!({"exposure": 0.8})), crop.clone()],
+    );
+    let ticked = plan_preview(&dragged, &draft, view).unwrap();
+    let tick = ticked.boundary.as_ref().expect("a drag's boundary");
+    assert_eq!(
+        tick.key, request.key,
+        "a drag starts from the rest boundary"
+    );
+    assert_eq!(tick.position, (0, 0));
+    let other = evaluation(vec![crop.clone()], vec![crop], None);
+    let other = plan_rest(&other, view).unwrap();
+    assert_eq!(
+        other.view.boundary.as_ref().map(|request| &request.key),
+        Some(&request.key),
+        "one key per source and view, whatever the stack holds"
+    );
 }

@@ -337,11 +337,13 @@ pub(crate) struct GpuPreviews {
     pub(crate) budget: Option<u64>,
 }
 
-/// What a tick asks the owner to plan its GPU preview for, with its preview job.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// What a tick, or a displayed entry's job, asks the owner to plan its GPU picture for, with its
+/// preview job.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) enum GpuAsk {
     /// Nothing planned: a view job that does not settle, or a view at 100% or more whose visible
     /// region is not known yet, as before the photograph's stage is.
+    #[default]
     Off,
     /// A whole frame at the job's display bounds: at Fit, and at a percentage zoom below 100%,
     /// whose bounds are the displayed size of the whole stage, the proxy the CPU path draws there.
@@ -1169,7 +1171,7 @@ impl Editor {
     /// committed stack with no boundary request of its own. Nothing with the preference off.
     pub(crate) fn gpu_resident_from(
         &mut self,
-        resident: Option<Box<GpuPreview>>,
+        rest: Option<Box<luxforge_core::GpuRest>>,
         region: bool,
         committed: bool,
     ) -> Option<BoundaryRequest> {
@@ -1182,7 +1184,7 @@ impl Editor {
             answer: GpuAnswer::Plan(plan),
             boundary: Some(request),
             ..
-        }) = resident.map(|resident| *resident)
+        }) = rest.map(|rest| rest.view)
         else {
             return None;
         };
