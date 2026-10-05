@@ -138,9 +138,10 @@ impl GpuPlaneSize {
     /// light, as its `xyz` (`docs/design/gpu-preview.md`, "The global estimate"). Declared by the
     /// [`GpuLight`] that writes it, and by a unit that reads a light it does not compute: a plane of
     /// this size that no pass of its operation writes is the light its plan's light link writes
-    /// ([`GpuSpatial::light`]). It is the one size, not a size of its own, so every description
-    /// that reaches the photo surface is one it already converts; the surface knows a light plane
-    /// by who writes it.
+    /// ([`GpuSpatial::light`]). It is a fixed size, not a size of its own, so every description
+    /// the desktop's conversion is handed is one it already converts; the conversion names the
+    /// plane the slot's light plane on the photo surface, from [`GpuSpatial::light`] in a reader
+    /// and as the plane a light link's last pass writes.
     pub const LIGHT: Self = Self::Fixed {
         width: 1,
         height: 1,
