@@ -1884,7 +1884,10 @@ pub(crate) fn build_reduction_cancellable(
             .enumerate()
             .try_for_each(|(j, values)| row(&mut planes, j, values))?;
     }
-    reduction_from(stage, &blocks)
+    let reduction = reduction_from(stage, &blocks)?;
+    #[cfg(any(test, feature = "qualification"))]
+    cells::capture(stage, cancel, &fill, &reduction)?;
+    Ok(reduction)
 }
 
 /// [`build_reduction_cancellable`] over a stage `fetch` answers one pixel at a time, for a test
@@ -1998,6 +2001,175 @@ fn reduction_from(stage: Stage, blocks: &[[f32; 3]]) -> Result<Reduction, Error>
         planes.extend(blocks.iter().map(|block| block[channel]));
     }
     Reduction::new(stage, ESTIMATE_REDUCTION, planes)
+}
+
+/// Qualification only: the exact means of a global estimate's stage over cells of other sides,
+/// for the measurement that chooses the per-frame light's reduction factor (`docs/specs/
+/// performance.md`, "The per-frame light's reduction factor"). Armed on one thread ([`arm`]), each
+/// reduction that thread builds through [`build_reduction_cancellable`] also reads its stage once
+/// per factor asked for, through the same `fill`, and records the cell means beside the reduction
+/// until [`take`]. A thread that is not armed, which is every render outside the measurement,
+/// reads and records nothing. Never built into a binary: only tests and the `qualification`
+/// feature, which only a `[dev-dependencies]` table turns on, compile it.
+#[cfg(any(test, feature = "qualification"))]
+pub(crate) mod cells {
+    use super::{Cancel, ESTIMATE_REDUCTION, Error, REDUCTION_SPAN, Reduction, Region, Stage};
+    use rayon::prelude::*;
+    use std::cell::RefCell;
+
+    /// A stage's exact means over `factor × factor` cells anchored at its origin, a partial cell at
+    /// the right or bottom edge averaged over its actual pixels, row-major: `width × height` of
+    /// them, the stage's dimensions over `factor`, rounded up.
+    #[derive(Clone, Debug, PartialEq)]
+    pub(crate) struct CellMeans {
+        pub(crate) stage: Stage,
+        pub(crate) factor: u32,
+        pub(crate) width: u32,
+        pub(crate) height: u32,
+        pub(crate) values: Vec<[f32; 3]>,
+    }
+
+    /// What one armed reduction recorded: the reduction itself, and its stage's cell means at each
+    /// factor in the order they were asked for.
+    #[derive(Clone, Debug)]
+    pub(crate) struct Captured {
+        pub(crate) reduction: Reduction,
+        pub(crate) cells: Vec<CellMeans>,
+    }
+
+    thread_local! {
+        static ARMED: RefCell<Option<Vec<u32>>> = const { RefCell::new(None) };
+        static CAPTURED: RefCell<Vec<Captured>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// Arm this thread at `factors`, each a divisor of [`ESTIMATE_REDUCTION`], forgetting what an
+    /// earlier arming recorded.
+    pub(crate) fn arm(factors: &[u32]) -> Result<(), Error> {
+        if let Some(factor) = factors
+            .iter()
+            .find(|&&factor| factor == 0 || !ESTIMATE_REDUCTION.is_multiple_of(factor))
+        {
+            return Err(Error::validation(format!(
+                "a cell side of {factor} does not divide the {ESTIMATE_REDUCTION} px block"
+            )));
+        }
+        ARMED.with(|armed| *armed.borrow_mut() = Some(factors.to_vec()));
+        CAPTURED.with(|captured| captured.borrow_mut().clear());
+        Ok(())
+    }
+
+    /// Disarm this thread and answer what it recorded, oldest reduction first.
+    pub(crate) fn take() -> Vec<Captured> {
+        ARMED.with(|armed| *armed.borrow_mut() = None);
+        CAPTURED.with(|captured| std::mem::take(&mut *captured.borrow_mut()))
+    }
+
+    /// Record `reduction`'s `stage` at every factor this thread is armed at, read through `fill`;
+    /// nothing when it is not armed.
+    pub(super) fn capture(
+        stage: Stage,
+        cancel: &Cancel,
+        fill: &(impl Fn(Region, &mut [f32]) -> Result<(), Error> + Sync),
+        reduction: &Reduction,
+    ) -> Result<(), Error> {
+        let Some(factors) = ARMED.with(|armed| armed.borrow().clone()) else {
+            return Ok(());
+        };
+        let cells = factors
+            .iter()
+            .map(|&factor| cell_means(stage, factor, cancel, fill))
+            .collect::<Result<Vec<_>, _>>()?;
+        CAPTURED.with(|captured| {
+            captured.borrow_mut().push(Captured {
+                reduction: reduction.clone(),
+                cells,
+            });
+        });
+        Ok(())
+    }
+
+    /// `stage`'s exact means over `factor`-sided cells, `factor` a divisor of
+    /// [`ESTIMATE_REDUCTION`], read through `fill` as [`super::block_means`] reads it: one block row
+    /// of at most [`REDUCTION_SPAN`] blocks at a time, block rows on the pool, each cell's pixels
+    /// summed in `f64` row by row and left to right. At [`ESTIMATE_REDUCTION`] they are the
+    /// reduction's own block means, bit for bit.
+    pub(crate) fn cell_means(
+        stage: Stage,
+        factor: u32,
+        cancel: &Cancel,
+        fill: &(impl Fn(Region, &mut [f32]) -> Result<(), Error> + Sync),
+    ) -> Result<CellMeans, Error> {
+        let (width, height) = Reduction::dimensions(stage, factor);
+        // A block row holds this many rows of cells, the last block row perhaps fewer.
+        let rows = ESTIMATE_REDUCTION / factor;
+        let mut values = vec![[0.0_f32; 3]; width as usize * height as usize];
+        values
+            .par_chunks_mut((width * rows) as usize)
+            .enumerate()
+            .try_for_each_init(Vec::new, |planes, (j, band)| {
+                cancel.check()?;
+                band_means(stage, factor, j as u32, width, band, planes, fill)
+            })?;
+        Ok(CellMeans {
+            stage,
+            factor,
+            width,
+            height,
+            values,
+        })
+    }
+
+    /// The cells of block row `j` of `stage` into `band`, its rows of `width` cells, from fills of
+    /// at most [`REDUCTION_SPAN`] blocks into `planes`, which grows to the largest fill.
+    fn band_means(
+        stage: Stage,
+        factor: u32,
+        j: u32,
+        width: u32,
+        band: &mut [[f32; 3]],
+        planes: &mut Vec<f32>,
+        fill: &impl Fn(Region, &mut [f32]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let top = j * ESTIMATE_REDUCTION;
+        let bottom = (top + ESTIMATE_REDUCTION).min(stage.height);
+        let span = REDUCTION_SPAN * ESTIMATE_REDUCTION;
+        for left in (0..stage.width).step_by(span as usize) {
+            let region = Region {
+                x0: left,
+                y0: top,
+                width: (left + span).min(stage.width) - left,
+                height: bottom - top,
+            };
+            let len = region.pixels() as usize;
+            if planes.len() < 3 * len {
+                planes.resize(3 * len, 0.0);
+            }
+            let planes = &mut planes[..3 * len];
+            fill(region, planes)?;
+            let stride = region.width as usize;
+            for y0 in (0..region.height).step_by(factor as usize) {
+                let y1 = (y0 + factor).min(region.height);
+                for x0 in (0..region.width).step_by(factor as usize) {
+                    let x1 = (x0 + factor).min(region.width);
+                    let count = f64::from(y1 - y0) * f64::from(x1 - x0);
+                    let rows = y0 as usize * stride..y1 as usize * stride;
+                    let mean = std::array::from_fn(|channel| {
+                        let plane = &planes[channel * len..(channel + 1) * len];
+                        let mut sum = 0.0_f64;
+                        for row in plane[rows.clone()].chunks_exact(stride) {
+                            for value in &row[x0 as usize..x1 as usize] {
+                                sum += f64::from(*value);
+                            }
+                        }
+                        (sum / count) as f32
+                    });
+                    let (column, row) = ((left + x0) / factor, y0 / factor);
+                    band[(row * width + column) as usize] = mean;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The SHA-256 of the canonical JSON of a layer prefix and the masks it reads. A mask ID in a
@@ -4886,6 +5058,96 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Qualification's cell capture: a reduction built on an armed thread records its stage's
+    /// exact means at each factor asked for — each cell's pixels summed in `f64` row by row and
+    /// averaged over the pixels inside the stage, so at 16 the reduction's own block means bit for
+    /// bit — with partial cells at both edges and on a stage wider than one fill's span. A thread
+    /// that is not armed records nothing, another thread's arming included, and a factor that does
+    /// not divide the block is refused.
+    #[test]
+    fn qualification_cells_are_the_stages_exact_means_at_each_factor() {
+        let factors = [16, 8, 4, 2];
+        for (width, height) in [(1, 1), (37, 23), (200, 131), (2100, 40)] {
+            let stage = Stage { width, height };
+            let fetch = |x: u32, y: u32| -> Result<[f32; 3], Error> {
+                Ok([
+                    (x * 7 + y * 3) as f32 / 97.0,
+                    ((x ^ y) % 13) as f32 / 5.0,
+                    ((x * y) % 29) as f32 - 3.5,
+                ])
+            };
+            cells::arm(&factors).unwrap();
+            let reduction = build_reduction(stage, fetch).unwrap();
+            let captured = cells::take();
+            assert_eq!(captured.len(), 1, "{width}x{height}: one reduction");
+            assert_eq!(captured[0].reduction, reduction);
+            assert_eq!(captured[0].cells.len(), factors.len());
+            for (cells, factor) in captured[0].cells.iter().zip(factors) {
+                let case = format!("{width}x{height} at {factor}");
+                assert_eq!((cells.stage, cells.factor), (stage, factor), "{case}");
+                assert_eq!(
+                    (cells.width, cells.height),
+                    Reduction::dimensions(stage, factor),
+                    "{case}"
+                );
+                for j in 0..cells.height {
+                    for i in 0..cells.width {
+                        let (left, top) = (i * factor, j * factor);
+                        let (right, bottom) =
+                            ((left + factor).min(width), (top + factor).min(height));
+                        let mut sum = [0.0_f64; 3];
+                        for y in top..bottom {
+                            for x in left..right {
+                                let pixel = fetch(x, y).unwrap();
+                                for channel in 0..3 {
+                                    sum[channel] += f64::from(pixel[channel]);
+                                }
+                            }
+                        }
+                        let count = f64::from(bottom - top) * f64::from(right - left);
+                        let at = (j * cells.width + i) as usize;
+                        assert_eq!(
+                            cells.values[at],
+                            sum.map(|sum| (sum / count) as f32),
+                            "{case}: cell ({i}, {j})"
+                        );
+                        if factor == ESTIMATE_REDUCTION {
+                            assert_eq!(Some(cells.values[at]), reduction.pixel(i, j), "{case}");
+                        }
+                    }
+                }
+            }
+            build_reduction(stage, fetch).unwrap();
+            assert!(cells::take().is_empty(), "{width}x{height}: not armed");
+        }
+        cells::arm(&[2]).unwrap();
+        let elsewhere = std::thread::spawn(|| {
+            build_reduction(
+                Stage {
+                    width: 40,
+                    height: 40,
+                },
+                |_, _| Ok([0.5; 3]),
+            )
+            .unwrap();
+            cells::take().len()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(elsewhere, 0, "another thread is not armed");
+        assert!(
+            cells::take().is_empty(),
+            "nothing was reduced on this thread"
+        );
+        for factor in [0, 3, 32] {
+            assert!(
+                cells::arm(&[factor]).is_err(),
+                "{factor} does not divide 16"
+            );
+        }
+        assert!(cells::take().is_empty());
     }
 
     /// Past its capacity a query releases the least recently read tile rather than growing: it
