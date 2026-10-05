@@ -3628,6 +3628,7 @@ pub use spatial::{
 };
 
 mod dissolve;
+pub mod light;
 pub use dissolve::{DISSOLVE_DURATION, Dissolve, DrawnDissolve};
 pub(crate) use dissolve::{DissolveFrame, dissolving, photo_uniform};
 
