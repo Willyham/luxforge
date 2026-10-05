@@ -5,26 +5,33 @@
 //! `job.read` and cancelled only by `job.cancel` or the owner stopping. A client disconnecting
 //! leaves its exports running, as it leaves capability jobs.
 //!
-//! Every export renders through the reference renderer, and a written file's result names it.
-//! `reference: true` asks for that renderer explicitly, which changes nothing until the GPU renders
-//! exports (`docs/design/gpu-first.md`, stage 4).
+//! An export streams through the owner's tile service (`docs/design/gpu-first.md`, stage 4): the
+//! host's GPU provider renders the output stage in full-resolution tiles on its own thread, and the
+//! encoder takes them as bands, in order, as they arrive. The reference renderer renders the whole
+//! frame instead when the export asks for it (`reference: true`), when the host has no GPU provider
+//! (`luxforge-json`), and when the provider says why it cannot, at once or part-way, in which case
+//! the export starts again from nothing: GPU and reference pixels are never mixed in one file. A
+//! written file's result names the renderer that rendered it, and why the reference did.
 use super::{Call, Owner};
 use crate::{
-    AssetId, EntryId, Error, JobId, JobStatus, Renderer,
+    AssetId, EntryId, Error, JobId, JobStatus, Renderer, RendererReason, RendererRecord,
     activity::ActivitySpec,
     api::announce_once,
     api::params::host_params,
     editor::ExportPlan,
     export::{
-        encode::encode_jpeg,
-        publish::{self, Destination},
+        CaptureMetadata,
+        encode::{encode_jpeg, encode_jpeg_rows},
+        publish::{self, Destination, Staged},
     },
     jobs::{JobControl, JobKind, NewJob, Work},
+    tiles::{BandStream, TileService, TileStatus},
 };
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc};
 
-/// The phases an export reports on the activity board, in order.
+/// The phases an export reports on the activity board, in order. An export the reference renders
+/// again after its stream stopped begins `rendering` again.
 const RENDERING: &str = "rendering";
 const ENCODING: &str = "encoding";
 const WRITING: &str = "writing";
@@ -54,7 +61,7 @@ host_params! {
         entry_id: Option<EntryId> = entry().notes("a saved entry of the asset; default its current entry"),
         keep_metadata: Option<bool> = boolean().default(false).notes("write the original's supported EXIF fields"),
         pixels_per_inch: Option<u16> = integer(1, 65535).notes("the JFIF header's density, which sizes the file in viewers such as Preview and in print; default none, a unitless 1:1 aspect ratio"),
-        reference: Option<bool> = boolean().default(false).notes("render through the reference renderer rather than the GPU; today every export is the reference renderer's, so the file is the same either way"),
+        reference: Option<bool> = boolean().default(false).notes("render through the reference renderer, the CPU render every GPU output is measured against, rather than the GPU; the result's renderer then names the reference with the reason requested"),
     }
 }
 
@@ -101,8 +108,8 @@ pub(in crate::api) fn plan(
 /// An obvious refusal — a destination's shape or an existing file, an unknown asset or entry, a
 /// stack the host cannot evaluate, a missing original — is answered now and queues nothing; an
 /// unprepared source is `preparation-required` with the source job the owner queued for it. The
-/// answer echoes `keep_metadata` and `reference` as the job was accepted with them; the job reads
-/// no `reference`, because the reference renderer renders every export.
+/// answer echoes `keep_metadata` and `reference` as the job was accepted with them, and the job
+/// streams through the owner's tile service unless `reference` asks for the reference renderer.
 pub(in crate::api) fn jpeg(
     owner: &mut Owner,
     call: &Call<'_>,
@@ -123,6 +130,8 @@ pub(in crate::api) fn jpeg(
         destination: destination.clone(),
         keep_metadata,
         pixels_per_inch,
+        reference,
+        tiles: Arc::clone(&owner.tiles),
         control: control.clone(),
         #[cfg(test)]
         hold: owner.export_hold.clone(),
@@ -183,22 +192,41 @@ struct ExportJob {
     destination: Destination,
     keep_metadata: bool,
     pixels_per_inch: Option<u16>,
+    /// The export asked for the reference renderer.
+    reference: bool,
+    /// The owner's tile service, which renders the export's bands on the GPU.
+    tiles: Arc<dyn TileService>,
     control: Arc<JobControl>,
     #[cfg(test)]
     hold: Option<Hold>,
 }
 
+/// What a stream through the tile service left: the file it wrote, staged, with the renderer that
+/// drew its bands; or why the reference is to render the export instead, nothing of the stream
+/// kept.
+enum Streamed {
+    Written(Staged, Renderer),
+    Stopped(RendererReason),
+}
+
 impl ExportJob {
-    /// Render the frozen entry exactly, encode it into a temporary file beside the destination and
-    /// publish that under the destination's name without replacing anything. A cancel stops the
-    /// render within a row or chunk and the encoder within about 1% of the rows; a failure or a
-    /// cancel before the publish drops the staged file, which removes it.
+    /// Render the frozen entry, encode it into a temporary file beside the destination and publish
+    /// that under the destination's name without replacing anything. Unless the export asked for
+    /// the reference renderer or the host has no GPU provider, the tile service renders the output
+    /// stage in bands that the encoder takes as they arrive; when the service says why it cannot,
+    /// before the stream or during it, the staged file is dropped and the reference renderer
+    /// renders the whole frame instead, so one file is never two renderers' pixels. A cancel stops
+    /// the stream between tiles, the render within a row or chunk and the encoder within about 1%
+    /// of the rows; a failure or a cancel before the publish drops the staged file, which removes
+    /// it.
     fn run(self) -> Result<Value, Error> {
         let Self {
             plan,
             destination,
             keep_metadata,
             pixels_per_inch,
+            reference,
+            tiles,
             control,
             #[cfg(test)]
             hold,
@@ -220,6 +248,41 @@ impl ExportJob {
             evaluation,
             capture,
         } = plan;
+        let encoding = Encoding {
+            control: &control,
+            capture: &capture,
+            keep_metadata,
+            pixels_per_inch,
+        };
+        // Which renderer renders the file, and why the reference does: the reference when the
+        // export asked for it or the host has no GPU provider, whose only renderer it is; the GPU
+        // otherwise, unless the service says why it cannot.
+        let reason = if reference {
+            Some(RendererReason::Requested)
+        } else if tiles.status() == TileStatus::Reference(None) {
+            None
+        } else {
+            match tiles.stream(&evaluation, control.render_cancel()) {
+                Ok(stream) => {
+                    let size = (identity.width, identity.height);
+                    match streamed(stream, size, &destination, &encoding, &phase)? {
+                        Streamed::Written(staged, renderer) => {
+                            drop(evaluation);
+                            phase(WRITING)?;
+                            return written(&destination, staged, size, &encoding, renderer);
+                        }
+                        // Rendered again from nothing by the reference, which begins with its own
+                        // render.
+                        Streamed::Stopped(reason) => {
+                            phase(RENDERING)?;
+                            Some(reason)
+                        }
+                    }
+                }
+                Err(fallback) => Some(RendererReason::from(&fallback)),
+            }
+        };
+        let renderer = reason.map_or(Renderer::headless(), Renderer::reference);
         // The frame is the render's own exact frame, from the compilation the plan made, inside the
         // evaluated-frame limit; the encoder reads it in place. The source, the recipe and its
         // artifacts are released with the evaluation.
@@ -229,7 +292,8 @@ impl ExportJob {
         drop(evaluation);
         let mut staged = destination.stage()?;
         phase(ENCODING)?;
-        let exif = keep_metadata.then(|| capture.exif_payload(frame.width, frame.height));
+        let size = (frame.width, frame.height);
+        let exif = encoding.exif(size);
         encode_jpeg(
             &mut staged,
             &frame,
@@ -238,24 +302,103 @@ impl ExportJob {
             &mut |fraction| control.set_progress(Some(fraction), ENCODING),
             &|| control.checkpoint(),
         )?;
-        let (width, height) = (frame.width, frame.height);
         drop(frame);
         phase(WRITING)?;
-        let bytes = staged.publish()?;
-        let metadata = if keep_metadata {
-            capture.field_names()
-        } else {
-            Vec::new()
-        };
-        Ok(json!({
-            "path": destination.path(),
-            "bytes": bytes,
-            "width": width,
-            "height": height,
-            "metadata": metadata,
-            // The renderer that rendered the file: the reference renderer, with no reason because
-            // it is the only renderer an export has until the GPU renders exports.
-            "renderer": Renderer::headless(),
-        }))
+        written(&destination, staged, size, &encoding, renderer)
     }
+}
+
+/// What every encode of one export shares: its control, the original's metadata and its options.
+struct Encoding<'a> {
+    control: &'a JobControl,
+    capture: &'a CaptureMetadata,
+    keep_metadata: bool,
+    pixels_per_inch: Option<u16>,
+}
+
+impl Encoding<'_> {
+    /// The EXIF payload of a `size` output, with Keep metadata.
+    fn exif(&self, (width, height): (u32, u32)) -> Option<Vec<u8>> {
+        self.keep_metadata
+            .then(|| self.capture.exif_payload(width, height))
+    }
+}
+
+/// Encode `stream`'s bands of the `size` output stage into a new temporary file as they arrive, in
+/// the phase `encoding`, progress as the rows encoded over the stage's height and the cancel
+/// checked before every strip. A cancellation, the encoder's own failure and an error of the
+/// stream's own end the export with it; a stream its provider stopped drawing for a reason the
+/// reference renders instead is dropped with the temporary file, and that reason is answered.
+fn streamed(
+    mut stream: BandStream,
+    size: (u32, u32),
+    destination: &Destination,
+    encoding: &Encoding<'_>,
+    phase: &dyn Fn(&'static str) -> Result<(), Error>,
+) -> Result<Streamed, Error> {
+    let control = encoding.control;
+    let mut staged = destination.stage()?;
+    phase(ENCODING)?;
+    let exif = encoding.exif(size);
+    let bands = stream
+        .by_ref()
+        .map(|band| band.map(|band| (band.rows, band.rgba)));
+    let encoded = encode_jpeg_rows(
+        &mut staged,
+        size,
+        bands,
+        exif.as_deref(),
+        encoding.pixels_per_inch,
+        &mut |fraction| control.set_progress(Some(fraction), ENCODING),
+        &|| control.checkpoint(),
+    );
+    match encoded {
+        Ok(()) => {
+            let answered = stream.answered();
+            let renderer = match answered.record {
+                RendererRecord::Gpu => Renderer::gpu(),
+                RendererRecord::Reference => answered
+                    .reason
+                    .as_ref()
+                    .map_or(Renderer::headless(), |reason| {
+                        Renderer::reference(reason.into())
+                    }),
+            };
+            Ok(Streamed::Written(staged, renderer))
+        }
+        Err(error) => {
+            // Nothing of the stream is kept: the temporary file goes now, and the provider stops
+            // drawing once the stream is dropped.
+            drop(staged);
+            control.checkpoint()?;
+            let reason = stream.fallback().map(RendererReason::from);
+            drop(stream);
+            reason.map(Streamed::Stopped).ok_or(error)
+        }
+    }
+}
+
+/// Publish `staged`, the encoded `size` output, under the destination's name, and answer the
+/// written file: its path, length, size, the EXIF fields kept and the renderer that rendered it.
+fn written(
+    destination: &Destination,
+    staged: Staged,
+    (width, height): (u32, u32),
+    encoding: &Encoding<'_>,
+    renderer: Renderer,
+) -> Result<Value, Error> {
+    let bytes = staged.publish()?;
+    let metadata = if encoding.keep_metadata {
+        encoding.capture.field_names()
+    } else {
+        Vec::new()
+    };
+    Ok(json!({
+        "path": destination.path(),
+        "bytes": bytes,
+        "width": width,
+        "height": height,
+        "metadata": metadata,
+        "renderer": renderer,
+    }))
 }

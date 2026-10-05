@@ -96,6 +96,7 @@ impl Fixture {
             resource_quota_bytes: self.quota,
             launch_flags: Default::default(),
             renderer: Default::default(),
+            tiles: None,
         }
     }
 

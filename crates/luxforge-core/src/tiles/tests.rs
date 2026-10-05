@@ -98,6 +98,72 @@ fn a_waking_stream_tells_its_provider_of_each_band_taken_and_of_its_drop() {
     assert!(sender.abandoned());
 }
 
+/// A stream its provider cannot go on drawing ends with an error naming why in its data, and says
+/// why itself, which an error of the provider's own or a cancellation does not: the export lane
+/// renders the export again with the reference only for the first, naming the reason in the
+/// session's shape.
+#[test]
+fn a_stream_the_gpu_cannot_go_on_drawing_names_why() {
+    let budget = TileFallback::Budget {
+        requested: 1_331_500_000,
+        budget: 805_306_368,
+    };
+    let (sender, mut stream) = BandStream::channel(3, 5, Answered::gpu());
+    assert!(sender.send(Ok(band(0, 2, 3))));
+    assert!(sender.fall_back(budget.clone()));
+    assert!(stream.next().unwrap().is_ok());
+    assert_eq!(stream.fallback(), None, "nothing has stopped it yet");
+    let ended = stream.next().unwrap().unwrap_err();
+    assert_eq!(ended.kind.code(), "render");
+    assert_eq!(
+        ended.data.as_deref(),
+        Some(
+            &json!({"fallback": "tiles-budget", "requested": 1_331_500_000_u64,
+            "budget": 805_306_368_u64})
+        )
+    );
+    assert_eq!(stream.fallback(), Some(&budget));
+    assert!(stream.next().is_none(), "the fallback ends the stream");
+
+    let lost = TileFallback::Unavailable(TileUnavailable::DeviceLost);
+    let (sender, mut stream) = BandStream::channel(3, 5, Answered::gpu());
+    assert!(sender.fall_back(lost.clone()));
+    let ended = stream.next().unwrap().unwrap_err();
+    assert_eq!(
+        ended.data.as_deref(),
+        Some(&json!({"fallback": "tiles-unavailable", "unavailable": "device-lost"}))
+    );
+    assert_eq!(stream.fallback(), Some(&lost));
+
+    for error in [Error::cancelled("stop"), Error::internal("a panic")] {
+        let (sender, mut stream) = BandStream::channel(3, 5, Answered::gpu());
+        assert!(sender.send(Err(error.clone())));
+        assert_eq!(stream.next().unwrap().unwrap_err().kind, error.kind);
+        assert_eq!(stream.fallback(), None, "{error:?} names no fallback");
+    }
+
+    let reason = |fallback: TileFallback| RendererReason::from(&fallback).as_str();
+    for (unavailable, code) in [
+        (TileUnavailable::Pending, "surface-pending"),
+        (TileUnavailable::NoAdapter, "no-adapter"),
+        (TileUnavailable::Refused, "refused"),
+        (TileUnavailable::DeviceLost, "device-lost"),
+        (TileUnavailable::AdapterMismatch, "adapter-mismatch"),
+    ] {
+        assert_eq!(unavailable.as_str(), code);
+        assert_eq!(reason(TileFallback::Unavailable(unavailable)), code);
+    }
+    assert_eq!(reason(budget), "tiles-budget");
+    assert_eq!(
+        reason(TileFallback::Plan(GpuFallback::RegionEstimate { layer: 2 })),
+        "region-estimate"
+    );
+    assert_eq!(
+        reason(TileFallback::Stage("pipeline-failed")),
+        "pipeline-failed"
+    );
+}
+
 /// The reason a provider's GPU stage gives is answered under the stage's own code.
 #[test]
 fn a_stage_reason_answers_its_own_code() {
