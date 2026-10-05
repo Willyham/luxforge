@@ -5,7 +5,10 @@ use super::{
     message::{Message, settings::SettingsMessage},
     tasks::{call, call_own},
 };
-use crate::state::settings::{FlagControl, GeneralPreferences, SettingsTab};
+use crate::state::{
+    preferences::{GeneralControl, GeneralPreference, GeneralValue},
+    settings::{FlagControl, SettingsTab},
+};
 use iced::{
     Event,
     event::Status,
@@ -17,7 +20,7 @@ use std::{path::PathBuf, sync::Arc};
 
 /// An editor over a developer registry, so the proof flags are listed, with its preferences in a
 /// directory of its own.
-fn launch() -> (Editor, PathBuf) {
+pub(super) fn launch() -> (Editor, PathBuf) {
     let root = luxforge_testbase::paths::temp_path("settings-sheet");
     let host = luxforge_core::HostConfig {
         preferences_dir: Some(root.join("config")),
@@ -41,7 +44,7 @@ fn launch() -> (Editor, PathBuf) {
     (editor, root)
 }
 
-fn finish(mut editor: Editor, root: PathBuf) {
+pub(super) fn finish(mut editor: Editor, root: PathBuf) {
     editor.owner.stop();
     if let Some(join) = editor.owner_join.take() {
         join.join().unwrap();
@@ -51,33 +54,29 @@ fn finish(mut editor: Editor, root: PathBuf) {
 }
 
 /// Answer the sheet's read as its task would.
-fn answer_read(editor: &mut Editor) {
+pub(super) fn answer_read(editor: &mut Editor) {
     let flags = call(&editor.owner, editor.client, "flags.list", json!({}))
         .map(|(value, _)| serde_json::from_value::<FlagList>(value).unwrap());
     let preferences = call(&editor.owner, editor.client, "preferences.read", json!({}))
-        .map(|(value, _)| serde_json::from_value::<GeneralPreferences>(value).unwrap());
+        .map(|(value, _)| crate::state::preferences::parse(value).unwrap());
     let _ = editor.update(Message::Settings(SettingsMessage::Listed {
         flags,
         preferences,
     }));
 }
 
-/// Answer the Auto collapse history write in flight as its task would.
-fn answer_preference(editor: &mut Editor) {
-    let on = editor.settings.collapse_writing.expect("a write in flight");
-    let answer = call_own(
-        &editor.owner,
-        editor.client,
-        "preferences.set",
-        json!({"auto_collapse_history": on}),
-    )
-    .map(|(value, request)| {
-        (
-            serde_json::from_value::<GeneralPreferences>(value).unwrap(),
-            request,
-        )
-    });
-    let _ = editor.update(Message::Settings(SettingsMessage::PreferencesSaved(answer)));
+/// Answer the preference writer's write in flight as its task would.
+pub(super) fn answer_preference(editor: &mut Editor) {
+    let params = editor
+        .preferences
+        .writing()
+        .expect("a write in flight")
+        .params();
+    let answer = call_own(&editor.owner, editor.client, "preferences.set", params)
+        .map(|(value, request)| (crate::state::preferences::parse(value).unwrap(), request));
+    let _ = editor.update(Message::Preferences(
+        super::message::preferences::PreferenceMessage::Saved(answer),
+    ));
 }
 
 /// Answer the write in flight as its task would.
@@ -356,6 +355,7 @@ fn another_clients_flag_change_reaches_an_open_sheet_through_the_event_sync() {
         presets: None,
         capabilities: false,
         flags: true,
+        preferences: false,
         own: Vec::new(),
     };
     let _ = editor.update(Message::Sync(super::message::sync::SyncMessage::Synced(
@@ -373,22 +373,36 @@ fn auto_collapse_history_is_on_by_default_and_turning_it_off_keeps_every_entry()
     let (mut editor, root) = launch();
     let _ = editor.update(Message::Settings(SettingsMessage::Toggle));
     answer_read(&mut editor);
-    assert_eq!(editor.workspace.settings.auto_collapse, Some(true));
+    let collapse = |editor: &Editor| editor.workspace.settings.general[0].clone();
+    assert_eq!(
+        collapse(&editor).preference,
+        GeneralPreference::AutoCollapseHistory
+    );
+    assert_eq!(collapse(&editor).control, GeneralControl::Toggle(true));
 
     // Off, on and off again before the first answer: two writes, the first and the newest.
     for on in [false, true, false] {
-        let _ = editor.update(Message::Settings(SettingsMessage::SetAutoCollapse(on)));
+        let _ = editor.update(Message::Settings(SettingsMessage::SetGeneral(
+            GeneralPreference::AutoCollapseHistory,
+            GeneralValue::Toggle(on),
+        )));
     }
-    assert_eq!(editor.settings.collapse_writing, Some(false));
-    assert_eq!(editor.settings.collapse_waiting, Some(false));
-    assert!(editor.workspace.settings.auto_collapse_saving);
-    answer_preference(&mut editor);
-    answer_preference(&mut editor);
-    assert!(editor.settings.idle());
-    assert_eq!(editor.workspace.settings.auto_collapse, Some(false));
     assert_eq!(
-        editor.settings_summary()["general"],
-        json!({"auto_collapse_history": false, "saving": false, "error": null})
+        editor.preferences.writing().unwrap().params(),
+        json!({"auto_collapse_history": false})
+    );
+    assert_eq!(
+        editor.preferences.waiting().unwrap().params(),
+        json!({"auto_collapse_history": false})
+    );
+    assert!(collapse(&editor).saving);
+    answer_preference(&mut editor);
+    answer_preference(&mut editor);
+    assert!(editor.preferences.idle());
+    assert_eq!(collapse(&editor).control, GeneralControl::Toggle(false));
+    assert_eq!(
+        editor.settings_summary()["general"]["rows"][0],
+        json!({"id": "auto_collapse_history", "control": {"toggle": false}, "saving": false})
     );
 
     // The owner applies it to the next edit without a relaunch.

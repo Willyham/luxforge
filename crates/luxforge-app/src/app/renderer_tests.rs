@@ -9,13 +9,14 @@
 //! the surface publishes it (`renderer.stage`); the photo surface's own tests prove that a refused
 //! pipeline answers `no-adapter` and draws the CPU frame on a real device.
 use super::{
-    gpu_preview_tests::{catalog, deliver_until},
-    message::{preview::PreviewMessage, renderer::RendererMessage},
+    gpu_preview::SurfaceReport,
+    gpu_preview_tests::{catalog, deliver_until, surface_ready},
+    message::{draft::DraftMessage, preview::PreviewMessage, renderer::RendererMessage},
     tasks::call,
-    testing::{finish, let_go, real_photo_launched, run_commit, slide},
+    testing::{attach_log, events, finish, let_go, logged, real_photo_launched, run_commit, slide},
     *,
 };
-use crate::state::status::CpuReason;
+use crate::state::status::renderer_notice;
 use luxforge_core::Renderer;
 use luxforge_ui::photo_surface::GpuStageState;
 
@@ -36,7 +37,7 @@ fn session_renderer(editor: &Editor, client: ClientId) -> Value {
 
 /// The next update finds the surface's answer changed and starts a report: run it through the
 /// owner as its task does and hand the answer back as the runtime does.
-fn report(editor: &mut Editor) {
+pub(super) fn report(editor: &mut Editor) {
     let _ = editor.update(Message::Preview(PreviewMessage::Poll));
     assert!(editor.renderer.in_flight(), "a report on its way");
     let renderer = editor.renderer.reported();
@@ -53,9 +54,9 @@ fn report(editor: &mut Editor) {
 /// every client, before the surface has checked its stage and after it answers as a refused stage
 /// does, so the desktop never reports another. No plan reaches the surface and no boundary is asked
 /// for: every tick of a drag takes the CPU path naming `no-adapter`, as the snapshot records, and
-/// the release commits on the CPU. The status bar says so beside its render slot in the No GPU
-/// class's words, at rest as well as during the drag. No request lets an agent claim another
-/// renderer.
+/// the release commits on the CPU. The status bar says so beside its render slot in the reference
+/// renderer's words, read from the session, at rest as well as during the drag. No request lets an
+/// agent claim another renderer.
 #[test]
 fn fallback_a_forced_no_gpu_launch_is_the_reference_in_the_session_and_every_tick_is_the_cpus() {
     let catalog = catalog("fallback-forced");
@@ -81,13 +82,14 @@ fn fallback_a_forced_no_gpu_launch_is_the_reference_in_the_session_and_every_tic
         forced
     );
 
-    let notice = CpuReason {
-        code: "no-adapter",
-        layer: None,
-        compiling_for: None,
-    }
-    .notice();
-    assert!(notice.is_some(), "the No GPU class says it");
+    let notice = renderer_notice(Renderer::reference(
+        luxforge_core::RendererReason::NoAdapter,
+    ));
+    assert!(notice.is_some(), "the reference renderer's class says it");
+    assert_eq!(
+        editor.workspace.status.fallback, notice,
+        "at rest, before any gesture"
+    );
     for value in [0.1, 0.2, 0.3] {
         let _ = slide(&mut editor, ACTION, FIELD, value);
         assert_eq!(editor.gpu.summary()["drag"]["reason"], json!("no-adapter"));
@@ -207,5 +209,56 @@ fn fallback_a_device_that_cannot_run_the_stage_is_the_reference_for_no_adapter()
         editor.snapshot()["surface"]["gpu"]["stage"],
         json!({"state": "no-adapter", "refused": false})
     );
+    finish(editor, catalog);
+}
+
+/// A device lost in the middle of a gesture: the gate refuses the next tick with `device-lost`, and
+/// the boundary the drag held for its GPU ticks is let go, as turning the preference off lets it
+/// go, because nothing will draw from it again. The release names the gate's reason, and the
+/// drag's later ticks ask for no boundary and hand the surface no plan.
+#[test]
+fn fallback_a_device_lost_mid_gesture_lets_the_held_boundary_go() {
+    let catalog = catalog("fallback-lost-boundary");
+    let (mut editor, _, _) = real_photo_launched(&catalog, &fixture(), crate::Config::default());
+    editor.gpu.surface = Some(SurfaceReport::default());
+    let _ = slide(&mut editor, ACTION, FIELD, 0.1);
+    deliver_until(&mut editor, "the boundary", |editor| {
+        editor.gpu.holds_boundary()
+    });
+    surface_ready(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.2);
+    assert_eq!(
+        editor.gpu.ticks().0,
+        1,
+        "a tick on the GPU over the held boundary"
+    );
+    let held = editor.gpu.held_version().expect("a held boundary");
+
+    editor.renderer.stage = Some(GpuStageState::DeviceLost);
+    let log = attach_log(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.3);
+    let records = logged(&mut editor, &log);
+    let released = events(&records, "gpu_boundary_released");
+    assert_eq!(released.len(), 1, "{released:?}");
+    assert_eq!(released[0]["why"], "device-lost");
+    assert_eq!(released[0]["version"], json!(held));
+    assert!(
+        !editor.gpu.holds_boundary(),
+        "nothing held for a stage that cannot draw"
+    );
+    assert_eq!(editor.gpu.summary()["drag"]["reason"], json!("device-lost"));
+    let asked = editor.gpu.ticks().2;
+    let _ = slide(&mut editor, ACTION, FIELD, 0.4);
+    assert_eq!(
+        editor.gpu.ticks().2,
+        asked,
+        "no boundary is asked for again"
+    );
+    assert!(
+        editor
+            .gpu_plan(editor.presentation.presenter.photo())
+            .is_none()
+    );
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     finish(editor, catalog);
 }

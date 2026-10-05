@@ -52,9 +52,11 @@ host_params! {
     }
 }
 
-/// `export.plan`: the output stage from the compiled recipe and a suggested destination beside the
-/// original, which costs reading at most 64 names in its directory. Nothing is rendered or
-/// prepared.
+/// `export.plan`: the output stage from the compiled recipe and a suggested destination in the
+/// remembered export folder while it exists, or beside the original, which costs reading the small
+/// preferences file and at most 64 names in that folder. Nothing is rendered or prepared. A
+/// preferences file that cannot be read suggests beside the original; the desktop reports that
+/// failure when it reads the preferences itself.
 pub(in crate::api) fn plan(
     owner: &mut Owner,
     _: &Call<'_>,
@@ -63,8 +65,15 @@ pub(in crate::api) fn plan(
     let target = owner
         .service
         .export_target(&params.asset_id, params.entry_id.as_ref())?;
+    let remembered = owner
+        .host
+        .preferences
+        .read()
+        .ok()
+        .and_then(|preferences| preferences.export_folder)
+        .filter(|folder| folder.is_dir());
     let suggested = match (
-        target.original.parent(),
+        remembered.as_deref().or(target.original.parent()),
         target.original.file_stem().and_then(|stem| stem.to_str()),
     ) {
         (Some(directory), Some(stem)) => publish::suggest(directory, stem),

@@ -11,6 +11,8 @@ use std::collections::HashSet;
 #[derive(Clone, Debug)]
 pub(crate) struct Document {
     pub(crate) state: Option<EditorState>,
+    /// Original capture metadata, read once on open through `source.inspect` after preparation.
+    pub(crate) capture: Option<luxforge_core::CaptureInfo>,
     pub(crate) history: HistoryPage,
     pub(crate) versions: Vec<Version>,
     /// Entries on the current undo-parent chain; other loaded entries are abandoned branches.
@@ -42,6 +44,7 @@ impl Default for Document {
     fn default() -> Self {
         Self {
             state: None,
+            capture: None,
             history: HistoryPage {
                 entries: Vec::new(),
                 next_before_sequence: None,
