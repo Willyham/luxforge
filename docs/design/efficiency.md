@@ -99,13 +99,12 @@ Done; adoption waits for the measurement task. Clarity's encoded-luminance block
   - **The served tile's input:** it reads the operation's input over the rectangle today's chain gives the first unit as its output (`regions[1]`). That is not the tile regrown by a smaller summed halo: beside a tile narrower than the halo, that rectangle would start elsewhere and move a running sum. Every later unit keeps today's rectangles.
   - **The charge, slots and scratch:** these stay today's, which bound both cases. A unit reading held planes takes a subset of what it takes computing them, and the host hands it the scratch it declares for the rectangle it reads without them.
   - **Masked layers:** a masked tile is read only where every tile its reach touches ran. With all three fields Dehaze fills the rectangle Texture's and Clarity's halos need, so behind a small mask few tiles are read.
-  - **Point samples:** a point sample reads planes that cover its tile's reach, and otherwise computes its tile as today. It never hands cells back or fills the store. Both give the same byte.
+  - **Reads:** a pixel read the reference answers renders the spatial layer's whole frame as a render does, so it reads, collects and publishes planes as one.
 - **Not windows.** A windowed render runs a spatial operation over its window as its own stage, whose edge blocks differ from the whole stage's. `SpatialEntry::cut` therefore marks the operation windowed, and a window neither reads nor fills the store and computes as today.
 - **Disposable.** Losing an entry costs only time. It is never part of history, an artifact or a source.
 - **Counters.** The store counts the following since its context was created:
   - frame renders that found or missed planes;
   - their tiles that read or computed them;
-  - the tiles of point queries that read or computed them;
   - cells handed back, publishes, evictions and refusals;
   - retained bytes and entries.
 

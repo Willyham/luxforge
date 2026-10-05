@@ -119,7 +119,7 @@ pub struct BudgetsReport {
 /// The render context's store of the reduced planes a spatial unit that runs first in its
 /// operation computes before any coefficient (`docs/design/efficiency.md`, "The reduced-grid
 /// cache"): its limit and what it holds now, and since the context was created how often a frame
-/// render, its tiles and the tiles of point queries found planes, what the renders handed back and
+/// render and its tiles found planes, what the renders handed back and
 /// published, and what the store evicted and refused. Every figure but the limit, the retained
 /// bytes and the entries only grows, so a hit rate over a gesture comes from two reads.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,10 +135,6 @@ pub struct ReducedPlanesReport {
     pub tile_hits: u64,
     /// Tiles of those renders that computed the planes, because nothing held covered their reach.
     pub tile_misses: u64,
-    /// Tiles point queries evaluated that read held planes.
-    pub point_hits: u64,
-    /// Tiles point queries evaluated that computed the planes.
-    pub point_misses: u64,
     /// Cells tiles handed back to their render's pending planes.
     pub cells_handed_back: u64,
     pub publishes: u64,
@@ -357,8 +353,6 @@ mod tests {
                 "entries",
                 "evictions",
                 "limit_bytes",
-                "point_hits",
-                "point_misses",
                 "publishes",
                 "refusals",
                 "render_hits",

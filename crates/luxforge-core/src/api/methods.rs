@@ -113,10 +113,11 @@ impl Mutated {
     }
 }
 
-/// What a planned service method answers: a value, or a point sample through a spatial layer,
-/// planned on the catalog owner in `O(layers)` and evaluated by whoever holds it. The owner hands
-/// the sample to its point worker; every other caller evaluates it where it stands. A planned
-/// method carries no mutation envelope, so no request table waits for its answer.
+/// What a planned service method answers: a value, or a read of pixels — a point sample, or a
+/// query that reads pixels — planned on the catalog owner in `O(layers)` and read by whoever holds
+/// it. The owner hands every read to its tile service, which reads no pixel on its thread; a
+/// caller without one reads it with the reference renderer where it stands. A planned method
+/// carries no mutation envelope, so no request table waits for its answer.
 pub(super) enum Planned {
     Value(Value),
     Sample(Box<PointPlan>),
@@ -125,12 +126,14 @@ pub(super) enum Planned {
 
 #[cfg(test)]
 impl Planned {
-    /// The answer, evaluating a planned sample here.
+    /// The answer, reading a planned sample or query here with the reference renderer.
     pub(super) fn answer(self) -> Result<Value, Error> {
         match self {
             Self::Value(value) => Ok(value),
             Self::Sample(plan) => sample_value((*plan).evaluate()?),
-            Self::Query(plan) => plan.evaluate(&crate::Cancel::never()),
+            Self::Query(plan) => {
+                plan.evaluate(&crate::tiles::ReferenceReads, &crate::Cancel::never())
+            }
         }
     }
 }
@@ -778,7 +781,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "resources.read",
         NoParams,
         |service, _, _| value(crate::resources::read(service.render_context())),
-        "what the operating system accounts to this process: {monotonic_ns, cpu: {time_ns, logical_cpus}, memory: {kind, bytes, peak_bytes, resident_bytes}, gpu: {time_ns, allocated_bytes, unified_memory}, budgets: {colour_scratch, spatial} each {target_bytes, in_use_bytes, peak_bytes}, and reduced_planes: {limit_bytes, retained_bytes, entries, render_hits, render_misses, tile_hits, tile_misses, point_hits, point_misses, cells_handed_back, publishes, evictions, refusals}}; reduced_planes is the store of the reduced planes a spatial unit that runs first computes: its limit, its level and counts since the context was created; times are nanoseconds and sizes bytes; memory.kind is footprint (macOS, Activity Monitor's Memory, including GPU allocations on unified memory), resident (Linux) or private (Windows); time counters are cumulative, so a rate comes from two reads: CPU percent of one core is 100 × Δcpu.time_ns / Δmonotonic_ns, up to 100 × logical_cpus, and GPU percent is the same over gpu.time_ns; monotonic_ns means something only as a difference; a counter the platform cannot give is omitted and its object's unavailable maps its key to the reason; takes no parameters, needs no asset, emits no event and changes nothing"
+        "what the operating system accounts to this process: {monotonic_ns, cpu: {time_ns, logical_cpus}, memory: {kind, bytes, peak_bytes, resident_bytes}, gpu: {time_ns, allocated_bytes, unified_memory}, budgets: {colour_scratch, spatial} each {target_bytes, in_use_bytes, peak_bytes}, and reduced_planes: {limit_bytes, retained_bytes, entries, render_hits, render_misses, tile_hits, tile_misses, cells_handed_back, publishes, evictions, refusals}}; reduced_planes is the store of the reduced planes a spatial unit that runs first computes: its limit, its level and counts since the context was created; times are nanoseconds and sizes bytes; memory.kind is footprint (macOS, Activity Monitor's Memory, including GPU allocations on unified memory), resident (Linux) or private (Windows); time counters are cumulative, so a rate comes from two reads: CPU percent of one core is 100 × Δcpu.time_ns / Δmonotonic_ns, up to 100 × logical_cpus, and GPU percent is the same over gpu.time_ns; monotonic_ns means something only as a difference; a counter the platform cannot give is omitted and its object's unavailable maps its key to the reason; takes no parameters, needs no asset, emits no event and changes nothing"
     ),
     service!(
         "draft.begin",
@@ -820,12 +823,12 @@ pub(super) const METHODS: &[MethodSpec] = &[
         draft_reapply,
         "rebases the draft on the asset's current revision, keeping and revalidating only the fields this client set"
     ),
-    // Planned on the owner; a sample through a spatial layer is evaluated on the point worker.
+    // Planned on the owner; every sample is read by the owner's tile service.
     planned!(
         "render.sample",
         RenderSample,
         render_sample,
-        "one pixel of the session's selected entry, or of an open draft's effective recipe, evaluated without rasterizing; names the entry and snapshot it was planned against, and its response sequence is the event sequence when it was planned; a sample through a spatial layer is evaluated off the catalog owner, and resource-limit means too many such samples are already waiting"
+        "one pixel of the session's selected entry, or of an open draft's effective recipe, read off the catalog owner by its tile service: on the desktop from a GPU tile render of the stack, the byte the picture shows there at 100%, and otherwise by the reference renderer, which through a spatial layer renders that layer's whole frame; names the entry and snapshot it was planned against and the renderer that drew it, {record: gpu or reference, reason}, the reason naming why the GPU did not; its response sequence is the event sequence when it was planned; resource-limit means too many pixel reads are already waiting"
     ),
     service!(
         "render.locate",
@@ -2043,9 +2046,9 @@ fn workspace_set(
     session_value(service, session)
 }
 
-/// Plan one pixel against the stack the caller names, reading the session and the catalog now. A
-/// point that costs `O(layers)` is answered here; one through a spatial layer is returned planned,
-/// for the catalog owner to hand to its point worker.
+/// Plan one pixel against the stack the caller names, reading the session and the catalog now,
+/// in `O(layers)`: it is returned planned, for the catalog owner to hand to its tile service,
+/// which reads the pixel off the owner's thread.
 fn render_sample(
     service: &mut EditorService,
     session: &mut ClientSession,
@@ -2069,11 +2072,7 @@ fn render_sample(
             )?
         }
     };
-    if plan.evaluates_spatial() {
-        Ok(Planned::Sample(Box::new(plan)))
-    } else {
-        sample_value(plan.evaluate()?).map(Planned::Value)
-    }
+    Ok(Planned::Sample(Box::new(plan)))
 }
 
 pub(super) fn sample_value(sample: PixelSample) -> Result<Value, Error> {
@@ -2194,16 +2193,21 @@ fn set_draft(
         .held_draft(draft_id)
         .expect("the draft was just checked")
         .merged(fields);
-    // A partial gesture may still lack a required field. Once complete, a stack containing
-    // spatial operations seeds any planning reads before acceptance; pointwise drafts keep
-    // their existing field-only set path. This metadata check neither compiles nor reads pixels.
+    // A partial gesture may still lack a required field. Once complete, a draft whose plan reads a
+    // pixel — a colour-limited stroke's seed — is planned here, so the read is parked once, off
+    // the owner, before the draft is accepted, and every later preview of it finds the pixel in
+    // the session's memo: a preview never parks a read. So is a draft over a stack holding a
+    // spatial layer, whose plan refusals are then this tick's. Any other draft keeps the
+    // field-only set path; neither check compiles or reads a pixel.
     let planned = if complete {
         service
             .draft_has_spatial_inputs(&next.asset_id)
-            .and_then(|spatial| match spatial {
-                true => service.draft_recipe(&next.asset_id, &next).map(drop),
-                false => Ok(()),
-            })
+            .and_then(
+                |spatial| match spatial || service.draft_reads_pixels(&next) {
+                    true => service.draft_recipe(&next.asset_id, &next).map(drop),
+                    false => Ok(()),
+                },
+            )
     } else {
         Ok(())
     };

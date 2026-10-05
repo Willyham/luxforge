@@ -480,7 +480,7 @@ fn a_masked_spatial_layer_compiles_with_its_mask_attached() {
         .entry
         .as_ref()
         .expect("a spatial entry");
-    let operation = entry.point_tiles().expect("a spatial entry");
+    let operation = entry.spatial_operation().expect("a spatial entry");
     let attached = operation.mask().expect("the mask is attached");
     // The mask is compiled against the stage the layer receives, which is the frame this
     // operation reads and writes: the tile loop needs no mapping at all.

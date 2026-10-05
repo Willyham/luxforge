@@ -1,7 +1,7 @@
 //! The pointer over the photograph: its position, and canvas picks located through the core and
-//! answered by the mode on screen. Nothing is read under the pointer as it moves: a `render.sample`
-//! through a spatial stack can cost the point worker minutes, so the one read the canvas makes is a
-//! pick, which a person asks for.
+//! answered by the mode on screen. Nothing is read under the pointer as it moves: every pixel read
+//! is a call to the tile service, a GPU tile render or, without one, the reference renderer's whole
+//! spatial frames, so the one read the canvas makes is a pick, which a person asks for.
 use super::{
     Editor,
     gesture::Starting,
@@ -409,9 +409,12 @@ impl Editor {
                         return Task::none();
                     }
                 };
+                // The renderer that read the pixel, where the answer names one: the GPU's tile
+                // worker, or the reference and why.
+                let renderer = answer.get("renderer").cloned().unwrap_or(Value::Null);
                 self.event(
                     "canvas_sample",
-                    || json!({"action":action,"x":x,"y":y,"fields":fields}),
+                    || json!({"action":action,"x":x,"y":y,"fields":fields,"renderer":renderer}),
                 );
                 // This pick commits, so its evidence is the render that follows rather than the
                 // status it leaves.

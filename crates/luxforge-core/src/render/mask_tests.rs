@@ -932,7 +932,7 @@ fn a_render_that_skips_uncovered_pixels_is_identical_and_samples_equal_it() {
                             &registry,
                             source,
                             &recipe,
-                            SpatialMode::Point,
+                            SpatialMode::Frames,
                         )
                         .unwrap();
                         assert!(
@@ -1397,8 +1397,9 @@ fn masked_brush_cost_on_photo_sized_frames() {
             };
             measure(&format!("{count}-stroke brush mask"), &recipe);
 
-            // The point query, which is the rule-4 claim: a sample through a masked layer costs
-            // `O(layers)` and never rasterizes, so its cost must not grow with the stroke count.
+            // The point query, which is the rule-4 claim: a sample through a masked colour layer
+            // costs `O(layers)` and never rasterizes, so its cost must not grow with the stroke
+            // count.
             // A thousand of them, spread over the frame, because one is too fast to time.
             let queries = 1000u32;
             let started = std::time::Instant::now();

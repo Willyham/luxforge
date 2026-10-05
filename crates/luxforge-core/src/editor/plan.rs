@@ -353,7 +353,7 @@ impl EditorService {
         // A module may catch a sampling error; a recorded read still suspends planning before
         // the resulting recipe can be admitted or any transaction can write it.
         if self.pixel_reads.borrow().deferred.is_some() {
-            return Err(Error::internal("pixel read deferred to the point worker"));
+            return Err(Error::internal(super::pixels::DEFERRED));
         }
         result
     }
@@ -1071,16 +1071,16 @@ impl StageQuestions for HostStage<'_> {
                 settings,
             },
         };
-        if let Some(answer) = self.service.spatial_read(
+        if let Some(answer) = self.service.deferred_read(
             self.asset,
             self.recipe,
             preview,
-            &compiled,
             self.input_wide(&compiled)?,
             super::pixels::PixelRead { index, x, y },
         )? {
             return Ok(answer.rgba);
         }
+        refuse_on_owner()?;
         let context = self.service.render_context();
         if compiled.evaluates_spatial() {
             let wide = self.input_wide(&compiled)?;
@@ -1113,16 +1113,16 @@ impl StageQuestions for HostStage<'_> {
                 }
             }
         };
-        if let Some(answer) = self.service.spatial_read(
+        if let Some(answer) = self.service.deferred_read(
             self.asset,
             self.recipe,
             preview.clone(),
-            &compiled,
             self.input_wide(&compiled)?,
             super::pixels::PixelRead { index, x, y },
         )? {
             return Ok(answer.linear);
         }
+        refuse_on_owner()?;
         let wide = self.input_wide(&compiled)?;
         crate::render::prefix_pixels(
             preview.input(),
@@ -1144,6 +1144,19 @@ impl StageQuestions for HostStage<'_> {
             )),
         }
     }
+}
+
+/// Refuse a pixel read on the catalog owner's thread, which reads no pixel ([performance rule
+/// 5](../../../../docs/engineering/performance-rules.md#rules)): every read made while it serves a
+/// call is deferred to its tile service, so one that reaches the host's own read there is a defect,
+/// answered `internal` rather than paid on the thread every client waits behind.
+fn refuse_on_owner() -> Result<(), Error> {
+    if std::thread::current().name() == Some(crate::api::OWNER_THREAD) {
+        return Err(Error::internal(
+            "the catalog owner reads no pixel: a read outside a call it serves reached its thread",
+        ));
+    }
+    Ok(())
 }
 
 /// One layer change of a plan, applied by the host: the half of a layer's identity a module never
@@ -2896,6 +2909,54 @@ mod tests {
             let y = (point_index / 5) as u32;
             assert_eq!(*cached, fresh.sample(x, y).unwrap().rgba, "({x}, {y})");
         }
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// The host reads a pixel itself only off the catalog owner's thread: on a thread of the
+    /// owner's name, a read that was not deferred to the tile service is refused `internal`, so
+    /// a path that reached it there could never block every client behind a read; on any other
+    /// thread it answers.
+    #[test]
+    fn the_hosts_own_read_is_refused_on_the_owners_thread() {
+        let catalog = temp("owner-thread-read.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let state = service.import(&fixture()).unwrap();
+        let answered = service
+            .with_stage_context(
+                &state.asset,
+                &state.current_entry.snapshot.recipe,
+                None,
+                |context| context.sample_before(0, 3, 4),
+            )
+            .unwrap();
+        assert!(
+            answered.is_some(),
+            "off the owner's thread the host reads it"
+        );
+        // The service moves to the thread, as the owner's does.
+        let (service, refused) = std::thread::Builder::new()
+            .name(crate::api::OWNER_THREAD.into())
+            .spawn(move || {
+                let refused = service.with_stage_context(
+                    &state.asset,
+                    &state.current_entry.snapshot.recipe,
+                    None,
+                    |context| context.sample_before(0, 3, 4),
+                );
+                (service, refused)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        let refused = refused.unwrap_err();
+        assert_eq!(refused.kind, ErrorKind::Internal, "{refused}");
+        assert!(
+            refused
+                .to_string()
+                .contains("the catalog owner reads no pixel"),
+            "{refused}"
+        );
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }

@@ -12,8 +12,9 @@
 //!
 //! `--case render|export|points|cancel|sharing` isolates a workload. Prepared-source decode is
 //! outside render, export and point latency; cold picks reopen and prepare the owner outside the
-//! timer. Point tiles are query-local, so a warm pick means the second request on that owner,
-//! rather than a cross-query tile-cache hit. Colour-limited later ticks use the same draft memo.
+//! timer. The points are read by the owner's reference tile service (this owner has no GPU
+//! provider), which renders the Detail prefix's whole frame once per call, so a warm pick means
+//! the second request on that owner. Colour-limited later ticks use the same draft memo.
 use crate::*;
 use luxforge_core::{
     ApiRequest, AssetId, ClientId, DETAIL_EFFECT, Layer, ModuleRegistry, PreviewIntent, PreviewJob,
@@ -394,7 +395,7 @@ fn points(
             stats::row("detail.colour_limited_later_tick_same_draft", "ms", later),
             stats::row("detail.reopened_owner_source_prepare", "ms", preparations)],
         "observations":observations,"neutral_point":[width/2,height/2],
-        "scope":"Each pair uses a newly reopened owner/context and verified prepared source. Neutral query reads its declared 25 points; tiles are query-local. First limited tick seeds through the point worker; later tick uses the same draft seed memo. No commit, overlay, preview or GPU work is requested. Owner startup/preparation and draft begin/cancel excluded from query/tick durations."
+        "scope":"Each pair uses a newly reopened owner/context and verified prepared source. Neutral query reads its declared 25 points through the reference tile service, one call and one frame of the prefix; first limited tick seeds through the same service; later tick uses the same draft seed memo. No commit, overlay, preview or GPU work is requested. Owner startup/preparation and draft begin/cancel excluded from query/tick durations."
     }))
 }
 
