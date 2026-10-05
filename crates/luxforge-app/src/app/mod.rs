@@ -917,7 +917,9 @@ impl Editor {
             gpu_frame_us: self.gpu_frame_us(),
             gpu_at_rest: self.gpu_at_rest(),
             cpu_reason: self.gpu_cpu_reason(),
-            rest_compiling: self.gpu_rest_compiling(),
+            // Said of the reference frame alone: a stack the GPU presented waits on its compile
+            // under the frame on screen, marked rendering, short of the threshold.
+            rest_compiling: self.gpu_rest_compiling() && !self.gpu_compile_deadline(),
             render_bar: self.activity.render_bar,
             render_error: self.presentation.render_error.as_ref(),
             analysis: self.presentation.shown_analysis(),
