@@ -156,7 +156,7 @@ Two read-only methods report what the editor is doing and what it costs. Neither
 ```
 
 ```json
-{"id":"cost","sequence":9,"result":{"monotonic_ns":167,"cpu":{"time_ns":6377125,"logical_cpus":14},"memory":{"kind":"footprint","bytes":2392448,"peak_bytes":2392448,"resident_bytes":9191424},"gpu":{"unavailable":{"time_ns":"no GPU client in this process","allocated_bytes":"no GPU presenter in this process"}},"budgets":{"colour_scratch":{"target_bytes":67108864,"in_use_bytes":0,"peak_bytes":0},"spatial":{"target_bytes":268435456,"in_use_bytes":0,"peak_bytes":0},"reduced_planes":{"limit_bytes":67108864,"retained_bytes":0,"entries":0,"render_hits":0,"render_misses":0,"tile_hits":0,"tile_misses":0,"point_hits":0,"point_misses":0,"cells_handed_back":0,"publishes":0,"evictions":0,"refusals":0}}}}
+{"id":"cost","sequence":9,"result":{"monotonic_ns":167,"cpu":{"time_ns":6377125,"logical_cpus":14},"memory":{"kind":"footprint","bytes":2392448,"peak_bytes":2392448,"resident_bytes":9191424},"gpu":{"unavailable":{"time_ns":"no GPU client in this process","allocated_bytes":"no GPU presenter in this process"}},"budgets":{"colour_scratch":{"target_bytes":67108864,"in_use_bytes":0,"peak_bytes":0},"spatial":{"target_bytes":268435456,"in_use_bytes":0,"peak_bytes":0},"reduced_planes":{"limit_bytes":67108864,"retained_bytes":0,"entries":0,"render_hits":0,"render_misses":0,"tile_hits":0,"tile_misses":0,"cells_handed_back":0,"publishes":0,"evictions":0,"refusals":0}}}}
 ```
 
 GPU time and allocations are reported on macOS only; on Linux and Windows they are unavailable with that reason.
@@ -343,7 +343,9 @@ stroke began and knows nothing about edges or connectivity, so it will also pain
 anywhere else the stroke passes over — if a strip of the same sky shows through on the far side of the
 roof and your stroke reaches it, it is painted too, and the remedy is to subtract a brush over what it
 caught. The colour is sampled once, where the stroke starts, and stored with the stroke: later edits
-never move it, and nothing is re-read when the picture is drawn. Because the stroke then reads pixels,
+never move it, and nothing is re-read when the picture is drawn. It is read from the GPU's picture,
+so the first moment of a limited stroke waits for that one read; a stroke painted through the JSON
+API without the desktop reads it from the reference, which may differ by a code. Because the stroke then reads pixels,
 it inherits what the range selections say below — what it holds follows the adjustment's own input, so
 a layer ahead of the mask changes it, and its overlay is read on that input rather than on the finished
 picture.
@@ -621,8 +623,9 @@ The geometry commands are **generated per component kind**, because one command 
 stage that adjustment's layer sees — plus the position and that stage's size. It is where a canvas
 pick gets the colour a colour range's swatch is, and it exists because a client must not read that
 colour off the frame: the frame holds the adjustment's output, which is a different colour wherever
-the adjustment does anything. A mask no layer is bound to has no adjustment to be the input of and is
-refused by name. `mask.add-stroke` takes `limit_to_colour` and `colour_refine` beside its path and its
+the adjustment does anything. The values are 32-bit floats, read from the GPU with the desktop open,
+and the answer names the `renderer` that read them as `render.sample`'s does. A mask no layer is bound
+to has no adjustment to be the input of and is refused by name. `mask.add-stroke` takes `limit_to_colour` and `colour_refine` beside its path and its
 brush; it carries **no colour**, because the host reads the pixel at the stroke's first position
 itself, and a stroke limited on a mask no layer carries is refused by name for the same reason.
 
@@ -642,7 +645,7 @@ A mask attaches only to a layer before the geometry tail, so a `finish`- or `geo
 
 `workspace.set` also accepts `mask_overlay` (`off`, `tint`, `mask-on-black`, `image-on-black`) and `mask_overlay_colour` (`green`, `white`), reported by `session.state`. Both are per-client view state: they change no pixels of the saved recipe and no history, and hiding a mask's overlay does not stop that mask applying.
 
-`render.sample {asset_id, x, y, draft_id?}` answers one pixel of the rendered image, of the session's selected entry or of this client's open draft, as `{entry_id, snapshot_id, source_fingerprint, width, height, x, y, rgba, draft?, source_detail_ready}`; a pixel outside the rendered image is a `validation` error naming the stage. The answer names the entry and snapshot it was evaluated against, and its response `sequence` is the event sequence when the editor planned it, so a client that sees a later event knows a newer stack may exist. Through a Detail or Presence layer a pixel depends on its neighbourhood, so the editor evaluates the one tile it needs on a worker of its own and answers other clients meanwhile; when nine such samples are already waiting it answers `resource-limit`, and a retry after an answer succeeds.
+`render.sample {asset_id, x, y, draft_id?}` answers one pixel of the rendered image, of the session's selected entry or of this client's open draft, as `{entry_id, snapshot_id, source_fingerprint, width, height, x, y, rgba, draft?, source_detail_ready, renderer}`; a pixel outside the rendered image is a `validation` error naming the stage. The answer names the entry and snapshot it was evaluated against, and its response `sequence` is the event sequence when the editor planned it, so a client that sees a later event knows a newer stack may exist. Every pixel is read off the editor's catalog thread, so other clients are answered meanwhile. With the desktop open it is read from the GPU: one tile of the stack around the pixel, the byte the picture shows there at 100%, and `renderer` is `{"record": "gpu", "reason": null}`. Where the GPU cannot draw the stack — a pixel proof's layer, a launch with `--no-gpu-render` — and always from `luxforge-json`, the reference renderer reads it, `renderer` naming the reference and why (`pixel-stage`, `refused`; no reason from `luxforge-json`, which has no GPU); through a Detail or Presence layer the reference renders that layer's whole picture for the read, which takes about as long as rendering the photograph through it. When nine reads are already waiting it answers `resource-limit`, and a retry after an answer succeeds. The GPU and the reference may differ by a code at a pixel, within the display limit the release gate holds them to.
 
 `render.transform {asset_id, entry_id?, draft_id?}` answers the whole geometry tail, so a client editing in content coordinates can map pointer positions without a request per move. It returns `{entry_id, snapshot_id, source_fingerprint, draft?, content: {width, height}, output: {width, height}, mapping, mapping_sha256}`. An affine tail's `mapping` is `{kind: "affine", forward: [6], inverse: [6]}`; a nonlinear tail carries `kind: "warp"`, bounded steps, cover scales and its local minification bound. The core's `GeometryMap` evaluates either form with `to_output`, `to_content` and `local_scale_at`; clients use its hash to correlate a displayed frame, pointer map and coverage cache. Coordinates are continuous pixel edges: pixel index `n` has its centre at `n + 0.5`, and a stage spans `0..width` by `0..height`. A coordinate outside the output stage was cropped away. Mapping failures are explicit. A draft whose base revision changed returns `conflict` until it is reapplied. An unavailable stack returns its own reason. `render.locate` maps one rendered pixel back for a pick.
 

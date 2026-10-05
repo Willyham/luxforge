@@ -132,10 +132,10 @@ is tessellated to impersonate coverage.
 
 Nothing is read under the pointer as it moves. The status-bar readout that asked `render.sample`
 on every move was removed on 2026-10-04 (owner): through a stack with Detail, Presence and masks
-the exact point path cost the point worker minutes, and the desktop ran that wait on the update
-loop, so the window froze with it. A pointer move now publishes its position for a pick and for
-the evidence cursor sync and asks the owner for nothing; `render.sample` remains the API's exact
-point query.
+the CPU point path then cost minutes, and the desktop ran that wait on the update loop, so the
+window froze with it. A pointer move now publishes its position for a pick and for the evidence
+cursor sync and asks the owner for nothing; `render.sample` remains the API's read of one pixel,
+answered off the owner by its tile service.
 
 A value typed into a generated field but not submitted belongs to the mask and component it was
 typed for: when the fields address another target, the edit is dropped and the fields reseeded.

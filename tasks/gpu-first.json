@@ -417,16 +417,17 @@
         },
         {
           "kind": "file",
-          "label": "Point tiles",
+          "label": "Spatial tiles",
           "target": "crates/luxforge-core/src/render/spatial.rs",
-          "relevance": "To retire.",
-          "locator": "PointTiles"
+          "relevance": "Where the point-tile cache was retired; a read through a spatial layer is the reference's whole frame of it.",
+          "locator": "run_tile"
         },
         {
           "kind": "file",
-          "label": "Point worker",
-          "target": "crates/luxforge-core/src/api/owner/point.rs",
-          "relevance": "To retire."
+          "label": "Tile service",
+          "target": "crates/luxforge-core/src/tiles.rs",
+          "relevance": "Replaces the point worker, which is retired: every pixel read is a call to it.",
+          "locator": "TileCall"
         },
         {
           "kind": "file",

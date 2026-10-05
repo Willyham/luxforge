@@ -296,10 +296,10 @@
         },
         {
           "kind": "file",
-          "label": "Point worker",
-          "target": "crates/luxforge-core/src/api/owner/point.rs",
-          "locator": "POINT_QUEUE_CAPACITY",
-          "relevance": "PointCall, Reply, POINT_QUEUE_CAPACITY, disconnect."
+          "label": "Tile service",
+          "target": "crates/luxforge-core/src/tiles.rs",
+          "locator": "TILE_QUEUE_CAPACITY",
+          "relevance": "TileCall, its reply, TILE_QUEUE_CAPACITY, disconnect: the service that replaced the point worker (GPU-first stage 4)."
         },
         {
           "kind": "file",
