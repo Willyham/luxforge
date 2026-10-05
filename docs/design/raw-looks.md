@@ -31,27 +31,49 @@ The look is a pointwise colour layer, `stage: Color`, **order 3**: after Basic (
 The layer compiles to at most four pointwise units, in this order, each frozen against an independent `f64` reference in `crates/luxforge-reference/src/look.rs`. A Neutral look compiles to no unit and keeps the identity path.
 
 1. **Tone.** A monotone curve `T` over **encoded luminance**, the sRGB transfer continued past `[0, 1]` that [Basic tone](basic-tone.md#working-tone-domain) and the [Tone curve](tone-curve.md) already use, with the Tone curve's floor-subtracted luminance-ratio reconstruction, so hue is kept. `T` is the Tone curve's open monotone interpolant (Fritsch–Butland PCHIP) over at most 24 knots, with a **look tail policy**: the knots span `[0, x_max]`, where `x_max = encode(2^H)` is the brightest scene value the look rolls off (`H` the headroom above sensor white). Below 0 the first segment continues linearly, so negative luminance stays finite and monotone. Above `x_max` the curve holds its last value, which is at most 1. The Tone curve's own tail policy, the unit-slope tail past white, is unchanged and stays byte-identical. The curve folds in the baseline lift: it maps the development's scene mid-grey to display mid-grey.
-2. **Chroma.** A uniform Oklab chroma gain `c` at constant Oklab lightness and hue, by Basic's colour unit where its saturation formula expresses that gain exactly, otherwise a look-owned unit with the same Oklab conversions.
-3. **Path to white.** A colour whose largest linear channel passes a knee `k` below 1 after tone and chroma has its Oklab chroma reduced at constant lightness and hue, smoothly, so it reaches white at the display boundary rather than clipping one channel at a time and shifting hue. A bounded closed form or a fixed number of bisection steps, decided by the study, so the GPU cost is fixed.
+2. **Chroma.** A uniform Oklab chroma gain `c` at constant Oklab lightness and hue: Basic's Saturation at `s = 100 (c − 1)`, which scales Oklab `a` and `b` by exactly `c` ([Basic colour](basic-colour.md)), so the look reuses Basic's colour unit and program.
+3. **Path to white.** A colour whose largest linear channel `m` passes a knee `k` after tone and chroma is mixed toward the grey of its own luminance `Y`, `rgb' = Y + t (rgb − Y)`, until its largest channel is `k + (1 − k)(1 − e^{−(m − k)/(1 − k)})`, which approaches 1: `t = max(0, (target − Y) / (m − Y))`. So it reaches white at the display boundary instead of clipping one channel at a time and shifting hue. Luminance is kept exactly, chroma never grows, a colour at or below the knee is unchanged, and the target is continuous with slope one at the knee. It is a closed form, so the GPU cost is fixed. The mix keeps the colour's chromaticity line to its grey, not its Oklab hue, so a strongly compressed colour can drift a few degrees of Oklab hue on its way to white.
 4. **Amount.** `out = in + a · (look(in) − in)` in linear light, `a = amount / 100`, amount 0–200; 0 compiles to nothing, 100 is the look. Past 100 it extrapolates, as Lightroom's profile Amount does.
 
 **Payload** (current shape only):
 
 ```json
-{"look": "standard", "amount": 100, "tone": [[0, 0], …, [x_max, 1]], "chroma": 1.12, "fit": null}
+{"look": "standard", "amount": 100, "tone": [[0, 0], …, [x_max, 1]], "chroma": 1.2, "fit": null}
 ```
 
 `look` is `standard`, `camera` or `neutral`. The resolved `tone` knots and `chroma` are **stored in every payload**, so a render depends only on the recipe: retuning Standard later never changes a photo already edited, and a camera fit never needs its preview again, not to export, not after the original goes missing. A Neutral payload is `{"look": "neutral"}`. `fit` is `null` except on a Camera look, where it records the fit's provenance ([Match camera](#phase-2-match-camera)).
 
 ### The Standard look
 
-One fixed look, chosen by a study and frozen as knots and a chroma gain in `modules/look/standard.rs`. Its targets, which the study measures and the owner reviews:
+One fixed look, chosen on the corpus and frozen as knots and a chroma gain in `modules/look/standard.rs`. Its tone is a log-logistic map in scene-linear luminance, `f(Y) = W Y^p / (Y^p + s^p)`, normalized to reach display white at `Y_max = 2^H` above sensor white, with `s` solved so that scene grey `0.18 · 2^−lift` renders to display grey 0.18. It is sampled into 24 knots in encoded luminance (whole stops through the shadows, half stops up to a quarter stop below the headroom), which follow `f` within `1e−3` encoded. The reference is `crates/luxforge-reference/src/look.rs` (`STANDARD`, `standard_knots`).
 
-- **Placement.** Over the corpus, the median midtone of Standard is within ±0.25 EV of the cameras' own JPEGs (histogram-matched on the embedded previews, which phase 2's fitter reuses as a measuring instrument). Recorded default before the study: a +0.5 EV lift.
-- **Contrast.** A midtone slope in the range of the camera JPEGs, measured the same way. Recorded default: a log-logistic (sigmoid) curve with a midtone slope of about 1.5 in log–log terms.
-- **Highlights.** The shoulder reaches display white at `H` = +1 EV above sensor white, so Basic's Exposure and Highlights keep recoverable range, and nothing at or below sensor white clips.
-- **Chroma.** A gain of 1.10 to 1.20, chosen visually.
-- **Owner review.** A contact sheet of about 24 corpus frames, each Neutral, Standard and the camera's preview side by side, is reviewed by the owner before the numbers freeze.
+**The corpus study** (`tests/studies/look.rs`, `look_study_figures`) measured 116 files from about 100 cameras: the owner's Z6, X100VI and Air 2S, and the local selection of CC0 samples the [embedded previews inventory](../research/embedded-previews.md) used. `crates/luxforge-raw/tests/look_corpus.rs` exports each file's as-shot development (the development, `rgb_cam` and the default crop) and its largest embedded JPEG, both at 768 px. Four files were not compared: three carry no embedded JPEG and one frames its preview differently. For each file the study matches the development's encoded-luminance quantiles (2% to 98%) to the preview's, keeping the quantiles where the preview is neither crushed nor clipped, and measures the exposure at which a candidate tone map best matches them and the error left:
+
+| Contrast `p` | Headroom `H` | Median error left (encoded) | 90th percentile |
+| --- | --- | --- | --- |
+| 1.3 | 1.0 EV | 0.0211 | 0.0404 |
+| 1.5 | 1.0 EV | 0.0125 | 0.0280 |
+| 1.6 | 1.0 EV | 0.0106 | 0.0266 |
+| **1.6** | **1.5 EV** | **0.0110** | **0.0266** |
+| 1.7 | 2.0 EV | 0.0120 | 0.0256 |
+| 2.0 | 1.0 EV | 0.0294 | 0.0531 |
+
+Medians and percentiles are nearest-rank, as everywhere in the workspace. An encoded error of 0.011 is about three output codes.
+
+- **Placement.** The cameras' JPEGs put mid-grey 1.15 EV above the bare development (median over the corpus at the best shape), more than the +0.5 EV assumed before the study. At the frozen Standard the exposure each camera's preview still needs is −0.10, +0.03 and +0.23 EV at the quartiles; the spread is wide, from about −1 EV (a Leica M10, a Pentax K-3 Mark III, a Fujifilm X-T30, a DJI FC7303) to +1 EV and beyond (a Canon EOS R3, a DJI FC4382), with Canon bodies mostly above the median. One file per camera cannot separate a camera's rendering from its scene's metering, so these are not per-camera figures.
+- **Contrast.** `p = 1.6`, a log–log slope of 1.32 at grey. A headroom of 1.0 or 1.5 EV fits within noise of each other; 1.5 EV keeps more room for Basic's Exposure and Highlights, and sensor white renders to 0.938 linear (code 248), so a clipped sky still reads white.
+- **Chroma.** The cameras' Oklab chroma is 1.08, 1.21 and 1.42 times the Standard-toned development's at the quartiles (114 files with enough coloured mid-tones); the gain is the median, 1.2.
+- **Knee.** 0.8: colours whose largest channel stays below 0.8 are untouched.
+
+| Frozen | Value |
+| --- | --- |
+| Lift | +1.15 EV |
+| Contrast `p` | 1.6 |
+| Headroom `H` | 1.5 EV |
+| Chroma gain | 1.2 |
+| Path-to-white knee | 0.8 |
+
+**Owner review.** The study writes three contact sheets of 24 corpus frames, each Neutral, Standard and the camera's preview side by side (`LUXFORGE_LOOK_SHEET`). The numbers above are frozen when the owner has reviewed them. Where Standard and the cameras still differ on the sheets, the cameras are more saturated in greens and blue skies and some lift deep shadows further (Active D-Lighting and similar), which is what Match camera is for.
 
 ## Phase 2: Match camera
 
