@@ -504,14 +504,9 @@ fn texture_and_clarity_never_reduce_for_an_unused_estimate() {
         json!({"texture": -70.0, "clarity": 35.0}),
     ] {
         let operation = operation(&payload, stage);
-        let globals = resolve_globals(
-            context.estimates(),
-            &operation,
-            stage,
-            "source",
-            "prefix",
-            || panic!("{payload} must not read pixels for a global estimate"),
-        )
+        let globals = resolve_globals(&context, &operation, stage, "source", "prefix", || {
+            panic!("{payload} must not read pixels for a global estimate")
+        })
         .unwrap();
         assert_eq!(globals, vec![None; operation.len()]);
         assert_eq!(
@@ -532,7 +527,7 @@ fn dehaze_reuses_only_strength_independent_estimates() {
     let reductions = std::cell::Cell::new(0);
     let resolve = |payload: Value, stage: Stage, source: &str, prefix: &str| {
         resolve_globals(
-            context.estimates(),
+            &context,
             &operation(&payload, stage),
             stage,
             source,
