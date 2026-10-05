@@ -13,17 +13,17 @@
 //!   when they are ready, and the notice goes with it.
 //! - **Recorded.** The compile thread times each warm-up, from a list handed to an idle thread
 //!   until its queue drains, and wakes the desktop at its start and its end. The desktop lists a
-//!   running warm-up on the owner's activity board as [`KIND`], which the Performance section and
-//!   `activity.list` read, ends it when the warm-up ends, and records each ended warm-up once as
-//!   the `gpu_warm_up` event. No timer or poll: both wakes are the compile thread's.
+//!   running warm-up on the owner's activity board as [`WARM_UP_KIND`], which the Performance
+//!   section and `activity.list` read, ends it when the warm-up ends, and records each ended
+//!   warm-up once as the `gpu_warm_up` event. No timer or poll: both wakes are the compile thread's.
 use super::Editor;
 use luxforge_core::activity::{Activity, ActivitySpec, Outcome};
 use luxforge_ui::photo_surface::{GpuFallback as SurfaceFallback, WarmUpFigures};
 use serde_json::{Value, json};
 
 /// The activity board's kind for a warm-up, and the label the Performance section shows.
-pub(crate) const KIND: &str = "gpu.warm";
-pub(crate) const LABEL: &str = "Preparing GPU renderer";
+pub(crate) const WARM_UP_KIND: &str = "gpu.warm";
+pub(crate) const WARM_UP_LABEL: &str = "Preparing GPU renderer";
 
 /// The desktop's record of the compile thread's warm-ups.
 #[derive(Debug, Default)]
@@ -80,8 +80,8 @@ impl Editor {
                     .as_ref()
                     .map(|state| state.asset.id.clone());
                 let activity = self.owner.activity().begin(ActivitySpec {
-                    kind: KIND,
-                    label: LABEL,
+                    kind: WARM_UP_KIND,
+                    label: WARM_UP_LABEL,
                     detail: None,
                     asset_id,
                     job_id: None,
