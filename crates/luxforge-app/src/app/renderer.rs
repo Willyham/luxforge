@@ -22,13 +22,26 @@
 //! - **The adapter.** Iced hands the surface a device, not the adapter it came from. An evidence
 //!   run records the adapter that drew from Iced's own name for it and an enumeration of its
 //!   backend on the blocking pool ([`identify`], [`adapter_record`]).
-use super::{Before, Editor, message::Message, message::renderer::RendererMessage, tasks};
+//! - **The tile worker's adapter.** The launch's GPU tile worker, which the owner's export lane
+//!   streams through, opens its own device on the adapter the window draws with and on no other
+//!   (`app::gpu_tiles`). Once the photo surface has checked its GPU stage, the desktop names that
+//!   adapter to it, once, by Iced's name for it ([`after_message`]): from the system information an
+//!   evidence run asks for at launch, or, in any other launch, from one request for it made then.
+//!   Iced answers that request by walking the host's processes on a thread of its own, which is why
+//!   a launch waits for its first photograph rather than asking at once. Until it is named the
+//!   worker answers the reference as `surface-pending`; a `--no-gpu-render` launch names nothing.
+use super::{
+    Before, Editor, gpu_tiles::GpuTiles, message::Message, message::renderer::RendererMessage,
+    tasks,
+};
 use iced::Task;
 use luxforge_core::{Renderer, RendererReason};
 use luxforge_ui::{adapters::Adapter, photo_surface::GpuStageState};
 use serde_json::{Value, json};
+use std::sync::Arc;
 
-/// What the desktop has told the owner of its renderer.
+/// What the desktop has told the owner of its renderer, and its GPU tile worker of its window's
+/// adapter.
 #[derive(Debug)]
 pub(crate) struct RendererReport {
     /// The launch refused the GPU stage (`--no-gpu-render`).
@@ -37,22 +50,50 @@ pub(crate) struct RendererReport {
     reported: Renderer,
     /// A report is on its way to the owner; the next waits for its answer.
     in_flight: bool,
+    /// The launch's GPU tile worker; none in a test that gives it none.
+    pub(crate) tiles: Option<Arc<GpuTiles>>,
+    /// What the desktop knows of the adapter its window draws with, and whether the worker has been
+    /// told.
+    adapter: WindowAdapter,
     /// A test's stand-in for the surface's stage, which no pipeline publishes in a unit test.
     #[cfg(test)]
     pub(crate) stage: Option<GpuStageState>,
 }
 
+/// The adapter the window draws with, as the desktop learns it and names it to its GPU tile worker.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) enum WindowAdapter {
+    /// Not known, and not asked for.
+    #[default]
+    Unknown,
+    /// Iced has been asked for its name.
+    Asked,
+    /// Iced named it, `name` on `backend`; the worker is told once the surface has checked its
+    /// stage.
+    Named { backend: String, name: String },
+    /// The worker has been told.
+    Told,
+}
+
 impl RendererReport {
     /// A launch that refused the GPU stage or not, whose answer the owner already holds
-    /// ([`launched`]).
+    /// ([`launched`]), with the launch's GPU tile worker.
     pub(crate) fn new(refused: bool) -> Self {
         Self {
             refused,
             reported: launched(refused),
             in_flight: false,
+            tiles: super::gpu_tiles::launched(),
+            adapter: WindowAdapter::Unknown,
             #[cfg(test)]
             stage: None,
         }
+    }
+
+    /// What the desktop knows of its window's adapter.
+    #[cfg(test)]
+    pub(crate) fn adapter(&self) -> &WindowAdapter {
+        &self.adapter
     }
 
     /// Whether a report is on its way to the owner.
@@ -109,31 +150,98 @@ impl Editor {
             reason @ (RendererReason::NoAdapter | RendererReason::DeviceLost) => {
                 Some(reason.as_str())
             }
-            RendererReason::SurfacePending => None,
+            // The surface has not checked its stage yet; the other reasons name why an export was
+            // the reference's, never the picture.
+            RendererReason::SurfacePending
+            | RendererReason::Requested
+            | RendererReason::Refused
+            | RendererReason::AdapterMismatch
+            | RendererReason::Budget
+            | RendererReason::Plan(_) => None,
         }
     }
 
-    /// The owner's answer to a report: the session it carries is adopted as any other is.
+    /// The owner's answer to a report: the session it carries is adopted as any other is. Iced's
+    /// name for the window's adapter, which the next hook names to the GPU tile worker.
     pub(super) fn renderer_update(&mut self, message: RendererMessage) -> Task<Message> {
         match message {
             RendererMessage::Reported(answer) => {
                 self.renderer.in_flight = false;
                 match answer {
-                    Ok(session) => self.adopt(session),
+                    Ok(session) => self.adopt(*session),
                     Err(error) => {
                         self.event("renderer_report_failed", || json!({"error": error}));
                     }
                 }
             }
+            RendererMessage::Adapter { backend, name } => self.window_adapter_named(backend, name),
         }
         Task::none()
     }
+
+    /// Iced named the adapter the window draws with, `name` on `backend`: the GPU tile worker is
+    /// told once the photo surface has checked its stage ([`after_message`]). Kept only while the
+    /// worker has not been told.
+    pub(crate) fn window_adapter_named(&mut self, backend: String, name: String) {
+        if matches!(
+            self.renderer.adapter,
+            WindowAdapter::Unknown | WindowAdapter::Asked
+        ) {
+            self.renderer.adapter = WindowAdapter::Named { backend, name };
+        }
+    }
 }
 
-/// After every message: when the surface's answer differs from what the owner holds, report it,
-/// one report at a time, off the update loop. The answer's own update reports any change that came
-/// while it was on its way.
+/// After every message: name the window's adapter to the GPU tile worker once the surface has
+/// checked its stage ([`name_adapter`]); and when the surface's answer differs from what the owner
+/// holds, report it, one report at a time, off the update loop. The answer's own update reports
+/// any change that came while it was on its way.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
+    let named = name_adapter(editor);
+    let reported = report(editor);
+    match named {
+        Some(asked) => Task::batch([asked, reported]),
+        None => reported,
+    }
+}
+
+/// Once the photo surface has checked its GPU stage, name the adapter the window draws with to the
+/// launch's GPU tile worker, once: Iced's name for it, which an evidence run asked for at launch
+/// and any other launch asks for now, once, as a task Iced answers off the update loop. Nothing
+/// for a launch that refused the stage, whose worker never opens anything, or with no worker.
+fn name_adapter(editor: &mut Editor) -> Option<Task<Message>> {
+    if editor.renderer.refused || editor.gpu_stage() == GpuStageState::Unchecked {
+        return None;
+    }
+    let tiles = editor.renderer.tiles.clone()?;
+    match std::mem::take(&mut editor.renderer.adapter) {
+        WindowAdapter::Named { backend, name } => {
+            let adopted = tiles.adopt_adapter(&backend, &name);
+            editor.event(
+                "gpu_tiles_adapter",
+                || json!({"backend": backend, "adapter": name, "adopted": adopted}),
+            );
+            editor.renderer.adapter = WindowAdapter::Told;
+            None
+        }
+        WindowAdapter::Unknown if editor.evidence.is_none() => {
+            editor.renderer.adapter = WindowAdapter::Asked;
+            Some(iced::system::information().map(|information| {
+                Message::Renderer(RendererMessage::Adapter {
+                    backend: information.graphics_backend,
+                    name: information.graphics_adapter,
+                })
+            }))
+        }
+        other => {
+            editor.renderer.adapter = other;
+            None
+        }
+    }
+}
+
+/// Report the surface's answer to the owner when it differs from what the owner holds.
+fn report(editor: &mut Editor) -> Task<Message> {
     let renderer = editor.renderer_now();
     if editor.renderer.in_flight || renderer == editor.renderer.reported {
         return Task::none();
@@ -150,6 +258,7 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
         move || {
             owner
                 .report_renderer(client, renderer)
+                .map(Box::new)
                 .map_err(|error| error.to_string())
         },
         |answer| Message::Renderer(RendererMessage::Reported(answer)),

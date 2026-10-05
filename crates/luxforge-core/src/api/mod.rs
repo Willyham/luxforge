@@ -290,30 +290,87 @@ pub enum RendererRecord {
     Reference,
 }
 
-/// Why the reference renderer draws the desktop's picture rather than the GPU: the desktop's photo
-/// surface's own reason, as its frames name it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+/// Why the reference renderer rendered rather than the GPU, as its stable kebab-case code.
+///
+/// The session's three reasons say why the reference draws the desktop's picture, as its photo
+/// surface names them ([`Self::ALL`]). An export's result names the renderer that rendered its file
+/// in the same shape, with those reasons and the export's own ([`Self::EXPORT`], and the GPU plan's
+/// code): the tile service's reason the GPU could not render it (`docs/design/export.md`).
+///
+/// It is read back only as a session carries it, with the session's reasons: an export's reason is
+/// written in its result, which no client reads back into a session, and a session read with one
+/// is refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RendererReason {
-    /// The photo surface has not checked its GPU stage yet: no photograph has been drawn.
+    /// The photo surface has not checked its GPU stage yet: no photograph has been drawn. For an
+    /// export, the desktop has not yet named the adapter its window draws with to its tile worker,
+    /// which it does once the surface has checked its stage.
     SurfacePending,
     /// The GPU stage cannot run on this graphics device, or the launch refused it
-    /// (`--no-gpu-render`), which the stage's capability check answers the same way.
+    /// (`--no-gpu-render`), which the stage's capability check answers the same way. For an
+    /// export, the tile worker found no adapter or device it can render on.
     NoAdapter,
     /// The graphics device was lost; nothing waits for a recovery.
     DeviceLost,
+    /// An export asked for the reference renderer (`reference: true`).
+    Requested,
+    /// The launch refused the GPU (`--no-gpu-render`), so the tile worker renders nothing.
+    Refused,
+    /// The tile worker's adapter is not the one the window draws with, so it renders nothing.
+    AdapterMismatch,
+    /// The export's tiles would hold more than the tile worker's budget (`tiles-budget`).
+    Budget,
+    /// The GPU cannot draw the stack's plan, for the code named: the plan's own fallback, such as
+    /// `region-estimate` for a Dehaze light the store does not hold, or the GPU stage's, such as
+    /// `pipeline-failed`.
+    Plan(&'static str),
 }
 
 impl RendererReason {
-    /// Every reason, in the order the session's description lists them.
+    /// Every reason a session carries, in the order the session's description lists them.
     pub const ALL: [Self; 3] = [Self::SurfacePending, Self::NoAdapter, Self::DeviceLost];
 
-    pub fn as_str(self) -> &'static str {
+    /// The reasons only an export's result names, besides the session's and the GPU plan's codes.
+    pub const EXPORT: [Self; 4] = [
+        Self::Requested,
+        Self::Refused,
+        Self::AdapterMismatch,
+        Self::Budget,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::SurfacePending => "surface-pending",
             Self::NoAdapter => "no-adapter",
             Self::DeviceLost => "device-lost",
+            Self::Requested => "requested",
+            Self::Refused => "refused",
+            Self::AdapterMismatch => "adapter-mismatch",
+            Self::Budget => "tiles-budget",
+            Self::Plan(code) => code,
         }
+    }
+}
+
+impl Serialize for RendererReason {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for RendererReason {
+    /// A session's reason, the only reasons a renderer is read back with.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        const SESSION: [&str; 3] = [
+            RendererReason::ALL[0].as_str(),
+            RendererReason::ALL[1].as_str(),
+            RendererReason::ALL[2].as_str(),
+        ];
+        let code = std::borrow::Cow::<str>::deserialize(deserializer)?;
+        Self::ALL
+            .into_iter()
+            .find(|reason| reason.as_str() == code)
+            .ok_or_else(|| serde::de::Error::unknown_variant(&code, &SESSION))
     }
 }
 
@@ -327,6 +384,10 @@ impl RendererReason {
 /// path), every client's session carries the owner's one value, and no method sets it, so no
 /// client can claim a renderer the desktop does not have. A GPU record never has a reason; a
 /// session read with one is refused.
+///
+/// An export's result names the renderer that rendered its file in the same shape: the GPU, or
+/// the reference with the reason the GPU did not render it, `requested` when the export asked for
+/// the reference, and no reason on an owner with no GPU provider ([`RendererReason`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "RendererFields")]
 pub struct Renderer {
