@@ -920,7 +920,9 @@ impl Editor {
             render_bar: self.activity.render_bar,
             render_error: self.presentation.render_error.as_ref(),
             analysis: self.presentation.shown_analysis(),
-            analysis_updating: self.presentation.analysis_updating(),
+            // While a draft is open the counts plotted are updating unless they are an exact
+            // report of its newest revision: the frame in motion's, or the last report, are not.
+            analysis_updating: self.presentation.analysis_updating() || self.draft_counts_behind(),
             capabilities: &self.capabilities,
             presets: &self.presets.library,
             preset_form: &self.presets.form,

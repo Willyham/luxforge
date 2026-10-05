@@ -339,8 +339,15 @@ pub fn verify_region(run: &mut Run, launches: &[Checked]) -> Result {
         gpu(launch.at("settled-pause")?, "retiring_bytes")? == 0,
         "GPU retirement remained pending after settle",
     )?;
+    // The draft's revision: the CPU frame's displayed one, or where the GPU drew the draft from
+    // its first tick over the resident region its picture at rest left, the draft's own.
     let first_revision = at("first-draft")?["displayed_draft_revision"]
         .as_u64()
+        .or_else(|| {
+            at("first-draft")
+                .ok()
+                .and_then(|state| state["draft"]["draft_revision"].as_u64())
+        })
         .ok_or("The first draft had no displayed revision")?;
     let first_histogram = drafted_histogram(launch, "first-draft", first_revision)?;
     let regions: Vec<_> = event(&launch.events, "preview_displayed")

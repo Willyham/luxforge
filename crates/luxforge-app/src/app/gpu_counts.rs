@@ -195,6 +195,21 @@ impl Editor {
         }
     }
 
+    /// Whether a draft is open whose newest revision the counts plotted are not an exact report of:
+    /// a GPU tick's frame in motion, or the report of a frame before it. The plot is then marked
+    /// updating, as the counts during motion are.
+    pub(crate) fn draft_counts_behind(&self) -> bool {
+        let Some(draft) = self.session.draft.as_ref() else {
+            return false;
+        };
+        self.presentation.shown_analysis().is_none_or(|analysis| {
+            analysis.source == AnalysisSource::Motion
+                || analysis.identity.draft.as_ref().is_none_or(|stamp| {
+                    stamp.draft_id != draft.draft_id || stamp.draft_revision != draft.draft_revision
+                })
+        })
+    }
+
     /// Whether the counts of the content the GPU presents are still to come: a capture waits for
     /// them, as it waited for the reference's report.
     pub(crate) fn gpu_counts_pending(&self) -> bool {
