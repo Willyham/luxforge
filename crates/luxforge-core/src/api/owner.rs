@@ -52,6 +52,7 @@ mod export_tests;
 #[cfg(test)]
 mod first_open_tests;
 mod point;
+#[cfg(test)]
 mod preferences_tests;
 #[cfg(test)]
 mod renderer_tests;
