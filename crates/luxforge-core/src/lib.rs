@@ -112,9 +112,9 @@ pub use render::gpu::{
     GpuComponent, GpuDescription, GpuFallback, GpuGeometry, GpuLight, GpuLightPasses,
     GpuLightRestoration, GpuMask, GpuOperation, GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest,
     GpuPlane, GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuPreview, GpuProgram, GpuProgramKind,
-    GpuRest, GpuSpatial, GpuSpatialUnit, GpuView, REST_TILE_BYTES, REST_TILE_SIDES, RestLight,
-    RestLights, RestTile, RestTiles, STREAM_TILE_SIDES, SourceBoundary, StreamPlan, TilePlan,
-    anchored, gpu_lights, gpu_plan, plan_read, plan_stream,
+    GpuRest, GpuSpatial, GpuSpatialUnit, GpuView, GpuWarmList, REST_TILE_BYTES, REST_TILE_SIDES,
+    RestLight, RestLights, RestTile, RestTiles, STREAM_TILE_SIDES, SourceBoundary, StreamPlan,
+    TilePlan, anchored, gpu_lights, gpu_plan, plan_read, plan_stream,
 };
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{

@@ -28,6 +28,7 @@ fn plan_of(boundary: &GpuBoundary, program: GpuProgram) -> GpuPlan {
         texels: TexelMap::IDENTITY,
         steps: vec![GpuStep::colour(program)],
         region: None,
+        lights: Vec::new(),
     }
 }
 

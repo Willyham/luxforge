@@ -450,11 +450,20 @@ impl GpuSpatial {
             "",
             "",
         ))
-        .chain(
-            self.planes
-                .iter()
-                .map(|plane| (StepKind::Plane(*plane), "", "")),
-        )
+        .chain(self.planes.iter().map(|plane| {
+            // Which of the slot's light planes a step reads or writes is bound when it runs — a
+            // light link's by the view it is handed ([`super::light`]), a link's by its planes'
+            // key, whose locations name the light, so another light is another key and other
+            // groups — never compiled: the same sequence whichever light that is.
+            let plane = match plane.size {
+                PlaneSize::Light(_) => GpuPlane {
+                    size: PlaneSize::Light(0),
+                    ..*plane
+                },
+                _ => *plane,
+            };
+            (StepKind::Plane(plane), "", "")
+        }))
         .chain(self.passes.iter().map(|pass| {
             (
                 StepKind::Pass(PassKey {

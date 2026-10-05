@@ -1213,9 +1213,7 @@ pub(crate) fn warm_sequence(plan: &GpuPlan) -> Vec<String> {
 /// apart by its programs and its mask's components; a spatial operation by its program, clamp,
 /// mask, planes, passes but for their words, and applies; the tail by its kind. Two links of one
 /// key compile to one sequence, wherever they sit in a chain and whichever plan holds them. Each
-/// light link the slot computes itself — one over the source, or the stand-in of one that is not —
-/// is a sequence after them, its colour operations and its light step, once however many of the
-/// plan's lights compile alike.
+/// light link the slot computes itself is a sequence after them ([`light_links`]).
 pub(crate) fn warm_links(plan: &GpuPlan) -> Vec<Vec<String>> {
     let mask = |mask: &Option<super::GpuMask>| {
         mask.as_ref().map(|mask| {
@@ -1276,27 +1274,71 @@ pub(crate) fn warm_links(plan: &GpuPlan) -> Vec<Vec<String>> {
         plan.geometry.clamps
     ));
     last.extend(colour(&plan.output));
-    for light in &plan.lights {
+    for (_, link) in light_links(plan) {
+        if !links.contains(&link) {
+            links.push(link);
+        }
+    }
+    links
+}
+
+/// Each light link of `plan` the slot computes itself — one over the source, or the stand-in of
+/// one that is not — with the light plane `k` it writes and what its sequence is told apart by, as
+/// [`warm_links`] tells a link apart: its colour operations and its light step, once however many
+/// of the plan's lights compile alike.
+fn light_links(plan: &GpuPlan) -> Vec<((usize, &GpuLight), Vec<String>)> {
+    let mut links: Vec<((usize, &GpuLight), Vec<String>)> = Vec::new();
+    for (k, light) in plan.lights.iter().enumerate() {
         let Some(light) = (match light.over_source() {
             true => Some(light),
             false => light.stand_in.as_deref(),
         }) else {
             continue;
         };
-        let mut link = vec![format!("light link, clamps {}", light.light.clamps)];
-        link.extend(colour(&light.content));
-        link.extend(light.light.passes.iter().map(|pass| {
-            format!(
-                "{} {:?} -> {}, {:?}",
-                pass.kernel, pass.inputs, pass.output, pass.shape
-            )
-        }));
-        // Lights whose prefixes compile alike share one sequence, as the surface keys it.
-        if !links.contains(&link) {
-            links.push(link);
+        let link = light_link(light);
+        if !links.iter().any(|(_, held)| *held == link) {
+            links.push(((k, light), link));
         }
     }
     links
+}
+
+/// What the sequence of light link `light` is told apart by ([`light_links`]): not the light plane
+/// it writes, which the surface binds when it runs it.
+pub(crate) fn light_link(light: &GpuLight) -> Vec<String> {
+    let mut link = vec![format!("light link, clamps {}", light.light.clamps)];
+    link.extend(light.content.iter().flat_map(|operation| {
+        operation
+            .units
+            .iter()
+            .map(|unit| unit.program.entry.to_owned())
+            .chain(operation.mask.as_ref().map(|mask| {
+                let components: Vec<&str> = mask
+                    .components
+                    .iter()
+                    .map(|component| component.program.program.entry)
+                    .collect();
+                format!("masked by {components:?}")
+            }))
+    }));
+    link.extend(light.light.passes.iter().map(|pass| {
+        format!(
+            "{} {:?} -> {}, {:?}",
+            pass.kernel, pass.inputs, pass.output, pass.shape
+        )
+    }));
+    link
+}
+
+/// The plans a gesture on a stack is likely to draw and the light links its ticks compute, for the
+/// desktop to warm before a drag begins ([`plan_warm`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GpuWarmList {
+    /// The plans whose chains' links the list warms, in the order they are to compile.
+    pub plans: Vec<GpuPlan>,
+    /// The light links the list warms, each with the slot's light plane `k` it writes: those of
+    /// the plans that fit within [`GPU_WARM_LINKS`] beside every link of their chains.
+    pub lights: Vec<(usize, GpuLight)>,
 }
 
 /// The plans a gesture on `evaluation`'s stack is likely to draw at `view`, for the desktop to
@@ -1308,14 +1350,16 @@ pub(crate) fn warm_links(plan: &GpuPlan) -> Vec<Vec<String>> {
 /// with ([`plan_preview`], [`drag_lights`]): a colour drag computes the light of every estimating
 /// layer after it over the source, whose link the list warms.
 ///
-/// The surface compiles one sequence per link of a plan's chain, so a plan joins only when it holds
-/// a link no plan before it holds ([`warm_links`]). A restoration or spatial layer's drag draws the
-/// stack's own links but its drafted one, so the list holds one drag for each distinct drafted
-/// shape, and the drag of every such layer finds each link it draws warmed. The list holds at most
-/// [`GPU_WARM_LINKS`] links: the stack's own plan and those drags always fit, and a colour
-/// candidate joins only while it leaves room for them. `O(layers × modules)` compiles on the
+/// The surface compiles one sequence per link of a plan's chain, so a plan joins only when its
+/// chain holds a link no plan before it holds ([`warm_links`]). A restoration or spatial layer's
+/// drag draws the stack's own links but its drafted one, so the list holds one drag for each
+/// distinct drafted shape, and the drag of every such layer finds each link of its chain warmed.
+/// Beside the chains, the light links their ticks compute ([`GpuWarmList::lights`]), each while it
+/// fits. The list holds at most [`GPU_WARM_LINKS`] links: the stack's own plan and those drags'
+/// chains always fit, then their light links, and a colour candidate joins only while it leaves
+/// room for them. `O(layers × modules)` compiles on the
 /// catalog owner, with no pixel read.
-pub(crate) fn plan_warm(evaluation: &Evaluation, view: GpuView) -> Result<Vec<GpuPlan>, Error> {
+pub(crate) fn plan_warm(evaluation: &Evaluation, view: GpuView) -> Result<GpuWarmList, Error> {
     let registry = evaluation.registry();
     let recipe = evaluation.recipe();
     let fit = FitStage::of_view(evaluation, view)?;
@@ -1358,11 +1402,12 @@ pub(crate) fn plan_warm(evaluation: &Evaluation, view: GpuView) -> Result<Vec<Gp
             Some(EffectStage::Restoration | EffectStage::Spatial)
         )
     });
-    // Every link a plan the list holds compiles, and the links of `plan` it would add.
+    // Every link a plan the list holds compiles, and the links of `plan`'s chain it would add.
     let mut links: Vec<Vec<String>> = Vec::new();
     let fresh = |plan: &GpuPlan, held: &[Vec<String>]| {
+        let chain = warm_links(plan).len() - light_links(plan).len();
         let mut fresh: Vec<Vec<String>> = Vec::new();
-        for link in warm_links(plan) {
+        for link in warm_links(plan).into_iter().take(chain) {
             if !held.contains(&link) && !fresh.contains(&link) {
                 fresh.push(link);
             }
@@ -1389,8 +1434,8 @@ pub(crate) fn plan_warm(evaluation: &Evaluation, view: GpuView) -> Result<Vec<Gp
             fallback => Ok(fallback),
         }
     };
-    // The restoration and spatial layers' drags are chosen first, so the colour candidates leave
-    // room for them, and join the list after the colour candidates.
+    // The restoration and spatial layers' drags are chosen first, by their chains' links, so the
+    // colour candidates leave room for them, and join the list after the colour candidates.
     let mut drags: Vec<GpuPlan> = Vec::new();
     for (index, _) in spatial {
         let request = fit.request(None).drafted(index);
@@ -1402,18 +1447,33 @@ pub(crate) fn plan_warm(evaluation: &Evaluation, view: GpuView) -> Result<Vec<Gp
             }
         }
     }
+    // The light links of the stack's own plan and of those drags, each while the list has room: a
+    // drag whose light link does not fit compiles it on its first tick.
+    let mut lights: Vec<(usize, GpuLight)> = Vec::new();
+    let mut admit = |plan: &GpuPlan, links: &mut Vec<Vec<String>>| {
+        for ((k, light), link) in light_links(plan) {
+            if !links.contains(&link) && links.len() < GPU_WARM_LINKS {
+                links.push(link);
+                lights.push((k, light.clone()));
+            }
+        }
+    };
+    for plan in plans.iter().chain(&drags) {
+        admit(plan, &mut links);
+    }
     // A drag of a colour layer changes the input of every estimating layer after it, so its ticks
-    // compute those lights over the source.
+    // compute those lights over the source: each joins with its light links while they fit.
     for (planned, index) in colours {
         let request = fit.request(None).drafted(index);
         if let GpuAnswer::Plan(plan) = dragged(&planned, request)? {
             let added = fresh(&plan, &links);
             if !added.is_empty() && links.len() + added.len() <= GPU_WARM_LINKS {
                 links.extend(added);
+                admit(&plan, &mut links);
                 plans.push(*plan);
             }
         }
     }
     plans.extend(drags);
-    Ok(plans)
+    Ok(GpuWarmList { plans, lights })
 }

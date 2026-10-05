@@ -97,6 +97,7 @@ fn plan(values: &[[f32; 3]], size: (u32, u32), origin: (u32, u32), steps: Vec<Gp
         },
         steps,
         region: None,
+        lights: Vec::new(),
     }
 }
 
@@ -640,6 +641,7 @@ fn a_raw_linear_tail_preserves_f32_intermediate_values() {
         texels: TexelMap::IDENTITY,
         steps: vec![GpuStep::Geometry(tail)],
         region: None,
+        lights: Vec::new(),
     };
     let drawn = qualifier.evaluate(&plan).expect("a readback");
     let mut changed = 0;
@@ -720,6 +722,7 @@ fn lf_test_show(rgb: vec3<f32>, at: vec2<i32>, words: u32, block: u32, planes: u
         texels: TexelMap::IDENTITY,
         steps: vec![GpuStep::Spatial(Box::new(spatial))],
         region: None,
+        lights: Vec::new(),
     };
     let drawn = qualifier.evaluate(&plan).expect("a readback");
     let (mut nearest, mut truncated, mut neither) = (0, 0, 0);

@@ -9,9 +9,9 @@
 //!   from NaN. Against the reference service the same stages, read at the cells of a 9 × 9 grid,
 //!   are within their class's display limit. A neutral pick's 25 points draw one tile, a seed is
 //!   the code of the sample input, and the worker keeps nothing of a call's stack once answered.
-//! - **The reference, by name.** A read whose light the store does not hold, a launch that refused
-//!   the GPU, an adapter the host does not offer and a lost device are answered by the reference,
-//!   naming why, and a stream of them is refused or ended naming it.
+//! - **The reference, by name.** A read of a stack whose Dehaze light the runner does not compute
+//!   yet, a launch that refused the GPU, an adapter the host does not offer and a lost device are
+//!   answered by the reference, naming why, and a stream of them is refused or ended naming it.
 //! - **Order and bounds.** A read waits behind at most the one export tile being drawn, and not at
 //!   all behind a stream whose encoder has its bands to take; a full queue refuses at once; a
 //!   disconnect drops a client's waiting reads and cancels its read being answered.
@@ -666,10 +666,10 @@ fn a_seed_is_the_code_of_the_sample_input() {
 }
 
 /// What the GPU cannot draw is answered by the reference, naming why, with the reference's own
-/// pixels: a stack whose Dehaze light the store does not hold, each read of its call after the
-/// first included, and its stream refused at once; a launch that refused the GPU, which opens
-/// nothing; an adapter the host does not offer by that name, which the status then names; and a
-/// desktop that named no adapter.
+/// pixels: a stack whose Dehaze light is computed from the whole stage, which the runner, holding
+/// a window of it, does not compute yet, each read of its call after the first included, and its
+/// stream refused at once; a launch that refused the GPU, which opens nothing; an adapter the host
+/// does not offer by that name, which the status then names; and a desktop that named no adapter.
 #[test]
 fn a_plan_the_gpu_cannot_run_is_answered_by_the_reference_naming_why() {
     let test = "a_plan_the_gpu_cannot_run_is_answered_by_the_reference_naming_why";
@@ -684,10 +684,12 @@ fn a_plan_the_gpu_cannot_run_is_answered_by_the_reference_naming_why() {
         .find(|(family, _)| *family == "Presence")
         .expect("the Presence family");
     let reference = ReferenceTiles::new();
-    // The light no frame has stored: the GPU would take it from a tile alone. The read of the
-    // source before Presence, which needs no light, is the reference's too: what remains of a call
-    // after a read the GPU cannot draw is the reference's.
-    let unheld = stack(&source, &recipe, false);
+    // Dehaze's light, from the whole stage. The read of the source before Presence, which needs no
+    // light, is the reference's too: what remains of a call after a read the GPU cannot draw is
+    // the reference's.
+    let mut dehaze = recipe.clone();
+    dehaze.layers[0].payload["dehaze"] = json!(20.0);
+    let unlit = stack(&source, &dehaze, false);
     let reads = [
         point(ReadStage::Output, 40, 30, ReadValues::Codes),
         point(
@@ -701,29 +703,33 @@ fn a_plan_the_gpu_cannot_run_is_answered_by_the_reference_naming_why() {
         ),
     ];
     let service = GpuTiles::new(Some((backend.clone(), name.clone())), false);
-    let why = TileFallback::Plan(GpuFallback::RegionEstimate { layer: 0 });
+    let why = TileFallback::Plan(GpuFallback::Unplannable(
+        "layer 0's global estimate is computed from the whole stage, which the tile worker does \
+         not compute yet"
+            .into(),
+    ));
     assert_eq!(
-        service.stream(&unheld, &Cancel::new()).err(),
+        service.stream(&unlit, &Cancel::new()).err(),
         Some(why.clone()),
         "a stream of it is refused at once"
     );
-    let (answers, _) = call(&service, client, &unheld, &reads);
-    let (expected, _) = call(&reference, client, &unheld, &reads);
+    let (answers, _) = call(&service, client, &unlit, &reads);
+    let (expected, _) = call(&reference, client, &unlit, &reads);
     for (answer, expected) in answers.iter().zip(&expected) {
         assert_eq!(answer.answered, Answered::reference(Some(why.clone())));
         assert_eq!(answer.pixels, expected.pixels, "the reference's own pixels");
     }
     assert_eq!(service.status(), TileStatus::Gpu, "the runner itself draws");
-    // The reference's answer rendered Presence's frame, which stored its light: from then on the
-    // GPU draws the stack, as it draws one whose light a settled frame stored.
-    let (answers, _) = call(&service, client, &unheld, &reads);
+    // Without Dehaze the GPU draws the stack.
+    let held = stack(&source, &recipe, true);
+    let (answers, _) = call(&service, client, &held, &reads);
     assert!(
         answers
             .iter()
             .all(|answer| answer.answered == Answered::gpu()),
-        "once the light is stored the GPU draws it"
+        "the GPU draws a stack that reads no light"
     );
-    let held = stack(&source, &recipe, true);
+    let (expected, _) = call(&reference, client, &held, &reads);
 
     // A launch that refused the GPU opens nothing, and says so.
     let refused = GpuTiles::new(Some((backend.clone(), name.clone())), true);

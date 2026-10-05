@@ -585,12 +585,6 @@ fn process_first(
                     )));
                 }
             };
-            if drawn.approximate {
-                return Ok(Err(format!(
-                    "region-estimate: the tile at ({x0}, {y0}) takes a global estimate from \
-                     itself alone, which the store does not hold"
-                )));
-            }
             let row = rect.width as usize * 3;
             for (y, codes) in drawn.gpu.chunks_exact(row).enumerate() {
                 let start = ((y0 as usize + y) * width as usize + x0 as usize) * 3;

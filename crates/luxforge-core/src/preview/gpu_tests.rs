@@ -699,8 +699,9 @@ fn an_exact_fit_boundary_keeps_the_whole_stage_only_where_its_output_reads_it() 
 fn the_warmed_plans_hold_every_first_drags_sequence() {
     let crop = crop();
     let (job, _) = draft_job("set-basic", vec![crop.clone()], vec![crop.clone()], 0);
-    let plans =
-        crate::render::gpu::plan_warm(&job.evaluation, crate::GpuView::Fit(bounds())).unwrap();
+    let plans = crate::render::gpu::plan_warm(&job.evaluation, crate::GpuView::Fit(bounds()))
+        .unwrap()
+        .plans;
     let warmed: Vec<Vec<&'static str>> = plans.iter().map(sequence).collect();
     let keys: Vec<Vec<String>> = plans.iter().map(pipelines).collect();
     for (index, one) in keys.iter().enumerate() {
@@ -760,8 +761,9 @@ fn the_warmed_plans_tell_a_masked_layer_from_an_unmasked_one() {
             stack(masked),
             0,
         );
-        let plans =
-            crate::render::gpu::plan_warm(&job.evaluation, crate::GpuView::Fit(bounds())).unwrap();
+        let plans = crate::render::gpu::plan_warm(&job.evaluation, crate::GpuView::Fit(bounds()))
+            .unwrap()
+            .plans;
         // The Presence layer's own drag is the last plan: the committed stack and the first
         // drags of the colour and finish modules come before it.
         plans
@@ -1068,8 +1070,9 @@ fn the_warmed_plans_hold_a_spatial_layers_drags() {
             )
         };
         let (job, _) = job_of(entry.clone(), 0);
-        let plans =
-            crate::render::gpu::plan_warm(&job.evaluation, crate::GpuView::Fit(bounds())).unwrap();
+        let plans = crate::render::gpu::plan_warm(&job.evaluation, crate::GpuView::Fit(bounds()))
+            .unwrap()
+            .plans;
         // The plans that draft the layer itself; the colour candidates before it, and the
         // vignette's first drag after it, hold it too.
         let own: Vec<&GpuPlan> = plans
@@ -1305,6 +1308,7 @@ fn the_warmed_plans_hold_a_drag_of_each_of_two_spatial_layers() {
     let warmed: Vec<Vec<&'static str>> =
         crate::render::gpu::plan_warm(&job.evaluation, crate::GpuView::Fit(bounds()))
             .unwrap()
+            .plans
             .iter()
             .map(sequence)
             .collect();
