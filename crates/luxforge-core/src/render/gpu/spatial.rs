@@ -496,10 +496,9 @@ pub(crate) fn admit(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GpuLightRestoration {
     /// The light reads their exact output, which only a sweep of the whole stage through them at
-    /// full resolution produces: the picture at rest's ([`super::RestLights`]). The link holds each
-    /// as a spatial operation of its own ([`GpuLight::spatial`]), which a light link over the
-    /// source does not evaluate ([`GpuLight::over_source`]). The light every frame draws with
-    /// at rest.
+    /// full resolution produces. The link holds each as a spatial operation of its own
+    /// ([`GpuLight::spatial`]), which a light link over the source does not evaluate
+    /// ([`GpuLight::over_source`]). The light every frame draws with at rest.
     Included,
     /// The light reads the prefix without them, their colour operations after them joining the
     /// ones before: a drag's per-tick light over the source, since their exact output exists only
@@ -542,9 +541,8 @@ pub struct GpuLightPasses {
 ///   operation that reads the light reads its plane ([`GpuSpatial::light`]).
 /// - **Where it runs.** A link over the source ([`Self::over_source`]) is run by any slot that
 ///   draws a plan reading its light, before the plan's links, whenever its content changes. One
-///   holding spatial operations is run by the picture at rest's sweep of the whole stage
-///   ([`super::RestLights`]), and a slot that draws its light reads the light that sweep wrote,
-///   computing its [`Self::stand_in`] while it holds none.
+///   holding spatial operations needs a sweep of the whole stage through them at full resolution,
+///   which no slot runs yet: a slot computes its [`Self::stand_in`] in its place.
 /// - Planned on the catalog owner from the stack's compilation alone, `O(layers + units)`, reading
 ///   no pixel ([`gpu_lights`]).
 #[derive(Clone, Debug, PartialEq)]
@@ -570,15 +568,15 @@ pub struct GpuLight {
     pub light: GpuSpatial,
     /// For a link that is not over the source, the same light with every spatial operation before
     /// it left out ([`GpuLightRestoration::LeftOut`]), over the source: what a slot computes in its
-    /// place while it holds no light the picture at rest's sweep wrote for it. `None` for a link
+    /// place, no sweep of the whole stage through those operations running yet. `None` for a link
     /// over the source.
     pub stand_in: Option<Box<GpuLight>>,
 }
 
 impl GpuLight {
     /// Whether a light link over the source evaluates it: its input runs colour operations alone,
-    /// per texel. One holding a spatial operation reads that operation's exact output, which the
-    /// picture at rest's sweep produces at full resolution.
+    /// per texel. One holding a spatial operation reads that operation's exact output, which only a
+    /// sweep of the whole stage at full resolution produces.
     pub fn over_source(&self) -> bool {
         self.spatial.is_empty()
     }

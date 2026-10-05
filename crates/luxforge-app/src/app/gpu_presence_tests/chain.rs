@@ -31,8 +31,8 @@ fn chained(detail: Value, presence: Value, masking: bool) -> Recipe {
 
 /// Detail's sharpening and noise reduction, then Presence's fields, chained in one plan over a
 /// synthetic photograph on the linear path at two sizes: the program's output against the CPU
-/// frame held to the spatial limits. Dehaze's light reads Detail's output, which the picture at
-/// rest's sweep computes; a slot computes it with Detail left out until it holds one, as here.
+/// frame held to the spatial limits. Dehaze's light reads Detail's output, which only a sweep of
+/// the whole stage through Detail computes; a slot computes it with Detail left out, as here.
 #[test]
 fn gpu_presence_after_detail_meets_the_spatial_limits() {
     let test = "gpu_presence_after_detail_meets_the_spatial_limits";
