@@ -91,9 +91,10 @@ pub(crate) trait HostParams: DeserializeOwned {
 /// Each declared field the request names is first checked against its declared kind by the check
 /// a module's parameters get ([`check_value`]), so a value outside its published range is refused
 /// in the same words whichever method it is sent to: `O(declared fields)`, allocating nothing unless
-/// it refuses. `null` is left to the struct, which reads it as an absent optional field and refuses
-/// it for a required one, and so is a secret, which is never a plain value to that check: its own
-/// type takes it without echoing it, and its setting's limit is checked where it is stored.
+/// it refuses. `null` is left to the struct, which reads it as an absent optional field, as a
+/// removal for a nullable one ([`nullable`]) and refuses it for a required one, and so is a
+/// secret, which is never a plain value to that check: its own type takes it without echoing it,
+/// and its setting's limit is checked where it is stored.
 pub(crate) fn parse<T: HostParams>(params: &Value) -> Result<T, Error> {
     let parsed = match params {
         Value::Object(object) => {
@@ -147,6 +148,16 @@ pub(crate) fn take_optional<T: DeserializeOwned>(
                 .map_err(|error| Error::validation(format!("{name}: {error}")))
         })
         .transpose()
+}
+
+/// Read a field declared `Option<Option<T>>` in [`host_params!`]: present, so `Some`, holding
+/// `None` for `null`. An absent field takes its `default`, `None`.
+pub(crate) fn nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 /// The kinds a host field is declared with, written after its `=` in [`host_params!`]. Each is a
@@ -300,16 +311,29 @@ pub(crate) mod kind {
 /// ```
 ///
 /// A kind is one expression of the constructors in [`kind`], with a descriptor's hints chained to
-/// it. A field typed `Option<T>` is optional; every other field is required. `mutation: Mutation`
-/// and `mutation: MutationRequest` name the envelope and take no kind, because `schema.list`
-/// describes each envelope once. Field attributes pass through to serde. Every field is
-/// `pub(crate)`, so a handler in the module that owns the method reads the struct another module
-/// declared (the catalog methods are declared in `catalog_types`).
+/// it. A field typed `Option<T>` is optional; every other field is required. A field typed
+/// `Option<Option<T>>` is optional and tells `null` (`Some(None)`) from an absent field (`None`).
+/// `mutation: Mutation` and `mutation: MutationRequest` name the envelope and take no kind,
+/// because `schema.list` describes each envelope once. Field attributes pass through to serde.
+/// Every field is `pub(crate)`, so a handler in the module that owns the method reads the struct
+/// another module declared (the catalog methods are declared in `catalog_types`).
 macro_rules! host_params {
     ($(#[$attr:meta])* $vis:vis struct $name:ident { $($body:tt)* }) => {
         $crate::api::params::host_params!(
             @munch [$(#[$attr])* $vis struct $name] $name [] []
             [$crate::api::params::Envelope::None] $($body)*
+        );
+    };
+    // A field that tells an absent value from `null`: `None` when the request leaves it out,
+    // `Some(None)` for `null` and `Some(Some(value))` for a value, so a method can tell "leave it
+    // as it is" from "remove it" ([`nullable`]).
+    (@munch [$($head:tt)*] $name:ident [$($fields:tt)*] [$($params:tt)*] [$env:expr]
+        $(#[$fmeta:meta])* $f:ident : Option<Option<$t:ty>> = $kind:expr $(, $($rest:tt)*)?) => {
+        $crate::api::params::host_params!(
+            @munch [$($head)*] $name [$($fields)* $(#[$fmeta])*
+                #[serde(default, deserialize_with = "crate::api::params::nullable")]
+                $f: Option<Option<$t>>,]
+            [$($params)* (stringify!($f), false, $kind),] [$env] $($($rest)*)?
         );
     };
     // An optional field and its kind.
@@ -398,6 +422,39 @@ mod tests {
         struct Requested {
             mutation: MutationRequest,
         }
+    }
+
+    host_params! {
+        struct Nullable {
+            level: Option<Option<u16>> = integer(1, 9),
+        }
+    }
+
+    /// A field declared `Option<Option<T>>` tells absent, `null` and a value apart, and its kind
+    /// is still checked before the struct is parsed.
+    #[test]
+    fn a_nullable_field_tells_null_from_absent() {
+        assert_eq!(
+            (Nullable::SCHEMA.parameters)(),
+            [ParameterDescriptor::integer("level", 1, 9)]
+        );
+        assert_eq!(parse::<Nullable>(&json!({})).unwrap().level, None);
+        assert_eq!(parse::<Nullable>(&Value::Null).unwrap().level, None);
+        assert_eq!(
+            parse::<Nullable>(&json!({"level": null})).unwrap().level,
+            Some(None)
+        );
+        assert_eq!(
+            parse::<Nullable>(&json!({"level": 3})).unwrap().level,
+            Some(Some(3))
+        );
+        let error = parse::<Nullable>(&json!({"level": 10}))
+            .map(|_| ())
+            .unwrap_err();
+        assert_eq!(
+            error.detail,
+            "parameter level must be an integer within 1..=9"
+        );
     }
 
     #[test]

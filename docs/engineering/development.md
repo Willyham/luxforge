@@ -46,6 +46,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Every smoke scenario, with its launches and frame counts, what it opens and its window | `cargo xtask smoke --list` |
 | A recorded smoke run's checks again, over a copy and without launching | `cargo xtask smoke --verify-only RUN_DIR --output NEW_DIR [--scenario NAME] [--source RAW]` |
 | Rendered crop workflow and overlay | `cargo xtask smoke --scenario crop --output NEW_DIR`, `--scenario crop-draft` |
+| Rendered image information: key and palette toggles, capture fields, selected/history/live crop dimensions, zoom and hidden panels, without photo uploads | `cargo xtask smoke --scenario information --output NEW_DIR` |
 | Rendered workspace panels, mode, preview, the combined crop section’s transform icon row, an agent's conflicting commit and palette; unavailable-provider notice | `cargo xtask smoke --scenario workspace --output NEW_DIR`, `--scenario unavailable` |
 | Rendered Basic slider gesture: draft, commit, typed value, undo, reset and an agent's conflicting commit | `cargo xtask smoke --scenario basic --output NEW_DIR` |
 | Rendered Basic panel on a JPEG: all three groups, the White balance group's four controls (Temperature, Tint, Neutral picker, As shot) with As shot sending Basic's own 0 and 0, historical values, a group reset, the neutral picker, As shot after a warm drag, and the default screen with Basic expanded and every other section collapsed | `cargo xtask smoke --scenario basic-panel --output NEW_DIR` |

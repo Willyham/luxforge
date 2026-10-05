@@ -90,10 +90,8 @@ impl ToolModule for Probe {
         self.asked.lock().unwrap().push(std::thread::current().id());
         // A module decides from metadata only: the source is prepared, so optics answer.
         context.optics()?;
-        if context.own_layer(PERSPECTIVE_EFFECT)?.is_some() {
-            return Ok(None);
-        }
         match self.proposal {
+            Proposal::Perspective if context.own_layer(PERSPECTIVE_EFFECT)?.is_some() => Ok(None),
             Proposal::Perspective => Ok(Some(ActionInput {
                 action_id: "set-perspective".into(),
                 parameters: Map::from_iter([("horizontal".into(), json!(20))]),
@@ -110,10 +108,15 @@ impl ToolModule for Probe {
 }
 
 fn registry(proposal: Proposal) -> (Arc<Probe>, Arc<ModuleRegistry>) {
+    wrapping("luxforge.perspective", proposal)
+}
+
+/// The linked modules with the one named `id` wrapped in a probe.
+fn wrapping(id: &str, proposal: Proposal) -> (Arc<Probe>, Arc<ModuleRegistry>) {
     let mut registry = ModuleRegistry::new();
     let mut probe = None;
     for module in crate::modules::linked_modules(false) {
-        if module.descriptor().id == "luxforge.perspective" {
+        if module.descriptor().id == id {
             let wrapped = Arc::new(Probe {
                 inner: module,
                 proposal,
@@ -326,6 +329,99 @@ fn a_first_open_refusal_is_reported_and_the_open_still_completes() {
             "error": {"code": "not-ready", "message": "probe resource unavailable"},
         }])
     );
+    owner.stop();
+    join.join().unwrap();
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// The lens module, asked on first open, answers with a refusal, so whether it was asked shows in
+/// the probe and on the import job alike.
+fn lens_probe() -> (Arc<Probe>, Arc<ModuleRegistry>) {
+    wrapping(crate::modules::LENS_MODULE, Proposal::Refuse)
+}
+
+#[test]
+fn first_open_skips_the_lens_module_while_the_switch_is_off_and_asks_it_when_on() {
+    let dir = temp_dir("first-open-lens-switch").canonicalize().unwrap();
+    let source = dir.join("photo.jpg");
+    fs::copy(fixture(), &source).unwrap();
+    for enabled in [false, true] {
+        let (probe, registry) = lens_probe();
+        let catalog = dir.join(format!("catalog-{enabled}.sqlite"));
+        let mut service = EditorService::open_with(&catalog, registry).unwrap();
+        assert!(
+            service.auto_lens_profile(),
+            "on until the host says otherwise"
+        );
+        service.set_auto_lens_profile(enabled);
+        let state = service.import(&source).unwrap();
+        assert_eq!(state.revision, 0, "the probe's refusal commits nothing");
+        assert_eq!(probe.asked.lock().unwrap().len(), usize::from(enabled));
+        drop(service);
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// The owner sets the lens switch from the stored preference when it starts and again on each
+/// `preferences.set`, and the switch applies to the next photograph's first preparation.
+#[test]
+fn an_owner_open_follows_the_lens_preference_at_start_and_after_a_change() {
+    let dir = temp_dir("first-open-lens-preference")
+        .canonicalize()
+        .unwrap();
+    let config = dir.join("config");
+    fs::create_dir_all(&config).unwrap();
+    fs::write(
+        config.join("preferences.json"),
+        br#"{"format":1,"auto_lens_profile":false}"#,
+    )
+    .unwrap();
+    let (probe, registry) = lens_probe();
+    let (owner, join) = OwnerHandle::start_with_host(
+        &dir.join("catalog.sqlite"),
+        registry,
+        crate::HostConfig {
+            preferences_dir: Some(config),
+            ..crate::HostConfig::unconfigured()
+        },
+    )
+    .unwrap();
+    let client = owner.register();
+    let first = dir.join("first.jpg");
+    fs::copy(fixture(), &first).unwrap();
+    let off = open_job(&owner, client, &first);
+    assert!(off["record"].get("first_open").is_none(), "{off}");
+    assert_eq!(off["record"]["result"]["revision"], 0);
+    assert!(probe.asked.lock().unwrap().is_empty());
+
+    let response = owner
+        .call(
+            client,
+            ApiRequest {
+                id: "lens-on".into(),
+                method: "preferences.set".into(),
+                params: json!({"auto_lens_profile": null}),
+                token: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(response.result.unwrap()["auto_lens_profile"], true);
+    // Another photograph: identical bytes would be the same photograph, already prepared.
+    let second = dir.join("second.jpg");
+    fs::copy(
+        luxforge_testbase::paths::fixture("s0/orientation-6.jpg"),
+        &second,
+    )
+    .unwrap();
+    let on = open_job(&owner, client, &second);
+    assert_eq!(
+        on["record"]["first_open"],
+        json!([{
+            "module_id": crate::modules::LENS_MODULE,
+            "error": {"code": "not-ready", "message": "probe resource unavailable"},
+        }])
+    );
+    assert_eq!(probe.asked.lock().unwrap().len(), 1);
     owner.stop();
     join.join().unwrap();
     fs::remove_dir_all(dir).unwrap();

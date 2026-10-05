@@ -8,8 +8,9 @@ use crate::{
     crop_smoke as crop, curve_smoke as curve, detail_smoke as detail,
     develop_picks_smoke as develop_picks, export_smoke as export, filmstrip_smoke as filmstrip,
     gallery_smoke as gallery, gpu_preview_smoke as gpu_preview,
-    gpu_preview_zoom_smoke as gpu_preview_zoom, histogram_smoke as histogram, lens_smoke as lens,
-    loupe_smoke as loupe, mask_brush_smoke as mask_brush, mask_combine_smoke as mask_combine,
+    gpu_preview_zoom_smoke as gpu_preview_zoom, histogram_smoke as histogram,
+    information_smoke as information, lens_smoke as lens, loupe_smoke as loupe,
+    mask_brush_smoke as mask_brush, mask_combine_smoke as mask_combine,
     mask_interactions_smoke as mask_interactions, mask_panel_smoke as mask_panel,
     mask_range_smoke as mask_range, mask_smoke as mask, minify_smoke as minify,
     mixer_smoke as mixer, performance_smoke as performance, presence_smoke as presence,
@@ -511,6 +512,19 @@ pub static SCENARIOS: &[Scenario] = &[
         own: None,
     },
     Scenario {
+        name: "information",
+        about: "Information key and palette toggle, cached capture metadata, current/history/live crop dimensions, zoom and hidden panels, without photo uploads",
+        launches: &[LaunchSpec {
+            plan: information::plan,
+            ..APP
+        }],
+        verify: information::verify,
+        source: Source::Fixtures(&[information::FIXTURE]),
+        window: Some(PANELLED),
+        note: None,
+        own: None,
+    },
+    Scenario {
         name: "basic",
         about: "The Exposure slider's whole gesture: draft, commit, typed value, undo, reset and an agent's conflicting commit",
         launches: &[LaunchSpec {
@@ -825,7 +839,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "settings",
-        about: "The Settings sheet's Experiments tab: every flag kind changed, refused, reset and read back",
+        about: "The Settings sheet's Experiments tab: every flag kind changed, refused, reset and read back; the General rows: the canvas background drawn, the interface size scaling the title bar, the mask overlay colour, the lens switch and a catalog folder's relaunch note",
         launches: &[LaunchSpec {
             plan: settings::plan,
             // The proof flags, which the choice and number controls are checked on, are listed
@@ -837,7 +851,8 @@ pub static SCENARIOS: &[Scenario] = &[
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(PANELLED),
         note: None,
-        own: None,
+        // The catalog step names a folder inside the launch's own evidence directory.
+        own: Some(settings::run),
     },
     Scenario {
         name: "gallery",

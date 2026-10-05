@@ -13,4 +13,6 @@ pub(crate) enum PaletteMessage {
     Run,
     /// Select and run one specific entry directly, as a click on it does.
     RunIndex(usize),
+    /// The reveal with this sequence number has been marked long enough.
+    Unmark(u64),
 }

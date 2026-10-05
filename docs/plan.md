@@ -92,6 +92,14 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 **Tuning delivered tools.** Refine the recorded defaults of Presence, the colour mixer and the vignette (decision pending).
 
+## Interface
+
+**UI themes** ([design](design/ui-themes.md), [plan](../tasks/ui-themes.json)). Let the person choose the interface's colours, with today's palette kept as the default. Decided by the owner on 2026-10-05: themes, light ones included, in place of dark only; a neutral surround; each theme's own accent; and a few bundled Omarchy themes ([decisions](decisions.md#ui-themes)).
+- A runtime theme in the widget crate, with Luxforge Dark pixel-identical to today
+- A theme library and `theme.*` methods outside every catalog
+- Omarchy theme import, six bundled Omarchy themes and the Settings › Appearance tab
+- Owner review of the recorded defaults: which themes are bundled, the contrast floors, the Omarchy forms read and the Appearance tab
+
 ## Programmability
 
 **MCP adapter.** Expose the whole operation registry to agents through a standards-compliant MCP server over the existing command service.

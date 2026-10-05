@@ -611,7 +611,7 @@ fn centre<'a>(
         container(canvas)
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(theme::canvas_surface)
+            .style(theme::canvas_surface(theme::CANVAS))
     ];
     match (sheet, &model.note) {
         (Some(sheet), _) => layers = layers.push(container(sheet).center(Length::Fill)),

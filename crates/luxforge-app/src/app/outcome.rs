@@ -79,6 +79,8 @@ pub(crate) enum Outcome<'a> {
     FlagsRead,
     /// The Settings sheet's last outstanding `flags.set` answered, or was refused.
     FlagsWritten,
+    /// The preference writer's last outstanding `preferences.set` answered, or was refused.
+    PreferencesWritten,
     /// `export.plan` answered for the export in progress.
     ExportPlanned(&'a Value),
     /// `export.jpeg` queued the export in progress.
@@ -155,6 +157,7 @@ impl Outcome<'_> {
             Self::PerformanceCancelled { .. } => "performance_cancelled",
             Self::FlagsRead => "flags_read",
             Self::FlagsWritten => "flags_written",
+            Self::PreferencesWritten => "preferences_written",
             Self::ExportPlanned(_) => "export_planned",
             Self::ExportQueued(_) => "export_queued",
             Self::ExportEnded { .. } => "export_ended",

@@ -89,7 +89,7 @@ pub(crate) use detail::gpu_functions as detail_gpu_functions;
 pub use detail::qualification as detail_qualification;
 pub use field_patch::{FieldPatch, FieldPatchModule, Spec, Values};
 pub use lens::LENS_EFFECT;
-pub(crate) use lens::LensModule;
+pub(crate) use lens::{LENS_MODULE, LensModule};
 pub use mixer::MIXER_EFFECT;
 pub(crate) use mixer::MixerModule;
 pub use perspective::PERSPECTIVE_EFFECT;
