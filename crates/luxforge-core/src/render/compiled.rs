@@ -24,8 +24,8 @@ use std::sync::Arc;
 /// over the kinds: the stage it produces and the rectangle of it a frame holds, the rectangle it
 /// reads, a windowed proxy's plan and cut of it, one point mapped back through it or evaluated
 /// through it, its forward map, its materialized frame in either driver, its estimates, how the
-/// linear rows load it, and whether a point query evaluates it in tiles. A new kind of boundary is one more variant
-/// with one more arm in each of these methods; no caller matches on the kind.
+/// linear rows load it, and whether it runs a spatial operation. A new kind of boundary is one more
+/// variant with one more arm in each of these methods; no caller matches on the kind.
 #[derive(Clone)]
 pub(crate) enum Entry {
     /// An interpolating boundary that also changes the stage.
@@ -161,8 +161,8 @@ impl Entry {
 
     /// One step of a windowed proxy's plan ([`super::window::WindowPlan::of_rect`]), against the
     /// uncut compilation: the rectangle of the stage before it, a `received` stage, that `read`, a
-    /// rectangle of its output stage, needs. `tiled_before` says whether a point query reaches the
-    /// stage it reads through an earlier boundary's tiles: a spatial operation that prepares a
+    /// rectangle of its output stage, needs. `tiled_before` says whether the stage it reads comes
+    /// through an earlier spatial operation: a spatial operation that prepares a
     /// global estimate there reads the whole stage, so every segment before it is kept whole and it
     /// reduces its own input as a frame does, since no window can hand it the estimate of a stage
     /// behind another spatial operation.
@@ -277,7 +277,7 @@ impl Entry {
 
     /// Pixel `(x, y)` of the input frame of segment `index` of `evaluation`, whose entry this is:
     /// a resample's bilinear blend of the segment before it, or a spatial operation's output, from
-    /// the evaluation's frame of it or else from the query's tiles.
+    /// the evaluation's frame of it.
     #[inline(always)]
     pub(super) fn pixel<D: PixelDomain>(
         &self,
@@ -288,7 +288,7 @@ impl Entry {
     ) -> Result<D::Pixel, Error> {
         match self {
             Self::Resample(entry) => evaluation.resample_pixel(index, entry, x, y),
-            Self::Spatial(entry) => evaluation.spatial_entry_pixel(index, entry, x, y),
+            Self::Spatial(_) => evaluation.spatial_entry_pixel(index, x, y),
         }
     }
 
@@ -394,9 +394,9 @@ impl Entry {
         }
     }
 
-    /// The spatial operation a point query evaluates this boundary through, tile by tile, in its
-    /// [`super::spatial::PointTiles`]; `None` for a boundary a point query pulls without tiles.
-    pub(crate) fn point_tiles(&self) -> Option<&SpatialOperation> {
+    /// The spatial operation this boundary runs, whose whole frame a read through it is
+    /// answered from; `None` for a resample, which a point query pulls through.
+    pub(crate) fn spatial_operation(&self) -> Option<&SpatialOperation> {
         match self {
             Self::Resample(_) => None,
             Self::Spatial(entry) => Some(&entry.operation),
@@ -586,26 +586,23 @@ impl Compiled {
         boundary
     }
 
-    /// Whether answering one pixel of this compilation evaluates a spatial segment.
-    ///
-    /// A spatial point query is the declared exception to [performance rule
-    /// 4](../../../../docs/engineering/performance-rules.md#rules): it evaluates the stage-aligned tiles
-    /// its pixels need, each once per query, so a caller that asks per display cell over the whole
-    /// stage evaluates every tile of it. The coverage overlay reads this to refuse rather than to
-    /// pay it. `O(segments)` and reads no pixels.
+    /// Whether answering one pixel of this compilation reads through a spatial segment, whose whole
+    /// frame the reference renderer materializes to answer it: a pixel of such a stack is never
+    /// `O(layers)`. The coverage overlay reads this to refuse rather than to pay it.
+    /// `O(segments)` and reads no pixels.
     pub(crate) fn evaluates_spatial(&self) -> bool {
         self.spatial_before(self.segments.len())
     }
 
-    /// Whether a segment entered through tiles ([`Entry::point_tiles`]) comes before segment
-    /// `index`, so that, in a point query, the stage `index` reads comes through
-    /// [`super::spatial::PointTiles`] rather than from the source alone.
+    /// Whether a segment entered through a spatial operation ([`Entry::spatial_operation`]) comes
+    /// before segment `index`, so that the stage `index` reads comes through that operation's
+    /// whole frame rather than from the source alone.
     pub(crate) fn spatial_before(&self, index: usize) -> bool {
         self.segments[..index].iter().any(|segment| {
             segment
                 .entry
                 .as_ref()
-                .is_some_and(|entry| entry.point_tiles().is_some())
+                .is_some_and(|entry| entry.spatial_operation().is_some())
         })
     }
 }

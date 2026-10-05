@@ -257,7 +257,7 @@ fn reference_reads_of_every_prefix_equal_the_prefix_frame() {
                     "{what}: the prefix's stage"
                 );
 
-                // The point path's own reads of the prefix, through point tiles.
+                // The host's own read of the prefix, as a plan reads it off the owner.
                 let compiled = registry
                     .compile_layers(
                         width,

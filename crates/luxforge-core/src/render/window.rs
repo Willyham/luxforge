@@ -1123,7 +1123,7 @@ mod tests {
             .segments
             .iter()
             .find_map(|segment| {
-                let operation = segment.entry.as_ref()?.point_tiles()?;
+                let operation = segment.entry.as_ref()?.spatial_operation()?;
                 Some(Tiling::Halo.tile(operation, Stage { width, height: 128 }))
             })
             .expect("a spatial segment");

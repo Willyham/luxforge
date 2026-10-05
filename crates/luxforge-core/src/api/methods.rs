@@ -781,7 +781,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "resources.read",
         NoParams,
         |service, _, _| value(crate::resources::read(service.render_context())),
-        "what the operating system accounts to this process: {monotonic_ns, cpu: {time_ns, logical_cpus}, memory: {kind, bytes, peak_bytes, resident_bytes}, gpu: {time_ns, allocated_bytes, unified_memory}, budgets: {colour_scratch, spatial} each {target_bytes, in_use_bytes, peak_bytes}, and reduced_planes: {limit_bytes, retained_bytes, entries, render_hits, render_misses, tile_hits, tile_misses, point_hits, point_misses, cells_handed_back, publishes, evictions, refusals}}; reduced_planes is the store of the reduced planes a spatial unit that runs first computes: its limit, its level and counts since the context was created; times are nanoseconds and sizes bytes; memory.kind is footprint (macOS, Activity Monitor's Memory, including GPU allocations on unified memory), resident (Linux) or private (Windows); time counters are cumulative, so a rate comes from two reads: CPU percent of one core is 100 × Δcpu.time_ns / Δmonotonic_ns, up to 100 × logical_cpus, and GPU percent is the same over gpu.time_ns; monotonic_ns means something only as a difference; a counter the platform cannot give is omitted and its object's unavailable maps its key to the reason; takes no parameters, needs no asset, emits no event and changes nothing"
+        "what the operating system accounts to this process: {monotonic_ns, cpu: {time_ns, logical_cpus}, memory: {kind, bytes, peak_bytes, resident_bytes}, gpu: {time_ns, allocated_bytes, unified_memory}, budgets: {colour_scratch, spatial} each {target_bytes, in_use_bytes, peak_bytes}, and reduced_planes: {limit_bytes, retained_bytes, entries, render_hits, render_misses, tile_hits, tile_misses, cells_handed_back, publishes, evictions, refusals}}; reduced_planes is the store of the reduced planes a spatial unit that runs first computes: its limit, its level and counts since the context was created; times are nanoseconds and sizes bytes; memory.kind is footprint (macOS, Activity Monitor's Memory, including GPU allocations on unified memory), resident (Linux) or private (Windows); time counters are cumulative, so a rate comes from two reads: CPU percent of one core is 100 × Δcpu.time_ns / Δmonotonic_ns, up to 100 × logical_cpus, and GPU percent is the same over gpu.time_ns; monotonic_ns means something only as a difference; a counter the platform cannot give is omitted and its object's unavailable maps its key to the reason; takes no parameters, needs no asset, emits no event and changes nothing"
     ),
     service!(
         "draft.begin",
@@ -2193,20 +2193,21 @@ fn set_draft(
         .held_draft(draft_id)
         .expect("the draft was just checked")
         .merged(fields);
-    // A partial gesture may still lack a required field. Once complete, the draft is planned here,
-    // so a pixel its plan reads — a colour-limited stroke's seed — is read off the owner before
-    // the draft is accepted, which every later preview of it then finds in the session's memo:
-    // the catalog owner reads no pixel, and a preview never parks a read. A stack holding a
-    // spatial layer refuses the draft its plan refuses, as its preview would; a pointwise stack's
-    // plan refusals are its preview's to report, as they were.
+    // A partial gesture may still lack a required field. Once complete, a draft whose plan reads a
+    // pixel — a colour-limited stroke's seed — is planned here, so the read is parked once, off
+    // the owner, before the draft is accepted, and every later preview of it finds the pixel in
+    // the session's memo: a preview never parks a read. So is a draft over a stack holding a
+    // spatial layer, whose plan refusals are then this tick's. Any other draft keeps the
+    // field-only set path; neither check compiles or reads a pixel.
     let planned = if complete {
-        let planned = service.draft_recipe(&next.asset_id, &next).map(drop);
-        match planned {
-            Err(_) if service.pixel_reads.borrow().deferred.is_none() => service
-                .draft_has_spatial_inputs(&next.asset_id)
-                .and_then(|spatial| if spatial { planned } else { Ok(()) }),
-            planned => planned,
-        }
+        service
+            .draft_has_spatial_inputs(&next.asset_id)
+            .and_then(
+                |spatial| match spatial || service.draft_reads_pixels(&next) {
+                    true => service.draft_recipe(&next.asset_id, &next).map(drop),
+                    false => Ok(()),
+                },
+            )
     } else {
         Ok(())
     };
