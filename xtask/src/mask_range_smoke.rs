@@ -929,6 +929,25 @@ fn verify_launch1(launch: &Checked, checks: &mut Checks) -> Result<Vec<(String, 
         picked.len() == 1,
         format!("The pick left {picked:?} on the row"),
     )?;
+    // Every pick the launch makes reads its pixel on the GPU's tile worker, which its answer names.
+    let picks: Vec<&Value> = launch
+        .events
+        .iter()
+        .filter(|event| event["event"] == "canvas_sample")
+        .collect();
+    ensure(
+        !picks.is_empty()
+            && picks.iter().all(|event| {
+                event["detail"]["renderer"] == json!({"record": "gpu", "reason": null})
+            }),
+        format!(
+            "The picks were not read by the GPU: {:?}",
+            picks
+                .iter()
+                .map(|event| &event["detail"])
+                .collect::<Vec<_>>()
+        ),
+    )?;
     let remedy = only(
         checks,
         remedied,

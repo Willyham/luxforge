@@ -409,9 +409,12 @@ impl Editor {
                         return Task::none();
                     }
                 };
+                // The renderer that read the pixel, where the answer names one: the GPU's tile
+                // worker, or the reference and why.
+                let renderer = answer.get("renderer").cloned().unwrap_or(Value::Null);
                 self.event(
                     "canvas_sample",
-                    || json!({"action":action,"x":x,"y":y,"fields":fields}),
+                    || json!({"action":action,"x":x,"y":y,"fields":fields,"renderer":renderer}),
                 );
                 // This pick commits, so its evidence is the render that follows rather than the
                 // status it leaves.
