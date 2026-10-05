@@ -470,13 +470,14 @@ pub static SCENARIOS: &[Scenario] = &[
         own: None,
     },
     Scenario {
-        name: viewport::FALLBACK,
-        about: "Estimate-after-spatial viewport refusal and exact fallback over two masks",
+        name: viewport::CHAINED,
+        about: "A global estimate behind an earlier spatial layer at 100%: GPU drag ticks and the \
+                exact region with the layers before it kept whole, over two masks",
         launches: &[LaunchSpec {
-            plan: viewport::fallback_plan,
+            plan: viewport::chained_plan,
             ..APP
         }],
-        verify: viewport::verify_fallback,
+        verify: viewport::verify_chained,
         source: Source::Fixtures(&["fixtures/generated/24mp.jpg"]),
         window: Some(PANELLED),
         note: None,

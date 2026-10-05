@@ -37,9 +37,9 @@
 //!   proxy stage. Its mask is compiled against the whole stage and read at the window's offset. What
 //!   the window cannot hold is a whole-stage reduction, so an operation that prepares a global
 //!   estimate is handed the exact whole-stage estimate, including in the half-detail viewport.
-//!   An operation with an estimate
-//!   behind another spatial operation would need the first spatial stage's whole output to prepare
-//!   it, so such a stack has no window.
+//!   An operation with an estimate behind another spatial operation needs that operation's whole
+//!   output to prepare it, so the segments before it are kept whole and it reduces its own input
+//!   as a frame does: such a stack's window starts after it.
 //!
 //! Everything else — the colour arithmetic, the masks, the finish units of the last segment, the
 //! quantization — is untouched, so a windowed proxy frame is byte for byte the proxy frame of the
@@ -61,7 +61,6 @@ pub(crate) enum RegionFallback {
     Empty,
     TooLarge,
     PointReplacement,
-    EstimateAfterSpatial,
     SegmentMismatch,
     ProxyCompileFailed,
     UnplannableGeometry,
@@ -75,9 +74,6 @@ impl RegionFallback {
             Self::Empty => "the requested viewport lies outside the output stage",
             Self::TooLarge => "the viewport exceeds the 32 MiB region frame bound",
             Self::PointReplacement => "a point replacement cannot yet be cut to a viewport",
-            Self::EstimateAfterSpatial => {
-                "a global estimate behind an earlier spatial layer cannot yet be windowed"
-            }
             Self::SegmentMismatch => "the scaled recipe has different stage boundaries",
             Self::ProxyCompileFailed => "the recipe cannot be compiled at half detail",
             Self::UnplannableGeometry => "the viewport cannot be mapped safely through the stack",
@@ -218,14 +214,13 @@ impl WindowPlan {
                 Some(entry) if gpu_after.is_some_and(|boundary| index > boundary) => {
                     needed = entry.plan_gpu_window(read, segments[index - 1].stage())?;
                 }
-                // A GPU preview's boundary reads an estimate behind an earlier spatial layer from
-                // the estimate store, never from a reduction of the cut stage, so only the CPU's
-                // own region refuses one.
+                // An estimate behind an earlier spatial layer reads that layer's whole output, so
+                // every segment before it is kept whole, a GPU preview's boundary's too.
                 Some(entry) => {
                     needed = entry.plan_window(
                         read,
                         segments[index - 1].stage(),
-                        compiled.spatial_before(index) && gpu_after.is_none(),
+                        compiled.spatial_before(index),
                     )?;
                 }
             }
@@ -1180,8 +1175,13 @@ mod tests {
         }
     }
 
+    /// A point replacement is a named fallback. A global estimate behind an earlier spatial layer
+    /// is not: the planner keeps every segment before it whole, so the estimating layer reduces its
+    /// own whole input as a frame does, and the region is the whole frame's region byte for byte; a
+    /// windowed proxy of the stack is planned too.
     #[test]
-    fn pixel_replacements_and_global_estimates_after_spatial_are_named_fallbacks() {
+    fn pixel_replacements_are_a_named_fallback_and_an_estimate_after_spatial_keeps_its_prefix_whole()
+     {
         let registry = ModuleRegistry::developer();
         let context = RenderContext::new();
         let source = jpeg(96, 64);
@@ -1206,15 +1206,23 @@ mod tests {
             vec![mask],
         );
         let render = exact(&context, &registry, &source, &chained);
-        assert!(matches!(
-            render.region(SnapshotId::new(), requested).unwrap(),
-            crate::RegionRenderOutcome::Declined(RegionFallback::EstimateAfterSpatial)
-        ));
+        let crate::RegionRenderOutcome::Rendered(region) =
+            render.region(SnapshotId::new(), requested).unwrap()
+        else {
+            panic!("the chained estimate's region declined");
+        };
+        let whole = exact(&RenderContext::new(), &registry, &source, &chained)
+            .frame(SnapshotId::new())
+            .unwrap();
         assert_eq!(
+            region.raster.rgba.as_slice(),
+            cropped_bytes(&whole, requested),
+            "the whole frame's region"
+        );
+        assert!(
             render
                 .plan_proxy_region(&registry, &chained, requested)
-                .unwrap_err(),
-            RegionFallback::EstimateAfterSpatial
+                .is_ok()
         );
     }
 
