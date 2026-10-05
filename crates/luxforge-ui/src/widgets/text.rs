@@ -1,17 +1,18 @@
 //! Text helpers at the sizes and colours the visual language defines.
 
-use crate::theme;
+use crate::Element;
+use crate::theme::{self, Token};
+use iced::Length;
 use iced::alignment::Horizontal;
 use iced::widget::text::{LineHeight, Wrapping};
 use iced::widget::{container, text};
-use iced::{Element, Length};
 
 /// 13 pt semibold text: module and section titles.
 pub fn title<'a, M: Clone + 'a>(content: impl Into<String>) -> Element<'a, M> {
     text(content.into())
         .size(theme::SIZE_TITLE)
         .font(theme::FONT_SEMIBOLD)
-        .color(theme::TEXT_PRIMARY)
+        .style(theme::ink(Token::Text))
         .into()
 }
 
@@ -19,7 +20,7 @@ pub fn title<'a, M: Clone + 'a>(content: impl Into<String>) -> Element<'a, M> {
 pub fn label<'a, M: Clone + 'a>(content: impl Into<String>) -> Element<'a, M> {
     text(content.into())
         .size(theme::SIZE_CONTROL)
-        .color(theme::TEXT_PRIMARY)
+        .style(theme::ink(Token::Text))
         .into()
 }
 
@@ -28,19 +29,18 @@ pub fn caption<'a, M: Clone + 'a>(content: impl Into<String>) -> Element<'a, M> 
     text(content.into())
         .size(theme::SIZE_CAPTION)
         .line_height(LineHeight::Absolute(theme::CAPTION_LINE_HEIGHT.into()))
-        .color(theme::TEXT_TERTIARY)
+        .style(theme::ink(Token::TextTertiary))
         .into()
 }
 
-/// An 11 pt caption in the clipping-highlight red: an invalid value's range message or an
-/// unavailable provider's reason. The visual language reserves red for clipping in principle, but
-/// the components board renders both of these states in exactly that colour, so this widget set
-/// follows the rendered evidence rather than the stated principle.
+/// An 11 pt caption in the error ink: an invalid value's range message or an unavailable
+/// provider's reason. Luxforge Dark's error ink is the clipping-highlight red, as the components
+/// board renders both of these states.
 pub fn error_caption<'a, M: Clone + 'a>(content: impl Into<String>) -> Element<'a, M> {
     text(content.into())
         .size(theme::SIZE_CAPTION)
         .line_height(LineHeight::Absolute(theme::CAPTION_LINE_HEIGHT.into()))
-        .color(theme::CLIPPING_HIGHLIGHT)
+        .style(theme::ink(Token::Error))
         .into()
 }
 
@@ -50,7 +50,7 @@ pub fn section_label<'a, M: Clone + 'a>(content: impl Into<String>) -> Element<'
     text(content.into().to_uppercase())
         .size(theme::SIZE_SECTION_LABEL)
         .font(theme::FONT_SEMIBOLD)
-        .color(theme::TEXT_TERTIARY)
+        .style(theme::ink(Token::TextTertiary))
         .wrapping(Wrapping::None)
         .into()
 }
@@ -69,7 +69,7 @@ pub(crate) fn value_text<'a, M: Clone + 'a>(content: impl Into<String>) -> Eleme
             .wrapping(Wrapping::None)
             .align_x(Horizontal::Right)
             .width(Length::Fill)
-            .color(theme::TEXT_PRIMARY),
+            .style(theme::ink(Token::Text)),
     )
     .padding(iced::Padding::default().right(theme::VALUE_INSET))
     .width(Length::Fixed(theme::VALUE_WIDTH))
@@ -81,15 +81,15 @@ pub(crate) fn value_text<'a, M: Clone + 'a>(content: impl Into<String>) -> Eleme
 pub(crate) fn control_label<'a>(
     content: impl Into<String>,
     enabled: bool,
-) -> iced::widget::Text<'a> {
+) -> iced::widget::Text<'a, crate::Theme> {
     text(content.into())
         .size(theme::SIZE_CONTROL)
         .line_height(LineHeight::Absolute(theme::SLIDER_LABEL_HEIGHT.into()))
-        .color(if enabled {
-            theme::TEXT_LABEL
+        .style(theme::ink(if enabled {
+            Token::TextLabel
         } else {
-            theme::TEXT_TERTIARY
-        })
+            Token::TextTertiary
+        }))
 }
 
 /// 11 pt semibold secondary text in sentence case: a sub-group's label (White balance, Tone).
@@ -97,7 +97,7 @@ pub(crate) fn group_label<'a, M: Clone + 'a>(content: impl Into<String>) -> Elem
     text(content.into())
         .size(theme::SIZE_CAPTION)
         .font(theme::FONT_SEMIBOLD)
-        .color(theme::TEXT_SECONDARY)
+        .style(theme::ink(Token::TextSecondary))
         .wrapping(Wrapping::None)
         .into()
 }

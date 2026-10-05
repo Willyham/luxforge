@@ -194,8 +194,9 @@
         {
           "kind": "file",
           "label": "Restoration prefix cache",
-          "target": "crates/luxforge-core/src/render/restoration.rs",
-          "relevance": "The cache this stage removes from the preview path."
+          "target": "docs/design/detail.md",
+          "relevance": "The settled Fit and restoration-prefix cache contracts this stage retires, recorded there.",
+          "locator": "Previews at Fit and percentage zoom"
         },
         {
           "kind": "file",

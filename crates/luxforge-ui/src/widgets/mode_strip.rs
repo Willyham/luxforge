@@ -2,8 +2,9 @@
 
 use super::icon_button::{Icon, icon};
 use crate::theme;
+use crate::{Element, Theme, Token};
 use iced::widget::{Row, Space, button, container, text, tooltip};
-use iced::{Alignment, Element, Length, Padding, Theme};
+use iced::{Alignment, Length, Padding};
 
 /// One canvas-mode entry (pointer, crop, mask, ...).
 #[derive(Debug, Clone, PartialEq)]
@@ -69,7 +70,9 @@ pub fn mode_strip<'a, M: Clone + 'a>(
     // padding clear of it, as the board's CSS border does.
     container(content)
         .padding(theme::STRIP_PADDING + theme::BORDER_WIDTH)
-        .style(|_: &Theme| theme::chrome_surface(theme::CHROME_BORDER, theme::STRIP_RADIUS))
+        .style(|theme: &Theme| {
+            theme::chrome_surface(theme, Token::ChromeBorder, theme::STRIP_RADIUS)
+        })
         .into()
 }
 
@@ -83,9 +86,9 @@ fn tool<'a, M: Clone + 'a>(
     on_press: Option<M>,
 ) -> Element<'a, M> {
     let ink = match (on_press.is_some(), selected) {
-        (false, _) => theme::TEXT_TERTIARY,
-        (true, true) => theme::ACCENT,
-        (true, false) => theme::STRIP_ICON,
+        (false, _) => Token::TextTertiary,
+        (true, true) => Token::Accent,
+        (true, false) => Token::StripIcon,
     };
     let (content, width, padding): (Element<'a, M>, Length, Padding) = match glyph {
         Some(glyph) => (
@@ -96,9 +99,13 @@ fn tool<'a, M: Clone + 'a>(
             Padding::ZERO,
         ),
         None => (
-            container(text(label.to_owned()).size(theme::SIZE_CONTROL).color(ink))
-                .center_y(Length::Fill)
-                .into(),
+            container(
+                text(label.to_owned())
+                    .size(theme::SIZE_CONTROL)
+                    .style(theme::ink(ink)),
+            )
+            .center_y(Length::Fill)
+            .into(),
             Length::Shrink,
             Padding::from([0.0, theme::BUTTON_PADDING]),
         ),
@@ -114,7 +121,7 @@ fn tool<'a, M: Clone + 'a>(
         container(
             text(tooltip_text(label, shortcut))
                 .size(theme::SIZE_CAPTION)
-                .color(theme::TEXT_PRIMARY),
+                .style(theme::ink(Token::Text)),
         )
         .padding(theme::TOOLTIP_PADDING)
         .style(theme::bar_surface),
@@ -137,7 +144,7 @@ fn rule<'a, M: Clone + 'a>() -> Element<'a, M> {
         container(Space::new())
             .width(Length::Fixed(theme::BORDER_WIDTH))
             .height(Length::Fixed(theme::STRIP_RULE_HEIGHT))
-            .style(|_: &Theme| container::Style::default().background(theme::STRIP_RULE)),
+            .style(theme::fill(Token::StripRule)),
     )
     .padding(Padding::from([0.0, theme::STRIP_RULE_MARGIN]))
     .into()

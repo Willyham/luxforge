@@ -246,6 +246,12 @@ fn api_draft_view_workspace_preview_palette_and_pick_round_trip() {
         {"settings":{"open":true}},
         {"flag":{"id":"proof.number","value":75}},
         {"flag":{"id":"proof.choice","value":null}},
+        {"settings":{"open":true,"tab":"appearance"}},
+        {"theme":{"id":"omarchy.nord"}},
+        {"theme_import":{"path":"fixtures/themes/paper.lftheme"}},
+        {"theme":{"name":"Paper"}},
+        {"theme_import_omarchy":{"path":"fixtures/themes/omarchy"}},
+        {"agent":{"method":"preferences.set","params":{"theme":"luxforge.dark"}}},
     ]));
     assert_eq!(steps[1], Step::api("history.undo"));
     assert_eq!(steps[2], Step::Draft(DraftStep::Start));
@@ -273,6 +279,26 @@ fn api_draft_view_workspace_preview_palette_and_pick_round_trip() {
     assert_eq!(steps[34], Step::settings(true));
     assert_eq!(steps[35], Step::flag("proof.number", Some(json!(75))));
     assert_eq!(steps[36], Step::flag("proof.choice", None));
+    assert_eq!(steps[37], Step::settings_tab("appearance"));
+    assert_eq!(steps[38], Step::theme("omarchy.nord"));
+    assert_eq!(
+        steps[39],
+        Step::theme_import("fixtures/themes/paper.lftheme")
+    );
+    assert_eq!(steps[40], Step::theme_named("Paper"));
+    assert_eq!(
+        steps[41],
+        Step::theme_import_omarchy("fixtures/themes/omarchy")
+    );
+    assert_eq!(
+        steps[42],
+        Step::agent("preferences.set", json!({"theme": "luxforge.dark"}))
+    );
+    // A step with no tab is written without one, as before tabs were named.
+    assert_eq!(
+        Step::settings(true).to_value(),
+        json!({"settings":{"open":true}})
+    );
     // An integer where a number is expected is the same number.
     assert_eq!(
         parse(r#"[{"draft":{"rect":[10,20,300,200]}},{"view":{"zoom":100}}]"#).unwrap(),
@@ -387,6 +413,43 @@ fn api_draft_view_workspace_preview_palette_and_pick_round_trip() {
         ),
         (json!({"performance":true}), "invalid type: boolean"),
         (json!({"settings":{}}), "missing field `open`"),
+        (
+            json!({"settings":{"open":true,"tab":"colours"}}),
+            "settings tab must be one of general, appearance, experiments, not \"colours\"",
+        ),
+        (
+            json!({"settings":{"open":false,"tab":"general"}}),
+            "only an opening settings step names a tab",
+        ),
+        (
+            json!({"theme":{}}),
+            "theme takes exactly one of id and name",
+        ),
+        (
+            json!({"theme":{"id":"luxforge.dark","name":"Luxforge Dark"}}),
+            "theme takes exactly one of id and name",
+        ),
+        (
+            json!({"theme":{"id":" "}}),
+            "theme id takes a non-empty string",
+        ),
+        (
+            json!({"theme":{"name":""}}),
+            "theme name takes a non-empty string",
+        ),
+        (json!({"theme":{"mode":"light"}}), "unknown field `mode`"),
+        (
+            json!({"theme_import":{"path":""}}),
+            "theme_import path takes a non-empty string",
+        ),
+        (
+            json!({"theme_import_omarchy":{"path":" "}}),
+            "theme_import_omarchy path takes a non-empty string",
+        ),
+        (
+            json!({"theme_import_omarchy":{"folder":"themes"}}),
+            "unknown field `folder`",
+        ),
         (
             json!({"flag":{"id":"proof.number"}}),
             "missing field `value`",

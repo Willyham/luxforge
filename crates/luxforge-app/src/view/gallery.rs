@@ -4,9 +4,10 @@
 
 use crate::app::message::{Message, view::ViewMessage};
 use iced::{
-    Element, Length,
+    Length,
     widget::{button, column, container, row, scrollable, text},
 };
+use luxforge_ui::{Element, Token};
 use luxforge_ui::{
     GALLERY_PAGES, MenuChoiceModel, caption, gallery_page, menu_choice, theme, title,
 };
@@ -48,7 +49,7 @@ pub(crate) fn gallery(page: usize) -> Element<'static, Message> {
             column![
                 text(format!("{number:02} · {name}"))
                     .size(theme::SIZE_CAPTION)
-                    .color(theme::TEXT_SECONDARY),
+                    .style(theme::ink(Token::TextSecondary)),
                 widget.map(|_| Message::View(ViewMessage::GalleryPreview)),
             ]
             .spacing(theme::SPACING / 2.0),

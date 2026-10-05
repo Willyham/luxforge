@@ -9,8 +9,9 @@
 //! `prepare`, after subscriptions were recomputed, so its later wake needs this blocked stream.
 //! The owner posts one signal per message that recorded another client's
 //! event ([`luxforge_core::OwnerHandle::watch_events`]), and the subscription that carries it in as
-//! [`SyncMessage::Changed`] exists only while a photograph is open; with nothing happening, the
-//! update loop does not run at all.
+//! [`SyncMessage::Changed`] runs for the life of the window, since another client's preference or
+//! theme change reaches it with no photograph open too; with nothing happening, the update loop
+//! does not run at all.
 //!
 //! Each channel is created once and outlives every subscription, which is what makes the gating
 //! safe. A queue can go busy and post its signal before the runtime has built the subscription for
@@ -173,8 +174,8 @@ pub(crate) fn subscription() -> iced::Subscription<Message> {
     iced::Subscription::run(|| preview().stream())
 }
 
-/// One `SyncMessage::Changed` per signal the owner posts. Gated by the caller on a photograph
-/// being open, which is when the event sync has anything to read back.
+/// One `SyncMessage::Changed` per signal the owner posts. Not gated: another client's change is
+/// read whether or not a photograph is open.
 pub(crate) fn events_subscription() -> iced::Subscription<Message> {
     iced::Subscription::run(|| events().stream())
 }

@@ -12,9 +12,10 @@ use crate::widgets::double_click::double_click_when;
 use crate::widgets::number_field::{NumberFieldModel, field_header};
 use crate::widgets::text::error_caption;
 use crate::widgets::{decorator::decorate, slider_guard::SliderGuard};
+use crate::{Element, Palette, Theme};
 use iced::widget::canvas::gradient;
 use iced::widget::{canvas, column, container, slider as iced_slider, stack};
-use iced::{Color, Element, Length, Point, Rectangle, Renderer, Size, Theme};
+use iced::{Color, Length, Point, Rectangle, Renderer, Size};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -215,43 +216,57 @@ impl RailDrawing {
 #[derive(Default)]
 struct RailCache {
     cache: canvas::Cache,
-    key: RefCell<Option<(RailDrawing, Size)>>,
+    key: RefCell<Option<RailKey>>,
 }
 
-impl<M> canvas::Program<M> for RailDrawing {
+/// What a rail's drawing depends on: the rail, its size and the theme's generation.
+type RailKey = (RailDrawing, Size, u64);
+
+impl RailDrawing {
+    /// Calls `clear` when the rail, its size or the theme changed since the cache was drawn.
+    fn refresh(
+        &self,
+        key: &RefCell<Option<RailKey>>,
+        size: Size,
+        theme: &Theme,
+        clear: impl FnOnce(),
+    ) {
+        let next = Some((self.clone(), size, theme.generation()));
+        if *key.borrow() != next {
+            clear();
+            *key.borrow_mut() = next;
+        }
+    }
+}
+
+impl<M> canvas::Program<M, Theme> for RailDrawing {
     type State = RailCache;
 
     fn draw(
         &self,
         state: &Self::State,
         renderer: &Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         bounds: Rectangle,
         _cursor: iced::mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
             return Vec::new();
         }
-        let key = Some((self.clone(), bounds.size()));
-        if *state.key.borrow() != key {
-            state.cache.clear();
-            *state.key.borrow_mut() = key;
-        }
+        self.refresh(&state.key, bounds.size(), theme, || state.cache.clear());
         // The halo is taller than the rail line, so the frame's clip reaches past the line above
         // and below; the rail line's layout, and so the row's pitch, stays as it is.
         let size = bounds.size();
         let clip = geometry::rail_clip(size.width, size.height, theme::THUMB_HALO_RADIUS);
         let clip = Rectangle::new(Point::new(clip.0, clip.1), Size::new(clip.2, clip.3));
-        vec![
-            state
-                .cache
-                .draw_with_bounds(renderer, clip, |frame| draw_rail(frame, self, size)),
-        ]
+        vec![state.cache.draw_with_bounds(renderer, clip, |frame| {
+            draw_rail(frame, self, size, theme.palette())
+        })]
     }
 }
 
 /// Draws the rail line into a `size` rail line; the frame's clip may reach beyond it.
-fn draw_rail(frame: &mut canvas::Frame, rail: &RailDrawing, size: Size) {
+fn draw_rail(frame: &mut canvas::Frame, rail: &RailDrawing, size: Size, palette: &Palette) {
     let width = size.width;
     let middle = size.height / 2.0;
     let geometry = geometry::rail_geometry(width, theme::THUMB_RADIUS, rail.value, rail.zero);
@@ -271,7 +286,7 @@ fn draw_rail(frame: &mut canvas::Frame, rail: &RailDrawing, size: Size) {
         let stops: Vec<[f32; 3]> = colors.iter().map(|c| [c.r, c.g, c.b]).collect();
         let [r, g, b] = geometry::over(
             geometry::rail_colour_at(&stops, t),
-            rgb(theme::PANEL),
+            rgb(palette.rail_backdrop),
             theme::DECORATED_RAIL_OPACITY,
         );
         Color::from_rgb(r, g, b)
@@ -298,10 +313,10 @@ fn draw_rail(frame: &mut canvas::Frame, rail: &RailDrawing, size: Size) {
         }
         None => {
             let (origin, size) = band(theme::RAIL_WIDTH, 0.0, width);
-            frame.fill_rectangle(origin, size, theme::RAIL);
+            frame.fill_rectangle(origin, size, palette.rail);
             if let Some((from, to)) = geometry.fill {
                 let (origin, size) = band(theme::RAIL_WIDTH, from, to);
-                frame.fill_rectangle(origin, size, theme::RAIL_FILL);
+                frame.fill_rectangle(origin, size, palette.rail_fill);
             }
         }
     }
@@ -312,22 +327,22 @@ fn draw_rail(frame: &mut canvas::Frame, rail: &RailDrawing, size: Size) {
         let radius = theme::THUMB_HALO_RADIUS;
         frame.fill(
             &canvas::Path::circle(Point::new(handle, middle), radius),
-            halo_over(theme::PANEL),
+            halo_over(palette, palette.background),
         );
         let (from, to) = ((handle - radius).max(0.0), (handle + radius).min(width));
         match colors {
             Some(colors) => {
-                let tinted = |x: f32| halo_over(at(colors, x / width.max(f32::EPSILON)));
+                let tinted = |x: f32| halo_over(palette, at(colors, x / width.max(f32::EPSILON)));
                 gradient_band(frame, from, to, tinted(from), tinted(to));
             }
             None => {
                 let (origin, size) = band(theme::RAIL_WIDTH, from, to);
-                frame.fill_rectangle(origin, size, halo_over(theme::RAIL));
+                frame.fill_rectangle(origin, size, halo_over(palette, palette.rail));
                 if let Some((fill_from, fill_to)) = geometry.fill {
                     let (fill_from, fill_to) = (fill_from.max(from), fill_to.min(to));
                     if fill_to > fill_from {
                         let (origin, size) = band(theme::RAIL_WIDTH, fill_from, fill_to);
-                        frame.fill_rectangle(origin, size, halo_over(theme::RAIL_FILL));
+                        frame.fill_rectangle(origin, size, halo_over(palette, palette.rail_fill));
                     }
                 }
             }
@@ -340,7 +355,7 @@ fn draw_rail(frame: &mut canvas::Frame, rail: &RailDrawing, size: Size) {
                 middle - theme::ZERO_TICK_HEIGHT / 2.0,
             ),
             Size::new(theme::ZERO_TICK_WIDTH, theme::ZERO_TICK_HEIGHT),
-            theme::ZERO_TICK,
+            palette.zero_tick,
         );
     }
 }
@@ -352,8 +367,8 @@ fn rgb(color: Color) -> [f32; 3] {
 /// What the thumb's halo makes of `under`: the accent laid over it at
 /// [`theme::THUMB_HALO_OPACITY`], mixed in sRGB and drawn opaque, since Iced blends a translucent
 /// fill in linear light and would draw the halo far brighter than the references do.
-fn halo_over(under: Color) -> Color {
-    let [r, g, b] = geometry::over(rgb(theme::ACCENT), rgb(under), theme::THUMB_HALO_OPACITY);
+fn halo_over(palette: &Palette, under: Color) -> Color {
+    let [r, g, b] = geometry::over(rgb(palette.accent), rgb(under), theme::THUMB_HALO_OPACITY);
     Color::from_rgb(r, g, b)
 }
 
@@ -362,14 +377,14 @@ struct OverRangeMark {
     side: Side,
 }
 
-impl<M> canvas::Program<M> for OverRangeMark {
+impl<M> canvas::Program<M, Theme> for OverRangeMark {
     type State = ();
 
     fn draw(
         &self,
         _state: &Self::State,
         renderer: &Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         bounds: Rectangle,
         _cursor: iced::mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
@@ -382,7 +397,7 @@ impl<M> canvas::Program<M> for OverRangeMark {
         frame.fill_rectangle(
             Point::new(x, (bounds.height - mark.height) / 2.0),
             mark,
-            theme::ACCENT,
+            theme.palette().accent,
         );
         vec![frame.into_geometry()]
     }
@@ -390,8 +405,7 @@ impl<M> canvas::Program<M> for OverRangeMark {
 
 #[cfg(test)]
 mod tests {
-    use super::halo_over;
-    use crate::theme;
+    use super::*;
 
     fn rgb8(color: iced::Color) -> [u8; 3] {
         [color.r, color.g, color.b].map(|c| (c * 255.0).round() as u8)
@@ -403,12 +417,33 @@ mod tests {
     #[test]
     fn the_dragging_halo_matches_the_references() {
         assert_eq!(2.0 * theme::THUMB_HALO_RADIUS, 18.0);
-        for (under, reference) in [(theme::PANEL, [81, 69, 53]), (theme::RAIL, [100, 88, 75])] {
-            let drawn = rgb8(halo_over(under));
+        let dark = crate::Palette::luxforge_dark();
+        for (under, reference) in [(dark.background, [81, 69, 53]), (dark.rail, [100, 88, 75])] {
+            let drawn = rgb8(halo_over(&dark, under));
             assert!(
                 drawn.iter().zip(reference).all(|(a, b)| a.abs_diff(b) <= 1),
                 "{drawn:?} against {reference:?}"
             );
         }
+    }
+
+    /// The rail is drawn again when the theme changes, and only then while the rail stands still.
+    #[test]
+    fn a_theme_change_redraws_the_rail() {
+        let rail = RailDrawing {
+            value: 0.25,
+            zero: Some(0.5),
+            rail: RailDecoration::Colors(theme::TEMPERATURE_RAIL.to_vec()),
+            dragging: true,
+        };
+        let size = Size::new(200.0, theme::SLIDER_RAIL_HEIGHT);
+        let (first, second) = (Theme::luxforge_dark(), Theme::luxforge_dark());
+        let key = RefCell::new(None);
+        let mut clears = 0;
+        rail.refresh(&key, size, &first, || clears += 1);
+        rail.refresh(&key, size, &first, || clears += 1);
+        assert_eq!(clears, 1, "an unchanged theme keeps the drawing");
+        rail.refresh(&key, size, &second, || clears += 1);
+        assert_eq!(clears, 2, "a new generation redraws it");
     }
 }

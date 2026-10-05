@@ -755,6 +755,27 @@ pub(crate) trait SpatialUnit: Send + Sync {
         None
     }
 
+    /// The step of this unit's light link over its whole input `stage`, for a unit that prepares a
+    /// global estimate the GPU computes per frame from that stage at full resolution
+    /// (`docs/design/gpu-preview.md`, "The global estimate"): the reduction of the input into
+    /// [`ESTIMATE_REDUCTION`]-pixel block means beside each block's channel minimum, each written
+    /// at its place in the whole stage's block plane by whichever tile of the stage holds it, and
+    /// the selection of the light from them, as [`Self::prepare`] selects it from the host's
+    /// reduction. The default is none: the unit prepares no estimate, or none the GPU computes.
+    /// Answered while planning: it reads no pixel and holds nothing that scales with the image.
+    fn gpu_light(&self, _stage: Stage) -> Option<crate::render::gpu::GpuLightPasses> {
+        None
+    }
+
+    /// The unit on the GPU reading its global estimate from the light plane its light link
+    /// writes ([`Self::gpu_light`]), rather than computing it in its own passes or reading it from
+    /// its words: its description holds a light plane no pass of it writes
+    /// ([`crate::render::gpu::GpuPlaneSize::LIGHT`]). The default is [`Self::gpu`] handed no
+    /// estimate, which a unit that reads none answers alike. Answered while planning.
+    fn gpu_reading_light(&self) -> Option<crate::render::gpu::GpuSpatialUnit> {
+        self.gpu(None)
+    }
+
     /// Whether a GPU preview may draw this unit with the estimate prepared from its input before
     /// a restoration layer changed it, held for a drag (`docs/design/gpu-preview.md`, "At 100%
     /// and above"): the unit's own judgement of how far its output follows such an estimate, which

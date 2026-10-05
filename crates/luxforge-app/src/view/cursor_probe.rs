@@ -5,12 +5,13 @@
 //! state. A paced path coalesces overdue positions before the widget sees them.
 use crate::app::message::{Message, pointer::PointerMessage};
 use iced::{
-    Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector,
+    Event, Length, Point, Rectangle, Renderer, Size, Vector,
     advanced::{
         Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer,
         widget::{Operation, Tree},
     },
 };
+use luxforge_ui::{Element, Theme};
 use serde_json::{Value, json};
 use std::{
     cell::{Cell, RefCell},
