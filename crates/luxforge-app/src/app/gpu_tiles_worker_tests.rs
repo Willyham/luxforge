@@ -1,0 +1,1168 @@
+//! The desktop's GPU tile worker (`app::gpu_tiles`) on this host's adapter, headless: its reads
+//! and its streams against the photo surface's own drawing (`HeadlessSurface`) on another device of
+//! the same adapter, and against the reference service (`ReferenceTiles`).
+//!
+//! - **Reads.** Every read through the worker — of every family on both paths, of the output stage
+//!   and of the stage each layer receives, as codes and as linear values — is bit for bit the
+//!   pixel the photo surface draws there over the whole stage as one region at full scale, and
+//!   the linear value an independent runner draws there, the worker's scratch planes starting
+//!   from NaN. Against the reference service the same stages, read at the cells of a 9 × 9 grid,
+//!   are within their class's display limit. A neutral pick's 25 points draw one tile, a seed is
+//!   the code of the sample input, and the worker keeps nothing of a call's stack once answered.
+//! - **The reference, by name.** A read whose light the store does not hold, a launch that refused
+//!   the GPU, an adapter the host does not offer and a lost device are answered by the reference,
+//!   naming why, and a stream of them is refused or ended naming it.
+//! - **Order and bounds.** A read waits behind at most the one export tile being drawn, and not at
+//!   all behind a stream whose encoder has its bands to take; a full queue refuses at once; a
+//!   disconnect drops a client's waiting reads and cancels its read being answered.
+//! - **Streams.** A stream's bands, stitched, are the whole stage the surface draws, bit for bit;
+//!   two streams, on one device and on two, are byte-identical; a cancelled stream stops between
+//!   tiles and lets go of what it held.
+//!
+//! A GPU test with no adapter prints that it was skipped and asserts nothing: it is not GPU
+//! evidence.
+use super::{
+    gpu_plan::{WarpGrid, install_output_encoding, surface_plan_over},
+    gpu_tiles::GpuTiles,
+    gpu_tiles_tests::{families, gpu_source, host_adapter},
+    gpu_window_tests::{HEIGHT, WIDTH, source},
+    testing::{entry, fresh_stack},
+};
+use luxforge_core::{
+    AssetId, BASIC_EFFECT, BoundaryFormat, Cancel, ClientId, DETAIL_EFFECT, EffectStage, Error,
+    Evaluation, GpuFallback, Layer, ModuleRegistry, OwnerHandle, PRESENCE_EFFECT, PreviewSource,
+    Recipe, Region, RenderContext, RenderOptions, SnapshotId, TilePlan, plan_read, render,
+    tiles::{
+        Answered, BandStream, EXPORT_BANDS_IN_FLIGHT, MaskInputMode, ReadAnswer, ReadPixels,
+        ReadStage, ReadValues, ReferenceTiles, TileCall, TileFallback, TileService, TileStatus,
+        TileUnavailable,
+    },
+};
+use luxforge_reference::preview_error::{Class, ciede2000, lab_from_srgb8, statistics_of};
+use luxforge_testbase::{Gate, HANG, paths, wait_until};
+use luxforge_ui::{
+    adapters,
+    photo_surface::{
+        Derivation, GpuBoundary, GpuPlan, GpuSource,
+        gpu_preview::{
+            headless::HeadlessSurface,
+            tiles::{TileEnd, TilePixels, TileRunner},
+        },
+    },
+};
+use serde_json::{Value, json};
+use std::sync::{Arc, mpsc};
+
+/// One read: the stage, the rectangle and the values asked for.
+type Read = (ReadStage, Region, ReadValues);
+
+/// Every pixel of a stage: a read or a plan of it is the whole stage, clipped.
+const WHOLE: Region = Region {
+    x0: 0,
+    y0: 0,
+    width: u32::MAX,
+    height: u32::MAX,
+};
+
+/// The side the streams of these tests are drawn at: 24 tiles over the 360 × 240 stage, six to a
+/// band, the last column and row narrower.
+const SIDE: u32 = 64;
+
+fn point(stage: ReadStage, x: u32, y: u32, values: ReadValues) -> Read {
+    (
+        stage,
+        Region {
+            x0: x,
+            y0: y,
+            width: 1,
+            height: 1,
+        },
+        values,
+    )
+}
+
+/// `count` client identities, which only a catalog owner hands out: one started on a scratch
+/// catalog, asked, and stopped.
+fn clients(count: usize) -> Vec<ClientId> {
+    let catalog = paths::temp_catalog("gpu-tiles-clients");
+    let (owner, join) = OwnerHandle::start(&catalog).expect("a catalog owner");
+    let clients = (0..count).map(|_| owner.register()).collect();
+    owner.stop();
+    join.join().expect("the owner stops");
+    for path in [paths::wal(&catalog), paths::shm(&catalog), catalog] {
+        let _ = std::fs::remove_file(path);
+    }
+    clients
+}
+
+/// `recipe` over `source`, bound as the catalog owner binds a saved entry's stack; with `stored`,
+/// on a context whose estimate store the stack's exact frame filled, as a displayed stack's
+/// settled frame fills it.
+fn stack(source: &PreviewSource, recipe: &Recipe, stored: bool) -> Evaluation {
+    let registry = Arc::new(ModuleRegistry::builtin());
+    let context = RenderContext::new();
+    if stored {
+        render(
+            &registry,
+            source,
+            recipe,
+            RenderOptions::exact(&Cancel::never()),
+            &context,
+        )
+        .expect("the exact render")
+        .frame(SnapshotId::new())
+        .expect("the exact frame");
+    }
+    Evaluation::new(
+        registry,
+        context,
+        source.clone(),
+        entry(&AssetId::new(), 1, None),
+        recipe.clone(),
+        None,
+    )
+}
+
+/// How layer `layer` of `recipe` receives the stage before it, as the catalog owner asks for it:
+/// a colour layer inside its colour run, any other layer, and none past the stack, as the encoded
+/// boundary.
+fn mode(registry: &ModuleRegistry, recipe: &Recipe, layer: usize) -> MaskInputMode {
+    match recipe
+        .layers
+        .get(layer)
+        .and_then(|layer| registry.effect(&layer.effect_id))
+    {
+        Some((_, effect)) if effect.stage == EffectStage::Color => MaskInputMode::ColourRun,
+        _ => MaskInputMode::Boundary,
+    }
+}
+
+/// What one call on `service` over `stack` answers to `reads`, in order, and the thread that read
+/// them.
+fn call(
+    service: &dyn TileService,
+    client: ClientId,
+    stack: &Evaluation,
+    reads: &[Read],
+) -> (Vec<ReadAnswer>, String) {
+    let (sender, answers) = mpsc::channel();
+    let (done, finished) = mpsc::sync_channel(1);
+    let (held, reads) = (stack.clone(), reads.to_vec());
+    service.submit(TileCall::caller(
+        client,
+        Cancel::new(),
+        move |tiles, cancel| {
+            let mut session = tiles.session(&held, cancel);
+            for (stage, rect, values) in reads {
+                let _ = sender.send(session.read(stage, rect, values)?);
+            }
+            Ok(json!(std::thread::current().name()))
+        },
+        move |result| {
+            let _ = done.send(result);
+        },
+    ));
+    let thread = finished
+        .recv_timeout(HANG)
+        .expect("the call is answered")
+        .unwrap_or_else(|error| panic!("the reads: {error:?}"));
+    (
+        answers.try_iter().collect(),
+        thread.as_str().unwrap_or_default().to_owned(),
+    )
+}
+
+/// Wait for every job queued on `service` before now to be answered, and its figures published:
+/// a call that reads nothing, answered after them.
+fn settle(service: &dyn TileService, client: ClientId) {
+    let (done, finished) = mpsc::sync_channel(1);
+    service.submit(TileCall::caller(
+        client,
+        Cancel::new(),
+        |_, _| Ok(Value::Null),
+        move |result| {
+            let _ = done.send(result);
+        },
+    ));
+    finished
+        .recv_timeout(HANG)
+        .expect("the call is answered")
+        .expect("a call that reads nothing");
+}
+
+/// `plan` as the photo surface's plain data over its tile's window of `gpu`, a lens warp's tail
+/// through its part of the whole stage's grid, as the worker converts a tile.
+fn converted(plan: &TilePlan, gpu: &GpuSource, version: u64) -> GpuPlan {
+    let window = plan.tile.window;
+    let boundary = GpuBoundary::derived(
+        gpu,
+        Derivation::Cut {
+            origin: (window.x0, window.y0),
+        },
+        window.width,
+        window.height,
+        version,
+    )
+    .expect("a derived boundary");
+    let grid = plan.warp().map(|warp| {
+        let stage = warp
+            .stage_grid(1.0)
+            .expect("a stage grid")
+            .expect("a lens warp's grid");
+        WarpGrid::new(&stage.part(plan.tile.rect).expect("the tile's part"))
+    });
+    surface_plan_over(
+        &plan.plan,
+        boundary,
+        (window.x0, window.y0),
+        grid.as_ref(),
+        Some(plan.tile.rect),
+    )
+    .expect("a runnable plan")
+}
+
+/// The whole of `stage` of `stack` drawn as one region at full scale by the photo surface's own
+/// drawing, from the window of `gpu` the planner gives it: the plan of the stage, and its codes,
+/// row by row.
+fn drawn_whole(
+    surface: &mut HeadlessSurface,
+    gpu: &GpuSource,
+    stack: &Evaluation,
+    stage: ReadStage,
+    version: u64,
+) -> (TilePlan, Vec<[u8; 4]>) {
+    let plan =
+        plan_read(stack, stage, WHOLE).unwrap_or_else(|fallback| panic!("{stage:?}: {fallback:?}"));
+    let codes = surface
+        .tile(gpu, &converted(&plan, gpu, version))
+        .unwrap_or_else(|fallback| panic!("{stage:?}: the surface's drawing: {fallback:?}"));
+    (plan, codes)
+}
+
+/// A linear value's output code by the core's own thresholds: clamped to `[0, 1]`, NaN taken to
+/// 0, the number of thresholds at or below it.
+fn code(value: f32) -> u8 {
+    let value = if value.is_nan() {
+        0.0
+    } else {
+        value.clamp(0.0, 1.0)
+    };
+    luxforge_core::colour::srgb::output_thresholds()
+        .partition_point(|threshold| *threshold <= value) as u8
+}
+
+/// Every band of `stream` in order, stitched into its output stage's codes, each band checked to
+/// start where the last ended and to be at most `side` rows.
+fn stitched(stream: BandStream, side: u32) -> Vec<u8> {
+    let (mut rgba, mut rows) = (Vec::new(), 0);
+    for band in stream {
+        let band = band.unwrap_or_else(|error| panic!("a band: {error:?}"));
+        assert_eq!(band.y0, rows, "bands in order");
+        assert!(band.rows <= side, "a band is one row of tiles");
+        rows += band.rows;
+        rgba.extend(band.rgba);
+    }
+    rgba
+}
+
+/// The first pixel two stages' codes differ at, and how many differ.
+fn first_difference(width: u32, ours: &[u8], theirs: &[u8]) -> Option<String> {
+    let differing: Vec<usize> = (0..ours.len() / 4)
+        .filter(|index| ours[index * 4..index * 4 + 4] != theirs[index * 4..index * 4 + 4])
+        .collect();
+    let index = *differing.first()?;
+    Some(format!(
+        "{} of {} pixels differ, the first at ({}, {}): {:?} against {:?}",
+        differing.len(),
+        ours.len() / 4,
+        index as u32 % width,
+        index as u32 / width,
+        &ours[index * 4..index * 4 + 4],
+        &theirs[index * 4..index * 4 + 4],
+    ))
+}
+
+/// A gate shut from the start.
+fn shut() -> Arc<Gate> {
+    let gate = Arc::new(Gate::new());
+    gate.shut();
+    gate
+}
+
+/// Hold `service`'s stream at the gate before its step after the one `held` holds, letting that
+/// one through: the gate it is held at now.
+fn next_step(service: &GpuTiles, held: &Gate) -> Arc<Gate> {
+    let next = shut();
+    service.hold_steps(Some(Arc::clone(&next)));
+    held.open();
+    wait_until("the worker held before the stream's next step", || {
+        next.holding()
+    });
+    next
+}
+
+/// Every read of every family on both paths, of every stage a layer receives and of the output
+/// stage, as codes and as linear values, at the stage's corners, its middle, two points between
+/// and over a small rectangle: the codes are bit for bit those the photo surface's own drawing
+/// draws over the whole stage as one region on another device of the same adapter, and the
+/// linear values those an independent runner on a third device draws over that region, each as
+/// the stage holds it; the worker's scratch starts from NaN, and its thread reads them.
+#[test]
+fn a_read_through_the_worker_equals_the_headless_surfaces_tile_bit_for_bit() {
+    let test = "a_read_through_the_worker_equals_the_headless_surfaces_tile_bit_for_bit";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(
+        install_output_encoding(),
+        "the surface holds the core's output encoding"
+    );
+    let window = adapters::open(&backend, &name)
+        .unwrap_or_else(|unopened| panic!("{test}: the surface's device: {unopened:?}"));
+    let mut surface = HeadlessSurface::new(&window.device, &window.queue);
+    let mut runner = TileRunner::open(&backend, &name)
+        .unwrap_or_else(|refusal| panic!("{test}: the runner: {refusal:?}"));
+    let service = GpuTiles::new(Some((backend, name)), false);
+    service.poison(true);
+    let client = clients(1)[0];
+    let registry = ModuleRegistry::builtin();
+    let mut versions = 0;
+    for (format, path) in [
+        (BoundaryFormat::Half, "the byte path"),
+        (BoundaryFormat::Float, "the linear path"),
+    ] {
+        let source = source(format);
+        versions += 1;
+        let gpu = gpu_source(versions, &source);
+        for (family, recipe) in families() {
+            let what = format!("{family} on {path}");
+            let stack = stack(&source, &recipe, true);
+            let stages = (0..=recipe.layers.len())
+                .map(|layer| ReadStage::Before {
+                    layer,
+                    mode: mode(&registry, &recipe, layer),
+                })
+                .chain(std::iter::once(ReadStage::Output));
+            let mut compared = 0;
+            for stage in stages {
+                versions += 2;
+                let (plan, codes) = drawn_whole(&mut surface, &gpu, &stack, stage, versions - 1);
+                let held = plan.tile.window;
+                let linear = match runner.run(
+                    &converted(&plan, &gpu, versions),
+                    &gpu,
+                    [held.x0, held.y0, held.width, held.height],
+                    TileEnd::Linear,
+                ) {
+                    Ok(TilePixels::Linear(values)) => values,
+                    other => panic!("{what}, {stage:?}: the independent runner: {other:?}"),
+                };
+                let (width, height) = (plan.size.width, plan.size.height);
+                let mut reads = Vec::new();
+                for values in [ReadValues::Codes, ReadValues::Linear] {
+                    for (x, y) in [
+                        (0, 0),
+                        (width - 1, height - 1),
+                        (width / 2, height / 2),
+                        (width / 3, height / 5),
+                        (width * 4 / 5, height * 2 / 3),
+                    ] {
+                        reads.push(point(stage, x, y, values));
+                    }
+                    reads.push((
+                        stage,
+                        Region {
+                            x0: width / 4,
+                            y0: height / 4,
+                            width: 7,
+                            height: 5,
+                        },
+                        values,
+                    ));
+                }
+                let (answers, thread) = call(&service, client, &stack, &reads);
+                assert_eq!(thread, "luxforge-gpu-tiles", "{what}: the worker reads");
+                assert_eq!(answers.len(), reads.len(), "{what}");
+                for ((_, rect, values), answer) in reads.iter().zip(&answers) {
+                    let at = format!("{what}, {stage:?}, {rect:?} as {values:?}");
+                    assert_eq!(answer.answered, Answered::gpu(), "{at}");
+                    assert_eq!((answer.stage, answer.rect), (plan.size, *rect), "{at}");
+                    for y in rect.y0..rect.y1() {
+                        for x in rect.x0..rect.x1() {
+                            let index = (y * width + x) as usize;
+                            match values {
+                                ReadValues::Codes => assert_eq!(
+                                    answer.code(x, y),
+                                    Some(codes[index]),
+                                    "{at}, ({x}, {y}): the surface's code"
+                                ),
+                                ReadValues::Linear => {
+                                    let ReadPixels::Linear(drawn) =
+                                        plan.answer(ReadValues::Linear, [linear[index]])
+                                    else {
+                                        panic!("{at}: linear values answer linear values");
+                                    };
+                                    assert_eq!(
+                                        answer.linear(x, y).map(|value| value.map(f32::to_bits)),
+                                        Some(drawn[0].map(f32::to_bits)),
+                                        "{at}, ({x}, {y}): the runner's linear value"
+                                    );
+                                }
+                            }
+                            compared += 1;
+                        }
+                    }
+                }
+            }
+            eprintln!(
+                "{test}: {what}: {compared} pixels read through the worker over {} stages, bit for \
+                 bit the surface's codes and the runner's linear values",
+                recipe.layers.len() + 2
+            );
+        }
+    }
+    eprintln!("{test}: the worker's figures {:?}", service.figures());
+}
+
+/// The output stage and the stage the last layer receives, read through the worker and through
+/// the reference service at the cells of a 9 × 9 grid, for every family on both paths: within
+/// the family's class's display limit — mean ΔE00, p99 and the signed mean ΔL\*, a worst block
+/// having no meaning over scattered points — with each figure printed.
+#[test]
+fn a_read_is_within_the_display_limit_of_the_reference_service() {
+    let test = "a_read_is_within_the_display_limit_of_the_reference_service";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let service = GpuTiles::new(Some((backend, name)), false);
+    let reference = ReferenceTiles::new();
+    let client = clients(1)[0];
+    let registry = ModuleRegistry::builtin();
+    for (format, path) in [
+        (BoundaryFormat::Half, "the byte path"),
+        (BoundaryFormat::Float, "the linear path"),
+    ] {
+        let source = source(format);
+        for (family, recipe) in families() {
+            let class = if family.contains("Presence") || family.contains("Detail") {
+                Class::Spatial
+            } else {
+                Class::Pointwise
+            };
+            let limits = class.limits();
+            let stack = stack(&source, &recipe, true);
+            let last = recipe.layers.len() - 1;
+            for stage in [
+                ReadStage::Output,
+                ReadStage::Before {
+                    layer: last,
+                    mode: mode(&registry, &recipe, last),
+                },
+            ] {
+                let size = plan_read(&stack, stage, WHOLE).expect("a plan").size;
+                let reads: Vec<Read> = (0..9)
+                    .flat_map(|row| (0..9).map(move |column| (row, column)))
+                    .map(|(row, column)| {
+                        point(
+                            stage,
+                            (2 * column + 1) * size.width / 18,
+                            (2 * row + 1) * size.height / 18,
+                            ReadValues::Codes,
+                        )
+                    })
+                    .collect();
+                let (gpu, _) = call(&service, client, &stack, &reads);
+                let (cpu, _) = call(&reference, client, &stack, &reads);
+                let (mut delta_e, mut delta_l) = (Vec::new(), Vec::new());
+                for ((_, rect, _), (gpu, cpu)) in reads.iter().zip(gpu.iter().zip(&cpu)) {
+                    assert_eq!(gpu.answered, Answered::gpu(), "{family} on {path}");
+                    let (ours, theirs) = (
+                        gpu.code(rect.x0, rect.y0).expect("the GPU's code"),
+                        cpu.code(rect.x0, rect.y0).expect("the reference's code"),
+                    );
+                    let ours = lab_from_srgb8([ours[0], ours[1], ours[2]]);
+                    let theirs = lab_from_srgb8([theirs[0], theirs[1], theirs[2]]);
+                    delta_e.push(ciede2000(theirs, ours));
+                    delta_l.push(ours[0] - theirs[0]);
+                }
+                let figures =
+                    statistics_of(reads.len(), 1, &delta_e, &delta_l).expect("the statistics");
+                eprintln!(
+                    "{test}: {family} on {path}, {stage:?}: {} samples, mean ΔE00 {:.4}, p99 \
+                     {:.3}, signed mean ΔL* {:+.4}, max {:.3}, against the {} limits {} / {} / {}",
+                    figures.pixels,
+                    figures.mean,
+                    figures.p99,
+                    figures.mean_delta_l,
+                    figures.max,
+                    class.name(),
+                    limits.mean,
+                    limits.p99,
+                    limits.mean_delta_l,
+                );
+                assert!(
+                    figures.mean <= limits.mean
+                        && figures.p99 <= limits.p99
+                        && figures.mean_delta_l.abs() <= limits.mean_delta_l,
+                    "{family} on {path}, {stage:?}: {figures:?} past the {} limits",
+                    class.name()
+                );
+            }
+        }
+    }
+    reference.stop();
+}
+
+/// The neutral picker's patch, the 25 points of a 5 × 5 square read one at a time from its corner
+/// before Basic, behind Detail, through one call: one tile drawn, its points the patch one
+/// rectangle read answers; and once the call is answered the worker holds nothing of its stack,
+/// not even the window of its source the runner kept.
+#[test]
+fn a_picks_25_points_render_one_window() {
+    let test = "a_picks_25_points_render_one_window";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let service = GpuTiles::new(Some((backend, name)), false);
+    let client = clients(1)[0];
+    let registry = ModuleRegistry::builtin();
+    let recipe = Recipe {
+        layers: vec![
+            Layer::new(
+                DETAIL_EFFECT,
+                json!({"sharpening": 60.0, "luminance": 30.0}),
+            ),
+            Layer::new(BASIC_EFFECT, json!({"exposure": 0.3, "contrast": 15.0})),
+            Layer::new(PRESENCE_EFFECT, json!({"clarity": 30.0, "dehaze": 15.0})),
+        ],
+        ..Recipe::default()
+    };
+    let stage = ReadStage::Before {
+        layer: 1,
+        mode: mode(&registry, &recipe, 1),
+    };
+    let (cx, cy) = (WIDTH / 2, HEIGHT / 3);
+    let points: Vec<Read> = (cy - 2..=cy + 2)
+        .flat_map(|y| (cx - 2..=cx + 2).map(move |x| point(stage, x, y, ReadValues::Codes)))
+        .collect();
+    let patch = Region {
+        x0: cx - 2,
+        y0: cy - 2,
+        width: 5,
+        height: 5,
+    };
+    for (format, path) in [
+        (BoundaryFormat::Half, "the byte path"),
+        (BoundaryFormat::Float, "the linear path"),
+    ] {
+        let stack = stack(&source(format), &recipe, true);
+        settle(&service, client);
+        let before = service.figures();
+        let (answers, _) = call(&service, client, &stack, &points);
+        settle(&service, client);
+        let after = service.figures();
+        assert_eq!(
+            after.tiles - before.tiles,
+            1,
+            "{path}: one tile for 25 points"
+        );
+        assert_eq!(
+            after.reads - before.reads,
+            25,
+            "{path}: every point the GPU's"
+        );
+        let (whole, _) = call(
+            &service,
+            client,
+            &stack,
+            &[(stage, patch, ReadValues::Codes)],
+        );
+        for ((_, rect, _), answer) in points.iter().zip(&answers) {
+            assert_eq!(answer.answered, Answered::gpu(), "{path}");
+            assert_eq!(
+                answer.code(rect.x0, rect.y0),
+                whole[0].code(rect.x0, rect.y0),
+                "{path}: ({}, {})",
+                rect.x0,
+                rect.y0
+            );
+        }
+        eprintln!("{test}: {path}: 25 points before Basic behind Detail, one tile: {after:?}");
+    }
+
+    // A stack over pixels nothing else holds: once its call is answered, the worker has let go of
+    // its evaluation, its source and the window of it the runner kept.
+    let (fresh, held) = fresh_stack(&stack(&source(BoundaryFormat::Half), &recipe, true));
+    call(&service, client, &fresh, &points);
+    drop(fresh);
+    settle(&service, client);
+    assert!(
+        held.upgrade().is_none(),
+        "the worker keeps nothing of an answered call's stack"
+    );
+    assert_eq!(
+        service.figures().in_use,
+        0,
+        "the runner's window went with the call"
+    );
+}
+
+/// A colour-limited stroke's seed reads the codes of the stage its masked layer receives, and
+/// `mask.sample-input` the linear values of that stage, each in a call of its own: every seed is
+/// the core quantizer's code of the sample input there, for every masked layer of every family on
+/// both paths.
+#[test]
+fn a_seed_is_the_code_of_the_sample_input() {
+    let test = "a_seed_is_the_code_of_the_sample_input";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let service = GpuTiles::new(Some((backend, name)), false);
+    let client = clients(1)[0];
+    let registry = ModuleRegistry::builtin();
+    let mut seeds = 0;
+    for format in [BoundaryFormat::Half, BoundaryFormat::Float] {
+        let source = source(format);
+        for (family, recipe) in families() {
+            let stack = stack(&source, &recipe, true);
+            for (layer, _) in recipe
+                .layers
+                .iter()
+                .enumerate()
+                .filter(|(_, layer)| layer.mask.is_some())
+            {
+                let stage = ReadStage::Before {
+                    layer,
+                    mode: mode(&registry, &recipe, layer),
+                };
+                let at = [(17, 23), (WIDTH / 2, HEIGHT / 2), (WIDTH - 9, HEIGHT - 4)];
+                let read = |values| -> Vec<Read> {
+                    at.iter()
+                        .map(|&(x, y)| point(stage, x, y, values))
+                        .collect()
+                };
+                let (codes, _) = call(&service, client, &stack, &read(ReadValues::Codes));
+                let (inputs, _) = call(&service, client, &stack, &read(ReadValues::Linear));
+                for ((x, y), (seed, input)) in at.into_iter().zip(codes.iter().zip(&inputs)) {
+                    let what = format!("{family} on {format:?}, before layer {layer}, ({x}, {y})");
+                    assert_eq!(seed.answered, Answered::gpu(), "{what}");
+                    assert_eq!(input.answered, Answered::gpu(), "{what}");
+                    let value = input.linear(x, y).expect("the sample input");
+                    assert_eq!(
+                        seed.code(x, y),
+                        Some([code(value[0]), code(value[1]), code(value[2]), 255]),
+                        "{what}: the seed is the code of the sample input {value:?}"
+                    );
+                    seeds += 1;
+                }
+            }
+        }
+    }
+    assert!(seeds > 0, "masked layers were read");
+    eprintln!("{test}: {seeds} seeds, each the code of its sample input");
+}
+
+/// What the GPU cannot draw is answered by the reference, naming why, with the reference's own
+/// pixels: a stack whose Dehaze light the store does not hold, each read of its call after the
+/// first included, and its stream refused at once; a launch that refused the GPU, which opens
+/// nothing; an adapter the host does not offer by that name, which the status then names; and a
+/// desktop that named no adapter.
+#[test]
+fn a_plan_the_gpu_cannot_run_is_answered_by_the_reference_naming_why() {
+    let test = "a_plan_the_gpu_cannot_run_is_answered_by_the_reference_naming_why";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let client = clients(1)[0];
+    let source = source(BoundaryFormat::Half);
+    let (_, recipe) = families()
+        .into_iter()
+        .find(|(family, _)| *family == "Presence")
+        .expect("the Presence family");
+    let reference = ReferenceTiles::new();
+    // The light no frame has stored: the GPU would take it from a tile alone. The read of the
+    // source before Presence, which needs no light, is the reference's too: what remains of a call
+    // after a read the GPU cannot draw is the reference's.
+    let unheld = stack(&source, &recipe, false);
+    let reads = [
+        point(ReadStage::Output, 40, 30, ReadValues::Codes),
+        point(
+            ReadStage::Before {
+                layer: 0,
+                mode: MaskInputMode::Boundary,
+            },
+            40,
+            30,
+            ReadValues::Codes,
+        ),
+    ];
+    let service = GpuTiles::new(Some((backend.clone(), name.clone())), false);
+    let why = TileFallback::Plan(GpuFallback::RegionEstimate { layer: 0 });
+    assert_eq!(
+        service.stream(&unheld, &Cancel::new()).err(),
+        Some(why.clone()),
+        "a stream of it is refused at once"
+    );
+    let (answers, _) = call(&service, client, &unheld, &reads);
+    let (expected, _) = call(&reference, client, &unheld, &reads);
+    for (answer, expected) in answers.iter().zip(&expected) {
+        assert_eq!(answer.answered, Answered::reference(Some(why.clone())));
+        assert_eq!(answer.pixels, expected.pixels, "the reference's own pixels");
+    }
+    assert_eq!(service.status(), TileStatus::Gpu, "the runner itself draws");
+    // The reference's answer rendered Presence's frame, which stored its light: from then on the
+    // GPU draws the stack, as it draws one whose light a settled frame stored.
+    let (answers, _) = call(&service, client, &unheld, &reads);
+    assert!(
+        answers
+            .iter()
+            .all(|answer| answer.answered == Answered::gpu()),
+        "once the light is stored the GPU draws it"
+    );
+    let held = stack(&source, &recipe, true);
+
+    // A launch that refused the GPU opens nothing, and says so.
+    let refused = GpuTiles::new(Some((backend.clone(), name.clone())), true);
+    let refusal = TileFallback::Unavailable(TileUnavailable::Refused);
+    assert_eq!(
+        refused.status(),
+        TileStatus::Reference(Some(refusal.clone()))
+    );
+    let (answers, _) = call(&refused, client, &held, &reads[..1]);
+    assert_eq!(
+        answers[0].answered,
+        Answered::reference(Some(refusal.clone()))
+    );
+    assert_eq!(answers[0].pixels, expected[0].pixels);
+    assert_eq!(refused.stream(&held, &Cancel::new()).err(), Some(refusal));
+    settle(&refused, client);
+    assert_eq!(refused.figures().adapter, None, "nothing was opened");
+
+    // An adapter the host does not offer by that name is refused by name, never replaced.
+    let mismatched = GpuTiles::new(Some((backend, "an adapter no host offers".into())), false);
+    assert_eq!(
+        mismatched.status(),
+        TileStatus::Gpu,
+        "not known until a call opens the runner"
+    );
+    let (answers, _) = call(&mismatched, client, &held, &reads[..1]);
+    let mismatch = TileFallback::Unavailable(TileUnavailable::AdapterMismatch);
+    assert_eq!(
+        answers[0].answered,
+        Answered::reference(Some(mismatch.clone()))
+    );
+    assert_eq!(answers[0].pixels, expected[0].pixels);
+    assert_eq!(mismatched.status(), TileStatus::Reference(Some(mismatch)));
+    settle(&mismatched, client);
+    let figures = mismatched.figures();
+    assert!(
+        figures
+            .refusal
+            .as_deref()
+            .is_some_and(|refusal| refusal.contains("an adapter no host offers")),
+        "the refusal names the adapter asked for: {figures:?}"
+    );
+
+    // A desktop that named no adapter.
+    assert_eq!(
+        GpuTiles::new(None, false).status(),
+        TileStatus::Reference(Some(TileFallback::Unavailable(TileUnavailable::NoAdapter)))
+    );
+    reference.stop();
+}
+
+/// A read submitted while the worker is held before an export's tile is answered once that one
+/// tile is drawn, before the next; a stream whose two bands its encoder has not taken draws
+/// nothing more, and a read then waits behind no tile at all; and once the encoder takes a band,
+/// the stream draws on.
+#[test]
+fn an_interactive_read_waits_behind_at_most_one_export_tile() {
+    let test = "an_interactive_read_waits_behind_at_most_one_export_tile";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let service = Arc::new(GpuTiles::new(Some((backend, name)), false));
+    service.draw_streams_at(vec![SIDE]);
+    let client = clients(1)[0];
+    let (_, recipe) = families()
+        .into_iter()
+        .find(|(family, _)| *family == "Presence")
+        .expect("the Presence family");
+    let stack = stack(&source(BoundaryFormat::Half), &recipe, true);
+    // A read whose call notes how many tiles the worker had drawn when it began answering it.
+    let observed = |service: &Arc<GpuTiles>| {
+        let (seen, noted) = mpsc::sync_channel(1);
+        let (done, finished) = mpsc::sync_channel(1);
+        let (observer, held) = (Arc::clone(service), stack.clone());
+        service.submit(TileCall::caller(
+            client,
+            Cancel::new(),
+            move |tiles, cancel| {
+                let _ = seen.send(observer.figures().tiles);
+                let (stage, rect, values) = point(ReadStage::Output, 50, 60, ReadValues::Codes);
+                let answer = tiles.session(&held, cancel).read(stage, rect, values)?;
+                Ok(json!(answer.answered == Answered::gpu()))
+            },
+            move |result| {
+                let _ = done.send(result);
+            },
+        ));
+        (noted, finished)
+    };
+
+    // Held before the stream's beginning, then before its first tile.
+    let begin = shut();
+    service.hold_steps(Some(Arc::clone(&begin)));
+    let mut bands = service.stream(&stack, &Cancel::new()).expect("a stream");
+    wait_until("the worker held before the stream begins", || {
+        begin.holding()
+    });
+    let first = next_step(&service, &begin);
+    let drawn = service.figures().tiles;
+    let (noted, finished) = observed(&service);
+    service.hold_steps(None);
+    first.open();
+    assert_eq!(
+        noted.recv_timeout(HANG).expect("the read begins"),
+        drawn + 1,
+        "the read waited behind the one tile being drawn, and no more"
+    );
+    assert_eq!(
+        finished
+            .recv_timeout(HANG)
+            .expect("answered")
+            .expect("read"),
+        json!(true),
+        "the GPU drew the read"
+    );
+
+    // The encoder takes no band: once two wait for it the stream draws nothing more.
+    wait_until("two bands wait for the encoder", || {
+        service.figures().bands == EXPORT_BANDS_IN_FLIGHT as u64
+    });
+    settle(&*service, client);
+    let parked = service.figures();
+    let (noted, finished) = observed(&service);
+    assert_eq!(
+        noted.recv_timeout(HANG).expect("the read begins"),
+        parked.tiles,
+        "a read waits behind no tile of a stream with no room"
+    );
+    finished
+        .recv_timeout(HANG)
+        .expect("answered")
+        .expect("read");
+    settle(&*service, client);
+    assert_eq!(
+        service.figures().bands,
+        parked.bands,
+        "the stream draws no band while two wait"
+    );
+
+    // The encoder takes one: the stream draws its next band.
+    let band = bands.next().expect("a band").expect("the first band");
+    assert_eq!(band.y0, 0);
+    wait_until("a third band", || {
+        service.figures().bands == EXPORT_BANDS_IN_FLIGHT as u64 + 1
+    });
+    eprintln!("{test}: {:?}", service.figures());
+    drop(bands);
+}
+
+/// Every family on both paths streamed in tiles of [`SIDE`], the worker's scratch starting from
+/// NaN: its bands, stitched, are bit for bit the whole output stage the photo surface's own
+/// drawing draws as one region on another device of the same adapter, so its tiles carry no seam.
+#[test]
+fn a_stream_is_the_whole_stage_render_bit_for_bit() {
+    let test = "a_stream_is_the_whole_stage_render_bit_for_bit";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let window = adapters::open(&backend, &name)
+        .unwrap_or_else(|unopened| panic!("{test}: the surface's device: {unopened:?}"));
+    let mut surface = HeadlessSurface::new(&window.device, &window.queue);
+    let service = GpuTiles::new(Some((backend, name)), false);
+    service.poison(true);
+    service.draw_streams_at(vec![SIDE]);
+    let mut versions = 0;
+    for (format, path) in [
+        (BoundaryFormat::Half, "the byte path"),
+        (BoundaryFormat::Float, "the linear path"),
+    ] {
+        let source = source(format);
+        versions += 1;
+        let gpu = gpu_source(versions, &source);
+        for (family, recipe) in families() {
+            let what = format!("{family} on {path}");
+            let stack = stack(&source, &recipe, true);
+            versions += 1;
+            let (plan, codes) =
+                drawn_whole(&mut surface, &gpu, &stack, ReadStage::Output, versions);
+            let bands = service
+                .stream(&stack, &Cancel::new())
+                .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"));
+            assert_eq!(bands.answered(), &Answered::gpu(), "{what}");
+            let rgba = stitched(bands, SIDE);
+            assert_eq!(rgba.len(), codes.len() * 4, "{what}: the whole stage");
+            if let Some(difference) = first_difference(plan.size.width, &rgba, &codes.concat()) {
+                panic!("{what}: the stream against the surface's region: {difference}");
+            }
+            eprintln!(
+                "{test}: {what}: {} x {} in tiles of {SIDE}, bit for bit the surface's region",
+                plan.size.width, plan.size.height
+            );
+        }
+    }
+    eprintln!("{test}: the worker's figures {:?}", service.figures());
+}
+
+/// The same export streamed twice on one worker, and once on a second worker's device of the
+/// same adapter, in tiles of [`SIDE`] and at the longest side: byte-identical, for the heavier
+/// families on both paths.
+#[test]
+fn two_streams_are_byte_identical() {
+    let test = "two_streams_are_byte_identical";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let adapter = Some((backend, name));
+    for (sides, tiles) in [
+        (Some(vec![SIDE]), "tiles of 64"),
+        (None, "the longest side"),
+    ] {
+        let (one, two) = (
+            GpuTiles::new(adapter.clone(), false),
+            GpuTiles::new(adapter.clone(), false),
+        );
+        if let Some(sides) = sides {
+            one.draw_streams_at(sides.clone());
+            two.draw_streams_at(sides);
+        }
+        for (format, path) in [
+            (BoundaryFormat::Half, "the byte path"),
+            (BoundaryFormat::Float, "the linear path"),
+        ] {
+            let source = source(format);
+            for (family, recipe) in families().into_iter().filter(|(family, _)| {
+                [
+                    "Presence after Detail",
+                    "a lens warp",
+                    "a masked Presence after Basic",
+                ]
+                .contains(family)
+            }) {
+                let what = format!("{family} on {path} in {tiles}");
+                let stack = stack(&source, &recipe, true);
+                let stream = |service: &GpuTiles| {
+                    stitched(
+                        service.stream(&stack, &Cancel::new()).expect("a stream"),
+                        u32::MAX,
+                    )
+                };
+                let first = stream(&one);
+                assert!(
+                    first.iter().any(|byte| *byte != first[0]),
+                    "{what}: a picture"
+                );
+                assert!(stream(&one) == first, "{what}: twice on one device");
+                assert!(stream(&two) == first, "{what}: on a second device");
+                eprintln!("{test}: {what}: byte-identical three times, on two devices");
+            }
+        }
+    }
+}
+
+/// A stream held before its second tile and cancelled there draws nothing more: its encoder reads
+/// the cancellation and then the end, the worker lets go of the window of the source its runner
+/// held and of the stack itself, and its figures say so.
+#[test]
+fn a_cancelled_stream_stops_between_tiles_and_frees_its_slots() {
+    let test = "a_cancelled_stream_stops_between_tiles_and_frees_its_slots";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let service = GpuTiles::new(Some((backend, name)), false);
+    service.draw_streams_at(vec![SIDE]);
+    let client = clients(1)[0];
+    let (_, recipe) = families()
+        .into_iter()
+        .find(|(family, _)| *family == "Presence after Detail")
+        .expect("the family");
+    let (stack, held) = fresh_stack(&stack(&source(BoundaryFormat::Half), &recipe, true));
+    let cancel = Cancel::new();
+    let begin = shut();
+    service.hold_steps(Some(Arc::clone(&begin)));
+    let mut bands = service.stream(&stack, &cancel).expect("a stream");
+    drop(stack);
+    wait_until("the worker held before the stream begins", || {
+        begin.holding()
+    });
+    let first = next_step(&service, &begin);
+    let second = next_step(&service, &first);
+    let drawing = service.figures();
+    assert_eq!(drawing.tiles, 1, "one tile drawn");
+    assert!(drawing.in_use > 0, "the runner holds the tile's window");
+
+    cancel.cancel();
+    service.hold_steps(None);
+    second.open();
+    let ended = bands.next().expect("the end").expect_err("cancelled");
+    assert_eq!(ended.kind.code(), "cancelled");
+    assert!(bands.next().is_none(), "nothing after the cancellation");
+    settle(&service, client);
+    let after = service.figures();
+    assert_eq!(after.tiles, drawing.tiles, "no tile after the cancellation");
+    assert_eq!(after.bands, 0);
+    assert_eq!(after.in_use, 0, "the runner's window let go");
+    assert!(
+        held.upgrade().is_none(),
+        "the worker holds nothing of a cancelled stream's stack"
+    );
+    eprintln!("{test}: {after:?}");
+}
+
+/// A stream whose device is lost before a tile ends naming `device-lost` in its error's data, the
+/// export lane's cue to render it again with the reference; from then on the status names it, a
+/// read is the reference's naming it, and a stream is refused at once.
+#[test]
+fn a_lost_device_ends_the_stream_with_device_lost() {
+    let test = "a_lost_device_ends_the_stream_with_device_lost";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let service = GpuTiles::new(Some((backend, name)), false);
+    service.draw_streams_at(vec![SIDE]);
+    let client = clients(1)[0];
+    let (_, recipe) = families()
+        .into_iter()
+        .find(|(family, _)| *family == "a colour stack")
+        .expect("the family");
+    let stack = stack(&source(BoundaryFormat::Half), &recipe, true);
+    let begin = shut();
+    service.hold_steps(Some(Arc::clone(&begin)));
+    let mut bands = service.stream(&stack, &Cancel::new()).expect("a stream");
+    wait_until("the worker held before the stream begins", || {
+        begin.holding()
+    });
+    let first = next_step(&service, &begin);
+    service.lose_device();
+    service.hold_steps(None);
+    first.open();
+
+    let ended = bands
+        .next()
+        .expect("the end")
+        .expect_err("the device was lost");
+    let data = ended.data.as_deref().cloned().unwrap_or_default();
+    assert_eq!(data["fallback"], "tiles-unavailable", "{ended:?}");
+    assert_eq!(data["unavailable"], "device-lost", "{ended:?}");
+    assert!(bands.next().is_none());
+    let lost = TileFallback::Unavailable(TileUnavailable::DeviceLost);
+    assert_eq!(service.status(), TileStatus::Reference(Some(lost.clone())));
+    let (answers, _) = call(
+        &service,
+        client,
+        &stack,
+        &[point(ReadStage::Output, 3, 3, ReadValues::Codes)],
+    );
+    assert_eq!(answers[0].answered, Answered::reference(Some(lost.clone())));
+    assert_eq!(service.stream(&stack, &Cancel::new()).err(), Some(lost));
+    eprintln!("{test}: {:?}", service.figures());
+}
+
+/// A call of `client` answering `value`, which reads nothing, and its answer.
+fn plain(client: ClientId, value: Value) -> (TileCall, mpsc::Receiver<Result<Value, Error>>) {
+    let (done, answer) = mpsc::sync_channel(1);
+    (
+        TileCall::caller(
+            client,
+            Cancel::new(),
+            move |_, _| Ok(value),
+            move |result| {
+                let _ = done.send(result);
+            },
+        ),
+        answer,
+    )
+}
+
+/// No thread before the first call; past the queue's capacity a call is refused at once with
+/// `resource-limit` on its own reply while the worker is held, and the calls queued before it are
+/// answered once it is released, in order.
+#[test]
+fn a_full_queue_refuses_at_once_with_resource_limit() {
+    let service = GpuTiles::with_capacity(2, None, false);
+    assert!(!service.started(), "no thread before the first call");
+    let gate = shut();
+    service.hold_calls(Some(Arc::clone(&gate)));
+    let client = clients(1)[0];
+    let (first, first_answer) = plain(client, json!(1));
+    service.submit(first);
+    gate.wait_reached(1, "the worker, with the first call");
+    assert!(service.started());
+    let (second, second_answer) = plain(client, json!(2));
+    let (third, third_answer) = plain(client, json!(3));
+    service.submit(second);
+    service.submit(third);
+    assert_eq!(service.waiting(), 2);
+    let (fourth, fourth_answer) = plain(client, json!(4));
+    service.submit(fourth);
+    assert_eq!(
+        fourth_answer
+            .recv_timeout(HANG)
+            .expect("refused at once")
+            .unwrap_err()
+            .kind
+            .code(),
+        "resource-limit"
+    );
+    gate.open();
+    for (answer, value) in [(first_answer, 1), (second_answer, 2), (third_answer, 3)] {
+        assert_eq!(answer.recv_timeout(HANG).unwrap().unwrap(), json!(value));
+    }
+}
+
+/// A disconnect drops that client's waiting calls, whose replies close unanswered, and keeps the
+/// others'; a disconnect of the client whose call is being answered cancels it before it reads.
+#[test]
+fn a_disconnect_drops_a_clients_waiting_reads() {
+    let service = GpuTiles::with_capacity(4, None, false);
+    let gate = shut();
+    service.hold_calls(Some(Arc::clone(&gate)));
+    let ids = clients(3);
+    let (first, first_answer) = plain(ids[0], json!(1));
+    service.submit(first);
+    gate.wait_reached(1, "the worker, with the first call");
+    let (second, second_answer) = plain(ids[1], json!(2));
+    let (third, third_answer) = plain(ids[2], json!(3));
+    service.submit(second);
+    service.submit(third);
+    assert_eq!(service.waiting(), 2);
+    service.disconnect(ids[1]);
+    assert_eq!(service.waiting(), 1);
+    assert!(
+        second_answer.recv_timeout(HANG).is_err(),
+        "a disconnected client's call is dropped, not answered"
+    );
+    service.disconnect(ids[0]);
+    gate.open();
+    assert_eq!(
+        first_answer
+            .recv_timeout(HANG)
+            .unwrap()
+            .unwrap_err()
+            .kind
+            .code(),
+        "cancelled"
+    );
+    assert_eq!(third_answer.recv_timeout(HANG).unwrap().unwrap(), json!(3));
+}

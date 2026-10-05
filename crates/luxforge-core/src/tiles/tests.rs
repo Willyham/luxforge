@@ -6,6 +6,7 @@ use crate::{
     editor::pixels::{PixelRead, PixelReadKey},
 };
 use luxforge_testbase::HANG;
+use std::sync::atomic::AtomicUsize;
 
 fn band(y0: u32, rows: u32, width: u32) -> Band {
     Band {
@@ -56,6 +57,59 @@ fn a_band_stream_hands_its_bands_in_order_and_ends_at_its_last_row() {
         !sender.send(Ok(band(0, 2, 3))),
         "a dropped stream abandons its provider"
     );
+}
+
+/// A waking stream tells its provider each time it hands a band to its encoder, which leaves room
+/// for one more, and once when it is dropped, which its provider also reads: so a provider on a
+/// thread of its own sends a band only when the stream has room for it. A stream asked for without
+/// a wake is still read as abandoned once dropped.
+#[test]
+fn a_waking_stream_tells_its_provider_of_each_band_taken_and_of_its_drop() {
+    let woken = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&woken);
+    let (sender, mut stream) = BandStream::waking(3, 5, Answered::gpu(), move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+    });
+    assert!(sender.send(Ok(band(0, 2, 3))));
+    assert!(sender.send(Ok(band(2, 3, 3))));
+    assert_eq!(woken.load(Ordering::SeqCst), 0, "nothing taken yet");
+    assert_eq!(stream.next().unwrap().unwrap(), band(0, 2, 3));
+    assert_eq!(woken.load(Ordering::SeqCst), 1, "one band taken");
+    assert_eq!(stream.next().unwrap().unwrap(), band(2, 3, 3));
+    assert!(stream.next().is_none(), "the last row has arrived");
+    assert_eq!(
+        woken.load(Ordering::SeqCst),
+        2,
+        "an ended stream takes nothing more"
+    );
+    assert!(!sender.abandoned());
+    drop(stream);
+    assert_eq!(
+        woken.load(Ordering::SeqCst),
+        3,
+        "the drop wakes the provider"
+    );
+    assert!(sender.abandoned());
+    assert!(!sender.send(Ok(band(0, 2, 3))));
+
+    let (sender, stream) = BandStream::channel(3, 5, Answered::gpu());
+    assert!(!sender.abandoned());
+    drop(stream);
+    assert!(sender.abandoned());
+}
+
+/// The reason a provider's GPU stage gives is answered under the stage's own code.
+#[test]
+fn a_stage_reason_answers_its_own_code() {
+    for code in [
+        "pipeline-failed",
+        "texture-limit",
+        "buffer-limit",
+        "source-missing",
+        "warp-grid",
+    ] {
+        assert_eq!(TileFallback::Stage(code).code(), code);
+    }
 }
 
 /// A mutation's pixel read hands its pixels back to the owner's delivery when it runs, and its
