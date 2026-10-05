@@ -27,8 +27,10 @@
 //! - **In motion.** While a gesture's ticks are drawn on the GPU the inspector plots the counts of
 //!   the frame each drew, the frame on screen, marked updating, and hands them to no one.
 //! - **The seam.** A content the GPU presented whose counts fail, whose tiles the surface falls
-//!   back from, whose view plan's programs are still compiling, or whose stage is lost, is
-//!   refused: it is asked for again and the reference renders it.
+//!   back from, whose view plan's programs are still compiling once the compile has lasted the
+//!   status bar's half-second `compiling` threshold, or whose stage is lost, is refused: it is
+//!   asked for again and the reference renders it. A shorter compile leaves the frame on screen,
+//!   marked rendering, until the GPU's picture is drawn.
 use super::{
     Before, Editor,
     outcome::{self, Outcome},
@@ -238,6 +240,7 @@ impl Editor {
             self.presentation.motion = None;
         }
         let Some(target) = self.gpu.counts.clone() else {
+            self.gpu.rest_compiling_since = None;
             return Task::none();
         };
         // A newer frame replaced the content before its counts came: they describe nothing on
@@ -245,6 +248,7 @@ impl Editor {
         if self.presentation.presented_content != target.content
             || self.presentation.content_serial != target.content
         {
+            self.gpu.rest_compiling_since = None;
             self.gpu.counts = None;
             self.gpu.want_rest_counts(false);
             return Task::none();
@@ -252,11 +256,27 @@ impl Editor {
         if self.gpu_stage() != GpuStageState::Available {
             return self.refuse_gpu_content(&target, "stage-unavailable".to_owned());
         }
-        // Its programs are still compiling, so the GPU draws nothing of it yet: the reference
-        // renders it, as the warm-up's label says, rather than an earlier stack's frame standing.
+        // Its programs are still compiling, so the GPU draws nothing of it yet: the frame on screen
+        // stays, marked rendering, as for any compile a moment long; once the compile has lasted
+        // the status bar's `compiling` threshold the reference renders it, as the warm-up's label
+        // then says. The deadline's own wake ([`Editor::gpu_compile_deadline`]) or the compile
+        // thread's, whichever comes first, brings the next look.
         if self.gpu_rest_compiling() {
-            return self.refuse_gpu_content(&target, "compiling".to_owned());
+            let now = std::time::Instant::now();
+            let since = match self.gpu.rest_compiling_since {
+                Some((content, since)) if content == target.content => since,
+                _ => {
+                    self.gpu.rest_compiling_since = Some((target.content, now));
+                    now
+                }
+            };
+            if now.duration_since(since) >= crate::state::status::COMPILING_AFTER {
+                self.gpu.rest_compiling_since = None;
+                return self.refuse_gpu_content(&target, "compiling".to_owned());
+            }
+            return Task::none();
         }
+        self.gpu.rest_compiling_since = None;
         let drawn = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
         if let Some(figures) = drawn.gpu_rest.filter(|figures| {
             target.versions.contains(&figures.version) && figures.fallback.is_some()
@@ -323,6 +343,7 @@ impl Editor {
     /// The surface could not draw or count the content the GPU presented: the reference renders
     /// it, and the GPU presents it no more.
     fn refuse_gpu_content(&mut self, target: &CountsTarget, why: String) -> Task<super::Message> {
+        self.gpu.rest_compiling_since = None;
         self.gpu.counts = None;
         self.gpu.want_rest_counts(false);
         self.gpu.refused_content = Some(target.content);
@@ -333,6 +354,16 @@ impl Editor {
             || json!({"content": content, "why": why}),
         );
         self.request_current_preview()
+    }
+
+    /// Whether a stack the GPU presented waits on its picture at rest's compile, short of the
+    /// `compiling` threshold: the one wake the desktop asks for of the clock while it does, at
+    /// the threshold, besides the compile thread's own when the compile ends.
+    pub(crate) fn gpu_compile_deadline(&self) -> bool {
+        self.gpu
+            .rest_compiling_since
+            .zip(self.gpu.counts.as_ref())
+            .is_some_and(|((content, _), target)| content == target.content)
     }
 
     /// The counts of a gesture's newest tick the GPU drew, the frame on screen in motion: plotted

@@ -324,12 +324,12 @@ fn compare_over_a_content_the_gpu_presented_waits_for_the_references_frame_of_it
     finish(editor, catalog);
 }
 
-/// A stack the GPU presented whose picture at rest finds its programs still compiling is refused:
-/// the reference renders it, as the warm-up's label says, rather than an earlier stack's frame
-/// standing under a picture the GPU cannot draw yet.
+/// A stack the GPU presented whose picture at rest finds its programs compiling keeps the frame on
+/// screen, marked rendering, and asks for the clock's one wake at the status bar's `compiling`
+/// threshold: a compile that ends sooner leaves the stack the GPU's, with no reference render.
 #[test]
-fn a_presented_stack_whose_programs_are_compiling_is_the_references() {
-    let (mut editor, catalog) = opened_on_the_gpu("counts-compiling");
+fn a_presented_stack_whose_compile_ends_within_the_threshold_stays_the_gpus() {
+    let (mut editor, catalog) = opened_on_the_gpu("counts-compiling-short");
     let log = attach_log(&mut editor);
     commit(&mut editor, 0.4);
     // Presented, and its view plan handed to be drawn at rest once the release has settled.
@@ -337,20 +337,73 @@ fn a_presented_stack_whose_programs_are_compiling_is_the_references() {
         editor.gpu.counts.is_some() && editor.gpu_rest_plan().is_some()
     });
     let content = editor.presentation.content_serial;
+    let compiling = crate::app::gpu_preview::SurfaceReport {
+        fallback: Some(luxforge_ui::photo_surface::GpuFallback::Compiling),
+        ..crate::app::gpu_preview::SurfaceReport::default()
+    };
+    editor.gpu.surface = Some(compiling);
+    assert!(editor.gpu_rest_compiling());
+    drop(editor.update(Message::Preview(PreviewMessage::Poll)));
+    assert_eq!(
+        editor.presentation.gpu_presented,
+        Some(content),
+        "still the GPU's"
+    );
+    assert!(
+        editor.gpu_compile_deadline(),
+        "the threshold's wake is asked for"
+    );
+    assert!(editor.activity.render.is_none(), "marked rendering");
+    assert_eq!(
+        editor.workspace.status.fallback, None,
+        "no reference frame to name"
+    );
+    // The compile ends: the surface draws the GPU's picture and the wait ends with it.
+    surface_ready(&mut editor);
+    drop(editor.update(Message::Preview(PreviewMessage::Poll)));
+    assert!(!editor.gpu_compile_deadline());
     assert_eq!(editor.presentation.gpu_presented, Some(content));
+    let records = logged(&mut editor, &log);
+    assert!(
+        events(&records, "gpu_presented_refused").is_empty(),
+        "{records:?}"
+    );
+    assert!(
+        events(&records, "preview_job_requested")
+            .iter()
+            .all(|job| job["generation"].as_u64() < Some(editor.presentation.presented_generation)),
+        "no reference render"
+    );
+    finish(editor, catalog);
+}
+
+/// A compile that outlasts the threshold sends the stack to the reference, whose frame the
+/// warm-up's label then names, and the deadline's wake goes.
+#[test]
+fn a_presented_stack_whose_compile_outlasts_the_threshold_is_the_references() {
+    let (mut editor, catalog) = opened_on_the_gpu("counts-compiling-long");
+    let log = attach_log(&mut editor);
+    commit(&mut editor, 0.4);
+    deliver_until(&mut editor, "the committed stack presented", |editor| {
+        editor.gpu.counts.is_some() && editor.gpu_rest_plan().is_some()
+    });
+    let content = editor.presentation.content_serial;
     editor.gpu.surface = Some(crate::app::gpu_preview::SurfaceReport {
         fallback: Some(luxforge_ui::photo_surface::GpuFallback::Compiling),
         ..crate::app::gpu_preview::SurfaceReport::default()
     });
-    assert!(editor.gpu_rest_compiling());
+    drop(editor.update(Message::Preview(PreviewMessage::Poll)));
+    assert_eq!(editor.presentation.gpu_presented, Some(content));
+    // The threshold's wake, as if half a second had passed since the compile was first seen.
+    let (seen, since) = editor.gpu.rest_compiling_since.expect("the wait recorded");
+    editor.gpu.rest_compiling_since = Some((seen, since - crate::state::status::COMPILING_AFTER));
     drop(editor.update(Message::Preview(PreviewMessage::Poll)));
     let records = logged(&mut editor, &log);
-    assert_eq!(
-        events(&records, "gpu_presented_refused").len(),
-        1,
-        "{records:?}"
-    );
+    let refused = events(&records, "gpu_presented_refused");
+    assert_eq!(refused.len(), 1, "{records:?}");
+    assert_eq!(refused[0]["why"], "compiling");
     assert_eq!(editor.gpu.refused_content, Some(content));
     assert_eq!(editor.presentation.gpu_presented, None);
+    assert!(!editor.gpu_compile_deadline(), "no further wake");
     finish(editor, catalog);
 }
