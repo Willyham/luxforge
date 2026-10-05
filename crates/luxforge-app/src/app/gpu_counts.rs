@@ -27,8 +27,8 @@
 //! - **In motion.** While a gesture's ticks are drawn on the GPU the inspector plots the counts of
 //!   the frame each drew, the frame on screen, marked updating, and hands them to no one.
 //! - **The seam.** A content the GPU presented whose counts fail, whose tiles the surface falls
-//!   back from, or whose stage is lost, is refused: it is asked for again and the reference
-//!   renders it.
+//!   back from, whose view plan's programs are still compiling, or whose stage is lost, is
+//!   refused: it is asked for again and the reference renders it.
 use super::{
     Before, Editor,
     outcome::{self, Outcome},
@@ -251,6 +251,11 @@ impl Editor {
         }
         if self.gpu_stage() != GpuStageState::Available {
             return self.refuse_gpu_content(&target, "stage-unavailable".to_owned());
+        }
+        // Its programs are still compiling, so the GPU draws nothing of it yet: the reference
+        // renders it, as the warm-up's label says, rather than an earlier stack's frame standing.
+        if self.gpu_rest_compiling() {
+            return self.refuse_gpu_content(&target, "compiling".to_owned());
         }
         let drawn = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
         if let Some(figures) = drawn.gpu_rest.filter(|figures| {

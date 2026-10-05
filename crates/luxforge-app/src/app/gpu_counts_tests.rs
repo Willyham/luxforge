@@ -323,3 +323,33 @@ fn compare_over_a_content_the_gpu_presented_waits_for_the_references_frame_of_it
     assert_eq!(editor.presentation.presented_content, content);
     finish(editor, catalog);
 }
+
+/// A stack the GPU presented whose picture at rest finds its programs still compiling is refused:
+/// the reference renders it, as the warm-up's label says, rather than an earlier stack's frame
+/// standing under a picture the GPU cannot draw yet.
+#[test]
+fn a_presented_stack_whose_programs_are_compiling_is_the_references() {
+    let (mut editor, catalog) = opened_on_the_gpu("counts-compiling");
+    let log = attach_log(&mut editor);
+    commit(&mut editor, 0.4);
+    deliver_until(&mut editor, "the committed stack presented", |editor| {
+        editor.gpu.counts.is_some()
+    });
+    let content = editor.presentation.content_serial;
+    assert_eq!(editor.presentation.gpu_presented, Some(content));
+    editor.gpu.surface = Some(crate::app::gpu_preview::SurfaceReport {
+        fallback: Some(luxforge_ui::photo_surface::GpuFallback::Compiling),
+        ..crate::app::gpu_preview::SurfaceReport::default()
+    });
+    assert!(editor.gpu_rest_compiling());
+    drop(editor.update(Message::Preview(PreviewMessage::Poll)));
+    let records = logged(&mut editor, &log);
+    assert_eq!(
+        events(&records, "gpu_presented_refused").len(),
+        1,
+        "{records:?}"
+    );
+    assert_eq!(editor.gpu.refused_content, Some(content));
+    assert_eq!(editor.presentation.gpu_presented, None);
+    finish(editor, catalog);
+}
