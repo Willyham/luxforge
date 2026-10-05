@@ -3673,7 +3673,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         }
         captured.push(json!({"frame": frame["file"], "path": gpu["drawing_path"],
             "drawn_gpu_revision": gpu["drawn_gpu_revision"], "gpu_ms": frame["state"]["status_bar"]["gpu_ms"],
-            "approximate": gpu["gpu_preview"]["drag"]["approximate"]}));
+            "lights": gpu["gpu_preview"]["drag"]["lights"]}));
     }
     if options.gpu_preview_off {
         ensure(
