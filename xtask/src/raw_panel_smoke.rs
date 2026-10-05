@@ -32,6 +32,7 @@ pub const SCENARIO: &str = "raw-panel";
 const RAW_MODULE: &str = "luxforge.raw";
 const RAW_EFFECT: &str = "luxforge.raw";
 const BASIC_MODULE: &str = "luxforge.basic";
+const CROP_MODULE: &str = "luxforge.crop";
 /// The action Basic's Temperature and Tint send on a RAW photo's global target, and its fields.
 const SET_RAW: &str = "set-raw";
 const TEMPERATURE: &str = "temperature";
@@ -163,13 +164,21 @@ fn sample((x, y): (u32, u32)) -> script::Step {
 /// The crop steps follow the double-clicks: a draft opened on the RAW's whole input stage, given
 /// a 16:9 ratio and straightened, applied at Fit, inspected at 100% through two point samples,
 /// replaced by a `crop-fit` through the API at 100% and read again, then Fit. Every frame of a
-/// committed crop shows it with no notice over it.
+/// committed crop shows it with no notice over it. Crop mode focuses the Crop section, collapsing
+/// every other, and Apply restores them, so the draft's frames show Crop and not Basic, and every
+/// later frame Basic again.
 fn crop_steps() -> Vec<Step> {
     let at_100 = |step: Step| step.percent(100.0).no_notices();
-    vec![
-        Step::new(names::CROP_STARTED, DraftStep::Start),
-        Step::new("crop-ratio", DraftStep::Preset("16:9".into())),
-        Step::new(names::CROP_STRAIGHTENED, DraftStep::Angle(CROP_ANGLE)),
+    let focused = |step: Step| step.expanded(CROP_MODULE).collapsed(BASIC_MODULE);
+    let drafting = [
+        focused(Step::new(names::CROP_STARTED, DraftStep::Start)),
+        focused(Step::new("crop-ratio", DraftStep::Preset("16:9".into()))),
+        focused(Step::new(
+            names::CROP_STRAIGHTENED,
+            DraftStep::Angle(CROP_ANGLE),
+        )),
+    ];
+    let committed = [
         // Apply commits one entry.
         Step::new(names::CROP_APPLIED, DraftStep::Apply)
             .commits(1)
@@ -191,7 +200,15 @@ fn crop_steps() -> Vec<Step> {
         Step::new(names::FITTED_AT_FIT, ViewStep::Fit)
             .fit()
             .no_notices(),
-    ]
+    ];
+    drafting
+        .into_iter()
+        .chain(
+            committed
+                .into_iter()
+                .map(|step| step.expanded(BASIC_MODULE)),
+        )
+        .collect()
 }
 
 /// Every frame, in order: the open, then one per step. The expectations here are what each step
@@ -258,15 +275,15 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         Step::new(names::PICK_LEFT, script::Step::key(script::KEY_ESCAPE)).mode(POINTER_MODE),
     );
     // A straightened crop drafted, applied and inspected; see `crop_steps`.
+    // Basic's section, expanded in every frame but the crop draft's, whose steps say what they
+    // show; that its White balance fields are the RAW development's is `verify`'s proof that the
+    // source opened as RAW.
+    let mut steps: Vec<Step> = steps
+        .into_iter()
+        .map(|step| step.expanded(BASIC_MODULE))
+        .collect();
     steps.extend(crop_steps());
-    // Basic's section, expanded in every frame; that its White balance fields are the RAW
-    // development's is `verify`'s proof that the source opened as RAW.
-    Plan::new(
-        steps
-            .into_iter()
-            .map(|step| step.expanded(BASIC_MODULE))
-            .collect(),
-    )
+    Plan::new(steps)
 }
 
 fn raw_payload(frame: &Value) -> Result<&Value> {
@@ -1998,7 +2015,8 @@ mod tests {
     }
 
     /// One frame for the open and one per script step, each step named for what it scripts and
-    /// every frame held to Basic's section expanded; and the table's row runs this plan, outside
+    /// every frame held to Basic's section expanded but the crop draft's, which hold Crop's
+    /// expanded and Basic's collapsed; and the table's row runs this plan, outside
     /// `rendered`. No RAW run can be replayed, so this is what ties the names the checks read to
     /// the steps they mean.
     #[test]
@@ -2014,10 +2032,16 @@ mod tests {
         let (open, steps) = plan.steps().split_first().expect("a planned open");
         assert_eq!(open.name(), names::OPENED);
         assert!(open.script().is_none() && steps.iter().all(|step| step.script().is_some()));
+        let drafting = [names::CROP_STARTED, "crop-ratio", names::CROP_STRAIGHTENED];
         assert!(plan.steps().iter().all(|step| {
-            step.expect()
-                .expanded
-                .contains(&(BASIC_MODULE.to_owned(), true))
+            let expanded = &step.expect().expanded;
+            if drafting.contains(&step.name()) {
+                expanded.contains(&(CROP_MODULE.to_owned(), true))
+                    && expanded.contains(&(BASIC_MODULE.to_owned(), false))
+                    && !expanded.contains(&(BASIC_MODULE.to_owned(), true))
+            } else {
+                expanded.contains(&(BASIC_MODULE.to_owned(), true))
+            }
         }));
         assert_eq!(
             scripted(&plan, names::SENSOR_PICK),
