@@ -597,14 +597,15 @@
     },
     {
       "id": "TASK-009",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
       "description": "Warm the GPU program set in the background at launch and open, so the first picture never waits on a cold shader cache, with the reference renderer labelled until then.",
       "extra_context": [
         "After an update a Presence drag's sequences took seconds to compile on a cold Metal cache and drags took the CPU path naming `compiling` (docs/specs/performance.md, Presence and Detail sequences in the editor). With the GPU as the renderer of record the picture at rest would wait on the same compilation.",
-        "Warm the programs the open stack needs first, then the rest, on the GPU compile thread, with the reference frame on screen and labelled until the GPU frame replaces it; record the warm-up's duration in the Performance section and the events."
+        "Warm the programs the open stack needs first, then the rest, on the GPU compile thread, with the reference frame on screen and labelled until the GPU frame replaces it; record the warm-up's duration in the Performance section and the events.",
+        "Delivered 2026-10-05: each committed job compiles the picture on screen first, then the open stack's drags, then every module's first drag, Detail and Presence included; while the picture at rest compiles the reference frame is on screen and the status bar says Preparing GPU render; the warm-up is listed on the activity board as gpu.warm and recorded as the gpu_warm_up event. On a fresh bundle's Metal cache the first warm-up took 1.53 s and the picture at rest's own programs 41 ms (docs/specs/performance.md, Warming at launch and open; the system compiler cache was not cleared). A release that changes which units a layer uses still compiles one link of its picture at rest, recorded in docs/design/gpu-first.md as a proposal with a default."
       ],
       "context_links": [
         {

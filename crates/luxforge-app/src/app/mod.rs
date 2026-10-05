@@ -75,6 +75,7 @@ pub(crate) mod gpu_tiles;
 mod gpu_tiles_tests;
 #[cfg(test)]
 mod gpu_tiles_worker_tests;
+pub(crate) mod gpu_warm;
 #[cfg(test)]
 mod gpu_window_tests;
 // The one conversion Fit drags will hand the photo surface its GPU plan through; the desktop does
@@ -917,6 +918,7 @@ impl Editor {
             gpu_frame_us: self.gpu_frame_us(),
             gpu_at_rest: self.gpu_at_rest(),
             cpu_reason: self.gpu_cpu_reason(),
+            rest_compiling: self.gpu_rest_compiling(),
             render_bar: self.activity.render_bar,
             render_error: self.presentation.render_error.as_ref(),
             analysis: self.presentation.shown_analysis(),

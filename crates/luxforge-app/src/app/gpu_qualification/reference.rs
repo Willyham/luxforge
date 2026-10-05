@@ -113,11 +113,19 @@ enum Exported {
 fn exported(exporters: &Exporters, evaluation: &Evaluation) -> Exported {
     let [one, two] = &exporters.workers;
     let before = one.figures();
-    let mut codes = Vec::new();
-    if let Err(reason) = streamed(one, evaluation, |rgba| codes.extend(rgb_of(rgba))) {
+    let (mut codes, mut taken) = (Vec::new(), 0);
+    if let Err(reason) = streamed(one, evaluation, |rgba| {
+        taken += 1;
+        codes.extend(rgb_of(rgba));
+    }) {
         return Exported::Gap(reason);
     }
-    let after = one.figures();
+    // A stream ends as its last row arrives, which can be before the worker publishes the band it
+    // sent: its figures are read once they count every band taken.
+    let after = luxforge_testbase::wait_for("the worker's figures of the first stream", || {
+        let after = one.figures();
+        (after.bands - before.bands >= taken).then_some(after)
+    });
     let (mut at, mut repeatable) = (0, true);
     let again = streamed(two, evaluation, |rgba| {
         let band: Vec<u8> = rgb_of(rgba).collect();

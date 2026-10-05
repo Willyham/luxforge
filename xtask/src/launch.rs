@@ -248,6 +248,34 @@ const HIDDEN_WINDOW: &str = "--hidden-window";
 /// before any window.
 const GPU_ADAPTERS: &str = "--gpu-adapters";
 
+/// The background bundle's identifier, which names the per-application caches macOS keeps for
+/// it, Metal's compiled shaders among them. Evidence of a cold shader cache sets a fresh suffix
+/// through [`BUNDLE_SUFFIX_ENV`], whose caches start empty, without touching any other cache.
+#[cfg(target_os = "macos")]
+const BUNDLE_IDENTIFIER: &str = "org.luxforge.background-test";
+/// The variable that appends `.<suffix>` to [`BUNDLE_IDENTIFIER`]: letters, digits and hyphens.
+#[cfg(target_os = "macos")]
+const BUNDLE_SUFFIX_ENV: &str = "LUXFORGE_BACKGROUND_BUNDLE_SUFFIX";
+
+/// The background bundle's identifier for this run: [`BUNDLE_IDENTIFIER`], with the suffix
+/// [`BUNDLE_SUFFIX_ENV`] names when it is set.
+#[cfg(target_os = "macos")]
+fn bundle_identifier() -> Result<String> {
+    match std::env::var(BUNDLE_SUFFIX_ENV) {
+        Err(_) => Ok(BUNDLE_IDENTIFIER.to_owned()),
+        Ok(suffix) => {
+            ensure(
+                !suffix.is_empty()
+                    && suffix
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-'),
+                format!("{BUNDLE_SUFFIX_ENV} must be letters, digits and hyphens: {suffix:?}"),
+            )?;
+            Ok(format!("{BUNDLE_IDENTIFIER}.{suffix}"))
+        }
+    }
+}
+
 /// The graphics adapters the built release editor sees, one record each as `--gpu-adapters` prints
 /// them: the adapters wgpu offers the backends its renderer chooses among (`WGPU_BACKEND` when
 /// set), with each one's backend, device type, vendor, device and driver. `None` while no release
@@ -339,18 +367,21 @@ impl Background {
             fs::create_dir_all(contents.join("MacOS"))?;
             let executable = contents.join("MacOS/luxforge-test");
             fs::copy(binary, &executable)?;
+            let identifier = bundle_identifier()?;
             fs::write(
                 contents.join("Info.plist"),
-                r#"<?xml version="1.0" encoding="UTF-8"?>
+                format!(
+                    r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>org.luxforge.background-test</string>
+<key>CFBundleIdentifier</key><string>{identifier}</string>
 <key>CFBundleName</key><string>Luxforge Test</string>
 <key>CFBundleExecutable</key><string>luxforge-test</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>LSBackgroundOnly</key><true/>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
-"#,
+"#
+                ),
             )?;
             Ok(Self {
                 executable,
