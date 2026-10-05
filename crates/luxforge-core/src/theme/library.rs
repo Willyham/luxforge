@@ -7,14 +7,18 @@
 //! each, the imported files' text included, in at most [`MAX_LIBRARY_BYTES`]. Each record is
 //! kept as the JSON value it is and read on its own, so a record this build cannot read is listed
 //! in [`Listing::unrecognized`] with its reason, never makes the others unreadable, and is written
-//! back as it was by every later change. Built-in themes are never stored: Luxforge Dark, and the
-//! bundled Omarchy themes when the Omarchy reader joins [`built_in_themes`].
+//! back as it was by every later change. Built-in themes are never stored: Luxforge Dark and the
+//! six bundled Omarchy themes ([`built_in_themes`]).
+//!
+//! An Omarchy theme folder's files are read by [`omarchy::read`], and the palette it resolves
+//! becomes roles by [`omarchy_roles`]; the bundled themes are read the same way.
 //!
 //! Everything here is small text work for the catalog owner: one bounded read, or one locked
 //! read-modify-write, per method. Nothing reads an asset, a recipe or a catalog.
 use super::{
-    LUXFORGE_DARK_NAME, Mode, Resolution, ResolvedTheme, Roles, ThemeDocument, Token, Tokens,
-    luxforge_dark, resolve,
+    DerivedReason, LUXFORGE_DARK_NAME, Mode, OmarchyDerived, OmarchyReport, OmarchyRole,
+    OmarchyUnused, Resolution, ResolvedTheme, Rgba, Roles, ThemeDocument, Token, Tokens,
+    luxforge_dark, omarchy, resolve,
 };
 use crate::{
     Error, MutationOutcome, capabilities::document::JsonDocument, editor::now_ms,
@@ -39,6 +43,8 @@ pub const MAX_THEME_FILE_BYTES: usize = 64 * 1024;
 pub const MAX_THEME_NAME: usize = 64;
 /// The longest theme id a request names.
 pub const MAX_THEME_ID: usize = 96;
+/// The longest Omarchy theme folder name a request names, in bytes.
+pub const MAX_THEME_FOLDER: usize = 128;
 
 /// The format marker of `themes.json`.
 const LIBRARY_FORMAT: u32 = 1;
@@ -58,8 +64,9 @@ pub enum ThemeOrigin {
     BuiltIn {},
     /// Read from a Luxforge theme document.
     Luxforge {},
-    /// Read from an Omarchy theme folder: its slug, and which palette form it held. A bundled
-    /// theme also names the Omarchy commit its file came from.
+    /// Read from an Omarchy theme folder: its slug, empty when the import named none, and which
+    /// palette form it held (`omarchy4`, `omarchy3` or `alacritty`). A bundled theme also names
+    /// the Omarchy commit its file came from.
     Omarchy {
         folder: String,
         form: String,
@@ -155,6 +162,7 @@ impl Theme {
                 "shortened": report.shortened.len(),
                 "neutralised": neutralised,
                 "accent_close": report.accent.close,
+                "unused": report.omarchy.as_ref().map_or(0, |omarchy| omarchy.unused.len()),
             },
             "adjusted": report.adjusted(),
         })
@@ -255,6 +263,8 @@ pub struct ThemeInput<'a> {
     pub content: Option<&'a str>,
     /// An Omarchy theme folder's files, by name.
     pub files: Option<&'a BTreeMap<String, String>>,
+    /// An Omarchy theme folder's name, its slug, which names the theme unless `name` does.
+    pub folder: Option<&'a str>,
     /// Overrides the theme's own name.
     pub name: Option<&'a str>,
 }
@@ -267,31 +277,66 @@ pub(crate) struct Imported {
     pub(crate) tokens: Tokens,
     pub(crate) origin: ThemeOrigin,
     pub(crate) source: BTreeMap<String, String>,
+    /// How an Omarchy palette became the roles, for the report.
+    pub(crate) omarchy: Option<OmarchyReport>,
 }
 
-/// The themes Luxforge ships, Luxforge Dark first. They are never stored and never deleted, and
-/// their names are taken. The bundled Omarchy themes (`docs/design/ui-themes.md#bundled-themes`)
-/// join this list, as `omarchy.<slug>` with an Omarchy origin naming the pinned commit, once the
-/// Omarchy reader reads them (`read_omarchy`). Resolved once, on first use.
+impl Imported {
+    /// The roles and tokens resolved by the origin's rules, with the Omarchy section of the report.
+    fn resolve(&self) -> Result<ResolvedTheme, Error> {
+        let mut resolved = resolve(&self.roles, &self.tokens, self.origin.resolution())?;
+        resolved.report.omarchy = self.omarchy.clone();
+        Ok(resolved)
+    }
+}
+
+/// The themes Luxforge ships: Luxforge Dark, then the bundled Omarchy themes
+/// (`docs/design/ui-themes.md#bundled-themes`) in [`omarchy::BUNDLED`]'s order as
+/// `omarchy.<slug>`, each read from its vendored `colors.toml` by the same reader and mapping as
+/// an import, with an origin naming the pinned commit. They are never stored and never deleted,
+/// and their names are taken. Resolved once, on first use.
 pub fn built_in_themes() -> &'static [Theme] {
     static BUILT_IN: LazyLock<Vec<Theme>> = LazyLock::new(|| {
-        let dark = luxforge_dark();
-        let resolved = dark
-            .resolve(Resolution::Document)
-            .expect("Luxforge Dark meets every rule");
-        vec![Theme {
-            id: Some(LUXFORGE_DARK_ID.to_owned()),
-            name: dark.name,
-            roles: dark.roles,
-            tokens: dark.tokens,
-            origin: ThemeOrigin::BuiltIn {},
+        let built_in = |id: String, imported: Imported, resolved| Theme {
+            id: Some(id),
+            name: imported.name,
+            roles: imported.roles,
+            tokens: imported.tokens,
+            origin: imported.origin,
             built_in: true,
             resolved,
-            source: BTreeMap::new(),
+            source: imported.source,
             actor: None,
             created_ms: None,
             updated_ms: None,
-        }]
+        };
+        let document = luxforge_dark();
+        let dark = Imported {
+            name: document.name,
+            roles: document.roles,
+            tokens: document.tokens,
+            origin: ThemeOrigin::BuiltIn {},
+            source: BTreeMap::new(),
+            omarchy: None,
+        };
+        let resolved = dark.resolve().expect("Luxforge Dark meets every rule");
+        let mut themes = vec![built_in(LUXFORGE_DARK_ID.to_owned(), dark, resolved)];
+        for bundled in omarchy::BUNDLED {
+            let files = BTreeMap::from([(
+                omarchy::COLORS_TOML.to_owned(),
+                bundled.colors_toml.to_owned(),
+            )]);
+            let mut imported = read_omarchy(&files, Some(bundled.slug), None)
+                .unwrap_or_else(|error| panic!("{} reads: {error}", bundled.name));
+            if let ThemeOrigin::Omarchy { commit, .. } = &mut imported.origin {
+                *commit = Some(omarchy::OMARCHY_COMMIT.to_owned());
+            }
+            let resolved = imported
+                .resolve()
+                .unwrap_or_else(|error| panic!("{} resolves: {error}", bundled.name));
+            themes.push(built_in(bundled.id(), imported, resolved));
+        }
+        themes
     });
     &BUILT_IN
 }
@@ -321,8 +366,11 @@ pub(crate) fn read_input(input: ThemeInput<'_>) -> Result<Imported, Error> {
         }
     }
     match (input.format, input.content, input.files) {
+        (ThemeFormat::Luxforge, _, _) if input.folder.is_some() => Err(Error::validation(format!(
+            "format {format} takes no folder; folder names an Omarchy theme folder"
+        ))),
         (ThemeFormat::Luxforge, Some(content), None) => read_luxforge(content),
-        (ThemeFormat::Omarchy, None, Some(files)) => read_omarchy(files),
+        (ThemeFormat::Omarchy, None, Some(files)) => read_omarchy(files, input.folder, input.name),
         (ThemeFormat::Luxforge, _, _) => Err(Error::validation(format!(
             "format {format} takes the document's text as content, and no files"
         ))),
@@ -343,18 +391,149 @@ fn read_luxforge(content: &str) -> Result<Imported, Error> {
         tokens: document.tokens,
         origin: ThemeOrigin::Luxforge {},
         source: BTreeMap::from([(file_name, content.to_owned())]),
+        omarchy: None,
     })
 }
 
-/// An Omarchy theme folder's files: `colors.toml`, `alacritty.toml` and `light.mode`. The Omarchy
-/// reader (`docs/design/ui-themes.md#what-luxforge-reads`) is not in this build, so every Omarchy
-/// import is refused by name. The reader replaces this body: it returns the roles it mapped and
-/// the files' text, with `ThemeOrigin::Omarchy`, and the library resolves them by
-/// [`Resolution::Import`].
-fn read_omarchy(_files: &BTreeMap<String, String>) -> Result<Imported, Error> {
-    Err(Error::unsupported_input(
-        "format omarchy: this build has no Omarchy theme reader yet",
-    ))
+/// An Omarchy theme folder's files: `colors.toml`, `alacritty.toml` and `light.mode`, read and
+/// resolved as Omarchy resolves them, mapped to roles by [`omarchy_roles`] and resolved by
+/// [`Resolution::Import`]. Any other file name is refused by name, as is a theme the reader cannot
+/// read; the refusal's data is the reader's coded error. The theme is named `name`, or else after
+/// `folder` as Omarchy lists it; with neither it is refused. `source` keeps the text of each file
+/// read: `alacritty.toml` beside a `colors.toml` is not read, so not kept.
+fn read_omarchy(
+    files: &BTreeMap<String, String>,
+    folder: Option<&str>,
+    name: Option<&str>,
+) -> Result<Imported, Error> {
+    if let Some(folder) = folder
+        && (folder.is_empty()
+            || folder.len() > MAX_THEME_FOLDER
+            || matches!(folder, "." | "..")
+            || folder
+                .chars()
+                .any(|c| c == '/' || c == '\\' || c.is_control()))
+    {
+        return Err(Error::validation(format!(
+            "folder {folder:?} is not a theme folder's name; folder is the folder's own name, of \
+             1..={MAX_THEME_FOLDER} bytes, not a path"
+        )));
+    }
+    let palette = omarchy::read(files).map_err(|error| {
+        let data = serde_json::to_value(&error).unwrap_or_default();
+        let detail = error.to_string();
+        match error {
+            omarchy::ReadError::FileNotAllowed { .. } => Error::validation(detail),
+            omarchy::ReadError::FileTooLarge { .. } => Error::resource_limit(detail),
+            _ => Error::unsupported_input(detail),
+        }
+        .with_data(data)
+    })?;
+    let name = folder
+        .and_then(omarchy::theme_name)
+        .or_else(|| name.map(str::to_owned))
+        .ok_or_else(|| {
+            Error::validation(match folder {
+                Some(folder) => {
+                    format!("the folder {folder:?} gives the theme no name; give the theme a name")
+                }
+                None => "format omarchy takes the theme folder's name as folder, or a name for \
+                         the theme"
+                    .to_owned(),
+            })
+        })?;
+    let (roles, report) = omarchy_roles(&palette);
+    let read = match palette.form {
+        omarchy::Form::Alacritty => omarchy::ALACRITTY_TOML,
+        omarchy::Form::Omarchy4 | omarchy::Form::Omarchy3 => omarchy::COLORS_TOML,
+    };
+    let source = files
+        .iter()
+        .filter(|(file, _)| [read, omarchy::LIGHT_MODE].contains(&file.as_str()))
+        .map(|(file, text)| (file.clone(), text.clone()))
+        .collect();
+    Ok(Imported {
+        name,
+        roles,
+        tokens: Tokens::new(),
+        origin: ThemeOrigin::Omarchy {
+            folder: folder.unwrap_or_default().to_owned(),
+            form: palette.form.as_str().to_owned(),
+            commit: None,
+        },
+        source,
+        omarchy: Some(report),
+    })
+}
+
+/// Each role an Omarchy key gives, in the role table's order.
+const OMARCHY_ROLES: [(Token, &str); 5] = [
+    (Token::Surround, "dark_background"),
+    (Token::Background, "background"),
+    (Token::Control, "lighter_background"),
+    (Token::Text, "foreground"),
+    (Token::Accent, "accent"),
+];
+
+/// An Omarchy palette's roles (`docs/design/ui-themes.md#what-luxforge-reads`): its mode; its
+/// background; `dark_background` as the surround, which [`Resolution::Import`] holds to the chroma
+/// bound; `lighter_background` as the control, left to derive when it equals the background;
+/// `foreground` as the text; and `accent` as the accent. No other colour is read, because Omarchy's
+/// named colours do not always hold the colour they name. Every other role derives.
+fn omarchy_roles(palette: &omarchy::Palette) -> (Roles, OmarchyReport) {
+    let colour = |omarchy::Rgb8([r, g, b])| Rgba::rgb(r, g, b);
+    let mode = match palette.mode {
+        omarchy::Mode::Dark => Mode::Dark,
+        omarchy::Mode::Light => Mode::Light,
+    };
+    let mut roles = Roles::new(
+        colour(palette.background),
+        colour(palette.foreground),
+        colour(palette.accent),
+    );
+    roles.mode = Some(mode);
+    roles.surround = Some(colour(palette.dark_background));
+    let mut derived = Vec::new();
+    let lighter = colour(palette.lighter_background);
+    if palette.lighter_background == palette.background {
+        derived.push(OmarchyDerived {
+            role: Token::Control,
+            key: "lighter_background".to_owned(),
+            value: lighter,
+            reason: DerivedReason::EqualsBackground,
+        });
+    } else {
+        roles.control = Some(lighter);
+    }
+    let given = OMARCHY_ROLES
+        .into_iter()
+        .filter_map(|(role, key)| {
+            Some(OmarchyRole {
+                role,
+                key: key.to_owned(),
+                value: roles.get(role)?,
+            })
+        })
+        .collect();
+    let unused = palette
+        .unused
+        .iter()
+        .map(|unused| OmarchyUnused {
+            file: unused.file.to_owned(),
+            key: unused.key.clone(),
+            value: unused.value.clone(),
+            reason: unused.reason,
+        })
+        .collect();
+    let report = OmarchyReport {
+        form: palette.form,
+        mode,
+        mode_source: palette.mode_source,
+        roles: given,
+        derived,
+        unused,
+    };
+    (roles, report)
 }
 
 /// Trimmed text of 1 to [`MAX_THEME_NAME`] characters with no control character.
@@ -414,7 +593,7 @@ struct Stored {
     tokens: Tokens,
     origin: ThemeOrigin,
     /// The report the import made. The answers give this build's resolution's report, which is
-    /// the same until the rules change.
+    /// the same until the rules change, with this one's Omarchy section.
     report: super::ThemeReport,
     source: BTreeMap<String, String>,
     actor: String,
@@ -483,8 +662,10 @@ fn read_record(value: &Value) -> Result<Theme, String> {
             ));
         }
     }
-    let resolved = resolve(&stored.roles, &stored.tokens, stored.origin.resolution())
+    let mut resolved = resolve(&stored.roles, &stored.tokens, stored.origin.resolution())
         .map_err(|error| format!("it does not resolve: {}", error.detail))?;
+    // What the import read of an Omarchy folder, which resolving the roles cannot say again.
+    resolved.report.omarchy = stored.report.omarchy;
     Ok(Theme {
         id: Some(stored.id),
         name: stored.name,
@@ -633,11 +814,7 @@ impl ThemeStore {
     pub(crate) fn inspect(&self, input: ThemeInput<'_>) -> Result<Theme, Error> {
         let imported = read_input(input)?;
         let name = checked_name(input.name.unwrap_or(&imported.name))?;
-        let resolved = resolve(
-            &imported.roles,
-            &imported.tokens,
-            imported.origin.resolution(),
-        )?;
+        let resolved = imported.resolve()?;
         Ok(Theme {
             id: None,
             name,

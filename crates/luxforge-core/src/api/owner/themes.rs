@@ -10,10 +10,18 @@ use crate::{
         announce_once, methods,
         params::{NoParams, host_params},
     },
-    theme::{MAX_THEME_FILE_BYTES, MAX_THEME_ID, MAX_THEME_NAME, ThemeFormat, ThemeInput},
+    theme::{
+        MAX_THEME_FILE_BYTES, MAX_THEME_FOLDER, MAX_THEME_ID, MAX_THEME_NAME, ThemeFormat,
+        ThemeInput,
+    },
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+
+/// The `folder` parameter of `theme.inspect` and `theme.import`.
+const FOLDER_NOTES: &str = "format omarchy: the theme folder's own name, its slug, not a path; \
+    names the theme as Omarchy lists it unless name is given, and is kept in its origin; a \
+    request with neither folder nor name is refused";
 
 host_params! {
     /// `theme.read` and `theme.export`.
@@ -28,6 +36,7 @@ host_params! {
         format: ThemeFormat = enumeration(ThemeFormat::ALL.map(ThemeFormat::as_str)),
         content: Option<String> = text(MAX_THEME_FILE_BYTES).notes("format luxforge: the Luxforge theme document's text"),
         files: Option<BTreeMap<String, String>> = json("format omarchy: {file name: text} for the theme folder's colors.toml, alacritty.toml and light.mode, each at most 64 KiB"),
+        folder: Option<String> = string(MAX_THEME_FOLDER).notes(FOLDER_NOTES),
         name: Option<String> = string(MAX_THEME_NAME).notes("overrides the theme's own name; non-empty after trimming"),
     }
 }
@@ -39,6 +48,7 @@ host_params! {
         mutation: MutationRequest,
         content: Option<String> = text(MAX_THEME_FILE_BYTES).notes("format luxforge: the Luxforge theme document's text"),
         files: Option<BTreeMap<String, String>> = json("format omarchy: {file name: text} for the theme folder's colors.toml, alacritty.toml and light.mode, each at most 64 KiB"),
+        folder: Option<String> = string(MAX_THEME_FOLDER).notes(FOLDER_NOTES),
         name: Option<String> = string(MAX_THEME_NAME).notes("overrides the theme's own name; non-empty after trimming"),
     }
 }
@@ -83,6 +93,7 @@ pub(in crate::api) fn inspect(
         format: params.format,
         content: params.content.as_deref(),
         files: params.files.as_ref(),
+        folder: params.folder.as_deref(),
         name: params.name.as_deref(),
     })?;
     Ok(json!({"theme": theme.record(false), "report": theme.resolved.report}))
@@ -99,6 +110,7 @@ pub(in crate::api) fn import(
             format: params.format,
             content: params.content.as_deref(),
             files: params.files.as_ref(),
+            folder: params.folder.as_deref(),
             name: params.name.as_deref(),
         },
         &params.mutation.actor,

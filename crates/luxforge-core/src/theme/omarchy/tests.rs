@@ -83,6 +83,43 @@ fn parity() -> Vec<Expected> {
         .collect()
 }
 
+/// Omarchy's 22 built-in themes at [`OMARCHY_COMMIT`], each its slug and the files a client sends
+/// for it: the bundled `colors.toml`, or the fixture's copy of the palette.
+pub(crate) fn built_in_folders() -> Vec<(String, BTreeMap<String, String>)> {
+    parity()
+        .into_iter()
+        .filter(|expected| expected.source == "omarchy")
+        .map(|expected| {
+            let text = expected.palette.unwrap_or_else(|| {
+                BUNDLED
+                    .iter()
+                    .find(|bundled| bundled.slug == expected.slug)
+                    .expect("a built-in theme is bundled or copied")
+                    .colors_toml
+                    .to_owned()
+            });
+            (expected.slug, files(&[(COLORS_TOML, &text)]))
+        })
+        .collect()
+}
+
+/// The synthetic themes in `testdata/`, each its folder's name and files.
+pub(crate) fn synthetic_folders() -> Vec<(String, BTreeMap<String, String>)> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/theme/omarchy/testdata");
+    let mut names: Vec<String> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    names
+        .into_iter()
+        .map(|name| {
+            let files = folder(&root.join(&name));
+            (name, files)
+        })
+        .collect()
+}
+
 /// The palette resolves to every value Omarchy's resolver gives, and lists as unknown exactly the
 /// keys it passes through verbatim.
 fn assert_parity(palette: &Palette, expected: &Expected) {

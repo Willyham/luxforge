@@ -12,7 +12,7 @@
 //! it says so: it parses strict TOML where Omarchy reads lines, every colour must be `#rrggbb`, and
 //! a mix of a colour the theme does not have leaves the mixed key out, where Omarchy's awk would
 //! mix an empty string.
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 use std::{collections::BTreeMap, fmt, ops::Range};
 use toml_edit::{Document, Item, Table, Value};
 
@@ -212,7 +212,7 @@ impl Serialize for Rgb8 {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Mode {
     Light,
@@ -220,7 +220,7 @@ pub enum Mode {
 }
 
 /// How the mode was decided, in Omarchy's precedence.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ModeSource {
     /// The `mode` key.
@@ -234,7 +234,7 @@ pub enum ModeSource {
 }
 
 /// Which of Omarchy's forms the palette was in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Form {
     /// Omarchy 4's semantic keys: any `colors.toml` that is not the Omarchy 3 form.
@@ -247,8 +247,19 @@ pub enum Form {
     Alacritty,
 }
 
+impl Form {
+    /// The form's name as it serializes: `omarchy4`, `omarchy3` or `alacritty`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Omarchy4 => "omarchy4",
+            Self::Omarchy3 => "omarchy3",
+            Self::Alacritty => "alacritty",
+        }
+    }
+}
+
 /// Why a key a theme holds is not used.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum UnusedReason {
     /// A key Omarchy's resolver does not read.
@@ -938,4 +949,4 @@ fn resolve(file: PaletteFile, light_mode: bool) -> Result<Palette, ReadError> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

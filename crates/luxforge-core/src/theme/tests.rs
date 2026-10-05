@@ -93,7 +93,7 @@ fn hue(colour: Rgba) -> f64 {
 }
 
 /// Every ink meets its floor, and the surround and rail backdrop the chroma bound.
-fn assert_legible(theme: &ResolvedTheme, what: &str) {
+pub(super) fn assert_legible(theme: &ResolvedTheme, what: &str) {
     let tokens = &theme.tokens;
     for token in Token::ALL {
         let Some(floor) = token.floor() else {

@@ -590,6 +590,7 @@ pub fn resolve(roles: &Roles, tokens: &Tokens, how: Resolution) -> Result<Resolv
         surround: surround_report,
         rail_backdrop: rail_backdrop.expect("the rail backdrop has a rule"),
         accent: accent_note(accent),
+        omarchy: None,
     };
     let values = resolver
         .values

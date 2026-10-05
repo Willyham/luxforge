@@ -7,7 +7,7 @@ use super::*;
 use crate::{ErrorKind, MutationOutcome};
 use luxforge_testbase::paths::temp_path;
 use serde_json::{Value, json};
-use std::{fs, path::PathBuf};
+use std::{collections::BTreeMap, fs, path::PathBuf};
 
 /// A directory of its own, removed at the end.
 struct Dir(PathBuf);
@@ -51,6 +51,21 @@ fn luxforge(content: &str) -> ThemeInput<'_> {
         format: ThemeFormat::Luxforge,
         content: Some(content),
         files: None,
+        folder: None,
+        name: None,
+    }
+}
+
+/// An Omarchy theme folder's files, sent with the folder's name.
+fn omarchy_input<'a>(
+    files: &'a BTreeMap<String, String>,
+    folder: Option<&'a str>,
+) -> ThemeInput<'a> {
+    ThemeInput {
+        format: ThemeFormat::Omarchy,
+        content: None,
+        files: Some(files),
+        folder,
         name: None,
     }
 }
@@ -61,6 +76,17 @@ fn named<'a>(content: &'a str, name: &'a str) -> ThemeInput<'a> {
         ..luxforge(content)
     }
 }
+
+/// The built-in themes' names, in their order: Luxforge Dark, then the bundled Omarchy themes.
+const BUILT_IN: [&str; 7] = [
+    LUXFORGE_DARK_NAME,
+    "Tokyo Night",
+    "Catppuccin",
+    "Catppuccin Latte",
+    "Gruvbox",
+    "Nord",
+    "Everforest",
+];
 
 fn names(listing: &Listing) -> Vec<&str> {
     listing
@@ -85,9 +111,10 @@ fn an_import_is_stored_outside_any_catalog_and_listed_after_the_built_ins() {
     let dir = Dir::new("round-trip");
     let store = dir.store();
     let listing = store.list().unwrap();
-    assert_eq!(names(&listing), [LUXFORGE_DARK_NAME]);
+    assert_eq!(names(&listing), BUILT_IN);
     assert_eq!(listing.themes[0].id(), LUXFORGE_DARK_ID);
-    assert!(listing.themes[0].built_in && listing.unrecognized.is_empty());
+    assert!(listing.themes.iter().all(|theme| theme.built_in));
+    assert!(listing.unrecognized.is_empty());
     assert!(!dir.0.exists(), "listing creates nothing");
 
     let text = night("Night");
@@ -100,8 +127,8 @@ fn an_import_is_stored_outside_any_catalog_and_listed_after_the_built_ins() {
     let listing = store.list().unwrap();
     assert_eq!(
         names(&listing),
-        [LUXFORGE_DARK_NAME, "aurora", "Night"],
-        "the built-in theme first, then by name ignoring case"
+        [BUILT_IN.as_slice(), &["aurora", "Night"]].concat(),
+        "the built-in themes first, then by name ignoring case"
     );
     let read = store.theme(first.id()).unwrap();
     assert_eq!(read, first);
@@ -111,7 +138,7 @@ fn an_import_is_stored_outside_any_catalog_and_listed_after_the_built_ins() {
     assert_eq!(first.created_ms, first.updated_ms);
     assert_eq!(
         first.source,
-        std::collections::BTreeMap::from([("Night.lftheme".to_owned(), text.clone())]),
+        BTreeMap::from([("Night.lftheme".to_owned(), text.clone())]),
         "the document's text is kept verbatim"
     );
     let (_, expected) = ThemeDocument::read(&text).unwrap();
@@ -158,7 +185,7 @@ fn an_import_is_stored_outside_any_catalog_and_listed_after_the_built_ins() {
 
     // With no directory only the built-in themes are held, and nothing can be stored.
     let unconfigured = ThemeStore::new(None);
-    assert_eq!(names(&unconfigured.list().unwrap()), [LUXFORGE_DARK_NAME]);
+    assert_eq!(names(&unconfigured.list().unwrap()), BUILT_IN);
     let error = unconfigured.import(luxforge(&text), "tester").unwrap_err();
     assert_eq!(error.kind, ErrorKind::NotReady);
 }
@@ -239,17 +266,9 @@ fn every_limit_is_refused_by_name_and_stores_nothing() {
         "{}",
         error.detail
     );
-    let files = std::collections::BTreeMap::from([("colors.toml".to_owned(), huge.clone())]);
+    let files = BTreeMap::from([("colors.toml".to_owned(), huge.clone())]);
     let error = store
-        .import(
-            ThemeInput {
-                format: ThemeFormat::Omarchy,
-                content: None,
-                files: Some(&files),
-                name: None,
-            },
-            "tester",
-        )
+        .import(omarchy_input(&files, Some("huge")), "tester")
         .unwrap_err();
     assert_eq!(error.kind, ErrorKind::ResourceLimit);
     assert!(
@@ -281,7 +300,10 @@ fn every_limit_is_refused_by_name_and_stores_nothing() {
         })
         .collect();
     fs::write(dir.file(), library_text(&records)).unwrap();
-    assert_eq!(store.list().unwrap().themes.len(), MAX_THEMES + 1);
+    assert_eq!(
+        store.list().unwrap().themes.len(),
+        MAX_THEMES + BUILT_IN.len()
+    );
     let full = fs::read(dir.file()).unwrap();
     let error = store
         .import(named(&text, "One more"), "tester")
@@ -310,6 +332,7 @@ fn every_limit_is_refused_by_name_and_stores_nothing() {
 fn a_malformed_or_foreign_input_is_refused_by_name() {
     let store = Dir::new("malformed").store();
     let unsupported = ErrorKind::UnsupportedInput;
+    let empty = BTreeMap::new();
     for (input, kind, refusal) in [
         (luxforge("{"), unsupported, "malformed JSON"),
         (
@@ -330,6 +353,7 @@ fn a_malformed_or_foreign_input_is_refused_by_name() {
                 format: ThemeFormat::Omarchy,
                 content: Some("x"),
                 files: None,
+                folder: None,
                 name: None,
             },
             ErrorKind::Validation,
@@ -337,13 +361,16 @@ fn a_malformed_or_foreign_input_is_refused_by_name() {
         ),
         (
             ThemeInput {
-                format: ThemeFormat::Omarchy,
-                content: None,
-                files: Some(&Default::default()),
-                name: None,
+                folder: Some("nord"),
+                ..luxforge("{}")
             },
+            ErrorKind::Validation,
+            "format luxforge takes no folder",
+        ),
+        (
+            omarchy_input(&empty, Some("nord")),
             unsupported,
-            "format omarchy: this build has no Omarchy theme reader yet",
+            "the theme has neither colors.toml nor alacritty.toml",
         ),
     ] {
         for error in [
@@ -412,7 +439,7 @@ fn an_unreadable_record_is_listed_and_kept_byte_for_byte() {
     fs::write(dir.file(), &before).unwrap();
 
     let listing = store.list().unwrap();
-    assert_eq!(names(&listing), [LUXFORGE_DARK_NAME, "Good"]);
+    assert_eq!(names(&listing), [BUILT_IN.as_slice(), &["Good"]].concat());
     let reasons: Vec<(Option<&str>, &str)> = listing
         .unrecognized
         .iter()
@@ -626,4 +653,609 @@ fn the_launch_read_draws_the_chosen_theme_or_luxforge_dark_with_the_reason() {
     let unconfigured = LaunchTheme::read(None, Some(missing));
     assert_eq!(unconfigured.id, LUXFORGE_DARK_ID);
     assert!(unconfigured.problem.is_some());
+}
+
+// Omarchy themes.
+
+fn rgb8(colour: omarchy::Rgb8) -> Rgba {
+    let [r, g, b] = colour.0;
+    Rgba::rgb(r, g, b)
+}
+
+/// The theme maps the six values Omarchy's resolver gives it to roles, and nothing else: every
+/// other role and token derives. Its Omarchy report is the reader's, and it meets every floor and
+/// the chroma bound after its reported moves.
+fn assert_mapped(theme: &Theme, palette: &omarchy::Palette, what: &str) {
+    let mode = match palette.mode {
+        omarchy::Mode::Dark => Mode::Dark,
+        omarchy::Mode::Light => Mode::Light,
+    };
+    let control = (palette.lighter_background != palette.background)
+        .then(|| rgb8(palette.lighter_background));
+    let roles = Roles {
+        surround: Some(rgb8(palette.dark_background)),
+        control,
+        mode: Some(mode),
+        ..Roles::new(
+            rgb8(palette.background),
+            rgb8(palette.foreground),
+            rgb8(palette.accent),
+        )
+    };
+    assert_eq!(theme.roles, roles, "{what}");
+    assert!(theme.tokens.is_empty(), "{what}");
+    assert_eq!(theme.resolved.mode, mode, "{what}");
+    let report = theme.resolved.report.omarchy.as_ref().expect(what);
+    assert_eq!(
+        (report.form, report.mode, report.mode_source),
+        (palette.form, mode, palette.mode_source),
+        "{what}"
+    );
+    let keys: Vec<(Token, &str, Rgba)> = report
+        .roles
+        .iter()
+        .map(|role| (role.role, role.key.as_str(), role.value))
+        .collect();
+    let mut expected = vec![(
+        Token::Surround,
+        "dark_background",
+        rgb8(palette.colours["dark_background"]),
+    )];
+    expected.push((
+        Token::Background,
+        "background",
+        rgb8(palette.colours["background"]),
+    ));
+    if let Some(control) = control {
+        expected.push((Token::Control, "lighter_background", control));
+    }
+    expected.push((
+        Token::Text,
+        "foreground",
+        rgb8(palette.colours["foreground"]),
+    ));
+    expected.push((Token::Accent, "accent", rgb8(palette.colours["accent"])));
+    assert_eq!(keys, expected, "{what}: each role and the key it came from");
+    let derived = (control.is_none()).then(|| OmarchyDerived {
+        role: Token::Control,
+        key: "lighter_background".into(),
+        value: rgb8(palette.lighter_background),
+        reason: DerivedReason::EqualsBackground,
+    });
+    assert_eq!(report.derived, Vec::from_iter(derived), "{what}");
+    let unused: Vec<(&str, &str, &str, omarchy::UnusedReason)> = report
+        .unused
+        .iter()
+        .map(|u| (u.file.as_str(), u.key.as_str(), u.value.as_str(), u.reason))
+        .collect();
+    let read: Vec<(&str, &str, &str, omarchy::UnusedReason)> = palette
+        .unused
+        .iter()
+        .map(|u| (u.file, u.key.as_str(), u.value.as_str(), u.reason))
+        .collect();
+    assert_eq!(unused, read, "{what}");
+    super::tests::assert_legible(&theme.resolved, what);
+}
+
+#[test]
+fn each_synthetic_omarchy_folder_maps_its_resolved_values_to_roles() {
+    let store = ThemeStore::new(None);
+    let folders = omarchy::tests::synthetic_folders();
+    assert_eq!(folders.len(), 9);
+    for (folder, files) in &folders {
+        let palette = omarchy::read(files).unwrap();
+        let inspected = store.inspect(omarchy_input(files, Some(folder)));
+        // The two mode fixtures on either side of Omarchy's brightness threshold are a mid grey
+        // with near-black text, which no lightness brings to its floor: refused by name.
+        if folder.starts_with("brightness-") {
+            let error = inspected.unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Validation);
+            assert!(
+                error
+                    .detail
+                    .starts_with("text #101010 cannot reach 7:1 against the surround"),
+                "{folder}: {}",
+                error.detail
+            );
+            continue;
+        }
+        let theme = inspected.unwrap_or_else(|error| panic!("{folder}: {error}"));
+        assert_mapped(&theme, &palette, folder);
+        assert_eq!(Some(theme.name.clone()), omarchy::theme_name(folder));
+        assert_eq!(
+            theme.origin,
+            ThemeOrigin::Omarchy {
+                folder: folder.clone(),
+                form: palette.form.as_str().into(),
+                commit: None,
+            }
+        );
+        assert_eq!(theme.origin.resolution(), Resolution::Import);
+        // The text of each file read, verbatim: the palette's file and the marker.
+        let read: Vec<&str> = theme.source.keys().map(String::as_str).collect();
+        let palette_file = match palette.form {
+            omarchy::Form::Alacritty => omarchy::ALACRITTY_TOML,
+            _ => omarchy::COLORS_TOML,
+        };
+        let mut expected = vec![palette_file];
+        if files.contains_key(omarchy::LIGHT_MODE) {
+            expected.push(omarchy::LIGHT_MODE);
+        }
+        expected.sort();
+        assert_eq!(read, expected, "{folder}");
+        for (file, text) in &theme.source {
+            assert_eq!(&files[file], text, "{folder}: {file}");
+        }
+    }
+
+    // The documented ones, in full.
+    let report = |name: &str| {
+        let (_, files) = folders.iter().find(|(folder, _)| folder == name).unwrap();
+        let theme = store.inspect(omarchy_input(files, Some(name))).unwrap();
+        (
+            serde_json::to_value(&theme.resolved.report.omarchy).unwrap(),
+            theme,
+        )
+    };
+    let (omarchy4, theme) = report("omarchy4");
+    assert_eq!(
+        omarchy4,
+        json!({
+            "form": "omarchy4", "mode": "dark", "mode_source": "mode-key",
+            "roles": [
+                {"role": "surround", "key": "dark_background", "value": "#14171d"},
+                {"role": "background", "key": "background", "value": "#1b1f27"},
+                {"role": "control", "key": "lighter_background", "value": "#252a35"},
+                {"role": "text", "key": "foreground", "value": "#c9ced8"},
+                {"role": "accent", "key": "accent", "value": "#5e9ce0"},
+            ],
+            "derived": [],
+            "unused": [
+                {"file": "colors.toml", "key": "hyprland_active_border",
+                 "value": "rgba(5e9ce0ee) rgba(98c379ee) 45deg", "reason": "gradient"},
+                {"file": "colors.toml", "key": "hyprland_inactive_border",
+                 "value": "rgb(252a35)", "reason": "gradient"},
+                {"file": "colors.toml", "key": "active_tab_background", "value": "#2b3140",
+                 "reason": "unknown-key"},
+            ],
+        })
+    );
+    assert_eq!(theme.name, "Omarchy4");
+    assert_eq!(
+        theme.resolved.report.given,
+        [
+            "surround",
+            "background",
+            "control",
+            "text",
+            "accent",
+            "mode"
+        ]
+    );
+    let (omarchy3, theme) = report("omarchy3");
+    assert_eq!(
+        omarchy3["derived"],
+        json!([{"role": "control", "key": "lighter_background", "value": "#2e3440",
+                "reason": "equals-background"}])
+    );
+    assert_eq!(omarchy3["mode_source"], "background-brightness");
+    assert_eq!(omarchy3["unused"][0]["reason"], "replaced");
+    assert!(
+        theme
+            .resolved
+            .report
+            .derived
+            .contains(&"control".to_owned())
+    );
+    let (alacritty, theme) = report("alacritty-light");
+    assert_eq!(
+        (&alacritty["form"], &alacritty["mode_source"]),
+        (&json!("alacritty"), &json!("light-mode-file"))
+    );
+    assert_eq!(theme.resolved.mode, Mode::Light);
+}
+
+#[test]
+fn an_omarchy_theme_is_named_after_its_folder_unless_named_and_refused_with_neither() {
+    let dir = Dir::new("omarchy-names");
+    let store = dir.store();
+    let files = BTreeMap::from([(
+        "colors.toml".to_owned(),
+        "background = \"#1b1f27\"\nforeground = \"#c9ced8\"\naccent = \"#5e9ce0\"\n".to_owned(),
+    )]);
+    let input = |folder, name| ThemeInput {
+        name,
+        ..omarchy_input(&files, folder)
+    };
+    let named = |folder, name| store.inspect(input(folder, name)).map(|theme| theme.name);
+    assert_eq!(named(Some("deep-sea"), None).unwrap(), "Deep Sea");
+    assert_eq!(
+        named(Some("omarchy-deep-sea-theme"), None).unwrap(),
+        "Deep Sea"
+    );
+    assert_eq!(named(Some("deep-sea"), Some("Abyss")).unwrap(), "Abyss");
+    assert_eq!(named(Some("omarchy-"), Some("Abyss")).unwrap(), "Abyss");
+    let unnamed = store.inspect(input(None, Some("Abyss"))).unwrap();
+    assert_eq!(unnamed.name, "Abyss");
+    assert_eq!(
+        unnamed.origin,
+        ThemeOrigin::Omarchy {
+            folder: String::new(),
+            form: "omarchy4".into(),
+            commit: None
+        },
+        "no folder is kept as none"
+    );
+    for (folder, name, refusal) in [
+        (
+            None,
+            None,
+            "format omarchy takes the theme folder's name as folder, or a name for the theme",
+        ),
+        (
+            Some("omarchy-"),
+            None,
+            "the folder \"omarchy-\" gives the theme no name; give the theme a name",
+        ),
+        (Some(""), None, "folder \"\" is not a theme folder's name"),
+        (
+            Some(".."),
+            None,
+            "folder \"..\" is not a theme folder's name",
+        ),
+        (
+            Some("themes/nord"),
+            None,
+            "folder \"themes/nord\" is not a theme folder's name",
+        ),
+        (
+            Some("themes\\nord"),
+            Some("Nord 2"),
+            "folder \"themes\\\\nord\" is not a theme folder's name",
+        ),
+        (Some("tab\tbed"), None, "folder \"tab\\tbed\" is not"),
+        (
+            Some(&"n".repeat(MAX_THEME_FOLDER + 1)),
+            None,
+            "folder \"nnn",
+        ),
+    ] {
+        for error in [
+            store.inspect(input(folder, name)).unwrap_err(),
+            store.import(input(folder, name), "tester").unwrap_err(),
+        ] {
+            assert_eq!(error.kind, ErrorKind::Validation, "{error}");
+            assert!(error.detail.starts_with(refusal), "{}", error.detail);
+        }
+    }
+    assert!(!dir.file().exists(), "nothing was stored");
+}
+
+/// Only `colors.toml`, `alacritty.toml` and `light.mode` are taken: any other name, beside a
+/// readable palette, is refused by name with the reader's coded error, and nothing is stored.
+#[test]
+fn no_omarchy_file_but_the_three_the_reader_takes_is_accepted() {
+    let dir = Dir::new("omarchy-files");
+    let store = dir.store();
+    let colors = "background = \"#1b1f27\"\nforeground = \"#c9ced8\"\naccent = \"#5e9ce0\"\n";
+    for name in [
+        "neovim.lua",
+        "backgrounds/1.png",
+        "preview.png",
+        "icons.theme",
+        "hyprland.conf",
+        "Colors.toml",
+        "colors.toml.bak",
+        " colors.toml",
+        "./colors.toml",
+        "../colors.toml",
+        "nord/colors.toml",
+        "light.mode/x",
+        "",
+    ] {
+        let files = BTreeMap::from([
+            ("colors.toml".to_owned(), colors.to_owned()),
+            (name.to_owned(), String::new()),
+        ]);
+        for error in [
+            store
+                .inspect(omarchy_input(&files, Some("deep-sea")))
+                .unwrap_err(),
+            store
+                .import(omarchy_input(&files, Some("deep-sea")), "tester")
+                .unwrap_err(),
+        ] {
+            assert_eq!(error.kind, ErrorKind::Validation, "{name:?}: {error}");
+            assert_eq!(
+                error.detail,
+                format!(
+                    "{name:?} is not read; an Omarchy theme is read from colors.toml, \
+                     alacritty.toml and light.mode only"
+                )
+            );
+            assert_eq!(
+                error.data.as_deref(),
+                Some(&json!({"code": "file-not-allowed", "file": name}))
+            );
+        }
+    }
+    assert!(!dir.file().exists(), "nothing was stored");
+    // All three together: colors.toml is read, and alacritty.toml beside it neither read nor kept.
+    let files = BTreeMap::from([
+        ("colors.toml".to_owned(), colors.to_owned()),
+        ("alacritty.toml".to_owned(), "[".to_owned()),
+        ("light.mode".to_owned(), String::new()),
+    ]);
+    let theme = store
+        .import(omarchy_input(&files, Some("deep-sea")), "tester")
+        .unwrap();
+    assert_eq!(
+        theme.source.keys().collect::<Vec<_>>(),
+        ["colors.toml", "light.mode"]
+    );
+    assert_eq!(theme.resolved.mode, Mode::Light);
+}
+
+#[test]
+fn an_omarchy_import_round_trips_with_its_source_and_report() {
+    let dir = Dir::new("omarchy-round-trip");
+    let store = dir.store();
+    let (_, files) = omarchy::tests::synthetic_folders()
+        .into_iter()
+        .find(|(folder, _)| folder == "omarchy4")
+        .unwrap();
+    let imported = store
+        .import(omarchy_input(&files, Some("deep-sea")), "tester")
+        .unwrap();
+    assert_eq!(imported.name, "Deep Sea");
+    let listing = store.list().unwrap();
+    let listed = listing.themes.last().unwrap();
+    assert_eq!(listed, &imported);
+    let read = store.theme(imported.id()).unwrap();
+    assert_eq!(read, imported, "the Omarchy report is kept with the record");
+    assert_eq!(read.source, files);
+    assert_eq!(
+        read.resolved.report.omarchy.as_ref().unwrap().unused.len(),
+        3
+    );
+    let record = stored(&dir).remove(0);
+    assert_eq!(
+        record["origin"],
+        json!({"kind": "omarchy", "folder": "deep-sea", "form": "omarchy4"})
+    );
+    assert_eq!(record["report"]["omarchy"]["form"], "omarchy4");
+    assert_eq!(read.summary()["report"]["unused"], 3);
+    assert_eq!(
+        read.summary()["report"]["derived"],
+        read.resolved.report.derived.len()
+    );
+    // Exported, it is a Luxforge document of the tokens it resolved to.
+    let exported = store.export(imported.id()).unwrap();
+    let (_, resolved) = ThemeDocument::read(&exported.content).unwrap();
+    assert_eq!(resolved.tokens, imported.resolved.tokens);
+}
+
+#[test]
+fn the_bundled_themes_are_built_in_read_by_the_same_reader_and_never_stored() {
+    let dir = Dir::new("bundled");
+    let store = dir.store();
+    let listing = store.list().unwrap();
+    assert_eq!(names(&listing), BUILT_IN);
+    assert_eq!(built_in_themes(), listing.themes.as_slice());
+    for (theme, bundled) in listing.themes[1..].iter().zip(omarchy::BUNDLED) {
+        assert_eq!(theme.id(), format!("omarchy.{}", bundled.slug));
+        assert!(theme.built_in);
+        assert_eq!(
+            theme.origin,
+            ThemeOrigin::Omarchy {
+                folder: bundled.slug.into(),
+                form: "omarchy4".into(),
+                commit: Some(omarchy::OMARCHY_COMMIT.into()),
+            }
+        );
+        assert_eq!(
+            theme.source,
+            BTreeMap::from([("colors.toml".to_owned(), bundled.colors_toml.to_owned())])
+        );
+        assert_eq!((theme.actor.as_ref(), theme.created_ms), (None, None));
+        // Omarchy's values, before the reported moves, and every floor met after them.
+        assert_mapped(theme, &bundled.read().unwrap(), bundled.slug);
+        assert_eq!(store.theme(theme.id()).unwrap(), *theme);
+        // An import of the same folder resolves to the same tokens and report.
+        let files = theme.source.clone();
+        let inspected = store
+            .inspect(omarchy_input(&files, Some(bundled.slug)))
+            .unwrap();
+        assert_eq!(inspected.resolved, theme.resolved, "{}", bundled.slug);
+        // It cannot be deleted, and its name is taken, ignoring case.
+        let error = store.delete(theme.id(), LUXFORGE_DARK_ID).unwrap_err();
+        assert_eq!(
+            (error.kind, error.detail),
+            (
+                ErrorKind::Validation,
+                format!("{} is built in and cannot be deleted", theme.name)
+            )
+        );
+        for input in [
+            omarchy_input(&files, Some(bundled.slug)),
+            ThemeInput {
+                name: Some(&theme.name.to_uppercase()),
+                ..omarchy_input(&files, None)
+            },
+        ] {
+            let error = store.import(input, "tester").unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Conflict, "{error}");
+            assert_eq!(
+                error.detail,
+                format!(
+                    "a theme named {:?} already exists; choose another name",
+                    theme.name
+                )
+            );
+        }
+    }
+    assert!(!dir.file().exists(), "a bundled theme is never stored");
+    // Under another name it imports as a theme of its own.
+    let files = built_in_themes()[5].source.clone();
+    let copy = store
+        .import(
+            ThemeInput {
+                name: Some("Nord copy"),
+                ..omarchy_input(&files, Some("nord"))
+            },
+            "tester",
+        )
+        .unwrap();
+    assert!(!copy.built_in && copy.id().starts_with("theme-"));
+    assert_eq!(copy.resolved, built_in_themes()[5].resolved);
+    let launch = LaunchTheme::read(Some(dir.0.clone()), Some("omarchy.nord"));
+    assert_eq!(
+        (launch.id.as_str(), launch.name.as_str()),
+        ("omarchy.nord", "Nord")
+    );
+    assert!(launch.problem.is_none());
+}
+
+/// What the mapping makes of Omarchy's 22 built-in themes at the pinned commit: the figures the
+/// design's table "What the 22 built-in themes become" records.
+#[test]
+fn the_22_built_in_omarchy_themes_become_the_recorded_figures() {
+    let store = ThemeStore::new(None);
+    let folders = omarchy::tests::built_in_folders();
+    assert_eq!(folders.len(), 22);
+    let mut neutralised = Vec::new();
+    let mut text = Vec::new();
+    let mut accent = Vec::new();
+    let mut error = Vec::new();
+    let mut secondary = Vec::new();
+    let mut tertiary = Vec::new();
+    let mut close = Vec::new();
+    let mut control = Vec::new();
+    for (slug, files) in &folders {
+        let theme = store
+            .inspect(omarchy_input(files, Some(slug)))
+            .unwrap_or_else(|error| panic!("{slug}: {error}"));
+        assert_mapped(&theme, &omarchy::read(files).unwrap(), slug);
+        let report = &theme.resolved.report;
+        let slug = slug.as_str();
+        if report.surround.before != report.surround.after {
+            neutralised.push((slug, report.surround.chroma));
+        }
+        for moved in &report.moved {
+            let list = match moved.ink {
+                Token::Text => &mut text,
+                Token::Accent => &mut accent,
+                Token::Error => &mut error,
+                ink => panic!("{slug}: {ink} moved"),
+            };
+            list.push((slug, moved.difference));
+        }
+        for tier in &report.shortened {
+            match tier.tier {
+                Token::TextSecondary => secondary.push(slug),
+                Token::TextTertiary => tertiary.push(slug),
+                other => panic!("{slug}: {other} shortened"),
+            }
+        }
+        if report.accent.close {
+            close.push((slug, report.accent.nearest, report.accent.distance));
+        }
+        if report.omarchy.as_ref().unwrap().derived.len() == 1 {
+            control.push(slug);
+        }
+        if slug == "retro-82" {
+            assert_eq!(
+                (report.surround.before, report.surround.after),
+                (rgb("#031222"), rgb("#0e1215"))
+            );
+        }
+    }
+    assert_eq!(
+        neutralised,
+        [
+            ("catppuccin", 0.0237),
+            ("ethereal", 0.0324),
+            ("everforest", 0.0127),
+            ("flexoki-light", 0.0149),
+            ("hackerman", 0.0155),
+            ("kanagawa", 0.0138),
+            ("lumon", 0.0197),
+            ("nord", 0.0183),
+            ("osaka-jade", 0.0148),
+            ("retro-82", 0.0402),
+            ("rose-pine", 0.0104),
+            ("tokyo-night", 0.0162),
+        ]
+    );
+    assert_eq!(
+        text,
+        [
+            ("catppuccin-latte", 3.41),
+            ("everforest", 2.2),
+            ("gruvbox", 2.26),
+            ("rose-pine", 3.83),
+            ("tokyo-night", 0.55),
+        ]
+    );
+    assert_eq!(accent, [("rose-pine", 2.11), ("white", 1.93)]);
+    assert_eq!(
+        error,
+        [
+            ("catppuccin-latte", 1.92),
+            ("everforest", 0.79),
+            ("flexoki-light", 0.96),
+            ("nord", 2.79),
+            ("white", 10.91),
+        ]
+    );
+    assert_eq!(
+        secondary,
+        [
+            "catppuccin-latte",
+            "everforest",
+            "gruvbox",
+            "miasma",
+            "nord",
+            "osaka-jade",
+            "rose-pine",
+            "tokyo-night",
+        ]
+    );
+    assert_eq!(
+        tertiary,
+        [
+            "catppuccin",
+            "catppuccin-latte",
+            "everforest",
+            "flexoki-light",
+            "gruvbox",
+            "kanagawa",
+            "lupine",
+            "matte-black",
+            "miasma",
+            "nord",
+            "osaka-jade",
+            "ristretto",
+            "rose-pine",
+            "solitude",
+            "tokyo-night",
+            "white",
+        ]
+    );
+    use ReservedColour::{ClippingBlue, ClippingRed, MaskGreen, MaskWhite};
+    assert_eq!(
+        close,
+        [
+            ("catppuccin", ClippingBlue, 12.85),
+            ("catppuccin-latte", ClippingBlue, 12.55),
+            ("ethereal", ClippingBlue, 11.03),
+            ("hackerman", MaskGreen, 10.59),
+            ("kanagawa", MaskWhite, 14.87),
+            ("lupine", ClippingBlue, 13.44),
+            ("nord", ClippingBlue, 9.72),
+            ("ristretto", ClippingRed, 13.9),
+            ("tokyo-night", ClippingBlue, 8.74),
+        ]
+    );
+    assert_eq!(control, ["last-horizon", "solitude"]);
 }
