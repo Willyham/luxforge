@@ -368,6 +368,9 @@ pub(crate) struct Inputs<'a> {
     /// While the photograph on screen is the GPU stage's output, the interface thread's time to
     /// prepare that frame, in microseconds; `None` while it is a CPU frame.
     pub(crate) gpu_frame_us: Option<u64>,
+    /// That GPU frame is the committed stack at rest, the GPU's render of it, rather than a
+    /// gesture's preview.
+    pub(crate) gpu_at_rest: bool,
     /// While the GPU preview is on and the open gesture's latest tick took the CPU path, why: what
     /// the status bar's notice is derived from ([`status::CpuReason::notice`]).
     pub(crate) cpu_reason: Option<status::CpuReason<'a>>,
@@ -767,6 +770,7 @@ mod tests {
                     approximate: false,
                 }),
                 gpu_frame_us: None,
+                gpu_at_rest: false,
                 cpu_reason: None,
                 render_error: self.render_error.as_ref(),
                 analysis: self.analysis.as_ref(),

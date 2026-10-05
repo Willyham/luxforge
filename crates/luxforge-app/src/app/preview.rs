@@ -1790,6 +1790,7 @@ impl Editor {
             proxy: quality == luxforge_ui::RegionQuality::Interactive || !covered,
             approximate: approximate_white_balance,
         });
+        let picture = self.displayed_picture();
         self.event("preview_displayed", || json!({
             "generation":generation,"entry_id":entry_id,
             "draft_revision":draft_revision,"snapshot_id":frame.raster.snapshot_id.to_string(),
@@ -1802,6 +1803,7 @@ impl Editor {
             "proxy_approximate_reason":frame.approximation.reason(),
             "approximate_white_balance":approximate_white_balance,
             "viewport_declined":delivery.viewport_declined,"render_ms":render_ms,
+            "picture":picture,
         }));
         if let Some(wanted) = self.desired_view_for(stage) {
             self.view_plan.dirty = !contains_region(frame.full_rect, wanted);
@@ -2466,6 +2468,7 @@ impl Editor {
             approximate: frame.approximate_white_balance(),
         });
         let raster = frame.raster();
+        let picture = self.displayed_picture();
         self.event(
             "preview_displayed",
             || json!({
@@ -2487,6 +2490,9 @@ impl Editor {
                 "approximate_white_balance":frame.approximate_white_balance(),
                 "reason":zoom.then_some("zoom"),
                 "render_ms":frame.render_ms(),
+                // Whose picture of this content is on screen: the GPU's at rest, this frame
+                // behind it, or this reference frame itself.
+                "picture":picture,
             }),
         );
         // These pixels are presented whether or not this frame also belongs to the one open

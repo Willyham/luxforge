@@ -877,6 +877,7 @@ impl Editor {
             rendering: self.presentation.queue.is_busy() || self.surface_photo_updating(),
             render: self.activity.render,
             gpu_frame_us: self.gpu_frame_us(),
+            gpu_at_rest: self.gpu_at_rest(),
             cpu_reason: self.gpu_cpu_reason(),
             render_bar: self.activity.render_bar,
             render_error: self.presentation.render_error.as_ref(),
@@ -984,17 +985,32 @@ impl Editor {
             surfaces.region_coverage = None;
         }
         surfaces.gpu = self.gpu_plan(surfaces.photo);
-        // The open gesture's plan is held behind the CPU frame of its revision once that frame is
-        // presented, and tagged with the revision it draws.
-        if surfaces.gpu.is_some()
+        let identity = self
+            .evidence
+            .as_ref()
+            .is_some_and(|evidence| evidence.gpu_identity.is_some());
+        if identity {
+            // The evidence hook's identity plan is drawn in place of the frame it was held from,
+            // untagged: no gesture's hold or revision is its.
+        } else if let Some((plan, change)) = self.gpu_rest_plan() {
+            // At rest the committed stack's own view plan is the photograph, drawn in place of its
+            // frame, until its picture at rest in tiles is in, where it has one.
+            surfaces.gpu = Some(plan);
+            surfaces.gpu_hold = false;
+            surfaces.gpu_tag = None;
+            surfaces.gpu_change = Some(change);
+        } else if surfaces.gpu.is_some()
             && let Some((_, revision)) = self.gesture_gpu_plan()
         {
+            // The open gesture's plan is held behind the CPU frame of its revision once that frame
+            // is presented, and tagged with the revision it draws.
             surfaces.gpu_hold = self.gpu_held();
             surfaces.gpu_tag = Some(revision);
             surfaces.gpu_change = self.gpu.surface_change();
         }
         surfaces.gpu_warm = self.gpu.warm();
         surfaces.gpu_source = self.gpu_source_handed();
+        surfaces.gpu_rest = self.gpu_rest_handed();
         surfaces.dissolve = self.gpu_settle.dissolve();
         surfaces
     }
