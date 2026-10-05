@@ -43,7 +43,7 @@ const SIDE: u32 = 96;
 /// This host's adapter the tests open their devices on, by backend and name: the first wgpu
 /// offers of the renderer's backends that is not a software rasterizer, or else the first. `None`,
 /// having printed that `test` was skipped, without one.
-fn host_adapter(test: &str) -> Option<(String, String)> {
+pub(super) fn host_adapter(test: &str) -> Option<(String, String)> {
     let offered = adapters::enumerate(adapters::renderer_backends());
     let Some(adapter) = offered
         .iter()
@@ -68,7 +68,7 @@ impl AsRef<[f32]> for Planes {
 
 /// `source` as the photo surface holds it on the GPU: a JPEG's upright codes, or a RAW
 /// development's planes through its view, never copied.
-fn gpu_source(version: u64, source: &PreviewSource) -> GpuSource {
+pub(super) fn gpu_source(version: u64, source: &PreviewSource) -> GpuSource {
     match source {
         PreviewSource::Jpeg(image) => {
             GpuSource::codes(version, Arc::clone(&image.rgba), image.width, image.height)
@@ -126,7 +126,7 @@ fn recipe(layers: Vec<Layer>, masked: Vec<(usize, luxforge_core::Component)>) ->
 
 /// The families a tile is drawn through: every kind of step a plan holds, a link before the last
 /// among them.
-fn families() -> Vec<(&'static str, Recipe)> {
+pub(super) fn families() -> Vec<(&'static str, Recipe)> {
     let basic = Layer::new(
         BASIC_EFFECT,
         json!({"exposure": 0.4, "contrast": 20.0, "vibrance": 25.0}),
