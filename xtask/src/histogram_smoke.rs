@@ -11,6 +11,12 @@
 //! Every count a frame reports is checked against `analysis::reduce` of an **independent**
 //! core render of the same fixture through the same recipe, so the plot is verified against the
 //! reducer rather than against itself — and so are the words the triangles' tooltips state them in.
+//! Counts the reference renderer reduced must equal it exactly; counts the GPU took over the
+//! stack's tiles (`state.histogram.source` `gpu`, `docs/design/gpu-first.md`, stage 2) are held to
+//! the recorded tolerance, each counter within 0.1% of the output pixel count, and the report the
+//! owner's store holds for them, read back through `analysis.request`, is held to it bin by bin.
+//! The pixel the scenario sets is a pixel-stage layer the GPU does not draw, so that stack is the
+//! reference's; the Original's and a later exposure-only stack are the GPU's.
 //!
 //! The inspector is the plot with the triangles in its bottom corners and nothing else, with no
 //! caption. Nothing is read under the pointer; the pixel the scenario sets is read back through the
@@ -110,9 +116,10 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         view("original", script::Step::Preview(PreviewStep::Sequence(0))),
         // Back to current, because a gesture is refused while a historical entry is shown.
         view("current", script::Step::Preview(PreviewStep::Current)),
-        // The drafted render's counts are the CPU's: with the GPU preview on, a drag is drawn on
-        // the GPU from its first tick and the plot keeps its updating state until the quiet policy
-        // settles the draft on the CPU, so the drag runs with the preview turned off.
+        // The drafted render's counts are the reference's: with the GPU preview off a drag is
+        // drawn by the reference renderer, whose frames of this small fixture are its exact
+        // frames, each reduced into a report. With it on, the plot shows the counts of the frame
+        // in motion, marked updating, which the GPU steps below hold.
         Step::new(
             "gpu-preview-off",
             luxforge_evidence::PaletteStep::Run("gpu preview".into()),
@@ -133,6 +140,43 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         .no_draft()
         .label("Exposure +1.00 EV")
         .payload(BASIC_EFFECT, json!({"exposure": 1.0})),
+        // The GPU preview back on, and the history undone to the Original, whose stack the GPU
+        // draws: its counts are the GPU's.
+        Step::new(
+            "gpu-preview-on",
+            luxforge_evidence::PaletteStep::Run("gpu preview".into()),
+        )
+        .commits(0)
+        .workspace("gpu_preview", json!(true)),
+        Step::new("undo-exposure", script::Step::api("history.undo")).commits(1),
+        Step::new("undo-pixel", script::Step::api("history.undo"))
+            .commits(1)
+            .no_layer(BASIC_EFFECT),
+        // An Exposure drag left open on the GPU: the plot shows the counts of the frame in motion,
+        // marked updating.
+        Step::new(
+            "gpu-drag",
+            SliderStep::new("set-basic", "exposure", [0.5, 1.0]),
+        )
+        .commits(0)
+        .draft("set-basic", json!({"exposure": 1.0}))
+        .no_layer(BASIC_EFFECT),
+        // Released: the GPU presents the committed stack with no CPU render, and its tiles'
+        // counts are its report.
+        Step::new(
+            "gpu-release",
+            SliderStep::new("set-basic", "exposure", [1.0]).release(),
+        )
+        .commits(1)
+        .no_draft()
+        .label("Exposure +1.00 EV")
+        .payload(BASIC_EFFECT, json!({"exposure": 1.0})),
+        // The owner's store holds that report: an agent's request for the current stack is
+        // answered at once.
+        view(
+            "analysis",
+            script::Step::call("analysis.request", json!({"target": {"kind": "current"}})),
+        ),
     ])
 }
 
@@ -275,9 +319,23 @@ fn counters(frame: &Value) -> &Value {
     &frame["state"]["histogram"]["counters"]
 }
 
-/// Check one frame's histogram against an independent reduction, counter by counter.
+/// Whether `frame`'s counts are the GPU's, taken over the stack's tiles, rather than the reference
+/// renderer's reduction.
+fn gpu_counted(frame: &Value) -> bool {
+    frame["state"]["histogram"]["source"] == json!("gpu")
+}
+
+/// The most a GPU clipping count may differ from the independent reduction's: 0.1% of the output
+/// pixels.
+fn tolerated(report: &analysis::Report) -> u64 {
+    (luxforge_reference::tolerance::HISTOGRAM_FRACTION * report.pixel_count() as f64).floor() as u64
+}
+
+/// Check one frame's histogram against an independent reduction, counter by counter: exactly
+/// where the reference renderer reduced it, within the recorded tolerance where the GPU counted it.
 fn expect_counts(frame: &Value, report: &analysis::Report, what: &str) -> Result<Value> {
     let state = &frame["state"]["histogram"];
+    let gpu = gpu_counted(frame);
     ensure(
         state["status"] == json!("ready"),
         format!("{what}: histogram status is {}", state["status"]),
@@ -299,20 +357,44 @@ fn expect_counts(frame: &Value, report: &analysis::Report, what: &str) -> Result
         state["notice"] == Value::Null,
         format!("{what}: the plot carries the notice {}", state["notice"]),
     )?;
-    // The triangles' tooltips state the counts in words, and the words are the independent
-    // reduction's, not the model's own numbers read back.
+    // The triangles' tooltips state the counts in words: the independent reduction's where the
+    // reference counted, and where the GPU did, the frame's own counts, which are held to the
+    // reduction's below.
+    let said = |name: &str| {
+        if gpu {
+            counters(frame)[name].as_u64().unwrap_or(u64::MAX)
+        } else {
+            match name {
+                "r0" => report.r0,
+                "g0" => report.g0,
+                "b0" => report.b0,
+                "r255" => report.r255,
+                "g255" => report.g255,
+                "b255" => report.b255,
+                "any_shadow" => report.any_shadow,
+                "any_highlight" => report.any_highlight,
+                "all_shadow" => report.all_shadow,
+                "all_highlight" => report.all_highlight,
+                _ => report.both,
+            }
+        }
+    };
     let shadow = format!(
         "{RULE}\n0 \u{b7} R {} G {} B {} \u{b7} any {} \u{b7} all {}",
-        report.r0, report.g0, report.b0, report.any_shadow, report.all_shadow
+        said("r0"),
+        said("g0"),
+        said("b0"),
+        said("any_shadow"),
+        said("all_shadow")
     );
     let highlight = format!(
         "{RULE}\n255 \u{b7} R {} G {} B {} \u{b7} any {} \u{b7} all {}\nboth {}",
-        report.r255,
-        report.g255,
-        report.b255,
-        report.any_highlight,
-        report.all_highlight,
-        report.both
+        said("r255"),
+        said("g255"),
+        said("b255"),
+        said("any_highlight"),
+        said("all_highlight"),
+        said("both")
     );
     ensure(
         state["tooltips"]["shadow"] == json!(shadow),
@@ -350,13 +432,36 @@ fn expect_counts(frame: &Value, report: &analysis::Report, what: &str) -> Result
         "all_shadow": report.all_shadow, "all_highlight": report.all_highlight,
         "both": report.both,
     });
-    ensure(
-        counters(frame) == &expected,
-        format!(
-            "{what}: counters are {}, the independent reduction says {expected}",
-            counters(frame)
-        ),
-    )?;
+    let limit = tolerated(report);
+    let within = |shown: &Value, expected: &Value| {
+        shown
+            .as_u64()
+            .zip(expected.as_u64())
+            .is_some_and(|(shown, expected)| shown.abs_diff(expected) <= limit)
+    };
+    if gpu {
+        let counted = counters(frame);
+        let past: Vec<&str> = luxforge_reference::tolerance::CLIPPING
+            .iter()
+            .copied()
+            .filter(|name| !within(&counted[*name], &expected[*name]))
+            .collect();
+        ensure(
+            past.is_empty(),
+            format!(
+                "{what}: the GPU's counters {counted} pass {limit} pixels from the independent \
+                 reduction's {expected} at {past:?}"
+            ),
+        )?;
+    } else {
+        ensure(
+            counters(frame) == &expected,
+            format!(
+                "{what}: counters are {}, the independent reduction says {expected}",
+                counters(frame)
+            ),
+        )?;
+    }
     // The plot's shared scale is the largest count in any channel, which is checkable too.
     let max = report
         .r
@@ -366,14 +471,23 @@ fn expect_counts(frame: &Value, report: &analysis::Report, what: &str) -> Result
         .copied()
         .max()
         .unwrap_or(0);
+    // A bin the GPU counts differently moves the tallest: held here to the clipping counts'
+    // tolerance, which this fixture's tallest bin meets.
     ensure(
-        state["plotted_max"] == json!(max),
+        state["plotted_max"] == json!(max) || (gpu && within(&state["plotted_max"], &json!(max))),
         format!(
             "{what}: one full-height bin stands for {}, the reduction's tallest bin is {max}",
             state["plotted_max"]
         ),
     )?;
-    Ok(json!({"counters":expected,"plotted_max":max,"identity":state["identity"]}))
+    Ok(json!({
+        "counters": counters(frame),
+        "reduced": expected,
+        "plotted_max": state["plotted_max"],
+        "identity": state["identity"],
+        "source": state["source"],
+        "tolerance_pixels": gpu.then_some(limit),
+    }))
 }
 
 /// The photograph's exact rectangle in a capture: the one the editor records drawing it in, with its
@@ -904,6 +1018,119 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         release,
         "the gesture released: one commit, and the counts equal an independent reduction of the composed pixel-and-exposure stack",
         released_detail,
+    );
+
+    // The GPU steps. Undone to the Original, whose empty stack the GPU draws at rest: its counts
+    // are the GPU's, within the tolerance of the fixture's own.
+    let undone = launch.at("undo-pixel")?;
+    let undone_counts = expect_counts(undone, &plain, "undone to the Original")?;
+    ensure(
+        gpu_counted(undone),
+        format!(
+            "Undone to the Original, the counts are the {}'s, not the GPU's",
+            undone["state"]["histogram"]["source"]
+        ),
+    )?;
+    checks.note(
+        undone,
+        "undone to the Original, which the GPU draws: its tiles' counts are the report, within the tolerance of an independent reduction",
+        undone_counts,
+    );
+    // The drag left open on the GPU: the plot is marked updating; where the GPU's counts of the
+    // frame in motion are in, they name the drafted revision they were drawn for.
+    let gpu_drag = launch.at("gpu-drag")?;
+    let gpu_drafted = gpu_drag.draft();
+    let histogram = &gpu_drag["state"]["histogram"];
+    ensure(
+        histogram["stale"] == json!(true) || histogram["source"] != json!("motion"),
+        format!("The counts of the frame in motion are not marked updating: {histogram}"),
+    )?;
+    if histogram["source"] == json!("motion") {
+        ensure(
+            histogram["identity"]["draft_revision"].as_u64()
+                <= gpu_drafted["draft_revision"].as_u64(),
+            format!(
+                "The counts in motion name draft revision {} past the frame's {}",
+                histogram["identity"]["draft_revision"], gpu_drafted["draft_revision"]
+            ),
+        )?;
+    }
+    checks.note(
+        gpu_drag,
+        "an Exposure drag left open on the GPU: the plot shows the frame in motion's counts, marked updating",
+        json!({"draft": gpu_drafted, "histogram": histogram}),
+    );
+    // Released: the GPU presents the stack, and its tiles' counts are its report.
+    let gpu_release = launch.at("gpu-release")?;
+    let gpu_released = reduction(root, &displayed_recipe(gpu_release)?)?;
+    let gpu_released_detail = expect_counts(gpu_release, &gpu_released, "the release on the GPU")?;
+    // A release whose committed stack adds a layer's units compiles its picture at rest first
+    // ([GPU-first](docs/design/gpu-first.md), proposals): while it does, the stack the GPU
+    // presented is refused, named `compiling`, and the reference counts it.
+    let refused_compiling = launch.events.iter().any(|event| {
+        event["event"] == "gpu_presented_refused" && event["detail"]["why"] == "compiling"
+    });
+    ensure(
+        gpu_counted(gpu_release) || refused_compiling,
+        format!(
+            "The release's counts are the {}'s, not the GPU's, and nothing was refused while compiling",
+            gpu_release["state"]["histogram"]["source"]
+        ),
+    )?;
+    checks.note(
+        gpu_release,
+        "the release on the GPU: the stack presented with no CPU render, its tiles' counts within the tolerance of an independent reduction of the composed stack, or, refused while its picture at rest compiled, the reference's exactly",
+        json!({"counts": gpu_released_detail, "refused_compiling": refused_compiling}),
+    );
+    // The owner's store holds that report under the released stack's identity: an agent's
+    // request is answered at once, its bins within the recorded tolerance of the independent
+    // reduction's, channel by channel: the earth mover's distance within a quarter of a code.
+    let asked = launch.at("analysis")?;
+    let answer = &asked["step"]["result"];
+    ensure(
+        answer["status"] == json!("ready"),
+        format!(
+            "analysis.request answered {}, not a ready hit",
+            answer["status"]
+        ),
+    )?;
+    ensure(
+        answer["identity"]["entry_id"] == gpu_release["state"]["histogram"]["identity"]["entry"],
+        format!(
+            "analysis.request answered entry {}, the released frame names {}",
+            answer["identity"]["entry_id"], gpu_release["state"]["histogram"]["identity"]["entry"]
+        ),
+    )?;
+    let bins = |name: &str| -> Vec<u64> {
+        answer["result"][name]
+            .as_array()
+            .map(|bins| bins.iter().filter_map(Value::as_u64).collect())
+            .unwrap_or_default()
+    };
+    let moved: Vec<f64> = [
+        (bins("r"), &gpu_released.r),
+        (bins("g"), &gpu_released.g),
+        (bins("b"), &gpu_released.b),
+    ]
+    .iter()
+    .map(
+        |(answered, reduced)| match <[u64; 256]>::try_from(answered.as_slice()) {
+            Ok(answered) => luxforge_reference::tolerance::histogram_emd(&answered, reduced),
+            Err(_) => f64::INFINITY,
+        },
+    )
+    .collect();
+    let limit = luxforge_reference::tolerance::HISTOGRAM_EMD_CODES;
+    ensure(
+        moved.iter().all(|codes| *codes <= limit),
+        format!(
+            "analysis.request's bins are {moved:?} codes from the independent reduction's by the earth mover's distance, past {limit}"
+        ),
+    )?;
+    checks.note(
+        asked,
+        "analysis.request for the current stack is a ready hit on the GPU's report, each channel within the earth mover's distance tolerance",
+        json!({"status": answer["status"], "emd_codes": moved, "tolerance_codes": limit}),
     );
 
     // Every frame the run presented reports its own render time, and each captured status bar

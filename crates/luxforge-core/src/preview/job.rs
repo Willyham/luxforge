@@ -81,6 +81,9 @@ pub enum PreviewIntent {
     Settle,
     /// Reduce a retained exact frame to new Fit bounds without rendering its recipe again.
     Reduce,
+    /// A paused draft's view at 100% and above: its exact visible region alone, the full detail a
+    /// pause restores, and no whole frame, which no pause in a gesture renders.
+    Refine,
 }
 
 #[derive(Clone, Debug)]

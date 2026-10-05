@@ -4451,6 +4451,14 @@ Reported, not gated; the frame a drag draws at each view against the picture at 
 - **No gap.** Every stack was drawn on the GPU, the 74 that read Dehaze's light among them: the tile worker's runner computes each light once for the export, from the whole stage at full resolution a window of the source at a time, before the tiles that read it; a light behind Detail is the stand-in with Detail left out, as on screen. At the merge before it (`21fc9c48`) those 74 were gaps, the runner computing no light.
 - A selection of one kind, so the run reports itself incomplete; its export rows are the whole corpus.
 
+### The histogram and clipping counts
+
+`--kind histogram` on 2026-10-05 over all 250 stacks of the corpus, the M4 Pro's Metal adapter, with the RAW manifest: a measurement of counts, not of time (`artifacts/gpu-first/task-004/gate-4`). The GPU's counts are the editor's own: each stack's tiles at full resolution as a committed job plans them (1 to 240 tiles of 2048 px or smaller), each over its window cut from the source, Dehaze's light computed on the GPU per frame, drawn by the photo surface's own drawing for their counts alone and counted by its histogram reduction; the same tiles are read back whole for the luminance histogram and the diagnostics, and their codes count to the GPU's counts exactly on every stack. The reference is the core's reducer over the reference renderer's exact whole frame. The limit, the owner's of 2026-10-05: the earth mover's distance between the histograms within 0.25 code on each of R, G, B and luminance, and each clipping counter within 0.1% of the output pixel count.
+
+- **Within the limit on all 250 stacks.** The largest earth mover's distance is 0.130 codes, on R, G, B and luminance alike (Basic under Dehaze with a crop, Presence fixture: a systematic shift of +0.12 codes, 15.5% of its pixels one code brighter); 249 stacks are within 0.05 and 240 within 0.02. The largest clipping difference is 0.0313% of the output pixels (`r255`, Texture with Clarity on the Presence fixture). 4 stacks are exact.
+- **Reported beside it, not gated.** The summed absolute bin difference is past 0.1% of the pixels on 89 stacks (34 of 106 pointwise, 55 of 144 spatial; 29 of 35 on the Presence fixture, 22 on the zone plate, 15 and 14 on the 60 and 24 MP JPEGs, 3 of 5 on the lens zone plate, 6 of 105 RAW stacks), the largest 23.6% on the stack above, 7.4% for all three Presence fields there; binned at 2 codes 69 of them are still past 0.1%, and at 4 codes 50, since a flat patch one code across a bin's edge moves whole. Pixel by pixel, the frame differs from the reference frame by more than two codes on at most 0.455% of a stack's pixels (the perspective and lens warp over the lens zone plate's chirp, whose resampling also moves 31% of its pixels by one code) and on none of most stacks; the all-three-Presence-fields stacks on the Presence fixture reach 0.29%. Eight stacks moved further when the light became per frame, the five with Detail before Presence by a systematic shift of up to 0.042 codes, which the light computed with Detail left out ([GPU previews](../design/gpu-preview.md)) would give.
+- **What it means.** The GPU's reduction counts its codes exactly ([basic and histogram](../design/basic-and-histogram.md#histogram-and-clipping-contract)). A summed difference counts a pixel whose code moved one step twice, so a share of a flat patch at a code's rounding edge moving by one code passes 0.1% of the pixels while the histogram moves by a hundredth of a code; the earth mover's distance measures how far it moved.
+
 ### Reproducing it
 
 ```sh
@@ -4459,6 +4467,8 @@ cargo run --release --locked --package xtask -- gpu-qualification --output NEW_D
   --manifest /path/to/raw-manifest.json
 cargo run --release --locked --package xtask -- gpu-qualification --output NEW_DIR \
   --manifest /path/to/raw-manifest.json --gate-motion against-rest
+cargo run --release --locked --package xtask -- gpu-qualification --output NEW_DIR \
+  --manifest /path/to/raw-manifest.json --kind histogram
 ```
 
 Each run writes `report.json` (every cell's figures and verdict, the reading, the limits, the build and corpus identity and the sources' hashes before and after), `summary.md`, `harness.log`, the harness's own `run/cells.json` and the frames of every judged cell past a limit under `run/frames/` (`--frames all` for every cell). Without `--manifest` the RAW stacks are gaps, so a run within every limit would still be incomplete; `--zoom`, `--kind`, `--families`, `--recipes` and `--sources` measure a selection, which is incomplete too.
