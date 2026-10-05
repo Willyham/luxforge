@@ -274,10 +274,17 @@ impl GpuTiles {
         Ok(())
     }
 
-    /// The sides a stream may be drawn at, longest first.
+    /// The sides a stream may be drawn at, longest first: never none.
     fn sides(&self) -> Vec<u32> {
         #[cfg(test)]
-        if let Some(sides) = self.shared.lock().hooks.sides.clone() {
+        if let Some(sides) = self
+            .shared
+            .lock()
+            .hooks
+            .sides
+            .clone()
+            .filter(|sides| !sides.is_empty())
+        {
             return sides;
         }
         STREAM_TILE_SIDES.to_vec()
@@ -343,7 +350,7 @@ impl TileService for GpuTiles {
             return Err(reason);
         }
         let sides = self.sides();
-        let plan = plan_stream(evaluation, sides.first().copied().unwrap_or(1))?;
+        let plan = plan_stream(evaluation, sides[0])?;
         let taken = Arc::new(AtomicUsize::new(0));
         let wake = {
             let (shared, taken) = (Arc::clone(&self.shared), Arc::clone(&taken));
