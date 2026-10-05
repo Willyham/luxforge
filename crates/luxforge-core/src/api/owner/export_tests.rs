@@ -224,6 +224,18 @@ fn with_envelope(mut params: Value) -> Value {
     params
 }
 
+/// The renderer a written export's result names: the reference renderer, with no reason, since it
+/// renders every export.
+fn reference_renderer() -> Value {
+    json!({"record": "reference", "reason": null})
+}
+
+/// The SHA-256 of a file's bytes, as hex.
+fn digest(path: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(fs::read(path).unwrap()))
+}
+
 /// The names in a directory, sorted.
 fn listing(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(dir)
@@ -515,6 +527,7 @@ fn an_export_writes_the_entrys_exact_render_as_a_new_jpeg() {
         (json!(480), json!(320))
     );
     assert_eq!(accepted["keep_metadata"], json!(false));
+    assert_eq!(accepted["reference"], json!(false));
     assert_eq!(accepted["deduplicated"], json!(false));
     let read = harness.settle(&accepted["job_id"]);
     assert_eq!(read["status"], "ready", "{read}");
@@ -522,7 +535,10 @@ fn an_export_writes_the_entrys_exact_render_as_a_new_jpeg() {
     let bytes = fs::metadata(&destination).unwrap().len();
     assert_eq!(
         read["result"],
-        json!({"path": destination, "bytes": bytes, "width": 480, "height": 320, "metadata": []})
+        json!({
+            "path": destination, "bytes": bytes, "width": 480, "height": 320, "metadata": [],
+            "renderer": reference_renderer(),
+        })
     );
     assert!(read.get("error").is_none());
     assert_eq!(
@@ -657,6 +673,100 @@ fn a_retried_export_is_answered_from_the_first_and_writes_one_file() {
         "request_id was already used with different input"
     );
     assert_eq!(listing(&out), ["once.jpg"]);
+}
+
+/// `schema.list` lists `reference` as an optional boolean, default false, whose notes say what it
+/// asks for, and a value of another kind is refused. The answer echoes it, and a written export's
+/// result names the renderer that wrote the file: the reference renderer, which renders every
+/// export, so asking for it writes the same file as not asking. Request deduplication hashes it as
+/// it does every parameter: the same request again is answered from the first answer, and the same
+/// request id with another value is a conflict. The original is unchanged throughout.
+#[test]
+fn the_reference_option_is_listed_echoed_and_hashed() {
+    let harness = Harness::start("reference");
+    let state = harness.import("reference.jpg");
+    let asset = state["asset"]["id"].clone();
+    let original = harness.dir.join("reference.jpg");
+    let original_digest = digest(&original);
+    harness.expose(&asset, 0.5);
+    let out = destinations(&harness);
+
+    let schema = harness.ok("schema.list", json!({}));
+    let listed = &schema["methods"]["export.jpeg"];
+    let parameter = listed["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|parameter| parameter["name"] == "reference")
+        .expect("export.jpeg lists reference");
+    assert_eq!(
+        (
+            parameter["kind"].clone(),
+            parameter["required"].clone(),
+            parameter["default"].clone()
+        ),
+        (json!("boolean"), json!(false), json!(false))
+    );
+    let notes = parameter["notes"].as_str().unwrap();
+    assert!(
+        notes.contains("reference renderer") && notes.contains("every export"),
+        "{notes}"
+    );
+    assert_eq!(listed["optional"]["reference"], json!(notes));
+    let refused = harness.refused(
+        "export.jpeg",
+        with_envelope(json!({
+            "asset_id": asset, "destination": out.join("refused.jpg"), "reference": "yes",
+        })),
+    );
+    assert_eq!(
+        (refused.code.as_str(), refused.message.as_str()),
+        ("validation", "parameter reference must be a boolean")
+    );
+
+    let default =
+        harness.export(json!({"asset_id": asset, "destination": out.join("default.jpg")}));
+    let asked = harness.export(json!({
+        "asset_id": asset, "destination": out.join("asked.jpg"), "reference": true,
+    }));
+    assert_eq!(default["reference"], json!(false));
+    assert_eq!(asked["reference"], json!(true));
+    for job in [&default, &asked] {
+        let read = harness.settle(&job["job_id"]);
+        assert_eq!(read["status"], "ready", "{read}");
+        assert_eq!(read["result"]["renderer"], reference_renderer());
+    }
+    assert!(
+        fs::read(out.join("asked.jpg")).unwrap() == fs::read(out.join("default.jpg")).unwrap(),
+        "the same file either way"
+    );
+
+    let params = json!({
+        "asset_id": asset, "destination": out.join("hashed.jpg"), "reference": true,
+        "mutation": {"request_id": "export-reference", "actor": "test"},
+    });
+    let first = harness.ok("export.jpeg", params.clone());
+    assert_eq!(harness.settle(&first["job_id"])["status"], "ready");
+    let retried = harness.ok("export.jpeg", params.clone());
+    assert_eq!(retried["deduplicated"], json!(true));
+    assert_eq!(retried["job_id"], first["job_id"]);
+    assert_eq!(retried["reference"], json!(true));
+    let mut declined = params;
+    declined["reference"] = json!(false);
+    let conflict = harness.refused("export.jpeg", declined);
+    assert_eq!(
+        (conflict.code.as_str(), conflict.message.as_str()),
+        (
+            "conflict",
+            "request_id was already used with different input"
+        )
+    );
+    assert_eq!(listing(&out), ["asked.jpg", "default.jpg", "hashed.jpg"]);
+    assert_eq!(
+        digest(&original),
+        original_digest,
+        "the original is unchanged"
+    );
 }
 
 /// The quadrant fixture with its EXIF segment replaced by one a camera might write: supported
