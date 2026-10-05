@@ -157,15 +157,22 @@ fn gpu_allocations_are_unavailable_until_enabled() {
     assert_eq!(gpu.unified_memory, None);
 }
 
-/// The fastest any Apple GPU writes memory, in bytes a second, with headroom: the M2 and M3 Ultra
-/// reach 800 GB/s, and the M4 Pro fills the test's buffer at about 200 GB/s.
+/// A fill rate no Apple GPU's counted time can show, in bytes a second: five times the 800 GB/s of
+/// the M2 and M3 Ultra. The M4 Pro fills the test's buffer at about 200 GB/s alone, and the driver
+/// counted it at about 1 TB/s beside the workspace's GPU tests, crediting only part of the work.
+/// A unit error moves the counter by orders of magnitude, so this margin still catches one.
 #[cfg(target_os = "macos")]
-const FASTEST_FILL: u64 = 1_000_000_000_000;
+const FASTEST_FILL: u64 = 4_000_000_000_000;
+
+/// How long the GPU-time check lets the counter stand still before it gives the queue the same
+/// work again.
+#[cfg(target_os = "macos")]
+const STALLED: Duration = Duration::from_millis(500);
 
 /// A 256 MiB private buffer raises the device's allocations by at least its size, and filling it
 /// with the blit engine raises GPU time. The GPU time the IORegistry reports is held, as an
-/// independent unit check, between the least time the blit's bytes take at the fastest bandwidth
-/// an Apple GPU has and a multiple of the command buffer's own GPU start and end times.
+/// independent unit check, between the least time the blits' bytes take at the fastest bandwidth
+/// an Apple GPU has and a multiple of their command buffers' own GPU start and end times.
 #[cfg(target_os = "macos")]
 #[test]
 fn a_metal_dispatch_raises_gpu_time_and_allocations() {
@@ -220,27 +227,42 @@ fn a_metal_dispatch_raises_gpu_time_and_allocations() {
     };
     let after = before.map(|before| {
         const FILLS: usize = 16;
-        let measured = gpu.dispatch(FILLS);
         // AppUsage is this process's active GPU time, while GPUStartTime..GPUEndTime is the
         // command buffer's GPU window, which other processes' work on a loaded host stretches
-        // without adding to this process's time. So the window bounds the rise only from above;
-        // from below it is bounded by the bytes the blit wrote at a bandwidth no Apple GPU
-        // reaches ([`FASTEST_FILL`]), which no load changes. That still catches a unit error: a
-        // counter in microseconds read as nanoseconds would rise about a two-hundredth of it.
+        // without adding to this process's time. So the windows bound the rise only from above;
+        // from below each dispatch is bounded by the bytes its blit wrote at a rate no Apple GPU's
+        // counted time shows ([`FASTEST_FILL`]), which no load changes.
         let floor = (FILLS as u64 * buffer).saturating_mul(1_000_000_000) / FASTEST_FILL;
-        let after = read_until(
-            "GPU time rising by the dispatch",
-            || sampler.read().gpu.time_ns.expect("GPU time"),
-            |after| after.saturating_sub(before) >= floor,
-        );
+        // Under GPU contention the driver can credit part of a command buffer's time and the rest
+        // only once the queue runs again, so a counter left alone can stay short of the work for
+        // good (measured beside the workspace's tests: 0.8 ms of a 31 ms dispatch, for 120 s). So
+        // the queue is given the same work again whenever the counter stalls, and every dispatch
+        // but the newest is held to its floor: a counter in microseconds read as nanoseconds would
+        // still rise about a fiftieth of what it must.
+        let mut windows = vec![gpu.dispatch(FILLS)];
+        let mut dispatched = Instant::now();
+        let after = luxforge_testbase::wait_for("GPU time rising by the dispatches", || {
+            let after = sampler.read().gpu.time_ns.expect("GPU time");
+            let credited = windows.len().saturating_sub(1).max(1) as u64;
+            if after.saturating_sub(before) >= floor * credited {
+                return Some(after);
+            }
+            if dispatched.elapsed() >= STALLED {
+                windows.push(gpu.dispatch(FILLS));
+                dispatched = Instant::now();
+            }
+            None
+        });
         let grown = after - before;
+        let measured: u64 = windows.iter().sum();
         println!(
-            "GPU time grew {grown} ns; the bytes written need at least {floor} ns; Metal \
-             measured the command buffer at {measured} ns"
+            "GPU time grew {grown} ns over {} dispatches, each needing at least {floor} ns for its \
+             bytes; Metal measured their command buffers at {measured} ns",
+            windows.len()
         );
         assert!(
             grown <= measured.saturating_mul(4).max(1_000_000),
-            "GPU time grew {grown} ns for a command buffer Metal measured at {measured} ns"
+            "GPU time grew {grown} ns for command buffers Metal measured at {measured} ns"
         );
         after
     });
