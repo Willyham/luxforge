@@ -229,8 +229,8 @@ pub(crate) fn extents(
     .stage())
 }
 
-/// A byte point evaluation of `recipe` through `context`, compiled once, for a test that asks
-/// it many pixels or inspects its tile cache.
+/// A byte evaluation of `recipe` through `context` in frame mode, compiled once and its spatial
+/// frames materialized, for a test that asks it many pixels.
 pub(crate) fn evaluation<'a>(
     context: &'a RenderContext,
     registry: &ModuleRegistry,
@@ -243,14 +243,14 @@ pub(crate) fn evaluation<'a>(
         Byte(source),
         Cow::Owned(compiled),
         super::spatial::Tiling::Halo,
-        SpatialMode::Point,
+        SpatialMode::Frames,
         &Cancel::never(),
         context,
     )
 }
 
 /// A linear evaluation of `recipe` through `context` in either spatial mode, for a test that
-/// inspects the frames or the tiles it holds.
+/// inspects the frames it holds.
 pub(crate) fn linear_evaluation<'a>(
     context: &'a RenderContext,
     registry: &ModuleRegistry,
@@ -275,8 +275,8 @@ pub(crate) fn linear_evaluation<'a>(
 /// Every output byte of `recipe` over `source` from the point evaluator in `mode`, row by row,
 /// with the output stage's dimensions: the reference a rendered frame is compared with. It
 /// resolves the segment, the replacement that wins and the view for every pixel and applies the
-/// colour runs to that pixel alone, never through the rows a frame is written from; in
-/// [`SpatialMode::Point`] it is the evaluation a sample reads, with one tile cache for every pixel.
+/// colour runs to that pixel alone, never through the rows a frame is written from, through the
+/// frames of its spatial segments in [`SpatialMode::Frames`].
 pub(crate) fn point_evaluated<'a>(
     context: &'a RenderContext,
     registry: &ModuleRegistry,

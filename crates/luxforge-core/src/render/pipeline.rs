@@ -38,8 +38,8 @@ use super::{
     color_chunk_rows, color_runs, mapped_replacements,
     reduced::ReducedKey,
     spatial::{
-        PlaneUse, PointTiles, SpatialPlan, TilePlanes, Tiling, build_reduction_cancellable,
-        fill_planes, resolve_globals, run_tile, run_tile_planned, run_tiles,
+        PlaneUse, SpatialPlan, TilePlanes, Tiling, build_reduction_cancellable, fill_planes,
+        resolve_globals, run_tile, run_tile_planned, run_tiles,
     },
 };
 
@@ -241,12 +241,12 @@ pub(super) fn input_prefix_key<'p, D: PixelDomain>(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SpatialMode {
     /// Materialize every spatial operation's output once over its whole stage, for a pass that
-    /// reads every pixel.
+    /// reads every pixel and for a read of any pixel through a spatial segment: the reference
+    /// renderer's whole frames.
     Frames,
-    /// Evaluate every spatial segment only in the tiles the requested pixels need, through one
-    /// [`PointTiles`] cache, for a point query, which is the declared exception to performance
-    /// rule 4. Nothing is materialized: a later segment's halo reads an earlier segment's tiles
-    /// from the same cache, and so does a reduction of a stage behind a spatial segment.
+    /// Materialize nothing, for a point query of a stack without a spatial segment, `O(layers)`
+    /// per pixel, or one that reads only the estimates the store holds. A pixel through a spatial
+    /// segment it has no frame of is an error ([`Evaluation::framed`] builds them).
     Point,
 }
 
@@ -272,8 +272,6 @@ pub(crate) struct Evaluation<'a, D: PixelDomain> {
     /// finished and before the one it replaces was released, which is the peak.
     #[cfg(test)]
     pub(super) built: Vec<(Weak<D::SpatialFrame>, usize)>,
-    /// In [`SpatialMode::Point`], the tiles of every spatial segment this query has evaluated.
-    pub(super) tiles: Option<PointTiles<'a>>,
     /// How each spatial segment is cut into tiles: [`Tiling::Halo`] everywhere but in the tests
     /// that prove the result does not depend on it.
     tiling: Tiling,
@@ -288,8 +286,8 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
 
     /// An evaluation of a stack compiled against the domain's source dimensions. In
     /// [`SpatialMode::Frames`] every spatial operation's output is materialized here, in stage
-    /// order, under `cancel`; in [`SpatialMode::Point`] nothing is, and a spatial segment's pixels
-    /// are evaluated one tile at a time as they are asked for.
+    /// order, under `cancel`, and planned on its progress meter; in [`SpatialMode::Point`] nothing
+    /// is.
     pub(crate) fn new(
         domain: D,
         compiled: Cow<'a, Compiled>,
@@ -298,15 +296,13 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         cancel: &Cancel,
         context: &'a RenderContext,
     ) -> Result<Self, Error> {
-        let mut evaluation = Self {
+        let evaluation = Self {
             domain,
             widths: super::byte::byte_frame_widths(&compiled),
             compiled,
             frame: None,
             #[cfg(test)]
             built: Vec::new(),
-            tiles: (mode == SpatialMode::Point)
-                .then(|| PointTiles::new(tiling, context.spatial(), context.reduced())),
             tiling,
             cancel: cancel.clone(),
             context,
@@ -315,36 +311,71 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             return Ok(evaluation);
         }
         // A spatial entry here reads the segment before it, so segment 0 never has one.
-        evaluation.compiled.plan_progress(
-            cancel,
-            None,
-            0..evaluation.compiled.segments.len(),
+        let segments = evaluation.compiled.segments.len();
+        evaluation
+            .compiled
+            .plan_progress(cancel, None, 0..segments, tiling);
+        evaluation.materialized(segments)
+    }
+
+    /// `compiled` evaluated in `domain` with the frames of its spatial segments before segment
+    /// `through` materialized, each as the whole stack's render builds it, so a pixel of any
+    /// segment before `through` and of `through`'s own input stage is read in `O(layers)` from
+    /// them: the stack's output stage with `through` its segment count, the stage a later spatial
+    /// operation reduces its estimates from, or the input a restoration boundary's tiles read
+    /// ([`Self::restoration_region`]). With `wide`, the boundary widths are the ones the whole
+    /// recipe chooses for this prefix ([`Self::with_input_width`]), set before any frame exists.
+    pub(crate) fn framed(
+        domain: D,
+        compiled: Cow<'a, Compiled>,
+        tiling: Tiling,
+        wide: Option<bool>,
+        through: usize,
+        cancel: &Cancel,
+        context: &'a RenderContext,
+    ) -> Result<Self, Error> {
+        let evaluation = Self::new(
+            domain,
+            compiled,
             tiling,
-        );
-        // In order, because a later spatial operation pulls its input through the earlier one, and
-        // each frame replaces the one before it once it exists.
-        for index in 0..evaluation.compiled.segments.len() {
-            let Some(entry) = &evaluation.compiled.segments[index].entry else {
+            SpatialMode::Point,
+            cancel,
+            context,
+        )?;
+        let evaluation = match wide {
+            Some(wide) => evaluation.with_input_width(wide),
+            None => evaluation,
+        };
+        evaluation.materialized(through)
+    }
+
+    /// This evaluation with the frames of its spatial segments before segment `through`
+    /// materialized, in order, because a later spatial operation pulls its input through the
+    /// earlier one, and each frame replacing the one before it once it exists.
+    fn materialized(mut self, through: usize) -> Result<Self, Error> {
+        let cancel = self.cancel.clone();
+        for index in 0..through.min(self.compiled.segments.len()) {
+            let Some(entry) = &self.compiled.segments[index].entry else {
                 continue;
             };
-            let Some(frame) = entry.frame(&evaluation, index, cancel)? else {
+            let Some(frame) = entry.frame(&self, index, &cancel)? else {
                 continue;
             };
             let planes = Arc::new(frame);
             #[cfg(test)]
             {
                 // This frame and every earlier one still alive.
-                let alive = 1 + evaluation
+                let alive = 1 + self
                     .built
                     .iter()
                     .filter(|(frame, _)| frame.strong_count() > 0)
                     .count();
-                evaluation.built.push((Arc::downgrade(&planes), alive));
+                self.built.push((Arc::downgrade(&planes), alive));
             }
             // Releases the frame before it: every later pull stops at this one.
-            evaluation.frame = Some(SpatialFrame { index, planes });
+            self.frame = Some(SpatialFrame { index, planes });
         }
-        Ok(evaluation)
+        Ok(self)
     }
 
     /// The frames a stack's prefix through segment `boundary` builds, each as the whole stack
@@ -359,33 +390,20 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         context: &'a RenderContext,
         boundary: usize,
     ) -> Result<Self, Error> {
-        let mut evaluation = Self::new(
+        Self::framed(
             domain,
             compiled,
             tiling,
-            SpatialMode::Point,
+            None,
+            boundary + 1,
             cancel,
             context,
-        )?;
-        evaluation.tiles = None;
-        for index in 0..=boundary {
-            let Some(entry) = &evaluation.compiled.segments[index].entry else {
-                continue;
-            };
-            let Some(frame) = entry.frame(&evaluation, index, cancel)? else {
-                continue;
-            };
-            evaluation.frame = Some(SpatialFrame {
-                index,
-                planes: Arc::new(frame),
-            });
-        }
-        Ok(evaluation)
+        )
     }
 
     /// Read an operation's prefix with the spatial boundary width selected by the whole recipe.
     /// A truncated prefix can otherwise choose a different width from a later point replacement
-    /// or colour run. Only point evaluations use this mode.
+    /// or colour run. Set before any frame is materialized ([`Self::framed`]).
     pub(crate) fn with_input_width(mut self, wide: bool) -> Self {
         debug_assert!(self.frame.is_none());
         let last = self.widths.len() - 1;
@@ -419,25 +437,6 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         self
     }
 
-    #[cfg(test)]
-    /// The same point evaluation with another spatial tile size. A spatial unit's value at a
-    /// pixel depends on that pixel's neighbourhood only, so this changes nothing but the schedule.
-    pub(crate) fn with_tile(mut self, tile: u32) -> Self {
-        self.tiling = Tiling::Fixed(tile);
-        self.tiles = Some(PointTiles::new(
-            self.tiling,
-            self.context.spatial(),
-            self.context.reduced(),
-        ));
-        self
-    }
-
-    /// The tiles this point evaluation has evaluated so far.
-    #[cfg(test)]
-    pub(crate) fn point_tiles(&self) -> &PointTiles<'a> {
-        self.tiles.as_ref().expect("a point evaluation holds tiles")
-    }
-
     /// The output stage.
     pub(crate) fn stage(&self) -> Stage {
         self.compiled.stage()
@@ -457,7 +456,6 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     /// [`Self::globals_of`] from the estimate store alone, under the key a frame of this
     /// compilation asks with: `None` when the store does not hold every one, which nothing here
     /// reduces. `O(units)`, and reads no pixel.
-    #[cfg(feature = "qualification")]
     pub(crate) fn held_globals_of(&self, index: usize) -> Option<Vec<Option<Global>>> {
         match &self.compiled.segments[index].entry {
             Some(super::Entry::Spatial(entry)) => entry
@@ -593,11 +591,8 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
 
     /// One pixel of one segment's output stage. A resample is evaluated recursively as the bilinear
     /// blend of four pixels of the previous segment, so a point query costs `O(layers · 4^resamples)`
-    /// and never allocates a frame; a stack holds at most one crop layer.
-    ///
-    /// A spatial entry is the one exception to "a point query never rasterizes", declared in the
-    /// [performance rules](../../../../docs/engineering/performance-rules.md): see
-    /// [`Self::spatial_pixel`].
+    /// and never allocates a frame; a stack holds at most one crop layer. A spatial entry is read
+    /// from its materialized frame ([`Self::spatial_entry_pixel`]).
     ///
     /// The colour phases are the rasterizing pass's, applied to this one pixel: the replacement that
     /// wins here ends the runs before it, and every run after it is applied in turn, so the sampled
@@ -652,14 +647,14 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         })
     }
 
-    /// One pixel of the input frame of segment `index`, which enters through the spatial `entry`:
-    /// from this evaluation's frame of it, or else from the query's tiles
-    /// ([`Self::spatial_pixel`]).
+    /// One pixel of the input frame of segment `index`, which enters through a spatial entry: from
+    /// this evaluation's frame of it. One it has not materialized is an error: a pixel through a
+    /// spatial segment is read from that segment's whole frame ([`Self::framed`]), never a tile of
+    /// its own.
     #[inline(always)]
     pub(super) fn spatial_entry_pixel(
         &self,
         index: usize,
-        entry: &SpatialEntry,
         x: u32,
         y: u32,
     ) -> Result<D::Pixel, Error> {
@@ -670,7 +665,10 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
                 x,
                 y,
             )),
-            _ => self.spatial_pixel(index, entry, x, y),
+            _ => Err(Error::internal(format!(
+                "segment {index} is entered through a spatial operation whose frame this \
+                 evaluation did not materialize"
+            ))),
         }
     }
 
@@ -842,9 +840,9 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     }
 
     /// The global estimates of spatial segment `index`, whose entry is `entry`
-    /// ([`SpatialEntry::globals`]), its stage read by rows ([`Self::fill_rows`]). A point query's
-    /// reduction reads through [`PointTiles::reduce`]; a frame's, which [`spatial_entry`] resolves
-    /// itself, reads the stage as a render does.
+    /// ([`SpatialEntry::globals`]): from the store, or from one reduction of its stage read by rows
+    /// as a render reads it ([`Self::fill_rows`]), through the frames of the spatial segments
+    /// before it, which must be materialized ([`Self::framed`]).
     pub(super) fn spatial_globals(
         &self,
         index: usize,
@@ -854,64 +852,9 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         let fill = |region: Region, planes: &mut [f32]| {
             self.fill_rows(index - 1, region, planes, Parallelism::Serial)
         };
-        entry.globals(&self.domain, self.context, stage, || match &self.tiles {
-            Some(tiles) => {
-                // The tile side of the nearest spatial segment before this one, whose tiles the
-                // stage is read through.
-                let through = (0..index).rev().find_map(|earlier| {
-                    let operation = self.compiled.segments[earlier]
-                        .entry
-                        .as_ref()?
-                        .point_tiles()?;
-                    Some(self.tiling.tile(operation, self.spatial_stage(earlier)))
-                });
-                tiles.reduce(stage, through, &self.cancel, fill)
-            }
-            None => build_reduction_cancellable(stage, &self.cancel, fill),
+        entry.globals(&self.domain, self.context, stage, || {
+            build_reduction_cancellable(stage, &self.cancel, fill)
         })
-    }
-
-    /// One pixel of the frame a spatial entry produces, without its frame.
-    ///
-    /// The value at a pixel depends on a bounded neighbourhood of it, so there is no way to answer
-    /// this in `O(layers)`: the sample evaluates the stage-aligned tile that contains the pixel,
-    /// reading that tile plus the operation's summed halo through the compiled prefix, with exactly
-    /// the tile function the render uses, and holds it in this evaluation's [`PointTiles`]. The
-    /// sampled value is therefore the value a render of that tile produces, by construction rather
-    /// than by agreement. When the prefix holds an earlier spatial segment, the halo reads that
-    /// segment's tiles from the same cache, so each (segment, tile) is evaluated once per query.
-    /// Its cost is `O((tile + halo)² × layers)` per evaluated tile, plus one bounded reduction of
-    /// the stage when a unit's global estimate is not already stored, and it allocates one tile
-    /// working set at a time from the spatial budget and no frame. This is the declared exception to
-    /// performance rule 4.
-    fn spatial_pixel(
-        &self,
-        index: usize,
-        entry: &SpatialEntry,
-        x: u32,
-        y: u32,
-    ) -> Result<D::Pixel, Error> {
-        let tiles = self
-            .tiles
-            .as_ref()
-            .expect("a pull meets only the latest frame or a point query's tiles");
-        let stage = self.spatial_stage(index);
-        let rgb = tiles.pixel(
-            index,
-            &entry.operation,
-            stage,
-            x,
-            y,
-            &self.cancel,
-            || self.spatial_globals(index, entry),
-            |globals| {
-                let (key, _) = entry.reduced_key(&self.domain, stage)?;
-                let global = globals.first().and_then(Option::as_ref);
-                Some(self.context.reduced().lookup(&key, global))
-            },
-            |region, planes| self.fill_rows(index - 1, region, planes, Parallelism::Serial),
-        )?;
-        D::spatial_output(rgb, self.widths[index].input)
     }
 }
 

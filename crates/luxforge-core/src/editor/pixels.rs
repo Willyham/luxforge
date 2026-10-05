@@ -154,8 +154,16 @@ impl DeferredRead {
 }
 
 impl EditorService {
-    /// Whether the current stack of `asset` holds a spatial layer, whose draft's plan refusals
-    /// `draft.set` reports as its preview would. Reads layer metadata only.
+    /// Whether `draft`'s plan reads a pixel when it is planned: a stroke drafted with a colour
+    /// limit, whose seed it reads. `draft.set` plans such a draft, so its read is parked once,
+    /// off the owner, before the draft is accepted, and every preview of it finds the pixel in the
+    /// session's memo. Reads the draft's fields alone.
+    pub(crate) fn draft_reads_pixels(&self, draft: &crate::Draft) -> bool {
+        crate::mask::commands::asks_colour_limit(&draft.fields)
+    }
+
+    /// Whether the current stack of `asset` holds a spatial layer, whose drafts `draft.set` plans
+    /// so their refusals are its own, as a preview's would be. Reads layer metadata only.
     pub(crate) fn draft_has_spatial_inputs(&self, asset: &AssetId) -> Result<bool, Error> {
         let head = self.head(asset)?;
         let entry = self.shared_entry(asset, &head.current)?;

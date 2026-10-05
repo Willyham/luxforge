@@ -11,7 +11,7 @@
 //!
 //! # Reads
 //!
-//! [`ReferenceReads`] answers from the reference renderer: whole frames, never point tiles. A
+//! [`ReferenceReads`] answers from the reference renderer: whole frames. A
 //! stage without a spatial segment is evaluated point by point over the rectangle, `O(rect ×
 //! layers)`. A stage with spatial segments is evaluated in frame mode: each spatial segment's
 //! whole frame is materialized once, on the shared pool as a render materializes it, and the
@@ -262,7 +262,7 @@ fn work(shared: &Shared) {
     }
 }
 
-/// The reference renderer's reads: whole frames, never point tiles, each answer naming the
+/// The reference renderer's reads: whole frames, each answer naming the
 /// reference with no reason. It holds nothing between calls; a session holds its call's
 /// evaluations. See the [module documentation](self).
 #[derive(Clone, Copy, Debug, Default)]

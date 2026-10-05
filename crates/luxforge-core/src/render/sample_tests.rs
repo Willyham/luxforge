@@ -318,7 +318,7 @@ fn slow_a_frame_equals_its_point_evaluator_and_a_sample_equals_the_frame() {
                     "{what}: every frame is opaque"
                 );
                 let (_, _, sampled) =
-                    point_evaluated(&context, &registry, source, &recipe, SpatialMode::Point)
+                    point_evaluated(&context, &registry, source, &recipe, SpatialMode::Frames)
                         .unwrap();
                 assert!(
                     sampled == expected,

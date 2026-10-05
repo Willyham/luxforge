@@ -269,8 +269,8 @@ impl<'a> Linear<'a> {
     /// The planes segment `index` of `evaluation` reads its entry from by rows: the source's, for
     /// the first segment, under the evaluation's white balance, or the spatial frame the evaluation
     /// holds for the segment's spatial entry. `None` for a resample, whose taps blend the segment
-    /// before it, and for a spatial entry a point query answers from its tiles: those are pulled
-    /// one pixel at a time ([`Evaluation::entry_pixel`]).
+    /// before it, and for a spatial entry whose frame the evaluation does not hold: those are
+    /// pulled one pixel at a time ([`Evaluation::entry_pixel`]).
     pub(super) fn entry_planes<'e>(
         evaluation: &'e Evaluation<'_, Self>,
         index: usize,
@@ -2471,8 +2471,11 @@ mod tests {
         }
     }
 
+    /// A point evaluation materializes nothing, so a pixel through a spatial segment is refused
+    /// there rather than evaluated in a tile of its own; the frame evaluation materializes the
+    /// segment's output once and answers it.
     #[test]
-    fn a_point_evaluation_builds_no_frame_for_its_spatial_segment() {
+    fn a_point_evaluation_refuses_a_pixel_through_a_spatial_segment() {
         let context = RenderContext::new();
         let source = cancellation_image(96, 64);
         let registry = ModuleRegistry::builtin();
@@ -2490,26 +2493,22 @@ mod tests {
             .unwrap()
         };
         let frames = evaluate(SpatialMode::Frames);
-        assert!(frames.tiles.is_none());
         assert_eq!(
             frames.built.len(),
             1,
             "a render materializes the spatial output"
         );
         assert!(frames.frame.is_some());
+        for (x, y) in [(5, 7), (90, 60)] {
+            assert!(frames.pixel(x, y).unwrap().is_some());
+        }
         let point = evaluate(SpatialMode::Point);
         assert!(
             point.built.is_empty() && point.frame.is_none(),
             "a point evaluation materializes nothing"
         );
-        for (x, y) in [(5, 7), (90, 60), (5, 7)] {
-            assert_eq!(point.pixel(x, y).unwrap(), frames.pixel(x, y).unwrap());
-        }
-        assert_eq!(
-            point.tiles.as_ref().unwrap().evaluated().len(),
-            1,
-            "one tile answers every pixel inside it"
-        );
+        let refused = point.pixel(5, 7).unwrap_err();
+        assert_eq!(refused.kind, crate::ErrorKind::Internal, "{refused}");
     }
 
     /// A global Presence layer, a colour layer and three masked Presence layers: four spatial
@@ -2567,7 +2566,7 @@ mod tests {
     }
 
     /// Each spatial frame is built from the one before it and replaces it, so building one holds
-    /// two and the evaluation keeps one, the latest; a point evaluation builds none. The counts are
+    /// two and the evaluation keeps one, the latest. The counts are
     /// the frames' own reference counts, not bookkeeping: an earlier frame anything still held would
     /// be counted alive.
     #[test]
@@ -2609,7 +2608,7 @@ mod tests {
                 segment
                     .entry
                     .as_ref()
-                    .is_some_and(|entry| entry.point_tiles().is_some())
+                    .is_some_and(|entry| entry.spatial_operation().is_some())
             })
             .map(|(index, _)| index)
             .collect();
@@ -2625,18 +2624,12 @@ mod tests {
             Some(spatial[3])
         );
 
-        // Point mode materializes no spatial segment: every one is answered from the query's tiles.
-        let point = evaluate(SpatialMode::Point);
-        assert!(point.built.is_empty() && point.frame.is_none());
-        for (x, y) in [(0, 0), (5, 7), (48, 32), (90, 60), (95, 63)] {
-            assert_eq!(point.pixel(x, y).unwrap(), frames.pixel(x, y).unwrap());
-        }
-
-        let built: Vec<_> = [&frames, &point]
+        let built: Vec<_> = frames
+            .built
             .iter()
-            .flat_map(|evaluation| evaluation.built.iter().map(|(frame, _)| frame.clone()))
+            .map(|(frame, _)| frame.clone())
             .collect();
-        drop((frames, point));
+        drop(frames);
         assert!(
             built.iter().all(|frame| frame.strong_count() == 0),
             "nothing outlives its evaluation"
@@ -2645,11 +2638,11 @@ mod tests {
 
     /// A sample from one `Compiled` shared by several points equals a sample that compiles for
     /// itself, at every point of a small stack with a colour layer: the split
-    /// A capability sample grid over a RAW stage with spatial layers answers its points through one
-    /// tile cache, as the byte path's does: it materializes no spatial frame where the render of
-    /// the same stack builds one per spatial layer, and every point is the rendered byte there.
+    /// A capability sample grid over a RAW stage with spatial layers is the reference's read: it
+    /// materializes each spatial layer's frame once, as the render of the same stack does, and
+    /// every point is the rendered byte there.
     #[test]
-    fn a_linear_grid_reads_tiles_and_materializes_no_spatial_frame() {
+    fn a_linear_grid_reads_the_reference_frames() {
         let registry = ModuleRegistry::builtin();
         let source = cancellation_image(300, 200);
         let stack = four_spatial_segments();
@@ -2666,9 +2659,9 @@ mod tests {
         )
         .unwrap();
         let grid = render.grid(8, &|| Ok(())).unwrap();
-        assert_eq!(context.spatial_frames(), 0, "a grid materializes no frame");
+        assert_eq!(context.spatial_frames(), 4, "a grid builds one per layer");
         let frame = render.frame(SnapshotId::new()).unwrap();
-        assert_eq!(context.spatial_frames(), 4, "a render builds one per layer");
+        assert_eq!(context.spatial_frames(), 8, "and so does a render");
         for ((x, y), sampled) in
             super::super::entry::grid_centres(8, frame.width, frame.height).zip(grid)
         {

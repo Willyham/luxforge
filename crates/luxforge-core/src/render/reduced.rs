@@ -358,8 +358,6 @@ struct Counters {
     render_misses: AtomicU64,
     tile_hits: AtomicU64,
     tile_misses: AtomicU64,
-    point_hits: AtomicU64,
-    point_misses: AtomicU64,
     cells_handed_back: AtomicU64,
     publishes: AtomicU64,
     evictions: AtomicU64,
@@ -528,16 +526,6 @@ impl ReducedStore {
         Counters::add(&self.counters.cells_handed_back, cells);
     }
 
-    /// Count one tile a point query evaluated, `served` from held planes or not.
-    pub(crate) fn note_point(&self, served: bool) {
-        let counter = if served {
-            &self.counters.point_hits
-        } else {
-            &self.counters.point_misses
-        };
-        Counters::add(counter, 1);
-    }
-
     /// Every figure, read now, as `resources.read` reports it.
     pub(crate) fn counts(&self) -> ReducedPlanesReport {
         let (retained_bytes, entries) = {
@@ -554,8 +542,6 @@ impl ReducedStore {
             render_misses: read(&counters.render_misses),
             tile_hits: read(&counters.tile_hits),
             tile_misses: read(&counters.tile_misses),
-            point_hits: read(&counters.point_hits),
-            point_misses: read(&counters.point_misses),
             cells_handed_back: read(&counters.cells_handed_back),
             publishes: read(&counters.publishes),
             evictions: read(&counters.evictions),

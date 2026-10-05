@@ -360,8 +360,9 @@ fn a_cancelled_render_publishes_nothing() {
     }
 }
 
-/// A sample equals the rendered byte whether the store holds the planes, which it reads, or not,
-/// when it computes them as a render does; a sample never fills the store.
+/// A sample, which the reference answers through the whole frame it renders, equals the rendered
+/// byte whether the store holds the planes, which it then reads, or not, when it computes them as
+/// a render does.
 #[test]
 fn a_sample_equals_the_rendered_byte_with_and_without_the_held_planes() {
     let sources = Sources::new();
@@ -376,6 +377,7 @@ fn a_sample_equals_the_rendered_byte_with_and_without_the_held_planes() {
                 let stack = recipe(payload.clone(), masked.then_some(&mask));
                 let held = RenderContext::new();
                 let rendered = frame(&held, input(), &stack, 16);
+                let before = held.reduced().counts();
                 let empty = RenderContext::new();
                 for (x, y) in points {
                     for context in [&held, &empty] {
@@ -385,23 +387,16 @@ fn a_sample_equals_the_rendered_byte_with_and_without_the_held_planes() {
                         assert_eq!(sampled.rgba, rendered.pixel(x, y), "{case} at ({x}, {y})");
                     }
                 }
-                let (read, computed) = (held.reduced().counts(), empty.reduced().counts());
+                let read = held.reduced().counts();
                 if !masked {
                     assert!(
-                        read.point_hits > 0,
+                        read.render_hits > before.render_hits,
                         "{case}: the samples read the held planes"
                     );
-                    assert_eq!(read.point_misses, 0, "{case}");
                 }
-                assert_eq!(computed.point_hits, 0, "{case}");
                 assert!(
-                    computed.point_misses > 0,
-                    "{case}: the samples computed them"
-                );
-                assert_eq!(
-                    (computed.publishes, computed.entries, read.publishes),
-                    (0, 0, 1),
-                    "{case}: a sample never fills"
+                    empty.reduced().counts().render_misses > 0,
+                    "{case}: the first sample computed them"
                 );
             }
         }
