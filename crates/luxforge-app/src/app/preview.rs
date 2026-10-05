@@ -18,7 +18,11 @@ use super::{
     tasks::{self, recipe_task},
 };
 use crate::app::{Before, waker};
-use crate::{layout, state, state::histogram::Analysis, view};
+use crate::{
+    layout, state,
+    state::histogram::{Analysis, AnalysisSource},
+    view,
+};
 use iced::{Subscription, Task};
 use luxforge_core::{
     DraftId, EntryId, ExactOutcome, PhaseOutcome, PreviewIntent, PreviewJob, PreviewPhase,
@@ -31,8 +35,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// One policy for a paused input, whether its first frame was Fit or a visible region. The
-/// evidence run measures this interval against render/round-trip timing before acceptance.
+/// How long a pan at a percentage zoom of 100% or more pauses before its view is planned at rest.
 const QUIET_INTERVAL: Duration = Duration::from_millis(120);
 
 /// The display-proxy frame of one generation, retained beside the exact raster.
@@ -264,8 +267,19 @@ pub(crate) struct Presentation {
     pub(crate) exact: Option<ExactFrame>,
     /// The visible pixels the region slot owns.
     pub(crate) region_raster: Option<PresentedRegion>,
-    /// The displayed frame's histogram report, adopted with the pixels under the same generation.
+    /// The displayed frame's histogram report, adopted with the pixels under the same generation:
+    /// the reference frame's, or the GPU's counts of the stack it presents
+    /// ([`super::gpu_counts`]).
     pub(crate) analysis: Option<Analysis>,
+    /// The counts of the frame on screen in motion, a gesture's GPU tick: shown in place of the
+    /// report, marked updating, and never handed to the owner.
+    pub(crate) motion: Option<Analysis>,
+    /// The content the GPU presents on its own, with no CPU frame of it rendered
+    /// ([`Editor::present_on_gpu`]): the photograph's frame on the presenter is an earlier one,
+    /// which the GPU's picture is drawn over.
+    pub(crate) gpu_presented: Option<u64>,
+    /// The photograph whose frame the presenter holds.
+    pub(crate) presented_asset: Option<luxforge_core::AssetId>,
     /// The report and frame of an exact phase whose pixels have not reached the surface yet. The
     /// histogram and the photograph are adopted together, so the plot never describes a frame that
     /// is not on screen.
@@ -499,6 +513,7 @@ impl Presentation {
                         generation,
                         identity,
                         report,
+                        source: AnalysisSource::Reference,
                     });
                     if intent == PreviewIntent::Reduce {
                         if let Some(exact) = &mut self.exact {
@@ -565,6 +580,7 @@ impl Presentation {
         frame.approximate_white_balance = false;
         self.exact = Some(frame);
         self.analysis = Some(analysis);
+        self.motion = None;
         self.analysis_content = self.pending_content.get(&generation).copied();
         true
     }
@@ -604,6 +620,7 @@ impl Presentation {
         // raster is drawn. Nothing but a new frame moves it.
         self.presenter.clear_region();
         self.region_raster = None;
+        self.gpu_presented = None;
         if frame.reduced() {
             self.presenter.show_reduced(frame.raster(), content);
         } else if proxy {
@@ -646,6 +663,7 @@ impl Presentation {
         {
             return false;
         }
+        self.gpu_presented = None;
         self.region_raster = Some(PresentedRegion {
             generation,
             content,
@@ -708,7 +726,10 @@ impl Presentation {
         self.exact = None;
         self.incoming = None;
         self.analysis = None;
+        self.motion = None;
         self.analysis_content = None;
+        self.gpu_presented = None;
+        self.presented_asset = None;
         self.held_by_proxy = None;
         self.presented_proxy = false;
         self.presented_reduced = false;
@@ -744,6 +765,7 @@ impl Presentation {
             gpu_warm: None,
             gpu_source: None,
             gpu_rest: None,
+            gpu_counts: None,
             compare_gpu: None,
             compare_change: None,
             compare_rest: None,
@@ -829,10 +851,56 @@ impl Presentation {
     /// whether a worker happens to be busy: a crop draft's own truncated job shares the queue and is
     /// never analysed, so queue business alone would mark a perfectly current histogram stale.
     pub(crate) fn analysis_updating(&self) -> bool {
+        if self.motion.is_some() {
+            return true;
+        }
         match &self.analysis {
             Some(_) => self.analysis_content != Some(self.content_serial),
             None => false,
         }
+    }
+
+    /// The report the inspector plots: the counts of the frame on screen in motion while a
+    /// gesture's GPU ticks give them, otherwise the displayed frame's report.
+    pub(crate) fn shown_analysis(&self) -> Option<&Analysis> {
+        self.motion.as_ref().or(self.analysis.as_ref())
+    }
+
+    /// Record the GPU's picture of `content`, rendered for `entry` at its exact stage `stage`, as
+    /// on screen under `generation`, with no CPU frame of it ([`Editor::present_on_gpu`]): the
+    /// presenter's frame, an earlier one of the same photograph, stays the surface's base, retagged
+    /// with the content, and the GPU's picture is drawn over it. Nothing CPU-rendered of another
+    /// content — an exact frame, a proxy, a region — is kept as this content's.
+    pub(crate) fn show_gpu(
+        &mut self,
+        generation: u64,
+        content: u64,
+        stage: (u32, u32),
+        entry: &EntryId,
+        bounds: Option<ProxyBounds>,
+    ) {
+        self.presenter.clear_region();
+        self.presenter.retag(content);
+        self.region_raster = None;
+        self.proxy_frame = None;
+        self.reduced_frame = None;
+        self.exact = None;
+        self.incoming = None;
+        self.held_by_proxy = None;
+        self.dimensions = Some(stage);
+        self.presented_generation = generation;
+        self.preview_generation = generation;
+        self.presented_content = content;
+        self.presented_proxy = false;
+        self.presented_reduced = false;
+        self.presented_approximate_white_balance = false;
+        self.presented_bounds = bounds;
+        self.refit_pending = false;
+        self.presented_entry = Some(entry.clone());
+        self.displayed_draft_revision = None;
+        self.displayed_draft_id = None;
+        self.render_error = None;
+        self.gpu_presented = Some(content);
     }
 }
 
@@ -1273,6 +1341,12 @@ impl Editor {
             self.view_plan.dirty = false;
             return Task::none();
         }
+        // The GPU's picture at rest of the content asked for holds the view: nothing to render.
+        if self.gpu_holds_view(wanted) {
+            self.view_plan.dirty = false;
+            self.view_plan.quiet_since = None;
+            return Task::none();
+        }
         if self.presentation.presenter.full_content() == Some(self.presentation.content_serial)
             && self.presentation.exact.as_ref().is_some_and(|frame| {
                 (frame.raster.width, frame.raster.height) == stage
@@ -1299,17 +1373,27 @@ impl Editor {
             return Task::none();
         }
         // A cancelled gesture or a returned history selection has no motion to debounce.
-        // Its committed whole-frame settlement may already have been replaced by this view
-        // retry, so the replacement must itself produce the exact report and retained raster.
-        self.view_plan(
-            if self.core_gesture().is_none() && self.view_plan.quiet_since.is_none() {
-                PreviewIntent::Settle
-            } else {
-                PreviewIntent::Interactive
-            },
-        )
+        // Its committed settlement may already have been replaced by this view retry, so the
+        // replacement must itself settle the view. Where the GPU presents the content, a zoom or
+        // a pan is planned at rest at once, the GPU's region cut from the source it holds, with
+        // nothing rendered on the CPU.
+        let at_rest = self.core_gesture().is_none()
+            && (self.view_plan.quiet_since.is_none()
+                || self.presentation.gpu_presented == Some(self.presentation.content_serial));
+        self.view_plan(if at_rest {
+            PreviewIntent::Settle
+        } else {
+            PreviewIntent::Interactive
+        })
     }
 
+    /// The shared quiet policy's settle: once a pan at a percentage zoom of 100% or more has paused
+    /// for [`QUIET_INTERVAL`], the view asked for is planned at rest, its GPU picture where the GPU
+    /// draws the stack and the reference renderer's frame where it cannot. A pause in a gesture
+    /// settles nothing: its frame is the GPU's of the drafted settings, or the reference's proxy
+    /// where the GPU cannot draw them, and the histogram is the frame in motion's, or the last
+    /// report marked updating, until the release (`docs/design/gpu-first.md`, stage 2). Nothing
+    /// renders a whole frame on a pause.
     fn quiet_refine(&mut self) -> Task<Message> {
         let Some(since) = self.view_plan.quiet_since else {
             return Task::none();
@@ -1326,28 +1410,7 @@ impl Editor {
         {
             return Task::none();
         }
-        // A draft whose newest revision the GPU draws on screen settles nothing: the picture is the
-        // GPU's frame of those settings, which a CPU frame of them would only replace — below 100%
-        // with an exact frame the whole frame's plan cannot stand in for — and nothing renders the
-        // whole frame on the CPU behind a gesture (`docs/design/gpu-first.md`, stage 2).
-        if self
-            .session
-            .draft
-            .as_ref()
-            .is_some_and(|draft| self.gpu_shows_revision(draft.draft_revision))
-        {
-            self.view_plan.quiet_since = None;
-            return Task::none();
-        }
-        // A draft whose newest revision only the GPU has drawn has no CPU frame yet, whatever the
-        // frame on screen is.
-        let drawn_on_gpu_only = self.session.draft.as_ref().is_some_and(|draft| {
-            self.presentation.displayed_draft_revision != Some(draft.draft_revision)
-        });
-        if !drawn_on_gpu_only
-            && self.presentation.analysis_content == Some(self.presentation.content_serial)
-            && self.presentation.exact_content() == Some(self.presentation.content_serial)
-        {
+        if self.session.draft.is_some() || self.view_settled() {
             self.view_plan.quiet_since = None;
             return Task::none();
         }
@@ -1359,6 +1422,49 @@ impl Editor {
             })
         });
         self.view_plan(PreviewIntent::Settle)
+    }
+
+    /// Whether the picture on screen is of the content asked for and settled: where the GPU
+    /// presents it, at Fit and below 100% at once, and at 100% and above once its view plan at
+    /// rest holds the view; where the reference renders it, once its whole frame and that frame's
+    /// report are in.
+    fn view_settled(&self) -> bool {
+        let content = self.presentation.content_serial;
+        if self.presentation.presented_content != content {
+            return false;
+        }
+        if self.presentation.gpu_presented == Some(content) {
+            return match self
+                .presentation
+                .dimensions
+                .and_then(|stage| self.desired_view_for(stage))
+            {
+                Some(wanted) => self.gpu_holds_view(wanted),
+                None => true,
+            };
+        }
+        self.presentation.analysis_content == Some(content)
+            && self.presentation.exact_content() == Some(content)
+    }
+
+    /// Whether the GPU presents the content asked for and its view plan at rest, a region's at
+    /// 100% and above, holds `wanted`.
+    fn gpu_holds_view(&self, wanted: Region) -> bool {
+        self.presentation.gpu_presented == Some(self.presentation.content_serial)
+            && self.gpu_rest_plan().is_some_and(|(plan, _)| {
+                plan.region.is_some_and(|region| {
+                    let [x0, y0, x1, y1] = region.rect;
+                    contains_region(
+                        Region {
+                            x0,
+                            y0,
+                            width: x1 - x0,
+                            height: y1 - y0,
+                        },
+                        wanted,
+                    )
+                })
+            })
     }
 
     /// The physical pixels the photo area can show a frame in, when the view means a display-size
@@ -1834,13 +1940,9 @@ impl Editor {
                 None => outcome::Presented::Region,
             };
             self.outcome(Outcome::Presented(presented));
-            if self.core_gesture().is_none()
-                && (self.presentation.analysis_content != Some(content)
-                    || self.presentation.exact_content() != Some(content))
-            {
-                // An interactive view can supersede a committed render, including after a
-                // cancelled draft. Leave a timer to replace it with a settled job when the view
-                // stops moving; otherwise the histogram can remain stale indefinitely.
+            if self.core_gesture().is_none() && !self.view_settled() {
+                // An interactive view can supersede a committed picture, including after a
+                // cancelled draft. Leave a timer to settle the view when it stops moving.
                 self.view_plan.quiet_since.get_or_insert_with(Instant::now);
                 self.view_plan.quiet_settle_requested = false;
             }
@@ -2300,6 +2402,7 @@ impl Editor {
             }
             self.presentation.remember_reduction_job(&job, reference);
             self.presentation.reused = Some(job.identity.clone());
+            self.retarget_gpu_counts(&job.identity, content);
             self.presentation.preview_generation = self.presentation.presented_generation;
             self.view_plan.dirty = false;
             return (
@@ -2308,6 +2411,14 @@ impl Editor {
             );
         }
         self.presentation.reused = None;
+        // A committed whole stack the GPU draws at rest is presented by the GPU alone: no job is
+        // queued, so no exact frame is rendered or reduced, and the counts of its tiles are its
+        // report (`docs/design/gpu-first.md`, stage 2). The reference renders the rest.
+        if self.gpu_presents(&job, content) {
+            let generation = self.present_on_gpu(&job, content);
+            self.view_plan.dirty = false;
+            return (generation, timed.then(Instant::now));
+        }
         // The job still waiting in the pending slot is replaced by this one and never starts, so
         // nothing about it will ever be delivered: when it was the crop draft's input stage, the
         // draft it was for ends here, as a cancelled one does in `poll_preview`. The request names
@@ -2503,6 +2614,13 @@ impl Editor {
         let proxy = frame.proxy();
         self.presentation
             .show(&frame, stage, &entry, draft_revision);
+        if !zoom {
+            self.presentation.presented_asset = self
+                .document
+                .state
+                .as_ref()
+                .map(|state| state.asset.id.clone());
+        }
         self.outcome(Outcome::EntryShown(&entry));
         // A zoom hands over a retained frame of the entry already on screen; the entry the desktop
         // is waiting for stays the one picks, readouts and the next request are addressed to.
@@ -3063,6 +3181,7 @@ mod reduction_tests {
                 &luxforge_core::Cancel::never(),
             )
             .unwrap(),
+            source: AnalysisSource::Reference,
         });
         editor.presentation.remember_reduction_job(&original, true);
 

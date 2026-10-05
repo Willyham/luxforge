@@ -584,7 +584,10 @@ fn plain<'a>(
     let gpu = surfaces.gpu;
     let (gpu_hold, gpu_tag, gpu_warm) = (surfaces.gpu_hold, surfaces.gpu_tag, surfaces.gpu_warm);
     let (gpu_change, gpu_source) = (surfaces.gpu_change, surfaces.gpu_source);
-    let gpu_rest = surfaces.gpu_rest;
+    // The picture at rest, or the same tiles for their counts alone where the picture is not
+    // drawn: a whole frame draws either, a percentage view's region only the counts'.
+    let gpu_rest = surfaces.gpu_rest.or(surfaces.gpu_counts);
+    let gpu_counts = surfaces.gpu_counts;
     let dissolve = surfaces.dissolve;
     match model.zoom {
         ZoomView::Fit => {
@@ -731,6 +734,7 @@ fn plain<'a>(
                     .gpu_change(gpu_change)
                     .gpu_warm(gpu_warm)
                     .gpu_source(gpu_source)
+                    .gpu_rest(gpu_counts)
                     .dissolve(dissolve)
                     .into()
                 };
@@ -809,6 +813,7 @@ fn comparison<'a>(
             .gpu_tag(surfaces.gpu_tag)
             .gpu_change(surfaces.gpu_change)
             .gpu_source(surfaces.gpu_source)
+            .gpu_rest(surfaces.gpu_counts)
             .into()
         } else {
             match before {
@@ -825,7 +830,7 @@ fn comparison<'a>(
                 .gpu_tag(surfaces.gpu_tag)
                 .gpu_change(surfaces.gpu_change)
                 .gpu_source(surfaces.gpu_source)
-                .gpu_rest(surfaces.gpu_rest)
+                .gpu_rest(surfaces.gpu_rest.or(surfaces.gpu_counts))
                 .into(),
                 None => empty("Rendering Before…"),
             }
@@ -1406,6 +1411,7 @@ mod tests {
             gpu_warm: None,
             gpu_source: None,
             gpu_rest: None,
+            gpu_counts: None,
             compare_gpu: None,
             compare_change: None,
             compare_rest: None,

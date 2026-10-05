@@ -664,6 +664,11 @@ impl Editor {
         {
             return true;
         }
+        // The histogram a capture records is the picture's own: where the GPU presents the content
+        // with no CPU render, its tiles' counts, which arrive a readback after they are drawn.
+        if self.gpu_counts_pending() {
+            return false;
+        }
         // The status bar names the frame the surface drew last, which only that draw can say: a
         // change of drawing path wakes the desktop, whose next update derives the label again.
         let label_current = self.workspace.status.gpu_us == self.gpu_frame_us();

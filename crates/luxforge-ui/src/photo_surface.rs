@@ -113,13 +113,13 @@ use std::time::Instant;
 
 pub mod gpu_preview;
 pub use gpu_preview::{
-    AxisCoverage, BoundaryFormat, ClipMarks, Coverage, CoverageComponent, CoverageMode,
-    DISSOLVE_DURATION, Derivation, Dissolve, DrawingPath, DrawnDissolve, GPU_PREVIEW_BUDGET,
-    GpuBoundary, GpuChange, GpuFallback, GpuPlan, GpuProgram, GpuRegion, GpuRest, GpuSource,
-    GpuStageState, GpuStep, GpuTail, GpuWarm, MaskedColour, OutputEncoding, PIPELINE_CACHE,
-    PRELUDE, PositionMap, REST_TILES_PER_FRAME, REST_VIEW_PIXELS, Reduction, RestFigures,
-    SourceFigures, SourceKind, TexelMap, install_output_encoding, output_encoding,
-    refuse_gpu_stage, validate_step,
+    AxisCoverage, BoundaryFormat, ClipMarks, CountsOutcome, Coverage, CoverageComponent,
+    CoverageMode, DISSOLVE_DURATION, Derivation, Dissolve, DrawingPath, DrawnDissolve,
+    GPU_PREVIEW_BUDGET, GpuBoundary, GpuChange, GpuFallback, GpuPlan, GpuProgram, GpuRegion,
+    GpuRest, GpuSource, GpuStageState, GpuStep, GpuTail, GpuWarm, MaskedColour, OutputEncoding,
+    PIPELINE_CACHE, PRELUDE, PositionMap, REST_TILES_PER_FRAME, REST_VIEW_PIXELS, Reduction,
+    RestFigures, RestReduction, SourceFigures, SourceKind, TexelMap, TickCounts,
+    install_output_encoding, output_encoding, refuse_gpu_stage, validate_step,
 };
 
 /// Which photo surface a primitive draws. The pipeline keeps one set of textures per id, so two
@@ -154,6 +154,47 @@ struct SurfaceFigures {
     clocks: Mutex<HashMap<SurfaceId, Arc<gpu_preview::PassClock>>>,
     /// The GPU-preview budget and what is charged to it, which its retirements discharge.
     preview: gpu_preview::Figures,
+    /// The histogram and clipping counts each surface's GPU stage last took, read live
+    /// ([`surface_counts`]): a readback completes on the retirement worker's poll, between draws.
+    counts: Mutex<HashMap<SurfaceId, HeldCounts>>,
+}
+
+/// The counts a surface last took: its picture at rest's, by version, and its gesture's last
+/// tick's, by boundary and revision.
+#[derive(Clone, Debug, Default)]
+struct HeldCounts {
+    rest: Option<(u64, gpu_preview::RestCounts)>,
+    tick: Option<gpu_preview::TickCounted>,
+}
+
+/// The histogram and clipping counts a surface's GPU stage took (`docs/design/gpu-first.md`, stage
+/// 2), as [`surface_counts`] reads them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SurfaceCounts {
+    /// The last picture at rest's version and its tiles' counts, the whole output stage's
+    /// ([`PhotoSurface::gpu_rest`]).
+    pub rest: Option<(u64, CountsOutcome)>,
+    /// The last gesture tick counted: the counts of the frame it drew, the frame on screen in
+    /// motion.
+    pub tick: Option<TickCounts>,
+}
+
+/// The counts `surface`'s GPU stage last took, read now and without a wait: a readback still on
+/// its way answers [`CountsOutcome::Counting`], and its arrival wakes the desktop.
+pub fn surface_counts(surface: SurfaceId) -> SurfaceCounts {
+    let held = process_figures()
+        .counts
+        .lock()
+        .expect("surface counts lock")
+        .get(&surface)
+        .cloned()
+        .unwrap_or_default();
+    SurfaceCounts {
+        rest: held
+            .rest
+            .map(|(version, counts)| (version, counts.outcome())),
+        tick: held.tick.as_ref().map(gpu_preview::TickCounted::read),
+    }
 }
 
 impl SurfaceFigures {
@@ -1031,11 +1072,13 @@ impl PhotoSurface {
         self
     }
 
-    /// The picture at rest this surface draws: a whole-frame photograph's; a percentage view's
-    /// region and a crop stage draw none, and ask for no frame for one.
+    /// The picture at rest this surface draws: a whole-frame photograph's, and a percentage view's
+    /// when it is drawn for its counts alone, which puts nothing on screen; a crop stage draws
+    /// none, and asks for no frame for one.
     fn rest_drawn(&self) -> Option<&GpuRest> {
         match (&self.base, &self.viewport) {
             (Base::Photo(_), None) => self.rest.as_ref(),
+            (Base::Photo(_), Some(_)) => self.rest.as_ref().filter(|rest| rest.reduction.is_none()),
             _ => None,
         }
     }
@@ -1761,6 +1804,19 @@ impl shader::Primitive for PhotoPrimitive {
         };
         surface.rest_frame = surface.rest_dissolving(now);
         surface.gpu_tag = self.gpu.as_ref().and(self.gpu_options.tag);
+        // The frame a gesture's tick drew is counted, the counts in motion; the picture at rest's
+        // tiles were counted as they were drawn. Both are read live by the desktop.
+        pipeline.count_tick(&mut surface, device, queue, self.gpu.as_ref());
+        {
+            let mut counts = pipeline.figures.counts.lock().expect("surface counts lock");
+            let held = counts.entry(self.surface).or_default();
+            if let Some(rest) = surface.rest.as_ref() {
+                held.rest = Some(rest.counts());
+            }
+            if let Some(tick) = surface.tick_counts.clone() {
+                held.tick = Some(tick);
+            }
+        }
         surface.gpu_marks = self.gpu.as_ref().and_then(|plan| match plan.steps.last() {
             Some(GpuStep::Clipping(marks)) => Some([marks.shadows, marks.highlights]),
             _ => None,
@@ -2509,6 +2565,16 @@ struct SurfaceSlots {
     rest_dissolve: Option<gpu_preview::Dissolve>,
     /// That dissolve as this frame draws it, while its share is short of one.
     rest_frame: Option<gpu_preview::DissolveFrame>,
+    /// The histogram reduction every picture at rest's tiles are counted with, made the first time
+    /// and kept for the surface's life, charged to the GPU-preview budget.
+    histogram: Option<gpu_preview::histogram::HistogramReduction>,
+    /// The one a gesture's ticks are counted with, apart, since a picture at rest's counts run
+    /// across frames.
+    tick_histogram: Option<gpu_preview::histogram::HistogramReduction>,
+    /// The boundary and revision of the last tick counted, so each is counted once.
+    tick_counted: Option<(u64, u64)>,
+    /// That tick's counts.
+    tick_counts: Option<gpu_preview::TickCounted>,
 }
 
 impl SurfaceSlots {
@@ -2752,6 +2818,10 @@ impl PhotoPipeline {
             rest_refused: None,
             rest_dissolve: None,
             rest_frame: None,
+            histogram: None,
+            tick_histogram: None,
+            tick_counted: None,
+            tick_counts: None,
         }
     }
 

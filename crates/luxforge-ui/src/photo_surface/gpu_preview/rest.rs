@@ -28,12 +28,22 @@
 //!   draws go and starts over from its first tile, and the rest output is drawn only once its last
 //!   tile is in it: in place of the photograph's frame and of a plan's output alike, dissolving in
 //!   over the plan's output the frame before ([`RestFigures::dissolving`]).
+//! - **The counts.** Every tile's codes are also added into the histogram and clipping counts
+//!   ([`super::histogram`]), a tile's own rectangle at a time, so after the last tile the counts are
+//!   the whole output stage's, read back without a wait ([`RestCounts`]). A picture at rest with no
+//!   reduction to a view ([`GpuRest::reduction`]) is drawn for its counts alone: where the view
+//!   draws the stage at its own size or larger — at 100% and above, through a percentage view's
+//!   surface too — or while the clipping overlay's marks are the view plan's. It has no
+//!   accumulator and no rest output, and draws nothing.
 //! - **Bounds.** The accumulator takes sixteen bytes a view pixel, 128 MiB at the 8-megapixel
 //!   display bounds ([`REST_VIEW_PIXELS`]); the rest output four; the coverage tables a few words
-//!   a view row and column; the tile slot what a 100% region's slot over the tile's window takes.
-//!   Each is charged to the GPU-preview budget before it is created, and leaves through the
-//!   retirement worker.
+//!   a view row and column; the tile slot what a 100% region's slot over the tile's window takes;
+//!   the counts the surface's reduction's 3,096 bytes and its kernel's table. Each is charged to
+//!   the GPU-preview budget before it is created, and leaves through the retirement worker.
 use super::super::{PhotoPipeline, Picture, SurfaceSlots, Tile, TileLayout, UNIFORM_SIZE};
+use super::histogram::{
+    Counts, HistogramError, HistogramReadback, HistogramRect, HistogramReduction,
+};
 use super::{
     AxisCoverage, Charged, GpuFallback, GpuPlan, Held, OUTPUT_FORMAT, SAMPLED_FORMAT, answered,
     buffer_capacity, storage_buffer, tail::encoding, validate,
@@ -62,8 +72,17 @@ pub struct GpuRest {
     /// Changes whenever the tiles or the reduction do: a picture at rest to draw anew.
     pub version: u64,
     /// The tiles' plans, in the order they are drawn, row by row: each a region plan of the output
-    /// stage at full scale, its region the tile, its boundary derived from the source.
+    /// stage at full scale, its region the tile, its boundary derived from the source. They cover
+    /// the output stage once, which the counts are the whole stage's for.
     pub tiles: Arc<[GpuPlan]>,
+    /// The reduction of the tiles to the view's size, which is the picture drawn; `None` draws
+    /// the tiles for their counts alone, and nothing on screen.
+    pub reduction: Option<RestReduction>,
+}
+
+/// A picture at rest's reduction of the output stage to the view's size.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RestReduction {
     /// The view's size the output stage is reduced to.
     pub view: (u32, u32),
     /// The reduction's coverage of the output stage across and down: for each view column and row,
@@ -73,8 +92,17 @@ pub struct GpuRest {
 }
 
 impl GpuRest {
-    /// Whether it can be drawn: a view within the bounds, every tile a region plan, and coverage
-    /// tables of the view's size.
+    /// Whether it can be drawn: every tile a region plan and, with a reduction, a view within the
+    /// bounds with coverage tables of its size.
+    fn valid(&self) -> bool {
+        !self.tiles.is_empty()
+            && self.tiles.iter().all(|tile| tile.region.is_some())
+            && self.reduction.as_ref().is_none_or(RestReduction::valid)
+    }
+}
+
+impl RestReduction {
+    /// A view within the bounds, and coverage tables of the view's size.
     fn valid(&self) -> bool {
         let axis = |coverage: &AxisCoverage, size: u32| {
             coverage.first.len() == size as usize
@@ -88,8 +116,6 @@ impl GpuRest {
         self.view.0 > 0
             && self.view.1 > 0
             && u64::from(self.view.0) * u64::from(self.view.1) <= REST_VIEW_PIXELS
-            && !self.tiles.is_empty()
-            && self.tiles.iter().all(|tile| tile.region.is_some())
             && axis(&self.across, self.view.0)
             && axis(&self.down, self.view.1)
     }
@@ -146,6 +172,87 @@ pub struct RestFigures {
     /// Why a tile, or the rest's own textures, could not be drawn: the picture at rest is then the
     /// caller's to draw otherwise.
     pub fallback: Option<GpuFallback>,
+    /// The tiles are drawn for their counts alone ([`GpuRest::reduction`] `None`).
+    pub counts_only: bool,
+}
+
+/// The histogram and clipping counts of a picture at rest's tiles, or of a gesture's frame, as
+/// the surface holds them: still being counted, on their way back from the GPU, or why there are
+/// none. Its clones answer alike.
+#[derive(Clone, Debug)]
+pub(in super::super) enum RestCounts {
+    /// Tiles remain to be counted.
+    Counting,
+    /// The last tile is counted and the counts are read back ([`HistogramReadback`]).
+    Reading(HistogramReadback),
+    /// No counts: the reduction could not be made or a tile could not be counted.
+    Failed(HistogramError),
+}
+
+impl RestCounts {
+    /// What a caller is told now, read without waiting.
+    pub(in super::super) fn outcome(&self) -> CountsOutcome {
+        match self {
+            Self::Counting => CountsOutcome::Counting,
+            Self::Reading(readback) => match readback.poll() {
+                None => CountsOutcome::Counting,
+                Some(Ok(counts)) => CountsOutcome::Ready(Box::new(counts)),
+                Some(Err(error)) => CountsOutcome::Failed(error),
+            },
+            Self::Failed(error) => CountsOutcome::Failed(error.clone()),
+        }
+    }
+
+    /// Whether counts are still on their way.
+    pub(in super::super) fn pending(&self) -> bool {
+        matches!(self.outcome(), CountsOutcome::Counting)
+    }
+}
+
+/// A gesture's tick counted: the boundary and the revision of the frame it drew, that frame's
+/// size, and its counts.
+#[derive(Clone, Debug)]
+pub(in super::super) struct TickCounted {
+    pub(in super::super) boundary: u64,
+    pub(in super::super) revision: u64,
+    pub(in super::super) size: (u32, u32),
+    pub(in super::super) counts: RestCounts,
+}
+
+impl TickCounted {
+    /// As the desktop reads it, without a wait.
+    pub(in super::super) fn read(&self) -> TickCounts {
+        TickCounts {
+            boundary: self.boundary,
+            revision: self.revision,
+            size: self.size,
+            counts: self.counts.outcome(),
+        }
+    }
+}
+
+/// The counts of the frame a gesture's tick drew, the frame on screen in motion, as the desktop
+/// reads them ([`crate::photo_surface::surface_counts`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TickCounts {
+    /// The boundary the tick's plan was drawn over, and the draft revision it was drawn for.
+    pub boundary: u64,
+    pub revision: u64,
+    /// The frame's size: the displayed-size proxy at Fit and below 100%, the visible region's at
+    /// 100% and above.
+    pub size: (u32, u32),
+    pub counts: CountsOutcome,
+}
+
+/// Counts as the desktop reads them ([`crate::photo_surface::surface_counts`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CountsOutcome {
+    /// Not counted yet, or on their way back from the GPU.
+    Counting,
+    /// The counts, exact over the codes counted.
+    Ready(Box<Counts>),
+    /// Why there are none.
+    Failed(HistogramError),
 }
 
 /// The reduction's and the quantization's passes, made once, the first time a surface of the
@@ -325,7 +432,7 @@ fn lf_rest_quantize(@builtin(global_invocation_id) id: vec3<u32>) {{
     )
 }
 
-/// What a picture at rest holds besides its tile slot, which retires as one.
+/// What a picture at rest's reduction to the view holds besides its tile slot, which retires as one.
 pub(super) struct RestParts {
     sums: Charged,
     tables: Charged,
@@ -333,8 +440,20 @@ pub(super) struct RestParts {
     output: Picture,
 }
 
+/// A picture at rest's reduction to the view: its coverage, its parts and the rest output's
+/// storage view.
+struct Reduce {
+    view: (u32, u32),
+    across: AxisCoverage,
+    down: AxisCoverage,
+    starts: [u32; 6],
+    parts: RestParts,
+    /// The rest output as the quantization writes it.
+    storage: wgpu::TextureView,
+}
+
 /// A surface's picture at rest: its tiles, the slot they are drawn through, how far it has got,
-/// the accumulator and the rest output.
+/// the reduction to the view with its accumulator and rest output, and the counts.
 pub(in super::super) struct RestSlot {
     version: u64,
     tiles: Arc<[GpuPlan]>,
@@ -345,27 +464,27 @@ pub(in super::super) struct RestSlot {
     /// The slot every tile is drawn through, apart from the surface's own GPU slot, which a
     /// gesture's plan keeps.
     tile: Box<SurfaceSlots>,
-    view: (u32, u32),
-    across: AxisCoverage,
-    down: AxisCoverage,
-    starts: [u32; 6],
-    parts: RestParts,
-    /// The rest output as the quantization writes it.
-    storage: wgpu::TextureView,
-    /// The bytes of the parts, charged.
+    /// The reduction to the view's size; `None` for the counts' tiles alone.
+    reduce: Option<Reduce>,
+    /// The bytes of the reduction's parts, charged.
     bytes: u64,
-    /// The rest output holds every tile's reduction, quantized.
+    /// The rest output holds every tile's reduction, quantized, and the counts are read back.
     done: bool,
     /// The last frame found the next tile waiting for its sequence, its source or a retirement.
     waiting: bool,
     /// The interface thread's time its tiles and quantization took so far.
     prepare_us: u64,
+    /// The tiles' histogram and clipping counts.
+    counts: RestCounts,
 }
 
 impl RestSlot {
-    /// The rest output, once its last tile is in it.
+    /// The rest output, once its last tile is in it; none for the counts' tiles alone.
     pub(in super::super) fn output(&self) -> Option<&Picture> {
-        self.done.then_some(&self.parts.output)
+        self.reduce
+            .as_ref()
+            .filter(|_| self.done)
+            .map(|reduce| &reduce.parts.output)
     }
 
     pub(in super::super) fn figures(&self) -> RestFigures {
@@ -378,17 +497,24 @@ impl RestSlot {
             prepare_us: self.prepare_us,
             dissolving: false,
             fallback: self.fallback,
+            counts_only: self.reduce.is_none(),
         }
+    }
+
+    /// Its version, and its counts as they stand.
+    pub(in super::super) fn counts(&self) -> (u64, RestCounts) {
+        (self.version, self.counts.clone())
     }
 
     /// Whether tiles remain to draw, which the widget asks the next frame for.
     pub(in super::super) fn pending(&self) -> bool {
         !self.done && self.fallback.is_none()
     }
+}
 
+impl Reduce {
     /// The tile just drawn, `plan`, its codes in `texture` at `(0, 0, width, height)`: encode its
-    /// share of the area average into the accumulator, and, here, any other reduction of the tile
-    /// that must run before the next tile is drawn into the same texture.
+    /// share of the area average into the accumulator.
     fn tile_drawn(
         &self,
         device: &wgpu::Device,
@@ -463,18 +589,71 @@ impl RestSlot {
             self.view.1,
         ]
     }
+
+    /// Quantize the accumulator into the rest output, once its last tile is in.
+    fn quantize(&self, device: &wgpu::Device, queue: &wgpu::Queue, passes: &RestPasses) {
+        queue.write_buffer(
+            &self.parts.params.buffer,
+            0,
+            &le_bytes(&self.params([0; 4])),
+        );
+        let bindings = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("luxforge.gpu_rest.quantize_bindings"),
+            layout: &passes.quantize_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.parts.params.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.parts.sums.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&self.storage),
+                },
+            ],
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("luxforge.gpu_rest.quantize_encoder"),
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("luxforge.gpu_rest.quantize"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&passes.quantize);
+            pass.set_bind_group(0, &bindings, &[]);
+            pass.dispatch_workgroups(self.view.0.div_ceil(GROUP), self.view.1.div_ceil(GROUP), 1);
+        }
+        queue.submit([encoder.finish()]);
+    }
 }
 
 fn le_bytes(words: &[u32]) -> Vec<u8> {
     words.iter().flat_map(|word| word.to_le_bytes()).collect()
 }
 
+/// The surface's histogram reduction, made the first time it counts and kept for its life: the
+/// kernel compiled once, its counts buffer cleared for each picture at rest. Why there is none.
+fn reduction<'a>(
+    pipeline: &PhotoPipeline,
+    device: &wgpu::Device,
+    held: &'a mut Option<HistogramReduction>,
+) -> Result<&'a mut HistogramReduction, HistogramError> {
+    if held.is_none() {
+        *held = Some(HistogramReduction::new(pipeline, device)?);
+    }
+    Ok(held.as_mut().expect("made above"))
+}
+
 impl PhotoPipeline {
     /// Draw `surface`'s picture at rest, `rest`: another version than the one it holds starts over,
-    /// none lets it go. At most [`REST_TILES_PER_FRAME`] tiles are drawn a frame, and the last
-    /// quantizes the rest output. A tile the stage cannot draw yet — its sequence compiling, its
-    /// source uploading — waits for a later frame; any other fallback stops the picture at rest,
-    /// naming why.
+    /// none lets it go. At most [`REST_TILES_PER_FRAME`] tiles are drawn a frame, each counted, and
+    /// the last quantizes the rest output and reads the counts back. A tile the stage cannot draw
+    /// yet — its sequence compiling, its source uploading — waits for a later frame; any other
+    /// fallback stops the picture at rest, naming why.
     pub(in super::super) fn prepare_rest(
         &mut self,
         surface: &mut SurfaceSlots,
@@ -498,7 +677,12 @@ impl PhotoPipeline {
                 return;
             }
             match self.allocate_rest(device, queue, rest) {
-                Ok(slot) => surface.rest = Some(Box::new(slot)),
+                Ok(mut slot) => {
+                    if let Err(error) = reduction(self, device, &mut surface.histogram) {
+                        slot.counts = RestCounts::Failed(error);
+                    }
+                    surface.rest = Some(Box::new(slot));
+                }
                 Err(fallback) => {
                     surface.rest_refused = Some((rest.version, fallback));
                     return;
@@ -511,24 +695,37 @@ impl PhotoPipeline {
         if !slot.pending() {
             return;
         }
-        let Some(Ok(passes)) = self.gpu.rest_passes(device) else {
-            slot.fallback = Some(GpuFallback::PipelineFailed);
-            return;
+        let passes = match &slot.reduce {
+            None => None,
+            Some(_) => match self.gpu.rest_passes(device) {
+                Some(Ok(passes)) => Some(Arc::clone(passes)),
+                _ => {
+                    slot.fallback = Some(GpuFallback::PipelineFailed);
+                    return;
+                }
+            },
         };
-        let passes = Arc::clone(passes);
         let started = std::time::Instant::now();
-        self.draw_rest(slot, device, queue, &passes);
+        self.draw_rest(
+            slot,
+            surface.histogram.as_mut(),
+            device,
+            queue,
+            passes.as_deref(),
+        );
         slot.prepare_us += started.elapsed().as_micros() as u64;
     }
 
-    /// The tiles `slot` draws this frame, and after its last the quantization: what one frame's
-    /// `prepare` spends on a picture at rest.
+    /// The tiles `slot` draws this frame, each reduced to the view and counted, and after its last
+    /// the quantization and the counts' readback: what one frame's `prepare` spends on a picture at
+    /// rest. `passes` are the reduction's, for a picture at rest with one.
     fn draw_rest(
         &mut self,
         slot: &mut RestSlot,
+        mut histogram: Option<&mut HistogramReduction>,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        passes: &RestPasses,
+        passes: Option<&RestPasses>,
     ) {
         for _ in 0..REST_TILES_PER_FRAME {
             let Some(plan) = slot.tiles.get(slot.next).cloned() else {
@@ -575,59 +772,61 @@ impl PhotoPipeline {
                 return;
             };
             let rect = plan.region.map_or([0; 4], |region| region.rect);
-            queue.write_buffer(&slot.parts.params.buffer, 0, &le_bytes(&slot.params(rect)));
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("luxforge.gpu_rest.tile_encoder"),
             });
-            if slot.next == 0 {
-                encoder.clear_buffer(&slot.parts.sums.buffer, 0, None);
+            if let (Some(reduce), Some(passes)) = (&slot.reduce, passes) {
+                queue.write_buffer(
+                    &reduce.parts.params.buffer,
+                    0,
+                    &le_bytes(&reduce.params(rect)),
+                );
+                if slot.next == 0 {
+                    encoder.clear_buffer(&reduce.parts.sums.buffer, 0, None);
+                }
+                reduce.tile_drawn(device, &mut encoder, passes, &texture, &plan);
             }
-            slot.tile_drawn(device, &mut encoder, passes, &texture, &plan);
+            // The tile's own codes, at the output's first texels, past its halo: counted into the
+            // whole stage's counts, which its first tile clears.
+            if let (RestCounts::Counting, Some(histogram)) =
+                (&slot.counts, histogram.as_deref_mut())
+            {
+                if slot.next == 0 {
+                    histogram.clear(&mut encoder);
+                }
+                let [x0, y0, x1, y1] = rect;
+                let counted = histogram.reduce(
+                    &mut encoder,
+                    &texture,
+                    HistogramRect {
+                        x: 0,
+                        y: 0,
+                        width: x1 - x0,
+                        height: y1 - y0,
+                    },
+                );
+                if let Err(error) = counted {
+                    slot.counts = RestCounts::Failed(error);
+                }
+            }
             queue.submit([encoder.finish()]);
             slot.next += 1;
         }
         if slot.next < slot.tiles.len() {
             return;
         }
-        // The last tile is in: quantize the accumulator into the rest output, and let the tile slot
-        // go, which nothing draws again.
-        queue.write_buffer(
-            &slot.parts.params.buffer,
-            0,
-            &le_bytes(&slot.params([0; 4])),
-        );
-        let bindings = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("luxforge.gpu_rest.quantize_bindings"),
-            layout: &passes.quantize_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: slot.parts.params.buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: slot.parts.sums.buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(&slot.storage),
-                },
-            ],
-        });
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("luxforge.gpu_rest.quantize_encoder"),
-        });
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("luxforge.gpu_rest.quantize"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&passes.quantize);
-            pass.set_bind_group(0, &bindings, &[]);
-            pass.dispatch_workgroups(slot.view.0.div_ceil(GROUP), slot.view.1.div_ceil(GROUP), 1);
+        // The last tile is in: quantize the accumulator into the rest output, read the counts back
+        // and let the tile slot go, which nothing draws again.
+        if let (Some(reduce), Some(passes)) = (&mut slot.reduce, passes) {
+            reduce.quantize(device, queue, passes);
+            reduce.parts.output.version = slot.version;
         }
-        queue.submit([encoder.finish()]);
-        slot.parts.output.version = slot.version;
+        if let (RestCounts::Counting, Some(histogram)) = (&slot.counts, histogram) {
+            let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("luxforge.gpu_rest.counts_encoder"),
+            });
+            slot.counts = RestCounts::Reading(histogram.read_back(queue, encoder));
+        }
         slot.done = true;
         self.release_gpu(&mut slot.tile);
         super::super::wake_surface();
@@ -639,20 +838,53 @@ impl PhotoPipeline {
             return;
         };
         self.release_gpu(&mut slot.tile);
-        let RestSlot { parts, bytes, .. } = *slot;
-        self.retire_preview(Held::Rest(Box::new(parts)), bytes);
+        let RestSlot { reduce, bytes, .. } = *slot;
+        if let Some(reduce) = reduce {
+            self.retire_preview(Held::Rest(Box::new(reduce.parts)), bytes);
+        }
     }
 
-    /// A picture at rest's parts for `rest`, charged before anything is created: the accumulator,
-    /// the coverage tables, the passes' parameters and the rest output with its placement.
+    /// A picture at rest's slot for `rest`, with its reduction's parts where it has one, charged
+    /// before anything is created: the accumulator, the coverage tables, the passes' parameters and
+    /// the rest output with its placement.
     fn allocate_rest(
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         rest: &GpuRest,
     ) -> Result<RestSlot, GpuFallback> {
-        let (width, height) = rest.view;
-        let (words, starts) = rest.tables();
+        let (reduce, bytes) = match &rest.reduction {
+            None => (None, 0),
+            Some(reduction) => {
+                let (reduce, bytes) = self.allocate_reduction(device, queue, reduction)?;
+                (Some(reduce), bytes)
+            }
+        };
+        Ok(RestSlot {
+            version: rest.version,
+            tiles: Arc::clone(&rest.tiles),
+            next: 0,
+            fallback: None,
+            tile: Box::new(self.new_surface()),
+            reduce,
+            bytes,
+            done: false,
+            waiting: false,
+            prepare_us: 0,
+            counts: RestCounts::Counting,
+        })
+    }
+
+    /// A reduction's parts for `reduction`, and what they are charged, charged before anything is
+    /// created.
+    fn allocate_reduction(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        reduction: &RestReduction,
+    ) -> Result<(Reduce, u64), GpuFallback> {
+        let (width, height) = reduction.view;
+        let (words, starts) = reduction.tables();
         let sums_bytes = buffer_capacity(device, u64::from(width) * u64::from(height) * 16)?;
         let table_bytes = buffer_capacity(device, (words.len().max(1) * 4) as u64)?;
         let params_bytes = (PARAMS * 4) as u64;
@@ -753,28 +985,97 @@ impl PhotoPipeline {
             mip_bytes: 0,
             mips_current: false,
         };
-        Ok(RestSlot {
-            version: rest.version,
-            tiles: Arc::clone(&rest.tiles),
-            next: 0,
-            fallback: None,
-            tile: Box::new(self.new_surface()),
-            view: rest.view,
-            across: rest.across.clone(),
-            down: rest.down.clone(),
-            starts,
-            parts: RestParts {
-                sums,
-                tables,
-                params,
-                output,
+        Ok((
+            Reduce {
+                view: reduction.view,
+                across: reduction.across.clone(),
+                down: reduction.down.clone(),
+                starts,
+                parts: RestParts {
+                    sums,
+                    tables,
+                    params,
+                    output,
+                },
+                storage,
             },
-            storage,
             bytes,
-            done: false,
-            waiting: false,
-            prepare_us: 0,
-        })
+        ))
+    }
+
+    /// Count the frame `surface`'s gesture's plan, `plan`, just drew — the frame on screen in
+    /// motion, the displayed-size proxy at Fit and below 100% or the visible region at 100% and
+    /// above — once for each tick, and read the counts back, tagged with the tick's boundary and
+    /// revision: when the slot evaluated the plan this frame, its output carries no clipping marks
+    /// and the surface's last tick's counts are not still on their way.
+    pub(in super::super) fn count_tick(
+        &mut self,
+        surface: &mut SurfaceSlots,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        plan: Option<&GpuPlan>,
+    ) {
+        let (Some(plan), Some(Ok(boundary)), Some(tag)) =
+            (plan, surface.gpu_outcome, surface.gpu_tag)
+        else {
+            return;
+        };
+        let key = (boundary, tag);
+        if surface.tick_counted == Some(key)
+            || matches!(plan.steps.last(), Some(super::GpuStep::Clipping(_)))
+            || surface
+                .tick_counts
+                .as_ref()
+                .is_some_and(|tick| tick.counts.pending())
+        {
+            return;
+        }
+        let Some(output) = surface.gpu.as_ref().map(super::GpuSlot::output) else {
+            return;
+        };
+        let [tile] = output.tiles.as_slice() else {
+            return;
+        };
+        let (width, height) = plan.region.map_or((output.width, output.height), |region| {
+            let [x0, y0, x1, y1] = region.rect;
+            (x1 - x0, y1 - y0)
+        });
+        let texture = tile.texture.clone();
+        surface.tick_counted = Some(key);
+        let counted = |counts| TickCounted {
+            boundary,
+            revision: tag,
+            size: (width, height),
+            counts,
+        };
+        let histogram = match reduction(self, device, &mut surface.tick_histogram) {
+            Ok(histogram) => histogram,
+            Err(error) => {
+                surface.tick_counts = Some(counted(RestCounts::Failed(error)));
+                return;
+            }
+        };
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("luxforge.gpu_preview.tick_counts"),
+        });
+        histogram.clear(&mut encoder);
+        let counts = match histogram.reduce(
+            &mut encoder,
+            &texture,
+            HistogramRect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            },
+        ) {
+            Ok(()) => RestCounts::Reading(histogram.read_back(queue, encoder)),
+            Err(error) => {
+                queue.submit([encoder.finish()]);
+                RestCounts::Failed(error)
+            }
+        };
+        surface.tick_counts = Some(counted(counts));
     }
 }
 

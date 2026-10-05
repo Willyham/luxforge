@@ -75,6 +75,15 @@ impl Presenter {
         shown
     }
 
+    /// Keep the photograph's frame as the base of `content`, which the GPU draws in place of it
+    /// with no CPU frame of its own: never full-detail texels of that content. `false` with no
+    /// frame to keep.
+    pub(crate) fn retag(&mut self, content: u64) -> bool {
+        self.full_content = None;
+        self.photo_content = self.photo.is_some().then_some(content);
+        self.photo.is_some()
+    }
+
     /// The exact frame reduced to the view has photograph content, but never full-detail texels.
     pub(crate) fn show_reduced(&mut self, raster: &luxforge_core::Raster, content: u64) -> bool {
         self.show_proxy(raster, content)
