@@ -36,6 +36,8 @@ mod proxy;
 mod render;
 pub mod resources;
 mod source;
+/// The interface's themes: roles, derived tokens, the neutral surround and the contrast floors.
+pub mod theme;
 
 // The public surface: what the desktop, `luxforge-json`, `luxforge-net`, `luxforge-testkit`, xtask
 // and this crate's integration tests name through the crate root, and every type a public item's
