@@ -395,11 +395,20 @@ pub fn verify_region(run: &mut Run, launches: &[Checked]) -> Result {
             && histogram["overlay"]["approximate"] == false,
         "Release lacks exact full-stage histogram and clipping overlay",
     )?;
+    // The pan writes no photograph texture. Released, the photograph at rest was the GPU's region
+    // plan, which the pan leaves: the full photograph texture already held is drawn; drawn by the
+    // CPU at release, the same full texture is drawn again.
+    let released = &final_state["surface"]["gpu"];
+    let settled = &at("settled-pause")?["surface"]["gpu"];
+    let full_reused = if released["picture"] == "view" || released["picture"] == "rest" {
+        !settled["drawn_full_version"].is_null()
+    } else {
+        released["drawn_full_version"] == settled["drawn_full_version"]
+    };
     ensure(
         gpu(launch.at("settled-pause")?, "photo_writes")?
             == gpu(launch.at("release-pause")?, "photo_writes")?
-            && final_state["surface"]["gpu"]["drawn_full_version"]
-                == at("settled-pause")?["surface"]["gpu"]["drawn_full_version"],
+            && full_reused,
         "Settled pan did not reuse the full photograph texture",
     )?;
     let tint_pixels = changed_pixels(launch.at("settled-pause")?, launch.at("mask-overlay-off")?)?;
@@ -524,9 +533,16 @@ pub fn verify_idle(run: &mut Run, launches: &[Checked]) -> Result {
             && detail["stale_photo_draws_delta"].as_u64().is_some(),
         format!("Idle Fit missed its draw or encoded blank content: {detail}"),
     )?;
+    // The photograph drawn at idle Fit: the GPU's picture at rest of the committed stack, which
+    // stands in for the presenter's frame, or that frame itself where the GPU does not draw it.
+    let at_rest = detail["picture"] == "rest" || detail["picture"] == "view";
     ensure(
         detail["expected_full_version"].as_u64().is_some()
-            && detail["expected_full_version"] == detail["drawn_full_version"]
+            && (if at_rest {
+                !detail["drawn_rest"].is_null() || !detail["drawn_gpu_boundary"].is_null()
+            } else {
+                detail["expected_full_version"] == detail["drawn_full_version"]
+            })
             && detail["drawn_stale_photo"] == false
             && detail["drawn_fallback_content"].is_null(),
         format!("Idle Fit did not draw the requested photograph version: {detail}"),
@@ -537,8 +553,11 @@ pub fn verify_idle(run: &mut Run, launches: &[Checked]) -> Result {
         "The script's pre-capture idle check disagrees with the event",
     )?;
     let after = launch.at("idle-fit")?;
+    let drawn = &after.state()["surface"]["gpu"];
     ensure(
-        after.state()["surface"]["gpu"]["drawn_full_version"] == detail["drawn_full_version"],
+        drawn["drawn_full_version"] == detail["drawn_full_version"]
+            && drawn["drawn_rest"] == detail["drawn_rest"]
+            && drawn["picture"] == detail["picture"],
         "Capture after idle check did not show the checked Fit photo",
     )?;
     Checks::new().write(

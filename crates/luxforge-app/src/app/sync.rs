@@ -334,6 +334,7 @@ impl Editor {
                 self.presentation.compare_after = None;
                 self.document.compare_return = None;
                 self.document.compare_hold = false;
+                self.gpu_compare_end();
             }
         }
     }

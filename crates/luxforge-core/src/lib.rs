@@ -78,8 +78,8 @@ pub use modules::{
     CapabilityModule, ChoiceControl, ChoiceStyle, ColorControl, ColorOperation, ColorStyle,
     CompileStage, Control, ControlVariant, Controls, ControlsModule, CropAspect, CropPayload,
     CropStage, CurveBackground, CurveChannel, CurveControl, DETAIL_EFFECT, Edge, EffectDescriptor,
-    EffectStage, ExactGeometry, FieldPatch, FieldPatchModule, FitSettle, GPU_PROGRAMS,
-    GroupControl, IdentityKind, LENS_EFFECT, LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE,
+    EffectStage, ExactGeometry, FieldPatch, FieldPatchModule, GPU_PROGRAMS, GroupControl,
+    IdentityKind, LENS_EFFECT, LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE,
     MAX_MASKED_SPATIAL_LAYERS, MIN_ANGLE, MIXER_EFFECT, ModuleDescriptor, ModuleLayout,
     ModuleRegistry, NewLayer, NumberControl, NumberStyle, ORIENTATION_EFFECT, OutputRect,
     PERSPECTIVE_EFFECT, PIXEL_EFFECT, PRESENCE_EFFECT, PROOF_GENERATE_PATH, PROOF_PALETTE,
@@ -119,9 +119,9 @@ pub use render::gpu::{
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{
     ContentPoint, GeometryMap, INPUT_GRID_MAX_CELLS, InputGridCache, LinearSettings, MapError,
-    MappingDescriptor, MappingShape, PrefixUse, Raster, RegionFrame, Render, RenderContext,
-    RenderOptions, RenderSource, Sample, ScratchBudget, StageSize, WhiteBalanceApproximation,
-    render, stage_transform,
+    MappingDescriptor, MappingShape, Raster, RegionFrame, Render, RenderContext, RenderOptions,
+    RenderSource, Sample, ScratchBudget, StageSize, WhiteBalanceApproximation, render,
+    stage_transform,
 };
 pub use source::{LinearImage, OpticalIdentity, SourceImage, SourceOptics, open_source};
 

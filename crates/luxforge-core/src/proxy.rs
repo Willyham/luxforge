@@ -698,13 +698,10 @@ impl BoxDownscale {
     }
 }
 
-/// The area average of a JPEG source, re-quantized through the render path's own threshold
-/// boundary. A uniform region therefore comes out as exactly its own code, and the proxy of an
-/// identity stack agrees with the exact render's arithmetic everywhere it can. The output frame is
-/// written in place and returned as the proxy's pixels, with no copy.
-/// Reduce final rendered pixels with the same linear-light area average as source proxies.
-/// The source allocation is borrowed through its Arc; only the display raster is allocated.
-pub(crate) fn downscale_raster(
+/// Finished pixels reduced by the same linear-light area average a source proxy is built with
+/// ([`crate::render::reduce_to_view`]): the source allocation is borrowed through its Arc, and only
+/// the reduced raster is allocated.
+pub(crate) fn reduce_raster(
     raster: &Raster,
     plan: ProxyPlan,
     cancel: &Cancel,
@@ -714,7 +711,7 @@ pub(crate) fn downscale_raster(
         || u64::from(plan.width) * u64::from(plan.height) > ProxyBounds::MAX_PIXELS
     {
         return Err(Error::resource_limit(
-            "settled display raster exceeds the 8 MP bound",
+            "the view's frame exceeds the 8 MP bound",
         ));
     }
     let source = SourceImage {
@@ -735,6 +732,10 @@ pub(crate) fn downscale_raster(
     })
 }
 
+/// The area average of a JPEG source, re-quantized through the render path's own threshold
+/// boundary. A uniform region therefore comes out as exactly its own code, and the proxy of an
+/// identity stack agrees with the exact render's arithmetic everywhere it can. The output frame is
+/// written in place and returned as the proxy's pixels, with no copy.
 fn downscale_jpeg(
     source: &SourceImage,
     plan: ProxyPlan,
@@ -2398,7 +2399,7 @@ mod tests {
         };
         for (w, h) in [(1, 1), (17, 13), (26, 20), (52, 40)] {
             let plan = plan(w, h, (w, h));
-            let reduced = downscale_raster(&raster, plan, &Cancel::never()).unwrap();
+            let reduced = reduce_raster(&raster, plan, &Cancel::never()).unwrap();
             let expected = source.proxy(plan).unwrap();
             assert_eq!(reduced.rgba.as_ref(), jpeg_of(&expected).rgba.as_ref());
             assert_eq!(reduced.snapshot_id, raster.snapshot_id);
@@ -2409,7 +2410,7 @@ mod tests {
         let cancel = Cancel::never();
         cancel.cancel();
         assert_eq!(
-            downscale_raster(&raster, plan(17, 13, (17, 13)), &cancel)
+            reduce_raster(&raster, plan(17, 13, (17, 13)), &cancel)
                 .unwrap_err()
                 .kind,
             ErrorKind::Cancelled

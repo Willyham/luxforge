@@ -1335,22 +1335,44 @@ fn plain_checks(scenario: &str, launch: &Checked) -> Result {
         }
     }
     if scenario.starts_with("large") {
-        // A photo-sized source at Fit is shown as its display proxy, so the status bar's figure is
-        // the proxy phase's own render time and says it is approximate. A capture can land while a
-        // refit or the exact phase is still running, when the bar says "Rendering…"; the figure
-        // behind it is still recorded, and it must be the proxy's.
+        // A photo-sized source at Fit is drawn at rest by the GPU, the stack at full resolution in
+        // tiles reduced to the view, and the status bar names the GPU's render. A capture can land
+        // before its tiles are in, while the photograph is still the CPU's display proxy, whose own
+        // render time the bar then gives and calls approximate, or says "Rendering…" while a refit
+        // or the exact phase runs; the figure behind it is still recorded, and it must be the
+        // proxy's.
         let record = expect_render_times(&launch.events, &launch.frames)?;
         ensure(
             launch.frames.iter().all(|frame| {
-                let bar = &frame.state()["status_bar"];
-                bar["render_proxy"] == json!(true)
-                    && bar["render"].as_str().is_some_and(|text| {
-                        text.starts_with("Approximate render") || text == "Rendering\u{2026}"
-                    })
+                let state = frame.state();
+                let bar = &state["status_bar"];
+                if gpu_at_rest(state) {
+                    bar["render"]
+                        .as_str()
+                        .is_some_and(|text| text.starts_with("GPU render"))
+                } else {
+                    bar["render_proxy"] == json!(true)
+                        && bar["render"].as_str().is_some_and(|text| {
+                            text.starts_with("Approximate render") || text == "Rendering\u{2026}"
+                        })
+                }
             }),
-            "A photo-sized frame at Fit does not report the proxy's render time",
+            "A photo-sized frame at Fit reports neither the GPU's render nor the proxy's",
         )?;
-        Checks::new().write(&launch.evidence, scenario, json!({"render_times": record}))?;
+        let pictures: Vec<Value> = launch
+            .frames
+            .iter()
+            .map(|frame| {
+                let state = frame.state();
+                json!({"frame": frame["file"], "picture": state["surface"]["gpu"]["picture"],
+                    "render": state["status_bar"]["render"], "rest": state["surface"]["gpu"]["rest"]})
+            })
+            .collect();
+        Checks::new().write(
+            &launch.evidence,
+            scenario,
+            json!({"render_times": record, "pictures": pictures}),
+        )?;
     }
     Ok(())
 }
@@ -1499,7 +1521,7 @@ fn gpu_identity(run: &mut Run, launches: &[Checked]) -> Result {
             ms.is_finite()
                 && (0.0..RENDER_MS_BOUND).contains(&ms)
                 && gpu["gpu_preview_frame_us"].as_f64().map(|us| us / 1000.0) == Some(ms)
-                && bar["render"] == json!(gpu_text(ms))
+                && bar["render"] == json!(gpu_text(ms, gpu_at_rest(frame.state())))
                 && gpu["plan_fallback"].is_null(),
             format!(
                 "{}: the status bar says {} for a GPU frame of {} µs (status figure {})",
@@ -1578,9 +1600,20 @@ pub fn render_text(ms: f64, proxy: bool, approximate: bool) -> String {
 }
 
 /// The status bar's wording of a GPU frame's figure, exactly as the editor's
-/// `state::status::gpu_text` formats it.
-pub fn gpu_text(ms: f64) -> String {
-    format!("GPU preview \u{b7} {}", render_figure(ms))
+/// `state::status::gpu_text` formats it: "GPU render" for the committed stack at rest, "GPU
+/// preview" for a gesture's frame.
+pub fn gpu_text(ms: f64, at_rest: bool) -> String {
+    let kind = if at_rest { "GPU render" } else { "GPU preview" };
+    format!("{kind} \u{b7} {}", render_figure(ms))
+}
+
+/// Whether a captured frame's photograph is the GPU's picture of the committed stack at rest,
+/// as its `state.surface.gpu.picture` names it: its picture at rest in tiles or its view plan.
+pub fn gpu_at_rest(state: &Value) -> bool {
+    matches!(
+        state["surface"]["gpu"]["picture"].as_str(),
+        Some("rest" | "view")
+    )
 }
 
 /// A figure as the status bar's render slot gives it.
@@ -1640,7 +1673,7 @@ pub fn expect_render_times<F: Borrow<Value>>(events: &[Value], frames: &[F]) -> 
         // render's: a drag drawn on the GPU from its first tick.
         if let Some(gpu_ms) = bar["gpu_ms"].as_f64() {
             ensure(
-                text == gpu_text(gpu_ms),
+                text == gpu_text(gpu_ms, gpu_at_rest(&frame["state"])),
                 format!(
                     "{}: the status bar says {text:?} for a GPU frame of {gpu_ms} ms",
                     frame["file"]
@@ -1722,8 +1755,9 @@ mod tests {
             render_text(140.0, false, true),
             "Approximate render \u{b7} 140 ms"
         );
-        assert_eq!(gpu_text(2.4), "GPU preview \u{b7} 2 ms");
-        assert_eq!(gpu_text(0.2), "GPU preview \u{b7} <1 ms");
+        assert_eq!(gpu_text(2.4, false), "GPU preview \u{b7} 2 ms");
+        assert_eq!(gpu_text(0.2, false), "GPU preview \u{b7} <1 ms");
+        assert_eq!(gpu_text(12.4, true), "GPU render \u{b7} 12 ms");
         let good = expect_render_times(
             &[displayed(json!(12.4))],
             &[frame("Approximate render \u{b7} 12 ms", 12.4, true)],
