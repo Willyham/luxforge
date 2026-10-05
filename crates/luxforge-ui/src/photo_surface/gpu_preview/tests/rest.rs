@@ -3,6 +3,7 @@
 //! a frame at a time, each over its own window of the source, reduced into the view's size as the
 //! reference's area average reduces the frame they make, and drawn in place of the photograph once
 //! the last is in.
+use super::super::headless::HeadlessSurface;
 use super::*;
 use crate::photo_surface::{GpuRegion, GpuRest, GpuSource, RestFigures};
 
@@ -66,62 +67,20 @@ fn a_picture_at_rest_is_drawn_in_tiles_and_reduced_to_the_view() {
     if let Err(error) = super::super::rest::RestPasses::new(&device) {
         panic!("the rest passes: {error}");
     }
-    let (width, height) = (128u32, 96u32);
+    let (width, height) = (WIDTH, HEIGHT);
     let rgba = codes(width, height);
     let source = GpuSource::codes(3, Arc::new(rgba.clone()), width, height).expect("a source");
-    let side = 48u32;
-    let mut tiles = Vec::new();
-    for y0 in (0..height).step_by(side as usize) {
-        for x0 in (0..width).step_by(side as usize) {
-            let (x1, y1) = ((x0 + side).min(width), (y0 + side).min(height));
-            let boundary = GpuBoundary::derived(
-                &source,
-                Derivation::Cut { origin: (x0, y0) },
-                x1 - x0,
-                y1 - y0,
-                10 + tiles.len() as u64,
-            )
-            .expect("a tile's boundary");
-            tiles.push(GpuPlan {
-                boundary,
-                texels: TexelMap {
-                    origin: [x0 as f32, y0 as f32],
-                    step: [1.0, 1.0],
-                },
-                steps: vec![GpuStep::colour(identity())],
-                region: Some(GpuRegion {
-                    rect: [x0, y0, x1, y1],
-                    stage: (width, height),
-                }),
-            });
-        }
-    }
+    let tiles = tiles_of(&source);
     assert_eq!(tiles.len(), 6);
     let (across, down) = (coverage(width, SIDE), coverage(height, SIDE));
-    let rest = GpuRest {
-        version: 1,
-        tiles: tiles.clone().into(),
-        view: (SIDE, SIDE),
-        across: axis(&across),
-        down: axis(&down),
-    };
+    let rest = rest_of(&tiles);
     pipeline.compile_now(&device, &tiles[0]);
     let primitive = PhotoPrimitive {
         source: Some(source.clone()),
         rest: Some(rest.clone()),
         ..primitive(ID, None)
     };
-    // The tiles' codes: each pixel's code decoded and held as the nearest half float, encoded.
-    let held: Vec<[u8; 3]> = rgba
-        .chunks_exact(4)
-        .map(|pixel| {
-            [0, 1, 2].map(|channel| {
-                srgb::code(f64::from(
-                    half::f16::from_f32(srgb::decode(pixel[channel]) as f32).to_f32(),
-                ))
-            })
-        })
-        .collect();
+    let held = held_codes(&rgba);
     let mut frames = 0;
     let drawn = loop {
         let drawn = paint(&device, &queue, &mut pipeline, &primitive);
@@ -192,6 +151,7 @@ fn a_picture_at_rest_is_drawn_in_tiles_and_reduced_to_the_view() {
             drawn: 1,
             done: false,
             waiting: false,
+            paused: false,
             fallback: None,
         })
     );
@@ -204,4 +164,137 @@ fn a_picture_at_rest_is_drawn_in_tiles_and_reduced_to_the_view() {
 /// Surface [`ID`]'s photograph with no plan and no picture at rest.
 fn handing_none() -> PhotoPrimitive {
     primitive(ID, None)
+}
+
+/// The output stage the pictures at rest here cover, and their tiles' side.
+const WIDTH: u32 = 128;
+const HEIGHT: u32 = 96;
+const TILE: u32 = 48;
+
+/// The identity's tiles of `source`'s 128 × 96 stage, 48 a side, row by row: each a region plan of
+/// the stage over its own cut of the source.
+fn tiles_of(source: &GpuSource) -> Vec<GpuPlan> {
+    let mut tiles = Vec::new();
+    for y0 in (0..HEIGHT).step_by(TILE as usize) {
+        for x0 in (0..WIDTH).step_by(TILE as usize) {
+            let (x1, y1) = ((x0 + TILE).min(WIDTH), (y0 + TILE).min(HEIGHT));
+            let boundary = GpuBoundary::derived(
+                source,
+                Derivation::Cut { origin: (x0, y0) },
+                x1 - x0,
+                y1 - y0,
+                10 + tiles.len() as u64,
+            )
+            .expect("a tile's boundary");
+            tiles.push(GpuPlan {
+                boundary,
+                texels: TexelMap {
+                    origin: [x0 as f32, y0 as f32],
+                    step: [1.0, 1.0],
+                },
+                steps: vec![GpuStep::colour(identity())],
+                region: Some(GpuRegion {
+                    rect: [x0, y0, x1, y1],
+                    stage: (WIDTH, HEIGHT),
+                }),
+            });
+        }
+    }
+    tiles
+}
+
+/// The picture at rest of `tiles`, reduced to the 64 × 64 view.
+fn rest_of(tiles: &[GpuPlan]) -> GpuRest {
+    GpuRest {
+        version: 1,
+        tiles: tiles.to_vec().into(),
+        view: (SIDE, SIDE),
+        across: axis(&coverage(WIDTH, SIDE)),
+        down: axis(&coverage(HEIGHT, SIDE)),
+    }
+}
+
+/// The identity's codes of `rgba`: each pixel's code decoded and held as the nearest half float,
+/// encoded.
+fn held_codes(rgba: &[u8]) -> Vec<[u8; 3]> {
+    rgba.chunks_exact(4)
+        .map(|pixel| {
+            [0, 1, 2].map(|channel| {
+                srgb::code(f64::from(
+                    half::f16::from_f32(srgb::decode(pixel[channel]) as f32).to_f32(),
+                ))
+            })
+        })
+        .collect()
+}
+
+/// A picture at rest drawn headless ([`HeadlessSurface`]) is the one the surface draws — the codes
+/// the photograph's draw shows, a tile a frame — and a tile drawn from a window of the source
+/// holding only that tile's own window is the tile drawn from the whole source, bit for bit, each
+/// pixel the identity's code of its own.
+#[test]
+fn a_picture_at_rest_drawn_headless_is_the_one_the_surface_draws() {
+    let test = "a_picture_at_rest_drawn_headless_is_the_one_the_surface_draws";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    if let Err(error) = super::super::rest::RestPasses::new(&device) {
+        panic!("the rest passes: {error}");
+    }
+    let mut pipeline = own_pipeline(&device, &queue);
+    let rgba = codes(WIDTH, HEIGHT);
+    let source = GpuSource::codes(3, Arc::new(rgba.clone()), WIDTH, HEIGHT).expect("a source");
+    let tiles = tiles_of(&source);
+    let rest = rest_of(&tiles);
+    pipeline.compile_now(&device, &tiles[0]);
+    let primitive = PhotoPrimitive {
+        source: Some(source.clone()),
+        rest: Some(rest.clone()),
+        ..primitive(ID, None)
+    };
+    let drawn = loop {
+        let drawn = paint(&device, &queue, &mut pipeline, &primitive);
+        if diagnostics(&pipeline, ID).drawn_rest == Some(1) {
+            break drawn;
+        }
+    };
+    let mut surface = HeadlessSurface::new(&device, &queue);
+    let headless = surface
+        .rest(&source, &rest)
+        .expect("the rest drawn headless");
+    assert!(
+        headless.frames >= 6,
+        "a tile a frame at most, beside the frames that waited for the compile"
+    );
+    assert_eq!(headless.codes.len(), (SIDE * SIDE) as usize);
+    for (index, code) in headless.codes.iter().enumerate() {
+        let at = index * 4;
+        assert_eq!(
+            [code[0], code[1], code[2], code[3]],
+            [drawn[at + 2], drawn[at + 1], drawn[at], 255],
+            "view pixel {index}"
+        );
+    }
+    let held = held_codes(&rgba);
+    for plan in &tiles {
+        let [x0, y0, x1, y1] = plan.region.expect("a region plan").rect;
+        let whole = surface
+            .tile(&source, plan)
+            .expect("a tile of the whole source");
+        let window = source
+            .window([x0, y0, x1 - x0, y1 - y0])
+            .expect("the tile's window");
+        assert_eq!(window.bytes(), u64::from((x1 - x0) * (y1 - y0) * 4));
+        let windowed = surface.tile(&window, plan).expect("a tile of its window");
+        assert_eq!(windowed, whole, "the tile at ({x0}, {y0})");
+        for (index, code) in whole.iter().enumerate() {
+            let (x, y) = (x0 + index as u32 % (x1 - x0), y0 + index as u32 / (x1 - x0));
+            assert_eq!(
+                [code[0], code[1], code[2]],
+                held[(y * WIDTH + x) as usize],
+                "({x}, {y})"
+            );
+        }
+    }
+    settle(&pipeline);
 }

@@ -97,15 +97,18 @@ pub use preview::{
     PreviewJob, PreviewPhase, PreviewProgress, PreviewQueue, PreviewResult, PreviewSession,
     PreviewSource, ProxyOutcome, Queued, RegionOutcome, ViewState, Zoom,
 };
-pub use proxy::{ProxyApproximation, ProxyBounds, ProxyCoverage, ProxyIdentity, ProxyPlan};
+pub use proxy::{
+    ProxyApproximation, ProxyBounds, ProxyCoverage, ProxyIdentity, ProxyPlan, area_coverage,
+};
 pub use render::gpu::{
     BoundaryKey, CoordinateGrid, EstimateSource, GPU_PASS_INPUTS, GPU_PLAN_LINKS,
     GPU_SHARED_VALUES, GPU_WARM_LINKS, GPU_WORKGROUP_LANES, GRID_MAX_NODES,
-    GRID_SAMPLE_TOLERANCE_PX, GRID_TOLERANCE_PX, GpuAnswer, GpuApply, GpuBoundary, GpuChange,
-    GpuClipping, GpuComponent, GpuDescription, GpuEstimates, GpuFallback, GpuGeometry, GpuMask,
-    GpuOperation, GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest, GpuPlane, GpuPlaneFormat,
-    GpuPlaneSize, GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuRest, GpuSpatial,
-    GpuSpatialUnit, GpuView, SourceBoundary, anchored, gpu_plan, gpu_plan_with,
+    GRID_SAMPLE_TOLERANCE_PX, GRID_TOLERANCE_PX, GpuAnchor, GpuAnswer, GpuApply, GpuBoundary,
+    GpuChange, GpuClipping, GpuComponent, GpuDescription, GpuEstimates, GpuFallback, GpuGeometry,
+    GpuMask, GpuOperation, GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest, GpuPlane,
+    GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuRest,
+    GpuSpatial, GpuSpatialUnit, GpuView, REST_TILE_BYTES, REST_TILE_SIDES, RestTile, RestTiles,
+    SourceBoundary, anchored, gpu_plan, gpu_plan_with,
 };
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{
@@ -150,6 +153,22 @@ pub mod qualification {
         view: crate::GpuView,
     ) -> Result<crate::GpuRest, crate::Error> {
         crate::render::gpu::plan_rest(evaluation, view)
+    }
+
+    /// `evaluation`'s picture at rest at Fit `bounds` in tiles of `side` ([`crate::RestTiles`]), as
+    /// the editor plans it with a side of its own: for a test that draws a stage in more tiles than
+    /// its size gives at the editor's sides, or the harness. The reason when it is not drawn so.
+    pub fn rest_tiles(
+        evaluation: &crate::Evaluation,
+        bounds: crate::ProxyBounds,
+        side: u32,
+    ) -> Result<Box<crate::RestTiles>, String> {
+        match crate::render::gpu::plan_rest_tiles(evaluation, bounds, Some(side)) {
+            Ok(Some(Ok(tiles))) => Ok(tiles),
+            Ok(Some(Err(reason))) => Err(reason.to_string()),
+            Ok(None) => Err("the bounds draw the output stage at its own size".into()),
+            Err(error) => Err(error.detail),
+        }
     }
 
     /// A Lens correction layer holding a frozen Poly3 profile of `k1`, resolved for a `stage`, as

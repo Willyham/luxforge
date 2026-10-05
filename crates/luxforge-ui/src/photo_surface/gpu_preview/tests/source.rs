@@ -454,3 +454,168 @@ fn a_derived_boundary_draws_from_the_slot_that_holds_it() {
     assert!(seen.gpu_source_derived > derived, "derived again");
     settle(&pipeline);
 }
+
+/// A window of a source holds only its rectangle's texels — the same pixels, shared, charged for
+/// the window alone — and a cut inside it is the whole source's cut, bit for bit: a JPEG's codes,
+/// and a RAW's planes viewed from a crop window of them through every orientation. A pipeline
+/// tells the window from the whole source of the same version by the rectangle it holds; a cut
+/// that leaves the window, and a reduction, which reads the whole source, derive nothing from it.
+#[test]
+fn a_window_of_the_source_holds_only_its_rectangle_and_cuts_as_the_whole_source() {
+    let test = "a_window_of_the_source_holds_only_its_rectangle_and_cuts_as_the_whole_source";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let (width, height) = (300u32, 200u32);
+    let rgba = codes(width, height);
+    let source = GpuSource::codes(1, Arc::new(rgba.clone()), width, height).expect("a source");
+    let rect = [100u32, 60, 120, 90];
+    let window = source.window(rect).expect("a window");
+    assert_eq!(window.held_rect(), rect);
+    assert_eq!(
+        window.stage(),
+        (width, height),
+        "addressed as the whole stage"
+    );
+    assert_eq!(window.bytes(), u64::from(rect[2] * rect[3] * 4));
+    assert_eq!(source.window([0, 0, 0, 4]).map(|w| w.held_rect()), None);
+    assert_eq!(window.window([90, 60, 20, 20]).map(|w| w.held_rect()), None);
+    assert_eq!(
+        window.window([110, 70, 20, 20]).map(|w| w.held_rect()),
+        Some([110, 70, 20, 20]),
+        "a window of a window inside it"
+    );
+    let origin = (120u32, 70u32);
+    let cut = |source: &GpuSource, origin: (u32, u32), version: u64| {
+        GpuBoundary::derived(source, Derivation::Cut { origin }, SIDE, SIDE, version)
+            .expect("a derived boundary")
+    };
+    let expected: Vec<[u8; 3]> = (0..SIDE * SIDE)
+        .map(|index| {
+            let (x, y) = (origin.0 + index % SIDE, origin.1 + index / SIDE);
+            let at = ((y * width + x) * 4) as usize;
+            [0, 1, 2].map(|channel| encoded(srgb::decode(rgba[at + channel])))
+        })
+        .collect();
+    let drawn = paint(
+        &device,
+        &queue,
+        &mut pipeline,
+        &handing(Some(over(&cut(&window, origin, 1))), Some(&window)),
+    );
+    pipeline.trim();
+    assert_codes(&drawn, &expected);
+    let seen = diagnostics(&pipeline, ID);
+    assert_eq!(seen.gpu_fallback, None);
+    assert_eq!(
+        seen.gpu_source.map(|held| held.bytes),
+        Some(window.bytes()),
+        "the window's texels alone"
+    );
+    // The whole source of the same version replaces the window, and draws the same cut.
+    let drawn = paint(
+        &device,
+        &queue,
+        &mut pipeline,
+        &handing(Some(over(&cut(&source, origin, 2))), Some(&source)),
+    );
+    pipeline.trim();
+    assert_codes(&drawn, &expected);
+    assert_eq!(
+        diagnostics(&pipeline, ID).gpu_source.map(|held| held.bytes),
+        Some(source.bytes())
+    );
+    // A cut that leaves the window derives nothing from it.
+    assert_cpu_frame(&paint(
+        &device,
+        &queue,
+        &mut pipeline,
+        &handing(Some(over(&cut(&window, (200, 70), 3))), Some(&window)),
+    ));
+    pipeline.trim();
+    assert_eq!(
+        diagnostics(&pipeline, ID).gpu_fallback,
+        Some(GpuFallback::PipelineFailed)
+    );
+    // Nor does a reduction, which reads the whole source.
+    let identity = |length: u32| AxisCoverage {
+        first: (0..length).collect(),
+        offsets: (0..=length).collect(),
+        weights: vec![1.0; length as usize],
+    };
+    let reduction = Reduction {
+        origin: (0, 0),
+        across: identity(width),
+        down: identity(height),
+    };
+    let reduced = GpuBoundary::derived(
+        &window,
+        Derivation::Reduce(Arc::new(reduction)),
+        SIDE,
+        SIDE,
+        4,
+    )
+    .expect("a derived boundary");
+    assert_cpu_frame(&paint(
+        &device,
+        &queue,
+        &mut pipeline,
+        &handing(Some(over(&reduced)), Some(&window)),
+    ));
+    pipeline.trim();
+    assert_eq!(
+        diagnostics(&pipeline, ID).gpu_fallback,
+        Some(GpuFallback::PipelineFailed)
+    );
+    // A RAW's planes: a 300 × 200 crop window of 320 × 210 base planes, viewed through each
+    // orientation, a window of the content stage and a cut inside it.
+    let base = (320u32, 210u32);
+    let crop = [12u32, 5, 300, 200];
+    let plane = (base.0 * base.1) as usize;
+    let value = |channel: usize, x: u32, y: u32| {
+        (channel as f32 + 1.0) * 0.001 * (x as f32) + 0.0007 * (y as f32) - 0.05 * channel as f32
+    };
+    let mut planes = vec![0f32; 3 * plane];
+    for channel in 0..3 {
+        for y in 0..base.1 {
+            for x in 0..base.0 {
+                planes[channel * plane + (y * base.0 + x) as usize] = value(channel, x, y);
+            }
+        }
+    }
+    let planes = Arc::new(planes);
+    for orientation in 1..=8u8 {
+        let version = 10 + u64::from(orientation);
+        let whole = GpuSource::planes(version, Arc::clone(&planes), base, crop, orientation)
+            .expect("a viewed source");
+        let stage = whole.stage();
+        let rect = [stage.0 / 2 - 50, stage.1 / 2 - 40, 100, 80];
+        let window = whole.window(rect).expect("a window");
+        assert_eq!(window.bytes(), u64::from(rect[2] * rect[3] * 12));
+        let origin = (rect[0] + 10, rect[1] + 8);
+        let drawn = paint(
+            &device,
+            &queue,
+            &mut pipeline,
+            &handing(Some(over(&cut(&window, origin, version))), Some(&window)),
+        );
+        pipeline.trim();
+        let expected: Vec<[u8; 3]> = (0..SIDE * SIDE)
+            .map(|index| {
+                let (x, y) = (origin.0 + index % SIDE, origin.1 + index / SIDE);
+                let (hx, hy) = viewed(orientation, (crop[2], crop[3]), x, y);
+                [0, 1, 2].map(|channel| {
+                    srgb::code(f64::from(value(channel, crop[0] + hx, crop[1] + hy)))
+                })
+            })
+            .collect();
+        assert_codes(&drawn, &expected);
+        assert_eq!(
+            diagnostics(&pipeline, ID).gpu_fallback,
+            None,
+            "{orientation}"
+        );
+    }
+    settle(&pipeline);
+}

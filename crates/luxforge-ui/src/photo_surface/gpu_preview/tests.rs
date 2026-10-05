@@ -9,7 +9,7 @@ use super::*;
 use iced::widget::shader::{Pipeline as _, Primitive as _, Viewport};
 use iced::{Rectangle, Size, Vector};
 use luxforge_reference::srgb;
-use luxforge_testbase::{wait_for, wait_until};
+use luxforge_testbase::wait_until;
 use std::time::Duration;
 
 /// The identity program: a pointwise colour program that returns its input.
@@ -455,40 +455,17 @@ fn a_device_without_fragment_storage_or_an_srgb_target_has_no_stage() {
 
 // ---- On a headless device ---------------------------------------------------------------------
 
-fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    let mut future = std::pin::pin!(future);
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    wait_for("the GPU request", || {
-        match future.as_mut().poll(&mut context) {
-            std::task::Poll::Ready(value) => Some(value),
-            std::task::Poll::Pending => None,
-        }
-    })
-}
-
 /// A device of this host's default adapter, or `None` after printing the skip.
 pub(super) fn headless(test: &str) -> Option<(wgpu::Device, wgpu::Queue)> {
     headless_with(test, wgpu::Limits::default())
 }
 
+/// [`headless`] at `limits`, through the one headless device the qualification code makes
+/// ([`super::headless::device`]).
 fn headless_with(test: &str, limits: wgpu::Limits) -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let Some(adapter) =
-        block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()
-    else {
-        eprintln!("skipped: no GPU adapter; {test} ran nothing and is not GPU evidence");
-        return None;
-    };
-    eprintln!("{test}: adapter {:?}", adapter.get_info());
-    let descriptor = wgpu::DeviceDescriptor {
-        required_limits: limits,
-        ..wgpu::DeviceDescriptor::default()
-    };
-    let device = block_on(adapter.request_device(&descriptor));
-    if device.is_err() {
-        eprintln!("skipped: no device for the adapter; {test} ran nothing and is not GPU evidence");
-    }
-    device.ok()
+    let (device, queue, adapter) = super::headless::device(test, limits)?;
+    eprintln!("{test}: adapter {adapter:?}");
+    Some((device, queue))
 }
 
 /// A pipeline counting into figures of its own, drawing to an sRGB target as the desktop's does.

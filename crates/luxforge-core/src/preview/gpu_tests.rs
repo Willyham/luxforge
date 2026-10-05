@@ -4,8 +4,8 @@
 use super::*;
 use crate::{
     AssetId, BASIC_EFFECT, Draft, DraftStamp, EntryId, Evaluation, GpuAnswer, GpuPlan, GpuPreview,
-    HistoryEntry, Layer, ModuleRegistry, ProxyBounds, RECIPE_FORMAT, Recipe, RenderContext,
-    Snapshot, SnapshotId, SourceImage,
+    GpuView, HistoryEntry, Layer, ModuleRegistry, ProxyBounds, RECIPE_FORMAT, Recipe,
+    RenderContext, Snapshot, SnapshotId, SourceImage,
     colour::srgb::decode_table,
     modules::{Processing, Stage},
     render::{gpu::plan_preview, tests::fitted_crop},
@@ -1492,7 +1492,7 @@ fn behind_detail_a_region_plan_holds_dehazes_stored_light() {
     );
     // The window planned on the owner, which the photo surface cuts from the source it holds, is
     // the one the CPU's reference render of the region's boundary at the source holds, its origin
-    // rounded down to the plan's anchor.
+    // moved by the plan's lead and rounded down to its multiple.
     job.viewport = Some(rect);
     let exact = job.evaluation.exact(&crate::Cancel::never()).unwrap();
     let cut = exact
@@ -1501,8 +1501,11 @@ fn behind_detail_a_region_plan_holds_dehazes_stored_light() {
     let anchor = plan.anchor();
     assert_eq!(
         anchor,
-        (64, 64),
-        "Presence's runs of 16 over its 4x reductions"
+        crate::GpuAnchor {
+            multiple: (64, 64),
+            lead: (300, 300)
+        },
+        "the drafted layer's three units, Texture's at nought, as a drag's shape holds them"
     );
     assert_eq!(
         request.window,
@@ -1517,7 +1520,10 @@ fn behind_detail_a_region_plan_holds_dehazes_stored_light() {
         )),
         "the window planned on the owner"
     );
-    assert_eq!((window.x0 % anchor.0, window.y0 % anchor.1), (0, 0));
+    assert_eq!(
+        (window.x0 % anchor.multiple.0, window.y0 % anchor.multiple.1),
+        (0, 0)
+    );
     let frame = exact
         .source_boundary(window, request.format)
         .expect("the window of the source");
@@ -1804,6 +1810,145 @@ fn behind_a_windowed_fit_proxy_a_plan_reads_the_exact_stages_light() {
     );
     assert!(!planned(&preview).approximate(), "the exact stage's light");
     window_estimate(&plan_of("set-basic", basic_drag()), "a Basic drag");
+}
+
+/// The committed `layers` over [`source`], evaluated in `context`, as a displayed stack's job is.
+fn committed(context: RenderContext, layers: Vec<Layer>) -> Evaluation {
+    let (job, _) = draft_job_in(context, source(), "set-basic", layers.clone(), layers, 0);
+    let evaluation = job.evaluation;
+    Evaluation::new(
+        evaluation.registry().clone(),
+        evaluation.context().clone(),
+        evaluation.source().clone(),
+        evaluation.entry().clone(),
+        evaluation.recipe().clone(),
+        None,
+    )
+}
+
+/// At Fit, where the view draws the output stage smaller than it is, a committed stack's picture
+/// at rest is planned process-first: the whole stack's plan at the exact stage from the source,
+/// over tiles that cover the output stage once, row by row, each with the window of the source it
+/// reads, anchored to the plan; reduced to the proxy frame's size by the proxy build's own area
+/// average. A view that draws the stage at its own size plans none, and a Presence stack's
+/// windows start on its anchor's multiples.
+#[test]
+fn a_picture_at_rest_is_planned_in_anchored_tiles_of_the_output_stage() {
+    for (what, layers, anchor) in [
+        (
+            "Basic",
+            vec![basic(json!({"exposure": 0.5}))],
+            crate::GpuAnchor::NONE,
+        ),
+        (
+            "Texture",
+            vec![Layer::new(crate::PRESENCE_EFFECT, json!({"texture": 30.0}))],
+            crate::GpuAnchor {
+                multiple: (16, 16),
+                lead: (60, 60),
+            },
+        ),
+    ] {
+        let evaluation = committed(RenderContext::new(), layers);
+        let rest = crate::render::gpu::plan_rest(&evaluation, GpuView::Fit(bounds())).unwrap();
+        let tiles = match rest.tiles {
+            Some(Ok(tiles)) => tiles,
+            other => panic!("{what}: {other:?}"),
+        };
+        assert_eq!(tiles.plan.anchor(), anchor, "{what}");
+        assert_eq!(
+            (tiles.output.width, tiles.output.height),
+            (WIDTH, HEIGHT),
+            "{what}"
+        );
+        let proxy = rest
+            .view
+            .boundary
+            .as_ref()
+            .and_then(|request| request.key.plan())
+            .expect("a proxy");
+        assert_eq!(tiles.view, (proxy.width, proxy.height), "{what}");
+        assert_eq!(tiles.across.first.len(), proxy.width as usize);
+        assert_eq!(tiles.down.first.len(), proxy.height as usize);
+        let area: u64 = tiles.tiles.iter().map(|tile| tile.rect.pixels()).sum();
+        assert_eq!(area, u64::from(WIDTH * HEIGHT), "{what}: every pixel once");
+        for (index, tile) in tiles.tiles.iter().enumerate() {
+            let (rect, window) = (tile.rect, tile.window);
+            assert!(
+                window.x0 <= rect.x0
+                    && window.y0 <= rect.y0
+                    && window.x1() >= rect.x1()
+                    && window.y1() >= rect.y1()
+                    && window.x1() <= WIDTH
+                    && window.y1() <= HEIGHT,
+                "{what}: tile {index}'s window {window:?} holds {rect:?}"
+            );
+            assert_eq!(
+                (window.x0 % anchor.multiple.0, window.y0 % anchor.multiple.1),
+                (0, 0),
+                "{what}: anchored"
+            );
+            if index > 0 {
+                let before = tiles.tiles[index - 1].rect;
+                assert!(
+                    (rect.y0, rect.x0) > (before.y0, before.x0),
+                    "{what}: row by row"
+                );
+            }
+        }
+    }
+    // A view that draws the stage at its own size: the view's plan is the picture at rest.
+    let evaluation = committed(RenderContext::new(), vec![basic(json!({"exposure": 0.5}))]);
+    let rest = crate::render::gpu::plan_rest(
+        &evaluation,
+        GpuView::Fit(ProxyBounds {
+            width: 2000,
+            height: 2000,
+        }),
+    )
+    .unwrap();
+    assert!(rest.tiles.is_none());
+}
+
+/// A picture at rest whose stack reads a global estimate the store does not hold yet — Dehaze's
+/// light, which a stack's exact phase stores — names `region-estimate`, and its job asks the
+/// worker to plan the tiles again: the exact phase's outcome carries them, read from the light it
+/// stored, and the owner plans them at once from then on.
+#[test]
+fn a_picture_at_rest_waits_for_the_light_its_exact_phase_stores() {
+    let context = RenderContext::new();
+    let layers = vec![Layer::new(crate::PRESENCE_EFFECT, json!({"dehaze": 40.0}))];
+    let evaluation = committed(context.clone(), layers.clone());
+    let rest = crate::render::gpu::plan_rest(&evaluation, GpuView::Fit(bounds())).unwrap();
+    assert!(
+        matches!(&rest.tiles, Some(Err(reason)) if reason.code() == "region-estimate"),
+        "{:?}",
+        rest.tiles
+    );
+    let mut job = PreviewJob::new(evaluation).unwrap();
+    job.proxy = Some(bounds());
+    job.analyse = true;
+    job.intent = PreviewIntent::Settle;
+    job.rest_bounds = Some(bounds());
+    let mut queue = PreviewQueue::default();
+    let generation = queue.request(job);
+    let exact = wait_for("the exact phase", || {
+        let result = queue.poll()?;
+        (result.generation == generation && result.phase() == PreviewPhase::Exact).then_some(result)
+    });
+    let PhaseOutcome::Exact(outcome) = exact.outcome else {
+        panic!("an exact phase");
+    };
+    assert!(outcome.result.is_ok());
+    let tiles = outcome.rest.expect("the tiles planned again");
+    assert!(
+        !tiles.plan.approximate(),
+        "the light the exact phase stored"
+    );
+    assert!(!tiles.tiles.is_empty());
+    let again = committed(context, layers);
+    let rest = crate::render::gpu::plan_rest(&again, GpuView::Fit(bounds())).unwrap();
+    assert!(matches!(rest.tiles, Some(Ok(_))), "{:?}", rest.tiles);
 }
 
 // The warm list over as many masked spatial layers as a recipe may hold.
