@@ -36,6 +36,9 @@ mod proxy;
 mod render;
 pub mod resources;
 mod source;
+/// The service that answers every pixel read off the catalog owner and renders an export's bands:
+/// the contract a host's GPU provider implements, and the reference renderer's own service.
+pub mod tiles;
 
 // The public surface: what the desktop, `luxforge-json`, `luxforge-net`, `luxforge-testkit`, xtask
 // and this crate's integration tests name through the crate root, and every type a public item's
