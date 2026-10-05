@@ -5,7 +5,7 @@
 //! plan, at another size.
 use super::{GpuAnswer, GpuPlan, GpuPreview, GpuView, plan_preview, plan_rest, plan_warm};
 use crate::{
-    AssetId, BASIC_EFFECT, Cancel, Draft, DraftStamp, EntryId, Evaluation, HistoryEntry, Layer,
+    AssetId, BASIC_EFFECT, Draft, DraftStamp, EntryId, Evaluation, HistoryEntry, Layer,
     ModuleRegistry, PreviewSource, ProxyBounds, ProxyPlan, RECIPE_FORMAT, Recipe, RenderContext,
     Snapshot, SnapshotId, SourceImage, modules::Stage, render::tests::fitted_crop,
 };
@@ -114,21 +114,22 @@ fn planned(preview: &GpuPreview) -> &GpuPlan {
     }
 }
 
-/// The proxy the preview worker's proxy phase renders `evaluation`'s stack at, at `bounds`: what
-/// the CPU path draws at that zoom.
-fn worker_proxy(evaluation: &Evaluation, bounds: ProxyBounds) -> ProxyPlan {
-    let exact = evaluation.exact(&Cancel::never()).expect("the exact stage");
-    let plan = exact
-        .proxy_plan(bounds)
-        .expect("a view below 100% has a proxy");
-    exact
-        .proxy_window(evaluation.registry(), evaluation.recipe(), plan)
-        .plan()
+/// The reduced stage the GPU plans `evaluation`'s stack at, at `bounds` ([`crate::gpu_fit_plan`]):
+/// the frame the view draws at that zoom.
+fn reduced_plan(evaluation: &Evaluation, bounds: ProxyBounds) -> ProxyPlan {
+    crate::gpu_fit_plan(
+        evaluation.registry(),
+        evaluation.recipe(),
+        evaluation.source().dimensions(),
+        bounds,
+    )
+    .expect("the stack compiles")
+    .expect("a view below 100% has a reduced stage")
 }
 
 /// Below 100% a drag is planned exactly as at Fit, at the displayed size of the whole stage: the
-/// plan addresses the proxy stage the CPU's proxy phase renders at those bounds, its output is the
-/// proxy frame the view draws, and its boundary is keyed by that proxy, holding no window of its
+/// plan addresses the reduced stage the GPU plans at those bounds, its output is the frame the view
+/// draws, and its boundary is keyed by that proxy, holding no window of its
 /// own and no region, at a magnification of one. Each percentage's key is its own, and the same
 /// percentage gives the same key whatever else the view does.
 #[test]
@@ -140,7 +141,7 @@ fn a_view_below_100_percent_is_planned_at_its_displayed_size_proxy() {
         let preview = plan_preview(&evaluation, &draft, GpuView::Fit(bounds)).unwrap();
         let plan = planned(&preview);
         let request = preview.boundary.clone().expect("a boundary");
-        let proxy = worker_proxy(&evaluation, bounds);
+        let proxy = reduced_plan(&evaluation, bounds);
         assert_eq!(
             (proxy.width, proxy.height),
             (bounds.width, bounds.height),
@@ -149,7 +150,7 @@ fn a_view_below_100_percent_is_planned_at_its_displayed_size_proxy() {
         assert_eq!(
             request.key.plan(),
             Some(proxy),
-            "{percent}%: the worker's proxy"
+            "{percent}%: the reduced stage"
         );
         let stage = Stage {
             width: proxy.width,
@@ -189,14 +190,14 @@ fn below_100_percent_a_crop_holds_the_window_its_proxy_reads() {
         vec![basic(json!({"exposure": 0.3})), crop],
     );
     let output = {
-        let exact = evaluation.exact(&Cancel::never()).expect("the exact stage");
-        exact.stage()
+        let stage = evaluation.compiled().expect("the stack compiles").stage();
+        (stage.width, stage.height)
     };
     for percent in BELOW {
         let bounds = displayed(output, percent);
         let preview = plan_preview(&evaluation, &draft, GpuView::Fit(bounds)).unwrap();
         let plan = planned(&preview);
-        let proxy = worker_proxy(&evaluation, bounds);
+        let proxy = reduced_plan(&evaluation, bounds);
         let window = proxy.window.expect("the crop's window");
         assert!(
             window.width < proxy.width && window.height < proxy.height,
@@ -236,7 +237,7 @@ fn the_resident_plan_and_warm_list_follow_a_view_below_100_percent() {
     let (dragged, draft) = drag(committed, vec![basic(json!({"exposure": 0.6}))]);
     for percent in BELOW {
         let bounds = displayed((WIDTH, HEIGHT), percent);
-        let proxy = worker_proxy(&stack, bounds);
+        let proxy = reduced_plan(&stack, bounds);
         let stage = Stage {
             width: proxy.width,
             height: proxy.height,
