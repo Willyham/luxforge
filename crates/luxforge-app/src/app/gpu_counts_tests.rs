@@ -332,8 +332,9 @@ fn a_presented_stack_whose_programs_are_compiling_is_the_references() {
     let (mut editor, catalog) = opened_on_the_gpu("counts-compiling");
     let log = attach_log(&mut editor);
     commit(&mut editor, 0.4);
+    // Presented, and its view plan handed to be drawn at rest once the release has settled.
     deliver_until(&mut editor, "the committed stack presented", |editor| {
-        editor.gpu.counts.is_some()
+        editor.gpu.counts.is_some() && editor.gpu_rest_plan().is_some()
     });
     let content = editor.presentation.content_serial;
     assert_eq!(editor.presentation.gpu_presented, Some(content));
