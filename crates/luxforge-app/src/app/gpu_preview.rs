@@ -816,6 +816,8 @@ pub(crate) struct GpuPreviews {
     /// The last boundary version handed out: each held boundary is derived once.
     versions: u64,
     warm: Option<GpuWarm>,
+    /// The compile thread's warm-up as the desktop follows it ([`super::gpu_warm`]).
+    pub(crate) warm_up: super::gpu_warm::WarmUpFollow,
     /// What a test reports for the surface, which no test draws.
     #[cfg(test)]
     pub(crate) surface: Option<SurfaceReport>,
@@ -2048,25 +2050,28 @@ impl Editor {
         });
     }
 
-    /// A committed stack's job carries the plans its gestures are likely to draw: hand their
-    /// sequences to the surface to compile before a drag begins.
-    pub(crate) fn gpu_warm_from(&mut self, plans: Option<&[luxforge_core::GpuPlan]>) {
+    /// A committed stack's job carries the plans its gestures are likely to draw, the first `open`
+    /// of them the open stack's and then the rest of the program set: hand their sequences to the
+    /// surface to compile, in that order, before a drag begins.
+    pub(crate) fn gpu_warm_from(&mut self, plans: Option<&[luxforge_core::GpuPlan]>, open: usize) {
         let Some(plans) = plans else {
             return;
         };
         // While a clipping overlay is shown the gestures' plans carry its marks.
         let clip = super::gpu_settle::clip_flags(&self.session.workspace);
-        let sequences: Vec<(Vec<GpuStep>, surface::BoundaryFormat)> = plans
-            .iter()
-            .filter_map(|plan| {
-                gpu_plan::plan_steps(plan).ok().map(|steps| {
-                    (
-                        super::gpu_settle::marked_steps(steps, plan, clip),
-                        gpu_plan::boundary_format(luxforge_core::BoundaryFormat::of(plan.linear)),
-                    )
-                })
-            })
-            .collect();
+        let mut open_sequences = 0;
+        let mut sequences: Vec<(Vec<GpuStep>, surface::BoundaryFormat)> = Vec::new();
+        for (index, plan) in plans.iter().enumerate() {
+            if let Ok(steps) = gpu_plan::plan_steps(plan) {
+                sequences.push((
+                    super::gpu_settle::marked_steps(steps, plan, clip),
+                    gpu_plan::boundary_format(luxforge_core::BoundaryFormat::of(plan.linear)),
+                ));
+            }
+            if index < open {
+                open_sequences = sequences.len();
+            }
+        }
         let same = self
             .gpu
             .warm
@@ -2078,9 +2083,9 @@ impl Editor {
         let version = self.gpu.warm.as_ref().map_or(1, |warm| warm.version() + 1);
         self.event(
             "gpu_preview_warm",
-            || json!({"version": version, "sequences": sequences.len()}),
+            || json!({"version": version, "sequences": sequences.len(), "open": open_sequences}),
         );
-        self.gpu.warm = Some(GpuWarm::new(version, sequences));
+        self.gpu.warm = Some(GpuWarm::new(version, sequences).with_open(open_sequences));
     }
 
     /// What the next tick asks the owner to plan its GPU preview for: at Fit and below 100%, a
@@ -2279,6 +2284,7 @@ pub(super) fn after_message(editor: &mut Editor, _: &super::Before) -> iced::Tas
     }
     editor.gpu_mark_at_rest();
     editor.gpu_follow_rest_drawn();
+    editor.gpu_follow_warm_up();
     editor.gpu_compute_grids()
 }
 

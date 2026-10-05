@@ -239,7 +239,13 @@ pub(crate) struct IdleWindow {
     pub(crate) drawn: u64,
     pub(crate) views: u64,
     pub(crate) cpu_ns: Option<u64>,
+    /// How long past its settle the window waited for the GPU stage's compiles to end.
+    pub(crate) compile_wait_ms: f64,
 }
+
+/// The most an idle check's settle is drawn out while the GPU stage still compiles: a warm-up in
+/// the background is work, whose end wakes the editor once, so the window opens after it.
+const IDLE_COMPILE_WAIT: Duration = Duration::from_secs(60);
 
 impl Evidence {
     /// Whether evidence's own tick and capture streams are suspended for a native idle probe.
@@ -3565,13 +3571,22 @@ impl Editor {
         let gpu = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
         let views = self.log.loop_timing.get().views;
         let Some(window) = observation.window else {
-            if now >= observation.settle_until {
+            // The settle lasts until the GPU stage has nothing left to compile too, at most
+            // [`IDLE_COMPILE_WAIT`] more.
+            let compiling = gpu.gpu_preview_compile_pending > 0
+                || self
+                    .gpu_warm_up_figures()
+                    .is_some_and(|warm_up| warm_up.running());
+            let settle_until = observation.settle_until;
+            if now >= settle_until && (!compiling || now >= settle_until + IDLE_COMPILE_WAIT) {
                 let window = IdleWindow {
                     started: now,
                     until: now + Duration::from_millis(observation.ms),
                     drawn: gpu.drawn_frames,
                     views,
                     cpu_ns: luxforge_core::resources::process_cpu_time_ns(),
+                    compile_wait_ms: now.saturating_duration_since(settle_until).as_secs_f64()
+                        * 1000.0,
                 };
                 if let Some(idle) = self.evidence.as_mut().and_then(|e| e.idle.as_mut()) {
                     idle.window = Some(window);
@@ -3597,6 +3612,7 @@ impl Editor {
         let detail = json!({
             "passed": passed,
             "settle_ms": observation.settle_ms,
+            "compile_wait_ms": window.compile_wait_ms,
             "window_ms": observation.ms,
             "drawn_frames_delta": drawn_delta,
             "views_delta": views_delta,
