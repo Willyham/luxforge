@@ -1037,7 +1037,6 @@ impl Editor {
         if self.presentation.compare_after.is_some() {
             surfaces.clipping = None;
             surfaces.coverage = None;
-            surfaces.region_clipping = None;
             surfaces.region_coverage = None;
         }
         surfaces.gpu = self.gpu_plan(surfaces.photo);

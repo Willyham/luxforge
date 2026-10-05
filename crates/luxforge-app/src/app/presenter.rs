@@ -17,7 +17,7 @@
 //! drawn over another. At 100% and above a mask's coverage may instead be a grid of the region the
 //! GPU draws ([`ViewRegion`]), laid over that region's frame.
 use super::preview::ViewRegion;
-use luxforge_ui::{Frame, RegionOverlay, RegionQuality};
+use luxforge_ui::{Frame, RegionOverlay};
 use std::sync::Arc;
 
 /// Every frame the canvas draws, with the versions that tell the surface which are new.
@@ -234,7 +234,6 @@ impl Presenter {
                     rect_of(region),
                     region.stage,
                     region.stage,
-                    RegionQuality::Exact,
                     region.content,
                     region.generation,
                 )

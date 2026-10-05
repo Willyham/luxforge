@@ -55,8 +55,7 @@ pub(crate) struct Surfaces<'a> {
     pub(crate) comparison: Option<(&'a luxforge_ui::Frame, f32)>,
     pub(crate) photo_content: Option<u64>,
     pub(crate) current_content: u64,
-    pub(crate) region: Option<&'a luxforge_ui::RegionFrame>,
-    pub(crate) region_clipping: Option<&'a luxforge_ui::RegionOverlay>,
+    /// A mask's coverage of the region the GPU draws at 100% and above, laid over that region.
     pub(crate) region_coverage: Option<&'a luxforge_ui::RegionOverlay>,
     /// The crop layer's input stage, drawn in place of the photograph while its draft is open.
     pub(crate) stage: Option<&'a luxforge_ui::Frame>,
@@ -111,9 +110,7 @@ impl Surfaces<'_> {
     /// photograph's frame alone fills the view's box. A GPU region plan — the GPU's picture of the
     /// view at 100% and above — is drawn through the view's own surface instead.
     pub(crate) fn whole_frame(&self) -> bool {
-        self.region.is_none()
-            && self.photo_content.is_none()
-            && self.gpu.is_none_or(|plan| plan.region.is_none())
+        self.photo_content.is_none() && self.gpu.is_none_or(|plan| plan.region.is_none())
     }
 }
 

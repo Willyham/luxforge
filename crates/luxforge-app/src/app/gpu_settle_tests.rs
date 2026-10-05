@@ -422,17 +422,13 @@ fn zoomed(editor: &mut Editor) {
 }
 
 /// The version of the CPU frame the percentage view draws the current content from: its whole
-/// frame of that content, or else its region of it.
+/// frame of that content.
 fn view_frame(editor: &Editor) -> Option<u64> {
     let surfaces = editor.surfaces();
-    if surfaces.photo_content == Some(surfaces.current_content) {
-        surfaces.photo.map(luxforge_ui::Frame::version)
-    } else {
-        surfaces
-            .region
-            .filter(|region| region.content_id == surfaces.current_content)
-            .map(|region| region.frame.version())
-    }
+    surfaces
+        .photo
+        .filter(|_| surfaces.photo_content == Some(surfaces.current_content))
+        .map(luxforge_ui::Frame::version)
 }
 
 /// At a percentage zoom the release's committed frame of the visible region replaces the GPU

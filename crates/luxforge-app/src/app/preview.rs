@@ -576,8 +576,6 @@ impl Presentation {
             photo: self.presenter.photo_for(self.presented_content),
             photo_content: self.presenter.full_content(),
             current_content: self.presented_content,
-            region: None,
-            region_clipping: None,
             region_coverage: self.presenter.region_coverage(self.presented_generation),
             stage: self.presenter.stage(),
             clipping: self.clipping(clipping),
