@@ -32,9 +32,16 @@
 //! A stream the GPU refuses or stops drawing is a gap naming why, and a stack whose export the
 //! export lane would hand the reference before any render had stored its Dehaze light says so.
 //!
-//! The histogram and clipping counts and samples are computed on the reference and recorded as not
-//! rendered by the GPU: their comparisons ([`histogram_kind`], [`sample_kind`]) take the GPU's
-//! output once the stage that renders it supplies it.
+//! **Samples** are the GPU's ([`sample_kind`]): each stack's output stage read at a 5 × 5 grid of
+//! points by the first of those tile workers, as `render.sample` reads a pixel through the
+//! desktop's — one call, its points one session — against the reference frame's bytes there by the
+//! display limit of the stack's class, and against the byte on screen there, the picture at rest
+//! at 100% drawn by the photo surface over a window around the point, which they must equal. A
+//! point the reference answered is a gap naming why.
+//!
+//! The histogram and clipping counts are computed on the reference and recorded as not rendered by
+//! the GPU: their comparison ([`histogram_kind`]) takes the GPU's output once the stage that
+//! renders it supplies it.
 //!
 //! It writes `cells.json` to `LUXFORGE_GPU_CORPUS_OUTPUT`, rewritten after every stack, and judges
 //! nothing: `cargo xtask gpu-qualification` holds every cell to its limit and writes the report. A
@@ -49,10 +56,10 @@ use crate::app::{
     gpu_preview::{derived_now, gpu_source_of, rest_now},
 };
 use luxforge_core::{
-    Cancel, Evaluation, GpuAnswer, GpuPreview, GpuView, PreviewRequest, ProxyBounds, Raster,
-    RenderOptions, RendererReason,
+    Cancel, ClientId, Evaluation, GpuAnswer, GpuPreview, GpuView, PreviewRequest, ProxyBounds,
+    Raster, Region, RenderOptions, RendererReason,
     analysis::Report,
-    tiles::{TileFallback, TileService},
+    tiles::{Answered as Drawn, ReadStage, ReadValues, TileCall, TileFallback, TileService},
 };
 use luxforge_reference::{
     preview_error::{self, Class, Rgb8, Statistics},
@@ -68,13 +75,14 @@ use std::path::{Path, PathBuf};
 const HISTOGRAM_NOT_RENDERED: &str = "the GPU does not render the histogram and clipping counts \
     yet: a GPU reduction over the full stage is stage 2's, and until it lands the counts come from \
     the reference renderer";
-/// Why samples are not compared on this branch.
-const SAMPLE_NOT_RENDERED: &str = "the GPU does not answer samples yet: a sample from a GPU tile \
-    render is stage 4's, and until it lands samples come from the reference renderer";
+/// The side of the window around a sampled point the picture at rest is drawn over at 100%, as a
+/// view panned to the point shows it, for the byte on screen there.
+const SAMPLE_WINDOW: u32 = 256;
 
 /// The two GPU tile workers the export kind streams each stack's output stage through, as the
 /// export lane streams an export, each on a device of its own on this host's adapter: the second
-/// draws every stream again, which must be the same bytes.
+/// draws every stream again, which must be the same bytes. The first also answers the sample kind's
+/// reads.
 struct Exporters {
     /// The adapter's backend and name.
     adapter: (String, String),
@@ -387,10 +395,11 @@ pub(crate) fn against_reference(test: &str) {
         settings.views,
         settings.kinds
     );
-    // The export kind's two GPU tile workers, on this host's adapter.
+    // The export and sample kinds' GPU tile workers, on this host's adapter.
     let exporters = settings
         .kinds
-        .contains(&Kind::Export)
+        .iter()
+        .any(|kind| matches!(kind, Kind::Export | Kind::Sample))
         .then(|| Exporters::new(test))
         .flatten();
     if let Some(exporters) = &exporters {
@@ -601,7 +610,30 @@ fn measure(
         let measured = match kind {
             Kind::PictureAtRest | Kind::PictureInMotion => continue,
             Kind::Histogram => histogram_kind(&reference, None)?,
-            Kind::Sample => sample_kind(&reference, None, class)?,
+            Kind::Sample => {
+                let measured = match exporters {
+                    Some(exporters) => {
+                        let gpu = gpu_source_of(1, evaluation.source())
+                            .ok_or("the photograph's source cannot be held on the GPU")?;
+                        let points = sample_points(stage);
+                        let read = sampled(
+                            &exporters.workers[0],
+                            opened.client,
+                            &evaluation,
+                            surface,
+                            &gpu,
+                            &points,
+                        )?;
+                        match read {
+                            Ok(answers) => sample_kind(&reference, Some(&answers), class)?,
+                            Err(reason) => gap(reason),
+                        }
+                    }
+                    None => gap("no adapter for the GPU tile workers"),
+                };
+                eprintln!("{cell}: sample: {measured}");
+                measured
+            }
             Kind::Export => {
                 let drawn = match exporters {
                     Some(exporters) => exported(exporters, &evaluation),
@@ -1063,9 +1095,139 @@ struct Answered {
     on_screen: Option<[u8; 3]>,
 }
 
+/// The GPU's answers at `points` of `evaluation`'s output stage, read by `worker` as
+/// `render.sample` reads a pixel through the desktop's tile worker — one call for all of them, one
+/// session — each with the byte on screen there: the picture at rest at 100% over a
+/// [`SAMPLE_WINDOW`] window around the point, as the editor draws a view showing it, the view plan
+/// over the window the view reads, drawn by `surface` from `gpu`. The outer `Err` is the harness's;
+/// the inner names why the GPU did not answer a point, a gap.
+fn sampled(
+    worker: &GpuTiles,
+    client: ClientId,
+    evaluation: &Evaluation,
+    surface: &mut HeadlessSurface,
+    gpu: &GpuSource,
+    points: &[[u32; 2]],
+) -> Result<Result<Vec<Answered>, String>, String> {
+    let (sender, answers) = std::sync::mpsc::channel();
+    let (done, finished) = std::sync::mpsc::sync_channel(1);
+    let (held, wanted) = (evaluation.clone(), points.to_vec());
+    worker.submit(TileCall::caller(
+        client,
+        Cancel::new(),
+        move |reads, cancel| {
+            let mut session = reads.session(&held, cancel);
+            for [x, y] in wanted {
+                let rect = Region {
+                    x0: x,
+                    y0: y,
+                    width: 1,
+                    height: 1,
+                };
+                let _ = sender.send(session.read(ReadStage::Output, rect, ReadValues::Codes)?);
+            }
+            Ok(Value::Null)
+        },
+        move |result| {
+            let _ = done.send(result);
+        },
+    ));
+    finished
+        .recv_timeout(luxforge_testbase::HANG)
+        .map_err(|_| "the tile worker did not answer the samples".to_owned())?
+        .map_err(|error| format!("the samples: {error}"))?;
+    let read: Vec<_> = answers.try_iter().collect();
+    if read.len() != points.len() {
+        return Err(format!(
+            "{} answers for {} points",
+            read.len(),
+            points.len()
+        ));
+    }
+    let stage = read
+        .first()
+        .map(|answer| (answer.stage.width, answer.stage.height))
+        .ok_or("no points")?;
+    let mut answered = Vec::with_capacity(points.len());
+    for ([x, y], answer) in points.iter().zip(read) {
+        if answer.answered != Drawn::gpu() {
+            let reason = answer
+                .answered
+                .reason
+                .as_ref()
+                .map_or("no reason", TileFallback::code);
+            return Ok(Err(format!(
+                "{reason}: the reference answered the sample at ({x}, {y})"
+            )));
+        }
+        let code = answer
+            .code(*x, *y)
+            .ok_or_else(|| format!("no code at ({x}, {y})"))?;
+        answered.push(Answered {
+            rgb: [code[0], code[1], code[2]],
+            on_screen: on_screen(surface, evaluation, gpu, stage, [*x, *y])?,
+        });
+    }
+    Ok(Ok(answered))
+}
+
+/// The byte the picture at rest shows at `point` at 100%, in a view of a [`SAMPLE_WINDOW`] window
+/// around it: the view plan the stack's job plans there over the window the view reads, drawn by
+/// `surface` from `gpu`; `None` where the editor would not draw it on the GPU.
+fn on_screen(
+    surface: &mut HeadlessSurface,
+    evaluation: &Evaluation,
+    gpu: &GpuSource,
+    (width, height): (u32, u32),
+    [x, y]: [u32; 2],
+) -> Result<Option<[u8; 3]>, String> {
+    let side = |length: u32| SAMPLE_WINDOW.min(length);
+    let origin = |at: u32, length: u32| {
+        at.saturating_sub(side(length) / 2)
+            .min(length - side(length))
+    };
+    let rect = Region {
+        x0: origin(x, width),
+        y0: origin(y, height),
+        width: side(width),
+        height: side(height),
+    };
+    let view = GpuView::Region {
+        rect,
+        magnification: 1.0,
+    };
+    let rest = luxforge_core::qualification::rest_plan(evaluation, view)
+        .map_err(|error| error.to_string())?;
+    let GpuPreview {
+        answer: GpuAnswer::Plan(plan),
+        boundary: Some(request),
+        ..
+    } = rest.view
+    else {
+        return Ok(None);
+    };
+    let Ok((boundary, origin, grid)) = derived_now(gpu, &plan, &request, 1) else {
+        return Ok(None);
+    };
+    let region = request.key.region();
+    let Ok(converted) = surface_plan_over(&plan, boundary, origin, grid.as_ref(), region) else {
+        return Ok(None);
+    };
+    let Ok(drawn) = surface.draw(gpu, &converted) else {
+        return Ok(None);
+    };
+    let at = region.ok_or("a view at 100% draws a region")?;
+    let index = ((y - at.y0) * drawn.size.0 + (x - at.x0)) as usize;
+    let code = drawn
+        .codes
+        .get(index)
+        .ok_or_else(|| format!("no drawn byte at ({x}, {y}) of {at:?}"))?;
+    Ok(Some([code[0], code[1], code[2]]))
+}
+
 /// Samples at [`sample_points`]: the reference frame's bytes there, and the GPU's `gpu` answers
-/// against them and against the bytes on screen when a stage supplies them, by the display limit of
-/// `class` over the samples. Without them the kind is not rendered by the GPU.
+/// against them and against the bytes on screen where a view draws them, by the display limit of
+/// `class` over the samples. Without answers the kind is not rendered by the GPU.
 fn sample_kind(
     reference: &Raster,
     gpu: Option<&[Answered]>,
@@ -1084,7 +1246,7 @@ fn sample_kind(
     let Some(gpu) = gpu else {
         return Ok(json!({
             "status": "not-rendered",
-            "reason": SAMPLE_NOT_RENDERED,
+            "reason": "no GPU answers were read",
             "points": points,
             "reference": bytes,
         }));
