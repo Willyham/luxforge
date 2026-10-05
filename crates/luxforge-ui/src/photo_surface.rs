@@ -118,7 +118,7 @@ pub use gpu_preview::{
     GPU_PREVIEW_BUDGET, GpuBoundary, GpuChange, GpuFallback, GpuPlan, GpuProgram, GpuRegion,
     GpuRest, GpuSource, GpuStageState, GpuStep, GpuTail, GpuWarm, MaskedColour, OutputEncoding,
     PIPELINE_CACHE, PRELUDE, PositionMap, REST_TILES_PER_FRAME, REST_VIEW_PIXELS, Reduction,
-    RestFigures, RestReduction, SourceFigures, SourceKind, TexelMap, TickCounts,
+    RestFigures, RestReduction, SourceFigures, SourceKind, TexelMap, TickCounts, WarmUpFigures,
     install_output_encoding, output_encoding, refuse_gpu_stage, validate_step,
 };
 
@@ -258,6 +258,7 @@ impl SurfaceFigures {
             overall.gpu_preview_compile_pending,
             overall.gpu_preview_warmed,
         ) = self.preview.compile_pending();
+        overall.gpu_warm_up = self.preview.warm_up();
         overall
     }
 }
@@ -344,6 +345,12 @@ pub fn surface_retirement_pending() -> bool {
 /// comes or changes ([`GpuStageState`]).
 pub fn gpu_stage() -> GpuStageState {
     process_figures().preview.stage_state()
+}
+
+/// The compile thread's warm-up running, or its last ([`WarmUpFigures`]), read live: one lock, no
+/// other diagnostic, so the desktop can follow it after every message.
+pub fn gpu_warm_up() -> Option<WarmUpFigures> {
+    process_figures().preview.warm_up()
 }
 
 /// A snapshot of actual texture work and draw encoding, distinct from desktop frame adoption.
@@ -480,6 +487,8 @@ pub struct SurfaceDiagnostics {
     pub gpu_preview_compile_pending: u64,
     /// The newest warm list's version the GPU stage has queued ([`PhotoSurface::gpu_warm`]).
     pub gpu_preview_warmed: Option<u64>,
+    /// The compile thread's warm-up running, or its last: read live, as the compile figures are.
+    pub gpu_warm_up: Option<WarmUpFigures>,
     /// Whether the GPU stage can draw at all on the pipeline's device ([`gpu_stage`]).
     pub gpu_stage: GpuStageState,
     /// The prepared source the pipeline holds on the GPU, which every derived boundary is drawn
@@ -1754,14 +1763,13 @@ impl shader::Primitive for PhotoPrimitive {
             }
         }
         pipeline.generate_mips(device, queue, &mut surface, drawn);
+        // The source every derived boundary is drawn from, before any plan derives one: held for
+        // every surface, a frame's rows of it written.
+        pipeline.fit_source(device, queue, self.source.as_ref());
         // The GPU stage evaluates a plan into its own slot, or names why this frame is the CPU's;
         // without a plan it releases the slot, unless a dissolve into a frame already in its
         // texture keeps it for the GPU frame it dissolves from. A dissolve runs beside a plan only
         // while the plan is held behind the CPU frame: a plan drawn cancels it.
-        pipeline.warm_gpu(device, self.gpu_options.warm.as_ref());
-        // The source every derived boundary is drawn from, before any plan derives one: held for
-        // every surface, a frame's rows of it written.
-        pipeline.fit_source(device, queue, self.source.as_ref());
         let dissolve = self.dissolve.filter(|frame| {
             self.dissolve_ready(&surface, frame.dissolve.to)
                 && (self.gpu.is_none() || self.gpu_options.hold)
@@ -1803,6 +1811,9 @@ impl shader::Primitive for PhotoPrimitive {
             (None, _) => None,
         };
         surface.rest_frame = surface.rest_dissolving(now);
+        // The warm list after the frame's own plan and the picture at rest have asked for theirs,
+        // so the compile thread takes the picture on screen's sequences first.
+        pipeline.warm_gpu(device, self.gpu_options.warm.as_ref());
         surface.gpu_tag = self.gpu.as_ref().and(self.gpu_options.tag);
         // The frame a gesture's tick drew is counted, the counts in motion; the picture at rest's
         // tiles were counted as they were drawn. Both are read live by the desktop.
