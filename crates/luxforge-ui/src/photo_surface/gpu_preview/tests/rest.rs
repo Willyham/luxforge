@@ -141,7 +141,10 @@ fn a_picture_at_rest_is_drawn_in_tiles_and_reduced_to_the_view() {
     // Its tiles' counts are the whole stage's, every pixel once, exactly the reference's.
     let counts = rest_counts(&device, &pipeline, 1);
     assert_eq!(counts.pixels, u64::from(width * height));
-    assert_eq!(compared(&counts), reference_counts(&held));
+    assert_eq!(
+        compared(&counts),
+        bins_and_counters(&reference_counts(&held))
+    );
     // Drawn again, the same bytes, and no tile drawn again.
     let again = paint(&device, &queue, &mut pipeline, &primitive);
     assert_eq!(again, drawn);
@@ -241,11 +244,19 @@ fn reference_counts(codes: &[[u8; 3]]) -> tolerance::Counts {
     tolerance::Counts::of(&rgba, 4)
 }
 
-/// `counts` as the independent comparison holds them.
-fn compared(counts: &Counts) -> tolerance::Counts {
-    tolerance::Counts {
-        bins: [counts.r, counts.g, counts.b],
-        clipping: [
+/// The bins and counters of `counts`, the GPU's, which carry no luminance histogram.
+type Compared = ([[u64; 256]; 3], [u64; 11]);
+
+/// The bins and counters of the independent comparison's counts.
+fn bins_and_counters(counts: &tolerance::Counts) -> Compared {
+    (counts.bins, counts.clipping)
+}
+
+/// `counts` as the independent comparison holds them: their bins and counters.
+fn compared(counts: &Counts) -> Compared {
+    (
+        [counts.r, counts.g, counts.b],
+        [
             counts.r0,
             counts.g0,
             counts.b0,
@@ -258,7 +269,7 @@ fn compared(counts: &Counts) -> tolerance::Counts {
             counts.all_highlight,
             counts.both,
         ],
-    }
+    )
 }
 
 /// The counts `pipeline`'s surface [`ID`] holds of its picture at rest of `version`, once read
@@ -476,7 +487,7 @@ fn tiles_drawn_for_their_counts_alone_count_the_stage_and_draw_nothing() {
         assert!(frames < 6, "the tiles were never all drawn: {figures:?}");
     }
     assert_eq!(frames, 6, "one tile a frame");
-    let expected = reference_counts(&held_codes(&rgba));
+    let expected = bins_and_counters(&reference_counts(&held_codes(&rgba)));
     let counts = rest_counts(&device, &pipeline, 1);
     assert_eq!(compared(&counts), expected);
     let mut surface = HeadlessSurface::new(&device, &queue);
@@ -562,7 +573,10 @@ fn a_gestures_tick_is_counted_once_from_the_frame_it_drew() {
             CountsOutcome::Failed(error) => panic!("no counts: {error}"),
         }
     });
-    assert_eq!(compared(&counts), reference_counts(&codes));
+    assert_eq!(
+        compared(&counts),
+        bins_and_counters(&reference_counts(&codes))
+    );
     // Drawn again, the same tick is not counted again.
     paint(&device, &queue, &mut pipeline, &drawn);
     assert!(matches!(

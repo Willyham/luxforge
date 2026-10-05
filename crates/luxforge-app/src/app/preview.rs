@@ -2887,6 +2887,14 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
     if editor.preview_wake_needed() {
         subscriptions.push(waker::subscription());
     }
+    // A stack the GPU presented waiting on its compile is looked at again at the `compiling`
+    // threshold, once, unless the compile thread's wake comes first and ends the wait.
+    if editor.gpu_compile_deadline() {
+        subscriptions.push(
+            iced::time::every(crate::state::status::COMPILING_AFTER)
+                .map(|_| Message::Preview(PreviewMessage::Poll)),
+        );
+    }
     if editor.view_plan.quiet_since.is_some() && !editor.view_plan.quiet_settle_requested {
         subscriptions.push(
             iced::time::every(Duration::from_millis(25))
