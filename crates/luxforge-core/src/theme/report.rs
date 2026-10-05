@@ -1,7 +1,8 @@
 //! What resolving a theme did: which roles it gave and which were derived, each ink moved to its
 //! floor, each derived tier that stopped short, the surround and rail backdrop before and after
-//! neutralising, and how close the accent sits to a reserved colour.
-use super::{Rgba, Token};
+//! neutralising, and how close the accent sits to a reserved colour. A theme read from an Omarchy
+//! folder also says what the folder held and how its palette became roles ([`OmarchyReport`]).
+use super::{Mode, Rgba, Token, omarchy};
 use serde::{Deserialize, Serialize};
 
 /// A resolved theme's report, returned with it by the API.
@@ -23,6 +24,10 @@ pub struct ThemeReport {
     /// The rail backdrop before and after it was held to the chroma bound.
     pub rail_backdrop: Neutralised,
     pub accent: AccentNote,
+    /// What an Omarchy theme's files held and how they became roles; absent for every other
+    /// theme. Resolving never sets it: the reader of the folder does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omarchy: Option<OmarchyReport>,
 }
 
 impl ThemeReport {
@@ -117,4 +122,64 @@ pub struct AccentNote {
     pub distance: f64,
     /// Whether the distance is under the note's threshold.
     pub close: bool,
+}
+
+/// How an Omarchy theme's palette became a Luxforge theme's roles
+/// (`docs/design/ui-themes.md#what-luxforge-reads`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OmarchyReport {
+    /// Which of Omarchy's forms the palette was in.
+    pub form: omarchy::Form,
+    pub mode: Mode,
+    /// How Omarchy's precedence decided the mode.
+    pub mode_source: omarchy::ModeSource,
+    /// Each role an Omarchy key gave, in the role table's order, with the value Omarchy's resolver
+    /// gives the key: the role before any move to its floor or to the chroma bound.
+    pub roles: Vec<OmarchyRole>,
+    /// Each role an Omarchy key could give that was left to derive instead, and why.
+    pub derived: Vec<OmarchyDerived>,
+    /// Every key and value the theme's files hold that its palette does not use, in the files'
+    /// order. The palette's other colours, its named ones among them, are never read.
+    pub unused: Vec<OmarchyUnused>,
+}
+
+/// One role and the Omarchy key it came from.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OmarchyRole {
+    pub role: Token,
+    pub key: String,
+    pub value: Rgba,
+}
+
+/// A role an Omarchy key could give, derived instead.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OmarchyDerived {
+    pub role: Token,
+    pub key: String,
+    pub value: Rgba,
+    pub reason: DerivedReason,
+}
+
+/// Why an Omarchy key's value was not taken as its role.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DerivedReason {
+    /// `lighter_background` equals the background, as it does for every Omarchy 3 palette, so it
+    /// is no raised surface: the control derives from the background.
+    EqualsBackground,
+}
+
+/// A key and value an Omarchy theme's file holds that its palette does not use.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OmarchyUnused {
+    pub file: String,
+    /// The key, dotted from the file's root.
+    pub key: String,
+    /// A string's text, or any other value as the file writes it.
+    pub value: String,
+    pub reason: omarchy::UnusedReason,
 }

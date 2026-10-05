@@ -3,7 +3,7 @@
 //! refusal by name, and no theme method touching a photograph's history. The store's own rules
 //! are the library's tests (`theme/library_tests.rs`).
 use super::*;
-use crate::theme::{LUXFORGE_DARK_ID, Roles, ThemeDocument, Tokens, luxforge_dark};
+use crate::theme::{LUXFORGE_DARK_ID, Roles, ThemeDocument, Tokens, luxforge_dark, omarchy};
 use luxforge_testbase::paths::{jpeg as fixture, temp_dir};
 use std::fs;
 
@@ -116,6 +116,17 @@ fn import(content: &str, request_id: &str) -> Value {
     json!({"format": "luxforge", "content": content, "mutation": mutation(request_id)})
 }
 
+/// The built-in themes' names, in their order: Luxforge Dark, then the bundled Omarchy themes.
+const BUILT_IN: [&str; 7] = [
+    "Luxforge Dark",
+    "Tokyo Night",
+    "Catppuccin",
+    "Catppuccin Latte",
+    "Gruvbox",
+    "Nord",
+    "Everforest",
+];
+
 const METHODS: [&str; 6] = [
     "theme.list",
     "theme.read",
@@ -150,7 +161,7 @@ fn schema_list_lists_every_theme_method_and_the_mutating_ones_take_the_request_e
     };
     assert_eq!(
         parameters("theme.import"),
-        ["format", "content", "files", "name"]
+        ["format", "content", "files", "folder", "name"]
     );
     assert_eq!(parameters("theme.delete"), ["theme_id"]);
     assert!(parameters("preferences.set").contains(&"theme".to_owned()));
@@ -230,9 +241,9 @@ fn an_import_is_listed_chosen_announced_and_read_back_and_a_retry_changes_nothin
         .iter()
         .map(|theme| theme["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["Luxforge Dark", "Night"]);
-    assert_eq!(listed["themes"][1]["built_in"], false);
-    assert_eq!(listed["themes"][1]["origin"], json!({"kind": "luxforge"}));
+    assert_eq!(names, [BUILT_IN.as_slice(), &["Night"]].concat());
+    assert_eq!(listed["themes"][7]["built_in"], false);
+    assert_eq!(listed["themes"][7]["origin"], json!({"kind": "luxforge"}));
 
     let read = harness.ok("read", "theme.read", json!({"theme_id": id}));
     assert_eq!(read["theme"]["source"], json!({"Night.lftheme": text}));
@@ -365,9 +376,9 @@ fn every_refusal_is_by_name_and_changes_nothing() {
         ),
         (
             "preferences.set",
-            json!({"theme": "omarchy.tokyo-night"}),
+            json!({"theme": "omarchy.kanagawa"}),
             "validation",
-            "unknown theme omarchy.tokyo-night".to_owned(),
+            "unknown theme omarchy.kanagawa".to_owned(),
         ),
         (
             "theme.import",
@@ -403,9 +414,29 @@ fn every_refusal_is_by_name_and_changes_nothing() {
         (
             "theme.import",
             json!({"format": "omarchy", "files": {"colors.toml": "accent = \"#7aa2f7\""},
-                   "mutation": mutation("omarchy")}),
+                   "folder": "night", "mutation": mutation("omarchy")}),
             "unsupported-input",
-            "format omarchy: this build has no Omarchy theme reader yet".to_owned(),
+            "colors.toml has no background".to_owned(),
+        ),
+        (
+            "theme.import",
+            json!({"format": "omarchy", "files": {"neovim.lua": ""}, "folder": "night",
+                   "mutation": mutation("omarchy-file")}),
+            "validation",
+            "\"neovim.lua\" is not read".to_owned(),
+        ),
+        (
+            "theme.import",
+            json!({"format": "luxforge", "content": text, "folder": "night",
+                   "mutation": mutation("luxforge-folder")}),
+            "validation",
+            "format luxforge takes no folder".to_owned(),
+        ),
+        (
+            "theme.delete",
+            json!({"theme_id": "omarchy.nord", "mutation": mutation("delete-nord")}),
+            "validation",
+            "Nord is built in and cannot be deleted".to_owned(),
         ),
         (
             "theme.import",
@@ -496,4 +527,330 @@ fn no_theme_method_changes_an_asset_revision() {
             assert!(event.get("asset_id").is_none_or(Value::is_null), "{event}");
         }
     }
+}
+
+// Omarchy themes.
+
+/// A synthetic Omarchy theme folder of `theme/omarchy/testdata`, by name.
+fn synthetic(name: &str) -> std::collections::BTreeMap<String, String> {
+    omarchy::tests::synthetic_folders()
+        .into_iter()
+        .find(|(folder, _)| folder == name)
+        .unwrap()
+        .1
+}
+
+/// Each synthetic folder through `theme.inspect` gives the roles Omarchy's resolver gives it, and
+/// its report; or its refusal by name. Nothing is stored.
+#[test]
+fn synthetic_omarchy_folders_give_their_roles_and_report_through_inspect() {
+    let harness = Harness::start("omarchy-inspect");
+    for (folder, files) in omarchy::tests::synthetic_folders() {
+        let params = json!({"format": "omarchy", "files": files, "folder": folder});
+        if folder.starts_with("brightness-") {
+            // A mid grey with near-black text, which no lightness brings to 7:1.
+            let (code, message) = harness.refused("theme.inspect", params);
+            assert_eq!(code, "validation", "{folder}");
+            assert!(
+                message.starts_with("text #101010 cannot reach 7:1"),
+                "{message}"
+            );
+            continue;
+        }
+        let answer = harness.ok(&folder, "theme.inspect", params);
+        let palette = omarchy::read(&files).unwrap();
+        let theme = &answer["theme"];
+        let report = &answer["report"]["omarchy"];
+        assert_eq!(theme["report"], answer["report"]);
+        assert_eq!(
+            theme["origin"],
+            json!({"kind": "omarchy", "folder": folder, "form": palette.form.as_str()})
+        );
+        assert_eq!(report["form"], palette.form.as_str());
+        assert_eq!(report["mode_source"], json!(palette.mode_source));
+        assert_eq!(theme["mode"], json!(palette.mode));
+        let control = palette.lighter_background != palette.background;
+        let mut roles = vec![
+            json!({"role": "surround", "key": "dark_background",
+                   "value": palette.dark_background.to_string()}),
+            json!({"role": "background", "key": "background",
+                   "value": palette.background.to_string()}),
+        ];
+        if control {
+            roles.push(json!({"role": "control", "key": "lighter_background",
+                              "value": palette.lighter_background.to_string()}));
+        }
+        roles.push(json!({"role": "text", "key": "foreground",
+                          "value": palette.foreground.to_string()}));
+        roles.push(json!({"role": "accent", "key": "accent",
+                          "value": palette.accent.to_string()}));
+        assert_eq!(report["roles"], json!(roles), "{folder}");
+        assert_eq!(
+            theme["roles"]["control"],
+            if control {
+                json!(palette.lighter_background.to_string())
+            } else {
+                Value::Null
+            },
+            "{folder}"
+        );
+        assert_eq!(theme["roles"]["text"], palette.foreground.to_string());
+        assert_eq!(
+            report["unused"].as_array().unwrap().len(),
+            palette.unused.len()
+        );
+        assert_eq!(
+            report["derived"].as_array().unwrap().len(),
+            usize::from(!control)
+        );
+    }
+    assert!(!harness.library().exists(), "an inspection stores nothing");
+}
+
+/// Every way an Omarchy folder cannot be read is refused by name through `theme.inspect` and
+/// `theme.import`, with the reader's coded error as data, and nothing is stored.
+#[test]
+fn an_unreadable_omarchy_folder_is_refused_by_name() {
+    let harness = Harness::start("omarchy-refused");
+    const BASE: &str = "background = \"#1b1f27\"\nforeground = \"#c9ced8\"\n";
+    let colors = |text: &str| json!({"colors.toml": text});
+    let alacritty = "[colors.normal]\nblack = \"#000000\"\nred = \"#ff0000\"\n";
+    for (files, code, message, data) in [
+        (
+            colors(&format!("{BASE}accent = \"#5e9ce0\"\nred = \"ff0000\"\n")),
+            "unsupported-input",
+            "colors.toml: red is \"ff0000\", not a #rrggbb colour",
+            json!({"code": "not-hex", "file": "colors.toml", "key": "red", "value": "ff0000"}),
+        ),
+        (
+            colors(&format!(
+                "{BASE}accent = \"rgba(33ccffee) rgba(00ff99ee) 45deg\"\n"
+            )),
+            "unsupported-input",
+            "colors.toml: accent is \"rgba(33ccffee) rgba(00ff99ee) 45deg\"",
+            json!({"code": "not-hex", "file": "colors.toml", "key": "accent",
+                   "value": "rgba(33ccffee) rgba(00ff99ee) 45deg"}),
+        ),
+        (
+            colors(&format!("{BASE}accent = #5e9ce0\n")),
+            "unsupported-input",
+            "colors.toml is not TOML at line 3, column 10",
+            json!({"code": "malformed-toml", "file": "colors.toml", "line": 3, "column": 10,
+                   "message": "string values must be quoted, expected literal string"}),
+        ),
+        (
+            colors("foreground = \"#c9ced8\"\naccent = \"#5e9ce0\"\n"),
+            "unsupported-input",
+            "colors.toml has no background",
+            json!({"code": "missing-key", "file": "colors.toml", "key": "background"}),
+        ),
+        (
+            colors("background = \"#1b1f27\"\naccent = \"#5e9ce0\"\n"),
+            "unsupported-input",
+            "colors.toml has no foreground",
+            json!({"code": "missing-key", "file": "colors.toml", "key": "foreground"}),
+        ),
+        (
+            colors(&format!("{BASE}blue = \"#5e9ce0\"\n")),
+            "unsupported-input",
+            "colors.toml has no accent",
+            json!({"code": "missing-key", "file": "colors.toml", "key": "accent"}),
+        ),
+        (
+            colors(&format!("{BASE}accent = \"#5e9ce0\"\nmode = \"auto\"\n")),
+            "unsupported-input",
+            "colors.toml: mode is \"auto\", not \"light\" or \"dark\"",
+            json!({"code": "invalid-mode", "file": "colors.toml", "key": "mode",
+                   "value": "auto"}),
+        ),
+        (
+            json!({"alacritty.toml": alacritty}),
+            "unsupported-input",
+            "alacritty.toml has no colors.normal.green",
+            json!({"code": "missing-key", "file": "alacritty.toml",
+                   "key": "colors.normal.green"}),
+        ),
+        (
+            json!({"light.mode": ""}),
+            "unsupported-input",
+            "the theme has neither colors.toml nor alacritty.toml",
+            json!({"code": "no-palette"}),
+        ),
+        (
+            json!({"colors.toml": format!("{BASE}accent = \"#5e9ce0\"\n"), "README.md": "x"}),
+            "validation",
+            "\"README.md\" is not read; an Omarchy theme is read from colors.toml, \
+             alacritty.toml and light.mode only",
+            json!({"code": "file-not-allowed", "file": "README.md"}),
+        ),
+    ] {
+        for (method, params) in [
+            (
+                "theme.inspect",
+                json!({"format": "omarchy", "files": files, "folder": "broken"}),
+            ),
+            (
+                "theme.import",
+                json!({"format": "omarchy", "files": files, "folder": "broken",
+                       "mutation": mutation("broken")}),
+            ),
+        ] {
+            let failure = harness.send("refused", method, params).error.unwrap();
+            assert_eq!(failure.code, code, "{}", failure.message);
+            assert!(failure.message.starts_with(message), "{}", failure.message);
+            assert_eq!(failure.data, Some(data.clone()), "{message}");
+        }
+    }
+    // A file past 64 KiB, and a folder with neither a folder name nor a name.
+    let oversized = format!("{BASE}accent = \"#5e9ce0\"\n{}", " ".repeat(64 * 1024));
+    let (code, message) = harness.refused(
+        "theme.inspect",
+        json!({"format": "omarchy", "files": {"colors.toml": oversized}, "folder": "big"}),
+    );
+    assert_eq!(code, "resource-limit");
+    assert!(message.starts_with("file \"colors.toml\" is "), "{message}");
+    let (code, message) = harness.refused(
+        "theme.inspect",
+        json!({"format": "omarchy", "files": colors(&format!("{BASE}accent = \"#5e9ce0\"\n"))}),
+    );
+    assert_eq!(
+        (code.as_str(), message.as_str()),
+        (
+            "validation",
+            "format omarchy takes the theme folder's name as folder, or a name for the theme"
+        )
+    );
+    assert!(!harness.library().exists(), "nothing was stored");
+}
+
+#[test]
+fn an_omarchy_import_is_listed_and_read_back_with_its_source_and_report() {
+    let harness = Harness::start("omarchy-round-trip");
+    let files = synthetic("omarchy4");
+    let params = json!({"format": "omarchy", "files": files, "folder": "deep-sea"});
+    let inspected = harness.ok("inspect", "theme.inspect", params.clone());
+    let mut import = params;
+    import["mutation"] = mutation("import");
+    let imported = harness.ok("import", "theme.import", import);
+    assert_eq!(imported["report"], inspected["report"]);
+    assert_eq!(imported["theme"]["name"], "Deep Sea");
+    let id = imported["theme"]["id"].as_str().unwrap().to_owned();
+
+    let listed = harness.ok("list", "theme.list", json!({}));
+    let row = &listed["themes"][BUILT_IN.len()];
+    assert_eq!(row["id"], id.as_str());
+    assert_eq!(
+        row["origin"],
+        json!({"kind": "omarchy", "folder": "deep-sea", "form": "omarchy4"})
+    );
+    assert_eq!(row["built_in"], false);
+    assert_eq!(row["report"]["unused"], 3);
+    assert_eq!(
+        row["report"]["derived"],
+        json!(imported["report"]["derived"].as_array().unwrap().len())
+    );
+
+    let read = harness.ok("read", "theme.read", json!({"theme_id": id}));
+    assert_eq!(read["theme"]["source"], json!(files));
+    assert_eq!(read["theme"]["report"], imported["report"]);
+    assert_eq!(read["theme"]["report"]["omarchy"]["form"], "omarchy4");
+    assert_eq!(
+        read["theme"]["report"]["omarchy"]["unused"][0]["key"],
+        "hyprland_active_border"
+    );
+    let set = harness.ok("choose", "preferences.set", json!({"theme": id}));
+    assert_eq!(set["theme"], id.as_str());
+}
+
+#[test]
+fn the_bundled_themes_are_listed_after_luxforge_dark_and_can_be_chosen_but_not_taken() {
+    let harness = Harness::start("bundled");
+    let listed = harness.ok("list", "theme.list", json!({}));
+    let rows = listed["themes"].as_array().unwrap();
+    let names: Vec<&str> = rows
+        .iter()
+        .map(|row| row["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, BUILT_IN);
+    for (row, bundled) in rows[1..].iter().zip(omarchy::BUNDLED) {
+        assert_eq!(row["id"], bundled.id());
+        assert_eq!(row["built_in"], true);
+        assert_eq!(
+            row["origin"],
+            json!({"kind": "omarchy", "folder": bundled.slug, "form": "omarchy4",
+                   "commit": omarchy::OMARCHY_COMMIT})
+        );
+        let read = harness.ok("read", "theme.read", json!({"theme_id": bundled.id()}));
+        assert_eq!(
+            read["theme"]["source"],
+            json!({"colors.toml": bundled.colors_toml})
+        );
+        let palette = bundled.read().unwrap();
+        let roles = &read["theme"]["report"]["omarchy"]["roles"];
+        assert_eq!(roles[1]["value"], palette.background.to_string());
+        assert_eq!(
+            read["theme"]["roles"]["text"],
+            palette.foreground.to_string()
+        );
+        assert_eq!(read["theme"]["roles"]["accent"], palette.accent.to_string());
+        assert_eq!(
+            (
+                read["theme"]["actor"].clone(),
+                read["theme"]["created_ms"].clone()
+            ),
+            (Value::Null, Value::Null)
+        );
+    }
+    assert!(!harness.library().exists(), "listing stores nothing");
+
+    // Chosen like any theme, announced, and drawn from launch.
+    let set = harness.ok(
+        "choose",
+        "preferences.set",
+        json!({"theme": "omarchy.nord"}),
+    );
+    assert_eq!(set["theme"], "omarchy.nord");
+    assert_eq!(
+        harness.ok("list", "theme.list", json!({}))["active"],
+        "omarchy.nord"
+    );
+    let launch = crate::preferences::LaunchPreferences::read(Some(harness.dir.join("config")));
+    assert_eq!(
+        (launch.theme.id.as_str(), launch.theme.name.as_str()),
+        ("omarchy.nord", "Nord")
+    );
+    assert!(launch.theme.problem.is_none());
+
+    // Never deleted, active or not, and its name never taken.
+    let (code, message) = harness.refused(
+        "theme.delete",
+        json!({"theme_id": "omarchy.nord", "mutation": mutation("delete")}),
+    );
+    assert_eq!(
+        (code.as_str(), message.as_str()),
+        ("validation", "Nord is built in and cannot be deleted")
+    );
+    let nord = omarchy::BUNDLED[4];
+    assert_eq!(nord.slug, "nord");
+    for params in [
+        json!({"format": "omarchy", "files": {"colors.toml": nord.colors_toml},
+               "folder": "nord", "mutation": mutation("nord")}),
+        json!({"format": "omarchy", "files": {"colors.toml": nord.colors_toml},
+               "name": "tokyo NIGHT", "mutation": mutation("tokyo")}),
+        json!({"format": "luxforge", "content": night("Everforest"),
+               "mutation": mutation("everforest")}),
+    ] {
+        let (code, message) = harness.refused("theme.import", params);
+        assert_eq!(code, "conflict", "{message}");
+        assert!(message.starts_with("a theme named \""), "{message}");
+    }
+    assert!(!harness.library().exists(), "nothing was stored");
+    let exported = harness.ok(
+        "export",
+        "theme.export",
+        json!({"theme_id": "omarchy.nord"}),
+    );
+    assert_eq!(exported["file_name"], "Nord.lftheme");
+    let announced: Vec<_> = harness.events().into_iter().map(|(_, id)| id).collect();
+    assert_eq!(announced, ["choose"]);
 }
