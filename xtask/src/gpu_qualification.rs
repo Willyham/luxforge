@@ -581,8 +581,7 @@ impl Judged {
 
 /// What one output kind other than the picture holds over the corpus: stacks measured, within and
 /// past its limit, the GPU could not render there and does not render yet, with the figures of
-/// those measured; for export, the stacks whose export is the reference's while no render has
-/// stored their Dehaze light.
+/// those measured.
 #[derive(Default)]
 struct Other {
     measured: usize,
@@ -591,7 +590,6 @@ struct Other {
     gaps: usize,
     unrendered: usize,
     figures: Extremes,
-    unstored: usize,
 }
 
 /// What one view and class of the picture holds over the corpus.
@@ -850,9 +848,6 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
         }
         for (kind, counts) in &mut other {
             let measured = &pair["kinds"][kind.name()];
-            if measured["without_stored_light"].is_string() {
-                counts.unstored += 1;
-            }
             match measured["status"].as_str() {
                 Some("measured") => {
                     counts.measured += 1;
@@ -966,7 +961,7 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
         }
     }
     for (kind, counts) in &other {
-        let mut result = json!({
+        let result = json!({
             "kind": kind.name(),
             "view": "the whole output stage",
             "measured": counts.measured,
@@ -985,9 +980,6 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
                 "passed"
             },
         });
-        if *kind == Kind::Export {
-            result["reference_without_stored_light"] = json!(counts.unstored);
-        }
         results.push(result);
     }
     report["results"] = json!(results);
@@ -1305,16 +1297,6 @@ pub fn markdown(report: &Value) -> String {
                 four(&result["figures"], "max"),
                 four(&result["figures"], "mean"),
                 result["verdict"].as_str().unwrap_or("?"),
-            ));
-        }
-        let unstored = others
-            .iter()
-            .find(|result| result["kind"] == Kind::Export.name())
-            .and_then(|result| result["reference_without_stored_light"].as_u64())
-            .unwrap_or(0);
-        if unstored > 0 {
-            text.push_str(&format!(
-                "\nExport: {unstored} stack(s) are the reference's (`region-estimate`) while no render has stored their Dehaze light, which the per-frame light of stage 3 replaces; each was measured with the light the reference frame's render stored, as a settled frame stores it.\n"
             ));
         }
     }
@@ -1661,8 +1643,7 @@ mod tests {
         let exported = |statistics: Value, repeatable: bool, passed: bool| {
             let mut stack = pair("a--b", "pointwise", within(), within());
             stack["kinds"]["export"] = json!({"status": "measured", "statistics": statistics,
-                "repeatable": repeatable, "passed": passed,
-                "without_stored_light": "region-estimate"});
+                "repeatable": repeatable, "passed": passed});
             stack
         };
         let report = judge(
@@ -1677,8 +1658,6 @@ mod tests {
             (json!(1), json!("passed"))
         );
         assert_eq!(row["figures"]["max"]["p99"], 1.0);
-        assert_eq!(row["reference_without_stored_light"], 1);
-        assert!(markdown(&report).contains("1 stack(s) are the reference's (`region-estimate`)"));
 
         let report = judge(
             Some(&cells(vec![exported(within(), false, false)])),

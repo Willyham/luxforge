@@ -49,8 +49,8 @@ use crate::app::{
     gpu_preview::{derived_now, gpu_source_of, rest_now},
 };
 use luxforge_core::{
-    Cancel, Evaluation, GpuAnswer, GpuFallback, GpuPreview, GpuView, PreviewRequest, ProxyBounds,
-    Raster, RenderOptions, RendererReason, STREAM_TILE_SIDES,
+    Cancel, Evaluation, GpuAnswer, GpuPreview, GpuView, PreviewRequest, ProxyBounds, Raster,
+    RenderOptions, RendererReason,
     analysis::Report,
     tiles::{TileFallback, TileService},
 };
@@ -562,21 +562,6 @@ fn measure(
         PreviewRequest::new(opened.client, opened.asset.clone()),
     )?;
     let evaluation = job.evaluation;
-    // Before anything has rendered the stack: whether the export lane would stream it, or hand it
-    // the reference for a Dehaze light no render has stored yet, which stage 3's per-frame light
-    // replaces. Planning reads no pixel.
-    let without_stored_light = settings
-        .kinds
-        .contains(&Kind::Export)
-        .then(|| luxforge_core::plan_stream(&evaluation, STREAM_TILE_SIDES[0]).err())
-        .flatten()
-        .filter(|fallback| {
-            matches!(
-                fallback,
-                TileFallback::Plan(GpuFallback::RegionEstimate { .. })
-            )
-        })
-        .map(|fallback| RendererReason::from(&fallback).as_str());
     let exact = luxforge_core::render(
         evaluation.registry(),
         evaluation.source(),
@@ -618,16 +603,11 @@ fn measure(
             Kind::Histogram => histogram_kind(&reference, None)?,
             Kind::Sample => sample_kind(&reference, None, class)?,
             Kind::Export => {
-                // Streamed now the reference frame's render has stored the stack's estimates, as
-                // a settled frame stores them.
                 let drawn = match exporters {
                     Some(exporters) => exported(exporters, &evaluation),
                     None => Exported::Gap("no adapter for the GPU tile workers".to_owned()),
                 };
-                let mut measured = export_kind(&reference, drawn, class)?;
-                if let Some(reason) = without_stored_light {
-                    measured["without_stored_light"] = json!(reason);
-                }
+                let measured = export_kind(&reference, drawn, class)?;
                 eprintln!("{cell}: export: {measured}");
                 measured
             }
@@ -705,6 +685,7 @@ fn selects_nothing(
             ..masked.clone()
         })],
         region: None,
+        lights: Vec::new(),
     };
     let input = GpuPlan {
         steps: Vec::new(),
@@ -1309,12 +1290,12 @@ fn the_export_comparison_holds_an_export_to_the_reference_and_to_itself() {
     let reference = raster(40, 30, |x, y| [x as u8 * 5, y as u8 * 7, 30]);
     let gap = export_kind(
         &reference,
-        Exported::Gap("the reference renders it: region-estimate".into()),
+        Exported::Gap("the reference renders it: pixel-stage".into()),
         Class::Pointwise,
     )
     .unwrap();
     assert_eq!(gap["status"], "gap", "never a pass");
-    assert_eq!(gap["reason"], "the reference renders it: region-estimate");
+    assert_eq!(gap["reason"], "the reference renders it: pixel-stage");
     assert_eq!(gap["reference"]["stage"], json!([40, 30]));
     let drawn = |codes: Vec<u8>, repeatable| Exported::Drawn {
         codes,

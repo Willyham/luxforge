@@ -457,7 +457,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     /// [`Self::globals_of`] from the estimate store alone, under the key a frame of this
     /// compilation asks with: `None` when the store does not hold every one, which nothing here
     /// reduces. `O(units)`, and reads no pixel.
-    #[cfg(any(test, feature = "qualification"))]
+    #[cfg(feature = "qualification")]
     pub(crate) fn held_globals_of(&self, index: usize) -> Option<Vec<Option<Global>>> {
         match &self.compiled.segments[index].entry {
             Some(super::Entry::Spatial(entry)) => entry
@@ -1031,6 +1031,7 @@ impl SpatialEntry {
     }
 
     /// The SHA-256 of the layers before this one, which a stored estimate's key names.
+    #[cfg(feature = "qualification")]
     pub(super) fn prefix_hash(&self) -> &str {
         &self.prefix_hash
     }
@@ -1088,7 +1089,8 @@ impl SpatialEntry {
             let windowed = mask.windowed(previous);
             self.operation = self.operation.clone().with_mask(windowed);
         }
-        if self.prepares_estimates() {
+        // Over its whole stage it reduces its own input, as a frame does.
+        if self.prepares_estimates() && previous != Region::whole(whole) {
             self.globals = Some(Arc::new(globals()?));
         }
         Ok(())

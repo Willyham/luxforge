@@ -106,15 +106,15 @@ pub use proxy::{
     ProxyApproximation, ProxyBounds, ProxyCoverage, ProxyIdentity, ProxyPlan, area_coverage,
 };
 pub use render::gpu::{
-    BoundaryKey, CoordinateGrid, EstimateSource, GPU_PASS_INPUTS, GPU_PLAN_LINKS,
-    GPU_SHARED_VALUES, GPU_WARM_LINKS, GPU_WORKGROUP_LANES, GRID_MAX_NODES,
-    GRID_SAMPLE_TOLERANCE_PX, GRID_TOLERANCE_PX, GpuAnchor, GpuAnswer, GpuApply, GpuBoundary,
-    GpuChange, GpuClipping, GpuComponent, GpuDescription, GpuEstimates, GpuFallback, GpuGeometry,
-    GpuLight, GpuLightPasses, GpuLightRestoration, GpuMask, GpuOperation, GpuPass, GpuPassShape,
-    GpuPlan, GpuPlanRequest, GpuPlane, GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuPreview,
-    GpuProgram, GpuProgramKind, GpuRest, GpuSpatial, GpuSpatialUnit, GpuView, REST_TILE_BYTES,
-    REST_TILE_SIDES, RestTile, RestTiles, STREAM_TILE_SIDES, SourceBoundary, StreamPlan, TilePlan,
-    anchored, gpu_lights, gpu_plan, gpu_plan_reading_lights, gpu_plan_with, plan_read, plan_stream,
+    BoundaryKey, CoordinateGrid, GPU_PASS_INPUTS, GPU_PLAN_LINKS, GPU_SHARED_VALUES,
+    GPU_WARM_LINKS, GPU_WORKGROUP_LANES, GRID_MAX_NODES, GRID_SAMPLE_TOLERANCE_PX,
+    GRID_TOLERANCE_PX, GpuAnchor, GpuAnswer, GpuApply, GpuBoundary, GpuChange, GpuClipping,
+    GpuComponent, GpuDescription, GpuFallback, GpuGeometry, GpuLight, GpuLightPasses,
+    GpuLightRestoration, GpuMask, GpuOperation, GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest,
+    GpuPlane, GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuPreview, GpuProgram, GpuProgramKind,
+    GpuRest, GpuSpatial, GpuSpatialUnit, GpuView, GpuWarmList, REST_TILE_BYTES, REST_TILE_SIDES,
+    RestTile, RestTiles, STREAM_TILE_SIDES, SourceBoundary, StreamPlan, TilePlan, anchored,
+    gpu_lights, gpu_plan, plan_read, plan_stream,
 };
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{
@@ -243,79 +243,6 @@ pub mod qualification {
         orientation: u8,
     ) -> Result<crate::LinearImage, crate::Error> {
         image.with_view(crop, orientation)
-    }
-
-    /// A light for a colour drag under Dehaze from a held reduced stage: the atmospheric light
-    /// prepared from the reduction of the Presence input of `prefix` — the layers before the
-    /// drag's first colour layer, then the Presence layer — over its whole exact stage, with the
-    /// colour operations `colour` compiles to run over the reduced pixels, colour after the
-    /// reduction standing in for the reduction after colour. Answers the light and how long the
-    /// part a tick would repeat took: the colour over the reduction and the preparation, not the
-    /// reduction, which a boundary job would hold.
-    pub fn light_after_reduction(
-        registry: &crate::ModuleRegistry,
-        source: crate::RenderSource<'_>,
-        prefix: &crate::Recipe,
-        colour: &crate::Recipe,
-    ) -> Result<(Option<Vec<f64>>, std::time::Duration), crate::Error> {
-        use crate::render::spatial::cells;
-        let context = crate::RenderContext::new();
-        let render = crate::render(
-            registry,
-            source,
-            prefix,
-            crate::RenderOptions::exact(&crate::Cancel::never()),
-            &context,
-        )?;
-        // This render's own reductions, whatever else renders beside it: the last is the
-        // Presence layer's input.
-        cells::arm(context.estimates(), &[])?;
-        let framed = render.frame(crate::SnapshotId::new());
-        let mut captured = cells::take(context.estimates());
-        framed?;
-        let reduction = captured
-            .pop()
-            .map(|captured| captured.reduction)
-            .ok_or_else(|| crate::Error::internal("no reduction"))?;
-        let unit = render
-            .estimating_unit()
-            .ok_or_else(|| crate::Error::validation("no unit prepares an estimate"))?;
-        let (width, height) = source.dimensions();
-        let compiled = registry.compile_sampled(
-            width,
-            height,
-            width,
-            height,
-            colour,
-            crate::mask_field::MaskSampling::Point,
-        )?;
-        let units: Vec<std::sync::Arc<dyn crate::modules::PointwiseColor>> = compiled
-            .segments
-            .iter()
-            .flat_map(|segment| &segment.operations)
-            .filter_map(|operation| match operation {
-                crate::modules::Processing::Color(colour) => Some(colour.units().to_vec()),
-                _ => None,
-            })
-            .flatten()
-            .collect();
-        // The byte path hands a spatial operation a quantized frame, so its colour is clamped to
-        // [0, 1] before it is reduced; the linear path's is not.
-        let clamps = matches!(source, crate::RenderSource::Byte(_));
-        let started = std::time::Instant::now();
-        let changed = reduction.with_rows(|y, row| {
-            for unit in &units {
-                unit.apply_row(y, 0, row);
-            }
-            if clamps {
-                for pixel in row.iter_mut() {
-                    *pixel = pixel.map(|value| value.clamp(0.0, 1.0));
-                }
-            }
-        });
-        let light = unit.prepare(&changed);
-        let elapsed = started.elapsed();
-        Ok((light.map(|light| light.values().to_vec()), elapsed))
     }
 
     /// The atmospheric light the per-frame estimate twin would prepare at each of `factors` (each a
@@ -453,6 +380,24 @@ pub mod qualification {
             }
         }
         Ok(lights)
+    }
+
+    /// Hold `estimates`, each unit's values or `None`, in `render`'s estimate store for the
+    /// spatial operation of layer `layer`, under the keys a frame of `render` asks with, as a
+    /// frame that prepared them would: what [`twin_lights`] hands an earlier layer's light by.
+    fn hold_estimates(
+        render: &crate::Render,
+        layer: usize,
+        estimates: &[Option<Vec<f64>>],
+    ) -> Result<(), crate::Error> {
+        let index = render
+            .spatial_segment_of(layer)
+            .ok_or_else(|| crate::Error::validation(format!("layer {layer} is not spatial")))?;
+        let globals = estimates
+            .iter()
+            .map(|values| values.clone().map(crate::modules::Global::new).transpose())
+            .collect::<Result<Vec<_>, _>>()?;
+        render.hold_spatial_globals(index, &globals)
     }
 
     /// More units than a spatial operation holds: [`twin_lights`] hands an earlier layer's light
@@ -636,24 +581,6 @@ pub mod qualification {
         }))
     }
 
-    /// Hold `estimates`, each unit's values or `None`, in `render`'s estimate store for the
-    /// spatial operation of layer `layer`, under the keys a frame of `render` asks with, as a
-    /// frame that prepared them would: a GPU plan over `render`'s context then reads them.
-    pub fn hold_estimates(
-        render: &crate::Render,
-        layer: usize,
-        estimates: &[Option<Vec<f64>>],
-    ) -> Result<(), crate::Error> {
-        let index = render
-            .spatial_segment_of(layer)
-            .ok_or_else(|| crate::Error::validation(format!("layer {layer} is not spatial")))?;
-        let globals = estimates
-            .iter()
-            .map(|values| values.clone().map(crate::modules::Global::new).transpose())
-            .collect::<Result<Vec<_>, _>>()?;
-        render.hold_spatial_globals(index, &globals)
-    }
-
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -697,7 +624,7 @@ pub mod qualification {
 
         /// A gain commutes with a mean and stays inside `[0, 1]` here, so the twin's light at
         /// every factor is the exact light, but for the byte path's 16-bit hand-off and the order
-        /// of the sums; and at 16 it is the light from the reduction itself, the colour over it.
+        /// of the sums.
         #[test]
         fn the_twins_light_through_a_gain_is_the_exact_light_at_every_factor() {
             let registry = ModuleRegistry::builtin();
@@ -719,17 +646,6 @@ pub mod qualification {
                     "at {factor}: {light:?} against {exact:?}"
                 );
             }
-            let prefix = Recipe {
-                layers: vec![recipe.layers[1].clone()],
-                ..recipe.clone()
-            };
-            let colour = Recipe {
-                layers: vec![recipe.layers[0].clone()],
-                ..recipe.clone()
-            };
-            let (reduced, _) =
-                light_after_reduction(&registry, (&source).into(), &prefix, &colour).unwrap();
-            assert_eq!(twin[0][0], reduced, "at 16, the colour over the reduction");
         }
 
         /// The largest of a light's three channels' errors against `exact`, as fractions of it.
@@ -881,8 +797,8 @@ pub mod qualification {
 
         /// Each capture reads its own render's reduction while other renders, of other stacks over
         /// other sources, reduce their own stages on other threads at the same time, as the tests
-        /// of a whole workspace do: the light from the reduction and the twin's light are the
-        /// stack's own exact light every time.
+        /// of a whole workspace do: the twin's light at full resolution is the stack's own exact
+        /// light every time, and at 16 the same light every time.
         #[test]
         fn a_capture_reads_only_its_own_render_while_others_render_beside_it() {
             let registry = ModuleRegistry::builtin();
@@ -895,14 +811,8 @@ pub mod qualification {
                 ..Recipe::default()
             };
             let exact = exact_light(&registry, (&source).into(), &recipe, 1);
-            let prefix = Recipe {
-                layers: vec![recipe.layers[1].clone()],
-                ..recipe.clone()
-            };
-            let colour = Recipe {
-                layers: vec![recipe.layers[0].clone()],
-                ..recipe.clone()
-            };
+            let alone =
+                twin_lights(&registry, (&source).into(), &recipe, &[1], &[16], false).unwrap();
             let stop = std::sync::atomic::AtomicBool::new(false);
             let measured = std::thread::scope(|scope| {
                 for other in 1..=4_u32 {
@@ -923,23 +833,19 @@ pub mod qualification {
                 }
                 let measured: Vec<_> = (0..24)
                     .map(|_| {
-                        (
-                            light_after_reduction(&registry, (&source).into(), &prefix, &colour),
-                            twin_lights(&registry, (&source).into(), &recipe, &[1], &[16], false),
-                        )
+                        twin_lights(&registry, (&source).into(), &recipe, &[1], &[16, 1], false)
                     })
                     .collect();
                 stop.store(true, std::sync::atomic::Ordering::Relaxed);
                 measured
             });
-            for (reduced, twin) in measured {
-                let reduced = reduced.unwrap().0.expect("the light from the reduction");
-                let twin = twin.unwrap()[0][0].clone().expect("the twin's light");
-                assert!(
-                    error(&exact, &reduced) < 1.0e-4,
-                    "{reduced:?} against {exact:?}"
-                );
-                assert_eq!(twin, reduced, "at 16, the colour over the reduction");
+            for twin in measured {
+                let twin = twin.unwrap();
+                let full = twin[1][0]
+                    .clone()
+                    .expect("the twin's light at full resolution");
+                assert!(error(&exact, &full) < 1.0e-4, "{full:?} against {exact:?}");
+                assert_eq!(twin[0], alone[0], "at 16, the light it gives alone");
             }
         }
     }

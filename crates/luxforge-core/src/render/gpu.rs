@@ -34,28 +34,29 @@ mod wgsl_tests;
 pub use changes::GpuChange;
 pub use grid::{CoordinateGrid, GRID_MAX_NODES, GRID_SAMPLE_TOLERANCE_PX, GRID_TOLERANCE_PX};
 pub use plan::{
-    EstimateSource, GpuAnchor, GpuAnswer, GpuBoundary, GpuClipping, GpuComponent, GpuEstimates,
-    GpuFallback, GpuGeometry, GpuMask, GpuOperation, GpuPlan, GpuPlanRequest, GpuPosition,
-    anchored, gpu_plan, gpu_plan_with,
+    GpuAnchor, GpuAnswer, GpuBoundary, GpuClipping, GpuComponent, GpuFallback, GpuGeometry,
+    GpuMask, GpuOperation, GpuPlan, GpuPlanRequest, GpuPosition, anchored, gpu_plan,
 };
+#[cfg(any(test, feature = "qualification"))]
+pub(crate) use preview::plan_rest_tiles;
 #[cfg(test)]
 pub(crate) use preview::plan_warm;
-#[cfg(any(test, feature = "qualification"))]
+#[cfg(feature = "qualification")]
 pub(crate) use preview::position;
 pub use preview::{
-    BoundaryKey, GPU_PLAN_LINKS, GPU_WARM_LINKS, GpuPreview, GpuRest, GpuView, REST_TILE_BYTES,
-    REST_TILE_SIDES, RestTile, RestTiles, SourceBoundary,
+    BoundaryKey, GPU_PLAN_LINKS, GPU_WARM_LINKS, GpuPreview, GpuRest, GpuView, GpuWarmList,
+    REST_TILE_BYTES, REST_TILE_SIDES, RestTile, RestTiles, SourceBoundary,
 };
 #[cfg(test)]
-pub(crate) use preview::{output_window, warm_links, warm_sequence};
-pub(crate) use preview::{plan_preview, plan_rest, plan_rest_tiles, plan_warm_list};
+pub(crate) use preview::{light_link, output_window, warm_links, warm_sequence};
+pub(crate) use preview::{plan_preview, plan_rest, plan_warm_list};
 #[cfg(test)]
 pub(crate) use program::testing;
 pub use program::{GpuDescription, GpuProgram, GpuProgramKind};
 pub use spatial::{
     GPU_PASS_INPUTS, GPU_SHARED_VALUES, GPU_WORKGROUP_LANES, GpuApply, GpuLight, GpuLightPasses,
     GpuLightRestoration, GpuPass, GpuPassShape, GpuPlane, GpuPlaneFormat, GpuPlaneSize, GpuSpatial,
-    GpuSpatialUnit, gpu_lights, gpu_plan_reading_lights,
+    GpuSpatialUnit, gpu_lights,
 };
 pub(crate) use spatial::{Word, Words};
 pub use tiles::{STREAM_TILE_SIDES, StreamPlan, TilePlan, plan_read, plan_stream};

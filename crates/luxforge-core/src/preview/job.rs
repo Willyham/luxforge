@@ -131,24 +131,17 @@ pub struct PreviewJob {
     /// (`PreviewRequest::gpu`): the plan a tick is drawn from, or why the gesture takes the CPU
     /// path, and the boundary it starts from. Preview state, never an API result.
     pub gpu: Option<Box<crate::GpuPreview>>,
-    /// The plans a gesture on this job's stack is likely to draw, planned with a committed stack's
+    /// The plans a gesture on this job's stack is likely to draw, the light links their ticks
+    /// compute and how many of the plans are the open stack's, planned with a committed stack's
     /// job when its request asked (`PreviewRequest::gpu`), so the desktop can compile their
     /// program sequences before a drag begins. Preview state, never an API result.
-    pub gpu_warm: Option<std::sync::Arc<[crate::GpuPlan]>>,
-    /// How many of [`Self::gpu_warm`]'s plans, from the first, are drags of this job's stack
-    /// itself; the rest are the first drags of the modules it does not hold, which the surface
-    /// compiles after them.
-    pub gpu_warm_open: usize,
+    pub gpu_warm: Option<std::sync::Arc<crate::GpuWarmList>>,
     /// A displayed stack's picture at rest on the GPU at its view's bounds or region, planned with
     /// its job when its request asked (`PreviewRequest::gpu`): the plan of the stack itself from the
     /// source, and the boundary every gesture over the same source and view starts from
     /// ([`crate::GpuRest`]). Every committed stack has one, the empty stack included. Preview
     /// state, never an API result.
     pub gpu_rest: Option<Box<crate::GpuRest>>,
-    /// The Fit bounds whose picture at rest's tiles the worker plans again once the exact phase
-    /// has stored the global estimates the owner's plan could not read
-    /// ([`crate::ExactOutcome::rest`]): set by the owner when its tiles named `region-estimate`.
-    pub rest_bounds: Option<crate::ProxyBounds>,
 }
 
 impl PreviewJob {
@@ -168,9 +161,7 @@ impl PreviewJob {
             viewport_declined: None,
             gpu: None,
             gpu_warm: None,
-            gpu_warm_open: 0,
             gpu_rest: None,
-            rest_bounds: None,
         })
     }
 }

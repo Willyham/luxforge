@@ -155,8 +155,10 @@ fn a_stream_the_gpu_cannot_go_on_drawing_names_why() {
     }
     assert_eq!(reason(budget), "tiles-budget");
     assert_eq!(
-        reason(TileFallback::Plan(GpuFallback::RegionEstimate { layer: 2 })),
-        "region-estimate"
+        reason(TileFallback::Plan(GpuFallback::Unplannable(
+            "a plan the planner cannot cut".into()
+        ))),
+        "unplannable"
     );
     assert_eq!(
         reason(TileFallback::Stage("pipeline-failed")),

@@ -7,7 +7,7 @@
 //! gesture's settle ends; and the reference renderer's notice is the session's, said at rest.
 use super::{
     gpu_preview::SurfaceReport,
-    gpu_preview_tests::{catalog, commit, deliver_until, surface_ready, zoomed, zoomed_out},
+    gpu_preview_tests::{catalog, deliver_until, surface_ready, zoomed, zoomed_out},
     message::{draft::DraftMessage, preview::PreviewMessage, view::ViewMessage},
     testing::{finish, let_go, real_photo, run_commit, slide},
     *,
@@ -16,7 +16,6 @@ use luxforge_ui::photo_surface::GpuFallback as SurfaceFallback;
 use std::time::Duration;
 
 const ACTION: &str = "set-basic";
-const PRESENCE: &str = "set-presence";
 const FIELD: &str = "exposure";
 
 const MEMORY: (&str, &str) = (
@@ -27,11 +26,6 @@ const MEMORY: (&str, &str) = (
 const STACK: (&str, &str) = (
     "Not on the GPU: Perspective",
     "The GPU preview cannot draw this layer yet, so this drag is drawn on the CPU.",
-);
-const DEHAZE: (&str, &str) = (
-    "Dehaze on the CPU",
-    "Dehaze needs the haze estimate a settled frame stores for this view; until then this drag is \
-     drawn on the CPU.",
 );
 const REFERENCE: (&str, &str) = (
     "Reference renderer",
@@ -278,32 +272,6 @@ fn gpu_preview_the_notice_names_the_layer_the_stack_cannot_draw() {
     editor.gpu.budget = Some(1);
     let _ = slide(&mut editor, ACTION, FIELD, 0.1);
     assert_says(&editor, "budget-exceeded", Some(MEMORY));
-    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
-    finish(editor, catalog);
-}
-
-/// At 100% a Basic drag under a committed Dehaze would take the light from the visible region
-/// alone, which the exact frame reads whole: the plan answers `region-estimate`, and the notice
-/// says Dehaze is on the CPU, naming no layer.
-#[test]
-fn gpu_preview_the_notice_says_dehaze_when_its_estimate_keeps_a_drag_on_the_cpu() {
-    let catalog = catalog("notice-dehaze");
-    let (mut editor, _, _) = real_photo(&catalog);
-    editor.gpu.surface = Some(SurfaceReport::default());
-    deliver_until(&mut editor, "the first frame", |editor| {
-        editor.presentation.dimensions.is_some() && !editor.presentation.queue.is_busy()
-    });
-    let at_100 = |editor: &mut Editor| {
-        editor.session.preview.view.zoom = luxforge_core::Zoom::Percent { value: 100.0 };
-    };
-    at_100(&mut editor);
-    commit(&mut editor, PRESENCE, "dehaze", 40.0);
-    at_100(&mut editor);
-    for value in [0.1, 0.2] {
-        let _ = slide(&mut editor, ACTION, FIELD, value);
-        assert_eq!(latest_reason(&editor), json!("region-estimate"));
-        assert_says(&editor, "region-estimate", Some(DEHAZE));
-    }
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     finish(editor, catalog);
 }

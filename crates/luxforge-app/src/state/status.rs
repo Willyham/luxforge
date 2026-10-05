@@ -97,7 +97,7 @@ struct Class {
 /// turned off (`preference-off`), and the two the table does not name (`unchanged` and
 /// `unplannable`). The last is the picture at rest's while its programs compile, said at rest
 /// alone.
-const CLASSES: [Class; 7] = [
+const CLASSES: [Class; 6] = [
     Class {
         codes: &["no-adapter", "device-lost"],
         phrase: "Reference renderer",
@@ -133,6 +133,7 @@ const CLASSES: [Class; 7] = [
             "boundary-size",
             "position-range",
             "region-outside",
+            "light-link",
         ],
         phrase: "Not on the GPU",
         tooltip: "The GPU preview cannot draw this layer yet, so this drag is drawn on the CPU.",
@@ -140,13 +141,6 @@ const CLASSES: [Class; 7] = [
             unnamed: "The GPU preview cannot draw this stack yet, so this drag is drawn on the \
                       CPU.",
         },
-    },
-    Class {
-        codes: &["region-estimate", "window-estimate"],
-        phrase: "Dehaze on the CPU",
-        tooltip: "Dehaze needs the haze estimate a settled frame stores for this view; until \
-                  then this drag is drawn on the CPU.",
-        say: Say::Lasting,
     },
     Class {
         codes: &["compiling"],
@@ -632,7 +626,7 @@ mod tests {
     /// of its codes the drag recorded.
     #[test]
     fn each_class_of_reason_says_its_phrase_and_tooltip() {
-        let classes: [(&[&str], &str, &str); 3] = [
+        let classes: [(&[&str], &str, &str); 2] = [
             (
                 &["budget-exceeded", "texture-limit", "buffer-limit"],
                 "GPU memory full",
@@ -646,16 +640,10 @@ mod tests {
                 "The GPU preview cannot run on this graphics device, so previews are drawn on \
                  the CPU.",
             ),
-            (
-                &["region-estimate", "window-estimate"],
-                "Dehaze on the CPU",
-                "Dehaze needs the haze estimate a settled frame stores for this view; until \
-                 then this drag is drawn on the CPU.",
-            ),
         ];
         for (codes, phrase, tooltip) in classes {
             for code in codes {
-                // None of these names a layer, though a Dehaze reason carries one.
+                // None of these names a layer, whichever the drag names.
                 for layer in [None, Some("Presence")] {
                     assert_eq!(
                         said(code, layer),

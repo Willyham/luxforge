@@ -7,7 +7,7 @@ use super::super::{
     GpuProgram, GpuStep, TexelMap, chain,
     spatial::{
         GpuApply, GpuPass, GpuPlane, GpuSpatial, LIGHT_BYTES, PassShape, PlaneFormat, PlaneSize,
-        PlaneTexture, PlanesKey, Pool, PoolKey, Schedule, fold_lights, validate_spatial,
+        PlaneTexture, PlanesKey, Pool, PoolKey, Schedule, validate_spatial,
     },
 };
 use super::{GpuLight, light_charge};
@@ -230,9 +230,7 @@ fn a_light_links_steps_name_its_light() {
     assert!(!shape(&light).holds(&shape(&wider)));
 }
 
-/// A light that changes runs again the passes that read it, and nothing else; the content key a
-/// link folds its lights into follows each light it reads, and is its input's alone for steps that
-/// read none.
+/// A light that changes runs again the passes that read it, and nothing else.
 #[test]
 fn a_light_that_changes_runs_again_what_reads_it() {
     let test = "a_light_that_changes_runs_again_what_reads_it";
@@ -264,13 +262,4 @@ fn a_light_that_changes_runs_again_what_reads_it() {
     assert_eq!(run(&mut pool), [false], "the same light written again");
     pool.set_light_key(0, 8);
     assert_eq!(run(&mut pool), [true], "another light");
-    // The link's content key.
-    let folded = fold_lights(5, &read, &pool);
-    assert_ne!(folded, 5);
-    pool.set_light_key(0, 9);
-    assert_ne!(fold_lights(5, &read, &pool), folded);
-    assert_eq!(fold_lights(5, &steps(writing(0))[..0], &pool), 5);
-    let mut plain = reading(0);
-    plain.planes[0] = plane(PlaneFormat::Quad, PlaneSize::Reduced(1));
-    assert_eq!(fold_lights(5, &steps(plain), &pool), 5);
 }

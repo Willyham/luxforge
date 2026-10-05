@@ -3,20 +3,20 @@
 //! stage, from its own window of the source anchored to the plan, through its part of a lens warp's
 //! grid of the whole stage — is the same stage drawn as one region, bit for bit, every scratch
 //! plane of every link starting from NaN, for every family whose texels depend on more than their
-//! own pixel: Presence's running sums over its reductions, Detail's neighbourhoods, a lens warp's
-//! grid and a perspective warp's homography. So tiles carry no seam, and a pixel read back from one
-//! tile is the pixel any other window of the stage draws.
+//! own pixel: Presence's running sums over its reductions and Dehaze's light from the whole stage,
+//! Detail's neighbourhoods, a lens warp's grid and a perspective warp's homography. So tiles carry
+//! no seam, and a pixel read back from one tile is the pixel any other window of the stage draws.
 //!
 //! A GPU test with no adapter prints that it was skipped and asserts nothing.
 use super::{
     gpu_plan::{WarpGrid, surface_plan_over},
-    gpu_qualification::headless,
+    gpu_qualification::{headless, lit},
     gpu_window_tests::{HEIGHT, WIDTH, cut, source, whole},
 };
 use luxforge_core::{
-    BASIC_EFFECT, BoundaryFormat, Cancel, DETAIL_EFFECT, EstimateSource, GpuAnswer, GpuEstimates,
-    GpuPlanRequest, Layer, ModuleRegistry, PERSPECTIVE_EFFECT, PRESENCE_EFFECT, Recipe, Region,
-    RenderContext, RenderOptions, SnapshotId, Stage, anchored, gpu_plan_with, render,
+    BASIC_EFFECT, BoundaryFormat, Cancel, DETAIL_EFFECT, GpuAnswer, GpuPlanRequest, Layer,
+    ModuleRegistry, PERSPECTIVE_EFFECT, PRESENCE_EFFECT, Recipe, Region, RenderContext,
+    RenderOptions, Stage, anchored, gpu_plan, render,
 };
 use luxforge_ui::photo_surface::gpu_preview::qualification::boundary_as;
 
@@ -99,7 +99,7 @@ fn gpu_rest_a_stage_in_tiles_is_the_stage_in_one_region_bit_for_bit() {
                 layers: layers.clone(),
                 ..Recipe::default()
             };
-            // The exact render, whose frame stores the global estimates every tile's plan reads.
+            // The exact render, whose boundaries name every tile's window.
             let context = RenderContext::new();
             let exact = render(
                 &registry,
@@ -109,23 +109,15 @@ fn gpu_rest_a_stage_in_tiles_is_the_stage_in_one_region_bit_for_bit() {
                 &context,
             )
             .expect("the exact render");
-            exact.frame(SnapshotId::new()).expect("the exact frame");
             let request = GpuPlanRequest::exact(0, stage).qualifying();
             let request = match format {
                 BoundaryFormat::Float => request.linear(),
                 BoundaryFormat::Half => request,
             };
-            let estimates = GpuEstimates {
-                context: &context,
-                source: EstimateSource::Render((&source).into()),
-            };
-            let plan = match gpu_plan_with(&registry, &recipe, request, Some(estimates))
-                .expect("a stack")
-            {
+            let plan = match gpu_plan(&registry, &recipe, request).expect("a stack") {
                 GpuAnswer::Plan(plan) => *plan,
                 GpuAnswer::Fallback(reason) => panic!("{name}: {reason}"),
             };
-            assert!(!plan.approximate(), "{name}: the stored estimates");
             let anchor = plan.anchor();
             let output = plan.geometry.output();
             let stage_grid = plan.geometry.stage_grid(1.0).expect("a stage grid");
@@ -149,6 +141,8 @@ fn gpu_rest_a_stage_in_tiles_is_the_stage_in_one_region_bit_for_bit() {
                     Some(rect),
                 )
                 .expect("a runnable plan");
+                // Every tile reads the one light of the whole stage.
+                lit(&qualifier, &source, &converted).expect("the plan's lights");
                 qualifier
                     .evaluate_codes(&converted)
                     .unwrap_or_else(|error| panic!("{name}: {rect:?}: {error}"))

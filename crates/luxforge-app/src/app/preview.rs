@@ -1501,15 +1501,6 @@ impl Editor {
     /// for, and whether it handed a frame to the display — the photograph, or the crop draft's
     /// input stage.
     pub(super) fn preview_ready(&mut self, mut result: PreviewResult) -> (Task<Message>, bool) {
-        // The picture at rest's tiles a committed stack's exact phase planned again, once it stored
-        // the global estimates they read: held for the surfaces when this is the newest job's.
-        if let PhaseOutcome::Exact(exact) = &mut result.outcome
-            && let Some(rest) = exact.rest.take()
-            && result.identity.draft.is_none()
-            && result.generation == self.presentation.preview_generation
-        {
-            self.gpu_rest_from(Some(rest));
-        }
         // An exact display reduction belongs to one view and one current content generation.
         // Its full raster can still be retained when a resize invalidates only the reduction.
         if let PhaseOutcome::Exact(exact) = &mut result.outcome
@@ -2194,14 +2185,13 @@ impl Editor {
         };
         let content = self.presentation.admit(&mut job);
         self.request_mask_coverage(&job, content);
-        self.gpu_warm_from(job.gpu_warm.as_deref(), job.gpu_warm_open);
+        self.gpu_warm_from(job.gpu_warm.as_deref());
         // Every boundary is derived from the job's own source on the GPU: the surface is handed it
         // before any plan over it.
         self.gpu_hold_source(job.evaluation.source());
         let committed = job.layer_count.is_none() && job.evaluation.draft_revision().is_none();
         // The displayed stack's picture at rest in tiles: held for the surfaces to draw, or let go
-        // where its view draws the stack at its own size or larger, or where its tiles wait for
-        // the global estimates the job's exact phase stores, which then plans them again.
+        // where its view draws the stack at its own size or larger or the GPU cannot draw them.
         if committed && let Some(rest) = job.gpu_rest.as_mut() {
             let tiles = rest.tiles.take().and_then(Result::ok);
             self.gpu_rest_from(tiles);

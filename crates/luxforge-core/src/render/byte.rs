@@ -128,14 +128,8 @@ fn encoded_in(quantizers: (&Quantizer, &Quantizer16), rgb: [f32; 3], wide: bool)
 }
 
 /// The estimate prefix of a byte source of `width` × `height` stored at `orientation`: what its
-/// estimates are keyed by, and a proxy not yet built is named by
-/// (`render::gpu::EstimateSource::Proxy`).
-pub(crate) fn estimate_prefix(
-    prefix_hash: &str,
-    width: u32,
-    height: u32,
-    orientation: u8,
-) -> String {
+/// estimates are keyed by.
+fn estimate_prefix(prefix_hash: &str, width: u32, height: u32, orientation: u8) -> String {
     format!("{prefix_hash}+byte:{width}x{height}:orientation:{orientation}")
 }
 

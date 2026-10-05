@@ -31,7 +31,8 @@ fn chained(detail: Value, presence: Value, masking: bool) -> Recipe {
 
 /// Detail's sharpening and noise reduction, then Presence's fields, chained in one plan over a
 /// synthetic photograph on the linear path at two sizes: the program's output against the CPU
-/// frame held to the spatial limits, Dehaze's light stored by the CPU frame or taken on the GPU.
+/// frame held to the spatial limits. Dehaze's light reads Detail's output, which only a sweep of
+/// the whole stage through Detail computes; a slot computes it with Detail left out, as here.
 #[test]
 fn gpu_presence_after_detail_meets_the_spatial_limits() {
     let test = "gpu_presence_after_detail_meets_the_spatial_limits";
@@ -64,42 +65,24 @@ fn gpu_presence_after_detail_meets_the_spatial_limits() {
                     };
                     let layers: Vec<usize> = plan.spatial.iter().map(|step| step.layer).collect();
                     assert_eq!(layers, [0, 2], "Detail's operation, then Presence's");
-                    let dehaze = presence.get("dehaze").is_some();
-                    for stored in if dehaze {
-                        vec![true, false]
-                    } else {
-                        vec![true]
-                    } {
-                        let measured = measure_unit(
-                            &qualifier,
-                            &registry,
-                            &stack,
-                            (width, height),
-                            &pixels,
-                            stored,
-                        );
-                        let name = format!(
-                            "{detail} then {presence}{} at {width}x{height}{}",
-                            if masking { " masked" } else { "" },
-                            if dehaze && !stored {
-                                ", light taken on the GPU"
-                            } else {
-                                ""
-                            }
-                        );
-                        eprintln!(
-                            "{name}: program {} | drawn {} | non-finite {} | planes {} B{}",
-                            figures(&measured.program),
-                            figures(&measured.drawn),
-                            measured.non_finite,
-                            measured.planes,
-                            if measured.passed { "" } else { " MISS" }
-                        );
-                        programs.push(measured.program);
-                        drawn.push(measured.drawn);
-                        if !measured.passed {
-                            missed.push(name);
-                        }
+                    let measured =
+                        measure_unit(&qualifier, &registry, &stack, (width, height), &pixels);
+                    let name = format!(
+                        "{detail} then {presence}{} at {width}x{height}",
+                        if masking { " masked" } else { "" },
+                    );
+                    eprintln!(
+                        "{name}: program {} | drawn {} | non-finite {} | planes {} B{}",
+                        figures(&measured.program),
+                        figures(&measured.drawn),
+                        measured.non_finite,
+                        measured.planes,
+                        if measured.passed { "" } else { " MISS" }
+                    );
+                    programs.push(measured.program);
+                    drawn.push(measured.drawn);
+                    if !measured.passed {
+                        missed.push(name);
                     }
                 }
             }

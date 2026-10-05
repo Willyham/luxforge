@@ -191,6 +191,7 @@ fn a_drag_over_a_warp_grid_compares_and_copies_none_of_it() {
         texels: TexelMap::IDENTITY,
         steps: vec![GpuStep::colour(scale(factor)), tail(nodes)],
         region: None,
+        lights: Vec::new(),
     };
     let both = (&mut pipeline, &mut reference);
     let first = warp(0.5, &nodes);
@@ -292,6 +293,7 @@ fn a_chains_links_write_only_the_blocks_a_tick_changes() {
             texels: TexelMap::IDENTITY,
             steps,
             region: None,
+            lights: Vec::new(),
         }
     };
     let mut blocks = Blocks {
