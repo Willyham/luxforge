@@ -116,6 +116,33 @@ fn workspace_state_reaches_the_models_only_through_the_adopted_session() {
 }
 
 #[test]
+fn information_toggle_has_api_parity_and_never_requests_pixels_or_history() {
+    let (mut editor, catalog, _, _) = opened(Vec::new(), 1);
+    let generation = editor.activity.requested;
+    let revision = editor.document.state.as_ref().unwrap().revision;
+    let before = editor.session.preview.clone();
+    let _ = editor.update(Message::View(ViewMessage::ToggleInformation));
+    assert!(editor.workspace.canvas.information.is_none());
+    super::tasks::owner_calls::take();
+    let (answer, _) = super::tasks::call(
+        &editor.owner,
+        editor.client,
+        "workspace.set",
+        json!({"information":true}),
+    )
+    .unwrap();
+    let session: ClientSession = serde_json::from_value(answer).unwrap();
+    assert_eq!(session.preview, before);
+    let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
+    assert!(editor.workspace.canvas.information.is_some());
+    assert_eq!(editor.snapshot()["workspace"]["information"], true);
+    assert_eq!(editor.activity.requested, generation);
+    assert_eq!(editor.document.state.as_ref().unwrap().revision, revision);
+    assert_eq!(super::tasks::owner_calls::take(), ["workspace.set"]);
+    finish(editor, catalog);
+}
+
+#[test]
 fn pan_keeps_one_request_in_flight_and_only_the_newest_pending_position() {
     let (mut editor, catalog) = boot();
     let _ = editor.update(Message::View(ViewMessage::Panned(1.0, 2.0)));

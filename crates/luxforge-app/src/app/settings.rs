@@ -1,14 +1,17 @@
 //! The Settings sheet: opening and closing it, reading the preferences and the flags through
-//! `preferences.read` and `flags.list`, and writing each change through `preferences.set` or
-//! `flags.set`, one at a time in the order made. The sheet changes no recipe, so it neither needs
-//! nor displaces a draft.
+//! `preferences.read` and `flags.list`, writing each flag change through `flags.set`, one at a
+//! time in the order made, and handing each General row's change to the desktop's preference
+//! writer. The sheet changes no recipe, so it neither needs nor displaces a draft.
 use super::{
     Editor,
     message::{Message, settings::SettingsMessage},
     outcome::Outcome,
     tasks::{call, call_own, owner_task},
 };
-use crate::state::settings::{FlagControl, GeneralPreferences, SettingsTab, parse_number};
+use crate::state::{
+    preferences::{self, GeneralControl},
+    settings::{FlagControl, SettingsTab, parse_number},
+};
 use iced::Task;
 use luxforge_core::flags::FlagList;
 use serde_json::{Value, json};
@@ -45,48 +48,12 @@ impl Editor {
                     }
                     Err(reason) => self.settings.error = Some(reason),
                 }
-                match preferences {
-                    Ok(preferences) => {
-                        self.settings.preferences = Some(preferences);
-                        self.settings.preferences_error = None;
-                    }
-                    Err(reason) => self.settings.preferences_error = Some(reason),
-                }
+                let applied = self.preferences_read(preferences);
                 self.outcome(Outcome::FlagsRead);
+                return applied;
             }
-            SettingsMessage::SetAutoCollapse(on) => {
-                self.settings.collapse_waiting = Some(on);
-                return self.write_preferences();
-            }
-            SettingsMessage::PreferencesSaved(result) => {
-                self.settings.collapse_writing = None;
-                let mut read = Task::none();
-                match result {
-                    Ok((preferences, request)) => {
-                        self.settings.preferences = Some(preferences);
-                        self.settings.preferences_error = None;
-                        self.read_back(request);
-                    }
-                    Err(reason) => {
-                        // The write may have landed before its answer was lost: the poll reads
-                        // its event like another client's.
-                        self.resync();
-                        self.status.text =
-                            format!("Could not change Auto collapse history: {reason}");
-                        self.event("preference_set_failed", || json!({"reason": reason}));
-                        self.settings.preferences_error = Some(reason);
-                        // The switch showed the change it asked for; read back what is stored.
-                        read = self.read_flags();
-                    }
-                }
-                if self.settings.closing && self.settings.idle() {
-                    return self.close();
-                }
-                if self.settings.idle() {
-                    self.outcome(Outcome::FlagsWritten);
-                }
-                return Task::batch([read, self.write_preferences()]);
-            }
+            SettingsMessage::SetGeneral(row, value) => return self.set_general(row, value),
+            SettingsMessage::CatalogFolder(folder) => return self.catalog_folder_chosen(folder),
             SettingsMessage::Set { flag, value } => {
                 self.settings.number_text.remove(&flag);
                 self.settings.waiting.push_back((flag, value));
@@ -166,7 +133,8 @@ impl Editor {
         let (owner, client) = (self.owner.clone(), self.client);
         owner_task(
             move || {
-                let preferences = general(call(&owner, client, "preferences.read", json!({})));
+                let preferences = call(&owner, client, "preferences.read", json!({}))
+                    .and_then(|(answer, _)| preferences::parse(answer));
                 (
                     listed(call(&owner, client, "flags.list", json!({}))),
                     preferences,
@@ -175,30 +143,6 @@ impl Editor {
             |(flags, preferences)| {
                 Message::Settings(SettingsMessage::Listed { flags, preferences })
             },
-        )
-    }
-
-    /// Send the newest Auto collapse history value asked for, once nothing is in flight.
-    fn write_preferences(&mut self) -> Task<Message> {
-        if self.settings.collapse_writing.is_some() {
-            return Task::none();
-        }
-        let Some(on) = self.settings.collapse_waiting.take() else {
-            return Task::none();
-        };
-        self.settings.collapse_writing = Some(on);
-        let (owner, client) = (self.owner.clone(), self.client);
-        owner_task(
-            move || {
-                let (answer, request) = call_own(
-                    &owner,
-                    client,
-                    "preferences.set",
-                    json!({"auto_collapse_history": on}),
-                )?;
-                Ok((general(Ok((answer, 0)))?, request))
-            },
-            |result| Message::Settings(SettingsMessage::PreferencesSaved(result)),
         )
     }
 
@@ -226,8 +170,8 @@ impl Editor {
         )
     }
 
-    /// What a captured frame records of the sheet: the tab, the flags as last read, every row as
-    /// drawn and the writes outstanding.
+    /// What a captured frame records of the sheet: the tab, every General row as drawn, the flags
+    /// as last read, every flag row as drawn and the writes outstanding.
     pub(crate) fn settings_summary(&self) -> Value {
         let rows: Vec<Value> = self
             .workspace
@@ -248,36 +192,51 @@ impl Editor {
                        "notes": row.notes, "error": row.error, "saving": row.saving})
             })
             .collect();
-        let general = &self.workspace.settings;
+        let general: Vec<Value> = self
+            .workspace
+            .settings
+            .general
+            .iter()
+            .map(|row| {
+                let control = match &row.control {
+                    GeneralControl::Toggle(on) => json!({"toggle": on}),
+                    GeneralControl::Choice { .. } => json!({"choice": row.control.value()}),
+                    GeneralControl::Catalog { path, notes, .. } => json!({
+                        "catalog": path, "stored": row.control.value(), "notes": notes
+                    }),
+                };
+                json!({"id": row.preference.field(), "control": control, "saving": row.saving})
+            })
+            .collect();
         json!({
             "open": self.settings.open.map(SettingsTab::name),
-            "general": {"auto_collapse_history": general.auto_collapse,
-                        "saving": general.auto_collapse_saving,
-                        "error": general.preferences_error},
+            "general": {"rows": general, "error": self.workspace.settings.preferences_error},
             "flags": self.settings.flags,
             "rows": rows,
             "unrecognized": self.workspace.settings.unrecognized,
             "error": self.settings.error,
             "writes_outstanding": usize::from(self.settings.writing.is_some())
                 + self.settings.waiting.len()
-                + usize::from(self.settings.collapse_writing.is_some())
-                + usize::from(self.settings.collapse_waiting.is_some()),
+                + self.preferences.outstanding(),
         })
     }
 
-    /// Another client changed a flag or a preference: read them again, while the sheet shows them.
-    pub(crate) fn flags_changed_elsewhere(&mut self) -> Task<Message> {
-        if self.settings.open.is_none() {
-            return Task::none();
+    /// Another client changed a flag or a preference. An open sheet reads both again; a closed
+    /// one reads nothing for a flag, but a preference is read again whatever is on screen, since
+    /// the desktop applies some of them to this session.
+    pub(crate) fn settings_changed_elsewhere(
+        &mut self,
+        flags: bool,
+        preferences: bool,
+    ) -> Task<Message> {
+        if self.settings.open.is_some() && (flags || preferences) {
+            return self.read_flags();
         }
-        self.read_flags()
+        if preferences {
+            return self.read_preferences();
+        }
+        Task::none()
     }
-}
-
-/// An owner answer as the preferences the General tab shows.
-fn general(answer: Result<(Value, u64), String>) -> Result<GeneralPreferences, String> {
-    let (value, _) = answer?;
-    serde_json::from_value(value).map_err(|error| format!("unreadable preferences: {error}"))
 }
 
 /// An owner answer as the flags it lists.
