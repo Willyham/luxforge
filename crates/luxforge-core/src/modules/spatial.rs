@@ -746,12 +746,12 @@ pub(crate) trait SpatialUnit: Send + Sync {
 
     /// The unit on the GPU, for a preview drawn there (`docs/design/gpu-preview.md`, "Spatial
     /// programs"): its program, the planes and passes that compute what its apply reads, and the
-    /// apply. `global` is the estimate the store holds for this unit over the stage the plan is
-    /// drawn at, when the plan found one; a unit that declares an estimate key and is handed none
-    /// computes it on the GPU from the stage it holds and says so. The default is none, which takes
-    /// the CPU path. Answered on the catalog owner while planning: it reads no pixel and holds
-    /// nothing that scales with the image.
-    fn gpu(&self, _global: Option<&Global>) -> Option<crate::render::gpu::GpuSpatialUnit> {
+    /// apply. A unit that prepares a global estimate reads it from the light plane its light link
+    /// writes ([`Self::gpu_light`]): its description holds a light plane
+    /// ([`crate::render::gpu::GpuPlaneSize::LIGHT`]) that no pass of it writes. The default is
+    /// none, which takes the CPU path. Answered on the catalog owner while planning: it reads no
+    /// pixel and holds nothing that scales with the image.
+    fn gpu(&self) -> Option<crate::render::gpu::GpuSpatialUnit> {
         None
     }
 
@@ -765,24 +765,6 @@ pub(crate) trait SpatialUnit: Send + Sync {
     /// Answered while planning: it reads no pixel and holds nothing that scales with the image.
     fn gpu_light(&self, _stage: Stage) -> Option<crate::render::gpu::GpuLightPasses> {
         None
-    }
-
-    /// The unit on the GPU reading its global estimate from the light plane its light link
-    /// writes ([`Self::gpu_light`]), rather than computing it in its own passes or reading it from
-    /// its words: its description holds a light plane no pass of it writes
-    /// ([`crate::render::gpu::GpuPlaneSize::LIGHT`]). The default is [`Self::gpu`] handed no
-    /// estimate, which a unit that reads none answers alike. Answered while planning.
-    fn gpu_reading_light(&self) -> Option<crate::render::gpu::GpuSpatialUnit> {
-        self.gpu(None)
-    }
-
-    /// Whether a GPU preview may draw this unit with the estimate prepared from its input before
-    /// a restoration layer changed it, held for a drag (`docs/design/gpu-preview.md`, "At 100%
-    /// and above"): the unit's own judgement of how far its output follows such an estimate, which
-    /// the qualification corpus measures. The default is no, so a unit with an estimate keeps the
-    /// CPU path for such a drag unless it says otherwise. Answered while planning.
-    fn holds_restored_estimate(&self) -> bool {
-        false
     }
 
     /// The planes this unit computes from a reduced grid of its input before it applies any

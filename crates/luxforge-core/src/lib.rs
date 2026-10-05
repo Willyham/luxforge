@@ -106,15 +106,15 @@ pub use proxy::{
     ProxyApproximation, ProxyBounds, ProxyCoverage, ProxyIdentity, ProxyPlan, area_coverage,
 };
 pub use render::gpu::{
-    BoundaryKey, CoordinateGrid, EstimateSource, GPU_PASS_INPUTS, GPU_PLAN_LINKS,
-    GPU_SHARED_VALUES, GPU_WARM_LINKS, GPU_WORKGROUP_LANES, GRID_MAX_NODES,
-    GRID_SAMPLE_TOLERANCE_PX, GRID_TOLERANCE_PX, GpuAnchor, GpuAnswer, GpuApply, GpuBoundary,
-    GpuChange, GpuClipping, GpuComponent, GpuDescription, GpuEstimates, GpuFallback, GpuGeometry,
-    GpuLight, GpuLightPasses, GpuLightRestoration, GpuMask, GpuOperation, GpuPass, GpuPassShape,
-    GpuPlan, GpuPlanRequest, GpuPlane, GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuPreview,
-    GpuProgram, GpuProgramKind, GpuRest, GpuSpatial, GpuSpatialUnit, GpuView, REST_TILE_BYTES,
-    REST_TILE_SIDES, RestTile, RestTiles, STREAM_TILE_SIDES, SourceBoundary, StreamPlan, TilePlan,
-    anchored, gpu_lights, gpu_plan, gpu_plan_reading_lights, gpu_plan_with, plan_read, plan_stream,
+    BoundaryKey, CoordinateGrid, GPU_PASS_INPUTS, GPU_PLAN_LINKS, GPU_SHARED_VALUES,
+    GPU_WARM_LINKS, GPU_WORKGROUP_LANES, GRID_MAX_NODES, GRID_SAMPLE_TOLERANCE_PX,
+    GRID_TOLERANCE_PX, GpuAnchor, GpuAnswer, GpuApply, GpuBoundary, GpuChange, GpuClipping,
+    GpuComponent, GpuDescription, GpuFallback, GpuGeometry, GpuLight, GpuLightPasses,
+    GpuLightRestoration, GpuMask, GpuOperation, GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest,
+    GpuPlane, GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuPreview, GpuProgram, GpuProgramKind,
+    GpuRest, GpuSpatial, GpuSpatialUnit, GpuView, REST_TILE_BYTES, REST_TILE_SIDES, RestLight,
+    RestLights, RestTile, RestTiles, STREAM_TILE_SIDES, SourceBoundary, StreamPlan, TilePlan,
+    anchored, gpu_lights, gpu_plan, plan_read, plan_stream,
 };
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{

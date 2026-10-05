@@ -628,11 +628,11 @@ fn the_exact_fit_window_planning_cost_is_measured() {
     }
 }
 
-/// At the exact stage at Fit a stack the window cannot hold whole keeps the whole stage: a drag
-/// under Dehaze, whose light the GPU then takes from the stage it holds, and a stack with no crop,
-/// whose output reads every pixel.
+/// At the exact stage at Fit a stack with no crop, whose output reads every pixel, keeps the whole
+/// stage; a drag under Dehaze behind a tight crop holds only the window the crop reads, since the
+/// light is its light link's, computed from the whole stage whatever window the boundary holds.
 #[test]
-fn an_exact_fit_boundary_keeps_the_whole_stage_where_a_window_cannot_hold_it() {
+fn an_exact_fit_boundary_keeps_the_whole_stage_only_where_its_output_reads_it() {
     let tight = Layer::crop(fitted_crop(WIDTH, HEIGHT, 7.0, [0.4, 0.4, 0.2, 0.2]));
     let dehaze = Layer::new(crate::PRESENCE_EFFECT, json!({"dehaze": 40.0}));
     let small = || {
@@ -648,25 +648,47 @@ fn an_exact_fit_boundary_keeps_the_whole_stage_where_a_window_cannot_hold_it() {
         };
         PreviewSource::Jpeg(image.window(window, &crate::Cancel::never()).unwrap())
     };
-    for (name, source, entry, drafted) in [
+    for (name, source, entry, drafted, whole) in [
         (
             "under Dehaze",
             source(),
             vec![dehaze.clone(), tight.clone()],
             vec![basic(json!({"exposure": 0.3})), dehaze, tight],
+            false,
         ),
         (
             "no crop",
             small(),
             Vec::new(),
             vec![basic(json!({"exposure": 0.3}))],
+            true,
         ),
     ] {
         let (job, draft) = draft_job_over(source, "set-basic", entry, drafted, 2);
         let preview = plan_preview(&job.evaluation, &draft, crate::GpuView::Fit(bounds())).unwrap();
-        let request = preview.boundary.expect("a boundary");
+        let request = preview.boundary.clone().expect("a boundary");
         assert_eq!(request.key.plan(), None, "{name}: drawn at the exact stage");
-        assert_eq!(request.window, None, "{name}: the whole stage");
+        match (whole, request.window) {
+            (true, None) => {}
+            (false, Some(window)) => {
+                assert!(
+                    window.width < WIDTH && window.height < HEIGHT,
+                    "{name}: the window the crop reads, {window:?}"
+                );
+                let [light] = &planned(&preview).lights[..] else {
+                    panic!("{name}: one light");
+                };
+                assert_eq!(
+                    light.stage,
+                    Stage {
+                        width: WIDTH,
+                        height: HEIGHT
+                    },
+                    "{name}: the whole stage's light"
+                );
+            }
+            (_, window) => panic!("{name}: {window:?}"),
+        }
     }
 }
 
@@ -864,13 +886,12 @@ fn a_region_boundary_holds_the_window_its_region_reads_at_full_scale() {
     }
 }
 
-/// At a percentage zoom a Dehaze plan whose atmospheric light the GPU would take from the visible
-/// region alone, where the exact visible region reads the whole stage's, is the CPU's, naming why
-/// and asking for no boundary; at Fit, where the GPU holds the whole stage, the same draft plans.
-/// A spatial plan with no global estimate plans over the region, its window wider than the region
-/// by the margin its filters read.
+/// At a percentage zoom a Dehaze drag plans over the visible region's window, its atmospheric light
+/// its light link's, computed from the whole stage at full resolution whatever window the plan draws
+/// over; at Fit the same draft reads the same light. A Clarity drag's window is wider than the
+/// region by the margin its filters read.
 #[test]
-fn a_region_plan_never_takes_a_spatial_estimate_from_the_region_alone() {
+fn a_region_plan_reads_dehazes_light_from_the_whole_stage() {
     let rect = crate::modules::Region {
         x0: 200,
         y0: 120,
@@ -881,27 +902,46 @@ fn a_region_plan_never_takes_a_spatial_estimate_from_the_region_alone() {
         rect,
         magnification: 1.0,
     };
+    let holds = |window: crate::modules::Region| {
+        window.x0 <= rect.x0
+            && window.y0 <= rect.y0
+            && window.x1() >= rect.x1()
+            && window.y1() >= rect.y1()
+    };
     let dehaze = Layer::new(crate::PRESENCE_EFFECT, json!({"dehaze": 40.0}));
     let (job, draft) = draft_job("set-presence", Vec::new(), vec![dehaze], 1);
     let preview = plan_preview(&job.evaluation, &draft, region).unwrap();
-    match &preview.answer {
-        GpuAnswer::Fallback(reason) => {
-            assert_eq!(reason.code(), "region-estimate");
-            assert_eq!(reason.layer(), Some(0));
-        }
-        GpuAnswer::Plan(_) => panic!("a region plan took Dehaze's light from the region"),
-    }
-    assert!(preview.boundary.is_none());
-    let fit = plan_preview(&job.evaluation, &draft, crate::GpuView::Fit(bounds())).unwrap();
-    assert!(
-        planned(&fit).approximate(),
-        "at Fit the GPU takes it over the whole stage"
+    let plan = planned(&preview);
+    let [light] = &plan.lights[..] else {
+        panic!("one light: {:?}", plan.lights);
+    };
+    assert_eq!(
+        (light.layer, light.stage),
+        (
+            0,
+            Stage {
+                width: WIDTH,
+                height: HEIGHT
+            }
+        ),
+        "the whole stage's"
     );
+    assert!(light.over_source() && plan.spatial[0].light.is_some());
+    let window = preview
+        .boundary
+        .as_ref()
+        .and_then(|request| request.window)
+        .expect("the region's window");
+    assert!(holds(window), "{window:?} holds {rect:?}");
+    let fit = plan_preview(&job.evaluation, &draft, crate::GpuView::Fit(bounds())).unwrap();
+    assert_eq!(planned(&fit).lights, plan.lights, "at Fit the same light");
     assert_eq!(fit.boundary.unwrap().window, None);
     let clarity = Layer::new(crate::PRESENCE_EFFECT, json!({"clarity": 30.0}));
     let (job, draft) = draft_job("set-presence", Vec::new(), vec![clarity], 1);
     let preview = plan_preview(&job.evaluation, &draft, region).unwrap();
-    assert!(!planned(&preview).approximate());
+    // The drafted layer's GPU shape holds Dehaze at nought, which reads its light too, so a drag
+    // across zero changes words alone.
+    assert!(planned(&preview).reads_lights());
     let window = preview
         .boundary
         .unwrap()
@@ -916,13 +956,12 @@ fn a_region_plan_never_takes_a_spatial_estimate_from_the_region_alone() {
     );
 }
 
-/// A Presence drag reads Dehaze's light from the estimate store the committed stack's Fit frame
-/// filled, under the name of the proxy that frame was rendered from, which planning never builds:
-/// once that frame is rendered, the drag's plan holds the CPU's light and is not approximate, on a
-/// JPEG and on a RAW. Before it, and for a drag of a layer under Presence, which changes the input
-/// the light is estimated from, the light is taken on the GPU and the plan says so.
+/// A drag reads the light the picture at rest draws with while it leaves the light's input as the
+/// committed stack holds it — a Presence drag, on a JPEG and on a RAW — and computes it every tick
+/// from the source through the drafted colour where a colour layer before it changes: a Basic drag
+/// under Presence. Planning reads no pixel and reduces nothing: the estimate store stays empty.
 #[test]
-fn a_presence_drag_reads_the_light_its_fit_frame_stored() {
+fn a_drag_reads_the_light_at_rest_unless_a_colour_layer_before_it_changes() {
     let raw = PreviewSource::Raw {
         image: crate::render::tests::varied(WIDTH, HEIGHT),
         settings: crate::LinearSettings::default(),
@@ -947,54 +986,48 @@ fn a_presence_drag_reads_the_light_its_fit_frame_stored() {
             );
             plan_preview(&job.evaluation, &draft, crate::GpuView::Fit(bounds())).unwrap()
         };
-        let clarity = || plan_of("set-presence", vec![presence(60)]);
-        let first = clarity();
+        let at_rest = crate::render::gpu::plan_rest(
+            &committed_over(context.clone(), source.clone(), entry.clone()),
+            GpuView::Fit(bounds()),
+        )
+        .unwrap();
+        let at_rest = planned(&at_rest.view).lights.clone();
         assert!(
-            first.boundary.as_ref().unwrap().key.plan().is_some(),
+            matches!(&at_rest[..], [light] if light.over_source() && light.content.is_empty()),
+            "{name}: {at_rest:?}"
+        );
+        let clarity = plan_of("set-presence", vec![presence(60)]);
+        assert!(
+            clarity.boundary.as_ref().unwrap().key.plan().is_some(),
             "{name}: a proxy"
         );
-        assert!(
-            planned(&first).approximate(),
-            "{name}: nothing is stored yet"
-        );
-        // The committed stack's Fit frame, through the preview worker in the same context.
-        let (mut job, _) = draft_job_in(
-            context.clone(),
-            source.clone(),
-            "set-presence",
-            entry.clone(),
-            entry.clone(),
-            0,
-        );
-        job.proxy = Some(bounds());
-        job.intent = PreviewIntent::Interactive;
-        let mut queue = PreviewQueue::default();
-        queue.request(job);
-        let frame = wait_for("the Fit frame", || queue.poll());
-        assert_eq!(frame.phase(), PreviewPhase::Proxy, "{name}");
-        let stored = clarity();
-        assert!(
-            !planned(&stored).approximate(),
-            "{name}: the stored light is read"
+        assert_eq!(
+            planned(&clarity).lights,
+            at_rest,
+            "{name}: the light at rest"
         );
         let under = plan_of(
             "set-basic",
             vec![basic(json!({"exposure": 0.3})), presence(30)],
         );
-        assert_eq!(planned(&under).boundary.layer, 0, "{name}");
+        let plan = planned(&under);
+        assert_eq!(plan.boundary.layer, 0, "{name}");
+        let [light] = &plan.lights[..] else {
+            panic!("{name}: one light");
+        };
         assert!(
-            planned(&under).approximate(),
-            "{name}: a drag under Presence changes the light's input"
+            light.layer == 1 && light.over_source() && light.content.len() == 1,
+            "{name}: the drafted exposure before Presence, every tick"
         );
+        assert_eq!(context.estimates().len(), 0, "{name}: nothing reduced");
     }
 }
 
 /// A drag of a restoration or spatial layer the stack holds is warmed by one plan, the layer in
 /// its GPU shape, which every drag of it draws: a Presence layer's Clarity drag and the first
 /// Texture and Dehaze drags of either sign, and a Detail layer's Sharpening drag and first
-/// noise-reduction drags, all find their pipelines warmed. Dehaze's light is stored by the
-/// committed stack's Fit frame only after the warm list is planned with its job, and the drags
-/// that read it still find theirs.
+/// noise-reduction drags, all find their pipelines warmed, Dehaze's reading the light its light
+/// link computes as the warmed plan does.
 #[test]
 fn the_warmed_plans_hold_a_spatial_layers_drags() {
     for (action, effect, held, drags) in [
@@ -1050,15 +1083,6 @@ fn the_warmed_plans_hold_a_spatial_layers_drags() {
             1,
             "{effect}: one plan, the layer in its GPU shape"
         );
-        // The committed stack's Fit frame, through the preview worker in the same context, fills
-        // the estimate store after the warm list was planned.
-        let (mut job, _) = job_of(entry.clone(), 0);
-        job.proxy = Some(bounds());
-        job.intent = PreviewIntent::Interactive;
-        let mut queue = PreviewQueue::default();
-        queue.request(job);
-        let frame = wait_for("the Fit frame", || queue.poll());
-        assert_eq!(frame.phase(), PreviewPhase::Proxy, "{effect}");
         for drafted in drags {
             let payload = drafted.clone();
             let (job, draft) = job_of(
@@ -1070,10 +1094,6 @@ fn the_warmed_plans_hold_a_spatial_layers_drags() {
             );
             let drag =
                 plan_preview(&job.evaluation, &draft, crate::GpuView::Fit(bounds())).unwrap();
-            assert!(
-                !planned(&drag).approximate(),
-                "{effect}: a stored estimate is read"
-            );
             assert_eq!(
                 pipelines(planned(&drag)),
                 pipelines(own[0]),
@@ -1274,64 +1294,6 @@ fn at_a_percentage_zoom_a_spatial_drag_carries_its_cpu_shape_too() {
     assert!(fit.cpu_shape.is_none(), "no choice at Fit");
 }
 
-/// At a percentage zoom a Dehaze drag reads the light the exact visible region's render stored over
-/// the whole stage, as the CPU frame that settles it does: before that render the store holds none
-/// and the drag keeps the CPU path (`region-estimate`); after it the region plan holds the CPU's
-/// light, is not approximate, and names its boundary's window.
-#[test]
-fn a_region_drag_reads_the_light_its_exact_region_stored() {
-    let rect = crate::modules::Region {
-        x0: 200,
-        y0: 120,
-        width: 160,
-        height: 100,
-    };
-    let region = crate::GpuView::Region {
-        rect,
-        magnification: 1.0,
-    };
-    let context = RenderContext::new();
-    let dehaze = |amount: i32| Layer::new(crate::PRESENCE_EFFECT, json!({"dehaze": amount}));
-    let entry = vec![dehaze(40)];
-    let plan_of = || {
-        let (job, draft) = draft_job_in(
-            context.clone(),
-            source(),
-            "set-presence",
-            entry.clone(),
-            vec![dehaze(60)],
-            1,
-        );
-        plan_preview(&job.evaluation, &draft, region).unwrap()
-    };
-    let first = plan_of();
-    assert!(
-        matches!(&first.answer, GpuAnswer::Fallback(reason) if reason.code() == "region-estimate"),
-        "nothing is stored yet"
-    );
-    // The committed stack's exact visible region, as the quiet policy settles it, in the same
-    // context.
-    let (mut job, _) = draft_job_in(
-        context.clone(),
-        source(),
-        "set-presence",
-        entry.clone(),
-        entry.clone(),
-        0,
-    );
-    job.viewport = Some(rect);
-    job.intent = PreviewIntent::Settle;
-    let mut queue = PreviewQueue::default();
-    let generation = queue.request(job);
-    wait_for("the exact region", || {
-        let result = queue.poll()?;
-        (result.generation == generation && result.phase() == PreviewPhase::Region).then_some(())
-    });
-    let stored = plan_of();
-    assert!(!planned(&stored).approximate(), "the stored light is read");
-    assert!(stored.boundary.unwrap().window.is_some());
-}
-
 /// With Detail and Presence both in the stack, the warm list holds a Detail drag's sequence, which
 /// chains Presence's operation after Detail's, and a Presence drag's.
 #[test]
@@ -1381,17 +1343,18 @@ fn the_warmed_plans_hold_a_drag_of_each_of_two_spatial_layers() {
     }
 }
 
-/// Behind Detail, Dehaze's light cannot be prepared from a region's window, so the CPU's region
-/// frames decline and the settled frame at a percentage zoom is the whole exact frame, which stores
-/// the light. Before it is stored, a Presence drag and a Detail drag keep the CPU path
-/// (`region-estimate`, naming Presence). After it, a Presence drag reads the stored light, the
-/// drafted stack's own, its plan running Detail's operation, then Presence's, from the photograph
-/// — the boundary every gesture over the view starts from — over the window the region reads,
-/// rendered after the drag's first moving job even though that job's region declined: every texel
-/// the whole stage's. A Detail drag reads the light the stack it started from stored, held for the
-/// drag, which the plan names approximate without taking anything on the GPU.
+/// Behind Detail, Dehaze's light reads Detail's exact output, which only the picture at rest's
+/// sweep of the whole stage at full resolution computes: every plan reading it holds that light's
+/// link, Detail's operation in its prefix, and beside it the stand-in with Detail left out, over
+/// the source, which a slot computes while it holds no swept light. At a percentage zoom, with
+/// nothing rendered and nothing stored, a Presence drag plans at once, reading the light at rest,
+/// its plan running Detail's operation, then Presence's, from the photograph — the boundary every
+/// gesture over the view starts from — over the window the region reads, every texel the whole
+/// stage's. A Detail drag reads the light of the stack it started from, the slot's still; a Basic
+/// drag between them, which changes the light's input by its tone, computes it every tick from the
+/// source with Detail left out, the recorded default.
 #[test]
-fn behind_detail_a_region_plan_holds_dehazes_stored_light() {
+fn behind_detail_a_region_plan_reads_the_light_at_rest_or_its_stand_in() {
     let rect = crate::modules::Region {
         x0: 200,
         y0: 120,
@@ -1434,55 +1397,28 @@ fn behind_detail_a_region_plan_holds_dehazes_stored_light() {
         );
         (plan_preview(&job.evaluation, &draft, region).unwrap(), job)
     };
-    for (action, drafted) in [
-        ("set-presence", &presence_drag),
-        ("set-detail", &detail_drag),
-    ] {
-        let (preview, _) = plan_of(action, drafted);
-        assert!(
-            matches!(&preview.answer,
-                GpuAnswer::Fallback(reason) if reason.code() == "region-estimate"
-                    && reason.layer() == Some(1)),
-            "{action}: nothing is stored yet, {:?}",
-            preview.answer.fallback()
-        );
-        assert!(preview.boundary.is_none(), "{action}");
-    }
-    assert_eq!(
-        context.estimates().len(),
-        0,
-        "planning on a cold store reduces nothing: it only looks the light up"
-    );
-    // The committed stack settles at the zoom: its region declines, and the whole exact frame
-    // stores the light.
-    let (mut job, _) = draft_job_in(
-        context.clone(),
-        source(),
-        "set-presence",
-        entry.clone(),
-        entry.clone(),
-        0,
-    );
-    job.viewport = Some(rect);
-    job.intent = PreviewIntent::Settle;
-    let mut queue = PreviewQueue::default();
-    let generation = queue.request(job);
-    wait_for("the settled frame", || {
-        let result = queue.poll()?;
-        (result.generation == generation && result.phase() == PreviewPhase::Exact).then_some(())
-    });
+    let at_rest = crate::render::gpu::plan_rest(
+        &committed(context.clone(), entry.clone()),
+        GpuView::Fit(bounds()),
+    )
+    .unwrap();
+    let swept = at_rest.lights.expect("Detail's exact output is swept");
+    let at_rest = planned(&at_rest.view).lights.clone();
+    let [light] = &at_rest[..] else {
+        panic!("one light: {at_rest:?}");
+    };
+    assert_eq!(swept.lights[0].light, *light);
+    assert!(light.layer == 1 && !light.over_source() && light.spatial.len() == 1);
+    let stand_in = light.stand_in.as_deref().expect("its stand-in");
+    assert!(stand_in.over_source() && stand_in.left_out == [0]);
 
     let (preview, mut job) = plan_of("set-presence", &presence_drag);
     let plan = planned(&preview);
-    assert!(!plan.approximate(), "the drafted stack's own light");
+    assert_eq!(plan.lights, at_rest, "the light at rest");
     assert_eq!(
         plan.spatial.len(),
         2,
         "Detail's operation, then Presence's, from the photograph"
-    );
-    assert!(
-        plan.spatial.iter().all(|spatial| !spatial.estimated),
-        "nothing is taken on the GPU"
     );
     let request = preview.boundary.clone().expect("a boundary");
     let window = request.window.expect("the region's window");
@@ -1558,115 +1494,34 @@ fn behind_detail_a_region_plan_holds_dehazes_stored_light() {
     let (preview, _) = plan_of("set-detail", &detail_drag);
     let plan = planned(&preview);
     assert_eq!(plan.spatial.len(), 2, "Detail's operation, then Presence's");
-    assert!(
-        plan.spatial.iter().all(|spatial| !spatial.estimated),
-        "nothing is taken on the GPU"
-    );
-    assert!(
-        plan.spatial[1].held && plan.approximate(),
-        "the light held for the drag"
+    assert_eq!(
+        plan.lights, at_rest,
+        "the light of the stack it started from"
     );
     assert!(preview.boundary.unwrap().window.is_some());
-    // A Basic drag between them changes the light's input by its tone, which a held light does
-    // not follow: the CPU path, naming Presence.
     let basic_drag = vec![
         detail.clone(),
         basic(json!({"exposure": 1.0})),
         presence.clone(),
     ];
     let (preview, _) = plan_of("set-basic", &basic_drag);
+    let [light] = &planned(&preview).lights[..] else {
+        panic!("one light");
+    };
     assert!(
-        matches!(&preview.answer,
-            GpuAnswer::Fallback(reason) if reason.code() == "region-estimate"
-                && reason.layer() == Some(2)),
-        "{:?}",
-        preview.answer.fallback()
+        light.layer == 2
+            && light.over_source()
+            && light.left_out == [0]
+            && light.content.len() == 1,
+        "the drafted exposure over the source, Detail left out: {light:?}"
     );
 }
 
-/// Behind Detail, a Detail drag holds Dehaze's stored light only while Dehaze removes a veil: at +1
-/// it does, and the plan is approximate; at 0 Dehaze compiles to nothing, so there is no light to
-/// hold and the plan is exact; at −1, the smallest step that adds a veil, the drag keeps the CPU
-/// path naming Presence (`region-estimate`), the store holding the light all the same.
-#[test]
-fn a_detail_drag_holds_dehazes_light_only_while_it_removes_a_veil() {
-    let rect = crate::modules::Region {
-        x0: 200,
-        y0: 120,
-        width: 160,
-        height: 100,
-    };
-    let region = crate::GpuView::Region {
-        rect,
-        magnification: 1.0,
-    };
-    let detail = Layer::new(crate::DETAIL_EFFECT, json!({"sharpening": 40}));
-    for dehaze in [1, 0, -1] {
-        let context = RenderContext::new();
-        let presence = Layer::new(
-            crate::PRESENCE_EFFECT,
-            json!({"dehaze": dehaze, "clarity": 20}),
-        );
-        let entry = vec![detail.clone(), presence.clone()];
-        // The committed stack settled at the zoom, its whole exact frame storing the light.
-        let (mut job, _) = draft_job_in(
-            context.clone(),
-            source(),
-            "set-detail",
-            entry.clone(),
-            entry.clone(),
-            0,
-        );
-        job.viewport = Some(rect);
-        job.intent = PreviewIntent::Settle;
-        let mut queue = PreviewQueue::default();
-        let generation = queue.request(job);
-        wait_for("the settled frame", || {
-            let result = queue.poll()?;
-            (result.generation == generation && result.phase() == PreviewPhase::Exact).then_some(())
-        });
-        let dragged = vec![
-            Layer {
-                payload: json!({"sharpening": 70}),
-                ..detail.clone()
-            },
-            presence,
-        ];
-        let (job, draft) = draft_job_in(context, source(), "set-detail", entry, dragged, 1);
-        let preview = plan_preview(&job.evaluation, &draft, region).unwrap();
-        match dehaze {
-            1 => {
-                let plan = planned(&preview);
-                assert!(
-                    plan.spatial[1].held && plan.approximate(),
-                    "dehaze {dehaze}"
-                );
-            }
-            0 => {
-                let plan = planned(&preview);
-                assert!(
-                    !plan.approximate() && plan.spatial.iter().all(|spatial| !spatial.held),
-                    "dehaze {dehaze}: no light to hold"
-                );
-            }
-            _ => assert!(
-                matches!(&preview.answer,
-                    GpuAnswer::Fallback(reason) if reason.code() == "region-estimate"
-                        && reason.layer() == Some(1)),
-                "dehaze {dehaze}: {:?}",
-                preview.answer.fallback()
-            ),
-        }
-    }
-}
-
 /// A drag after Presence, at a percentage zoom, runs Presence on the GPU from the stack's first
-/// content layer over the window its region reads: behind Detail, Presence's light must be stored,
-/// since no window can prepare it. With none stored the drag keeps the CPU path naming Presence
-/// (`region-estimate`), and a region's boundary through Presence refuses to reduce it; with one
-/// stored, it plans, reading that light.
+/// content layer over the window its region reads, behind Detail too: it plans at once, nothing
+/// rendered or stored, reading the light the picture at rest draws with, which no window prepares.
 #[test]
-fn a_drag_after_presence_behind_detail_needs_its_light_stored() {
+fn a_drag_after_presence_behind_detail_reads_the_light_at_rest() {
     let rect = crate::modules::Region {
         x0: 200,
         y0: 120,
@@ -1682,49 +1537,41 @@ fn a_drag_after_presence_behind_detail_needs_its_light_stored() {
     let vignette = Layer::new(crate::VIGNETTE_EFFECT, json!({"amount": -30}));
     let entry = vec![detail.clone(), presence.clone()];
     let drafted = vec![detail, presence, vignette];
-    let (job, draft) = draft_job("set-vignette", entry, drafted, 1);
-    let preview = plan_preview(&job.evaluation, &draft, region).unwrap();
-    assert!(
-        matches!(&preview.answer,
-            GpuAnswer::Fallback(reason) if reason.code() == "region-estimate"
-                && reason.layer() == Some(1)),
-        "{:?}",
-        preview.answer.fallback()
+    let context = RenderContext::new();
+    let (job, draft) = draft_job_in(
+        context.clone(),
+        source(),
+        "set-vignette",
+        entry.clone(),
+        drafted,
+        1,
     );
-    let exact = job.evaluation.exact(&crate::Cancel::never()).unwrap();
-    let position =
-        crate::render::gpu::position(job.evaluation.compiled().unwrap(), 2).expect("the vignette");
-    let refused = exact
-        .region_boundary(rect, position, crate::BoundaryFormat::Half)
-        .expect_err("no window can reduce Presence's stage");
-    assert!(refused.detail.contains("estimate store"), "{refused}");
-    // The drafted stack's exact frame stores the light; the vignette's drag then plans.
-    exact
-        .frame(job.evaluation.entry().snapshot.id.clone())
-        .unwrap();
     let preview = plan_preview(&job.evaluation, &draft, region).unwrap();
     let plan = planned(&preview);
-    assert!(
-        plan.spatial.len() == 2 && !plan.approximate(),
-        "the vignette's plan starts at Detail and reads Presence's stored light"
+    assert_eq!(
+        plan.spatial.len(),
+        2,
+        "the vignette's plan starts at Detail and runs Presence"
     );
+    let at_rest =
+        crate::render::gpu::plan_rest(&committed(context.clone(), entry), GpuView::Fit(bounds()))
+            .unwrap();
+    assert_eq!(
+        plan.lights,
+        planned(&at_rest.view).lights,
+        "the light at rest"
+    );
+    assert!(!plan.lights[0].over_source());
     assert!(preview.boundary.unwrap().window.is_some());
-    assert!(
-        exact
-            .region_boundary(rect, position, crate::BoundaryFormat::Half)
-            .is_ok()
-    );
+    assert_eq!(context.estimates().len(), 0, "nothing reduced");
 }
 
-/// At Fit behind a straightened crop, whose proxy holds a window of its stage, the CPU's proxy is
-/// handed the exact stage's atmospheric light. A drag's plan reads that light from the store under
-/// the exact stage's name: before the committed stack's Fit frame stored it, a Presence drag keeps
-/// the CPU path naming `window-estimate`; after it, the drag reads it and is exact; and a Basic drag
-/// under Dehaze, whose tone a held light does not follow, keeps the CPU path. The plan only looks
-/// the light up. (A Detail layer before Dehaze holds the proxy to its whole stage, which no window
-/// can prepare the light behind.)
+/// At Fit behind a straightened crop, whose proxy holds a window of its stage, a drag's light is
+/// the whole exact stage's, as the CPU's windowed proxy is handed: a Presence drag reads it, and a
+/// Basic drag under Dehaze computes it every tick from the source through the drafted exposure.
+/// Nothing is rendered or stored first, and planning reduces nothing.
 #[test]
-fn behind_a_windowed_fit_proxy_a_plan_reads_the_exact_stages_light() {
+fn behind_a_windowed_fit_proxy_a_plan_reads_the_whole_stages_light() {
     // A proxy stage wider than Dehaze's 512 px tiles, and a crop on its right, so the window the
     // crop reads starts past the stage's first tile.
     let (width, height) = (2400, 1600);
@@ -1762,44 +1609,17 @@ fn behind_a_windowed_fit_proxy_a_plan_reads_the_exact_stages_light() {
             draft_job_in(context.clone(), source(), action, entry.clone(), drafted, 1);
         plan_preview(&job.evaluation, &draft, crate::GpuView::Fit(bounds)).unwrap()
     };
-    let presence_drag = || {
+    let whole = Stage { width, height };
+    let preview = plan_of(
+        "set-presence",
         vec![
             Layer {
                 payload: json!({"dehaze": 60}),
                 ..presence.clone()
             },
             crop(),
-        ]
-    };
-    let basic_drag = || vec![basic(json!({"exposure": 1.0})), presence.clone(), crop()];
-    let window_estimate = |preview: &GpuPreview, what: &str| {
-        assert!(
-            matches!(&preview.answer,
-                GpuAnswer::Fallback(reason) if reason.code() == "window-estimate"
-                    && reason.layer().is_some()),
-            "{what}: {:?}",
-            preview.answer.fallback()
-        );
-        assert!(preview.boundary.is_none(), "{what}");
-    };
-    window_estimate(&plan_of("set-presence", presence_drag()), "nothing stored");
-    assert_eq!(context.estimates().len(), 0, "planning reduces nothing");
-    // The committed stack's Fit frame, a windowed proxy, through the preview worker.
-    let (mut job, _) = draft_job_in(
-        context.clone(),
-        source(),
-        "set-presence",
-        entry.clone(),
-        entry.clone(),
-        0,
+        ],
     );
-    job.proxy = Some(bounds);
-    job.intent = PreviewIntent::Interactive;
-    let mut queue = PreviewQueue::default();
-    queue.request(job);
-    let frame = wait_for("the Fit frame", || queue.poll());
-    assert_eq!(frame.phase(), PreviewPhase::Proxy);
-    let preview = plan_of("set-presence", presence_drag());
     assert!(
         preview
             .boundary
@@ -1808,13 +1628,29 @@ fn behind_a_windowed_fit_proxy_a_plan_reads_the_exact_stages_light() {
             .is_some_and(|plan| plan.window.is_some()),
         "a windowed proxy"
     );
-    assert!(!planned(&preview).approximate(), "the exact stage's light");
-    window_estimate(&plan_of("set-basic", basic_drag()), "a Basic drag");
+    let [light] = &planned(&preview).lights[..] else {
+        panic!("one light");
+    };
+    assert!(light.stage == whole && light.over_source() && light.content.is_empty());
+    let preview = plan_of(
+        "set-basic",
+        vec![basic(json!({"exposure": 1.0})), presence.clone(), crop()],
+    );
+    let [light] = &planned(&preview).lights[..] else {
+        panic!("one light");
+    };
+    assert!(light.stage == whole && light.over_source() && light.content.len() == 1);
+    assert_eq!(context.estimates().len(), 0, "planning reduces nothing");
 }
 
 /// The committed `layers` over [`source`], evaluated in `context`, as a displayed stack's job is.
 fn committed(context: RenderContext, layers: Vec<Layer>) -> Evaluation {
-    let (job, _) = draft_job_in(context, source(), "set-basic", layers.clone(), layers, 0);
+    committed_over(context, source(), layers)
+}
+
+/// [`committed`] over `source`.
+fn committed_over(context: RenderContext, source: PreviewSource, layers: Vec<Layer>) -> Evaluation {
+    let (job, _) = draft_job_in(context, source, "set-basic", layers.clone(), layers, 0);
     let evaluation = job.evaluation;
     Evaluation::new(
         evaluation.registry().clone(),
@@ -1910,45 +1746,63 @@ fn a_picture_at_rest_is_planned_in_anchored_tiles_of_the_output_stage() {
     assert!(rest.tiles.is_none());
 }
 
-/// A picture at rest whose stack reads a global estimate the store does not hold yet — Dehaze's
-/// light, which a stack's exact phase stores — names `region-estimate`, and its job asks the
-/// worker to plan the tiles again: the exact phase's outcome carries them, read from the light it
-/// stored, and the owner plans them at once from then on.
+/// A picture at rest of a Dehaze stack is planned at once, nothing rendered or stored: its tiles'
+/// plan reads the light its light link computes from the source. Behind Detail the light reads
+/// Detail's exact output, so the picture at rest sweeps the whole content stage at full resolution
+/// in tiles whose origins and sides are whole 16-pixel blocks, each block in one tile, every tile's
+/// window holding what Detail's halo reads; a sweep's side must be whole blocks.
 #[test]
-fn a_picture_at_rest_waits_for_the_light_its_exact_phase_stores() {
-    let context = RenderContext::new();
-    let layers = vec![Layer::new(crate::PRESENCE_EFFECT, json!({"dehaze": 40.0}))];
-    let evaluation = committed(context.clone(), layers.clone());
+fn a_picture_at_rest_reads_its_lights_and_sweeps_those_behind_detail() {
+    let dehaze = Layer::new(crate::PRESENCE_EFFECT, json!({"dehaze": 40.0}));
+    let evaluation = committed(RenderContext::new(), vec![dehaze.clone()]);
     let rest = crate::render::gpu::plan_rest(&evaluation, GpuView::Fit(bounds())).unwrap();
-    assert!(
-        matches!(&rest.tiles, Some(Err(reason)) if reason.code() == "region-estimate"),
-        "{:?}",
-        rest.tiles
-    );
-    let mut job = PreviewJob::new(evaluation).unwrap();
-    job.proxy = Some(bounds());
-    job.analyse = true;
-    job.intent = PreviewIntent::Settle;
-    job.rest_bounds = Some(bounds());
-    let mut queue = PreviewQueue::default();
-    let generation = queue.request(job);
-    let exact = wait_for("the exact phase", || {
-        let result = queue.poll()?;
-        (result.generation == generation && result.phase() == PreviewPhase::Exact).then_some(result)
-    });
-    let PhaseOutcome::Exact(outcome) = exact.outcome else {
-        panic!("an exact phase");
+    let tiles = match &rest.tiles {
+        Some(Ok(tiles)) => tiles,
+        other => panic!("{other:?}"),
     };
-    assert!(outcome.result.is_ok());
-    let tiles = outcome.rest.expect("the tiles planned again");
+    assert!(tiles.plan.reads_lights() && tiles.plan.lights[0].over_source());
     assert!(
-        !tiles.plan.approximate(),
-        "the light the exact phase stored"
+        rest.lights.is_none(),
+        "a light over the source needs no sweep"
     );
-    assert!(!tiles.tiles.is_empty());
-    let again = committed(context, layers);
-    let rest = crate::render::gpu::plan_rest(&again, GpuView::Fit(bounds())).unwrap();
-    assert!(matches!(rest.tiles, Some(Ok(_))), "{:?}", rest.tiles);
+
+    let detail = Layer::new(crate::DETAIL_EFFECT, json!({"sharpening": 40}));
+    let evaluation = committed(RenderContext::new(), vec![detail, dehaze]);
+    let rest = crate::render::gpu::plan_rest(&evaluation, GpuView::Fit(bounds())).unwrap();
+    let lights = planned(&rest.view).lights.clone();
+    let swept = rest.lights.expect("a sweep");
+    let [one] = &swept.lights[..] else {
+        panic!("one light swept");
+    };
+    let stage = Stage {
+        width: WIDTH,
+        height: HEIGHT,
+    };
+    assert_eq!((one.k, &one.light, swept.stage), (0, &lights[0], stage));
+    let check = |tiles: &[crate::RestTile]| {
+        let area: u64 = tiles.iter().map(|tile| tile.rect.pixels()).sum();
+        assert_eq!(area, u64::from(WIDTH * HEIGHT), "every pixel once");
+        for tile in tiles {
+            let (rect, window) = (tile.rect, tile.window);
+            assert_eq!((rect.x0 % 16, rect.y0 % 16), (0, 0), "{rect:?}");
+            assert!(
+                window.x0 <= rect.x0
+                    && window.y0 <= rect.y0
+                    && window.x1() >= rect.x1()
+                    && window.y1() >= rect.y1()
+                    && window.x1() <= WIDTH
+                    && window.y1() <= HEIGHT,
+                "{window:?} holds {rect:?}"
+            );
+        }
+    };
+    check(&one.tiles);
+    let small = crate::render::gpu::plan_rest_lights(&evaluation, &lights, Some(64))
+        .unwrap()
+        .expect("a sweep");
+    assert_eq!(small.lights[0].tiles.len(), 10 * 7);
+    check(&small.lights[0].tiles);
+    assert!(crate::render::gpu::plan_rest_lights(&evaluation, &lights, Some(40)).is_err());
 }
 
 // The warm list over as many masked spatial layers as a recipe may hold.
