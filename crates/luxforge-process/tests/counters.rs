@@ -157,9 +157,15 @@ fn gpu_allocations_are_unavailable_until_enabled() {
     assert_eq!(gpu.unified_memory, None);
 }
 
+/// The fastest any Apple GPU writes memory, in bytes a second, with headroom: the M2 and M3 Ultra
+/// reach 800 GB/s, and the M4 Pro fills the test's buffer at about 200 GB/s.
+#[cfg(target_os = "macos")]
+const FASTEST_FILL: u64 = 1_000_000_000_000;
+
 /// A 256 MiB private buffer raises the device's allocations by at least its size, and filling it
-/// with the blit engine raises GPU time. The GPU time the IORegistry reports is compared, loosely,
-/// with the command buffer's own GPU start and end times as an independent unit check.
+/// with the blit engine raises GPU time. The GPU time the IORegistry reports is held, as an
+/// independent unit check, between the least time the blit's bytes take at the fastest bandwidth
+/// an Apple GPU has and a multiple of the command buffer's own GPU start and end times.
 #[cfg(target_os = "macos")]
 #[test]
 fn a_metal_dispatch_raises_gpu_time_and_allocations() {
@@ -213,23 +219,27 @@ fn a_metal_dispatch_raises_gpu_time_and_allocations() {
         }
     };
     let after = before.map(|before| {
-        let measured = gpu.dispatch(16);
-        // AppUsage is active GPU time while GPUStartTime..GPUEndTime is the command buffer's GPU
-        // window; the blit can occupy a fraction of that window on Apple silicon. Wait for a
-        // meaningful fraction rather than treating the command-buffer interval as equal GPU work.
+        const FILLS: usize = 16;
+        let measured = gpu.dispatch(FILLS);
+        // AppUsage is this process's active GPU time, while GPUStartTime..GPUEndTime is the
+        // command buffer's GPU window, which other processes' work on a loaded host stretches
+        // without adding to this process's time. So the window bounds the rise only from above;
+        // from below it is bounded by the bytes the blit wrote at a bandwidth no Apple GPU
+        // reaches ([`FASTEST_FILL`]), which no load changes. That still catches a unit error: a
+        // counter in microseconds read as nanoseconds would rise about a two-hundredth of it.
+        let floor = (FILLS as u64 * buffer).saturating_mul(1_000_000_000) / FASTEST_FILL;
         let after = read_until(
             "GPU time rising by the dispatch",
             || sampler.read().gpu.time_ns.expect("GPU time"),
-            |after| after.saturating_sub(before) >= (measured / 8).max(1),
-        );
-        assert!(
-            after > before,
-            "GPU time stayed at {before} ns after a dispatch"
+            |after| after.saturating_sub(before) >= floor,
         );
         let grown = after - before;
-        println!("GPU time grew {grown} ns; Metal measured the command buffer at {measured} ns");
+        println!(
+            "GPU time grew {grown} ns; the bytes written need at least {floor} ns; Metal \
+             measured the command buffer at {measured} ns"
+        );
         assert!(
-            grown >= measured / 8 && grown <= measured.saturating_mul(4).max(1_000_000),
+            grown <= measured.saturating_mul(4).max(1_000_000),
             "GPU time grew {grown} ns for a command buffer Metal measured at {measured} ns"
         );
         after
