@@ -1846,10 +1846,7 @@ impl PoolKey {
 
     /// The pool of `self`'s scratch textures holding `lights` light planes: one fitted for a light
     /// link, which declares the light it writes, beside the links of the plan whose readers do.
-    #[cfg_attr(
-        not(any(test, feature = "qualification")),
-        expect(dead_code, reason = "the slot runs no light link yet")
-    )]
+    #[cfg(any(test, feature = "qualification"))]
     pub(super) fn with_lights(self, lights: u32) -> Self {
         Self {
             lights: self.lights.max(lights),
@@ -2687,32 +2684,6 @@ fn hash_of(parts: impl std::hash::Hash) -> u64 {
 
 /// What a light plane its light link has not written yet holds, as a key: no light link's.
 const UNLIT: u64 = u64::MAX;
-
-/// `input`, the content key of what a link's input holds, with the key of every light its `steps`
-/// read ([`Pool::light_key`]): what the link's content key folds in, so a light that changes —
-/// which changes nothing of the link's input, words or blocks — runs the link again, and each
-/// step reading it runs its passes and draws whole ([`GpuSpatial::global`]). `input` itself for
-/// steps that read no light.
-#[cfg_attr(
-    not(any(test, feature = "qualification")),
-    expect(dead_code, reason = "the slot runs no light link yet")
-)]
-pub(super) fn fold_lights(input: u64, steps: &[GpuStep], pool: &Pool) -> u64 {
-    let lights: Vec<(u32, Option<u64>)> = steps
-        .iter()
-        .filter_map(|step| match step {
-            GpuStep::Spatial(spatial) => Some(spatial),
-            _ => None,
-        })
-        .flat_map(|spatial| spatial.lights())
-        .map(|k| (k, pool.light_key(k)))
-        .collect();
-    if lights.is_empty() {
-        input
-    } else {
-        hash_of((input, lights))
-    }
-}
 
 impl Schedule {
     /// A schedule of new planes, which hold nothing yet, with a holder drawn from `pool`.

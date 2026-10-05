@@ -1484,9 +1484,8 @@ fn gpu_window_the_paint_harness_masks_at_100_grow_the_window_by_every_links_halo
 /// only what does not depend on the figures: the window is the region grown by every link's halo,
 /// the slot never falls as N grows, and a tick derives no boundary exactly when its slot passes
 /// the budget. With Dehaze beside Clarity and Texture in every masked Presence layer the same drag
-/// has no plan to charge at any N: the drag changes the input of every Dehaze layer, whose estimate
-/// at 100% is the exact stage's, which the store cannot hold for a drafted value, so every tick
-/// names `region-estimate` before the budget is asked.
+/// changes the input of every Dehaze layer, so each tick computes every layer's light from the
+/// whole stage over the source, a light a layer, its light links charged beside the slot.
 ///
 /// ```text
 /// LUXFORGE_GENERATED_FIXTURES=fixtures/generated cargo test --release -p luxforge-app \
@@ -1575,7 +1574,7 @@ fn gpu_window_the_paint_harness_masks_at_100_fit_the_budget_up_to_a_count() {
             view.name
         );
     }
-    // With Dehaze 25 beside them: the drag's first tick at 100% has no plan to charge.
+    // With Dehaze 25 beside them: a light a layer, computed every tick, charged with the slot.
     let mut dehaze = harness_presence();
     dehaze["dehaze"] = serde_json::json!(25.0);
     for masks in [1, 2] {
@@ -1589,12 +1588,15 @@ fn gpu_window_the_paint_harness_masks_at_100_fit_the_budget_up_to_a_count() {
                 "exposure",
                 0.8 + 0.1 * number as f64,
             );
-            let summary = editor.gpu.summary();
-            assert!(editor.gpu.planned().is_none(), "{summary}");
-            assert_eq!(summary["drag"]["reason"], "region-estimate", "{summary}");
+            let (plan, _) = editor.gpu.planned().expect("a 100% plan");
+            assert_eq!(plan.lights.len(), masks, "{masks} masks, {}", view.name);
+            let (_, slot) = editor.gpu.region_charge().expect("a region's charge");
             eprintln!(
-                "{test}: with Dehaze 25, {masks} masks, {}: the tick names {}",
-                view.name, summary["drag"]["reason"]
+                "{test}: with Dehaze 25, {masks} masks, {}: {} lights, slot {:.1} MB, fits {}",
+                view.name,
+                plan.lights.len(),
+                megabytes(slot),
+                slot <= GPU_PREVIEW_BUDGET
             );
             cancel_draft(&mut editor);
         }
