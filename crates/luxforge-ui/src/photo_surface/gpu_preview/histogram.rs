@@ -59,12 +59,14 @@
 //! (`map_buffer_on_submit`), submits it and hands the staging buffer to the retirement worker. The
 //! worker already blocks on its channel while nothing retires and, while something does, polls the
 //! device without waiting every 2 ms (performance rule 8): that poll, or the next frame's own
-//! submit, runs the mapping's callback, which decodes the counts and unmaps. wgpu runs a mapping's
-//! callback before any work-done callback registered after it, so the counts are decoded before the
-//! worker's own work-done callback ends the retirement, discharges the staging copy and wakes the
-//! desktop through the surface waker (`set_surface_waker`), whose subscription stays open while
-//! `surface_retirement_pending` holds. No timer, thread or wait is added, and the UI thread only
-//! encodes and submits. [`HistogramReadback::poll`] answers nothing while the counts are on their
+//! submit, runs the mapping's callback, which decodes the counts, unmaps and wakes the desktop
+//! through the surface waker (`set_surface_waker`), whose stream the desktop keeps installed while
+//! a photograph is open. The callback wakes it itself, after the counts are stored, because the
+//! worker's own wake when it ends the retirement and discharges the staging copy can come first:
+//! wgpu fires a mapping's callback before a later work-done callback only when one poll or submit
+//! finds both, and a frame's submit on the interface thread and the worker's poll may each find
+//! one. No timer, thread or wait is added, and the UI thread only encodes and submits.
+//! [`HistogramReadback::poll`] answers nothing while the counts are on their
 //! way, then the counts or why there are none: the budget, a failed mapping, counts that do not add
 //! up to the pixels reduced since the clear, or a lost device. It never answers counts it did not
 //! read for this readback.
@@ -526,7 +528,7 @@ impl HistogramReduction {
 
     /// Copy the counts into a staging buffer in `encoder`, map it on the same submission, submit
     /// `encoder` and hand the staging buffer to the retirement worker, whose polling completes the
-    /// mapping and whose end of the retirement wakes the desktop; answer the handle the counts
+    /// mapping, whose callback stores the counts and wakes the desktop; answer the handle the counts
     /// arrive through ([module documentation](self#the-readback)). `encoder` is submitted whatever
     /// happens: the staging copy refused by the budget, or a lost device, makes the handle answer
     /// the error at once, and wakes the desktop too.
@@ -572,6 +574,8 @@ impl HistogramReduction {
                 Err(_) => Err(HistogramError::ReadbackFailed),
             };
             *outcome.lock().expect("histogram readback lock") = Some(counts);
+            // After the counts are stored, so no wake reaches the desktop before them.
+            wake_surface();
         });
         queue.submit([encoder.finish()]);
         // After the submission, so the worker's work-done callback is registered after the mapping.
