@@ -16,9 +16,7 @@
 //! A test with no adapter prints that it was skipped and asserts nothing: the skip is the report,
 //! and `cargo test` counting it as passed does not make it GPU evidence.
 use super::gpu_plan::surface_plan;
-use super::gpu_qualification::{
-    Stream, codes, corpus_at_fit, drafted_against_cpu, figures, grid, worst,
-};
+use super::gpu_qualification::{Stream, codes, drafted_against_cpu, figures, grid, worst};
 use luxforge_core::{
     Cancel, DETAIL_EFFECT, GPU_PROGRAMS, GpuAnswer, GpuPlanRequest, Layer, LinearImage,
     LinearSettings, ModuleRegistry, Recipe, RenderContext, RenderOptions, RenderSource, SnapshotId,
@@ -1835,25 +1833,4 @@ mod drags {
         ));
         finish(editor, catalog);
     }
-}
-
-// ---- The corpus at Fit ------------------------------------------------------------------------
-
-/// The qualification corpus's Detail recipes at Fit through the shared harness
-/// ([`corpus_at_fit`]), each held to the spatial limits against the CPU's moving proxy the GPU
-/// frame stands in for (owner, 2026-10-02), with the jump from that proxy to the exact-derived
-/// frame a Detail stack settles to reported beside it.
-///
-/// ```sh
-/// LUXFORGE_GPU_CORPUS_OUTPUT=/tmp/new-dir \
-/// LUXFORGE_GENERATED_FIXTURES=fixtures/generated \
-/// LUXFORGE_RAW_MANIFEST=/path/to/raw-manifest.json \
-/// cargo test -p luxforge-app gpu_detail_corpus -- --ignored --nocapture
-/// ```
-#[test]
-#[ignore = "the GPU preview corpus at Fit: set LUXFORGE_GPU_CORPUS_OUTPUT to a new directory, \
-            LUXFORGE_GENERATED_FIXTURES to the generated JPEGs and, for the RAWs, \
-            LUXFORGE_RAW_MANIFEST"]
-fn gpu_detail_corpus_at_fit() {
-    corpus_at_fit("gpu_detail_corpus_at_fit", &["detail"]);
 }

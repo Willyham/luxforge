@@ -67,7 +67,7 @@
         "commands": [
           "cargo test -p luxforge-ui photo_surface",
           "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/60mp.jpg --output NEW_DIR --mode crop-start --presence --samples 5",
-          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/60mp.jpg --output NEW_DIR --mode viewport --zoom 100",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/60mp.jpg --output NEW_DIR --mode drag --zoom 100",
           "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [

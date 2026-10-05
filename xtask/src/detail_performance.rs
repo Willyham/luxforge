@@ -10,26 +10,21 @@
 //!   --source fixtures/generated/24mp.jpg --output NEW --samples 30
 //! ```
 //!
-//! `--case render|export|points|cancel|sharing` isolates a workload. Prepared-source decode is
+//! `--case render|export|points|sharing` isolates a workload. Prepared-source decode is
 //! outside render, export and point latency; cold picks reopen and prepare the owner outside the
 //! timer. The points are read by the owner's reference tile service (this owner has no GPU
 //! provider), which renders the Detail prefix's whole frame once per call, so a warm pick means
 //! the second request on that owner. Colour-limited later ticks use the same draft memo.
 use crate::*;
 use luxforge_core::{
-    ApiRequest, AssetId, ClientId, DETAIL_EFFECT, Layer, ModuleRegistry, PreviewIntent, PreviewJob,
-    PreviewQueue, PreviewRequest, PreviewSource, ProxyBounds, Recipe, RenderContext, RenderOptions,
-    SnapshotId, render, resources,
+    ApiRequest, AssetId, ClientId, DETAIL_EFFECT, Layer, ModuleRegistry, PreviewJob,
+    PreviewRequest, PreviewSource, Recipe, RenderContext, RenderOptions, SnapshotId, render,
+    resources,
 };
 use luxforge_testkit::client::{self, Owner};
 use std::{
     sync::Arc,
     time::{Instant, SystemTime, UNIX_EPOCH},
-};
-
-const FIT: ProxyBounds = ProxyBounds {
-    width: 2880,
-    height: 1800,
 };
 
 fn ms(start: Instant) -> f64 {
@@ -237,77 +232,6 @@ fn source_sharing(fixture: &Fixture) -> Result<Value> {
     }))
 }
 
-fn cancellation(fixture: &Fixture, samples: usize) -> Result<Value> {
-    let base = fixture.job()?;
-    let context = fixture.owner.render_context();
-    let mut durations = Vec::with_capacity(samples);
-    let mut observations = Vec::with_capacity(samples);
-    for sample in 0..samples {
-        let mut queue = PreviewQueue::default();
-        let mut job = base.clone();
-        job.intent = PreviewIntent::Interactive;
-        job.proxy = Some(FIT);
-        let queued = queue.request(job.clone());
-        // A live spatial reservation proves the cancel reaches active restoration work. This
-        // public resource read adds system-call overhead before the timer, never inside it.
-        luxforge_testbase::try_wait_for("Detail proxy to reserve a tile", || {
-            let report = resources::read(&context);
-            if report.budgets.spatial.in_use_bytes > 0 {
-                Some(Ok(()))
-            } else if queue.ready() || !queue.is_busy() {
-                Some(Err(
-                    "Proxy completed before active restoration was observed",
-                ))
-            } else {
-                None
-            }
-        })??;
-        let start = Instant::now();
-        let floor = queue.cancel();
-        let mut stale_results = 0;
-        luxforge_testbase::try_wait_for("cancelled Detail proxy to clean up", || {
-            while queue.poll().is_some() {
-                stale_results += 1;
-            }
-            (!queue.is_busy()).then_some(())
-        })?;
-        let duration = ms(start);
-        let memory = resources::read(&context);
-        released(&memory)?;
-        ensure(
-            stale_results == 0,
-            "Cancelled preview delivered a stale frame",
-        )?;
-        // A successful next job on the same queue proves the cancelled work was discarded, rather
-        // than an incomplete frame adopted. These pixels are outside the timer.
-        let recovery_generation = queue.request(job);
-        let recovery = luxforge_testbase::try_wait_for("next Detail proxy", || queue.poll())?;
-        ensure(
-            recovery.generation == recovery_generation,
-            "Recovery delivered another generation",
-        )?;
-        let proxy = recovery.proxy().ok_or("Recovery produced no proxy")?;
-        luxforge_testbase::try_wait_for("recovered proxy to become idle", || {
-            (!queue.is_busy()).then_some(())
-        })?;
-        let after = resources::read(&context);
-        released(&after)?;
-        observations.push(json!({
-            "sample":sample,"cancel_to_idle_ms":duration,"requested_generation":queued,
-            "cancel_floor":floor,"stale_results":stale_results,"resources_after_cancel":memory,
-            "recovery":{"generation":recovery_generation,
-                "proxy_dimensions":proxy.dimensions,"source_proxy_built":proxy.built,
-                "resources_with_caches_held":after}
-        }));
-        durations.push(duration);
-    }
-    Ok(json!({
-        "rows":[stats::row("detail.active_proxy_cancel_to_worker_idle", "ms", durations)],
-        "observations":observations,"display_bounds":FIT,
-        "scope":"Cancel during a live Detail tile on a fresh public PreviewQueue; latency includes worker cleanup and client polling (1 ms interval). Recovery runs on the same queue outside the timer and retains its source proxy until queue drop."
-    }))
-}
-
 fn points(
     fixture: Fixture,
     catalog: &Path,
@@ -406,10 +330,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize, case: &str) -
     )?;
     ensure(samples > 0, "Detail samples must be positive")?;
     ensure(
-        matches!(
-            case,
-            "all" | "render" | "export" | "points" | "cancel" | "sharing"
-        ),
+        matches!(case, "all" | "render" | "export" | "points" | "sharing"),
         "Unknown Detail performance case",
     )?;
     ensure(!out.exists(), "Detail performance output must be new")?;
@@ -456,7 +377,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize, case: &str) -
         report["recipe"] = serde_json::to_value(job.evaluation.recipe())?;
         report["identity"] = serde_json::to_value(&job.identity)?;
         drop(job);
-        for name in ["sharing", "render", "export", "cancel"] {
+        for name in ["sharing", "render", "export"] {
             if case != "all" && case != name {
                 continue;
             }
@@ -466,7 +387,6 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize, case: &str) -
                 "sharing" => source_sharing(&fixture)?,
                 "render" => full_render(&fixture, samples)?,
                 "export" => export(&fixture, out, samples)?,
-                "cancel" => cancellation(&fixture, samples)?,
                 _ => unreachable!(),
             };
             result["start_load"] = start_load;
