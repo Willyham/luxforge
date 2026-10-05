@@ -132,10 +132,26 @@ impl HeadlessSurface {
             });
         // Whatever stopped it, the rest's slot goes with its charge.
         self.pipeline.release_rest(&mut self.surface);
+        self.retired();
         Ok(RestDrawn {
             codes: codes?,
             frames,
         })
+    }
+
+    /// Wait, through the test base's one hang-bounded wait, until every resource this surface's
+    /// pipeline released has retired: the editor's surface holds one slot and its picture at rest,
+    /// never a run of released ones still charged, so the next draw is charged as it would be.
+    fn retired(&self) {
+        let _ = luxforge_testbase::try_wait_for("the released slots' retirement", || {
+            (self
+                .pipeline
+                .figures
+                .retirement_pending
+                .load(std::sync::atomic::Ordering::Acquire)
+                == 0)
+                .then_some(())
+        });
     }
 
     /// `plan`, a region plan whose boundary is derived from `source`, drawn as a picture at rest
@@ -191,6 +207,7 @@ impl HeadlessSurface {
             })
         });
         self.pipeline.release_gpu(&mut slots);
+        self.retired();
         codes
     }
 
@@ -235,16 +252,26 @@ impl HeadlessSurface {
             .map_async(wgpu::MapMode::Read, move |result| {
                 let _ = sender.send(result);
             });
-        self.device
-            .poll(wgpu::PollType::Wait {
-                submission_index: Some(index),
+        // The copy's submission waited for, and its mapping taken up by the poll that completes it,
+        // through the test base's one hang-bounded wait: a wait the driver times out on a loaded
+        // host is waited again, and only a lost device or a failed mapping ends it.
+        luxforge_testbase::try_wait_for("a readback's mapping", || {
+            match self.device.poll(wgpu::PollType::Wait {
+                submission_index: Some(index.clone()),
                 timeout: None,
-            })
-            .map_err(|_| GpuFallback::DeviceLost)?;
-        match receiver.try_recv() {
-            Ok(Ok(())) => {}
-            _ => return Err(GpuFallback::DeviceLost),
-        }
+            }) {
+                Ok(_) | Err(wgpu::PollError::Timeout) => {}
+                Err(_) => return Some(Err(GpuFallback::DeviceLost)),
+            }
+            match receiver.try_recv() {
+                Ok(Ok(())) => Some(Ok(())),
+                Ok(Err(_)) | Err(mpsc::TryRecvError::Disconnected) => {
+                    Some(Err(GpuFallback::DeviceLost))
+                }
+                Err(mpsc::TryRecvError::Empty) => None,
+            }
+        })
+        .map_err(|_| GpuFallback::DeviceLost)??;
         let mapped = readback.slice(..).get_mapped_range();
         let mut codes = Vec::with_capacity((width * height) as usize);
         for line in mapped.chunks_exact(padded as usize) {
