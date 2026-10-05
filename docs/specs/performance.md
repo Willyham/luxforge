@@ -3778,6 +3778,23 @@ What each program sequence the `gpu-preview` scenario compiles costs the editor'
 
 
 
+### Warming at launch and open
+
+The warm-up's own duration as the editor records it (`gpu_warm_up`, [GPU previews](../design/gpu-preview.md#warming-at-launch-and-open)): from a warm list handed to the idle compile thread until its queue drained, and when the newest list's open stack's part, with the frame's own sequences, had compiled. Release editor of `claude/gpu-first-task-009`, the `gpu-preview` scenario on the M4 Pro (Metal), 5 October 2026: one run per row, functional figures, not a timing gate.
+
+| Run | Shader cache | First warm-up | Open stack's part | Reference frame on screen before the GPU's |
+| --- | --- | ---: | ---: | ---: |
+| `LUXFORGE_BACKGROUND_BUNDLE_SUFFIX=task009-cold-1`, the first launch of the new build | A bundle identifier of its own, its Metal cache empty | 4,389 ms, 11 sequences over two lists (the release's list joined it) | 1,510 ms (the second list's) | not recorded: the idle check, then still unaware of warm-ups, failed the run |
+| `task009-cold-2`, the next launch | Its own, empty | 1,525 ms, 6 sequences | 41 ms | 38 ms (`surface_frame_drawn` `cpu` at 957 ms, `gpu` at 995 ms) |
+| The shared background bundle | Warm | 37 ms, 6 sequences | 2 ms | |
+
+The second cold run is faster than the first although its bundle's cache was empty too: macOS also keeps a compiler cache outside the bundle's, which the first run filled and which was not cleared, so neither row is a whole-system cold cache. Later warm-ups in both cold runs, as each commit warmed its stack, took 0.3 to 0.7 s and compiled only what the stack added.
+
+```sh
+cargo build --release --locked -p luxforge-app
+LUXFORGE_BACKGROUND_BUNDLE_SUFFIX=NEW_SUFFIX cargo run --release --locked --package xtask -- smoke --scenario gpu-preview --output NEW_DIR
+```
+
 ### Compacted pass modules
 
 Every spatial pass's module reaches wgpu as the `naga` module the surface validated, compacted to its entry point ([GPU previews](../design/gpu-preview.md#where-the-code-lives)): `naga` leaves a module of one entry point uncompacted, so the driver compiled the whole spatial program, every kernel and apply, for every pass. `gpu_preview_spatial_compile_cost_on_a_cold_cache` compiles, in one process and in the order the editor's warm lists do, the links of seven Presence and Detail sequences — a Presence drag's own, drags of colour layers under it and a Detail drag with Presence after it — which create 20 pass pipelines in all, the links sharing the rest. Every kernel and apply opens with a test of its words against the process's own constant, so the driver's shader cache holds none of them; a second run handed the first run's constant measures them warm. The headless `test` profile build of the chain of links, one binary compacting and one handing wgpu the WGSL text, alternated three times each on the `Apple M4 Pro` adapter (Metal), 3 October 2026, at a one-minute load of 2.5 to 2.7. Cold, milliseconds:
