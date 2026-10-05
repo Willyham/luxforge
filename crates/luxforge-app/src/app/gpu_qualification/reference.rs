@@ -32,9 +32,15 @@
 //! A stream the GPU refuses or stops drawing is a gap naming why, and a stack whose export the
 //! export lane would hand the reference before any render had stored its Dehaze light says so.
 //!
-//! The histogram and clipping counts and samples are computed on the reference and recorded as not
-//! rendered by the GPU: their comparisons ([`histogram_kind`], [`sample_kind`]) take the GPU's
-//! output once the stage that renders it supplies it.
+//! **The histogram and clipping counts** are the GPU's ([`histogram_kind`]): the stack at full
+//! resolution in the tiles a committed job plans, drawn by the photo surface's own drawing for
+//! their counts alone, as the editor draws them wherever it does not draw the picture from them,
+//! after the reference frame's render has stored the stack's global estimates, as the picture at
+//! rest's tiles read them; their counts against the reference frame's, from the core's own
+//! reducer, each channel's summed bin difference and each clipping counter within 0.1% of the
+//! output pixel count. A stack whose tiles the GPU cannot draw is a gap naming why. Samples are
+//! computed on the reference and recorded as not rendered by the GPU: their comparison
+//! ([`sample_kind`]) takes the GPU's answers once stage 4 supplies them.
 //!
 //! It writes `cells.json` to `LUXFORGE_GPU_CORPUS_OUTPUT`, rewritten after every stack, and judges
 //! nothing: `cargo xtask gpu-qualification` holds every cell to its limit and writes the report. A
@@ -64,10 +70,6 @@ use luxforge_ui::photo_surface::{
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-/// Why the histogram and clipping counts are not compared on this branch.
-const HISTOGRAM_NOT_RENDERED: &str = "the GPU does not render the histogram and clipping counts \
-    yet: a GPU reduction over the full stage is stage 2's, and until it lands the counts come from \
-    the reference renderer";
 /// Why samples are not compared on this branch.
 const SAMPLE_NOT_RENDERED: &str = "the GPU does not answer samples yet: a sample from a GPU tile \
     render is stage 4's, and until it lands samples come from the reference renderer";
@@ -557,18 +559,17 @@ fn measure(
     // Before anything has rendered the stack: whether the export lane would stream it, or hand it
     // the reference for a Dehaze light no render has stored yet, which stage 3's per-frame light
     // replaces. Planning reads no pixel.
-    let without_stored_light = settings
-        .kinds
-        .contains(&Kind::Export)
-        .then(|| luxforge_core::plan_stream(&evaluation, STREAM_TILE_SIDES[0]).err())
-        .flatten()
-        .filter(|fallback| {
-            matches!(
-                fallback,
-                TileFallback::Plan(GpuFallback::RegionEstimate { .. })
-            )
-        })
-        .map(|fallback| RendererReason::from(&fallback).as_str());
+    let without_stored_light = (settings.kinds.contains(&Kind::Export)
+        || settings.kinds.contains(&Kind::Histogram))
+    .then(|| luxforge_core::plan_stream(&evaluation, STREAM_TILE_SIDES[0]).err())
+    .flatten()
+    .filter(|fallback| {
+        matches!(
+            fallback,
+            TileFallback::Plan(GpuFallback::RegionEstimate { .. })
+        )
+    })
+    .map(|fallback| RendererReason::from(&fallback).as_str());
     let exact = luxforge_core::render(
         evaluation.registry(),
         evaluation.source(),
@@ -582,18 +583,24 @@ fn measure(
         .map_err(|error| error.to_string())?;
     let stage = (reference.width, reference.height);
     record["reference"] = json!({"stage": [stage.0, stage.1]});
-    if settings.kinds.iter().any(|kind| kind.picture()) {
-        // The photograph's source as the editor holds it on the GPU, which every frame of the
-        // stack is derived from.
-        let gpu = gpu_source_of(1, evaluation.source())
-            .ok_or("the photograph's source cannot be held on the GPU")?;
+    // The photograph's source as the editor holds it on the GPU, which every frame of the stack and
+    // every tile its counts are taken from is derived from.
+    let gpu = (settings.kinds.iter().any(|kind| kind.picture())
+        || settings.kinds.contains(&Kind::Histogram))
+    .then(|| gpu_source_of(1, evaluation.source()))
+    .map(|gpu| gpu.ok_or("the photograph's source cannot be held on the GPU"))
+    .transpose()?;
+    if let Some(gpu) = gpu
+        .as_ref()
+        .filter(|_| settings.kinds.iter().any(|kind| kind.picture()))
+    {
         for (id, view) in &settings.views {
             let measured = picture(
                 qualifier,
                 surface,
                 settings,
                 &evaluation,
-                &gpu,
+                gpu,
                 &reference,
                 *view,
                 class,
@@ -607,7 +614,19 @@ fn measure(
     for kind in &settings.kinds {
         let measured = match kind {
             Kind::PictureAtRest | Kind::PictureInMotion => continue,
-            Kind::Histogram => histogram_kind(&reference, None)?,
+            Kind::Histogram => {
+                let counted = gpu
+                    .as_ref()
+                    .ok_or_else(|| "no source held on the GPU".to_owned())
+                    .and_then(|gpu| gpu_counts(surface, &evaluation, gpu));
+                let mut measured = histogram_kind(&reference, Some(counted))?;
+                // The editor's reference renders such a stack until a render has stored its light.
+                if let Some(reason) = without_stored_light {
+                    measured["without_stored_light"] = json!(reason);
+                }
+                eprintln!("{cell}: histogram: {measured}");
+                measured
+            }
             Kind::Sample => sample_kind(&reference, None, class)?,
             Kind::Export => {
                 // Streamed now the reference frame's render has stored the stack's estimates, as
@@ -1020,12 +1039,71 @@ fn clipping(values: &[u64; 11]) -> Value {
         .into()
 }
 
+/// The GPU's counts of `evaluation`'s stack, a report in the reducer's shape, and the tiles they
+/// were taken over: the stack at full resolution in the tiles a committed job plans, each over its
+/// window cut from the source `gpu`, drawn by `surface` for their counts alone, as the editor draws
+/// them wherever it does not draw the picture from them, and read back. Why not, where the editor
+/// would hand the reference the stack.
+fn gpu_counts(
+    surface: &mut HeadlessSurface,
+    evaluation: &Evaluation,
+    gpu: &GpuSource,
+) -> Result<(Report, usize), String> {
+    let rest = luxforge_core::qualification::rest_plan(evaluation, GpuView::Fit(fit_bounds()))
+        .map_err(|error| error.to_string())?;
+    let tiles = match rest.tiles {
+        Some(Ok(tiles)) => tiles,
+        Some(Err(reason)) => {
+            return Err(format!(
+                "{}: the GPU draws no tiles of this stack",
+                reason.code()
+            ));
+        }
+        None => return Err("no tiles planned".to_owned()),
+    };
+    let mut handed = rest_now(gpu, &tiles, 1)?;
+    handed.reduction = None;
+    let drawn = surface
+        .rest(gpu, &handed)
+        .map_err(|fallback| format!("the tiles: {fallback:?}"))?;
+    let counted = drawn
+        .counts
+        .map_err(|error| format!("the counts: {error}"))?;
+    let report = Report::of_counts(
+        [counted.r, counted.g, counted.b],
+        [
+            counted.r0,
+            counted.g0,
+            counted.b0,
+            counted.r255,
+            counted.g255,
+            counted.b255,
+            counted.any_shadow,
+            counted.any_highlight,
+            counted.all_shadow,
+            counted.all_highlight,
+            counted.both,
+        ],
+        tiles.output.width,
+        tiles.output.height,
+    )
+    .map_err(|error| error.detail)?;
+    Ok((report, handed.tiles.len()))
+}
+
+/// Why the histogram and clipping counts are not compared, where nothing counted them on the GPU.
+const HISTOGRAM_NOT_RENDERED: &str = "no GPU counts were taken of this stack";
+
 /// The histogram and clipping counts: the reference frame's, from the core's own reducer
-/// (`luxforge_core::analysis`) over the exact whole frame, and the GPU's `gpu` counts against them
-/// when a stage supplies them, by each channel's summed bin difference and each clipping counter
-/// within 0.1% of the output pixel count. Without them the kind is not rendered by the GPU, which
-/// is neither a pass nor a failure.
-fn histogram_kind(reference: &Raster, gpu: Option<&Report>) -> Result<Value, String> {
+/// (`luxforge_core::analysis`) over the exact whole frame, and the GPU's counts, `gpu`, against
+/// them with the tiles they were taken over, by each channel's summed bin difference and each
+/// clipping counter within 0.1% of the output pixel count; a gap naming why the GPU took none
+/// where it could not, never a pass. With no counts asked for at all, the kind is not rendered by
+/// the GPU, neither a pass nor a failure.
+fn histogram_kind(
+    reference: &Raster,
+    gpu: Option<Result<(Report, usize), String>>,
+) -> Result<Value, String> {
     let report = luxforge_core::analysis::reduce(
         &reference.rgba,
         reference.width,
@@ -1034,17 +1112,27 @@ fn histogram_kind(reference: &Raster, gpu: Option<&Report>) -> Result<Value, Str
     )
     .map_err(|error| error.to_string())?;
     let expected = counts(&report);
-    let Some(gpu) = gpu else {
-        return Ok(json!({
-            "status": "not-rendered",
-            "reason": HISTOGRAM_NOT_RENDERED,
-            "reference": {"pixels": expected.pixels(), "clipping": clipping(&expected.clipping)},
-        }));
+    let reference_value =
+        json!({"pixels": expected.pixels(), "clipping": clipping(&expected.clipping)});
+    let (gpu, tiles) = match gpu {
+        None => {
+            return Ok(json!({
+                "status": "not-rendered",
+                "reason": HISTOGRAM_NOT_RENDERED,
+                "reference": reference_value,
+            }));
+        }
+        Some(Err(reason)) => {
+            return Ok(json!({"status": "gap", "reason": reason, "reference": reference_value}));
+        }
+        Some(Ok(counted)) => counted,
     };
-    let error = tolerance::histogram(&counts(gpu), &expected)?;
+    let error = tolerance::histogram(&counts(&gpu), &expected)?;
     let (counter, share) = error.worst_clipping();
     Ok(json!({
         "status": "measured",
+        "against": "the reference frame's counts, by the core's reducer",
+        "tiles": tiles,
         "pixels": error.pixels,
         "limit_pixels": error.limit(),
         "bins": error.bins,
@@ -1239,14 +1327,18 @@ fn a_corpus_view_step_names_its_view() {
 #[test]
 fn the_histogram_comparison_takes_the_reference_frames_counts_and_judges_a_gpus() {
     let reference = raster(100, 50, |x, y| [(x * 2) as u8, (y * 5) as u8, 0]);
-    // On this branch the GPU renders no counts: not rendered, neither a pass nor a failure.
+    // No counts asked for: not rendered, neither a pass nor a failure; counts the GPU could not
+    // take, a gap naming why.
+    let gap = histogram_kind(&reference, Some(Err("region-estimate".into()))).unwrap();
+    assert_eq!(gap["status"], "gap");
+    assert_eq!(gap["reason"], "region-estimate");
     let unrendered = histogram_kind(&reference, None).unwrap();
     assert_eq!(unrendered["status"], "not-rendered");
     assert_eq!(unrendered["reference"]["pixels"], 5000);
     assert_eq!(unrendered["reference"]["clipping"]["b0"], 5000);
     // Counts equal to the reference's pass; counts four pixels off do not, at 0.1% of 5000.
     let same = luxforge_core::analysis::reduce(&reference.rgba, 100, 50, &Cancel::never()).unwrap();
-    let judged = histogram_kind(&reference, Some(&same)).unwrap();
+    let judged = histogram_kind(&reference, Some(Ok((same, 1)))).unwrap();
     assert_eq!(
         (judged["status"].clone(), judged["passed"].clone()),
         (json!("measured"), json!(true))
@@ -1255,7 +1347,7 @@ fn the_histogram_comparison_takes_the_reference_frames_counts_and_judges_a_gpus(
         [(x * 2) as u8 + u8::from(x < 2 && y < 2), (y * 5) as u8, 0]
     });
     let moved = luxforge_core::analysis::reduce(&shifted.rgba, 100, 50, &Cancel::never()).unwrap();
-    let judged = histogram_kind(&reference, Some(&moved)).unwrap();
+    let judged = histogram_kind(&reference, Some(Ok((moved, 1)))).unwrap();
     assert_eq!(
         judged["bins"][0], 8,
         "four pixels moved, counted where they left and arrived"

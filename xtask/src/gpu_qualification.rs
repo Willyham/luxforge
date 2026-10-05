@@ -581,8 +581,8 @@ impl Judged {
 
 /// What one output kind other than the picture holds over the corpus: stacks measured, within and
 /// past its limit, the GPU could not render there and does not render yet, with the figures of
-/// those measured; for export, the stacks whose export is the reference's while no render has
-/// stored their Dehaze light.
+/// those measured; for export and the histogram, the stacks the editor's reference renders while no
+/// render has stored their Dehaze light; for the histogram, its largest differences.
 #[derive(Default)]
 struct Other {
     measured: usize,
@@ -592,6 +592,53 @@ struct Other {
     unrendered: usize,
     figures: Extremes,
     unstored: usize,
+    counts: CountsWorst,
+}
+
+/// The histogram's largest differences over the corpus, each a share of its stack's output pixel
+/// count, with the cell it came from, and how many stacks' counts were the reference's exactly.
+#[derive(Default)]
+struct CountsWorst {
+    bins: Option<(f64, String)>,
+    clipping: Option<(f64, String, String)>,
+    exact: usize,
+}
+
+impl CountsWorst {
+    /// One stack's measured counts, `measured`, of `cell`.
+    fn add(&mut self, measured: &Value, cell: &str) {
+        let bins = measured["worst_bins"].as_f64().unwrap_or(f64::NAN);
+        let clipping = measured["worst_clipping"]["share"]
+            .as_f64()
+            .unwrap_or(f64::NAN);
+        if self.bins.as_ref().is_none_or(|(worst, _)| bins > *worst) {
+            self.bins = Some((bins, cell.to_owned()));
+        }
+        if self
+            .clipping
+            .as_ref()
+            .is_none_or(|(worst, _, _)| clipping > *worst)
+        {
+            let counter = measured["worst_clipping"]["counter"]
+                .as_str()
+                .unwrap_or("?")
+                .to_owned();
+            self.clipping = Some((clipping, counter, cell.to_owned()));
+        }
+        if bins == 0.0 && clipping == 0.0 {
+            self.exact += 1;
+        }
+    }
+
+    fn value(&self) -> Value {
+        json!({
+            "worst_bins": self.bins.as_ref().map(|(share, cell)| json!({"share": share, "cell": cell})),
+            "worst_clipping": self.clipping.as_ref().map(|(share, counter, cell)| {
+                json!({"share": share, "counter": counter, "cell": cell})
+            }),
+            "exact": self.exact,
+        })
+    }
 }
 
 /// What one view and class of the picture holds over the corpus.
@@ -856,6 +903,9 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
             match measured["status"].as_str() {
                 Some("measured") => {
                     counts.measured += 1;
+                    if *kind == Kind::Histogram {
+                        counts.counts.add(measured, cell);
+                    }
                     let figures = measured.get("statistics").map(statistics);
                     if let Some(figures) = &figures {
                         counts.figures.add(figures, cell);
@@ -985,8 +1035,11 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
                 "passed"
             },
         });
-        if *kind == Kind::Export {
+        if matches!(kind, Kind::Export | Kind::Histogram) {
             result["reference_without_stored_light"] = json!(counts.unstored);
+        }
+        if *kind == Kind::Histogram {
+            result["counts"] = counts.counts.value();
         }
         results.push(result);
     }
@@ -1316,6 +1369,37 @@ pub fn markdown(report: &Value) -> String {
             text.push_str(&format!(
                 "\nExport: {unstored} stack(s) are the reference's (`region-estimate`) while no render has stored their Dehaze light, which the per-frame light of stage 3 replaces; each was measured with the light the reference frame's render stored, as a settled frame stores it.\n"
             ));
+        }
+        if let Some(histogram) = others
+            .iter()
+            .find(|result| result["kind"] == Kind::Histogram.name())
+        {
+            let counts = &histogram["counts"];
+            let share = |value: &Value| {
+                value
+                    .as_f64()
+                    .map_or_else(|| "—".to_owned(), |share| format!("{:.4}%", share * 100.0))
+            };
+            if counts["worst_bins"].is_object() {
+                text.push_str(&format!(
+                    "\nHistogram: the GPU's counts over each stack's tiles at full resolution against the reference frame's, by the core's reducer. Largest summed bin difference {} of the output pixels ({}); largest clipping difference {} (`{}`, {}); the reference's counts exactly on {} of {} stacks.\n",
+                    share(&counts["worst_bins"]["share"]),
+                    counts["worst_bins"]["cell"].as_str().unwrap_or("?"),
+                    share(&counts["worst_clipping"]["share"]),
+                    counts["worst_clipping"]["counter"].as_str().unwrap_or("?"),
+                    counts["worst_clipping"]["cell"].as_str().unwrap_or("?"),
+                    counts["exact"],
+                    histogram["measured"],
+                ));
+            }
+            let unstored = histogram["reference_without_stored_light"]
+                .as_u64()
+                .unwrap_or(0);
+            if unstored > 0 {
+                text.push_str(&format!(
+                    "\nHistogram: {unstored} stack(s) are counted by the reference (`region-estimate`) while no render has stored their Dehaze light; each was measured with the light the reference frame's render stored.\n"
+                ));
+            }
         }
     }
     let missed = report["missed"].as_array().cloned().unwrap_or_default();
@@ -1650,6 +1734,36 @@ mod tests {
         let report = judge(Some(&cells(vec![measured])), 1, &options());
         assert_eq!(report["status"], "failed");
         assert_eq!(report["missed"][0]["kind"], "histogram");
+    }
+
+    /// The histogram's results carry its largest differences over the corpus, each with its cell,
+    /// how many stacks were counted exactly, and the stacks the editor's reference counts while no
+    /// render has stored their light; a stack the GPU could not count is a gap, never a pass.
+    #[test]
+    fn the_histograms_largest_differences_are_reported_with_their_cells() {
+        let counted = |bins: f64, clipping: f64, counter: &str| {
+            json!({"status": "measured", "passed": true, "worst_bins": bins,
+                "worst_clipping": {"counter": counter, "share": clipping}})
+        };
+        let mut exact = pair("a--b", "pointwise", within(), within());
+        exact["kinds"]["histogram"] = counted(0.0, 0.0, "r0");
+        let mut off = pair("a--c", "pointwise", within(), within());
+        off["kinds"]["histogram"] = counted(0.0002, 0.0001, "any_highlight");
+        off["kinds"]["histogram"]["without_stored_light"] = json!("region-estimate");
+        let report = judge(Some(&cells(vec![exact, off])), 2, &options());
+        let histogram = rows(&report, Kind::Histogram)[0].clone();
+        assert_eq!(histogram["verdict"], "passed", "{histogram:#}");
+        assert_eq!(histogram["counts"]["exact"], 1);
+        assert_eq!(histogram["counts"]["worst_bins"]["cell"], "a--c");
+        assert_eq!(
+            histogram["counts"]["worst_clipping"]["counter"],
+            "any_highlight"
+        );
+        assert_eq!(histogram["reference_without_stored_light"], 1);
+        let mut gap = pair("a--b", "pointwise", within(), within());
+        gap["kinds"]["histogram"] = json!({"status": "gap", "reason": "region-estimate"});
+        let report = judge(Some(&cells(vec![gap])), 1, &options());
+        assert_eq!(report["status"], "incomplete", "{report:#}");
     }
 
     /// The GPU's export of a stack is judged by its figures against the reference export and by
