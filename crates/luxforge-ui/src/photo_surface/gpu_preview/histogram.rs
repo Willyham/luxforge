@@ -798,3 +798,7 @@ fn kernel(device: &wgpu::Device) -> Result<(wgpu::ComputePipeline, wgpu::BindGro
         _ => Err("the kernel's error scopes were not answered without waiting".into()),
     }
 }
+
+#[cfg(test)]
+#[path = "histogram_tests.rs"]
+mod tests;
