@@ -11,7 +11,7 @@ Accepted owner decisions and the questions still open. Proposals stay proposals 
 - Project code is GPL-3.0-or-later. Dependencies and extensions should be open source and license-compatible; no proprietary hosted service is a development prerequisite. The manual license, native and asset review is deferred and is not a passing result.
 - Everything is v0 and breaking changes are expected. Only current catalog, recipe, API and module shapes are supported; no migrations, compatibility shims, old-version fixtures or historical parity requirements. Unsupported data is refused without rewriting it. No release-version planning, cloud or accounts, marketplace or generalized processing graph.
 - Initial RAW targets are the original Nikon Z6 and the Fujifilm X100VI; implementation is requested, with the supplied DJI Air 2S DNG added for qualification. Benchmark established decoders before proposing a custom one.
-- RAW editing stays continuous and non-destructive, in the same workflow sense as Lightroom: the original remains the source, adjustments remain recipe data and later edits do not operate on a JPEG baked from earlier WB/exposure settings. Keep high precision through editing and convert for display or explicit export. Neutral development is the initial direction; this does not select Adobe or camera-look matching. See the [initial RAW design](design/initial-raw.md).
+- RAW editing stays continuous and non-destructive, in the same workflow sense as Lightroom: the original remains the source, adjustments remain recipe data and later edits do not operate on a JPEG baked from earlier WB/exposure settings. Keep high precision through editing and convert for display or explicit export. The development itself is neutral and selects no Adobe matching; new RAW photos start from a Luxforge look on top of it, with camera-preview matching as a setting ([RAW looks](#raw-looks)). See the [initial RAW design](design/initial-raw.md).
 - Lightroom Library and Develop are familiarity references. Map, Book, Slideshow, Print, Web and Publish Services are out of scope.
 - All development tooling is Rust (`cargo xtask`); no second toolchain.
 
@@ -392,6 +392,16 @@ Decided by the owner on 2026-10-05, on the [AI editing](design/ai-editing.md) pr
 - **Sky replacement** is a deterministic layer over the Select Sky mask, with imported skies or a CC0 set.
 
 Recorded defaults and the remaining open questions (the first hosted provider, a removal fine-tune, a macOS 27 Swift shim, what a CPU-only machine is offered) are in the [design](design/ai-editing.md#decisions).
+
+## RAW looks
+
+Decided by the owner on 2026-10-05, after noticing that photos which look vivid in the catalog, where the camera's embedded preview is shown, look flat once developed ([design](design/raw-looks.md)):
+
+- **New RAW photos start from a Luxforge look**, Standard, rather than the bare neutral development. The development stays neutral; the look is a recipe layer on it.
+- **Matching the camera's preview is a setting**, Match camera, fitted per photo to its embedded preview.
+- **Standard is built first**, on an architecture that carries Match camera.
+
+The owner accepted the design's recorded defaults the same day ([design](design/raw-looks.md#decided)): Standard written into a new photograph's Original; the look after Basic and before the Tone curve; resolved knots stored in every payload; Reset Look returning to Standard, the dot lit only away from it; Amount 0–200; not presettable; no baseline exposure read; colour kept under a monochrome preview; sRGB and Adobe RGB previews fitted. The Standard look's numbers are frozen after the owner reviews its contact sheet.
 
 ## Open product questions
 
