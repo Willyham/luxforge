@@ -257,6 +257,7 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         if character(key, "e") {
             return Some(Message::Export(ExportMessage::Start {
                 keep_metadata: modifiers.shift(),
+                reference: false,
             }));
         }
         // The panel toggles are the one pair that also needs Option, so they cannot collide with a
@@ -996,14 +997,14 @@ mod tests {
                 pressed(letter("e"), command),
                 Status::Ignored,
                 &plain,
-                Some("Export(Start { keep_metadata: false })"),
+                Some("Export(Start { keep_metadata: false, reference: false })"),
             ),
             (
                 "export keeping metadata",
                 pressed(letter("E"), shift_command),
                 Status::Ignored,
                 &plain,
-                Some("Export(Start { keep_metadata: true })"),
+                Some("Export(Start { keep_metadata: true, reference: false })"),
             ),
             (
                 "a plain e is no shortcut",

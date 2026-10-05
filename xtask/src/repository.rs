@@ -1245,9 +1245,10 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         reason: "only a [dev-dependencies] table may turn on luxforge-core's test-skip-disk-flush, \
                  so no build of a binary skips the flush of a durable write",
     },
-    // Reading a GPU frame back is for qualification: only a `[dev-dependencies]` table turns the
-    // photo surface's `qualification` feature on, so no build of the desktop reads a GPU pixel
-    // back or waits on the GPU.
+    // Reading a plan's frame back outside the stage is for qualification: only a
+    // `[dev-dependencies]` table turns the photo surface's `qualification` feature on, so the
+    // desktop's one production readback is the tile runner's, on its GPU tile worker's own device,
+    // and the interface thread never waits on the GPU.
     DependencyRule {
         name: "gpu-qualification-only-in-tests",
         refuses: Depends::Feature {
@@ -1258,7 +1259,8 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         tables: &[Table::Normal, Table::Build, Table::Workspace],
         allowed: &[],
         reason: "only a [dev-dependencies] table may turn on luxforge-ui's qualification feature, \
-                 so no build of the desktop reads a GPU pixel back",
+                 so no build of the desktop reads a GPU pixel back but through the tile runner its \
+                 GPU tile worker owns",
     },
     // The CPU filters a GPU kernel is qualified against are for qualification: only a
     // `[dev-dependencies]` table turns the core's `qualification` feature on.

@@ -12,6 +12,10 @@
 //! job from `activity.list` like any other. Once an export whose destination the dialog chose
 //! succeeds, its folder is stored as the remembered export folder.
 //!
+//! The title bar's two exports send no `reference`, so the core's export lane renders them on the
+//! GPU where it can; the palette's Export reference render… sends `reference: true` through the
+//! same chain, as an API client asks for the reference renderer's export.
+//!
 //! An evidence run bypasses only the dialog: its `export` step names the file, written into the
 //! run's evidence directory, and the rest of the chain is the same, except that its folder is
 //! never remembered.
@@ -53,6 +57,9 @@ pub(crate) struct ExportChoice {
     pub(crate) keep_metadata: bool,
     /// The JFIF density asked for ([`screen_pixels_per_inch`]).
     pub(crate) pixels_per_inch: Option<u16>,
+    /// Ask for the reference renderer's export, `reference: true`; otherwise `reference` is not
+    /// sent.
+    pub(crate) reference: bool,
     /// `export.plan`'s answer, reported when the choice is taken up.
     pub(crate) plan: Value,
 }
@@ -66,6 +73,8 @@ pub(crate) struct Exporting {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ExportRun {
     pub(crate) keep_metadata: bool,
+    /// It asked for the reference renderer's export.
+    pub(crate) reference: bool,
     /// The destination's file name, once the dialog has chosen it.
     pub(crate) file_name: Option<String>,
     /// The core's job, once `export.jpeg` has queued it.
@@ -92,14 +101,17 @@ impl Exporting {
 impl Editor {
     pub(super) fn export_update(&mut self, message: ExportMessage) -> Task<Message> {
         match message {
-            ExportMessage::Start { keep_metadata } => {
+            ExportMessage::Start {
+                keep_metadata,
+                reference,
+            } => {
                 // The dialog is the only way a person names a destination, and an evidence run
                 // never opens one: its `export` step names the file instead.
                 if self.evidence.is_some() {
                     self.close_export_menu();
                     return Task::none();
                 }
-                self.export_start(keep_metadata, None)
+                self.export_start(keep_metadata, reference, None)
             }
             ExportMessage::Chosen(result) => self.export_chosen(result),
             ExportMessage::Queued(result) => self.export_queued(result),
@@ -153,11 +165,13 @@ impl Editor {
             .or_else(|| self.displayed_entry())
     }
 
-    /// Start exporting the displayed saved entry, or the comparison's fixed After entry.
-    /// `destination` bypasses the save dialog, for an evidence step; without it the dialog chooses.
+    /// Start exporting the displayed saved entry, or the comparison's fixed After entry, through
+    /// the reference renderer when `reference` asks for it. `destination` bypasses the save dialog,
+    /// for an evidence step; without it the dialog chooses.
     pub(crate) fn export_start(
         &mut self,
         keep_metadata: bool,
+        reference: bool,
         destination: Option<PathBuf>,
     ) -> Task<Message> {
         self.close_export_menu();
@@ -177,6 +191,7 @@ impl Editor {
         }
         self.export.run = Some(ExportRun {
             keep_metadata,
+            reference,
             file_name: None,
             job_id: None,
             dialog: destination.is_none(),
@@ -185,13 +200,17 @@ impl Editor {
         let pixels_per_inch = screen_pixels_per_inch(self.view_state.system_scale_factor);
         self.event(
             "export_started",
-            || json!({"asset_id":asset,"entry_id":entry,"keep_metadata":keep_metadata,"pixels_per_inch":pixels_per_inch,"dialog":destination.is_none()}),
+            || json!({"asset_id":asset,"entry_id":entry,"keep_metadata":keep_metadata,"reference":reference,"pixels_per_inch":pixels_per_inch,"dialog":destination.is_none()}),
         );
         plan_task(
             self.owner.clone(),
             self.client,
             (asset, entry),
-            (keep_metadata, pixels_per_inch),
+            Options {
+                keep_metadata,
+                pixels_per_inch,
+                reference,
+            },
             original,
             destination,
         )
@@ -320,14 +339,16 @@ impl Editor {
     }
 
     /// The export ended, one way or another: say so, forget it, and report it with the job's last
-    /// record. `failure` marks an export that was refused or failed.
+    /// record and what the GPU tile worker has done and holds. `failure` marks an export that was
+    /// refused or failed.
     fn export_finished(&mut self, status: String, failure: Option<&str>, record: Option<Value>) {
         self.status.text = status;
         self.export.run = None;
-        self.event(
-            "export_finished",
-            || json!({"status":self.status.text,"record":record}),
-        );
+        self.event("export_finished", || {
+            let tiles = self.renderer.tiles.as_ref();
+            json!({"status":self.status.text,"record":record,
+                "tiles":tiles.map(|tiles| tiles.figures().record())})
+        });
         self.outcome(Outcome::ExportEnded {
             record: record.as_ref(),
             failure,
@@ -358,11 +379,20 @@ impl Editor {
             "can_export": self.workspace.title.can_export,
             "running": self.export.run.as_ref().map(|run| json!({
                 "keep_metadata": run.keep_metadata,
+                "reference": run.reference,
                 "file_name": run.file_name,
                 "job_id": run.job_id,
             })),
         })
     }
+}
+
+/// What an export asks for beside its entry and destination.
+#[derive(Clone, Copy, Debug)]
+struct Options {
+    keep_metadata: bool,
+    pixels_per_inch: Option<u16>,
+    reference: bool,
 }
 
 /// The plan as an evidence step records it: everything but the suggested path, whose directory is
@@ -440,10 +470,15 @@ fn plan_task(
     owner: OwnerHandle,
     client: ClientId,
     (asset_id, entry_id): (AssetId, EntryId),
-    (keep_metadata, pixels_per_inch): (bool, Option<u16>),
+    options: Options,
     original: PathBuf,
     destination: Option<PathBuf>,
 ) -> Task<Message> {
+    let Options {
+        keep_metadata,
+        pixels_per_inch,
+        reference,
+    } = options;
     let target = (asset_id.clone(), entry_id.clone());
     owner_work(move || plan_now(&owner, client, &asset_id, &entry_id)).then(move |plan| {
         let (asset_id, entry_id) = target.clone();
@@ -474,6 +509,7 @@ fn plan_task(
                     destination,
                     keep_metadata,
                     pixels_per_inch,
+                    reference,
                     plan,
                 })))
             },
@@ -508,14 +544,11 @@ pub(crate) fn plan_now(
     .map(|(plan, _)| plan)
 }
 
-/// `export.jpeg` for one choice, waiting for the source and asking again, under one request id,
-/// when the owner answers `preparation-required`.
-pub(crate) fn send_now(
-    owner: &OwnerHandle,
-    client: ClientId,
-    choice: &ExportChoice,
-) -> Result<Value, CallError> {
-    let params = json!({
+/// `export.jpeg`'s parameters for one choice, under a new request id: `reference: true` only for a
+/// choice that asks for the reference renderer's export, as an API client asks for it, and no
+/// `reference` for any other.
+pub(crate) fn export_params(choice: &ExportChoice) -> Value {
+    let mut params = json!({
         "asset_id": choice.asset_id,
         "entry_id": choice.entry_id,
         "destination": choice.destination,
@@ -523,6 +556,20 @@ pub(crate) fn send_now(
         "pixels_per_inch": choice.pixels_per_inch,
         "mutation": request(),
     });
+    if choice.reference {
+        params["reference"] = json!(true);
+    }
+    params
+}
+
+/// `export.jpeg` for one choice ([`export_params`]), waiting for the source and asking again, under
+/// one request id, when the owner answers `preparation-required`.
+pub(crate) fn send_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    choice: &ExportChoice,
+) -> Result<Value, CallError> {
+    let params = export_params(choice);
     let mut attempt = 0;
     loop {
         match call_detailed(owner, client, "export.jpeg", params.clone()) {

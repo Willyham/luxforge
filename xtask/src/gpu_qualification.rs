@@ -19,6 +19,11 @@
 //! `--hold-motion-to-reference` judges the picture in motion against the reference instead, the
 //! other reading the owner may choose.
 //!
+//! Export is judged over the whole output stage: the GPU's export of each stack, streamed in tiles
+//! by the desktop's GPU tile worker as the export lane streams it, against the reference export by
+//! the display limit of the stack's class, and a second GPU export, on a second device of the same
+//! adapter, the same bytes. A stack the GPU cannot export is a gap naming why.
+//!
 //! A kind the GPU does not render yet is reported as such, never as a pass and never as a failure.
 //! The gate fails (an ordinary failure) when any cell it judges passes a limit, when the harness did
 //! not run to its end, or when a source's SHA-256 changed during the run; it is incomplete (exit 3)
@@ -534,6 +539,21 @@ impl Judged {
     }
 }
 
+/// What one output kind other than the picture holds over the corpus: stacks measured, within and
+/// past its limit, the GPU could not render there and does not render yet, with the figures of
+/// those measured; for export, the stacks whose export is the reference's while no render has
+/// stored their Dehaze light.
+#[derive(Default)]
+struct Other {
+    measured: usize,
+    within: usize,
+    past: usize,
+    gaps: usize,
+    unrendered: usize,
+    figures: Extremes,
+    unstored: usize,
+}
+
 /// What one view and class of the picture holds over the corpus.
 #[derive(Default)]
 struct Tally {
@@ -651,12 +671,12 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
     let mut motion_past = Vec::new();
     let (mut candidate_missed, mut candidate_gaps, mut candidate_frames) =
         (Vec::new(), Vec::new(), Vec::new());
-    // Per kind other than the pictures: how many stacks it was measured on, passed, missed, and
-    // was not rendered on.
-    let mut other: Vec<(Kind, [usize; 4])> = kinds
+    // Per kind other than the pictures: how many stacks it was measured on, passed, missed, could
+    // not be rendered by the GPU there and was not rendered on, with its figures.
+    let mut other: Vec<(Kind, Other)> = kinds
         .iter()
         .filter(|kind| !kind.picture())
-        .map(|kind| (*kind, [0; 4]))
+        .map(|kind| (*kind, Other::default()))
         .collect();
     let mut not_rendered: Vec<(Kind, String)> = Vec::new();
     let note = |not_rendered: &mut Vec<(Kind, String)>, kind: Kind, reason: &Value| {
@@ -852,22 +872,51 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
         }
         for (kind, counts) in &mut other {
             let measured = &pair["kinds"][kind.name()];
+            if measured["without_stored_light"].is_string() {
+                counts.unstored += 1;
+            }
             match measured["status"].as_str() {
                 Some("measured") => {
-                    counts[0] += 1;
+                    counts.measured += 1;
+                    let figures = measured.get("statistics").map(statistics);
+                    if let Some(figures) = &figures {
+                        counts.figures.add(figures, cell);
+                    }
                     if measured["passed"] == true {
-                        counts[1] += 1;
+                        counts.within += 1;
                     } else {
-                        counts[2] += 1;
+                        counts.past += 1;
+                        let mut exceeded = figures
+                            .as_ref()
+                            .map(|figures| exceeded(figures, class))
+                            .unwrap_or_default();
+                        if measured["repeatable"] == false {
+                            exceeded.push("repeatable");
+                        }
                         missed.push(json!({
                             "kind": kind.name(), "cell": cell, "view": null,
-                            "class": class.name(), "figures": measured,
+                            "class": class.name(), "exceeded": exceeded,
+                            "statistics": measured["statistics"], "figures": measured,
                         }));
                     }
                 }
                 Some("not-rendered") => {
-                    counts[3] += 1;
+                    counts.unrendered += 1;
                     note(&mut not_rendered, *kind, &measured["reason"]);
+                }
+                // The GPU could not render it here, for the reason given: never a pass.
+                Some("gap") => {
+                    counts.gaps += 1;
+                    gaps.push(json!({
+                        "cell": cell,
+                        "view": null,
+                        "kind": kind.name(),
+                        "reason": format!(
+                            "{}: {}",
+                            kind.name(),
+                            measured["reason"].as_str().unwrap_or("unrecorded")
+                        ),
+                    }));
                 }
                 _ => errors.push(json!({
                     "cell": cell,
@@ -964,22 +1013,30 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
             }
         }
     }
-    for (kind, [measured, passed, past, unrendered]) in &other {
-        results.push(json!({
+    for (kind, counts) in &other {
+        let mut result = json!({
             "kind": kind.name(),
             "view": "the whole output stage",
-            "measured": measured,
-            "within": passed,
-            "past_a_limit": past,
-            "not_rendered": unrendered,
-            "verdict": if *past > 0 {
+            "measured": counts.measured,
+            "within": counts.within,
+            "past_a_limit": counts.past,
+            "gaps": counts.gaps,
+            "not_rendered": counts.unrendered,
+            "figures": counts.figures.value(),
+            "verdict": if counts.past > 0 {
                 "failed"
-            } else if *measured == 0 && *unrendered > 0 {
+            } else if counts.gaps > 0 {
+                "incomplete"
+            } else if counts.measured == 0 && counts.unrendered > 0 {
                 "not rendered by the GPU yet"
             } else {
                 "passed"
             },
-        }));
+        });
+        if *kind == Kind::Export {
+            result["reference_without_stored_light"] = json!(counts.unstored);
+        }
+        results.push(result);
     }
     report["results"] = json!(results);
     report["not_rendered"] = json!(
@@ -1357,16 +1414,29 @@ pub fn markdown(report: &Value) -> String {
         })
         .collect();
     if !others.is_empty() {
-        text.push_str("\n## The other output kinds\n\n| Kind | Measured | Within | Past a limit | Not rendered by the GPU | Verdict |\n| --- | ---: | ---: | ---: | ---: | --- |\n");
-        for result in others {
+        text.push_str("\n## The other output kinds\n\nOver the whole output stage, each stack's statistics as the picture's are; for export, the GPU's export against the reference export by the display limit of the stack's class, and two GPU exports the same bytes.\n\n| Kind | Measured | Within | Past a limit | Gaps | Not rendered by the GPU | Max | Mean | Verdict |\n| --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |\n");
+        for result in &others {
             text.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
                 result["kind"].as_str().unwrap_or("?"),
                 result["measured"],
                 result["within"],
                 result["past_a_limit"],
+                result["gaps"],
                 result["not_rendered"],
+                four(&result["figures"], "max"),
+                four(&result["figures"], "mean"),
                 result["verdict"].as_str().unwrap_or("?"),
+            ));
+        }
+        let unstored = others
+            .iter()
+            .find(|result| result["kind"] == Kind::Export.name())
+            .and_then(|result| result["reference_without_stored_light"].as_u64())
+            .unwrap_or(0);
+        if unstored > 0 {
+            text.push_str(&format!(
+                "\nExport: {unstored} stack(s) are the reference's (`region-estimate`) while no render has stored their Dehaze light, which the per-frame light of stage 3 replaces; each was measured with the light the reference frame's render stored, as a settled frame stores it.\n"
             ));
         }
     }
@@ -1711,6 +1781,65 @@ mod tests {
         let report = judge(Some(&cells(vec![measured])), 1, &options());
         assert_eq!(report["status"], "failed");
         assert_eq!(report["missed"][0]["kind"], "histogram");
+    }
+
+    /// The GPU's export of a stack is judged by its figures against the reference export and by
+    /// whether a second GPU export was the same bytes; a stack the GPU could not export there is a
+    /// gap with its reason, which makes the run incomplete, never a pass; and the stacks whose
+    /// export is the reference's while no render has stored their light are counted beside it.
+    #[test]
+    fn an_export_is_judged_by_its_figures_and_its_repeat_and_a_gap_is_never_a_pass() {
+        let exported = |statistics: Value, repeatable: bool, passed: bool| {
+            let mut stack = pair("a--b", "pointwise", within(), within());
+            stack["kinds"]["export"] = json!({"status": "measured", "statistics": statistics,
+                "repeatable": repeatable, "passed": passed,
+                "without_stored_light": "region-estimate"});
+            stack
+        };
+        let report = judge(
+            Some(&cells(vec![exported(within(), true, true)])),
+            1,
+            &options(),
+        );
+        assert_eq!(report["status"], "passed", "{report:#}");
+        let row = rows(&report, Kind::Export)[0].clone();
+        assert_eq!(
+            (row["within"].clone(), row["verdict"].clone()),
+            (json!(1), json!("passed"))
+        );
+        assert_eq!(row["figures"]["max"]["p99"], 1.0);
+        assert_eq!(row["reference_without_stored_light"], 1);
+        assert!(markdown(&report).contains("1 stack(s) are the reference's (`region-estimate`)"));
+
+        let report = judge(
+            Some(&cells(vec![exported(within(), false, false)])),
+            1,
+            &options(),
+        );
+        assert_eq!(report["status"], "failed");
+        assert_eq!(report["missed"][0]["exceeded"], json!(["repeatable"]));
+        let report = judge(
+            Some(&cells(vec![exported(
+                stats(0.6, 0.5, 1.0, 0.0),
+                true,
+                false,
+            )])),
+            1,
+            &options(),
+        );
+        assert_eq!(report["missed"][0]["exceeded"], json!(["mean"]));
+
+        let mut gap = pair("c--d", "spatial", within(), within());
+        gap["kinds"]["export"] = json!({"status": "gap",
+            "reason": "the reference renders it: tiles-budget"});
+        let report = judge(Some(&cells(vec![gap])), 1, &options());
+        assert_eq!(report["status"], "incomplete", "{report:#}");
+        assert_eq!(rows(&report, Kind::Export)[0]["verdict"], "incomplete");
+        assert_eq!(
+            report["gaps"][0]["reason"],
+            "export: the reference renders it: tiles-budget"
+        );
+        assert!(markdown(&report).contains("## Cells that could not run here (1)"));
     }
 
     #[test]

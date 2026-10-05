@@ -2,9 +2,9 @@
 //! "Qualifying a program"): one tile of a stack drawn on a device of its own and read back, the GPU
 //! half of a pixel read and of an export's tile, run on its caller's thread.
 //!
-//! Built and not yet wired: nothing in the desktop opens a [`TileRunner`] yet. The desktop's tile
-//! worker, which will own one on a thread of its own and answer the core's tile contract through
-//! it, mapping each [`TileFailure`] onto the contract's own reasons, is the next step.
+//! The desktop's GPU tile worker owns one on a thread of its own and answers the core's tile
+//! contract through it, mapping each [`TileFailure`] onto the contract's own reasons: every export
+//! the catalog owner's export lane streams is drawn here, the desktop's one production readback.
 //!
 //! - **Its own device, on the window's adapter.** [`TileRunner::open`] opens a device on the adapter
 //!   the window's renderer reports drawing with, found by its backend and name, requested with the

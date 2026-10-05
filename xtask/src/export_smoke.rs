@@ -2,26 +2,36 @@
 //! fixture, brightens it by one stop and crops it to 16:9, so the output differs from the original
 //! in pixels, in orientation and in size; opens the title bar's Export menu; exports the displayed
 //! entry with metadata stripped and again keeping it, into the run's evidence directory through the
-//! chain the menu starts (only the save dialog is bypassed); exports while the comparison selects
-//! Before, checking identical edited JPEG bytes; and exports once more with Keep metadata to the
-//! stripped file's name, which the core refuses without touching the file.
+//! chain the menu starts (only the save dialog is bypassed); exports it through the reference
+//! renderer, as the palette's Export reference render… does (`reference: true`); exports while the
+//! comparison selects Before, checking identical edited JPEG bytes; and exports once more with Keep
+//! metadata to the stripped file's name, which the core refuses without touching the file.
 //!
 //! The written files are checked independently of the editor: each is decoded here with the `image`
 //! crate and must have the dimensions of the captured output stage and of the job's own record, the
-//! byte length the job reported, an embedded ICC profile, and pixels that agree between the two
-//! files and are brighter than the original's. Their segments are read here too: the stripped file
+//! byte length the job reported, an embedded ICC profile, and pixels that agree between the files
+//! and are brighter than the original's. Their segments are read here too: the stripped file
 //! carries no APP1 at all, and the kept one exactly one EXIF APP1 whose Orientation is 1 and no XMP.
 //! The stripped file still has no APP1 and its reported length after the refused export, so the
 //! refusal replaced nothing, and the fixture's hash is the one the run recorded before launching.
+//!
+//! The renderer (`docs/design/gpu-first.md`, stage 4): each export's result names the GPU, but the
+//! reference one's, which names the reference as requested. The GPU's stripped export, decoded, is
+//! within the pointwise display limit of the reference export decoded, over every pixel
+//! (`luxforge_reference::preview_error`); the two GPU exports of the edited entry, stripped and
+//! during comparison, are the same bytes; and the GPU tile worker drew them on the adapter that
+//! draws the window, as each export's `export_finished` event records.
 use crate::{
     scenario::{Checked, Checks, Frame, Plan, Run, Step, Tolerance, plan::only},
     *,
 };
 use luxforge_evidence as script;
+use luxforge_reference::preview_error::{self, Class, Rgb8};
 
 pub const FIXTURE: &str = "fixtures/s0/orientation-6.jpg";
 const STRIPPED: &str = "export-stripped.jpg";
 const KEPT: &str = "export-kept.jpg";
+const REFERENCE: &str = "export-reference.jpg";
 const COMPARED: &str = "export-compared.jpg";
 /// The EXIF Orientation tag.
 const ORIENTATION: u16 = 0x0112;
@@ -57,6 +67,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         Step::new("menu", script::Step::export_menu()).commits(0),
         Step::new("stripped", script::Step::export(STRIPPED, false)).commits(0),
         Step::new("kept", script::Step::export(KEPT, true)).commits(0),
+        Step::new("reference", script::Step::export_reference(REFERENCE)).commits(0),
         Step::new("compare", script::CompareStep::Tap).commits(0),
         Step::new("compared", script::Step::export(COMPARED, false)).commits(0),
         Step::new("compare-exited", script::CompareStep::Tap).commits(0),
@@ -143,6 +154,8 @@ struct Written {
     app1: Vec<Vec<u8>>,
     icc: bool,
     mean: [f64; 3],
+    /// Its pixels as the decoder here reads them, three bytes each, row by row.
+    rgb: Vec<u8>,
 }
 
 fn read_export(path: &Path) -> Result<Written> {
@@ -163,7 +176,22 @@ fn read_export(path: &Path) -> Result<Written> {
         app1,
         icc,
         mean: mean_rgb(&image),
+        rgb: image.into_raw(),
     })
+}
+
+/// The GPU tile worker's figures each export's `export_finished` event records in `step`.
+fn worker(launch: &Checked, step: &str) -> Result<Value> {
+    let events = crate::gpu_preview_smoke::step_events(launch, step)?;
+    let finished = crate::gpu_preview_smoke::named(events, "export_finished");
+    let [finished] = finished.as_slice() else {
+        return Err(format!(
+            "The {step} step logged {} export_finished events",
+            finished.len()
+        )
+        .into());
+    };
+    Ok(finished["detail"]["tiles"].clone())
 }
 
 fn mean_rgb(image: &image::RgbImage) -> [f64; 3] {
@@ -260,15 +288,33 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let source = image::open(root.join(FIXTURE))?.to_rgb8();
     let original = mean_luminance(mean_rgb(&source));
 
+    // Every export but the reference one is the GPU's; the reference one asked for the reference.
+    let gpu = json!({"record": "gpu", "reason": null});
+    let requested = json!({"record": "reference", "reason": "requested"});
     let mut written = Vec::new();
-    for (step, file, keep) in [
-        ("stripped", STRIPPED, false),
-        ("kept", KEPT, true),
-        ("compared", COMPARED, false),
+    for (step, file, keep, renderer) in [
+        ("stripped", STRIPPED, false, &gpu),
+        ("kept", KEPT, true, &gpu),
+        ("reference", REFERENCE, false, &requested),
+        ("compared", COMPARED, false, &gpu),
     ] {
         let frame = launch.at(step)?;
         let export = record(frame, step)?;
         let result = &export["record"]["result"];
+        ensure(
+            result["renderer"] == *renderer,
+            format!(
+                "The {step} export names {} as its renderer, not {renderer}",
+                result["renderer"]
+            ),
+        )?;
+        ensure(
+            export["queued"]["reference"] == json!(renderer == &requested),
+            format!(
+                "The {step} export was accepted with reference {}",
+                export["queued"]["reference"]
+            ),
+        )?;
         let (width, height, bytes) = (
             result["width"].as_u64().unwrap_or_default(),
             result["height"].as_u64().unwrap_or_default(),
@@ -341,9 +387,76 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             frame,
             "an export written and read back",
             json!({"file":file,"keep_metadata":keep,"decoded":[read.size.0,read.size.1],
-            "bytes":read.bytes,"app1":read.app1.len(),"icc":read.icc,"metadata":result["metadata"]}),
+            "bytes":read.bytes,"app1":read.app1.len(),"icc":read.icc,"metadata":result["metadata"],
+            "renderer":result["renderer"]}),
         );
         written.push(read);
+    }
+
+    // The GPU's stripped export against the reference renderer's, both decoded here, over every
+    // pixel, by the pointwise display limit: an exposure and a crop are colour steps.
+    let reference = launch.at("reference")?;
+    let (gpu_export, reference_export) = (&written[0], &written[2]);
+    let (width, height) = reference_export.size;
+    let statistics = preview_error::compare(
+        Rgb8::new(width, height, &gpu_export.rgb)?,
+        Rgb8::new(width, height, &reference_export.rgb)?,
+        [0, 0, width, height],
+    )?;
+    let limits = Class::Pointwise.limits();
+    let figures = json!({
+        "pixels": statistics.pixels, "mean": statistics.mean,
+        "worst_block": statistics.worst_block, "p99": statistics.p99,
+        "mean_delta_l": statistics.mean_delta_l, "max": statistics.max,
+    });
+    ensure(
+        preview_error::verdict(&statistics, Class::Pointwise).passed(),
+        format!(
+            "The GPU export is past the pointwise display limit of the reference export: {figures}"
+        ),
+    )?;
+    checks.note(
+        reference,
+        "the GPU's export within the pointwise display limit of the reference export, both decoded here",
+        json!({
+            "files": [STRIPPED, REFERENCE],
+            "statistics": figures,
+            "limits": {"mean": limits.mean, "worst_block": limits.worst_block, "p99": limits.p99,
+                "mean_delta_l_abs": limits.mean_delta_l},
+        }),
+    );
+
+    // The GPU tile worker drew each GPU export on the adapter that draws the window, one stream
+    // each, and the reference export streamed nothing.
+    let backend = &launch.at("stripped")?["state"]["backend"];
+    let mut streams = 0;
+    for (step, streamed) in [
+        ("stripped", true),
+        ("kept", true),
+        ("reference", false),
+        ("compared", true),
+    ] {
+        let tiles = worker(launch, step)?;
+        ensure(
+            tiles["status"] == "gpu"
+                && tiles["adapter"]["backend"] == backend["backend"]
+                && tiles["adapter"]["adapter"] == backend["adapter"],
+            format!(
+                "The {step} export's tile worker is not the GPU's on the window's adapter {backend}: \
+                 {tiles}"
+            ),
+        )?;
+        let now = tiles["streams"].as_u64().unwrap_or_default();
+        ensure(
+            now == streams + u64::from(streamed),
+            format!("The {step} export left the tile worker at {now} streams after {streams}"),
+        )?;
+        streams = now;
+        checks.note(
+            launch.at(step)?,
+            "the GPU tile worker's figures as the export ended",
+            tiles,
+        );
     }
     checks.compare(
         launch.at("kept")?,
@@ -366,8 +479,9 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
     checks.note(
         compared,
-        "comparison exports the fixed After entry, with identical JPEG bytes",
-        json!({"entry_id": entry, "files": [STRIPPED, COMPARED]}),
+        "comparison exports the fixed After entry, with identical JPEG bytes: two GPU exports of \
+         one entry in one run, the same bytes",
+        json!({"entry_id": entry, "files": [STRIPPED, COMPARED], "renderer": gpu}),
     );
 
     // The refusal, whose reason the plan holds, and the stripped file exactly as the first export
@@ -388,7 +502,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             "output_stage": [output.0, output.1],
             "same_tolerance": SAME,
             "brighter_margin": BRIGHTER,
-            "scope": "Each written JPEG decoded with the image crate and its segments read here: dimensions, byte length, ICC profile, APP1 and EXIF orientation, and mean colour against the original and each other. Not a colorimetric claim",
+            "scope": "Each written JPEG decoded with the image crate and its segments read here: dimensions, byte length, ICC profile, APP1 and EXIF orientation, mean colour against the original and each other, and the GPU's export against the reference renderer's by the pointwise display limit (CIEDE2000, luxforge_reference::preview_error) over every pixel of one small fixture: functional evidence of the GPU export, which the release gate measures over the corpus",
         }),
     )
 }

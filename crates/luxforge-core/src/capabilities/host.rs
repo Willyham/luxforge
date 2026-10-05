@@ -78,11 +78,17 @@ pub struct HostConfig {
     /// what it knows before its window opens; a host that draws nothing keeps the reference with
     /// no reason ([`crate::Renderer::headless`]).
     pub renderer: crate::Renderer,
+    /// The host's GPU provider of the tile contract ([`crate::tiles`]), which the export lane
+    /// streams every export through: the desktop's GPU tile worker. `None` for a host without
+    /// one, such as `luxforge-json`, whose owner holds the reference renderer's service instead
+    /// ([`crate::tiles::ReferenceTiles`]), so every export there is the reference renderer's.
+    pub tiles: Option<Arc<dyn crate::tiles::TileService>>,
 }
 
 impl HostConfig {
-    /// No directories, no secure store and no transport: every settings, permission and resource
-    /// method, and every request, reports `not-ready`.
+    /// No directories, no secure store, no transport and no GPU provider: every settings,
+    /// permission and resource method, and every request, reports `not-ready`, and every export is
+    /// the reference renderer's.
     pub fn unconfigured() -> Self {
         Self {
             preferences_dir: None,
@@ -95,6 +101,7 @@ impl HostConfig {
             resource_quota_bytes: DEFAULT_RESOURCE_QUOTA_BYTES,
             launch_flags: Default::default(),
             renderer: crate::Renderer::headless(),
+            tiles: None,
         }
     }
 }
@@ -110,6 +117,7 @@ impl std::fmt::Debug for HostConfig {
             .field("resource_quota_bytes", &self.resource_quota_bytes)
             .field("launch_flags", &self.launch_flags)
             .field("renderer", &self.renderer)
+            .field("tiles", &self.tiles.as_ref().map(|tiles| tiles.status()))
             .finish()
     }
 }
@@ -305,6 +313,11 @@ impl CapabilityHost {
     /// The renderer the host said it draws with when it started ([`HostConfig::renderer`]).
     pub(crate) fn launch_renderer(&self) -> crate::Renderer {
         self.config.renderer
+    }
+
+    /// The host's GPU provider of the tile contract, if it has one ([`HostConfig::tiles`]).
+    pub(crate) fn tiles(&self) -> Option<Arc<dyn crate::tiles::TileService>> {
+        self.config.tiles.clone()
     }
 
     fn not_configured() -> Error {

@@ -69,15 +69,6 @@ pub(crate) mod gpu_qualification;
 mod gpu_rest_tests;
 #[cfg(test)]
 mod gpu_source_tests;
-// The GPU tile worker, built and not yet wired: no catalog owner or export lane is handed it.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the catalog owner and the export lane are handed the tile worker once stage 4 \
-                  is wired"
-    )
-)]
 pub(crate) mod gpu_tiles;
 #[cfg(test)]
 mod gpu_tiles_tests;

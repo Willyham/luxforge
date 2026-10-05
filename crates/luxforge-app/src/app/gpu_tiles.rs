@@ -3,11 +3,15 @@
 //! device of the desktop's own through the photo surface's tile runner ([`TileRunner`]), so a
 //! pixel read and an export's band are drawn by the GPU as the picture on screen is drawn.
 //!
-//! Built and not yet wired: no catalog owner is handed this service, so `render.sample`, the
-//! modules' queries and the mutations' pixel reads are still answered by the point worker and on
-//! the owner, and `export.jpeg` still renders its reference frame. Handing it to the owner through
-//! `HostConfig`, and the export lane's stream, are the next step.
+//! The launch builds one ([`launch`]) and hands it to the catalog owner through `HostConfig`, whose
+//! export lane streams every export through it (`docs/design/export.md`). No call is submitted to
+//! it yet: `render.sample`, the modules' queries and the mutations' pixel reads are still answered
+//! by the point worker and on the owner.
 //!
+//! - **The window's adapter.** Iced hands the photo surface a device, not the adapter it came from,
+//!   and names that adapter only in its system information. The launch's worker opens nothing until
+//!   the desktop has named it ([`GpuTiles::adopt_adapter`], from `app::renderer` once the surface
+//!   has checked its GPU stage), and answers the reference as `surface-pending` until then.
 //! - **One thread.** `luxforge-gpu-tiles`, started by the first call or stream and asleep on its
 //!   condition variable while nothing waits (performance rule 8). It owns the runner, which the
 //!   first call or stream that needs it opens on the adapter the window's renderer reports drawing
@@ -44,9 +48,8 @@
 //!   figures alone; row by row, each tile a fresh evaluation, each row of tiles assembled into one
 //!   band of `width × side × 4` bytes and sent in order. It stops between tiles once the stream's
 //!   cancellation is set or its encoder drops it, and lets go of everything it held for it. A tile
-//!   the GPU cannot draw ends the stream with an error naming why in its data (`fallback`, the
-//!   reason's code, and `unavailable` for a runner that cannot draw): GPU and reference tiles are
-//!   never mixed in one export, and the export lane renders it again with the reference.
+//!   the GPU cannot draw ends the stream naming why ([`BandSender::fall_back`]): GPU and reference
+//!   tiles are never mixed in one export, and the export lane renders it again with the reference.
 //! - **Evidence.** [`GpuTiles::figures`]: the status, the adapter, the reads each renderer
 //!   answered, the streams and bands, the tiles drawn, the bytes the runner holds and has held,
 //!   and its compiles.
@@ -71,17 +74,32 @@ use luxforge_ui::{
         },
     },
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{
     cell::{Cell, RefCell, RefMut},
     collections::VecDeque,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Arc, Condvar, Mutex, MutexGuard, PoisonError,
+        Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError,
         atomic::{AtomicUsize, Ordering},
     },
     thread::JoinHandle,
 };
+
+/// The launch's one worker ([`launch`]).
+static LAUNCHED: OnceLock<Arc<GpuTiles>> = OnceLock::new();
+
+/// The launch's one worker, which the catalog owner's export lane streams every export through:
+/// waiting for the desktop to name the adapter its window draws with, or refused for a launch with
+/// `--no-gpu-render` ([`GpuTiles::pending`]). Made once; a second call answers the first's.
+pub(crate) fn launch(refused: bool) -> Arc<GpuTiles> {
+    Arc::clone(LAUNCHED.get_or_init(|| Arc::new(GpuTiles::pending(refused))))
+}
+
+/// The launch's one worker, once the launch has made it; none in a test, which makes its own.
+pub(crate) fn launched() -> Option<Arc<GpuTiles>> {
+    LAUNCHED.get().cloned()
+}
 
 /// The stack a call or a stream reads, named on this one line (`desktop-keeps-no-stack`): the
 /// worker holds one only while it answers the call whose evaluation carries it, and an export's
@@ -117,12 +135,12 @@ struct Shared {
     /// Signalled when a call or a stream is queued, when a stream's encoder takes a band or drops
     /// the stream, and when the worker is to stop. Only the worker waits on it.
     wake: Condvar,
-    /// The backend and name of the adapter the window's renderer draws with, which the runner is
-    /// opened on.
-    adapter: Option<(String, String)>,
 }
 
 struct State {
+    /// The backend and name of the adapter the window's renderer draws with, which the runner is
+    /// opened on: given at the start, or named later ([`GpuTiles::adopt_adapter`]).
+    adapter: Option<(String, String)>,
     calls: VecDeque<TileCall>,
     /// The streams asked for, the one being drawn first; the worker takes it out while it draws a
     /// step of it.
@@ -130,8 +148,8 @@ struct State {
     stopping: bool,
     /// The client of the call being answered, and that call's cancellation.
     active: Option<(ClientId, Cancel)>,
-    /// Why the runner cannot draw: the launch refused the GPU, the desktop named no adapter,
-    /// opening it failed or its device was lost.
+    /// Why the runner cannot draw: the desktop has not named its window's adapter yet, the launch
+    /// refused the GPU, the desktop named no adapter, opening it failed or its device was lost.
     unavailable: Option<TileUnavailable>,
     figures: Figures,
     #[cfg(test)]
@@ -210,12 +228,28 @@ impl GpuTiles {
     /// A worker that opens its runner, when its first call or stream needs it, on `adapter`: the
     /// backend and name the window's renderer reports drawing with, or `None` when the desktop
     /// recorded none. `refused` for a launch with `--no-gpu-render`, whose reads the reference
-    /// answers naming it. Starts no thread before the first call or stream.
+    /// answers naming it. Starts no thread before the first call or stream. A launch makes its
+    /// worker before its window names the adapter ([`Self::pending`]).
+    #[cfg(test)]
     pub(crate) fn new(adapter: Option<(String, String)>, refused: bool) -> Self {
         Self::with_capacity(TILE_QUEUE_CAPACITY, adapter, refused)
     }
 
+    /// A launch's worker, which opens nothing until the desktop names the adapter its window draws
+    /// with ([`Self::adopt_adapter`]) and answers the reference as `surface-pending` until then;
+    /// for a launch with `--no-gpu-render`, `refused`, a worker that never opens anything. Starts
+    /// no thread before the first call or stream.
+    pub(crate) fn pending(refused: bool) -> Self {
+        let reason = if refused {
+            TileUnavailable::Refused
+        } else {
+            TileUnavailable::Pending
+        };
+        Self::with_state(TILE_QUEUE_CAPACITY, None, Some(reason))
+    }
+
     /// [`Self::new`], holding at most `capacity` calls waiting.
+    #[cfg(test)]
     pub(crate) fn with_capacity(
         capacity: usize,
         adapter: Option<(String, String)>,
@@ -228,9 +262,18 @@ impl GpuTiles {
         } else {
             None
         };
+        Self::with_state(capacity, adapter, unavailable)
+    }
+
+    fn with_state(
+        capacity: usize,
+        adapter: Option<(String, String)>,
+        unavailable: Option<TileUnavailable>,
+    ) -> Self {
         Self {
             shared: Arc::new(Shared {
                 state: Mutex::new(State {
+                    adapter,
                     calls: VecDeque::new(),
                     streams: VecDeque::new(),
                     stopping: false,
@@ -241,11 +284,25 @@ impl GpuTiles {
                     hooks: Hooks::default(),
                 }),
                 wake: Condvar::new(),
-                adapter,
             }),
             thread: Mutex::new(None),
             capacity,
         }
+    }
+
+    /// Name the adapter the window's renderer draws with, `name` on `backend`, which a launch's
+    /// worker waits for ([`Self::pending`]): from then on its status is the GPU's, and the first
+    /// call or stream that needs the runner opens it on that adapter, or names why it cannot.
+    /// Whether it was taken: a worker that already has an adapter, or that the launch refused,
+    /// keeps what it has. Never waits for the worker.
+    pub(crate) fn adopt_adapter(&self, backend: &str, name: &str) -> bool {
+        let mut state = self.shared.lock();
+        if state.unavailable != Some(TileUnavailable::Pending) {
+            return false;
+        }
+        state.adapter = Some((backend.to_owned(), name.to_owned()));
+        state.unavailable = None;
+        true
     }
 
     /// What the worker has done and holds, as of the last call or tile it drew.
@@ -432,6 +489,15 @@ impl Drop for GpuTiles {
     }
 }
 
+impl std::fmt::Debug for GpuTiles {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GpuTiles")
+            .field("figures", &self.figures())
+            .finish()
+    }
+}
+
 /// An export's output stage as the worker draws it.
 struct Stream {
     stack: Stack,
@@ -449,8 +515,26 @@ struct Stream {
     next: usize,
     band: Vec<u8>,
     sent: usize,
-    /// The error that ends the stream, which waits for room in its channel.
-    ending: Option<Error>,
+    /// What ends the stream, which waits for room in its channel.
+    ending: Option<End>,
+}
+
+/// What ends a stream before its last band: an error of its own, a cancellation among them, or the
+/// reason the GPU cannot go on drawing it, for which the export lane renders it again with the
+/// reference.
+enum End {
+    Error(Error),
+    Fallback(TileFallback),
+}
+
+impl End {
+    /// Hand it to the stream through `sender`.
+    fn send(self, sender: &BandSender) {
+        match self {
+            Self::Error(error) => sender.send(Err(error)),
+            Self::Fallback(fallback) => sender.fall_back(fallback),
+        };
+    }
 }
 
 /// A stream being drawn: the plan at the side chosen for it, the source its tiles' windows are cut
@@ -573,12 +657,12 @@ impl Worker {
         }
         let mut runner = self.runner.borrow_mut();
         if runner.is_none() {
-            let Some((backend, name)) = &self.shared.adapter else {
+            let Some((backend, name)) = self.shared.lock().adapter.clone() else {
                 return Err(TileFallback::Unavailable(TileUnavailable::NoAdapter));
             };
             // A JPEG's cut reads the core's decode table, which the surface holds once handed it.
             gpu_plan::install_output_encoding();
-            match TileRunner::open(backend, name) {
+            match TileRunner::open(&backend, &name) {
                 Ok(opened) => {
                     self.figures.borrow_mut().adapter = Some(opened.adapter().clone());
                     *runner = Some(opened);
@@ -695,7 +779,10 @@ impl Worker {
     fn step(&self, stream: &mut Stream) -> bool {
         match catch_unwind(AssertUnwindSafe(|| self.advance(stream))) {
             Ok(more) => more,
-            Err(_) => self.end(stream, Error::internal("drawing an export's tile panicked")),
+            Err(_) => self.end(
+                stream,
+                End::Error(Error::internal("drawing an export's tile panicked")),
+            ),
         }
     }
 
@@ -705,13 +792,13 @@ impl Worker {
             self.release();
             return false;
         }
-        if let Some(error) = stream.ending.take() {
-            // The worker steps an ending stream only once its channel has room for the error.
-            stream.sender.send(Err(error));
+        if let Some(end) = stream.ending.take() {
+            // The worker steps an ending stream only once its channel has room for its end.
+            end.send(&stream.sender);
             return false;
         }
         if let Err(cancelled) = stream.cancel.check() {
-            return self.end(stream, cancelled);
+            return self.end(stream, End::Error(cancelled));
         }
         let Some(drawing) = &stream.drawing else {
             return match self.begin(stream) {
@@ -720,7 +807,7 @@ impl Worker {
                     self.figures.borrow_mut().streams += 1;
                     true
                 }
-                Err(fallback) => self.end(stream, ended(&fallback)),
+                Err(fallback) => self.end(stream, End::Fallback(fallback)),
             };
         };
         let tile = drawing.plan.tiles[stream.next];
@@ -737,10 +824,10 @@ impl Worker {
             Ok(TilePixels::Linear(_)) => {
                 return self.end(
                     stream,
-                    Error::internal("an export's tile read back no codes"),
+                    End::Error(Error::internal("an export's tile read back no codes")),
                 );
             }
-            Err(fallback) => return self.end(stream, ended(&fallback)),
+            Err(fallback) => return self.end(stream, End::Fallback(fallback)),
         };
         let width = drawing.plan.output.width as usize;
         let rect = tile.rect;
@@ -832,17 +919,17 @@ impl Worker {
         Ok(largest)
     }
 
-    /// End `stream` with `error`: everything held for it let go, and the error sent once its
-    /// channel has room for it. Whether the stream waits for that room.
-    fn end(&self, stream: &mut Stream, error: Error) -> bool {
+    /// End `stream` with `end`: everything held for it let go, and the end sent once its channel
+    /// has room for it. Whether the stream waits for that room.
+    fn end(&self, stream: &mut Stream, end: End) -> bool {
         self.release();
         stream.drawing = None;
         stream.band = Vec::new();
         if stream.room() {
-            stream.sender.send(Err(error));
+            end.send(&stream.sender);
             false
         } else {
-            stream.ending = Some(error);
+            stream.ending = Some(end);
             true
         }
     }
@@ -1129,25 +1216,36 @@ fn fallback_of(failure: TileFailure) -> TileFallback {
     }
 }
 
-/// The error that ends a stream the GPU cannot go on drawing, naming why in its data: `fallback`,
-/// the reason's code; `unavailable` for a runner that cannot draw; `requested` and `budget` for a
-/// stage no side's tiles fit; `detail` for the plan's own reason.
-fn ended(fallback: &TileFallback) -> Error {
-    let mut data = json!({ "fallback": fallback.code() });
-    match fallback {
-        TileFallback::Unavailable(reason) => data["unavailable"] = json!(reason.as_str()),
-        TileFallback::Budget { requested, budget } => {
-            data["requested"] = json!(requested);
-            data["budget"] = json!(budget);
-        }
-        TileFallback::Plan(reason) => data["detail"] = json!(reason.to_string()),
-        TileFallback::Stage(_) => {}
+impl TileWorkerFigures {
+    /// The figures as evidence records them: the status, `gpu` or the reference's reason code
+    /// (`tiles-unavailable` naming the unavailability as `surface-pending`, `refused` and so on);
+    /// the adapter the runner's device is on, as an adapter is recorded, or why opening it was
+    /// refused; and the counts and bytes.
+    pub(crate) fn record(&self) -> Value {
+        let status = match &self.status {
+            TileStatus::Gpu => json!("gpu"),
+            TileStatus::Reference(None) => json!({"reference": null}),
+            TileStatus::Reference(Some(TileFallback::Unavailable(reason))) => {
+                json!({"reference": "tiles-unavailable", "unavailable": reason.as_str()})
+            }
+            TileStatus::Reference(Some(reason)) => json!({"reference": reason.code()}),
+        };
+        json!({
+            "status": status,
+            "adapter": self.adapter.as_ref().map(|adapter| {
+                super::renderer::adapter_record(&adapter.backend, &adapter.name, Some(adapter))
+            }),
+            "refusal": self.refusal,
+            "reads": self.reads,
+            "references": self.references,
+            "streams": self.streams,
+            "bands": self.bands,
+            "tiles": self.tiles,
+            "compiles": self.compiles,
+            "in_use_bytes": self.in_use,
+            "peak_bytes": self.peak,
+        })
     }
-    Error::render(format!(
-        "the GPU stopped drawing the export's tiles: {}",
-        fallback.code()
-    ))
-    .with_data(data)
 }
 
 /// What a test asks of the worker.
