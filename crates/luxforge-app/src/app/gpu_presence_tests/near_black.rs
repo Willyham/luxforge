@@ -1,6 +1,7 @@
 //! Near-black outliers on the linear (RAW) path, measured for a decision rather than held to a
 //! limit: the Presence corpus recipes on the RAW sources, at Fit and on a full-resolution crop the
-//! size of the 100% view, each through the boundary the slot holds today (`rgba16float`), through
+//! size of the 100% view, each a photograph of its own on both sides (the development reduced to
+//! the Fit size, or cut to the crop), each through the boundary the slot holds today (`rgba16float`), through
 //! an `rgba32float` boundary holding the same pixels unrounded, and through candidate guards in the
 //! GPU apply's luminance-ratio reconstruction. The CPU frame is never changed.
 //!
@@ -10,12 +11,11 @@
 //! cargo test -p luxforge-app gpu_presence_near_black -- --ignored --nocapture
 //! ```
 use super::super::gpu_plan::surface_plan;
-use super::super::gpu_qualification::{apply_steps, codes, corpus_sources, figures, fit_bounds};
+use super::super::gpu_qualification::{apply_steps, codes, corpus_sources, figures, fit_size};
 use luxforge_core::{
     Cancel, CompileStage, EffectStage, GpuAnswer, GpuPlanRequest, Layer, LinearImage,
-    LinearSettings, ModuleRegistry, PhaseOutcome, PreviewIntent, PreviewQueue, PreviewRequest,
-    PreviewSource, Processing, Recipe, RenderContext, RenderOptions, RenderSource, SnapshotId,
-    Stage, gpu_plan, render,
+    LinearSettings, ModuleRegistry, PreviewRequest, PreviewSource, Processing, Recipe,
+    RenderContext, RenderOptions, RenderSource, SnapshotId, Stage, gpu_plan, render,
 };
 use luxforge_reference::preview_error::{self, Rgb8, Statistics};
 use luxforge_ui::photo_surface::{
@@ -262,8 +262,11 @@ fn rgb_of(rgba: &[u8]) -> Vec<u8> {
         .collect()
 }
 
-/// A RAW cell's Fit frame through the desktop's own Fit job, and the full-resolution development,
-/// its settings, the recipe and the registry it was rendered with.
+/// A RAW cell's Fit frame, and the full-resolution development, its settings, the recipe and the
+/// registry it was rendered with. The Fit frame is the development reduced to the size the editor
+/// draws the stack at Fit in an evidence run's window ([`fit_size`]) by an area-weighted average,
+/// rendered exactly by the CPU as a photograph of its own, and the exact plan over it, as a crop is
+/// ([`crop`]): both sides read the same pixels, and Dehaze's light is the reduced frame's on both.
 fn fit(
     source: &std::path::Path,
     steps: &[Value],
@@ -284,71 +287,103 @@ fn fit(
     let asset = crate::app::testing::import_and_adopt(&owner, client, source);
     let result = (|| {
         apply_steps(&owner, client, &asset, steps)?;
-        let bounds = fit_bounds();
-        let mut job = crate::app::tasks::ready_preview_job(
+        let job = crate::app::tasks::ready_preview_job(
             &owner,
-            PreviewRequest::new(client, asset.clone()).proxy(bounds),
+            PreviewRequest::new(client, asset.clone()),
         )?;
-        job.intent = PreviewIntent::Interactive;
-        let evaluation = job.evaluation.clone();
+        let evaluation = job.evaluation;
         let recipe = evaluation.recipe().clone();
         let registry = evaluation.registry().clone();
-        let mut queue = PreviewQueue::default();
-        let generation = queue.request(job);
-        let outcome = luxforge_testbase::wait_for("the Fit frame", || {
-            let result = queue.poll()?;
-            (result.generation == generation).then_some(result.outcome)
-        });
-        let PhaseOutcome::Proxy(proxy) = outcome else {
-            return Err("a RAW at Fit is a proxy".to_owned());
-        };
-        let context = RenderContext::new();
-        let plan = render(
-            &registry,
-            evaluation.source(),
-            evaluation.recipe(),
-            RenderOptions::exact(&Cancel::never()),
-            &context,
-        )
-        .map_err(|error| error.to_string())?
-        .proxy_plan(bounds)
-        .ok_or("a proxy frame without a proxy plan")?;
-        let proxied = evaluation
-            .source()
-            .proxy(plan)
-            .map_err(|error| error.to_string())?;
-        let (PreviewSource::Raw { image, settings }, PreviewSource::Raw { image: full, .. }) =
-            (&proxied, evaluation.source())
+        let PreviewSource::Raw {
+            image: full,
+            settings,
+        } = evaluation.source()
         else {
             return Err("not a RAW".to_owned());
         };
-        if settings.white_balance.is_some() {
-            return Err("an approximated white balance".to_owned());
-        }
-        let size = proxied.dimensions();
-        let full_size = evaluation.source().dimensions();
-        let layer = boundary_layer(&registry, &recipe, size)?;
-        let texels = pixels(image, (0, 0), size);
-        let request = GpuPlanRequest::fit(
-            layer,
-            stage(size.0, size.1),
-            stage(full_size.0, full_size.1),
-        )
-        .qualifying()
-        .linear();
-        let frame = frame_of(
-            &registry,
-            &recipe,
-            request,
-            size,
-            texels,
-            rgb_of(&proxy.raster.rgba),
-        )?;
+        let size = fit_size(&evaluation)?;
+        let reduced = reduced(full, size)?;
+        let frame = own_photograph(&registry, &recipe, settings, &reduced, "fit")?;
         Ok((frame, full.clone(), *settings, recipe, registry))
     })();
     owner.stop();
     let _ = join.join();
     result
+}
+
+/// `image`'s viewed pixels reduced to `size` by an area-weighted average: each output pixel the
+/// mean of the source pixels it covers, weighted by how much of each it covers.
+fn reduced(image: &LinearImage, size: (u32, u32)) -> Result<LinearImage, String> {
+    let (width, height) = (image.width(), image.height());
+    // For each output index along an axis, the source indices it covers and by how much.
+    let axis = |full: u32, out: u32| -> Vec<Vec<(u32, f64)>> {
+        let scale = f64::from(full) / f64::from(out);
+        (0..out)
+            .map(|o| {
+                let (start, end) = (f64::from(o) * scale, f64::from(o + 1) * scale);
+                (start.floor() as u32..(end.ceil() as u32).min(full))
+                    .map(|i| {
+                        let i0 = f64::from(i);
+                        (i, end.min(i0 + 1.0) - start.max(i0))
+                    })
+                    .filter(|(_, weight)| *weight > 0.0)
+                    .collect()
+            })
+            .collect()
+    };
+    let (across, down) = (axis(width, size.0), axis(height, size.1));
+    let len = (size.0 * size.1) as usize;
+    let mut planes = vec![0.0_f32; 3 * len];
+    // Each source row is reduced across once, then the rows each output row covers combined.
+    let mut rows: Vec<Option<Vec<[f64; 3]>>> = vec![None; height as usize];
+    for (y, weights_down) in down.iter().enumerate() {
+        // A source row no output row from here on reads is let go.
+        if let Some(&(first, _)) = weights_down.first() {
+            for row in rows.iter_mut().take(first as usize) {
+                *row = None;
+            }
+        }
+        let mut sums = vec![[0.0_f64; 3]; size.0 as usize];
+        let mut total = 0.0;
+        for &(sy, wy) in weights_down {
+            let row = rows[sy as usize].get_or_insert_with(|| {
+                across
+                    .iter()
+                    .map(|weights| {
+                        let mut sum = [0.0_f64; 3];
+                        let mut count = 0.0;
+                        for &(sx, wx) in weights {
+                            let pixel = image.pixel(sx, sy).expect("a viewed pixel");
+                            for channel in 0..3 {
+                                sum[channel] += wx * f64::from(pixel[channel]);
+                            }
+                            count += wx;
+                        }
+                        sum.map(|value| value / count)
+                    })
+                    .collect()
+            });
+            for (x, value) in row.iter().enumerate() {
+                for channel in 0..3 {
+                    sums[x][channel] += wy * value[channel];
+                }
+            }
+            total += wy;
+        }
+        for (x, sum) in sums.iter().enumerate() {
+            let index = y * size.0 as usize + x;
+            for channel in 0..3 {
+                planes[channel * len + index] = (sum[channel] / total) as f32;
+            }
+        }
+    }
+    LinearImage::with_fingerprint(
+        size.0,
+        size.1,
+        planes,
+        format!("sha256:near-black-fit-{}x{}", size.0, size.1),
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// The viewed pixels of `image` in the `size` rectangle at `origin`, row by row.
@@ -411,11 +446,25 @@ fn crop(
         format!("sha256:near-black-{}-{}", origin.0, origin.1),
     )
     .map_err(|error| error.to_string())?;
+    own_photograph(registry, recipe, settings, &image, "crop")
+}
+
+/// `image` rendered exactly by the CPU as a photograph of its own, and the exact plan over its
+/// pixels; `what` names it in a failure.
+fn own_photograph(
+    registry: &ModuleRegistry,
+    recipe: &Recipe,
+    settings: &LinearSettings,
+    image: &LinearImage,
+    what: &str,
+) -> Result<Frame, String> {
+    let size = (image.width(), image.height());
+    let texels = pixels(image, (0, 0), size);
     let context = RenderContext::new();
     let raster = render(
         registry,
         RenderSource::Linear {
-            image: &image,
+            image,
             settings: *settings,
         },
         recipe,
@@ -423,7 +472,7 @@ fn crop(
         &context,
     )
     .and_then(|render| render.frame(SnapshotId::new()))
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| format!("the {what}: {error}"))?;
     let layer = boundary_layer(registry, recipe, size)?;
     let request = GpuPlanRequest::exact(layer, stage(size.0, size.1))
         .qualifying()
