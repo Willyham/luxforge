@@ -478,7 +478,8 @@
       "description": "Export through GPU tiles: export.jpeg renders full-resolution tiles on the GPU and encodes them, with the reference renderer as the export for machines without a GPU and as an explicit reference option (stage 4).",
       "extra_context": [
         "docs/design/export.md: the exporter renders the exact frame on the CPU and encodes it. On the GPU the stack renders in full-resolution tiles with halos inside the GPU budget and the tiles feed the encoder in order; the job, its progress, cancellation and the sidecar identity keep their shapes. On one machine and driver the export is identical run to run; across machines a last-digit difference is accepted (owner, 2026-10-04).",
-        "The reference export stays: the default on a machine without a usable GPU, and an explicit option (`reference: true`) a test or a person can ask for. The harness compares a GPU export with a reference export per corpus stack within the display limit."
+        "The reference export stays: the default on a machine without a usable GPU, and an explicit option (`reference: true`) a test or a person can ask for. The harness compares a GPU export with a reference export per corpus stack within the display limit.",
+        "Delivered 2026-10-05: export.jpeg streams the GPU's bands into the encoder through the owner's tile service, the reference renders when asked, without a GPU provider or when the provider stops part-way (the export starts again from nothing), and the result names the renderer and its reason; the release gate's export kind is within its limit on all 250 corpus stacks and byte-identical on a second device, and the export and no-gpu-render scenarios pass (artifacts/gpu-first/task-007 in the lane's worktree). The export timing at 24 and 60 MP is TASK-011's."
       ],
       "context_links": [
         {
