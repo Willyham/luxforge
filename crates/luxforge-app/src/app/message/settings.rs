@@ -1,5 +1,8 @@
 //! The Settings sheet.
-use crate::state::settings::{GeneralPreferences, SettingsTab};
+use crate::state::{
+    preferences::{GeneralPreference, GeneralValue, Preferences},
+    settings::SettingsTab,
+};
 use luxforge_core::flags::FlagList;
 use serde_json::Value;
 
@@ -14,13 +17,13 @@ pub(crate) enum SettingsMessage {
     /// `flags.list` and `preferences.read` answered.
     Listed {
         flags: Result<FlagList, String>,
-        preferences: Result<GeneralPreferences, String>,
+        preferences: Result<Preferences, String>,
     },
-    /// Turn Auto collapse history on or off through `preferences.set`.
-    SetAutoCollapse(bool),
-    /// `preferences.set` answered the Auto collapse history write in flight: the preferences it
-    /// left and the request id its event carries, which the event sync then skips.
-    PreferencesSaved(Result<(GeneralPreferences, String), String>),
+    /// One gesture on a General row's control, stored through the desktop's preference writer.
+    SetGeneral(GeneralPreference, GeneralValue),
+    /// The Catalog row's folder dialog answered: the folder chosen, or `None` when it was
+    /// cancelled.
+    CatalogFolder(Option<std::path::PathBuf>),
     /// Change a flag to `value`, or reset it to its default for `None`, through `flags.set`.
     Set {
         flag: String,

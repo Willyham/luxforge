@@ -19,6 +19,7 @@ pub(crate) mod overlay;
 pub(crate) mod palette;
 pub(crate) mod performance;
 pub(crate) mod pointer;
+pub(crate) mod preferences;
 pub(crate) mod preset;
 pub(crate) mod preview;
 pub(crate) mod renderer;
@@ -55,6 +56,8 @@ pub(crate) enum Message {
     Performance(performance::PerformanceMessage),
     /// One Settings sheet gesture or answer.
     Settings(settings::SettingsMessage),
+    /// An owner answer to the desktop's preference writer or to a read of the preferences.
+    Preferences(preferences::PreferenceMessage),
     /// One export gesture or answer.
     Export(export::ExportMessage),
     Evidence(evidence::EvidenceMessage),
@@ -91,6 +94,7 @@ impl Message {
                 message,
                 V::TogglePanel(_)
                     | V::ToggleThirds
+                    | V::ToggleInformation
                     | V::ToggleGpuPreview
                     | V::SetMode(_)
                     | V::Gallery(_)

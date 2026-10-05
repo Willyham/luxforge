@@ -427,12 +427,16 @@ impl EditorService {
     /// ones before it. The source is prepared, so a module reads its optics from the verified
     /// cache; planning reads metadata only. A refusal commits nothing and is reported, and the next
     /// module is still asked. Only an import that inserted the asset calls this, so it never runs
-    /// for a file imported again, a reopen or an asset that already has history.
+    /// for a file imported again, a reopen or an asset that already has history. The lens module is
+    /// not asked while the person's lens switch is off ([`Self::set_auto_lens_profile`]).
     pub(crate) fn first_open(&mut self, asset_id: &AssetId) -> Vec<crate::FirstOpen> {
         let registry = self.registry.clone();
         let mut reports = Vec::new();
         for module in registry.providers() {
             let descriptor = module.descriptor();
+            if !self.auto_lens_profile && descriptor.id == crate::modules::LENS_MODULE {
+                continue;
+            }
             let report = |action_id: Option<&str>| crate::FirstOpen {
                 module_id: descriptor.id.clone(),
                 action_id: action_id.map(str::to_owned),

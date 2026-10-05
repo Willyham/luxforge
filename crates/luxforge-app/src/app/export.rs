@@ -2,17 +2,19 @@
 //!
 //! The desktop holds no export logic. One chain of owner requests runs off the update loop:
 //! `export.plan` for the displayed entry's suggested name (the fixed After entry during slider
-//! comparison), the native save dialog in the original's folder, and `export.jpeg` for that entry
-//! with the chosen destination, asked again once the source is prepared when the owner answers
-//! `preparation-required`. The job then runs on the core's export
-//! lane, and the desktop reads it with `job.read` until it ends, through a reader that exists only
-//! while this window's export is queued or running (performance rule 8) and sends the desktop a
-//! message only when the job's record changes or the job ends ([`job_reads`]). The status bar says
-//! what happened; the Performance section lists the running job from `activity.list` like any
-//! other.
+//! comparison), the native save dialog in the folder that plan suggests — the remembered export
+//! folder, or the original's — and `export.jpeg` for that entry with the chosen destination, asked
+//! again once the source is prepared when the owner answers `preparation-required`. The job then
+//! runs on the core's export lane, and the desktop reads it with `job.read` until it ends, through
+//! a reader that exists only while this window's export is queued or running (performance rule 8)
+//! and sends the desktop a message only when the job's record changes or the job ends
+//! ([`job_reads`]). The status bar says what happened; the Performance section lists the running
+//! job from `activity.list` like any other. Once an export whose destination the dialog chose
+//! succeeds, its folder is stored as the remembered export folder.
 //!
 //! An evidence run bypasses only the dialog: its `export` step names the file, written into the
-//! run's evidence directory, and the rest of the chain is the same.
+//! run's evidence directory, and the rest of the chain is the same, except that its folder is
+//! never remembered.
 use crate::app::{
     Editor,
     gesture::Starting,
@@ -66,6 +68,11 @@ pub(crate) struct ExportRun {
     pub(crate) file_name: Option<String>,
     /// The core's job, once `export.jpeg` has queued it.
     pub(crate) job_id: Option<String>,
+    /// The save dialog chooses the destination, rather than an evidence step.
+    pub(crate) dialog: bool,
+    /// The folder the save dialog chose, stored as the remembered export folder once the export
+    /// succeeds. `None` for a destination given any other way.
+    pub(crate) folder: Option<PathBuf>,
 }
 
 impl Exporting {
@@ -170,6 +177,8 @@ impl Editor {
             keep_metadata,
             file_name: None,
             job_id: None,
+            dialog: destination.is_none(),
+            folder: None,
         });
         self.event(
             "export_started",
@@ -196,6 +205,9 @@ impl Editor {
                 self.status.text = format!("Exporting {file_name}\u{2026}");
                 if let Some(run) = &mut self.export.run {
                     run.file_name = Some(file_name);
+                    if run.dialog {
+                        run.folder = super::remembered::export_folder(&choice.destination);
+                    }
                     self.outcome(Outcome::ExportPlanned(&choice.plan));
                 }
                 send_task(self.owner.clone(), self.client, *choice)
@@ -279,7 +291,10 @@ impl Editor {
                     result["height"].as_u64().unwrap_or(0),
                     result["bytes"].as_u64().unwrap_or(0),
                 );
+                let folder = self.export.run.as_ref().and_then(|run| run.folder.clone());
                 self.export_finished(status, None, Some(record));
+                // Only a destination the person chose in the save dialog is remembered.
+                return self.remember_export_folder(folder);
             }
             Some("cancelled") => {
                 self.export_finished("Export cancelled".into(), None, Some(record));
@@ -369,7 +384,7 @@ fn file_name(path: &Path) -> String {
 
 /// The folder and file name the save dialog opens on: the plan's suggestion, or `<stem>-edited.jpg`
 /// in the original's folder when the plan suggests none.
-fn dialog_start(plan: &Value, original: &Path) -> (PathBuf, String) {
+pub(crate) fn dialog_start(plan: &Value, original: &Path) -> (PathBuf, String) {
     let folder = original.parent().map(Path::to_path_buf).unwrap_or_default();
     match plan["suggested"].as_str().map(Path::new) {
         Some(suggested) => (

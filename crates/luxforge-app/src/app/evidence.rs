@@ -472,6 +472,8 @@ pub(crate) enum Settle {
     PerformanceCancel,
     /// The Settings sheet's `flags.list` answered, or its last outstanding `flags.set` did.
     Flags,
+    /// The preference writer's last outstanding `preferences.set` answered.
+    Preferences,
     /// A capability step's round trips have answered and, unless it said otherwise, the jobs it
     /// started have finished.
     Capability,
@@ -502,6 +504,7 @@ impl Settle {
             Self::Performance => "performance",
             Self::PerformanceCancel => "performance_cancel",
             Self::Flags => "flags",
+            Self::Preferences => "preferences",
             Self::Capability => "capability",
             Self::Export => "export",
             Self::Agent => "agent",
@@ -1089,10 +1092,12 @@ impl Editor {
                 );
                 let revision = self.session.revision;
                 self.await_step(Settle::Session);
+                // In the system's points, as AppKit reports a pinch.
+                let points = f64::from(self.view_state.interface_scale());
                 let task = self.update(Message::View(ViewMessage::Pinch(luxforge_input::Pinch {
                     delta: step.delta,
-                    x: f64::from(left) + f64::from(right - left) * step.x,
-                    y: f64::from(top) + f64::from(bottom - top) * step.y,
+                    x: (f64::from(left) + f64::from(right - left) * step.x) * points,
+                    y: (f64::from(top) + f64::from(bottom - top) * step.y) * points,
                 })));
                 if self.session.revision == revision {
                     return self.fail_step("pinch changed no view");
@@ -1177,6 +1182,7 @@ impl Editor {
             }
             Step::Settings { open } => self.settings_step(open),
             Step::Flag { id, value } => self.flag_step(id, value),
+            Step::Preference(fields) => self.preference_step(fields),
             Step::Wait { ms } => self.wait_step(ms),
             Step::GpuWarmed { quiet_ms, ms } => self.warm_wait_step(quiet_ms, ms),
             Step::Key { key } => self.key_step(key),
@@ -3752,6 +3758,10 @@ impl Editor {
         let status = iced::event::Status::Ignored;
         match crate::app::keymap::keymap(&event, status, &self.key_context()) {
             None => self.fail_step(format!("the key {key} does nothing here")),
+            Some(Message::View(ViewMessage::ToggleInformation)) => {
+                self.await_step(Settle::Session);
+                self.dispatch(Message::Key(event, status))
+            }
             Some(Message::View(ViewMessage::SetMode(mode)))
                 if mode != self.session.workspace.mode =>
             {
@@ -3820,11 +3830,17 @@ impl Editor {
             PaletteAction::Mode(_)
             | PaletteAction::TogglePanel(_)
             | PaletteAction::ToggleThirds
+            | PaletteAction::ToggleInformation
             | PaletteAction::ToggleGpuPreview
             | PaletteAction::Fit
             | PaletteAction::HundredPercent => self.await_step(Settle::Session),
             PaletteAction::TogglePerformance => self.arm_performance_settle(),
             PaletteAction::Settings(_) => self.arm_settings_settle(),
+            // A reveal is local view state, unless it has to show the tools panel first.
+            PaletteAction::Reveal(_) if !self.session.workspace.tools_panel => {
+                self.await_step(Settle::Session)
+            }
+            PaletteAction::Reveal(_) => self.capture_next_frame(),
             // An evidence run opens no save dialog, so the entry only closes the palette.
             PaletteAction::Export { .. } => self.capture_next_frame(),
         }
@@ -3942,6 +3958,45 @@ impl Editor {
             flag: id,
             value: Some(value),
         }))
+    }
+
+    /// Change General rows as a person does, each through its own control's message: a switch
+    /// turned to a boolean, a segment chosen by its value, and the catalog's folder as its dialog
+    /// would answer for `<folder>/catalog.sqlite` or Use Default for `null`. Every field is checked
+    /// against the row before any is sent, so a field no row shows or a value its control does not
+    /// offer fails the step with nothing changed. The changes go through the desktop's one
+    /// preference writer, and the step waits for its last write to answer; a step whose rows
+    /// already show every value sends nothing and is captured on the next frame. The rows answer
+    /// whether or not the sheet is open, as the Masks panel's colour control does.
+    fn preference_step(&mut self, fields: serde_json::Map<String, Value>) -> Task<Message> {
+        use crate::state::preferences::{GeneralPreference, general_rows};
+        let rows = general_rows(&self.preferences);
+        let mut gestures = Vec::new();
+        for (field, value) in &fields {
+            let Some(row) = GeneralPreference::parse(field)
+                .and_then(|preference| rows.iter().find(|row| row.preference == preference))
+            else {
+                return self.fail_step(format!("the General tab shows no preference {field}"));
+            };
+            let Some(gesture) = row.control.gesture(value) else {
+                return self.fail_step(format!("{field}'s control does not offer {value}"));
+            };
+            if !row.control.shows(gesture.clone()) {
+                gestures.push((row.preference, gesture));
+            }
+        }
+        if gestures.is_empty() {
+            self.capture_next_frame();
+            return Task::none();
+        }
+        self.await_step(Settle::Preferences);
+        let sent: Vec<_> = gestures
+            .into_iter()
+            .map(|(row, value)| {
+                self.update(Message::Settings(SettingsMessage::SetGeneral(row, value)))
+            })
+            .collect();
+        Task::batch(sent)
     }
 
     /// Click one row, exactly as the section does: the section's own action with that preset's
@@ -4383,6 +4438,7 @@ impl Editor {
                 }
             }
             Outcome::FlagsRead | Outcome::FlagsWritten => self.settle_step(Settle::Flags, by),
+            Outcome::PreferencesWritten => self.settle_step(Settle::Preferences, by),
             Outcome::ExportPlanned(plan) => {
                 if let Some(evidence) = &mut self.evidence {
                     evidence.recorded.export_plan = Some(plan.clone());

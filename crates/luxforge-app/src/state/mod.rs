@@ -7,11 +7,13 @@ pub(crate) mod control_tree;
 pub(crate) mod document;
 pub(crate) mod fields;
 pub(crate) mod histogram;
+pub(crate) mod information;
 pub(crate) mod masks;
 pub(crate) mod number;
 pub(crate) mod palette;
 pub(crate) mod panel;
 pub(crate) mod performance;
+pub(crate) mod preferences;
 pub(crate) mod presets;
 pub(crate) mod query_choice;
 pub(crate) mod settings;
@@ -23,7 +25,10 @@ pub(crate) mod tools;
 
 use crate::{coalesce::Coalesce, crop_draft::CropDraft, mask_draft::MaskDraft};
 use fields::Fields;
-use luxforge_core::{ClientSession, EditorState, HistorySelection, MaskId, ModuleDescriptor};
+use luxforge_core::{
+    ClientSession, EditorState, HistorySelection, MaskId, ModuleDescriptor,
+    preferences::{CanvasBackground, DEFAULT_INTERFACE_SIZE, INTERFACE_SIZES},
+};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
@@ -176,12 +181,26 @@ pub(crate) struct VersionForm {
 /// but the zoom and the pan, which the owner's session holds and this follows.
 #[derive(Clone, Debug)]
 pub(crate) struct ViewState {
-    /// The window's logical size, from the launch size and every resize event since, which with
-    /// the panels and the display scale decides what Fit comes to as a percentage.
+    /// The window's logical size, from the launch size, every resize event and every interface
+    /// size change since, which with the panels and the display scale decides what Fit comes to as
+    /// a percentage.
     pub(crate) window: (f32, f32),
     /// The window fills the screen, so the title bar holds no traffic lights to leave room for.
     pub(crate) fullscreen: bool,
+    /// Whether this launch remembers the window's frame, and whether the close has asked for it.
+    pub(crate) memory: crate::window_frame::WindowMemory,
+    /// Physical pixels per logical pixel: the system's factor times the interface size. Every
+    /// physical-pixel computation reads this one, so 100% zoom stays one source pixel per display
+    /// pixel at any interface size. Written through [`Self::set_system_scale_factor`] and
+    /// [`Self::set_interface_size`].
     pub(crate) scale_factor: f32,
+    /// The system's own scale factor for the window, as the window reports it.
+    pub(crate) system_scale_factor: f32,
+    /// The interface size the layout is drawn at, in percent of the system's scale: Iced's
+    /// application scale factor ([`Self::interface_scale`]).
+    pub(crate) interface_size: u16,
+    /// The colour around the photograph.
+    pub(crate) canvas_background: CanvasBackground,
     /// The zoom field's text.
     pub(crate) zoom: String,
     /// The title bar's percentage segment has been opened for typing a zoom.
@@ -209,7 +228,11 @@ impl ViewState {
         Self {
             window,
             fullscreen: false,
+            memory: Default::default(),
             scale_factor: 1.0,
+            system_scale_factor: 1.0,
+            interface_size: DEFAULT_INTERFACE_SIZE,
+            canvas_background: CanvasBackground::default(),
             zoom: "100".into(),
             zoom_editing: false,
             zoom_reveal: 0,
@@ -219,6 +242,38 @@ impl ViewState {
             local_pan: (0.0, 0.0),
             pan: Coalesce::default(),
         }
+    }
+
+    /// The interface size as Iced's application scale factor: logical pixels are this many of the
+    /// system's points.
+    pub(crate) fn interface_scale(&self) -> f32 {
+        f32::from(self.interface_size) / 100.0
+    }
+
+    /// Take up the system's scale factor for the window.
+    pub(crate) fn set_system_scale_factor(&mut self, scale: f32) {
+        if scale.is_finite() && scale > 0.0 {
+            self.system_scale_factor = scale;
+            self.scale_factor = scale * self.interface_scale();
+        }
+    }
+
+    /// Draw the interface at `size` percent, or at the system's own scale for a size this build
+    /// does not offer. The window keeps its size in the system's points, so its logical size, which
+    /// Iced reports no resize for, shrinks or grows by the change, and the physical factor follows.
+    pub(crate) fn set_interface_size(&mut self, size: u16) {
+        let size = if INTERFACE_SIZES.contains(&size) {
+            size
+        } else {
+            DEFAULT_INTERFACE_SIZE
+        };
+        if size == self.interface_size {
+            return;
+        }
+        let ratio = f32::from(self.interface_size) / f32::from(size);
+        self.window = (self.window.0 * ratio, self.window.1 * ratio);
+        self.interface_size = size;
+        self.scale_factor = self.system_scale_factor * self.interface_scale();
     }
 }
 
@@ -296,6 +351,8 @@ pub(crate) struct Inputs<'a> {
     pub(crate) palette: &'a palette::Palette,
     /// The Settings sheet.
     pub(crate) settings: &'a settings::Settings,
+    /// The person's preferences and the writes outstanding.
+    pub(crate) preferences: &'a preferences::PreferenceWriter,
     /// The version chip row's naming form.
     pub(crate) version_form: &'a VersionForm,
     pub(crate) dimensions: Option<(u32, u32)>,
@@ -377,8 +434,10 @@ impl Workspace {
         self.tools = tools::derive(inputs);
         self.histogram = histogram::derive(inputs, &self.histogram);
         self.status = status::derive(inputs);
-        self.palette = palette::derive(inputs);
-        self.settings = settings::derive(inputs.settings);
+        // The panel draws sections unless Mask mode's list has no mask open to bind them to.
+        let sections_shown = !(self.canvas.mask_panel && self.masks.selected.is_none());
+        self.palette = palette::derive(inputs, &self.tools, sections_shown);
+        self.settings = settings::derive(inputs.settings, inputs.preferences);
     }
 
     /// Every picker control the panel derived, by the module whose pick mode it selects, with the
@@ -559,6 +618,7 @@ mod tests {
         performance: performance::PerformanceHistory,
         palette: palette::Palette,
         settings: settings::Settings,
+        preferences: preferences::PreferenceWriter,
         version_form: VersionForm,
     }
 
@@ -589,6 +649,7 @@ mod tests {
                 analysis_updating: false,
                 view_state: ViewState {
                     scale_factor: 2.0,
+                    system_scale_factor: 2.0,
                     ..ViewState::new((1440.0, 900.0))
                 },
                 hover: Hover::default(),
@@ -600,6 +661,7 @@ mod tests {
                 performance: performance::PerformanceHistory::default(),
                 palette: palette::Palette::default(),
                 settings: settings::Settings::default(),
+                preferences: preferences::PreferenceWriter::default(),
                 version_form: VersionForm::default(),
             }
         }
@@ -692,6 +754,7 @@ mod tests {
                 hover: &self.hover,
                 palette: &self.palette,
                 settings: &self.settings,
+                preferences: &self.preferences,
                 version_form: &self.version_form,
                 dimensions: Some((480, 320)),
                 photo: true,
@@ -993,6 +1056,61 @@ mod tests {
             Some("disabled by --disable-module")
         );
         assert!(!disabled.enabled);
+    }
+
+    #[test]
+    fn information_follows_selected_recipe_and_live_crop_instead_of_proxy_dimensions() {
+        let mut scene = Scene::new(Vec::new()).opened(Vec::new()).sized(6000, 4000);
+        assert!(information::derive(&scene.inputs()).is_none());
+        scene.session.workspace.information = true;
+        let full = information::derive(&scene.inputs()).unwrap();
+        assert_eq!(full.dimensions, Some((6000, 4000)));
+        assert!(full.rows.contains(&("Aperture", "Unavailable".into())));
+        assert!(!full.rows.iter().any(|(label, _)| *label == "Original"));
+        // A selected historical crop is the recipe's own output, independent of the preview proxy.
+        scene.document.recipe.as_mut().unwrap().output_stage = Some(luxforge_core::StageSize {
+            width: 3000,
+            height: 2000,
+        });
+        let cropped = information::derive(&scene.inputs()).unwrap();
+        assert_eq!(cropped.dimensions, Some((3000, 2000)));
+        assert!(
+            cropped
+                .rows
+                .contains(&("Original", "6000 × 4000 px".into()))
+        );
+        scene.draft = Some(CropDraft::from_layer(
+            luxforge_core::CropStage {
+                width: 6000,
+                height: 4000,
+                angle: 0.0,
+            },
+            luxforge_core::CropPayload {
+                x: 0.25,
+                y: 0.25,
+                width: 0.25,
+                height: 0.5,
+                angle: 0.0,
+            },
+            luxforge_core::LayerId::new(),
+            0,
+            &[],
+        ));
+        let draft = information::derive(&scene.inputs()).unwrap();
+        assert_eq!(draft.dimensions, Some((1500, 2000)));
+        assert_eq!(draft.rows[0], ("Crop", "1500 × 2000 px".into()));
+        scene.document.capture = Some(luxforge_core::CaptureInfo {
+            aperture: Some(2.8),
+            exposure_seconds: Some(1.0 / 250.0),
+            iso: Some(400),
+            ..Default::default()
+        });
+        let metadata = information::derive(&scene.inputs()).unwrap();
+        assert!(metadata.rows.contains(&("Aperture", "f/2.8".into())));
+        assert!(metadata.rows.contains(&("Shutter", "1/250 s".into())));
+        assert!(metadata.rows.contains(&("ISO", "400".into())));
+        scene.document.state = None;
+        assert!(information::derive(&scene.inputs()).is_none());
     }
 
     fn crop_model(workspace: &Workspace, id: &str) -> tools::CropSectionModel {
@@ -2652,6 +2770,50 @@ mod tests {
         assert_eq!(
             workspace.status.fallback, None,
             "and neither does no reason"
+        );
+
+        // The reference renderer's notice is the session's: said at rest, before any reason a
+        // gesture's tick gives, and never beside a GPU frame; a renderer the photo surface has not
+        // checked yet says nothing.
+        let phrase = |workspace: &Workspace| {
+            workspace
+                .status
+                .fallback
+                .as_ref()
+                .map(|notice| notice.phrase.clone())
+        };
+        let mut lost = scene.session.clone();
+        lost.renderer =
+            luxforge_core::Renderer::reference(luxforge_core::RendererReason::DeviceLost);
+        let mut inputs = scene.inputs();
+        inputs.session = &lost;
+        workspace.derive(&inputs);
+        assert_eq!(phrase(&workspace).as_deref(), Some("Reference renderer"));
+        for code in ["device-lost", "budget-exceeded"] {
+            inputs.cpu_reason = Some(status::CpuReason {
+                code,
+                layer: None,
+                compiling_for: None,
+            });
+            workspace.derive(&inputs);
+            assert_eq!(
+                phrase(&workspace).as_deref(),
+                Some("Reference renderer"),
+                "{code}: during a gesture too"
+            );
+        }
+        inputs.gpu_frame_us = Some(1600);
+        workspace.derive(&inputs);
+        assert_eq!(workspace.status.fallback, None, "never beside a GPU frame");
+        let mut pending = scene.session.clone();
+        pending.renderer =
+            luxforge_core::Renderer::reference(luxforge_core::RendererReason::SurfacePending);
+        let mut inputs = scene.inputs();
+        inputs.session = &pending;
+        workspace.derive(&inputs);
+        assert_eq!(
+            workspace.status.fallback, None,
+            "the surface has not checked its stage"
         );
 
         // Nobody else connected is a count of none, with the dot unlit.
