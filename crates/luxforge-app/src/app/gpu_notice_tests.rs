@@ -494,7 +494,7 @@ fn gpu_preview_the_picture_at_rest_is_labelled_the_reference_while_its_programs_
 /// marked so.
 #[test]
 fn gpu_preview_a_warm_up_is_listed_while_it_runs_and_recorded_once_it_ends() {
-    use super::gpu_warm::{KIND, LABEL};
+    use super::gpu_warm::{WARM_UP_KIND, WARM_UP_LABEL};
     use luxforge_ui::photo_surface::WarmUpFigures;
     let catalog = catalog("warm-up");
     let (mut editor, _, _) = real_photo(&catalog);
@@ -507,7 +507,7 @@ fn gpu_preview_a_warm_up_is_listed_while_it_runs_and_recorded_once_it_ends() {
             .as_array()
             .expect("active")
             .iter()
-            .filter(|entry| entry["kind"] == json!(KIND))
+            .filter(|entry| entry["kind"] == json!(WARM_UP_KIND))
             .map(|entry| entry["label"].clone())
             .collect()
     };
@@ -521,7 +521,11 @@ fn gpu_preview_a_warm_up_is_listed_while_it_runs_and_recorded_once_it_ends() {
     };
     editor.gpu.warm_up.figures = Some(running);
     let _ = editor.update(Message::Preview(PreviewMessage::Poll));
-    assert_eq!(listed(&editor), [json!(LABEL)], "listed while it runs");
+    assert_eq!(
+        listed(&editor),
+        [json!(WARM_UP_LABEL)],
+        "listed while it runs"
+    );
     let _ = editor.update(Message::Preview(PreviewMessage::Poll));
     assert_eq!(listed(&editor).len(), 1, "listed once");
     assert_eq!(
