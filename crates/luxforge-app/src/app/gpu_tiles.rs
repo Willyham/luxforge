@@ -3,10 +3,10 @@
 //! device of the desktop's own through the photo surface's tile runner ([`TileRunner`]), so a
 //! pixel read and an export's band are drawn by the GPU as the picture on screen is drawn.
 //!
-//! The launch builds one ([`launch`]) and hands it to the catalog owner through `HostConfig`, whose
-//! export lane streams every export through it (`docs/design/export.md`). No call is submitted to
-//! it yet: `render.sample`, the modules' queries and the mutations' pixel reads are still answered
-//! by the point worker and on the owner.
+//! The launch builds one ([`launch`]) and hands it to the catalog owner through `HostConfig`, which
+//! submits every pixel read to it — `render.sample`, the modules' queries that read pixels (the
+//! neutral picker, `mask.sample-input`) and a mutation's planning read (a colour-limited stroke's
+//! seed) — and whose export lane streams every export through it (`docs/design/export.md`).
 //!
 //! - **The window's adapter.** Iced hands the photo surface a device, not the adapter it came from,
 //!   and names that adapter only in its system information. The launch's worker opens nothing until

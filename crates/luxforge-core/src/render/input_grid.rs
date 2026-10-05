@@ -1,8 +1,8 @@
 //! One exact restoration-input grid per overlay worker. It contains values, never a retained
 //! source, recipe or development. The downstream pointwise suffix is evaluated per cell.
 use super::{
-    Byte, Compiled, Entry, Evaluation, PixelDomain, RenderContext, RenderSource, SpatialMode,
-    color_runs, linear::Linear, spatial::Tiling,
+    Byte, Compiled, Entry, Evaluation, PixelDomain, RenderContext, RenderSource, color_runs,
+    linear::Linear, spatial::Tiling,
 };
 use crate::{
     Cancel, EffectStage, Error, GeometryMap, ModuleRegistry, Recipe, Region,
@@ -325,15 +325,18 @@ fn build<D: PixelDomain, P: Copy>(
             _ => None,
         })
         .unwrap_or(512);
-    let evaluation = Evaluation::new(
+    // The restoration boundary's tiles read the stage before it through the whole frames of any
+    // spatial segment earlier in the prefix, which the reference materializes once here.
+    let through = compiled.segments.len() - 1;
+    let evaluation = Evaluation::framed(
         domain,
         Cow::Owned(compiled),
         Tiling::Halo,
-        SpatialMode::Point,
+        Some(wide),
+        through,
         cancel,
         context,
-    )?
-    .with_input_width(wide);
+    )?;
     let empty = D::spatial_output([0.0; 3], true)?;
     let mut output = vec![keep(empty); count];
     // Group cells by the stage-aligned tile, so a dense grid computes each touched tile once.

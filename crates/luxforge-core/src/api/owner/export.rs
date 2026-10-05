@@ -14,7 +14,7 @@
 //! written file's result names the renderer that rendered it, and why the reference did.
 use super::{Call, Owner};
 use crate::{
-    AssetId, EntryId, Error, JobId, JobStatus, Renderer, RendererReason, RendererRecord,
+    AssetId, EntryId, Error, JobId, JobStatus, Renderer, RendererReason,
     activity::ActivitySpec,
     api::announce_once,
     api::params::host_params,
@@ -353,19 +353,7 @@ fn streamed(
         &|| control.checkpoint(),
     );
     match encoded {
-        Ok(()) => {
-            let answered = stream.answered();
-            let renderer = match answered.record {
-                RendererRecord::Gpu => Renderer::gpu(),
-                RendererRecord::Reference => answered
-                    .reason
-                    .as_ref()
-                    .map_or(Renderer::headless(), |reason| {
-                        Renderer::reference(reason.into())
-                    }),
-            };
-            Ok(Streamed::Written(staged, renderer))
-        }
+        Ok(()) => Ok(Streamed::Written(staged, stream.answered().into())),
         Err(error) => {
             // Nothing of the stream is kept: the temporary file goes now, and the provider stops
             // drawing once the stream is dropped.

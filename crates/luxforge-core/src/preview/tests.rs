@@ -1984,10 +1984,9 @@ fn mixed_mask() -> Mask {
 /// A value-based mask whose first bound layer sits behind a **spatial** layer has no grid, and the
 /// refusal names the cost rather than paying it.
 ///
-/// A point sample through a spatial segment is the declared exception to [performance rule
-/// 4](../../../../docs/engineering/performance-rules.md#rules): it evaluates the stage-aligned tiles its
-/// pixel needs plus the operation's halo, so asking it once per display cell over the whole stage
-/// would evaluate every tile of the picture on every overlay. That is not an overlay to ship
+/// A pixel read through a spatial segment is answered from that segment's whole frame ([performance
+/// rule 4](../../../../docs/engineering/performance-rules.md#rules)), so asking it once per display
+/// cell over the whole stage would render the picture's spatial layers on every overlay. That is not an overlay to ship
 /// slowly, so the grid is refused here on exactly the rule the unbound mask is refused on, and the
 /// 100% view still reads such a selection. The **geometric** half of the same stack is unaffected,
 /// because a position-only mask needs no pixel at all.

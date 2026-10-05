@@ -1158,9 +1158,9 @@ fn fit_placement(frame: &Frame, output: [u32; 2]) -> Result<Value> {
 
 /// A point sample of the committed crop at 100%: the codes `render.sample` answered for one stage
 /// pixel are the codes the canvas shows at that pixel, one stage pixel per physical pixel from the
-/// corner of the rectangle the editor records drawing the photograph in. The sample is the owner's
-/// own point evaluation of the current stack, so this ties the picture on screen to the committed
-/// recipe.
+/// corner of the rectangle the editor records drawing the photograph in. The sample is the GPU's
+/// tile render of the current stack, which the answer names, so this ties the picture on screen to
+/// the committed recipe.
 fn sample_on_screen(frame: &Frame, point: (u32, u32), output: [u32; 2]) -> Result<Value> {
     let state = &frame["state"];
     ensure(
@@ -1173,6 +1173,10 @@ fn sample_on_screen(frame: &Frame, point: (u32, u32), output: [u32; 2]) -> Resul
     let answer = &frame["step"]["result"];
     let codes: [u8; 4] = serde_json::from_value(answer["rgba"].clone())
         .map_err(|_| format!("render.sample at {point:?} carries no codes: {answer}"))?;
+    ensure(
+        answer["renderer"] == json!({"record": "gpu", "reason": null}),
+        format!("render.sample at {point:?} is not the GPU's: {answer}"),
+    )?;
     let image = frame.image()?;
     let [left, top, right, bottom] = frame.photo_rect()?;
     ensure(
@@ -1200,6 +1204,7 @@ fn sample_on_screen(frame: &Frame, point: (u32, u32), output: [u32; 2]) -> Resul
         "point": [point.0, point.1],
         "screen": [screen.0, screen.1],
         "sampled": codes,
+        "renderer": answer["renderer"],
         "shown": shown,
         "tolerance_codes": 1,
     }))

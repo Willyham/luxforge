@@ -20,10 +20,11 @@
 //! served by [`ReferenceTiles`], the reference renderer's service, whose reads ([`ReferenceReads`])
 //! are also what a GPU provider answers with when it cannot render a read.
 //!
-//! The catalog owner holds the host's service, or [`ReferenceTiles`] when the host gives none, and
-//! its export lane asks it for each export's bands (`docs/design/export.md`). No owner submits a
-//! call here yet: samples, queries and pixel reads are still answered on the catalog owner and by
-//! its point worker, until stage 4 wires this contract in their place.
+//! The catalog owner holds the host's service, or [`ReferenceTiles`] when the host gives none:
+//! every `render.sample`, every query that reads a pixel and every mutation's planning read is a
+//! call here, and its export lane asks it for each export's bands (`docs/design/export.md`). A
+//! mutation's read is answered back to the owner, which replays the mutation once with the pixels
+//! it read; nothing else waits on the owner thread.
 //!
 //! # Bounds
 //!
@@ -36,8 +37,8 @@
 //! [performance rule 5]: ../../../docs/engineering/performance-rules.md#rules
 
 use crate::{
-    Cancel, ClientId, Error, Evaluation, GpuFallback, Region, RendererReason, RendererRecord,
-    Stage, editor::pixels::PixelAnswer,
+    Cancel, ClientId, Error, Evaluation, GpuFallback, Region, Renderer, RendererReason,
+    RendererRecord, Stage, editor::pixels::PixelAnswer,
 };
 use serde_json::{Value, json};
 use std::{
@@ -51,6 +52,8 @@ use std::{
 
 mod reference;
 
+#[cfg(test)]
+pub(crate) use reference::Hold;
 pub use reference::{ReferenceReads, ReferenceTiles};
 
 #[cfg(test)]
@@ -229,8 +232,7 @@ impl TileCall {
 
     /// A mutation's pixel read, evaluated by `evaluate` and handed to `deliver`, which returns the
     /// pixels to the catalog owner for its entry, revision, draft and source checks before the
-    /// mutation is replayed. The owner's parked reads submit these once it is wired to a service.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// mutation is replayed once: what the owner submits for each read it parks.
     pub(crate) fn pixels(
         client: ClientId,
         cancel: Cancel,
@@ -460,6 +462,19 @@ impl Answered {
         Self {
             record: RendererRecord::Reference,
             reason,
+        }
+    }
+}
+
+/// The renderer an answer names, in the session's shape: the GPU; the reference for the reason the
+/// GPU did not draw it; or the reference with no reason on a host without a GPU provider, whose
+/// only renderer it is.
+impl From<&Answered> for Renderer {
+    fn from(answered: &Answered) -> Self {
+        match (answered.record, &answered.reason) {
+            (RendererRecord::Gpu, _) => Self::gpu(),
+            (RendererRecord::Reference, Some(reason)) => Self::reference(reason.into()),
+            (RendererRecord::Reference, None) => Self::headless(),
         }
     }
 }

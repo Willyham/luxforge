@@ -19,8 +19,10 @@
 //! reference's; the Original's and a later exposure-only stack are the GPU's.
 //!
 //! The inspector is the plot with the triangles in its bottom corners and nothing else, with no
-//! caption. Nothing is read under the pointer; the pixel the scenario sets is read back through the
-//! public `render.sample`, whose answer the step records.
+//! caption. Nothing is read under the pointer; a pixel of the Original is read through the public
+//! `render.sample`, which the GPU's tile worker answers with the fixture's own codes, and the pixel
+//! the scenario sets is read back the same way, which the reference answers, naming the pixel
+//! stage no GPU program replaces.
 use crate::{
     scenario::{Checked, Checks, Fixture, Frame, Plan, Run, Step, Tolerance, pixels, plan::only},
     *,
@@ -64,6 +66,11 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         Step::opened("opened")
             .workspace("clip_shadows", json!(false))
             .workspace("clip_highlights", json!(false)),
+        // A pixel of the Original, read by the GPU's tile worker.
+        view(
+            "original-sample",
+            script::Step::call("render.sample", json!({"x":CLEAN[0].0,"y":CLEAN[0].1})),
+        ),
         // One both-endpoint pixel, committed through the ordinary edit path.
         Step::new(
             "pixel",
@@ -224,6 +231,19 @@ fn reference(root: &Path, recipe: &Recipe) -> Result<analysis::Report> {
         format!("Reference render is {}x{}", report.width, report.height),
     )?;
     Ok(report)
+}
+
+/// The Original's byte at `point`, decoded independently in this process.
+fn original_byte(root: &Path, (x, y): (u32, u32)) -> Result<[u8; 4]> {
+    let source = luxforge_core::open_source(&root.join(FIXTURE))?;
+    let registry = ModuleRegistry::developer();
+    let context = luxforge_core::RenderContext::new();
+    let options = luxforge_core::RenderOptions::default();
+    let raster = core_render(&registry, &source, &Recipe::default(), options, &context)?
+        .frame(SnapshotId::new())?;
+    Ok(raster
+        .pixel(x, y)
+        .ok_or("the point is outside the Original")?)
 }
 
 /// The same reduction without the source-sized expectation, for a composition whose crop changes
@@ -646,6 +666,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
     let root = run.root();
     let opened = launch.at("opened")?;
+    let original_sample = launch.at("original-sample")?;
     let pixel = launch.at("pixel")?;
     let sample = launch.at("sample")?;
     let shadows = launch.at("shadows")?;
@@ -697,6 +718,21 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         json!({"histogram":opened_counts,"pixels":opened.fixture(Fixture::fit(1))?}),
     );
 
+    // A pixel of the Original, read by the GPU's tile worker: the fixture's own codes there, as
+    // this process decodes them, and the GPU named.
+    let answer = &original_sample["step"]["result"];
+    let expected = original_byte(root, CLEAN[0])?;
+    ensure(
+        answer["rgba"] == json!(expected)
+            && answer["renderer"] == json!({"record": "gpu", "reason": null}),
+        format!("render.sample of the Original answered {answer}, expected the GPU's {expected:?}"),
+    )?;
+    checks.note(
+        original_sample,
+        "render.sample of the Original is the GPU's, the fixture's own codes",
+        json!({"sample": answer}),
+    );
+
     // One both-endpoint pixel committed. The counts follow the new stack exactly. The plan holds
     // that the step commits once; this holds which revision that is, a fresh catalog's first.
     ensure(
@@ -710,11 +746,18 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         after,
     );
 
-    // The public point query of that very pixel, in output codes, recorded with its step.
+    // The public point query of that very pixel, in output codes, recorded with its step: the
+    // reference's, since no GPU program replaces a pixel, and saying so.
     let answer = &sample["step"]["result"];
     ensure(
         answer["rgba"] == json!([BOTH_RGB[0], BOTH_RGB[1], BOTH_RGB[2], 255]),
         format!("render.sample answered {answer}, expected the pixel just set"),
+    )?;
+    ensure(
+        answer["renderer"] == json!({"record": "reference", "reason": "pixel-stage"}),
+        format!(
+            "render.sample of the pixel proof is not the reference's for pixel-stage: {answer}"
+        ),
     )?;
     // A point query reads one pixel and changes nothing on screen.
     ensure(
@@ -723,7 +766,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
     checks.note(
         sample,
-        "render.sample of the pixel that was just set answers its three codes; the histogram is unchanged",
+        "render.sample of the pixel that was just set answers its three codes, read by the reference for pixel-stage; the histogram is unchanged",
         json!({"sample": answer}),
     );
 

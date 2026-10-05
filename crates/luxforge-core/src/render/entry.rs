@@ -27,7 +27,7 @@ use crate::{
     mask_field::MaskSampling,
     modules::{Global, Region, Stage},
 };
-use std::{borrow::Cow, sync::Arc};
+use std::borrow::Cow;
 
 pub(super) use super::context::RenderContext;
 
@@ -331,12 +331,6 @@ impl<'a> Render<'a> {
             options,
             context,
         })
-    }
-
-    /// Whether a point of this stack evaluates a spatial tile, the declared exception to a point
-    /// query costing `O(layers)`. `O(segments)` and reads no pixel.
-    pub(crate) fn evaluates_spatial(&self) -> bool {
-        self.compiled.evaluates_spatial()
     }
 
     /// The output stage's dimensions.
@@ -693,9 +687,9 @@ impl<'a> Render<'a> {
         }))
     }
 
-    /// One output pixel without rasterizing a frame: `O(layers)`, and through a spatial layer the
-    /// one tile that contains it, which is the declared exception to point queries never
-    /// rasterizing. The byte is the byte [`Self::frame`] writes there. `rgba` is `None` outside the
+    /// One output pixel, the byte [`Self::frame`] writes there: `O(layers)` without a spatial layer,
+    /// and through one the reference renderer's whole frames of the spatial segments, materialized
+    /// for this one pixel, as the reference answers every read. `rgba` is `None` outside the
     /// output stage.
     pub fn sample(&self, x: u32, y: u32) -> Result<Sample, Error> {
         let (width, height) = self.stage();
@@ -715,7 +709,7 @@ impl<'a> Render<'a> {
     /// One rectangle of the output stage, row by row from its top-left, read in frame mode: each
     /// spatial segment's whole frame is materialized once ([`SpatialMode::Frames`]), on the pool as
     /// a render materializes it, and every pixel of `rect` is then evaluated through those frames
-    /// in `O(layers)`, through no point tile. Each byte is therefore the byte [`Self::sample`]
+    /// in `O(layers)`. Each byte is therefore the byte [`Self::sample`]
     /// answers at that pixel and [`Self::frame`] writes there: the reference renderer's read of a
     /// rectangle, which a GPU tile read is held to. `rect` must lie inside the output stage, and it
     /// answers at most the pixels one evaluated frame may hold.
@@ -774,10 +768,10 @@ impl<'a> Render<'a> {
     }
 
     /// The stage this render's stack produces held in frame mode as the input of the layer after
-    /// it, as [`prefix_pixels`] reads it through point tiles: with the boundary width `wide` the
-    /// whole recipe chooses at its last spatial segment, and the linear values that layer receives
-    /// as `mode` says. Its spatial frames are materialized here, once, at those widths; each pixel
-    /// read from it afterwards costs `O(layers)`.
+    /// it, as [`prefix_pixels`] reads it: with the boundary width `wide` the whole recipe chooses
+    /// at its last spatial segment, and the linear values that layer receives as `mode` says. Its
+    /// spatial frames are materialized here, once, at those widths; each pixel read from it
+    /// afterwards costs `O(layers)`.
     pub(crate) fn frame_input(
         self,
         wide: bool,
@@ -826,10 +820,9 @@ impl<'a> Render<'a> {
     }
 
     /// The output pixels at the centres of a `side` × `side` grid, row by row from the top-left,
-    /// through one point evaluation, so each equals the rendered byte there: `O(side² × layers)`,
-    /// with each spatial segment answered through one tile cache on both pixel domains, so the
-    /// points evaluate only the tiles they fall in and allocate no frame. `checkpoint` is asked
-    /// before each point.
+    /// through one evaluation, so each equals the rendered byte there: `O(side² × layers)` once
+    /// the reference renderer has materialized the whole frame of every spatial segment, which a
+    /// stack without one has none of. `checkpoint` is asked before each point.
     pub(crate) fn grid(
         &self,
         side: u32,
@@ -958,8 +951,9 @@ impl<'a> Render<'a> {
 
     /// The global estimates the spatial operation entering segment `index` reads, resolved as a
     /// frame of this render resolves them: from the store, or from one reduction of that
-    /// operation's whole input stage, which the store then keeps for the frame. A point
-    /// evaluation, so no frame is materialized for it.
+    /// operation's whole input stage, which the store then keeps for the frame. On a miss the
+    /// whole frames of the spatial segments before it are materialized to read that stage; with
+    /// none before it, none is.
     pub(crate) fn spatial_globals(&self, index: usize) -> Result<Vec<Option<Global>>, Error> {
         self.spatial_globals_with_cancel(index, &self.options.cancel)
     }
@@ -1044,25 +1038,47 @@ impl<'a> Render<'a> {
         index: usize,
         cancel: &Cancel,
     ) -> Result<Vec<Option<Global>>, Error> {
+        fn in_domain<D: PixelDomain>(
+            render: &Render<'_>,
+            domain: D,
+            index: usize,
+            cancel: &Cancel,
+        ) -> Result<Vec<Option<Global>>, Error> {
+            let compiled = Cow::Borrowed(&*render.compiled);
+            let tiling = render.options.tiling;
+            // The store answers without a pixel read when it holds them, so the frames before
+            // the segment are materialized only for a miss.
+            let point = Evaluation::new(
+                domain,
+                compiled,
+                tiling,
+                SpatialMode::Point,
+                cancel,
+                render.context,
+            )?;
+            if !point.compiled.spatial_before(index) {
+                return point.globals_of(index);
+            }
+            if let Some(held) = point.held_globals_of(index) {
+                return Ok(held);
+            }
+            let Evaluation { domain, .. } = point;
+            Evaluation::framed(
+                domain,
+                Cow::Borrowed(&*render.compiled),
+                tiling,
+                None,
+                index,
+                cancel,
+                render.context,
+            )?
+            .globals_of(index)
+        }
         match self.source {
-            RenderSource::Byte(image) => Evaluation::new(
-                Byte(image),
-                Cow::Borrowed(&*self.compiled),
-                self.options.tiling,
-                SpatialMode::Point,
-                cancel,
-                self.context,
-            )?
-            .globals_of(index),
-            RenderSource::Linear { image, settings } => Evaluation::new(
-                Linear::new(image, settings)?,
-                Cow::Borrowed(&*self.compiled),
-                self.options.tiling,
-                SpatialMode::Point,
-                cancel,
-                self.context,
-            )?
-            .globals_of(index),
+            RenderSource::Byte(image) => in_domain(self, Byte(image), index, cancel),
+            RenderSource::Linear { image, settings } => {
+                in_domain(self, Linear::new(image, settings)?, index, cancel)
+            }
         }
     }
 
@@ -1095,7 +1111,7 @@ impl<'a> Render<'a> {
     ) -> Result<Option<[u8; 4]>, Error> {
         let (width, height) = self.stage();
         domain.check_output(width, height)?;
-        self.evaluation(domain, SpatialMode::Point)?.terminal(x, y)
+        self.evaluation(domain, SpatialMode::Frames)?.terminal(x, y)
     }
 
     fn grid_in<D: PixelDomain>(
@@ -1106,7 +1122,7 @@ impl<'a> Render<'a> {
     ) -> Result<Vec<[u8; 4]>, Error> {
         let (width, height) = self.stage();
         domain.check_output(width, height)?;
-        let evaluation = self.evaluation(domain, SpatialMode::Point)?;
+        let evaluation = self.evaluation(domain, SpatialMode::Frames)?;
         let outside = || Error::internal("a grid centre lies outside the stage");
         grid_centres(side, width, height)
             .map(|(x, y)| {
@@ -1140,13 +1156,12 @@ fn same_segments(left: &Compiled, right: &Compiled) -> bool {
 /// the same reason they do there — a prefix layer may itself be masked, and dropping them would
 /// make a valid stack look as if it named a mask that does not exist.
 ///
-/// **A prefix holding a spatial layer is refused by name, before an evaluation exists.** One point
-/// query through such a layer is the declared exception to [performance rule
-/// 4](../../../../docs/engineering/performance-rules.md#rules) — it evaluates the stage-aligned tiles
-/// its pixel needs, plus the operation's halo, each once per query. The caller here asks per
-/// display cell over the whole stage, which would evaluate every tile of it on every overlay, so
-/// it is refused rather than paid: the check is the prefix's own compilation, which is
-/// `O(layers)` and allocates no frame, and the evaluation reuses that compilation.
+/// **A prefix holding a spatial layer is refused by name, before an evaluation exists.** A pixel
+/// read through such a layer is answered from that layer's whole frame, which the overlay, asking
+/// per display cell, would render on every overlay ([performance rule
+/// 4](../../../../docs/engineering/performance-rules.md#rules)), so it is refused rather than paid:
+/// the check is the prefix's own compilation, which is `O(layers)` and allocates no frame, and the
+/// evaluation reuses that compilation.
 ///
 /// The answer is the stage the layer receives, which is the stage a mask bound to it is compiled
 /// against, and the point query over it, in the domain the render's masked primitives blend in.
@@ -1266,7 +1281,7 @@ impl<D: PixelDomain> MaskInputPixel for InputPixels<'_, D> {
     }
 }
 
-/// One prefix point evaluation retained for a complete query, including all spatial tile caches.
+/// One stage held for reads for a complete query, with the frames of its spatial segments.
 pub(crate) trait StagePixels: MaskInputPixel {
     fn rgba(&self, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error>;
 }
@@ -1323,8 +1338,7 @@ fn output_pixels<'a, D: PixelDomain + 'a>(
 /// `compiled` evaluated in `domain` in frame mode: every spatial operation's output materialized
 /// once over its whole stage, in stage order, as [`SpatialMode::Frames`] materializes it. With
 /// `wide`, the boundary widths are the ones the whole recipe chooses for this prefix
-/// ([`Evaluation::with_input_width`]), which must be set before any frame exists, so the frames
-/// are then materialized here, in the same order and each replacing the one before it.
+/// ([`Evaluation::with_input_width`]), set before any frame exists.
 fn frame_evaluation<'a, D: PixelDomain>(
     domain: D,
     compiled: Cow<'a, Compiled>,
@@ -1343,31 +1357,22 @@ fn frame_evaluation<'a, D: PixelDomain>(
             context,
         );
     };
-    let mut evaluation = Evaluation::new(
+    let segments = compiled.segments.len();
+    Evaluation::framed(
         domain,
         compiled,
         tiling,
-        SpatialMode::Point,
+        Some(wide),
+        segments,
         cancel,
         context,
-    )?
-    .with_input_width(wide);
-    evaluation.tiles = None;
-    for index in 0..evaluation.compiled.segments.len() {
-        let Some(entry) = &evaluation.compiled.segments[index].entry else {
-            continue;
-        };
-        let Some(frame) = entry.frame(&evaluation, index, cancel)? else {
-            continue;
-        };
-        evaluation.frame = Some(super::pipeline::SpatialFrame {
-            index,
-            planes: Arc::new(frame),
-        });
-    }
-    Ok(evaluation)
+    )
 }
 
+/// The stage `compiled`, a prefix of a recipe, produces, held for reads as the layer after it
+/// receives it, at the boundary width `wide` the whole recipe chooses and with the linear values
+/// `mode` says: the reference renderer's read of a layer's input, its spatial frames materialized
+/// here once ([`frame_evaluation`]), each pixel read from it afterwards `O(layers)`.
 pub(crate) fn prefix_pixels<'a>(
     source: RenderSource<'a>,
     compiled: Compiled,
@@ -1385,15 +1390,14 @@ pub(crate) fn prefix_pixels<'a>(
         mode: MaskInputMode,
     ) -> Result<Box<dyn StagePixels + 'a>, Error> {
         Ok(Box::new(InputPixels {
-            evaluation: Evaluation::new(
+            evaluation: frame_evaluation(
                 domain,
                 Cow::Owned(compiled),
                 Tiling::Halo,
-                SpatialMode::Point,
+                Some(wide),
                 cancel,
                 context,
-            )?
-            .with_input_width(wide),
+            )?,
             mode,
         }))
     }

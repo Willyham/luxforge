@@ -799,10 +799,9 @@ const SOURCE_RULES: &[SourceRule] = &[
         allowed: &[
             "crates/luxforge-testbase",
             // The core's production blocking points: the source worker's plane gate, the
-            // latest-job worker, the point-query worker and the reference tile worker.
+            // latest-job worker and the reference tile worker.
             "crates/luxforge-core/src/source.rs",
             "crates/luxforge-core/src/latest.rs",
-            "crates/luxforge-core/src/api/owner/point.rs",
             "crates/luxforge-core/src/tiles/reference.rs",
             // Production RGBA handoff backpressure, not a test gate; keeps the overlay byte bound.
             "crates/luxforge-app/src/app/mask_coverage.rs",
@@ -870,11 +869,10 @@ const SOURCE_RULES: &[SourceRule] = &[
         scope: &["crates", "xtask"],
         types: &["rs"],
         allowed: &[
-            // The core: the source worker and the owner loop, the point-query worker, the API
-            // transport's accept and connection threads, the job table's lanes, the latest-job
-            // worker and the reference tile worker.
+            // The core: the source worker and the owner loop, the API transport's accept and
+            // connection threads, the job table's lanes, the latest-job worker and the reference
+            // tile worker.
             "crates/luxforge-core/src/api/owner.rs",
-            "crates/luxforge-core/src/api/owner/point.rs",
             "crates/luxforge-core/src/api/transport.rs",
             "crates/luxforge-core/src/jobs.rs",
             "crates/luxforge-core/src/latest.rs",

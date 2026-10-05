@@ -703,6 +703,12 @@ pub(crate) struct LimitRequest {
     pub refine: f64,
 }
 
+/// Whether a mask command's `fields` ask for a colour limit, whose seed its plan reads from a
+/// pixel: the one planning read a drafted gesture makes. Reads the flag alone.
+pub(crate) fn asks_colour_limit(fields: &Map<String, Value>) -> bool {
+    fields.get("limit_to_colour").and_then(Value::as_bool) == Some(true)
+}
+
 /// Whether this request asks for a colour limit, and everything the host needs to seed it.
 pub(crate) fn colour_limit_request(
     command: &MaskCommand,

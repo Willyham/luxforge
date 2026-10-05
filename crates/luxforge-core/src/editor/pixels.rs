@@ -1,5 +1,12 @@
-//! Deferred stage reads. The owner only records identities and plans; the existing point worker
-//! evaluates spatial prefixes. A query retains one point evaluation per prefix for its lifetime.
+//! Pixel reads off the catalog owner ([performance rule 5]). While the owner serves a call, every
+//! read a plan or a query makes of a stage is deferred rather than answered: the owner records the
+//! read's identities and its evaluation ([`DeferredRead`]) and hands the read to its tile service
+//! ([`crate::tiles`]), which answers it on a thread of its own with its renderer's reads. A query
+//! is answered there whole ([`QueryPlan`]), through one [`TileSession`] whose reads share the
+//! tiles they draw, so a neutral pick's 25 points draw one; a mutation's read comes back to the
+//! owner, which keeps it in the session's [`PixelMemo`] and replays the mutation once with it.
+//!
+//! [performance rule 5]: ../../../../docs/engineering/performance-rules.md#rules
 use super::{
     AssetRecord, EditorService, Evaluation,
     evaluate::source_of,
@@ -7,16 +14,24 @@ use super::{
     source::RawSettingsMode,
 };
 use crate::{
-    AssetId, Cancel, DraftId, EntryId, Error, MaskId, PixelInput, PreviewSource, Recipe,
+    AssetId, Cancel, DraftId, EntryId, Error, MaskId, PixelInput, PreviewSource, Recipe, Region,
     modules::{QueryRef, Stage, StageContext, StageQuestions, check_parameters},
-    render::{Compiled, StagePixels, prefix_pixels},
+    tiles::{Answered, ReadAnswer, ReadStage, ReadValues, TileReads, TileSession},
 };
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
-use std::{cell::RefCell, collections::HashMap};
+use std::cell::RefCell;
 
 pub(crate) const MAX_PIXEL_MEMO: usize = 32;
-pub(crate) const MAX_PIXEL_READ_ROUNDS: usize = 4;
+
+/// The most pixels the plans of one call read, each parked once and the call replayed after it:
+/// a plan reads one, and a mutation that collapses into the entry before it plans again against
+/// that entry's parent, reading another. Past it the call is refused with `resource-limit`.
+pub(crate) const MAX_PIXEL_READS: usize = 4;
+
+/// What a read deferred to the tile service answers where its pixel would have been: the call
+/// that made it is discarded whatever it answered, and runs again once the pixel is read.
+pub(crate) const DEFERRED: &str = "pixel read deferred to the tile service";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PixelRead {
@@ -37,6 +52,19 @@ pub(crate) struct PixelReadKey {
     pub source: crate::ProxyIdentity,
 }
 
+impl PixelReadKey {
+    /// Whether the two keys read the same state of the session — the same asset at the same
+    /// entry and revision, the same draft at the same revision and the same source — whatever
+    /// prefix of it each reads.
+    fn same_state(&self, other: &Self) -> bool {
+        self.asset_id == other.asset_id
+            && self.entry_id == other.entry_id
+            && self.revision == other.revision
+            && self.draft == other.draft
+            && self.source == other.source
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PixelAnswer {
     pub key: PixelReadKey,
@@ -53,9 +81,13 @@ impl PixelMemo {
     pub(crate) fn clear(&mut self) {
         self.answers.clear();
     }
+    /// Keep `answer`, letting go of every answer read from another state of the session and of an
+    /// older answer to the same read; answers of other prefixes of the same state stay, since one
+    /// call's plans may read several (a collapse plans against the entry's parent too).
     pub(crate) fn insert(&mut self, answer: PixelAnswer) {
-        self.answers
-            .retain(|held| held.key == answer.key && held.read != answer.read);
+        self.answers.retain(|held| {
+            held.key.same_state(&answer.key) && (held.key != answer.key || held.read != answer.read)
+        });
         if self.answers.len() == MAX_PIXEL_MEMO {
             self.answers.remove(0);
         }
@@ -101,11 +133,17 @@ pub(crate) struct DeferredRead {
 }
 
 impl DeferredRead {
-    pub(crate) fn evaluate(self, cancel: &Cancel) -> Result<PixelAnswer, Error> {
-        let stage = WorkerStage::new(&self.evaluation, cancel);
+    /// Read the deferred pixel with `reads`, the tile service's renderer: its code and its linear
+    /// value in the stage its layer receives, through one session, so the two are one tile.
+    pub(crate) fn evaluate(
+        self,
+        reads: &dyn TileReads,
+        cancel: &Cancel,
+    ) -> Result<PixelAnswer, Error> {
+        let stage = TileStage::new(&self.evaluation, reads, cancel);
         let read = self.read;
         let rgba = stage.sample_before(read.index, read.x, read.y)?;
-        let linear = stage.linear_before(read.index, read.x, read.y)?;
+        let linear = stage.input_before(read.index, read.x, read.y)?;
         Ok(PixelAnswer {
             key: self.key,
             read,
@@ -116,6 +154,16 @@ impl DeferredRead {
 }
 
 impl EditorService {
+    /// Whether `draft`'s plan reads a pixel when it is planned: a stroke drafted with a colour
+    /// limit, whose seed it reads. `draft.set` plans such a draft, so its read is parked once,
+    /// off the owner, before the draft is accepted, and every preview of it finds the pixel in the
+    /// session's memo. Reads the draft's fields alone.
+    pub(crate) fn draft_reads_pixels(&self, draft: &crate::Draft) -> bool {
+        crate::mask::commands::asks_colour_limit(&draft.fields)
+    }
+
+    /// Whether the current stack of `asset` holds a spatial layer, whose drafts `draft.set` plans
+    /// so their refusals are its own, as a preview's would be. Reads layer metadata only.
     pub(crate) fn draft_has_spatial_inputs(&self, asset: &AssetId) -> Result<bool, Error> {
         let head = self.head(asset)?;
         let entry = self.shared_entry(asset, &head.current)?;
@@ -142,16 +190,19 @@ impl EditorService {
         self.pixel_reads.borrow_mut().enabled = false;
     }
 
-    pub(super) fn spatial_read(
+    /// While the catalog owner serves a call, answer a read of the stage layer `read.index`
+    /// receives from the call's memo, or defer it to the tile service: record what it reads and
+    /// from which entry, revision, draft and source, and answer the internal [`DEFERRED`] error,
+    /// which discards the call. `Ok(None)` outside a call, where the host reads the pixel itself.
+    pub(super) fn deferred_read(
         &self,
         asset: &AssetRecord,
         recipe: &Recipe,
         source: PreviewSource,
-        compiled: &Compiled,
         input_wide: bool,
         read: PixelRead,
     ) -> Result<Option<PixelAnswer>, Error> {
-        if !compiled.evaluates_spatial() || !self.pixel_reads.borrow().enabled {
+        if !self.pixel_reads.borrow().enabled {
             return Ok(None);
         }
         let head = self.head(&asset.id)?;
@@ -191,7 +242,7 @@ impl EditorService {
             key,
             evaluation,
         });
-        Err(Error::internal("pixel read deferred to the point worker"))
+        Err(Error::internal(DEFERRED))
     }
 
     pub(crate) fn pixel_key_current(
@@ -262,6 +313,8 @@ impl EditorService {
     }
 }
 
+/// A query that reads pixels, planned on the catalog owner in `O(layers)` and answered whole by
+/// the tile service ([`Self::evaluate`]).
 pub(crate) struct QueryPlan {
     evaluation: Evaluation,
     query: String,
@@ -270,8 +323,10 @@ pub(crate) struct QueryPlan {
     kind: crate::SourceTag,
 }
 impl QueryPlan {
-    pub(crate) fn evaluate(self, cancel: &Cancel) -> Result<Value, Error> {
-        let questions = WorkerStage::new(&self.evaluation, cancel);
+    /// Answer the query with `reads`, the tile service's renderer, every read of it through one
+    /// session. `mask.sample-input` names the renderer that drew its pixel.
+    pub(crate) fn evaluate(self, reads: &dyn TileReads, cancel: &Cancel) -> Result<Value, Error> {
+        let questions = TileStage::new(&self.evaluation, reads, cancel);
         let recipe = self.evaluation.recipe();
         let registry = self.evaluation.registry();
         match registry
@@ -297,9 +352,20 @@ impl QueryPlan {
                 let x = self.parameters["x"].as_u64().unwrap() as u32;
                 let y = self.parameters["y"].as_u64().unwrap() as u32;
                 let stage = questions.stage_before(layer)?;
-                let [r, g, b] = questions
-                    .linear_before(layer, x, y)?
-                    .ok_or_else(|| Error::validation("outside the stage"))?;
+                let outside = || {
+                    Error::validation(format!(
+                        "outside the stage: ({x}, {y}) is not inside the {}x{} stage the masked \
+                         layer receives",
+                        stage.width, stage.height
+                    ))
+                };
+                if x >= stage.width || y >= stage.height {
+                    return Err(outside());
+                }
+                let [r, g, b] = questions.input_before(layer, x, y)?.ok_or_else(outside)?;
+                let renderer = questions
+                    .answered()
+                    .ok_or_else(|| Error::internal("the sample input was read by no renderer"))?;
                 serde_json::to_value(PixelInput {
                     r,
                     g,
@@ -308,6 +374,7 @@ impl QueryPlan {
                     y,
                     width: stage.width,
                     height: stage.height,
+                    renderer: (&renderer).into(),
                 })
                 .map_err(|e| Error::internal(e.to_string()))
             }
@@ -316,75 +383,93 @@ impl QueryPlan {
     }
 }
 
-type PointPrefix<'a> = (Stage, Box<dyn StagePixels + 'a>);
-
-struct WorkerStage<'a> {
+/// The stage questions of one call, answered off the catalog owner by the tile service: each
+/// pixel of a stage a layer receives is a one-pixel read of that stage through the call's one
+/// [`TileSession`], which keeps what it drew for the call, so the points of a patch draw one tile.
+/// A stage's size is its prefix's compilation, `O(layers)`, and reads no pixel.
+pub(crate) struct TileStage<'a> {
     evaluation: &'a Evaluation,
-    cancel: &'a Cancel,
-    prefixes: RefCell<HashMap<usize, PointPrefix<'a>>>,
+    session: RefCell<Box<dyn TileSession + 'a>>,
+    /// The renderer that drew the latest read.
+    answered: RefCell<Option<Answered>>,
 }
-impl<'a> WorkerStage<'a> {
-    fn new(evaluation: &'a Evaluation, cancel: &'a Cancel) -> Self {
+
+impl<'a> TileStage<'a> {
+    pub(crate) fn new(
+        evaluation: &'a Evaluation,
+        reads: &'a dyn TileReads,
+        cancel: &'a Cancel,
+    ) -> Self {
         Self {
             evaluation,
-            cancel,
-            prefixes: RefCell::new(HashMap::new()),
+            session: RefCell::new(reads.session(evaluation, cancel)),
+            answered: RefCell::new(None),
         }
     }
-    fn with_prefix<T>(
+
+    /// The renderer that drew the latest read, once one was made.
+    pub(crate) fn answered(&self) -> Option<Answered> {
+        self.answered.borrow().clone()
+    }
+
+    /// One pixel of the stage layer `index` receives, as `values`: `None` outside that stage.
+    fn read(
         &self,
         index: usize,
-        answer: impl FnOnce(Stage, &dyn StagePixels) -> Result<T, Error>,
-    ) -> Result<T, Error> {
-        self.cancel.check()?;
-        if !self.prefixes.borrow().contains_key(&index) {
-            let recipe = self.evaluation.recipe();
-            let (width, height) = self.evaluation.source().dimensions();
-            let compiled = self.evaluation.registry().compile_layers(
+        x: u32,
+        y: u32,
+        values: ReadValues,
+    ) -> Result<Option<ReadAnswer>, Error> {
+        let mode = crate::render::MaskInputMode::for_layer(
+            self.evaluation.registry(),
+            self.evaluation.recipe(),
+            index,
+        );
+        let answer = self.session.borrow_mut().read(
+            ReadStage::Before {
+                layer: index,
+                mode: mode.into(),
+            },
+            Region {
+                x0: x,
+                y0: y,
+                width: 1,
+                height: 1,
+            },
+            values,
+        )?;
+        *self.answered.borrow_mut() = Some(answer.answered.clone());
+        Ok((!answer.rect.is_empty()).then_some(answer))
+    }
+}
+
+impl StageQuestions for TileStage<'_> {
+    fn stage_before(&self, index: usize) -> Result<Stage, Error> {
+        let recipe = self.evaluation.recipe();
+        let (width, height) = self.evaluation.source().dimensions();
+        Ok(self
+            .evaluation
+            .registry()
+            .compile_layers(
                 width,
                 height,
                 super::prefix(&recipe.layers, index)?,
                 &recipe.masks,
                 &recipe.strokes,
                 &recipe.artifacts,
-            )?;
-            let stage = compiled.stage();
-            let full = self.evaluation.registry().compile_layers(
-                width,
-                height,
-                &recipe.layers,
-                &recipe.masks,
-                &recipe.strokes,
-                &recipe.artifacts,
-            )?;
-            let wide = full.prefix_spatial_input_wide(&compiled);
-            let pixels = prefix_pixels(
-                self.evaluation.source().input(),
-                compiled,
-                self.evaluation.context(),
-                self.cancel,
-                wide,
-                crate::render::MaskInputMode::for_layer(self.evaluation.registry(), recipe, index),
-            )?;
-            self.prefixes.borrow_mut().insert(index, (stage, pixels));
-        }
-        let held = self.prefixes.borrow();
-        let (stage, pixels) = &held[&index];
-        answer(*stage, &**pixels)
-    }
-    fn linear_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
-        self.with_prefix(index, |_, pixels| pixels.linear(x, y))
-    }
-}
-impl StageQuestions for WorkerStage<'_> {
-    fn stage_before(&self, index: usize) -> Result<Stage, Error> {
-        self.with_prefix(index, |stage, _| Ok(stage))
+            )?
+            .stage())
     }
     fn sample_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error> {
-        self.with_prefix(index, |_, pixels| pixels.rgba(x, y))
+        Ok(self
+            .read(index, x, y, ReadValues::Codes)?
+            .and_then(|answer| answer.code(x, y)))
     }
     fn input_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
-        self.linear_before(index, x, y)
+        Ok(self
+            .read(index, x, y, ReadValues::Linear)?
+            .and_then(|answer| answer.linear(x, y))
+            .map(|value| value.map(f64::from)))
     }
     fn sensor_neutral(&self, _: u32, _: u32) -> Result<[f32; 3], Error> {
         Err(Error::internal("sensor neutral reads never defer"))
@@ -412,7 +497,7 @@ mod tests {
         }
     }
     #[test]
-    fn pixel_memo_is_bounded_and_evicts_changed_keys() {
+    fn pixel_memo_is_bounded_keeps_other_prefixes_and_evicts_changed_states() {
         let key = key();
         let mut memo = PixelMemo::default();
         for x in 0..33 {
@@ -435,8 +520,33 @@ mod tests {
             )
             .is_none()
         );
+        // Another prefix of the same state is kept beside the answers it holds.
+        let mut prefix = key.clone();
+        prefix.prefix_hash = [1; 32];
+        memo.insert(PixelAnswer {
+            key: prefix.clone(),
+            read: PixelRead {
+                index: 2,
+                x: 0,
+                y: 0,
+            },
+            rgba: None,
+            linear: None,
+        });
+        assert_eq!(memo.answers.len(), MAX_PIXEL_MEMO);
+        assert!(
+            memo.find(
+                &prefix,
+                PixelRead {
+                    index: 2,
+                    x: 0,
+                    y: 0
+                }
+            )
+            .is_some()
+        );
         let mut changed = key.clone();
-        changed.input_wide = false;
+        changed.revision += 1;
         memo.insert(PixelAnswer {
             key: changed.clone(),
             read: PixelRead {
