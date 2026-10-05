@@ -27,7 +27,7 @@ use crate::{
     mask_field::MaskSampling,
     modules::{Global, Region, Stage},
 };
-use std::borrow::Cow;
+use std::{borrow::Cow, sync::Arc};
 
 pub(super) use super::context::RenderContext;
 
@@ -837,6 +837,119 @@ impl<'a> Render<'a> {
         })
     }
 
+    /// One rectangle of the output stage, row by row from its top-left, read in frame mode: each
+    /// spatial segment's whole frame is materialized once ([`SpatialMode::Frames`]), on the pool as
+    /// a render materializes it, and every pixel of `rect` is then evaluated through those frames
+    /// in `O(layers)`, through no point tile. Each byte is therefore the byte [`Self::sample`]
+    /// answers at that pixel and [`Self::frame`] writes there: the reference renderer's read of a
+    /// rectangle, which a GPU tile read is held to. `rect` must lie inside the output stage, and it
+    /// answers at most the pixels one evaluated frame may hold.
+    pub fn read_rect(&self, rect: Region) -> Result<Vec<[u8; 4]>, Error> {
+        let (width, height) = self.stage();
+        if rect.x1() > width || rect.y1() > height {
+            return Err(Error::validation(format!(
+                "the {}x{} rectangle at ({}, {}) is not inside the {width}x{height} output stage",
+                rect.width, rect.height, rect.x0, rect.y0
+            )));
+        }
+        // A rectangle's codes are bounded as an evaluated frame of its size is.
+        Raster::expected_len(rect.width, rect.height)?;
+        let mut codes = Vec::with_capacity(rect.pixels() as usize);
+        let pixels = Render {
+            source: self.source,
+            compiled: Cow::Borrowed(&*self.compiled),
+            options: self.options.clone(),
+            context: self.context,
+        }
+        .frame_pixels()?;
+        for y in rect.y0..rect.y1() {
+            self.options.cancel.check()?;
+            for x in rect.x0..rect.x1() {
+                codes.push(
+                    pixels.rgba(x, y)?.ok_or_else(|| {
+                        Error::render("a pixel inside the output stage is missing")
+                    })?,
+                );
+            }
+        }
+        Ok(codes)
+    }
+
+    /// The output stage held for reads in frame mode: what [`Self::read_rect`] reads, kept for a
+    /// caller that reads it more than once, such as the reference tile service over one call
+    /// (`crate::tiles`). Its spatial frames are materialized here, once, and each pixel read from
+    /// it afterwards costs `O(layers)`. It answers [`Self::sample`]'s bytes and the output pixels'
+    /// own linear values, and holds its frames until it is dropped.
+    pub(crate) fn frame_pixels(self) -> Result<Box<dyn StagePixels + 'a>, Error> {
+        let Render {
+            source,
+            compiled,
+            options,
+            context,
+        } = self;
+        match source {
+            RenderSource::Byte(image) => {
+                check_source(image)?;
+                output_pixels(Byte(image), compiled, &options, context)
+            }
+            RenderSource::Linear { image, settings } => {
+                output_pixels(Linear::new(image, settings)?, compiled, &options, context)
+            }
+        }
+    }
+
+    /// The stage this render's stack produces held in frame mode as the input of the layer after
+    /// it, as [`prefix_pixels`] reads it through point tiles: with the boundary width `wide` the
+    /// whole recipe chooses at its last spatial segment, and the linear values that layer receives
+    /// as `mode` says. Its spatial frames are materialized here, once, at those widths; each pixel
+    /// read from it afterwards costs `O(layers)`.
+    pub(crate) fn frame_input(
+        self,
+        wide: bool,
+        mode: MaskInputMode,
+    ) -> Result<Box<dyn StagePixels + 'a>, Error> {
+        fn in_domain<'a, D: PixelDomain + 'a>(
+            domain: D,
+            compiled: Cow<'a, Compiled>,
+            options: &RenderOptions,
+            context: &'a RenderContext,
+            wide: bool,
+            mode: MaskInputMode,
+        ) -> Result<Box<dyn StagePixels + 'a>, Error> {
+            Ok(Box::new(InputPixels {
+                evaluation: frame_evaluation(
+                    domain,
+                    compiled,
+                    options.tiling,
+                    Some(wide),
+                    &options.cancel,
+                    context,
+                )?,
+                mode,
+            }))
+        }
+        let Render {
+            source,
+            compiled,
+            options,
+            context,
+        } = self;
+        match source {
+            RenderSource::Byte(image) => {
+                check_source(image)?;
+                in_domain(Byte(image), compiled, &options, context, wide, mode)
+            }
+            RenderSource::Linear { image, settings } => in_domain(
+                Linear::new(image, settings)?,
+                compiled,
+                &options,
+                context,
+                wide,
+                mode,
+            ),
+        }
+    }
+
     /// The output pixels at the centres of a `side` × `side` grid, row by row from the top-left,
     /// through one point evaluation, so each equals the rendered byte there: `O(side² × layers)`,
     /// with each spatial segment answered through one tile cache on both pixel domains, so the
@@ -1298,6 +1411,89 @@ impl<D: PixelDomain> StagePixels for InputPixels<'_, D> {
     fn rgba(&self, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error> {
         self.evaluation.rgba(x, y)
     }
+}
+
+/// An output stage held for reads: its terminal bytes exactly as [`Render::sample`] answers them,
+/// and its output pixels' own linear values.
+struct OutputPixels<'a, D: PixelDomain>(Evaluation<'a, D>);
+
+impl<D: PixelDomain> MaskInputPixel for OutputPixels<'_, D> {
+    fn linear(&self, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
+        self.0.linear(x, y)
+    }
+}
+
+impl<D: PixelDomain> StagePixels for OutputPixels<'_, D> {
+    fn rgba(&self, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error> {
+        self.0.terminal(x, y)
+    }
+}
+
+/// [`Render::frame_pixels`] in one domain: the output stage it may produce, held in frame mode.
+fn output_pixels<'a, D: PixelDomain + 'a>(
+    domain: D,
+    compiled: Cow<'a, Compiled>,
+    options: &RenderOptions,
+    context: &'a RenderContext,
+) -> Result<Box<dyn StagePixels + 'a>, Error> {
+    let stage = compiled.stage();
+    domain.check_output(stage.width, stage.height)?;
+    Ok(Box::new(OutputPixels(frame_evaluation(
+        domain,
+        compiled,
+        options.tiling,
+        None,
+        &options.cancel,
+        context,
+    )?)))
+}
+
+/// `compiled` evaluated in `domain` in frame mode: every spatial operation's output materialized
+/// once over its whole stage, in stage order, as [`SpatialMode::Frames`] materializes it. With
+/// `wide`, the boundary widths are the ones the whole recipe chooses for this prefix
+/// ([`Evaluation::with_input_width`]), which must be set before any frame exists, so the frames
+/// are then materialized here, in the same order and each replacing the one before it.
+fn frame_evaluation<'a, D: PixelDomain>(
+    domain: D,
+    compiled: Cow<'a, Compiled>,
+    tiling: Tiling,
+    wide: Option<bool>,
+    cancel: &Cancel,
+    context: &'a RenderContext,
+) -> Result<Evaluation<'a, D>, Error> {
+    let Some(wide) = wide else {
+        return Evaluation::new(
+            domain,
+            compiled,
+            tiling,
+            SpatialMode::Frames,
+            cancel,
+            context,
+        );
+    };
+    let mut evaluation = Evaluation::new(
+        domain,
+        compiled,
+        tiling,
+        SpatialMode::Point,
+        cancel,
+        context,
+    )?
+    .with_input_width(wide);
+    evaluation.tiles = None;
+    for index in 0..evaluation.compiled.segments.len() {
+        let Some(entry) = &evaluation.compiled.segments[index].entry else {
+            continue;
+        };
+        let Some(frame) = entry.frame(&evaluation, index, cancel)? else {
+            continue;
+        };
+        evaluation.frame = Some(super::pipeline::SpatialFrame {
+            index,
+            planes: Arc::new(frame),
+        });
+    }
+    Ok(evaluation)
 }
 
 pub(crate) fn prefix_pixels<'a>(
