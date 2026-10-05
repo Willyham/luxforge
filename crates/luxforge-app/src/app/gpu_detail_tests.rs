@@ -1534,7 +1534,7 @@ mod drags {
 
     /// A Detail Amount drag at Fit on a photograph drawn as a proxy. Its first tick derives the
     /// boundary — the input of the restoration layer, which is the source reduced to the proxy —
-    /// and takes the CPU path until the surface has evaluated its plan. From then on every tick is
+    /// and holds the frame on screen until the surface has evaluated its plan. From then on every tick is
     /// Detail's spatial step drawn on the GPU with no preview job. The release commits: the
     /// committed stack renders no proxy, its exact frame reduced to the view is the reference
     /// frame, and the GPU draws its picture at rest; the boundary stays resident for the next
@@ -1552,7 +1552,7 @@ mod drags {
         let _ = slide(&mut editor, "set-detail", "sharpening", 40.0);
         let records = logged(&mut editor, &log);
         let ticks = events(&records, "gpu_preview_tick");
-        assert_eq!(ticks[0]["path"], "cpu");
+        assert_eq!(ticks[0]["path"], "held");
         assert_eq!(ticks[0]["reason"], "surface-pending");
         let derived = events(&records, "gpu_boundary");
         assert_eq!(derived.len(), 1, "the proxy's boundary derived at the tick");
@@ -1795,7 +1795,7 @@ mod drags {
         let _ = slide(&mut editor, "set-detail", "sharpening", 40.0);
         let records = logged(&mut editor, &log);
         let ticks = events(&records, "gpu_preview_tick");
-        assert_eq!(ticks[0]["path"], "cpu");
+        assert_eq!(ticks[0]["path"], "held");
         assert_eq!(ticks[0]["reason"], "surface-pending");
         let derived = events(&records, "gpu_boundary");
         assert_eq!(

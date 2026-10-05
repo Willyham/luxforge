@@ -599,8 +599,6 @@ impl Editor {
             self.outcome(Outcome::DraftRefused);
             return Task::none();
         }
-        self.view_plan.quiet_since = None;
-        self.view_plan.quiet_settle_requested = true;
         self.view_plan.epoch = self.view_plan.epoch.saturating_add(1);
         self.view_plan.released_draft = self
             .core_gesture()
@@ -892,31 +890,31 @@ impl Editor {
                         self.note_view_motion();
                     }
                     // A tick the surface draws from the GPU plan the answer carries makes no
-                    // preview job and no upload ([`super::gpu_preview`]); any other takes the
-                    // CPU path as before. Its boundary is derived from the job's source.
+                    // preview job and no upload ([`super::gpu_preview`]); any other holds its
+                    // frame or has the reference draw it ([`super::motion`]). Its boundary is
+                    // derived from the job's source.
                     self.gpu_hold_source(job.evaluation.source());
+                    let planned = job.gpu.is_some();
                     let tick = self.gpu_tick(&set, job.gpu.take());
                     match tick {
                         super::gpu_preview::Tick::Gpu => {
+                            self.motion_drawn_on_gpu();
                             // The mask overlay's coverage follows the tick through its own
-                            // worker, as on the CPU path, over the frame on screen, whose
-                            // geometry a colour or mask draft does not change.
+                            // worker, over the frame on screen, whose geometry a colour or mask
+                            // draft does not change.
                             let content = self.presentation.presented_content;
                             self.request_mask_coverage(&job, content);
                             self.gpu_ticked(&set);
                             drawn_on_gpu = true;
                         }
                         super::gpu_preview::Tick::Cpu => {
-                            let (generation, requested_at) = if self.log.diagnostics.is_some()
-                                && self.mask_gesture().is_some()
+                            if let Some((generation, requested_at)) =
+                                self.cpu_tick(&set, job, planned)
                             {
-                                self.request_mask_preview_timed(job)
-                            } else {
-                                (self.request_preview(job), None)
-                            };
-                            self.gpu_cpu_tick(&set, generation);
-                            self.presentation.preview_generation = generation;
-                            self.set_previewed(set.draft_revision, round_trip, requested_at);
+                                self.gpu_cpu_tick(&set, generation);
+                                self.presentation.preview_generation = generation;
+                                self.set_previewed(set.draft_revision, round_trip, requested_at);
+                            }
                         }
                     }
                 }
@@ -1224,7 +1222,7 @@ impl Editor {
 
 /// What a `draft.set` tick reads of the draft it answered with — its identity, revisions, target
 /// and conflict state — without the fields, which the session keeps.
-fn identity(answered: &Draft) -> Draft {
+pub(crate) fn identity(answered: &Draft) -> Draft {
     let Draft {
         draft_id,
         action,

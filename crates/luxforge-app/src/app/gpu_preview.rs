@@ -859,7 +859,7 @@ pub(crate) struct GpuPreviews {
     /// After side.
     pub(crate) compare_waits: bool,
     /// The Fit bounds the displayed stack's picture at rest was planned at by its job's owner
-    /// task: a refit plans it again once they are not the view's ([`Editor::refit_proxy`]).
+    /// task: a refit plans it again once they are not the view's ([`Editor::refit_view`]).
     pub(crate) rest_planned_at: Option<luxforge_core::ProxyBounds>,
     /// The content the GPU presented whose picture at rest found its programs compiling, and when
     /// it first did: the reference renders it once that has lasted the `compiling` threshold.
@@ -2298,18 +2298,14 @@ impl Editor {
         self.gpu.surface_plan()
     }
 
-    /// Whether the view shows what `plan` draws: at Fit a whole frame's; below 100% a whole frame's
-    /// while the view draws its photograph's frame alone, the displayed-size proxy, as Fit does,
-    /// an exact frame or a region it still holds from a zoom of 100% or more being its own to
-    /// draw; at 100% and above a region's while that region holds the view, or, over a stack the
+    /// Whether the view shows what `plan` draws: at Fit and below 100% a whole frame's, the view
+    /// drawing its photograph's frame alone as Fit does; at 100% and above a region's while that region holds the view, or, over a stack the
     /// GPU presented with no CPU frame, while a pan's region is planned: the region is the only
     /// picture of that stack, and the frame under it an earlier stack's.
     fn gpu_plan_shown(&self, plan: &surface::GpuPlan) -> bool {
         match (&self.session.preview.view.zoom, plan.region) {
             (luxforge_core::Zoom::Fit, None) => true,
-            (luxforge_core::Zoom::Percent { value }, None) if *value < 100.0 => {
-                self.presentation.surfaces(None).whole_frame()
-            }
+            (luxforge_core::Zoom::Percent { value }, None) if *value < 100.0 => true,
             (luxforge_core::Zoom::Percent { value }, Some(region)) if *value >= 100.0 => {
                 let presented =
                     self.presentation.gpu_presented == Some(self.presentation.presented_content);

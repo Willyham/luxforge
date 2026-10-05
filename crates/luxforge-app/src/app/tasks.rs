@@ -1610,11 +1610,11 @@ pub(crate) fn thumbnail_source(
 }
 
 /// Plan one view-only frame without reading or changing the session. The app re-reads its local
-/// pan before admission, so a coalesced scroll remains the newest rectangle. A committed stack's
-/// frame at a percentage zoom of 100% or more also carries the plans a gesture there draws and
-/// the boundary it starts from, over the region `gpu` names ([`super::gpu_preview`]), so the
-/// first stroke after a zoom or a pan draws on the GPU from its first tick.
-#[allow(clippy::too_many_arguments)]
+/// pan before admission, so a coalesced scroll remains the newest rectangle. At a percentage zoom
+/// of 100% or more the frame carries its GPU picture over the region `gpu` names
+/// ([`super::gpu_preview`]): a committed stack's view plan at rest, with the plans a gesture there
+/// draws and the boundary it starts from, so the first stroke after a zoom or a pan draws on the
+/// GPU from its first tick; a paused draft's next tick, over the view a pan moved to.
 pub(crate) fn view_preview_task(
     owner: OwnerHandle,
     client: ClientId,
@@ -1622,7 +1622,6 @@ pub(crate) fn view_preview_task(
     entry_id: Option<EntryId>,
     draft: Option<DraftId>,
     epoch: u64,
-    intent: luxforge_core::PreviewIntent,
     gpu: super::gpu_preview::GpuAsk,
 ) -> Task<Message> {
     owner_task(
@@ -1630,19 +1629,17 @@ pub(crate) fn view_preview_task(
             let mut request = PreviewRequest::new(client, asset_id)
                 .entry(entry_id)
                 .analyse();
-            match (draft, gpu) {
-                (Some(draft), _) => request = request.draft(draft),
-                (None, super::gpu_preview::GpuAsk::Region(rect, magnification)) => {
-                    request = request.gpu_region(rect, magnification);
-                }
-                (None, _) => {}
+            if let Some(draft) = draft {
+                request = request.draft(draft);
+            }
+            if let super::gpu_preview::GpuAsk::Region(rect, magnification) = gpu {
+                request = request.gpu_region(rect, magnification);
             }
             ready_preview_job(&owner, request)
         },
         move |result| {
             Message::Preview(PreviewMessage::ViewLoaded {
                 epoch,
-                intent,
                 result: result.map(Box::new),
             })
         },

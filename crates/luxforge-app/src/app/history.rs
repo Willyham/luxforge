@@ -367,7 +367,7 @@ impl Editor {
             .presentation
             .exact()
             .map(|exact| &exact.raster)
-            .or_else(|| self.presentation.proxy().map(|proxy| &proxy.raster))
+            .or_else(|| self.presentation.reduced().map(|reduced| &reduced.raster))
             .and_then(|raster| {
                 luxforge_ui::Frame::new(
                     raster.rgba.clone(),

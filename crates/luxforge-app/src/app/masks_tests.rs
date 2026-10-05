@@ -3666,6 +3666,8 @@ fn race_e_a_slider_discard_presents_no_queued_drafted_frame() {
     use crate::app::testing::{attach_log, logged};
     let mut masking = Masking::opened();
     drain_queue(&mut masking);
+    // The reference renderer draws the drafted frame, which the discard holds back.
+    masking.editor.renderer.stage = Some(luxforge_ui::photo_surface::GpuStageState::DeviceLost);
     let presented = masking.editor.presentation.presented_generation;
     let _ = testing::slide(&mut masking.editor, "set-basic", "exposure", 0.3);
     assert!(
@@ -3707,6 +3709,8 @@ fn cancelled_masked_adjustments_restore_committed_pixels_history_and_coverage() 
         ("set-presence", "edit.set-presence", "dehaze", 20.0, 55.0),
     ] {
         let mut masking = Masking::opened();
+        // The reference renderer draws every frame, a drafted one included.
+        masking.editor.renderer.stage = Some(luxforge_ui::photo_surface::GpuStageState::DeviceLost);
         masking.enter_mask_mode();
         masking.draw_mask();
         let mask = masking.listing().masks[0].id.clone();
@@ -3930,7 +3934,7 @@ fn race_g_a_proxy_refit_waits_for_a_mask_gesture() {
     masking.editor.view_state.scale_factor = 1.0;
     masking.editor.presentation.presented_generation =
         masking.editor.presentation.preview_generation;
-    masking.editor.presentation.presented_proxy = true;
+    masking.editor.presentation.presented_reduced = true;
     masking.editor.presentation.presented_bounds = masking.editor.proxy_bounds();
     masking.editor.presentation.refit_pending = false;
     let _ = masking
