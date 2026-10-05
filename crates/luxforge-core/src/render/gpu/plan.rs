@@ -13,6 +13,8 @@
 //! - **Output operations**, over the output stage's pixels in recipe order: the colour operations
 //!   of the last segment when a resample separates it from the boundary, the vignette among them.
 //! - **Clipping marks**: the output codes the clipping overlay counts, as linear thresholds.
+//! - **Lights**: the light link of every spatial operation that reads a global estimate, which
+//!   computes it per frame from the whole stage at full resolution ([`GpuLight`]).
 //!
 //! Each operation carries the map from its pass's pixel to the coordinate its units address, which
 //! is exactly the coordinate the CPU hands `PointwiseColor::apply_row`, and its mask's map to the
@@ -21,19 +23,15 @@
 //! itself wherever `M` is exactly zero, so a value the CPU never computes cannot reach the frame.
 use super::grid::CoordinateGrid;
 use super::program::{GpuDescription, GpuProgramKind};
-use super::spatial::{self, GPU_CHAIN_APPLY_PLANES, GpuSpatial};
+use super::spatial::{self, GPU_CHAIN_APPLY_PLANES, GpuLight, GpuSpatial};
 use crate::{
-    ComponentMode, EffectStage, Error, ModuleRegistry, PreviewSource, ProxyPlan, Recipe,
+    ComponentMode, EffectStage, Error, ModuleRegistry, Recipe,
     colour::srgb,
-    mask_field::MaskSampling,
-    modules::{ColorOperation, ExactGeometry, Global, Processing, Region, Stage},
+    modules::{ColorOperation, ExactGeometry, Processing, Region, Stage},
     render::{
-        Compiled, Entry, PixelDomain, RenderContext, RenderSource,
-        byte::{self, Byte},
-        context::EstimateKey,
-        linear::{self, Linear},
+        Compiled, Entry,
         map::{Affine, GeometryMap, MappingShape, StageSize, WarpStep},
-        pipeline::{SpatialEntry, input_prefix_key},
+        pipeline::SpatialEntry,
     },
 };
 
@@ -129,169 +127,6 @@ impl GpuPlanRequest {
     }
 }
 
-/// Where a plan finds the global estimates its spatial operations read ([`gpu_plan_with`]): the
-/// render context whose store the CPU frames the plan previews fill, and the source those frames
-/// were rendered from at the plan's stage. A unit's estimate is the store's when the store holds it
-/// under the key a CPU frame of the same content at the same stage asks with; otherwise the GPU
-/// takes it from the stage it holds and the frame is approximate.
-#[derive(Clone, Copy)]
-pub struct GpuEstimates<'a> {
-    pub context: &'a RenderContext,
-    pub source: EstimateSource<'a>,
-}
-
-/// The source a plan's CPU frames are rendered from, as the estimate store names it.
-#[derive(Clone, Copy)]
-pub enum EstimateSource<'a> {
-    /// The source itself.
-    Render(RenderSource<'a>),
-    /// The proxy of a preview source at a plan, which the preview worker renders a Fit frame from:
-    /// named by the source's identity and the plan alone, and never built, so a plan made on the
-    /// catalog owner reads the store with no pixel work.
-    Proxy {
-        source: &'a PreviewSource,
-        plan: ProxyPlan,
-    },
-    /// The source at its own whole `stage`, whose estimates the exact phase hands a windowed
-    /// proxy's spatial operations, since a window cannot reduce its stage (`Render::render_proxy`):
-    /// named with that stage's dimensions whatever stage the plan is drawn at.
-    Whole {
-        source: RenderSource<'a>,
-        stage: Stage,
-    },
-}
-
-impl<'a> From<RenderSource<'a>> for EstimateSource<'a> {
-    fn from(source: RenderSource<'a>) -> Self {
-        Self::Render(source)
-    }
-}
-
-impl EstimateSource<'_> {
-    /// Whether its frames take the linear path.
-    fn linear(&self) -> bool {
-        match self {
-            Self::Render(source) | Self::Whole { source, .. } => {
-                matches!(source, RenderSource::Linear { .. })
-            }
-            Self::Proxy { source, .. } => matches!(source, PreviewSource::Raw { .. }),
-        }
-    }
-
-    /// The stage its estimates are named with: `stage`, the one the plan addresses, but for
-    /// [`Self::Whole`]'s own.
-    fn stage(&self, stage: Stage) -> Stage {
-        match self {
-            Self::Whole { stage, .. } => *stage,
-            _ => stage,
-        }
-    }
-
-    /// The fingerprint and the estimate prefix its pixel domain gives `prefix_hash`. A proxy keeps
-    /// its source's fingerprint; a JPEG's is the plan's window at the source's orientation, a
-    /// RAW's its derived development ([`crate::proxy::proxy_development`]) under an identity view
-    /// and the settings a job renders it under.
-    pub(crate) fn identity(&self, prefix_hash: &str) -> Result<(String, String), Error> {
-        Ok(match *self {
-            Self::Render(RenderSource::Byte(image))
-            | Self::Whole {
-                source: RenderSource::Byte(image),
-                ..
-            } => {
-                let domain = Byte(image);
-                (
-                    domain.fingerprint().to_owned(),
-                    input_prefix_key(&domain, prefix_hash).into_owned(),
-                )
-            }
-            Self::Render(RenderSource::Linear { image, settings })
-            | Self::Whole {
-                source: RenderSource::Linear { image, settings },
-                ..
-            } => {
-                let domain = Linear::new(image, settings)?;
-                (
-                    domain.fingerprint().to_owned(),
-                    input_prefix_key(&domain, prefix_hash).into_owned(),
-                )
-            }
-            Self::Proxy { source, plan } => {
-                let (width, height) = plan.source_dimensions();
-                match source {
-                    PreviewSource::Jpeg(image) => (
-                        image.fingerprint.clone(),
-                        byte::estimate_prefix(prefix_hash, width, height, image.orientation),
-                    ),
-                    PreviewSource::Raw { image, settings } => (
-                        image.fingerprint().to_owned(),
-                        linear::estimate_prefix(
-                            prefix_hash,
-                            crate::proxy::proxy_development(image, plan),
-                            ([0, 0, width, height], 1),
-                            settings.white_balance,
-                        ),
-                    ),
-                }
-            }
-        })
-    }
-}
-
-impl GpuEstimates<'_> {
-    /// The store's estimate for `key` over a spatial entry's `stage`, or `None` when it holds none.
-    fn stored(
-        &self,
-        entry: &SpatialEntry,
-        stage: Stage,
-        key: &str,
-    ) -> Result<Option<Global>, Error> {
-        Ok(self.cached(entry.prefix_hash(), stage, key)?.flatten())
-    }
-
-    /// The store's entry for `key` over a `stage` behind the layers `prefix_hash` names: `None`
-    /// when it holds none, `Some(None)` for a preparation that yielded none.
-    fn cached(
-        &self,
-        prefix_hash: &str,
-        stage: Stage,
-        key: &str,
-    ) -> Result<Option<Option<Global>>, Error> {
-        let (fingerprint, prefix) = self.source.identity(prefix_hash)?;
-        let stage = self.source.stage(stage);
-        Ok(self.context.estimates().cached(&EstimateKey {
-            fingerprint,
-            prefix_hash: prefix,
-            width: stage.width,
-            height: stage.height,
-            estimate: key.to_owned().into(),
-        }))
-    }
-
-    /// Whether the store holds every global estimate `entry` prepares over its `stage`, so a frame
-    /// of it reduces nothing. `O(units)`, and reads no pixel.
-    pub(crate) fn holds(&self, entry: &SpatialEntry, stage: Stage) -> Result<bool, Error> {
-        for unit in entry.operation.units() {
-            if let Some(key) = unit.estimate_key()
-                && self.cached(entry.prefix_hash(), stage, &key)?.is_none()
-            {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-}
-
-/// What the stack a draft was opened over stored for one of the drafted stack's spatial layers:
-/// the prefix hash its global estimates were stored under there. Where the store holds none for
-/// the drafted stack, the plan reads the layer's estimates under this one instead, held for the
-/// drag ([`GpuSpatial::held`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct HeldPrefix {
-    /// The layer in the planned stack.
-    pub(crate) layer: usize,
-    pub(crate) prefix_hash: String,
-}
-
 /// What the compiled evaluation answers for a gesture.
 #[derive(Clone, Debug, PartialEq)]
 pub enum GpuAnswer {
@@ -345,16 +180,6 @@ pub enum GpuFallback {
     /// The draft changes no layer of the stack yet, and drafts no layer of its own: there is
     /// nothing for a plan to start from, and its frame is the entry's.
     Unchanged,
-    /// At a percentage zoom, the spatial layer's global estimate would be taken on the GPU from
-    /// the visible region alone, where the exact visible region reads the whole stage's: Dehaze's
-    /// atmospheric light, which misses the spatial limits there on the corpus.
-    RegionEstimate { layer: usize },
-    /// At a Fit proxy that holds a window of its stage, the spatial layer's global estimate would be
-    /// taken on the GPU from the proxy, where the CPU's windowed proxy is handed the exact stage's:
-    /// Dehaze's atmospheric light, which no proxy-scale estimate reproduces within the spatial
-    /// limits on the corpus. The store holds none the drag may read: a colour drag under it, or a
-    /// stack whose exact light no frame has stored yet.
-    WindowEstimate { layer: usize },
     /// Planning a draft's GPU preview failed for this reason, which the CPU path answers in its
     /// own way.
     Unplannable(String),
@@ -372,8 +197,6 @@ impl GpuFallback {
             Self::NoProgram { .. } => "no-program",
             Self::DisabledProgram { .. } => "disabled-program",
             Self::Unchanged => "unchanged",
-            Self::RegionEstimate { .. } => "region-estimate",
-            Self::WindowEstimate { .. } => "window-estimate",
             Self::Unplannable(_) => "unplannable",
         }
     }
@@ -387,9 +210,7 @@ impl GpuFallback {
             | Self::SpatialChain { layer }
             | Self::BetweenResamples { layer }
             | Self::NoProgram { layer, .. }
-            | Self::DisabledProgram { layer, .. }
-            | Self::RegionEstimate { layer }
-            | Self::WindowEstimate { layer } => Some(*layer),
+            | Self::DisabledProgram { layer, .. } => Some(*layer),
             Self::Unchanged | Self::Unplannable(_) => None,
         }
     }
@@ -424,15 +245,6 @@ impl std::fmt::Display for GpuFallback {
                 write!(f, "layer {layer} needs the disabled GPU program {program}")
             }
             Self::Unchanged => write!(f, "the draft changes no layer yet"),
-            Self::RegionEstimate { layer } => write!(
-                f,
-                "layer {layer}'s global estimate would be taken from the visible region alone"
-            ),
-            Self::WindowEstimate { layer } => write!(
-                f,
-                "layer {layer}'s global estimate would be taken from a windowed proxy, which is \
-                 handed the exact stage's"
-            ),
             Self::Unplannable(reason) => {
                 write!(f, "the GPU preview could not be planned: {reason}")
             }
@@ -740,6 +552,13 @@ pub struct GpuPlan {
     /// Over the output stage's pixels, after the geometry tail, in recipe order.
     pub output: Vec<GpuOperation>,
     pub clipping: GpuClipping,
+    /// The light links its spatial operations read their global estimates from, in recipe order
+    /// ([`spatial::gpu_lights`]): the operation of each one's layer reads it as light `k`, its
+    /// place here, from the slot's light plane `k` ([`GpuSpatial::light`]). Each is planned from
+    /// the source over the whole content stage at full scale, whatever stage the plan draws, so a
+    /// frame at Fit reads the whole stage's light as the picture at rest does. Empty for a plan
+    /// that reads none.
+    pub lights: Vec<GpuLight>,
 }
 
 impl GpuPlan {
@@ -752,13 +571,15 @@ impl GpuPlan {
             .chain(&self.output)
     }
 
-    /// The frame is approximate beyond the GPU's arithmetic: a global estimate is taken on the GPU
-    /// from the stage it holds, or held from the stack the draft was opened over, not read from
-    /// the store under the drafted stack's own key.
-    pub fn approximate(&self) -> bool {
-        self.spatial
-            .iter()
-            .any(|spatial| spatial.estimated || spatial.held)
+    /// Whether a spatial operation of the plan reads a global estimate its light links compute.
+    pub fn reads_lights(&self) -> bool {
+        !self.lights.is_empty()
+    }
+
+    /// The light `k` the operation of layer `layer` reads, as the slot's light planes are numbered:
+    /// its place among [`Self::lights`]. `None` for a layer whose light the plan holds no link of.
+    pub fn light_of(&self, layer: usize) -> Option<usize> {
+        self.lights.iter().position(|light| light.layer == layer)
     }
 
     /// Where every window of the boundary stage the plan is evaluated over — a 100% region's, a
@@ -766,30 +587,36 @@ impl GpuPlan {
     /// whole stage's, bit for bit, whatever window holds it: tiles carry no seam, and a pixel read
     /// back from one is the pixel any other window draws ([`GpuAnchor`]). `O(passes)`.
     pub fn anchor(&self) -> GpuAnchor {
-        let mut anchor = GpuAnchor::NONE;
-        for spatial in &self.spatial {
-            for pass in &spatial.passes {
-                let spatial::GpuPassShape::Texels { span } = pass.shape else {
-                    continue;
-                };
-                let Some(spatial::GpuPlaneSize::Reduced(s)) =
-                    spatial.planes.get(pass.output).map(|plane| plane.size)
-                else {
-                    continue;
-                };
-                let (span, s) = (span.map(|n| n.max(1)), s.max(1));
-                anchor.multiple = (
-                    lcm(anchor.multiple.0, span[0] * s),
-                    lcm(anchor.multiple.1, span[1] * s),
-                );
-                anchor.lead = (
-                    anchor.lead.0 + (span[0] - 1) * s,
-                    anchor.lead.1 + (span[1] - 1) * s,
-                );
-            }
-        }
-        anchor
+        anchor_of(&self.spatial)
     }
+}
+
+/// The anchor of a chain of `spatial` operations ([`GpuPlan::anchor`]): where a window of the stage
+/// they run over starts, so each texel it holds is the whole stage's. `O(passes)`.
+pub(crate) fn anchor_of(spatial: &[GpuSpatial]) -> GpuAnchor {
+    let mut anchor = GpuAnchor::NONE;
+    for spatial in spatial {
+        for pass in &spatial.passes {
+            let spatial::GpuPassShape::Texels { span } = pass.shape else {
+                continue;
+            };
+            let Some(spatial::GpuPlaneSize::Reduced(s)) =
+                spatial.planes.get(pass.output).map(|plane| plane.size)
+            else {
+                continue;
+            };
+            let (span, s) = (span.map(|n| n.max(1)), s.max(1));
+            anchor.multiple = (
+                lcm(anchor.multiple.0, span[0] * s),
+                lcm(anchor.multiple.1, span[1] * s),
+            );
+            anchor.lead = (
+                anchor.lead.0 + (span[0] - 1) * s,
+                anchor.lead.1 + (span[1] - 1) * s,
+            );
+        }
+    }
+    anchor
 }
 
 /// Where a window of the boundary stage a plan is evaluated over starts ([`GpuPlan::anchor`]):
@@ -880,7 +707,9 @@ pub fn anchored(window: Region, anchor: GpuAnchor) -> Region {
 /// The GPU plan of `recipe` for `request`, or the reason the gesture takes the CPU path.
 ///
 /// Compiles the stack once, exactly as the CPU frame it previews is compiled, and walks the
-/// compilation: `O(layers + units + components)` on the catalog owner, with no pixel read and
+/// compilation; then plans the light links its spatial operations read, from the source over the
+/// whole content stage at full scale ([`GpuPlan::lights`]), compiled again at that stage when the
+/// plan's is another: `O(layers + units + components)` on the catalog owner, with no pixel read and
 /// nothing allocated that scales with the image. A stack that does not compile, or a boundary
 /// outside it, is the CPU path's own error.
 pub fn gpu_plan(
@@ -888,92 +717,28 @@ pub fn gpu_plan(
     recipe: &Recipe,
     request: GpuPlanRequest,
 ) -> Result<GpuAnswer, Error> {
-    gpu_plan_with(registry, recipe, request, None)
-}
-
-/// [`gpu_plan`], with the estimate store a spatial operation's global estimates are read from
-/// ([`GpuEstimates`]). Without one, every estimate is taken on the GPU and the plan says so
-/// ([`GpuPlan::approximate`]). The lookup is the store's own, `O(entries)`, and reads no pixel. A
-/// source on the linear path comes with a [`GpuPlanRequest::linear`] request.
-pub fn gpu_plan_with(
-    registry: &ModuleRegistry,
-    recipe: &Recipe,
-    request: GpuPlanRequest,
-    estimates: Option<GpuEstimates<'_>>,
-) -> Result<GpuAnswer, Error> {
-    gpu_plan_holding(registry, recipe, request, estimates, &[])
-}
-
-/// [`gpu_plan_with`], a spatial layer's estimates that the store does not hold for `recipe` read
-/// under `held`'s prefix for it instead ([`HeldPrefix`]).
-pub(crate) fn gpu_plan_holding(
-    registry: &ModuleRegistry,
-    recipe: &Recipe,
-    request: GpuPlanRequest,
-    estimates: Option<GpuEstimates<'_>>,
-    held: &[HeldPrefix],
-) -> Result<GpuAnswer, Error> {
-    if let Some(estimates) = &estimates
-        && estimates.source.linear() != request.linear
-    {
-        return Err(Error::internal(
-            "a GPU plan's request names one path and its estimates' source the other",
-        ));
-    }
-    // A plan from the source starts before every layer, so it needs none: an empty stack, or one of
-    // source and geometry layers alone, is planned too.
-    let layer = match (request.source, recipe.layers.get(request.boundary)) {
-        (true, _) => None,
-        (false, Some(layer)) => Some(layer),
-        (false, None) => {
-            return Err(Error::validation(format!(
-                "layer {} is outside the {}-layer stack",
-                request.boundary,
-                recipe.layers.len()
-            )));
+    let (compiled, answer) = spatial::planned(registry, recipe, request)?;
+    let GpuAnswer::Plan(mut plan) = answer else {
+        return Ok(answer);
+    };
+    match spatial::plan_lights(registry, recipe, request, &compiled, &plan)? {
+        Ok(lights) => {
+            plan.lights = lights;
+            Ok(GpuAnswer::Plan(plan))
         }
-    };
-    let sampling = if request.proxy {
-        MaskSampling::ThinFeature
-    } else {
-        MaskSampling::Point
-    };
-    let compiled = registry.compile_shaped(
-        request.stage.width,
-        request.stage.height,
-        request.full.width,
-        request.full.height,
-        recipe,
-        sampling,
-        request.drafted,
-    )?;
-    compiled.gpu_plan(
-        request.boundary,
-        request.stage,
-        layer.and_then(|layer| registry.effect_stage(&layer.effect_id)),
-        Planning {
-            qualifying: request.qualifying,
-            linear: request.linear,
-            source: request.source,
-            estimates,
-            held,
-        },
-    )
+        Err(reason) => Ok(GpuAnswer::Fallback(reason)),
+    }
 }
 
 /// How one plan is walked: whether disabled programs are planned, which path's quantization the
-/// frame previews, whether it starts from the source, and where stored estimates come from.
+/// frame previews, and whether it starts from the source.
 #[derive(Clone, Copy, Default)]
-pub(crate) struct Planning<'a> {
+pub(crate) struct Planning {
     pub(crate) qualifying: bool,
     pub(crate) linear: bool,
     /// The plan starts from the source, before the first segment's first operation, whatever
     /// layer it is reported under ([`GpuPlanRequest::source`]).
     pub(crate) source: bool,
-    pub(crate) estimates: Option<GpuEstimates<'a>>,
-    /// Where the stack the draft was opened over stored a spatial layer's estimates, read when
-    /// the store holds none for the planned stack.
-    pub(crate) held: &'a [HeldPrefix],
 }
 
 /// One step's verdict: a part of the plan, or the reason there is none.
@@ -988,7 +753,7 @@ impl Compiled {
         boundary: usize,
         content: Stage,
         stage: Option<EffectStage>,
-        planning: Planning<'_>,
+        planning: Planning,
     ) -> Result<GpuAnswer, Error> {
         match self.walk(boundary, content, stage, planning)? {
             Ok(plan) => Ok(GpuAnswer::Plan(Box::new(plan))),
@@ -1001,7 +766,7 @@ impl Compiled {
         boundary: usize,
         content: Stage,
         stage: Option<EffectStage>,
-        planning: Planning<'_>,
+        planning: Planning,
     ) -> Result<Planned<GpuPlan>, Error> {
         let qualifying = planning.qualifying;
         // From the source, the boundary is the first segment's input before its first operation:
@@ -1249,6 +1014,7 @@ impl Compiled {
             },
             output: output_operations,
             clipping: GpuClipping::of_output_codes(),
+            lights: Vec::new(),
         }))
     }
 
@@ -1295,30 +1061,6 @@ impl Compiled {
     /// of the segment before it.
     fn entry_layer(&self, segment: usize) -> usize {
         self.layer_at(segment - 1, self.segments[segment - 1].operations.len())
-    }
-
-    /// The layer of the first spatial operation a boundary in segment `first` is rendered through
-    /// that lies behind an earlier spatial operation and prepares a global estimate `estimates`
-    /// does not hold: a region's boundary reads such an estimate from the store alone, since no
-    /// window can reduce its stage (`Render::region_boundary`). `None` when there is none.
-    /// `O(segments + units)`, and reads no pixel.
-    pub(crate) fn unheld_estimate(
-        &self,
-        first: usize,
-        estimates: &GpuEstimates<'_>,
-    ) -> Result<Option<usize>, Error> {
-        for index in 1..=first.min(self.segments.len() - 1) {
-            let Some(Entry::Spatial(entry)) = &self.segments[index].entry else {
-                continue;
-            };
-            if entry.prepares_estimates()
-                && self.spatial_before(index)
-                && !estimates.holds(entry, self.segments[index - 1].stage())?
-            {
-                return Ok(Some(self.entry_layer(index)));
-            }
-        }
-        Ok(None)
     }
 }
 
@@ -1392,39 +1134,18 @@ fn plan_operation(
 }
 
 /// The spatial entry of layer `layer`, at the `stage` of the frame it reads, as plan data: every
-/// unit's description, each global estimate the store holds for it, and its mask.
+/// unit's description, a unit that prepares a global estimate reading it from its light link's
+/// plane, and its mask.
 fn plan_spatial(
     layer: usize,
     entry: &SpatialEntry,
     stage: Stage,
-    planning: Planning<'_>,
+    planning: Planning,
 ) -> Result<Planned<GpuSpatial>, Error> {
     let operation = &entry.operation;
     let mut units = Vec::with_capacity(operation.len());
-    let mut held = false;
     for unit in operation.units() {
-        let global = match (unit.estimate_key(), &planning.estimates) {
-            (Some(key), Some(estimates)) => match estimates.stored(entry, stage, &key)? {
-                Some(global) => Some(global),
-                None => match planning
-                    .held
-                    .iter()
-                    .find(|prefix| prefix.layer == layer)
-                    .filter(|_| unit.holds_restored_estimate())
-                {
-                    Some(prefix) => {
-                        let global = estimates
-                            .cached(&prefix.prefix_hash, stage, &key)?
-                            .flatten();
-                        held |= global.is_some();
-                        global
-                    }
-                    None => None,
-                },
-            },
-            _ => None,
-        };
-        let Some(description) = unit.gpu(global.as_ref()) else {
+        let Some(description) = unit.gpu() else {
             return Ok(Err(GpuFallback::SpatialUnit { layer }));
         };
         if let Some(fallback) = spatial::admit(layer, &description, planning.qualifying)? {
@@ -1466,6 +1187,5 @@ fn plan_spatial(
     };
     let mut composed = spatial::compose(layer, units, !planning.linear, mask)?;
     composed.halos = operation.halos(stage);
-    composed.held = held;
     Ok(Ok(composed))
 }

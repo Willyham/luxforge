@@ -121,10 +121,6 @@ pub struct ExactOutcome {
     /// the failure that building or rendering the proxy returned. `None` when the job asked for no
     /// proxy or got one.
     pub proxy_declined: Option<String>,
-    /// The picture at rest's tiles, planned again after this phase stored the global estimates the
-    /// owner's plan could not read ([`crate::PreviewJob::rest_bounds`]); `None` when the job asked
-    /// for none, or they still cannot be drawn.
-    pub rest: Option<Box<crate::RestTiles>>,
 }
 
 impl PreviewResult {

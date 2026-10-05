@@ -39,7 +39,7 @@ use super::plan::Planning;
 use super::program::{GpuProgram, GpuProgramKind};
 use super::{GpuAnswer, GpuFallback, GpuMask, GpuOperation, GpuPlanRequest};
 use crate::{
-    EffectStage, Error, ModuleRegistry, Recipe,
+    Error, ModuleRegistry, Recipe,
     mask_field::MaskSampling,
     modules::Stage,
     render::{Compiled, Entry, pipeline::SpatialEntry},
@@ -231,9 +231,6 @@ pub struct GpuSpatialUnit {
     pub planes: Vec<GpuPlane>,
     pub passes: Vec<GpuPass>,
     pub apply: GpuApply,
-    /// The unit computes a global estimate from the stage the GPU holds rather than reading the
-    /// one the CPU stored, so its frame is approximate.
-    pub estimated: bool,
 }
 
 /// One spatial operation of a plan, at the stage of the content pass it follows: every unit's
@@ -253,12 +250,6 @@ pub struct GpuSpatial {
     pub clamps: bool,
     /// The mask the operation's output is blended by against its input, as the colour primitive's.
     pub mask: Option<GpuMask>,
-    /// A global estimate is computed on the GPU from the stage it holds instead of read from the
-    /// estimate store, so the frame is labelled approximate, as the CPU proxy is.
-    pub estimated: bool,
-    /// A global estimate is the one the stack the draft was opened over stored, held for the drag
-    /// because the store holds none for the drafted stack: approximate too.
-    pub held: bool,
     /// The colour operations of its segment, which run on its output before the next spatial
     /// operation of the plan enters: empty for the last, whose segment's colour operations are the
     /// plan's output operations.
@@ -268,12 +259,12 @@ pub struct GpuSpatial {
     /// as their sum. A masked operation's passes need run only over its mask's bounds grown by the
     /// sum, and a tick that changes part of the input only over that part grown unit by unit.
     pub halos: Vec<u32>,
-    /// The plane the operation reads a light from that none of its passes writes: a unit described
-    /// reading its global estimate from a light plane ([`GpuPlaneSize::LIGHT`],
-    /// [`crate::modules::SpatialUnit::gpu_reading_light`]), which the light link of its plan
-    /// writes from the whole stage ([`GpuLight`]). `None` for an operation that reads no light, or
-    /// takes one in its own passes or words. A step reading a light is redrawn whole when the
-    /// light changes, wherever its input did ([`GpuLight`]).
+    /// The plane the operation reads a light from that none of its passes writes: a unit that
+    /// prepares a global estimate reads it from a light plane ([`GpuPlaneSize::LIGHT`],
+    /// [`crate::modules::SpatialUnit::gpu`]), which its plan's light link of the same layer writes
+    /// from the whole stage ([`GpuLight`], [`super::GpuPlan::lights`]). `None` for an operation
+    /// that reads no light. A step reading a light is redrawn whole when the light changes,
+    /// wherever its input did.
     pub light: Option<usize>,
 }
 
@@ -318,8 +309,6 @@ pub(crate) fn compose(
         applies: Vec::with_capacity(units.len()),
         clamps,
         mask,
-        estimated: false,
-        held: false,
         after: Vec::new(),
         halos: Vec::new(),
         light: None,
@@ -426,7 +415,6 @@ pub(crate) fn compose(
         };
         free.extend(single_writer(&mut composed, &mut apply));
         composed.applies.push(apply);
-        composed.estimated |= unit.estimated;
         for (plane, &at) in unit.planes.iter().zip(&placed) {
             if plane.scratch && composed.light != Some(at) {
                 free.push(at);
@@ -502,17 +490,21 @@ pub(crate) fn admit(
     )
 }
 
-/// Whether a light link reads the restoration (Detail) layers of its prefix ([`GpuLight`]), whose
-/// exact output only the full-resolution prefix holds.
+/// Whether a light link reads the spatial operations before its estimating one ([`GpuLight`]):
+/// the restoration (Detail) layers and any spatial (Presence) layer before it, whose exact output
+/// only the full-resolution stage holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GpuLightRestoration {
-    /// The light reads their exact output, which the picture at rest's tiles produce: the link
-    /// holds each as a spatial operation of its own ([`GpuLight::spatial`]), which a light link over
-    /// the source does not evaluate ([`GpuLight::over_source`]).
+    /// The light reads their exact output, which only a sweep of the whole stage through them at
+    /// full resolution produces: the picture at rest's ([`super::RestLights`]). The link holds each
+    /// as a spatial operation of its own ([`GpuLight::spatial`]), which a light link over the
+    /// source does not evaluate ([`GpuLight::over_source`]). The light every frame draws with
+    /// at rest.
     Included,
-    /// The light reads the prefix without them: a drag's per-tick light, since Detail's exact
-    /// output exists only at rest. The recorded default for a colour drag between Detail and
-    /// Presence, whose five sharpen-stress cells under Dehaze −100 miss the limits in motion
+    /// The light reads the prefix without them, their colour operations after them joining the
+    /// ones before: a drag's per-tick light over the source, since their exact output exists only
+    /// at rest. The recorded default for a colour drag before an estimating layer behind Detail,
+    /// whose five sharpen-stress cells under Dehaze −100 miss the limits in motion
     /// (`docs/design/gpu-first.md`, "Proposals with recorded defaults").
     LeftOut,
 }
@@ -541,14 +533,20 @@ pub struct GpuLightPasses {
 /// - **Its input** is the whole content stage at full scale, every pixel the source fills,
 ///   planned from the source as a plan of [`GpuPlanRequest::from_source`] is: the colour
 ///   operations before the estimating one ([`Self::content`]), run per texel over the source, and
-///   with the restoration layers included those operations ([`Self::spatial`]).
+///   with the spatial operations before it included, those operations ([`Self::spatial`]), each
+///   reading the light an earlier link writes where it estimates one.
 /// - **Its step** ([`Self::light`]) is the estimating unit's light passes: the reduction of the
 ///   input into the stage's 16-pixel block means beside each block's channel minimum, each block
 ///   written by the one tile of the stage that holds it, then one workgroup's selection of the
 ///   brightest blocks into the light plane. It has no apply: the link draws no frame, and the
 ///   operation that reads the light reads its plane ([`GpuSpatial::light`]).
+/// - **Where it runs.** A link over the source ([`Self::over_source`]) is run by any slot that
+///   draws a plan reading its light, before the plan's links, whenever its content changes. One
+///   holding spatial operations is run by the picture at rest's sweep of the whole stage
+///   ([`super::RestLights`]), and a slot that draws its light reads the light that sweep wrote,
+///   computing its [`Self::stand_in`] while it holds none.
 /// - Planned on the catalog owner from the stack's compilation alone, `O(layers + units)`, reading
-///   no pixel ([`gpu_lights`]). Not planned into the editor's plans yet.
+///   no pixel ([`gpu_lights`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct GpuLight {
     /// The estimating spatial layer whose light it computes.
@@ -559,38 +557,43 @@ pub struct GpuLight {
     /// `[0, 1]` before it is reduced, as the frame the CPU's operation reads is.
     pub linear: bool,
     /// The colour operations its input runs before [`Self::spatial`]'s, in recipe order, over the
-    /// source's texels: with restoration layers left out, every colour operation of the prefix.
+    /// source's texels: with the spatial operations left out, every colour operation of the
+    /// prefix.
     pub content: Vec<GpuOperation>,
-    /// The restoration operations its input runs, in recipe order, each with the colour operations
+    /// The spatial operations its input runs, in recipe order, each with the colour operations
     /// after it ([`GpuSpatial::after`]): empty when they are left out or the prefix holds none.
     pub spatial: Vec<GpuSpatial>,
-    /// The restoration layers of the prefix left out of its input.
+    /// The spatial layers of the prefix left out of its input.
     pub left_out: Vec<usize>,
     /// Its own step: the estimating unit's light passes, with no apply, its input clamped where
     /// the byte path clamps it.
     pub light: GpuSpatial,
+    /// For a link that is not over the source, the same light with every spatial operation before
+    /// it left out ([`GpuLightRestoration::LeftOut`]), over the source: what a slot computes in its
+    /// place while it holds no light the picture at rest's sweep wrote for it. `None` for a link
+    /// over the source.
+    pub stand_in: Option<Box<GpuLight>>,
 }
 
 impl GpuLight {
     /// Whether a light link over the source evaluates it: its input runs colour operations alone,
-    /// per texel. One holding a restoration operation reads that operation's exact output, which
-    /// the picture at rest's tiles produce at full resolution.
+    /// per texel. One holding a spatial operation reads that operation's exact output, which the
+    /// picture at rest's sweep produces at full resolution.
     pub fn over_source(&self) -> bool {
         self.spatial.is_empty()
     }
 }
 
 /// Every light link of `recipe` planned for `request`, in recipe order: one for each spatial
-/// operation whose unit prepares a global estimate the GPU computes ([`GpuLightPasses`]) and which
-/// reads through no spatial operation but restoration ones, those `restoration`'s. The order is the
-/// order of the light planes a plan's readers name ([`gpu_plan_reading_lights`]).
+/// operation whose unit prepares a global estimate the GPU computes ([`GpuLightPasses`]), with the
+/// spatial operations before it `restoration`'s. The order is the order of the light planes a
+/// plan's readers name ([`super::GpuPlan::lights`]).
 ///
 /// `request` plans from the source over its whole content stage at full scale
 /// ([`GpuPlanRequest::exact`], [`GpuPlanRequest::from_source`]), drafted and on the linear path as
 /// the frame it lights is. The stack is compiled once and walked as [`super::gpu_plan`] walks it,
 /// `O(layers + units)`, reading no pixel. A stack of which the GPU plans no frame from the source
-/// has none, and an estimating operation behind another spatial operation has none, its input
-/// being that operation's output, which no light link holds.
+/// has none.
 pub fn gpu_lights(
     registry: &ModuleRegistry,
     recipe: &Recipe,
@@ -606,11 +609,22 @@ pub fn gpu_lights(
     let GpuAnswer::Plan(plan) = answer else {
         return Ok(Vec::new());
     };
+    links(&compiled, &plan, request, restoration)
+}
+
+/// The light links of `plan`, `compiled` from the source over its whole content stage at full
+/// scale for `request`, with the spatial operations before each `restoration`'s.
+fn links(
+    compiled: &Compiled,
+    plan: &super::GpuPlan,
+    request: GpuPlanRequest,
+    restoration: GpuLightRestoration,
+) -> Result<Vec<GpuLight>, Error> {
     let mut lights = Vec::new();
     let mut content = plan.content.clone();
     let mut held: Vec<GpuSpatial> = Vec::new();
     let mut left_out = Vec::new();
-    for (spatial, entry) in plan.spatial.iter().zip(spatial_entries(&compiled, 0)) {
+    for (spatial, entry) in plan.spatial.iter().zip(spatial_entries(compiled, 0)) {
         if let Some(passes) = light_passes(entry, request.stage) {
             lights.push(GpuLight {
                 layer: spatial.layer,
@@ -620,82 +634,120 @@ pub fn gpu_lights(
                 spatial: held.clone(),
                 left_out: left_out.clone(),
                 light: light_step(spatial.layer, passes, !request.linear)?,
+                stand_in: None,
             });
         }
-        match (entry.stage, restoration) {
-            (EffectStage::Restoration, GpuLightRestoration::LeftOut) => {
+        match restoration {
+            GpuLightRestoration::LeftOut => {
                 left_out.push(spatial.layer);
                 content.extend(spatial.after.iter().cloned());
             }
-            (EffectStage::Restoration, GpuLightRestoration::Included) => {
-                held.push(spatial.clone());
-            }
-            // Every later operation reads this one's output, which no light link holds.
-            _ => break,
+            GpuLightRestoration::Included => held.push(spatial.clone()),
         }
     }
     Ok(lights)
 }
 
-/// [`super::gpu_plan`] of `recipe` for `request`, with every spatial operation that has a light
-/// link ([`gpu_lights`]) described reading its light from a light plane
-/// ([`crate::modules::SpatialUnit::gpu_reading_light`], [`GpuSpatial::light`]) instead of taking it
-/// in its own passes or from its words: the plan a slot draws once the light links have run before
-/// its chain. Each such operation keeps its layer, mask, halos and the colour operations after it;
-/// every other part of the plan is [`super::gpu_plan`]'s. The stack is compiled once, `O(layers +
-/// units)`, reading no pixel. Not the editor's plan yet.
-pub fn gpu_plan_reading_lights(
+/// The request a plan's lights are planned for: `request` from the source over the whole content
+/// stage at full scale, drafted, qualifying and on the path as it is.
+pub(super) fn light_request(request: GpuPlanRequest) -> GpuPlanRequest {
+    GpuPlanRequest {
+        boundary: 0,
+        stage: request.full,
+        full: request.full,
+        proxy: false,
+        source: true,
+        ..request
+    }
+}
+
+/// The lights a plan of `recipe` for `request` reads, each the exact light the picture at rest
+/// draws with ([`GpuLightRestoration::Included`]) and, where that is not over the source, its
+/// stand-in with the spatial operations before it left out: planned from the source over the whole
+/// content stage at full scale ([`light_request`]), reusing `compiled` and `plan` when they are
+/// that request's. Every operation of `plan` reading a light has one of its layer, or the answer is
+/// the reason the plan cannot be drawn. `O(layers + units)`, no pixel.
+pub(super) fn plan_lights(
     registry: &ModuleRegistry,
     recipe: &Recipe,
     request: GpuPlanRequest,
-) -> Result<GpuAnswer, Error> {
-    let (compiled, answer) = planned(registry, recipe, request)?;
-    let GpuAnswer::Plan(mut plan) = answer else {
-        return Ok(answer);
-    };
-    // The segments of the operations with a light link, by the rule `gpu_lights` follows over the
-    // stack from its source.
-    let mut lit: Vec<usize> = Vec::new();
-    for (index, entry) in (1..).zip(spatial_entries(&compiled, 0)) {
-        if light_passes(entry, request.full).is_some() {
-            lit.push(index);
-        }
-        if entry.stage != EffectStage::Restoration {
-            break;
-        }
+    compiled: &Compiled,
+    plan: &super::GpuPlan,
+) -> Result<Result<Vec<GpuLight>, GpuFallback>, Error> {
+    let reads: Vec<usize> = plan
+        .spatial
+        .iter()
+        .filter(|spatial| spatial.light.is_some())
+        .map(|spatial| spatial.layer)
+        .collect();
+    if reads.is_empty() {
+        return Ok(Ok(Vec::new()));
     }
-    let first = match request.source {
-        true => 0,
-        false => compiled
-            .layers
-            .get(request.boundary)
-            .map(|(segment, _)| *segment)
-            .ok_or_else(|| Error::internal("the boundary layer has no compiled position"))?,
+    let full = light_request(request);
+    let whole;
+    let (compiled, plan) = if full == request {
+        (compiled, plan)
+    } else {
+        whole = planned(registry, recipe, full)?;
+        match &whole {
+            (compiled, GpuAnswer::Plan(plan)) => (compiled, &**plan),
+            (_, GpuAnswer::Fallback(reason)) => return Ok(Err(reason.clone())),
+        }
     };
-    for ((index, spatial), entry) in (first + 1..)
-        .zip(plan.spatial.iter_mut())
-        .zip(spatial_entries(&compiled, first))
+    let lights = with_stand_ins(compiled, plan, full)?;
+    if let Some(layer) = reads
+        .iter()
+        .find(|layer| !lights.iter().any(|light| light.layer == **layer))
     {
-        if !lit.contains(&index) {
-            continue;
-        }
-        let units = entry
-            .operation
-            .units()
-            .iter()
-            .map(|unit| unit.gpu_reading_light())
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| Error::internal("a unit with a light link has no GPU description"))?;
-        let mut reading = compose(spatial.layer, units, spatial.clamps, spatial.mask.clone())?;
-        reading.halos = std::mem::take(&mut spatial.halos);
-        reading.after = std::mem::take(&mut spatial.after);
-        *spatial = reading;
+        return Ok(Err(GpuFallback::Unplannable(format!(
+            "layer {layer} reads a global estimate no light link computes"
+        ))));
     }
-    Ok(GpuAnswer::Plan(plan))
+    Ok(Ok(lights))
 }
 
-/// `recipe` compiled for `request` and its plan, as [`super::gpu_plan`] compiles and walks it.
-fn planned(
+/// Every light of `recipe` as a plan for `request` reads it, from the source over the whole content
+/// stage at full scale: each the exact light the picture at rest draws with, and its stand-in
+/// where that is not over the source ([`plan_lights`]). The stack compiled once, `O(layers +
+/// units)`, no pixel.
+pub(super) fn lights_of(
+    registry: &ModuleRegistry,
+    recipe: &Recipe,
+    request: GpuPlanRequest,
+) -> Result<Vec<GpuLight>, Error> {
+    let full = light_request(request);
+    let (compiled, answer) = planned(registry, recipe, full)?;
+    match answer {
+        GpuAnswer::Plan(plan) => with_stand_ins(&compiled, &plan, full),
+        GpuAnswer::Fallback(_) => Ok(Vec::new()),
+    }
+}
+
+/// The light links of `plan`, `compiled` for `request` from the source over its whole content
+/// stage, with the spatial operations before each included, and beside each that is not over the
+/// source its stand-in with them left out.
+fn with_stand_ins(
+    compiled: &Compiled,
+    plan: &super::GpuPlan,
+    request: GpuPlanRequest,
+) -> Result<Vec<GpuLight>, Error> {
+    let mut lights = links(compiled, plan, request, GpuLightRestoration::Included)?;
+    let left_out = links(compiled, plan, request, GpuLightRestoration::LeftOut)?;
+    for light in &mut lights {
+        if !light.over_source() {
+            light.stand_in = left_out
+                .iter()
+                .find(|stand_in| stand_in.layer == light.layer)
+                .cloned()
+                .map(Box::new);
+        }
+    }
+    Ok(lights)
+}
+
+/// `recipe` compiled for `request` and its plan, as [`super::gpu_plan`] compiles and walks it, its
+/// lights not yet planned.
+pub(super) fn planned(
     registry: &ModuleRegistry,
     recipe: &Recipe,
     request: GpuPlanRequest,
@@ -733,8 +785,6 @@ fn planned(
             qualifying: request.qualifying,
             linear: request.linear,
             source: request.source,
-            estimates: None,
-            held: &[],
         },
     )?;
     Ok((compiled, answer))
@@ -806,8 +856,6 @@ fn light_step(layer: usize, passes: GpuLightPasses, clamps: bool) -> Result<GpuS
         applies: Vec::new(),
         clamps,
         mask: None,
-        estimated: false,
-        held: false,
         after: Vec::new(),
         halos: Vec::new(),
         light: None,
@@ -976,10 +1024,11 @@ mod light_tests {
 
     /// A restoration layer before Dehaze is left out of the light's input, the colour operations
     /// after it joining the ones before it, or held as an operation of the link's own, which a
-    /// link over the source does not evaluate. A Dehaze layer behind a Presence layer has none: its
-    /// input is that layer's output.
+    /// link over the source does not evaluate. A Dehaze layer behind a Presence layer has a light
+    /// of its own too: left out, its prefix's colour alone; included, the Presence layer before it,
+    /// which reads the first light.
     #[test]
-    fn restoration_is_left_out_or_held_and_a_spatial_layer_ends_the_lights() {
+    fn spatial_layers_are_left_out_or_held_and_every_dehaze_layer_has_its_light() {
         let stack = masked(
             recipe(&[
                 (BASIC_EFFECT, json!({"exposure": 0.4})),
@@ -1014,7 +1063,8 @@ mod light_tests {
         assert_eq!(included.content, planned.content);
         assert_eq!(included.spatial, planned.spatial[..1]);
         assert_eq!(included.light, left_out.light);
-        // Dehaze behind a Presence layer: the first has its light, the second none.
+        // Dehaze behind a Presence layer: each has its light, the second's prefix the first layer
+        // included, reading the first light, or left out.
         let behind = masked(
             recipe(&[
                 (PRESENCE_EFFECT, json!({"dehaze": 30, "clarity": 20})),
@@ -1022,21 +1072,31 @@ mod light_tests {
             ]),
             1,
         );
-        let found = lights(&behind, GpuLightRestoration::LeftOut);
-        assert_eq!(
-            found.iter().map(|light| light.layer).collect::<Vec<_>>(),
-            [0]
+        let [first, second] = &lights(&behind, GpuLightRestoration::Included)[..] else {
+            panic!("two light links");
+        };
+        assert_eq!((first.layer, second.layer), (0, 1));
+        assert!(first.over_source() && !second.over_source());
+        let planned = plan(&behind, from_source());
+        assert_eq!(second.spatial, planned.spatial[..1]);
+        assert!(
+            second.spatial[0].light.is_some(),
+            "it reads the first light"
         );
+        let [_, second] = &lights(&behind, GpuLightRestoration::LeftOut)[..] else {
+            panic!("two light links");
+        };
+        assert!(second.over_source() && second.left_out == [0]);
     }
 
-    /// The plan reading lights is the plan but for each operation with a light link: that one
-    /// reads its light from a plane of its own no pass writes, the two passes that take the light
-    /// gone, its layer, mask, halos and the colour operations after it the plan's own. From the
-    /// source and from a drafted layer's boundary; a Dehaze layer behind a Presence one keeps its
-    /// own passes.
+    /// A plan reads each light its links write: every operation with a Dehaze unit reads its light
+    /// from a plane of its own no pass writes, and the plan holds that layer's light link, the one
+    /// the picture at rest draws with, with the spatial operations before it included, and beside
+    /// a link that is not over the source its stand-in with them left out. From the source, from a
+    /// drafted layer's boundary and over a proxy stage, whose lights are the whole stage's at full
+    /// scale.
     #[test]
-    fn a_plan_reading_lights_reads_each_light_its_links_write() {
-        let registry = ModuleRegistry::builtin();
+    fn a_plan_reads_each_light_its_links_write() {
         let stack = masked(
             masked(
                 recipe(&[
@@ -1052,52 +1112,72 @@ mod light_tests {
             ),
             3,
         );
+        let exact = lights(&stack, GpuLightRestoration::Included);
+        let proxy = Stage {
+            width: 240,
+            height: 160,
+        };
         for request in [
             from_source(),
-            GpuPlanRequest::exact(1, STAGE),
             GpuPlanRequest::exact(0, STAGE).drafted(1),
+            GpuPlanRequest::fit(0, proxy, STAGE).from_source(),
         ] {
-            let words = plan(&stack, request);
-            let reading = match gpu_plan_reading_lights(&registry, &stack, request).unwrap() {
-                GpuAnswer::Plan(plan) => *plan,
-                GpuAnswer::Fallback(reason) => panic!("{reason}"),
-            };
-            assert_eq!(reading.content, words.content);
-            assert_eq!(reading.geometry, words.geometry);
-            assert_eq!(reading.output, words.output);
-            let [first, second] = &reading.spatial[..] else {
+            let planned = plan(&stack, request);
+            let [first, second] = &planned.spatial[..] else {
                 panic!("two spatial operations");
             };
-            // The first reads its light from a plane of its own.
-            let light = first.light.expect("the first reads a light");
-            assert_eq!(first.planes[light].size, GpuPlaneSize::LIGHT);
-            assert!(!first.planes[light].scratch);
-            assert!(first.passes.iter().all(|pass| pass.output != light));
-            assert!(
-                first
-                    .applies
-                    .iter()
-                    .any(|apply| apply.planes.contains(&light))
-            );
-            assert!(!first.estimated && !first.held);
-            let own = &words.spatial[0];
-            assert_eq!(first.passes.len() + 2, own.passes.len());
-            assert_eq!(first.applies.len(), own.applies.len());
-            assert_eq!(
-                (first.layer, &first.mask, &first.halos, &first.after),
-                (own.layer, &own.mask, &own.halos, &own.after)
-            );
-            assert_eq!(own.light, None);
-            // The second, behind it, keeps its own passes.
-            assert_eq!(*second, words.spatial[1]);
-            assert_eq!(second.light, None);
+            for spatial in [first, second] {
+                let light = spatial.light.expect("each reads a light");
+                assert_eq!(spatial.planes[light].size, GpuPlaneSize::LIGHT);
+                assert!(!spatial.planes[light].scratch);
+                assert!(spatial.passes.iter().all(|pass| pass.output != light));
+                assert!(
+                    spatial
+                        .applies
+                        .iter()
+                        .any(|apply| apply.planes.contains(&light))
+                );
+                assert!(
+                    !spatial
+                        .passes
+                        .iter()
+                        .any(|pass| pass.kernel == "lf_presence_atmosphere")
+                );
+            }
+            let [one, two] = &planned.lights[..] else {
+                panic!("two lights");
+            };
+            assert_eq!((one.layer, two.layer), (1, 3));
+            assert!(one.over_source() && one.stand_in.is_none());
+            assert!(!two.over_source());
+            let stand_in = two.stand_in.as_deref().expect("a stand-in");
+            assert!(stand_in.over_source() && stand_in.left_out == [1]);
+            assert!(planned.lights.iter().all(|light| light.stage == STAGE));
+            if request.drafted.is_none() {
+                assert_eq!(
+                    planned
+                        .lights
+                        .iter()
+                        .map(|light| (&light.content, &light.spatial, &light.light))
+                        .collect::<Vec<_>>(),
+                    exact
+                        .iter()
+                        .map(|light| (&light.content, &light.spatial, &light.light))
+                        .collect::<Vec<_>>()
+                );
+            }
         }
-        // Without Dehaze the plan is the plan.
+        // Without Dehaze a plan reads no light.
         let texture = recipe(&[(PRESENCE_EFFECT, json!({"texture": 40}))]);
-        assert_eq!(
-            gpu_plan_reading_lights(&registry, &texture, from_source()).unwrap(),
-            GpuAnswer::Plan(Box::new(plan(&texture, from_source())))
+        let planned = plan(&texture, from_source());
+        assert!(planned.lights.is_empty());
+        assert!(
+            planned
+                .spatial
+                .iter()
+                .all(|spatial| spatial.light.is_none())
         );
+        assert!(!planned.reads_lights());
     }
 
     /// An operation reads one light at most: two units reading one are refused.
@@ -1116,9 +1196,7 @@ mod light_tests {
             )
             .unwrap();
         let entry = spatial_entries(&compiled, 0).next().expect("Presence");
-        let reading = entry.operation.units()[0]
-            .gpu_reading_light()
-            .expect("Dehaze");
+        let reading = entry.operation.units()[0].gpu().expect("Dehaze");
         let one = compose(0, vec![reading.clone()], true, None).unwrap();
         assert_eq!(one.light, Some(0));
         assert!(compose(0, vec![reading.clone(), reading], true, None).is_err());

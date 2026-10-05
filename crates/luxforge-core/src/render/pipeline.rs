@@ -1031,6 +1031,7 @@ impl SpatialEntry {
     }
 
     /// The SHA-256 of the layers before this one, which a stored estimate's key names.
+    #[cfg(feature = "qualification")]
     pub(super) fn prefix_hash(&self) -> &str {
         &self.prefix_hash
     }
