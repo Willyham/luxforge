@@ -284,6 +284,245 @@ pub mod qualification {
         Ok((light.map(|light| light.values().to_vec()), elapsed))
     }
 
+    /// The atmospheric light the per-frame estimate twin would prepare at each of `factors` (each a
+    /// divisor of 16) for each estimating layer of `recipe` named in `estimating`, in recipe order,
+    /// emulated on the CPU (`docs/specs/performance.md`, "The per-frame light's reduction factor").
+    /// For each such layer: the stage its colour run reads — the output of every layer before it
+    /// but the colour layers directly before it, the run, and with every restoration layer left
+    /// out when `skip_restoration` — rendered at full resolution and reduced to its exact means
+    /// over `factor × factor` cells; the run compiled at that reduced stage and run over the
+    /// means, a masked layer blended by its coverage there ([`twin_light`]); clamped to `[0, 1]`
+    /// where the byte path clamps; each 16-pixel block's cells averaged, unweighted, as the twin's
+    /// light step averages its texels; and the light selected as Dehaze prepares it. An earlier
+    /// layer of `estimating` that the stage passes through draws with its own light at the same
+    /// factor; every other layer before the run is rendered exactly. Answers, for each factor,
+    /// each layer's light in the order of `estimating`.
+    pub fn twin_lights(
+        registry: &crate::ModuleRegistry,
+        source: crate::RenderSource<'_>,
+        recipe: &crate::Recipe,
+        estimating: &[usize],
+        factors: &[u32],
+        skip_restoration: bool,
+    ) -> Result<Vec<Vec<Option<Vec<f64>>>>, crate::Error> {
+        use crate::modules::EffectStage;
+        use crate::render::spatial::cells;
+        let stage_of = |layer: &crate::Layer| {
+            registry
+                .effect(&layer.effect_id)
+                .map(|(_, effect)| effect.stage)
+        };
+        // The byte path hands a spatial operation a quantized frame, so its colour is clamped to
+        // [0, 1] before it is reduced; the linear path's is not.
+        let clamps = matches!(source, crate::RenderSource::Byte(_));
+        let mut lights: Vec<Vec<Option<Vec<f64>>>> = vec![Vec::new(); factors.len()];
+        for (k, &layer) in estimating.iter().enumerate() {
+            if layer >= recipe.layers.len() {
+                return Err(crate::Error::validation(format!(
+                    "layer {layer} is past the stack"
+                )));
+            }
+            let before: Vec<usize> = (0..layer)
+                .filter(|&at| {
+                    !(skip_restoration
+                        && stage_of(&recipe.layers[at]) == Some(EffectStage::Restoration))
+                })
+                .collect();
+            // The colour run: the colour layers directly before the estimating layer.
+            let split = before
+                .iter()
+                .rposition(|&at| stage_of(&recipe.layers[at]) != Some(EffectStage::Color))
+                .map_or(0, |at| at + 1);
+            let (base, run) = before.split_at(split);
+            let layers = |indices: &[usize]| -> Vec<crate::Layer> {
+                indices
+                    .iter()
+                    .map(|&at| recipe.layers[at].clone())
+                    .collect()
+            };
+            let mut stack = layers(base);
+            stack.push(recipe.layers[layer].clone());
+            let prefix = crate::Recipe {
+                layers: stack,
+                ..recipe.clone()
+            };
+            let run = crate::Recipe {
+                layers: layers(run),
+                ..recipe.clone()
+            };
+            // The earlier estimating layers the stage passes through: their places in `prefix`,
+            // and in `estimating`.
+            let earlier: Vec<(usize, usize)> = base
+                .iter()
+                .enumerate()
+                .filter_map(|(place, at)| {
+                    estimating[..k]
+                        .iter()
+                        .position(|other| other == at)
+                        .map(|index| (place, index))
+                })
+                .collect();
+            // One render reads the stage at every factor, unless an earlier light, which differs
+            // by factor, is held in it: then one render a factor.
+            let groups: Vec<Vec<usize>> = if earlier.is_empty() {
+                vec![(0..factors.len()).collect()]
+            } else {
+                (0..factors.len()).map(|index| vec![index]).collect()
+            };
+            for group in groups {
+                let asked: Vec<u32> = group.iter().map(|&index| factors[index]).collect();
+                let context = crate::RenderContext::new();
+                let render = crate::render(
+                    registry,
+                    source,
+                    &prefix,
+                    crate::RenderOptions::exact(&crate::Cancel::never()),
+                    &context,
+                )?;
+                for &(place, index) in &earlier {
+                    let light = lights[group[0]][index].clone().ok_or_else(|| {
+                        crate::Error::validation("an earlier layer prepared no light")
+                    })?;
+                    // Every unit of the operation that declares the light's key is handed it;
+                    // the others read nothing.
+                    hold_estimates(&render, place, &vec![Some(light); HELD_UNITS])?;
+                }
+                cells::arm(&asked)?;
+                let framed = render.frame(crate::SnapshotId::new());
+                let captured = cells::take();
+                framed?;
+                let captured = captured.last().ok_or_else(|| {
+                    crate::Error::internal("the estimating layer's input was not reduced")
+                })?;
+                let reduction = &captured.reduction;
+                if let Some(blocks) = captured.cells.iter().find(|cells| cells.factor == 16) {
+                    let held = (0..blocks.height).all(|y| {
+                        (0..blocks.width).all(|x| {
+                            reduction.pixel(x, y)
+                                == Some(blocks.values[(y * blocks.width + x) as usize])
+                        })
+                    });
+                    if !held
+                        || (blocks.width, blocks.height) != (reduction.width(), reduction.height())
+                    {
+                        return Err(crate::Error::internal(
+                            "the cells at 16 are not the reduction's own blocks",
+                        ));
+                    }
+                }
+                let unit = render
+                    .estimating_unit()
+                    .ok_or_else(|| crate::Error::validation("no unit prepares an estimate"))?;
+                for (&index, means) in group.iter().zip(&captured.cells) {
+                    lights[index].push(twin_light(registry, &run, means, clamps, unit.as_ref())?);
+                }
+            }
+        }
+        Ok(lights)
+    }
+
+    /// More units than a spatial operation holds: [`twin_lights`] hands an earlier layer's light
+    /// to each of them, and only a unit that declares the light's key keeps it.
+    const HELD_UNITS: usize = 16;
+
+    /// The light the twin's light step selects from `means`, the exact cell means of an estimating
+    /// layer's input before its colour run `run`: `run` compiled at the cells' stage, as the twin
+    /// compiles a stack at its block stage (masks sampled by the proxy's thin-feature rule), and run
+    /// over each row of means in order — a masked operation blended against its own input by the
+    /// coverage at the cell, `(1 − M)·in + M·units(in)`, its input kept where the coverage is 0 —
+    /// then clamped to `[0, 1]` when `clamps`; each 16-pixel block's cells averaged, unweighted, in
+    /// `f64`; and the light `unit` prepares from those block means.
+    fn twin_light(
+        registry: &crate::ModuleRegistry,
+        run: &crate::Recipe,
+        means: &crate::render::spatial::cells::CellMeans,
+        clamps: bool,
+        unit: &dyn crate::modules::SpatialUnit,
+    ) -> Result<Option<Vec<f64>>, crate::Error> {
+        let (width, height) = (means.width, means.height);
+        let compiled = registry.compile_shaped(
+            width,
+            height,
+            means.stage.width,
+            means.stage.height,
+            run,
+            crate::mask_field::MaskSampling::ThinFeature,
+            None,
+        )?;
+        let mut operations = Vec::new();
+        for operation in compiled
+            .segments
+            .iter()
+            .flat_map(|segment| &segment.operations)
+        {
+            match operation {
+                crate::modules::Processing::Color(colour) => operations.push(colour),
+                other => {
+                    return Err(crate::Error::validation(format!(
+                        "a colour run compiled to {other:?}"
+                    )));
+                }
+            }
+        }
+        let mut texels = means.values.clone();
+        for (y, row) in texels.chunks_exact_mut(width as usize).enumerate() {
+            let y = y as u32;
+            for operation in &operations {
+                let input = row.to_vec();
+                for unit in operation.units() {
+                    unit.apply_row(y, 0, row);
+                }
+                if let Some(mask) = operation.mask() {
+                    for (x, (output, input)) in row.iter_mut().zip(&input).enumerate() {
+                        let coverage = mask.evaluate(x as u32, y, *input);
+                        *output = if coverage == 0.0 {
+                            *input
+                        } else {
+                            std::array::from_fn(|channel| {
+                                (1.0 - coverage) * input[channel] + coverage * output[channel]
+                            })
+                        };
+                    }
+                }
+                if !row.as_flattened().iter().all(|value| value.is_finite()) {
+                    return Err(crate::Error::resource_limit(
+                        "the twin's colour run produced a value that is not finite",
+                    ));
+                }
+            }
+            if clamps {
+                for pixel in row.iter_mut() {
+                    *pixel = pixel.map(|value| value.clamp(0.0, 1.0));
+                }
+            }
+        }
+        let block = crate::modules::ESTIMATE_REDUCTION;
+        let side = block / means.factor;
+        let (blocks_x, blocks_y) = crate::modules::Reduction::dimensions(means.stage, block);
+        let len = (blocks_x * blocks_y) as usize;
+        let mut planes = vec![0.0_f32; 3 * len];
+        for j in 0..blocks_y {
+            for i in 0..blocks_x {
+                let (x0, y0) = (i * side, j * side);
+                let (x1, y1) = ((x0 + side).min(width), (y0 + side).min(height));
+                let count = f64::from(x1 - x0) * f64::from(y1 - y0);
+                for (channel, plane) in planes.chunks_exact_mut(len).enumerate() {
+                    let mut sum = 0.0_f64;
+                    for y in y0..y1 {
+                        for x in x0..x1 {
+                            sum += f64::from(texels[(y * width + x) as usize][channel]);
+                        }
+                    }
+                    plane[(j * blocks_x + i) as usize] = (sum / count) as f32;
+                }
+            }
+        }
+        let reduction = crate::modules::Reduction::new(means.stage, block, planes)?;
+        Ok(unit
+            .prepare(&reduction)
+            .map(|light| light.values().to_vec()))
+    }
+
     /// The proxy phase of `render`'s stack as a preview job's worker renders it at `bounds`: the
     /// stack compiled at the proxy stage of [`fit_proxy`]'s plan, cut to its window when it has
     /// one, over `proxied`, the proxy source that plan builds, in `context`, whose store a frame of
@@ -379,6 +618,232 @@ pub mod qualification {
             .map(|values| values.clone().map(crate::modules::Global::new).transpose())
             .collect::<Result<Vec<_>, _>>()?;
         render.hold_spatial_globals(index, &globals)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::{
+            BASIC_EFFECT, Cancel, Layer, ModuleRegistry, PRESENCE_EFFECT, Recipe, RenderContext,
+            RenderOptions, RenderSource, SnapshotId,
+        };
+        use serde_json::json;
+
+        const FACTORS: [u32; 5] = [16, 8, 4, 2, 1];
+
+        /// The light a render of `recipe` over `source` prepares for layer `layer`, exactly.
+        fn exact_light(
+            registry: &ModuleRegistry,
+            source: RenderSource<'_>,
+            recipe: &Recipe,
+            layer: usize,
+        ) -> Vec<f64> {
+            let context = RenderContext::new();
+            let render = crate::render(
+                registry,
+                source,
+                recipe,
+                RenderOptions::exact(&Cancel::never()),
+                &context,
+            )
+            .unwrap();
+            render.frame(SnapshotId::new()).unwrap();
+            held_estimates(&render, layer)
+                .unwrap()
+                .unwrap()
+                .into_iter()
+                .flatten()
+                .find(|values| values.len() == 3)
+                .unwrap()
+        }
+
+        /// A stage whose width and height are multiples of 8, so no cell is partial at a factor
+        /// below 16, and whose height is not one of 16, so the last row of blocks is.
+        const STAGE: (u32, u32) = (208, 136);
+
+        /// A gain commutes with a mean and stays inside `[0, 1]` here, so the twin's light at
+        /// every factor is the exact light, but for the byte path's 16-bit hand-off and the order
+        /// of the sums; and at 16 it is the light from the reduction itself, the colour over it.
+        #[test]
+        fn the_twins_light_through_a_gain_is_the_exact_light_at_every_factor() {
+            let registry = ModuleRegistry::builtin();
+            let source = crate::render::tests::gradient(STAGE.0, STAGE.1);
+            let recipe = Recipe {
+                layers: vec![
+                    Layer::new(BASIC_EFFECT, json!({"exposure": -1.0})),
+                    Layer::new(PRESENCE_EFFECT, json!({"dehaze": 60})),
+                ],
+                ..Recipe::default()
+            };
+            let exact = exact_light(&registry, (&source).into(), &recipe, 1);
+            let twin =
+                twin_lights(&registry, (&source).into(), &recipe, &[1], &FACTORS, false).unwrap();
+            for (factor, lights) in FACTORS.iter().zip(&twin) {
+                let light = lights[0].as_ref().expect("a light");
+                assert!(
+                    error(&exact, light) < 1.0e-4,
+                    "at {factor}: {light:?} against {exact:?}"
+                );
+            }
+            let prefix = Recipe {
+                layers: vec![recipe.layers[1].clone()],
+                ..recipe.clone()
+            };
+            let colour = Recipe {
+                layers: vec![recipe.layers[0].clone()],
+                ..recipe.clone()
+            };
+            let (reduced, _) =
+                light_after_reduction(&registry, (&source).into(), &prefix, &colour).unwrap();
+            assert_eq!(twin[0][0], reduced, "at 16, the colour over the reduction");
+        }
+
+        /// The largest of a light's three channels' errors against `exact`, as fractions of it.
+        fn error(exact: &[f64], light: &[f64]) -> f64 {
+            (0..3)
+                .map(|channel| (light[channel] - exact[channel]).abs() / exact[channel])
+                .fold(0.0, f64::max)
+        }
+
+        /// Grey stripes three pixels wide, dark ones darker down the frame and bright ones
+        /// brighter across it.
+        fn stripes(width: u32, height: u32) -> crate::SourceImage {
+            let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+            for y in 0..height {
+                for x in 0..width {
+                    let code = if (x / 3) % 2 == 1 {
+                        150 + x * 100 / width
+                    } else {
+                        20 + y * 60 / height
+                    } as u8;
+                    rgba.extend([code, code, code, 255]);
+                }
+            }
+            crate::SourceImage {
+                width,
+                height,
+                rgba: rgba.into(),
+                fingerprint: "sha256:stripes".into(),
+                orientation: 1,
+                capture: Default::default(),
+            }
+        }
+
+        /// Three stops clip the bright stripes and not the dark ones, so the colour over a cell's
+        /// mean is not the mean of the colour over its pixels where a cell holds both: the twin's
+        /// light misses the exact light by that gap, less over cells finer than a stripe, and not
+        /// at all over cells of one pixel, where the colour is the CPU's over every pixel.
+        #[test]
+        fn the_twins_light_misses_by_the_colour_runs_gap_which_finer_cells_narrow() {
+            let registry = ModuleRegistry::builtin();
+            let source = stripes(STAGE.0, STAGE.1);
+            let recipe = Recipe {
+                layers: vec![
+                    Layer::new(BASIC_EFFECT, json!({"exposure": 3.0})),
+                    Layer::new(PRESENCE_EFFECT, json!({"dehaze": 40})),
+                ],
+                ..Recipe::default()
+            };
+            let exact = exact_light(&registry, (&source).into(), &recipe, 1);
+            let twin =
+                twin_lights(&registry, (&source).into(), &recipe, &[1], &FACTORS, false).unwrap();
+            let gaps: Vec<f64> = twin
+                .iter()
+                .map(|lights| error(&exact, lights[0].as_ref().unwrap()))
+                .collect();
+            assert!(gaps[0] > 1.0e-3, "the colour run's gap at 16: {gaps:?}");
+            assert!(gaps[3] < gaps[0], "finer cells narrow the gap: {gaps:?}");
+            assert!(gaps[4] < 1.0e-4, "cells of one pixel have none: {gaps:?}");
+        }
+
+        /// A light whose stage passes through an earlier estimating layer reads that layer's
+        /// output drawn with its own twin light at the same factor: through a gain, which the twin
+        /// follows exactly, it is the exact light at every factor. And a restoration layer left
+        /// out leaves the stack without it, bit for bit.
+        #[test]
+        fn a_twin_light_reads_the_earlier_twin_light_and_can_leave_restoration_out() {
+            let registry = ModuleRegistry::builtin();
+            let source = crate::render::tests::gradient(STAGE.0, STAGE.1);
+            let mut mask = crate::Mask::new("Mask 1");
+            mask.components = vec![crate::Component::new(
+                "Linear 1",
+                crate::ComponentMode::Add,
+                "linear",
+                json!({"x0": -0.5, "y0": 0.5, "x1": 1.5, "y1": 0.5}),
+            )];
+            let chained = Recipe {
+                layers: vec![
+                    Layer::new(BASIC_EFFECT, json!({"exposure": -1.0})),
+                    Layer::new(PRESENCE_EFFECT, json!({"dehaze": 40})),
+                    Layer {
+                        mask: Some(mask.id.clone()),
+                        ..Layer::new(PRESENCE_EFFECT, json!({"dehaze": -60}))
+                    },
+                ],
+                masks: vec![mask],
+                ..Recipe::default()
+            };
+            let second = exact_light(&registry, (&source).into(), &chained, 2);
+            let twin = twin_lights(
+                &registry,
+                (&source).into(),
+                &chained,
+                &[1, 2],
+                &FACTORS,
+                false,
+            )
+            .unwrap();
+            for (factor, lights) in FACTORS.iter().zip(&twin) {
+                let light = lights[1].as_ref().expect("the second light");
+                assert!(
+                    error(&second, light) < 1.0e-3,
+                    "at {factor}: {light:?} against {second:?}"
+                );
+            }
+            let stack = |layers: Vec<Layer>| Recipe {
+                layers,
+                ..Recipe::default()
+            };
+            let gain = Layer::new(BASIC_EFFECT, json!({"exposure": -1.0}));
+            let dehaze = Layer::new(PRESENCE_EFFECT, json!({"dehaze": 40}));
+            let sharpened = stack(vec![
+                Layer::new(
+                    crate::DETAIL_EFFECT,
+                    json!({"sharpening": 150, "radius": 3, "sharpen-detail": 100}),
+                ),
+                gain.clone(),
+                dehaze.clone(),
+            ]);
+            let skipped = twin_lights(
+                &registry,
+                (&source).into(),
+                &sharpened,
+                &[2],
+                &FACTORS,
+                true,
+            )
+            .unwrap();
+            let without = twin_lights(
+                &registry,
+                (&source).into(),
+                &stack(vec![gain, dehaze]),
+                &[1],
+                &FACTORS,
+                false,
+            )
+            .unwrap();
+            assert_eq!(skipped, without);
+            let kept = twin_lights(
+                &registry,
+                (&source).into(),
+                &sharpened,
+                &[2],
+                &FACTORS,
+                false,
+            )
+            .unwrap();
+            assert_ne!(kept, without, "sharpening moves the cells it is kept in");
+        }
     }
 }
 
