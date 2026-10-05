@@ -634,7 +634,13 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     // stage.
     let opened = launch.at("opened")?;
     let at_open = &opened.state()["surface"]["gpu"]["gpu_preview"];
-    let derived_at_open = named(span_events(launch, "opened", "drag-first")?, "gpu_boundary");
+    // The open's events: every one before the script's first step.
+    let first_step = launch
+        .events
+        .iter()
+        .position(|event| event["event"] == "script_step")
+        .unwrap_or(launch.events.len());
+    let derived_at_open = named(&launch.events[..first_step], "gpu_boundary");
     checks.note(
         opened,
         "the source held and the resident boundary derived from it as the photograph opened",

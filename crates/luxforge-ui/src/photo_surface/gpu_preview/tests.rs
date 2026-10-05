@@ -530,6 +530,7 @@ pub(super) fn primitive(surface: SurfaceId, plan: Option<GpuPlan>) -> PhotoPrimi
         gpu_options: Default::default(),
         dissolve: None,
         source: None,
+        rest: None,
         offset: Vector::new(0.0, 0.0),
         size: Size::new(SIDE as f32, SIDE as f32),
         clip_size: Size::new(SIDE as f32, SIDE as f32),
@@ -1547,6 +1548,7 @@ fn a_boundary_past_the_texture_limit_makes_the_frame_the_cpus() {
 
 mod blocks;
 mod masked;
+mod rest;
 mod source;
 mod spatial;
 

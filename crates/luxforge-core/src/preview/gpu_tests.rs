@@ -1490,23 +1490,37 @@ fn behind_detail_a_region_plan_holds_dehazes_stored_light() {
         window.x0 < rect.x0 && window.x1() > rect.x1(),
         "{window:?} holds {rect:?} and Presence's margin"
     );
-    // The CPU's reference render of the region's boundary at the source holds the window planned
-    // on the owner, which the photo surface cuts from the source it holds.
+    // The window planned on the owner, which the photo surface cuts from the source it holds, is
+    // the one the CPU's reference render of the region's boundary at the source holds, its origin
+    // rounded down to the plan's anchor.
     job.viewport = Some(rect);
     let exact = job.evaluation.exact(&crate::Cancel::never()).unwrap();
-    let frame = exact
+    let cut = exact
         .region_boundary(rect, (0, 0), request.format)
         .expect("the region's boundary");
+    let anchor = plan.anchor();
     assert_eq!(
-        Some(crate::modules::Region {
-            x0: frame.origin.0,
-            y0: frame.origin.1,
-            width: frame.width,
-            height: frame.height,
-        }),
+        anchor,
+        (64, 64),
+        "Presence's runs of 16 over its 4x reductions"
+    );
+    assert_eq!(
         request.window,
+        Some(crate::anchored(
+            crate::modules::Region {
+                x0: cut.origin.0,
+                y0: cut.origin.1,
+                width: cut.width,
+                height: cut.height,
+            },
+            anchor
+        )),
         "the window planned on the owner"
     );
+    assert_eq!((window.x0 % anchor.0, window.y0 % anchor.1), (0, 0));
+    let frame = exact
+        .source_boundary(window, request.format)
+        .expect("the window of the source");
     let whole_stage = Stage {
         width: WIDTH,
         height: HEIGHT,

@@ -657,18 +657,39 @@ impl GpuGeometry {
 
     /// A lens warp's coordinate grid over `region` of the output stage, within
     /// [`super::GRID_TOLERANCE_PX`] of the map, drawn at `magnification` display pixels per output
-    /// pixel ([`CoordinateGrid::new`]). `None` for an affine or projective tail, whose matrix the
-    /// surface evaluates exactly at every pixel. Once per draft, not per tick: the geometry does not
-    /// change while a colour draft is open.
+    /// pixel: the part over the region of the whole stage's grid at that magnification
+    /// ([`CoordinateGrid::stage`], [`CoordinateGrid::part`]), so every window of the stage
+    /// interpolates the same nodes and draws the same pixel alike. Where the whole stage's grid
+    /// would need more nodes than a grid holds, as far into a zoom, the region's own grid
+    /// ([`CoordinateGrid::new`]). `None` for an affine or projective tail, whose matrix the surface
+    /// evaluates exactly at every pixel. Frame work, once per draft, not per tick: the geometry
+    /// does not change while a colour draft is open.
     pub fn grid(
         &self,
         region: Region,
         magnification: f64,
     ) -> Result<Option<CoordinateGrid>, Error> {
+        match self.stage_grid(magnification) {
+            Ok(None) => Ok(None),
+            Ok(Some(stage)) => stage.part(region).map(Some).ok_or_else(|| {
+                Error::validation(format!(
+                    "a coordinate grid's region {region:?} is outside the output stage"
+                ))
+            }),
+            Err(error) if error.kind == crate::ErrorKind::ResourceLimit => {
+                CoordinateGrid::new(&self.map, region, magnification).map(Some)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// A lens warp's coordinate grid over the whole output stage at `magnification`, which every
+    /// window takes its part of ([`Self::grid`]); `None` for an affine or projective tail.
+    pub fn stage_grid(&self, magnification: f64) -> Result<Option<CoordinateGrid>, Error> {
         if !self.needs_grid() {
             return Ok(None);
         }
-        CoordinateGrid::new(&self.map, region, magnification).map(Some)
+        CoordinateGrid::stage(&self.map, magnification).map(Some)
     }
 }
 
@@ -738,6 +759,72 @@ impl GpuPlan {
         self.spatial
             .iter()
             .any(|spatial| spatial.estimated || spatial.held)
+    }
+
+    /// What every window of the boundary stage the plan is evaluated over — a 100% region's, a
+    /// tile's of the picture at rest, a crop's at Fit — has its origin rounded down to a multiple
+    /// of, per axis: the least common multiple of `span × s` over every pass that runs once a
+    /// `span` of an output plane of `s × s`-pixel blocks ([`spatial::GpuPassShape::Texels`],
+    /// [`spatial::GpuPlaneSize::Reduced`]). A running sum's drift depends on where its run starts
+    /// and a reduced plane's block on where it lies, so over a window anchored here every run and
+    /// every block starts where it does over the whole stage, and each texel a window holds is the
+    /// whole stage's, bit for bit, whatever window holds it: tiles carry no seam, and a pixel read
+    /// back from one is the pixel any other window draws. A fixed plane, a global estimate's, is
+    /// whole in every window. `(1, 1)` for a plan with no spatial operation; Presence's runs of 16
+    /// over its 4x reductions give 64. `O(passes)`.
+    pub fn anchor(&self) -> (u32, u32) {
+        let mut anchor = (1, 1);
+        for spatial in &self.spatial {
+            for pass in &spatial.passes {
+                let spatial::GpuPassShape::Texels { span } = pass.shape else {
+                    continue;
+                };
+                let Some(spatial::GpuPlaneSize::Reduced(s)) =
+                    spatial.planes.get(pass.output).map(|plane| plane.size)
+                else {
+                    continue;
+                };
+                anchor = (
+                    lcm(anchor.0, span[0].max(1) * s.max(1)),
+                    lcm(anchor.1, span[1].max(1) * s.max(1)),
+                );
+            }
+        }
+        anchor
+    }
+}
+
+fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 { a } else { gcd(b, a % b) }
+}
+
+/// The least common multiple of two positive integers.
+fn lcm(a: u32, b: u32) -> u32 {
+    a / gcd(a, b) * b
+}
+
+/// The anchor every plan of `plans` is evaluated alike over ([`GpuPlan::anchor`]): the least
+/// common multiple of theirs, per axis, for plans drawn over one boundary.
+pub(crate) fn common_anchor<'a>(plans: impl IntoIterator<Item = &'a GpuPlan>) -> (u32, u32) {
+    plans.into_iter().fold((1, 1), |anchor, plan| {
+        let other = plan.anchor();
+        (lcm(anchor.0, other.0), lcm(anchor.1, other.1))
+    })
+}
+
+/// `window` of a boundary stage with its origin rounded down to a multiple of `anchor`
+/// ([`GpuPlan::anchor`]), its far edges where they were: the window an evaluation over it holds, a
+/// texel at most `anchor − 1` more on its top and left.
+pub fn anchored(window: Region, anchor: (u32, u32)) -> Region {
+    let (x0, y0) = (
+        window.x0 / anchor.0.max(1) * anchor.0.max(1),
+        window.y0 / anchor.1.max(1) * anchor.1.max(1),
+    );
+    Region {
+        x0,
+        y0,
+        width: window.x1() - x0,
+        height: window.y1() - y0,
     }
 }
 

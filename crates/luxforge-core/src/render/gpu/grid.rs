@@ -110,10 +110,69 @@ impl CoordinateGrid {
         }
     }
 
-    /// The grid at one spacing.
+    /// The grid of `map` over its whole output stage at `magnification`, its spacing chosen once for
+    /// the stage ([`Self::new`]): what every window of the stage takes its part of ([`Self::part`]),
+    /// so a tile, a region and the whole frame interpolate the same nodes wherever they overlap and
+    /// draw the same output pixel alike.
+    pub fn stage(map: &GeometryMap, magnification: f64) -> Result<Self, Error> {
+        Self::new(
+            map,
+            Region {
+                x0: 0,
+                y0: 0,
+                width: map.output.width,
+                height: map.output.height,
+            },
+            magnification,
+        )
+    }
+
+    /// The part of this grid that covers `region` of the output stage: its nodes from the last at
+    /// or before the region's origin to the first at or past its far edges, at the same spacing and
+    /// with the same values, so every pixel centre in the region interpolates the nodes the whole
+    /// grid gives it. `None` when the region is empty or reaches past the grid's nodes. `O(nodes
+    /// of the part)`.
+    pub fn part(&self, region: Region) -> Option<Self> {
+        if region.is_empty() || region.x0 < self.origin.0 || region.y0 < self.origin.1 {
+            return None;
+        }
+        let axis = |from: u32, to: u32, origin: u32, count: u32| {
+            let first = (from - origin) / self.spacing;
+            // The node at or past the far edge, and at least one after the first.
+            let last = (to - origin).div_ceil(self.spacing).max(first + 1);
+            (last < count).then_some((first, last - first + 1))
+        };
+        let (column, columns) = axis(region.x0, region.x1(), self.origin.0, self.columns)?;
+        let (row, rows) = axis(region.y0, region.y1(), self.origin.1, self.rows)?;
+        let mut nodes = Vec::with_capacity(columns as usize * rows as usize);
+        for y in row..row + rows {
+            let start = (y * self.columns + column) as usize;
+            nodes.extend_from_slice(&self.nodes[start..start + columns as usize]);
+        }
+        Some(Self {
+            origin: (
+                self.origin.0 + column * self.spacing,
+                self.origin.1 + row * self.spacing,
+            ),
+            spacing: self.spacing,
+            columns,
+            rows,
+            nodes,
+        })
+    }
+
+    /// The grid at one spacing: its nodes on the stage's lattice of that spacing, from the last
+    /// at or before the region's origin to the first at or past its far edges, so a node is
+    /// where it is in every grid of that spacing.
     fn at(map: &GeometryMap, region: Region, spacing: u32) -> Result<Self, Error> {
-        let columns = region.width.div_ceil(spacing) + 1;
-        let rows = region.height.div_ceil(spacing) + 1;
+        let (first_column, first_row) = (region.x0 / spacing, region.y0 / spacing);
+        let columns = region.x1().div_ceil(spacing).max(first_column + 1) - first_column + 1;
+        let rows = region.y1().div_ceil(spacing).max(first_row + 1) - first_row + 1;
+        let region = Region {
+            x0: first_column * spacing,
+            y0: first_row * spacing,
+            ..region
+        };
         let count = u64::from(columns) * u64::from(rows);
         if count > GRID_MAX_NODES as u64 {
             return Err(Error::resource_limit(format!(
@@ -150,10 +209,12 @@ impl CoordinateGrid {
         self.nodes[(row * self.columns + column) as usize]
     }
 
-    /// The cell holding grid coordinate `g` on an axis of `count` nodes, and the fraction across it.
-    fn cell(g: f32, count: u32) -> (u32, f32) {
-        let index = (g.floor().max(0.0) as u32).min(count - 2);
-        (index, g - index as f32)
+    /// The cell holding stage lattice coordinate `g` on an axis of `count` nodes from lattice node
+    /// `first`, and the fraction across it: both from the stage's own lattice, never from where the
+    /// grid starts, so every grid of the spacing that holds the cell interpolates a pixel alike.
+    fn cell(g: f32, first: u32, count: u32) -> (u32, f32) {
+        let index = ((g.floor() - first as f32).max(0.0) as u32).min(count - 2);
+        (index, g - (first + index) as f32)
     }
 
     /// The boundary coordinate at the output pixel-edge coordinate `(x, y)`, a pixel centre being
@@ -162,8 +223,8 @@ impl CoordinateGrid {
     /// bits to hold the tolerance.
     pub fn sample(&self, x: f32, y: f32) -> [f32; 2] {
         let spacing = self.spacing as f32;
-        let (column, fx) = Self::cell((x - self.origin.0 as f32) / spacing, self.columns);
-        let (row, fy) = Self::cell((y - self.origin.1 as f32) / spacing, self.rows);
+        let (column, fx) = Self::cell(x / spacing, self.origin.0 / self.spacing, self.columns);
+        let (row, fy) = Self::cell(y / spacing, self.origin.1 / self.spacing, self.rows);
         let lerp =
             |a: [f32; 2], b: [f32; 2], t: f32| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
         let top = lerp(self.node(column, row), self.node(column + 1, row), fx);
