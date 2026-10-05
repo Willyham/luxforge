@@ -440,6 +440,89 @@ pub fn histogram(candidate: &Counts, reference: &Counts) -> Result<HistogramErro
     })
 }
 
+// ---- Histogram diagnostics, reported beside the gated figures and never gated -------------------
+
+/// The earth mover's distance between two histograms of the same pixel count, in codes: the L1
+/// distance of their cumulative histograms over the pixel count, which is the mean distance each
+/// pixel's code must move to turn one into the other. A whole frame shifted by one code is 1.0;
+/// a share `s` of the pixels shifted by one code is `s`.
+pub fn histogram_emd(candidate: &[u64; 256], reference: &[u64; 256]) -> f64 {
+    let pixels: u64 = reference.iter().sum();
+    if pixels == 0 {
+        return 0.0;
+    }
+    let (mut a, mut b, mut moved) = (0i128, 0i128, 0u128);
+    for (x, y) in candidate.iter().zip(reference) {
+        a += i128::from(*x);
+        b += i128::from(*y);
+        moved += (a - b).unsigned_abs();
+    }
+    moved as f64 / pixels as f64
+}
+
+/// The signed mean code of `candidate` less `reference`'s over the same pixel count: a systematic
+/// shift shows here, a spread of shifts in both directions does not.
+pub fn histogram_mean_shift(candidate: &[u64; 256], reference: &[u64; 256]) -> f64 {
+    let pixels: u64 = reference.iter().sum();
+    if pixels == 0 {
+        return 0.0;
+    }
+    let sum = |bins: &[u64; 256]| -> f64 {
+        bins.iter()
+            .enumerate()
+            .map(|(code, count)| code as f64 * *count as f64)
+            .sum()
+    };
+    (sum(candidate) - sum(reference)) / pixels as f64
+}
+
+/// The summed absolute bin difference after both histograms are binned at `width` codes, the bins
+/// aligned at code 0: as [`histogram`]'s, a pixel that moves between bins counts twice.
+pub fn histogram_binned(candidate: &[u64; 256], reference: &[u64; 256], width: usize) -> u64 {
+    let width = width.max(1);
+    candidate
+        .chunks(width)
+        .zip(reference.chunks(width))
+        .map(|(a, b)| a.iter().sum::<u64>().abs_diff(b.iter().sum::<u64>()))
+        .sum()
+}
+
+/// The luminance histogram of an 8-bit frame, `stride` bytes a pixel: each pixel's Rec. 709
+/// weighting of its three codes, rounded to a code. A diagnostic of the frames, not a figure the
+/// report or the reducer holds.
+pub fn luma_bins(pixels: &[u8], stride: usize) -> [u64; 256] {
+    let mut bins = [0u64; 256];
+    for pixel in pixels.chunks_exact(stride.max(3)) {
+        let y = 0.2126 * f64::from(pixel[0])
+            + 0.7152 * f64::from(pixel[1])
+            + 0.0722 * f64::from(pixel[2]);
+        bins[(y.round() as usize).min(255)] += 1;
+    }
+    bins
+}
+
+/// How many pixels of `candidate` differ from `reference`'s at the same place by their largest
+/// channel difference: equal, by exactly one code, by exactly two, and by more than two. Both are
+/// 8-bit frames of the same size, `stride` bytes a pixel.
+pub fn code_shifts(candidate: &[u8], reference: &[u8], stride: usize) -> Result<[u64; 4], String> {
+    if candidate.len() != reference.len() {
+        return Err(format!(
+            "the frames hold {} and {} bytes",
+            candidate.len(),
+            reference.len()
+        ));
+    }
+    let mut shifts = [0u64; 4];
+    for (a, b) in candidate
+        .chunks_exact(stride.max(3))
+        .zip(reference.chunks_exact(stride.max(3)))
+    {
+        let largest = (0..3).map(|c| a[c].abs_diff(b[c])).max().unwrap_or(0);
+        shifts[usize::from(largest.min(3))] += 1;
+    }
+    Ok(shifts)
+}
+
 // ---- Samples ------------------------------------------------------------------------------------
 
 /// One sampled pixel: the byte the renderer of record answered, the byte on screen at that pixel
@@ -750,5 +833,54 @@ mod tests {
         let repeat = Rgb8::new(20, 20, &other).unwrap();
         let error = export(same, repeat, same).unwrap();
         assert!(!error.repeatable && !error.passed(Class::Spatial));
+    }
+
+    /// A share of a frame moved by one code is that share in codes by the earth mover's distance,
+    /// counts twice in the summed bin difference, and mostly vanishes when the bins are widened;
+    /// a far move costs its distance.
+    #[test]
+    fn the_histogram_diagnostics_measure_how_far_counts_moved() {
+        let mut reference = [0u64; 256];
+        reference[100] = 600;
+        reference[101] = 400;
+        let mut candidate = reference;
+        // 100 pixels from 100 to 101: a tenth of the frame by one code.
+        candidate[100] -= 100;
+        candidate[101] += 100;
+        assert!((histogram_emd(&candidate, &reference) - 0.1).abs() < 1e-12);
+        assert!((histogram_mean_shift(&candidate, &reference) - 0.1).abs() < 1e-12);
+        assert_eq!(
+            histogram(
+                &Counts {
+                    bins: [candidate; 3],
+                    clipping: [0; 11]
+                },
+                &Counts {
+                    bins: [reference; 3],
+                    clipping: [0; 11]
+                }
+            )
+            .unwrap()
+            .bins[0],
+            200
+        );
+        // 100 and 101 share a bin of two codes and of four.
+        assert_eq!(histogram_binned(&candidate, &reference, 2), 0);
+        assert_eq!(histogram_binned(&candidate, &reference, 4), 0);
+        assert_eq!(histogram_binned(&candidate, &reference, 1), 200);
+        // Ten pixels moved by fifty codes are half a code by the distance.
+        let mut far = reference;
+        far[100] -= 10;
+        far[150] += 10;
+        assert!((histogram_emd(&far, &reference) - 0.5).abs() < 1e-12);
+        assert_eq!(histogram_binned(&far, &reference, 4), 20);
+        // Pixel by pixel, by the largest channel difference.
+        let a = [10u8, 10, 10, 0, 20, 20, 20, 0, 30, 30, 30, 0, 40, 40, 40, 0];
+        let b = [10u8, 10, 10, 0, 21, 20, 20, 0, 30, 28, 30, 0, 40, 40, 47, 0];
+        assert_eq!(code_shifts(&a, &b, 4).unwrap(), [1, 1, 1, 1]);
+        assert!(code_shifts(&a, &b[..8], 4).is_err());
+        // Luminance by Rec. 709 weights over the codes.
+        let luma = luma_bins(&[255, 255, 255, 0, 0, 0, 0, 0], 4);
+        assert_eq!((luma[255], luma[0]), (1, 1));
     }
 }
