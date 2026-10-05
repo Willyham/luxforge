@@ -1,0 +1,577 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "raw-looks",
+  "title": "RAW looks",
+  "objective": "Start new RAW photos from a Luxforge look instead of the bare neutral development: the Standard look by default (phase 1), and Match camera, fitted per photo to its embedded camera preview, as a preference (phase 2), on one recipe layer, payload and set of GPU units.",
+  "context_summary": "Planned from docs/design/raw-looks.md, the contract every task follows. The owner decided on 2026-10-05 that new RAW photos start from a Luxforge look, that matching the camera preview is a setting, and that Standard is built first, and accepted the design's defaults the same day. Phase 1 is TASK-001 to TASK-005 and is deliverable on its own; phase 2 is TASK-006 to TASK-008; TASK-009 measures once at the end. The look is a colour-stage layer at order 3 (after Basic, before the Tone curve), written into a new RAW photograph's Original from the raw_look preference, with resolved knots stored in every payload. It reuses the Tone curve's interpolant with a new tail policy and Basic's Oklab chroma unit where exact, and adds a path-to-white unit; every unit has a CPU unit checked exactly against an f64 reference fixture and a WGSL program qualified within the GPU tolerance. The GPU-first integration is in flight: GPU_PROGRAMS, the GPU qualification step list, the conformance list and the descriptor snapshot are regenerated after any rebase, never hand-merged. Supplied RAW files come from the owner's private manifest; none enter the repository. Decisions: docs/decisions.md.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Freeze the look numerics and choose the Standard look: the f64 reference for the tone, chroma, path-to-white and amount units, the study over the corpus, the oracle fixture and the owner's contact-sheet review.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Create crates/luxforge-reference/src/look.rs beside curve.rs, calling crate::tone::luminance, crate::srgb's extended transfer and the curve reference's interpolant construction rather than restating them; the look tail policy (linear continuation of the first segment below 0, hold at the last knot above x_max) is new and the Tone curve's unit-slope tails are untouched.",
+        "Units in order: tone (encoded-luminance PCHIP over at most 24 knots on [0, x_max], x_max = encode(2^H), floor-subtracted luminance-ratio reconstruction), uniform Oklab chroma gain at constant lightness and hue, path to white above a knee k (closed form or a fixed number of bisection steps, chosen here so the GPU cost is fixed), amount blend out = in + a(look(in) - in) with amount 0-200.",
+        "Standard is chosen by measurement: histogram-match each corpus file's as-shot development to its largest embedded JPEG (the same matching the camera fit will use, here as an instrument in the study only) and set the Standard's lift and midtone slope near the corpus median; recorded defaults before measuring are +0.5 EV lift, log-logistic midtone slope about 1.5, H = +1 EV, chroma 1.10-1.20. Use the CC0 corpus and the owner's private RAW manifest; no RAW enters the repository.",
+        "Write a contact sheet of about 24 corpus frames (Neutral, Standard, camera preview side by side) to a temp directory for the owner. The numbers freeze only after the owner has reviewed it; record the chosen values and the figures in the design.",
+        "Study tests over named and seeded random inputs: monotone tone on an extended ramp including negative and above-white luminance; greys stay grey; Oklab hue kept through tone and chroma; no channel clips at or below sensor white at amount 100; path to white never increases chroma and leaves colours below the knee unchanged; finite on extreme inputs; amount 0 is the identity and amount 100 the look; a regenerable oracle fixture of cases with their expected outputs."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "RAW looks design",
+          "target": "docs/design/raw-looks.md",
+          "relevance": "The unit contracts, payload and the Standard look's targets.",
+          "locator": "The look"
+        },
+        {
+          "kind": "file",
+          "label": "Tone curve reference",
+          "target": "crates/luxforge-reference/src/curve.rs",
+          "relevance": "The open PCHIP construction the look's tone unit reuses."
+        },
+        {
+          "kind": "file",
+          "label": "Basic tone",
+          "target": "docs/design/basic-tone.md",
+          "relevance": "The encoded luminance domain and the luminance-ratio reconstruction.",
+          "locator": "Working tone domain"
+        },
+        {
+          "kind": "file",
+          "label": "Embedded previews inventory",
+          "target": "docs/research/embedded-previews.md",
+          "relevance": "Which cameras carry a usable preview for the study's matching."
+        }
+      ],
+      "acceptance_criteria": [
+        "The reference, the study tests and the oracle fixture exist and pass; the fixture regenerates deterministically.",
+        "The Standard look's knots, chroma gain, H and knee are chosen from recorded corpus figures, reviewed by the owner on the contact sheet, and written into the design with those figures.",
+        "The Tone curve reference and its fixture are unchanged."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the study tests and regenerate the fixture twice to confirm determinism.",
+          "Run the ignored figures and contact-sheet tests and hand the sheet to the owner."
+        ],
+        "commands": [
+          "cargo test -p luxforge-reference --test studies look::",
+          "cargo test -p luxforge-reference --test studies curve::",
+          "cargo test -p luxforge-reference --test studies -- --ignored --nocapture look::look_study_figures",
+          "cargo xtask check-repository"
+        ],
+        "expected_results": [
+          "Every look and curve study test passes; the figures and the owner's review are recorded in the design."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Make the shared colour primitives the look needs: a tail policy and a module-parameterized identity for the curve unit and its GPU program, a reusable Oklab chroma unit, and the path-to-white unit with its WGSL program.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "modules/curve/unit.rs keeps Interpolant and ToneCurve pub(super) and hard-codes the curve effect in describe(); widen them to pub(crate), add a tail policy (the Tone curve's unit-slope tails, or the look's linear-below and hold-above), and take the description prefix from the owning module so two modules never share an identity. The GPU program gains one uniform word for the policy. The Tone curve's outputs and fixture stay byte-identical.",
+        "basic/colour.rs's ColourAdjust (Oklab vibrance and saturation, GPU program lf_basic_colour_adjust) is pub(super). Reuse it for the look's chroma gain if its saturation formula expresses a uniform gain exactly; otherwise add a look-owned unit with the same Oklab conversions. Record which in the design.",
+        "Path to white: a new PointwiseColor unit with its .wgsl program, listed in GPU_PROGRAMS in run order, its uniforms a pure function of describe() (render::gpu::testing::assert_uniforms_follow_descriptions).",
+        "The GPU-first integration may land first: regenerate GPU_PROGRAMS, the gpu_colour_tests step list and the conformance list after any rebase, never hand-merge them."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Curve unit",
+          "target": "crates/luxforge-core/src/modules/curve/unit.rs",
+          "relevance": "Interpolant, ToneCurve, PROGRAM and gpu()."
+        },
+        {
+          "kind": "file",
+          "label": "Basic colour unit",
+          "target": "crates/luxforge-core/src/modules/basic/colour.rs",
+          "relevance": "ColourAdjust and its program."
+        },
+        {
+          "kind": "file",
+          "label": "GPU program contract",
+          "target": "crates/luxforge-core/src/render/gpu/program.rs",
+          "relevance": "GpuProgram, GpuDescription and the uniform rule."
+        },
+        {
+          "kind": "file",
+          "label": "GPU colour qualification",
+          "target": "crates/luxforge-app/src/app/gpu_colour_tests.rs",
+          "relevance": "qualify() over the 65,536-pixel grid and the expected step list."
+        },
+        {
+          "kind": "file",
+          "label": "RAW looks design",
+          "target": "docs/design/raw-looks.md",
+          "relevance": "The reuse and identity rules.",
+          "locator": "GPU and reference"
+        }
+      ],
+      "acceptance_criteria": [
+        "The curve unit evaluates either tail policy; the Tone curve's tests, fixture and GPU qualification pass unchanged.",
+        "The chroma and path-to-white units match the TASK-001 fixture exactly on the CPU and pass GPU qualification within the pointwise limits.",
+        "Every shipped WGSL program validates and is listed."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the curve, colour and GPU program tests and the device qualification for the new and changed programs."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core curve",
+          "cargo test -p luxforge-core --lib colour",
+          "cargo test -p luxforge-core --lib render::gpu",
+          "cargo test -p luxforge-app gpu_colour"
+        ],
+        "expected_results": [
+          "All pass; no Tone curve output changes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Build the luxforge.look module: descriptor, payload, set-look, reset-look, sample-look, compilation to units, history labels, recipe description and conformance.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002"
+      ],
+      "extra_context": [
+        "Create crates/luxforge-core/src/modules/look/ (mod.rs, standard.rs holding the frozen Standard knots and chroma, unit wiring). EffectDescriptor: stage Color, order 3, single, sources [Raw], not maskable. Register it after Basic and before Curve in modules/registry/mod.rs.",
+        "Payload {look, amount, tone, chroma, fit}; neutral payload {look: neutral}. set-look {look?, amount?} resolves standard to the current Standard's knots and chroma; look: camera is refused with a pointer to match-camera-look (phase 2). reset-look returns to Standard. Neutral and amount 0 compile to no unit. If the field-patch contract cannot carry the resolved tone, chroma and fit fields, implement the actions directly as Lens does.",
+        "Neutrality per the recorded default: the band dot is lit only when the look is not the current Standard at amount 100.",
+        "query.sample-look answers 257 samples over [0, x_max] and the chroma gain without reading pixels; recipe.describe reports look, amount, chroma, knot count and fit. Labels: Look Standard, Look Neutral, Look amount N, Reset Look.",
+        "Presets: not presettable. Update the Lightroom CameraProfile reason text in presets/mapping.rs and docs/design/presets.md to \"Luxforge's looks are its own\".",
+        "Regenerate the builtin descriptor snapshot and add the module to the conformance KNOWN list."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "RAW looks design",
+          "target": "docs/design/raw-looks.md",
+          "relevance": "Actions, labels, neutrality and presets.",
+          "locator": "Controls, API and history"
+        },
+        {
+          "kind": "file",
+          "label": "Tone curve module",
+          "target": "crates/luxforge-core/src/modules/curve/mod.rs",
+          "relevance": "A field-patch colour module with a sample query."
+        },
+        {
+          "kind": "file",
+          "label": "Placement",
+          "target": "crates/luxforge-core/src/modules/registry/placement.rs",
+          "relevance": "How order places a new layer within its stage."
+        },
+        {
+          "kind": "file",
+          "label": "Preset mapping",
+          "target": "crates/luxforge-core/src/presets/mapping.rs",
+          "relevance": "The CameraProfile rule and its reason text."
+        }
+      ],
+      "acceptance_criteria": [
+        "The module is listed by module.list with its schema; set-look, reset-look and sample-look behave as the design says, including the refusals.",
+        "A recipe with Basic, the look and a Tone curve renders in that order whatever order they were added in; the render matches the reference within the exact CPU fixture and the GPU tolerance.",
+        "Conformance, descriptor snapshot and preset tests pass."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the module, registry, conformance and preset tests."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core look",
+          "cargo test -p luxforge-core --lib modules::registry",
+          "cargo test -p luxforge-core --test modules -- --ignored generate_builtin_descriptor_snapshot",
+          "cargo test -p luxforge-core --test modules",
+          "cargo test -p luxforge-core --lib presets"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Start new RAW photos from the preferred look: the ToolModule::original hook, the raw_look preference (standard or neutral) in the core, API and General tab, and the look in a new RAW photograph's Original.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003"
+      ],
+      "extra_context": [
+        "Add ToolModule::original(&self, context) -> Option<layer>, asked in registry order by EditorService::new_photograph (editor/source.rs) for a new photograph's Original from its kind, metadata and the preferences; the look module returns its payload for standard and nothing for neutral. JPEG photographs get no look. seed.rs mirrors new_photograph.",
+        "Preference raw_look: an enum like CanvasBackground in preferences.rs (ALL, as_str, parse, default standard), announced as a General row, pushed into EditorService as auto_lens_profile is (api/owner.rs at owner start and in preferences_set). Desktop: a GeneralPreference variant after the lens row, a choice control, title Starting look for new RAW photos.",
+        "Existing photos and their recipes are never rewritten. Tests that assert a bare neutral RAW Original set raw_look to neutral or update their expectations from the reference; fixtures are regenerated, never hand-edited.",
+        "pick.develop must stay metadata-only: no pixel or file read is added by the hook."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "RAW looks design",
+          "target": "docs/design/raw-looks.md",
+          "relevance": "Why Standard lives in the Original and what it means for tiles, exports and Before.",
+          "locator": "Starting a new photo"
+        },
+        {
+          "kind": "file",
+          "label": "New photograph",
+          "target": "crates/luxforge-core/src/editor/source.rs",
+          "relevance": "new_photograph writes the Original.",
+          "locator": "new_photograph"
+        },
+        {
+          "kind": "file",
+          "label": "Preferences design",
+          "target": "docs/design/preferences.md",
+          "relevance": "Fields, checks, events and the lens switch precedent."
+        },
+        {
+          "kind": "file",
+          "label": "Core preferences",
+          "target": "crates/luxforge-core/src/preferences.rs",
+          "relevance": "The enum preference pattern and general()."
+        }
+      ],
+      "acceptance_criteria": [
+        "A new RAW Original holds the Standard look by default and none with raw_look neutral; a JPEG Original is unchanged; an existing photo's recipe and render are unchanged.",
+        "preferences.read and preferences.set expose raw_look with its check and event; the General row reads and writes it.",
+        "Catalog rendered tiers and batch export of a never-opened RAW photo carry the look."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Run the editor, preferences, owner and develop tests, and the desktop settings tests."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib editor",
+          "cargo test -p luxforge-core --lib preferences",
+          "cargo test -p luxforge-core --lib api::owner",
+          "cargo test -p luxforge-core --lib library::develop",
+          "cargo test -p luxforge-app preferences",
+          "cargo test -p luxforge-cli --test json_cli"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Show the Look section in Develop, capture native rendered evidence with a look smoke scenario, and document phase 1.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "extra_context": [
+        "Section before Basic on RAW photos only: the Standard and Neutral choice and Amount with the core draft lifecycle. No Camera choice in phase 1.",
+        "Scenario look (xtask/src/look_smoke.rs, registered in SCENARIOS) over the supplied Z6, X100VI and Air 2S files through the owner manifest, launched in the background bundle with an isolated catalog: a new photo opens with Standard; switch to Neutral and back through the section and the API; drag Amount; the catalog tile carries the look; export matches the render. Correlate every frame with asset.state, the draft and the events log. Build the release app first.",
+        "Docs: user guide (RAW development, Settings), feature status (a RAW looks row), initial-raw.md (the neutral development is now the look's input, not the starting rendition), preferences.md, product-decisions.json TASK-002 context (camera matching decided as an option), the design's status."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Develop workspace",
+          "target": "docs/design/develop-workspace.md",
+          "relevance": "Section layout and the tool array."
+        },
+        {
+          "kind": "file",
+          "label": "Rendered evidence rules",
+          "target": "docs/engineering/development.md",
+          "relevance": "Correlated state, requests and logs; background launches.",
+          "locator": "Rendered evidence"
+        },
+        {
+          "kind": "file",
+          "label": "Curve smoke scenario",
+          "target": "xtask/src/curve_smoke.rs",
+          "relevance": "A module scenario with drafted frames, commits and pixel checks."
+        }
+      ],
+      "acceptance_criteria": [
+        "The section draws and edits the look through the shared registry, with UI and API parity checked.",
+        "The look scenario passes on the M4 Mac with correlated evidence; verify quick and rendered pass.",
+        "The docs describe the delivered behaviour only."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Unit tests for the section, then the scenario, then the tiers."
+        ],
+        "commands": [
+          "cargo test -p luxforge-app look",
+          "cargo xtask build --release",
+          "cargo xtask smoke --scenario look --manifest FILE --output NEW_DIR",
+          "cargo xtask verify --tier quick --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR"
+        ],
+        "expected_results": [
+          "All pass; phase 1 is deliverable."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Freeze the camera fit: the reference fitter, its study over the corpus and its fixture.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "In crates/luxforge-reference/src/look.rs: exclusion of clipped and crushed preview pixels and non-finite development pixels; 1024-bin encoded-luminance histograms; the monotone quantile map at fixed quantiles with slope floor and cap; the join to the Standard shoulder above the highest confident quantile; the median Oklab chroma ratio on mid-lightness chromatic pixels, clamped to 0.7-1.6; monochrome-preview detection keeping chroma 1.0; refusal below 10% usable pixels.",
+        "Preview colour: sRGB or untagged as sRGB, and Adobe RGB by ICC profile or EXIF colour space, converted to linear sRGB; anything else refused with its reason.",
+        "Study figures per camera over the CC0 corpus and the owner manifest: fit success rate, median luminance error against the preview, chroma gain spread, refusals and their reasons. No pixel equivalence with any camera is claimed."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "RAW looks design",
+          "target": "docs/design/raw-looks.md",
+          "relevance": "The fit's inputs, steps, refusals and provenance.",
+          "locator": "Phase 2: Match camera"
+        },
+        {
+          "kind": "file",
+          "label": "Embedded previews inventory",
+          "target": "docs/research/embedded-previews.md",
+          "relevance": "Preview sizes and colour spaces by camera."
+        }
+      ],
+      "acceptance_criteria": [
+        "The fitter's tests and fixture pass; fitted curves are monotone, join the Standard shoulder continuously and never clip at or below sensor white.",
+        "The per-camera figures are recorded in the design."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the fit study and its figures."
+        ],
+        "commands": [
+          "cargo test -p luxforge-reference --test studies look::fit",
+          "cargo test -p luxforge-reference --test studies -- --ignored --nocapture look::fit_study_figures"
+        ],
+        "expected_results": [
+          "All pass; figures recorded."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Fit camera looks in the core off the owner: the preview read and decode, the cached fit per source, the first-open data hook, edit.match-camera-look through the off-owner pixel-read path, and announced first-open entries.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004",
+        "TASK-006"
+      ],
+      "extra_context": [
+        "The fit reads the original's largest embedded JPEG through EmbeddedPreviews (prepare_bytes already holds the file's bytes before RawPrepared::decode), cut at its last EOI as previews/region.rs does, decoded at a DCT scale through luxforge-jpeg, and the as-shot development downscaled to at most 1024 px. Cache one fit per source identity beside the prepared source.",
+        "Extend first open: a hook run on the source worker where await_first_open runs, given the prepared development and the original's bytes, returning opaque data the module's first_open reads from its context. With raw_look camera the Original still holds Standard (TASK-004) and first open commits Look Match camera by the system actor; a refused fit is reported in the preparation's first_open list and the photo stays at revision 0.",
+        "edit.match-camera-look takes no parameters and defers its fit as a new read kind of the Detail design's off-owner pixel-read path, keyed by source identity and development, under MAX_PIXEL_READ_ROUNDS and the point queue capacity; refused with unavailable: and the reason when there is no usable preview.",
+        "Announce committed first-open entries to the preview lane as edits are announced (api/owner.rs source_complete), so tiles rendered from the Original re-render; this also covers the lens entry. Confirm the gap with a failing test first.",
+        "Add the ignored owner test owner_raw_camera_look beside the existing owner RAW tests: it fits the supplied Z6, X100VI and Air 2S files and checks the first-open entry, the cached fit and the reference agreement."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "RAW looks design",
+          "target": "docs/design/raw-looks.md",
+          "relevance": "Where the fit runs and how it fails.",
+          "locator": "Phase 2: Match camera"
+        },
+        {
+          "kind": "file",
+          "label": "First open",
+          "target": "crates/luxforge-core/src/editor/plan.rs",
+          "relevance": "EditorService::first_open and the lens switch."
+        },
+        {
+          "kind": "file",
+          "label": "Pixel reads off the owner",
+          "target": "docs/design/detail.md",
+          "relevance": "Deferred mutations, rounds and keys.",
+          "locator": "Pixel reads off the owner"
+        },
+        {
+          "kind": "file",
+          "label": "Embedded previews",
+          "target": "crates/luxforge-raw/src/embedded.rs",
+          "relevance": "EmbeddedPreviews, largest_jpeg and extract."
+        },
+        {
+          "kind": "file",
+          "label": "100% region",
+          "target": "crates/luxforge-core/src/previews/region.rs",
+          "relevance": "EOI cut, full-size check and orientation handling to reuse."
+        }
+      ],
+      "acceptance_criteria": [
+        "The fit matches the reference fixture on the same inputs; nothing on the owner reads pixels or files for it.",
+        "First open with raw_look camera commits one Look Match camera entry after the Original; Undo returns to Standard; a refusal is reported and commits nothing.",
+        "match-camera-look commits a Camera look or refuses with its reason; a stack change during the read retries or refuses as the deferred path does.",
+        "A tile rendered from the Original re-renders after a first-open entry."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Run the core tests and the owner RAW test over the supplied files."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core look",
+          "cargo test -p luxforge-core --lib first_open",
+          "cargo test -p luxforge-core --lib api::owner",
+          "cargo test -p luxforge-core --lib previews",
+          "LUXFORGE_RAW_OWNER_DIR=DIR cargo test -p luxforge-core --lib owner_raw_camera_look -- --ignored --nocapture"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Offer Match camera in the preference and the Look section, extend the look scenario, and document phase 2.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-005",
+        "TASK-007"
+      ],
+      "extra_context": [
+        "raw_look gains camera; the General row offers Match camera. The section's Camera choice runs match-camera-look, shows the fit's provenance line, and is disabled with its reason when the photo has no usable preview.",
+        "Scenario steps: Match camera through the preference on a new photo (the first-open entry appears and the tile follows), through the section on another, a refused fit's reason on a file without a usable preview, and a monochrome-preview note where the corpus has one.",
+        "Docs: user guide, feature status, preferences.md, the design's status and figures."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "RAW looks design",
+          "target": "docs/design/raw-looks.md",
+          "relevance": "The Camera choice and its states.",
+          "locator": "Controls, API and history"
+        },
+        {
+          "kind": "file",
+          "label": "Preferences design",
+          "target": "docs/design/preferences.md",
+          "relevance": "Rows and events."
+        }
+      ],
+      "acceptance_criteria": [
+        "Match camera works through the preference, the section and the API with parity checked.",
+        "The extended look scenario passes on the M4 Mac; verify quick and rendered pass."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Unit tests, then the scenario, then the tiers."
+        ],
+        "commands": [
+          "cargo test -p luxforge-app look",
+          "cargo xtask build --release",
+          "cargo xtask smoke --scenario look --manifest FILE --output NEW_DIR",
+          "cargo xtask verify --tier quick --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Qualify and measure: the full tier and the timing runs for the look units, the fit and pick.develop, once all feature work is merged, on a quiet host.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-008"
+      ],
+      "extra_context": [
+        "Per-frame cost of the look units at Fit and 100% on 24 MP and 60 MP RAW; fit cost beyond preparation (target under 60 ms at 24 MP); pick.develop of a batch with and without raw_look standard (expected unchanged within noise). Run before and after back to back on a quiet host.",
+        "Record results with their scope in docs/specs/performance.md and the design."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "RAW looks design",
+          "target": "docs/design/raw-looks.md",
+          "relevance": "The targets to measure.",
+          "locator": "Resource and responsiveness"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "The checklist the change answers."
+        }
+      ],
+      "acceptance_criteria": [
+        "The full tier passes; the measurements are recorded with their scope, including any missed target."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Build release, run the timing commands, then the full tier."
+        ],
+        "commands": [
+          "cargo xtask build --release",
+          "target/release/xtask editor-performance --source RAW --output NEW_DIR --samples 30",
+          "target/release/xtask verify --tier full --manifest FILE --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Recorded measurements; full tier passes."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-002",
+        "TASK-006"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-003"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-004"
+      ]
+    },
+    {
+      "wave": 5,
+      "task_ids": [
+        "TASK-005",
+        "TASK-007"
+      ]
+    },
+    {
+      "wave": 6,
+      "task_ids": [
+        "TASK-008"
+      ]
+    },
+    {
+      "wave": 7,
+      "task_ids": [
+        "TASK-009"
+      ]
+    }
+  ]
+}
