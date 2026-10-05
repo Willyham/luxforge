@@ -2772,6 +2772,50 @@ mod tests {
             "and neither does no reason"
         );
 
+        // The reference renderer's notice is the session's: said at rest, before any reason a
+        // gesture's tick gives, and never beside a GPU frame; a renderer the photo surface has not
+        // checked yet says nothing.
+        let phrase = |workspace: &Workspace| {
+            workspace
+                .status
+                .fallback
+                .as_ref()
+                .map(|notice| notice.phrase.clone())
+        };
+        let mut lost = scene.session.clone();
+        lost.renderer =
+            luxforge_core::Renderer::reference(luxforge_core::RendererReason::DeviceLost);
+        let mut inputs = scene.inputs();
+        inputs.session = &lost;
+        workspace.derive(&inputs);
+        assert_eq!(phrase(&workspace).as_deref(), Some("Reference renderer"));
+        for code in ["device-lost", "budget-exceeded"] {
+            inputs.cpu_reason = Some(status::CpuReason {
+                code,
+                layer: None,
+                compiling_for: None,
+            });
+            workspace.derive(&inputs);
+            assert_eq!(
+                phrase(&workspace).as_deref(),
+                Some("Reference renderer"),
+                "{code}: during a gesture too"
+            );
+        }
+        inputs.gpu_frame_us = Some(1600);
+        workspace.derive(&inputs);
+        assert_eq!(workspace.status.fallback, None, "never beside a GPU frame");
+        let mut pending = scene.session.clone();
+        pending.renderer =
+            luxforge_core::Renderer::reference(luxforge_core::RendererReason::SurfacePending);
+        let mut inputs = scene.inputs();
+        inputs.session = &pending;
+        workspace.derive(&inputs);
+        assert_eq!(
+            workspace.status.fallback, None,
+            "the surface has not checked its stage"
+        );
+
         // Nobody else connected is a count of none, with the dot unlit.
         let mut inputs = scene.inputs();
         inputs.clients = Some(0);
