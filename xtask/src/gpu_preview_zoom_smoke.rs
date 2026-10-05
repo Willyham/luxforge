@@ -14,16 +14,15 @@
 //! tick, deriving nothing. At 800%, where the view shows a corner of the photograph, the drag is
 //! panned across it while it ticks: the pan past the held region lets that boundary go and a later
 //! tick derives the new region's, and every frame drawn on the GPU draws a region that holds the
-//! view it was captured with. Before that, back at 100%, Presence is committed with Dehaze and Clarity: a
-//! Texture and a Clarity drag read Dehaze's light from the store the exact frames filled and run at
-//! most five compute passes a tick; a Basic drag under it, whose light the region alone cannot
-//! give, keeps the CPU path and names `region-estimate`; and with Dehaze back at neutral a Basic
-//! drag under Presence is drawn on the GPU, running every pass a tick. Then Detail is committed
-//! under Presence and Dehaze again, so Dehaze's light sits behind Detail, where the CPU cannot cut
-//! the view's region and draws the whole exact frame: a Texture drag reads the light that frame
-//! stored and a Detail drag the one its starting stack stored, held for the drag and named
-//! approximate, both on the GPU; Dehaze then goes back to neutral, Detail staying under Presence
-//! for the drags after. Each Basic release's committed frame dissolves in from the drag's last GPU
+//! view it was captured with. Before that, back at 100%, Presence is committed with Dehaze and
+//! Clarity: a Texture and a Clarity drag read Dehaze's light at rest, which its light link computes
+//! from the whole stage over the source, and run at most five compute passes a tick; and a Basic
+//! drag under it, which changes the light's input, computes the light every tick from the whole
+//! stage and is drawn on the GPU over the region too, running every pass a tick. Then Detail is
+//! committed under Presence and Dehaze again, so Dehaze's light sits behind Detail: a Texture drag
+//! and a Detail drag each read the light its stack draws with, which the slot computes by its
+//! stand-in with Detail left out, both on the GPU; Dehaze then goes back to neutral, Detail
+//! staying under Presence for the drags after. Each Basic release's committed frame dissolves in from the drag's last GPU
 //! frame: the dissolve's start and its identities are checked, and the release's capture either
 //! shows it running or follows its end, which a capture after 150 ms allows.
 //!
@@ -287,20 +286,6 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         Held::Compiled(PRESENCE_QUIET_MS),
         Settled::Quiet,
     ));
-    steps.extend([
-        Step::new(
-            "under-refused-100",
-            SliderStep::new(BASIC, EXPOSURE, [UNDER_DRAG[0]]),
-        )
-        .commits(0),
-        Step::new(
-            "under-refused-release-100",
-            SliderStep::new(BASIC, EXPOSURE, [UNDER_DRAG[0]]).release(),
-        )
-        .commits(1)
-        .no_draft(),
-        release("dehaze-off-100", "dehaze", 0.0),
-    ]);
     steps.extend(drag_steps(
         "under-100",
         BASIC,
@@ -309,13 +294,14 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         Held::Compiled(PRESENCE_QUIET_MS),
         Settled::Quiet,
     ));
+    steps.push(release("dehaze-off-100", "dehaze", 0.0));
     // Still at 100%, Detail committed under Presence and Dehaze committed again, so Dehaze's light
-    // sits behind Detail and the CPU cannot cut the view's region: a Presence drag reads the light
-    // the whole exact frame stored, and a Detail drag the one the stack it started from stored,
-    // held for the drag. Dehaze then goes back to neutral for the drags after them, which a
-    // Detail layer under Presence leaves on the GPU; the evidence script's 64 steps hold no more,
-    // so a Basic drag between Detail and Presence, which keeps the CPU path as the one above does,
-    // is the core's to prove (`behind_detail_a_region_plan_holds_dehazes_stored_light`).
+    // sits behind Detail: a Presence drag reads the light its stack draws with, and a Detail drag
+    // the one the stack it started from draws with, each computed by the slot's stand-in with
+    // Detail left out. Dehaze then goes back to neutral for the drags after them, which a Detail
+    // layer under Presence leaves on the GPU; a Basic drag between Detail and Presence, whose light
+    // leaves Detail out every tick, is the core's to prove
+    // (`behind_detail_a_region_plan_reads_the_light_at_rest_or_its_stand_in`).
     let detail = |name: &str, value: f64| {
         Step::new(name, SliderStep::new(DETAIL, SHARPENING, [value]).release())
             .commits(1)
@@ -815,49 +801,18 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             "settled": settled}),
     );
 
-    // At 100%: the Presence drags over the stored light, the Basic drag under Presence refused
-    // while Dehaze's light would come from the region alone, then drawn once it is neutral.
-    // Behind Detail: the Texture drag over the stored light and the Detail drag over the held
-    // one, approximate, both drawn on the GPU over the whole stage the CPU cannot cut.
-    for (name, approximate, gain_only) in [
-        ("texture-100", false, true),
-        ("clarity-100", false, true),
-        ("under-100", false, false),
-        ("behind-texture-100", false, true),
-        ("behind-sharpen-100", true, false),
+    // At 100%: the Presence drags over the light at rest and the Basic drag under Presence over a
+    // light computed every tick, all from the source. Behind Detail: the Texture drag and the
+    // Detail drag over the stand-in with Detail left out, both drawn on the GPU.
+    for (name, lights, gain_only) in [
+        ("texture-100", "source", true),
+        ("clarity-100", "source", true),
+        ("under-100", "source", false),
+        ("behind-texture-100", "stand-in", true),
+        ("behind-sharpen-100", "stand-in", false),
     ] {
-        presence_drag_checks(launch, &mut checks, name, approximate, gain_only, false)?;
+        presence_drag_checks(launch, &mut checks, name, &[lights], gain_only, false)?;
     }
-    let refused = launch.at("under-refused-100")?;
-    let events = step_events(launch, "under-refused-100")?;
-    let (gpu_ticks, cpu_ticks, jobs) = ticks(events);
-    let reasons: Vec<&Value> = named(events, "gpu_preview_tick")
-        .iter()
-        .map(|tick| &tick["detail"]["reason"])
-        .collect();
-    let summary = &refused.state()["surface"]["gpu"]["gpu_preview"]["drag"];
-    ensure(
-        gpu_ticks == 0
-            && cpu_ticks >= 1
-            && jobs >= 1
-            && reasons
-                .iter()
-                .all(|reason| **reason == json!("region-estimate"))
-            && summary["boundaries_derived"] == json!(0),
-        format!(
-            "The Basic drag under Presence with Dehaze at 100% was {gpu_ticks} GPU and \
-             {cpu_ticks} CPU ticks for {reasons:?}, deriving {} boundaries",
-            summary["boundaries_derived"]
-        ),
-    )?;
-    checks.note(
-        refused,
-        "a Basic drag under Presence with Dehaze at 100% keeps the CPU path: the region alone \
-         cannot give the light",
-        json!({"cpu_ticks": cpu_ticks, "jobs": jobs, "reasons": reasons,
-            "plan_fallback": refused.state()["surface"]["gpu"]["plan_fallback"]}),
-    );
-
     // Below 100%: drawn on the GPU from the displayed-size proxy, as at Fit.
     drawn_on_the_gpu_below_100(below, &mut checks)?;
 
