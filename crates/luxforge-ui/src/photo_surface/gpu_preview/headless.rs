@@ -22,16 +22,22 @@ use std::sync::{Arc, mpsc};
 
 /// A device of this host's default adapter at `limits`, its queue and the adapter's description,
 /// or `None` after printing that `run` was skipped: a run without one drew nothing and is not GPU
-/// evidence.
+/// evidence. The default adapter is wgpu's first by rank, a hardware one before a software one;
+/// with `LUXFORGE_GPU_ADAPTER=software` it is the platform's software adapter alone (lavapipe,
+/// WARP), asked for as wgpu's fallback adapter, so a host with both measures the software one.
 pub fn device(
     run: &str,
     limits: wgpu::Limits,
 ) -> Option<(wgpu::Device, wgpu::Queue, wgpu::AdapterInfo)> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let Some(Ok(adapter)) =
-        answered(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-    else {
-        eprintln!("skipped: no GPU adapter; {run} ran nothing and is not GPU evidence");
+    let software = std::env::var("LUXFORGE_GPU_ADAPTER").as_deref() == Ok("software");
+    let options = wgpu::RequestAdapterOptions {
+        force_fallback_adapter: software,
+        ..wgpu::RequestAdapterOptions::default()
+    };
+    let Some(Ok(adapter)) = answered(instance.request_adapter(&options)) else {
+        let what = if software { "software" } else { "GPU" };
+        eprintln!("skipped: no {what} adapter; {run} ran nothing and is not GPU evidence");
         return None;
     };
     let descriptor = wgpu::DeviceDescriptor {
@@ -53,6 +59,14 @@ pub struct RestDrawn {
     pub codes: Vec<[u8; 4]>,
     pub frames: u32,
     pub counts: Result<super::histogram::Counts, super::histogram::HistogramError>,
+}
+
+/// A drag's ticks drawn headless ([`HeadlessSurface::ticks`]): each timed tick's duration, and the
+/// last tick's output codes, RGBA row by row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ticked {
+    pub times: Vec<std::time::Duration>,
+    pub last: Vec<[u8; 4]>,
 }
 
 /// A plan drawn headless: its output's codes, RGBA row by row, and its size.
@@ -225,6 +239,95 @@ impl HeadlessSurface {
         self.pipeline.release_gpu(&mut slots);
         self.retired();
         codes
+    }
+
+    /// `plans` drawn one after another through one slot, as a drag's ticks are handed to the
+    /// surface's slot, each with the change its caller measured since the one before, and the last
+    /// tick's codes read back after the timing, for a caller to hold to a fresh draw: the time each
+    /// tick took from handing the source to the GPU having finished it, the queue waited on after
+    /// the evaluation's submissions, so the GPU's work is counted and not only its encoding. The
+    /// first plan is the drag's first tick, drawn untimed, waiting out its sequences' compile and
+    /// the source's upload; every later one is timed, one figure each. The fallback that stops a
+    /// tick otherwise.
+    pub fn ticks(
+        &mut self,
+        source: &GpuSource,
+        plans: &[(GpuPlan, Option<super::GpuChange>)],
+    ) -> Result<Ticked, GpuFallback> {
+        let mut slots = self.pipeline.new_surface();
+        let timed = self
+            .ticks_through(&mut slots, source, plans)
+            .and_then(|times| {
+                let (plan, _) = plans.last().ok_or(GpuFallback::PipelineFailed)?;
+                let slot = slots.gpu.as_ref().ok_or(GpuFallback::PipelineFailed)?;
+                let output = slot.output();
+                let size = plan.region.map_or((output.width, output.height), |region| {
+                    let [x0, y0, x1, y1] = region.rect;
+                    (x1 - x0, y1 - y0)
+                });
+                let [tile] = output.tiles.as_slice() else {
+                    return Err(GpuFallback::PipelineFailed);
+                };
+                let last = self.read(&tile.texture, size)?;
+                Ok(Ticked { times, last })
+            });
+        self.pipeline.release_gpu(&mut slots);
+        self.retired();
+        timed
+    }
+
+    /// [`Self::ticks`] through `slots`, which the caller releases.
+    fn ticks_through(
+        &mut self,
+        slots: &mut SurfaceSlots,
+        source: &GpuSource,
+        plans: &[(GpuPlan, Option<super::GpuChange>)],
+    ) -> Result<Vec<std::time::Duration>, GpuFallback> {
+        let Some((first, _)) = plans.first() else {
+            return Ok(Vec::new());
+        };
+        let mut waited = GpuFallback::Compiling;
+        luxforge_testbase::try_wait_for("a drag's first tick", || {
+            self.hand(source);
+            match self
+                .pipeline
+                .evaluate_lit(slots, &self.device, &self.queue, first, None)
+            {
+                Ok(_) => Some(Ok(())),
+                Err(waiting @ (GpuFallback::Compiling | GpuFallback::SourceUploading { .. })) => {
+                    waited = waiting;
+                    None
+                }
+                Err(fallback) => Some(Err(fallback)),
+            }
+        })
+        .unwrap_or(Err(waited))?;
+        self.finished()?;
+        let mut times = Vec::with_capacity(plans.len());
+        for (plan, change) in &plans[1..] {
+            let started = std::time::Instant::now();
+            self.hand(source);
+            self.pipeline
+                .evaluate_lit(slots, &self.device, &self.queue, plan, *change)?;
+            self.finished()?;
+            times.push(started.elapsed());
+        }
+        Ok(times)
+    }
+
+    /// Wait until the GPU has finished everything submitted so far.
+    fn finished(&self) -> Result<(), GpuFallback> {
+        let index = self.queue.submit([]);
+        loop {
+            match self.device.poll(wgpu::PollType::Wait {
+                submission_index: Some(index.clone()),
+                timeout: None,
+            }) {
+                Ok(_) => return Ok(()),
+                Err(wgpu::PollError::Timeout) => {}
+                Err(_) => return Err(GpuFallback::DeviceLost),
+            }
+        }
     }
 
     /// The `size` texels at the origin of `texture`, four bytes each, read back: the submission
