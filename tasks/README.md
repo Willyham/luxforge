@@ -35,11 +35,10 @@ The three modules share the restoration stage, compile context, window planner, 
 | [Corrections](corrections.json) | Proposed offline Clone/Heal and optional provider-agnostic AI Remove, with a qualified local-model path and explicit owner decisions |
 | [Dependency advisories](dependency-advisories.json) | Remove or re-review the two expiring advisory exceptions the dependency audit enforces |
 | [Product decisions](product-decisions.json) | Open product questions |
-| [UI themes](ui-themes.json) | Runtime UI themes, with today's palette kept as the default Luxforge Dark: a theme library and `theme.*` methods outside every catalog, Omarchy theme import, six bundled Omarchy themes and a Settings › Appearance tab |
 
 The Corrections plan is a planning proposal. Its AI implementation builds on the implemented [module capabilities](../docs/design/module-capabilities.md) and depends on owner acceptance of the scope and consequential product choices in the [Corrections design](../docs/design/corrections.md).
 
-The UI themes plan runs on the owner's decisions of 2026-10-05 in [decisions](../docs/decisions.md#ui-themes): themes, light ones included, in place of dark only; a neutral surround; each theme's own accent; and a few bundled Omarchy themes. The remaining questions run on the recorded defaults in its [design](../docs/design/ui-themes.md#proposals-with-recorded-defaults) and are a [product decisions](product-decisions.json) task. The decisions settle the product questions; implementation waits for the owner to ask for it.
+UI themes are implemented and their plan is deleted; the outcome is in the [UI themes design](../docs/design/ui-themes.md) and [feature status](../docs/features.md), and the remaining questions are a [product decisions](product-decisions.json) task.
 
 RAW editing is implemented with initial native M4 verification. Its [design](../docs/design/initial-raw.md) records the owner's continuous RAW editing requirement, the pinned processing path, and outstanding controlled quality, resource and platform qualification, which the RAW plan carries. The supplied FC3411 DNG has required gain/warp corrections and continuous editor support; its [contract](../docs/design/air2s-dng.md) records the qualified encoding, numerical interpretation and limits. RAW recipes export through the shared [JPEG exporter](../docs/design/export.md).
 

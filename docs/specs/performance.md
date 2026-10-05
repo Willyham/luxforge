@@ -4612,6 +4612,44 @@ These are not yet measured:
 Skipping the process scan at launch is shown by the code, not by a measurement: only an evidence
 launch asks for system information.
 
+## UI themes, measured on the M4
+
+The runtime theme, the theme library and the Appearance tab ([UI themes](../design/ui-themes.md))
+against the build before the runtime theme: `7deaafac` (release binary SHA-256 `9f4b4618…`)
+against `82476a52` (`6b9ed32f…`), both under Luxforge Dark with no theme stored, as every evidence
+run starts.
+
+**Host and build.** Apple M4 Pro (14 cores), macOS 26.5.2, Metal, background hidden-window
+launches of `release` builds with `--locked` (Cargo.lock `8ef94c89…`), warm filesystem cache.
+Measured 5 October 2026.
+
+**Order and load.** Each workload ran base, branch, branch, base, and the drags again in the
+reverse order. The one-minute load was 1.6 to 4.9 at the start of every run.
+
+**Statistics.** Nearest-rank p50 / p95 in ms, every launch's samples pooled.
+
+| Workload | Before | After |
+| --- | --- | --- |
+| `editor-latency --mode drag`, 24 MP at Fit, input to presented frame (GPU preview, 4 launches, 120 inputs) | 8.18 / 9.23 | 8.16 / 9.12 |
+| The same drag with `--no-gpu-preview` (4 launches, 120 inputs) | 8.63 / 9.10 | 8.66 / 9.16 |
+| Workspace derivation per message, `last_rederive_ms` of `slider_draft_preview` (the CPU drags, 248 samples) | 0.030 / 0.058 | 0.030 / 0.065 |
+| `view()` of the same update | 0.068 / 0.080 | 0.066 / 0.084 |
+| `measure`, empty launch to observed frame (2 runs of 5 launches) | 1754 / 1789 | 1778 / 1919 |
+
+The drag and the derivation are unchanged within the host's spread: the style functions read the
+theme Iced passes in place of a constant, and a canvas cache's key gains eight bytes. With the GPU
+preview on, a drag derives the workspace through `slider_draft_preview` only once per launch, so the
+derivation is read from the CPU drags.
+
+Launch to observed frame was about 23 ms later at p50 in both orders. Split at each launch's first
+RSS sample above 1 MiB (samples about 55 ms apart), the difference sits before the process starts:
+the launcher's share, which includes copying the executable into the background bundle, moved from a
+median of 635 to 690 ms with an executable 1.4 MB larger (the themes code, the bundled palettes
+and `toml_edit`), while the application's own share, from its first sample to its first frame, held a
+median of about 1105 ms in both builds. No theme is stored in these runs, so the launch read does
+not open `themes.json`; with a theme chosen it is one bounded document read more, not measured
+here. Idle CPU stayed 1.3 to 1.4% of one core.
+
 ## Method
 
 Optimized builds only, with commit, lockfile, OS, CPU/GPU, RAM, display and storage recorded. Report cold and warm runs separately and say which cold is meant. Keep at least 30 samples and never drop failures or tails silently. Measure user event to presented frame, not shader time, and account CPU RSS, cache bytes, GPU allocations and transient copies without double-counting unified memory. Capture idle after all background work stops. No timing gates in CI; CI enforces exactness, deterministic bounds and coverage. VM checks record hypervisor, guest graphics path and software versus accelerated rendering, and never stand in for native timings.
