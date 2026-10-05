@@ -91,9 +91,11 @@ fn reference(rgba: &[u8], width: u32, rect: HistogramRect) -> tolerance::Counts 
 }
 
 /// `counts` as the independent comparison holds them, its clipping counters in the order of
-/// `tolerance::CLIPPING`, as the release gate's harness maps a report onto them.
-fn held(counts: &Counts) -> tolerance::Counts {
+/// `tolerance::CLIPPING`, as the release gate's harness maps a report onto them, beside `luma`, a
+/// luminance histogram the GPU's counts do not carry.
+fn held(counts: &Counts, luma: [u64; 256]) -> tolerance::Counts {
     tolerance::Counts {
+        luma,
         bins: [counts.r, counts.g, counts.b],
         clipping: [
             counts.r0,
@@ -113,7 +115,8 @@ fn held(counts: &Counts) -> tolerance::Counts {
 
 /// The GPU's counts against the reference's at a zero tolerance: every bin and every counter equal.
 fn assert_exact(gpu: &Counts, expected: &tolerance::Counts, what: &str) {
-    let candidate = held(gpu);
+    // The luminance is the reference's own: what is compared here is the bins and counters.
+    let candidate = held(gpu, expected.luma);
     let error = tolerance::histogram(&candidate, expected)
         .unwrap_or_else(|error| panic!("{what}: {error}"));
     assert_eq!(
