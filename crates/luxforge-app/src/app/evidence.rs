@@ -120,6 +120,8 @@ pub(crate) struct Evidence {
     pub(crate) agent: Option<ClientId>,
     /// What a running `agent` step still waits for.
     pub(crate) agent_wait: Option<AgentWait>,
+    /// What a running `agent` step that sent a host method still waits for.
+    pub(crate) agent_host: Option<AgentHostWait>,
     pub(crate) sync: CaptureSync,
     /// What only a captured frame's state reports, from the outcomes the seams report.
     pub(crate) recorded: Recorded,
@@ -156,6 +158,13 @@ pub(crate) struct WarmWait {
     started: Instant,
     quiet_until: Instant,
     deadline: Instant,
+}
+
+/// What a running `agent` step that sent a host method waits for: its answer, and the event
+/// sequence it was answered at, which the event sync must read past.
+#[derive(Debug)]
+pub(crate) struct AgentHostWait {
+    pub(crate) sequence: Option<u64>,
 }
 
 /// What a running `agent` step waits for. The desktop sends nothing for it: the owner wakes the
@@ -203,6 +212,7 @@ impl Evidence {
             warm_wait: None,
             agent: None,
             agent_wait: None,
+            agent_host: None,
             sync: CaptureSync::default(),
             recorded: Recorded::default(),
             gpu_identity: None,
@@ -488,6 +498,9 @@ pub(crate) enum Settle {
     /// An agent step's edit has answered, and the event sync's refresh brought the frame of the
     /// entry it committed to the screen: see [`AgentWait`].
     Agent,
+    /// An agent step's host method has answered, and the desktop has followed it through the event
+    /// sync: see [`AgentHostWait`].
+    AgentHost,
 }
 
 impl Settle {
@@ -516,6 +529,7 @@ impl Settle {
             Self::Capability => "capability",
             Self::Export => "export",
             Self::Agent => "agent",
+            Self::AgentHost => "agent_host",
         }
     }
 
@@ -1022,6 +1036,7 @@ impl Editor {
                 return self.host_answered(result.map(|answer| *answer));
             }
             EvidenceMessage::AgentAnswered(result) => self.agent_answered(result),
+            EvidenceMessage::AgentHostAnswered(result) => self.agent_host_answered(result),
         }
         Task::none()
     }
@@ -1170,6 +1185,7 @@ impl Editor {
             Step::Settings { open, tab } => self.settings_step(open, tab),
             Step::Theme(pick) => self.theme_step(pick),
             Step::ThemeImport { path } => self.theme_import_step(path),
+            Step::ThemeImportOmarchy { path } => self.theme_import_omarchy_step(path),
             Step::Flag { id, value } => self.flag_step(id, value),
             Step::Preference(fields) => self.preference_step(fields),
             Step::Wait { ms } => self.wait_step(ms),
@@ -1338,10 +1354,8 @@ impl Editor {
     /// once the frame of the entry this request committed is on screen and the agent has its
     /// answer ([`AgentWait`]).
     fn agent_step(&mut self, method: String, mut params: Map<String, Value>) -> Task<Message> {
-        if envelope_free(&method).is_some() {
-            return self.fail_step(format!(
-                "an agent step edits the open photograph, and {method} is not an edit of it"
-            ));
+        if let Some(host) = envelope_free(&method) {
+            return self.agent_host_step(method, params, host);
         }
         if let Err(reason) = self.resolve_identities(&mut params) {
             return self.fail_step(reason);
@@ -1384,6 +1398,104 @@ impl Editor {
             move || call(&owner, agent, &method, request).map(|(answer, _)| answer),
             |result| Message::Evidence(EvidenceMessage::AgentAnswered(result)),
         )
+    }
+
+    /// One host method sent by the run's second client, such as another client's
+    /// `preferences.set`: as written, with `asset_id` when the method names one and a request
+    /// envelope of the agent's own when its schema names one. A module settings write, whose
+    /// envelope carries the revision the desktop holds, is refused. The desktop sends nothing: the
+    /// owner wakes the event sync, which reads what changed as a change made elsewhere. The step's
+    /// frame is captured once the agent has its answer, the sync has read past the event that
+    /// answer was given at, and nothing the sync started reading — the preferences, the theme
+    /// library, the flags, a theme to draw — is still in flight ([`AgentHostWait`]).
+    fn agent_host_step(
+        &mut self,
+        method: String,
+        mut params: Map<String, Value>,
+        host: HostStep,
+    ) -> Task<Message> {
+        if host.revision {
+            return self.fail_step(format!(
+                "an agent step sends no module settings write, and {method} is one"
+            ));
+        }
+        if host.takes_asset
+            && let Some(state) = &self.document.state
+        {
+            params.insert("asset_id".into(), json!(state.asset.id));
+        }
+        if host.request && !params.contains_key("mutation") {
+            let mutation = luxforge_core::MutationRequest {
+                actor: AGENT_ACTOR.into(),
+                ..request()
+            };
+            params.insert("mutation".into(), json!(mutation));
+        }
+        let owner = self.owner.clone();
+        let Some(evidence) = &mut self.evidence else {
+            return Task::none();
+        };
+        let agent = *evidence.agent.get_or_insert_with(|| owner.register());
+        evidence.agent_host = Some(AgentHostWait { sequence: None });
+        self.note_step(json!({"actor": AGENT_ACTOR}));
+        self.await_step(Settle::AgentHost);
+        owner_task(
+            move || call(&owner, agent, &method, Value::Object(params)),
+            |result| Message::Evidence(EvidenceMessage::AgentHostAnswered(result)),
+        )
+    }
+
+    /// The running `agent` step's host method answered: a refusal is recorded as failed and
+    /// captured on the next frame; an answer waits for the event sync to follow it.
+    fn agent_host_answered(&mut self, result: Result<(Value, u64), String>) {
+        let Some(wait) = self
+            .evidence
+            .as_mut()
+            .and_then(|evidence| evidence.agent_host.as_mut())
+        else {
+            return;
+        };
+        match result {
+            Ok((answer, sequence)) => {
+                wait.sequence = Some(sequence);
+                self.note_step(json!({"result": answer, "sequence": sequence}));
+                self.settle_agent_host();
+            }
+            Err(error) => {
+                if let Some(evidence) = &mut self.evidence {
+                    evidence.agent_host = None;
+                }
+                self.refuse_step(&error);
+                self.capture_next_frame();
+            }
+        }
+    }
+
+    /// Capture the running host `agent` step's frame once the desktop has followed the change:
+    /// the sync has read past the agent's answer, and the preferences, the theme library, the
+    /// flags and the theme they choose are read and drawn. Checked after every message.
+    fn settle_agent_host(&mut self) {
+        let Some(sequence) = self
+            .evidence
+            .as_ref()
+            .filter(|evidence| evidence.awaiting == Some(Settle::AgentHost))
+            .and_then(|evidence| evidence.agent_host.as_ref())
+            .and_then(|wait| wait.sequence)
+        else {
+            return;
+        };
+        let followed = self.sync.sequence >= sequence
+            && self.sync.poll.idle()
+            && self.preferences.reading.idle()
+            && self.themes.listing.idle()
+            && !self.settings.reading
+            && self.theme_settled();
+        if followed {
+            if let Some(evidence) = &mut self.evidence {
+                evidence.agent_host = None;
+            }
+            self.settle_step(Settle::AgentHost, "agent_host_followed");
+        }
     }
 
     /// The running `agent` step's edit answered. A refusal, or an answer still at the revision it
@@ -3952,6 +4064,15 @@ impl Editor {
         self.theme_import(PathBuf::from(path))
     }
 
+    /// Import an Omarchy theme folder, or a folder of them, through the same task the folder
+    /// dialog's answer starts. The step records what each theme became, with its report; it fails
+    /// only when the folder is refused as a whole, since a theme that conflicts or fails is the
+    /// import's own outcome, listed in the tab.
+    fn theme_import_omarchy_step(&mut self, path: String) -> Task<Message> {
+        self.await_step(Settle::Themes);
+        self.theme_import_folder(PathBuf::from(path))
+    }
+
     /// Change one flag through its row, as a person does: the switch or a segment, Reset for
     /// `null`, or for a number its field typed and Enter pressed. A change the row sends waits for
     /// `flags.set`; a number the field refuses sends nothing and is captured with the refusal in
@@ -4500,6 +4621,17 @@ impl Editor {
                     self.settle_step(Settle::Theme, by);
                 }
             }
+            // The step's record keeps what each theme of the folder became, with its report.
+            Outcome::ThemeFolderImported(detail) => {
+                if self
+                    .evidence
+                    .as_ref()
+                    .and_then(|evidence| evidence.awaiting)
+                    == Some(Settle::Themes)
+                {
+                    self.note_step(json!({ "folder_import": detail }));
+                }
+            }
             Outcome::ThemesAnswered { failure } => {
                 if let Some(reason) = failure {
                     self.refuse_step(reason);
@@ -4923,6 +5055,7 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     editor.settle_when_quiet();
     editor.settle_capability();
+    editor.settle_agent_host();
     // The GPU identity hook follows the photograph at Fit, the one view it draws.
     let fit = matches!(editor.session.preview.view.zoom, luxforge_core::Zoom::Fit);
     let photo = editor
@@ -5536,6 +5669,7 @@ mod tests {
             warm_wait: None,
             agent: None,
             agent_wait: None,
+            agent_host: None,
             sync: CaptureSync::default(),
             recorded: Recorded::default(),
             gpu_identity: None,
@@ -6078,19 +6212,35 @@ mod tests {
         finish(editor, catalog);
     }
 
-    /// An `agent` step sends only an edit of the open photograph, whose read-back is what it
-    /// settles on; any other method is refused and still captured.
+    /// An `agent` step sends an edit of the open photograph or a host method, but no module
+    /// settings write, whose envelope carries the revision the desktop holds: that is refused and
+    /// still captured. A host method waits for the event sync to follow it.
     #[test]
-    fn an_agent_step_refuses_a_method_that_is_no_edit_of_the_photograph() {
-        let (mut editor, catalog, _, _) = scripted(r#"[{"agent":{"method":"preset.list"}}]"#);
+    fn an_agent_step_refuses_a_module_settings_write_and_waits_on_a_host_method() {
+        let (mut editor, catalog, _, _) = scripted(
+            r#"[{"agent":{"method":"module.settings.reset","params":{"module_id":"luxforge.lens"}}}]"#,
+        );
         let _ = editor.next_step();
         assert!(evidence(&editor).had_errors && evidence(&editor).capture_pending);
         assert!(evidence(&editor).agent.is_none(), "no client registered");
         assert!(
-            editor.status.text.contains("not an edit of it"),
+            editor
+                .status
+                .text
+                .contains("sends no module settings write"),
             "{}",
             editor.status.text
         );
+        finish(editor, catalog);
+
+        let (mut editor, catalog, _, _) = scripted(r#"[{"agent":{"method":"preset.list"}}]"#);
+        let _ = editor.next_step();
+        assert!(
+            evidence(&editor).agent.is_some(),
+            "the second client is registered"
+        );
+        assert_eq!(evidence(&editor).awaiting, Some(Settle::AgentHost));
+        assert!(!evidence(&editor).capture_pending, "waits for its answer");
         finish(editor, catalog);
     }
 

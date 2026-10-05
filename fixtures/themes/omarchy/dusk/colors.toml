@@ -1,0 +1,23 @@
+# A synthetic dark Omarchy 4 palette for the theme scenario: a near-neutral surround, a violet-grey
+# panel and a rose accent apart from the reserved clipping and mask colours.
+mode = "dark"
+
+accent = "#d0789a"
+selection = "#3a3540"
+muted = "#5a5560"
+
+background = "#24222a"
+dark_background = "#1a191d"
+lighter_background = "#302d37"
+
+foreground = "#e4e0ea"
+dark_foreground = "#7a7484"
+light_foreground = "#cfcad6"
+bright_foreground = "#f2eff6"
+
+red = "#e06c75"
+yellow = "#e5c07b"
+green = "#98c379"
+cyan = "#56b6c2"
+blue = "#61afef"
+magenta = "#c678dd"

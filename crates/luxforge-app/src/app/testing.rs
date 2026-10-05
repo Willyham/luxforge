@@ -397,6 +397,7 @@ pub(crate) fn scripted_evidence(steps: &str) -> Evidence {
         warm_wait: None,
         agent: None,
         agent_wait: None,
+        agent_host: None,
         sync: crate::app::evidence::CaptureSync::default(),
         recorded: Default::default(),
         gpu_identity: None,

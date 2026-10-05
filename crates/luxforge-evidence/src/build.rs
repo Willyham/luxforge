@@ -152,6 +152,12 @@ impl Step {
         Self::ThemeImport { path: path.into() }
     }
 
+    /// Import an Omarchy theme folder, or a folder of them, through the Appearance tab's Import
+    /// Omarchy theme… task.
+    pub fn theme_import_omarchy(path: impl Into<String>) -> Self {
+        Self::ThemeImportOmarchy { path: path.into() }
+    }
+
     /// Change one flag through its row, or Reset it for `None`.
     pub fn flag(id: impl Into<String>, value: Option<Value>) -> Self {
         Self::Flag {

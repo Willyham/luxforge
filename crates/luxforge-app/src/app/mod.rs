@@ -138,6 +138,9 @@ mod sync_tests;
 pub(crate) mod tasks;
 #[cfg(test)]
 pub(crate) mod testing;
+pub(crate) mod theme_folder;
+#[cfg(test)]
+mod theme_folder_tests;
 pub(crate) mod themes;
 #[cfg(test)]
 mod themes_tests;

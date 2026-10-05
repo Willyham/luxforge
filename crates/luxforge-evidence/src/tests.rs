@@ -250,6 +250,8 @@ fn api_draft_view_workspace_preview_palette_and_pick_round_trip() {
         {"theme":{"id":"omarchy.nord"}},
         {"theme_import":{"path":"fixtures/themes/paper.lftheme"}},
         {"theme":{"name":"Paper"}},
+        {"theme_import_omarchy":{"path":"fixtures/themes/omarchy"}},
+        {"agent":{"method":"preferences.set","params":{"theme":"luxforge.dark"}}},
     ]));
     assert_eq!(steps[1], Step::api("history.undo"));
     assert_eq!(steps[2], Step::Draft(DraftStep::Start));
@@ -284,6 +286,14 @@ fn api_draft_view_workspace_preview_palette_and_pick_round_trip() {
         Step::theme_import("fixtures/themes/paper.lftheme")
     );
     assert_eq!(steps[40], Step::theme_named("Paper"));
+    assert_eq!(
+        steps[41],
+        Step::theme_import_omarchy("fixtures/themes/omarchy")
+    );
+    assert_eq!(
+        steps[42],
+        Step::agent("preferences.set", json!({"theme": "luxforge.dark"}))
+    );
     // A step with no tab is written without one, as before tabs were named.
     assert_eq!(
         Step::settings(true).to_value(),
@@ -431,6 +441,14 @@ fn api_draft_view_workspace_preview_palette_and_pick_round_trip() {
         (
             json!({"theme_import":{"path":""}}),
             "theme_import path takes a non-empty string",
+        ),
+        (
+            json!({"theme_import_omarchy":{"path":" "}}),
+            "theme_import_omarchy path takes a non-empty string",
+        ),
+        (
+            json!({"theme_import_omarchy":{"folder":"themes"}}),
+            "unknown field `folder`",
         ),
         (
             json!({"flag":{"id":"proof.number"}}),
