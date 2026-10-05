@@ -590,6 +590,72 @@ struct Other {
     gaps: usize,
     unrendered: usize,
     figures: Extremes,
+    samples: Samples,
+}
+
+/// The sample kind's figures over the stacks it was measured on: how many points were read, how
+/// many had a byte on screen and how many differed from it, and the largest mean, p99, signed mean
+/// ΔL\* and single ΔE00 of a stack's samples against the reference, with the stack.
+#[derive(Default)]
+struct Samples {
+    points: u64,
+    on_screen: u64,
+    unequal: u64,
+    largest: [Option<(f64, String)>; 4],
+}
+
+impl Samples {
+    const FIGURES: [&'static str; 4] = ["mean", "p99", "mean_delta_l", "max"];
+
+    fn add(&mut self, measured: &Value, cell: &str) {
+        self.points += measured["samples"].as_u64().unwrap_or(0);
+        self.on_screen += measured["on_screen"].as_u64().unwrap_or(0);
+        self.unequal += measured["unequal"].as_u64().unwrap_or(0);
+        for (largest, name) in self.largest.iter_mut().zip(Self::FIGURES) {
+            // A figure that is not a number is the worst there is, and stays so.
+            let value = measured[name].as_f64().map_or(f64::INFINITY, f64::abs);
+            if largest.as_ref().is_none_or(|(held, _)| value > *held) {
+                *largest = Some((value, cell.to_owned()));
+            }
+        }
+    }
+
+    fn value(&self) -> Value {
+        let mut value = json!({
+            "points": self.points,
+            "on_screen": self.on_screen,
+            "unequal_to_the_screen": self.unequal,
+        });
+        for (largest, name) in self.largest.iter().zip(Self::FIGURES) {
+            value[format!("largest_{name}")] = match largest {
+                Some((figure, cell)) => json!({"value": figure, "cell": cell}),
+                None => Value::Null,
+            };
+        }
+        value
+    }
+}
+
+/// What of a stack's samples is past `class`'s limit, by name: the mean, the p99 and the signed
+/// mean ΔL\* against the reference (a worst block has no meaning over scattered points), and a
+/// sample unequal to the byte on screen.
+fn sample_exceeded(measured: &Value, class: Class) -> Vec<&'static str> {
+    let limits = class.limits();
+    let figure = |key: &str| measured[key].as_f64().unwrap_or(f64::INFINITY);
+    let mut exceeded = Vec::new();
+    if figure("mean") > limits.mean {
+        exceeded.push("mean");
+    }
+    if figure("p99") > limits.p99 {
+        exceeded.push("p99");
+    }
+    if figure("mean_delta_l").abs() > limits.mean_delta_l {
+        exceeded.push("mean_delta_l");
+    }
+    if measured["unequal"].as_u64() != Some(0) {
+        exceeded.push("on_screen");
+    }
+    exceeded
 }
 
 /// What one view and class of the picture holds over the corpus.
@@ -855,14 +921,18 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
                     if let Some(figures) = &figures {
                         counts.figures.add(figures, cell);
                     }
+                    if *kind == Kind::Sample {
+                        counts.samples.add(measured, cell);
+                    }
                     if measured["passed"] == true {
                         counts.within += 1;
                     } else {
                         counts.past += 1;
-                        let mut exceeded = figures
-                            .as_ref()
-                            .map(|figures| exceeded(figures, class))
-                            .unwrap_or_default();
+                        let mut exceeded = match (*kind, &figures) {
+                            (Kind::Sample, _) => sample_exceeded(measured, class),
+                            (_, Some(figures)) => exceeded(figures, class),
+                            (_, None) => Vec::new(),
+                        };
                         if measured["repeatable"] == false {
                             exceeded.push("repeatable");
                         }
@@ -961,7 +1031,7 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
         }
     }
     for (kind, counts) in &other {
-        let result = json!({
+        let mut result = json!({
             "kind": kind.name(),
             "view": "the whole output stage",
             "measured": counts.measured,
@@ -980,6 +1050,9 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
                 "passed"
             },
         });
+        if *kind == Kind::Sample {
+            result["samples"] = counts.samples.value();
+        }
         results.push(result);
     }
     report["results"] = json!(results);
