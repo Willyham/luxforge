@@ -25,10 +25,18 @@
 //!   estimates, stitched and reduced to the view's size as the reference is; at 100% the region plan
 //!   over the visible window, which is the frame a drag draws there.
 //!
-//! The other output kinds — the histogram and clipping counts, samples and export — are computed on
-//! the reference and recorded as not rendered by the GPU: their comparisons ([`histogram_kind`],
-//! [`sample_kind`], [`export_kind`]) take the GPU's output once the stage that renders it supplies
-//! it.
+//! **Export** is the GPU's ([`export_kind`]): each stack's output stage streamed in tiles by the
+//! desktop's GPU tile worker on this host's adapter, as the export lane streams an export, after
+//! the reference frame's render has stored the stack's global estimates, as a settled frame
+//! stores them; its codes, which the encoder reads, against the reference frame's, which the
+//! reference export encodes, by the display limit of the stack's class over every pixel; and the
+//! same stream drawn again by a second worker on a device of its own, which must be the same bytes.
+//! A stream the GPU refuses or stops drawing is a gap naming why, and a stack whose export the
+//! export lane would hand the reference before any render had stored its Dehaze light says so.
+//!
+//! The histogram and clipping counts and samples are computed on the reference and recorded as not
+//! rendered by the GPU: their comparisons ([`histogram_kind`], [`sample_kind`]) take the GPU's
+//! output once the stage that renders it supplies it.
 //!
 //! It writes `cells.json` to `LUXFORGE_GPU_CORPUS_OUTPUT`, rewritten after every stack, and judges
 //! nothing: `cargo xtask gpu-qualification` holds every cell to its limit and writes the report. A
@@ -40,9 +48,12 @@ use super::{
     Cell, CellOptions, CorpusSource, Opened, RegionDraw, corpus_sources, draw_region, fit_bounds,
     headless, proxy_cell, region_cell_in, write_png,
 };
+use crate::app::gpu_tiles::GpuTiles;
 use luxforge_core::{
-    Cancel, Evaluation, PreviewRequest, ProxyBounds, Raster, Render, RenderOptions,
+    Cancel, Evaluation, GpuFallback, PreviewRequest, ProxyBounds, Raster, Render, RenderOptions,
+    RendererReason, STREAM_TILE_SIDES,
     analysis::Report,
+    tiles::{TileFallback, TileService},
 };
 use luxforge_reference::{
     preview_error::{self, Class, Rgb8, Statistics},
@@ -66,9 +77,112 @@ const HISTOGRAM_NOT_RENDERED: &str = "the GPU does not render the histogram and 
 /// Why samples are not compared on this branch.
 const SAMPLE_NOT_RENDERED: &str = "the GPU does not answer samples yet: a sample from a GPU tile \
     render is stage 4's, and until it lands samples come from the reference renderer";
-/// Why export is not compared on this branch.
-const EXPORT_NOT_RENDERED: &str = "the GPU does not export yet: export through GPU tiles is stage \
-    4's, and until it lands export is the reference renderer's";
+
+/// The two GPU tile workers the export kind streams each stack's output stage through, as the
+/// export lane streams an export, each on a device of its own on this host's adapter: the second
+/// draws every stream again, which must be the same bytes.
+struct Exporters {
+    /// The adapter's backend and name.
+    adapter: (String, String),
+    workers: [GpuTiles; 2],
+}
+
+impl Exporters {
+    /// Two workers on this host's adapter, or none without one.
+    fn new(test: &str) -> Option<Self> {
+        let adapter = crate::app::gpu_tiles_tests::host_adapter(test)?;
+        let worker = || GpuTiles::new(Some(adapter.clone()), false);
+        Some(Self {
+            workers: [worker(), worker()],
+            adapter,
+        })
+    }
+}
+
+/// The GPU's export of a stack: the codes of its output stage, three bytes a pixel, as the first
+/// worker's stream handed them to the encoder, whether the second's were the same bytes, and the
+/// bands and tiles the first drew it in; or why the GPU did not export it.
+enum Exported {
+    Drawn {
+        codes: Vec<u8>,
+        repeatable: bool,
+        bands: u64,
+        tiles: u64,
+    },
+    Gap(String),
+}
+
+/// `evaluation`'s output stage streamed through each of `exporters`' workers in turn, the second
+/// compared band by band with the first.
+fn exported(exporters: &Exporters, evaluation: &Evaluation) -> Exported {
+    let [one, two] = &exporters.workers;
+    let before = one.figures();
+    let mut codes = Vec::new();
+    if let Err(reason) = streamed(one, evaluation, |rgba| codes.extend(rgb_of(rgba))) {
+        return Exported::Gap(reason);
+    }
+    let after = one.figures();
+    let (mut at, mut repeatable) = (0, true);
+    let again = streamed(two, evaluation, |rgba| {
+        let band: Vec<u8> = rgb_of(rgba).collect();
+        repeatable &= codes.get(at..at + band.len()) == Some(band.as_slice());
+        at += band.len();
+    });
+    if let Err(reason) = again {
+        return Exported::Gap(format!("the second worker: {reason}"));
+    }
+    Exported::Drawn {
+        repeatable: repeatable && at == codes.len(),
+        codes,
+        bands: after.bands - before.bands,
+        tiles: after.tiles - before.tiles,
+    }
+}
+
+/// The three codes of each pixel of `rgba`.
+fn rgb_of(rgba: &[u8]) -> impl Iterator<Item = u8> + '_ {
+    rgba.chunks_exact(4)
+        .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
+}
+
+/// Stream `evaluation`'s output stage through `worker`, handing each band's codes to `take`; why
+/// the reference renders the export instead when the worker refuses the stream or stops drawing
+/// it, as the export's result names it, or why the stream failed.
+fn streamed(
+    worker: &GpuTiles,
+    evaluation: &Evaluation,
+    mut take: impl FnMut(&[u8]),
+) -> Result<(), String> {
+    let mut stream = worker
+        .stream(evaluation, &Cancel::new())
+        .map_err(|fallback| refused(&fallback))?;
+    while let Some(band) = stream.next() {
+        match band {
+            Ok(band) => take(&band.rgba),
+            Err(error) => {
+                return Err(match stream.fallback() {
+                    Some(fallback) => refused(fallback),
+                    None => format!("the stream failed: {error}"),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Why the reference renders an export, as its result names it, with what the GPU said.
+fn refused(fallback: &TileFallback) -> String {
+    let reason = RendererReason::from(fallback).as_str();
+    match fallback {
+        TileFallback::Plan(plan) => format!("the reference renders it: {reason} ({plan})"),
+        TileFallback::Budget { requested, budget } => format!(
+            "the reference renders it: {reason} ({requested} bytes for one tile, past {budget})"
+        ),
+        TileFallback::Unavailable(_) | TileFallback::Stage(_) => {
+            format!("the reference renders it: {reason}")
+        }
+    }
+}
 
 /// One view of the corpus: Fit, or a percentage of the output stage.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -255,6 +369,16 @@ pub(crate) fn against_reference(test: &str) {
         settings.views,
         settings.kinds
     );
+    // The export kind's two GPU tile workers, on this host's adapter.
+    let exporters = settings
+        .kinds
+        .contains(&Kind::Export)
+        .then(|| Exporters::new(test))
+        .flatten();
+    if let Some(exporters) = &exporters {
+        let (backend, name) = &exporters.adapter;
+        document["export_adapter"] = json!({"backend": backend, "adapter": name});
+    }
     let sources = corpus_sources(&corpus, &generated, manifest.as_ref());
     document["sources"] = corpus["sources"]
         .as_array()
@@ -296,7 +420,7 @@ pub(crate) fn against_reference(test: &str) {
             }
             let record = match sources.iter().find(|found| found.id == source_id) {
                 Some(source) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    pair(&qualifier, &settings, recipe, source)
+                    pair(&qualifier, &settings, exporters.as_ref(), recipe, source)
                 }))
                 .unwrap_or_else(|panic| {
                     let reason = panic
@@ -345,6 +469,7 @@ fn write(output: &Path, document: &Value) {
 fn pair(
     qualifier: &Qualifier,
     settings: &Settings,
+    exporters: Option<&Exporters>,
     recipe: &Value,
     source: &CorpusSource,
 ) -> Value {
@@ -362,7 +487,7 @@ fn pair(
     });
     let steps = recipe["steps"].as_array().expect("steps");
     match measure(
-        qualifier,
+        (qualifier, exporters),
         settings,
         class,
         steps,
@@ -382,7 +507,7 @@ fn pair(
 
 /// [`pair`]'s measurements, recorded in `record`.
 fn measure(
-    qualifier: &Qualifier,
+    (qualifier, exporters): (&Qualifier, Option<&Exporters>),
     settings: &Settings,
     class: Class,
     steps: &[Value],
@@ -403,6 +528,21 @@ fn measure(
         PreviewRequest::new(opened.client, opened.asset.clone()),
     )?;
     let evaluation = job.evaluation;
+    // Before anything has rendered the stack: whether the export lane would stream it, or hand it
+    // the reference for a Dehaze light no render has stored yet, which stage 3's per-frame light
+    // replaces. Planning reads no pixel.
+    let without_stored_light = settings
+        .kinds
+        .contains(&Kind::Export)
+        .then(|| luxforge_core::plan_stream(&evaluation, STREAM_TILE_SIDES[0]).err())
+        .flatten()
+        .filter(|fallback| {
+            matches!(
+                fallback,
+                TileFallback::Plan(GpuFallback::RegionEstimate { .. })
+            )
+        })
+        .map(|fallback| RendererReason::from(&fallback).as_str());
     let exact = luxforge_core::render(
         evaluation.registry(),
         evaluation.source(),
@@ -471,7 +611,20 @@ fn measure(
             Kind::PictureAtRest | Kind::PictureInMotion => continue,
             Kind::Histogram => histogram_kind(&reference, None)?,
             Kind::Sample => sample_kind(&reference, None, class)?,
-            Kind::Export => export_kind(&reference, None, class)?,
+            Kind::Export => {
+                // Streamed now the reference frame's render has stored the stack's estimates, as
+                // a settled frame stores them.
+                let drawn = match exporters {
+                    Some(exporters) => exported(exporters, &evaluation),
+                    None => Exported::Gap("no adapter for the GPU tile workers".to_owned()),
+                };
+                let mut measured = export_kind(&reference, drawn, class)?;
+                if let Some(reason) = without_stored_light {
+                    measured["without_stored_light"] = json!(reason);
+                }
+                eprintln!("{cell}: export: {measured}");
+                measured
+            }
         };
         record["kinds"][kind.name()] = measured;
     }
@@ -1015,30 +1168,48 @@ fn sample_kind(
     }))
 }
 
-/// Export: the reference export, the exact whole frame, and the GPU's export and a second export of
-/// the same stack, `gpu`, against it and against each other when a stage supplies them, by the
-/// display limit of `class` over every pixel. Without them the kind is not rendered by the GPU.
-fn export_kind(
-    reference: &Raster,
-    gpu: Option<(&Raster, &Raster)>,
-    class: Class,
-) -> Result<Value, String> {
-    let Some((export, repeat)) = gpu else {
-        return Ok(json!({
-            "status": "not-rendered",
-            "reason": EXPORT_NOT_RENDERED,
-            "reference": {"stage": [reference.width, reference.height]},
-        }));
+/// Export: the GPU's export of the stack, `exported`, against the reference export, by the display
+/// limit of `class` over every pixel of the codes each encodes — the GPU's stream's and the
+/// reference's exact whole frame, `reference` — and repeatable, its second stream the same bytes;
+/// or a gap naming why the GPU did not export it, never a pass.
+fn export_kind(reference: &Raster, exported: Exported, class: Class) -> Result<Value, String> {
+    let stage = [reference.width, reference.height];
+    let (codes, repeatable, bands, tiles) = match exported {
+        Exported::Gap(reason) => {
+            return Ok(json!({
+                "status": "gap",
+                "reason": reason,
+                "reference": {"stage": stage},
+            }));
+        }
+        Exported::Drawn {
+            codes,
+            repeatable,
+            bands,
+            tiles,
+        } => (codes, repeatable, bands, tiles),
     };
-    let (expected, export, repeat) = (rgb(reference), rgb(export), rgb(repeat));
-    let (width, height) = (reference.width, reference.height);
-    let error = tolerance::export(
-        Rgb8::new(width, height, &export)?,
-        Rgb8::new(width, height, &repeat)?,
-        Rgb8::new(width, height, &expected)?,
-    )?;
+    let expected = rgb(reference);
+    if codes.len() != expected.len() {
+        return Err(format!(
+            "the GPU's export holds {} codes where the reference's {} × {} stage holds {}",
+            codes.len(),
+            stage[0],
+            stage[1],
+            expected.len()
+        ));
+    }
+    let error = tolerance::ExportError {
+        statistics: compare(&codes, &expected, (reference.width, reference.height))?,
+        repeatable,
+    };
     Ok(json!({
         "status": "measured",
+        "renderer": "gpu",
+        "against": "the reference export's codes: the exact whole frame its encoder reads",
+        "stage": stage,
+        "bands": bands,
+        "tiles": tiles,
         "statistics": statistics(&error.statistics),
         "repeatable": error.repeatable,
         "passed": error.passed(class),
@@ -1165,20 +1336,101 @@ fn the_sample_comparison_reads_the_reference_at_its_points_and_judges_a_gpus_ans
 #[test]
 fn the_export_comparison_holds_an_export_to_the_reference_and_to_itself() {
     let reference = raster(40, 30, |x, y| [x as u8 * 5, y as u8 * 7, 30]);
-    let unrendered = export_kind(&reference, None, Class::Pointwise).unwrap();
-    assert_eq!(unrendered["status"], "not-rendered");
-    assert_eq!(unrendered["reference"]["stage"], json!([40, 30]));
-    let judged = export_kind(&reference, Some((&reference, &reference)), Class::Pointwise).unwrap();
+    let gap = export_kind(
+        &reference,
+        Exported::Gap("the reference renders it: region-estimate".into()),
+        Class::Pointwise,
+    )
+    .unwrap();
+    assert_eq!(gap["status"], "gap", "never a pass");
+    assert_eq!(gap["reason"], "the reference renders it: region-estimate");
+    assert_eq!(gap["reference"]["stage"], json!([40, 30]));
+    let drawn = |codes: Vec<u8>, repeatable| Exported::Drawn {
+        codes,
+        repeatable,
+        bands: 2,
+        tiles: 4,
+    };
+    let judged = export_kind(&reference, drawn(rgb(&reference), true), Class::Pointwise).unwrap();
     assert_eq!(
         (judged["passed"].clone(), judged["repeatable"].clone()),
         (json!(true), json!(true))
     );
-    let other = raster(40, 30, |x, y| [x as u8 * 5, y as u8 * 7, 31]);
-    let judged = export_kind(&reference, Some((&reference, &other)), Class::Pointwise).unwrap();
     assert_eq!(
-        (judged["passed"].clone(), judged["repeatable"].clone()),
-        (json!(false), json!(false))
+        (judged["bands"].clone(), judged["tiles"].clone()),
+        (json!(2), json!(4))
     );
+    // Within the limit but not the same bytes twice: not a pass.
+    let judged = export_kind(&reference, drawn(rgb(&reference), false), Class::Pointwise).unwrap();
+    assert_eq!(judged["passed"], false);
+    let far = rgb(&raster(40, 30, |x, y| [x as u8 * 5, y as u8 * 7, 90]));
+    let judged = export_kind(&reference, drawn(far, true), Class::Spatial).unwrap();
+    assert_eq!(judged["passed"], false, "{judged}");
+    assert!(export_kind(&reference, drawn(vec![0; 9], true), Class::Pointwise).is_err());
+}
+
+/// The GPU's export of a stack streamed through two workers on this host's adapter, as the export
+/// lane streams it: the second the same bytes as the first, and each band's codes in order.
+#[test]
+fn an_exported_stack_is_streamed_twice_and_compared_band_by_band() {
+    let test = "an_exported_stack_is_streamed_twice_and_compared_band_by_band";
+    let Some(exporters) = Exporters::new(test) else {
+        return;
+    };
+    for worker in &exporters.workers {
+        worker.draw_streams_at(vec![64]);
+    }
+    let (_, recipe) = crate::app::gpu_tiles_tests::families()
+        .into_iter()
+        .find(|(family, _)| *family == "Presence after Detail")
+        .expect("the family");
+    let source = crate::app::gpu_window_tests::source(luxforge_core::BoundaryFormat::Half);
+    let registry = std::sync::Arc::new(luxforge_core::ModuleRegistry::builtin());
+    let context = luxforge_core::RenderContext::new();
+    let frame = luxforge_core::render(
+        &registry,
+        &source,
+        &recipe,
+        RenderOptions::exact(&Cancel::never()),
+        &context,
+    )
+    .unwrap()
+    .frame(luxforge_core::SnapshotId::new())
+    .unwrap();
+    let evaluation = Evaluation::new(
+        registry,
+        context,
+        source,
+        crate::app::testing::entry(&luxforge_core::AssetId::new(), 1, None),
+        recipe,
+        None,
+    );
+    let Exported::Drawn {
+        codes,
+        repeatable,
+        bands,
+        tiles,
+    } = exported(&exporters, &evaluation)
+    else {
+        panic!("{test}: the stream was refused");
+    };
+    assert!(repeatable, "two devices, the same bytes");
+    assert_eq!(codes.len(), rgb(&frame).len());
+    assert_eq!(bands, u64::from(frame.height.div_ceil(64)));
+    assert!(tiles >= bands);
+    let judged = export_kind(
+        &frame,
+        Exported::Drawn {
+            codes,
+            repeatable,
+            bands,
+            tiles,
+        },
+        Class::Spatial,
+    )
+    .unwrap();
+    eprintln!("{test}: {judged}");
+    assert_eq!(judged["passed"], true, "{judged}");
 }
 
 #[test]
