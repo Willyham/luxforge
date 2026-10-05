@@ -1,7 +1,7 @@
 //! States added with the module control vocabulary.
 
 use crate::*;
-use iced::Element;
+use crate::{Element, Token};
 
 pub(crate) fn gallery_components() -> Vec<Element<'static, ()>> {
     let mut states = Vec::new();
@@ -298,8 +298,8 @@ pub(crate) fn gallery_components() -> Vec<Element<'static, ()>> {
                     iced::widget::text(name)
                         .size(theme::SIZE_CAPTION)
                         .width(120.0),
-                    icon::<()>(symbol, 12.0, theme::TEXT_PRIMARY),
-                    icon::<()>(symbol, 16.0, theme::TEXT_PRIMARY),
+                    icon::<()>(symbol, 12.0, Token::Text),
+                    icon::<()>(symbol, 16.0, Token::Text),
                 ]
                 .spacing(12.0)
                 .align_y(iced::Alignment::Center),

@@ -1,8 +1,9 @@
 //! A themed menu choice that reports the selected option index.
 
 use crate::theme;
+use crate::{Element, Token};
 use iced::widget::{container, pick_list, row, text};
-use iced::{Alignment, Element, Length};
+use iced::{Alignment, Length};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MenuChoiceModel {
@@ -26,7 +27,7 @@ pub fn menu_choice<'a, M: Clone + 'a>(
             container(
                 text(selected.unwrap_or_default())
                     .size(theme::SIZE_CONTROL)
-                    .color(theme::TEXT_TERTIARY)
+                    .style(theme::ink(Token::TextTertiary))
             )
             .padding(6.0)
         ]

@@ -5,10 +5,11 @@
 use super::text::{caption, section_label};
 use super::truncated_text::truncated_text;
 use crate::theme;
+use crate::{Element, Theme, Token};
 use iced::alignment::Horizontal;
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, button, container, mouse_area, row, text};
-use iced::{Alignment, Border, Color, Element, Length, Theme};
+use iced::{Alignment, Border, Color, Length};
 
 /// A list row's marker, drawn as a small circle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,11 +48,11 @@ pub fn list_row<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let current = model.marker == Marker::Current;
     let label_color = if model.dimmed {
-        theme::TEXT_TERTIARY
+        Token::TextTertiary
     } else if current {
-        theme::TEXT_CURRENT_ROW
+        Token::TextCurrentRow
     } else {
-        theme::TEXT_LABEL
+        Token::TextLabel
     };
 
     // The label and its tag take what the sequence, the marker and the actor leave, so the actor
@@ -84,7 +85,7 @@ pub fn list_row<'a, M: Clone + 'a>(
         content = content.push(
             text(trailing.clone())
                 .size(theme::SIZE_SMALL_CAPTION)
-                .color(theme::TEXT_TERTIARY)
+                .style(theme::ink(Token::TextTertiary))
                 .wrapping(Wrapping::None),
         );
     }
@@ -137,9 +138,9 @@ pub fn panel_heading<'a, M: Clone + 'a>(
 /// A small marker circle: filled, outlined or hollow depending on [`Marker`].
 fn marker_dot<'a, M: Clone + 'a>(marker: Marker) -> Element<'a, M> {
     match marker {
-        Marker::Current => marker_circle(Some(theme::ACCENT), None),
-        Marker::Previewed => marker_circle(None, Some(theme::ACCENT)),
-        Marker::Plain => marker_circle(None, Some(theme::TEXT_TERTIARY)),
+        Marker::Current => marker_circle(Some(Token::Accent), None),
+        Marker::Previewed => marker_circle(None, Some(Token::Accent)),
+        Marker::Plain => marker_circle(None, Some(Token::TextTertiary)),
         Marker::None => marker_circle(None, None),
     }
 }
@@ -147,23 +148,23 @@ fn marker_dot<'a, M: Clone + 'a>(marker: Marker) -> Element<'a, M> {
 /// The list vocabulary's [`theme::MARKER_SIZE`] circle, filled with `fill` and ringed with a
 /// [`theme::MARKER_RING_WIDTH`] outline in `ring`, either or neither. A job row draws its running
 /// and finished markers with it, so they are the same circles as the history's.
-pub(crate) fn marker_circle<'a, M: 'a>(fill: Option<Color>, ring: Option<Color>) -> Element<'a, M> {
-    let (border_color, border_width) = match ring {
-        Some(color) => (color, theme::MARKER_RING_WIDTH),
-        None => (Color::TRANSPARENT, 0.0),
-    };
-
+pub(crate) fn marker_circle<'a, M: 'a>(fill: Option<Token>, ring: Option<Token>) -> Element<'a, M> {
     container(Space::new())
         .width(Length::Fixed(theme::MARKER_SIZE))
         .height(Length::Fixed(theme::MARKER_SIZE))
-        .style(move |_theme: &Theme| {
+        .style(move |theme: &Theme| {
+            let palette = theme.palette();
+            let (border_color, border_width) = match ring {
+                Some(token) => (palette.get(token), theme::MARKER_RING_WIDTH),
+                None => (Color::TRANSPARENT, 0.0),
+            };
             let style = container::Style::default().border(Border {
                 radius: (theme::MARKER_SIZE / 2.0).into(),
                 width: border_width,
                 color: border_color,
             });
             match fill {
-                Some(color) => style.background(color),
+                Some(token) => style.background(palette.get(token)),
                 None => style,
             }
         })

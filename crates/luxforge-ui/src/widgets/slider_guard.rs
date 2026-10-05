@@ -1,9 +1,10 @@
 //! Filter Iced slider events: panel scrolling must never edit, and disabled rails are inert.
 
 use super::decorator::Decoration;
+use crate::{Element, Theme};
 use iced::advanced::{Clipboard, Layout, Shell, mouse, widget::Tree};
 use iced::{
-    Element, Event, Rectangle, Renderer, Theme,
+    Event, Rectangle, Renderer,
     keyboard::{self, Key, key::Named},
 };
 

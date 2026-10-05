@@ -1,6 +1,6 @@
 //! A row of mutually exclusive labelled options on one track, as the title bar's view control
-//! draws them: the options inset on a [`theme::SEGMENT_TRACK`], the selected one raised on
-//! [`theme::SEGMENT_SELECTED`] and never tinted with the accent.
+//! draws them: the options inset on a [`Token::TabTrack`], the selected one raised on
+//! [`Token::TabSelected`] and never tinted with the accent.
 //!
 //! [`segmented`] builds the whole control from its options. [`segment`] and [`segment_track`] are
 //! its two parts, for a control whose last segment is sometimes something other than a label (the
@@ -9,9 +9,10 @@
 
 use crate::theme;
 use crate::widgets::icon_button::{Icon, icon};
+use crate::{Element, Token};
 use iced::widget::text::{LineHeight, Wrapping};
 use iced::widget::{Row, button, container, row, text};
-use iced::{Alignment, Element, Length};
+use iced::{Alignment, Length};
 
 /// Plain data for a segmented control.
 #[derive(Debug, Clone, PartialEq)]
@@ -60,9 +61,9 @@ pub fn chevron_segment<'a, M: Clone + 'a>(
     on_press: Option<M>,
 ) -> Element<'a, M> {
     let ink = match (on_press.is_some(), selected) {
-        (false, _) => theme::TEXT_TERTIARY,
-        (true, true) => theme::TEXT_BRIGHT,
-        (true, false) => theme::TEXT_SECONDARY,
+        (false, _) => Token::TextTertiary,
+        (true, true) => Token::TextBright,
+        (true, false) => Token::TextSecondary,
     };
     let content = row![
         segment_label(label),
@@ -73,7 +74,7 @@ pub fn chevron_segment<'a, M: Clone + 'a>(
     segment_with(content.into(), selected, on_press)
 }
 
-fn segment_label<'a>(label: String) -> iced::widget::Text<'a> {
+fn segment_label<'a>(label: String) -> iced::widget::Text<'a, crate::Theme> {
     text(label)
         .size(theme::SIZE_CONTROL)
         .line_height(LineHeight::Absolute(theme::SLIDER_LABEL_HEIGHT.into()))

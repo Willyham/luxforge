@@ -10,8 +10,9 @@
 
 use super::icon_button::{Icon, icon, with_tooltip};
 use crate::theme;
+use crate::{Element, Ink, Token};
 use iced::widget::{Row, button, container, tooltip};
-use iced::{Alignment, Color, Element, Length};
+use iced::{Alignment, Length};
 
 /// How a component combines with the ones above it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,15 +50,16 @@ pub struct ModeControlModel {
 
 /// A glyph's ink: the chosen Subtract in the highlight clipping red, the chosen Intersect in the
 /// shadow clipping blue, the chosen Add in bright text; the others tertiary. A fixed mode's glyph
-/// is dimmed, and a disabled control's glyphs are all faint.
-pub(crate) fn mode_ink(mode: CombineMode, selected: bool, fixed: bool, enabled: bool) -> Color {
+/// is dimmed, and a disabled control's glyphs are all faint. The two clipping colours are fixed,
+/// the same in every theme, as the mask-panels board draws them.
+pub(crate) fn mode_ink(mode: CombineMode, selected: bool, fixed: bool, enabled: bool) -> Ink {
     match (enabled, fixed, selected, mode) {
-        (false, ..) => theme::TEXT_FAINT,
-        (true, true, _, _) => theme::MODE_FIXED_INK,
-        (true, false, false, _) => theme::TEXT_TERTIARY,
-        (true, false, true, CombineMode::Add) => theme::TEXT_BRIGHT,
-        (true, false, true, CombineMode::Subtract) => theme::CLIPPING_HIGHLIGHT,
-        (true, false, true, CombineMode::Intersect) => theme::CLIPPING_SHADOW,
+        (false, ..) => Token::TextFaint.into(),
+        (true, true, _, _) => Token::ModeFixedInk.into(),
+        (true, false, false, _) => Token::TextTertiary.into(),
+        (true, false, true, CombineMode::Add) => Token::TextBright.into(),
+        (true, false, true, CombineMode::Subtract) => theme::CLIPPING_HIGHLIGHT.into(),
+        (true, false, true, CombineMode::Intersect) => theme::CLIPPING_SHADOW.into(),
     }
 }
 
@@ -137,20 +139,23 @@ mod tests {
     fn a_chosen_subtract_is_red_and_a_chosen_intersect_blue() {
         assert_eq!(
             mode_ink(CombineMode::Subtract, true, false, true),
-            theme::CLIPPING_HIGHLIGHT
+            theme::CLIPPING_HIGHLIGHT.into()
         );
         assert_eq!(
             mode_ink(CombineMode::Intersect, true, false, true),
-            theme::CLIPPING_SHADOW
+            theme::CLIPPING_SHADOW.into()
         );
         assert_eq!(
             mode_ink(CombineMode::Add, true, false, true),
-            theme::TEXT_BRIGHT
+            Token::TextBright.into()
         );
         for mode in CombineMode::ALL {
-            assert_eq!(mode_ink(mode, false, false, true), theme::TEXT_TERTIARY);
-            assert_eq!(mode_ink(mode, true, true, true), theme::MODE_FIXED_INK);
-            assert_eq!(mode_ink(mode, true, false, false), theme::TEXT_FAINT);
+            assert_eq!(
+                mode_ink(mode, false, false, true),
+                Token::TextTertiary.into()
+            );
+            assert_eq!(mode_ink(mode, true, true, true), Token::ModeFixedInk.into());
+            assert_eq!(mode_ink(mode, true, false, false), Token::TextFaint.into());
         }
     }
 

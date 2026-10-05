@@ -12,9 +12,10 @@ use super::icon_button::{Icon, IconButtonModel, header_icon_button, icon};
 use super::section_header::hairline;
 use super::text::group_label;
 use crate::theme;
+use crate::{Element, Token};
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, button, container, row, text};
-use iced::{Alignment, Element, Length, Padding};
+use iced::{Alignment, Length, Padding};
 
 /// Plain data for one sub-group header.
 #[derive(Debug, Clone, PartialEq)]
@@ -117,7 +118,7 @@ fn header<'a, M: Clone + 'a>(
                 Icon::ChevronRight
             };
             let content = row![
-                icon(chevron, theme::DISCLOSURE_SIZE, theme::TEXT_SECONDARY),
+                icon(chevron, theme::DISCLOSURE_SIZE, Token::TextSecondary),
                 group_label(model.label.clone())
             ]
             .spacing(theme::GROUP_HEADER_SPACING)
@@ -154,11 +155,11 @@ fn header<'a, M: Clone + 'a>(
             text(state.clone())
                 .size(theme::SIZE_CAPTION)
                 .wrapping(Wrapping::None)
-                .color(if model.state_accent {
-                    theme::ACCENT
+                .style(theme::ink(if model.state_accent {
+                    Token::Accent
                 } else {
-                    theme::TEXT_TERTIARY
-                }),
+                    Token::TextTertiary
+                })),
         );
     }
 

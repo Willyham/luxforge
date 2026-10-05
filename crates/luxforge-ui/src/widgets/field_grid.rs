@@ -11,9 +11,10 @@ use super::double_click::double_click_when;
 use super::number_field::{BoxSize, NumberFieldModel, invalid, outside_unit, sized_field_box};
 use super::text::error_caption;
 use crate::theme;
+use crate::{Element, Token};
 use iced::widget::text::Wrapping;
 use iced::widget::{Column, Row, Space, container, mouse_area, row, text};
-use iced::{Alignment, Element, Length, Padding};
+use iced::{Alignment, Length, Padding};
 
 /// One field of a grid, with the messages a number field publishes.
 pub struct GridField<'a, M> {
@@ -100,11 +101,11 @@ fn cell<'a, M: Clone + 'a>(field: GridField<'a, M>) -> Element<'a, M> {
         text(model.label.to_lowercase())
             .size(theme::SIZE_GRID_FIELD)
             .wrapping(Wrapping::None)
-            .color(if model.enabled {
-                theme::TEXT_LABEL
+            .style(theme::ink(if model.enabled {
+                Token::TextLabel
             } else {
-                theme::TEXT_TERTIARY
-            }),
+                Token::TextTertiary
+            })),
         on_reset,
         model.enabled,
     );

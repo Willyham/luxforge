@@ -14,12 +14,13 @@
 //! width beyond that. Under it: the host's hint, when it gives one, then a Points disclosure row
 //! whose numeric point rows are drawn only while it is open.
 
+use crate::{Element, Theme, Token};
 use crate::{
     Icon, IconButtonModel, SegmentedModel, SubGroupHeaderModel, ValueEdit, icon_button, segmented,
     sub_group_header, theme, value_input,
 };
 use iced::{
-    Alignment, Element, Length, Point, Rectangle, Renderer, Size, Theme,
+    Alignment, Length, Point, Rectangle, Renderer, Size,
     advanced::{
         self, Clipboard, Shell, Widget, layout,
         mouse::{Click, click::Kind},
@@ -268,7 +269,7 @@ pub fn curve_editor<'a, M: Clone + 'a>(
         body = body.push(
             text(hint.clone())
                 .size(theme::SIZE_CAPTION)
-                .color(theme::TEXT_TERTIARY),
+                .style(theme::ink(Token::TextTertiary)),
         );
     }
     let (header, toggle) = points_header(model);
@@ -334,10 +335,28 @@ struct FocusableCurveCanvas<'a, M> {
     on_event: Rc<dyn Fn(CurveEditorEvent) -> M + 'a>,
 }
 
+impl<M> FocusableCurveCanvas<'_, M> {
+    /// Calls `clear` when the model, the focus or the theme changed since the cache was drawn.
+    fn refresh(
+        &self,
+        key: &Cell<Option<(u64, bool, u64)>>,
+        focused: bool,
+        theme: &Theme,
+        clear: impl FnOnce(),
+    ) {
+        invalidate_on_version_change(
+            key,
+            (self.model.version, focused, theme.generation()),
+            clear,
+        );
+    }
+}
+
 #[derive(Default)]
 struct CurveState {
     cache: canvas::Cache,
-    version: Cell<Option<(u64, bool)>>,
+    /// The model version, focus and theme generation the cache was drawn for.
+    version: Cell<Option<(u64, bool, u64)>>,
     /// The point a press armed a drag on.
     active: Option<usize>,
     /// Where that press was, in window coordinates, until the pointer leaves the drag slop.
@@ -372,7 +391,7 @@ impl operation::Focusable for CurveState {
     }
 }
 
-impl<M: Clone> canvas::Program<M> for FocusableCurveCanvas<'_, M> {
+impl<M: Clone> canvas::Program<M, Theme> for FocusableCurveCanvas<'_, M> {
     type State = CurveState;
 
     fn update(
@@ -512,25 +531,24 @@ impl<M: Clone> canvas::Program<M> for FocusableCurveCanvas<'_, M> {
         &self,
         state: &Self::State,
         renderer: &Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         bounds: Rectangle,
         _cursor: Cursor,
     ) -> Vec<canvas::Geometry> {
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
             return Vec::new();
         }
-        invalidate_on_version_change(&state.version, (self.model.version, state.focused), || {
-            state.cache.clear()
-        });
+        self.refresh(&state.version, state.focused, theme, || state.cache.clear());
         let model = &self.model;
+        let palette = theme.palette();
         vec![state.cache.draw(renderer, bounds.size(), |frame| {
             let size = frame.size();
-            frame.fill_rectangle(Point::ORIGIN, size, theme::CONTROL);
+            frame.fill_rectangle(Point::ORIGIN, size, palette.control);
             if state.focused {
                 frame.stroke_rectangle(
                     Point::ORIGIN,
                     size,
-                    Stroke::default().with_color(theme::ACCENT).with_width(1.0),
+                    Stroke::default().with_color(palette.accent).with_width(1.0),
                 );
             }
             if let Some(background) = &model.background {
@@ -553,7 +571,7 @@ impl<M: Clone> canvas::Program<M> for FocusableCurveCanvas<'_, M> {
                     &path.build(),
                     iced::Color {
                         a: 0.16,
-                        ..theme::TEXT_SECONDARY
+                        ..palette.text_secondary
                     },
                 );
             }
@@ -561,7 +579,7 @@ impl<M: Clone> canvas::Program<M> for FocusableCurveCanvas<'_, M> {
                 let f = n as f32 / 4.0;
                 let grid = iced::Color {
                     a: 0.2,
-                    ..theme::TEXT_TERTIARY
+                    ..palette.text_tertiary
                 };
                 frame.stroke(
                     &Path::line(
@@ -582,7 +600,7 @@ impl<M: Clone> canvas::Program<M> for FocusableCurveCanvas<'_, M> {
                 frame.stroke(
                     &Path::line(Point::new(0.0, size.height), Point::new(size.width, 0.0)),
                     Stroke::default()
-                        .with_color(theme::TEXT_TERTIARY)
+                        .with_color(palette.text_tertiary)
                         .with_width(1.0),
                 );
             }
@@ -594,9 +612,7 @@ impl<M: Clone> canvas::Program<M> for FocusableCurveCanvas<'_, M> {
                 }
                 frame.stroke(
                     &path.build(),
-                    Stroke::default()
-                        .with_color(theme::TEXT_PRIMARY)
-                        .with_width(2.0),
+                    Stroke::default().with_color(palette.text).with_width(2.0),
                 );
             }
             for (index, point) in model.points.iter().enumerate() {
@@ -610,9 +626,9 @@ impl<M: Clone> canvas::Program<M> for FocusableCurveCanvas<'_, M> {
                         },
                     ),
                     if model.selected == Some(index) && model.dragging {
-                        theme::ACCENT
+                        palette.accent
                     } else {
-                        theme::TEXT_PRIMARY
+                        palette.text
                     },
                 );
             }
@@ -771,6 +787,20 @@ mod tests {
             points_max: 8,
             hint: None,
         }
+    }
+
+    /// The plot is drawn again when the theme changes, as well as when the model or the focus
+    /// does.
+    #[test]
+    fn a_theme_change_redraws_the_plot() {
+        let (canvas, state) = editor(model());
+        let (first, second) = (Theme::luxforge_dark(), Theme::luxforge_dark());
+        let mut clears = 0;
+        canvas.refresh(&state.version, false, &first, || clears += 1);
+        canvas.refresh(&state.version, false, &first, || clears += 1);
+        assert_eq!(clears, 1, "an unchanged theme keeps the drawing");
+        canvas.refresh(&state.version, false, &second, || clears += 1);
+        assert_eq!(clears, 2, "a new generation redraws it");
     }
 
     fn message(action: Option<Action<CurveEditorEvent>>) -> Option<CurveEditorEvent> {

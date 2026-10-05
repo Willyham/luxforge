@@ -9,9 +9,10 @@
 
 use super::icon_button::{Icon, icon, with_tooltip};
 use crate::theme;
+use crate::{Element, Token};
 use iced::widget::text::{LineHeight, Wrapping};
 use iced::widget::{Column, Space, button, container, row, text};
-use iced::{Alignment, Element, Length};
+use iced::{Alignment, Length};
 
 /// Plain data for a dropdown button.
 #[derive(Debug, Clone, PartialEq)]
@@ -50,9 +51,9 @@ pub fn dropdown_button<'a, M: Clone + 'a>(
     on_press: Option<M>,
 ) -> Element<'a, M> {
     let ink = if model.enabled {
-        theme::TEXT_PRIMARY
+        Token::Text
     } else {
-        theme::TEXT_TERTIARY
+        Token::TextTertiary
     };
     let (height, padding) = if model.compact {
         (
@@ -68,7 +69,7 @@ pub fn dropdown_button<'a, M: Clone + 'a>(
             .size(theme::SIZE_CONTROL)
             .line_height(LineHeight::Absolute(theme::SLIDER_LABEL_HEIGHT.into()))
             .wrapping(Wrapping::None)
-            .color(ink),
+            .style(theme::ink(ink)),
         icon(Icon::ChevronDown, theme::DROPDOWN_CHEVRON_SIZE, ink),
     ]
     .spacing(theme::BUTTON_ICON_SPACING)
@@ -108,9 +109,9 @@ pub fn menu_list<'a, M: Clone + 'a>(entries: Vec<MenuEntry<M>>) -> Element<'a, M
 fn menu_item<'a, M: Clone + 'a>(item: MenuItem<M>) -> Element<'a, M> {
     let enabled = item.on_press.is_some();
     let ink = if enabled {
-        theme::TEXT_PRIMARY
+        Token::Text
     } else {
-        theme::TEXT_TERTIARY
+        Token::TextTertiary
     };
     let glyph: Element<'a, M> = match item.icon {
         Some(glyph) => icon(glyph, theme::HEADER_ICON_SIZE, ink),
@@ -123,7 +124,7 @@ fn menu_item<'a, M: Clone + 'a>(item: MenuItem<M>) -> Element<'a, M> {
         text(item.label)
             .size(theme::SIZE_CONTROL)
             .wrapping(Wrapping::None)
-            .color(ink),
+            .style(theme::ink(ink)),
         Space::new().width(Length::Fill),
     ]
     .spacing(theme::MENU_ITEM_SPACING)
@@ -134,7 +135,7 @@ fn menu_item<'a, M: Clone + 'a>(item: MenuItem<M>) -> Element<'a, M> {
             text(trailing)
                 .size(theme::SIZE_SMALL_CAPTION)
                 .wrapping(Wrapping::None)
-                .color(theme::TEXT_TERTIARY),
+                .style(theme::ink(Token::TextTertiary)),
         );
     }
     let reason = item.reason.filter(|_| !enabled);

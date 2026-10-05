@@ -10,9 +10,10 @@
 
 use super::icon_button::{Icon, IconButtonModel, icon};
 use crate::theme;
+use crate::{Element, Token};
 use iced::widget::text::{LineHeight, Wrapping};
 use iced::widget::{Row, Space, button, container, text, tooltip};
-use iced::{Alignment, Element, Length, Padding};
+use iced::{Alignment, Length, Padding};
 
 /// How a labelled button reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -106,12 +107,12 @@ pub fn labelled_button<'a, M: Clone + 'a>(
     on_press: Option<M>,
 ) -> Element<'a, M> {
     let ink = match (model.tone, model.enabled) {
-        (_, false) => theme::TEXT_TERTIARY,
-        (ButtonTone::Primary, true) => theme::PRIMARY_INK,
-        (ButtonTone::Selected, true) => theme::ACCENT,
-        (ButtonTone::Control | ButtonTone::Quiet, true) => theme::TEXT_PRIMARY,
+        (_, false) => Token::TextTertiary,
+        (ButtonTone::Primary, true) => Token::AccentInk,
+        (ButtonTone::Selected, true) => Token::Accent,
+        (ButtonTone::Control | ButtonTone::Quiet, true) => Token::Text,
     };
-    let hint_ink = theme::TEXT_TERTIARY;
+    let hint_ink = Token::TextTertiary;
     let mut content = Row::new().align_y(Alignment::Center);
     if let Some(glyph) = model.icon {
         content = content.push(
@@ -124,7 +125,7 @@ pub fn labelled_button<'a, M: Clone + 'a>(
             .size(theme::SIZE_CONTROL)
             .line_height(LineHeight::Absolute(theme::SLIDER_LABEL_HEIGHT.into()))
             .wrapping(Wrapping::None)
-            .color(ink),
+            .style(theme::ink(ink)),
     );
     if model.fill {
         content = content.push(Space::new().width(Length::Fill));
@@ -135,7 +136,7 @@ pub fn labelled_button<'a, M: Clone + 'a>(
             None => text(key.clone())
                 .size(theme::SIZE_CAPTION)
                 .wrapping(Wrapping::None)
-                .color(hint_ink)
+                .style(theme::ink(hint_ink))
                 .into(),
         };
         content = content
@@ -246,9 +247,9 @@ pub fn row_icon_button<'a, M: Clone + 'a>(
     on_press: Option<M>,
 ) -> Element<'a, M> {
     let ink = if model.enabled {
-        theme::TEXT_PRIMARY
+        Token::Text
     } else {
-        theme::TEXT_TERTIARY
+        Token::TextTertiary
     };
     let style = if model.selected {
         theme::button_selected
@@ -267,7 +268,7 @@ pub fn row_icon_button<'a, M: Clone + 'a>(
         container(
             text(model.tooltip.clone())
                 .size(theme::SIZE_CAPTION)
-                .color(theme::TEXT_PRIMARY),
+                .style(theme::ink(Token::Text)),
         )
         .padding(theme::TOOLTIP_PADDING)
         .style(theme::bar_surface),

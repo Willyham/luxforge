@@ -10,9 +10,10 @@ use crate::{
     },
 };
 use iced::{
-    Alignment, Background, Color, Element, Length,
+    Alignment, Length,
     widget::{Space, column, container, mouse_area, row, scrollable},
 };
+use luxforge_ui::Element;
 use luxforge_ui::{
     ButtonSize, ButtonTone, Icon, LabelledButtonModel, SegmentedModel, ToggleModel, boxed_input,
     caption, error_caption, label, labelled_button, segmented, switch, text_button, theme, title,
@@ -92,12 +93,7 @@ pub(crate) fn settings(model: &SettingsModel) -> Option<Element<'_, Message>> {
         container(Space::new())
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(|_theme: &iced::Theme| {
-                container::Style::default().background(Background::Color(Color {
-                    a: 0.35,
-                    ..Color::BLACK
-                }))
-            }),
+            .style(theme::scrim_surface),
     )
     .on_press(close);
     Some(

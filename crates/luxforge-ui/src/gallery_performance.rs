@@ -3,11 +3,11 @@
 //! from the app's sampler, scale rules or layout. Each series is given as the fractions a metric
 //! row draws.
 
+use crate::Element;
 use crate::{
     JobRowModel, MetricRowModel, SparklineModel, disclosure_heading, gallery::narrow, job_row,
     metric_row, theme,
 };
-use iced::Element;
 use iced::widget::column;
 
 /// The sparklines' capacity in these examples, so a short series starts part-way across.

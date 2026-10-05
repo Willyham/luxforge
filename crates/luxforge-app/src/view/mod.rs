@@ -36,10 +36,11 @@ use crate::{
     state::Workspace,
 };
 use iced::{
-    Element, Length, Theme,
+    Length,
     widget::{Space, column, container, row, stack},
 };
 use luxforge_ui::theme;
+use luxforge_ui::{Element, Theme};
 
 /// The pixels and the transient draft the canvas borrows for one frame. They are not view-model
 /// data: the model says what to draw, these are what it is drawn from.
@@ -167,8 +168,8 @@ fn horizontal_divider<'a>() -> Element<'a, Message> {
         .into()
 }
 
-/// The rules are [`theme::DIVIDER`], the border's 6% white stored opaque, because Iced blends in
-/// linear light and would draw the translucent border far brighter than the board does.
+/// The rules are the theme's band border, the border's 6% white stored opaque, because Iced blends
+/// in linear light and would draw the translucent border far brighter than the board does.
 fn divider_style(iced_theme: &Theme) -> container::Style {
     theme::divider_surface(iced_theme)
 }

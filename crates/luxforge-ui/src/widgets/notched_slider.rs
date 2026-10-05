@@ -17,12 +17,13 @@
 
 use crate::geometry;
 use crate::theme;
+use crate::{Element, Palette, Theme};
 use iced::alignment::Vertical;
 use iced::keyboard::{self, Key, Modifiers, key::Named};
 use iced::widget::canvas::{self, Action, Event, Path, Stroke};
 use iced::widget::container;
 use iced::widget::text::{Alignment as TextAlignment, LineHeight};
-use iced::{Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, mouse};
+use iced::{Color, Length, Point, Rectangle, Renderer, Size, mouse};
 use std::cell::RefCell;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -125,9 +126,9 @@ struct NotchCanvas<'a, M> {
     on_step: Box<dyn Fn(i32) -> M + 'a>,
 }
 
-/// What the drawing depends on besides the model: the size, the stop under the pointer and the
-/// stop a gesture holds.
-type DrawKey = (NotchedSliderModel, Size, Option<usize>, Option<usize>);
+/// What the drawing depends on besides the model: the size, the stop under the pointer, the stop
+/// a gesture holds and the theme's generation.
+type DrawKey = (NotchedSliderModel, Size, Option<usize>, Option<usize>, u64);
 
 #[derive(Default)]
 struct NotchState {
@@ -139,7 +140,26 @@ struct NotchState {
     hovered: Option<usize>,
 }
 
-impl<M> canvas::Program<M> for NotchCanvas<'_, M> {
+impl<M> NotchCanvas<'_, M> {
+    /// Calls `clear` when anything the drawing depends on changed since the cache was drawn.
+    fn refresh(
+        &self,
+        key: &RefCell<Option<DrawKey>>,
+        size: Size,
+        hovered: Option<usize>,
+        held: Option<usize>,
+        theme: &Theme,
+        clear: impl FnOnce(),
+    ) {
+        let next = Some((self.model.clone(), size, hovered, held, theme.generation()));
+        if *key.borrow() != next {
+            clear();
+            *key.borrow_mut() = next;
+        }
+    }
+}
+
+impl<M> canvas::Program<M, Theme> for NotchCanvas<'_, M> {
     type State = NotchState;
 
     fn update(
@@ -207,7 +227,7 @@ impl<M> canvas::Program<M> for NotchCanvas<'_, M> {
         &self,
         state: &Self::State,
         renderer: &Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
@@ -222,13 +242,23 @@ impl<M> canvas::Program<M> for NotchCanvas<'_, M> {
         } else {
             None
         };
-        let key = Some((self.model.clone(), bounds.size(), hovered, state.held));
-        if *state.key.borrow() != key {
-            state.cache.clear();
-            *state.key.borrow_mut() = key;
-        }
+        self.refresh(
+            &state.key,
+            bounds.size(),
+            hovered,
+            state.held,
+            theme,
+            || state.cache.clear(),
+        );
         vec![state.cache.draw(renderer, bounds.size(), |frame| {
-            draw_notches(frame, &self.model, bounds.size(), hovered, state.held)
+            draw_notches(
+                frame,
+                &self.model,
+                bounds.size(),
+                hovered,
+                state.held,
+                theme.palette(),
+            )
         })]
     }
 
@@ -255,8 +285,8 @@ fn rgb(color: Color) -> [f32; 3] {
 }
 
 /// `colour` laid over the menu surface at `opacity`, mixed in sRGB and drawn opaque.
-fn over(colour: Color, opacity: f32) -> Color {
-    let [r, g, b] = geometry::over(rgb(colour), rgb(theme::MENU_SURFACE), opacity);
+fn over(palette: &Palette, colour: Color, opacity: f32) -> Color {
+    let [r, g, b] = geometry::over(rgb(colour), rgb(palette.menu_surface), opacity);
     Color::from_rgb(r, g, b)
 }
 
@@ -266,6 +296,7 @@ fn draw_notches(
     size: Size,
     hovered: Option<usize>,
     held: Option<usize>,
+    palette: &Palette,
 ) {
     let count = model.labels.len();
     let width = size.width;
@@ -276,7 +307,7 @@ fn draw_notches(
         if model.enabled {
             color
         } else {
-            over(color, 0.4)
+            over(palette, color, 0.4)
         }
     };
     // A held thumb is drawn where the gesture holds it; otherwise where the host says it is.
@@ -289,10 +320,10 @@ fn draw_notches(
         )
     };
     let (origin, rail) = band(first, last);
-    frame.fill_rectangle(origin, rail, theme::RAIL);
+    frame.fill_rectangle(origin, rail, palette.rail);
     if let Some(thumb) = thumb {
         let (origin, filled) = band(first, thumb);
-        frame.fill_rectangle(origin, filled, ink(theme::RAIL_FILL));
+        frame.fill_rectangle(origin, filled, ink(palette.rail_fill));
     }
     for stop in 0..count {
         let centre = x(stop as f32);
@@ -306,15 +337,15 @@ fn draw_notches(
                     Size::new(cell - 2.0, theme::NOTCH_LABEL_HEIGHT + 4.0),
                     theme::MENU_ITEM_RADIUS.into(),
                 ),
-                theme::MENU_ITEM_HOVER,
+                palette.menu_item_hover,
             );
         }
         let tick = if lit {
-            theme::TEXT_PRIMARY
+            palette.text
         } else if thumb.is_some_and(|thumb| centre <= thumb + 0.5) {
-            theme::RAIL_FILL
+            palette.rail_fill
         } else {
-            theme::TEXT_TERTIARY
+            palette.text_tertiary
         };
         frame.fill_rectangle(
             Point::new(
@@ -326,11 +357,11 @@ fn draw_notches(
         );
         let selected = Some(stop) == model.selected && held.is_none_or(|held| held == stop);
         let color = if selected {
-            theme::TEXT_BRIGHT
+            palette.text_bright
         } else if lit {
-            theme::TEXT_PRIMARY
+            palette.text
         } else {
-            theme::TEXT_SECONDARY
+            palette.text_secondary
         };
         frame.fill_text(canvas::Text {
             content: model.labels[stop].clone(),
@@ -356,16 +387,16 @@ fn draw_notches(
     if held.is_some() {
         frame.fill(
             &Path::circle(centre, theme::THUMB_HALO_RADIUS),
-            over(theme::ACCENT, theme::THUMB_HALO_OPACITY),
+            over(palette, palette.accent, theme::THUMB_HALO_OPACITY),
         );
-        frame.fill(&Path::circle(centre, theme::THUMB_RADIUS), theme::ACCENT);
+        frame.fill(&Path::circle(centre, theme::THUMB_RADIUS), palette.accent);
     } else {
         let inner = theme::THUMB_RADIUS - theme::THUMB_OUTLINE_WIDTH;
-        frame.fill(&Path::circle(centre, inner), ink(theme::THUMB));
+        frame.fill(&Path::circle(centre, inner), ink(palette.thumb));
         frame.stroke(
             &Path::circle(centre, inner + theme::THUMB_OUTLINE_WIDTH / 2.0),
             Stroke::default()
-                .with_color(theme::THUMB_OUTLINE)
+                .with_color(palette.thumb_outline)
                 .with_width(theme::THUMB_OUTLINE_WIDTH),
         );
     }
@@ -374,6 +405,31 @@ fn draw_notches(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rail is drawn again when the theme changes, and only then while nothing else moves.
+    #[test]
+    fn a_theme_change_redraws_the_notches() {
+        let canvas = NotchCanvas {
+            model: NotchedSliderModel {
+                labels: vec!["50%".into(), "100%".into()],
+                position: Some(1.0),
+                selected: Some(1),
+                keys: StepKeys::Off,
+                enabled: true,
+            },
+            on_select: Box::new(|_| ()),
+            on_step: Box::new(|_| ()),
+        };
+        let size = Size::new(76.0, theme::NOTCH_HEIGHT);
+        let (first, second) = (Theme::luxforge_dark(), Theme::luxforge_dark());
+        let key = RefCell::new(None);
+        let mut clears = 0;
+        canvas.refresh(&key, size, None, None, &first, || clears += 1);
+        canvas.refresh(&key, size, None, None, &first, || clears += 1);
+        assert_eq!(clears, 1, "an unchanged theme keeps the drawing");
+        canvas.refresh(&key, size, None, None, &second, || clears += 1);
+        assert_eq!(clears, 2, "a new generation redraws it");
+    }
 
     /// Nine stops 36 pt apart: each notch at its cell's centre, a fraction between two on the line
     /// joining them, and a position off the rail at its end.
