@@ -38,6 +38,10 @@ use luxforge_ui::photo_surface::{GpuBoundary, gpu_preview::qualification::Qualif
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 
+/// The per-frame light's reduction factor: these drags' stacks, and more, drawn with the light the
+/// estimate twin would compute at each factor, against the reference frame of the view.
+mod factor;
+
 /// One drag: the stack it starts from, the steps that draft it, and the layer it drafts.
 struct Drag {
     id: &'static str,
