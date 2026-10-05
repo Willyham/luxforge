@@ -174,7 +174,7 @@ Every job the catalog owner runs is one record in one table (`crates/luxforge-co
 | --- | --- |
 | `queued` | Accepted and not started: in the source worker's queue, the analysis worker's one replaceable pending slot or a lane's waiting list |
 | `running` | Its worker holds it now |
-| `ready` | Complete; `result` carries what it produced: the prepared asset's state, a collection's `{rows, objects, temporary}`, an analysis report, a capability job's value or an export's `{path, bytes, width, height, metadata}` |
+| `ready` | Complete; `result` carries what it produced: the prepared asset's state, a collection's `{rows, objects, temporary}`, an analysis report, a capability job's value or an export's `{path, bytes, width, height, metadata, renderer}`, `renderer` naming which renderer drew it (`{record, reason}`, today always the reference) |
 | `failed` | `error` carries the structured reason |
 | `cancelled` | Stopped before it finished; `error` names why |
 | `superseded` | Replaced before it ran: a pending analysis a newer request displaced |
