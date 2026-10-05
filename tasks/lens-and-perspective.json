@@ -1114,7 +1114,7 @@
           "target/release/xtask editor-latency --source JPEG --output NEW_DIR --lens --perspective --crop 2.5 --action set-perspective --parameter horizontal --samples 30",
           "target/release/xtask editor-latency --source RAW --output NEW_DIR --lens --perspective --crop 2.5 --action set-perspective --parameter horizontal --samples 30",
           "target/release/xtask editor-latency --source JPEG_OR_RAW --output NEW_DIR --lens --perspective --crop 2.5 --mode commit --action set-perspective --parameter horizontal --samples 30 --idle",
-          "target/release/xtask editor-latency --source JPEG_OR_RAW --output NEW_DIR --lens --perspective --crop 2.5 --mode viewport --zoom 100 --action set-perspective --parameter horizontal --samples 30",
+          "target/release/xtask editor-latency --source JPEG_OR_RAW --output NEW_DIR --lens --perspective --crop 2.5 --mode drag --zoom 100 --action set-perspective --parameter horizontal --samples 30",
           "target/release/xtask editor-latency --source JPEG_OR_RAW --output NEW_DIR --lens --perspective --crop 2.5 --mode crop-start --samples 14",
           "target/release/xtask editor-latency --source JPEG_OR_RAW --output NEW_DIR --lens --perspective --crop 2.5 --mode paint --samples 400",
           "target/release/xtask verify --tier full --manifest FILE --output NEW_DIR"
