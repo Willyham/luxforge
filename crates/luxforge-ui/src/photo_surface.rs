@@ -306,6 +306,12 @@ pub fn gpu_stage() -> GpuStageState {
     process_figures().preview.stage_state()
 }
 
+/// The compile thread's warm-up running, or its last ([`WarmUpFigures`]), read live: one lock, no
+/// other diagnostic, so the desktop can follow it after every message.
+pub fn gpu_warm_up() -> Option<WarmUpFigures> {
+    process_figures().preview.warm_up()
+}
+
 /// A snapshot of actual texture work and draw encoding, distinct from desktop frame adoption.
 /// Residency includes textures whose GPU submission has not yet retired. Overlay textures and
 /// backend-owned upload staging are outside these photograph-slot byte counts. Counts and
