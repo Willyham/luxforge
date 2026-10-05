@@ -437,12 +437,12 @@
     },
     {
       "id": "TASK-009",
-      "description": "Decide the remaining UI themes questions: which Omarchy themes are bundled, the contrast floors and moving an imported theme's own ink, the Omarchy forms read, the Appearance tab, and whether following Omarchy's current theme or the system appearance joins the plan.",
+      "description": "Decide the remaining UI themes questions: which Omarchy themes are bundled, the contrast floors and moving an imported theme's own ink, the Omarchy forms read, a Theme choice for the canvas background as its default, the Appearance tab, and whether following Omarchy's current theme or the system appearance joins the plan.",
       "status": "ready",
       "dependencies": [],
       "extra_context": [
         "The owner decided on 2026-10-05 (docs/decisions.md, UI themes) that themes, light ones included, replace dark only; that the surround stays neutral; that each theme keeps its own accent; and that a few popular Omarchy themes are bundled. The design records a default for each remaining question so the plan can run, and each is a proposal until it is recorded here.",
-        "The recorded defaults: Tokyo Night, Catppuccin, Catppuccin Latte, Gruvbox, Nord and Everforest bundled; floors of 7:1 for primary text, 4.5:1 for labels and secondary text, and 3:1 for tertiary text, the accent and the error ink, with an imported theme's own text or accent moved to its floor and reported (6 of Omarchy's 22 built-in themes in the prototype); Omarchy 4 and 3 palettes, light.mode and alacritty.toml read; a Settings › Appearance tab; following Omarchy's current theme and the system appearance left for later."
+        "The recorded defaults: Tokyo Night, Catppuccin, Catppuccin Latte, Gruvbox, Nord and Everforest bundled; floors of 7:1 for primary text, 4.5:1 for labels and secondary text, and 3:1 for tertiary text, the accent and the error ink, with an imported theme's own text or accent moved to its floor and reported (6 of Omarchy's 22 built-in themes in the prototype); Omarchy 4 and 3 palettes, light.mode and alacritty.toml read; a fourth canvas background choice, Theme, as its default, with Dark, Black and Grey kept as fixed greys; a Settings › Appearance tab for the theme list, the canvas background and interface size staying General rows; following Omarchy's current theme and the system appearance left for later."
       ],
       "context_links": [
         {
