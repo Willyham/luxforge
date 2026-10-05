@@ -15,7 +15,7 @@ use super::{
     testing::{finish, let_go, real_photo_launched, run_commit, slide},
     *,
 };
-use crate::state::status::CpuReason;
+use crate::state::status::renderer_notice;
 use luxforge_core::Renderer;
 use luxforge_ui::photo_surface::GpuStageState;
 
@@ -53,9 +53,9 @@ fn report(editor: &mut Editor) {
 /// every client, before the surface has checked its stage and after it answers as a refused stage
 /// does, so the desktop never reports another. No plan reaches the surface and no boundary is asked
 /// for: every tick of a drag takes the CPU path naming `no-adapter`, as the snapshot records, and
-/// the release commits on the CPU. The status bar says so beside its render slot in the No GPU
-/// class's words, at rest as well as during the drag. No request lets an agent claim another
-/// renderer.
+/// the release commits on the CPU. The status bar says so beside its render slot in the reference
+/// renderer's words, read from the session, at rest as well as during the drag. No request lets an
+/// agent claim another renderer.
 #[test]
 fn fallback_a_forced_no_gpu_launch_is_the_reference_in_the_session_and_every_tick_is_the_cpus() {
     let catalog = catalog("fallback-forced");
@@ -81,13 +81,14 @@ fn fallback_a_forced_no_gpu_launch_is_the_reference_in_the_session_and_every_tic
         forced
     );
 
-    let notice = CpuReason {
-        code: "no-adapter",
-        layer: None,
-        compiling_for: None,
-    }
-    .notice();
-    assert!(notice.is_some(), "the No GPU class says it");
+    let notice = renderer_notice(Renderer::reference(
+        luxforge_core::RendererReason::NoAdapter,
+    ));
+    assert!(notice.is_some(), "the reference renderer's class says it");
+    assert_eq!(
+        editor.workspace.status.fallback, notice,
+        "at rest, before any gesture"
+    );
     for value in [0.1, 0.2, 0.3] {
         let _ = slide(&mut editor, ACTION, FIELD, value);
         assert_eq!(editor.gpu.summary()["drag"]["reason"], json!("no-adapter"));
