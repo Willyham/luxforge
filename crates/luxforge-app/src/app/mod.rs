@@ -358,6 +358,10 @@ pub(crate) struct Editor {
     /// A test's stand-in for the owner's draft requests, for a photograph the owner does not hold.
     #[cfg(test)]
     pub(crate) stand_in: Option<testing::StandIn>,
+    /// Every `draft.set` and `draft.reapply` that read a pixel, sent to the blocking pool, for a
+    /// test to run as the runtime would.
+    #[cfg(test)]
+    pub(crate) reads_waiting: tasks::ReadsWaiting,
     /// The crop section's own options: the custom ratio's extents and the held modifiers.
     pub(crate) crop_section: state::CropSection,
     /// The Masks panel: selection, hover, hidden overlays, mode, brush, typing, drag, thumbnails.
@@ -581,6 +585,8 @@ impl Editor {
             gesture_serial: 0,
             #[cfg(test)]
             stand_in: None,
+            #[cfg(test)]
+            reads_waiting: tasks::ReadsWaiting::default(),
             crop_section: Default::default(),
             mask_panel: Default::default(),
             armed: None,

@@ -8,7 +8,7 @@ mod owner;
 mod transport;
 
 pub use methods::schemas;
-pub use owner::{ClientId, EventWake, OwnerHandle, PreviewRequest};
+pub use owner::{ClientId, EventWake, OwnerHandle, PIXEL_READ_REQUIRED, PreviewRequest};
 pub(crate) use owner::{OWNER_THREAD, SourceFlightKey};
 
 pub use transport::{LocalServer, serve_json_lines_with};
