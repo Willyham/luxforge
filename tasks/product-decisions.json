@@ -3,7 +3,7 @@
   "plan_id": "product-decisions",
   "title": "Open product decisions",
   "objective": "Resolve the product questions that gate later roadmap phases, recording each answer in docs/decisions.md and the affected specification.",
-  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks are the open questions: storage/backup workflow, RAW recording-mode and quality priorities, the first external module use case, accepted performance workloads and budgets, the Presence, colour mixer and vignette defaults, and interactive-preview quality levels beyond the authorized baseline, and the GPU-first rendering questions left open by the owner's decision of 2026-10-04.",
+  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks are the open questions: storage/backup workflow, RAW recording-mode and quality priorities, the first external module use case, accepted performance workloads and budgets, the Presence, colour mixer and vignette defaults, and interactive-preview quality levels beyond the authorized baseline, and the GPU-first rendering questions left open by the owner's decision of 2026-10-04, and the AI editing decisions of the 2026-10-04 proposal (scope, weights licence policy, training-data provenance, runtime, models, the effect region, stale patches, budgets, the generative hardware minimum, sky replacement and remote consent).",
   "tasks": [
     {
       "id": "TASK-001",
@@ -434,6 +434,62 @@
           "No proposal is silently treated as accepted."
         ]
       }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Decide the AI editing questions: scope, the weights licence policy and training-data provenance, the inference runtime, the segmenter, Fast fill and generative models, the effect region, stale patches, budgets, the generative hardware minimum, sky replacement and remote consent.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "Completed on 2026-10-05: every question is recorded in docs/decisions.md under AI editing, with the open questions that remain named there.",
+        "The AI editing design of 2026-10-04 proposes Remove, Select, generative fill and Replace, and optional sky replacement on local, user-downloaded models, and records a recommendation for each of its twelve decisions so its plan can run; each is a proposal until recorded in docs/decisions.md.",
+        "Two decisions are consequential beyond engineering: the weights licence policy (permissive by default; whether OpenRAIL++-M and the SAM License may be offered as explicit, off-by-default downloads; non-commercial never) and training-data provenance (Places2, SA-1B, DIS5K and ADE20K carry non-commercial terms on their images while the weights are Apache or MIT). Refusing disclosed academic data removes every strong model the research found.",
+        "The stale-patch decision chooses between keeping a stale AI patch rendering with a mark and an export acknowledgement (the AI editing design) and failing render, sample and export explicitly (the Corrections design); the design not chosen is updated to match."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "AI editing design",
+          "target": "docs/design/ai-editing.md",
+          "locator": "Decisions",
+          "relevance": "The thirteen questions, their recommendations, the recorded defaults and the open questions."
+        },
+        {
+          "kind": "file",
+          "label": "Object removal research",
+          "target": "docs/research/object-removal/README.md",
+          "locator": "Licences eliminate more candidates than quality does",
+          "relevance": "The licence and provenance evidence behind decisions 2 and 3."
+        },
+        {
+          "kind": "file",
+          "label": "Corrections proposal",
+          "target": "docs/design/corrections.md",
+          "relevance": "The stale-prefix rule the stale-patch decision weighs against."
+        },
+        {
+          "kind": "file",
+          "label": "Owner decisions",
+          "target": "docs/decisions.md",
+          "locator": "Open product questions",
+          "relevance": "Where each answer is recorded."
+        }
+      ],
+      "acceptance_criteria": [
+        "Each question is accepted as its recommendation, changed with the design updated to match, or explicitly left as a recorded default the plan runs on, and docs/decisions.md records the outcome with its date.",
+        "The roadmap's exclusion of generative editing is lifted or kept according to the scope decision, and the Corrections design agrees with the stale-patch decision."
+      ],
+      "test_strategy": {
+        "approach": "manual",
+        "steps": [
+          "Review the design's Decisions table with the owner.",
+          "Record the outcomes in the decisions document and adjust the designs where a default changed."
+        ],
+        "commands": [],
+        "expected_results": [
+          "No proposal is silently treated as accepted."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -447,7 +503,8 @@
         "TASK-005",
         "TASK-006",
         "TASK-007",
-        "TASK-008"
+        "TASK-008",
+        "TASK-009"
       ]
     }
   ]
