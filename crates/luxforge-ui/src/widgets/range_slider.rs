@@ -17,11 +17,12 @@ use crate::geometry;
 use crate::theme;
 use crate::widgets::slider::RailDecoration;
 use crate::widgets::text::control_label;
+use crate::{Element, Palette, Theme, Token};
 use iced::alignment::Horizontal;
 use iced::widget::canvas::{self, Action, Event, Path, Stroke, gradient};
 use iced::widget::text::{LineHeight, Wrapping};
 use iced::widget::{column, container, row, text};
-use iced::{Alignment, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, mouse};
+use iced::{Alignment, Color, Length, Point, Rectangle, Renderer, Size, mouse};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -99,11 +100,11 @@ pub fn range_slider<'a, M: Clone + 'a>(
         .line_height(LineHeight::Absolute(theme::SLIDER_LABEL_HEIGHT.into()))
         .wrapping(Wrapping::None)
         .align_x(Horizontal::Right)
-        .color(if model.enabled {
-            theme::TEXT_PRIMARY
+        .style(theme::ink(if model.enabled {
+            Token::Text
         } else {
-            theme::TEXT_TERTIARY
-        });
+            Token::TextTertiary
+        }));
     let header = row![
         container(control_label(model.label.clone(), model.enabled)).width(Length::Fill),
         container(readout).padding(iced::Padding::default().right(theme::VALUE_INSET)),
@@ -324,14 +325,32 @@ enum Held {
 #[derive(Default)]
 struct RangeState {
     cache: canvas::Cache,
-    key: RefCell<Option<(RangeSliderModel, Size)>>,
+    key: RefCell<Option<RangeKey>>,
     held: Option<Held>,
     press_x: f32,
     offset: f32,
     last_click: Option<(Instant, f32)>,
 }
 
+/// What a range's drawing depends on: the model, its size and the theme's generation.
+type RangeKey = (RangeSliderModel, Size, u64);
+
 impl<M> RangeCanvas<'_, M> {
+    /// Calls `clear` when the model, its size or the theme changed since the cache was drawn.
+    fn refresh(
+        &self,
+        key: &RefCell<Option<RangeKey>>,
+        size: Size,
+        theme: &Theme,
+        clear: impl FnOnce(),
+    ) {
+        let next = Some((self.model.clone(), size, theme.generation()));
+        if *key.borrow() != next {
+            clear();
+            *key.borrow_mut() = next;
+        }
+    }
+
     fn layout(&self, width: f32) -> RangeLayout {
         range_layout(
             width,
@@ -358,7 +377,7 @@ impl<M> RangeCanvas<'_, M> {
     }
 }
 
-impl<M> canvas::Program<M> for RangeCanvas<'_, M> {
+impl<M> canvas::Program<M, Theme> for RangeCanvas<'_, M> {
     type State = RangeState;
 
     fn update(
@@ -449,23 +468,25 @@ impl<M> canvas::Program<M> for RangeCanvas<'_, M> {
         &self,
         state: &Self::State,
         renderer: &Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
             return Vec::new();
         }
-        let key = Some((self.model.clone(), bounds.size()));
-        if *state.key.borrow() != key {
-            state.cache.clear();
-            *state.key.borrow_mut() = key;
-        }
+        self.refresh(&state.key, bounds.size(), theme, || state.cache.clear());
         let size = bounds.size();
         let clip = geometry::rail_clip(size.width, size.height, theme::THUMB_HALO_RADIUS);
         let clip = Rectangle::new(Point::new(clip.0, clip.1), Size::new(clip.2, clip.3));
         vec![state.cache.draw_with_bounds(renderer, clip, |frame| {
-            draw_range(frame, &self.model, &self.layout(size.width), size)
+            draw_range(
+                frame,
+                &self.model,
+                &self.layout(size.width),
+                size,
+                theme.palette(),
+            )
         })]
     }
 
@@ -507,6 +528,7 @@ fn draw_range(
     model: &RangeSliderModel,
     layout: &RangeLayout,
     size: Size,
+    palette: &Palette,
 ) {
     let width = size.width;
     let middle = size.height / 2.0;
@@ -525,7 +547,7 @@ fn draw_range(
             Size::new((to - from).abs(), thickness),
         )
     };
-    // The rail: a declared colour rail mixed in sRGB and laid over the panel, in short exact
+    // The rail: a declared colour rail mixed in sRGB and laid over its backdrop, in short exact
     // pieces as the slider draws one, or the plain rail.
     match colors {
         Some(colors) => {
@@ -533,7 +555,7 @@ fn draw_range(
             let at = |t: f32| {
                 let [r, g, b] = geometry::over(
                     geometry::rail_colour_at(&stops, t),
-                    rgb(theme::PANEL),
+                    rgb(palette.rail_backdrop),
                     theme::DECORATED_RAIL_OPACITY,
                 );
                 Color::from_rgb(r, g, b)
@@ -551,13 +573,13 @@ fn draw_range(
         }
         None => {
             let (origin, rail) = band(0.0, width);
-            frame.fill_rectangle(origin, rail, theme::RAIL);
+            frame.fill_rectangle(origin, rail, palette.rail);
         }
     }
     // The shoulders fade from the band's fill at its edge to nothing at the grip.
     let transparent = Color {
         a: 0.0,
-        ..theme::RAIL_FILL
+        ..palette.rail_fill
     };
     for (edge, end) in [
         (layout.low, layout.low_shoulder),
@@ -568,28 +590,32 @@ fn draw_range(
         };
         let (origin, shoulder) = band(edge, end);
         let linear = gradient::Linear::new(Point::new(edge, middle), Point::new(end, middle))
-            .add_stop(0.0, theme::RAIL_FILL)
+            .add_stop(0.0, palette.rail_fill)
             .add_stop(1.0, transparent);
         frame.fill_rectangle(origin, shoulder, canvas::Fill::from(linear));
     }
     // The band itself.
     if layout.high > layout.low {
         let (origin, filled) = band(layout.low, layout.high);
-        frame.fill_rectangle(origin, filled, theme::RAIL_FILL);
+        frame.fill_rectangle(origin, filled, palette.rail_fill);
     }
     let dragging = |grip| model.dragging == Some(grip);
     // The halo sits under whichever grip a gesture holds.
     if let Some(x) = model.dragging.and_then(|grip| layout.at(grip)) {
         frame.fill(
             &Path::circle(Point::new(x, middle), theme::THUMB_HALO_RADIUS),
-            over(theme::ACCENT, theme::PANEL, theme::THUMB_HALO_OPACITY),
+            over(
+                palette.accent,
+                palette.background,
+                theme::THUMB_HALO_OPACITY,
+            ),
         );
     }
     let ink = |color: Color| {
         if model.enabled {
             color
         } else {
-            over(color, theme::PANEL, 0.4)
+            over(color, palette.background, 0.4)
         }
     };
     for (grip, x) in [
@@ -598,9 +624,9 @@ fn draw_range(
     ] {
         let Some(x) = x else { continue };
         let fill = if dragging(grip) {
-            theme::ACCENT
+            palette.accent
         } else {
-            theme::TEXT_TERTIARY
+            palette.text_tertiary
         };
         frame.fill(
             &Path::circle(Point::new(x, middle), theme::SHOULDER_GRIP_RADIUS),
@@ -611,14 +637,14 @@ fn draw_range(
         let Some(x) = layout.at(grip) else { continue };
         let centre = Point::new(x, middle);
         if dragging(grip) {
-            frame.fill(&Path::circle(centre, theme::THUMB_RADIUS), theme::ACCENT);
+            frame.fill(&Path::circle(centre, theme::THUMB_RADIUS), palette.accent);
         } else {
             let inner = theme::THUMB_RADIUS - theme::THUMB_OUTLINE_WIDTH;
-            frame.fill(&Path::circle(centre, inner), ink(theme::THUMB));
+            frame.fill(&Path::circle(centre, inner), ink(palette.thumb));
             frame.stroke(
                 &Path::circle(centre, inner + theme::THUMB_OUTLINE_WIDTH / 2.0),
                 Stroke::default()
-                    .with_color(theme::THUMB_OUTLINE)
+                    .with_color(palette.thumb_outline)
                     .with_width(theme::THUMB_OUTLINE_WIDTH),
             );
         }
@@ -639,6 +665,36 @@ mod tests {
             low_feather: Some(10.0),
             high_feather: Some(6.0),
         }
+    }
+
+    /// The range is drawn again when the theme changes, and only then while it stands still.
+    #[test]
+    fn a_theme_change_redraws_the_range() {
+        let canvas = RangeCanvas {
+            model: RangeSliderModel {
+                label: "Luminance".into(),
+                readout: "62 \u{2013} 88".into(),
+                min: 0.0,
+                max: 100.0,
+                values: band(),
+                step: 1.0,
+                rail: RailDecoration::Plain,
+                dragging: None,
+                enabled: true,
+            },
+            on_change: Rc::new(|_, _| ()),
+            on_release: Rc::new(|_| ()),
+            on_reset: Rc::new(|_| ()),
+        };
+        let size = Size::new(WIDTH, 2.0 * RADIUS);
+        let (first, second) = (Theme::luxforge_dark(), Theme::luxforge_dark());
+        let key = RefCell::new(None);
+        let mut clears = 0;
+        canvas.refresh(&key, size, &first, || clears += 1);
+        canvas.refresh(&key, size, &first, || clears += 1);
+        assert_eq!(clears, 1, "an unchanged theme keeps the drawing");
+        canvas.refresh(&key, size, &second, || clears += 1);
+        assert_eq!(clears, 2, "a new generation redraws it");
     }
 
     /// The axis's ends are a radius in from the rail's, as a slider's handle travels, and the two

@@ -41,6 +41,7 @@ fn chosen(editor: &mut Editor, name: &str) {
         entry_id: state.current_entry.id.clone(),
         destination: std::path::PathBuf::from("/tmp").join(name),
         keep_metadata: false,
+        pixels_per_inch: None,
         plan: json!({"suggested": null}),
     };
     let _ = editor.update(Message::Export(ExportMessage::Chosen(Ok(Some(Box::new(
@@ -545,6 +546,7 @@ fn an_export_through_the_owner_writes_a_new_file_and_never_replaces_it() {
             entry_id: entry.clone(),
             destination: destination.clone(),
             keep_metadata: true,
+            pixels_per_inch: Some(144),
             plan,
         };
         let queued = send_now(&editor.owner, editor.client, &choice);
@@ -580,6 +582,10 @@ fn an_export_through_the_owner_writes_a_new_file_and_never_replaces_it() {
     export_once(&mut editor);
     let written = std::fs::read(&destination).unwrap();
     let decoded = image::load_from_memory(&written).unwrap();
+    // The JFIF header right after SOI: its units, then 144 pixels per inch both ways.
+    assert_eq!(&written[2..4], [0xff, 0xe0]);
+    assert_eq!(&written[6..11], b"JFIF\0");
+    assert_eq!(&written[13..18], [1, 0, 144, 0, 144]);
     let expected = format!(
         "Exported photo-edited.jpg \u{b7} {} \u{d7} {} \u{b7} ",
         decoded.width(),
@@ -688,6 +694,7 @@ fn a_slider_edit_is_compared_and_exported_while_before_is_selected() {
         entry_id: target,
         destination: destination.clone(),
         keep_metadata: false,
+        pixels_per_inch: None,
         plan,
     };
     let queued = send_now(&editor.owner, editor.client, &choice).unwrap();

@@ -12,11 +12,12 @@
 //! measurement is cached against the content, the available width, the size, the line height and
 //! the font, so a layout pass with nothing changed shapes and allocates nothing.
 
+use crate::{Element, Ink, Theme};
 use iced::advanced::text::{self as core_text, Paragraph as _, Renderer as _};
 use iced::advanced::widget::{Operation, Tree, tree};
 use iced::advanced::{Layout, Widget, layout, mouse, renderer};
 use iced::widget::text::{LineHeight, Shaping, Wrapping};
-use iced::{Color, Element, Font, Length, Pixels, Rectangle, Renderer, Size, Theme, alignment};
+use iced::{Font, Length, Pixels, Rectangle, Renderer, Size, alignment};
 
 /// The mark appended to a truncated string.
 pub(crate) const ELLIPSIS: &str = "\u{2026}";
@@ -95,22 +96,22 @@ pub struct TruncatedText {
     content: String,
     size: f32,
     font: Font,
-    color: Color,
+    ink: Ink,
     line_height: LineHeight,
 }
 
-/// A one-line label at `size` in `font` and `color`, ending in "…" when it does not fit.
+/// A one-line label at `size` in `font` and `ink`, ending in "…" when it does not fit.
 pub fn truncated_text(
     content: impl Into<String>,
     size: f32,
     font: Font,
-    color: Color,
+    ink: impl Into<Ink>,
 ) -> TruncatedText {
     TruncatedText {
         content: content.into(),
         size,
         font,
-        color,
+        ink: ink.into(),
         line_height: LineHeight::default(),
     }
 }
@@ -223,7 +224,7 @@ impl<M> Widget<M, Theme, Renderer> for TruncatedText {
         &self,
         tree: &Tree,
         renderer: &mut Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
@@ -233,7 +234,7 @@ impl<M> Widget<M, Theme, Renderer> for TruncatedText {
         renderer.fill_paragraph(
             &state.paragraph,
             layout.bounds().position(),
-            self.color,
+            self.ink.resolve(theme.palette()),
             *viewport,
         );
     }

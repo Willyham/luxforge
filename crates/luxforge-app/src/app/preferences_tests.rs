@@ -45,7 +45,7 @@ fn poll(editor: &mut Editor) -> super::tasks::SyncResult {
     let polled = sync_now(
         &editor.owner,
         editor.client,
-        (AssetId::new(), 0),
+        Some((AssetId::new(), 0)),
         editor.sync.sequence,
         &own,
         None,
@@ -394,10 +394,13 @@ fn the_canvas_background_row_fills_the_canvas_in_each_choice_and_follows_another
     let drawn = |editor: &Editor| {
         (
             editor.view_state.canvas_background,
-            crate::view::canvas::background_colour(editor.workspace.canvas.background),
+            crate::view::canvas::background_colour(
+                editor.workspace.canvas.background,
+                editor.theme.palette(),
+            ),
         )
     };
-    assert_eq!(drawn(&editor), (CanvasBackground::Dark, theme::CANVAS));
+    assert_eq!(drawn(&editor), (CanvasBackground::Theme, theme::CANVAS));
     for (index, background, colour) in [
         (2, CanvasBackground::Grey, theme::CANVAS_GREY),
         (1, CanvasBackground::Black, theme::CANVAS_BLACK),
@@ -447,7 +450,7 @@ fn a_frame_records_the_combined_scale_factor_at_each_interface_size() {
     let display = |editor: &Editor| editor.snapshot()["preferences"]["display"].clone();
     assert_eq!(
         display(&editor),
-        json!({"canvas_background": "dark", "interface_size": 100,
+        json!({"canvas_background": "theme", "interface_size": 100,
                "system_scale_factor": 2.0, "scale_factor": 2.0})
     );
     for (index, size) in INTERFACE_SIZES.into_iter().enumerate().rev() {
@@ -462,7 +465,7 @@ fn a_frame_records_the_combined_scale_factor_at_each_interface_size() {
         assert_eq!(editor.view_state.scale_factor, combined);
         assert_eq!(
             display(&editor),
-            json!({"canvas_background": "dark", "interface_size": size,
+            json!({"canvas_background": "theme", "interface_size": size,
                    "system_scale_factor": 2.0, "scale_factor": combined}),
             "{size}"
         );
@@ -525,5 +528,17 @@ fn at_an_interface_scale_of_125_percent_100_percent_zoom_is_one_source_pixel_per
     editor.session.preview.view.zoom = Zoom::Percent { value: 50.0 };
     assert_eq!(editor.displayed_size(stage), Some((3000.0, 2000.0)));
     answer_preference(&mut editor);
+    finish(editor, root);
+}
+
+/// The editor launches in Luxforge Dark, and the theme Iced reads from it after every update is
+/// the editor's own, not a new one each time: its generation stays put, so no canvas redraws.
+#[test]
+fn the_editor_hands_iced_its_own_luxforge_dark_theme() {
+    let (editor, root) = launch();
+    let theme = editor.theme();
+    assert_eq!(*theme.palette(), luxforge_ui::Palette::luxforge_dark());
+    assert_eq!(theme.mode(), luxforge_ui::Mode::Dark);
+    assert_eq!(theme.generation(), editor.theme().generation());
     finish(editor, root);
 }

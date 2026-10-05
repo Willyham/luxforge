@@ -281,13 +281,13 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "preferences.read",
         NoParams,
         |owner, _, _| Ok(preference_values(&owner.host.preferences.read()?)),
-        "user preferences outside the catalog, each with its default filled in where the person chose nothing: {performance_expanded (default true), auto_collapse_history (default true), auto_lens_profile (default true), mask_overlay_colour (green or white, default green), canvas_background (dark, black or grey, default dark), interface_size (100, 110, 125 or 150 percent, default 100), catalog (the absolute path of the catalog file the desktop opens at its next launch, or null for the default catalog), workspace ({state_panel, tools_panel, thirds, clip_shadows, clip_highlights}, default the workspace's defaults), brush ({size, feather, flow}, or null for the neutral brush), window ({width, height, x, y} in the system's points, or null for the default frame), export_folder (the absolute path of the folder export.plan suggests while it exists, or null for the original's folder)}; reads no pixels, changes no history and creates no file; malformed or unsupported preferences are refused without rewriting them"
+        "user preferences outside the catalog, each with its default filled in where the person chose nothing: {performance_expanded (default true), auto_collapse_history (default true), auto_lens_profile (default true), mask_overlay_colour (green or white, default green), canvas_background (dark, black, grey or theme, the active theme's surround; default theme), interface_size (100, 110, 125 or 150 percent, default 100), catalog (the absolute path of the catalog file the desktop opens at its next launch, or null for the default catalog), workspace ({state_panel, tools_panel, thirds, clip_shadows, clip_highlights}, default the workspace's defaults), brush ({size, feather, flow}, or null for the neutral brush), window ({width, height, x, y} in the system's points, or null for the default frame), export_folder (the absolute path of the folder export.plan suggests while it exists, or null for the original's folder), theme (the active theme's id, default luxforge.dark, which theme.list answers as active)}; reads no pixels, changes no history and creates no file; malformed or unsupported preferences are refused without rewriting them"
     ),
     owner!(
         "preferences.set",
         owner::PreferencesSet,
         owner::preferences_set,
-        "persist the preferences named through one bounded atomic user-settings write, leaving the others as they were; null removes a stored value so the preference follows its default: performance_expanded, the Performance section's expanded state; auto_collapse_history, whether an edit that sets the same control as the entry before it, by the same actor, collapses that entry so history keeps one row for the chain, or none when the control returns to where the chain began, with collapsed entries kept and listed by history.list on request, applying to edits from now on and rewriting no history; auto_lens_profile, whether an import commits a new RAW photo's detected lens profile as its first-open entry, applying to imports from now on and never changing a photo already in the catalog; mask_overlay_colour, green or white; canvas_background, dark, black or grey; interface_size, 100, 110, 125 or 150 percent; catalog, the absolute path of the catalog file the desktop opens at its next launch, which moves no file; workspace, the remembered {state_panel, tools_panel, thirds, clip_shadows, clip_highlights}; brush, the remembered {size, feather, flow} within the ranges mask.add-stroke declares; window, the remembered {width, height, x, y} in the system's points, width and height within 320..=16384; export_folder, the absolute path of the folder export.plan suggests while it exists; a path need not exist; a bad value is refused by name and writes nothing; a change to auto_collapse_history, auto_lens_profile, mask_overlay_colour, canvas_background, interface_size or catalog is announced; no preference changes a rendered or exported byte; returns every preference as preferences.read does; needs a configured application preference directory"
+        "persist the preferences named through one bounded atomic user-settings write, leaving the others as they were; null removes a stored value so the preference follows its default: performance_expanded, the Performance section's expanded state; auto_collapse_history, whether an edit that sets the same control as the entry before it, by the same actor, collapses that entry so history keeps one row for the chain, or none when the control returns to where the chain began, with collapsed entries kept and listed by history.list on request, applying to edits from now on and rewriting no history; auto_lens_profile, whether an import commits a new RAW photo's detected lens profile as its first-open entry, applying to imports from now on and never changing a photo already in the catalog; mask_overlay_colour, green or white; canvas_background, dark, black, grey or theme, the active theme's surround; interface_size, 100, 110, 125 or 150 percent; catalog, the absolute path of the catalog file the desktop opens at its next launch, which moves no file; workspace, the remembered {state_panel, tools_panel, thirds, clip_shadows, clip_highlights}; brush, the remembered {size, feather, flow} within the ranges mask.add-stroke declares; window, the remembered {width, height, x, y} in the system's points, width and height within 320..=16384; export_folder, the absolute path of the folder export.plan suggests while it exists; theme, the id of a theme the library holds (an unknown id is refused, and luxforge.dark is stored as no choice); a path need not exist; a bad value is refused by name and writes nothing; a change to auto_collapse_history, auto_lens_profile, mask_overlay_colour, canvas_background, interface_size, catalog or theme is announced; no preference changes a rendered or exported byte; returns every preference as preferences.read does; needs a configured application preference directory"
     ),
     owner!(
         "flags.list",
@@ -300,6 +300,46 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::FlagsSet,
         owner::flags_set,
         "store one feature flag's value outside the catalog, checked against its kind, or remove the stored value for a null or absent value so the flag follows its default; answers as flags.list does; a changed value is announced in the event log; leaves every other stored value, recognized or not, untouched; a launch flag takes effect at the next desktop launch; changes no recipe, history or render; needs a configured application preference directory"
+    ),
+    // The theme library, outside every catalog: `themes.json` beside the preferences. No theme
+    // method reads or writes a catalog or changes a photograph.
+    owner!(
+        "theme.list",
+        NoParams,
+        owner::themes::list,
+        "{themes, active, unrecognized}: every theme the library holds, built-in themes first (luxforge.dark, then the bundled Omarchy themes omarchy.tokyo-night, omarchy.catppuccin, omarchy.catppuccin-latte, omarchy.gruvbox, omarchy.nord and omarchy.everforest, whose origin names the Omarchy commit their colors.toml came from), then stored themes by name ignoring case, each {id, name, mode (dark or light), origin ({kind: built-in}, {kind: luxforge} or {kind: omarchy, folder, form (omarchy4, omarchy3 or alacritty), commit?}), built_in, swatches {surround, background, surface, text, accent}, report {derived, explicit, moved, shortened, neutralised, accent_close, unused (an Omarchy theme's unused keys)}, adjusted (an own ink was moved to its floor)}; active is the theme preferences.read answers; unrecognized lists each stored record this build cannot read, {id, name, reason}, which is kept and never rewritten; reads no catalog and creates no file"
+    ),
+    owner!(
+        "theme.read",
+        owner::themes::ThemeParams,
+        owner::themes::read,
+        "{theme}: {id, name, mode, roles (as given), tokens (the explicit ones), origin, built_in, resolved (every token's colour), report (the full resolution report: given, derived, explicit, moved, shortened, surround, rail_backdrop, accent, and for an Omarchy theme omarchy {form, mode, mode_source (mode-key, theme-type-key, light-mode-file or background-brightness), roles [{role, key, value}] (each role and the Omarchy key it came from, before any move), derived [{role, key, value, reason}] (the control when lighter_background equals the background: equals-background), unused [{file, key, value, reason}] (unknown-key, gradient, replaced, empty or not-a-colour)}), adjusted, actor, created_ms, updated_ms, source ({file name: text}, the files read kept verbatim; a bundled theme's vendored colors.toml)}; actor and the times are null for a built-in theme; an unknown id is validation, and a stored record this build cannot read is incompatible with its reason"
+    ),
+    owner!(
+        "theme.inspect",
+        owner::themes::ThemeInspect,
+        owner::themes::inspect,
+        "dry run of theme.import that stores nothing: {theme, report}, theme having theme.read's shape with id, actor and the times null and no source; the name rules apply, but not the library's uniqueness or size"
+    ),
+    owner!(
+        "theme.import",
+        owner::themes::ThemeImport,
+        owner::themes::import,
+        "{theme, report, deduplicated}: store a theme from a Luxforge theme document (format luxforge, its text as content; resolved by a document's rules, so a missed contrast floor or a surround past the chroma bound is refused) or an Omarchy theme folder (format omarchy, its files as files and the folder's own name as folder: only colors.toml, alacritty.toml (read when there is no colors.toml) and light.mode are taken, and any other file name is refused as validation; the palette is resolved as Omarchy's resolver resolves it, and its mode, background, dark_background (the surround, held to the chroma bound), lighter_background (the control, derived instead when it equals the background), foreground (the text) and accent become roles; an own ink that misses its floor is moved and reported; a theme the reader cannot read is unsupported-input with the reader's coded error as data; named after folder as Omarchy lists it unless name is given, and refused with neither), with mutation.actor as its actor and the imported text kept verbatim; name overrides the theme's own; a name is 1..64 printable characters after trimming and unique ignoring case across every theme, a built-in one's included (a duplicate is a conflict, and nothing is renamed or replaced); the library holds at most 128 themes of at most 8 KiB each, source included, in at most 1 MiB (resource-limit); each file is at most 64 KiB; theme has theme.read's shape without source; a refused import stores nothing",
+        retries: Owner,
+    ),
+    owner!(
+        "theme.export",
+        owner::themes::ThemeParams,
+        owner::themes::export,
+        "{file_name, content}: the theme, a built-in one included, as a Luxforge theme document named <name>.lftheme, which theme.import reads back to the same tokens; an imported theme whose inks were moved is written as it resolved"
+    ),
+    owner!(
+        "theme.delete",
+        owner::themes::ThemeDelete,
+        owner::themes::delete,
+        "{outcome, deleted, deduplicated}: remove a stored theme, or a stored record this build cannot read, by id: applied and true when it was there, no-op and false when it was not; a built-in theme is refused as validation and the active theme as a conflict, by name",
+        retries: Owner,
     ),
     owner!(
         "catalog.import",
@@ -831,7 +871,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "export.jpeg",
         owner::export::ExportJpeg,
         owner::export::jpeg,
-        "writes one saved entry's exact render, the current entry unless entry_id names another, to a new baseline quality-90 sRGB JPEG at destination: an absolute path ending .jpg or .jpeg whose parent directory exists and at which nothing exists (conflict otherwise, and nothing is ever replaced); keep_metadata writes the original's supported EXIF fields, otherwise the file carries none; reference asks for the reference renderer, which renders every export today, and a ready job's result names the renderer that wrote the file as renderer {record: reference, reason: null}; the entry is frozen when accepted, so later commits never change it; queues one job on the export lane (one running, four waiting, resource-limit beyond), read with job.read and cancelled with job.cancel, and returns {job_id, status, asset_id, entry_id, snapshot_id, destination, width, height, keep_metadata, reference, deduplicated}; an unprepared source is preparation-required with its job; a finished export records an event",
+        "writes one saved entry's exact render, the current entry unless entry_id names another, to a new baseline quality-90 sRGB JPEG at destination: an absolute path ending .jpg or .jpeg whose parent directory exists and at which nothing exists (conflict otherwise, and nothing is ever replaced); keep_metadata writes the original's supported EXIF fields, otherwise the file carries none; pixels_per_inch (1 to 65535) is the JFIF header's density, which sizes the file in viewers such as Preview and in print, otherwise the header names none, a unitless 1:1 aspect ratio; reference asks for the reference renderer, which renders every export today, and a ready job's result names the renderer that wrote the file as renderer {record: reference, reason: null}; the entry is frozen when accepted, so later commits never change it; queues one job on the export lane (one running, four waiting, resource-limit beyond), read with job.read and cancelled with job.cancel, and returns {job_id, status, asset_id, entry_id, snapshot_id, destination, width, height, keep_metadata, pixels_per_inch, reference, deduplicated}; an unprepared source is preparation-required with its job; a finished export records an event",
         retries: Owner,
     ),
     service!(
@@ -1468,6 +1508,7 @@ pub(super) fn preference_values(preferences: &crate::preferences::Preferences) -
         "brush": preferences.brush,
         "window": preferences.window,
         "export_folder": preferences.export_folder,
+        "theme": preferences.theme(),
     })
 }
 

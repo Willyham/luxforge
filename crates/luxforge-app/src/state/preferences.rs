@@ -96,17 +96,22 @@ preferences! {
     window: Option<WindowFrame>,
     /// The folder `export.plan` suggests, or `None` for the original's.
     export_folder: Option<PathBuf>,
+    /// The active theme's id, Luxforge Dark's when none is stored. The Appearance tab and the
+    /// palette's theme entries set it; the desktop draws the theme it names.
+    theme: String,
 }
 
 /// The fields whose change `preferences.set` announces in the event log: the ones a General row
-/// shows. The rest are the desktop's own bookkeeping and announce nothing.
-pub(crate) const ANNOUNCED: [&str; 6] = [
+/// shows, and the theme the Appearance tab chooses. The rest are the desktop's own bookkeeping and
+/// announce nothing.
+pub(crate) const ANNOUNCED: [&str; 7] = [
     "auto_collapse_history",
     "auto_lens_profile",
     "mask_overlay_colour",
     "canvas_background",
     "interface_size",
     "catalog",
+    "theme",
 ];
 
 impl PreferenceChange {
@@ -207,6 +212,16 @@ impl PreferenceWriter {
             change.apply(&mut preferences);
         }
         Some(preferences)
+    }
+
+    /// The theme [`Self::applied`] holds, without cloning the rest: the newest outstanding change
+    /// to it, or the stored one. Read after every message, so it allocates nothing.
+    pub(crate) fn applied_theme(&self) -> Option<&str> {
+        self.waiting
+            .iter()
+            .chain(&self.writing)
+            .find_map(|change| change.theme.as_deref())
+            .or_else(|| self.stored.as_ref().map(|stored| stored.theme.as_str()))
     }
 
     /// A change to the field named `field` has not been answered yet.
@@ -458,6 +473,7 @@ impl GeneralPreference {
                         CanvasBackground::Dark => "Dark",
                         CanvasBackground::Black => "Black",
                         CanvasBackground::Grey => "Grey",
+                        CanvasBackground::Theme => "Theme",
                     };
                     (Value::from(background.as_str()), label)
                 }),
@@ -654,14 +670,15 @@ mod tests {
             "auto_collapse_history": true,
             "auto_lens_profile": true,
             "mask_overlay_colour": "green",
-            "canvas_background": "dark",
+            "canvas_background": "theme",
             "interface_size": 100,
             "catalog": null,
             "workspace": {"state_panel": true, "tools_panel": true, "thirds": false,
                           "clip_shadows": false, "clip_highlights": false},
             "brush": null,
             "window": null,
-            "export_folder": null
+            "export_folder": null,
+            "theme": "luxforge.dark"
         }))
         .unwrap()
     }
@@ -818,8 +835,9 @@ mod tests {
         assert!(!rows[0].saving && rows[1].saving && rows[2].saving);
     }
 
-    /// The canvas background row offers its three colours by name and the interface size row its
-    /// four sizes as numbers, the values `preferences.set` takes; each gesture sets its field.
+    /// The canvas background row offers its four choices by name, Theme the default, and the
+    /// interface size row its four sizes as numbers, the values `preferences.set` takes; each
+    /// gesture sets its field.
     #[test]
     fn the_canvas_background_and_interface_scale_rows_offer_their_choices() {
         let mut writer = PreferenceWriter::new(Ok(defaults()));
@@ -828,9 +846,9 @@ mod tests {
         assert_eq!(
             rows[3].control,
             GeneralControl::Choice {
-                values: vec![json!("dark"), json!("black"), json!("grey")],
-                labels: vec!["Dark", "Black", "Grey"],
-                selected: Some(0),
+                values: vec![json!("dark"), json!("black"), json!("grey"), json!("theme")],
+                labels: vec!["Dark", "Black", "Grey", "Theme"],
+                selected: Some(3),
             }
         );
         assert_eq!(rows[4].preference.title(), "Interface size");

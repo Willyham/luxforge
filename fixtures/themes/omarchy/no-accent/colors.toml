@@ -1,0 +1,5 @@
+# A synthetic palette with no accent, which Omarchy's resolver cannot give: its import fails with
+# the reader's reason, and the rest of the set is imported.
+mode = "dark"
+background = "#202020"
+foreground = "#e0e0e0"
