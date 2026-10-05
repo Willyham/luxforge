@@ -7,13 +7,14 @@
   "tasks": [
     {
       "id": "TASK-001",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "description": "Build the reference comparison harness, measure the tolerance per output kind on the corpus, and rewrite the rules and testing guidance for reference-buffer correctness.",
       "extra_context": [
         "The owner decided on 2026-10-04 that correctness is a declared tolerance against the CPU reference render for every output kind (docs/decisions.md, GPU-first rendering). Before any stage lands, one harness must render a stack on the reference and on the GPU and report, per output kind, the error against the proposed limits in the design: the preview error limit for the picture, 0.1% of the output pixel count for histogram bins and clipping counts, the display limit per pixel for export, equality by construction for samples.",
         "Start from the existing qualification machinery (crates/luxforge-core/src/render/gpu qualification, the corpus and the error limit in docs/design/gpu-preview.md, xtask gpu_qualification) and extend it to the histogram reduction, export and the at-rest picture. The harness runs natively; on CI it runs the reference renderer's own tests and, on Linux, the software Vulkan adapter when TASK-008 lands.",
-        "Docs to rewrite with the measured limits: performance rule 4's exception and rule 11, rule 14's cache list, the review checklist's exactness items, docs/engineering/development.md's evidence rules (exact-buffer tests become reference-buffer tests with a declared tolerance), docs/design/architecture.md's renderer section. AGENTS.md's pillars already state the decision; keep them in step."
+        "Docs to rewrite with the measured limits: performance rule 4's exception and rule 11, rule 14's cache list, the review checklist's exactness items, docs/engineering/development.md's evidence rules (exact-buffer tests become reference-buffer tests with a declared tolerance), docs/design/architecture.md's renderer section. AGENTS.md's pillars already state the decision; keep them in step.",
+        "Delivered 2026-10-05: `cargo xtask gpu-qualification` is the release gate in the `rendered` tier (docs/engineering/development.md); its first run measured the picture on the whole corpus at Fit, 33%, 50% and 100% (docs/specs/performance.md, GPU qualification against the reference), and it passes under the recorded default (the picture in motion held to the frame it settles to on all 1,000 cells; the picture at rest, histogram, sample and export reported as not rendered by the GPU yet) and fails with `--hold-motion-to-reference` on 481 of 750 cells below 100%: artifacts/gpu-first/task-001/gq-default and gq-hold on the integration worktree, both at build 0961d235."
       ],
       "context_links": [
         {
@@ -534,14 +535,15 @@
     },
     {
       "id": "TASK-008",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001"
       ],
       "description": "Make the renderer of record portable and testable without a native GPU: a software Vulkan adapter for Linux CI journeys, the reference renderer as the no-GPU fallback with a notice, and the native checks Windows and Linux need.",
       "extra_context": [
         "The pillars require Windows and Linux portability and distinguish VM functional checks from native GPU evidence. wgpu selects a software adapter (lavapipe) on Linux when no device is present; macOS has no software Metal, so a macOS VM proves the reference renderer and the owner thread, not the GPU.",
-        "A machine whose adapter is missing, refused or fails compilation gets the reference renderer: whole frames, slower, named in the status bar and the API's session; nothing silently approximates. CI runs the reference tests and, on Linux, the rendered journeys through the software adapter; the development guide's CI section records exactly what each lane proves."
+        "A machine whose adapter is missing, refused or fails compilation gets the reference renderer: whole frames, slower, named in the status bar and the API's session; nothing silently approximates. CI runs the reference tests and, on Linux, the rendered journeys through the software adapter; the development guide's CI section records exactly what each lane proves.",
+        "On the M4 (2026-10-05): the forced `--no-gpu-render` launch shows the reference renderer's notice in the status bar and `session.state`'s `renderer` field, every frame is the CPU path's with the reason recorded, and the no-gpu-render scenario and tests prove it (artifacts/gpu-first/task-008 on the integration worktree); the development guide states what each lane and machine proves. The Linux no-adapter and lavapipe lanes are configured in .github/workflows/check.yml but unproven until the owner pushes: a configured step is not a passing result, so the first acceptance criterion waits on a hosted run."
       ],
       "context_links": [
         {
