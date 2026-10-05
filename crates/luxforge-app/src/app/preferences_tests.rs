@@ -397,7 +397,7 @@ fn the_canvas_background_row_fills_the_canvas_in_each_choice_and_follows_another
             crate::view::canvas::background_colour(editor.workspace.canvas.background),
         )
     };
-    assert_eq!(drawn(&editor), (CanvasBackground::Dark, theme::CANVAS));
+    assert_eq!(drawn(&editor), (CanvasBackground::Theme, theme::CANVAS));
     for (index, background, colour) in [
         (2, CanvasBackground::Grey, theme::CANVAS_GREY),
         (1, CanvasBackground::Black, theme::CANVAS_BLACK),
@@ -447,7 +447,7 @@ fn a_frame_records_the_combined_scale_factor_at_each_interface_size() {
     let display = |editor: &Editor| editor.snapshot()["preferences"]["display"].clone();
     assert_eq!(
         display(&editor),
-        json!({"canvas_background": "dark", "interface_size": 100,
+        json!({"canvas_background": "theme", "interface_size": 100,
                "system_scale_factor": 2.0, "scale_factor": 2.0})
     );
     for (index, size) in INTERFACE_SIZES.into_iter().enumerate().rev() {
@@ -462,7 +462,7 @@ fn a_frame_records_the_combined_scale_factor_at_each_interface_size() {
         assert_eq!(editor.view_state.scale_factor, combined);
         assert_eq!(
             display(&editor),
-            json!({"canvas_background": "dark", "interface_size": size,
+            json!({"canvas_background": "theme", "interface_size": size,
                    "system_scale_factor": 2.0, "scale_factor": combined}),
             "{size}"
         );

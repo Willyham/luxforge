@@ -11,8 +11,12 @@
 //! to its floor and the move reported; a Luxforge theme document's author chose each value, so a
 //! document that misses a floor is refused by name.
 //!
+//! The library keeps the themes a person imported in `themes.json`, outside every
+//! catalog, beside the built-in ones.
+//!
 //! A theme never changes a photograph: nothing here reads an asset, a recipe or a catalog.
 mod document;
+mod library;
 pub mod omarchy;
 mod report;
 mod resolve;
@@ -20,9 +24,17 @@ mod rgba;
 mod token;
 
 #[cfg(test)]
+mod library_tests;
+#[cfg(test)]
 mod tests;
 
 pub use document::{THEME_DOCUMENT_FORMAT, THEME_DOCUMENT_VERSION, ThemeDocument};
+pub(crate) use library::ThemeStore;
+pub use library::{
+    LUXFORGE_DARK_ID, LaunchTheme, Listing, MAX_LIBRARY_BYTES, MAX_THEME_BYTES,
+    MAX_THEME_FILE_BYTES, MAX_THEME_ID, MAX_THEME_NAME, MAX_THEMES, Theme, ThemeExport,
+    ThemeFormat, ThemeInput, ThemeOrigin, Unrecognized, built_in_themes, luxforge_dark_theme,
+};
 pub use report::{AccentNote, InkMove, Neutralised, ReservedColour, ShortenedTier, ThemeReport};
 pub use resolve::{
     ACCENT_INK_WEIGHT, ACCENT_NOTE_DISTANCE, CHROMA_BOUND, CONTROL_STEP, DARK_ACCENT_LUMINANCE,
