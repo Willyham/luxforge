@@ -510,7 +510,8 @@ impl PhotoPipeline {
     /// forgets what it holds, so the plan is evaluated whole and every link reading a light draws
     /// with the new one. The surface keeps one link for each light, light `k` the `k`-th, and lets
     /// the ones past the plan's go. Names why the frame is not the GPU's, as `evaluate` does: a
-    /// light's sequence compiling, the source still uploading or not held whole among them.
+    /// light's sequence compiling, the source still uploading or not held whole among them, the
+    /// source checked before anything is fitted.
     pub(super) fn evaluate_lit(
         &mut self,
         surface: &mut SurfaceSlots,
@@ -522,6 +523,19 @@ impl PhotoPipeline {
         self.retire_lights(&mut surface.gpu_lights, plan.lights.len());
         if plan.lights.is_empty() {
             return self.evaluate(surface, device, queue, plan, change);
+        }
+        // The lights read the source the pipeline holds: until it is whole the frame is the CPU's,
+        // and no slot is fitted that a later frame would let go of before its boundary uploads.
+        match self.gpu.source.as_ref() {
+            None => return Err(GpuFallback::SourceMissing),
+            Some(source) if !source.ready() => {
+                let figures = source.figures();
+                return Err(GpuFallback::SourceUploading {
+                    uploaded: figures.uploaded,
+                    bytes: figures.bytes,
+                });
+            }
+            Some(_) => {}
         }
         let count = plan.lights.len() as u32;
         let fitted = surface.gpu.as_ref().is_some_and(|slot| {
