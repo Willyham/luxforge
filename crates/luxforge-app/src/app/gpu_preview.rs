@@ -859,6 +859,9 @@ pub(crate) struct GpuPreviews {
     /// The Fit bounds the displayed stack's picture at rest was planned at by its job's owner
     /// task: a refit plans it again once they are not the view's ([`Editor::refit_proxy`]).
     pub(crate) rest_planned_at: Option<luxforge_core::ProxyBounds>,
+    /// The content the GPU presented whose picture at rest found its programs compiling, and when
+    /// it first did: the reference renders it once that has lasted the `compiling` threshold.
+    pub(crate) rest_compiling_since: Option<(u64, std::time::Instant)>,
     /// The compile thread's warm-up as the desktop follows it ([`super::gpu_warm`]).
     pub(crate) warm_up: super::gpu_warm::WarmUpFollow,
     /// What a test reports for the surface, which no test draws.
