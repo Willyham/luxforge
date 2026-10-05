@@ -807,9 +807,11 @@ impl Editor {
                 // Iced names the adapter and its backend; the rest of the adapter's identity — its
                 // device type above all, which tells a software rasterizer from a GPU — comes from
                 // an enumeration of that backend, which creates a graphics instance, so it runs on
-                // the blocking pool and the capture waits for it.
+                // the blocking pool and the capture waits for it. The GPU tile worker is named the
+                // same adapter, as any launch names it once its photo surface has checked its stage.
                 let (backend, name) =
                     (info.graphics_backend.clone(), info.graphics_adapter.clone());
+                self.window_adapter_named(backend.clone(), name.clone());
                 return super::tasks::owner_task(
                     move || super::renderer::identify(&backend, &name),
                     move |adapter| {
@@ -1239,7 +1241,11 @@ impl Editor {
                 let dir = std::path::absolute(&dir).unwrap_or(dir);
                 self.note_step(json!({"destination":file.name}));
                 self.await_step(Settle::Export);
-                let task = self.export_start(file.keep_metadata, Some(dir.join(&file.name)));
+                let task = self.export_start(
+                    file.keep_metadata,
+                    file.reference,
+                    Some(dir.join(&file.name)),
+                );
                 if !self.export.active() {
                     return self
                         .fail_step(format!("the export was not started: {}", self.status.text));
