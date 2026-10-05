@@ -1,11 +1,12 @@
-//! The Settings sheet: which tab is open, the person's preferences as `preferences.read` and the
-//! flags as `flags.list` last answered them, the writes waiting and the number fields' text, and
-//! the model its tabs, General and Experiments, are drawn from. The sheet is this desktop's own
-//! view state, like the gallery page; the preferences and flags are the host's, read and written
-//! through `preferences.read`, `preferences.set`, `flags.list` and `flags.set` as any client does
-//! ([design](../../../../docs/design/settings-and-flags.md)).
+//! The Settings sheet: which tab is open, the flags as `flags.list` last answered them, the flag
+//! writes waiting and the number fields' text, and the model its tabs, General and Experiments, are
+//! drawn from. The sheet is this desktop's own view state, like the gallery page; the preferences
+//! and flags are the host's, read and written through `preferences.read`, `preferences.set`,
+//! `flags.list` and `flags.set` as any client does
+//! ([design](../../../../docs/design/settings-and-flags.md)). The preferences the General tab shows
+//! are held from launch by the desktop's one preference writer ([`super::preferences`]).
+use super::preferences::{GeneralRow, PreferenceWriter, general_rows};
 use luxforge_core::flags::{Applies, FlagList, ListedFlag};
-use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, VecDeque};
 
@@ -35,12 +36,6 @@ impl SettingsTab {
     }
 }
 
-/// The preferences the General tab shows, as `preferences.read` and `preferences.set` answer them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-pub(crate) struct GeneralPreferences {
-    pub(crate) auto_collapse_history: bool,
-}
-
 /// One flag write: the flag and its new value, or `None` to remove the stored value.
 pub(crate) type FlagWrite = (String, Option<Value>);
 
@@ -51,34 +46,24 @@ pub(crate) struct Settings {
     pub(crate) open: Option<SettingsTab>,
     /// The flags as the last `flags.list` or `flags.set` answered them.
     pub(crate) flags: Option<FlagList>,
-    /// The preferences as the last `preferences.read` or `preferences.set` answered them.
-    pub(crate) preferences: Option<GeneralPreferences>,
     /// A read of the flags and the preferences is in flight.
     pub(crate) reading: bool,
     /// Why the last read or write of the flags failed, until the next one succeeds.
     pub(crate) error: Option<String>,
-    /// Why the last read or write of the preferences failed, until the next one succeeds.
-    pub(crate) preferences_error: Option<String>,
-    /// The Auto collapse history value in flight, and the newest one asked for since, which
-    /// replaces any older one still waiting.
-    pub(crate) collapse_writing: Option<bool>,
-    pub(crate) collapse_waiting: Option<bool>,
-    /// The write in flight. Writes go one at a time, in the order they were made.
+    /// The flag write in flight. Writes go one at a time, in the order they were made.
     pub(crate) writing: Option<FlagWrite>,
     pub(crate) waiting: VecDeque<FlagWrite>,
     /// A number field's text while it is being typed, by flag.
     pub(crate) number_text: BTreeMap<String, String>,
-    /// The window asked to close while a write was outstanding; it closes once the last lands.
+    /// The window asked to close while a flag write was outstanding; it closes once the last
+    /// lands.
     pub(crate) closing: bool,
 }
 
 impl Settings {
-    /// No write is in flight or waiting.
+    /// No flag write is in flight or waiting.
     pub(crate) fn idle(&self) -> bool {
-        self.writing.is_none()
-            && self.waiting.is_empty()
-            && self.collapse_writing.is_none()
-            && self.collapse_waiting.is_none()
+        self.writing.is_none() && self.waiting.is_empty()
     }
 
     /// The newest write made for `flag` that has not been answered yet.
@@ -135,15 +120,14 @@ pub(crate) struct SettingsModel {
     /// The flags have not been read yet.
     pub(crate) loading: bool,
     pub(crate) error: Option<String>,
-    /// The General tab's Auto collapse history switch, or `None` until the preferences are read.
-    pub(crate) auto_collapse: Option<bool>,
-    /// A change to it has not been answered yet.
-    pub(crate) auto_collapse_saving: bool,
+    /// The General tab's rows, one per preference, or none until the preferences are read.
+    pub(crate) general: Vec<GeneralRow>,
     pub(crate) preferences_error: Option<String>,
 }
 
-/// The sheet for this state. Closed, it is empty, so a closed sheet costs a message nothing.
-pub(crate) fn derive(settings: &Settings) -> SettingsModel {
+/// The sheet for this state and the preferences the writer shows. Closed, it is empty, so a closed
+/// sheet costs a message nothing.
+pub(crate) fn derive(settings: &Settings, preferences: &PreferenceWriter) -> SettingsModel {
     let Some(open) = settings.open else {
         return SettingsModel::default();
     };
@@ -164,15 +148,8 @@ pub(crate) fn derive(settings: &Settings) -> SettingsModel {
         loading: settings.flags.is_none() && settings.error.is_none(),
         error: settings.error.clone(),
         // A change shows at once; the answer that lands confirms it or puts the truth back.
-        auto_collapse: settings
-            .collapse_waiting
-            .or(settings.collapse_writing)
-            .or(settings
-                .preferences
-                .map(|preferences| preferences.auto_collapse_history)),
-        auto_collapse_saving: settings.collapse_writing.is_some()
-            || settings.collapse_waiting.is_some(),
-        preferences_error: settings.preferences_error.clone(),
+        general: general_rows(preferences),
+        preferences_error: preferences.error.clone(),
     }
 }
 
@@ -311,48 +288,24 @@ mod tests {
     }
 
     #[test]
-    fn the_general_switch_shows_a_change_at_once_and_the_stored_value_otherwise() {
-        let mut settings = Settings {
-            open: Some(SettingsTab::General),
-            ..Settings::default()
-        };
-        assert_eq!(derive(&settings).auto_collapse, None, "unread");
-        settings.preferences = Some(GeneralPreferences {
-            auto_collapse_history: true,
-        });
-        let model = derive(&settings);
-        assert_eq!(
-            (model.auto_collapse, model.auto_collapse_saving),
-            (Some(true), false)
-        );
-        settings.collapse_writing = Some(false);
-        let model = derive(&settings);
-        assert_eq!(
-            (model.auto_collapse, model.auto_collapse_saving),
-            (Some(false), true)
-        );
-        settings.collapse_waiting = Some(true);
-        assert_eq!(
-            derive(&settings).auto_collapse,
-            Some(true),
-            "the newest asked for"
-        );
-        assert!(!settings.idle());
-    }
-
-    #[test]
     fn a_closed_sheet_derives_nothing_and_an_unread_one_is_loading() {
-        assert_eq!(derive(&Settings::default()), SettingsModel::default());
-        let unread = derive(&Settings {
-            open: Some(SettingsTab::Experiments),
-            ..Settings::default()
-        });
+        assert_eq!(
+            derive(&Settings::default(), &PreferenceWriter::default()),
+            SettingsModel::default()
+        );
+        let unread = derive(
+            &Settings {
+                open: Some(SettingsTab::Experiments),
+                ..Settings::default()
+            },
+            &PreferenceWriter::default(),
+        );
         assert!(unread.loading && unread.rows.is_empty());
     }
 
     #[test]
     fn every_kind_draws_its_control_with_its_notes() {
-        let model = derive(&open());
+        let model = derive(&open(), &PreferenceWriter::default());
         assert_eq!(model.unrecognized, ["gone"]);
         let [developer, choice, number] = model.rows.as_slice() else {
             panic!("three rows")
@@ -389,9 +342,15 @@ mod tests {
         let mut settings = open();
         let developer = &mut settings.flags.as_mut().unwrap().flags[0];
         developer.forced_by = None;
-        assert_eq!(derive(&settings).rows[0].notes, ["Relaunch to apply"]);
+        assert_eq!(
+            derive(&settings, &PreferenceWriter::default()).rows[0].notes,
+            ["Relaunch to apply"]
+        );
         settings.flags.as_mut().unwrap().flags[0].value = json!(true);
-        assert_eq!(derive(&settings).rows[0].notes, ["Applies on next launch"]);
+        assert_eq!(
+            derive(&settings, &PreferenceWriter::default()).rows[0].notes,
+            ["Applies on next launch"]
+        );
     }
 
     #[test]
@@ -399,7 +358,7 @@ mod tests {
         let mut settings = open();
         settings.writing = Some(("proof.number".into(), Some(json!(75))));
         settings.waiting.push_back(("proof.choice".into(), None));
-        let model = derive(&settings);
+        let model = derive(&settings, &PreferenceWriter::default());
         assert!(matches!(
             &model.rows[2].control,
             FlagControl::Number { text, .. } if text == "75"
@@ -429,7 +388,7 @@ mod tests {
             .number_text
             .insert("proof.number".into(), "33".into());
         assert!(matches!(
-            &derive(&settings).rows[2].control,
+            &derive(&settings, &PreferenceWriter::default()).rows[2].control,
             FlagControl::Number { text, invalid: true, .. } if text == "33"
         ));
     }
