@@ -372,7 +372,7 @@ impl SpatialUnit for Sharpen {
             cancel,
         )
     }
-    fn gpu(&self, _: Option<&Global>) -> Option<GpuSpatialUnit> {
+    fn gpu(&self) -> Option<GpuSpatialUnit> {
         super::gpu::sharpen(
             &self.kernels,
             &self.guide,

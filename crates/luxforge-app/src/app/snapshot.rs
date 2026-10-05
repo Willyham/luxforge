@@ -382,9 +382,6 @@ impl Editor {
                     "dissolving":rest.dissolving,"prepare_ms":rest.prepare_us as f64 / 1000.0,
                     "fallback":rest.fallback.map(gpu_fallback)})),
                 "drawn_rest":gpu.drawn_rest,
-                // The committed stack's view plan held back from being drawn at rest because it is
-                // approximate, until its picture at rest in tiles is in.
-                "view_held_back":self.gpu_rest_held_back(),
                 // Compare's After side while Compare is shown: `rest` or `view` for the GPU picture
                 // of the stack Compare began over, retained, `retained` for its retained frame.
                 "compare":self.presentation.compare_after.as_ref().map(|_| {

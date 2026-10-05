@@ -16,17 +16,17 @@
 //!   plan's anchor ([`GpuPlan::anchor`]), so every pixel of it is the pixel any other window of the
 //!   stage draws, the photo surface's at 100% included: a read of the output stage is the byte on
 //!   screen there, and a stream's tiles carry no seam. A stream's tiles are the picture at rest's
-//!   at full scale ([`super::plan_rest_tiles`]), row by row from the stage's origin, every one the
+//!   at full scale ([`super::preview::plan_rest_tiles`]), row by row from the stage's origin, every one the
 //!   same plan with only its rectangle and window varying. The picture at rest's own planner
 //!   cannot be called for them, since it plans a Fit view's reduction and picks its side by the
 //!   photo surface's budget, so the tiling is written again here from the same parts: the plan
 //!   from the source, its anchor, the region planner's window of each tile.
-//! - **Estimates.** A spatial operation's global estimate, Dehaze's atmospheric light, is read from
-//!   the render context's estimate store under the key a CPU frame of the same content asks with,
-//!   as the picture at rest's tiles read it. A plan whose light the store does not hold, which the
-//!   GPU would otherwise take from the tile alone, answers `region-estimate`, and the reference
-//!   renders the read or the export: the per-frame light that is to take the store's place is
-//!   stage 3's, and lands separately.
+//! - **Lights.** A spatial operation's global estimate, Dehaze's atmospheric light, is read from
+//!   the light its plan's light link computes from the whole stage at full resolution
+//!   ([`super::GpuLight`]), whatever window a tile reads: the plan carries its lights, as the
+//!   picture at rest's does, and the tile worker's runner computes each once from the source
+//!   before the tiles that read it. A light behind a spatial layer is its stand-in, that layer left
+//!   out, as the photo surface draws it.
 //! - **The answer.** The output stage's codes are read back as the GPU's output quantizer gives
 //!   them, the picture's own bytes. Every other read is read back as the linear values before that
 //!   quantizer, and its codes are quantized from them by the core's own quantizer
@@ -36,12 +36,12 @@
 //!   receives its colour run's unclamped value, and the linear path clamps nothing.
 //! - **What the GPU cannot draw** answers its reason ([`TileFallback::Plan`]), and the reference
 //!   renders the read or the export: the plan's own fallback (`pixel-stage`, `no-program`,
-//!   `disabled-program`, `region-estimate`, ...), and as `unplannable` a stack that does not
+//!   `disabled-program`, ...), and as `unplannable` a stack that does not
 //!   compile, a stack the window planner cannot cut and a source drafted under an approximate
 //!   white balance, which the GPU source does not hold.
 use super::{
-    EstimateSource, GpuAnchor, GpuAnswer, GpuEstimates, GpuFallback, GpuGeometry, GpuPlan,
-    GpuPlanRequest, RestTile, anchored, gpu_plan_with,
+    GpuAnchor, GpuAnswer, GpuFallback, GpuGeometry, GpuPlan, GpuPlanRequest, RestTile, anchored,
+    gpu_plan,
 };
 use crate::{
     BoundaryFormat, Error, Evaluation, PreviewSource, ProxyIdentity, Recipe,
@@ -67,7 +67,7 @@ pub struct TilePlan {
     /// Its size: the output stage's, or the one the layers before the read layer produce.
     pub size: Stage,
     /// The plan of the stack, or of the layers before the read layer, from the source at the exact
-    /// stage, its global estimates read from the store.
+    /// stage.
     pub plan: Box<GpuPlan>,
     /// The tile drawn: the rectangle asked for, clipped to the stage, and the window of the source
     /// it reads, anchored. Both are empty where the rectangle misses the stage, and the read reads
@@ -133,8 +133,8 @@ impl TilePlan {
 /// An export's output stage in tiles of one side at full scale ([`plan_stream`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct StreamPlan {
-    /// The plan of the whole stack from the source at the exact stage, its global estimates read
-    /// from the store: every tile's plan, which a tile's rectangle and window place.
+    /// The plan of the whole stack from the source at the exact stage: every tile's plan, which a
+    /// tile's rectangle and window place.
     pub plan: Box<GpuPlan>,
     /// The tiles, row by row from the stage's origin: each its rectangle of the output stage, `side`
     /// pixels a side but at the stage's right and bottom edges, and the window of the source it
@@ -238,7 +238,7 @@ fn unplannable(reason: impl Into<String>) -> TileFallback {
 impl<'a> Planned<'a> {
     /// `stage` of `evaluation`: the stack's own compilation and plan for the output stage, or the
     /// layers before the read layer compiled once and planned, as the GPU plan compiles them, with
-    /// every global estimate read from the store.
+    /// the lights it reads.
     fn of(evaluation: &'a Evaluation, stage: ReadStage) -> Result<Self, TileFallback> {
         let source = evaluation.source();
         if source.approximate_white_balance() {
@@ -265,24 +265,12 @@ impl<'a> Planned<'a> {
         let linear = matches!(source, PreviewSource::Raw { .. });
         let request = GpuPlanRequest::exact(0, full).from_source();
         let request = if linear { request.linear() } else { request };
-        let estimates = GpuEstimates {
-            context: evaluation.context(),
-            source: EstimateSource::Render(source.into()),
-        };
         let planned = before.as_ref().unwrap_or(recipe);
-        let plan = match gpu_plan_with(registry, planned, request, Some(estimates)) {
+        let plan = match gpu_plan(registry, planned, request) {
             Ok(GpuAnswer::Plan(plan)) => plan,
             Ok(GpuAnswer::Fallback(reason)) => return Err(TileFallback::Plan(reason)),
             Err(error) => return Err(refused(error)),
         };
-        // A plan from the source holds every spatial operation of the stage, so each global
-        // estimate is the plan's own: read from the store, or taken on the GPU from the tile alone,
-        // which is not the whole stage's.
-        if let Some(spatial) = plan.spatial.iter().find(|spatial| spatial.estimated) {
-            return Err(TileFallback::Plan(GpuFallback::RegionEstimate {
-                layer: spatial.layer,
-            }));
-        }
         Ok(Self {
             size: compiled.stage(),
             compiled,
@@ -324,9 +312,9 @@ impl<'a> Planned<'a> {
 mod tests {
     use super::*;
     use crate::{
-        AssetId, BASIC_EFFECT, Cancel, CropPayload, DETAIL_EFFECT, EntryId, HistoryEntry, Layer,
+        AssetId, BASIC_EFFECT, CropPayload, DETAIL_EFFECT, EntryId, HistoryEntry, Layer,
         LinearSettings, MIXER_EFFECT, ModuleRegistry, PRESENCE_EFFECT, ProxyBounds, RenderContext,
-        RenderOptions, Snapshot, SnapshotId, VIGNETTE_EFFECT, WhiteBalanceApproximation,
+        Snapshot, VIGNETTE_EFFECT, WhiteBalanceApproximation,
         render::tests::{gradient, varied},
     };
     use serde_json::json;
@@ -362,21 +350,9 @@ mod tests {
         )
     }
 
-    /// `recipe` over `source` on a context whose estimate store the stack's exact frame filled, as
-    /// a displayed stack's settled frame fills it: every global estimate a plan reads is held.
+    /// `recipe` over `source` on a context of its own.
     fn stored(source: &PreviewSource, recipe: &Recipe) -> Evaluation {
-        let context = RenderContext::new();
-        crate::render(
-            &ModuleRegistry::builtin(),
-            source.input(),
-            recipe,
-            RenderOptions::exact(&Cancel::never()),
-            &context,
-        )
-        .unwrap()
-        .frame(SnapshotId::new())
-        .unwrap();
-        evaluation(&context, source, recipe)
+        evaluation(&RenderContext::new(), source, recipe)
     }
 
     fn recipe_of(layers: Vec<Layer>) -> Recipe {
@@ -398,11 +374,9 @@ mod tests {
         )
     }
 
+    /// Presence with no Dehaze, whose plan reads no light.
     fn presence() -> Layer {
-        Layer::new(
-            PRESENCE_EFFECT,
-            json!({"texture": 30.0, "clarity": 35.0, "dehaze": 20.0}),
-        )
+        Layer::new(PRESENCE_EFFECT, json!({"texture": 30.0, "clarity": 35.0}))
     }
 
     fn crop() -> Layer {
@@ -472,16 +446,7 @@ mod tests {
                     PreviewSource::Raw { .. } => request.linear(),
                     PreviewSource::Jpeg(_) => request,
                 };
-                let estimates = GpuEstimates {
-                    context: evaluation.context(),
-                    source: EstimateSource::Render(source.input()),
-                };
-                let plan = planned(gpu_plan_with(
-                    &ModuleRegistry::builtin(),
-                    &recipe,
-                    request,
-                    Some(estimates),
-                ));
+                let plan = planned(gpu_plan(&ModuleRegistry::builtin(), &recipe, request));
                 let compiled = evaluation.compiled().unwrap();
                 let output = compiled.stage();
                 for rect in [
@@ -585,13 +550,9 @@ mod tests {
                     PreviewSource::Raw { .. } => request.linear(),
                     PreviewSource::Jpeg(_) => request,
                 };
-                let estimates = GpuEstimates {
-                    context: evaluation.context(),
-                    source: EstimateSource::Render(source.input()),
-                };
                 assert_eq!(
                     read.plan,
-                    planned(gpu_plan_with(&registry, &before, request, Some(estimates))),
+                    planned(gpu_plan(&registry, &before, request)),
                     "{what}: the plan of the layers before it"
                 );
                 let size = registry.compile(width, height, &before).unwrap().stage();
@@ -626,15 +587,17 @@ mod tests {
         }
     }
 
-    /// Dehaze's light read from the store: before any frame of the stack has stored it, a read of
-    /// the output stage, a read of the stage after it and a stream answer `region-estimate`, naming
-    /// the Presence layer, where the GPU would take the light from a tile alone; once the exact
-    /// frame has stored it, each is planned with the stored light and nothing approximate. A read
-    /// of the stage before Presence needs no light.
+    /// A read of the output stage, a read of the stage after Dehaze and a stream carry the light
+    /// the Presence layer reads, planned from the source over the whole stage at full resolution
+    /// as the picture at rest's is; a read of the stage before Presence reads no light.
     #[test]
-    fn a_read_or_a_stream_whose_light_the_store_lacks_answers_region_estimate() {
+    fn a_read_or_a_stream_that_reads_a_light_carries_it() {
         for (domain, source) in sources(97, 61) {
-            let recipe = recipe_of(vec![basic(), presence(), mixer()]);
+            let dehaze = Layer::new(
+                PRESENCE_EFFECT,
+                json!({"texture": 30.0, "clarity": 35.0, "dehaze": 20.0}),
+            );
+            let recipe = recipe_of(vec![basic(), dehaze, mixer()]);
             let after = ReadStage::Before {
                 layer: 2,
                 mode: MaskInputMode::ColourRun,
@@ -649,24 +612,24 @@ mod tests {
                 width: 3,
                 height: 3,
             };
-            let fresh = evaluation(&RenderContext::new(), &source, &recipe);
-            let unheld = TileFallback::Plan(GpuFallback::RegionEstimate { layer: 1 });
+            let evaluation = stored(&source, &recipe);
+            let whole = Stage {
+                width: 97,
+                height: 61,
+            };
+            let lit = |plan: &GpuPlan| {
+                plan.lights.len() == 1
+                    && plan.lights[0].layer == 1
+                    && plan.lights[0].stage == whole
+                    && plan.lights[0].over_source()
+            };
             for stage in [ReadStage::Output, after] {
-                assert_eq!(
-                    plan_read(&fresh, stage, rect).unwrap_err(),
-                    unheld,
-                    "{domain}: {stage:?}"
-                );
+                let read = plan_read(&evaluation, stage, rect).unwrap();
+                assert!(lit(&read.plan), "{domain}: {stage:?}");
             }
-            assert_eq!(plan_stream(&fresh, 32).unwrap_err(), unheld, "{domain}");
-            assert!(plan_read(&fresh, before, rect).is_ok(), "{domain}");
-
-            let held = stored(&source, &recipe);
-            for stage in [ReadStage::Output, after, before] {
-                let read = plan_read(&held, stage, rect).unwrap();
-                assert!(!read.plan.approximate(), "{domain}: {stage:?}");
-            }
-            assert!(!plan_stream(&held, 32).unwrap().plan.approximate());
+            assert!(lit(&plan_stream(&evaluation, 32).unwrap().plan), "{domain}");
+            let read = plan_read(&evaluation, before, rect).unwrap();
+            assert!(!read.plan.reads_lights(), "{domain}");
         }
     }
 

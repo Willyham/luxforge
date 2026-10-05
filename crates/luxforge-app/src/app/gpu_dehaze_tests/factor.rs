@@ -12,9 +12,9 @@
 //! is the CPU's over every pixel, so for a colour run alone the light is the reference's but for
 //! the byte path's 16-bit hand-off; and, where the stage a light reads passes through Detail, the
 //! same with Detail left out, which is what the twin at f = 16 nearly computes (Detail at a
-//! sixteenth of its scale barely filters). Each is handed to the GPU plan through the estimate
-//! store under the drafted stack's own keys, as the measurements beside it hand theirs, with the
-//! reference's own exact light as the floor. The frame drawn with it is judged against the
+//! sixteenth of its scale barely filters). Each is handed to the GPU plan's light planes in place
+//! of the light its light links compute (`Qualifier::set_lights`), with the reference's own exact
+//! light as the floor. The frame drawn with it is judged against the
 //! reference frame of the view by the stack's class's limits, as the release gate judges the
 //! picture at rest:
 //!
@@ -27,17 +27,15 @@
 //! The light's own error against the reference's exact light, per channel as a fraction of it, is
 //! recorded beside the frame's figures. A measurement of pixels, not of time.
 use super::{
-    Drag, Estimates, basic, basic_moderate, cropped_drags, detail_sharpen, drags, light, presence,
-    step, with_light,
+    Drag, basic, basic_moderate, cropped_drags, detail_sharpen, drags, light, presence, step,
 };
 use crate::app::gpu_qualification::{
     CorpusSource, Opened, corpus_sources, figures, first_pixel_layer, fit_bounds, headless,
     largest_view,
 };
 use luxforge_core::{
-    BASIC_EFFECT, Cancel, DETAIL_EFFECT, EffectStage, EstimateSource, Evaluation, GpuAnswer,
-    GpuEstimates, GpuPlanRequest, ModuleRegistry, PRESENCE_EFFECT, PreviewRequest, Region, Render,
-    RenderContext, RenderOptions, qualification, render,
+    Cancel, EffectStage, Evaluation, GpuAnswer, GpuPlanRequest, ModuleRegistry, PRESENCE_EFFECT,
+    PreviewRequest, Region, Render, RenderContext, RenderOptions, qualification, render,
 };
 use luxforge_reference::{
     preview_error::{self, Class, Rgb8, Statistics},
@@ -110,11 +108,10 @@ fn added_drags(raw: bool) -> Vec<Drag> {
             json!({"mask": {"name": "Mask 1"}, "dehaze": amount}),
         )
     };
-    let drag = |id, committed: Vec<Value>, drafted, effect| Drag {
+    let drag = |id, committed: Vec<Value>, drafted| Drag {
         id,
         committed,
         drafted,
-        effect,
     };
     let chained = |amount| vec![presence(50, 50, 30), radial(), masked_dehaze(amount)];
     vec![
@@ -122,61 +119,47 @@ fn added_drags(raw: bool) -> Vec<Drag> {
             "basic-moderate-alone",
             vec![presence(50, 50, 30)],
             basic_moderate(raw),
-            BASIC_EFFECT,
         ),
         drag(
             "basic-plus3-strong-alone",
             vec![presence(100, 100, 100)],
             plus3(),
-            BASIC_EFFECT,
         ),
         drag(
             "basic-minus3-negative-alone",
             vec![presence(-100, -100, -100)],
             minus3(),
-            BASIC_EFFECT,
         ),
         drag(
             "detail-sharpen-dehaze-negative",
             vec![presence(0, 0, -100)],
             detail_sharpen(),
-            DETAIL_EFFECT,
         ),
         drag(
             "range-masked-basic-under-dehaze",
             vec![presence(0, 0, 100), range()],
             masked(json!({"exposure": 0.8, "contrast": 20.0, "vibrance": 30.0})),
-            BASIC_EFFECT,
         ),
         drag(
             "range-masked-plus3-under-dehaze",
             vec![presence(0, 0, 100), range()],
             masked(json!({"exposure": 3.0, "whites": 100.0, "blacks": 100.0})),
-            BASIC_EFFECT,
         ),
         drag(
             "range-masked-minus3-under-negative",
             vec![presence(0, 0, -100), range()],
             masked(json!({"exposure": -3.0, "whites": -100.0, "blacks": -100.0})),
-            BASIC_EFFECT,
         ),
         drag(
             "masked-dehaze-after-presence",
             chained(100),
             basic_moderate(raw),
-            BASIC_EFFECT,
         ),
-        drag(
-            "masked-dehaze-after-presence-plus3",
-            chained(100),
-            plus3(),
-            BASIC_EFFECT,
-        ),
+        drag("masked-dehaze-after-presence-plus3", chained(100), plus3()),
         drag(
             "masked-negative-dehaze-after-presence-minus3",
             chained(-100),
             minus3(),
-            BASIC_EFFECT,
         ),
     ]
 }
@@ -303,45 +286,29 @@ fn fit_size(opened: &Opened) -> Result<(u32, u32), String> {
     })
 }
 
-/// A render context whose estimate store holds `lights`, one for each layer of `estimating`, in
-/// place of each layer's atmospheric light among `templates`, its exact estimates, under the keys
-/// a frame of `evaluation`'s stack asks with: what a plan reading the store then draws with.
-fn holding(
-    evaluation: &Evaluation,
-    estimating: &[usize],
-    templates: &[Estimates],
-    lights: &[Option<Vec<f64>>],
-) -> Result<RenderContext, String> {
-    let context = RenderContext::new();
-    {
-        let keyed = render(
-            evaluation.registry(),
-            evaluation.source(),
-            evaluation.recipe(),
-            RenderOptions::exact(&Cancel::never()),
-            &context,
-        )
-        .map_err(|error| error.to_string())?;
-        for ((&layer, template), light) in estimating.iter().zip(templates).zip(lights) {
-            let light = light.clone().ok_or("the candidate prepared no light")?;
-            qualification::hold_estimates(&keyed, layer, &with_light(template, Some(light)))
-                .map_err(|error| error.to_string())?;
-        }
-    }
-    Ok(context)
+/// `lights`, one for each estimating layer in recipe order, as a plan's light planes hold them:
+/// what a plan drawn with them reads in place of the lights its light links compute.
+fn planes_of(lights: &[Option<Vec<f64>>]) -> Result<Vec<[f32; 4]>, String> {
+    lights
+        .iter()
+        .map(|light| match light.as_deref() {
+            Some([r, g, b]) => Ok([*r as f32, *g as f32, *b as f32, 1.0]),
+            _ => Err("the candidate prepared no light".to_owned()),
+        })
+        .collect()
 }
 
 /// The plan from `evaluation`'s first pixel layer over `rect` of its output stage at 100%, drawn on
-/// the device over the boundary the worker renders for that region from `exact`, reading the
-/// lights `context` holds — the release gate's region plan (`gpu_qualification::draw_region`),
-/// with the estimates handed rather than the evaluation's own. A restoration or spatial first layer
+/// the device over the boundary the worker renders for that region from `exact`, its light planes
+/// holding `lights` — the release gate's region plan (`gpu_qualification::draw_region`), with the
+/// lights handed rather than its light links' own. A restoration or spatial first layer
 /// draws its GPU shape, every unit, while that slot fits the budget, else its CPU shape. `Err`
 /// names why nothing was drawn: a gap, never a pass.
 fn draw(
     qualifier: &Qualifier,
     evaluation: &Evaluation,
     exact: &Render<'_>,
-    context: &RenderContext,
+    lights: &[[f32; 4]],
     raw: bool,
     rect: Region,
 ) -> Result<Drawn, String> {
@@ -361,10 +328,6 @@ fn draw(
     .map_err(|error| format!("no boundary: {error}"))?;
     let request = GpuPlanRequest::exact(boundary_layer, frame.stage).qualifying();
     let request = if raw { request.linear() } else { request };
-    let estimates = GpuEstimates {
-        context,
-        source: EstimateSource::Render(evaluation.source().into()),
-    };
     let spatial = matches!(
         stage_of(registry, &recipe.layers[boundary_layer]),
         Some(EffectStage::Restoration | EffectStage::Spatial)
@@ -379,14 +342,18 @@ fn draw(
     };
     let mut over = Vec::new();
     for (request, shape) in shapes {
-        let plan = match luxforge_core::gpu_plan_with(registry, recipe, request, Some(estimates))
+        let plan = match luxforge_core::gpu_plan(registry, recipe, request)
             .map_err(|error| error.to_string())?
         {
             GpuAnswer::Plan(plan) => *plan,
             GpuAnswer::Fallback(reason) => return Err(format!("{}: {reason}", reason.code())),
         };
-        if plan.approximate() {
-            return Err("the plan did not read the light it was handed".into());
+        if plan.lights.len() != lights.len() {
+            return Err(format!(
+                "the plan reads {} lights, not the {} handed",
+                plan.lights.len(),
+                lights.len()
+            ));
         }
         let held = GpuBoundary::new(
             frame.texels.clone(),
@@ -419,6 +386,7 @@ fn draw(
             ));
             continue;
         }
+        qualifier.set_lights(lights.to_vec());
         let codes = qualifier
             .evaluate_codes(&converted)?
             .iter()
@@ -437,12 +405,12 @@ fn draw(
 }
 
 /// The process-first frame of `evaluation`'s whole output stage of `size`: [`draw`] over a grid
-/// of [`TILE`]-sided tiles, every tile reading the lights `context` holds, stitched.
+/// of [`TILE`]-sided tiles, every tile reading `lights`, stitched.
 fn process_first(
     qualifier: &Qualifier,
     evaluation: &Evaluation,
     exact: &Render<'_>,
-    context: &RenderContext,
+    lights: &[[f32; 4]],
     raw: bool,
     (width, height): (u32, u32),
 ) -> Result<Drawn, String> {
@@ -459,7 +427,7 @@ fn process_first(
                 width: TILE.min(width - x0),
                 height: TILE.min(height - y0),
             };
-            let drawn = draw(qualifier, evaluation, exact, context, raw, rect)
+            let drawn = draw(qualifier, evaluation, exact, lights, raw, rect)
                 .map_err(|error| format!("the tile at ({x0}, {y0}): {error}"))?;
             let row = rect.width as usize * 3;
             for (y, codes) in drawn.codes.chunks_exact(row).enumerate() {
@@ -598,12 +566,12 @@ fn cell(
         }
     };
     drop(whole);
-    let frame_of = |context: &RenderContext| -> Result<Drawn, String> {
+    let frame_of = |lights: &[[f32; 4]]| -> Result<Drawn, String> {
         match region {
-            Some(rect) => draw(qualifier, &evaluation, &exact, context, opened.raw, rect),
+            Some(rect) => draw(qualifier, &evaluation, &exact, lights, opened.raw, rect),
             None => {
                 let full =
-                    process_first(qualifier, &evaluation, &exact, context, opened.raw, stage)?;
+                    process_first(qualifier, &evaluation, &exact, lights, opened.raw, stage)?;
                 Ok(Drawn {
                     codes: reduce(&full.codes, 3, stage, size)?,
                     ..full
@@ -621,10 +589,10 @@ fn cell(
             "light_error": errors,
             "light_error_largest": largest,
         });
-        let drawn = holding(&evaluation, &estimating, &templates, &candidate.lights)
-            .and_then(|context| frame_of(&context).map(|drawn| (drawn, context)));
+        let drawn = planes_of(&candidate.lights)
+            .and_then(|lights| frame_of(&lights).map(|drawn| (drawn, lights)));
         match drawn {
-            Ok((drawn, context)) => {
+            Ok((drawn, lights)) => {
                 let against = compare(&drawn.codes, &reference, size)?;
                 let passed = preview_error::verdict(&against, CLASS).passed();
                 eprintln!(
@@ -636,7 +604,7 @@ fn cell(
                 );
                 // The same light drawn again draws the same frame.
                 if candidate.name == "f16" {
-                    let again = frame_of(&context)?;
+                    let again = frame_of(&lights)?;
                     repeat = json!(again.codes == drawn.codes);
                 }
                 record["against_reference"] = statistics(&against);

@@ -12,6 +12,10 @@
 //!   runner draws each tile twice, every scratch plane of every link starting from NaN the second
 //!   time, so no pass of its own read scratch it did not write.
 //! - **Run to run.** Two runs of one tile read back the same codes and the same linear bits.
+//! - **Lights.** The Presence families read Dehaze's light, which the surface's light link computes
+//!   from the whole source it holds and the runner from the source a window of each of the link's
+//!   tiles at a time, read back once and written into every tile's light plane: the same light, so
+//!   the same codes.
 //!
 //! A GPU test with no adapter prints that it was skipped and asserts nothing.
 use super::{
@@ -19,10 +23,10 @@ use super::{
     gpu_window_tests::{HEIGHT, WIDTH, source},
 };
 use luxforge_core::{
-    BASIC_EFFECT, BoundaryFormat, CURVE_EFFECT, Cancel, DETAIL_EFFECT, EstimateSource, GpuAnswer,
-    GpuEstimates, GpuPlanRequest, Layer, LinearImage, MIXER_EFFECT, ModuleRegistry,
-    PERSPECTIVE_EFFECT, PRESENCE_EFFECT, PreviewSource, Recipe, Region, RenderContext,
-    RenderOptions, SnapshotId, Stage, VIGNETTE_EFFECT, anchored, gpu_plan_with, render,
+    BASIC_EFFECT, BoundaryFormat, CURVE_EFFECT, Cancel, DETAIL_EFFECT, GpuAnswer, GpuPlanRequest,
+    Layer, LinearImage, MIXER_EFFECT, ModuleRegistry, PERSPECTIVE_EFFECT, PRESENCE_EFFECT,
+    PreviewSource, Recipe, Region, RenderContext, RenderOptions, Stage, VIGNETTE_EFFECT, anchored,
+    gpu_plan, render,
 };
 use luxforge_ui::{
     adapters,
@@ -277,7 +281,7 @@ fn cases() -> Vec<Case> {
         let gpu = gpu_source(version, &source);
         for (family, recipe) in families() {
             let name = format!("{family} on {path}");
-            // The exact render, whose frame stores the global estimates every tile's plan reads.
+            // The exact render, whose boundaries name every tile's window.
             let context = RenderContext::new();
             let exact = render(
                 &registry,
@@ -287,23 +291,15 @@ fn cases() -> Vec<Case> {
                 &context,
             )
             .expect("the exact render");
-            exact.frame(SnapshotId::new()).expect("the exact frame");
             let request = GpuPlanRequest::exact(0, stage).from_source();
             let request = match format {
                 BoundaryFormat::Float => request.linear(),
                 BoundaryFormat::Half => request,
             };
-            let estimates = GpuEstimates {
-                context: &context,
-                source: EstimateSource::Render((&source).into()),
-            };
-            let plan = match gpu_plan_with(&registry, &recipe, request, Some(estimates))
-                .expect("a stack")
-            {
+            let plan = match gpu_plan(&registry, &recipe, request).expect("a stack") {
                 GpuAnswer::Plan(plan) => *plan,
                 GpuAnswer::Fallback(reason) => panic!("{name}: {reason}"),
             };
-            assert!(!plan.approximate(), "{name}: the stored estimates");
             let anchor = plan.anchor();
             let output = plan.geometry.output();
             let stage_grid = plan.geometry.stage_grid(1.0).expect("a stage grid");

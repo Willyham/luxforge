@@ -211,6 +211,7 @@ fn tiles_of(source: &GpuSource) -> Vec<GpuPlan> {
                     rect: [x0, y0, x1, y1],
                     stage: (WIDTH, HEIGHT),
                 }),
+                lights: Vec::new(),
             });
         }
     }

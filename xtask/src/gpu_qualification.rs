@@ -581,8 +581,7 @@ impl Judged {
 
 /// What one output kind other than the picture holds over the corpus: stacks measured, within and
 /// past its limit, the GPU could not render there and does not render yet, with the figures of
-/// those measured; for export and the histogram, the stacks the editor's reference renders while no
-/// render has stored their Dehaze light; for the histogram, its largest differences.
+/// those measured; for the histogram, its largest differences.
 #[derive(Default)]
 struct Other {
     measured: usize,
@@ -591,7 +590,6 @@ struct Other {
     gaps: usize,
     unrendered: usize,
     figures: Extremes,
-    unstored: usize,
     counts: CountsWorst,
 }
 
@@ -897,9 +895,6 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
         }
         for (kind, counts) in &mut other {
             let measured = &pair["kinds"][kind.name()];
-            if measured["without_stored_light"].is_string() {
-                counts.unstored += 1;
-            }
             match measured["status"].as_str() {
                 Some("measured") => {
                     counts.measured += 1;
@@ -1035,9 +1030,6 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
                 "passed"
             },
         });
-        if matches!(kind, Kind::Export | Kind::Histogram) {
-            result["reference_without_stored_light"] = json!(counts.unstored);
-        }
         if *kind == Kind::Histogram {
             result["counts"] = counts.counts.value();
         }
@@ -1360,16 +1352,6 @@ pub fn markdown(report: &Value) -> String {
                 result["verdict"].as_str().unwrap_or("?"),
             ));
         }
-        let unstored = others
-            .iter()
-            .find(|result| result["kind"] == Kind::Export.name())
-            .and_then(|result| result["reference_without_stored_light"].as_u64())
-            .unwrap_or(0);
-        if unstored > 0 {
-            text.push_str(&format!(
-                "\nExport: {unstored} stack(s) are the reference's (`region-estimate`) while no render has stored their Dehaze light, which the per-frame light of stage 3 replaces; each was measured with the light the reference frame's render stored, as a settled frame stores it.\n"
-            ));
-        }
         if let Some(histogram) = others
             .iter()
             .find(|result| result["kind"] == Kind::Histogram.name())
@@ -1390,14 +1372,6 @@ pub fn markdown(report: &Value) -> String {
                     counts["worst_clipping"]["cell"].as_str().unwrap_or("?"),
                     counts["exact"],
                     histogram["measured"],
-                ));
-            }
-            let unstored = histogram["reference_without_stored_light"]
-                .as_u64()
-                .unwrap_or(0);
-            if unstored > 0 {
-                text.push_str(&format!(
-                    "\nHistogram: {unstored} stack(s) are counted by the reference (`region-estimate`) while no render has stored their Dehaze light; each was measured with the light the reference frame's render stored.\n"
                 ));
             }
         }
@@ -1737,8 +1711,8 @@ mod tests {
     }
 
     /// The histogram's results carry its largest differences over the corpus, each with its cell,
-    /// how many stacks were counted exactly, and the stacks the editor's reference counts while no
-    /// render has stored their light; a stack the GPU could not count is a gap, never a pass.
+    /// and how many stacks were counted exactly; a stack the GPU could not count is a gap, never a
+    /// pass.
     #[test]
     fn the_histograms_largest_differences_are_reported_with_their_cells() {
         let counted = |bins: f64, clipping: f64, counter: &str| {
@@ -1749,7 +1723,6 @@ mod tests {
         exact["kinds"]["histogram"] = counted(0.0, 0.0, "r0");
         let mut off = pair("a--c", "pointwise", within(), within());
         off["kinds"]["histogram"] = counted(0.0002, 0.0001, "any_highlight");
-        off["kinds"]["histogram"]["without_stored_light"] = json!("region-estimate");
         let report = judge(Some(&cells(vec![exact, off])), 2, &options());
         let histogram = rows(&report, Kind::Histogram)[0].clone();
         assert_eq!(histogram["verdict"], "passed", "{histogram:#}");
@@ -1759,9 +1732,8 @@ mod tests {
             histogram["counts"]["worst_clipping"]["counter"],
             "any_highlight"
         );
-        assert_eq!(histogram["reference_without_stored_light"], 1);
         let mut gap = pair("a--b", "pointwise", within(), within());
-        gap["kinds"]["histogram"] = json!({"status": "gap", "reason": "region-estimate"});
+        gap["kinds"]["histogram"] = json!({"status": "gap", "reason": "budget-exceeded"});
         let report = judge(Some(&cells(vec![gap])), 1, &options());
         assert_eq!(report["status"], "incomplete", "{report:#}");
     }
@@ -1775,8 +1747,7 @@ mod tests {
         let exported = |statistics: Value, repeatable: bool, passed: bool| {
             let mut stack = pair("a--b", "pointwise", within(), within());
             stack["kinds"]["export"] = json!({"status": "measured", "statistics": statistics,
-                "repeatable": repeatable, "passed": passed,
-                "without_stored_light": "region-estimate"});
+                "repeatable": repeatable, "passed": passed});
             stack
         };
         let report = judge(
@@ -1791,8 +1762,6 @@ mod tests {
             (json!(1), json!("passed"))
         );
         assert_eq!(row["figures"]["max"]["p99"], 1.0);
-        assert_eq!(row["reference_without_stored_light"], 1);
-        assert!(markdown(&report).contains("1 stack(s) are the reference's (`region-estimate`)"));
 
         let report = judge(
             Some(&cells(vec![exported(within(), false, false)])),

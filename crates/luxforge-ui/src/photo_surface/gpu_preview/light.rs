@@ -19,22 +19,19 @@
 //! - **Keys.** The light plane keeps the content key of what its light link wrote — the source,
 //!   the stage, the steps' words and blocks and the pipeline — and a link whose key did not change
 //!   encodes nothing. A step reading the light folds that key into its passes' keys and draws whole
-//!   when it changes ([`spatial::GpuSpatial::global`], [`spatial::fold_lights`]).
+//!   when it changes ([`spatial::GpuSpatial::global`]), the slot evaluating its plan whole then
+//!   ([`PhotoPipeline::evaluate_lit`]).
 //! - **Bounds.** A link holds the tile texture, the stage's block plane, every tile's words and
 //!   cut's words, the blocks and the passes' parameters, charged to the GPU-preview budget before
 //!   they are created ([`light_charge`]); the light plane is the slot's pool's, one texel. Nothing
 //!   is read back and nothing waits for the GPU: the light is never planned from.
 //!
-//! The slot does not run light links yet: [`super::super::PhotoPipeline::encode_light`] is what its
-//! chain will call before its links, and a qualification bench draws with it meanwhile.
-#![cfg_attr(
-    not(any(test, feature = "qualification")),
-    expect(
-        dead_code,
-        reason = "the slot runs no light link yet; the qualification bench draws with it"
-    )
-)]
-use super::super::PhotoPipeline;
+//! - **Where it runs.** A slot evaluating a plan that reads lights ([`super::GpuPlan::lights`]) runs
+//!   each light link first, in the same frame, into its pool's light planes
+//!   ([`PhotoPipeline::evaluate_lit`]): the main slot's plan and every tile of a picture at rest
+//!   alike. A link whose light did not change encodes nothing; a light that changed makes the slot
+//!   evaluate the plan whole, every link reading it drawn again.
+use super::super::{PhotoPipeline, SurfaceSlots};
 use super::{
     BLOCK_CHUNK, BoundaryFormat, Charged, Compiled, GpuFallback, GpuStep, Held, TexelMap,
     blocks::{self, WrittenBlocks},
@@ -54,7 +51,7 @@ pub const LIGHT_TILE: u32 = 2048;
 
 /// The format a light link's sequence is compiled to write: its frame is never drawn, and its last
 /// pass writes linear values, as a qualification's does, which needs no output encoding.
-const LIGHT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
+pub(super) const LIGHT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 
 /// A light link the surface evaluates: plain data, as a plan is, so this crate names no core type.
 #[derive(Clone, Debug, PartialEq)]
@@ -254,7 +251,7 @@ const CUT_WORDS: u64 = 11;
 /// What a light link holds on the GPU, charged to the GPU-preview budget: the tile texture each tile
 /// of the source is cut into in turn and the stage's block plane, which only its own passes read,
 /// and its buffers; and the content key of the light it last wrote.
-pub(super) struct LightLink {
+pub(in crate::photo_surface) struct LightLink {
     shape: Shape,
     /// One tile of the source at full scale, in the source's boundary format.
     tile: PoolTexture,
@@ -279,6 +276,7 @@ pub(super) struct LightLink {
 
 impl LightLink {
     /// Everything it holds, as charged.
+    #[cfg(any(test, feature = "qualification"))]
     pub(super) fn bytes(&self) -> u64 {
         self.texture_bytes + self.buffer_bytes
     }
@@ -290,10 +288,10 @@ impl LightLink {
     }
 }
 
-impl PhotoPipeline {
-    /// A light link of `shape`, charged to the GPU-preview budget before anything is created: its
-    /// textures as the scratch they are, which only its own passes read.
-    fn light_link(&self, device: &wgpu::Device, shape: Shape) -> Result<LightLink, GpuFallback> {
+impl LightLink {
+    /// What a link of `shape` takes on `device`: its textures' bytes and each buffer's, every side
+    /// checked against the device's largest texture first.
+    fn sized(device: &wgpu::Device, shape: &Shape) -> Result<(u64, Vec<u64>), GpuFallback> {
         let limit = device.limits().max_texture_dimension_2d;
         let (tile, grid) = (shape.tile(), shape.grid());
         if [tile.0, tile.1, grid.0, grid.1]
@@ -307,11 +305,18 @@ impl PhotoPipeline {
             });
         }
         let binding = u64::from(device.limits().max_storage_buffer_binding_size);
-        let sizes = shape.buffer_sizes(binding)?;
-        let (texture_bytes, buffer_bytes) = (shape.texture_bytes(), sizes.iter().sum::<u64>());
-        let preview = &self.figures.preview;
-        preview.charge(texture_bytes + buffer_bytes)?;
-        preview.scratch.fetch_add(texture_bytes, Ordering::AcqRel);
+        Ok((shape.texture_bytes(), shape.buffer_sizes(binding)?))
+    }
+
+    /// A link of `shape` on `device`, its buffers of `sizes` ([`LightLink::sized`]), charged by its
+    /// caller before it is created.
+    fn create(
+        device: &wgpu::Device,
+        shape: Shape,
+        (texture_bytes, sizes): (u64, Vec<u64>),
+    ) -> Self {
+        let buffer_bytes = sizes.iter().sum::<u64>();
+        let (tile, grid) = (shape.tile(), shape.grid());
         let texture = |label, (width, height), format, usage| {
             PoolTexture::new(device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -340,7 +345,7 @@ impl PhotoPipeline {
         let cuts = (0..shape.tiles().len())
             .map(|_| charged("luxforge.gpu_light.cut", next()))
             .collect();
-        Ok(LightLink {
+        LightLink {
             tile: texture(
                 "luxforge.gpu_light.tile",
                 tile,
@@ -363,7 +368,19 @@ impl PhotoPipeline {
             written_params: Vec::new(),
             texture_bytes,
             buffer_bytes,
-        })
+        }
+    }
+}
+
+impl PhotoPipeline {
+    /// A light link of `shape`, charged to the GPU-preview budget before anything is created: its
+    /// textures as the scratch they are, which only its own passes read.
+    fn light_link(&self, device: &wgpu::Device, shape: Shape) -> Result<LightLink, GpuFallback> {
+        let (texture_bytes, sizes) = LightLink::sized(device, &shape)?;
+        let preview = &self.figures.preview;
+        preview.charge(texture_bytes + sizes.iter().sum::<u64>())?;
+        preview.scratch.fetch_add(texture_bytes, Ordering::AcqRel);
+        Ok(LightLink::create(device, shape, (texture_bytes, sizes)))
     }
 
     /// Retire `link` through the retirement worker, still charged until the GPU is done with it:
@@ -503,6 +520,86 @@ impl PhotoPipeline {
     }
 }
 
+impl PhotoPipeline {
+    /// Evaluate `plan` into `surface`'s slot as [`PhotoPipeline::evaluate`] does, each light its
+    /// steps read written first ([`super::GpuPlan::lights`]): a slot not yet fitted to the plan is
+    /// fitted by a first evaluation, which makes its pool hold the light planes; then every light
+    /// link is encoded into its plane and submitted, encoding nothing where the plane holds its
+    /// light already ([`PhotoPipeline::encode_light`]); and where any light changed, the slot
+    /// forgets what it holds, so the plan is evaluated whole and every link reading a light draws
+    /// with the new one. The surface keeps one link for each light, light `k` the `k`-th, and lets
+    /// the ones past the plan's go. Names why the frame is not the GPU's, as `evaluate` does: a
+    /// light's sequence compiling, the source still uploading or not held whole among them, the
+    /// source checked before anything is fitted.
+    pub(super) fn evaluate_lit(
+        &mut self,
+        surface: &mut SurfaceSlots,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        plan: &super::GpuPlan,
+        change: Option<super::GpuChange>,
+    ) -> Result<u64, GpuFallback> {
+        self.retire_lights(&mut surface.gpu_lights, plan.lights.len());
+        if plan.lights.is_empty() {
+            return self.evaluate(surface, device, queue, plan, change);
+        }
+        // The lights read the source the pipeline holds: until it is whole the frame is the CPU's,
+        // and no slot is fitted that a later frame would let go of before its boundary uploads.
+        match self.gpu.source.as_ref() {
+            None => return Err(GpuFallback::SourceMissing),
+            Some(source) if !source.ready() => {
+                let figures = source.figures();
+                return Err(GpuFallback::SourceUploading {
+                    uploaded: figures.uploaded,
+                    bytes: figures.bytes,
+                });
+            }
+            Some(_) => {}
+        }
+        let count = plan.lights.len() as u32;
+        let fitted = surface.gpu.as_ref().is_some_and(|slot| {
+            slot.shape == super::Shape::of(plan)
+                && slot.boundary_version == Some(plan.boundary.version())
+                && (0..count).all(|k| slot.pool.light_view(k).is_some())
+        });
+        if !fitted {
+            self.evaluate(surface, device, queue, plan, None)?;
+        }
+        let slot = surface.gpu.as_mut().ok_or(GpuFallback::PipelineFailed)?;
+        let held: Vec<Option<u64>> = (0..count).map(|k| slot.pool.light_key(k)).collect();
+        surface.gpu_lights.resize_with(plan.lights.len(), || None);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("luxforge.gpu_light.encoder"),
+        });
+        let mut encoded = Ok(());
+        for (light, link) in plan.lights.iter().zip(surface.gpu_lights.iter_mut()) {
+            encoded = self
+                .encode_light(link, &mut slot.pool, device, queue, &mut encoder, light)
+                .map(|_| ());
+            if encoded.is_err() {
+                break;
+            }
+        }
+        // What was encoded is submitted whatever stopped the rest: each light plane's key names
+        // the light its passes write.
+        queue.submit([encoder.finish()]);
+        encoded?;
+        if (0..count).any(|k| slot.pool.light_key(k) != held[k as usize]) {
+            slot.forget_evaluation();
+        }
+        self.evaluate(surface, device, queue, plan, change)
+    }
+
+    /// Retire every light link of `links` past the first `keep`, through the retirement worker.
+    pub(super) fn retire_lights(&self, links: &mut Vec<Option<LightLink>>, keep: usize) {
+        if links.len() > keep {
+            for link in links.drain(keep..).flatten() {
+                self.retire_light(link);
+            }
+        }
+    }
+}
+
 /// The content key of a light: its source's version, its stage, its tile side, the steps' words,
 /// their blocks' key and its pipeline.
 fn light_key(parts: impl std::hash::Hash) -> u64 {
@@ -522,9 +619,27 @@ fn encode_tiles(
     light: &GpuLight,
     light_view: &wgpu::TextureView,
 ) -> Result<(), GpuFallback> {
-    let [reduce, select] = &compiled.spatial.passes[..] else {
-        return Err(GpuFallback::PipelineFailed);
-    };
+    let places = prepare_tiles(held, queue, light)?;
+    for (index, (tile, place)) in held.shape.tiles().into_iter().zip(&places).enumerate() {
+        encode_reduce(
+            held,
+            (device, queue, encoder),
+            (compiled, support),
+            (source, layouts),
+            (index, tile, place),
+        )?;
+    }
+    encode_select(held, (device, encoder), (compiled, support), light_view)
+}
+
+/// Write `light`'s words for every tile of its stage, its texel map at the tile, and every tile's
+/// reduction's parameters over its blocks, then the selection's, where they changed: each tile's
+/// place, in tile order.
+fn prepare_tiles(
+    held: &mut LightLink,
+    queue: &wgpu::Queue,
+    light: &GpuLight,
+) -> Result<Vec<Place>, GpuFallback> {
     let shape = held.shape.clone();
     let tiles = shape.tiles();
     if tiles.is_empty() {
@@ -537,11 +652,6 @@ fn encode_tiles(
     let mut words = vec![0u32; (tiles.len() as u64 * stride / 4) as usize];
     let mut packed = Vec::new();
     let mut params = Vec::new();
-    let selection = Place {
-        origin: [0, 0],
-        limit: Rect::whole((spatial::UNLIMITED, spatial::UNLIMITED)),
-        dispatch: [1, 1, 1],
-    };
     let mut places = Vec::with_capacity(tiles.len());
     for (index, &[x0, y0, x1, y1]) in tiles.iter().enumerate() {
         let texels = TexelMap {
@@ -567,11 +677,11 @@ fn encode_tiles(
                 1,
             ],
         };
-        let slices = spatial::parameters(&light.steps, &[place, selection]);
+        let slices = spatial::parameters(&light.steps, &[place, SELECTION]);
         params.extend_from_slice(&slices[..slices.len() / 2]);
         places.push(place);
     }
-    let slices = spatial::parameters(&light.steps, &[places[0], selection]);
+    let slices = spatial::parameters(&light.steps, &[places[0], SELECTION]);
     params.extend_from_slice(&slices[slices.len() / 2..]);
     if held.written_words != words {
         queue.write_buffer(&held.words.buffer, 0, &super::le_bytes(&words));
@@ -581,99 +691,158 @@ fn encode_tiles(
         queue.write_buffer(&held.params.buffer, 0, &super::le_bytes(&params));
         held.written_params = params;
     }
-    let word_bytes = std::num::NonZeroU64::new((shape.words * 4) as u64);
-    let params_slice = |number: usize| {
-        wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+    Ok(places)
+}
+
+/// Where the selection runs: one workgroup over the whole block plane.
+const SELECTION: Place = Place {
+    origin: [0, 0],
+    limit: Rect {
+        x0: 0,
+        y0: 0,
+        x1: spatial::UNLIMITED,
+        y1: spatial::UNLIMITED,
+    },
+    dispatch: [1, 1, 1],
+};
+
+/// The bind group of the light's programs for tile `index`: its words, a binding's offset apart, the
+/// steps' blocks and the tile texture. The selection binds tile 0's.
+fn programs(
+    held: &LightLink,
+    device: &wgpu::Device,
+    support: &super::Support,
+    index: usize,
+) -> wgpu::BindGroup {
+    let stride = region(held.shape.words);
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("luxforge.gpu_light.bindings"),
+        layout: &support.layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &held.words.buffer,
+                    offset: index as u64 * stride,
+                    size: std::num::NonZeroU64::new((held.shape.words * 4) as u64),
+                }),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: held.block_words.buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(held.tile.view()),
+            },
+        ],
+    })
+}
+
+/// The bind group of a light pass's planes: the plane it reads, when it reads one, its output and
+/// its parameters, slice `number`.
+fn planes(
+    held: &LightLink,
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    (plane, view): (Option<&wgpu::TextureView>, &wgpu::TextureView),
+    number: usize,
+) -> wgpu::BindGroup {
+    let mut entries = Vec::with_capacity(3);
+    if let Some(plane) = plane {
+        entries.push(wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(plane),
+        });
+    }
+    entries.push(wgpu::BindGroupEntry {
+        binding: spatial::OUTPUT_BINDING,
+        resource: wgpu::BindingResource::TextureView(view),
+    });
+    entries.push(wgpu::BindGroupEntry {
+        binding: spatial::PARAMS_BINDING,
+        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
             buffer: &held.params.buffer,
             offset: spatial::PARAMS_STRIDE * number as u64,
             size: std::num::NonZeroU64::new(spatial::PARAMS_STRIDE),
-        })
+        }),
+    });
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("luxforge.gpu_light.planes"),
+        layout,
+        entries: &entries,
+    })
+}
+
+/// The light's two passes, the reduction and the selection; the reduction reads no plane and the
+/// selection reads the block plane.
+fn passes(compiled: &Compiled) -> Result<[&spatial::CompiledPass; 2], GpuFallback> {
+    let [reduce, select] = &compiled.spatial.passes[..] else {
+        return Err(GpuFallback::PipelineFailed);
     };
-    let programs = |index: usize| {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("luxforge.gpu_light.bindings"),
-            layout: &support.layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &held.words.buffer,
-                        offset: index as u64 * stride,
-                        size: word_bytes,
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: held.block_words.buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(held.tile.view()),
-                },
-            ],
-        })
-    };
-    // The reduction reads no plane: its second group is its output, the block plane, and its
-    // parameters. The selection reads the block plane and writes the light.
     if !reduce.slots().is_empty() || select.slots().len() != 1 {
         return Err(GpuFallback::PipelineFailed);
     }
-    let output = |layout: &wgpu::BindGroupLayout,
-                  plane: Option<&wgpu::TextureView>,
-                  view: &wgpu::TextureView,
-                  number: usize| {
-        let mut entries = Vec::with_capacity(3);
-        if let Some(plane) = plane {
-            entries.push(wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(plane),
-            });
-        }
-        entries.push(wgpu::BindGroupEntry {
-            binding: spatial::OUTPUT_BINDING,
-            resource: wgpu::BindingResource::TextureView(view),
-        });
-        entries.push(wgpu::BindGroupEntry {
-            binding: spatial::PARAMS_BINDING,
-            resource: params_slice(number),
-        });
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("luxforge.gpu_light.planes"),
-            layout,
-            entries: &entries,
-        })
-    };
-    for (index, (&[x0, y0, x1, y1], place)) in tiles.iter().zip(&places).enumerate() {
-        let size = (x1 - x0, y1 - y0);
-        let cut = Derivation::Cut { origin: (x0, y0) };
-        let words = source.words(&cut, size).ok_or(GpuFallback::SourceMissing)?;
-        queue.write_buffer(&held.cuts[index].buffer, 0, &super::le_bytes(&words));
-        source.encode(
-            device,
-            encoder,
-            layouts,
-            &cut,
-            &held.cuts[index].buffer,
-            held.tile.view(),
-            size,
-        );
-        let bindings = programs(index);
-        let planes = output(reduce.layout(), None, held.blocks.view(), index);
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("luxforge.gpu_light.reduce"),
-            timestamp_writes: None,
-        });
-        pass.set_pipeline(reduce.pipeline());
-        pass.set_bind_group(0, &bindings, &[]);
-        pass.set_bind_group(1, &planes, &[]);
-        pass.dispatch_workgroups(place.dispatch[0], place.dispatch[1], place.dispatch[2]);
-    }
-    let bindings = programs(0);
-    let planes = output(
+    Ok([reduce, select])
+}
+
+/// Encode tile `index` of the light's stage, `tile` at `place`: cut from `source`, which holds it,
+/// into the tile texture, and reduced into the block plane's blocks it holds.
+fn encode_reduce(
+    held: &LightLink,
+    (device, queue, encoder): (&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder),
+    (compiled, support): (&Compiled, &super::Support),
+    (source, layouts): (&super::SourceSlot, &super::SourceLayouts),
+    (index, [x0, y0, x1, y1], place): (usize, [u32; 4], &Place),
+) -> Result<(), GpuFallback> {
+    let [reduce, _] = passes(compiled)?;
+    let size = (x1 - x0, y1 - y0);
+    let cut = Derivation::Cut { origin: (x0, y0) };
+    let words = source.words(&cut, size).ok_or(GpuFallback::SourceMissing)?;
+    queue.write_buffer(&held.cuts[index].buffer, 0, &super::le_bytes(&words));
+    source.encode(
+        device,
+        encoder,
+        layouts,
+        &cut,
+        &held.cuts[index].buffer,
+        held.tile.view(),
+        size,
+    );
+    let bindings = programs(held, device, support, index);
+    let planes = planes(
+        held,
+        device,
+        reduce.layout(),
+        (None, held.blocks.view()),
+        index,
+    );
+    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        label: Some("luxforge.gpu_light.reduce"),
+        timestamp_writes: None,
+    });
+    pass.set_pipeline(reduce.pipeline());
+    pass.set_bind_group(0, &bindings, &[]);
+    pass.set_bind_group(1, &planes, &[]);
+    pass.dispatch_workgroups(place.dispatch[0], place.dispatch[1], place.dispatch[2]);
+    Ok(())
+}
+
+/// Encode the selection of the light from the block plane into `light_view`.
+fn encode_select(
+    held: &LightLink,
+    (device, encoder): (&wgpu::Device, &mut wgpu::CommandEncoder),
+    (compiled, support): (&Compiled, &super::Support),
+    light_view: &wgpu::TextureView,
+) -> Result<(), GpuFallback> {
+    let [_, select] = passes(compiled)?;
+    let bindings = programs(held, device, support, 0);
+    let planes = planes(
+        held,
+        device,
         select.layout(),
-        Some(held.blocks.view()),
-        light_view,
-        tiles.len(),
+        (Some(held.blocks.view()), light_view),
+        held.shape.tiles().len(),
     );
     let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
         label: Some("luxforge.gpu_light.select"),
@@ -684,6 +853,161 @@ fn encode_tiles(
     pass.set_bind_group(1, &planes, &[]);
     pass.dispatch_workgroups(1, 1, 1);
     Ok(())
+}
+
+/// What [`read_light`] holds at once on `device` for `light` over `source`: the link's textures and
+/// buffers, the largest window of the source one of its tiles is cut from, the light texture and
+/// its readback copy. Creates nothing and reads no pixel; refused as [`read_light`] would be for a
+/// light whose steps are not a light link's or whose tiles the device cannot hold.
+pub(super) fn read_light_charge(
+    device: &wgpu::Device,
+    source: &super::GpuSource,
+    light: &GpuLight,
+) -> Result<u64, GpuFallback> {
+    let limit = device.limits().max_texture_dimension_2d;
+    let shape =
+        Shape::of(light, source.kind().boundary(), limit).ok_or(GpuFallback::PipelineFailed)?;
+    let (textures, sizes) = LightLink::sized(device, &shape)?;
+    // The largest tile's window of the source, as it holds its pixels whatever their orientation.
+    let window = shape
+        .tiles()
+        .iter()
+        .map(|[x0, y0, x1, y1]| u64::from(x1 - x0) * u64::from(y1 - y0))
+        .max()
+        .unwrap_or(0)
+        * source.kind().pixel_bytes();
+    Ok(textures + sizes.iter().sum::<u64>() + window + spatial::LIGHT_BYTES + LIGHT_READBACK)
+}
+
+/// The bytes the light's readback copy takes: one texel, its row padded to a copy's alignment.
+const LIGHT_READBACK: u64 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u64;
+
+/// `light` computed on `device` from `source` and read back, `[r, g, b, 1]`, its sequence
+/// `compiled`: what a tile runner, which holds a window of the source for each tile it draws, runs
+/// once for the light every tile of a plan reads, and then writes into each tile's light plane
+/// ([`Pool::write_light`]). Each tile of the light's stage is cut from a window of `source` of its
+/// own, uploaded, reduced into the stage's block plane and let go, the device waited for, before
+/// the next: the block plane is the one a link over the whole source writes, bit for bit, since
+/// every block is one tile's, read in the same order. Then the selection writes the light, which
+/// is copied out and read back. Blocks its caller until the device is done; never on the
+/// interface thread. The caller charges [`read_light_charge`] first.
+pub(super) fn read_light(
+    (device, queue): (&wgpu::Device, &wgpu::Queue),
+    (compiled, support, layouts): (&Compiled, &super::Support, &super::SourceLayouts),
+    source: &super::GpuSource,
+    light: &GpuLight,
+) -> Result<[f32; 4], GpuFallback> {
+    let limit = device.limits().max_texture_dimension_2d;
+    let shape =
+        Shape::of(light, source.kind().boundary(), limit).ok_or(GpuFallback::PipelineFailed)?;
+    let sized = LightLink::sized(device, &shape)?;
+    let mut link = LightLink::create(device, shape, sized);
+    link.written_blocks
+        .write(queue, &link.block_words.buffer, &light.steps, BLOCK_CHUNK);
+    let places = prepare_tiles(&mut link, queue, light)?;
+    let wait = || {
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .map_err(|_| GpuFallback::DeviceLost)
+    };
+    for (index, (tile, place)) in link.shape.tiles().into_iter().zip(&places).enumerate() {
+        let [x0, y0, x1, y1] = tile;
+        let window = source
+            .window([x0, y0, x1 - x0, y1 - y0])
+            .ok_or(GpuFallback::SourceMissing)?;
+        let mut held = super::SourceSlot::new(device, &window, layouts, |_| Ok(()))?;
+        while !held.ready() {
+            if held.upload(queue, &window, u64::MAX) == 0 {
+                return Err(GpuFallback::SourceMissing);
+            }
+        }
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("luxforge.gpu_light.read"),
+        });
+        encode_reduce(
+            &link,
+            (device, queue, &mut encoder),
+            (compiled, support),
+            (&held, layouts),
+            (index, tile, place),
+        )?;
+        queue.submit([encoder.finish()]);
+        // The window goes before the next is created: the device is done with it.
+        drop(held);
+        wait()?;
+    }
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("luxforge.gpu_light.read.light"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: spatial::PlaneFormat::Quad.texture(),
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("luxforge.gpu_light.read.readback"),
+        size: LIGHT_READBACK,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("luxforge.gpu_light.read"),
+    });
+    encode_select(
+        &link,
+        (device, &mut encoder),
+        (compiled, support),
+        &texture.create_view(&wgpu::TextureViewDescriptor::default()),
+    )?;
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(LIGHT_READBACK as u32),
+                rows_per_image: Some(1),
+            },
+        },
+        wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+    let (sender, mapped) = std::sync::mpsc::channel();
+    readback
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, move |answer| {
+            let _ = sender.send(answer);
+        });
+    wait()?;
+    mapped
+        .recv()
+        .ok()
+        .and_then(Result::ok)
+        .ok_or(GpuFallback::DeviceLost)?;
+    let light = {
+        let bytes = readback.slice(..).get_mapped_range();
+        let value = |at: usize| {
+            f32::from_le_bytes(bytes[at * 4..at * 4 + 4].try_into().expect("four bytes"))
+        };
+        [value(0), value(1), value(2), value(3)]
+    };
+    readback.unmap();
+    Ok(light)
 }
 
 /// What the block plane is created with: written by the reductions, read by the selection, and in
@@ -722,8 +1046,8 @@ mod bench {
     }
 
     /// One surface of a pipeline of its own on a headless device, its slot drawing a plan as the
-    /// desktop's does, and a light link beside it: what the slot runs before its chain once it runs
-    /// light links ([`PhotoPipeline::encode_light`]).
+    /// desktop's does, its light links run before its chain, and a light link of its own beside it
+    /// that computes a light alone ([`PhotoPipeline::encode_light`]).
     pub struct LightBench {
         device: wgpu::Device,
         queue: wgpu::Queue,
@@ -900,7 +1224,7 @@ mod bench {
             // its source's rows are written.
             luxforge_testbase::try_wait_for("a plan's evaluation", || {
                 self.hand(source);
-                let outcome = self.pipeline.evaluate(
+                let outcome = self.pipeline.evaluate_lit(
                     &mut self.surface,
                     &self.device,
                     &self.queue,
@@ -925,12 +1249,9 @@ mod bench {
             .unwrap_or(Err(waited))
         }
 
-        /// `plan` drawn over `source` through the surface's own slot, reading `light`, when given,
-        /// from the slot's light plane: the slot fitted to the plan and drawn, the light encoded into
-        /// its pool's light plane, then the plan drawn again with `change` as the slot draws a tick
-        /// whose link's content key folds the light's in — what the slot's chain does once it runs
-        /// light links itself ([`spatial::fold_lights`]), which a bench stands in for here by
-        /// setting the input key the slot compares. Its output's codes, RGBA row by row.
+        /// `plan` drawn over `source` through the surface's own slot with `change`, reading
+        /// `light`, when given, in place of the light links it carries, as the slot runs them
+        /// before its chain ([`PhotoPipeline::evaluate_lit`]). Its output's codes, RGBA row by row.
         pub fn draw(
             &mut self,
             source: &GpuSource,
@@ -938,28 +1259,14 @@ mod bench {
             plan: &GpuPlan,
             change: Option<GpuChange>,
         ) -> Result<Vec<[u8; 4]>, GpuFallback> {
-            if let Some(light) = light {
-                // The slot's pool holds the light plane once the slot is fitted to a plan of this
-                // one's shape and boundary that reads it: the slot a plan's own tick keeps.
-                let k = light.index().ok_or(GpuFallback::PipelineFailed)?;
-                let fitted = self.surface.gpu.as_ref().is_some_and(|slot| {
-                    slot.shape == super::super::Shape::of(plan)
-                        && slot.boundary_version == Some(plan.boundary.version())
-                        && slot.pool.light_view(k).is_some()
-                });
-                if !fitted {
-                    self.evaluate(source, plan, None)?;
-                }
-                self.encode(source, light, true)?;
-                let slot = self
-                    .surface
-                    .gpu
-                    .as_mut()
-                    .ok_or(GpuFallback::PipelineFailed)?;
-                let held = slot.input_key.unwrap_or_default();
-                slot.input_key = Some(spatial::fold_lights(held, &plan.steps, &slot.pool));
-            }
-            self.evaluate(source, plan, change)?;
+            let plan = match light {
+                Some(light) => GpuPlan {
+                    lights: vec![light.clone()],
+                    ..plan.clone()
+                },
+                None => plan.clone(),
+            };
+            self.evaluate(source, &plan, change)?;
             let slot = self
                 .surface
                 .gpu
@@ -972,6 +1279,63 @@ mod bench {
                 .chunks_exact(4)
                 .map(|texel| [texel[0], texel[1], texel[2], texel[3]])
                 .collect())
+        }
+
+        /// `plan` drawn over `source` as the desktop's surface draws a frame of it
+        /// ([`PhotoPipeline::prepare_gpu`]): the slot running the light links the plan carries
+        /// ([`super::super::GpuPlan::lights`]) before its chain, as each frame does, waiting out a
+        /// compile and the upload, with `change`. Its output's codes, RGBA row by row.
+        pub fn prepare(
+            &mut self,
+            source: &GpuSource,
+            plan: &GpuPlan,
+            change: Option<GpuChange>,
+        ) -> Result<Vec<[u8; 4]>, GpuFallback> {
+            let mut waited = GpuFallback::Compiling;
+            luxforge_testbase::try_wait_for("a frame's lights and chain", || {
+                self.hand(source);
+                self.pipeline.prepare_gpu(
+                    &mut self.surface,
+                    &self.device,
+                    &self.queue,
+                    Some(plan),
+                    None,
+                    change,
+                );
+                self.trim();
+                match self.surface.gpu_outcome {
+                    Some(Ok(_)) => Some(Ok(())),
+                    Some(Err(
+                        waiting @ (GpuFallback::Compiling
+                        | GpuFallback::SourceUploading { .. }
+                        | GpuFallback::BoundaryUploading { .. }),
+                    )) => {
+                        waited = waiting;
+                        None
+                    }
+                    Some(Err(fallback)) => Some(Err(fallback)),
+                    None => Some(Err(GpuFallback::PipelineFailed)),
+                }
+            })
+            .unwrap_or(Err(waited))?;
+            let slot = self
+                .surface
+                .gpu
+                .as_ref()
+                .ok_or(GpuFallback::PipelineFailed)?;
+            let output = slot.output();
+            let size = (output.width, output.height);
+            let bytes = read(&self.device, &self.queue, &output.tiles[0].texture, size, 4)?;
+            Ok(bytes
+                .chunks_exact(4)
+                .map(|texel| [texel[0], texel[1], texel[2], texel[3]])
+                .collect())
+        }
+
+        /// How many light links the surface holds for its slot, and what they hold, as charged.
+        pub fn surface_lights(&self) -> (usize, u64) {
+            let links = self.surface.gpu_lights.iter().flatten();
+            (links.clone().count(), links.map(LightLink::bytes).sum())
         }
 
         /// How many spatial passes the slot has dispatched, over every draw.

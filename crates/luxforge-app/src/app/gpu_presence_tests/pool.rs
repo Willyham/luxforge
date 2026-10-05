@@ -5,11 +5,10 @@
 //! drag after another link ran.
 use super::{photograph, stage};
 use crate::app::gpu_plan::surface_plan;
-use crate::app::gpu_qualification::{headless, held_to_whole};
+use crate::app::gpu_qualification::{headless, held_to_whole, lit, lit_fixed};
 use luxforge_core::{
-    BASIC_EFFECT, Cancel, Component, ComponentMode, GpuAnswer, GpuEstimates, GpuPlanRequest, Layer,
-    LinearImage, LinearSettings, Mask, ModuleRegistry, PRESENCE_EFFECT, Recipe, RenderContext,
-    RenderOptions, RenderSource, SnapshotId, gpu_plan, gpu_plan_with, render,
+    BASIC_EFFECT, Component, ComponentMode, GpuAnswer, GpuPlanRequest, Layer, LinearImage,
+    LinearSettings, Mask, ModuleRegistry, PRESENCE_EFFECT, PreviewSource, Recipe, gpu_plan,
 };
 use luxforge_ui::photo_surface::{GpuPlan, gpu_preview::qualification::boundary};
 use serde_json::{Value, json};
@@ -46,13 +45,13 @@ fn layered(effects: &[&str], payloads: &[Value], masks: &[Mask]) -> Recipe {
 /// links, the Basic layer's colour link and four spatial ones taking their scratch planes from one
 /// pool. Drags of every layer in turn, 22 ticks after the first, each one value a tick, change one
 /// link's words: the links before it run nothing, it runs the passes its words change, and every
-/// link after it, whose input moved, all of its own. A Texture drag runs 5 of its link's 22
-/// passes and a Clarity drag none, as one link alone does. A Dehaze drag runs 20 when a later
+/// link after it, whose input moved, all of its own. A Texture drag runs 5 of its link's 20
+/// passes and a Clarity drag none, as one link alone does. A Dehaze drag runs all 20 when a later
 /// masked layer, which holds Dehaze's planes too, wrote that link's scratch since, and 19, as
 /// alone, for the third masked layer, after which only the global layer runs: it holds no Dehaze
 /// plane, so the textures of Dehaze's own classes are still the third layer's. Every tick's frame
-/// is the whole evaluation's, bit for bit, and so it is with the poison on; each tick's passes are
-/// pinned link by link.
+/// is the whole evaluation's, bit for bit, both reading one light, and so it is with the poison
+/// on; each tick's passes are pinned link by link.
 #[test]
 fn gpu_presence_chained_masked_layers_dragged_in_turn_draw_what_a_whole_evaluation_does() {
     let test =
@@ -97,27 +96,27 @@ fn gpu_presence_chained_masked_layers_dragged_in_turn_draw_what_a_whole_evaluati
     // crossing zero, which would change the plan's shape. Then each link's passes: the colour
     // link's none, then each Presence link's.
     let drags: [(usize, &str, f64, [u64; 5]); 22] = [
-        (1, "texture", 45.0, [0, 5, 22, 22, 13]),
-        (1, "texture", 50.0, [0, 5, 22, 22, 13]),
-        (2, "clarity", 40.0, [0, 0, 0, 22, 13]),
-        (2, "clarity", 30.0, [0, 0, 0, 22, 13]),
+        (1, "texture", 45.0, [0, 5, 20, 20, 13]),
+        (1, "texture", 50.0, [0, 5, 20, 20, 13]),
+        (2, "clarity", 40.0, [0, 0, 0, 20, 13]),
+        (2, "clarity", 30.0, [0, 0, 0, 20, 13]),
         (3, "dehaze", -15.0, [0, 0, 0, 19, 13]),
         (3, "dehaze", -5.0, [0, 0, 0, 19, 13]),
         (4, "texture", 35.0, [0, 0, 0, 0, 5]),
         (4, "texture", 45.0, [0, 0, 0, 0, 5]),
-        (0, "exposure", 0.6, [0, 22, 22, 22, 13]),
-        (0, "exposure", 0.8, [0, 22, 22, 22, 13]),
-        (1, "dehaze", 30.0, [0, 20, 22, 22, 13]),
-        (1, "dehaze", 40.0, [0, 20, 22, 22, 13]),
+        (0, "exposure", 0.6, [0, 20, 20, 20, 13]),
+        (0, "exposure", 0.8, [0, 20, 20, 20, 13]),
+        (1, "dehaze", 30.0, [0, 20, 20, 20, 13]),
+        (1, "dehaze", 40.0, [0, 20, 20, 20, 13]),
         (3, "texture", 40.0, [0, 0, 0, 5, 13]),
-        (2, "dehaze", 45.0, [0, 0, 20, 22, 13]),
+        (2, "dehaze", 45.0, [0, 0, 20, 20, 13]),
         (4, "clarity", 10.0, [0, 0, 0, 0, 0]),
         (4, "clarity", 5.0, [0, 0, 0, 0, 0]),
-        (1, "clarity", 10.0, [0, 0, 22, 22, 13]),
-        (2, "texture", -10.0, [0, 0, 5, 22, 13]),
+        (1, "clarity", 10.0, [0, 0, 20, 20, 13]),
+        (2, "texture", -10.0, [0, 0, 5, 20, 13]),
         (3, "clarity", -35.0, [0, 0, 0, 0, 13]),
-        (0, "exposure", 0.2, [0, 22, 22, 22, 13]),
-        (1, "texture", 20.0, [0, 5, 22, 22, 13]),
+        (0, "exposure", 0.2, [0, 20, 20, 20, 13]),
+        (1, "texture", 20.0, [0, 5, 20, 20, 13]),
         (4, "texture", 30.0, [0, 0, 0, 0, 5]),
     ];
     let mut plans = vec![planned(&payloads)];
@@ -127,6 +126,8 @@ fn gpu_presence_chained_masked_layers_dragged_in_turn_draw_what_a_whole_evaluati
     }
     let ticks: Vec<(GpuPlan, Option<[u32; 4]>)> =
         plans.into_iter().map(|plan| (plan, None)).collect();
+    // The tick held to the whole evaluation, both reading the one light each Dehaze layer reads.
+    lit_fixed(&qualifier, &ticks[0].0);
     let whole: Vec<_> = ticks
         .iter()
         .map(|(plan, _)| qualifier.evaluate(plan).expect("a readback"))
@@ -144,7 +145,7 @@ fn gpu_presence_chained_masked_layers_dragged_in_turn_draw_what_a_whole_evaluati
     }
     assert_eq!(
         passes[0],
-        [0, 22, 22, 22, 13],
+        [0, 20, 20, 20, 13],
         "the first tick runs every pass"
     );
     for (number, (_, _, _, wanted)) in drags.iter().enumerate() {
@@ -154,9 +155,9 @@ fn gpu_presence_chained_masked_layers_dragged_in_turn_draw_what_a_whole_evaluati
 
 /// The one pass count sharing the scratch moves: a Dehaze drag of the first of two masked Presence
 /// layers of every field, each through a radial of its own, on a tick after the second has run.
-/// The second link wrote every pool texture the first takes its scratch from, so the first runs 20
-/// of its 22 passes, where alone, its scratch its own, it runs 19; the second runs all 22, its
-/// input moved. The light stored by the CPU frame or taken on the GPU, every frame the whole
+/// The second link wrote every pool texture the first takes its scratch from, so the first runs
+/// all 20 of its passes, where alone, its scratch its own, it runs 19; the second runs all 20, its
+/// input moved. Each light its light link's, computed from the whole stage; every frame the whole
 /// evaluation's, bit for bit, and so with the poison on.
 #[test]
 fn gpu_presence_a_dehaze_drag_after_another_link_ran_reruns_what_that_link_wrote() {
@@ -176,8 +177,8 @@ fn gpu_presence_a_dehaze_drag_after_another_link_ran_reruns_what_that_link_wrote
     }
     let image = LinearImage::with_fingerprint(width, height, planes, "sha256:gpu-presence-pool")
         .expect("a linear image");
-    let source = RenderSource::Linear {
-        image: &image,
+    let source = PreviewSource::Raw {
+        image,
         settings: LinearSettings::default(),
     };
     let masks = [
@@ -190,30 +191,13 @@ fn gpu_presence_a_dehaze_drag_after_another_link_ran_reruns_what_that_link_wrote
         let effects = vec![PRESENCE_EFFECT; payloads.len()];
         layered(&effects, payloads, &masks[..payloads.len()])
     };
-    let stored = RenderContext::new();
-    for layers in [1, 2] {
-        render(
-            &registry,
-            source,
-            &stack(&vec![start.clone(); layers]),
-            RenderOptions::exact(&Cancel::never()),
-            &stored,
-        )
-        .and_then(|render| render.frame(SnapshotId::new()))
-        .expect("the CPU frame, which stores the light");
-    }
-    let fresh = RenderContext::new();
-    let planned = |payloads: &[Value], context: &RenderContext| {
-        let plan = match gpu_plan_with(
+    let planned = |payloads: &[Value]| {
+        let plan = match gpu_plan(
             &registry,
             &stack(payloads),
             GpuPlanRequest::exact(0, stage(width, height))
                 .qualifying()
                 .linear(),
-            Some(GpuEstimates {
-                context,
-                source: source.into(),
-            }),
         )
         .expect("the stack compiles")
         {
@@ -223,43 +207,40 @@ fn gpu_presence_a_dehaze_drag_after_another_link_ran_reruns_what_that_link_wrote
         let held = boundary(width, height, 1, &pixels).expect("a boundary");
         surface_plan(&plan, held).expect("a runnable plan")
     };
-    for (light, context) in [("stored", &stored), ("taken on the GPU", &fresh)] {
-        // Each case: the layers before and after the drag, and each link's passes on its tick.
-        for (layers, before, after, wanted) in [
-            (
-                "one layer",
-                vec![start.clone()],
-                vec![dragged.clone()],
-                vec![19],
-            ),
-            (
-                "two layers",
-                vec![start.clone(), start.clone()],
-                vec![dragged.clone(), start.clone()],
-                vec![20, 22],
-            ),
-        ] {
-            let ticks = vec![
-                (planned(&before, context), None),
-                (planned(&after, context), None),
-            ];
-            let whole: Vec<_> = ticks
-                .iter()
-                .map(|(plan, _)| qualifier.evaluate(plan).expect("a readback"))
-                .collect();
-            let passes = held_to_whole(&qualifier, &ticks, &whole, &|number| {
-                format!("{layers}, the light {light}, tick {number}")
-            });
-            eprintln!(
-                "{test}: {layers}, the light {light}: {:?} passes, then {:?}",
-                passes[0], passes[1]
-            );
-            assert_eq!(
-                passes[0],
-                vec![22; wanted.len()],
-                "{layers}: every pass first"
-            );
-            assert_eq!(passes[1], wanted, "{layers}, the light {light}");
-        }
+    // Each case: the layers before and after the drag, and each link's passes on its tick.
+    for (layers, before, after, wanted) in [
+        (
+            "one layer",
+            vec![start.clone()],
+            vec![dragged.clone()],
+            vec![19],
+        ),
+        (
+            "two layers",
+            vec![start.clone(), start.clone()],
+            vec![dragged.clone(), start.clone()],
+            vec![20, 20],
+        ),
+    ] {
+        let ticks = vec![(planned(&before), None), (planned(&after), None)];
+        // The lights depend on the stage alone, which the drag does not move.
+        lit(&qualifier, &source, &ticks[0].0).expect("the lights");
+        let whole: Vec<_> = ticks
+            .iter()
+            .map(|(plan, _)| qualifier.evaluate(plan).expect("a readback"))
+            .collect();
+        let passes = held_to_whole(&qualifier, &ticks, &whole, &|number| {
+            format!("{layers}, tick {number}")
+        });
+        eprintln!(
+            "{test}: {layers}: {:?} passes, then {:?}",
+            passes[0], passes[1]
+        );
+        assert_eq!(
+            passes[0],
+            vec![20; wanted.len()],
+            "{layers}: every pass first"
+        );
+        assert_eq!(passes[1], wanted, "{layers}");
     }
 }

@@ -8,8 +8,7 @@
 use super::{
     gpu_preview::SurfaceReport,
     message::{
-        draft::DraftMessage, history::HistoryMessage, preview::PreviewMessage, sync::SyncMessage,
-        view::ViewMessage,
+        draft::DraftMessage, history::HistoryMessage, preview::PreviewMessage, view::ViewMessage,
     },
     testing::{attach_log, events, finish, let_go, logged, real_photo, run_commit, slide},
     *,
@@ -202,62 +201,6 @@ fn gpu_settle_at_rest_the_gpu_draws_the_committed_stack_with_no_dissolve() {
     assert!(
         events(&records, "gpu_dissolve_started").is_empty(),
         "{records:?}"
-    );
-    finish(editor, catalog);
-}
-
-/// A committed stack whose view plan is approximate at rest — Dehaze's light taken on the GPU from
-/// the reduced stage the plan holds, the store holding only the exact stage's — is never drawn at
-/// rest: the CPU's frame stays the photograph, the state says the view plan is held back, and the
-/// photograph is marked rendering until the picture at rest in tiles, planned again once the exact
-/// phase stored the light, is handed to the surface and drawn.
-#[test]
-fn gpu_settle_an_approximate_view_plan_is_held_back_at_rest_until_its_tiles() {
-    let catalog = catalog("held-back");
-    let (mut editor, asset, agent) = real_photo(&catalog);
-    // A window smaller than the photograph: Fit draws it reduced, and at rest in tiles.
-    let _ = editor.update(Message::View(ViewMessage::Resized(900.0, 600.0)));
-    let owner = editor.owner.clone();
-    let revision = editor.document.state.as_ref().unwrap().revision;
-    tasks::call(
-        &owner,
-        agent,
-        "edit.set-presence",
-        json!({"asset_id": asset, "dehaze": 40, "mutation": tasks::mutation(revision)}),
-    )
-    .expect("Dehaze committed by another client");
-    let refreshed = tasks::refresh(
-        &owner,
-        editor.client,
-        asset.clone(),
-        tasks::Scope::Open,
-        editor.drawn(),
-    )
-    .unwrap();
-    let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
-        refreshed,
-    )))));
-    assert!(
-        editor.gpu_rest_held_back(),
-        "the view plan takes Dehaze's light on the GPU"
-    );
-    assert!(
-        editor.gpu_rest_plan().is_none(),
-        "nothing approximate at rest"
-    );
-    assert_eq!(editor.displayed_picture(), "reference");
-    assert_eq!(editor.snapshot()["surface"]["gpu"]["view_held_back"], true);
-    deliver_until(&mut editor, "the picture at rest in tiles", |editor| {
-        editor.gpu_rest_handed().is_some()
-    });
-    assert_eq!(
-        editor.displayed_picture(),
-        "gpu",
-        "the tiles are the picture"
-    );
-    assert!(
-        editor.gpu_rest_landing(),
-        "marked rendering until the surface has drawn them"
     );
     finish(editor, catalog);
 }

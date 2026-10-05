@@ -55,8 +55,8 @@ use crate::app::{
     gpu_preview::{derived_now, gpu_source_of, rest_now},
 };
 use luxforge_core::{
-    Cancel, Evaluation, GpuAnswer, GpuFallback, GpuPreview, GpuView, PreviewRequest, ProxyBounds,
-    Raster, RenderOptions, RendererReason, STREAM_TILE_SIDES,
+    Cancel, Evaluation, GpuAnswer, GpuPreview, GpuView, PreviewRequest, ProxyBounds, Raster,
+    RenderOptions, RendererReason,
     analysis::Report,
     tiles::{TileFallback, TileService},
 };
@@ -564,20 +564,6 @@ fn measure(
         PreviewRequest::new(opened.client, opened.asset.clone()),
     )?;
     let evaluation = job.evaluation;
-    // Before anything has rendered the stack: whether the export lane would stream it, or hand it
-    // the reference for a Dehaze light no render has stored yet, which stage 3's per-frame light
-    // replaces. Planning reads no pixel.
-    let without_stored_light = (settings.kinds.contains(&Kind::Export)
-        || settings.kinds.contains(&Kind::Histogram))
-    .then(|| luxforge_core::plan_stream(&evaluation, STREAM_TILE_SIDES[0]).err())
-    .flatten()
-    .filter(|fallback| {
-        matches!(
-            fallback,
-            TileFallback::Plan(GpuFallback::RegionEstimate { .. })
-        )
-    })
-    .map(|fallback| RendererReason::from(&fallback).as_str());
     let exact = luxforge_core::render(
         evaluation.registry(),
         evaluation.source(),
@@ -627,26 +613,17 @@ fn measure(
                     .as_ref()
                     .ok_or_else(|| "no source held on the GPU".to_owned())
                     .and_then(|gpu| gpu_counts(surface, &evaluation, gpu));
-                let mut measured = histogram_kind(&reference, Some(counted))?;
-                // The editor's reference renders such a stack until a render has stored its light.
-                if let Some(reason) = without_stored_light {
-                    measured["without_stored_light"] = json!(reason);
-                }
+                let measured = histogram_kind(&reference, Some(counted))?;
                 eprintln!("{cell}: histogram: {measured}");
                 measured
             }
             Kind::Sample => sample_kind(&reference, None, class)?,
             Kind::Export => {
-                // Streamed now the reference frame's render has stored the stack's estimates, as
-                // a settled frame stores them.
                 let drawn = match exporters {
                     Some(exporters) => exported(exporters, &evaluation),
                     None => Exported::Gap("no adapter for the GPU tile workers".to_owned()),
                 };
-                let mut measured = export_kind(&reference, drawn, class)?;
-                if let Some(reason) = without_stored_light {
-                    measured["without_stored_light"] = json!(reason);
-                }
+                let measured = export_kind(&reference, drawn, class)?;
                 eprintln!("{cell}: export: {measured}");
                 measured
             }
@@ -724,6 +701,7 @@ fn selects_nothing(
             ..masked.clone()
         })],
         region: None,
+        lights: Vec::new(),
     };
     let input = GpuPlan {
         steps: Vec::new(),
@@ -1337,9 +1315,9 @@ fn the_histogram_comparison_takes_the_reference_frames_counts_and_judges_a_gpus(
     let reference = raster(100, 50, |x, y| [(x * 2) as u8, (y * 5) as u8, 0]);
     // No counts asked for: not rendered, neither a pass nor a failure; counts the GPU could not
     // take, a gap naming why.
-    let gap = histogram_kind(&reference, Some(Err("region-estimate".into()))).unwrap();
+    let gap = histogram_kind(&reference, Some(Err("budget-exceeded".into()))).unwrap();
     assert_eq!(gap["status"], "gap");
-    assert_eq!(gap["reason"], "region-estimate");
+    assert_eq!(gap["reason"], "budget-exceeded");
     let unrendered = histogram_kind(&reference, None).unwrap();
     assert_eq!(unrendered["status"], "not-rendered");
     assert_eq!(unrendered["reference"]["pixels"], 5000);
@@ -1401,12 +1379,12 @@ fn the_export_comparison_holds_an_export_to_the_reference_and_to_itself() {
     let reference = raster(40, 30, |x, y| [x as u8 * 5, y as u8 * 7, 30]);
     let gap = export_kind(
         &reference,
-        Exported::Gap("the reference renders it: region-estimate".into()),
+        Exported::Gap("the reference renders it: pixel-stage".into()),
         Class::Pointwise,
     )
     .unwrap();
     assert_eq!(gap["status"], "gap", "never a pass");
-    assert_eq!(gap["reason"], "the reference renders it: region-estimate");
+    assert_eq!(gap["reason"], "the reference renders it: pixel-stage");
     assert_eq!(gap["reference"]["stage"], json!([40, 30]));
     let drawn = |codes: Vec<u8>, repeatable| Exported::Drawn {
         codes,
