@@ -997,14 +997,14 @@ mod tests {
                 pressed(letter("e"), command),
                 Status::Ignored,
                 &plain,
-                Some("Export(Start { keep_metadata: false })"),
+                Some("Export(Start { keep_metadata: false, reference: false })"),
             ),
             (
                 "export keeping metadata",
                 pressed(letter("E"), shift_command),
                 Status::Ignored,
                 &plain,
-                Some("Export(Start { keep_metadata: true })"),
+                Some("Export(Start { keep_metadata: true, reference: false })"),
             ),
             (
                 "a plain e is no shortcut",
