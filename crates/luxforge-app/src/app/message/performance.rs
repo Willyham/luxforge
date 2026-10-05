@@ -5,9 +5,9 @@ use luxforge_core::JobId;
 /// The state panel's Performance section. Handled in `app/performance.rs`.
 #[derive(Clone, Debug)]
 pub(crate) enum PerformanceMessage {
-    /// Open or close the section and save its next-launch default through `preferences.set`.
+    /// Open or close the section and store its next-launch default through the desktop's
+    /// preference writer.
     Toggle,
-    Saved(Result<(), String>),
     Cancel(JobId),
     Cancelled {
         job_id: JobId,

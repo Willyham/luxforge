@@ -65,6 +65,7 @@ impl Editor {
                 self.outcome(Outcome::SessionAnswered);
             }
             ViewMessage::WorkspaceUpdated(result) => {
+                let before = super::remembered::remembered_workspace(&self.session.workspace);
                 match result {
                     Ok(session) => {
                         self.adopt(session);
@@ -78,6 +79,7 @@ impl Editor {
                     Err(error) => self.status.text = error,
                 }
                 self.outcome(Outcome::SessionAnswered);
+                return self.remember_workspace(before);
             }
             ViewMessage::PanSynced(result) => {
                 self.view_state.pan.answered();
@@ -104,6 +106,8 @@ impl Editor {
                 }
             }
             ViewMessage::Fullscreen(fullscreen) => self.view_state.fullscreen = fullscreen,
+            ViewMessage::Placed { report, on_main } => return self.window_placed(report, on_main),
+            ViewMessage::ClosingFrame(report) => return self.closing_frame(report),
             ViewMessage::TogglePanel(panel) => {
                 let open = match panel {
                     Panel::State => self.session.workspace.state_panel,
@@ -118,6 +122,13 @@ impl Editor {
                     self.owner.clone(),
                     self.client,
                     json!({"thirds": !self.session.workspace.thirds}),
+                );
+            }
+            ViewMessage::ToggleInformation => {
+                return workspace_task(
+                    self.owner.clone(),
+                    self.client,
+                    json!({"information": !self.session.workspace.information}),
                 );
             }
             ViewMessage::ToggleGpuPreview => {
@@ -171,7 +182,16 @@ impl Editor {
             ViewMessage::FocusNext => return operation::focus_next(),
             ViewMessage::FocusPrevious => return operation::focus_previous(),
             ViewMessage::Zoom(value) => self.view_state.zoom = value,
-            ViewMessage::Pinch(input) => return self.pinch(input),
+            // AppKit reports the pointer in the system's points; the layout is in logical pixels,
+            // which are the interface size's multiple of them.
+            ViewMessage::Pinch(input) => {
+                let scale = f64::from(self.view_state.interface_scale());
+                return self.pinch(luxforge_input::Pinch {
+                    x: input.x / scale,
+                    y: input.y / scale,
+                    ..input
+                });
+            }
             #[cfg(target_os = "macos")]
             ViewMessage::PinchPending => {
                 if let Some(input) = super::waker::take_pinch() {
@@ -235,11 +255,9 @@ impl Editor {
             ViewMessage::DragWindow => {
                 return iced::window::oldest().and_then(iced::window::drag);
             }
-            ViewMessage::ScaleFactor(scale) => {
-                if scale.is_finite() && scale > 0.0 {
-                    self.view_state.scale_factor = scale;
-                }
-            }
+            // The system's factor alone: Iced's answer leaves out the application's scale factor,
+            // which the interface size sets.
+            ViewMessage::ScaleFactor(scale) => self.view_state.set_system_scale_factor(scale),
         }
         Task::none()
     }

@@ -27,7 +27,8 @@ mod modules;
 /// The host's path primitives: the stored coordinate grid, decimation, the stroke a painting
 /// action captures, and the content-addressed store those strokes live in.
 pub mod path;
-mod preferences;
+/// The person's preferences outside every catalog, and the launch read the desktop makes of them.
+pub mod preferences;
 mod presets;
 mod preview;
 mod profile;
@@ -57,7 +58,7 @@ pub use editor::{
     SkippedSetting, SourceKind, SourceTag, Version,
 };
 pub use error::{Error, ErrorKind, Preparation, PreparationNeeds};
-pub use export::CaptureMetadata;
+pub use export::{CaptureInfo, CaptureMetadata};
 pub use mask::MASK_GPU_PROGRAMS;
 pub use model::{
     AssetId, COMPONENTS_PER_MASK, Component, ComponentId, ComponentMode, DraftId, EFFECT_FORMAT,
