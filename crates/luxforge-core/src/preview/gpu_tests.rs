@@ -1347,10 +1347,10 @@ fn the_warmed_plans_hold_a_drag_of_each_of_two_spatial_layers() {
     }
 }
 
-/// Behind Detail, Dehaze's light reads Detail's exact output, which only the picture at rest's
-/// sweep of the whole stage at full resolution computes: every plan reading it holds that light's
-/// link, Detail's operation in its prefix, and beside it the stand-in with Detail left out, over
-/// the source, which a slot computes while it holds no swept light. At a percentage zoom, with
+/// Behind Detail, Dehaze's light reads Detail's exact output, which only a sweep of the whole
+/// stage at full resolution computes: every plan reading it holds that light's link, Detail's
+/// operation in its prefix, and beside it the stand-in with Detail left out, over the source,
+/// which a slot computes in its place. At a percentage zoom, with
 /// nothing rendered and nothing stored, a Presence drag plans at once, reading the light at rest,
 /// its plan running Detail's operation, then Presence's, from the photograph — the boundary every
 /// gesture over the view starts from — over the window the region reads, every texel the whole
@@ -1406,12 +1406,10 @@ fn behind_detail_a_region_plan_reads_the_light_at_rest_or_its_stand_in() {
         GpuView::Fit(bounds()),
     )
     .unwrap();
-    let swept = at_rest.lights.expect("Detail's exact output is swept");
     let at_rest = planned(&at_rest.view).lights.clone();
     let [light] = &at_rest[..] else {
         panic!("one light: {at_rest:?}");
     };
-    assert_eq!(swept.lights[0].light, *light);
     assert!(light.layer == 1 && !light.over_source() && light.spatial.len() == 1);
     let stand_in = light.stand_in.as_deref().expect("its stand-in");
     assert!(stand_in.over_source() && stand_in.left_out == [0]);
@@ -1752,11 +1750,10 @@ fn a_picture_at_rest_is_planned_in_anchored_tiles_of_the_output_stage() {
 
 /// A picture at rest of a Dehaze stack is planned at once, nothing rendered or stored: its tiles'
 /// plan reads the light its light link computes from the source. Behind Detail the light reads
-/// Detail's exact output, so the picture at rest sweeps the whole content stage at full resolution
-/// in tiles whose origins and sides are whole 16-pixel blocks, each block in one tile, every tile's
-/// window holding what Detail's halo reads; a sweep's side must be whole blocks.
+/// Detail's output: the tiles' plan holds that light with Detail's operation in its prefix, and its
+/// stand-in over the source with Detail left out, which a slot computes in its place.
 #[test]
-fn a_picture_at_rest_reads_its_lights_and_sweeps_those_behind_detail() {
+fn a_picture_at_rest_reads_its_lights() {
     let dehaze = Layer::new(crate::PRESENCE_EFFECT, json!({"dehaze": 40.0}));
     let evaluation = committed(RenderContext::new(), vec![dehaze.clone()]);
     let rest = crate::render::gpu::plan_rest(&evaluation, GpuView::Fit(bounds())).unwrap();
@@ -1765,48 +1762,24 @@ fn a_picture_at_rest_reads_its_lights_and_sweeps_those_behind_detail() {
         other => panic!("{other:?}"),
     };
     assert!(tiles.plan.reads_lights() && tiles.plan.lights[0].over_source());
-    assert!(
-        rest.lights.is_none(),
-        "a light over the source needs no sweep"
-    );
-
     let detail = Layer::new(crate::DETAIL_EFFECT, json!({"sharpening": 40}));
     let evaluation = committed(RenderContext::new(), vec![detail, dehaze]);
     let rest = crate::render::gpu::plan_rest(&evaluation, GpuView::Fit(bounds())).unwrap();
-    let lights = planned(&rest.view).lights.clone();
-    let swept = rest.lights.expect("a sweep");
-    let [one] = &swept.lights[..] else {
-        panic!("one light swept");
+    let tiles = match &rest.tiles {
+        Some(Ok(tiles)) => tiles,
+        other => panic!("{other:?}"),
     };
-    let stage = Stage {
-        width: WIDTH,
-        height: HEIGHT,
+    let [light] = &tiles.plan.lights[..] else {
+        panic!("one light");
     };
-    assert_eq!((one.k, &one.light, swept.stage), (0, &lights[0], stage));
-    let check = |tiles: &[crate::RestTile]| {
-        let area: u64 = tiles.iter().map(|tile| tile.rect.pixels()).sum();
-        assert_eq!(area, u64::from(WIDTH * HEIGHT), "every pixel once");
-        for tile in tiles {
-            let (rect, window) = (tile.rect, tile.window);
-            assert_eq!((rect.x0 % 16, rect.y0 % 16), (0, 0), "{rect:?}");
-            assert!(
-                window.x0 <= rect.x0
-                    && window.y0 <= rect.y0
-                    && window.x1() >= rect.x1()
-                    && window.y1() >= rect.y1()
-                    && window.x1() <= WIDTH
-                    && window.y1() <= HEIGHT,
-                "{window:?} holds {rect:?}"
-            );
-        }
-    };
-    check(&one.tiles);
-    let small = crate::render::gpu::plan_rest_lights(&evaluation, &lights, Some(64))
-        .unwrap()
-        .expect("a sweep");
-    assert_eq!(small.lights[0].tiles.len(), 10 * 7);
-    check(&small.lights[0].tiles);
-    assert!(crate::render::gpu::plan_rest_lights(&evaluation, &lights, Some(40)).is_err());
+    assert!(!light.over_source() && light.spatial.len() == 1);
+    let stand_in = light.stand_in.as_deref().expect("its stand-in");
+    assert!(stand_in.over_source() && stand_in.left_out == [0]);
+    assert_eq!(
+        planned(&rest.view).lights,
+        tiles.plan.lights,
+        "one light at every view"
+    );
 }
 
 // The warm list over as many masked spatial layers as a recipe may hold.

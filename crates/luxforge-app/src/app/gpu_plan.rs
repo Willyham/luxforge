@@ -318,8 +318,8 @@ fn light_of(plan: &luxforge_core::GpuPlan, spatial: &GpuSpatial) -> Option<u32> 
 /// The light links of `plan` as the surface runs them before its steps ([`gpu_preview::light`]),
 /// light `k` the `k`-th: each one's colour operations' steps, as a plan's are converted, then its
 /// own step, the plane its selection writes the slot's light `k`. A light behind a spatial
-/// operation, whose exact input only the picture at rest's sweep of the whole stage computes, is
-/// computed by its stand-in over the source with those operations left out
+/// operation, whose exact input only a sweep of the whole stage through it computes, which no slot
+/// runs yet, is computed by its stand-in over the source with those operations left out
 /// ([`luxforge_core::GpuLight::stand_in`]).
 pub(crate) fn surface_lights(
     plan: &luxforge_core::GpuPlan,

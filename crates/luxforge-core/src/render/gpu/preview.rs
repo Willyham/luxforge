@@ -23,13 +23,14 @@
 //! - **Lights.** A spatial operation's global estimate, Dehaze's atmospheric light, is read from the
 //!   light plane its plan's light link writes from the whole stage at full resolution, per frame
 //!   ([`super::GpuLight`]), at every view: the one the picture at rest draws with, with every
-//!   spatial layer before it included, computed by the picture at rest's sweep where such a layer
-//!   is ([`RestLights`]). A drag that leaves a light's input unchanged reads that light, which the
-//!   slot keeps; one that changes it only through restoration or spatial layers reads the light of
-//!   the stack it started from, the slot's still; and one that changes it through a colour layer
-//!   computes it every tick from the source with every spatial layer before it left out
-//!   ([`super::GpuLightRestoration::LeftOut`]), as the recorded default sets
-//!   (`docs/design/gpu-first.md`, "Proposals with recorded defaults").
+//!   spatial layer before it included, whose input only a sweep of the whole stage through those
+//!   layers gives, which no slot runs yet, so a slot computes such a light by its stand-in over the
+//!   source with them left out ([`super::GpuLight::stand_in`]). A drag that leaves a light's input
+//!   unchanged reads that light, which the slot keeps; one that changes it only through
+//!   restoration or spatial layers reads the light of the stack it started from, the slot's still;
+//!   and one that changes it through a colour layer computes it every tick from the source with
+//!   every spatial layer before it left out ([`super::GpuLightRestoration::LeftOut`]), as the
+//!   recorded default sets (`docs/design/gpu-first.md`, "Proposals with recorded defaults").
 //! - **The boundary key** names everything the boundary's texels depend on: the source's identity
 //!   (fingerprint, development and view), the layers before the boundary and the masks they read,
 //!   the boundary's index, and the proxy plan with its bounds and window, or at the exact stage at
@@ -54,7 +55,7 @@ use crate::{
     Draft, EFFECT_FORMAT, EffectStage, Error, Evaluation, Layer, LayerId, MaskId, ModuleRegistry,
     ProxyBounds, ProxyIdentity, ProxyPlan, Recipe,
     mask_field::MaskSampling,
-    modules::{ESTIMATE_REDUCTION, MAX_MASKED_SPATIAL_LAYERS, Region, Stage},
+    modules::{MAX_MASKED_SPATIAL_LAYERS, Region, Stage},
     render::{Compiled, spatial::prefix_hash, window::WindowPlan},
 };
 use serde_json::json;
@@ -708,39 +709,6 @@ pub struct GpuRest {
     /// where the view draws the output stage at its own size or larger, whose picture at rest is
     /// [`Self::view`]'s plan.
     pub tiles: Option<Result<Box<RestTiles>, GpuFallback>>,
-    /// The lights the stack's frames read that only a sweep of the whole stage at full resolution
-    /// computes, at every view ([`RestLights`]); `None` for a stack with none.
-    pub lights: Option<Box<RestLights>>,
-}
-
-/// The lights of a stack at rest that are not over the source (`docs/design/gpu-preview.md`, "The
-/// global estimate"): each estimating layer's whose input runs a restoration or spatial layer, which
-/// the picture at rest's sweep computes from the stack at full resolution before any tile reads it,
-/// tile by tile of the content stage, into the light every frame of the stack and every drag that
-/// leaves its input as it is draws with.
-#[derive(Clone, Debug, PartialEq)]
-pub struct RestLights {
-    /// The lights, in the order their sweeps run: a later one's prefix may read an earlier one's.
-    pub lights: Vec<RestLight>,
-    /// The content stage every tile's window is cut from, the source's own.
-    pub stage: Stage,
-    /// The source every tile's boundary is cut from, and how its texels are held.
-    pub source: ProxyIdentity,
-    pub format: crate::BoundaryFormat,
-}
-
-/// One light of a stack at rest computed by a sweep of its whole stage ([`RestLights`]).
-#[derive(Clone, Debug, PartialEq)]
-pub struct RestLight {
-    /// Its place among the plan's lights ([`GpuPlan::lights`]): the light plane `k` it is read as.
-    pub k: usize,
-    /// Its light link, holding the spatial operations before it.
-    pub light: GpuLight,
-    /// The content stage in tiles, row by row: each a rectangle whose origin and side are
-    /// multiples of the light's 16-pixel blocks, so each block lies in one tile, and the window of
-    /// the source its prefix reads to give that rectangle's pixels exactly, anchored as a region's
-    /// is ([`super::plan::anchored`]).
-    pub tiles: Vec<RestTile>,
 }
 
 /// The sides a picture at rest's tiles of the output stage take, longest first: the first whose
@@ -927,8 +895,7 @@ pub(crate) fn plan_rest_tiles(
 /// The GPU picture at rest of a committed stack, `evaluation` a job of no draft, drawn as `view`
 /// says ([`GpuRest`]): every stack has one, the empty stack and a stack of geometry alone included,
 /// since it is planned from the source. `O(layers)` on the catalog owner, and no pixel read, and at
-/// Fit and below 100% `O(tiles × segments)` for its tiles, and for its lights' sweeps
-/// `O(tiles × layers)`.
+/// Fit and below 100% `O(tiles × segments)` for its tiles.
 pub(crate) fn plan_rest(evaluation: &Evaluation, view: GpuView) -> Result<GpuRest, Error> {
     let recipe = evaluation.recipe();
     let fit = FitStage::of_view(evaluation, view)?;
@@ -938,116 +905,10 @@ pub(crate) fn plan_rest(evaluation: &Evaluation, view: GpuView) -> Result<GpuRes
         GpuView::Fit(bounds) => plan_rest_tiles(evaluation, bounds, None)?,
         GpuView::Region { .. } => None,
     };
-    let lights = match &planned.answer {
-        GpuAnswer::Plan(plan) => plan_rest_lights(evaluation, &plan.lights, None)?,
-        GpuAnswer::Fallback(_) => None,
-    };
     Ok(GpuRest {
         view: planned,
         tiles,
-        lights,
     })
-}
-
-/// The sweeps of `lights`, a plan of `evaluation`'s stack's lights, that are not over the source
-/// ([`RestLights`]): each light's whole content stage in tiles of the longest of
-/// [`REST_TILE_SIDES`] whose prefix the light's own figures hold within [`REST_TILE_BYTES`], or of
-/// `side` for a test. `None` when every light is over the source, or a tile's window cannot be
-/// planned. `O(tiles × layers)` on the catalog owner, no pixel read.
-pub(crate) fn plan_rest_lights(
-    evaluation: &Evaluation,
-    lights: &[GpuLight],
-    side: Option<u32>,
-) -> Result<Option<Box<RestLights>>, Error> {
-    let full = evaluation.source().dimensions();
-    let stage = Stage {
-        width: full.0,
-        height: full.1,
-    };
-    let linear = matches!(evaluation.source(), crate::PreviewSource::Raw { .. });
-    let format = crate::BoundaryFormat::of(linear);
-    let mut swept = Vec::new();
-    for (k, light) in lights.iter().enumerate() {
-        if light.over_source() {
-            continue;
-        }
-        if light.stage != stage {
-            return Err(Error::internal(
-                "a light is planned over its source's whole content stage",
-            ));
-        }
-        // Every pixel of a tile's rectangle is the whole stage's when its window holds what the
-        // prefix's halos read, anchored as a region's window is.
-        let halo: u32 = light
-            .spatial
-            .iter()
-            .map(|spatial| spatial.halos.iter().sum::<u32>())
-            .sum();
-        let anchor = super::plan::anchor_of(&light.spatial);
-        let window_of = |rect: Region| super::plan::anchored(rect.grown(halo, stage), anchor);
-        let side = side.unwrap_or_else(|| {
-            REST_TILE_SIDES
-                .into_iter()
-                .find(|side| {
-                    let (width, height) = ((*side).min(stage.width), (*side).min(stage.height));
-                    let middle = Region {
-                        x0: (stage.width - width) / 2 / ESTIMATE_REDUCTION * ESTIMATE_REDUCTION,
-                        y0: (stage.height - height) / 2 / ESTIMATE_REDUCTION * ESTIMATE_REDUCTION,
-                        width,
-                        height,
-                    };
-                    sweep_bytes(light, window_of(middle), format) <= REST_TILE_BYTES
-                })
-                .unwrap_or(REST_TILE_SIDES[REST_TILE_SIDES.len() - 1])
-        });
-        if !side.is_multiple_of(ESTIMATE_REDUCTION) {
-            return Err(Error::validation(
-                "a light's sweep is tiled in multiples of its 16-pixel blocks",
-            ));
-        }
-        let mut tiles = Vec::new();
-        for y0 in (0..stage.height).step_by(side as usize) {
-            for x0 in (0..stage.width).step_by(side as usize) {
-                let rect = Region {
-                    x0,
-                    y0,
-                    width: side.min(stage.width - x0),
-                    height: side.min(stage.height - y0),
-                };
-                tiles.push(RestTile {
-                    rect,
-                    window: window_of(rect),
-                });
-            }
-        }
-        swept.push(RestLight {
-            k,
-            light: light.clone(),
-            tiles,
-        });
-    }
-    Ok((!swept.is_empty()).then(|| {
-        Box::new(RestLights {
-            lights: swept,
-            stage,
-            source: evaluation.source().identity(),
-            format,
-        })
-    }))
-}
-
-/// What one tile of `light`'s sweep over `window` of a `format` boundary takes by the light's own
-/// figures: the boundary and an intermediate for every link of its prefix, and its spatial
-/// operations' planes.
-fn sweep_bytes(light: &GpuLight, window: Region, format: crate::BoundaryFormat) -> u64 {
-    let texels = u64::from(window.width) * u64::from(window.height);
-    let links = light.spatial.len() as u64 + 1;
-    let planes: u64 = light
-        .spatial
-        .iter()
-        .map(|spatial| spatial.plane_bytes((window.x0, window.y0), (window.width, window.height)))
-        .sum();
-    texels * format.texel_bytes() as u64 * (links + 1) + planes
 }
 
 /// The plan of `planned` from layer `boundary`'s input, or from the source for `None`, at `fit`'s
