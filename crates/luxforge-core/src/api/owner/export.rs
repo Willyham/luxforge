@@ -49,6 +49,7 @@ host_params! {
         mutation: MutationRequest,
         entry_id: Option<EntryId> = entry().notes("a saved entry of the asset; default its current entry"),
         keep_metadata: Option<bool> = boolean().default(false).notes("write the original's supported EXIF fields"),
+        pixels_per_inch: Option<u16> = integer(1, 65535).notes("the JFIF header's density, which sizes the file in viewers such as Preview and in print; default none, a unitless 1:1 aspect ratio"),
     }
 }
 
@@ -105,6 +106,7 @@ pub(in crate::api) fn jpeg(
         .service
         .export_plan(&params.asset_id, params.entry_id.as_ref())?;
     let keep_metadata = params.keep_metadata.unwrap_or(false);
+    let pixels_per_inch = params.pixels_per_inch;
     let job_id = JobId::new();
     let control = JobControl::new();
     let identity = plan.identity.clone();
@@ -112,6 +114,7 @@ pub(in crate::api) fn jpeg(
         plan,
         destination: destination.clone(),
         keep_metadata,
+        pixels_per_inch,
         control: control.clone(),
         #[cfg(test)]
         hold: owner.export_hold.clone(),
@@ -150,6 +153,7 @@ pub(in crate::api) fn jpeg(
         "width": identity.width,
         "height": identity.height,
         "keep_metadata": keep_metadata,
+        "pixels_per_inch": pixels_per_inch,
     }))
 }
 
@@ -169,6 +173,7 @@ struct ExportJob {
     plan: ExportPlan,
     destination: Destination,
     keep_metadata: bool,
+    pixels_per_inch: Option<u16>,
     control: Arc<JobControl>,
     #[cfg(test)]
     hold: Option<Hold>,
@@ -184,6 +189,7 @@ impl ExportJob {
             plan,
             destination,
             keep_metadata,
+            pixels_per_inch,
             control,
             #[cfg(test)]
             hold,
@@ -219,6 +225,7 @@ impl ExportJob {
             &mut staged,
             &frame,
             exif.as_deref(),
+            pixels_per_inch,
             &mut |fraction| control.set_progress(Some(fraction), ENCODING),
             &|| control.checkpoint(),
         )?;

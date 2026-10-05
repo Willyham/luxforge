@@ -51,6 +51,8 @@ pub(crate) struct ExportChoice {
     pub(crate) entry_id: EntryId,
     pub(crate) destination: PathBuf,
     pub(crate) keep_metadata: bool,
+    /// The JFIF density asked for ([`screen_pixels_per_inch`]).
+    pub(crate) pixels_per_inch: Option<u16>,
     /// `export.plan`'s answer, reported when the choice is taken up.
     pub(crate) plan: Value,
 }
@@ -180,15 +182,16 @@ impl Editor {
             dialog: destination.is_none(),
             folder: None,
         });
+        let pixels_per_inch = screen_pixels_per_inch(self.view_state.system_scale_factor);
         self.event(
             "export_started",
-            || json!({"asset_id":asset,"entry_id":entry,"keep_metadata":keep_metadata,"dialog":destination.is_none()}),
+            || json!({"asset_id":asset,"entry_id":entry,"keep_metadata":keep_metadata,"pixels_per_inch":pixels_per_inch,"dialog":destination.is_none()}),
         );
         plan_task(
             self.owner.clone(),
             self.client,
             (asset, entry),
-            keep_metadata,
+            (keep_metadata, pixels_per_inch),
             original,
             destination,
         )
@@ -401,6 +404,15 @@ pub(crate) fn dialog_start(plan: &Value, original: &Path) -> (PathBuf, String) {
     }
 }
 
+/// The density an export from this window asks for. On macOS, 72 pixels per inch for each physical
+/// pixel of a point on the window's display, 144 on a Retina display, which is what makes Preview's
+/// Actual Size show one image pixel per physical pixel, as 100% does here; Preview sizes a file
+/// that names no density at 72. Elsewhere none: the JFIF header keeps its unitless aspect ratio.
+pub(crate) fn screen_pixels_per_inch(system_scale_factor: f32) -> Option<u16> {
+    (cfg!(target_os = "macos") && system_scale_factor.is_finite() && system_scale_factor > 0.0)
+        .then(|| (72.0 * system_scale_factor).round().clamp(1.0, 65535.0) as u16)
+}
+
 /// `Exported DSC_0042-edited.jpg · 6000 × 4000 · 8.4 MB`.
 pub(crate) fn exported_text(file: &str, width: u64, height: u64, bytes: u64) -> String {
     format!(
@@ -428,7 +440,7 @@ fn plan_task(
     owner: OwnerHandle,
     client: ClientId,
     (asset_id, entry_id): (AssetId, EntryId),
-    keep_metadata: bool,
+    (keep_metadata, pixels_per_inch): (bool, Option<u16>),
     original: PathBuf,
     destination: Option<PathBuf>,
 ) -> Task<Message> {
@@ -461,6 +473,7 @@ fn plan_task(
                     entry_id,
                     destination,
                     keep_metadata,
+                    pixels_per_inch,
                     plan,
                 })))
             },
@@ -507,6 +520,7 @@ pub(crate) fn send_now(
         "entry_id": choice.entry_id,
         "destination": choice.destination,
         "keep_metadata": choice.keep_metadata,
+        "pixels_per_inch": choice.pixels_per_inch,
         "mutation": request(),
     });
     let mut attempt = 0;
@@ -595,6 +609,16 @@ mod tests {
             refused_text("a.jpg"),
             "Not exported: a.jpg already exists; Luxforge never replaces a file"
         );
+    }
+
+    #[test]
+    fn an_export_asks_for_72_pixels_per_inch_per_physical_pixel_on_macos() {
+        let expected = |density: u16| cfg!(target_os = "macos").then_some(density);
+        assert_eq!(screen_pixels_per_inch(2.0), expected(144));
+        assert_eq!(screen_pixels_per_inch(1.0), expected(72));
+        assert_eq!(screen_pixels_per_inch(1.5), expected(108));
+        assert_eq!(screen_pixels_per_inch(f32::NAN), None);
+        assert_eq!(screen_pixels_per_inch(0.0), None);
     }
 
     #[test]
