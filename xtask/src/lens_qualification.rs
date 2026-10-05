@@ -174,16 +174,33 @@ fn source(
         client,
         serial: 0,
     };
+    // Opened as a client opens a file: developed at once (`pick.develop`), its photograph prepared
+    // (`source.prepare`) and adopted (`job.adopt`).
     let mutation = api.envelope(None);
-    let queued = api.call("catalog.import", json!({"path":path,"mutation":mutation}))?;
+    let developed = api.call(
+        "pick.develop",
+        json!({"targets":{"kind":"paths","paths":[path]},"into":[],"confirm_removable":true,"mutation":mutation}),
+    )?;
+    let developed = api.ready(&developed["job_id"])?;
+    ensure(
+        developed["result"]["failed"]
+            .as_array()
+            .is_none_or(Vec::is_empty),
+        format!(
+            "{} was not developed: {}",
+            source.id, developed["result"]["failed"]
+        ),
+    )?;
+    let photograph = developed["result"]["developed"][0]["asset_id"].clone();
+    let queued = api.call("source.prepare", json!({"asset_id":photograph}))?;
     let job: luxforge_core::JobId = serde_json::from_value(queued["job_id"].clone())?;
     api.owner.wait_source(client, Some(&job))?;
     api.ready(&queued["job_id"])?;
     let adopted = api.call("job.adopt", json!({"job_id":job}))?;
     let state = &adopted["asset"];
     let asset = state["asset"]["id"].clone();
-    ensure(!asset.is_null(), "Import answer has no asset")?;
-    // A supported RAW is imported with its detected profile applied as its first-open entry, so
+    ensure(!asset.is_null(), "Open answer has no asset")?;
+    // A supported RAW is opened with its detected profile applied as its first-open entry, so
     // the uncorrected geometry is its Original's, the entry that one undoes to.
     let entry = &state["current_entry"];
     let uncorrected = if entry["action_id"] == "select-lens-profile" && entry["actor"] == "system" {

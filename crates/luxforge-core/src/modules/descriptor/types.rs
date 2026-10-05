@@ -263,6 +263,10 @@ pub enum IdentityKind {
     Component,
     /// One stroke of a brush component, by its content address.
     Stroke,
+    /// A catalog folder, `folder-…`.
+    CatalogFolder,
+    /// A collection, smart collection or collection group, `collection-…`.
+    Collection,
 }
 
 impl IdentityKind {
@@ -277,6 +281,8 @@ impl IdentityKind {
             Self::Mask => "a mask",
             Self::Component => "a component",
             Self::Stroke => "a stroke",
+            Self::CatalogFolder => "a catalog folder",
+            Self::Collection => "a collection",
         }
     }
 
@@ -294,6 +300,8 @@ impl IdentityKind {
             Self::Mask => crate::MaskId::is_valid(text),
             Self::Component => crate::ComponentId::is_valid(text),
             Self::Stroke => crate::path::StrokeId::parse(text).is_ok(),
+            Self::CatalogFolder => crate::catalog_types::CatalogFolderId::is_valid(text),
+            Self::Collection => crate::catalog_types::CollectionId::is_valid(text),
         }
     }
 }

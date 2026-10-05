@@ -4021,11 +4021,24 @@ fn history_navigation_is_refused_while_a_mask_gesture_is_open() {
 /// A scripted release that ends a sweep commits the gradient the sweep placed, re-sending no
 /// geometry the core draft already holds, and the step waits for the commit rather than capturing
 /// the next redraw.
+///
+/// The overlay is turned Off while the sweep's coverage grid is still computing, which cancels it.
+/// A cancelled job keeps the worker busy until it returns but delivers nothing, so the step waits
+/// for the commit and not for it. The worker is held at a gate so the release always runs while
+/// that job is still on it, whatever the host's load.
 #[test]
 fn a_scripted_release_commits_the_swept_gradient_without_resending_geometry() {
-    use crate::app::testing::{attach_log, attach_script, evidence, logged};
+    use crate::app::{
+        mask_coverage::CoverageQueue,
+        testing::{attach_log, attach_script, evidence, logged},
+    };
+    use luxforge_testbase::Gate;
+    use std::sync::Arc;
 
     let mut masking = Masking::opened();
+    let gate = Arc::new(Gate::new());
+    gate.shut();
+    masking.editor.coverage_worker.queue = CoverageQueue::held(gate.clone());
     masking.enter_mask_mode();
     masking.message(MaskMessage::New(LINEAR.to_owned()));
     masking.open_gesture();
@@ -4034,7 +4047,16 @@ fn a_scripted_release_commits_the_swept_gradient_without_resending_geometry() {
         to: (0.5, 0.7),
     }));
     masking.assert_geometry_sent();
+    gate.wait_reached(1, "the sweep's coverage grid");
     masking.message(MaskMessage::Overlay(0));
+    assert!(
+        masking.editor.coverage_worker.queue.is_busy(),
+        "the cancelled grid is still on the worker"
+    );
+    assert!(
+        !masking.editor.mask_coverage_pending(),
+        "a cancelled grid is no coverage anything waits for"
+    );
     // The sweep's own preview can still be in flight here; let it land so the release is judged
     // alone.
     drain_queue(&mut masking);
@@ -4055,6 +4077,14 @@ fn a_scripted_release_commits_the_swept_gradient_without_resending_geometry() {
             .and_then(|open| open.draft.in_flight()),
         Some(Round::Commit),
         "the release sent the commit"
+    );
+    gate.open();
+    luxforge_testbase::wait_until("the cancelled grid returns", || {
+        !masking.editor.coverage_worker.queue.is_busy()
+    });
+    assert!(
+        masking.editor.coverage_worker.queue.poll().is_none(),
+        "the cancelled grid delivered nothing"
     );
     let records = logged(&mut masking.editor, &log);
     assert!(

@@ -4569,16 +4569,17 @@ fn burst(run: &mut Run, options: &Options) -> Result {
 /// strengths. It must retain every committed layer's identity, payload, mask and artifact links.
 fn idle_catalog_stack(catalog: &Path, source: &Path) -> Result<Value> {
     let service = luxforge_core::EditorService::open(catalog)?;
-    let assets = service.assets(None, 1)?;
+    // Two identities say whether a second photograph exists.
+    let assets = service.asset_ids(2)?;
     ensure(
-        assets.assets.len() == 1 && assets.next.is_none(),
+        assets.len() == 1,
         "The idle catalog must contain exactly the measured source",
     )?;
+    let state = service.state(&assets[0])?;
     ensure(
-        assets.assets[0].locator.canonicalize()? == source.canonicalize()?,
+        state.asset.locator.canonicalize()? == source.canonicalize()?,
         "The idle catalog reopened a different source",
     )?;
-    let state = service.state(&assets.assets[0].id)?;
     let layers: Vec<_> = state
         .current_entry
         .snapshot

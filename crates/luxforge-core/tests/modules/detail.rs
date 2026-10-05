@@ -180,7 +180,7 @@ impl Session {
         )
         .unwrap();
         let client = owner.client();
-        let asset = owner.import(client, &paths::jpeg()).unwrap()["asset"]["id"].clone();
+        let asset = owner.open(client, &paths::jpeg()).unwrap()["asset"]["id"].clone();
         Self {
             owner,
             client,

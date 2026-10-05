@@ -46,6 +46,38 @@ fn a_deferred_or_blank_surface_marks_the_photo_updating_until_the_current_draw()
     ));
 }
 
+/// Idle means asleep: with no photograph presented there is no view to settle, so the window facts
+/// a launch reports — its size, its display scale, whether it is fullscreen — arm no quiet timer,
+/// and the preview seam listens to nothing a worker or the surface does not need. Armed, the 25 ms
+/// timer ran the update loop and a redraw forty times a second in an empty window.
+#[test]
+fn with_nothing_presented_a_view_change_arms_no_quiet_timer() {
+    let (mut editor, catalog) = super::testing::boot();
+    assert!(editor.document.state.is_none() && editor.presentation.dimensions.is_none());
+    for message in [
+        ViewMessage::Resized(1280.0, 800.0),
+        ViewMessage::ScaleFactor(2.0),
+        ViewMessage::Fullscreen(false),
+        ViewMessage::Panned(40.0, 20.0),
+    ] {
+        let _ = editor.update(Message::View(message.clone()));
+        assert!(
+            !editor.quiet_timer_armed(),
+            "{message:?} armed the quiet timer with nothing presented"
+        );
+        assert_eq!(
+            iced::advanced::subscription::into_recipes(super::preview::subscription(&editor)).len(),
+            usize::from(editor.preview_wake_needed()),
+            "{message:?} left the preview seam a timer"
+        );
+    }
+    assert!(
+        editor.view_plan.dirty,
+        "the view stays dirty for the first frame to reconcile"
+    );
+    finish(editor, catalog);
+}
+
 /// The retirement can begin in the redraw's `prepare`, after update recomputes subscriptions.
 /// Keeping the blocked channel open while a photo is displayed delivers that later wake.
 #[test]
@@ -657,7 +689,7 @@ fn the_fit_bounds_are_the_padded_photo_surface_in_physical_pixels() {
     editor.view_state.scale_factor = 2.0;
     editor.session.workspace.state_panel = true;
     editor.session.workspace.tools_panel = true;
-    let surface = crate::layout::photo_surface(editor.view_state.window, true, true);
+    let surface = crate::layout::photo_surface(editor.view_state.window, true, true, false);
     let inset = crate::layout::FIT_INSET;
     let bounds = editor
         .proxy_bounds()

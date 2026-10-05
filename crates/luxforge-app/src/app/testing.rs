@@ -118,27 +118,33 @@ pub(crate) fn fresh_stack(stack: &Evaluation) -> (Evaluation, std::sync::Weak<Ve
     (evaluation, held)
 }
 
-/// Import the photograph at `fixture` as `client`, wait for its source job on the owner's own
-/// blocking wait (the one the desktop's import tasks use, never a poll of `job.read`) and adopt it.
-/// Answers the adopted asset.
+/// Develop the photograph at `fixture` as `client` opens a file, on the owner's own blocking wait
+/// (the one the desktop's open tasks use, never a poll of `job.read`), and ask for its
+/// preparation: answers the photograph and its preparation's source job.
+pub(crate) fn develop_and_prepare(
+    owner: &luxforge_core::OwnerHandle,
+    client: luxforge_core::ClientId,
+    fixture: &std::path::Path,
+) -> (AssetId, String) {
+    use crate::app::tasks::{developed_photograph, prepare_photograph, queue_import};
+    let queued = queue_import(owner, client, fixture).expect("a Develop");
+    let asset = developed_photograph(owner, client, queued.job_id()).expect("the Develop");
+    let job = prepare_photograph(owner, client, &asset).expect("a preparation");
+    (asset, job)
+}
+
+/// Open the photograph at `fixture` as `client`: develop it, wait for its source job on the owner's
+/// own blocking wait and adopt it. Answers the adopted asset.
 pub(crate) fn import_and_adopt(
     owner: &luxforge_core::OwnerHandle,
     client: luxforge_core::ClientId,
     fixture: &std::path::Path,
 ) -> AssetId {
-    use crate::app::tasks::{call, request, wait_source_job};
-    let (queued, _) = call(
-        owner,
-        client,
-        "catalog.import",
-        json!({"path": fixture, "mutation": request()}),
-    )
-    .expect("an import");
-    let job = queued["job_id"].as_str().expect("a source job");
-    wait_source_job(owner, client, job).expect("source preparation");
-    let (adopted, _) =
-        call(owner, client, "job.adopt", json!({"job_id": job})).expect("an adoption");
-    AssetId::parse(adopted["asset"]["asset"]["id"].as_str().expect("an asset")).unwrap()
+    use crate::app::tasks::{call, wait_source_job};
+    let (asset, job) = develop_and_prepare(owner, client, fixture);
+    wait_source_job(owner, client, &job).expect("source preparation");
+    call(owner, client, "job.adopt", json!({"job_id": job})).expect("an adoption");
+    asset
 }
 
 /// [`real_photo`] of the photograph at `fixture`. A RAW original is decoded and developed on the
@@ -398,6 +404,9 @@ pub(crate) fn scripted_evidence(steps: &str) -> Evidence {
         agent: None,
         agent_wait: None,
         agent_host: None,
+        long_work_wait: None,
+        loupe_arrows: None,
+        grid_scroll: None,
         sync: crate::app::evidence::CaptureSync::default(),
         recorded: Default::default(),
         gpu_identity: None,
@@ -467,13 +476,11 @@ pub(crate) fn sample_mode(editor: &Editor) -> (String, String, String) {
         .expect("a declared sample-apply canvas")
 }
 
-/// Attach a real diagnostics log so the evidence records a pick writes can be read back.
+/// Attach a real diagnostics log so the evidence records a pick writes can be read back. Its path is
+/// the test base's scratch path, which clears whatever an earlier process with the same id left
+/// there, so a reused process id never finds the log already present.
 pub(crate) fn attach_log(editor: &mut Editor) -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "luxforge-pick-{}-{}.jsonl",
-        std::process::id(),
-        REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
-    ));
+    let path = luxforge_testbase::paths::temp_path("pick.jsonl");
     editor.log.diagnostics =
         Some(crate::diagnostics::Diagnostics::start(&path).expect("a fresh log"));
     path

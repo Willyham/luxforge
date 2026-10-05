@@ -199,6 +199,9 @@ pub(crate) enum NoticeAction {
     AllowConsent,
     /// Record that the person did not allow that scope.
     DenyConsent,
+    /// Locate original…: point the open photograph at a file the person chooses (`source.locate`),
+    /// then open it again from that file.
+    LocateOriginal,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -391,10 +394,14 @@ fn photo_view(inputs: &Inputs<'_>, drafting: bool) -> PhotoView {
     if inputs.document.state.is_some()
         && let Some(error) = inputs.render_error
     {
-        let reason = render_notice(inputs.modules, error)
+        let reason = render_notice(inputs.modules, error, true)
             .map(|notice| notice.body)
             .unwrap_or_else(|| error.detail.clone());
         return PhotoView::Empty(format!("Preview unavailable: {reason}"));
+    }
+    // A photograph of the development set opening with no preview decoded for it yet.
+    if let Some(name) = &inputs.develop.switching {
+        return PhotoView::Empty(format!("Opening {name}\u{2026}"));
     }
     PhotoView::default()
 }
@@ -510,14 +517,23 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
         });
     }
     if let Some(error) = inputs.render_error {
-        notices.extend(render_notice(inputs.modules, error));
+        notices.extend(render_notice(
+            inputs.modules,
+            error,
+            inputs.document.state.is_some(),
+        ));
     }
     notices
 }
 
 /// The notice one failed preview produces, when its kind is one the workspace explains. What the
-/// failure is comes from its kind and data, never from its message, which is only shown.
-fn render_notice(modules: &[ModuleDescriptor], error: &luxforge_core::Error) -> Option<Notice> {
+/// failure is comes from its kind and data, never from its message, which is only shown. An
+/// original that is not there offers Locate original… while a photograph is `open`.
+fn render_notice(
+    modules: &[ModuleDescriptor],
+    error: &luxforge_core::Error,
+    open: bool,
+) -> Option<Notice> {
     let detail = &error.detail;
     // A stack whose provider is missing is reported, never rendered without the effect.
     if let Some(effect) = error.unavailable_effect_id() {
@@ -530,13 +546,21 @@ fn render_notice(modules: &[ModuleDescriptor], error: &luxforge_core::Error) -> 
         });
     }
     match error.kind {
-        // Locate is a later feature, so this notice names the cause and offers nothing.
+        // The notice names the cause and offers to point the photograph at its original's new
+        // place: the same Locate as Missing originals' rows.
         ErrorKind::SourceUnavailable | ErrorKind::FileAccess => Some(Notice {
             tone: NoticeTone::Error,
             icon: NoticeIcon::Triangle,
             title: "Original not found".into(),
             body: detail.to_owned(),
-            actions: Vec::new(),
+            actions: if open {
+                vec![(
+                    "Locate original\u{2026}".into(),
+                    NoticeAction::LocateOriginal,
+                )]
+            } else {
+                Vec::new()
+            },
         }),
         ErrorKind::ResourceLimit => Some(Notice {
             tone: NoticeTone::Error,

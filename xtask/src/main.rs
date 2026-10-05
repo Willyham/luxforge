@@ -1,6 +1,8 @@
 mod basic_acceptance;
 mod basic_smoke;
 mod capabilities_smoke;
+mod catalog_measure;
+mod catalog_probes;
 mod check;
 /// The field-patch conformance suite the core's own integration test runs, compiled in rather than
 /// copied, so `editor-acceptance` records the evidence of exactly the checks `cargo test` makes.
@@ -13,13 +15,17 @@ mod curve_smoke;
 mod detail_grid_performance;
 mod detail_performance;
 mod detail_smoke;
+mod develop_picks_smoke;
 mod diagnostics;
 mod editor_acceptance;
 mod editor_latency;
 mod editor_performance;
 mod export_smoke;
+mod filmstrip_smoke;
 mod fixtures;
 mod gallery_smoke;
+mod gazetteer;
+mod generate_catalog;
 mod gpu_preview_smoke;
 mod gpu_preview_zoom_smoke;
 mod histogram_smoke;
@@ -30,6 +36,7 @@ mod lens_performance;
 mod lens_qualification;
 mod lens_smoke;
 mod lensfun_import;
+mod loupe_smoke;
 mod mask_acceptance;
 mod mask_brush_smoke;
 mod mask_combine_smoke;
@@ -51,7 +58,10 @@ mod raw_camera;
 mod raw_editor;
 mod raw_panel_smoke;
 mod repository;
+mod resolve_missing_smoke;
 mod scenario;
+mod select_catalog_smoke;
+mod select_smoke;
 mod settings_smoke;
 mod smoke;
 mod stats;
@@ -376,6 +386,32 @@ fn main_result() -> Result {
                 .unwrap_or_else(|| root.join("fixtures/generated"));
             a.done()?;
             fixtures::generate(&absolute(&root, &out))?;
+        }
+        "gazetteer" => {
+            let source = absolute(&root, &a.path("--source")?);
+            let out = absolute(&root, &a.path("--output")?);
+            a.done()?;
+            gazetteer::run(&source, &out)?;
+        }
+        "generate-catalog" => {
+            let out = absolute(&root, &a.path("--output")?);
+            let mut number = |key: &str| -> Result<Option<u64>> {
+                Ok(a.value(key)?
+                    .map(|v| v.to_string_lossy().parse::<u64>())
+                    .transpose()?)
+            };
+            let seed = number("--seed")?.unwrap_or(1);
+            let mut count = |key: &str| -> Result<Option<u32>> {
+                Ok(number(key)?.map(u32::try_from).transpose()?)
+            };
+            let options = generate_catalog::Options {
+                seed,
+                files: count("--files")?,
+                assets: count("--assets")?,
+                images: count("--images")?,
+            };
+            a.done()?;
+            generate_catalog::run(&out, &options)?;
         }
         "raw-camera-metadata" => {
             let index = absolute(&root, &a.path("--index")?);
@@ -707,6 +743,44 @@ fn main_result() -> Result {
                 )?
             );
         }
+        "catalog-measure" => {
+            let out = absolute(&root, &a.path("--output")?);
+            let samples = samples(&mut a, catalog_measure::DEFAULT_SAMPLES)?;
+            let scale = a
+                .value("--scale")?
+                .map(|scale| catalog_measure::Scale::parse(&scale.to_string_lossy()))
+                .transpose()?
+                .unwrap_or(catalog_measure::Scale::Full);
+            let binary = a
+                .value("--binary")?
+                .map(|path| absolute(&root, Path::new(&path)))
+                .map_or_else(|| binary(&root), Ok)?;
+            let corpus = a
+                .value("--raw-corpus")?
+                .or_else(|| std::env::var_os(catalog_measure::CORPUS_ENV))
+                .map(|path| absolute(&root, Path::new(&path)));
+            let card = a
+                .value("--card")?
+                .map(|path| absolute(&root, Path::new(&path)));
+            let only = a
+                .value("--only")?
+                .map(|step| step.to_string_lossy().into_owned());
+            a.done()?;
+            // Timing runs never overlap, whether they were started by `verify` or by hand.
+            let _gate = launch::TimingGate::acquire()?;
+            catalog_measure::run(
+                &root,
+                &out,
+                &catalog_measure::Options {
+                    samples,
+                    scale,
+                    binary,
+                    corpus,
+                    card,
+                    only,
+                },
+            )?;
+        }
         "hardening" | "measure" => {
             let out = absolute(&root, &a.path("--output")?);
             let bin = absolute(&root, &a.path("--binary")?);
@@ -724,7 +798,7 @@ fn main_result() -> Result {
         "preview-corpus" => preview_error::corpus::run(&root, a)?,
         "__hang" => std::thread::sleep(std::time::Duration::from_secs(60)),
         "help" => println!(
-            "cargo xtask doctor|check [--quick]|check-repository|fmt|lint|test [--quick]|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-camera-metadata --index FILE --ids ID[,ID...] --output NEW [--max-source-mib N]|inspect-dng --source DNG [--json NEW]|raw-authentic --manifest FILE --output NEW|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N] [--lens-only (JPEG or RAW)]|detail-performance --source JPEG --output NEW [--samples N] [--case all|render|export|points|cancel|sharing]|detail-grid-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG_OR_RAW --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint|hover|viewport|crop-start] [--mask-overlay] [--zoom PERCENT] [--moving-pan] [--control slider|curve] [--action ID --parameter NAME (a field-patch slider, or with --control curve a module curve such as set-curve luminance)] [--crop DEGREES] [--basic] [--presence] [--curve-layer] [--detail] [--lens] [--perspective] [--mask] [--idle] [--warm MS] [--contend N] [--no-gpu-preview]|lens-qualification --manifest FILE --edges FILE --output NEW|lensfun-import --source DIR --output DIR|inventory --output NEW|package --output NEW|smoke --list|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (the scenarios --list shows taking one)] [--manifest FILE (the scenarios --list shows needing one)]|smoke --verify-only RUN_DIR --output NEW [--scenario NAME] [--source RAW]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|preview-error (--candidate PNG --reference PNG --photo-rect LEFT,TOP,RIGHT,BOTTOM | --evidence DIR --candidate-frame N --reference-frame N) [--class pointwise|spatial] [--output NEW_FILE]|preview-corpus [--manifest FILE] [--output NEW_FILE]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]"
+            "cargo xtask doctor|check [--quick]|check-repository|fmt|lint|test [--quick]|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|generate-catalog --output NEW [--files N] [--assets M] [--images N] [--seed N]|gazetteer --source cities15000.txt --output NEW|audit|raw-camera-metadata --index FILE --ids ID[,ID...] --output NEW [--max-source-mib N]|inspect-dng --source DNG [--json NEW]|raw-authentic --manifest FILE --output NEW|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N] [--lens-only (JPEG or RAW)]|detail-performance --source JPEG --output NEW [--samples N] [--case all|render|export|points|cancel|sharing]|detail-grid-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG_OR_RAW --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint|hover|viewport|crop-start] [--mask-overlay] [--zoom PERCENT] [--moving-pan] [--control slider|curve] [--action ID --parameter NAME (a field-patch slider, or with --control curve a module curve such as set-curve luminance)] [--crop DEGREES] [--basic] [--presence] [--curve-layer] [--detail] [--lens] [--perspective] [--mask] [--idle] [--warm MS] [--contend N] [--no-gpu-preview]|lens-qualification --manifest FILE --edges FILE --output NEW|lensfun-import --source DIR --output DIR|inventory --output NEW|package --output NEW|smoke --list|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (the scenarios --list shows taking one)] [--manifest FILE (the scenarios --list shows needing one)]|smoke --verify-only RUN_DIR --output NEW [--scenario NAME] [--source RAW]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|preview-error (--candidate PNG --reference PNG --photo-rect LEFT,TOP,RIGHT,BOTTOM | --evidence DIR --candidate-frame N --reference-frame N) [--class pointwise|spatial] [--output NEW_FILE]|preview-corpus [--manifest FILE] [--output NEW_FILE]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]|catalog-measure --output NEW [--samples N] [--scale tiny|full] [--binary PATH] [--raw-corpus DIR] [--card DIR]"
         ),
         _ => return Err("Unknown command; use cargo xtask help".into()),
     }

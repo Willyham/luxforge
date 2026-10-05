@@ -15,7 +15,7 @@ use luxforge_core::{
     StageContext, ToolModule,
 };
 use luxforge_testbase::paths::{self, jpeg};
-use luxforge_testkit::client::{self, call, import, refused};
+use luxforge_testkit::client::{self, call, open, refused};
 use luxforge_testkit::fixtures;
 use serde_json::{Map, Value, json};
 use std::{fs, path::PathBuf, sync::Arc};
@@ -893,7 +893,7 @@ fn a_preset_carrying_set_curve_captures_applies_and_round_trips() {
     let catalog = paths::temp_catalog("presets-curve");
     let (owner, join) = OwnerHandle::start(&catalog).expect("an owner");
     let editor = owner.register();
-    let asset = import(&owner, editor, &jpeg(), ACTOR).unwrap()["asset"]["id"].clone();
+    let asset = open(&owner, editor, &jpeg(), ACTOR).unwrap()["asset"]["id"].clone();
     let edit = |method: &str, tag: &str, fields: Value| {
         let revision = client::revision(&owner, editor, &asset).unwrap();
         let mut params = json!({

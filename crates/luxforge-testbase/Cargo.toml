@@ -12,8 +12,9 @@ publish.workspace = true
 # depends on no workspace crate, so the core's own unit tests and the widget crate (luxforge-ui,
 # which may not reach the core) can use it, and naming it never builds the core a second time;
 # `cargo xtask check-repository` refuses a manifest of it that names one. Only
-# `[dev-dependencies]`, `luxforge-testkit` and `xtask` name this crate, so no build of a shipped
-# binary compiles it.
+# `[dev-dependencies]`, `luxforge-testkit`, `xtask` and `luxforge-core`'s `test-holds` feature,
+# which only `[dev-dependencies]` turn on, name this crate, so no build of a shipped binary compiles
+# it.
 [dependencies]
 rustls = { workspace = true, optional = true }
 serde_json.workspace = true

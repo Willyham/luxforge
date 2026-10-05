@@ -17,6 +17,7 @@ mod color;
 mod corpus_tests;
 mod develop;
 mod dng;
+mod embedded;
 mod format;
 mod jxl;
 mod limits;
@@ -32,12 +33,16 @@ mod rawspeed;
 mod unpacker;
 mod zeroed;
 pub use dng::{DngCalibrationMetadata, DngCorrectionMetadata, DngOpcodeProvenance};
+pub use embedded::{
+    EmbeddedImage, EmbeddedPreview, EmbeddedPreviews, PreviewFormat, PreviewListing, RandomAccess,
+};
 use format::{classify_mode, raf_default_crop};
 pub use limits::{
-    MAX_FRAME_BYTES, MAX_PIXELS, MAX_RGB_BYTES, MAX_SIDE, MAX_SOURCE_BYTES, PARALLEL_COLOUR_PIXELS,
-    PARALLEL_HEAVY_COLOUR_PIXELS, PARALLEL_PIXELS, PARALLEL_PROXY_PIXELS, PARALLEL_RESAMPLE_PIXELS,
-    PARALLEL_SPATIAL_PIXELS, PARALLEL_TRANSFORM_PIXELS, RETAINED_DEVELOPMENT_BYTES, RenderPass,
-    SPATIAL_TILE, SPATIAL_WIDE_HALO, SPATIAL_WIDE_TILE, parallel_pixels, spatial_tile,
+    MAX_EMBEDDED_IMAGE_BYTES, MAX_EMBEDDED_READ_BUDGET, MAX_FRAME_BYTES, MAX_PIXELS, MAX_RGB_BYTES,
+    MAX_SIDE, MAX_SOURCE_BYTES, PARALLEL_COLOUR_PIXELS, PARALLEL_HEAVY_COLOUR_PIXELS,
+    PARALLEL_PIXELS, PARALLEL_PROXY_PIXELS, PARALLEL_RESAMPLE_PIXELS, PARALLEL_SPATIAL_PIXELS,
+    PARALLEL_TRANSFORM_PIXELS, RETAINED_DEVELOPMENT_BYTES, RenderPass, SPATIAL_TILE,
+    SPATIAL_WIDE_HALO, SPATIAL_WIDE_TILE, parallel_pixels, spatial_tile,
 };
 use native_status::NativeStatus;
 pub use native_tiles::refill_each;
@@ -70,7 +75,8 @@ pub enum RawError {
     InvalidInput(&'static str),
     UnsupportedMode(String),
     /// A RAW compression no decoder here reads, refused before any unpack: the text names the
-    /// format and how to record a supported one instead.
+    /// format and how to record a supported one instead. Also an embedded preview in a format
+    /// [`EmbeddedPreviews::extract`] does not hand over: the text names the format.
     UnsupportedCompression(&'static str),
     UnsupportedRequiredOpcodes(Vec<u32>),
     UnsupportedCfa,
@@ -78,6 +84,14 @@ pub enum RawError {
     ResourceLimit(&'static str),
     Cancelled,
     Native(String),
+    /// Reading the source failed: the file is gone, unreadable, or shorter than when it was
+    /// opened, as when a card is removed mid-read. Kept apart from a corrupt file, which is
+    /// [`RawError::Native`] or [`RawError::InvalidInput`], so a caller can say the source is
+    /// unavailable rather than broken.
+    Io {
+        kind: std::io::ErrorKind,
+        message: String,
+    },
     /// A neutral pick whose point or sensor patch cannot give gains: outside the image, dark,
     /// clipped or otherwise unusable.
     NeutralPatch(String),
@@ -97,6 +111,7 @@ impl fmt::Display for RawError {
             Self::ResourceLimit(v) => write!(f, "RAW resource limit: {v}"),
             Self::Cancelled => write!(f, "RAW work cancelled"),
             Self::Native(v) => write!(f, "RAW native decoder: {v}"),
+            Self::Io { message, .. } => write!(f, "RAW source read: {message}"),
             Self::NeutralPatch(v) => write!(f, "{v}"),
         }
     }

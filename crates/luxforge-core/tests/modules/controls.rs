@@ -3,7 +3,7 @@
 //! an independent JSON client.
 use luxforge_core::{CONTROLS_EFFECT, ControlsModule, ModuleRegistry, OwnerHandle, SnapshotId};
 use luxforge_testbase::paths;
-use luxforge_testkit::client::{call, import, refused};
+use luxforge_testkit::client::{call, open, refused};
 use luxforge_testkit::fixtures::render;
 use luxforge_testkit::fixtures::{self, recipe, source_of};
 use serde_json::json;
@@ -40,7 +40,7 @@ fn controls_query_choice_is_described_and_selects_through_the_json_service() {
         schema["methods"]["edit.select-controls-choice"]["patch"],
         false
     );
-    let asset = import(&owner, client, &paths::jpeg(), "test").unwrap()["asset"]["id"].clone();
+    let asset = open(&owner, client, &paths::jpeg(), "test").unwrap()["asset"]["id"].clone();
     let choices = call(
         &owner,
         client,
@@ -117,7 +117,7 @@ fn proof_is_opt_in_and_each_control_field_has_an_independent_json_action() {
         false
     );
 
-    let asset = import(&owner, client, &paths::jpeg(), "test").unwrap()["asset"]["id"].clone();
+    let asset = open(&owner, client, &paths::jpeg(), "test").unwrap()["asset"]["id"].clone();
     let fields = [
         ("amount", json!(2.5)),
         ("coordinate", json!(72.0)),

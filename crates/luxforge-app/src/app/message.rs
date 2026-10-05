@@ -10,10 +10,13 @@ pub(crate) mod action;
 pub(crate) mod capability;
 pub(crate) mod control;
 pub(crate) mod crop;
+pub(crate) mod develop;
 pub(crate) mod draft;
 pub(crate) mod evidence;
 pub(crate) mod export;
 pub(crate) mod history;
+pub(crate) mod long_work;
+pub(crate) mod loupe;
 pub(crate) mod mask;
 pub(crate) mod overlay;
 pub(crate) mod palette;
@@ -22,6 +25,9 @@ pub(crate) mod pointer;
 pub(crate) mod preferences;
 pub(crate) mod preset;
 pub(crate) mod preview;
+pub(crate) mod select;
+pub(crate) mod select_catalog;
+pub(crate) mod select_missing;
 pub(crate) mod settings;
 pub(crate) mod sync;
 pub(crate) mod theme;
@@ -63,6 +69,13 @@ pub(crate) enum Message {
     /// One export gesture or answer.
     Export(export::ExportMessage),
     Evidence(evidence::EvidenceMessage),
+    /// One Select workspace gesture or owner answer.
+    Select(select::SelectMessage),
+    /// Long-running work: the status bar's busiest job, a job's Cancel, the progress sheet.
+    LongWork(long_work::LongWorkMessage),
+    /// Developing picks and the development set: Develop N's confirmation, the filmstrip and moving
+    /// through it.
+    Develop(develop::DevelopMessage),
     Close,
 }
 

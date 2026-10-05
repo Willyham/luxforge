@@ -35,8 +35,9 @@ pub(crate) const MAX_JPEG_BYTES: usize = 128 * 1024 * 1024;
 
 /// The largest JPEG original decoded: [`luxforge_raw::MAX_SIDE`] px per side (the same side limit
 /// every other source obeys) and 64 megapixels, so its RGBA frame stays inside the 512 MiB
-/// evaluated-frame limit.
-const JPEG_LIMITS: luxforge_jpeg::Limits = luxforge_jpeg::Limits {
+/// evaluated-frame limit. The preview lane decodes files' JPEGs within the same limits, the 100%
+/// region included, from an original or a RAW's embedded preview.
+pub(crate) const JPEG_LIMITS: luxforge_jpeg::Limits = luxforge_jpeg::Limits {
     max_side: luxforge_raw::MAX_SIDE,
     max_pixels: 64_000_000,
 };
@@ -143,9 +144,9 @@ const UPRIGHT_STRIP_ROWS: usize = 16;
 
 /// Where the decoded pixel `(x, y)` of a `width` × `height` image lands once EXIF `orientation`
 /// turns it upright: the inverse of the orientation's upright-to-stored mapping, so 5 to 8 swap
-/// the dimensions.
+/// the dimensions. The preview lane turns its tiers and its 100% regions upright through it too.
 #[inline]
-fn upright_position(
+pub(crate) fn upright_position(
     orientation: u8,
     width: usize,
     height: usize,
@@ -238,8 +239,14 @@ pub(crate) fn open_source_file(file: &mut File) -> Result<SourceImage, Error> {
 /// written once: no intermediate RGBA buffer that this then copies into another frame.
 pub(crate) fn open_source_bytes(bytes: Vec<u8>) -> Result<SourceImage, Error> {
     let fingerprint = format!("{:x}", Sha256::digest(&bytes));
-    let capture = Arc::new(CaptureMetadata::from_jpeg(&bytes));
-    let upright = decode_upright(&bytes)?;
+    decode_source(&bytes, fingerprint)
+}
+
+/// [`open_source_bytes`] of bytes already hashed, whose SHA-256 is `fingerprint`: what a
+/// preparation decodes when a Develop has just read and hashed the file.
+pub(crate) fn decode_source(bytes: &[u8], fingerprint: String) -> Result<SourceImage, Error> {
+    let capture = Arc::new(CaptureMetadata::from_jpeg(bytes));
+    let upright = decode_upright(bytes)?;
     Ok(SourceImage {
         width: upright.width,
         height: upright.height,
@@ -350,6 +357,8 @@ impl RawPreparation {
 }
 
 impl PreparedSource {
+    /// Its upright size: a JPEG's decoded frame, a RAW's default crop turned by its orientation.
+    #[cfg(test)]
     pub(crate) fn dimensions(&self) -> (u32, u32) {
         match self {
             Self::Jpeg(image) => (image.width, image.height),
@@ -382,6 +391,7 @@ pub(crate) fn raw_error(error: RawError) -> Error {
         | RawError::UnsupportedCfa => ErrorKind::UnsupportedInput,
         RawError::MissingCalibration(_) => ErrorKind::UnsupportedColor,
         RawError::InvalidInput(_) | RawError::Native(_) => ErrorKind::Decode,
+        RawError::Io { .. } => ErrorKind::SourceUnavailable,
         RawError::NeutralPatch(_) => ErrorKind::Validation,
     };
     Error::new(kind, error.to_string())
@@ -418,6 +428,20 @@ impl RawPrepared {
         let capture = Arc::new(CaptureMetadata::from_raw(&bytes));
         // The file's bytes go to the decoder as read: no copy into another buffer.
         let sensor = Arc::new(RawSource::decode(bytes, cancel).map_err(raw_error)?);
+        Self::develop_for(sensor, capture, fingerprint, target, cancel)
+    }
+
+    /// Develop a decoded `sensor` for `target`: its interpretation checked against the
+    /// photograph's and developed at the entry's gains, or at the camera's as-shot gains when no
+    /// target names any. What [`Self::decode`] does after decoding, and what a preparation does
+    /// with the sensor a Develop has just decoded.
+    pub(crate) fn develop_for(
+        sensor: Arc<RawSource>,
+        capture: Arc<CaptureMetadata>,
+        fingerprint: String,
+        target: Option<&RawPreparation>,
+        cancel: &AtomicBool,
+    ) -> Result<Self, Error> {
         let gains = match target {
             Some(target) => {
                 target.validate(sensor.metadata())?;
@@ -767,6 +791,13 @@ mod tests {
             (RawError::Cancelled, ErrorKind::Conflict),
             (RawError::Native("x".into()), ErrorKind::Decode),
             (RawError::NeutralPatch("x".into()), ErrorKind::Validation),
+            (
+                RawError::Io {
+                    kind: std::io::ErrorKind::NotFound,
+                    message: "x".into(),
+                },
+                ErrorKind::SourceUnavailable,
+            ),
         ] {
             assert_eq!(raw_error(error.clone()).kind, kind, "{error:?}");
         }

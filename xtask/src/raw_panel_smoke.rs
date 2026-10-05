@@ -247,12 +247,20 @@ pub fn plan(_: &[PathBuf]) -> Plan {
     );
     // A straightened crop drafted, applied and inspected; see `crop_steps`.
     steps.extend(crop_steps());
-    // Basic's section, expanded in every frame; that its White balance fields are the RAW
+    // Basic's section, expanded in every frame but the crop draft's, where crop mode collapses
+    // every other module until the draft ends; that its White balance fields are the RAW
     // development's is `verify`'s proof that the source opened as RAW.
+    const CROP_DRAFT: [&str; 3] = [names::CROP_STARTED, "crop-ratio", names::CROP_STRAIGHTENED];
     Plan::new(
         steps
             .into_iter()
-            .map(|step| step.expanded(BASIC_MODULE))
+            .map(|step| {
+                if CROP_DRAFT.contains(&step.name()) {
+                    step.collapsed(BASIC_MODULE)
+                } else {
+                    step.expanded(BASIC_MODULE)
+                }
+            })
             .collect(),
     )
 }
@@ -1981,7 +1989,7 @@ mod tests {
     }
 
     /// One frame for the open and one per script step, each step named for what it scripts and
-    /// every frame held to Basic's section expanded; and the table's row runs this plan, outside
+    /// every frame held to Basic's section expanded but the crop draft's, where it is collapsed; and the table's row runs this plan, outside
     /// `rendered`. No RAW run can be replayed, so this is what ties the names the checks read to
     /// the steps they mean.
     #[test]
@@ -1997,10 +2005,12 @@ mod tests {
         let (open, steps) = plan.steps().split_first().expect("a planned open");
         assert_eq!(open.name(), names::OPENED);
         assert!(open.script().is_none() && steps.iter().all(|step| step.script().is_some()));
+        let draft = [names::CROP_STARTED, "crop-ratio", names::CROP_STRAIGHTENED];
         assert!(plan.steps().iter().all(|step| {
+            let expanded = !draft.contains(&step.name());
             step.expect()
                 .expanded
-                .contains(&(BASIC_MODULE.to_owned(), true))
+                .contains(&(BASIC_MODULE.to_owned(), expanded))
         }));
         assert_eq!(
             scripted(&plan, names::SENSOR_PICK),

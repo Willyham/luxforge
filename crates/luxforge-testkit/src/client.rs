@@ -120,19 +120,41 @@ fn settled(owner: &OwnerHandle, client: ClientId, job: &Value, what: &str) -> Ch
     })?
 }
 
-/// Import one file through the source job an independent client waits on, answering the imported
-/// asset record once the job is ready.
-pub fn import(owner: &OwnerHandle, client: ClientId, path: &Path, actor: &str) -> Checked<Value> {
-    let queued = call(
+/// Open one file as an independent client does: develop it at once (`pick.develop` of its path
+/// into the plan's folder, confirming removable media, since the person chose the file), then
+/// prepare the photograph the Develop answers — created, linked to the photograph that already
+/// has its bytes, or relinked — and answer the prepared photograph's state once its source job is
+/// ready.
+pub fn open(owner: &OwnerHandle, client: ClientId, path: &Path, actor: &str) -> Checked<Value> {
+    let started = call(
         owner,
         client,
-        "catalog.import",
-        json!({"path": path, "mutation": {"request_id": request_id("import"), "actor": actor}}),
+        "pick.develop",
+        json!({
+            "targets": {"kind": "paths", "paths": [path]},
+            "into": [],
+            "confirm_removable": true,
+            "mutation": {"request_id": request_id("develop"), "actor": actor},
+        }),
     )?;
-    let status = settle(owner, client, &queued["job_id"])?;
+    let developed = settled(owner, client, &started["job_id"], "a Develop settling")?;
+    ensure(
+        developed["status"] == json!("ready"),
+        format!("the Develop settled as {developed}"),
+    )?;
+    let report = &developed["result"];
+    if let Some(failed) = report["failed"]
+        .as_array()
+        .and_then(|failed| failed.first())
+    {
+        return Err(format!("{} was not developed: {failed}", path.display()));
+    }
+    let asset = &report["developed"][0]["asset_id"];
+    let prepared = call(owner, client, "source.prepare", json!({"asset_id": asset}))?;
+    let status = settle(owner, client, &prepared["job_id"])?;
     ensure(
         status["status"] == json!("ready"),
-        format!("the import settled as {status}"),
+        format!("the preparation settled as {status}"),
     )?;
     Ok(status["result"].clone())
 }
@@ -194,7 +216,7 @@ pub struct Owner {
 }
 
 impl Owner {
-    /// Start an owner on `catalog`; `actor` is who its imports name.
+    /// Start an owner on `catalog`; `actor` is who its Develops name.
     pub fn start(catalog: &Path, registry: ModuleRegistry, actor: &str) -> Checked<Self> {
         let (handle, join) = OwnerHandle::start_with(catalog, Arc::new(registry))
             .map_err(|error| format!("the catalog owner did not start: {error}"))?;
@@ -240,11 +262,10 @@ impl Owner {
         refused(&self.handle, client, method, params)
     }
 
-    /// Import one file and prepare its verified source, answering the imported asset record.
-    pub fn import(&self, client: ClientId, path: &Path) -> Checked<Value> {
-        let asset = import(&self.handle, client, path, &self.actor)?;
-        prepare(&self.handle, client, &asset["asset"]["id"])?;
-        Ok(asset)
+    /// Open one file — develop it, prepare its photograph — answering the photograph's state
+    /// ([`open`]).
+    pub fn open(&self, client: ClientId, path: &Path) -> Checked<Value> {
+        open(&self.handle, client, path, &self.actor)
     }
 
     pub fn prepare(&self, client: ClientId, asset: &Value) -> Checked {

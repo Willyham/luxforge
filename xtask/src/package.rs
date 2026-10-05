@@ -104,6 +104,21 @@ fn bundled_theme_notices(root: &Path, out: &Path) -> Result {
     Ok(())
 }
 
+/// Copies the bundled place names' provenance, attribution and indication of changes (CC BY 4.0
+/// asks for all three) beside the other notices. The licence is named by its address, so there is no
+/// licence file to copy.
+fn bundled_data_notices(root: &Path, out: &Path) -> Result {
+    let input = root.join("crates/luxforge-core/THIRD_PARTY.md");
+    ensure(
+        input.is_file(),
+        format!("Missing bundled data notice: {}", input.display()),
+    )?;
+    let destination = out.join("data/luxforge-core/THIRD_PARTY.md");
+    fs::create_dir_all(destination.parent().ok_or("Notice parent")?)?;
+    fs::copy(input, destination)?;
+    Ok(())
+}
+
 const LENS_FILES: &[&str] = &[
     "index.json",
     "provenance.json",
@@ -176,6 +191,7 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
     native_jpeg_notices(root, out)?;
     bundled_font_notices(root, out)?;
     bundled_theme_notices(root, out)?;
+    bundled_data_notices(root, out)?;
     lens_resources(root, &out.join("data/lensfun"))?;
     write_json(
         &out.join("dependencies.json"),
@@ -237,7 +253,18 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
                     "provenance":"fonts/luxforge-ui/THIRD_PARTY.md"
                 }
             ],
-            "bundled_data":[{
+            "bundled_data":[
+                {
+                    "name":"GeoNames cities15000 (modified extract)",
+                    "downloaded":"2026-09-30",
+                    "source":"https://download.geonames.org/export/dump/cities15000.zip",
+                    "source_sha256":"44347468d5656101a999ba0cbb64b0cbdc7c2b48de83c8f6e129b50e697dd05d",
+                    "files":["places.tsv"],
+                    "license":"CC-BY-4.0",
+                    "license_url":"https://creativecommons.org/licenses/by/4.0/",
+                    "notices":"data/luxforge-core",
+                    "provenance":"data/luxforge-core/THIRD_PARTY.md"
+                },{
                 "name":"Lensfun distortion profile index",
                 "version":"0.3.4",
                 "revision":"101c745e847a5de4a1e569a94368ce2027198598",
@@ -391,6 +418,32 @@ mod tests {
         assert!(licence.contains("Copyright (c) David Heinemeier Hansson"));
         let notice = fs::read_to_string(tmp.path().join("themes/omarchy/NOTICE.md")).unwrap();
         assert!(notice.contains("035ce29f03bdd97a09af80ef5f2d22d7a98930d6"));
+    }
+    #[test]
+    fn copies_the_bundled_place_names_notice() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        bundled_data_notices(root, tmp.path()).unwrap();
+        let notice =
+            fs::read_to_string(tmp.path().join("data/luxforge-core/THIRD_PARTY.md")).unwrap();
+        assert!(notice.contains("Creative Commons Attribution 4.0 License"));
+        assert!(notice.contains("https://www.geonames.org"));
+        assert!(notice.contains("modified extract"));
+    }
+    /// The notice records the asset the binary compiles in (rows, bytes and hash), so a regenerated
+    /// asset cannot ship under the previous one's provenance.
+    #[test]
+    fn the_place_names_notice_records_the_asset_it_ships() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let asset = root.join("crates/luxforge-core/assets/gazetteer/places.tsv");
+        let notice = fs::read_to_string(root.join("crates/luxforge-core/THIRD_PARTY.md")).unwrap();
+        let record = format!(
+            "| `assets/gazetteer/places.tsv` | {} | {} | `{}` |",
+            fs::read_to_string(&asset).unwrap().lines().count() - 1,
+            fs::metadata(&asset).unwrap().len(),
+            hash(&asset).unwrap()
+        );
+        assert!(notice.contains(&record), "THIRD_PARTY.md lacks {record}");
     }
     #[test]
     fn package_copies_lens_index_and_its_notices() {

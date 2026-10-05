@@ -287,7 +287,7 @@ mod tests {
         let mut output = Vec::new();
         let input = [
             request("schema", "schema.list", json!({})),
-            request("list", "catalog.list", json!({})),
+            request("info", "catalog.info", json!({})),
             request("pixel", "edit.set-pixel", json!({"asset_id":asset,"mutation":{"expected_revision":0,"request_id":"p1","actor":"api-test"},"x":0,"y":0,"rgb":[1,2,3]})),
             request("sample", "render.sample", json!({"asset_id":asset,"x":0,"y":0})),
             request("version", "version.create", json!({"asset_id":asset,"name":"Edited","mutation":{"request_id":"v1","actor":"api-test"}})),
@@ -312,7 +312,7 @@ mod tests {
         assert_eq!(responses.len(), 8);
         assert!(responses.iter().all(|response| response.error.is_none()));
         let result = |index: usize| responses[index].result.as_ref().unwrap();
-        assert_eq!(result(1)["assets"][0]["id"], json!(asset));
+        assert_eq!(result(1)["counts"]["photographs"], json!(1));
         assert_eq!(result(3)["rgba"], json!([1, 2, 3, 255]));
         assert_eq!(result(4)["outcome"], json!("applied"));
         assert_eq!(result(6)["versions"][0]["name"], json!("Edited"));
@@ -395,9 +395,9 @@ mod tests {
         // Small answers: three requests, three lines, and exactly one `write` and one flush each.
         let mut small = CountingWriter::default();
         let input = [
-            request("a", "catalog.list", json!({})),
-            request("b", "catalog.list", json!({})),
-            request("c", "catalog.list", json!({})),
+            request("a", "activity.list", json!({})),
+            request("b", "activity.list", json!({})),
+            request("c", "activity.list", json!({})),
         ]
         .concat();
         serve_json_lines_with(

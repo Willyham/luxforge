@@ -1,6 +1,8 @@
 //! The two channels the desktop is woken through: one the preview and overlay workers post to when
 //! they have a result, and one the catalog owner posts to when another client's change reaches the
-//! event log.
+//! event log. A seam that is woken apart from both holds its own [`Signal`] of the same kind: the
+//! Select grid's decoded previews (`select_previews.rs`), and long-running work, which the owner's
+//! activity board wakes when catalog work changes (`long_work.rs`).
 //!
 //! Idle means asleep: there is no timer that wakes up to ask whether a frame is ready or whether
 //! anything changed. A worker posts one signal when it has something to deliver, and the
@@ -37,17 +39,20 @@ use std::{
     task::{Context, Poll},
 };
 
-struct Signal {
+/// One wake channel: a signal posted from any thread, carried into the event loop as one message
+/// of type `T` by the subscription that runs [`Signal::stream`]. Held in a `static`, so it outlives
+/// every subscription.
+pub(crate) struct Signal<T: 'static> {
     sender: Mutex<Sender<()>>,
     /// Lent to the running subscription and returned when it is dropped, so a buffered signal
     /// survives the gap between one subscription ending and the next one starting.
     receiver: Mutex<Option<Receiver<()>>>,
     /// The message one signal becomes.
-    message: fn() -> Message,
+    message: fn() -> T,
 }
 
-impl Signal {
-    fn new(message: fn() -> Message) -> Self {
+impl<T: 'static> Signal<T> {
+    pub(crate) fn new(message: fn() -> T) -> Self {
         let (sender, receiver) = channel(1);
         Self {
             sender: Mutex::new(sender),
@@ -58,14 +63,14 @@ impl Signal {
 
     /// Post the signal. A full channel or a poisoned lock is nothing to report, because both mean
     /// a message is already on its way.
-    fn post(&self) {
+    pub(crate) fn post(&self) {
         if let Ok(mut sender) = self.sender.lock() {
             let _ = sender.try_send(());
         }
     }
 
     /// Lend the receiver to a new stream.
-    fn stream(&'static self) -> Wakes {
+    pub(crate) fn stream(&'static self) -> Wakes<T> {
         Wakes {
             receiver: self.receiver.lock().ok().and_then(|mut slot| slot.take()),
             signal: self,
@@ -73,15 +78,15 @@ impl Signal {
     }
 }
 
-static PREVIEW: OnceLock<Signal> = OnceLock::new();
-static EVENTS: OnceLock<Signal> = OnceLock::new();
+static PREVIEW: OnceLock<Signal<Message>> = OnceLock::new();
+static EVENTS: OnceLock<Signal<Message>> = OnceLock::new();
 #[cfg(target_os = "macos")]
-static PINCH: OnceLock<Signal> = OnceLock::new();
+static PINCH: OnceLock<Signal<Message>> = OnceLock::new();
 #[cfg(target_os = "macos")]
 static PENDING_PINCH: Mutex<Option<luxforge_input::Pinch>> = Mutex::new(None);
 
 #[cfg(target_os = "macos")]
-fn pinch() -> &'static Signal {
+fn pinch() -> &'static Signal<Message> {
     PINCH.get_or_init(|| Signal::new(|| Message::View(ViewMessage::PinchPending)))
 }
 
@@ -115,11 +120,11 @@ pub(crate) fn pinch_subscription() -> iced::Subscription<Message> {
     iced::Subscription::run(|| pinch().stream())
 }
 
-fn preview() -> &'static Signal {
+fn preview() -> &'static Signal<Message> {
     PREVIEW.get_or_init(|| Signal::new(|| Message::Preview(PreviewMessage::Poll)))
 }
 
-fn events() -> &'static Signal {
+fn events() -> &'static Signal<Message> {
     EVENTS.get_or_init(|| Signal::new(|| Message::Sync(SyncMessage::Changed)))
 }
 
@@ -136,15 +141,15 @@ pub(crate) fn events_waker() -> luxforge_core::EventWake {
 }
 
 /// The stream a subscription runs: the borrowed receiver, one message per signal.
-struct Wakes {
+pub(crate) struct Wakes<T: 'static> {
     receiver: Option<Receiver<()>>,
-    signal: &'static Signal,
+    signal: &'static Signal<T>,
 }
 
-impl Stream for Wakes {
-    type Item = Message;
+impl<T: 'static> Stream for Wakes<T> {
+    type Item = T;
 
-    fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Message>> {
+    fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<T>> {
         let message = self.signal.message;
         match self.receiver.as_mut() {
             Some(receiver) => Pin::new(receiver)
@@ -159,7 +164,7 @@ impl Stream for Wakes {
     }
 }
 
-impl Drop for Wakes {
+impl<T: 'static> Drop for Wakes<T> {
     fn drop(&mut self) {
         if let (Some(receiver), Ok(mut slot)) = (self.receiver.take(), self.signal.receiver.lock())
         {
@@ -252,7 +257,7 @@ mod tests {
     }
 
     /// One item, without an executor: the signal is already buffered, so the stream is ready.
-    fn futures_lite_next(stream: &mut Wakes) -> Option<Message> {
+    fn futures_lite_next(stream: &mut Wakes<Message>) -> Option<Message> {
         let mut stream = Pin::new(stream);
         let waker = std::task::Waker::noop();
         let mut context = Context::from_waker(waker);

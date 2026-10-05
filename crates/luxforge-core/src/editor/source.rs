@@ -1,21 +1,27 @@
 use super::{
-    AssetRecord, CachedSource, EditorService, EditorState, MutationOutcome, PreparedFile,
-    RawDevelopment, SourceKind, SourceSignature,
-    catalog::{encode, insert_entry, now_ms, write},
+    AssetRecord, CachedSource, EditorService, EditorState, PreparedFile, RawDevelopment,
+    SourceKind, SourceSignature,
+    catalog::{insert_entry, now_ms},
+    catalog_rows::{NewAsset, insert_asset, insert_capture},
 };
 use crate::{
     AssetId, EntryId, Error, ErrorKind, HistoryEntry, LayerId, Preparation, PreparationNeeds,
     Snapshot,
     artifacts::{self, ArtifactRead, VerifiedArtifact},
     atomic_file::file_error,
+    catalog_types::HeaderMetadata,
+    export::CaptureMetadata,
+    library::availability,
     open_source_bytes, read_bounded_file,
-    source::{PreparedSource, RawPreparation, RawPrepared, SecondDevelopment},
+    source::{PreparedSource, RawPreparation, RawPrepared, SecondDevelopment, decode_source},
 };
-use rusqlite::{OptionalExtension, params};
+use luxforge_raw::RawSource;
+use rusqlite::params;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
+    fmt,
     fs::{File, Metadata},
     path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
@@ -98,26 +104,66 @@ fn located_signature(path: &Path) -> Result<(PathBuf, Metadata, SourceSignature)
     Ok((canonical, metadata, signature))
 }
 
-/// The signature an asset's original has now, refused when the file is gone or is no longer the
-/// file that was imported.
-fn original_signature(asset: &AssetRecord) -> Result<SourceSignature, Error> {
-    let metadata = asset
-        .locator
-        .metadata()
-        .map_err(|_| Error::source_unavailable("original source is unavailable"))?;
-    let signature = source_signature(&asset.locator, &metadata);
-    if signature.file_identity != asset.file_identity || signature.byte_len != asset.byte_len {
-        return Err(Error::source_unavailable(
-            "original source fingerprint changed",
-        ));
+impl SourceSignature {
+    /// The file's length in bytes.
+    pub(crate) fn byte_len(&self) -> u64 {
+        self.byte_len
     }
-    Ok(signature)
+
+    /// The file's identity as the catalog records it (`assets.file_identity`).
+    pub(crate) fn file_identity(&self) -> &str {
+        &self.file_identity
+    }
+}
+
+/// The one stat every read of an original starts from — a preparation, an evaluation, an export,
+/// a rendered preview — and all a present original costs: its signature now, or whether a file is
+/// there that is no longer the one developed (`Err(true)`) or none is (`Err(false)`).
+fn current_signature(asset: &AssetRecord) -> Result<SourceSignature, bool> {
+    match asset.locator.metadata() {
+        Ok(metadata) => {
+            let signature = source_signature(&asset.locator, &metadata);
+            if signature.file_identity == asset.file_identity
+                && signature.byte_len == asset.byte_len
+            {
+                Ok(signature)
+            } else {
+                Err(true)
+            }
+        }
+        Err(_) => Err(false),
+    }
+}
+
+/// The signature an asset's original has now, off the owner (a preview worker): refused as
+/// `source-unavailable` when the file is gone or is no longer the file that was developed, without
+/// recording the observation, which only the owner's [`EditorService::original_signature`] does.
+pub(crate) fn original_signature(asset: &AssetRecord) -> Result<SourceSignature, Error> {
+    current_signature(asset).map_err(|changed| {
+        Error::source_unavailable(if changed {
+            "original source fingerprint changed"
+        } else {
+            "original source is unavailable"
+        })
+    })
+}
+
+impl EditorService {
+    /// The signature an asset's original has now. Refused as `source-unavailable`, naming why, when
+    /// the file is gone or is no longer the file that was developed ([`availability::refusal`]);
+    /// only then is the catalog read, the volume looked at and the observation recorded.
+    fn original_signature(&self, asset: &AssetRecord) -> Result<SourceSignature, Error> {
+        current_signature(asset)
+            .map_err(|changed| availability::refusal(&self.connection, asset, changed))
+    }
 }
 
 /// Immutable source settings for a known file. The worker receives bounded catalog metadata,
 /// then checks the decoded original before developing it at this entry's gains.
 #[derive(Clone, Debug)]
 pub(crate) struct FilePreparation {
+    /// The photograph whose original this is.
+    pub(crate) asset_id: AssetId,
     pub(crate) fingerprint: String,
     pub(crate) raw: Option<RawPreparation>,
 }
@@ -125,7 +171,7 @@ pub(crate) struct FilePreparation {
 impl FilePreparation {
     /// The preparation of `recipe`, a stack of `asset` its caller already admitted as one
     /// ([`EditorService::saved_entry`]).
-    fn for_recipe(asset: &AssetRecord, recipe: &crate::Recipe) -> Result<Self, Error> {
+    pub(crate) fn for_recipe(asset: &AssetRecord, recipe: &crate::Recipe) -> Result<Self, Error> {
         let raw = match &asset.source {
             SourceKind::Jpeg => None,
             SourceKind::Raw { metadata } => Some(RawPreparation {
@@ -134,6 +180,7 @@ impl FilePreparation {
             }),
         };
         Ok(Self {
+            asset_id: asset.id.clone(),
             fingerprint: asset.fingerprint.clone(),
             raw,
         })
@@ -149,21 +196,113 @@ impl FilePreparation {
     }
 }
 
+/// What a one-file Develop read of the file it brought in, kept for the preparation that follows
+/// it, which opening a file asks next: that preparation then reads, hashes and decodes nothing the
+/// Develop already did (`docs/design/catalog.md`, "Developing picks"). The service keeps one
+/// ([`EditorService::keep_read`]); the next preparation takes it, whatever it prepares, and uses it
+/// only for this photograph's file while that has the signature it was read with
+/// ([`SourceWork::file_or_read`]).
+#[derive(Clone, Debug)]
+pub(crate) struct ReadOriginal {
+    /// The photograph the Develop made of the file, or linked or relinked it to.
+    pub(crate) asset_id: AssetId,
+    /// The file's canonical path.
+    pub(crate) path: PathBuf,
+    /// Its signature while it was read, the same before the first read and after the last.
+    pub(crate) signature: SourceSignature,
+    /// The SHA-256 of the bytes read.
+    pub(crate) fingerprint: String,
+    pub(crate) content: ReadContent,
+}
+
+/// What a Develop's read holds of a file: what a preparation would otherwise read and decode.
+#[derive(Clone)]
+pub(crate) enum ReadContent {
+    /// A JPEG's bytes, which the Develop checked only up to its header: its preparation decodes
+    /// them.
+    Jpeg(Arc<Vec<u8>>),
+    /// A RAW's unpacked sensor, which the Develop decoded to read the interpretation, and the
+    /// capture metadata of its bytes: its preparation develops it.
+    Raw {
+        sensor: Arc<RawSource>,
+        capture: Arc<CaptureMetadata>,
+    },
+}
+
+impl ReadContent {
+    /// The RAW sensor it holds, which pins its mosaic while it is held.
+    pub(crate) fn sensor(&self) -> Option<&Arc<RawSource>> {
+        match self {
+            Self::Jpeg(_) => None,
+            Self::Raw { sensor, .. } => Some(sensor),
+        }
+    }
+}
+
+/// The content by its size, never its bytes or samples.
+impl fmt::Debug for ReadContent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Jpeg(bytes) => write!(f, "Jpeg({} bytes)", bytes.len()),
+            Self::Raw { sensor, .. } => {
+                let metadata = sensor.metadata();
+                write!(
+                    f,
+                    "Raw({} × {} sensor)",
+                    metadata.sensor_width, metadata.sensor_height
+                )
+            }
+        }
+    }
+}
+
+/// What preparing originals costs, counted per thread, for the tests that prove a preparation
+/// after an open reads nothing its Develop read: every original's file a preparation reads and
+/// hashes, and every original it decodes (a JPEG's bytes, a RAW's sensor unpacked).
+#[cfg(test)]
+pub(crate) mod original_work {
+    use std::cell::Cell;
+
+    thread_local! {
+        static READ: Cell<u64> = const { Cell::new(0) };
+        static DECODED: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn read() {
+        READ.with(|count| count.set(count.get() + 1));
+    }
+
+    pub(crate) fn decoded() {
+        DECODED.with(|count| count.set(count.get() + 1));
+    }
+
+    /// The files read and the originals decoded on this thread since it last asked.
+    pub(crate) fn take() -> (u64, u64) {
+        (
+            READ.with(|count| count.replace(0)),
+            DECODED.with(|count| count.replace(0)),
+        )
+    }
+}
+
 /// One source job's preparation: what the catalog owner queues on its source worker, and what the
 /// blocking helpers ([`EditorService::import`], [`EditorService::prepare`]) run on the caller's
 /// thread. Either way it is the same work, run by [`Self::run`] and completed by the service's one
 /// completion, so no caller prepares an original or an artifact any other way.
 #[derive(Debug)]
 pub(crate) enum SourceWork {
-    /// Read and decode the original at `path`, which must still have `signature`, checking a
-    /// known file against `target` and developing a known RAW at its entry's gains.
+    /// Read and decode the original at `path`, which must still have `signature`, checking it
+    /// against its photograph's `target` and developing a RAW at its entry's gains; or, with
+    /// `read`, decode or develop what the Develop that brought the photograph in read of it, read
+    /// with the same signature, instead of reading the file.
     File {
         path: PathBuf,
         signature: SourceSignature,
-        target: Option<Box<FilePreparation>>,
-        /// For a file no asset names yet, the registry whose first-open readiness the worker
-        /// awaits after decoding ([`crate::ModuleRegistry::await_first_open`]), so the owner can
-        /// plan a new asset's first-open actions without waiting.
+        target: Box<FilePreparation>,
+        read: Option<Box<ReadOriginal>>,
+        /// For a photograph whose head has never moved, the registry whose first-open readiness
+        /// the worker awaits after decoding ([`crate::ModuleRegistry::await_first_open`]), so the
+        /// owner can plan its first-open actions without waiting.
         first_open: Option<Arc<crate::ModuleRegistry>>,
     },
     /// Redevelop the cached RAW mosaic at new gains.
@@ -172,7 +311,7 @@ pub(crate) enum SourceWork {
     Artifacts(AssetId),
 }
 
-/// What preparing one import or one set of needs takes: nothing, because the verified cache
+/// What preparing one set of needs takes: nothing, because the verified cache
 /// already answers it, or one source job's work and the artifacts it reads and verifies after it.
 #[derive(Debug)]
 pub(crate) enum Preparing {
@@ -183,11 +322,10 @@ pub(crate) enum Preparing {
 /// What completing one source job came to ([`EditorService::complete_preparation`]).
 #[derive(Debug)]
 pub(crate) struct Completion {
-    /// The asset's state after the completion, and after a new asset's first-open entries.
+    /// The photograph's state after the completion, and after its first-open entries.
     pub(crate) state: EditorState,
-    /// Whether an import inserted a new asset, for event publication.
-    pub(crate) created: bool,
-    /// A new asset's first-open reports ([`EditorService::first_open`]); empty otherwise.
+    /// The first-open reports of a photograph whose head had never moved when its original was
+    /// adopted ([`EditorService::first_open`]); empty otherwise.
     pub(crate) first_open: Vec<crate::FirstOpen>,
 }
 
@@ -195,7 +333,6 @@ impl Completion {
     fn of(state: EditorState) -> Self {
         Self {
             state,
-            created: false,
             first_open: Vec::new(),
         }
     }
@@ -209,14 +346,32 @@ pub(crate) enum Prepared {
 }
 
 impl SourceWork {
-    /// The preparation of the original at `path` as it is now, checked against `target` when the
-    /// file is already an asset. Fails when the path is not a regular file.
-    pub(crate) fn file(path: &Path, target: Option<FilePreparation>) -> Result<Self, Error> {
+    /// The preparation of the original at `path` as it is now, checked against its photograph's
+    /// `target`. Fails when the path is not a regular file.
+    pub(crate) fn file(path: &Path, target: FilePreparation) -> Result<Self, Error> {
+        Self::file_or_read(path, target, None)
+    }
+
+    /// [`Self::file`], taking `read` in place of reading the file when it is what a Develop read
+    /// of this very file for this photograph: the same canonical path, the signature the file has
+    /// now and the bytes the photograph records. Anything else is left, and the file is read.
+    pub(crate) fn file_or_read(
+        path: &Path,
+        target: FilePreparation,
+        read: Option<ReadOriginal>,
+    ) -> Result<Self, Error> {
         let (path, signature) = EditorService::request_signature(path)?;
+        let read = read.filter(|read| {
+            read.asset_id == target.asset_id
+                && read.path == path
+                && read.signature == signature
+                && read.fingerprint == target.fingerprint
+        });
         Ok(Self::File {
             path,
             signature,
-            target: target.map(Box::new),
+            target: Box::new(target),
+            read: read.map(Box::new),
             first_open: None,
         })
     }
@@ -253,9 +408,11 @@ impl SourceWork {
                 path,
                 signature,
                 target,
+                read: kept,
                 first_open,
             } => {
-                let prepared = EditorService::prepare_file(&path, target.as_deref(), cancel)?;
+                let prepared =
+                    EditorService::prepare_file(&path, &target, kept.map(|kept| *kept), cancel)?;
                 if prepared.signature != signature {
                     return Err(Error::conflict("source changed after job was queued"));
                 }
@@ -277,6 +434,22 @@ impl SourceWork {
             }
             Self::Artifacts(asset_id) => Ok(Prepared::Artifacts(asset_id, read()?)),
         }
+    }
+}
+
+#[cfg(test)]
+impl SourceWork {
+    /// The preparation of the file at `path` for a photograph that does not exist: for a test of
+    /// the source queue, which admits and deduplicates work it never runs.
+    pub(crate) fn unrun_file(path: &Path) -> Result<Self, Error> {
+        Self::file(
+            path,
+            FilePreparation {
+                asset_id: AssetId::new(),
+                fingerprint: String::new(),
+                raw: None,
+            },
+        )
     }
 }
 
@@ -305,30 +478,16 @@ impl EditorService {
         Ok((canonical, signature))
     }
 
-    /// The asset already imported from this file, found by either identity a source has — its
-    /// canonical path, or the file's own identity, which a hard link keeps — with its fingerprint.
-    fn asset_for_source(
-        &self,
-        canonical: &Path,
-        file_identity: &str,
-    ) -> Result<Option<(AssetId, String)>, Error> {
-        self.connection
-            .query_row(
-                "SELECT id,fingerprint FROM assets WHERE canonical_locator=?1 OR file_identity=?2 LIMIT 1",
-                params![canonical.to_string_lossy(), file_identity],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()?
-            .map(|(id, fingerprint)| Ok((AssetId::parse(id)?, fingerprint)))
-            .transpose()
-    }
-
     /// Read, hash and decode an original from the same bounded, stable read-only file handle, under
-    /// a cancellation flag: the one read of an original, which only [`SourceWork::run`] makes. A
-    /// known file is checked against `target`, and a known RAW is developed at its entry's gains.
+    /// a cancellation flag: the one read of an original, which only [`SourceWork::run`] makes. The
+    /// file is checked against its photograph's `target`, and a RAW is developed at its entry's
+    /// gains. With `read`, what the Develop that brought the photograph in read of this file with
+    /// the signature it has on each side of this, nothing is read or hashed and a RAW is not
+    /// decoded again: a JPEG's bytes are decoded and a RAW's sensor developed.
     fn prepare_file(
         path: &Path,
-        target: Option<&FilePreparation>,
+        target: &FilePreparation,
+        read: Option<ReadOriginal>,
         cancel: &AtomicBool,
     ) -> Result<PreparedFile, Error> {
         let canonical = canonical_source(path)?;
@@ -339,36 +498,9 @@ impl EditorService {
         if signature != source_signature(&canonical, &path_before) {
             return Err(Error::conflict("source changed before preparation"));
         }
-        let bytes = read_bounded_file(&mut file)?;
-        let (source, fingerprint) = if bytes.starts_with(&[0xff, 0xd8]) {
-            let image = open_source_bytes(bytes)?;
-            let fingerprint = image.fingerprint.clone();
-            if let Some(target) = target {
-                target.verify_fingerprint(&fingerprint)?;
-                if target.raw.is_some() {
-                    return Err(Error::incompatible(
-                        "original source interpretation changed",
-                    ));
-                }
-            }
-            (PreparedSource::Jpeg(image), fingerprint)
-        } else {
-            let fingerprint = format!("{:x}", Sha256::digest(&bytes));
-            if let Some(target) = target {
-                target.verify_fingerprint(&fingerprint)?;
-                if target.raw.is_none() {
-                    return Err(Error::incompatible(
-                        "original source interpretation changed",
-                    ));
-                }
-            }
-            let raw = RawPrepared::decode(
-                bytes,
-                fingerprint.clone(),
-                target.and_then(|target| target.raw.as_ref()),
-                cancel,
-            )?;
-            (PreparedSource::Raw(raw), fingerprint)
+        let (source, fingerprint) = match read {
+            Some(read) => Self::prepare_read(read, target, cancel)?,
+            None => Self::prepare_bytes(read_bounded_file(&mut file)?, target, cancel)?,
         };
         let handle_after = file.metadata().map_err(file_access)?;
         let path_after = canonical.metadata().map_err(file_access)?;
@@ -378,6 +510,7 @@ impl EditorService {
             return Err(Error::conflict("source changed during preparation"));
         }
         Ok(PreparedFile {
+            asset_id: target.asset_id.clone(),
             canonical,
             signature,
             source,
@@ -385,11 +518,76 @@ impl EditorService {
         })
     }
 
-    fn known_file_preparation(&self, path: &Path) -> Result<Option<FilePreparation>, Error> {
-        let (canonical, signature) = Self::request_signature(path)?;
-        self.asset_for_source(&canonical, &signature.file_identity)?
-            .map(|(id, _)| self.file_preparation(&id, None))
-            .transpose()
+    /// What a Develop read of an original, checked against its photograph's `target` as its bytes
+    /// would be: a JPEG's decoded, a RAW's sensor developed.
+    fn prepare_read(
+        read: ReadOriginal,
+        target: &FilePreparation,
+        cancel: &AtomicBool,
+    ) -> Result<(PreparedSource, String), Error> {
+        let ReadOriginal {
+            fingerprint,
+            content,
+            ..
+        } = read;
+        target.verify_fingerprint(&fingerprint)?;
+        let changed = || Error::incompatible("original source interpretation changed");
+        let source = match content {
+            ReadContent::Jpeg(bytes) => {
+                if target.raw.is_some() {
+                    return Err(changed());
+                }
+                #[cfg(test)]
+                original_work::decoded();
+                PreparedSource::Jpeg(decode_source(&bytes, fingerprint.clone())?)
+            }
+            ReadContent::Raw { sensor, capture } => {
+                let raw = target.raw.as_ref().ok_or_else(changed)?;
+                PreparedSource::Raw(RawPrepared::develop_for(
+                    sensor,
+                    capture,
+                    fingerprint.clone(),
+                    Some(raw),
+                    cancel,
+                )?)
+            }
+        };
+        Ok((source, fingerprint))
+    }
+
+    /// An original's `bytes`, read from its file, hashed and decoded, checked against its
+    /// photograph's `target`, and a RAW developed.
+    fn prepare_bytes(
+        bytes: Vec<u8>,
+        target: &FilePreparation,
+        cancel: &AtomicBool,
+    ) -> Result<(PreparedSource, String), Error> {
+        #[cfg(test)]
+        {
+            original_work::read();
+            original_work::decoded();
+        }
+        Ok(if bytes.starts_with(&[0xff, 0xd8]) {
+            let image = open_source_bytes(bytes)?;
+            let fingerprint = image.fingerprint.clone();
+            target.verify_fingerprint(&fingerprint)?;
+            if target.raw.is_some() {
+                return Err(Error::incompatible(
+                    "original source interpretation changed",
+                ));
+            }
+            (PreparedSource::Jpeg(image), fingerprint)
+        } else {
+            let fingerprint = format!("{:x}", Sha256::digest(&bytes));
+            target.verify_fingerprint(&fingerprint)?;
+            if target.raw.is_none() {
+                return Err(Error::incompatible(
+                    "original source interpretation changed",
+                ));
+            }
+            let raw = RawPrepared::decode(bytes, fingerprint.clone(), target.raw.as_ref(), cancel)?;
+            (PreparedSource::Raw(raw), fingerprint)
+        })
     }
 
     fn file_preparation(
@@ -406,7 +604,7 @@ impl EditorService {
     /// source kind ([`validate_source_recipe`]). What every question about a saved stack starts
     /// from, an evaluation of it included ([`Self::evaluation`]): a cached head and entry read,
     /// nothing copied but the asset record, and `O(layers)` checks.
-    pub(super) fn saved_entry(
+    pub(crate) fn saved_entry(
         &self,
         asset_id: &AssetId,
         entry_id: Option<&EntryId>,
@@ -415,27 +613,6 @@ impl EditorService {
         let entry = self.shared_entry(asset_id, entry_id.unwrap_or(&head.current))?;
         validate_source_recipe(&self.registry, &head.asset, &entry.snapshot.recipe)?;
         Ok((head.asset, entry))
-    }
-
-    /// A repeated import can reuse the one verified immutable decode without a new worker job.
-    fn cached_import(&self, path: &Path) -> Result<Option<EditorState>, Error> {
-        let (canonical, _, signature) = located_signature(path)?;
-        let Some((id, _)) = self.asset_for_source(&canonical, &signature.file_identity)? else {
-            return Ok(None);
-        };
-        let state = self.state(&id)?;
-        if state.asset.file_identity != signature.file_identity
-            || state.asset.byte_len != signature.byte_len
-        {
-            return Err(Error::source_unavailable(
-                "original source fingerprint changed",
-            ));
-        }
-        let cache = self.source_cache.borrow();
-        Ok(cache
-            .as_ref()
-            .filter(|cached| cached.asset_id == state.asset.id && cached.signature == signature)
-            .map(|_| state))
     }
 
     /// Persisted source interpretation and current in-memory readiness, with no decode or frame work.
@@ -616,7 +793,7 @@ impl EditorService {
 
     pub(crate) fn cached_state(&self, asset_id: &AssetId) -> Result<Option<EditorState>, Error> {
         let state = self.state(asset_id)?;
-        let signature = original_signature(&state.asset)?;
+        let signature = self.original_signature(&state.asset)?;
         let cache = self.source_cache.borrow();
         Ok(cache
             .as_ref()
@@ -624,40 +801,32 @@ impl EditorService {
             .map(|_| state))
     }
 
-    /// What importing `path` takes: nothing when the verified cache already holds this file, and
-    /// otherwise the preparation of the file, checked against the asset it already is, if any.
-    /// What `catalog.import` queues, and what [`Self::import`] runs.
-    pub(crate) fn importing(&self, path: &Path) -> Result<Preparing, Error> {
-        if let Some(state) = self.cached_import(path)? {
-            return Ok(Preparing::Ready(Box::new(state)));
-        }
-        let target = self.known_file_preparation(path)?;
-        let mut work = SourceWork::file(path, target)?;
-        if let SourceWork::File {
-            target: None,
-            first_open,
-            ..
-        } = &mut work
-        {
-            *first_open = Some(self.registry.clone());
-        }
-        Ok(Preparing::Work(work, Vec::new()))
-    }
-
     /// What preparing exactly what `needs` names takes — the asset's original, its RAW development
     /// at the named gains and the named artifacts — and nothing re-derived from the request that
     /// was refused. An original the cache does not hold is prepared and developed at the entry's
-    /// gains in the same job; one it holds is redeveloped only when its planes do not hold them;
-    /// artifacts that became ready since they were named are left out. Needs with nothing left to
-    /// prepare are ready at once. What `source.prepare` and a refused evaluation queue, and what
-    /// [`Self::prepare`] runs.
+    /// gains in the same job, from what the one-file Develop that just brought it in read of it
+    /// while that is still the file ([`ReadOriginal`]); one it holds is redeveloped only when its
+    /// planes do not hold them; artifacts that became ready since they were named are left out.
+    /// Needs with nothing left to prepare are ready at once. What `source.prepare` and a refused
+    /// evaluation queue, and what [`Self::prepare`] runs.
     pub(crate) fn preparation(&self, needs: &PreparationNeeds) -> Result<Preparing, Error> {
+        // What the last one-file Develop read is for the preparation that follows it: this one
+        // takes it whatever it prepares, so it is held no longer, and uses it only in place of
+        // reading its own photograph's file.
+        let read = self.read_original.take();
         let asset_id = &needs.asset_id;
         let reads = self.artifact_reads(&needs.artifacts)?;
         let Some(state) = self.cached_state(asset_id)? else {
             let state = self.state(asset_id)?;
             let target = self.file_preparation(asset_id, Some(&needs.entry_id))?;
-            let work = SourceWork::file(&state.asset.locator, Some(target))?;
+            let mut work = SourceWork::file_or_read(&state.asset.locator, target, read)?;
+            // A photograph whose head has never moved is asked for its first-open actions when
+            // this completes ([`Self::first_open`]); the worker waits for what they read.
+            if state.revision == 0
+                && let SourceWork::File { first_open, .. } = &mut work
+            {
+                *first_open = Some(self.registry.clone());
+            }
             return Ok(Preparing::Work(work, reads));
         };
         let development = match needs.gains {
@@ -669,94 +838,6 @@ impl EditorService {
             None if reads.is_empty() => Preparing::Ready(Box::new(state)),
             None => Preparing::Work(SourceWork::Artifacts(state.asset.id), reads),
         })
-    }
-
-    /// Import `path` on the caller's thread, blocking: the catalog owner's own import
-    /// ([`Self::importing`]), its source job's own work ([`SourceWork::run`]) and its own
-    /// completion ([`Self::complete_preparation`]), in turn. For tests and the harness; the catalog
-    /// owner queues the work on its source worker instead.
-    pub fn import(&mut self, path: &Path) -> Result<EditorState, Error> {
-        let preparing = self.importing(path)?;
-        self.run_preparation(preparing)
-    }
-
-    /// Point `asset_id` at the file now at `path`, where its original has moved: the asset's
-    /// locator, source root and file identity are rewritten in one catalog transaction, and after it
-    /// commits the cached head carries the row as stored ([`EntryCache::row_changed`]). History,
-    /// the fingerprint and the interpretation are untouched, and so is every file: the original is
-    /// only looked at, never written.
-    ///
-    /// The file must be a regular file of the original's length that no other asset names; its
-    /// bytes are not hashed here. A decode of it is checked against the stored fingerprint as every
-    /// preparation of a known file is, and the decoded source the service holds is keyed by the
-    /// file's signature, so a source decoded from the old file is never answered for a new one. A
-    /// relocation to where the asset already is changes nothing and is a no-op.
-    ///
-    /// The internal write the Locate milestone's command will make; no method exposes it yet.
-    ///
-    /// [`EntryCache::row_changed`]: super::entries::EntryCache::row_changed
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn relocate(
-        &mut self,
-        asset_id: &AssetId,
-        path: &Path,
-    ) -> Result<MutationOutcome, Error> {
-        let head = self.head(asset_id)?;
-        let (canonical, signature) = Self::request_signature(path)?;
-        if signature.byte_len != head.asset.byte_len {
-            return Err(Error::source_unavailable(
-                "the file is not this asset's original: its length differs",
-            ));
-        }
-        // Either identity a source has may already be another asset's; this asset's own row is not
-        // a conflict.
-        let other: Option<String> = self
-            .connection
-            .query_row(
-                "SELECT id FROM assets WHERE (canonical_locator=?1 OR file_identity=?2) AND id<>?3
-                 LIMIT 1",
-                params![
-                    canonical.to_string_lossy(),
-                    signature.file_identity,
-                    asset_id.as_str()
-                ],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if let Some(other) = other {
-            return Err(Error::conflict(format!(
-                "the file is already the original of asset {other}"
-            )));
-        }
-        // The row exactly as it is stored, so the cached head is what a fresh read returns.
-        let locator = canonical.to_string_lossy().into_owned();
-        let source_root = canonical
-            .parent()
-            .unwrap_or(Path::new(""))
-            .to_string_lossy()
-            .into_owned();
-        let asset = AssetRecord {
-            source_root: PathBuf::from(&source_root),
-            locator: PathBuf::from(&locator),
-            file_identity: signature.file_identity,
-            ..head.asset.clone()
-        };
-        if asset == head.asset {
-            return Ok(MutationOutcome::NoOp);
-        }
-        write(&mut self.connection, |tx| {
-            let changed = tx.execute(
-                "UPDATE assets SET source_root=?1,locator=?2,canonical_locator=?2,file_identity=?3
-                 WHERE id=?4",
-                params![source_root, locator, asset.file_identity, asset_id.as_str()],
-            )?;
-            if changed != 1 {
-                return Err(Error::validation("unknown asset"));
-            }
-            Ok(())
-        })?;
-        self.entries.borrow_mut().row_changed(asset);
-        Ok(MutationOutcome::Applied)
     }
 
     /// Prepare exactly what `needs` names on the caller's thread, blocking: the catalog owner's own
@@ -785,13 +866,13 @@ impl EditorService {
             .map(|completion| completion.state)
     }
 
-    /// Complete one source job's preparation, on the thread that owns the catalog: commit an
-    /// import, or adopt a new original, a development and the verified artifacts into the caches.
+    /// Complete one source job's preparation, on the thread that owns the catalog: adopt a
+    /// photograph's prepared original, a development and the verified artifacts into the caches.
     /// The one completion, which the catalog owner runs for each source job and the blocking
     /// helpers run after the same work.
     pub(crate) fn complete_preparation(&mut self, prepared: Prepared) -> Result<Completion, Error> {
         let (completed, verified) = match prepared {
-            Prepared::File(file, verified) => (self.import_prepared(file)?, verified),
+            Prepared::File(file, verified) => (self.adopt_original(file)?, verified),
             Prepared::Develop(request, developed, verified) => (
                 Completion::of(self.install_development(&request, developed)?),
                 verified,
@@ -804,11 +885,15 @@ impl EditorService {
         Ok(completed)
     }
 
-    /// Complete an import only after a worker has verified and decoded its exact source bytes. A
-    /// new asset's Original is written first, then its first-open actions are committed after it
-    /// ([`Self::first_open`]), so the state answered is the asset's current one.
-    fn import_prepared(&mut self, prepared: PreparedFile) -> Result<Completion, Error> {
+    /// Adopt a photograph's original into the verified cache once a worker has read, checked and
+    /// decoded its exact bytes: the file must still have the signature it was read with, and be
+    /// the photograph's original by fingerprint and interpretation. A photograph comes into the
+    /// catalog only by being developed (`crate::library::develop`); a preparation never adds one.
+    /// A photograph whose head has never moved then has its first-open actions committed after its
+    /// Original ([`Self::first_open`]), so the state answered is its current one.
+    fn adopt_original(&mut self, prepared: PreparedFile) -> Result<Completion, Error> {
         let PreparedFile {
+            asset_id,
             canonical,
             signature,
             source,
@@ -818,53 +903,110 @@ impl EditorService {
             .metadata()
             .map_err(|e| Error::source_unavailable(e.kind().to_string()))?;
         if source_signature(&canonical, &current) != signature {
-            return Err(Error::conflict("source changed before import completion"));
+            return Err(Error::conflict(
+                "source changed before its preparation completed",
+            ));
         }
-        let identity = signature.file_identity.clone();
-        let canonical_text = canonical.to_string_lossy().into_owned();
-        if let Some((existing, _)) = self.asset_for_source(&canonical, &identity)? {
-            let state = self.state(&existing)?;
-            if state.asset.fingerprint != fingerprint {
-                return Err(Error::source_unavailable(
-                    "original source fingerprint changed",
-                ));
-            }
-            if state.asset.source != SourceKind::of(&source)? {
-                return Err(Error::incompatible(
-                    "original source interpretation changed",
-                ));
-            }
-            self.source_cache.replace(Some(CachedSource {
-                asset_id: state.asset.id.clone(),
-                signature,
-                source,
-                second: SecondDevelopment::default(),
-            }));
+        let state = self.state(&asset_id)?;
+        if state.asset.fingerprint != fingerprint {
+            return Err(Error::source_unavailable(
+                "original source fingerprint changed",
+            ));
+        }
+        if state.asset.source != SourceKind::of(&source)? {
+            return Err(Error::incompatible(
+                "original source interpretation changed",
+            ));
+        }
+        // The original was just read and verified where the catalog looks for it, so it is
+        // available, whatever an earlier check or refusal observed. An observation that cannot be
+        // recorded is left to the next look; the preparation stands.
+        if state.asset.locator == canonical {
+            let _ = availability::observed(
+                &self.connection,
+                &state.asset.id,
+                crate::catalog_types::FileAvailability::Available,
+                now_ms(),
+            );
+        }
+        self.source_cache.replace(Some(CachedSource {
+            asset_id: state.asset.id.clone(),
+            signature,
+            source,
+            second: SecondDevelopment::default(),
+        }));
+        if state.revision != 0 {
             return Ok(Completion::of(state));
         }
-        let (width, height) = source.dimensions();
-        let source_kind = SourceKind::of(&source)?;
-        let asset = AssetRecord {
-            id: AssetId::new(),
-            source_root: canonical.parent().unwrap_or(Path::new("")).to_path_buf(),
-            locator: canonical.clone(),
-            fingerprint: fingerprint.clone(),
-            file_identity: identity,
-            byte_len: signature.byte_len,
-            width,
-            height,
-            source: source_kind,
+        let first_open = self.first_open(&state.asset.id);
+        let state = if first_open.iter().any(|report| report.entry_id.is_some()) {
+            self.state(&state.asset.id)?
+        } else {
+            state
         };
+        Ok(Completion { state, first_open })
+    }
+
+    /// Keep `read`, what a one-file Develop read of the file it brought in, for the preparation
+    /// that follows it, in place of what an earlier one kept. The prepared source stays as it is
+    /// until that preparation completes: a Develop no open follows, such as a client's one-file
+    /// Develop of a photograph nobody opens, leaves every client's prepared photograph prepared.
+    pub(crate) fn keep_read(&self, read: ReadOriginal) {
+        self.read_original.replace(Some(read));
+    }
+
+    /// Drop what a Develop kept of `asset_id`'s file, once its record is deleted.
+    pub(super) fn forget_read(&self, asset_id: &AssetId) {
+        let kept = self
+            .read_original
+            .borrow()
+            .as_ref()
+            .is_some_and(|read| read.asset_id == *asset_id);
+        if kept {
+            self.read_original.replace(None);
+        }
+    }
+
+    /// The photograph and content of what the service keeps of a Develop's read, for tests.
+    #[cfg(test)]
+    pub(crate) fn kept_read(&self) -> Option<(AssetId, ReadContent)> {
+        self.read_original
+            .borrow()
+            .as_ref()
+            .map(|read| (read.asset_id.clone(), read.content.clone()))
+    }
+
+    /// The RAW sensor the verified cache holds for `asset_id`, for tests.
+    #[cfg(test)]
+    pub(crate) fn cached_sensor(&self, asset_id: &AssetId) -> Option<Arc<RawSource>> {
+        match self.source_cache.borrow().as_ref() {
+            Some(CachedSource {
+                asset_id: cached,
+                source: PreparedSource::Raw(raw),
+                ..
+            }) if cached == asset_id => Some(raw.sensor.clone()),
+            _ => None,
+        }
+    }
+
+    /// A new photograph of `asset`, not yet written: its Original entry at `now_ms`, which for a
+    /// RAW holds its source development at the camera's as-shot white balance, admitted exactly as
+    /// a commit admits the stack it writes. What a Develop brings in, and nothing else makes;
+    /// [`insert_photograph`] writes it. `O(layers)`: nothing is read or decoded.
+    pub(crate) fn new_photograph(
+        &self,
+        asset: AssetRecord,
+        now_ms: i64,
+    ) -> Result<NewPhotograph, Error> {
         let mut snapshot = Snapshot::original(asset.id.clone());
-        // A source with RAW metadata is exactly the source `SourceKind::of` reads as a RAW.
-        if let Some(metadata) = source.metadata() {
+        if let SourceKind::Raw { metadata } = &asset.source {
             snapshot = snapshot.with_layer_inserted(
                 0,
                 crate::RawPayload::for_as_shot(metadata.as_shot_gains, metadata.cam_xyz)?
                     .layer(LayerId::new()),
             )?;
         }
-        let mut entry = HistoryEntry {
+        let mut original = HistoryEntry {
             id: EntryId::new(),
             asset_id: asset.id.clone(),
             sequence: 0,
@@ -872,7 +1014,7 @@ impl EditorService {
             label: "Original".into(),
             parameters: json!({}),
             actor: "system".into(),
-            timestamp_ms: now_ms(),
+            timestamp_ms: now_ms,
             request_id: None,
             base_revision: 0,
             result_revision: 0,
@@ -880,60 +1022,50 @@ impl EditorService {
             undo_parent: None,
             restore_target: None,
         };
-        // An import is its own write, because it creates the asset a head would name, but it admits
-        // its Original exactly as a commit admits the stack it writes.
-        self.admit(&asset, &mut entry.snapshot.recipe)?;
-        let byte_len = i64::try_from(asset.byte_len)
-            .map_err(|_| Error::resource_limit("source length exceeds catalog range"))?;
-        let artifact_root = &self.artifact_root;
-        write(&mut self.connection, |tx| {
-            tx.execute(
-                "INSERT INTO assets VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-                params![
-                    asset.id.as_str(),
-                    asset.source_root.to_string_lossy(),
-                    asset.locator.to_string_lossy(),
-                    canonical_text,
-                    asset.file_identity,
-                    asset.fingerprint,
-                    byte_len,
-                    i64::from(asset.width),
-                    i64::from(asset.height),
-                    encode(&asset.source)?,
-                    asset.source.tag().as_str(),
-                ],
-            )?;
-            insert_entry(tx, artifact_root, &entry)?;
-            tx.execute(
-                "INSERT INTO asset_state VALUES (?1,?2,0,'[]')",
-                params![asset.id.as_str(), entry.id.as_str()],
-            )?;
-            Ok(())
-        })?;
-        self.source_cache.replace(Some(CachedSource {
-            asset_id: asset.id.clone(),
-            signature,
-            source,
-            second: SecondDevelopment::default(),
-        }));
-        let first_open = self.first_open(&asset.id);
-        let state = if first_open.iter().any(|report| report.entry_id.is_some()) {
-            self.state(&asset.id)?
-        } else {
-            EditorState {
-                asset,
-                revision: 0,
-                current_entry: entry,
-                redo: Vec::new(),
-            }
-        };
-        Ok(Completion {
-            state,
-            created: true,
-            first_open,
-        })
+        // Bringing a photograph in is its own write, because it creates the asset a head would
+        // name, but it admits its Original exactly as a commit admits the stack it writes.
+        self.admit(&asset, &mut original.snapshot.recipe)?;
+        Ok(NewPhotograph { asset, original })
     }
 
+    /// Where this catalog's artifacts live, which an entry's references are checked in when a
+    /// transaction the caller runs writes one ([`insert_photograph`]).
+    pub(crate) fn artifact_root(&self) -> &Path {
+        &self.artifact_root
+    }
+}
+
+/// A photograph about to be brought into the catalog: its asset record and its admitted Original
+/// entry ([`EditorService::new_photograph`]).
+#[derive(Clone, Debug)]
+pub(crate) struct NewPhotograph {
+    pub(crate) asset: AssetRecord,
+    pub(crate) original: HistoryEntry,
+}
+
+/// Write a new photograph's rows in the caller's transaction: its asset row (`row`, whose record is
+/// the photograph's), its capture row from `header` and the place its position was named, its
+/// Original entry and its state row at revision 0. The one writer of a new photograph, a
+/// Develop's.
+pub(crate) fn insert_photograph(
+    tx: &rusqlite::Transaction<'_>,
+    artifact_root: &Path,
+    original: &HistoryEntry,
+    row: &NewAsset<'_>,
+    header: &HeaderMetadata,
+    place: Option<&str>,
+) -> Result<crate::catalog_types::AssetRowId, Error> {
+    let asset_row = insert_asset(tx, row)?;
+    insert_capture(tx, asset_row, header, place)?;
+    insert_entry(tx, artifact_root, original)?;
+    tx.execute(
+        "INSERT INTO asset_state VALUES (?1,?2,0,'[]')",
+        params![row.record.id.as_str(), original.id.as_str()],
+    )?;
+    Ok(asset_row)
+}
+
+impl EditorService {
     /// The asset's prepared original from the verified cache, once its file still has the
     /// signature it was prepared under, holding the development of `recipe`'s white balance when
     /// the second slot has it ([`SecondDevelopment::take_up`]). Nothing is read here: a cache miss
@@ -944,7 +1076,7 @@ impl EditorService {
         asset: &AssetRecord,
         recipe: &crate::Recipe,
     ) -> Result<PreparedSource, Error> {
-        let signature = original_signature(asset)?;
+        let signature = self.original_signature(asset)?;
         let raw_source = matches!(&asset.source, SourceKind::Raw { .. });
         let max_source_bytes = if raw_source {
             luxforge_raw::MAX_SOURCE_BYTES as u64
@@ -1400,26 +1532,78 @@ mod tests {
     use crate::{Draft, PreviewSource, render::testing::render};
     use serde_json::Map;
 
+    /// A file's preparation checks the bytes against its photograph's fingerprint and source kind,
+    /// and so does one from what a Develop read of the file, exactly as it would the file's: the
+    /// same source, and the same refusals.
     #[test]
-    fn known_file_preparation_checks_bytes_and_source_kind() {
+    fn a_file_preparation_checks_bytes_and_source_kind() {
         let path = fixture();
         let never = AtomicBool::new(false);
-        let prepared = EditorService::prepare_file(&path, None, &never).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
         let target = FilePreparation {
-            fingerprint: prepared.fingerprint.clone(),
+            asset_id: AssetId::new(),
+            fingerprint: format!("{:x}", Sha256::digest(&bytes)),
             raw: None,
         };
-        EditorService::prepare_file(&path, Some(&target), &never).expect("matching JPEG target");
-        let wrong = FilePreparation {
-            fingerprint: "different bytes".into(),
-            ..target
+        let (_, signature) = EditorService::request_signature(&path).unwrap();
+        let read = |target: &FilePreparation| {
+            Some(ReadOriginal {
+                asset_id: target.asset_id.clone(),
+                path: path.clone(),
+                signature: signature.clone(),
+                fingerprint: target.fingerprint.clone(),
+                content: ReadContent::Jpeg(Arc::new(bytes.clone())),
+            })
+        };
+        let prepared = EditorService::prepare_file(&path, &target, None, &never)
+            .expect("matching JPEG target");
+        assert_eq!(prepared.asset_id, target.asset_id);
+        let from_read = EditorService::prepare_file(&path, &target, read(&target), &never)
+            .expect("the same bytes, read by a Develop");
+        let (PreparedSource::Jpeg(file), PreparedSource::Jpeg(kept)) =
+            (&prepared.source, &from_read.source)
+        else {
+            panic!("JPEG sources");
         };
         assert_eq!(
-            EditorService::prepare_file(&path, Some(&wrong), &never)
+            (&from_read.fingerprint, &from_read.signature),
+            (&prepared.fingerprint, &prepared.signature)
+        );
+        assert!(file.rgba == kept.rgba && file.fingerprint == kept.fingerprint);
+        let wrong = FilePreparation {
+            fingerprint: "different bytes".into(),
+            ..target.clone()
+        };
+        assert_eq!(
+            EditorService::prepare_file(&path, &wrong, None, &never)
                 .unwrap_err()
                 .kind,
             ErrorKind::SourceUnavailable
         );
+        let mut other_bytes = read(&target).unwrap();
+        other_bytes.fingerprint = "different bytes".into();
+        assert_eq!(
+            EditorService::prepare_file(&path, &target, Some(other_bytes), &never)
+                .unwrap_err()
+                .kind,
+            ErrorKind::SourceUnavailable
+        );
+        let raw = FilePreparation {
+            raw: Some(RawPreparation {
+                metadata: synthetic_raw_metadata(),
+                gains: [2.0, 1.0, 1.5],
+            }),
+            ..target
+        };
+        for read in [None, read(&raw)] {
+            assert_eq!(
+                EditorService::prepare_file(&path, &raw, read, &never)
+                    .unwrap_err()
+                    .kind,
+                ErrorKind::Incompatible,
+                "a JPEG is not the RAW the photograph was developed from"
+            );
+        }
     }
 
     #[test]
@@ -2092,7 +2276,7 @@ mod tests {
         else {
             panic!("a reopened original is prepared from its file");
         };
-        assert_eq!(target.unwrap().raw.unwrap().gains, gains);
+        assert_eq!(target.raw.unwrap().gains, gains);
         service.prepare(&needs).unwrap();
         {
             let cache = service.source_cache.borrow();
@@ -2124,11 +2308,12 @@ mod tests {
     /// plan](../../../../docs/specs/performance.md#native-development-and-saved-white-balance-preparation)
     /// measures it. One catalog is made first, holding the RAW with a saved custom red gain of
     /// 1.1 × as-shot. Every observation then starts a new owner on it, so the source cache is
-    /// empty while the filesystem cache stays warm, and times from immediately before
-    /// `catalog.import` until a strict exact-source `PreviewJob` for the current entry is
-    /// available: reading, hashing, decoding and developing the original at the saved gains, and
-    /// waiting for and adopting that one job. Starting the owner and opening the catalog,
-    /// hashing the planes and stopping the owner are outside the clock, and nothing is rendered.
+    /// empty while the filesystem cache stays warm, and times from immediately before the
+    /// photograph's `source.prepare` until a strict exact-source `PreviewJob` for the current
+    /// entry is available: reading, hashing, decoding and developing the original at the saved
+    /// gains, and waiting for and adopting that one job. Starting the owner and opening the
+    /// catalog, hashing the planes and stopping the owner are outside the clock, and nothing is
+    /// rendered.
     /// Every observation's planes must hash the same. A measurement, not a gate; the one-minute
     /// load average is read before the first and after the last observation:
     ///
@@ -2202,18 +2387,11 @@ mod tests {
         }
         let (mut times, mut digest, mut backend) = (Vec::new(), None, None);
         let load_start = load();
-        for observation in 0..samples {
+        for _ in 0..samples {
             let (owner, join) = OwnerHandle::start(&catalog).unwrap();
             let client = owner.register();
             let started = Instant::now();
-            let queued = call(
-                &owner,
-                client,
-                "catalog.import",
-                json!({"path": path, "mutation": {
-                    "request_id": format!("cold-import-{observation}"), "actor": "timing",
-                }}),
-            );
+            let queued = call(&owner, client, "source.prepare", json!({"asset_id": asset}));
             let job = queued["job_id"].clone();
             owner.wait_source(client, None).unwrap();
             let adopted = call(&owner, client, "job.adopt", json!({"job_id": job}));
@@ -2265,8 +2443,11 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
+    /// A hard link to a photograph's original is that original, and a byte-identical copy links
+    /// to the photograph rather than adding it twice, as a Develop links it; a changed original
+    /// is refused.
     #[test]
-    fn aliases_reuse_asset_but_copies_do_not_and_changed_sources_fail() {
+    fn aliases_and_copies_reuse_the_asset_and_changed_sources_fail() {
         let dir = temp("aliases");
         std::fs::create_dir_all(&dir).unwrap();
         let source = dir.join("source.jpg");
@@ -2278,16 +2459,8 @@ mod tests {
         let mut service = EditorService::open(&dir.join("catalog.sqlite")).unwrap();
         let a = service.import(&source).unwrap().asset.id;
         assert_eq!(service.import(&hard).unwrap().asset.id, a);
-        assert_ne!(service.import(&copy).unwrap().asset.id, a);
-        let listed: Vec<AssetId> = service
-            .assets(None, 100)
-            .unwrap()
-            .assets
-            .into_iter()
-            .map(|asset| asset.id)
-            .collect();
-        assert_eq!(listed.len(), 2);
-        assert_eq!(listed[0], a);
+        assert_eq!(service.import(&copy).unwrap().asset.id, a);
+        assert_eq!(service.asset_ids(100).unwrap(), std::slice::from_ref(&a));
         std::fs::write(&source, b"changed").unwrap();
         assert_eq!(
             service.render_current(&a).unwrap_err().kind,
@@ -2357,6 +2530,167 @@ mod tests {
         );
         drop(service);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The file at `path` with a modification time a second later: the same bytes under another
+    /// signature.
+    fn touch(path: &Path) {
+        let file = File::options().write(true).open(path).unwrap();
+        let modified = file.metadata().unwrap().modified().unwrap();
+        file.set_modified(modified + std::time::Duration::from_secs(1))
+            .unwrap();
+    }
+
+    /// Opening a JPEG — a Develop of that one file, then its preparation — reads the file once:
+    /// the preparation takes the bytes the Develop read and hashed and decodes them, reading
+    /// nothing, into the source a read of the file prepares; and what was kept is gone once taken.
+    #[test]
+    fn an_opened_jpeg_is_read_once_and_decoded_once() {
+        let dir = temp("open-read-once");
+        let path = crate::editor::distinct_jpeg(&fixture(), &dir.join("open.jpg"));
+        let mut service = EditorService::open(&dir.join("catalog.sqlite")).unwrap();
+        let asset = service.develop_one(&path).unwrap();
+        let Some((kept, ReadContent::Jpeg(bytes))) = service.kept_read() else {
+            panic!("a one-file Develop keeps its JPEG's bytes");
+        };
+        assert_eq!(kept, asset);
+        assert_eq!(*bytes, std::fs::read(&path).unwrap());
+        drop(bytes);
+        let needs = service.entry_needs(&asset, None).unwrap();
+        original_work::take();
+        service.prepare(&needs).unwrap();
+        assert_eq!(original_work::take(), (0, 1), "no file read, one decode");
+        assert!(service.kept_read().is_none(), "taken by the preparation");
+        let job = service.preview_job(&asset, None, None, None, None).unwrap();
+        let PreviewSource::Jpeg(prepared) = job.evaluation.source() else {
+            panic!("a JPEG source");
+        };
+        let read = open_source_bytes(std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            (prepared.width, prepared.height, &prepared.fingerprint),
+            (read.width, read.height, &read.fingerprint)
+        );
+        assert!(prepared.rgba == read.rgba, "the file's own decode");
+        drop(service);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// What a Develop kept serves only its own photograph's unchanged file, and only the
+    /// preparation that follows it: a file changed after its Develop is read and decoded afresh —
+    /// and refused when its bytes changed — and a preparation of another photograph takes what
+    /// was kept without using it, so the next one reads the file.
+    #[test]
+    fn a_kept_read_serves_only_its_photographs_unchanged_file_once() {
+        let dir = temp("open-read-changed");
+        let mut service = EditorService::open(&dir.join("catalog.sqlite")).unwrap();
+
+        // The same bytes under a new signature.
+        let touched = crate::editor::distinct_jpeg(&fixture(), &dir.join("touched.jpg"));
+        let asset = service.develop_one(&touched).unwrap();
+        touch(&touched);
+        let needs = service.entry_needs(&asset, None).unwrap();
+        original_work::take();
+        service.prepare(&needs).unwrap();
+        assert_eq!(original_work::take(), (1, 1), "read and decoded afresh");
+        assert!(service.kept_read().is_none());
+
+        // Other bytes of the same length.
+        let replaced = dir.join("replaced.jpg");
+        std::fs::copy(fixture(), &replaced).unwrap();
+        let other = service.develop_one(&replaced).unwrap();
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-2.jpg"),
+            &replaced,
+        )
+        .unwrap();
+        let needs = service.entry_needs(&other, None).unwrap();
+        original_work::take();
+        assert_eq!(
+            service.prepare(&needs).unwrap_err().kind,
+            ErrorKind::SourceUnavailable,
+            "the file read afresh holds other bytes"
+        );
+        assert_eq!(original_work::take(), (1, 1));
+
+        // Another photograph's preparation takes it; this one's then reads its file.
+        let later_path = crate::editor::distinct_jpeg(&fixture(), &dir.join("later.jpg"));
+        let later = service.develop_one(&later_path).unwrap();
+        assert!(service.kept_read().is_some());
+        let first = service.entry_needs(&asset, None).unwrap();
+        service.prepare(&first).unwrap();
+        assert!(service.kept_read().is_none(), "taken, whatever it prepared");
+        let needs = service.entry_needs(&later, None).unwrap();
+        original_work::take();
+        service.prepare(&needs).unwrap();
+        assert_eq!(original_work::take(), (1, 1));
+        drop(service);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The paths of the RAWs the owner's private manifest `LUXFORGE_RAW_MANIFEST` lists, which is
+    /// only read.
+    fn manifest_raws() -> Vec<PathBuf> {
+        let manifest = std::env::var("LUXFORGE_RAW_MANIFEST").expect("LUXFORGE_RAW_MANIFEST");
+        let listed: Value = serde_json::from_slice(&std::fs::read(manifest).unwrap()).unwrap();
+        listed["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|source| PathBuf::from(source["path"].as_str().unwrap()))
+            .collect()
+    }
+
+    /// On the owner's Mac: opening a copy of each RAW the owner's manifest lists decodes it once.
+    /// The preparation after its Develop reads and decodes nothing and adopts the very sensor the
+    /// Develop unpacked, whose interpretation it checks as a file's; a copy changed between its
+    /// Develop and its preparation is read and decoded afresh. Each file is only copied. Run with
+    /// `LUXFORGE_RAW_MANIFEST=/path/to/raw-manifest.json cargo test -p luxforge-core --lib
+    /// an_opened_raw_is_decoded_once -- --ignored`.
+    #[test]
+    #[ignore = "requires the private RAW fixtures and their manifest"]
+    fn an_opened_raw_is_decoded_once() {
+        for original in manifest_raws() {
+            let name = original.file_name().unwrap().to_string_lossy().into_owned();
+            let dir = temp(&format!("open-raw-{name}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let copy = dir.join(&name);
+            std::fs::copy(&original, &copy).unwrap();
+            let mut service = EditorService::open(&dir.join("catalog.sqlite")).unwrap();
+            let asset = service.develop_one(&copy).unwrap();
+            let Some((_, ReadContent::Raw { sensor, .. })) = service.kept_read() else {
+                panic!("{name}: a one-file Develop keeps its RAW's sensor");
+            };
+            let needs = service.entry_needs(&asset, None).unwrap();
+            original_work::take();
+            service.prepare(&needs).unwrap();
+            assert_eq!(
+                original_work::take(),
+                (0, 0),
+                "{name}: nothing read or decoded"
+            );
+            let cached = service.cached_sensor(&asset).unwrap();
+            assert!(
+                Arc::ptr_eq(&cached, &sensor),
+                "{name}: the Develop's sensor"
+            );
+            drop((sensor, cached, service));
+
+            let changed = dir.join(format!("changed-{name}"));
+            std::fs::copy(&original, &changed).unwrap();
+            let mut service = EditorService::open(&dir.join("changed.sqlite")).unwrap();
+            let asset = service.develop_one(&changed).unwrap();
+            touch(&changed);
+            let needs = service.entry_needs(&asset, None).unwrap();
+            original_work::take();
+            service.prepare(&needs).unwrap();
+            assert_eq!(
+                original_work::take(),
+                (1, 1),
+                "{name}: read and decoded afresh"
+            );
+            drop(service);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 }
 
