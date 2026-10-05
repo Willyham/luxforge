@@ -66,11 +66,13 @@ impl<'a> From<&'a PreviewSource> for RenderSource<'a> {
     }
 }
 
-/// How much work the one preview lane may do for this request. An interactive request produces
-/// visible pixels only; the desktop asks for settlement once its shared quiet gate opens or the
-/// gesture commits. A normal request preserves the existing two-phase path for callers that need
-/// its full result immediately. A crop draft's input stage is asked for interactively whenever it
-/// has bounds, since nothing is reduced from it, and without bounds as a normal exact-only job.
+/// How much work the one preview lane may do for this request. An interactive request — a draft's
+/// tick the GPU does not draw — produces visible pixels only, from a proxy when its bounds plan
+/// one; the desktop asks for settlement once its shared quiet gate opens or the gesture commits.
+/// Every other request renders no proxy: its exact frame, reduced to the view's bounds when it
+/// names them, is the reference frame of a stack at rest, whose picture is the GPU's. A crop
+/// draft's input stage is asked for interactively whenever it has bounds, since nothing is reduced
+/// from it, and without bounds as a normal exact-only job.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PreviewIntent {
     #[default]
@@ -108,11 +110,12 @@ pub struct PreviewJob {
     /// report, whatever the job asked, so every histogram and clipping count comes from an exact
     /// render.
     pub analyse: bool,
-    /// The physical pixels the display can show this frame in. `Some` asks for a proxy phase before
-    /// the exact one; `None` is the exact path alone, as a percentage zoom at or above 100% takes.
-    /// A proxy is only ever an offer: an ineligible stack, a scale of one or any failure building
-    /// or rendering the proxy declines it in [`ExactOutcome::proxy_declined`] and the exact phase
-    /// runs unchanged.
+    /// The physical pixels the display can show this frame in. An interactive job renders a proxy
+    /// phase at them; any other job reduces its exact frame to them ([`ExactOutcome::display`]).
+    /// `None` is the exact path alone, as a percentage zoom at or above 100% takes. A proxy is
+    /// only ever an offer: an ineligible stack, a scale of one or any failure building or
+    /// rendering the proxy declines it in [`ExactOutcome::proxy_declined`] and the exact phase runs
+    /// unchanged.
     pub proxy: Option<ProxyBounds>,
     /// The visible output-stage rectangle at a percentage zoom, in full-stage pixels. `None` is
     /// the Fit path. The worker clips it against its uncut compilation and explicitly reports a

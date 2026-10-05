@@ -94,7 +94,6 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
         id: MODULE.into(),
         title: "Capabilities test".into(),
         effects: vec![EffectDescriptor {
-            fit_settle: Default::default(),
             id: "test.capabilities.tint".into(),
             format: 1,
             stage: EffectStage::Color,

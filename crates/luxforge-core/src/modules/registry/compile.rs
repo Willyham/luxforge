@@ -201,19 +201,6 @@ impl ModuleRegistry {
         Error::unavailable_effect(effect_id, &holding)
     }
 
-    /// The leading source/pixel/restoration run, before the first later-stage layer.
-    pub(crate) fn restoration_prefix(&self, layers: &[Layer]) -> usize {
-        layers
-            .iter()
-            .take_while(|layer| {
-                matches!(
-                    self.effect_stage(&layer.effect_id),
-                    Some(EffectStage::Source | EffectStage::Pixel | EffectStage::Restoration)
-                )
-            })
-            .count()
-    }
-
     /// Validate a recipe against the source dimensions and fold its exact geometry into one mapping
     /// per rasterizing pass. A resample is a stage boundary, so it closes the current pass and opens
     /// the next one. Cost is linear in the layer count and allocates only the operation lists.
@@ -531,8 +518,6 @@ impl ModuleRegistry {
                             prefix_hash,
                             self.effect_stage(&layer.effect_id)
                                 .unwrap_or(EffectStage::Spatial),
-                            self.effect(&layer.effect_id)
-                                .map_or(crate::FitSettle::Proxy, |(_, effect)| effect.fit_settle),
                         )),
                         stage.width,
                         stage.height,

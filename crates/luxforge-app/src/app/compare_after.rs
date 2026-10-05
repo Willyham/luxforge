@@ -17,12 +17,12 @@ use luxforge_ui::Frame;
 /// 8192 pixels a side, and a tiled photograph is one wider or taller than that.
 pub(crate) const DEVICE_TEXTURE_LIMIT: u32 = 8192;
 
-/// The display-size frame on screen when it is the exact photograph at that size: the settled
-/// reduction of the exact render, or the display proxy of a stack whose proxy does not
-/// approximate it. The canvas draws that same frame at Fit when nothing is compared, so the After
+/// The display-size frame on screen when it is the exact photograph at that size: the exact
+/// render reduced to the view, or the display proxy of a stack whose proxy does not approximate
+/// it. The canvas draws that same frame at Fit when nothing is compared, so the After
 /// side drawn from it at Fit is the photograph as it is shown.
 pub(crate) fn display_reduction(presentation: &Presentation) -> Option<&Frame> {
-    let exact_at_display_size = presentation.presented_settled
+    let exact_at_display_size = presentation.presented_reduced
         || (presentation.presented_proxy
             && presentation.proxy().is_some_and(|proxy| {
                 !proxy.approximation.is_approximate() && !proxy.approximate_white_balance

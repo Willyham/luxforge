@@ -77,12 +77,6 @@ impl ByteFrame {
     pub(crate) fn wide(&self) -> bool {
         matches!(self, Self::Wide(_))
     }
-    pub(crate) fn bytes(&self) -> usize {
-        match self {
-            Self::Narrow(v) => v.len(),
-            Self::Wide(v) => v.len() * 2,
-        }
-    }
     pub(crate) fn new(stage: Stage, wide: bool) -> Result<Self, Error> {
         if !wide {
             return Ok(Self::Narrow(zeroed_frame(Raster::expected_len(

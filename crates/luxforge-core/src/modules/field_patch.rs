@@ -536,12 +536,6 @@ impl Spec {
         self
     }
 
-    /// The next group of the module's section.
-    pub(crate) fn fit_settle(mut self, policy: super::FitSettle) -> Self {
-        self.effect.fit_settle = policy;
-        self
-    }
-
     pub(crate) fn group(mut self, group: Group) -> Self {
         self.groups.push(group);
         self

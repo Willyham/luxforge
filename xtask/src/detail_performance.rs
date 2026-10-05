@@ -16,9 +16,9 @@
 //! rather than a cross-query tile-cache hit. Colour-limited later ticks use the same draft memo.
 use crate::*;
 use luxforge_core::{
-    ApiRequest, AssetId, ClientId, DETAIL_EFFECT, Layer, ModuleRegistry, PrefixUse, PreviewIntent,
-    PreviewJob, PreviewQueue, PreviewRequest, PreviewSource, ProxyBounds, Recipe, RenderContext,
-    RenderOptions, SnapshotId, render, resources,
+    ApiRequest, AssetId, ClientId, DETAIL_EFFECT, Layer, ModuleRegistry, PreviewIntent, PreviewJob,
+    PreviewQueue, PreviewRequest, PreviewSource, ProxyBounds, Recipe, RenderContext, RenderOptions,
+    SnapshotId, render, resources,
 };
 use luxforge_testkit::client::{self, Owner};
 use std::{
@@ -277,8 +277,8 @@ fn cancellation(fixture: &Fixture, samples: usize) -> Result<Value> {
             stale_results == 0,
             "Cancelled preview delivered a stale frame",
         )?;
-        // A successful next job on the same queue proves the cancelled prefix was discarded,
-        // rather than an incomplete frame adopted as a hit. These pixels are outside the timer.
+        // A successful next job on the same queue proves the cancelled work was discarded, rather
+        // than an incomplete frame adopted. These pixels are outside the timer.
         let recovery_generation = queue.request(job);
         let recovery = luxforge_testbase::try_wait_for("next Detail proxy", || queue.poll())?;
         ensure(
@@ -286,32 +286,24 @@ fn cancellation(fixture: &Fixture, samples: usize) -> Result<Value> {
             "Recovery delivered another generation",
         )?;
         let proxy = recovery.proxy().ok_or("Recovery produced no proxy")?;
-        ensure(
-            recovery.restoration_prefix == Some(PrefixUse::Built),
-            "Cancelled prefix was reused",
-        )?;
         luxforge_testbase::try_wait_for("recovered proxy to become idle", || {
             (!queue.is_busy()).then_some(())
         })?;
         let after = resources::read(&context);
         released(&after)?;
-        // This recipe has one leading Detail and only colour after it. Its uncropped boundary is
-        // RGB16 at the actual proxy dimensions. This is a derived frame size, not a private cache
-        // counter or an OS allocation estimate.
-        let held_bytes = u64::from(proxy.dimensions.0) * u64::from(proxy.dimensions.1) * 6;
         observations.push(json!({
             "sample":sample,"cancel_to_idle_ms":duration,"requested_generation":queued,
             "cancel_floor":floor,"stale_results":stale_results,"resources_after_cancel":memory,
-            "recovery":{"generation":recovery_generation,"prefix":recovery.restoration_prefix,
+            "recovery":{"generation":recovery_generation,
                 "proxy_dimensions":proxy.dimensions,"source_proxy_built":proxy.built,
-                "derived_restoration_prefix_bytes":held_bytes,"resources_with_caches_held":after}
+                "resources_with_caches_held":after}
         }));
         durations.push(duration);
     }
     Ok(json!({
         "rows":[stats::row("detail.active_proxy_cancel_to_worker_idle", "ms", durations)],
         "observations":observations,"display_bounds":FIT,
-        "scope":"Cancel during a live Detail tile on a fresh public PreviewQueue; latency includes worker cleanup and client polling (1 ms interval). Recovery runs on the same queue outside the timer, builds its prefix and retains caches until queue drop."
+        "scope":"Cancel during a live Detail tile on a fresh public PreviewQueue; latency includes worker cleanup and client polling (1 ms interval). Recovery runs on the same queue outside the timer and retains its source proxy until queue drop."
     }))
 }
 

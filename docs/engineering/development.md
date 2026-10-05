@@ -1056,17 +1056,16 @@ timers. The points case reopens and prepares an owner for every sample, then mea
 second 25-point neutral query. Warm means the second request on that owner; each query still owns
 its own tile cache. It also measures the first colour-limited brush tick through the point worker
 and a later tick using the same draft memo. Cancellation begins during a live spatial reservation,
-measures cancel-to-worker-idle, checks released reservations and stale-frame refusal, and rebuilds
-the prefix on the same queue outside the timer. Sharing checks allocation identity for prepared
+measures cancel-to-worker-idle, checks released reservations and stale-frame refusal, and renders
+the next proxy on the same queue outside the timer. Sharing checks allocation identity for prepared
 jobs and default/ancillary-only Detail; it is a functional check without a latency distribution.
 
 `result.json` retains every observation, nearest-rank distributions from `luxforge-testbase`,
 executable/source/lockfile hashes, git identity, recipe, run identity and host load. It writes failed
 status explicitly and preserves completed cases. `resources` separates exact colour/spatial budget
 counters from OS process memory. OS high-water marks include earlier cases in the process, so use
-isolated `--case` runs for attribution. Retained RGB16 prefix bytes in cancellation recovery are
-derived from the actual uncropped proxy dimensions and the known six-byte boundary; private cache
-counters, GPU residency and backend staging remain unmeasured. This helper launches no editor and
+isolated `--case` runs for attribution. Private cache counters, GPU residency and backend staging
+remain unmeasured. This helper launches no editor and
 does not measure native presentation, RAW residency or photographic quality. The generic `timing`
 tier does not run this Detail matrix automatically.
 

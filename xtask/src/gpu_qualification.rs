@@ -545,8 +545,6 @@ struct Tally {
     settled: Judged,
     reference: Judged,
     cpu: Extremes,
-    settled_cpu: Extremes,
-    settled_gpu: Extremes,
     /// The picture at rest: the GPU's frame against the reference where a stage draws one, and how
     /// many cells it does not draw.
     at_rest: Judged,
@@ -743,12 +741,6 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
                 tally
                     .cpu
                     .add(&statistics(&measured["cpu_against_reference"]), cell);
-                if let Some(settled) = measured.get("settled_from_exact") {
-                    tally
-                        .settled_cpu
-                        .add(&statistics(&settled["cpu_proxy"]), cell);
-                    tally.settled_gpu.add(&statistics(&settled["gpu"]), cell);
-                }
                 if motion {
                     let ((judged_past, judged), (information_past, information)) = if to_reference {
                         (
@@ -924,8 +916,6 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
                         "against": information_against,
                         "comparison": information.value(),
                         "cpu_against_reference": tally.cpu.value(),
-                        "settle_jump_cpu_proxy": tally.settled_cpu.value(),
-                        "settle_jump_gpu": tally.settled_gpu.value(),
                     },
                 }));
             }
@@ -1346,16 +1336,14 @@ pub fn markdown(report: &Value) -> String {
                 ));
             }
         }
-        text.push_str("\n### The CPU frame and the settle jump\n\nThe largest magnitude of each statistic: the CPU frame of the view against the reference (what the CPU path shows there), and at Fit the jump a stack that settles from the exact render makes, its CPU proxy and its GPU frame against the frame it settles to.\n\n| View | Class | CPU frame against the reference | Settle jump: CPU proxy | Settle jump: GPU |\n| --- | --- | --- | --- | --- |\n");
+        text.push_str("\n### The CPU frame\n\nThe largest magnitude of each statistic: the CPU frame of the view against the reference, what the CPU path shows there.\n\n| View | Class | CPU frame against the reference |\n| --- | --- | --- |\n");
         for result in &motion {
             let information = &result["information"];
             text.push_str(&format!(
-                "| {} | {} | {} | {} | {} |\n",
+                "| {} | {} | {} |\n",
                 result["view"].as_str().unwrap_or("?"),
                 result["class"].as_str().unwrap_or("?"),
                 four(&information["cpu_against_reference"], "max"),
-                four(&information["settle_jump_cpu_proxy"], "max"),
-                four(&information["settle_jump_gpu"], "max"),
             ));
         }
     }
