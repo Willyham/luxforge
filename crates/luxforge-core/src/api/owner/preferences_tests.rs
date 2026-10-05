@@ -89,7 +89,7 @@ fn defaults() -> Value {
         "auto_collapse_history": true,
         "auto_lens_profile": true,
         "mask_overlay_colour": "green",
-        "canvas_background": "dark",
+        "canvas_background": "theme",
         "interface_size": 100,
         "catalog": null,
         "workspace": {
@@ -102,6 +102,7 @@ fn defaults() -> Value {
         "brush": null,
         "window": null,
         "export_folder": null,
+        "theme": "luxforge.dark",
     })
 }
 
@@ -145,6 +146,7 @@ fn preferences_read_answers_every_default_and_set_round_trips_every_field() {
         "brush": {"size": 0.05, "feather": 20.0, "flow": 75.0},
         "window": {"width": 1280.0, "height": 800.0, "x": -40.5, "y": 25.0},
         "export_folder": exports,
+        "theme": "luxforge.dark",
     });
     assert_eq!(
         harness.ok("set", "preferences.set", chosen.clone()),
@@ -202,7 +204,7 @@ fn every_bad_preference_is_refused_by_name_and_writes_nothing() {
         ),
         (
             json!({"canvas_background": "white"}),
-            "parameter canvas_background must be one of dark, black, grey",
+            "parameter canvas_background must be one of dark, black, grey, theme",
         ),
         (
             json!({"interface_size": 120}),
@@ -251,7 +253,11 @@ fn every_bad_preference_is_refused_by_name_and_writes_nothing() {
             "window.x must be a finite number",
         ),
         (json!({"window": "1440x900"}), "window: invalid type"),
-        (json!({"theme": "dark"}), "unknown field `theme`"),
+        (json!({"theme": "dark"}), "unknown theme dark"),
+        (
+            json!({"colour_theme": "dark"}),
+            "unknown field `colour_theme`",
+        ),
         // One bad field refuses the whole write.
         (
             json!({"workspace": workspace, "interface_size": 99}),

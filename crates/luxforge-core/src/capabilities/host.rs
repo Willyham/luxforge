@@ -265,6 +265,8 @@ pub(crate) struct Requirement {
 /// table's `transfer` and `module` lanes.
 pub(crate) struct CapabilityHost {
     pub(crate) preferences: crate::preferences::PreferenceStore,
+    /// The theme library, `themes.json` beside the preferences.
+    pub(crate) themes: crate::theme::ThemeStore,
     config: HostConfig,
     settings: Option<SettingsStore>,
     grants: Option<GrantsStore>,
@@ -278,6 +280,7 @@ impl CapabilityHost {
     pub(crate) fn new(config: HostConfig) -> Self {
         Self {
             preferences: crate::preferences::PreferenceStore::new(config.preferences_dir.clone()),
+            themes: crate::theme::ThemeStore::new(config.preferences_dir.clone()),
             settings: config.config_dir.clone().map(SettingsStore::new),
             grants: config.config_dir.clone().map(GrantsStore::new),
             resources: config.resource_dir.clone().map(ResourceStore::new),

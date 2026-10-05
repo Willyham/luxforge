@@ -458,6 +458,7 @@ impl GeneralPreference {
                         CanvasBackground::Dark => "Dark",
                         CanvasBackground::Black => "Black",
                         CanvasBackground::Grey => "Grey",
+                        CanvasBackground::Theme => "Theme",
                     };
                     (Value::from(background.as_str()), label)
                 }),
@@ -654,7 +655,7 @@ mod tests {
             "auto_collapse_history": true,
             "auto_lens_profile": true,
             "mask_overlay_colour": "green",
-            "canvas_background": "dark",
+            "canvas_background": "theme",
             "interface_size": 100,
             "catalog": null,
             "workspace": {"state_panel": true, "tools_panel": true, "thirds": false,
@@ -818,8 +819,9 @@ mod tests {
         assert!(!rows[0].saving && rows[1].saving && rows[2].saving);
     }
 
-    /// The canvas background row offers its three colours by name and the interface size row its
-    /// four sizes as numbers, the values `preferences.set` takes; each gesture sets its field.
+    /// The canvas background row offers its four choices by name, Theme the default, and the
+    /// interface size row its four sizes as numbers, the values `preferences.set` takes; each
+    /// gesture sets its field.
     #[test]
     fn the_canvas_background_and_interface_scale_rows_offer_their_choices() {
         let mut writer = PreferenceWriter::new(Ok(defaults()));
@@ -828,9 +830,9 @@ mod tests {
         assert_eq!(
             rows[3].control,
             GeneralControl::Choice {
-                values: vec![json!("dark"), json!("black"), json!("grey")],
-                labels: vec!["Dark", "Black", "Grey"],
-                selected: Some(0),
+                values: vec![json!("dark"), json!("black"), json!("grey"), json!("theme")],
+                labels: vec!["Dark", "Black", "Grey", "Theme"],
+                selected: Some(3),
             }
         );
         assert_eq!(rows[4].preference.title(), "Interface size");

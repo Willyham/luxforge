@@ -79,6 +79,9 @@ pub(crate) fn background_colour(fill: CanvasFill) -> iced::Color {
         CanvasFill::Dark => theme::CANVAS,
         CanvasFill::Black => theme::CANVAS_BLACK,
         CanvasFill::Grey => theme::CANVAS_GREY,
+        // Luxforge Dark's surround, which is Dark's grey: the desktop draws only Luxforge Dark
+        // until it holds the active theme, whose surround this becomes.
+        CanvasFill::Theme => theme::CANVAS,
     }
 }
 

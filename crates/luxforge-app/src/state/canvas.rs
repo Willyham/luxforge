@@ -214,10 +214,12 @@ pub(crate) struct Notice {
 /// canvas tokens.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum CanvasFill {
-    #[default]
     Dark,
     Black,
     Grey,
+    /// The active theme's surround.
+    #[default]
+    Theme,
 }
 
 impl From<CanvasBackground> for CanvasFill {
@@ -226,6 +228,7 @@ impl From<CanvasBackground> for CanvasFill {
             CanvasBackground::Dark => Self::Dark,
             CanvasBackground::Black => Self::Black,
             CanvasBackground::Grey => Self::Grey,
+            CanvasBackground::Theme => Self::Theme,
         }
     }
 }
