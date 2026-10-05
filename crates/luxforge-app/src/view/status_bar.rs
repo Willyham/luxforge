@@ -8,9 +8,10 @@ use crate::{
     state::status::StatusBarModel,
 };
 use iced::{
-    Alignment, Element, Length, Theme,
+    Alignment, Length,
     widget::{Space, container, row, text, tooltip},
 };
+use luxforge_ui::{Element, Theme, Token};
 use luxforge_ui::{Icon, IconButtonModel, header_icon_button, theme, truncated_text};
 
 /// The widest the notice's tooltip grows before its sentence wraps.
@@ -24,7 +25,7 @@ pub(crate) fn status_bar(model: &StatusBarModel) -> Element<'_, Message> {
             model.message.clone(),
             theme::SIZE_CAPTION,
             theme::FONT,
-            theme::TEXT_SECONDARY,
+            Token::TextSecondary,
         ),
         header_icon_button(
             &IconButtonModel {
@@ -42,12 +43,12 @@ pub(crate) fn status_bar(model: &StatusBarModel) -> Element<'_, Message> {
     let dot = container(Space::new())
         .width(Length::Fixed(theme::STATUS_DOT_SIZE))
         .height(Length::Fixed(theme::STATUS_DOT_SIZE))
-        .style(move |_: &Theme| {
+        .style(move |theme: &Theme| {
             container::Style::default()
                 .background(if connected {
                     theme::AGENT_CONNECTED
                 } else {
-                    theme::TEXT_TERTIARY
+                    theme.palette().text_tertiary
                 })
                 .border(iced::Border {
                     radius: (theme::STATUS_DOT_SIZE / 2.0).into(),
@@ -57,7 +58,7 @@ pub(crate) fn status_bar(model: &StatusBarModel) -> Element<'_, Message> {
     let fact = |value: &str| {
         text(value.to_owned())
             .size(theme::SIZE_CAPTION)
-            .color(theme::TEXT_TERTIARY)
+            .style(theme::ink(Token::TextTertiary))
             .wrapping(text::Wrapping::None)
     };
     // Why the gesture is drawn on the CPU, a muted phrase right after the render slot with its
@@ -66,12 +67,12 @@ pub(crate) fn status_bar(model: &StatusBarModel) -> Element<'_, Message> {
         tooltip(
             text(notice.phrase.clone())
                 .size(theme::SIZE_CAPTION)
-                .color(theme::TEXT_SECONDARY)
+                .style(theme::ink(Token::TextSecondary))
                 .wrapping(text::Wrapping::None),
             container(
                 text(notice.tooltip.clone())
                     .size(theme::SIZE_CAPTION)
-                    .color(theme::TEXT_PRIMARY),
+                    .style(theme::ink(Token::Text)),
             )
             .max_width(NOTICE_TOOLTIP_WIDTH)
             .padding(theme::TOOLTIP_PADDING)

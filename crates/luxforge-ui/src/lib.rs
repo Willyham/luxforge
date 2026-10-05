@@ -18,6 +18,12 @@ pub mod photo_surface;
 pub mod theme;
 mod widgets;
 
+pub use theme::{Ink, Mode, Palette, Theme, Token};
+
+/// An element drawn in Luxforge's [`Theme`]: every widget here returns one, and the desktop's view
+/// is built of them.
+pub type Element<'a, Message> = iced::Element<'a, Message, Theme, iced::Renderer>;
+
 pub use photo_surface::{
     FirstDrawn, Frame, Placement, RegionFrame, RegionOverlay, RegionQuality, SurfaceDiagnostics,
     SurfaceId, Turn, mips_admissible, photo_surface, region_texture_admissible, set_surface_waker,
@@ -37,7 +43,7 @@ mod gallery_performance;
 /// Hidden because it exists for unit checks and the real-app gallery evidence renderer,
 /// not for reuse as part of the widget API.
 #[doc(hidden)]
-pub fn gallery_states() -> Vec<iced::Element<'static, ()>> {
+pub fn gallery_states() -> Vec<Element<'static, ()>> {
     gallery::gallery()
 }
 
@@ -222,7 +228,7 @@ pub const GALLERY_PAGES: [(&str, &[&str]); 14] = [
 /// Builds gallery page `page`'s states in draw order, each with its 1-based number on the whole
 /// board and its name, or `None` past the last page.
 #[doc(hidden)]
-pub fn gallery_page(page: usize) -> Option<Vec<(usize, &'static str, iced::Element<'static, ()>)>> {
+pub fn gallery_page(page: usize) -> Option<Vec<(usize, &'static str, Element<'static, ()>)>> {
     let (_, names) = GALLERY_PAGES.get(page)?;
     let states = gallery_states();
     assert_eq!(

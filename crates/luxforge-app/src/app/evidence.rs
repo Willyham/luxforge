@@ -15,7 +15,7 @@ use crate::{
             history::HistoryMessage, mask::BrushEdit, mask::MaskMessage, mask::PaintTarget,
             mask::RowEdit, palette::PaletteMessage, performance::PerformanceMessage,
             pointer::PointerMessage, preset::PresetMessage, settings::SettingsMessage,
-            view::ViewMessage,
+            theme::ThemeMessage, view::ViewMessage,
         },
         performance,
         tasks::{
@@ -37,6 +37,7 @@ use crate::{
 use iced::advanced::{Layout, Widget, layout, mouse, renderer, widget::Tree};
 use iced::{Subscription, Task};
 use luxforge_core::{ClientId, HistoryEntry, Mutation};
+use luxforge_ui::Element;
 use luxforge_ui::{ColorPickerEvent, CurveEditorEvent};
 use serde_json::{Map, Value, json};
 use std::{
@@ -119,6 +120,8 @@ pub(crate) struct Evidence {
     pub(crate) agent: Option<ClientId>,
     /// What a running `agent` step still waits for.
     pub(crate) agent_wait: Option<AgentWait>,
+    /// What a running `agent` step that sent a host method still waits for.
+    pub(crate) agent_host: Option<AgentHostWait>,
     pub(crate) sync: CaptureSync,
     /// What only a captured frame's state reports, from the outcomes the seams report.
     pub(crate) recorded: Recorded,
@@ -155,6 +158,13 @@ pub(crate) struct WarmWait {
     started: Instant,
     quiet_until: Instant,
     deadline: Instant,
+}
+
+/// What a running `agent` step that sent a host method waits for: its answer, and the event
+/// sequence it was answered at, which the event sync must read past.
+#[derive(Debug)]
+pub(crate) struct AgentHostWait {
+    pub(crate) sequence: Option<u64>,
 }
 
 /// What a running `agent` step waits for. The desktop sends nothing for it: the owner wakes the
@@ -202,6 +212,7 @@ impl Evidence {
             warm_wait: None,
             agent: None,
             agent_wait: None,
+            agent_host: None,
             sync: CaptureSync::default(),
             recorded: Recorded::default(),
             gpu_identity: None,
@@ -342,13 +353,13 @@ where
 
 /// `content` with a [`DrawnMarker`] over it, for an evidence run's window.
 pub(crate) fn marked<'a>(
-    content: iced::Element<'a, Message>,
+    content: Element<'a, Message>,
     sync: &CaptureSync,
-) -> iced::Element<'a, Message> {
+) -> Element<'a, Message> {
     view::cursor_probe::wrap(
         iced::widget::stack![
             content,
-            iced::Element::new(DrawnMarker {
+            Element::new(DrawnMarker {
                 updates: sync.updates,
                 sink: sync.drawn.clone(),
             })
@@ -417,7 +428,7 @@ pub(crate) use luxforge_evidence::{
     DraftStep, DragHandle, ExportStep, FieldStep, GroupStep, IdleStep, KindMenuStep, MaskRow,
     MaskStep, PaintStep, PaletteStep, PickStep, PickerStep, PresetCreateStep, PresetPick,
     PreviewStep, Reference, ResetStep, RowStep, SectionStep, SliderDraftStep, SliderEnd,
-    SliderStep, Step, TabStep, ViewIdleStep, ViewStep, WorkspaceStep,
+    SliderStep, Step, TabStep, ThemePick, ViewIdleStep, ViewStep, WorkspaceStep,
 };
 
 #[derive(Clone, Copy)]
@@ -472,6 +483,13 @@ pub(crate) enum Settle {
     PerformanceCancel,
     /// The Settings sheet's `flags.list` answered, or its last outstanding `flags.set` did.
     Flags,
+    /// The preference writer's last outstanding `preferences.set` answered.
+    Preferences,
+    /// The theme a step chose is drawn, or Luxforge Dark in its place, with no `theme.read` and no
+    /// preference write outstanding.
+    Theme,
+    /// A theme library call and the listing after it answered, or the call was refused.
+    Themes,
     /// A capability step's round trips have answered and, unless it said otherwise, the jobs it
     /// started have finished.
     Capability,
@@ -480,6 +498,9 @@ pub(crate) enum Settle {
     /// An agent step's edit has answered, and the event sync's refresh brought the frame of the
     /// entry it committed to the screen: see [`AgentWait`].
     Agent,
+    /// An agent step's host method has answered, and the desktop has followed it through the event
+    /// sync: see [`AgentHostWait`].
+    AgentHost,
 }
 
 impl Settle {
@@ -502,9 +523,13 @@ impl Settle {
             Self::Performance => "performance",
             Self::PerformanceCancel => "performance_cancel",
             Self::Flags => "flags",
+            Self::Preferences => "preferences",
+            Self::Theme => "theme",
+            Self::Themes => "themes",
             Self::Capability => "capability",
             Self::Export => "export",
             Self::Agent => "agent",
+            Self::AgentHost => "agent_host",
         }
     }
 
@@ -1011,6 +1036,7 @@ impl Editor {
                 return self.host_answered(result.map(|answer| *answer));
             }
             EvidenceMessage::AgentAnswered(result) => self.agent_answered(result),
+            EvidenceMessage::AgentHostAnswered(result) => self.agent_host_answered(result),
         }
         Task::none()
     }
@@ -1068,10 +1094,12 @@ impl Editor {
                 );
                 let revision = self.session.revision;
                 self.await_step(Settle::Session);
+                // In the system's points, as AppKit reports a pinch.
+                let points = f64::from(self.view_state.interface_scale());
                 let task = self.update(Message::View(ViewMessage::Pinch(luxforge_input::Pinch {
                     delta: step.delta,
-                    x: f64::from(left) + f64::from(right - left) * step.x,
-                    y: f64::from(top) + f64::from(bottom - top) * step.y,
+                    x: (f64::from(left) + f64::from(right - left) * step.x) * points,
+                    y: (f64::from(top) + f64::from(bottom - top) * step.y) * points,
                 })));
                 if self.session.revision == revision {
                     return self.fail_step("pinch changed no view");
@@ -1154,8 +1182,12 @@ impl Editor {
                 self.await_step(Settle::PerformanceCancel);
                 self.update(Message::Performance(PerformanceMessage::Cancel(job_id)))
             }
-            Step::Settings { open } => self.settings_step(open),
+            Step::Settings { open, tab } => self.settings_step(open, tab),
+            Step::Theme(pick) => self.theme_step(pick),
+            Step::ThemeImport { path } => self.theme_import_step(path),
+            Step::ThemeImportOmarchy { path } => self.theme_import_omarchy_step(path),
             Step::Flag { id, value } => self.flag_step(id, value),
+            Step::Preference(fields) => self.preference_step(fields),
             Step::Wait { ms } => self.wait_step(ms),
             Step::GpuWarmed { quiet_ms, ms } => self.warm_wait_step(quiet_ms, ms),
             Step::Key { key } => self.key_step(key),
@@ -1322,10 +1354,8 @@ impl Editor {
     /// once the frame of the entry this request committed is on screen and the agent has its
     /// answer ([`AgentWait`]).
     fn agent_step(&mut self, method: String, mut params: Map<String, Value>) -> Task<Message> {
-        if envelope_free(&method).is_some() {
-            return self.fail_step(format!(
-                "an agent step edits the open photograph, and {method} is not an edit of it"
-            ));
+        if let Some(host) = envelope_free(&method) {
+            return self.agent_host_step(method, params, host);
         }
         if let Err(reason) = self.resolve_identities(&mut params) {
             return self.fail_step(reason);
@@ -1368,6 +1398,104 @@ impl Editor {
             move || call(&owner, agent, &method, request).map(|(answer, _)| answer),
             |result| Message::Evidence(EvidenceMessage::AgentAnswered(result)),
         )
+    }
+
+    /// One host method sent by the run's second client, such as another client's
+    /// `preferences.set`: as written, with `asset_id` when the method names one and a request
+    /// envelope of the agent's own when its schema names one. A module settings write, whose
+    /// envelope carries the revision the desktop holds, is refused. The desktop sends nothing: the
+    /// owner wakes the event sync, which reads what changed as a change made elsewhere. The step's
+    /// frame is captured once the agent has its answer, the sync has read past the event that
+    /// answer was given at, and nothing the sync started reading — the preferences, the theme
+    /// library, the flags, a theme to draw — is still in flight ([`AgentHostWait`]).
+    fn agent_host_step(
+        &mut self,
+        method: String,
+        mut params: Map<String, Value>,
+        host: HostStep,
+    ) -> Task<Message> {
+        if host.revision {
+            return self.fail_step(format!(
+                "an agent step sends no module settings write, and {method} is one"
+            ));
+        }
+        if host.takes_asset
+            && let Some(state) = &self.document.state
+        {
+            params.insert("asset_id".into(), json!(state.asset.id));
+        }
+        if host.request && !params.contains_key("mutation") {
+            let mutation = luxforge_core::MutationRequest {
+                actor: AGENT_ACTOR.into(),
+                ..request()
+            };
+            params.insert("mutation".into(), json!(mutation));
+        }
+        let owner = self.owner.clone();
+        let Some(evidence) = &mut self.evidence else {
+            return Task::none();
+        };
+        let agent = *evidence.agent.get_or_insert_with(|| owner.register());
+        evidence.agent_host = Some(AgentHostWait { sequence: None });
+        self.note_step(json!({"actor": AGENT_ACTOR}));
+        self.await_step(Settle::AgentHost);
+        owner_task(
+            move || call(&owner, agent, &method, Value::Object(params)),
+            |result| Message::Evidence(EvidenceMessage::AgentHostAnswered(result)),
+        )
+    }
+
+    /// The running `agent` step's host method answered: a refusal is recorded as failed and
+    /// captured on the next frame; an answer waits for the event sync to follow it.
+    fn agent_host_answered(&mut self, result: Result<(Value, u64), String>) {
+        let Some(wait) = self
+            .evidence
+            .as_mut()
+            .and_then(|evidence| evidence.agent_host.as_mut())
+        else {
+            return;
+        };
+        match result {
+            Ok((answer, sequence)) => {
+                wait.sequence = Some(sequence);
+                self.note_step(json!({"result": answer, "sequence": sequence}));
+                self.settle_agent_host();
+            }
+            Err(error) => {
+                if let Some(evidence) = &mut self.evidence {
+                    evidence.agent_host = None;
+                }
+                self.refuse_step(&error);
+                self.capture_next_frame();
+            }
+        }
+    }
+
+    /// Capture the running host `agent` step's frame once the desktop has followed the change:
+    /// the sync has read past the agent's answer, and the preferences, the theme library, the
+    /// flags and the theme they choose are read and drawn. Checked after every message.
+    fn settle_agent_host(&mut self) {
+        let Some(sequence) = self
+            .evidence
+            .as_ref()
+            .filter(|evidence| evidence.awaiting == Some(Settle::AgentHost))
+            .and_then(|evidence| evidence.agent_host.as_ref())
+            .and_then(|wait| wait.sequence)
+        else {
+            return;
+        };
+        let followed = self.sync.sequence >= sequence
+            && self.sync.poll.idle()
+            && self.preferences.reading.idle()
+            && self.themes.listing.idle()
+            && !self.settings.reading
+            && self.theme_settled();
+        if followed {
+            if let Some(evidence) = &mut self.evidence {
+                evidence.agent_host = None;
+            }
+            self.settle_step(Settle::AgentHost, "agent_host_followed");
+        }
     }
 
     /// The running `agent` step's edit answered. A refusal, or an answer still at the revision it
@@ -3731,6 +3859,10 @@ impl Editor {
         let status = iced::event::Status::Ignored;
         match crate::app::keymap::keymap(&event, status, &self.key_context()) {
             None => self.fail_step(format!("the key {key} does nothing here")),
+            Some(Message::View(ViewMessage::ToggleInformation)) => {
+                self.await_step(Settle::Session);
+                self.dispatch(Message::Key(event, status))
+            }
             Some(Message::View(ViewMessage::SetMode(mode)))
                 if mode != self.session.workspace.mode =>
             {
@@ -3799,11 +3931,18 @@ impl Editor {
             PaletteAction::Mode(_)
             | PaletteAction::TogglePanel(_)
             | PaletteAction::ToggleThirds
+            | PaletteAction::ToggleInformation
             | PaletteAction::ToggleGpuPreview
             | PaletteAction::Fit
             | PaletteAction::HundredPercent => self.await_step(Settle::Session),
             PaletteAction::TogglePerformance => self.arm_performance_settle(),
             PaletteAction::Settings(_) => self.arm_settings_settle(),
+            PaletteAction::Theme(id) => self.arm_theme_settle(id),
+            // A reveal is local view state, unless it has to show the tools panel first.
+            PaletteAction::Reveal(_) if !self.session.workspace.tools_panel => {
+                self.await_step(Settle::Session)
+            }
+            PaletteAction::Reveal(_) => self.capture_next_frame(),
             // An evidence run opens no save dialog, so the entry only closes the palette.
             PaletteAction::Export { .. } => self.capture_next_frame(),
         }
@@ -3846,21 +3985,92 @@ impl Editor {
         }
     }
 
-    /// Open the Settings sheet at Experiments, as its title bar button does, and wait for the
-    /// flags; or close it, captured on the next frame. A sheet already as asked sends nothing.
-    fn settings_step(&mut self, open: bool) -> Task<Message> {
-        if self.settings.open.is_some() == open {
+    /// Open the Settings sheet at `tab`, Experiments when it names none, as its title bar button
+    /// and tab rail do, and wait for the flags; or close it, captured on the next frame. A sheet
+    /// already as asked sends nothing; an open one moved to another tab is captured on the next
+    /// frame, as the rail's own click reads nothing it has not read.
+    fn settings_step(&mut self, open: bool, tab: Option<String>) -> Task<Message> {
+        use crate::state::settings::SettingsTab;
+        let tab = match tab.as_deref().map(SettingsTab::parse) {
+            None => SettingsTab::Experiments,
+            Some(Some(tab)) => tab,
+            Some(None) => return self.fail_step("the Settings sheet has no such tab"),
+        };
+        if !open {
+            self.capture_next_frame();
+            if self.settings.open.is_none() {
+                return Task::none();
+            }
+            return self.update(Message::Settings(SettingsMessage::Close));
+        }
+        if self.settings.open == Some(tab) {
             self.capture_next_frame();
             return Task::none();
         }
-        if !open {
-            self.capture_next_frame();
-            return self.update(Message::Settings(SettingsMessage::Close));
-        }
         self.arm_settings_settle();
-        self.update(Message::Settings(SettingsMessage::Open(
-            crate::state::settings::SettingsTab::Experiments,
-        )))
+        self.update(Message::Settings(SettingsMessage::Open(tab)))
+    }
+
+    /// Choose one theme, by its id or its name, through its Appearance row's own message, and wait
+    /// until the theme it names is drawn — or Luxforge Dark with the reason in the status bar —
+    /// and the preference writer has stored it. The theme must be one the library lists; a theme
+    /// already chosen and drawn sends nothing and is captured on the next frame.
+    fn theme_step(&mut self, pick: ThemePick) -> Task<Message> {
+        let themes = self.themes.list.iter().flat_map(|list| &list.themes);
+        let found = match (&pick.id, &pick.name) {
+            (Some(id), _) => themes
+                .filter(|theme| &theme.id == id)
+                .map(|theme| theme.id.clone())
+                .next(),
+            (None, Some(name)) => themes
+                .filter(|theme| &theme.name == name)
+                .map(|theme| theme.id.clone())
+                .next(),
+            (None, None) => None,
+        };
+        let Some(id) = found else {
+            let named = pick.id.or(pick.name).unwrap_or_default();
+            return self.fail_step(format!("the theme library lists no theme {named}"));
+        };
+        self.note_step(json!({"theme_id": id}));
+        let task = self.update(Message::Theme(ThemeMessage::Choose(id)));
+        self.arm_theme_settle_now();
+        task
+    }
+
+    /// What choosing a theme from a palette entry settles on: the theme drawn and stored, or the
+    /// next frame for the theme already on screen.
+    fn arm_theme_settle(&mut self, id: &str) {
+        if self.preferences.applied_theme() == Some(id) && self.theme_settled() {
+            self.capture_next_frame();
+        } else {
+            self.await_step(Settle::Theme);
+        }
+    }
+
+    /// After a choice was sent: settled already when it chose the theme on screen, and otherwise
+    /// waiting for its read and its write.
+    fn arm_theme_settle_now(&mut self) {
+        if self.theme_settled() {
+            self.capture_next_frame();
+        } else {
+            self.await_step(Settle::Theme);
+        }
+    }
+
+    /// Import one theme document through the same task the dialog's answer starts.
+    fn theme_import_step(&mut self, path: String) -> Task<Message> {
+        self.await_step(Settle::Themes);
+        self.theme_import(PathBuf::from(path))
+    }
+
+    /// Import an Omarchy theme folder, or a folder of them, through the same task the folder
+    /// dialog's answer starts. The step records what each theme became, with its report; it fails
+    /// only when the folder is refused as a whole, since a theme that conflicts or fails is the
+    /// import's own outcome, listed in the tab.
+    fn theme_import_omarchy_step(&mut self, path: String) -> Task<Message> {
+        self.await_step(Settle::Themes);
+        self.theme_import_folder(PathBuf::from(path))
     }
 
     /// Change one flag through its row, as a person does: the switch or a segment, Reset for
@@ -3921,6 +4131,45 @@ impl Editor {
             flag: id,
             value: Some(value),
         }))
+    }
+
+    /// Change General rows as a person does, each through its own control's message: a switch
+    /// turned to a boolean, a segment chosen by its value, and the catalog's folder as its dialog
+    /// would answer for `<folder>/catalog.sqlite` or Use Default for `null`. Every field is checked
+    /// against the row before any is sent, so a field no row shows or a value its control does not
+    /// offer fails the step with nothing changed. The changes go through the desktop's one
+    /// preference writer, and the step waits for its last write to answer; a step whose rows
+    /// already show every value sends nothing and is captured on the next frame. The rows answer
+    /// whether or not the sheet is open, as the Masks panel's colour control does.
+    fn preference_step(&mut self, fields: serde_json::Map<String, Value>) -> Task<Message> {
+        use crate::state::preferences::{GeneralPreference, general_rows};
+        let rows = general_rows(&self.preferences);
+        let mut gestures = Vec::new();
+        for (field, value) in &fields {
+            let Some(row) = GeneralPreference::parse(field)
+                .and_then(|preference| rows.iter().find(|row| row.preference == preference))
+            else {
+                return self.fail_step(format!("the General tab shows no preference {field}"));
+            };
+            let Some(gesture) = row.control.gesture(value) else {
+                return self.fail_step(format!("{field}'s control does not offer {value}"));
+            };
+            if !row.control.shows(gesture.clone()) {
+                gestures.push((row.preference, gesture));
+            }
+        }
+        if gestures.is_empty() {
+            self.capture_next_frame();
+            return Task::none();
+        }
+        self.await_step(Settle::Preferences);
+        let sent: Vec<_> = gestures
+            .into_iter()
+            .map(|(row, value)| {
+                self.update(Message::Settings(SettingsMessage::SetGeneral(row, value)))
+            })
+            .collect();
+        Task::batch(sent)
     }
 
     /// Click one row, exactly as the section does: the section's own action with that preset's
@@ -4362,6 +4611,33 @@ impl Editor {
                 }
             }
             Outcome::FlagsRead | Outcome::FlagsWritten => self.settle_step(Settle::Flags, by),
+            // A theme chosen is drawn by a read and stored by a write, which answer in either
+            // order: the step settles on whichever lands last.
+            Outcome::PreferencesWritten | Outcome::ThemeDrawn => {
+                if matches!(outcome, Outcome::PreferencesWritten) {
+                    self.settle_step(Settle::Preferences, by);
+                }
+                if self.theme_settled() {
+                    self.settle_step(Settle::Theme, by);
+                }
+            }
+            // The step's record keeps what each theme of the folder became, with its report.
+            Outcome::ThemeFolderImported(detail) => {
+                if self
+                    .evidence
+                    .as_ref()
+                    .and_then(|evidence| evidence.awaiting)
+                    == Some(Settle::Themes)
+                {
+                    self.note_step(json!({ "folder_import": detail }));
+                }
+            }
+            Outcome::ThemesAnswered { failure } => {
+                if let Some(reason) = failure {
+                    self.refuse_step(reason);
+                }
+                self.settle_step(Settle::Themes, by);
+            }
             Outcome::ExportPlanned(plan) => {
                 if let Some(evidence) = &mut self.evidence {
                     evidence.recorded.export_plan = Some(plan.clone());
@@ -4779,6 +5055,7 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     editor.settle_when_quiet();
     editor.settle_capability();
+    editor.settle_agent_host();
     // The GPU identity hook follows the photograph at Fit, the one view it draws.
     let fit = matches!(editor.session.preview.view.zoom, luxforge_core::Zoom::Fit);
     let photo = editor
@@ -5392,6 +5669,7 @@ mod tests {
             warm_wait: None,
             agent: None,
             agent_wait: None,
+            agent_host: None,
             sync: CaptureSync::default(),
             recorded: Recorded::default(),
             gpu_identity: None,
@@ -5891,7 +6169,7 @@ mod tests {
         let polled = crate::app::tasks::sync_now(
             &owner,
             client,
-            (asset.clone(), held),
+            Some((asset.clone(), held)),
             editor.sync.sequence,
             &editor.sync.own_requests.iter().cloned().collect::<Vec<_>>(),
             None,
@@ -5934,19 +6212,35 @@ mod tests {
         finish(editor, catalog);
     }
 
-    /// An `agent` step sends only an edit of the open photograph, whose read-back is what it
-    /// settles on; any other method is refused and still captured.
+    /// An `agent` step sends an edit of the open photograph or a host method, but no module
+    /// settings write, whose envelope carries the revision the desktop holds: that is refused and
+    /// still captured. A host method waits for the event sync to follow it.
     #[test]
-    fn an_agent_step_refuses_a_method_that_is_no_edit_of_the_photograph() {
-        let (mut editor, catalog, _, _) = scripted(r#"[{"agent":{"method":"preset.list"}}]"#);
+    fn an_agent_step_refuses_a_module_settings_write_and_waits_on_a_host_method() {
+        let (mut editor, catalog, _, _) = scripted(
+            r#"[{"agent":{"method":"module.settings.reset","params":{"module_id":"luxforge.lens"}}}]"#,
+        );
         let _ = editor.next_step();
         assert!(evidence(&editor).had_errors && evidence(&editor).capture_pending);
         assert!(evidence(&editor).agent.is_none(), "no client registered");
         assert!(
-            editor.status.text.contains("not an edit of it"),
+            editor
+                .status
+                .text
+                .contains("sends no module settings write"),
             "{}",
             editor.status.text
         );
+        finish(editor, catalog);
+
+        let (mut editor, catalog, _, _) = scripted(r#"[{"agent":{"method":"preset.list"}}]"#);
+        let _ = editor.next_step();
+        assert!(
+            evidence(&editor).agent.is_some(),
+            "the second client is registered"
+        );
+        assert_eq!(evidence(&editor).awaiting, Some(Settle::AgentHost));
+        assert!(!evidence(&editor).capture_pending, "waits for its answer");
         finish(editor, catalog);
     }
 

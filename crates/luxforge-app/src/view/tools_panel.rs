@@ -16,15 +16,24 @@ use crate::{
         tools::{
             ActionControl, ActionControlStyle, ChoiceControlStyle, ColorControl, ColorControlStyle,
             ControlModel, CropSectionModel, CurveControl, EnumControl, GroupControl, GroupState,
-            NumberControlStyle, PickerControl, RailStyle, RangeControl, SectionLayout,
-            SectionModel, SliderControl, ToggleControl, ToolsModel, ValueEdit, drawn_by_range,
+            NumberControlStyle, PickerControl, RailStyle, RangeControl, RevealKey, SectionLayout,
+            SectionMark, SectionModel, SliderControl, ToggleControl, ToolsModel, ValueEdit,
+            drawn_by_range,
         },
     },
 };
 use iced::{
-    Alignment, Color, Element, Length,
-    widget::{Space, button, column, mouse_area, row, scrollable, text_input},
+    Alignment, Color, Length, Rectangle, Task, Vector,
+    advanced::widget::{
+        Id, Operation,
+        operation::{Outcome, Scrollable, scrollable::scroll_to},
+    },
+    widget::{
+        Space, button, column, container, mouse_area, row, scrollable, scrollable::AbsoluteOffset,
+        text_input,
+    },
 };
+use luxforge_ui::Element;
 use luxforge_ui::{
     BINS, BadgeModel, ButtonSize, ButtonTone, ChipModel, ClipTriangleModel, ColorPickerModel,
     ColorSwatchModel, ControlKey, ControlKeyEvent, CurveEditorModel, CurvePointRow,
@@ -44,6 +53,106 @@ use serde_json::{Map, Value};
 /// Stable identity for evidence scripts that scroll the actual generated tools panel.
 pub(crate) fn scroll_id() -> iced::widget::Id {
     iced::widget::Id::new("tools-panel")
+}
+
+/// The section or row a palette reveal marks, which [`scroll_to_revealed`] scrolls to. One element
+/// at most carries it.
+fn revealed_id() -> Id {
+    Id::new("luxforge.tools.revealed")
+}
+
+/// Scroll the tools panel to the revealed section or row, measured on the panel as laid out.
+pub(crate) fn scroll_to_revealed() -> Task<Message> {
+    iced::advanced::widget::operate(ScrollToRevealed::default()).discard()
+}
+
+/// Finds the tools panel's viewport and the revealed element's bounds in one pass, then scrolls.
+#[derive(Default)]
+struct ScrollToRevealed {
+    /// The panel's viewport, its content's bounds and its current scroll.
+    panel: Option<(Rectangle, Rectangle, Vector)>,
+    target: Option<Rectangle>,
+}
+
+impl Operation for ScrollToRevealed {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+        operate(self);
+    }
+
+    fn container(&mut self, id: Option<&Id>, bounds: Rectangle) {
+        if id == Some(&revealed_id()) {
+            self.target = Some(bounds);
+        }
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&Id>,
+        bounds: Rectangle,
+        content_bounds: Rectangle,
+        translation: Vector,
+        _state: &mut dyn Scrollable,
+    ) {
+        if id == Some(&scroll_id()) {
+            self.panel = Some((bounds, content_bounds, translation));
+        }
+    }
+
+    fn finish(&self) -> Outcome<()> {
+        let (Some((viewport, content, translation)), Some(target)) = (self.panel, self.target)
+        else {
+            return Outcome::None;
+        };
+        let y = reveal_offset(
+            viewport.height,
+            target.y - content.y,
+            target.height,
+            translation.y,
+        );
+        Outcome::Chain(Box::new(scroll_to(
+            scroll_id(),
+            AbsoluteOffset {
+                x: None,
+                y: Some(y),
+            },
+        )))
+    }
+}
+
+/// The scroll that shows an element `height` tall at `top` in the panel's content, in a viewport
+/// `view` tall now scrolled to `current`: unchanged when the element is already in view, up to its
+/// top when it starts above, and down to its bottom when it ends below, but never past its top, so
+/// a section taller than the panel shows its header. Each edge keeps a small margin.
+fn reveal_offset(view: f32, top: f32, height: f32, current: f32) -> f32 {
+    const MARGIN: f32 = 24.0;
+    let start = (top - MARGIN).max(0.0);
+    if start < current {
+        start
+    } else if top + height + MARGIN > current + view {
+        (top + height + MARGIN - view).min(start)
+    } else {
+        current
+    }
+}
+
+/// A section, value row or group header in the container a reveal marks it with. Each is wrapped
+/// marked or not, so the mark coming and going moves no widget in the tree and a drag under way
+/// keeps its state.
+fn revealable(row: Element<'_, Message>, marked: bool) -> Element<'_, Message> {
+    let wrapped = container(row);
+    if marked {
+        wrapped
+            .id(revealed_id())
+            .style(theme::revealed_surface)
+            .into()
+    } else {
+        wrapped.into()
+    }
+}
+
+/// Whether `control` is the one a reveal marks in its section.
+fn is_marked(control: &ControlModel, mark: Option<&RevealKey>) -> bool {
+    mark.is_some_and(|mark| control.reveal_key().as_ref() == Some(mark))
 }
 
 /// The whole tools panel.
@@ -215,6 +324,10 @@ fn section_view<'a>(
     menu: Option<&'a MenuTarget>,
     plot: &HistogramModel,
 ) -> Element<'a, Message> {
+    let mark = match &section.mark {
+        Some(SectionMark::Control(key)) => Some(key),
+        _ => None,
+    };
     // An unavailable module cannot expand, per the design; nothing under it is drawn. Otherwise a
     // disabled section (busy, a historical preview) still shows its values, just not interactive.
     let body = (section.expanded && section.unavailable.is_none()).then(|| {
@@ -234,15 +347,16 @@ fn section_view<'a>(
                 menu,
                 plot,
                 false,
+                mark,
             ),
-            SectionLayout::Tabs { .. } => tabbed_rows(section, menu, plot),
+            SectionLayout::Tabs { .. } => tabbed_rows(section, menu, plot, mark),
         });
         if let Some(summary) = &section.geometry_summary {
             rows.push(PanelRow::Plain(caption(summary.clone())));
         }
         finish_rows(rows, menu)
     });
-    module_section(
+    let band = module_section(
         &SectionHeaderModel {
             title: section.title.clone(),
             expanded: section.expanded,
@@ -257,7 +371,14 @@ fn section_view<'a>(
         Message::Control(ControlMessage::ToggleSection(section.module_id.clone())),
         Message::Control(ControlMessage::ResetModule(section.module_id.clone())),
         body,
-    )
+    );
+    // A revealed section is the scroll target but carries no tint: the open band is the mark.
+    let wrapped = container(band);
+    if section.mark == Some(SectionMark::Section) {
+        wrapped.id(revealed_id()).into()
+    } else {
+        wrapped.into()
+    }
 }
 
 /// The rows of a section whose module declares `layout: tabs`: one tab per top-level group, a dot
@@ -267,6 +388,7 @@ fn tabbed_rows<'a>(
     section: &'a SectionModel,
     menu: Option<&'a MenuTarget>,
     plot: &HistogramModel,
+    mark: Option<&RevealKey>,
 ) -> Vec<PanelRow<'a>> {
     let module_id = section.module_id.as_str();
     let enabled = section.enabled;
@@ -279,7 +401,15 @@ fn tabbed_rows<'a>(
         })
         .collect();
     let Some(visible) = section.visible_tab() else {
-        return control_rows(module_id, enabled, &section.controls, menu, plot, false);
+        return control_rows(
+            module_id,
+            enabled,
+            &section.controls,
+            menu,
+            plot,
+            false,
+            mark,
+        );
     };
     let tabs = tab_row(
         &TabRowModel {
@@ -325,12 +455,14 @@ fn tabbed_rows<'a>(
         menu,
         plot,
         false,
+        mark,
     ));
     for control in &section.controls {
         if !matches!(control, ControlModel::Group(_)) && !drawn_by_range(&section.controls, control)
         {
-            rows.push(PanelRow::Plain(control_view(
-                module_id, enabled, control, menu, plot,
+            rows.push(PanelRow::Plain(revealable(
+                control_view(module_id, enabled, control, menu, plot),
+                is_marked(control, mark),
             )));
         }
     }
@@ -364,6 +496,7 @@ fn control_rows<'a>(
     menu: Option<&'a MenuTarget>,
     plot: &HistogramModel,
     under_header: bool,
+    mark: Option<&RevealKey>,
 ) -> Vec<PanelRow<'a>> {
     let mut rows = Vec::new();
     let mut buttons: Vec<&'a ControlModel> = Vec::new();
@@ -388,10 +521,11 @@ fn control_rows<'a>(
         flush(&mut rows, &mut buttons);
         match control {
             ControlModel::Group(group) => {
-                rows.extend(group_rows(module_id, enabled, group, menu, plot));
+                rows.extend(group_rows(module_id, enabled, group, menu, plot, mark));
             }
-            other => rows.push(PanelRow::Plain(control_view(
-                module_id, enabled, other, menu, plot,
+            other => rows.push(PanelRow::Plain(revealable(
+                control_view(module_id, enabled, other, menu, plot),
+                is_marked(other, mark),
             ))),
         }
     }
@@ -540,7 +674,7 @@ pub(crate) fn control_view<'a>(
         ControlModel::Color(color) => color_view(enabled, color, menu),
         ControlModel::Curve(curve) => curve_view(enabled, curve, menu, plot),
         ControlModel::Group(group) => column(finish_rows(
-            group_rows(module_id, enabled, group, menu, plot),
+            group_rows(module_id, enabled, group, menu, plot, None),
             menu,
         ))
         .spacing(theme::ROW_SPACING)
@@ -1602,6 +1736,7 @@ fn group_rows<'a>(
     group: &'a GroupControl,
     menu: Option<&'a MenuTarget>,
     plot: &HistogramModel,
+    mark: Option<&RevealKey>,
 ) -> Vec<PanelRow<'a>> {
     let enabled = enabled && group.enabled;
     let header = sub_group_header(
@@ -1631,7 +1766,8 @@ fn group_rows<'a>(
         }
         None => header,
     };
-    let mut rows = vec![PanelRow::Plain(header)];
+    let marked = matches!(mark, Some(RevealKey::Group(path)) if *path == group.path);
+    let mut rows = vec![PanelRow::Plain(revealable(header, marked))];
     if group.expanded {
         rows.extend(control_rows(
             module_id,
@@ -1640,6 +1776,7 @@ fn group_rows<'a>(
             menu,
             plot,
             true,
+            mark,
         ));
     }
     rows
@@ -2131,6 +2268,18 @@ mod tests {
             style: crate::state::tools::ActionControlStyle::Default,
             icon: icon.map(str::to_owned),
         })
+    }
+
+    /// A revealed element already in view stays put; one above is brought to the top, one below is
+    /// scrolled up just far enough, and one taller than the view shows its top.
+    #[test]
+    fn a_reveal_scrolls_only_as_far_as_it_must() {
+        // A 600-tall view scrolled to 100 shows 100..700.
+        assert_eq!(reveal_offset(600.0, 300.0, 40.0, 100.0), 100.0);
+        assert_eq!(reveal_offset(600.0, 50.0, 40.0, 100.0), 26.0);
+        assert_eq!(reveal_offset(600.0, 10.0, 40.0, 100.0), 0.0);
+        assert_eq!(reveal_offset(600.0, 900.0, 40.0, 100.0), 364.0);
+        assert_eq!(reveal_offset(600.0, 900.0, 1200.0, 100.0), 876.0);
     }
 
     /// A run is an icon row only when every control in it is an action naming a known icon: the

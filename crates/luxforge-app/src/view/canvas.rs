@@ -14,7 +14,7 @@ use crate::{
     },
     layout::{FIT_INSET_BOTTOM, FIT_INSET_EDGE},
     state::canvas::{
-        CanvasModel, DraftBar, Notice, NoticeAction, NoticeIcon, NoticeTone, PhotoView,
+        CanvasFill, CanvasModel, DraftBar, Notice, NoticeAction, NoticeIcon, NoticeTone, PhotoView,
         SurfaceMode, ZoomView,
     },
     view::{
@@ -25,16 +25,17 @@ use crate::{
     },
 };
 use iced::{
-    Alignment, ContentFit, Element, Length, Padding, Point, Rectangle, Renderer, Size, Theme,
+    Alignment, ContentFit, Length, Padding, Point, Rectangle, Renderer, Size,
     alignment::{Horizontal, Vertical},
     mouse::{self, Cursor},
-    widget::{Column, canvas, container, mouse_area, responsive, scrollable, stack, text},
+    widget::{Column, Row, canvas, container, mouse_area, responsive, scrollable, stack, text},
 };
 use luxforge_ui::{
     ChipModel, ControlKey, ControlKeyEvent, DraftBarModel, DraftFinish, DraftSubject, Icon,
     ModeEntry, NoticeCardModel, ToggleEntry, Tone, chip, draft_bar_with_controls, focus_control,
     mode_strip, notice_card, theme,
 };
+use luxforge_ui::{Element, Theme, Token};
 
 /// The Develop canvas's one photo surface. The plain photograph at every zoom and a crop draft's
 /// input stage all draw on it, so the photograph's textures stay while a draft shows the stage, and
@@ -70,6 +71,26 @@ pub(crate) fn fit_rect_in(canvas: [u32; 4], scale: f32) -> [u32; 4] {
     ]
 }
 
+/// The colour each canvas background names in `palette`, the active theme's: Dark, Black and Grey
+/// are the same fixed greys in every theme, and Theme is the theme's own surround. The photo
+/// surface draws only the photograph, so the canvas region's fill is what shows around it, at
+/// Fit, at a percentage and on either side of the compare divider.
+pub(crate) fn background_colour(fill: CanvasFill, palette: &luxforge_ui::Palette) -> iced::Color {
+    match fill {
+        CanvasFill::Dark => theme::CANVAS,
+        CanvasFill::Black => theme::CANVAS_BLACK,
+        CanvasFill::Grey => theme::CANVAS_GREY,
+        CanvasFill::Theme => palette.surround,
+    }
+}
+
+/// The canvas region's surface for `fill`, read from the theme Iced draws with.
+pub(crate) fn background_surface(
+    fill: CanvasFill,
+) -> impl Fn(&luxforge_ui::Theme) -> iced::widget::container::Style {
+    move |active| theme::canvas_surface(background_colour(fill, active.palette()))(active)
+}
+
 /// The whole canvas region: the photograph, and the floating chrome stacked over it.
 pub(crate) fn surface<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Element<'a, Message> {
     let mut layers: Vec<Element<'a, Message>> = vec![photo_area(model, surfaces)];
@@ -81,6 +102,9 @@ pub(crate) fn surface<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Ele
     }
     if let Some(top) = top_chrome(model) {
         layers.push(top);
+    }
+    if let Some(information) = information(model) {
+        layers.push(information);
     }
     layers.push(strip(model));
     stack(layers)
@@ -133,18 +157,31 @@ fn strip<'a>(model: &'a CanvasModel) -> Element<'a, Message> {
             enabled: mode.enabled,
         })
         .collect();
-    let toggles = [ToggleEntry {
-        label: "Thirds".into(),
-        icon: Some(Icon::Thirds),
-        shortcut: Some("O".into()),
-        on: model.thirds,
-    }];
+    let toggles = [
+        ToggleEntry {
+            label: "Thirds".into(),
+            icon: Some(Icon::Thirds),
+            shortcut: Some("O".into()),
+            on: model.thirds,
+        },
+        ToggleEntry {
+            label: "Information".into(),
+            icon: Some(Icon::Information),
+            shortcut: Some("I".into()),
+            on: model.information_on,
+        },
+    ];
     let ids: Vec<String> = model.modes.iter().map(|mode| mode.id.clone()).collect();
     let bar = mode_strip(
         &modes,
         move |index| Message::View(ViewMessage::SetMode(ids[index].clone())),
         &toggles,
-        |_| Message::View(ViewMessage::ToggleThirds),
+        |index| {
+            Message::View(match index {
+                0 => ViewMessage::ToggleThirds,
+                _ => ViewMessage::ToggleInformation,
+            })
+        },
     );
     container(bar)
         .width(Length::Fill)
@@ -153,6 +190,58 @@ fn strip<'a>(model: &'a CanvasModel) -> Element<'a, Message> {
         .align_x(Horizontal::Center)
         .align_y(Vertical::Bottom)
         .into()
+}
+
+/// The readout floats over the photograph, independent of zoom and the side panels. Text receives
+/// no photo gestures; metadata and size are already formatted in the pure view model.
+fn information(model: &CanvasModel) -> Option<Element<'_, Message>> {
+    let information = model.information.as_ref()?;
+    let mut content = Column::new().spacing(5);
+    content = content.push(
+        text("Information")
+            .size(12)
+            .style(theme::ink(Token::TextBright)),
+    );
+    for (label, value) in &information.rows {
+        content = content.push(
+            Row::new()
+                .spacing(10)
+                .push(
+                    text(*label)
+                        .size(11)
+                        .style(theme::ink(Token::TextSecondary))
+                        .width(80),
+                )
+                .push(
+                    text(value)
+                        .size(11)
+                        .style(theme::ink(Token::Text))
+                        .width(Length::Fill),
+                ),
+        );
+    }
+    let card = container(content)
+        .padding(12)
+        .width(320)
+        .style(|theme: &Theme| {
+            theme::chrome_surface(theme, Token::ChromeBorder, theme::CHROME_RADIUS)
+        });
+    Some(
+        container(card)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(Padding {
+                top: if model.draft_bar.is_some() {
+                    96.0
+                } else {
+                    theme::CHROME_INSET
+                },
+                ..Padding::new(theme::CHROME_INSET)
+            })
+            .align_x(Horizontal::Left)
+            .align_y(Vertical::Top)
+            .into(),
+    )
 }
 
 /// The draft bar and the notices under it, at the top centre of the canvas: the bar first and each
@@ -317,7 +406,7 @@ struct Thirds {
     dimensions: (u32, u32),
 }
 
-impl canvas::Program<Message> for Thirds {
+impl canvas::Program<Message, Theme> for Thirds {
     type State = ();
 
     fn draw(
@@ -419,14 +508,14 @@ struct RenderBar {
     fraction: f32,
 }
 
-impl canvas::Program<Message> for RenderBar {
+impl canvas::Program<Message, Theme> for RenderBar {
     type State = ();
 
     fn draw(
         &self,
         _state: &Self::State,
         renderer: &Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         bounds: Rectangle,
         _cursor: Cursor,
     ) -> Vec<canvas::Geometry> {
@@ -441,7 +530,7 @@ impl canvas::Program<Message> for RenderBar {
         frame.fill_rectangle(
             track.position(),
             Size::new(filled, track.height),
-            theme::ACCENT,
+            theme.palette().accent,
         );
         vec![frame.into_geometry()]
     }
@@ -462,7 +551,7 @@ fn empty(message: &str) -> Element<'_, Message> {
     container(
         text(message.to_owned())
             .size(luxforge_ui::theme::SIZE_TITLE)
-            .color(luxforge_ui::theme::TEXT_SECONDARY),
+            .style(theme::ink(Token::TextSecondary)),
     )
     .center(Length::Fill)
     .into()

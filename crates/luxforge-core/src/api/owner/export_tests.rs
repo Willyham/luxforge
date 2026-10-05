@@ -27,6 +27,29 @@ impl Harness {
         Self::open(dir, catalog, Arc::new(ModuleRegistry::developer()))
     }
 
+    /// [`Self::start`] with the person's preferences kept in `<dir>/config`.
+    fn with_preferences(name: &str) -> Self {
+        let dir = temp_dir(&format!("export-{name}")).canonicalize().unwrap();
+        let catalog = dir.join("catalog.sqlite");
+        let (owner, join) = OwnerHandle::start_with_host(
+            &catalog,
+            Arc::new(ModuleRegistry::developer()),
+            HostConfig {
+                preferences_dir: Some(dir.join("config")),
+                ..HostConfig::unconfigured()
+            },
+        )
+        .unwrap();
+        let client = owner.register();
+        Self {
+            owner,
+            join: Some(join),
+            client,
+            dir,
+            catalog,
+        }
+    }
+
     fn open(dir: PathBuf, catalog: PathBuf, registry: Arc<ModuleRegistry>) -> Self {
         let (owner, join) = OwnerHandle::start_observed(
             &catalog,
@@ -299,7 +322,7 @@ fn assert_matches(path: &Path, frame: &crate::Raster, what: &str) {
 /// the job rendered exactly that frame and added nothing to it.
 fn assert_encodes(path: &Path, frame: &crate::Raster, what: &str) {
     let mut expected = Vec::new();
-    crate::export::encode::encode_jpeg(&mut expected, frame, None, &mut |_| {}, &|| Ok(()))
+    crate::export::encode::encode_jpeg(&mut expected, frame, None, None, &mut |_| {}, &|| Ok(()))
         .unwrap();
     assert!(
         fs::read(path).unwrap() == expected,
@@ -416,6 +439,33 @@ fn detail_export_evaluates_exact_detail_once() {
         format!("{:x}", Sha256::digest(fs::read(&original).unwrap())),
         original_hash
     );
+}
+
+/// With an export folder remembered, `export.plan` suggests a name there, counting up within it,
+/// while it is a folder that exists; otherwise beside the original, as with none remembered.
+#[test]
+fn export_plan_suggests_the_remembered_folder_only_while_it_exists() {
+    let harness = Harness::with_preferences("remembered-folder");
+    let state = harness.import("DSC_0042.jpg");
+    let asset = state["asset"]["id"].clone();
+    let suggested = || harness.ok("export.plan", json!({"asset_id": asset}))["suggested"].clone();
+    let beside = json!(harness.dir.join("DSC_0042-edited.jpg"));
+    assert_eq!(suggested(), beside, "nothing remembered");
+    let folder = harness.dir.join("Exports");
+    harness.ok("preferences.set", json!({"export_folder": folder}));
+    assert_eq!(suggested(), beside, "a missing folder is not suggested");
+    fs::create_dir(&folder).unwrap();
+    assert_eq!(suggested(), json!(folder.join("DSC_0042-edited.jpg")));
+    fs::write(folder.join("DSC_0042-edited.jpg"), b"taken").unwrap();
+    assert_eq!(suggested(), json!(folder.join("DSC_0042-edited-2.jpg")));
+    // A file where the folder was is not a folder.
+    fs::remove_dir_all(&folder).unwrap();
+    fs::write(&folder, b"not a folder").unwrap();
+    assert_eq!(suggested(), beside);
+    fs::remove_file(&folder).unwrap();
+    fs::create_dir(&folder).unwrap();
+    harness.ok("preferences.set", json!({"export_folder": null}));
+    assert_eq!(suggested(), beside, "forgotten");
 }
 
 /// An export plans the entry's output stage and suggests a name beside the original, writes the
@@ -707,6 +757,58 @@ fn keep_metadata_writes_one_exif_segment_and_the_default_writes_none() {
     assert_eq!(value(exif::Tag::PixelYDimension).as_deref(), Some("320"));
     assert_eq!(value(exif::Tag::MakerNote), None);
     assert_eq!(value(exif::Tag::BodySerialNumber), None);
+}
+
+/// The JFIF header's density, `(units, x, y)`.
+fn jfif_density(bytes: &[u8]) -> (u8, u16, u16) {
+    let app0 = luxforge_jpeg::segments(bytes)
+        .map(Result::unwrap)
+        .find(|segment| segment.marker == 0xe0)
+        .expect("a JFIF header");
+    let density = |at: usize| u16::from_be_bytes([app0.payload[at], app0.payload[at + 1]]);
+    (app0.payload[7], density(8), density(10))
+}
+
+/// By default the JFIF header names no density, a unitless 1:1 aspect ratio; asked for one, it
+/// carries that many pixels per inch both ways and the file is otherwise the same bytes. A density
+/// outside the JFIF field is a validation error and writes nothing.
+#[test]
+fn pixels_per_inch_sets_the_jfif_density_and_nothing_else() {
+    let harness = Harness::start("density");
+    let state = harness.import("density.jpg");
+    let asset = state["asset"]["id"].clone();
+    let out = destinations(&harness);
+    let plain = harness.export(json!({"asset_id": asset, "destination": out.join("plain.jpg")}));
+    let dense = harness.export(json!({
+        "asset_id": asset, "destination": out.join("dense.jpg"), "pixels_per_inch": 144,
+    }));
+    assert_eq!(plain["pixels_per_inch"], Value::Null);
+    assert_eq!(dense["pixels_per_inch"], json!(144));
+    harness.settle(&plain["job_id"]);
+    harness.settle(&dense["job_id"]);
+    let plain = fs::read(out.join("plain.jpg")).unwrap();
+    let dense = fs::read(out.join("dense.jpg")).unwrap();
+    assert_eq!(jfif_density(&plain), (0, 1, 1));
+    assert_eq!(jfif_density(&dense), (1, 144, 144));
+    let differing: Vec<usize> = (0..plain.len().max(dense.len()))
+        .filter(|&at| plain.get(at) != dense.get(at))
+        .collect();
+    assert_eq!(
+        differing,
+        [13, 15, 17],
+        "only the units and the densities' low bytes"
+    );
+    for density in [0, 65536] {
+        let refused = harness.refused(
+            "export.jpeg",
+            with_envelope(json!({
+                "asset_id": asset, "destination": out.join("refused.jpg"),
+                "pixels_per_inch": density,
+            })),
+        );
+        assert_eq!(refused.code, "validation", "{density}: {refused:?}");
+    }
+    assert!(!out.join("refused.jpg").exists());
 }
 
 /// Every obvious refusal is answered at once and writes nothing: the destination's shape, an

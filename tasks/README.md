@@ -41,6 +41,8 @@ The Corrections plan covers Clone and Heal, the repair stage, the shared brush a
 
 The AI editing plan runs on the owner's decisions of 2026-10-05 in [decisions](../docs/decisions.md#ai-editing): quality-first model choice with no licence or provenance gate, ONNX Runtime, stale patches kept rendering, budgets raised for quality, consent remembered per provider, sky replacement in scope. It builds on the object removal research, the standalone prototype measured on the M4 (on the `claude/object-removal-research-d3374b` branch until its harness task brings it onto `main`), the implemented module capabilities and the delivered mask model. The decisions task is complete; the harness task and the two foundation tasks that enter `crates/` are ready, the qualification tasks need only the harness, and the plan is sequenced after the GPU-first integration branch merges, with the Corrections foundation beside its first stage.
 
+UI themes are implemented and their plan is deleted; the outcome is in the [UI themes design](../docs/design/ui-themes.md) and [feature status](../docs/features.md), and the remaining questions are a [product decisions](product-decisions.json) task.
+
 RAW editing is implemented with initial native M4 verification. Its [design](../docs/design/initial-raw.md) records the owner's continuous RAW editing requirement, the pinned processing path, and outstanding controlled quality, resource and platform qualification, which the RAW plan carries. The supplied FC3411 DNG has required gain/warp corrections and continuous editor support; its [contract](../docs/design/air2s-dng.md) records the qualified encoding, numerical interpretation and limits. RAW recipes export through the shared [JPEG exporter](../docs/design/export.md).
 
 ## Conventions

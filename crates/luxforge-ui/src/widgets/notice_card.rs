@@ -3,8 +3,9 @@
 use super::button_row::{ButtonSize, ButtonTone, text_button};
 use super::icon_button::{Icon, icon};
 use crate::theme;
+use crate::{Element, Theme, Token};
 use iced::widget::{Row, column, container, row, text};
-use iced::{Alignment, Color, Element, Length, Theme};
+use iced::{Alignment, Length};
 
 /// A notice's tone, which sets its outline and its icon's colour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,27 +15,27 @@ pub enum Tone {
     /// A notice that needs a decision (e.g. a conflict): the accent outline and icon, and its last
     /// action is the primary one.
     Warning,
-    /// A notice that reports a failure (e.g. a missing original): the clipping red's outline and
+    /// A notice that reports a failure (e.g. a missing original): the error ink's outline and
     /// icon.
     Error,
 }
 
 impl Tone {
     /// The card's outline.
-    pub const fn border(self) -> Color {
+    pub fn border(self) -> Token {
         match self {
-            Self::Neutral => theme::NOTICE_BORDER,
-            Self::Warning => theme::NOTICE_WARNING_BORDER,
-            Self::Error => theme::NOTICE_ERROR_BORDER,
+            Self::Neutral => Token::StripRule,
+            Self::Warning => Token::NoticeWarningBorder,
+            Self::Error => Token::NoticeErrorBorder,
         }
     }
 
     /// The leading icon's colour.
-    pub const fn ink(self) -> Color {
+    pub fn ink(self) -> Token {
         match self {
-            Self::Neutral => theme::TEXT_SECONDARY,
-            Self::Warning => theme::ACCENT,
-            Self::Error => theme::CLIPPING_HIGHLIGHT,
+            Self::Neutral => Token::TextSecondary,
+            Self::Warning => Token::Accent,
+            Self::Error => Token::Error,
         }
     }
 }
@@ -59,10 +60,10 @@ pub fn notice_card<'a, M: Clone + 'a>(
     let header = text(model.title.clone())
         .size(theme::SIZE_NOTICE_TITLE)
         .font(theme::FONT_SEMIBOLD)
-        .color(theme::TEXT_BRIGHT);
+        .style(theme::ink(Token::TextBright));
     let body = text(model.body.clone())
         .size(theme::SIZE_NOTICE_BODY)
-        .color(theme::TEXT_SECONDARY);
+        .style(theme::ink(Token::TextSecondary));
 
     let count = actions.len();
     let mut action_row = Row::new()
@@ -94,6 +95,6 @@ pub fn notice_card<'a, M: Clone + 'a>(
     container(content)
         .padding(theme::NOTICE_PADDING)
         .width(Length::Fixed(theme::NOTICE_WIDTH))
-        .style(move |_: &Theme| theme::chrome_surface(border, theme::CHROME_RADIUS))
+        .style(move |theme: &Theme| theme::chrome_surface(theme, border, theme::CHROME_RADIUS))
         .into()
 }

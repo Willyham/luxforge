@@ -11,10 +11,11 @@
 use super::icon_button::{Icon, IconButtonModel, header_icon_button, icon};
 use super::truncated_text::truncated_text;
 use crate::theme;
+use crate::{Element, Theme, Token};
 use iced::alignment::Horizontal;
 use iced::widget::text::{LineHeight, Wrapping};
 use iced::widget::{Column, Space, button, column, container, row, text};
-use iced::{Alignment, Border, Color, Element, Length, Padding, Theme};
+use iced::{Alignment, Border, Color, Length, Padding};
 
 /// Plain data for one module section header.
 #[derive(Debug, Clone, PartialEq)]
@@ -74,18 +75,18 @@ pub(crate) fn section_header<'a, M: Clone + 'a>(
         Icon::ChevronRight
     };
     let title_color = if model.unavailable.is_some() {
-        theme::TEXT_SECONDARY
+        Token::TextSecondary
     } else {
-        theme::TEXT_PRIMARY
+        Token::Text
     };
 
     let mut leading = row![
-        icon(chevron, theme::DISCLOSURE_SIZE, theme::TEXT_SECONDARY),
+        icon(chevron, theme::DISCLOSURE_SIZE, Token::TextSecondary),
         text(model.title.clone())
             .size(theme::SIZE_TITLE)
             .font(theme::FONT_SEMIBOLD)
             .wrapping(Wrapping::None)
-            .color(title_color),
+            .style(theme::ink(title_color)),
     ]
     .spacing(theme::MODULE_HEADER_SPACING)
     .align_y(Alignment::Center);
@@ -111,11 +112,11 @@ pub(crate) fn section_header<'a, M: Clone + 'a>(
         .align_x(Horizontal::Right)
     };
     let trailing: Element<'a, M> = if let Some(reason) = &model.unavailable {
-        one_line(reason, theme::CLIPPING_HIGHLIGHT).into()
+        one_line(reason, Token::Error).into()
     } else if !model.expanded
         && let Some(hint) = &model.hint
     {
-        one_line(hint, theme::TEXT_TERTIARY).into()
+        one_line(hint, Token::TextTertiary).into()
     } else {
         Space::new().width(Length::Fill).into()
     };
@@ -129,7 +130,7 @@ pub(crate) fn section_header<'a, M: Clone + 'a>(
             text(status.clone())
                 .size(theme::SIZE_CAPTION)
                 .wrapping(Wrapping::None)
-                .color(theme::ACCENT),
+                .style(theme::ink(Token::Accent)),
         );
     }
 
@@ -185,12 +186,12 @@ pub fn band_header<'a, M: Clone + 'a>(
         Icon::ChevronRight
     };
     let mut leading = row![
-        icon(chevron, theme::DISCLOSURE_SIZE, theme::TEXT_SECONDARY),
+        icon(chevron, theme::DISCLOSURE_SIZE, Token::TextSecondary),
         text(title.to_owned())
             .size(theme::SIZE_TITLE)
             .font(theme::FONT_SEMIBOLD)
             .wrapping(Wrapping::None)
-            .color(theme::TEXT_PRIMARY),
+            .style(theme::ink(Token::Text)),
     ]
     .spacing(theme::MODULE_HEADER_SPACING)
     .align_y(Alignment::Center);
@@ -199,7 +200,7 @@ pub fn band_header<'a, M: Clone + 'a>(
     }
     let trailing: Element<'a, M> = match hint {
         Some(hint) => container(
-            truncated_text(hint, theme::SIZE_CAPTION, theme::FONT, theme::TEXT_TERTIARY)
+            truncated_text(hint, theme::SIZE_CAPTION, theme::FONT, Token::TextTertiary)
                 .line_height(LineHeight::Absolute(theme::CAPTION_LINE_HEIGHT.into())),
         )
         .width(Length::Fill)
@@ -262,7 +263,7 @@ pub(crate) fn hairline<'a, M: 'a>(style: fn(&Theme) -> container::Style) -> Elem
 }
 
 /// The scope chip: the bound mask's name in the accent, semibold, on the accent tint the band's own
-/// Bar surface takes it at ([`theme::STRIP_SELECTED`], the accent at 16% over the Bar). It is not a
+/// Bar surface takes it at ([`Token::StripSelected`], the accent at 16% over the Bar). It is not a
 /// button — the band's press still toggles the section — and it never wraps: the hint before it is
 /// what gives way.
 fn scope_chip<'a, M: 'a>(scope: &str) -> Element<'a, M> {
@@ -272,12 +273,12 @@ fn scope_chip<'a, M: 'a>(scope: &str) -> Element<'a, M> {
             .font(theme::FONT_SEMIBOLD)
             .line_height(LineHeight::Absolute(theme::CAPTION_LINE_HEIGHT.into()))
             .wrapping(Wrapping::None)
-            .color(theme::ACCENT),
+            .style(theme::ink(Token::Accent)),
     )
     .padding(SCOPE_PADDING)
-    .style(|_theme: &Theme| {
+    .style(|theme: &Theme| {
         container::Style::default()
-            .background(theme::STRIP_SELECTED)
+            .background(theme.palette().strip_selected)
             .border(Border {
                 radius: SCOPE_RADIUS.into(),
                 width: 0.0,
@@ -292,9 +293,9 @@ pub(crate) fn accent_dot<'a, M: 'a>() -> Element<'a, M> {
     container(Space::new())
         .width(Length::Fixed(theme::DOT_SIZE))
         .height(Length::Fixed(theme::DOT_SIZE))
-        .style(|_theme: &Theme| {
+        .style(|theme: &Theme| {
             container::Style::default()
-                .background(theme::ACCENT)
+                .background(theme.palette().accent)
                 .border(Border {
                     radius: (theme::DOT_SIZE / 2.0).into(),
                     width: 0.0,

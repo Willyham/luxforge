@@ -13,8 +13,9 @@
 
 use super::curve_editor::invalidate_on_version_change;
 use crate::theme;
+use crate::{Element, Theme};
 use iced::widget::canvas;
-use iced::{Color, Element, Length, Point, Rectangle, Renderer, Size, Theme};
+use iced::{Color, Length, Point, Rectangle, Renderer, Size};
 use std::cell::Cell;
 use std::sync::Arc;
 
@@ -92,8 +93,9 @@ struct Thumbnail {
     model: CoverageThumbnailModel,
 }
 
-/// What the cached drawing was built from: the caller's version, the grid's allocation and size.
-type Key = (u64, usize, usize, usize);
+/// What the cached drawing was built from: the caller's version, the grid's allocation and size,
+/// and the theme's generation, which colours its outline.
+type Key = (u64, usize, usize, usize, u64);
 
 #[derive(Default)]
 struct ThumbnailState {
@@ -101,14 +103,36 @@ struct ThumbnailState {
     key: Cell<Option<Key>>,
 }
 
-impl<M> canvas::Program<M> for Thumbnail {
+impl Thumbnail {
+    /// Calls `clear` when the grid or the theme changed since the cache was drawn.
+    fn refresh(&self, key: &Cell<Option<Key>>, theme: &Theme, clear: impl FnOnce()) {
+        let model = &self.model;
+        let address = model
+            .cells
+            .as_ref()
+            .map_or(0, |cells| cells.as_ptr() as usize);
+        invalidate_on_version_change(
+            key,
+            (
+                model.version,
+                address,
+                model.width,
+                model.height,
+                theme.generation(),
+            ),
+            clear,
+        );
+    }
+}
+
+impl<M> canvas::Program<M, Theme> for Thumbnail {
     type State = ThumbnailState;
 
     fn draw(
         &self,
         state: &Self::State,
         renderer: &Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         bounds: Rectangle,
         _cursor: iced::mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
@@ -116,15 +140,8 @@ impl<M> canvas::Program<M> for Thumbnail {
             return Vec::new();
         }
         let model = &self.model;
-        let address = model
-            .cells
-            .as_ref()
-            .map_or(0, |cells| cells.as_ptr() as usize);
-        invalidate_on_version_change(
-            &state.key,
-            (model.version, address, model.width, model.height),
-            || state.cache.clear(),
-        );
+        self.refresh(&state.key, theme, || state.cache.clear());
+        let border = theme.palette().thumbnail_border;
         vec![state.cache.draw(renderer, bounds.size(), |frame| {
             let size = frame.size();
             frame.fill(
@@ -168,7 +185,7 @@ impl<M> canvas::Program<M> for Thumbnail {
                     (theme::THUMBNAIL_RADIUS - half).into(),
                 ),
                 canvas::Stroke::default()
-                    .with_color(theme::THUMBNAIL_BORDER)
+                    .with_color(border)
                     .with_width(theme::BORDER_WIDTH),
             );
         })]
@@ -178,6 +195,28 @@ impl<M> canvas::Program<M> for Thumbnail {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A thumbnail is drawn again when the theme changes, since its outline is the theme's, and
+    /// not when only its version is asked again.
+    #[test]
+    fn a_theme_change_redraws_a_thumbnail() {
+        let thumbnail = Thumbnail {
+            model: CoverageThumbnailModel {
+                cells: Some(Arc::from(vec![0u8, 255, 128, 64])),
+                width: 2,
+                height: 2,
+                version: 7,
+            },
+        };
+        let (first, second) = (Theme::luxforge_dark(), Theme::luxforge_dark());
+        let key = Cell::new(None);
+        let mut clears = 0;
+        thumbnail.refresh(&key, &first, || clears += 1);
+        thumbnail.refresh(&key, &first, || clears += 1);
+        assert_eq!(clears, 1, "an unchanged theme keeps the drawing");
+        thumbnail.refresh(&key, &second, || clears += 1);
+        assert_eq!(clears, 2, "a new generation redraws it");
+    }
 
     #[test]
     fn a_grid_at_or_under_the_thumbnail_size_is_drawn_as_given() {

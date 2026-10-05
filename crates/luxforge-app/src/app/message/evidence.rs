@@ -34,6 +34,9 @@ pub(crate) enum EvidenceMessage {
     HostAnswered(Result<Box<HostAnswer>, String>),
     /// The edit an `agent` step sent through the run's second client answered.
     AgentAnswered(Result<Value, String>),
+    /// The host method an `agent` step sent through the run's second client answered, with the
+    /// event sequence it was answered at.
+    AgentHostAnswered(Result<(Value, u64), String>),
     /// The graphics backend, recorded with every captured frame.
     Info(iced::system::Information),
     /// The GPU identity hook's boundary, held from the frame on screen off the UI thread, or

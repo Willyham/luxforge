@@ -17,10 +17,11 @@ use crate::{
     view::canvas_view::CanvasView,
 };
 use iced::{
-    Point, Rectangle, Renderer, Theme,
+    Point, Rectangle, Renderer,
     mouse::{self, Cursor},
     widget::canvas::{self, Action, Event, Frame, Geometry, Path, Stroke},
 };
+use luxforge_ui::Theme;
 use luxforge_ui::theme;
 
 /// The hit radius of one handle, in logical pixels. It is the same for every grip, whatever size
@@ -190,7 +191,7 @@ fn local(cursor: Cursor, bounds: Rectangle) -> Option<Point> {
         .map(|point| Point::new(point.x - bounds.x, point.y - bounds.y))
 }
 
-impl canvas::Program<Message> for MaskCanvas<'_> {
+impl canvas::Program<Message, Theme> for MaskCanvas<'_> {
     type State = Interaction;
 
     fn update(
@@ -390,7 +391,7 @@ const GRIP_RING: iced::Color = iced::Color::from_rgba(0.0, 0.0, 0.0, 0.5);
 /// A grip's fill: the accent for the anchor, white for the rest.
 fn grip_fill(grip: Grip) -> iced::Color {
     match grip {
-        Grip::Anchor => theme::ACCENT,
+        Grip::Anchor => theme::PHOTO_ANCHOR,
         Grip::Round | Grip::Square => iced::Color::WHITE,
     }
 }
@@ -693,7 +694,7 @@ mod tests {
                 if handle.moves_figure() {
                     anchors += 1;
                     assert_eq!(grip, Grip::Anchor, "{kind} {handle:?}");
-                    assert_eq!(grip_fill(grip), theme::ACCENT, "{kind} {handle:?}");
+                    assert_eq!(grip_fill(grip), theme::PHOTO_ANCHOR, "{kind} {handle:?}");
                     assert!(
                         grip_radius(grip) < HANDLE_RADIUS,
                         "the anchor is the smaller dot"

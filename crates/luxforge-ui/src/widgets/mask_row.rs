@@ -20,10 +20,11 @@ use super::mode_control::{CombineMode, ModeControlModel, inert_mode_control, mod
 use super::number_field::value_input;
 use super::truncated_text::truncated_text;
 use crate::theme;
+use crate::{Element, Theme, Token};
 use iced::alignment::Horizontal;
 use iced::widget::text::{LineHeight, Wrapping};
 use iced::widget::{Id, Space, button, container, mouse_area, row, text, tooltip};
-use iced::{Alignment, Color, Element, Length, Padding};
+use iced::{Alignment, Color, Length, Padding};
 
 /// The identity of the one name input a row being renamed draws, so the caller can focus it as the
 /// rename starts. Only one row is renamed at a time.
@@ -105,20 +106,20 @@ pub fn mask_row<'a, M: Clone + 'a>(
         .spacing(theme::MASK_ROW_SPACING)
         .align_y(Alignment::Center);
     if model.active {
-        content = content.push(marker_circle(Some(theme::ACCENT), None));
+        content = content.push(marker_circle(Some(Token::Accent), None));
     }
     content = content.push(
         text(model.amount.clone())
             .size(theme::SIZE_CAPTION)
-            .color(theme::TEXT_TERTIARY)
+            .style(theme::ink(Token::TextTertiary))
             .wrapping(Wrapping::None)
             .align_x(Horizontal::Right)
             .width(Length::Fixed(theme::MASK_AMOUNT_WIDTH)),
     );
     let (eye, eye_ink) = if model.visible {
-        (Icon::Eye, theme::TEXT_SECONDARY)
+        (Icon::Eye, Token::TextSecondary)
     } else {
-        (Icon::EyeOff, theme::TEXT_FAINT)
+        (Icon::EyeOff, Token::TextFaint)
     };
     content = content.push(small_button(
         eye,
@@ -138,7 +139,7 @@ pub fn mask_row<'a, M: Clone + 'a>(
     row_button(
         content.into(),
         theme::MASK_ROW_PADDING,
-        model.selected.then_some(theme::MASK_ROW_SELECTED),
+        model.selected.then_some(Token::MaskRowSelected),
         false,
         messages.on_select.filter(|_| enabled && !renaming),
     )
@@ -205,11 +206,11 @@ pub fn component_row<'a, M: Clone + 'a>(
     let enabled = model.enabled;
     let renaming = model.renaming.is_some();
     let grip = drag_handle(
-        icon(Icon::Grip, theme::GRIP_SIZE, theme::TEXT_FAINT),
+        icon(Icon::Grip, theme::GRIP_SIZE, Token::TextFaint),
         messages.on_drag_start.filter(|_| enabled && !renaming),
     );
     let kind: Element<'a, M> = match model.icon {
-        Some(kind) => icon(kind, theme::HEADER_ICON_SIZE, theme::TEXT_SECONDARY),
+        Some(kind) => icon(kind, theme::HEADER_ICON_SIZE, Token::TextSecondary),
         None => Space::new().into(),
     };
     let mode = match messages.on_mode {
@@ -217,9 +218,9 @@ pub fn component_row<'a, M: Clone + 'a>(
         _ => inert_mode_control(&model.mode),
     };
     let invert_ink = if model.inverted {
-        theme::ACCENT
+        Token::Accent
     } else {
-        theme::TEXT_TERTIARY
+        Token::TextTertiary
     };
     let content = row![
         grip,
@@ -252,7 +253,7 @@ pub fn component_row<'a, M: Clone + 'a>(
     let control = row_button(
         content.into(),
         theme::COMPONENT_ROW_PADDING,
-        model.selected.then_some(theme::LIST_ROW_CURRENT),
+        model.selected.then_some(Token::ListRowCurrent),
         model.hovered,
         messages.on_select.filter(|_| enabled && !renaming),
     );
@@ -304,11 +305,11 @@ pub fn drop_feedback<'a, M: 'a>(
             container(Space::new())
                 .width(Length::Fill)
                 .height(Length::Fill)
-                .style(|_| container::Style {
+                .style(|theme: &Theme| container::Style {
                     background: Some(
                         Color {
                             a: theme::DRAGGED_ROW_DIM,
-                            ..theme::PANEL
+                            ..theme.palette().background
                         }
                         .into(),
                     ),
@@ -320,8 +321,8 @@ pub fn drop_feedback<'a, M: 'a>(
         let line = container(Space::new())
             .width(Length::Fill)
             .height(Length::Fixed(theme::DROP_INDICATOR_WIDTH))
-            .style(|_| container::Style {
-                background: Some(theme::ACCENT.into()),
+            .style(|theme: &Theme| container::Style {
+                background: Some(theme.palette().accent.into()),
                 ..container::Style::default()
             });
         let fill = Space::new().height(Length::Fill);
@@ -351,7 +352,7 @@ pub fn stroke_row<'a, M: Clone + 'a>(
     let content = row![
         text(model.index.clone())
             .size(theme::SIZE_CAPTION)
-            .color(theme::TEXT_TERTIARY)
+            .style(theme::ink(Token::TextTertiary))
             .wrapping(Wrapping::None)
             .align_x(Horizontal::Right)
             .width(Length::Fixed(theme::STROKE_INDEX_WIDTH)),
@@ -359,16 +360,16 @@ pub fn stroke_row<'a, M: Clone + 'a>(
             model.label.clone(),
             theme::SIZE_CAPTION,
             theme::FONT,
-            theme::TEXT_LABEL,
+            Token::TextLabel,
         ))
         .width(Length::Fill),
         small_button(
             Icon::Trash,
             theme::STROKE_ICON_SIZE,
             if model.delete_enabled {
-                theme::TEXT_SECONDARY
+                Token::TextSecondary
             } else {
-                theme::TEXT_FAINT
+                Token::TextFaint
             },
             &model.delete_tooltip,
             false,
@@ -391,7 +392,7 @@ pub fn component_note<'a, M: 'a>(content: impl Into<String>) -> Element<'a, M> {
     container(
         text(content.into())
             .size(theme::SIZE_SMALL_CAPTION)
-            .color(theme::TEXT_SECONDARY),
+            .style(theme::ink(Token::TextSecondary)),
     )
     .padding(theme::COMPONENT_NOTE_PADDING)
     .width(Length::Fill)
@@ -401,9 +402,9 @@ pub fn component_note<'a, M: 'a>(content: impl Into<String>) -> Element<'a, M> {
 /// A row's name: it takes what the row's other parts leave and ends in an ellipsis first.
 fn name<'a, M: 'a>(name: &str, selected: bool, enabled: bool) -> Element<'a, M> {
     let ink = match (enabled, selected) {
-        (false, _) => theme::TEXT_TERTIARY,
-        (true, true) => theme::TEXT_CURRENT_ROW,
-        (true, false) => theme::TEXT_LABEL,
+        (false, _) => Token::TextTertiary,
+        (true, true) => Token::TextCurrentRow,
+        (true, false) => Token::TextLabel,
     };
     container(truncated_text(
         name.to_owned(),
@@ -460,7 +461,7 @@ fn drag_handle<'a, M: Clone + 'a>(content: Element<'a, M>, on_press: Option<M>) 
 fn small_button<'a, M: Clone + 'a>(
     glyph: Icon,
     size: f32,
-    ink: Color,
+    ink: Token,
     tooltip: &str,
     selected: bool,
     enabled: bool,
@@ -489,9 +490,9 @@ fn menu_button<'a, M: Clone + 'a>(
     on_press: Option<M>,
 ) -> Element<'a, M> {
     let ink = match (enabled, open) {
-        (false, _) => theme::TEXT_FAINT,
-        (true, true) => theme::ACCENT,
-        (true, false) => theme::TEXT_SECONDARY,
+        (false, _) => Token::TextFaint,
+        (true, true) => Token::Accent,
+        (true, false) => Token::TextSecondary,
     };
     small_button(
         Icon::More,
@@ -508,7 +509,7 @@ fn menu_button<'a, M: Clone + 'a>(
 fn row_button<'a, M: Clone + 'a>(
     content: Element<'a, M>,
     padding: Padding,
-    selected: Option<Color>,
+    selected: Option<Token>,
     hovered: bool,
     on_press: Option<M>,
 ) -> Element<'a, M> {

@@ -1,0 +1,22 @@
+# The legacy short names, the legacy theme_type and one canonical name beside its short form.
+theme_type = "light"
+
+accent = "#b4637a"
+
+bg = "#faf4ed"
+dark_bg = "#f2e9e1"
+darker_bg = "#e4dcd4"
+lighter_bg = "#fffaf3"
+
+fg = "#000000"
+foreground = "#575279"
+dark_fg = "#9893a5"
+light_fg = "#6e6a86"
+bright_fg = "#26233a"
+
+red = "#b4637a"
+green = "#286983"
+yellow = "#ea9d34"
+blue = "#56949f"
+magenta = "#907aa9"
+cyan = "#d7827e"

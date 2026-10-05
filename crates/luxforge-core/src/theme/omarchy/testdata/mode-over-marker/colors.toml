@@ -1,0 +1,5 @@
+# The mode key wins over a light.mode marker.
+mode = "dark"
+accent = "#4078f2"
+background = "#fafafa"
+foreground = "#383a42"

@@ -33,6 +33,21 @@ struct Config {
     /// Where this run keeps its files, resolved once at startup by [`Config::resolve_paths`].
     paths: Option<Paths>,
     catalog: Option<PathBuf>,
+    /// The catalog this launch opens and why: `--catalog`, an evidence run's own, the stored
+    /// location or the default. Resolved once by [`Config::resolve_launch`].
+    launch_catalog: Option<state::preferences::LaunchCatalog>,
+    /// The remembered window frame this launch opens at: none with `--window-size`, in a hidden
+    /// or evidence launch, or with nothing stored.
+    opening: Option<window_frame::Opening>,
+    /// The close stores the window's frame: a launch that shows its window, outside an evidence
+    /// run.
+    remember_window: bool,
+    /// The stored interface size the window opens at, read with the catalog and the frame; the
+    /// default size until [`Config::resolve_launch`] reads it.
+    interface_size: Option<u16>,
+    /// The active theme the first frame is drawn in, read with the catalog and the frame, and
+    /// taken by the editor as it is built; `None` until [`Config::resolve_launch`] reads it.
+    launch_theme: Option<luxforge_core::theme::LaunchTheme>,
     diagnostics: Option<Diagnostics>,
     run_id: String,
     /// Serve the test modules and show the components gallery; the default workspace stays a photo
@@ -83,6 +98,38 @@ impl Config {
             &overrides,
         );
         self.developer = self.launch_flags.toggle(DEVELOPER);
+    }
+
+    /// Read the launch preferences once, from this run's preferences: the catalog to open, the
+    /// window's remembered frame and the active theme. `--catalog` and an evidence run's own catalog take precedence
+    /// over the stored location, and a stored catalog whose folder is missing opens the default.
+    /// `--window-size` and a hidden or evidence launch open at their own size, placed by the
+    /// system. Reading creates nothing, and a file that cannot be read leaves the defaults.
+    fn resolve_launch(&mut self) {
+        use state::preferences::{CATALOG_FILE, LaunchCatalog};
+        let config = self.paths.as_ref().map(|paths| paths.config.clone());
+        let stored = luxforge_core::preferences::LaunchPreferences::read(config.clone());
+        self.launch_catalog = LaunchCatalog::resolve(
+            self.catalog.as_deref(),
+            self.evidence.as_deref(),
+            config.map(|config| config.join(CATALOG_FILE)),
+            stored.catalog,
+        );
+        self.remember_window = !self.hidden && self.evidence.is_none();
+        self.opening = stored
+            .window
+            .filter(|_| self.remember_window && self.size.is_none())
+            .map(window_frame::Opening::new);
+        self.interface_size = Some(stored.interface_size);
+        self.launch_theme = Some(stored.theme);
+    }
+
+    /// The window's size at launch in the system's points: `--window-size`, the remembered
+    /// frame's, or the default.
+    fn window_size(&self) -> (f32, f32) {
+        self.size
+            .or(self.opening.map(|opening| opening.size()))
+            .unwrap_or((1440., 900.))
     }
 
     /// Where this run keeps its files. An evidence run keeps them inside its evidence directory,
@@ -163,6 +210,7 @@ fn arguments() -> Result<Config, String> {
     // The directories are deliberately not created until they have real work.
     config.paths = config.resolve_paths();
     config.resolve_flags();
+    config.resolve_launch();
     // Refused here, before an evidence directory or log exists; the assembly refuses it again.
     config.registry_options().check()?;
     if config.files.len() > 16 {
@@ -237,7 +285,7 @@ fn main() {
         eprintln!("{error}");
         std::process::exit(2)
     });
-    let size = config.size.unwrap_or((1440., 900.));
+    let size = config.window_size();
     // The editor presents through the GPU device the counters read, so reading it opens nothing new.
     luxforge_core::resources::declare_gpu_presenter();
     if let Err(error) = app::run(config, size) {
@@ -316,5 +364,196 @@ mod tests {
         };
         assert!(allowed.registry_options().check().is_ok());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A launch over `root` as `arguments` resolves it after parsing.
+    fn resolved(config: Config) -> Config {
+        let mut config = config;
+        config.paths = config.resolve_paths();
+        config.resolve_flags();
+        config.resolve_launch();
+        config
+    }
+
+    fn store(root: &std::path::Path, preferences: &str) {
+        let config = root.join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(config.join("preferences.json"), preferences).unwrap();
+    }
+
+    #[test]
+    fn the_launch_catalog_follows_the_stored_location_unless_the_command_line_or_evidence_overrides_it()
+     {
+        use state::preferences::CatalogOverride;
+        let root = luxforge_testbase::paths::temp_path("launch-catalog");
+        let default = root.join("config").join("catalog.sqlite");
+        let launch = || Config {
+            data_root: Some(root.clone()),
+            ..Config::default()
+        };
+        // Nothing stored: the default, as before.
+        let catalog = resolved(launch()).launch_catalog.unwrap();
+        assert_eq!(
+            (&catalog.path, catalog.forced, &catalog.missing),
+            (&default, None, &None)
+        );
+        assert_eq!(catalog.default.as_ref(), Some(&default));
+
+        // A stored location whose folder exists opens there, though it holds no catalog yet.
+        let folder = root.join("Photos");
+        std::fs::create_dir_all(&folder).unwrap();
+        let stored = folder.join("catalog.sqlite");
+        store(
+            &root,
+            &format!(r#"{{"format":1,"catalog":{}}}"#, json(&stored)),
+        );
+        let catalog = resolved(launch()).launch_catalog.unwrap();
+        assert_eq!((&catalog.path, &catalog.missing), (&stored, &None));
+        assert!(!stored.exists(), "resolving creates nothing");
+
+        // --catalog and an evidence run take precedence.
+        let named = root.join("named.sqlite");
+        let catalog = resolved(Config {
+            catalog: Some(named.clone()),
+            ..launch()
+        })
+        .launch_catalog
+        .unwrap();
+        assert_eq!(
+            (&catalog.path, catalog.forced),
+            (&named, Some(CatalogOverride::CommandLine))
+        );
+        let evidence = root.join("evidence");
+        let catalog = resolved(Config {
+            evidence: Some(evidence.clone()),
+            ..launch()
+        })
+        .launch_catalog
+        .unwrap();
+        assert_eq!(
+            (&catalog.path, catalog.forced),
+            (
+                &evidence.join("catalog.sqlite"),
+                Some(CatalogOverride::Evidence)
+            )
+        );
+
+        // A missing folder, as with an unplugged drive, opens the default with the reason and
+        // keeps the stored location.
+        let unplugged = root.join("Unplugged").join("catalog.sqlite");
+        let stored_text = format!(r#"{{"format":1,"catalog":{}}}"#, json(&unplugged));
+        store(&root, &stored_text);
+        let catalog = resolved(launch()).launch_catalog.unwrap();
+        assert_eq!(
+            (&catalog.path, &catalog.missing),
+            (&default, &Some(unplugged.clone()))
+        );
+        assert_eq!(
+            catalog.missing_note().unwrap(),
+            format!(
+                "Catalog folder not found: {}; using the default catalog",
+                root.join("Unplugged").display()
+            )
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("config").join("preferences.json")).unwrap(),
+            stored_text,
+            "the stored location is kept"
+        );
+        // --catalog still wins over a missing folder, with no reason to give.
+        let catalog = resolved(Config {
+            catalog: Some(named.clone()),
+            ..launch()
+        })
+        .launch_catalog
+        .unwrap();
+        assert_eq!((&catalog.path, &catalog.missing), (&named, &None));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_stored_window_frame_opens_unless_window_size_or_a_hidden_or_evidence_launch_overrides_it()
+     {
+        let root = luxforge_testbase::paths::temp_path("launch-window");
+        let launch = || Config {
+            data_root: Some(root.clone()),
+            ..Config::default()
+        };
+        // Nothing stored: the default size, placed by the system, and the close remembers it.
+        let config = resolved(launch());
+        assert_eq!(
+            (config.opening, config.window_size()),
+            (None, (1440., 900.))
+        );
+        assert!(config.remember_window);
+
+        store(
+            &root,
+            r#"{"format":1,"window":{"width":1250,"height":750,"x":-1200.5,"y":40},"interface_size":125}"#,
+        );
+        let config = resolved(launch());
+        let opening = config.opening.expect("the stored frame");
+        assert_eq!(opening.position(), (-1200.5, 40.0));
+        // In the system's points; the launch hands Iced 1000 by 600 at 125%.
+        assert_eq!(config.window_size(), (1250.0, 750.0));
+        assert_eq!(config.interface_size, Some(125));
+        assert!(config.remember_window);
+
+        // --window-size opens at its own size, placed by the system.
+        let config = resolved(Config {
+            size: Some((800.0, 600.0)),
+            ..launch()
+        });
+        assert_eq!(
+            (config.opening, config.window_size()),
+            (None, (800.0, 600.0))
+        );
+        assert!(config.remember_window);
+
+        // A hidden launch and an evidence run neither open at nor store the frame.
+        for config in [
+            Config {
+                hidden: true,
+                ..launch()
+            },
+            Config {
+                evidence: Some(root.join("evidence")),
+                ..launch()
+            },
+        ] {
+            let config = resolved(config);
+            assert_eq!(config.opening, None);
+            assert!(!config.remember_window);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The launch reads the active theme with the catalog and the frame: Luxforge Dark with nothing
+    /// stored, and in place of a stored choice the library cannot show, with the problem naming it.
+    #[test]
+    fn the_launch_reads_the_active_theme_with_the_other_launch_preferences() {
+        let root = luxforge_testbase::paths::temp_path("launch-theme");
+        let launch = || Config {
+            data_root: Some(root.clone()),
+            ..Config::default()
+        };
+        let theme = resolved(launch()).launch_theme.expect("read at launch");
+        assert_eq!(theme.id, luxforge_core::theme::LUXFORGE_DARK_ID);
+        assert!(theme.problem.is_none());
+
+        store(&root, r#"{"format":1,"theme":"theme-0123456789abcdef"}"#);
+        let theme = resolved(launch()).launch_theme.expect("read at launch");
+        assert_eq!(theme.id, luxforge_core::theme::LUXFORGE_DARK_ID);
+        let problem = theme.problem.expect("the chosen theme cannot be shown");
+        assert!(
+            problem.detail.contains("theme-0123456789abcdef"),
+            "{}",
+            problem.detail
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn json(path: &std::path::Path) -> String {
+        serde_json::to_string(path).unwrap()
     }
 }

@@ -2,17 +2,19 @@
 //!
 //! The desktop holds no export logic. One chain of owner requests runs off the update loop:
 //! `export.plan` for the displayed entry's suggested name (the fixed After entry during slider
-//! comparison), the native save dialog in the original's folder, and `export.jpeg` for that entry
-//! with the chosen destination, asked again once the source is prepared when the owner answers
-//! `preparation-required`. The job then runs on the core's export
-//! lane, and the desktop reads it with `job.read` until it ends, through a reader that exists only
-//! while this window's export is queued or running (performance rule 8) and sends the desktop a
-//! message only when the job's record changes or the job ends ([`job_reads`]). The status bar says
-//! what happened; the Performance section lists the running job from `activity.list` like any
-//! other.
+//! comparison), the native save dialog in the folder that plan suggests — the remembered export
+//! folder, or the original's — and `export.jpeg` for that entry with the chosen destination, asked
+//! again once the source is prepared when the owner answers `preparation-required`. The job then
+//! runs on the core's export lane, and the desktop reads it with `job.read` until it ends, through
+//! a reader that exists only while this window's export is queued or running (performance rule 8)
+//! and sends the desktop a message only when the job's record changes or the job ends
+//! ([`job_reads`]). The status bar says what happened; the Performance section lists the running
+//! job from `activity.list` like any other. Once an export whose destination the dialog chose
+//! succeeds, its folder is stored as the remembered export folder.
 //!
 //! An evidence run bypasses only the dialog: its `export` step names the file, written into the
-//! run's evidence directory, and the rest of the chain is the same.
+//! run's evidence directory, and the rest of the chain is the same, except that its folder is
+//! never remembered.
 use crate::app::{
     Editor,
     gesture::Starting,
@@ -49,6 +51,8 @@ pub(crate) struct ExportChoice {
     pub(crate) entry_id: EntryId,
     pub(crate) destination: PathBuf,
     pub(crate) keep_metadata: bool,
+    /// The JFIF density asked for ([`screen_pixels_per_inch`]).
+    pub(crate) pixels_per_inch: Option<u16>,
     /// `export.plan`'s answer, reported when the choice is taken up.
     pub(crate) plan: Value,
 }
@@ -66,6 +70,11 @@ pub(crate) struct ExportRun {
     pub(crate) file_name: Option<String>,
     /// The core's job, once `export.jpeg` has queued it.
     pub(crate) job_id: Option<String>,
+    /// The save dialog chooses the destination, rather than an evidence step.
+    pub(crate) dialog: bool,
+    /// The folder the save dialog chose, stored as the remembered export folder once the export
+    /// succeeds. `None` for a destination given any other way.
+    pub(crate) folder: Option<PathBuf>,
 }
 
 impl Exporting {
@@ -170,16 +179,19 @@ impl Editor {
             keep_metadata,
             file_name: None,
             job_id: None,
+            dialog: destination.is_none(),
+            folder: None,
         });
+        let pixels_per_inch = screen_pixels_per_inch(self.view_state.system_scale_factor);
         self.event(
             "export_started",
-            || json!({"asset_id":asset,"entry_id":entry,"keep_metadata":keep_metadata,"dialog":destination.is_none()}),
+            || json!({"asset_id":asset,"entry_id":entry,"keep_metadata":keep_metadata,"pixels_per_inch":pixels_per_inch,"dialog":destination.is_none()}),
         );
         plan_task(
             self.owner.clone(),
             self.client,
             (asset, entry),
-            keep_metadata,
+            (keep_metadata, pixels_per_inch),
             original,
             destination,
         )
@@ -196,6 +208,9 @@ impl Editor {
                 self.status.text = format!("Exporting {file_name}\u{2026}");
                 if let Some(run) = &mut self.export.run {
                     run.file_name = Some(file_name);
+                    if run.dialog {
+                        run.folder = super::remembered::export_folder(&choice.destination);
+                    }
                     self.outcome(Outcome::ExportPlanned(&choice.plan));
                 }
                 send_task(self.owner.clone(), self.client, *choice)
@@ -279,7 +294,10 @@ impl Editor {
                     result["height"].as_u64().unwrap_or(0),
                     result["bytes"].as_u64().unwrap_or(0),
                 );
+                let folder = self.export.run.as_ref().and_then(|run| run.folder.clone());
                 self.export_finished(status, None, Some(record));
+                // Only a destination the person chose in the save dialog is remembered.
+                return self.remember_export_folder(folder);
             }
             Some("cancelled") => {
                 self.export_finished("Export cancelled".into(), None, Some(record));
@@ -369,7 +387,7 @@ fn file_name(path: &Path) -> String {
 
 /// The folder and file name the save dialog opens on: the plan's suggestion, or `<stem>-edited.jpg`
 /// in the original's folder when the plan suggests none.
-fn dialog_start(plan: &Value, original: &Path) -> (PathBuf, String) {
+pub(crate) fn dialog_start(plan: &Value, original: &Path) -> (PathBuf, String) {
     let folder = original.parent().map(Path::to_path_buf).unwrap_or_default();
     match plan["suggested"].as_str().map(Path::new) {
         Some(suggested) => (
@@ -384,6 +402,15 @@ fn dialog_start(plan: &Value, original: &Path) -> (PathBuf, String) {
             (folder, format!("{stem}-edited.jpg"))
         }
     }
+}
+
+/// The density an export from this window asks for. On macOS, 72 pixels per inch for each physical
+/// pixel of a point on the window's display, 144 on a Retina display, which is what makes Preview's
+/// Actual Size show one image pixel per physical pixel, as 100% does here; Preview sizes a file
+/// that names no density at 72. Elsewhere none: the JFIF header keeps its unitless aspect ratio.
+pub(crate) fn screen_pixels_per_inch(system_scale_factor: f32) -> Option<u16> {
+    (cfg!(target_os = "macos") && system_scale_factor.is_finite() && system_scale_factor > 0.0)
+        .then(|| (72.0 * system_scale_factor).round().clamp(1.0, 65535.0) as u16)
 }
 
 /// `Exported DSC_0042-edited.jpg · 6000 × 4000 · 8.4 MB`.
@@ -413,7 +440,7 @@ fn plan_task(
     owner: OwnerHandle,
     client: ClientId,
     (asset_id, entry_id): (AssetId, EntryId),
-    keep_metadata: bool,
+    (keep_metadata, pixels_per_inch): (bool, Option<u16>),
     original: PathBuf,
     destination: Option<PathBuf>,
 ) -> Task<Message> {
@@ -446,6 +473,7 @@ fn plan_task(
                     entry_id,
                     destination,
                     keep_metadata,
+                    pixels_per_inch,
                     plan,
                 })))
             },
@@ -492,6 +520,7 @@ pub(crate) fn send_now(
         "entry_id": choice.entry_id,
         "destination": choice.destination,
         "keep_metadata": choice.keep_metadata,
+        "pixels_per_inch": choice.pixels_per_inch,
         "mutation": request(),
     });
     let mut attempt = 0;
@@ -580,6 +609,16 @@ mod tests {
             refused_text("a.jpg"),
             "Not exported: a.jpg already exists; Luxforge never replaces a file"
         );
+    }
+
+    #[test]
+    fn an_export_asks_for_72_pixels_per_inch_per_physical_pixel_on_macos() {
+        let expected = |density: u16| cfg!(target_os = "macos").then_some(density);
+        assert_eq!(screen_pixels_per_inch(2.0), expected(144));
+        assert_eq!(screen_pixels_per_inch(1.0), expected(72));
+        assert_eq!(screen_pixels_per_inch(1.5), expected(108));
+        assert_eq!(screen_pixels_per_inch(f32::NAN), None);
+        assert_eq!(screen_pixels_per_inch(0.0), None);
     }
 
     #[test]
