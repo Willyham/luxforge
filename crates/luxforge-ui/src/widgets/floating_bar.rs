@@ -3,9 +3,10 @@
 use super::button_row::{ButtonSize, ButtonTone, LabelledButtonModel, labelled_button};
 use super::icon_button::{Icon, icon};
 use crate::theme;
+use crate::{Element, Theme, Token};
 use iced::widget::text::Wrapping;
 use iced::widget::{Row, Space, column, container, text, tooltip};
-use iced::{Alignment, Element, Length, Theme};
+use iced::{Alignment, Length};
 
 /// Renders a floating, bordered bar holding `children` laid out in a row, in order: the canvas
 /// chrome's surface, [`theme::DRAFT_BAR_HEIGHT`] tall.
@@ -22,7 +23,9 @@ pub(crate) fn floating_bar<'a, M: Clone + 'a>(children: Vec<Element<'a, M>>) -> 
     container(content)
         .padding(theme::DRAFT_BAR_PADDING)
         .height(Length::Fixed(theme::DRAFT_BAR_HEIGHT))
-        .style(|_: &Theme| theme::chrome_surface(theme::CHROME_BORDER, theme::CHROME_RADIUS))
+        .style(|theme: &Theme| {
+            theme::chrome_surface(theme, Token::ChromeBorder, theme::CHROME_RADIUS)
+        })
         .into()
 }
 
@@ -75,22 +78,22 @@ pub fn draft_bar<'a, M: Clone + 'a>(
         .size(theme::SIZE_CONTROL)
         .font(theme::FONT_SEMIBOLD)
         .wrapping(Wrapping::None)
-        .color(theme::ACCENT);
+        .style(theme::ink(Token::Accent));
     // With a subject the subject takes the label ink and the numbers step back, as the mask board
     // sets them; alone, the numbers are the line the lead names.
     let readout_ink = if model.subject.is_some() {
-        theme::TEXT_SECONDARY
+        Token::TextSecondary
     } else {
-        theme::TEXT_LABEL
+        Token::TextLabel
     };
     let readout = text(model.readout.clone())
         .size(theme::SIZE_CONTROL)
         .wrapping(Wrapping::None)
-        .color(readout_ink);
+        .style(theme::ink(readout_ink));
     let rule = container(Space::new())
         .width(Length::Fixed(theme::BORDER_WIDTH))
         .height(Length::Fixed(theme::STRIP_RULE_HEIGHT))
-        .style(|_: &Theme| container::Style::default().background(theme::STRIP_RULE));
+        .style(theme::fill(Token::StripRule));
     let button = |label: &str, key: &str, tone: ButtonTone, enabled: bool| LabelledButtonModel {
         label: label.to_owned(),
         icon: None,
@@ -128,7 +131,7 @@ pub fn draft_bar<'a, M: Clone + 'a>(
                     container(
                         text(reason.clone())
                             .size(theme::SIZE_CAPTION)
-                            .color(theme::TEXT_PRIMARY),
+                            .style(theme::ink(Token::Text)),
                     )
                     .padding(theme::TOOLTIP_PADDING)
                     .style(theme::bar_surface),
@@ -166,13 +169,13 @@ fn subject_view<'a, M: 'a>(subject: &DraftSubject) -> Element<'a, M> {
         .spacing(theme::DRAFT_BAR_SUBJECT_SPACING)
         .align_y(Alignment::Center);
     if let Some(glyph) = subject.icon {
-        row = row.push(icon(glyph, theme::BUTTON_ICON_SIZE, theme::TEXT_LABEL));
+        row = row.push(icon(glyph, theme::BUTTON_ICON_SIZE, Token::TextLabel));
     }
     row.push(
         text(subject.label.clone())
             .size(theme::SIZE_CONTROL)
             .wrapping(Wrapping::None)
-            .color(theme::TEXT_LABEL),
+            .style(theme::ink(Token::TextLabel)),
     )
     .into()
 }

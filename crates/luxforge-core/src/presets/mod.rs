@@ -266,6 +266,12 @@ const MAX_STEM_BYTES: usize = 200;
 
 /// `<name>.lfpreset`, safe to create on every desktop platform.
 fn export_file_name(name: &str) -> String {
+    safe_file_name(name, "preset", "lfpreset")
+}
+
+/// `<name>.<extension>`, safe to create on every desktop platform, with `fallback` as the stem of
+/// a name that leaves nothing: what an exported preset or theme document is called.
+pub(crate) fn safe_file_name(name: &str, fallback: &str, extension: &str) -> String {
     let replaced: String = name
         .chars()
         .map(|character| {
@@ -288,7 +294,7 @@ fn export_file_name(name: &str) -> String {
         stem = stem.trim_end_matches(edges).to_owned();
     }
     if stem.is_empty() {
-        stem = "preset".to_owned();
+        stem = fallback.to_owned();
     }
     let device = stem
         .split('.')
@@ -304,7 +310,7 @@ fn export_file_name(name: &str) -> String {
         // Windows reserves the device name whatever extension follows it.
         stem.insert(device.len(), '_');
     }
-    format!("{stem}.lfpreset")
+    format!("{stem}.{extension}")
 }
 
 /// A Luxforge preset document for these settings, pretty-printed, and its file name. The

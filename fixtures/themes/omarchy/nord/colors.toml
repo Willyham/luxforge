@@ -1,0 +1,6 @@
+# A synthetic palette in a folder named like Omarchy's bundled Nord, so the theme it names is
+# already built in and its import is listed as a conflict.
+mode = "dark"
+accent = "#7fa0c0"
+background = "#2d333f"
+foreground = "#d6dce6"

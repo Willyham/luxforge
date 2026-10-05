@@ -1,0 +1,27 @@
+# An Omarchy 4 palette that leaves the derived shades to the resolver.
+mode = "dark"
+
+accent = "#5E9CE0"
+selection = "#2b3140"
+muted = "#4a5263"
+
+background = "#1b1f27"
+lighter_background = "#252a35"
+
+foreground = "#c9ced8"
+dark_foreground = "#6d7586"
+light_foreground = "#d4d8e0"
+bright_foreground = "#e6e9ef"
+
+red = "#e06c75"
+yellow = "#e5c07b"
+green = "#98c379"
+cyan = "#56b6c2"
+blue = "#61afef"
+purple = "#c678dd"
+
+bright_green = "#a8d389"
+
+hyprland_active_border = "rgba(5e9ce0ee) rgba(98c379ee) 45deg"
+hyprland_inactive_border = "rgb(252a35)"
+active_tab_background = "#2b3140"

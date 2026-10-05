@@ -7,8 +7,10 @@
 //! normalize one channel differently from another, because it never sees the raw numbers at all.
 
 use crate::theme;
+use crate::widgets::curve_editor::invalidate_on_version_change;
+use crate::{Element, Ink, Theme, Token};
 use iced::{
-    Alignment, Color, Element, Length, Padding, Point, Rectangle, Renderer, Size, Theme,
+    Alignment, Color, Length, Padding, Point, Rectangle, Renderer, Size,
     alignment::{Horizontal, Vertical},
     widget::{Space, button, canvas, container, row, stack, text, text::LineHeight, tooltip},
 };
@@ -146,7 +148,7 @@ pub fn histogram_inspector<'a, M: Clone + 'a>(
                     .size(theme::SIZE_CAPTION)
                     .line_height(LineHeight::Absolute(theme::CAPTION_LINE_HEIGHT.into()))
                     .align_x(Horizontal::Center)
-                    .color(theme::TEXT_TERTIARY),
+                    .style(theme::ink(Token::TextTertiary)),
             )
             .center(Length::Fill)
             .padding(theme::SPACING)
@@ -189,24 +191,33 @@ struct Plot {
     model: HistogramModel,
 }
 
-/// The program's persistent state: the tessellated geometry, and the model version it was
-/// tessellated from. This is what survives across `view` calls (a fresh [`Plot`] is built every
-/// time), which is what makes caching possible at all: the geometry a redraw reuses has to live
-/// somewhere other than the `Plot` the redraw is handed.
+/// The program's persistent state: the tessellated geometry, and the model version and theme
+/// generation it was tessellated for. This is what survives across `view` calls (a fresh [`Plot`]
+/// is built every time), which is what makes caching possible at all: the geometry a redraw reuses
+/// has to live somewhere other than the `Plot` the redraw is handed.
 #[derive(Default)]
 struct PlotState {
     cache: canvas::Cache,
-    version: Cell<Option<u64>>,
+    key: Cell<Option<(u64, u64)>>,
 }
 
-impl<M> canvas::Program<M> for Plot {
+impl Plot {
+    /// Calls `clear` when the bins or the theme changed since the cache was drawn. The channel
+    /// fills are fixed colours, but a theme change redraws the plot once anyway, so nothing drawn
+    /// here can outlive the theme it was drawn in.
+    fn refresh(&self, key: &Cell<Option<(u64, u64)>>, theme: &Theme, clear: impl FnOnce()) {
+        invalidate_on_version_change(key, (self.model.version, theme.generation()), clear);
+    }
+}
+
+impl<M> canvas::Program<M, Theme> for Plot {
     type State = PlotState;
 
     fn draw(
         &self,
         state: &Self::State,
         renderer: &Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         bounds: Rectangle,
         _cursor: iced::mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
@@ -217,10 +228,7 @@ impl<M> canvas::Program<M> for Plot {
         // redraw — the periodic desktop sync chief among them — hits the cache and skips
         // tessellation entirely. `Cache` itself still invalidates on a bounds change (a resize),
         // so this only has to cover content the widget cannot infer from `bounds`.
-        if state.version.get() != Some(self.model.version) {
-            state.cache.clear();
-            state.version.set(Some(self.model.version));
-        }
+        self.refresh(&state.key, theme, || state.cache.clear());
         let dim = if self.model.stale { STALE_ALPHA } else { 1.0 };
         let channels = self.model.channels;
         let geometry = state.cache.draw(renderer, bounds.size(), |frame| {
@@ -276,13 +284,13 @@ pub struct ClipTriangleModel {
 /// an overlay that is on fills.
 const TRIANGLE_HIT_PAD: f32 = 3.0;
 
-/// The ink of one clipping triangle: [`theme::CLIP_TRIANGLE_REST`] while its endpoint has no pixels
-/// or it is disabled, and its overlay's own colour once the endpoint has some.
-pub(crate) fn triangle_ink(model: &ClipTriangleModel) -> Color {
+/// The ink of one clipping triangle: the theme's faint text while its endpoint has no pixels or
+/// it is disabled, and its overlay's own fixed colour once the endpoint has some.
+pub(crate) fn triangle_ink(model: &ClipTriangleModel) -> Ink {
     if model.enabled && model.tinted {
-        model.tint
+        model.tint.into()
     } else {
-        theme::CLIP_TRIANGLE_REST
+        Token::TextFaint.into()
     }
 }
 
@@ -324,7 +332,7 @@ pub(crate) fn clip_triangle<'a, M: Clone + 'a>(
         container(
             text(model.tooltip.clone())
                 .size(theme::SIZE_CAPTION)
-                .color(theme::TEXT_PRIMARY),
+                .style(theme::ink(Token::Text)),
         )
         .padding(6.0)
         .style(theme::bar_surface),
@@ -345,17 +353,17 @@ pub(crate) fn triangle_points(size: Size) -> [Point; 3] {
 
 /// A clipping triangle's ink. It holds no state and caches nothing: three points, filled.
 struct TriangleMark {
-    color: Color,
+    color: Ink,
 }
 
-impl<M> canvas::Program<M> for TriangleMark {
+impl<M> canvas::Program<M, Theme> for TriangleMark {
     type State = ();
 
     fn draw(
         &self,
         _state: &Self::State,
         renderer: &Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         bounds: Rectangle,
         _cursor: iced::mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
@@ -366,7 +374,7 @@ impl<M> canvas::Program<M> for TriangleMark {
         path.line_to(b);
         path.line_to(c);
         path.close();
-        frame.fill(&path.build(), self.color);
+        frame.fill(&path.build(), self.color.resolve(theme.palette()));
         vec![frame.into_geometry()]
     }
 }
@@ -374,6 +382,25 @@ impl<M> canvas::Program<M> for TriangleMark {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The plot is drawn again when the theme changes, as well as when its bins move.
+    #[test]
+    fn a_theme_change_redraws_the_plot() {
+        let plot = Plot {
+            model: HistogramModel {
+                version: 4,
+                ..HistogramModel::default()
+            },
+        };
+        let (first, second) = (Theme::luxforge_dark(), Theme::luxforge_dark());
+        let key = Cell::new(None);
+        let mut clears = 0;
+        plot.refresh(&key, &first, || clears += 1);
+        plot.refresh(&key, &first, || clears += 1);
+        assert_eq!(clears, 1, "an unchanged theme keeps the drawing");
+        plot.refresh(&key, &second, || clears += 1);
+        assert_eq!(clears, 2, "a new generation redraws it");
+    }
 
     /// A triangle is grey until its endpoint has pixels, then its overlay's colour; a disabled one
     /// stays grey whatever the counts say.
@@ -386,17 +413,17 @@ mod tests {
             active: false,
             enabled: true,
         };
-        assert_eq!(triangle_ink(&model), theme::CLIP_TRIANGLE_REST);
+        assert_eq!(triangle_ink(&model), Token::TextFaint.into());
         let tinted = ClipTriangleModel {
             tinted: true,
             ..model.clone()
         };
-        assert_eq!(triangle_ink(&tinted), theme::CLIPPING_SHADOW);
+        assert_eq!(triangle_ink(&tinted), theme::CLIPPING_SHADOW.into());
         let disabled = ClipTriangleModel {
             enabled: false,
             ..tinted
         };
-        assert_eq!(triangle_ink(&disabled), theme::CLIP_TRIANGLE_REST);
+        assert_eq!(triangle_ink(&disabled), Token::TextFaint.into());
         let size = Size::new(theme::CLIP_TRIANGLE_WIDTH, theme::CLIP_TRIANGLE_HEIGHT);
         assert_eq!(
             triangle_points(size),

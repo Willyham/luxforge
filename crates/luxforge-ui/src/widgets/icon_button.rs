@@ -1,8 +1,10 @@
 //! Named vector icons and square icon buttons.
 
-use crate::theme;
+use crate::theme::{self, Ink, Token};
+use crate::widgets::curve_editor::invalidate_on_version_change;
+use crate::{Element, Theme};
 use iced::widget::{button, canvas, container, tooltip};
-use iced::{Color, Element, Length, Point, Rectangle, Renderer, Theme};
+use iced::{Color, Length, Point, Rectangle, Renderer};
 use std::cell::Cell;
 
 /// Icons exposed to module action controls and the desktop shell.
@@ -147,11 +149,14 @@ pub struct IconButtonModel {
 }
 
 /// Draw a named path at a requested point size, without a glyph font dependency.
-pub(crate) fn icon<'a, M: 'a>(icon: Icon, size: f32, color: Color) -> Element<'a, M> {
-    canvas(IconDrawing { icon, color })
-        .width(Length::Fixed(size))
-        .height(Length::Fixed(size))
-        .into()
+pub(crate) fn icon<'a, M: 'a>(icon: Icon, size: f32, ink: impl Into<Ink>) -> Element<'a, M> {
+    canvas(IconDrawing {
+        icon,
+        ink: ink.into(),
+    })
+    .width(Length::Fixed(size))
+    .height(Length::Fixed(size))
+    .into()
 }
 
 /// A [`theme::ICON_BUTTON_SIZE`] square with a [`theme::ICON_SIZE`] icon, as the title bar draws
@@ -187,11 +192,11 @@ pub fn title_bar_icon_button<'a, M: Clone + 'a>(
     )
 }
 
-fn action_color(model: &IconButtonModel) -> Color {
+fn action_color(model: &IconButtonModel) -> Token {
     match (model.enabled, model.selected) {
-        (false, _) => theme::TEXT_FAINT,
-        (true, true) => theme::ACCENT,
-        (true, false) => theme::TEXT_SECONDARY,
+        (false, _) => Token::TextFaint,
+        (true, true) => Token::Accent,
+        (true, false) => Token::TextSecondary,
     }
 }
 
@@ -203,9 +208,9 @@ pub fn header_icon_button<'a, M: Clone + 'a>(
     on_press: Option<M>,
 ) -> Element<'a, M> {
     let color = match (model.enabled, model.selected) {
-        (false, _) => theme::TEXT_TERTIARY,
-        (true, true) => theme::ACCENT,
-        (true, false) => theme::TEXT_SECONDARY,
+        (false, _) => Token::TextTertiary,
+        (true, true) => Token::Accent,
+        (true, false) => Token::TextSecondary,
     };
     // A header's selected action (a locked ratio) reads by its accent ink alone, with no surface.
     let bare = IconButtonModel {
@@ -227,7 +232,7 @@ pub(crate) fn sized_icon_button<'a, M: Clone + 'a>(
     on_press: Option<M>,
     size: f32,
     icon_size: f32,
-    color: Color,
+    color: impl Into<Ink>,
     position: tooltip::Position,
 ) -> Element<'a, M> {
     let style = if model.selected {
@@ -257,7 +262,7 @@ pub fn with_tooltip<'a, M: 'a>(
         container(
             iced::widget::text(label)
                 .size(theme::SIZE_CAPTION)
-                .color(theme::TEXT_PRIMARY),
+                .style(theme::ink(Token::Text)),
         )
         .padding(theme::TOOLTIP_PADDING)
         .style(theme::bar_surface),
@@ -268,36 +273,45 @@ pub fn with_tooltip<'a, M: 'a>(
 
 struct IconDrawing {
     icon: Icon,
-    color: Color,
+    ink: Ink,
 }
+
+/// What an icon's drawing depends on: the icon, its ink and the theme's generation that resolves
+/// the ink (and the overlay glyphs' own colours with it).
+type IconKey = (Icon, Ink, u64);
 
 #[derive(Default)]
 struct IconState {
     cache: canvas::Cache,
-    key: Cell<Option<(Icon, Color)>>,
+    key: Cell<Option<IconKey>>,
 }
 
-impl<M> canvas::Program<M> for IconDrawing {
+impl IconDrawing {
+    /// Calls `clear` when the icon, its ink or the theme changed since the cache was drawn.
+    fn refresh(&self, key: &Cell<Option<IconKey>>, theme: &Theme, clear: impl FnOnce()) {
+        invalidate_on_version_change(key, (self.icon, self.ink, theme.generation()), clear);
+    }
+}
+
+impl<M> canvas::Program<M, Theme> for IconDrawing {
     type State = IconState;
 
     fn draw(
         &self,
         state: &Self::State,
         renderer: &Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         bounds: Rectangle,
         _cursor: iced::mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
             return Vec::new();
         }
-        if state.key.get() != Some((self.icon, self.color)) {
-            state.cache.clear();
-            state.key.set(Some((self.icon, self.color)));
-        }
+        self.refresh(&state.key, theme, || state.cache.clear());
+        let color = self.ink.resolve(theme.palette());
         vec![state.cache.draw(renderer, bounds.size(), |frame| {
             let size = frame.width().min(frame.height());
-            draw_icon(frame, self.icon, size, self.color)
+            draw_icon(frame, self.icon, size, color)
         })]
     }
 }
@@ -930,9 +944,27 @@ mod tests {
     #[test]
     fn every_icon_builds_at_both_sizes() {
         for (_, icon) in Icon::NAMED {
-            let _: Element<'_, ()> = super::icon(icon, 12.0, theme::TEXT_PRIMARY);
-            let _: Element<'_, ()> = super::icon(icon, 16.0, theme::TEXT_PRIMARY);
+            let _: Element<'_, ()> = super::icon(icon, 12.0, Token::Text);
+            let _: Element<'_, ()> = super::icon(icon, 16.0, Token::Text);
         }
+    }
+
+    /// An icon's cache is drawn again when the theme changes, and only then: the same icon and
+    /// ink under a new generation clears it once.
+    #[test]
+    fn a_theme_change_redraws_an_icon() {
+        let drawing = IconDrawing {
+            icon: Icon::OverlayMask,
+            ink: Token::TextSecondary.into(),
+        };
+        let (first, second) = (Theme::luxforge_dark(), Theme::luxforge_dark());
+        let key = Cell::new(None);
+        let mut clears = 0;
+        drawing.refresh(&key, &first, || clears += 1);
+        drawing.refresh(&key, &first, || clears += 1);
+        assert_eq!(clears, 1, "an unchanged theme keeps the drawing");
+        drawing.refresh(&key, &second, || clears += 1);
+        assert_eq!(clears, 2, "a new generation redraws it");
     }
 
     #[test]

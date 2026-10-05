@@ -2,9 +2,10 @@
 //!
 //! The caller places it: this widget only renders the list, not a popover or its position.
 
+use crate::Element;
 use crate::theme;
+use iced::Length;
 use iced::widget::{Column, button, container, text};
-use iced::{Element, Length};
 
 /// Renders an inline menu: one `(label, message)` action per row, in order.
 pub fn inline_menu<'a, M: Clone + 'a>(items: Vec<(String, M)>) -> Element<'a, M> {

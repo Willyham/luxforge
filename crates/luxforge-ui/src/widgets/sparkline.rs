@@ -7,9 +7,11 @@
 //! so it cannot disagree with the figure printed beside it about what the line means.
 
 use crate::theme;
+use crate::widgets::curve_editor::invalidate_on_version_change;
+use crate::{Element, Palette, Theme};
 use iced::widget::canvas;
 use iced::widget::canvas::{LineCap, LineJoin, Path, Stroke, path};
-use iced::{Element, Length, Point, Rectangle, Renderer, Size, Theme};
+use iced::{Length, Point, Rectangle, Renderer, Size};
 use std::cell::Cell;
 
 /// One sparkline's series.
@@ -91,42 +93,46 @@ struct Trace {
     version: u64,
 }
 
-/// The tessellated geometry and the series version it was built from, which survive across view
-/// calls in the widget tree (a fresh [`Trace`] is built every time).
+/// The tessellated geometry and the series version and theme generation it was built from, which
+/// survive across view calls in the widget tree (a fresh [`Trace`] is built every time).
 #[derive(Default)]
 struct TraceState {
     cache: canvas::Cache,
-    version: Cell<Option<u64>>,
+    key: Cell<Option<(u64, u64)>>,
 }
 
-impl<M> canvas::Program<M> for Trace {
+impl Trace {
+    /// Calls `clear` when the series or the theme changed since the cache was drawn. `Cache`
+    /// itself invalidates on a bounds change, so this covers only what the widget cannot infer
+    /// from `bounds`.
+    fn refresh(&self, key: &Cell<Option<(u64, u64)>>, theme: &Theme, clear: impl FnOnce()) {
+        invalidate_on_version_change(key, (self.version, theme.generation()), clear);
+    }
+}
+
+impl<M> canvas::Program<M, Theme> for Trace {
     type State = TraceState;
 
     fn draw(
         &self,
         state: &Self::State,
         renderer: &Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         bounds: Rectangle,
         _cursor: iced::mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
             return Vec::new();
         }
-        // The series only changes when the caller's version moves; `Cache` itself invalidates on a
-        // bounds change, so this covers only what the widget cannot infer from `bounds`.
-        if state.version.get() != Some(self.version) {
-            state.cache.clear();
-            state.version.set(Some(self.version));
-        }
+        self.refresh(&state.key, theme, || state.cache.clear());
         let geometry = state.cache.draw(renderer, bounds.size(), |frame| {
-            draw_trace(frame, &self.values, self.capacity);
+            draw_trace(frame, &self.values, self.capacity, theme.palette());
         });
         vec![geometry]
     }
 }
 
-fn draw_trace(frame: &mut canvas::Frame, values: &[f32], capacity: usize) {
+fn draw_trace(frame: &mut canvas::Frame, values: &[f32], capacity: usize, palette: &Palette) {
     let size = frame.size();
     let baseline_top = size.height - theme::BORDER_WIDTH;
     let points = sparkline_points(values, capacity, size);
@@ -140,13 +146,13 @@ fn draw_trace(frame: &mut canvas::Frame, values: &[f32], capacity: usize) {
         }
         area.line_to(Point::new(last.x, baseline_top));
         area.close();
-        frame.fill(&area.build(), theme::SPARKLINE_AREA);
+        frame.fill(&area.build(), palette.sparkline_area);
     }
 
     frame.fill_rectangle(
         Point::new(0.0, baseline_top),
         Size::new(size.width, theme::BORDER_WIDTH),
-        theme::RULE,
+        palette.rule,
     );
 
     if let [first, rest @ ..] = points.as_slice()
@@ -160,7 +166,7 @@ fn draw_trace(frame: &mut canvas::Frame, values: &[f32], capacity: usize) {
         frame.stroke(
             &line.build(),
             Stroke::default()
-                .with_color(theme::RAIL_FILL)
+                .with_color(palette.rail_fill)
                 .with_width(theme::SPARKLINE_LINE_WIDTH)
                 .with_line_join(LineJoin::Round)
                 .with_line_cap(LineCap::Round),
@@ -170,7 +176,7 @@ fn draw_trace(frame: &mut canvas::Frame, values: &[f32], capacity: usize) {
     if let Some(newest) = points.last() {
         frame.fill(
             &Path::circle(*newest, theme::SPARKLINE_DOT_RADIUS),
-            theme::THUMB,
+            palette.thumb,
         );
     }
 }
@@ -180,6 +186,25 @@ mod tests {
     use super::*;
 
     const R: f32 = theme::SPARKLINE_DOT_RADIUS;
+
+    /// The trace is drawn again when the theme changes, since its colours are the theme's, as
+    /// well as when the series moves.
+    #[test]
+    fn a_theme_change_redraws_the_trace() {
+        let trace = Trace {
+            values: vec![0.2, 0.4],
+            capacity: 60,
+            version: 3,
+        };
+        let (first, second) = (Theme::luxforge_dark(), Theme::luxforge_dark());
+        let key = Cell::new(None);
+        let mut clears = 0;
+        trace.refresh(&key, &first, || clears += 1);
+        trace.refresh(&key, &first, || clears += 1);
+        assert_eq!(clears, 1, "an unchanged theme keeps the drawing");
+        trace.refresh(&key, &second, || clears += 1);
+        assert_eq!(clears, 2, "a new generation redraws it");
+    }
 
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-4

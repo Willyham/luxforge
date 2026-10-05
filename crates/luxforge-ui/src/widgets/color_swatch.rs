@@ -1,8 +1,10 @@
 //! A colour swatch that publishes a press without interpreting the colour.
 
 use crate::theme;
+use crate::widgets::curve_editor::invalidate_on_version_change;
+use crate::{Element, Theme};
 use iced::{
-    Color, Element, Length, Renderer, Size, Theme,
+    Color, Length, Renderer, Size,
     widget::{button, canvas},
 };
 use std::cell::Cell;
@@ -37,27 +39,36 @@ struct Swatch {
 #[derive(Default)]
 struct SwatchState {
     cache: canvas::Cache,
-    rgb: Cell<Option<[u8; 3]>>,
+    key: Cell<Option<SwatchKey>>,
 }
 
-impl<M> canvas::Program<M> for Swatch {
+/// What a swatch's drawing depends on: its colour and the theme's generation, which colours its
+/// ring.
+type SwatchKey = ([u8; 3], u64);
+
+impl Swatch {
+    /// Calls `clear` when the colour or the theme changed since the cache was drawn.
+    fn refresh(&self, key: &Cell<Option<SwatchKey>>, theme: &Theme, clear: impl FnOnce()) {
+        invalidate_on_version_change(key, (self.model.rgb, theme.generation()), clear);
+    }
+}
+
+impl<M> canvas::Program<M, Theme> for Swatch {
     type State = SwatchState;
 
     fn draw(
         &self,
         state: &Self::State,
         renderer: &Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         bounds: iced::Rectangle,
         _cursor: iced::mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
             return Vec::new();
         }
-        if state.rgb.get() != Some(self.model.rgb) {
-            state.cache.clear();
-            state.rgb.set(Some(self.model.rgb));
-        }
+        self.refresh(&state.key, theme, || state.cache.clear());
+        let ring_colour = theme.palette().thumb_outline;
         let color = Color::from_rgb8(self.model.rgb[0], self.model.rgb[1], self.model.rgb[2]);
         vec![
             state
@@ -70,7 +81,7 @@ impl<M> canvas::Program<M> for Swatch {
                         size,
                         theme::SWATCH_RADIUS.into(),
                     );
-                    frame.fill(&ring, theme::THUMB_OUTLINE);
+                    frame.fill(&ring, ring_colour);
                     let inset = theme::BORDER_WIDTH;
                     frame.fill(
                         &canvas::Path::rounded_rectangle(
@@ -82,5 +93,30 @@ impl<M> canvas::Program<M> for Swatch {
                     );
                 }),
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A swatch is drawn again when the theme changes, since its ring is the theme's.
+    #[test]
+    fn a_theme_change_redraws_a_swatch() {
+        let swatch = Swatch {
+            model: ColorSwatchModel {
+                rgb: [10, 20, 30],
+                open: false,
+                enabled: true,
+            },
+        };
+        let (first, second) = (Theme::luxforge_dark(), Theme::luxforge_dark());
+        let key = Cell::new(None);
+        let mut clears = 0;
+        swatch.refresh(&key, &first, || clears += 1);
+        swatch.refresh(&key, &first, || clears += 1);
+        assert_eq!(clears, 1, "an unchanged theme keeps the drawing");
+        swatch.refresh(&key, &second, || clears += 1);
+        assert_eq!(clears, 2, "a new generation redraws it");
     }
 }

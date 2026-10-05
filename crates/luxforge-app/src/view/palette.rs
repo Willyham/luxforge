@@ -5,9 +5,10 @@ use crate::{
     state::palette::PaletteModel,
 };
 use iced::{
-    Alignment, Background, Color, Element, Length,
+    Alignment, Length,
     widget::{Space, column, container, mouse_area, text_input},
 };
+use luxforge_ui::Element;
 use luxforge_ui::{ListRowModel, Marker, list_row, theme};
 
 /// The widget id `OpenPalette` focuses so typing reaches the query immediately.
@@ -59,12 +60,7 @@ pub(crate) fn palette(model: &PaletteModel) -> Option<Element<'_, Message>> {
         container(Space::new())
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(|_theme: &iced::Theme| {
-                container::Style::default().background(Background::Color(Color {
-                    a: 0.35,
-                    ..Color::BLACK
-                }))
-            }),
+            .style(theme::scrim_surface),
     )
     .on_press(Message::Palette(PaletteMessage::Close));
 

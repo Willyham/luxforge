@@ -10,9 +10,10 @@
 use super::list_row::marker_circle;
 use super::truncated_text::truncated_text;
 use crate::theme;
+use crate::{Element, Theme, Token};
 use iced::widget::text::{LineHeight, Wrapping};
 use iced::widget::{Column, container, progress_bar, row, text};
-use iced::{Alignment, Border, Element, Length, Padding};
+use iced::{Alignment, Border, Length, Padding};
 
 /// Plain data for one job row.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -63,15 +64,15 @@ pub(crate) fn progress_fraction(progress: f32) -> f32 {
 pub fn job_row<'a, M: Clone + 'a>(model: &JobRowModel) -> Element<'a, M> {
     let (marker, label_color, trailing_color) = if model.running {
         (
-            marker_circle(Some(theme::TEXT_PRIMARY), None),
-            theme::TEXT_PRIMARY,
-            theme::TEXT_SECONDARY,
+            marker_circle(Some(Token::Text), None),
+            Token::Text,
+            Token::TextSecondary,
         )
     } else {
         (
-            marker_circle(None, Some(theme::TEXT_TERTIARY)),
-            theme::TEXT_TERTIARY,
-            theme::TEXT_FAINT,
+            marker_circle(None, Some(Token::TextTertiary)),
+            Token::TextTertiary,
+            Token::TextFaint,
         )
     };
     let line = LineHeight::Absolute(theme::JOB_LABEL_HEIGHT.into());
@@ -95,7 +96,7 @@ pub fn job_row<'a, M: Clone + 'a>(model: &JobRowModel) -> Element<'a, M> {
             .size(theme::SIZE_SMALL_CAPTION)
             .line_height(line)
             .wrapping(Wrapping::None)
-            .color(trailing_color),
+            .style(theme::ink(trailing_color)),
     ]
     .align_y(Alignment::Center)
     .width(Length::Fill)
@@ -110,7 +111,7 @@ pub fn job_row<'a, M: Clone + 'a>(model: &JobRowModel) -> Element<'a, M> {
                     detail.clone(),
                     theme::SIZE_SMALL_CAPTION,
                     theme::FONT,
-                    theme::TEXT_TERTIARY,
+                    Token::TextTertiary,
                 )
                 .line_height(LineHeight::Absolute(theme::CAPTION_LINE_HEIGHT.into())),
             )
@@ -125,9 +126,9 @@ pub fn job_row<'a, M: Clone + 'a>(model: &JobRowModel) -> Element<'a, M> {
                 progress_bar(0.0..=1.0, progress_fraction(progress))
                     .length(Length::Fill)
                     .girth(Length::Fixed(theme::RAIL_WIDTH))
-                    .style(|_theme| progress_bar::Style {
-                        background: theme::RAIL.into(),
-                        bar: theme::RAIL_FILL.into(),
+                    .style(|theme: &Theme| progress_bar::Style {
+                        background: theme.palette().rail.into(),
+                        bar: theme.palette().rail_fill.into(),
                         border: Border::default(),
                     }),
             )

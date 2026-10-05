@@ -9,6 +9,7 @@ use super::{
     tasks::{call, call_own, owner_task},
 };
 use crate::state::{
+    MenuTarget,
     preferences::{self, GeneralControl},
     settings::{FlagControl, SettingsTab, parse_number},
 };
@@ -26,11 +27,17 @@ impl Editor {
                 self.view_state.menu = None;
                 self.settings.open = Some(tab);
                 self.settings.number_text.clear();
-                return self.read_flags();
+                // What a `luxforge-json` process stored in the library reaches the desktop by no
+                // event, so opening the sheet lists the themes again too.
+                return Task::batch([self.read_flags(), self.list_themes()]);
             }
             SettingsMessage::Close => {
                 self.settings.open = None;
                 self.settings.number_text.clear();
+                // A theme row's menu belongs to the sheet.
+                if matches!(self.view_state.menu, Some(MenuTarget::Theme(_))) {
+                    self.view_state.menu = None;
+                }
             }
             SettingsMessage::Toggle => {
                 let message = match self.settings.open {
@@ -208,9 +215,22 @@ impl Editor {
                 json!({"id": row.preference.field(), "control": control, "saving": row.saving})
             })
             .collect();
+        let appearance = &self.workspace.settings.appearance;
+        let themes: Vec<Value> = appearance
+            .rows
+            .iter()
+            .map(|row| {
+                json!({"id": row.id, "name": row.name, "mode": row.mode, "origin": row.origin,
+                       "adjusted": row.adjusted, "active": row.active,
+                       "deletable": row.deletable, "menu_open": row.menu_open})
+            })
+            .collect();
         json!({
             "open": self.settings.open.map(SettingsTab::name),
             "general": {"rows": general, "error": self.workspace.settings.preferences_error},
+            "appearance": {"rows": themes, "unrecognized": appearance.unrecognized,
+                           "loading": appearance.loading, "error": appearance.error,
+                           "refusal": appearance.refusal},
             "flags": self.settings.flags,
             "rows": rows,
             "unrecognized": self.workspace.settings.unrecognized,
@@ -221,21 +241,30 @@ impl Editor {
         })
     }
 
-    /// Another client changed a flag or a preference. An open sheet reads both again; a closed
-    /// one reads nothing for a flag, but a preference is read again whatever is on screen, since
-    /// the desktop applies some of them to this session.
+    /// Another client changed a flag, a preference or the theme library. An open sheet reads the
+    /// flags and the preferences again; a closed one reads nothing for a flag, but a preference is
+    /// read again whatever is on screen, since the desktop applies some of them to this session,
+    /// the active theme among them. A theme event lists the library again whether or not the sheet
+    /// is open, since the palette lists the themes too.
     pub(crate) fn settings_changed_elsewhere(
         &mut self,
         flags: bool,
         preferences: bool,
+        themes: bool,
     ) -> Task<Message> {
-        if self.settings.open.is_some() && (flags || preferences) {
-            return self.read_flags();
-        }
-        if preferences {
-            return self.read_preferences();
-        }
-        Task::none()
+        let listed = if themes {
+            self.list_themes()
+        } else {
+            Task::none()
+        };
+        let read = if self.settings.open.is_some() && (flags || preferences) {
+            self.read_flags()
+        } else if preferences {
+            self.read_preferences()
+        } else {
+            Task::none()
+        };
+        Task::batch([listed, read])
     }
 }
 
