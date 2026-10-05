@@ -24,6 +24,7 @@ pub(crate) mod preset;
 pub(crate) mod preview;
 pub(crate) mod settings;
 pub(crate) mod sync;
+pub(crate) mod theme;
 pub(crate) mod view;
 
 /// The semantic messages the desktop understands: one variant per seam, each carrying that seam's
@@ -57,6 +58,8 @@ pub(crate) enum Message {
     Settings(settings::SettingsMessage),
     /// An owner answer to the desktop's preference writer or to a read of the preferences.
     Preferences(preferences::PreferenceMessage),
+    /// One Appearance-tab gesture or theme library answer.
+    Theme(theme::ThemeMessage),
     /// One export gesture or answer.
     Export(export::ExportMessage),
     Evidence(evidence::EvidenceMessage),

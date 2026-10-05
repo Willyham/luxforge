@@ -117,8 +117,27 @@ impl Step {
         Self::Performance { expanded }
     }
 
+    /// Open the Settings sheet at Experiments, or close it.
     pub fn settings(open: bool) -> Self {
-        Self::Settings { open }
+        Self::Settings { open, tab: None }
+    }
+
+    /// Open the Settings sheet at one of [`crate::SETTINGS_TABS`].
+    pub fn settings_tab(tab: impl Into<String>) -> Self {
+        Self::Settings {
+            open: true,
+            tab: Some(tab.into()),
+        }
+    }
+
+    /// Choose a theme by its id, as its Appearance row does.
+    pub fn theme(id: impl Into<String>) -> Self {
+        Self::Theme { id: id.into() }
+    }
+
+    /// Import one Luxforge theme document through the Appearance tab's import task.
+    pub fn theme_import(path: impl Into<String>) -> Self {
+        Self::ThemeImport { path: path.into() }
     }
 
     /// Change one flag through its row, or Reset it for `None`.

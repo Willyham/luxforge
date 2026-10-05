@@ -324,7 +324,7 @@ fn another_clients_flag_change_reaches_an_open_sheet_through_the_event_sync() {
     let polled = super::tasks::sync_now(
         &editor.owner,
         editor.client,
-        (luxforge_core::AssetId::new(), 0),
+        None,
         editor.sync.sequence,
         &[],
         None,
@@ -356,6 +356,7 @@ fn another_clients_flag_change_reaches_an_open_sheet_through_the_event_sync() {
         capabilities: false,
         flags: true,
         preferences: false,
+        themes: false,
         own: Vec::new(),
     };
     let _ = editor.update(Message::Sync(super::message::sync::SyncMessage::Synced(

@@ -138,6 +138,9 @@ mod sync_tests;
 pub(crate) mod tasks;
 #[cfg(test)]
 pub(crate) mod testing;
+pub(crate) mod themes;
+#[cfg(test)]
+mod themes_tests;
 pub(crate) mod thumbnails;
 mod view_state;
 #[cfg(test)]
@@ -359,6 +362,9 @@ pub(crate) struct Editor {
     /// The person's preferences, read once at launch and held whether or not the sheet is open,
     /// and the one writer every `preferences.set` the desktop sends goes through.
     pub(crate) preferences: state::preferences::PreferenceWriter,
+    /// The theme library as `theme.list` last answered it, and the identity of the theme on
+    /// screen. The theme value itself is [`Self::theme`].
+    pub(crate) themes: state::themes::Themes,
     /// The version chip row's naming form.
     pub(crate) version_form: state::VersionForm,
     /// The Presets section: the library and its create form.
@@ -438,7 +444,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 15] = [
+const AFTER_MESSAGE: [AfterMessage; 16] = [
     view_state::after_message,
     performance::after_message,
     slider::after_message,
@@ -454,6 +460,7 @@ const AFTER_MESSAGE: [AfterMessage; 15] = [
     thumbnails::after_message,
     mask_coverage::after_message,
     drawn_frames::after_message,
+    themes::after_message,
 ];
 
 /// The seams whose work reads the screen just derived: what a capability section or a curve shows
@@ -559,6 +566,7 @@ impl Editor {
             palette: Default::default(),
             settings: Default::default(),
             preferences: state::preferences::PreferenceWriter::new(preferences),
+            themes: Default::default(),
             version_form: Default::default(),
             presets: Default::default(),
             capabilities: Default::default(),
@@ -607,6 +615,9 @@ impl Editor {
             editor.status.text = note;
         }
         editor.view_state.memory.remember = config.remember_window;
+        // The first frame is drawn in the stored theme, read with the launch preferences; one that
+        // cannot be shown leaves Luxforge Dark, and the status bar says why.
+        editor.launch_theme(config.launch_theme.take());
         // The launch flags and the Performance preference share one file, so one sentence covers
         // both: every flag took its default for this launch and the section starts open.
         if let Some(reason) = failed {
@@ -644,6 +655,9 @@ impl Editor {
         // preset library is listed the same way; the event sync keeps it current afterwards.
         let modules = modules_task(editor.owner.clone(), editor.client);
         let presets = presets_task(editor.owner.clone(), editor.client);
+        // The theme library, which the palette's theme entries and the Appearance tab list, off
+        // the update loop: the first frame needs only the active theme, read above.
+        let themes = editor.list_themes();
         let first = match &mut editor.evidence {
             Some(evidence) => match evidence.queue.pop_front() {
                 Some(path) => editor.open_queued(path, initial_import),
@@ -659,7 +673,9 @@ impl Editor {
         editor.rederive();
         (
             editor,
-            Task::batch([scale, trackpad, placed, backend, modules, presets, first]),
+            Task::batch([
+                scale, trackpad, placed, backend, modules, presets, themes, first,
+            ]),
         )
     }
 
@@ -863,6 +879,7 @@ impl Editor {
             palette: &self.palette,
             settings: &self.settings,
             preferences: &self.preferences,
+            themes: &self.themes,
             version_form: &self.version_form,
             dimensions: self.presentation.dimensions,
             photo: self.presentation.has_picture(),
@@ -920,6 +937,7 @@ impl Editor {
             Message::Performance(message) => self.performance_update(message),
             Message::Settings(message) => self.settings_update(message),
             Message::Preferences(message) => self.preferences_update(message),
+            Message::Theme(message) => self.theme_update(message),
             Message::Export(message) => self.export_update(message),
             Message::Evidence(message) => self.evidence_update(message),
             Message::Close => self.close(),
