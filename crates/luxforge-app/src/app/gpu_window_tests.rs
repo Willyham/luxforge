@@ -1,7 +1,7 @@
 //! A boundary held over the window its output reads (`docs/design/gpu-preview.md`, "The held input
 //! boundary"): the GPU frame over the window is the frame over the whole boundary stage, and at Fit
-//! a crop drawn at its exact stage asks for that window and is held to the bound and the budget
-//! before it is rendered.
+//! a crop drawn at its exact stage derives that window and is held to the bound and the budget
+//! before it is derived.
 //!
 //! - **The same frame.** For an affine tail (a straightened crop), a projective one (a perspective
 //!   warp with the crop) and a lens warp's coordinate grid, on both boundary formats, the surface's
@@ -13,8 +13,8 @@
 //!   (Texture and Clarity) over the window, which the planner grows by its filters' margin, draws
 //!   the same frame too.
 //! - **At Fit.** A tight crop of a photograph that fits the display is drawn at its exact stage:
-//!   the tick asks for the window its output reads, the boundary held is that window, and a slot
-//!   over the budget asks for no boundary and names it.
+//!   the tick derives the window its output reads, the boundary held is that window, and a slot
+//!   over the budget derives no boundary and names it.
 //! - **A chain's charge.** Before its boundary exists, a chained masked plan is held to the slot's
 //!   own charge, each link's intermediate and the shared scratch pool counted, over a 100% region
 //!   and at Fit's exact stage; the budget reads that pooled figure.
@@ -569,8 +569,8 @@ pub(super) fn answered(
     answer
 }
 
-/// A Fit drag over a tight crop drawn at its exact stage asks for the window its output reads,
-/// and holds that window, not the whole photograph; the charge it is held to before rendering is
+/// A Fit drag over a tight crop drawn at its exact stage derives the window its output reads,
+/// and holds that window, not the whole photograph; the charge it is held to before deriving it is
 /// that window's.
 #[test]
 fn gpu_window_an_exact_fit_crop_holds_the_window_its_output_reads() {
@@ -581,13 +581,14 @@ fn gpu_window_an_exact_fit_crop_holds_the_window_its_output_reads() {
     let _ = slide(&mut editor, "set-basic", "exposure", 0.2);
     let records = logged(&mut editor, &log);
     let ticks = events(&records, "gpu_preview_tick");
-    assert_eq!(ticks[0]["reason"], "boundary-pending", "{ticks:?}");
+    assert_eq!(ticks[0]["reason"], "surface-pending", "{ticks:?}");
     let (boundary, slot) = editor
         .gpu
         .region_charge()
         .expect("held to the bound and budget");
-    deliver_until(&mut editor, "the boundary", |editor| {
-        editor.gpu.holds_boundary()
+    assert!(editor.gpu.holds_boundary(), "derived at the tick");
+    deliver_until(&mut editor, "the tick's frame", |editor| {
+        !editor.presentation.queue.is_busy() && !editor.presentation.queue.ready()
     });
     let (width, height) = editor.presentation.dimensions.expect("the crop's output");
     let summary = editor.gpu.summary();
@@ -615,7 +616,7 @@ fn gpu_window_an_exact_fit_crop_holds_the_window_its_output_reads() {
     finish(editor, catalog);
 }
 
-/// At Fit at the exact stage a slot the GPU-preview budget would not hold asks for no boundary:
+/// At Fit at the exact stage a slot the GPU-preview budget would not hold derives no boundary:
 /// every tick takes the CPU path naming the budget, with the bytes and the budget they pass.
 #[test]
 fn gpu_window_an_exact_fit_slot_over_the_budget_keeps_the_cpu_path() {
@@ -633,7 +634,7 @@ fn gpu_window_an_exact_fit_slot_over_the_budget_keeps_the_cpu_path() {
             .all(|tick| tick["path"] == "cpu" && tick["reason"] == "budget-exceeded"),
         "{ticks:?}"
     );
-    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is asked for");
+    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is derived");
     let (_, slot) = editor.gpu.region_charge().expect("a charge");
     assert_eq!(
         editor.gpu.summary()["drag"]["over_budget"],
@@ -646,7 +647,7 @@ fn gpu_window_an_exact_fit_slot_over_the_budget_keeps_the_cpu_path() {
 }
 
 /// On the corpus's Z6 and Air 2S, whose lens profile the crop is fused with, a Fit drag of Basic
-/// over a 16:9 crop straightened by 7°, the corpus's, and by 45° asks for a windowed proxy's
+/// over a 16:9 crop straightened by 7°, the corpus's, and by 45° derives a windowed proxy's
 /// boundary, holds it within the 256 MiB bound, and draws its later ticks on the GPU with no
 /// preview job once the surface has evaluated it. The surface is stood in for, as in every desktop
 /// test; the corpus draws the same plans on the device.
@@ -848,14 +849,14 @@ fn gpu_window_a_chained_masked_plan_is_held_to_the_slots_own_charge() {
     }
 }
 
-/// The budget a chained masked plan's boundary is held to before it is asked for reads the pooled
-/// figure. Over a 100% region, a budget the slot fits to the byte asks for the boundary, though the
+/// The budget a chained masked plan's boundary is held to before it is derived reads the pooled
+/// figure. Over a 100% region, a budget the slot fits to the byte derives the boundary, though the
 /// figure the desktop held a plan to before the pool — every plane of every spatial step in a
 /// texture of its own, with the passes' parameters and no link's intermediate — passes it, and so
 /// does that figure with the intermediates, what each link holding its own scratch charged. A byte
 /// less names `budget-exceeded`, with the pooled figure and the budget in `over_budget`.
 #[test]
-fn gpu_window_a_chained_masked_plan_asks_for_its_boundary_when_its_pooled_slot_fits() {
+fn gpu_window_a_chained_masked_plan_derives_its_boundary_when_its_pooled_slot_fits() {
     use luxforge_ui::photo_surface::gpu_preview::chain_charge;
     let catalog = catalog("chain-budget");
     let (mut editor, asset, agent) = real_photo(&catalog);
@@ -908,7 +909,7 @@ fn gpu_window_a_chained_masked_plan_asks_for_its_boundary_when_its_pooled_slot_f
                 .all(|tick| tick["path"] == "cpu" && tick["reason"] == "budget-exceeded"),
         "{ticks:?}"
     );
-    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is asked for");
+    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is derived");
     assert_eq!(
         editor.gpu.summary()["drag"]["over_budget"],
         serde_json::json!({"requested": pooled, "budget": pooled - 1})
@@ -917,8 +918,8 @@ fn gpu_window_a_chained_masked_plan_asks_for_its_boundary_when_its_pooled_slot_f
     editor.gpu.budget = Some(pooled);
     let _ = slide(&mut editor, "set-basic", "exposure", 0.6);
     let summary = editor.gpu.summary();
-    assert_eq!(editor.gpu.ticks().2, 1, "the boundary is asked for");
-    assert_eq!(summary["drag"]["reason"], "boundary-pending");
+    assert_eq!(editor.gpu.ticks().2, 1, "the boundary is derived");
+    assert_eq!(summary["drag"]["reason"], "surface-pending");
     assert_eq!(summary["drag"]["over_budget"], Value::Null);
     let _ = editor.update(Message::Draft(
         crate::app::message::draft::DraftMessage::Cancel,
@@ -1402,8 +1403,7 @@ fn gpu_window_the_paint_harness_masks_at_100_grow_the_window_by_every_links_halo
                 1,
                 format,
             )
-            .expect("a boundary")
-            .resident();
+            .expect("a boundary");
             let surface = super::gpu_plan::surface_plan_over(plan, held, origin, None, Some(rect))
                 .expect("a runnable plan");
             let charged = qualifier.charged_bytes(&surface).expect("a charge");
@@ -1441,7 +1441,7 @@ fn gpu_window_the_paint_harness_masks_at_100_grow_the_window_by_every_links_halo
                  {}; region_charge (boundary {:.1} MB, slot {:.1} MB); steps converted \
                  {converted}; chain {:.1} MB: {} intermediates of {:.1} MB, kept {:.1} MB a \
                  Presence link, pool {:.1} MB; the slot's own charge {:.1} MB, {:.1} KB more \
-                 (the links' buffers); over the budget: {over}; boundaries asked for: {}",
+                 (the links' buffers); over the budget: {over}; boundaries derived: {}",
                 view.name,
                 shown(rect),
                 halos[0],
@@ -1479,10 +1479,10 @@ fn gpu_window_the_paint_harness_masks_at_100_grow_the_window_by_every_links_halo
 
 /// How many of the paint harness's masks a 100% drag of the first mask's exposure holds within the
 /// GPU-preview budget, in the harness's view and the corpus's ([`VIEWS`]): for every N from 1 to 16
-/// masks of the harness's layout, the window the drag's boundary request names, the slot the
+/// masks of the harness's layout, the window the drag's boundary names, the slot the
 /// desktop holds it to and whether that fits, and the largest N that does in each view. It holds
 /// only what does not depend on the figures: the window is the region grown by every link's halo,
-/// the slot never falls as N grows, and a tick asks for no boundary exactly when its slot passes
+/// the slot never falls as N grows, and a tick derives no boundary exactly when its slot passes
 /// the budget. With Dehaze beside Clarity and Texture in every masked Presence layer the same drag
 /// has no plan to charge at any N: the drag changes the input of every Dehaze layer, whose estimate
 /// at 100% is the exact stage's, which the store cannot hold for a drafted value, so every tick
@@ -1534,7 +1534,7 @@ fn gpu_window_the_paint_harness_masks_at_100_fit_the_budget_up_to_a_count() {
             assert_eq!(
                 editor.gpu.ticks().2 == 0,
                 over,
-                "{masks} masks, {}: a boundary is asked for exactly when the slot fits",
+                "{masks} masks, {}: a boundary is derived exactly when the slot fits",
                 view.name
             );
             assert_eq!(

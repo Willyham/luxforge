@@ -378,13 +378,13 @@ fn a_fallback_carries_its_layers_label_from_the_stack_it_was_planned_over() {
     assert_eq!(preview.layer, None, "a plan names no layer");
 }
 
-/// A job that asks for the boundary delivers it after its Fit frame, as one more result of its
-/// generation: the input of the drafted layer over the window of the proxy stage the crop reads,
-/// which for a first layer is the proxy source itself, decoded. A job that does not ask delivers
-/// its frame alone.
+/// At Fit a drag's boundary is the source reduced to the job's proxy: the key names the proxy plan
+/// the worker's proxy phase builds at the job's bounds, with the window of it the crop reads, and
+/// the plan addresses that whole proxy stage; the photo surface derives the boundary from the
+/// source it holds, so the job asks the worker for nothing more than its frame.
 #[test]
-fn a_job_that_asks_renders_its_boundary_after_its_fit_frame() {
-    let (mut job, draft) = draft_job(
+fn a_fit_boundary_is_the_source_reduced_to_the_jobs_proxy() {
+    let (job, draft) = draft_job(
         "set-basic",
         vec![crop()],
         vec![basic(json!({"exposure": 0.3})), crop()],
@@ -392,72 +392,36 @@ fn a_job_that_asks_renders_its_boundary_after_its_fit_frame() {
     );
     let preview = plan_preview(&job.evaluation, &draft, crate::GpuView::Fit(bounds())).unwrap();
     let request = preview.boundary.clone().expect("a boundary");
-    let plan = request.key.plan().expect("a proxy");
-    let window = plan.window.expect("the crop's window");
-    job.proxy = Some(bounds());
-    job.intent = PreviewIntent::Interactive;
-    job.boundary = Some(request.clone());
-    let proxied = job.evaluation.source().proxy(plan).unwrap();
-    let mut plain = job.clone();
-    plain.boundary = None;
-    let mut queue = PreviewQueue::default();
-    let generation = queue.request(job);
-    let proxy = wait_for("the Fit frame", || queue.poll());
-    assert_eq!(
-        (proxy.generation, proxy.phase()),
-        (generation, PreviewPhase::Proxy)
-    );
-    let boundary = wait_for("the boundary", || queue.poll());
-    assert_eq!(
-        (boundary.generation, boundary.phase()),
-        (generation, PreviewPhase::Boundary)
-    );
-    assert_eq!(boundary.draft_revision, Some(2));
-    let outcome = boundary.boundary().unwrap();
-    assert_eq!(outcome.key, request.key);
-    let frame = outcome.result.as_ref().unwrap();
     assert_eq!(request.format, crate::BoundaryFormat::Half, "a JPEG's");
-    assert_eq!(frame.format, crate::BoundaryFormat::Half);
-    assert_eq!(frame.origin, (window.x, window.y));
-    assert_eq!((frame.width, frame.height), (window.width, window.height));
+    assert_eq!(request.window, None, "the proxy plan names its window");
+    let plan = request.key.plan().expect("a proxy");
+    let exact = job.evaluation.exact(&crate::Cancel::never()).unwrap();
+    let worker = exact.proxy_plan(bounds()).expect("a proxy at the bounds");
+    let worker = exact
+        .proxy_window(job.evaluation.registry(), job.evaluation.recipe(), worker)
+        .plan();
+    assert_eq!(plan, worker, "the worker's proxy, its window included");
+    let window = plan.window.expect("the crop's window");
     assert_eq!(
-        frame.stage,
+        plan.held(),
+        [window.x, window.y, window.width, window.height]
+    );
+    assert_eq!(
+        planned(&preview).boundary.stage,
         Stage {
             width: plan.width,
             height: plan.height
-        }
+        },
+        "the whole proxy stage is addressed"
     );
-    let PreviewSource::Jpeg(image) = &proxied else {
-        panic!("a JPEG proxy")
-    };
-    assert_eq!((image.width, image.height), (window.width, window.height));
-    let table = decode_table();
-    let held = |value: f32| half::f16::from_f32(value).to_f32();
-    for (index, pixel) in image.rgba.chunks_exact(4).enumerate() {
-        let (x, y) = (index as u32 % image.width, index as u32 / image.width);
-        assert_eq!(
-            frame.texel(x, y).unwrap(),
-            [0, 1, 2].map(|channel| held(table[usize::from(pixel[channel])])),
-            "texel ({x}, {y})"
-        );
-    }
-    // Without the request, the job ends with its frame.
-    let generation = queue.request(plain);
-    let proxy = wait_for("the plain Fit frame", || queue.poll());
-    assert_eq!(
-        (proxy.generation, proxy.phase()),
-        (generation, PreviewPhase::Proxy)
-    );
-    luxforge_testbase::wait_until("the job to end", || !queue.is_busy());
-    assert!(queue.poll().is_none(), "no boundary was asked for");
+    assert_eq!(planned(&preview).boundary.layer, 0, "the source");
 }
 
 /// Below 100% the desktop's job carries the displayed size of the whole stage as its bounds, and a
-/// draft's boundary planned at them is rendered as Fit's is: after the job's proxy frame, the frame
-/// the view draws at that zoom, as one more result of its generation, holding that proxy's whole
-/// stage, decoded, so the GPU frame drawn from it is the CPU frame's size.
+/// draft's boundary planned at them is the source reduced to that proxy, as Fit's is: its whole
+/// stage, the size of the proxy frame the CPU path draws at that zoom.
 #[test]
-fn below_100_percent_a_job_renders_its_boundary_after_its_proxy_frame() {
+fn below_100_percent_a_boundary_is_the_source_reduced_to_the_displayed_size() {
     // 50% and 33% of the 600 × 400 source, as the desktop rounds a displayed size.
     for bounds in [
         ProxyBounds {
@@ -479,10 +443,14 @@ fn below_100_percent_a_job_renders_its_boundary_after_its_proxy_frame() {
         let request = preview.boundary.clone().expect("a boundary");
         let plan = request.key.plan().expect("a proxy");
         assert_eq!((plan.width, plan.height), (bounds.width, bounds.height));
-        let proxied = job.evaluation.source().proxy(plan).unwrap();
+        assert_eq!(
+            plan.held(),
+            [0, 0, plan.width, plan.height],
+            "the whole stage"
+        );
+        // The CPU's proxy frame at the zoom is the size the surface's reduction of the source is.
         job.proxy = Some(bounds);
         job.intent = PreviewIntent::Interactive;
-        job.boundary = Some(request.clone());
         let mut queue = PreviewQueue::default();
         let generation = queue.request(job);
         let proxy = wait_for("the proxy frame", || queue.poll());
@@ -496,49 +464,19 @@ fn below_100_percent_a_job_renders_its_boundary_after_its_proxy_frame() {
             (bounds.width, bounds.height),
             "the frame the view draws: the whole stage at its displayed size"
         );
-        let boundary = wait_for("the boundary", || queue.poll());
-        assert_eq!(
-            (boundary.generation, boundary.phase()),
-            (generation, PreviewPhase::Boundary)
-        );
-        let outcome = boundary.boundary().unwrap();
-        assert_eq!(outcome.key, request.key);
-        let frame = outcome.result.as_ref().unwrap();
-        assert_eq!(frame.origin, (0, 0), "the whole proxy stage");
-        assert_eq!((frame.width, frame.height), (raster.width, raster.height));
-        assert_eq!(
-            frame.stage,
-            Stage {
-                width: plan.width,
-                height: plan.height
-            }
-        );
-        let PreviewSource::Jpeg(image) = &proxied else {
-            panic!("a JPEG proxy")
-        };
-        let table = decode_table();
-        let held = |value: f32| half::f16::from_f32(value).to_f32();
-        for (index, pixel) in image.rgba.chunks_exact(4).enumerate() {
-            let (x, y) = (index as u32 % image.width, index as u32 / image.width);
-            assert_eq!(
-                frame.texel(x, y).unwrap(),
-                [0, 1, 2].map(|channel| held(table[usize::from(pixel[channel])])),
-                "texel ({x}, {y}) at {bounds:?}"
-            );
-        }
         luxforge_testbase::wait_until("the job to end", || !queue.is_busy());
     }
 }
 
-/// A developed RAW's boundary, on the linear path, holds `f32` texels: every value of the proxy the
-/// Fit frame was rendered from, exactly, as the plan of the linear path reads it.
+/// A developed RAW's boundary, on the linear path, holds `f32` texels, as the plan of the linear
+/// path reads them: the surface derives it from the RAW's planes as the `f32` they are.
 #[test]
 fn a_raw_boundary_holds_its_values_as_f32() {
     let raw = PreviewSource::Raw {
         image: crate::render::tests::varied(WIDTH, HEIGHT),
         settings: crate::LinearSettings::default(),
     };
-    let (mut job, draft) = draft_job_over(
+    let (job, draft) = draft_job_over(
         raw,
         "set-basic",
         Vec::new(),
@@ -548,40 +486,8 @@ fn a_raw_boundary_holds_its_values_as_f32() {
     let preview = plan_preview(&job.evaluation, &draft, crate::GpuView::Fit(bounds())).unwrap();
     let request = preview.boundary.clone().expect("a boundary");
     assert_eq!(request.format, crate::BoundaryFormat::Float);
-    let plan = request.key.plan().expect("a proxy");
-    let proxied = job.evaluation.source().proxy(plan).unwrap();
-    job.proxy = Some(bounds());
-    job.intent = PreviewIntent::Interactive;
-    job.boundary = Some(request.clone());
-    let mut queue = PreviewQueue::default();
-    queue.request(job);
-    let _ = wait_for("the Fit frame", || queue.poll());
-    let boundary = wait_for("the boundary", || queue.poll());
-    let frame = boundary
-        .boundary()
-        .unwrap()
-        .result
-        .as_ref()
-        .unwrap()
-        .clone();
-    assert_eq!(frame.format, crate::BoundaryFormat::Float);
-    let PreviewSource::Raw { image, .. } = &proxied else {
-        panic!("a RAW proxy")
-    };
-    assert_eq!((frame.width, frame.height), (image.width(), image.height()));
-    assert_eq!(
-        frame.texels.len(),
-        (frame.width * frame.height * 16) as usize
-    );
-    for y in 0..frame.height {
-        for x in 0..frame.width {
-            assert_eq!(
-                frame.texel(x, y).unwrap().map(f32::to_bits),
-                image.pixel(x, y).unwrap().map(f32::to_bits),
-                "texel ({x}, {y})"
-            );
-        }
-    }
+    assert!(planned(&preview).linear, "the linear path");
+    assert!(request.key.plan().is_some(), "a proxy");
 }
 
 /// A tight crop whose output fits the display bounds is drawn at Fit at its exact stage, and its
@@ -612,7 +518,7 @@ fn an_exact_fit_boundary_holds_only_the_window_its_output_reads() {
     for (name, geometry, edge) in cases {
         let mut drafted = vec![basic(json!({"exposure": 0.3}))];
         drafted.extend(geometry.iter().cloned());
-        let (mut job, draft) = draft_job("set-basic", geometry, drafted, 2);
+        let (job, draft) = draft_job("set-basic", geometry, drafted, 2);
         let preview = plan_preview(&job.evaluation, &draft, crate::GpuView::Fit(bounds())).unwrap();
         let output = planned(&preview).geometry.output();
         assert!(
@@ -632,20 +538,12 @@ fn an_exact_fit_boundary_holds_only_the_window_its_output_reads() {
                 "{name}: {window:?} reaches the source's edge"
             );
         }
-        job.proxy = Some(bounds());
-        job.intent = PreviewIntent::Interactive;
-        job.boundary = Some(request.clone());
-        let mut queue = PreviewQueue::default();
-        let generation = queue.request(job);
-        let exact = wait_for("the Fit frame", || queue.poll());
-        assert_eq!(
-            (exact.generation, exact.phase()),
-            (generation, PreviewPhase::Exact)
-        );
-        let boundary = wait_for("the boundary", || queue.poll());
-        let outcome = boundary.boundary().unwrap();
-        assert_eq!(outcome.key, request.key);
-        let frame = outcome.result.as_ref().unwrap();
+        // The CPU's reference render of the boundary over the whole output holds the window the
+        // plan names, which the surface cuts from the source it holds: the source's own texels.
+        let exact = job.evaluation.exact(&crate::Cancel::never()).unwrap();
+        let frame = exact
+            .output_boundary((0, 0), request.format)
+            .expect("the CPU's reference");
         assert_eq!(frame.origin, (window.x0, window.y0), "{name}");
         assert_eq!((frame.width, frame.height), (window.width, window.height));
         assert_eq!(
@@ -865,40 +763,10 @@ fn the_warmed_plans_tell_a_masked_layer_from_an_unmasked_one() {
     );
 }
 
-/// A job whose Fit frame is drawn at another stage than its boundary names still answers the
-/// request, with the reason, so the desktop never waits for a boundary that will not come.
-#[test]
-fn a_boundary_of_another_stage_is_answered_with_its_reason() {
-    let (mut job, draft) = draft_job(
-        "set-basic",
-        vec![crop()],
-        vec![basic(json!({"exposure": 0.3})), crop()],
-        3,
-    );
-    let preview = plan_preview(&job.evaluation, &draft, crate::GpuView::Fit(bounds())).unwrap();
-    job.proxy = Some(ProxyBounds {
-        width: 220,
-        height: 150,
-    });
-    job.intent = PreviewIntent::Interactive;
-    job.boundary = preview.boundary;
-    let mut queue = PreviewQueue::default();
-    let generation = queue.request(job);
-    let proxy = wait_for("the Fit frame", || queue.poll());
-    assert_eq!(proxy.phase(), PreviewPhase::Proxy);
-    let boundary = wait_for("the boundary's answer", || queue.poll());
-    assert_eq!(
-        (boundary.generation, boundary.phase()),
-        (generation, PreviewPhase::Boundary)
-    );
-    let error = boundary.boundary().unwrap().result.as_ref().unwrap_err();
-    assert!(error.detail.contains("another stage"), "{error}");
-}
-
-/// At a percentage zoom the boundary is the exact stage's window the visible region reads, at full
-/// scale: keyed by that region, rendered before the job's region frame, which it does not depend
-/// on, and its texels the layer's input there exactly. Behind a straightened crop the window is the
-/// crop's read of the source.
+/// At a percentage zoom the boundary is the window of the source the visible region reads, at full
+/// scale: keyed by that region, and the window the plan names is the one the CPU's reference render
+/// of the region's boundary holds, its texels the source's there exactly. Behind a straightened
+/// crop the window is the crop's read of the source.
 #[test]
 fn a_region_boundary_holds_the_window_its_region_reads_at_full_scale() {
     let rect = crate::modules::Region {
@@ -938,25 +806,10 @@ fn a_region_boundary_holds_the_window_its_region_reads_at_full_scale() {
         let other = plan_preview(&job.evaluation, &draft, moved).unwrap();
         assert_ne!(other.boundary.unwrap().key, request.key, "{what}");
         job.viewport = Some(rect);
-        job.intent = PreviewIntent::Interactive;
-        job.boundary = Some(request.clone());
-        let mut queue = PreviewQueue::default();
-        let generation = queue.request(job);
-        let boundary = wait_for("the boundary", || queue.poll());
-        assert_eq!(
-            (boundary.generation, boundary.phase()),
-            (generation, PreviewPhase::Boundary),
-            "{what}"
-        );
-        let region = wait_for("the region frame", || queue.poll());
-        assert_eq!(
-            (region.generation, region.phase()),
-            (generation, PreviewPhase::Region),
-            "{what}"
-        );
-        let outcome = boundary.boundary().unwrap();
-        assert_eq!(outcome.key, request.key);
-        let frame = outcome.result.as_ref().unwrap();
+        let exact = job.evaluation.exact(&crate::Cancel::never()).unwrap();
+        let frame = exact
+            .region_boundary(rect, (0, 0), request.format)
+            .expect("the CPU's reference");
         assert_eq!(frame.format, crate::BoundaryFormat::Half);
         // The window the request named when it was planned is the one the boundary holds.
         assert_eq!(
@@ -1637,20 +1490,13 @@ fn behind_detail_a_region_plan_holds_dehazes_stored_light() {
         window.x0 < rect.x0 && window.x1() > rect.x1(),
         "{window:?} holds {rect:?} and Presence's margin"
     );
-    // The drag's first job: a moving region job, whose region declines.
+    // The CPU's reference render of the region's boundary at the source holds the window planned
+    // on the owner, which the photo surface cuts from the source it holds.
     job.viewport = Some(rect);
-    job.intent = PreviewIntent::Interactive;
-    job.boundary = Some(request.clone());
-    let mut queue = PreviewQueue::default();
-    let generation = queue.request(job.clone());
-    let boundary = wait_for("the boundary", || {
-        let result = queue.poll()?;
-        (result.generation == generation && result.phase() == PreviewPhase::Boundary)
-            .then_some(result)
-    });
-    let outcome = boundary.boundary().unwrap();
-    assert_eq!(outcome.key, request.key);
-    let frame = outcome.result.as_ref().expect("the region's boundary");
+    let exact = job.evaluation.exact(&crate::Cancel::never()).unwrap();
+    let frame = exact
+        .region_boundary(rect, (0, 0), request.format)
+        .expect("the region's boundary");
     assert_eq!(
         Some(crate::modules::Region {
             x0: frame.origin.0,
@@ -1665,13 +1511,12 @@ fn behind_detail_a_region_plan_holds_dehazes_stored_light() {
         width: WIDTH,
         height: HEIGHT,
     };
-    let exact = job.evaluation.exact(&crate::Cancel::never()).unwrap();
     let whole = exact
         .boundary(
             job.evaluation.compiled().unwrap(),
             whole_stage,
             crate::modules::Region::whole(whole_stage),
-            request.position,
+            (0, 0),
             request.format,
         )
         .unwrap();

@@ -96,13 +96,12 @@ fn gpu_preview_the_notice_says_a_slot_over_the_budget_is_memory() {
         assert_eq!(latest_reason(&editor), json!("budget-exceeded"));
         assert_says(&editor, "budget-exceeded", Some(MEMORY));
     }
-    // Within the budget the boundary is asked for, which passes: nothing is said while it comes.
+    // Within the budget the boundary is derived, and the plan waits for the surface, which
+    // passes: nothing is said while it does.
     editor.gpu.budget = Some(u64::MAX);
     let _ = slide(&mut editor, ACTION, FIELD, 0.3);
-    assert_says(&editor, "boundary-pending", None);
-    deliver_until(&mut editor, "the region's boundary", |editor| {
-        editor.gpu.holds_boundary()
-    });
+    assert!(editor.gpu.holds_boundary());
+    assert_says(&editor, "surface-pending", None);
     // The next tick drawn on the GPU says nothing of a gesture that is no longer slow.
     surface_ready(&mut editor);
     let _ = slide(&mut editor, ACTION, FIELD, 0.4);
@@ -117,7 +116,7 @@ fn gpu_preview_the_notice_says_a_slot_over_the_budget_is_memory() {
 /// A reason that lasts is said from the first tick that names it, and kept through the release
 /// until the frame that replaces the drafted one is presented, which is when the drag, and the
 /// gesture's settle, end: here a Fit drag whose slot, at the exact stage the photograph is drawn
-/// at, a test budget refuses.
+/// at, the surface finds over the budget.
 #[test]
 fn gpu_preview_the_notice_says_a_lasting_reason_and_clears_when_the_settle_ends() {
     let catalog = catalog("notice-settle");
@@ -126,7 +125,18 @@ fn gpu_preview_the_notice_says_a_lasting_reason_and_clears_when_the_settle_ends(
         editor.presentation.dimensions.is_some() && !editor.presentation.queue.is_busy()
     });
     assert_eq!(editor.gpu_plan_fallback(), None, "no gesture, no notice");
-    editor.gpu.budget = Some(1);
+    // The drag starts from the boundary the photograph's job derived, and the surface finds its
+    // slot over the budget.
+    editor.gpu.surface = Some(SurfaceReport {
+        ready_boundary: None,
+        fallback: Some(SurfaceFallback::BudgetExceeded {
+            requested: 2,
+            in_use: 0,
+            budget: 1,
+        }),
+        drawn: None,
+        evaluated: None,
+    });
     for value in [0.1, 0.2] {
         let _ = slide(&mut editor, ACTION, FIELD, value);
         assert_says(&editor, "budget-exceeded", Some(MEMORY));
@@ -153,30 +163,34 @@ fn gpu_preview_the_notice_says_a_lasting_reason_and_clears_when_the_settle_ends(
     finish(editor, catalog);
 }
 
-/// A first tick that waits for its boundary names `boundary-pending`, which passes within a tick
-/// or two: nothing is said, though the evidence records the reason.
+/// A first tick whose plan the surface has not evaluated yet names `surface-pending`, and one while
+/// the surface still uploads the source names `source-uploading`; both pass within a frame or two,
+/// so nothing is said, though the evidence records the reason.
 #[test]
-fn gpu_preview_the_notice_says_nothing_while_a_boundary_comes() {
+fn gpu_preview_the_notice_says_nothing_while_the_source_or_the_plan_comes() {
     let catalog = catalog("notice-pending");
     let (mut editor, _, _) = real_photo(&catalog);
     editor.gpu.surface = Some(SurfaceReport::default());
     let _ = slide(&mut editor, ACTION, FIELD, 0.1);
-    assert_eq!(editor.gpu.ticks(), (0, 1, 1), "a CPU tick asking");
-    assert_says(&editor, "boundary-pending", None);
-    let _ = slide(&mut editor, ACTION, FIELD, 0.2);
-    assert_says(&editor, "boundary-pending", None);
-    deliver_until(&mut editor, "the boundary", |editor| {
-        editor.gpu.holds_boundary()
-    });
-    // The boundary held but not yet evaluated by the surface is passing too.
-    let _ = slide(&mut editor, ACTION, FIELD, 0.3);
+    assert_eq!(editor.gpu.ticks(), (0, 1, 0), "a CPU tick");
     assert_says(&editor, "surface-pending", None);
+    editor.gpu.surface = Some(SurfaceReport {
+        ready_boundary: None,
+        fallback: Some(SurfaceFallback::SourceUploading {
+            uploaded: 1,
+            bytes: 2,
+        }),
+        drawn: None,
+        evaluated: None,
+    });
+    let _ = slide(&mut editor, ACTION, FIELD, 0.2);
+    assert_says(&editor, "source-uploading", None);
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     finish(editor, catalog);
 }
 
 /// Below 100% a drag is drawn on the GPU from the displayed-size proxy as at Fit, so the zoom has
-/// no reason of its own: the first tick's `boundary-pending` passes, the ticks after it are drawn on
+/// no reason of its own: the first tick's `surface-pending` passes, the ticks after it are drawn on
 /// the GPU, and nothing is said through the release until the settle ends.
 #[test]
 fn gpu_preview_the_notice_says_nothing_of_a_zoom_below_100() {
@@ -186,10 +200,7 @@ fn gpu_preview_the_notice_says_nothing_of_a_zoom_below_100() {
         editor.gpu.surface = Some(SurfaceReport::default());
         zoomed_out(&mut editor, value);
         let _ = slide(&mut editor, ACTION, FIELD, 0.1);
-        assert_says(&editor, "boundary-pending", None);
-        deliver_until(&mut editor, "the boundary", |editor| {
-            editor.gpu.holds_boundary()
-        });
+        assert_says(&editor, "surface-pending", None);
         surface_ready(&mut editor);
         for tick in [0.2, 0.3] {
             let _ = slide(&mut editor, ACTION, FIELD, tick);
@@ -260,8 +271,10 @@ fn gpu_preview_the_notice_names_the_layer_the_stack_cannot_draw() {
         assert_eq!(latest_reason(&editor), json!("boundary-stage"));
         assert_says(&editor, "boundary-stage", Some(STACK));
     }
-    // Another gesture over the same stack names its own reason, and the layer goes with the last.
+    // Another gesture over the same stack names its own reason, and the layer goes with the last:
+    // at a region, whose boundary the drag derives, a slot over a test budget.
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    zoomed(&mut editor);
     editor.gpu.budget = Some(1);
     let _ = slide(&mut editor, ACTION, FIELD, 0.1);
     assert_says(&editor, "budget-exceeded", Some(MEMORY));
@@ -344,7 +357,7 @@ fn gpu_preview_the_notice_says_compiling_once_it_has_lasted_half_a_second() {
     editor.gpu.backdate_compiling(Duration::from_millis(600));
     editor.gpu.surface = Some(SurfaceReport {
         ready_boundary: Some(version),
-        fallback: Some(SurfaceFallback::BoundaryUploading {
+        fallback: Some(SurfaceFallback::SourceUploading {
             uploaded: 1,
             bytes: 2,
         }),
@@ -352,7 +365,7 @@ fn gpu_preview_the_notice_says_compiling_once_it_has_lasted_half_a_second() {
         evaluated: None,
     });
     let _ = slide(&mut editor, ACTION, FIELD, 0.6);
-    assert_says(&editor, "boundary-uploading", None);
+    assert_says(&editor, "source-uploading", None);
     compiling(&mut editor);
     let _ = slide(&mut editor, ACTION, FIELD, 0.7);
     assert_says(&editor, "compiling", None);

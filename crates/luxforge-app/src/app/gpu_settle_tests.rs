@@ -58,12 +58,15 @@ fn drawn_on_the_gpu(editor: &mut Editor) {
     let _ = editor.update(Message::Preview(PreviewMessage::Poll));
 }
 
-/// A Fit drag of exposure whose last ticks are drawn on the GPU: the boundary asked for and held,
-/// the surface ready, and each tick of `values` drawn.
+/// A Fit drag of exposure whose last ticks are drawn on the GPU: the boundary derived, the first
+/// tick's CPU frame presented, the surface ready, and each tick of `values` drawn.
 fn gpu_drag(editor: &mut Editor, values: &[f64]) {
     editor.gpu.surface = Some(SurfaceReport::default());
     let _ = slide(editor, ACTION, FIELD, 0.1);
-    deliver_until(editor, "the boundary", |editor| editor.gpu.holds_boundary());
+    assert!(editor.gpu.holds_boundary(), "derived at the tick");
+    deliver_until(editor, "the first tick's frame", |editor| {
+        !editor.presentation.queue.is_busy() && !editor.presentation.queue.ready()
+    });
     let version = editor.gpu.held_version().expect("a held boundary");
     editor.gpu.surface = Some(SurfaceReport {
         ready_boundary: Some(version),

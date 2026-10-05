@@ -4046,7 +4046,7 @@ fn paths(drained: &[Input], events: &[Value]) -> Value {
         "cpu_reasons": reasons,
         "run_gpu_ticks": ticks("gpu"),
         "run_cpu_ticks": ticks("cpu"),
-        "note": "gpu_frames and cpu_frames count the drained inputs by the path that drew each one's frame; cpu_reasons is what each CPU tick's gpu_preview_tick named (boundary-pending for the gesture's first tick, which asks for the boundary). run_gpu_ticks and run_cpu_ticks count every tick of the run, its release and burst step's included.",
+        "note": "gpu_frames and cpu_frames count the drained inputs by the path that drew each one's frame; cpu_reasons is what each CPU tick's gpu_preview_tick named (surface-pending for a tick whose plan the surface has not evaluated yet). run_gpu_ticks and run_cpu_ticks count every tick of the run, its release and burst step's included.",
     })
 }
 

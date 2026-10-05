@@ -284,7 +284,8 @@ fn a_dissolve_into_another_frame_asks_for_nothing_and_a_percentage_view_into_its
 
 /// While its last frame said the plan's boundary is still uploading, the widget asks for the next
 /// frame, whose `prepare` writes the next chunks; once it is not — drawn, another fallback, or a
-/// resident boundary no upload is for — it asks for nothing, so an idle editor stays asleep.
+/// boundary derived from the source, which no boundary upload is for — it asks for nothing, so an
+/// idle editor stays asleep.
 #[test]
 fn the_widget_asks_for_frames_only_while_its_plans_boundary_uploads() {
     use super::super::super::{SurfaceDiagnostics, SurfaceId, process_figures};
@@ -305,7 +306,19 @@ fn the_widget_asks_for_frames_only_while_its_plans_boundary_uploads() {
     let frame = solid(3, [255, 0, 0, 255]);
     let boundary = black_boundary(5);
     let held = plan(&boundary, vec![identity()]);
-    let resident = plan(&boundary.resident(), vec![identity()]);
+    let source =
+        crate::photo_surface::GpuSource::codes(1, Arc::new(vec![0u8; 16]), 2, 2).expect("a source");
+    let derived = plan(
+        &GpuBoundary::derived(
+            &source,
+            crate::photo_surface::Derivation::Cut { origin: (0, 0) },
+            2,
+            2,
+            6,
+        )
+        .expect("a derived boundary"),
+        vec![identity()],
+    );
     let now = Instant::now();
     let surface = |plan: &GpuPlan| {
         photo_surface(id, &frame, Placement::Contain, Length::Fill, Length::Fill)
@@ -318,7 +331,7 @@ fn the_widget_asks_for_frames_only_while_its_plans_boundary_uploads() {
     for (what, fallback, plan, asks) in [
         ("drawn", None, &held, false),
         ("uploading", Some(uploading), &held, true),
-        ("a resident boundary", Some(uploading), &resident, false),
+        ("a derived boundary", Some(uploading), &derived, false),
         (
             "compiling",
             Some(crate::photo_surface::GpuFallback::Compiling),

@@ -1,17 +1,20 @@
-//! A gesture drawn on the GPU (`docs/design/gpu-preview.md`, "The held input boundary" and "A
-//! tick"): the desktop's half, between the owner's plan and the photo surface's GPU stage.
+//! A gesture drawn on the GPU (`docs/design/gpu-preview.md`, "The GPU source" and "A tick"): the
+//! desktop's half, between the owner's plan and the photo surface's GPU stage.
 //!
 //! - **The plan rides the tick's own answer.** Each `draft.set` is answered with its preview job,
 //!   synchronously on this thread ([`super::tasks::draft_set_now`]), and the catalog owner plans
 //!   the draft's GPU preview with that job (its `gpu` field): the plan in `O(layers)`, or its
 //!   reason, and the boundary it starts from. It is preview state in the desktop's typed owner
 //!   reply, never an API result, and a tick adds no hop for it (performance rule 12).
-//! - **The boundary job.** While the draft's boundary is not held, each tick takes the CPU path as
-//!   today and its preview job carries the boundary request, so the preview worker renders the
-//!   boundary once after that job's whole frame. A request in flight on the active job is not asked
-//!   again; one still pending rides the job that replaces it. The boundary arrives as one more
-//!   result of that job and is held here, its texels shared with the surface, which uploads them
-//!   once.
+//! - **The source and its boundaries.** Every plan starts from the source. The desktop hands the
+//!   photo surface the prepared source of the photograph on screen once ([`GpuSource`]), from the
+//!   pixels the preview jobs already share, and lets its pixels go once the surface holds them; the
+//!   surface uploads it a frame's rows at a time and holds it for every surface. A plan's boundary
+//!   is derived from it on the GPU the moment the plan names one ([`GpuBoundary::derived`]): the
+//!   source reduced to the plan's proxy at Fit and below 100%, a window of it cut at full scale at
+//!   100% and above. No preview job carries a boundary, and none is rendered on the CPU. A lens
+//!   warp's coordinate grid is the one part computed on the CPU, once per key, on the runtime's
+//!   blocking pool; until it arrives the tick names `boundary-pending`.
 //! - **A tick on the GPU.** With the boundary held and the plan converted, the surface draws the
 //!   plan in the frame after the update that handled the input. Once the surface reports that it
 //!   evaluated this boundary's plan with no fallback — its pipeline is ready and its slot holds the
@@ -27,11 +30,10 @@
 //!   falls back to an older drafted frame and the next gesture over the stack starts from it. A
 //!   tick whose plan names another key releases it; so does another photograph.
 //! - **The resident boundary.** A committed stack's preview job carries the stack's own plan and
-//!   the boundary every gesture over it starts from (its `gpu_resident` field): at the job's
-//!   bounds, at Fit and below 100%, and for a view settled at 100% or more over its region. The
-//!   job asks for the boundary when no held one has its key; it is held as the resident one when
-//!   it arrives, or taken by a drag still waiting for it, so a gesture's first tick draws on the
-//!   GPU.
+//!   the boundary every gesture over it starts from (its `gpu_rest` field's view plan): at the
+//!   job's bounds, at Fit and below 100%, and for a view at 100% or more over its region. The
+//!   boundary is derived from the source as the job is queued and held as the resident one, with
+//!   the stack's plan behind the frame on screen, so a gesture's first tick draws on the GPU.
 //! - **Incremental ticks.** Every plan handed to the surface carries a serial and what changed
 //!   since a plan of the last 16 handed that the surface evaluated (`Stamps::hand`, from the core's
 //!   `GpuPlan::changes_since`): a painted tick's rectangle, so the surface evaluates each link of
@@ -52,14 +54,18 @@
 //!   quiet policy settles the view exactly. A view the region does not hold withdraws the plan, so
 //!   the CPU's frames are drawn, never a mix of the two, until a tick plans the new region and its
 //!   boundary is held. A region whose slot — everything the surface charges it but its links' words
-//!   and blocks buffers ([`region_charge`]) — would pass the GPU-preview budget asks for no
+//!   and blocks buffers ([`region_charge`]) — would pass the GPU-preview budget derives no
 //!   boundary and keeps the CPU path, naming the budget; so does one the surface finds over it once
 //!   held. The mask overlay's region coverage is laid over the GPU region frame.
 use super::{Editor, gpu_plan};
 use crate::state::status::CpuReason;
-use luxforge_core::{BoundaryKey, BoundaryRequest, Draft, DraftId, GpuAnswer, GpuPreview, Region};
+use luxforge_core::{
+    BoundaryKey, CoordinateGrid, Draft, DraftId, GpuAnswer, GpuPreview, LinearImage, PreviewSource,
+    ProxyCoverage, ProxyIdentity, Region, SourceBoundary,
+};
 use luxforge_ui::photo_surface::{
-    self as surface, DrawingPath, GpuBoundary, GpuStep, GpuWarm, SurfaceDiagnostics,
+    self as surface, AxisCoverage, Derivation, DrawingPath, GpuBoundary, GpuSource, GpuStep,
+    GpuWarm, Reduction, SurfaceDiagnostics,
 };
 use serde_json::{Value, json};
 use std::{
@@ -101,16 +107,267 @@ impl SurfaceReport {
     }
 }
 
-/// The boundary held for the open draft: its key, its texels as the surface uploads them, and
-/// where they lie in the plan's boundary stage.
+/// A boundary held for the open draft or between drafts: its key, the boundary as the surface
+/// derives it from the source it holds, and where it lies in the plan's boundary stage.
 struct Held {
     key: BoundaryKey,
     boundary: GpuBoundary,
     origin: (u32, u32),
-    /// A warp tail's coordinate grid, computed with the boundary and converted to its tail's words
-    /// once, as it is held, for every tick drawn from it to share; `None` for an affine tail, or a
-    /// warp whose grid could not be built, which then keeps the CPU path.
+    /// A warp tail's coordinate grid, computed off the interface thread and converted to its
+    /// tail's words once, as it is held, for every tick drawn from it to share; `None` for an
+    /// affine tail, or a warp whose grid could not be built, which then keeps the CPU path.
     grid: Option<gpu_plan::WarpGrid>,
+}
+
+/// The prepared source of the photograph on screen as the photo surface holds it on the GPU
+/// (`docs/design/gpu-preview.md`, "The GPU source"), and what the desktop knows of it.
+struct HeldSource {
+    identity: ProxyIdentity,
+    /// The content stage it fills, which a cut addresses and a reduction covers.
+    stage: (u32, u32),
+    /// As the surfaces are handed it: with its pixels until the surface reports it holds them all,
+    /// then without, so the desktop keeps no reference to them.
+    gpu: GpuSource,
+    /// The photograph it was held for: another lets it go.
+    asset: Option<luxforge_core::AssetId>,
+    /// Why the surface could not hold it, which every boundary of it names until a job hands its
+    /// pixels again.
+    refused: Option<&'static str>,
+}
+
+/// A RAW development's planes as the GPU source uploads them, borrowed through a clone of the image,
+/// which shares its planes and keeps the source worker's memory gate counting them while it lives.
+struct DevelopedPlanes(LinearImage);
+
+impl AsRef<[f32]> for DevelopedPlanes {
+    fn as_ref(&self) -> &[f32] {
+        self.0.shared_planes().0
+    }
+}
+
+/// `source` as the photo surface holds it on the GPU, under `version`: a JPEG's upright codes, or a
+/// RAW development's planes through its view, each shared with the preview job, never copied.
+fn gpu_source_of(version: u64, source: &PreviewSource) -> Option<GpuSource> {
+    match source {
+        PreviewSource::Jpeg(image) => {
+            GpuSource::codes(version, Arc::clone(&image.rgba), image.width, image.height)
+        }
+        PreviewSource::Raw { image, .. } => {
+            let (_, base, crop, orientation) = image.shared_planes();
+            GpuSource::planes(
+                version,
+                Arc::new(DevelopedPlanes(image.clone())),
+                base,
+                crop,
+                orientation,
+            )
+        }
+    }
+}
+
+/// The surface's coverage of one axis of a proxy's area average, from the core's, each weight
+/// narrowed to `f32` once.
+fn axis(coverage: ProxyCoverage) -> AxisCoverage {
+    AxisCoverage {
+        first: coverage.first,
+        offsets: coverage.offsets,
+        weights: coverage
+            .weights
+            .iter()
+            .map(|weight| *weight as f32)
+            .collect(),
+    }
+}
+
+/// How a boundary is derived from the source, its size, and its origin in the plan's boundary
+/// stage.
+struct Derived {
+    derivation: Derivation,
+    size: (u32, u32),
+    origin: (u32, u32),
+}
+
+/// How the boundary `request` names is derived from a source filling `stage`: the source reduced
+/// to the key's proxy plan with the CPU proxy build's own coverage, the window of the proxy stage
+/// the plan holds, at Fit and below 100%; a window of the source cut at full scale at the exact
+/// stage, at Fit or over a region at 100% or more. `O(source + proxy)` for a reduction's coverage,
+/// no pixel.
+fn derivation_of(request: &SourceBoundary, stage: (u32, u32)) -> Result<Derived, String> {
+    match request.key.plan() {
+        Some(plan) => {
+            let [across, down] = plan.coverage(stage).map_err(|error| error.detail)?;
+            let [x, y, width, height] = plan.held();
+            Ok(Derived {
+                derivation: Derivation::Reduce(Arc::new(Reduction {
+                    origin: (x, y),
+                    across: axis(across),
+                    down: axis(down),
+                })),
+                size: (width, height),
+                origin: (x, y),
+            })
+        }
+        None => {
+            let window = request.window.unwrap_or(Region {
+                x0: 0,
+                y0: 0,
+                width: stage.0,
+                height: stage.1,
+            });
+            Ok(Derived {
+                derivation: Derivation::Cut {
+                    origin: (window.x0, window.y0),
+                },
+                size: (window.width, window.height),
+                origin: (window.x0, window.y0),
+            })
+        }
+    }
+}
+
+/// The boundary `request` names, derived on the GPU from the source the surface holds
+/// ([`GpuBoundary::derived`]) under a new version, with where it lies in the plan's boundary stage
+/// and a lens warp's grid. Refused with the tick's reason: `source-missing` when the desktop holds
+/// no source of the request's, `boundary-pending` while a lens warp's grid is computed — asked for
+/// here the first time its key is — and `boundary-size` for a derivation the source does not fit.
+/// `O(source + proxy)` for a reduction's coverage; no pixel is read.
+fn derive_held(
+    source: Option<&HeldSource>,
+    versions: &mut u64,
+    grids: &mut Grids,
+    request: &SourceBoundary,
+) -> Result<Held, &'static str> {
+    let source = source
+        .filter(|source| source.identity == *request.key.source())
+        .ok_or("source-missing")?;
+    if let Some(reason) = source.refused {
+        return Err(reason);
+    }
+    // A warp whose grid could not be built is held with none, and its conversion names
+    // `warp-grid`, as before.
+    let grid = match request.needs_grid() {
+        false => None,
+        true => grids
+            .of(request)
+            .map_err(|()| "boundary-pending")?
+            .map(|grid| gpu_plan::WarpGrid::new(&grid)),
+    };
+    let Derived {
+        derivation,
+        size,
+        origin,
+    } = derivation_of(request, source.stage).map_err(|_| "boundary-size")?;
+    *versions += 1;
+    let boundary = GpuBoundary::derived(&source.gpu, derivation, size.0, size.1, *versions)
+        .ok_or("boundary-size")?;
+    Ok(Held {
+        key: request.key.clone(),
+        boundary,
+        origin,
+        grid,
+    })
+}
+
+/// How a boundary is derived, as evidence names it: `reduce` to a proxy, a `cut` of the source at
+/// full scale, or `texels` handed whole.
+fn derivation_name(boundary: &GpuBoundary) -> &'static str {
+    match boundary.derivation() {
+        Some((_, Derivation::Reduce(_))) => "reduce",
+        Some((_, Derivation::Cut { .. })) => "cut",
+        None => "texels",
+    }
+}
+
+/// The evidence of a boundary derived from the source, for a drag or, `resident`, a committed
+/// stack's job.
+fn derived_evidence(held: &Held, resident: bool) -> Value {
+    json!({"held": true, "resident": resident, "version": held.boundary.version(),
+        "width": held.boundary.size().0, "height": held.boundary.size().1,
+        "origin": [held.origin.0, held.origin.1], "derived": derivation_name(&held.boundary),
+        "source": held.boundary.derivation().map(|(source, _)| *source)})
+}
+
+/// A lens warp's grid for `request`, or why it could not be built. Frame work: run off the
+/// interface thread.
+fn grid_of(request: &SourceBoundary) -> Result<Arc<CoordinateGrid>, String> {
+    match request.grid() {
+        Some(grid) => grid.map_err(|error| error.to_string()),
+        None => Err("a boundary with no warp".into()),
+    }
+}
+
+/// A lens warp's coordinate grid for one boundary key, computed off the interface thread.
+enum GridState {
+    /// Asked for; the task that computes it starts after the message that asked.
+    Wanted(Box<SourceBoundary>),
+    Computing,
+    Ready(Arc<CoordinateGrid>),
+    /// The warp needs more nodes than a grid holds, or a degenerate map: the drag keeps the CPU
+    /// path, naming `warp-grid`.
+    Failed,
+}
+
+/// The coordinate grids of the last few boundary keys a lens warp's plan named.
+#[derive(Default)]
+struct Grids {
+    states: std::collections::VecDeque<(BoundaryKey, GridState)>,
+}
+
+/// How many keys' grids are kept: a drag at one view, the resident boundary and a view or two
+/// beside them.
+const GRID_KEYS: usize = 4;
+
+impl Grids {
+    /// The grid of `request`'s key: `Ok(Some)` once computed, `Ok(None)` when it could not be
+    /// built, and `Err` while it is still to come, asked for here the first time.
+    fn of(&mut self, request: &SourceBoundary) -> Result<Option<Arc<CoordinateGrid>>, ()> {
+        match self.states.iter().find(|(key, _)| *key == request.key) {
+            Some((_, GridState::Ready(grid))) => Ok(Some(Arc::clone(grid))),
+            Some((_, GridState::Failed)) => Ok(None),
+            Some(_) => Err(()),
+            None => {
+                if self.states.len() == GRID_KEYS {
+                    self.states.pop_front();
+                }
+                self.states.push_back((
+                    request.key.clone(),
+                    GridState::Wanted(Box::new(request.clone())),
+                ));
+                Err(())
+            }
+        }
+    }
+
+    /// The boundaries whose grids are wanted, now computing.
+    fn start(&mut self) -> Vec<SourceBoundary> {
+        let mut started = Vec::new();
+        for (_, state) in &mut self.states {
+            if matches!(state, GridState::Wanted(_))
+                && let GridState::Wanted(request) = std::mem::replace(state, GridState::Computing)
+            {
+                started.push(*request);
+            }
+        }
+        started
+    }
+
+    /// The grid of `key` computed, or why it could not be.
+    fn finish(&mut self, key: &BoundaryKey, grid: Result<Arc<CoordinateGrid>, String>) {
+        if let Some((_, state)) = self.states.iter_mut().find(|(held, _)| held == key) {
+            *state = match grid {
+                Ok(grid) => GridState::Ready(grid),
+                Err(_) => GridState::Failed,
+            };
+        }
+    }
+}
+
+/// A lens warp's coordinate grid computed for a boundary key off the interface thread, or why it
+/// could not be.
+#[derive(Clone, Debug)]
+pub(crate) struct GridAnswer {
+    pub(crate) key: BoundaryKey,
+    pub(crate) grid: Result<Arc<CoordinateGrid>, String>,
 }
 
 /// A plan handed to the surface: converted, the draft revision it is tagged with, and its serial
@@ -223,12 +480,8 @@ struct Drag {
     /// The revision of the entry that plan's draft was planned over.
     base: Option<u64>,
     /// The boundary that plan starts from.
-    wanted: Option<BoundaryRequest>,
+    wanted: Option<SourceBoundary>,
     held: Option<Held>,
-    /// The generation of the job carrying the boundary request, while it is in flight.
-    requested: Option<u64>,
-    /// A boundary of this key could not be rendered; the draft keeps the CPU path for it.
-    failed: Option<BoundaryKey>,
     /// The plan the surface draws.
     surface: Option<Handed>,
     /// The resident boundary's last plan, which the surface holds behind the CPU frame while this
@@ -244,7 +497,7 @@ struct Drag {
     /// the displayed-size proxy below; `None` at Fit.
     zoom: Option<f32>,
     /// What a region's boundary or slot would take, and the bound on a boundary or the budget it
-    /// passes, when the latest tick asked for no boundary because of them ([`region_charge`]).
+    /// passes, when the latest tick derived no boundary because of them ([`region_charge`]).
     over_budget: Option<(u64, u64)>,
     /// At a percentage zoom, the shape the latest tick's restoration or spatial layer is planned
     /// in when its owner planned both: `gpu`, every unit, or `cpu`, the units its values need,
@@ -255,7 +508,9 @@ struct Drag {
     ended: Option<u64>,
     gpu_ticks: u64,
     cpu_ticks: u64,
-    boundary_requests: u64,
+    /// Boundaries derived from the source for this drag's plans: one for each key it asked for
+    /// that no held boundary had.
+    derived: u64,
 }
 
 impl Drag {
@@ -266,8 +521,6 @@ impl Drag {
             base: None,
             wanted: None,
             held: None,
-            requested: None,
-            failed: None,
             surface: None,
             standby: None,
             reason: None,
@@ -279,7 +532,7 @@ impl Drag {
             ended: None,
             gpu_ticks: 0,
             cpu_ticks: 0,
-            boundary_requests: 0,
+            derived: 0,
         }
     }
 
@@ -306,27 +559,30 @@ impl Drag {
 }
 
 /// A boundary held between drafts: every gesture over one source and view is planned from the
-/// same boundary (the stack's first content layer's input), so the next draft finds it, with the
-/// surface's slot, its links' intermediates and their planes, still on the GPU and draws its first
-/// tick there. The last plan drawn over it is handed to the surface behind the CPU frame, which
-/// keeps the slot; the asset it was held for lets a different photograph let it go.
+/// same boundary (the source itself), so the next draft finds it, with the surface's slot, its
+/// links' intermediates and their planes, still on the GPU and draws its first tick there. The
+/// last plan drawn over it is handed to the surface behind the frame on screen, which keeps the
+/// slot; the asset it was held for lets a different photograph let it go.
 struct Resident {
     held: Held,
     plan: Option<Handed>,
     asset: Option<luxforge_core::AssetId>,
 }
 
-/// The desktop's GPU previews: the open draft's, the boundary held between drafts and the warm
-/// list of the committed stack.
+/// The desktop's GPU previews: the source the surface holds, the open draft's, the boundary held
+/// between drafts and the warm list of the committed stack.
 #[derive(Default)]
 pub(crate) struct GpuPreviews {
     drag: Option<Drag>,
     resident: Option<Resident>,
-    /// A committed stack's plan whose boundary a queued job asks for, to hold as the resident one:
-    /// its key, the plan and the job's generation.
-    pending_resident: Option<(BoundaryKey, Box<CorePlan>, Option<u64>)>,
+    /// The prepared source of the photograph on screen, which every boundary is derived from.
+    source: Option<HeldSource>,
+    /// The last source version handed out: each source is uploaded once.
+    sources: u64,
+    /// A lens warp's coordinate grids, by boundary key.
+    grids: Grids,
     stamps: Stamps,
-    /// The last boundary version handed out: each held boundary is uploaded once.
+    /// The last boundary version handed out: each held boundary is derived once.
     versions: u64,
     warm: Option<GpuWarm>,
     /// What a test reports for the surface, which no test draws.
@@ -335,6 +591,9 @@ pub(crate) struct GpuPreviews {
     /// The budget a test holds a region's boundary to, in place of the surface's.
     #[cfg(test)]
     pub(crate) budget: Option<u64>,
+    /// What a test reports of the source the surface holds, which no test uploads.
+    #[cfg(test)]
+    pub(crate) source_figures: Option<surface::gpu_preview::SourceFigures>,
 }
 
 /// What a tick, or a displayed entry's job, asks the owner to plan its GPU picture for, with its
@@ -363,7 +622,7 @@ pub(crate) enum GpuAsk {
 /// every link's words and blocks buffers once it is held. At Fit at the exact stage the frame is
 /// the whole output stage and the boundary the window it reads, or the whole boundary stage.
 /// `None` at a Fit proxy, which the display bounds bound.
-pub(crate) fn region_charge(plan: &CorePlan, request: &BoundaryRequest) -> Option<(u64, u64)> {
+pub(crate) fn region_charge(plan: &CorePlan, request: &SourceBoundary) -> Option<(u64, u64)> {
     let whole = |width, height| Region {
         x0: 0,
         y0: 0,
@@ -394,6 +653,18 @@ pub(crate) fn region_charge(plan: &CorePlan, request: &BoundaryRequest) -> Optio
         boundary,
         textures + chain_charge(plan, window, request.format),
     ))
+}
+
+/// A region's boundary, or one at the exact stage at Fit, that would pass the bound on a
+/// boundary, or whose slot `budget`, is never derived: the figure, and the bound or budget it
+/// passes. `None` within both, and at a Fit proxy, which the display bounds bound.
+fn over_budget(plan: &CorePlan, request: &SourceBoundary, budget: u64) -> Option<(u64, u64)> {
+    let (boundary, slot) = region_charge(plan, request)?;
+    if boundary > luxforge_core::BOUNDARY_MAX_BYTES {
+        Some((boundary, luxforge_core::BOUNDARY_MAX_BYTES))
+    } else {
+        (slot > budget).then_some((slot, budget))
+    }
 }
 
 /// The bytes a boundary over `window` in `format` takes, and so does each of a chain's
@@ -537,14 +808,22 @@ impl GpuPreviews {
             .map(|held| held.boundary.version())
     }
 
-    /// The open drag's figures, as evidence and the tests read them.
+    /// The open drag's figures, as evidence and the tests read them, with the source the surface
+    /// holds.
     pub(crate) fn summary(&self) -> Value {
         let resident = self.resident.as_ref().map(|resident| {
             json!({"version": resident.held.boundary.version(), "layer": resident.held.key.layer(),
                 "proxy": proxy_evidence(&resident.held.key)})
         });
+        let source = self.source.as_ref().map(|source| {
+            json!({"version": source.gpu.version(), "width": source.stage.0,
+                "height": source.stage.1, "bytes": source.gpu.bytes(),
+                // Whether the desktop still holds the pixels, which it lets go once the surface
+                // holds them.
+                "pixels_held": source.gpu.holds_pixels()})
+        });
         let Some(drag) = &self.drag else {
-            return json!({"drag": null, "resident": resident,
+            return json!({"drag": null, "resident": resident, "source": source,
                 "warm": self.warm.as_ref().map(GpuWarm::version)});
         };
         json!({
@@ -560,9 +839,8 @@ impl GpuPreviews {
                     "height": held.boundary.size().1,
                     "origin": [held.origin.0, held.origin.1],
                     "layer": held.key.layer(),
-                    // Whether the desktop still holds the texels, which it lets go once the
-                    // surface's slot holds them.
-                    "texels_held": held.boundary.holds_texels(),
+                    // How the surface derives it from the source: reduced to a proxy, or cut.
+                    "derived": derivation_name(&held.boundary),
                     "region": held.key.region().map(|rect| {
                         [rect.x0, rect.y0, rect.width, rect.height]
                     }),
@@ -573,14 +851,14 @@ impl GpuPreviews {
                     json!({"requested": requested, "budget": budget})
                 }),
                 "shape": drag.shape,
-                "boundary_requested": drag.requested,
-                "boundary_requests": drag.boundary_requests,
+                "boundaries_derived": drag.derived,
                 "reason": drag.reason,
                 "ended": drag.ended.is_some(),
                 "gpu_ticks": drag.gpu_ticks,
                 "cpu_ticks": drag.cpu_ticks,
             },
             "resident": resident,
+            "source": source,
             "warm": self.warm.as_ref().map(GpuWarm::version),
         })
     }
@@ -588,8 +866,13 @@ impl GpuPreviews {
     #[cfg(test)]
     pub(crate) fn ticks(&self) -> (u64, u64, u64) {
         self.drag.as_ref().map_or((0, 0, 0), |drag| {
-            (drag.gpu_ticks, drag.cpu_ticks, drag.boundary_requests)
+            (drag.gpu_ticks, drag.cpu_ticks, drag.derived)
         })
+    }
+
+    /// The prepared source the surfaces are handed, with its pixels until the surface holds them.
+    pub(crate) fn source(&self) -> Option<&GpuSource> {
+        self.source.as_ref().map(|source| &source.gpu)
     }
 
     /// Make the open drag's run of `compiling` ticks have begun `by` earlier, so a test need not
@@ -620,7 +903,7 @@ impl GpuPreviews {
 
     /// The latest tick's plan, in the shape it is drawn in, and the boundary it asks for.
     #[cfg(test)]
-    pub(crate) fn planned(&self) -> Option<(&CorePlan, &BoundaryRequest)> {
+    pub(crate) fn planned(&self) -> Option<(&CorePlan, &SourceBoundary)> {
         let drag = self.drag.as_ref()?;
         Some((&drag.plan.as_ref()?.0, drag.wanted.as_ref()?))
     }
@@ -650,14 +933,9 @@ impl Editor {
 
     /// One tick of the open draft's gesture, answered with the GPU `preview` its job carries:
     /// whether the surface draws it from the plan, with no preview job and no upload, or the job
-    /// goes to the worker as today — carrying the returned boundary request while the boundary is
-    /// not held.
-    pub(crate) fn gpu_tick(
-        &mut self,
-        set: &Draft,
-        preview: Option<Box<GpuPreview>>,
-    ) -> (Tick, Option<BoundaryRequest>) {
-        let mut boundary_request = None;
+    /// goes to the worker as today. A plan whose boundary no held one has is derived from the source
+    /// the surface holds at once ([`derive_held`]), so the next frame evaluates it.
+    pub(crate) fn gpu_tick(&mut self, set: &Draft, preview: Option<Box<GpuPreview>>) -> Tick {
         let now = Instant::now();
         // With the gate refusing — the preference off, or a GPU stage that cannot draw at all — the
         // plan is never handed over, so nothing is asked for it.
@@ -672,23 +950,16 @@ impl Editor {
             luxforge_core::Zoom::Fit => None,
         };
         let budget = self.gpu_budget();
-        // A region's boundary, or one at the exact stage at Fit, that would pass the bound on a
-        // boundary, or whose slot the GPU-preview budget, is never rendered: the figure, and the
-        // bound or budget it passes.
-        let over_budget = |plan: &CorePlan, request: &BoundaryRequest| {
-            let (boundary, slot) = region_charge(plan, request)?;
-            if boundary > luxforge_core::BOUNDARY_MAX_BYTES {
-                Some((boundary, luxforge_core::BOUNDARY_MAX_BYTES))
-            } else {
-                (slot > budget).then_some((slot, budget))
-            }
-        };
-        self.gpu_release_texels();
+        let over_budget =
+            |plan: &CorePlan, request: &SourceBoundary| over_budget(plan, request, budget);
         let report = self.surface_report();
         let mut released = None;
-        let mut lost = None;
+        let mut derived_now = None;
         let resident = &mut self.gpu.resident;
         let stamps = &mut self.gpu.stamps;
+        let source = self.gpu.source.as_ref();
+        let versions = &mut self.gpu.versions;
+        let grids = &mut self.gpu.grids;
         let drag = match &mut self.gpu.drag {
             Some(drag) if drag.draft == set.draft_id && drag.ended.is_none() => drag,
             slot => {
@@ -747,22 +1018,13 @@ impl Editor {
                 let Some(request) = boundary else {
                     drag.stopped("unplannable", None, now);
                     drag.cpu_ticks += 1;
-                    return (Tick::Cpu, None);
+                    return Tick::Cpu;
                 };
                 if let Some(held) = drag.held.take_if(|held| held.key != request.key) {
                     // The plan needs another boundary: the window moved, the bounds changed, or
-                    // the layers before the boundary did.
+                    // the source did.
                     drag.surface = None;
-                    drag.failed = None;
                     released = Some(held.boundary.version());
-                }
-                // The slot let go of a boundary whose texels the desktop no longer holds: the
-                // tick asks for them again.
-                if report.fallback == Some(SurfaceFallback::BoundaryReleased)
-                    && let Some(held) = drag.held.take_if(|held| !held.boundary.holds_texels())
-                {
-                    drag.surface = None;
-                    lost = Some(held.boundary.version());
                 }
 
                 let revision = set.draft_revision;
@@ -783,25 +1045,28 @@ impl Editor {
                 drag.base = Some(set.base_revision);
                 drag.zoom = zoom;
                 drag.over_budget = over_budget;
-                match &drag.held {
-                    None if over_budget.is_some() => {
-                        drag.surface = None;
-                        // The surface's own name for a plan over the budget.
-                        drag.stopped("budget-exceeded", None, now);
-                        Tick::Cpu
+                // A plan whose boundary no held one has is derived from the source the surface
+                // holds, unless it would pass the budget; a lens warp waits for its grid.
+                let refused = if drag.held.is_some() {
+                    None
+                } else if over_budget.is_some() {
+                    // The surface's own name for a plan over the budget.
+                    Some("budget-exceeded")
+                } else {
+                    match derive_held(source, versions, grids, &request) {
+                        Ok(held) => {
+                            derived_now = Some(derived_evidence(&held, false));
+                            drag.held = Some(held);
+                            drag.derived += 1;
+                            None
+                        }
+                        Err(reason) => Some(reason),
                     }
+                };
+                match drag.held.as_ref().filter(|_| refused.is_none()) {
                     None => {
                         drag.surface = None;
-                        if drag.failed.as_ref() == Some(&request.key) {
-                            drag.stopped("boundary-failed", None, now);
-                        } else {
-                            drag.stopped("boundary-pending", None, now);
-                            let pending = self.presentation.queue.pending_generation();
-                            if drag.requested.is_none() || drag.requested == pending {
-                                boundary_request = Some(request);
-                                drag.boundary_requests += 1;
-                            }
-                        }
+                        drag.stopped(refused.unwrap_or("boundary-pending"), None, now);
                         Tick::Cpu
                     }
                     Some(held) => {
@@ -854,65 +1119,10 @@ impl Editor {
             // boundary.
             self.log_release(version, allowed.err().unwrap_or("key-changed"));
         }
-        if let Some(version) = lost {
-            self.log_release(version, "slot-released");
+        if let Some(detail) = derived_now {
+            self.event("gpu_boundary", || detail);
         }
-        (tick, boundary_request)
-    }
-
-    /// Once the surface reports that its slot holds the open drag's boundary, let its texels go:
-    /// the held boundary, and the plan handed to the surface, name the resident boundary from then
-    /// on ([`GpuBoundary::resident`]), so the desktop keeps no copy for the rest of the gesture.
-    /// Run after every message and at each tick.
-    pub(crate) fn gpu_release_texels(&mut self) {
-        let report = self.surface_report();
-        if self.gpu.drag.is_none()
-            && let Some(resident) = &mut self.gpu.resident
-            && resident.held.boundary.holds_texels()
-            && report.ready_boundary == Some(resident.held.boundary.version())
-            && report.fallback.is_none()
-        {
-            resident.held.boundary = resident.held.boundary.resident();
-            let held = resident.held.boundary.clone();
-            if let Some(handed) = &mut resident.plan
-                && handed.plan.boundary.version() == held.version()
-            {
-                handed.plan.boundary = held.clone();
-            }
-            self.event(
-                "gpu_boundary_resident",
-                || json!({"version": held.version(), "why": "texels-let-go"}),
-            );
-            return;
-        }
-        let Some(drag) = &mut self.gpu.drag else {
-            return;
-        };
-        let Some(held) = drag.held.as_mut().filter(|held| {
-            held.boundary.holds_texels()
-                && report.ready_boundary == Some(held.boundary.version())
-                && report.fallback.is_none()
-        }) else {
-            return;
-        };
-        held.boundary = held.boundary.resident();
-        let resident = held.boundary.clone();
-        if let Some(handed) = &mut drag.surface
-            && handed.plan.boundary.version() == resident.version()
-        {
-            handed.plan.boundary = resident.clone();
-        }
-        self.event(
-            "gpu_boundary_resident",
-            || json!({"version": resident.version()}),
-        );
-    }
-
-    /// The tick's job, carrying the boundary request, was queued as `generation`.
-    pub(crate) fn gpu_boundary_requested(&mut self, generation: u64) {
-        if let Some(drag) = &mut self.gpu.drag {
-            drag.requested = Some(generation);
-        }
+        tick
     }
 
     /// One tick drawn on the GPU: the evidence that ties it to the frame the surface draws.
@@ -968,217 +1178,179 @@ impl Editor {
                 "path": "cpu",
                 "reason": drag.reason,
                 "generation": generation,
-                "boundary_requested": drag.requested == Some(generation),
             })
         });
     }
 
-    /// A job's boundary: held for the open draft when it is the one that draft's plan wants, or
-    /// let go. A failed one keeps the draft on the CPU path for that key.
-    pub(crate) fn gpu_boundary_ready(&mut self, result: luxforge_core::PreviewResult) {
-        let generation = result.generation;
-        let draft = result
-            .identity
-            .draft
-            .as_ref()
-            .map(|stamp| stamp.draft_id.clone());
-        let render_ms = result.render_ms;
-        let luxforge_core::PhaseOutcome::Boundary(outcome) = result.outcome else {
-            return;
-        };
-        let clip = super::gpu_settle::clip_flags(&self.session.workspace);
-        let evaluated = self.surface_report().evaluated;
-        // A committed stack's job asked for the boundary every gesture starts from: an open drag
-        // that waits for one of its key takes it, and otherwise it is held as the resident one, its
-        // plan behind the CPU frame.
-        if draft.is_none()
-            && let Some((key, plan, _)) = self
-                .gpu
-                .pending_resident
-                .take_if(|(key, _, _)| *key == outcome.key)
-        {
-            let detail = match outcome.result {
-                Ok(frame) => {
-                    self.gpu.versions += 1;
-                    let version = self.gpu.versions;
-                    let size = (frame.width, frame.height);
-                    let format = gpu_plan::boundary_format(frame.format);
-                    match GpuBoundary::new(frame.texels, size.0, size.1, version, format) {
-                        Some(boundary) => {
-                            let held = Held {
-                                key,
-                                boundary,
-                                origin: frame.origin,
-                                grid: outcome
-                                    .grid
-                                    .and_then(Result::ok)
-                                    .map(|grid| gpu_plan::WarpGrid::new(&grid)),
-                            };
-                            let over = |plan: &CorePlan, held: &Held| {
-                                gpu_plan::surface_plan_over(
-                                    plan,
-                                    held.boundary.clone(),
-                                    held.origin,
-                                    held.grid.as_ref(),
-                                    held.key.region(),
-                                )
-                                .ok()
-                                .map(|converted| super::gpu_settle::marked(converted, plan, clip))
-                            };
-                            let stamps = &mut self.gpu.stamps;
-                            let standby = over(&plan, &held)
-                                .map(|converted| stamps.hand(converted, 0, &plan, evaluated));
-                            let asset = self
-                                .document
-                                .state
-                                .as_ref()
-                                .map(|state| state.asset.id.clone());
-                            match self.gpu.drag.as_mut() {
-                                // An open drag still waiting for this boundary draws from it.
-                                Some(drag)
-                                    if drag.ended.is_none()
-                                        && drag.held.is_none()
-                                        && drag
-                                            .wanted
-                                            .as_ref()
-                                            .is_some_and(|wanted| wanted.key == held.key) =>
-                                {
-                                    drag.surface =
-                                        drag.plan.as_ref().and_then(|(plan, revision)| {
-                                            over(plan, &held).map(|converted| {
-                                                stamps.hand(converted, *revision, plan, evaluated)
-                                            })
-                                        });
-                                    drag.standby = standby;
-                                    drag.failed = None;
-                                    drag.held = Some(held);
-                                }
-                                _ => {
-                                    self.gpu.resident = Some(Resident {
-                                        held,
-                                        plan: standby,
-                                        asset,
-                                    });
-                                }
-                            }
-                            json!({"held": true, "resident": true, "version": version,
-                                "width": size.0, "height": size.1, "render_ms": render_ms})
-                        }
-                        None => json!({"held": false, "why": "malformed texels"}),
-                    }
-                }
-                Err(error) => json!({"held": false, "resident": true, "why": error.to_string()}),
-            };
-            self.event("gpu_boundary", || {
-                let mut detail = detail;
-                detail["generation"] = json!(generation);
-                detail
-            });
+    /// Hold `source`, the prepared source of a preview job about to be queued or of a tick's
+    /// answer, as the one every boundary is derived from: a new version whenever its identity
+    /// changes — another photograph, a new development, another crop or orientation of a RAW's
+    /// view — handed to the surfaces with its pixels, which are the job's own, shared. Once the
+    /// surface holds the source the desktop lets them go ([`after_message`]); should the surface
+    /// report it no longer holds it, or could not hold it, the pixels are taken again from this
+    /// job. `O(1)`: the identity is read and nothing is copied.
+    pub(crate) fn gpu_hold_source(&mut self, source: &PreviewSource) {
+        if self.gpu_preview_allowed().is_err() {
             return;
         }
-        let stamps = &mut self.gpu.stamps;
-        let Some(drag) = self
+        let identity = source.identity();
+        let (surface, _) = self.surface_source();
+        let asset = self
+            .document
+            .state
+            .as_ref()
+            .map(|state| state.asset.id.clone());
+        match &mut self.gpu.source {
+            Some(held) if held.identity == identity => {
+                held.asset = asset;
+                // The pipeline let the version go — a frame no surface handed it, as a gallery
+                // page draws — or could not hold it, while the desktop held no pixels for it: hand
+                // them again under the same version, which no boundary derived from it changes.
+                if !held.gpu.holds_pixels()
+                    && surface.is_none_or(|figures| figures.version != held.gpu.version())
+                    && let Some(again) = gpu_source_of(held.gpu.version(), source)
+                {
+                    held.gpu = again;
+                    held.refused = None;
+                    let version = held.gpu.version();
+                    self.event(
+                        "gpu_source",
+                        || json!({"version": version, "why": "surface-let-go"}),
+                    );
+                }
+            }
+            slot => {
+                self.gpu.sources += 1;
+                let version = self.gpu.sources;
+                let Some(gpu) = gpu_source_of(version, source) else {
+                    *slot = None;
+                    self.event(
+                        "gpu_source",
+                        || json!({"version": null, "why": "source-unfit"}),
+                    );
+                    return;
+                };
+                let stage = gpu.stage();
+                let bytes = gpu.bytes();
+                *slot = Some(HeldSource {
+                    identity,
+                    stage,
+                    gpu,
+                    asset,
+                    refused: None,
+                });
+                self.event("gpu_source", || {
+                    json!({"version": version, "width": stage.0, "height": stage.1,
+                        "bytes": bytes, "why": "source-changed"})
+                });
+            }
+        }
+    }
+
+    /// The prepared source the surfaces are handed, which every GPU boundary is derived from: none
+    /// while the gate refuses the GPU stage.
+    pub(crate) fn gpu_source_handed(&self) -> Option<&GpuSource> {
+        self.gpu_preview_allowed().ok()?;
+        self.gpu.source()
+    }
+
+    /// What the surface reports of the source the pipeline holds, live, and of a source it could
+    /// not hold.
+    fn surface_source(
+        &self,
+    ) -> (
+        Option<surface::SourceFigures>,
+        Option<(u64, SurfaceFallback)>,
+    ) {
+        #[cfg(test)]
+        if let Some(figures) = self.gpu.source_figures {
+            return (Some(figures), None);
+        }
+        let diagnostics = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
+        (diagnostics.gpu_source, diagnostics.gpu_source_refused)
+    }
+
+    /// Once the surface holds every row of the source the desktop hands it, let its pixels go: the
+    /// surfaces are handed the source without them from then on ([`GpuSource::resident`]), so the
+    /// desktop keeps no reference to them and a RAW's development can be let go by its worker. A
+    /// source the surface could not hold — past the budget, or on a device with no derivation
+    /// passes — has its pixels let go too, and every boundary of it names why until a job hands
+    /// them again. Run after every message.
+    fn gpu_release_source_pixels(&mut self) {
+        let (figures, refused) = self.surface_source();
+        let Some(held) = self
             .gpu
-            .drag
+            .source
             .as_mut()
-            .filter(|drag| Some(&drag.draft) == draft.as_ref())
+            .filter(|held| held.gpu.holds_pixels())
         else {
-            self.event(
-                "gpu_boundary_dropped",
-                || json!({"generation": generation, "why": "no open draft"}),
-            );
             return;
         };
-        // A draft that ended while its boundary rendered keeps it, drawing nothing from it: it
-        // stays resident when the drag is let go.
-        let ended = drag.ended.is_some();
-        if drag.requested == Some(generation) {
-            drag.requested = None;
-        }
-        let wanted = drag
-            .wanted
-            .as_ref()
-            .is_some_and(|wanted| wanted.key == outcome.key);
-        let detail = match (outcome.result, wanted) {
-            (Ok(frame), true) => {
-                self.gpu.versions += 1;
-                let version = self.gpu.versions;
-                let size = (frame.width, frame.height);
-                let origin = frame.origin;
-                let format = gpu_plan::boundary_format(frame.format);
-                match GpuBoundary::new(frame.texels, size.0, size.1, version, format) {
-                    Some(boundary) => {
-                        drag.held = Some(Held {
-                            key: outcome.key,
-                            boundary,
-                            origin,
-                            grid: outcome
-                                .grid
-                                .and_then(Result::ok)
-                                .map(|grid| gpu_plan::WarpGrid::new(&grid)),
-                        });
-                        drag.failed = None;
-                        // The latest tick's plan is drawn now, before the next input.
-                        if !ended
-                            && let Some((plan, revision)) = &drag.plan
-                            && let Some(held) = &drag.held
-                        {
-                            drag.surface = gpu_plan::surface_plan_over(
-                                plan,
-                                held.boundary.clone(),
-                                held.origin,
-                                held.grid.as_ref(),
-                                held.key.region(),
-                            )
-                            .ok()
-                            .map(|converted| {
-                                stamps.hand(
-                                    super::gpu_settle::marked(converted, plan, clip),
-                                    *revision,
-                                    plan,
-                                    evaluated,
-                                )
-                            });
-                        }
-                        json!({"held": true, "version": version, "width": size.0,
-                            "height": size.1, "origin": [origin.0, origin.1],
-                            "render_ms": render_ms})
-                    }
-                    None => json!({"held": false, "why": "malformed texels"}),
-                }
-            }
-            (Ok(_), false) => json!({"held": false, "why": "another key"}),
-            (Err(error), _) => {
-                if wanted {
-                    drag.failed = Some(outcome.key);
-                }
-                json!({"held": false, "why": error.to_string()})
-            }
+        let version = held.gpu.version();
+        let why = if figures.is_some_and(|figures| figures.version == version && figures.ready) {
+            "pixels-let-go"
+        } else if let Some((_, fallback)) = refused.filter(|(refused, _)| *refused == version) {
+            held.refused = Some(fallback.as_str());
+            fallback.as_str()
+        } else {
+            return;
         };
-        self.event("gpu_boundary", || {
-            let mut detail = detail;
-            detail["generation"] = json!(generation);
-            detail
-        });
+        held.gpu = held.gpu.resident();
+        self.event(
+            "gpu_source_resident",
+            || json!({"version": version, "why": why}),
+        );
+    }
+
+    /// The coordinate grids asked for since the last message, each computed off the interface
+    /// thread on the runtime's blocking pool and answered as a [`GridAnswer`].
+    fn gpu_compute_grids(&mut self) -> iced::Task<super::Message> {
+        let started = self.gpu.grids.start();
+        if started.is_empty() {
+            return iced::Task::none();
+        }
+        let count = started.len();
+        self.event("gpu_grid_requested", || json!({"grids": count}));
+        iced::Task::batch(started.into_iter().map(|request| {
+            let key = request.key.clone();
+            super::tasks::owner_task(
+                move || grid_of(&request),
+                move |grid| {
+                    super::Message::Preview(super::message::preview::PreviewMessage::GridReady(
+                        Box::new(GridAnswer { key, grid }),
+                    ))
+                },
+            )
+        }))
+    }
+
+    /// A lens warp's grid computed for a boundary key: held for every boundary of that key derived
+    /// from then on. The tick after it derives the boundary and draws.
+    pub(crate) fn gpu_grid_ready(&mut self, answer: GridAnswer) {
+        let detail = match &answer.grid {
+            Ok(grid) => json!({"held": true, "columns": grid.columns, "rows": grid.rows}),
+            Err(why) => json!({"held": false, "why": why}),
+        };
+        self.event("gpu_grid", || detail);
+        self.gpu.grids.finish(&answer.key, answer.grid);
     }
 
     /// A committed stack's job, about to be queued: the plan of the stack itself it carries
-    /// (`resident`) is held behind the CPU frame over the resident boundary when that boundary has
-    /// its key, so the surface keeps the stack's spatial outputs for the next gesture; otherwise
-    /// the answer is the boundary request the job asks with, the boundary becoming the resident one
-    /// when it arrives, unless a gesture is open then, which holds its own. `region` is whether the
+    /// (`rest`'s view plan) is held behind the CPU frame over the resident boundary, derived from
+    /// the source the surface holds when no boundary held has its key, so the surface keeps the
+    /// stack's outputs and the next gesture's first tick draws on the GPU. `region` is whether the
     /// job's view is a percentage zoom's region, and `committed` whether the job draws the whole
-    /// committed stack with no boundary request of its own. Nothing with the preference off.
+    /// committed stack. Nothing with the preference off, or while a drag holds the boundary.
     pub(crate) fn gpu_resident_from(
         &mut self,
         rest: Option<Box<luxforge_core::GpuRest>>,
         region: bool,
         committed: bool,
-    ) -> Option<BoundaryRequest> {
+    ) {
         // A committed stack's job may be queued while the gesture that committed it is still
-        // winding down; its boundary is adopted only if no gesture is open when it arrives.
+        // winding down; that drag keeps its boundary and leaves it resident once released.
         if self.gpu_preview_allowed().is_err() || !committed {
-            return None;
+            return;
         }
         let Some(GpuPreview {
             answer: GpuAnswer::Plan(plan),
@@ -1186,15 +1358,12 @@ impl Editor {
             ..
         }) = rest.map(|rest| rest.view)
         else {
-            return None;
+            return;
         };
-        // A region's boundary rides only on a job of a region, and Fit's only on Fit's: the job's
-        // view is the one it was queued at, and the worker renders a boundary only at its frame's.
+        // A region's plan is held only for a job of a region, and Fit's only for Fit's.
         if region != request.key.region().is_some() {
-            return None;
+            return;
         }
-        // A drag that ended holds the boundary until its committed frame is presented, and then
-        // leaves it resident.
         if self
             .gpu
             .drag
@@ -1202,58 +1371,72 @@ impl Editor {
             .and_then(|drag| drag.held.as_ref())
             .is_some_and(|held| held.key == request.key)
         {
-            return None;
+            return;
         }
-        let clip = super::gpu_settle::clip_flags(&self.session.workspace);
-        let evaluated = self.surface_report().evaluated;
-        let stamps = &mut self.gpu.stamps;
-        if let Some(resident) = self
+        let held = match self
             .gpu
             .resident
-            .as_mut()
-            .filter(|resident| resident.held.key == request.key)
+            .take_if(|resident| resident.held.key == request.key)
         {
-            let held = &resident.held;
-            resident.plan = gpu_plan::surface_plan_over(
+            Some(resident) => resident.held,
+            None => {
+                // A boundary a drag would not derive is not derived for the resting stack either.
+                if let Some((requested, bound)) = over_budget(&plan, &request, self.gpu_budget()) {
+                    self.event("gpu_boundary", || {
+                        json!({"held": false, "resident": true, "why": "budget-exceeded",
+                            "requested": requested, "budget": bound})
+                    });
+                    return;
+                }
+                let derived = derive_held(
+                    self.gpu.source.as_ref(),
+                    &mut self.gpu.versions,
+                    &mut self.gpu.grids,
+                    &request,
+                );
+                let held = match derived {
+                    Ok(held) => held,
+                    Err(why) => {
+                        self.event(
+                            "gpu_boundary",
+                            || json!({"held": false, "resident": true, "why": why}),
+                        );
+                        return;
+                    }
+                };
+                let detail = derived_evidence(&held, true);
+                self.event("gpu_boundary", || detail);
+                held
+            }
+        };
+        let clip = super::gpu_settle::clip_flags(&self.session.workspace);
+        let evaluated = self.surface_report().evaluated;
+        let standby = gpu_plan::surface_plan_over(
+            &plan,
+            held.boundary.clone(),
+            held.origin,
+            held.grid.as_ref(),
+            held.key.region(),
+        )
+        .ok()
+        .map(|converted| {
+            self.gpu.stamps.hand(
+                super::gpu_settle::marked(converted, &plan, clip),
+                0,
                 &plan,
-                held.boundary.clone(),
-                held.origin,
-                held.grid.as_ref(),
-                held.key.region(),
+                evaluated,
             )
-            .ok()
-            .map(|converted| {
-                stamps.hand(
-                    super::gpu_settle::marked(converted, &plan, clip),
-                    0,
-                    &plan,
-                    evaluated,
-                )
-            });
-            return None;
-        }
-        // A request still in flight for the same key is asked again: the job that carried it may
-        // have been replaced before it started, and a boundary rendered twice costs one copy of
-        // the proxy, where one never answered would leave every gesture without it.
-        self.gpu.pending_resident = Some((request.key.clone(), plan, None));
-        Some(request)
-    }
-
-    /// The committed job carrying the resident boundary's request was queued as `generation`.
-    pub(crate) fn gpu_resident_requested(&mut self, generation: u64) {
-        if let Some((_, _, requested)) = &mut self.gpu.pending_resident
-            && requested.is_none()
-        {
-            *requested = Some(generation);
-        }
-    }
-
-    /// The preview queue was cancelled: a boundary request in flight will not be answered.
-    pub(crate) fn gpu_queue_cancelled(&mut self) {
-        if let Some(drag) = &mut self.gpu.drag {
-            drag.requested = None;
-        }
-        self.gpu.pending_resident = None;
+        });
+        let asset = self
+            .document
+            .state
+            .as_ref()
+            .map(|state| state.asset.id.clone());
+        self.gpu.resident = Some(Resident {
+            held,
+            plan: standby,
+            asset,
+        });
     }
 
     /// A committed stack's job carries the plans its gestures are likely to draw: hand their
@@ -1436,7 +1619,7 @@ impl Editor {
 /// is presented, or until nothing more is coming, and then hands its boundary to the resident slot
 /// the next draft starts from; a resident boundary of another photograph is let go.
 pub(super) fn after_message(editor: &mut Editor, _: &super::Before) -> iced::Task<super::Message> {
-    editor.gpu_release_texels();
+    editor.gpu_release_source_pixels();
     let asset = editor
         .document
         .state
@@ -1453,21 +1636,38 @@ pub(super) fn after_message(editor: &mut Editor, _: &super::Before) -> iced::Tas
             || json!({"version": version, "why": "asset-changed"}),
         );
     }
+    // The source of another photograph, or of none, is let go with it: the surfaces are handed
+    // none, and the pipeline lets its textures go.
+    if let Some(source) = editor.gpu.source.take_if(|source| source.asset != asset) {
+        let version = source.gpu.version();
+        editor.event(
+            "gpu_source_released",
+            || json!({"version": version, "why": "asset-changed"}),
+        );
+    }
+    release_ended_drag(editor, asset);
+    editor.gpu_compute_grids()
+}
+
+/// A draft that ended keeps its drawn plan until the frame that replaces it is presented, or
+/// until nothing more is coming, and then hands its boundary to the resident slot the next draft
+/// starts from.
+fn release_ended_drag(editor: &mut Editor, asset: Option<luxforge_core::AssetId>) {
     let open = editor
         .core_gesture()
         .map(|gesture| gesture.draft.draft_id.clone());
     let presented = editor.presentation.presented_generation;
     let idle = !editor.presentation.queue.is_busy() && !editor.presentation.queue.ready();
     let Some(drag) = &mut editor.gpu.drag else {
-        return iced::Task::none();
+        return;
     };
     if open.as_ref() == Some(&drag.draft) {
-        return iced::Task::none();
+        return;
     }
     let ended = *drag.ended.get_or_insert(presented);
     if presented > ended || idle {
         let Some(drag) = editor.gpu.drag.take() else {
-            return iced::Task::none();
+            return;
         };
         match drag.held {
             // The boundary stays on the GPU for the next draft, behind the CPU frame.
@@ -1489,7 +1689,6 @@ pub(super) fn after_message(editor: &mut Editor, _: &super::Before) -> iced::Tas
             ),
         }
     }
-    iced::Task::none()
 }
 
 #[cfg(test)]

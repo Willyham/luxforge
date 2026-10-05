@@ -291,7 +291,7 @@ fn an_empty_stack_is_planned_from_the_source() {
             let rest = plan_rest(&stack, view).unwrap();
             let plan = planned(&rest.view);
             let request = rest.view.boundary.as_ref().expect("a boundary");
-            assert_eq!(request.position, (0, 0), "{name}, {view:?}: the source");
+            assert_eq!(request.key.layer(), 0, "{name}, {view:?}: the source");
             assert_eq!(plan.boundary.layer, 0, "{name}, {view:?}");
             assert!(!plan.boundary.continues_run, "{name}, {view:?}");
             assert!(
@@ -330,8 +330,11 @@ fn every_rest_plan_starts_at_the_source() {
     let stack = evaluation(committed.clone(), committed.clone(), None);
     let rest = plan_rest(&stack, view).unwrap();
     let request = rest.view.boundary.as_ref().expect("a boundary");
-    assert_eq!(request.position, (0, 0), "the source");
-    assert_eq!(request.key.layer(), 0, "reported under the first layer");
+    assert_eq!(
+        request.key.layer(),
+        0,
+        "the source, reported under the first layer"
+    );
     let plan = planned(&rest.view);
     assert_eq!(plan.content.len(), 1, "the Basic layer over the source");
     assert!(
@@ -348,7 +351,6 @@ fn every_rest_plan_starts_at_the_source() {
         tick.key, request.key,
         "a drag starts from the rest boundary"
     );
-    assert_eq!(tick.position, (0, 0));
     let other = evaluation(vec![crop.clone()], vec![crop], None);
     let other = plan_rest(&other, view).unwrap();
     assert_eq!(

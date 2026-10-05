@@ -992,6 +992,7 @@ impl Editor {
             surfaces.gpu_change = self.gpu.surface_change();
         }
         surfaces.gpu_warm = self.gpu.warm();
+        surfaces.gpu_source = self.gpu_source_handed();
         surfaces.dissolve = self.gpu_settle.dissolve();
         surfaces
     }

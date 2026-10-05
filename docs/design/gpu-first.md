@@ -59,6 +59,16 @@ Owner, 2026-10-04:
 | 5 | Shader warm-up at launch and open; the software adapter on Linux CI; the reference renderer as the no-GPU fallback with a notice; the CPU production paths retired | Proxies, windows and regions, the spatial budget's render use, the settle phases; the architecture limits shrink to the GPU budgets and the prepared source |
 | 6 | Qualification and measurement: the corpus comparison per output kind, native, and the latencies against the baseline below; the release gate | This plan |
 
+A stage that needs a cache, a budget or a fallback reason the baseline did not have names it here and among the [known remaining costs](../engineering/performance-rules.md#known-remaining-costs), with what it replaces, so the counts above fall:
+
+| Stage | Adds | Replaces | Bound |
+| --- | --- | --- | --- |
+| 2 | The GPU source: the photograph's prepared source held on the GPU for every surface, uploaded once per source and development a frame's rows at a time, every boundary derived from it on the GPU, a window of it cut at full scale or its area average at a proxy plan ([GPU previews](gpu-preview.md#the-held-input-boundary)) | The boundary the preview worker rendered on the CPU after a job's frame, its upload, and the desktop's copy of its texels | Charged to the 2 GiB GPU-preview budget: four bytes a pixel of a JPEG, twelve of a RAW's crop window, so 96 MB for a 24 MP JPEG, 240 MB for a 60 MP JPEG and the Air 2S, 292 MB for the Z6, 478 MB for the X100VI and 720 MB for a 60 MP RAW |
+| 2 | `source-uploading`: a tick over a boundary of a source the pipeline is still uploading, which passes within the upload's frames and says nothing | `boundary-uploading` on the editor's path; the surface names it only for a boundary handed as texels, which no gesture hands it | The upload's frames: at most 32 MiB a frame, so about 22 for 720 MB |
+| 2 | `source-missing`: a boundary of a source the pipeline does not hold, whose pixels the next job hands again | `boundary-released`, gone with the desktop's copy of a boundary's texels, and `boundary-failed`, gone with the worker's boundary render | One job |
+
+`boundary-pending` names only a lens warp's coordinate grid still being computed for the boundary's key, off the interface thread, once per key.
+
 ## Constraints
 
 - **Texture limits.** iced's wgpu limits cap a texture at 8192 px, and 60 MP of f32 RGBA is nearly a gigabyte per plane set. Full-resolution work on the GPU is tiled with halos, as the CPU does today; the 100% chain and its budget are that tiling and remain the only tiling.
