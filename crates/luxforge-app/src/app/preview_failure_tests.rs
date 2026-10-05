@@ -134,7 +134,6 @@ impl Hold {
                     id: "test.held".into(),
                     title: "Held".into(),
                     effects: vec![EffectDescriptor {
-                        fit_settle: Default::default(),
                         id: HELD_EFFECT.into(),
                         format: EFFECT_FORMAT,
                         stage: EffectStage::Color,

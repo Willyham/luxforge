@@ -64,10 +64,10 @@ pub(crate) use curve::CurveModule;
 pub use descriptor::{
     ActionControl, ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceStyle,
     ColorStyle, Control, CurveBackground, CurveChannel, CurveControl, EffectDescriptor,
-    EffectStage, FitSettle, GroupControl, ModuleDescriptor, ModuleLayout, NumberControl,
-    NumberStyle, ParameterDescriptor, ParameterKind, PickerControl, PresetsControl,
-    QueryChoiceControl, RailDecoration, ResetAction, check_parameters, check_value,
-    resolve_control, resolve_group_reset,
+    EffectStage, GroupControl, ModuleDescriptor, ModuleLayout, NumberControl, NumberStyle,
+    ParameterDescriptor, ParameterKind, PickerControl, PresetsControl, QueryChoiceControl,
+    RailDecoration, ResetAction, check_parameters, check_value, resolve_control,
+    resolve_group_reset,
 };
 pub use descriptor::{
     ChoiceControl, ColorControl, ControlVariant, IdentityKind, RangeControl, ResolvedControl,

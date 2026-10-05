@@ -347,6 +347,10 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         Ok(evaluation)
     }
 
+    /// The frames a stack's prefix through segment `boundary` builds, each as the whole stack
+    /// builds it: what the CPU's render of a layer's input boundary reads
+    /// ([`super::boundary`]), for tests and the qualification harness alone.
+    #[cfg(any(test, feature = "qualification"))]
     pub(super) fn frames_prefix(
         domain: D,
         compiled: Cow<'a, Compiled>,
@@ -364,50 +368,19 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             context,
         )?;
         evaluation.tiles = None;
-        evaluation.materialize(0, boundary + 1, cancel)?;
-        Ok(evaluation)
-    }
-
-    pub(super) fn frames_suffix(
-        domain: D,
-        compiled: Cow<'a, Compiled>,
-        tiling: Tiling,
-        cancel: &Cancel,
-        context: &'a RenderContext,
-        boundary: usize,
-        planes: Arc<D::SpatialFrame>,
-    ) -> Result<Self, Error> {
-        let mut evaluation = Self::new(
-            domain,
-            compiled,
-            tiling,
-            SpatialMode::Point,
-            cancel,
-            context,
-        )?;
-        evaluation.tiles = None;
-        evaluation.frame = Some(SpatialFrame {
-            index: boundary,
-            planes,
-        });
-        evaluation.materialize(boundary + 1, evaluation.compiled.segments.len(), cancel)?;
-        Ok(evaluation)
-    }
-
-    fn materialize(&mut self, start: usize, end: usize, cancel: &Cancel) -> Result<(), Error> {
-        for index in start..end {
-            let Some(entry) = &self.compiled.segments[index].entry else {
+        for index in 0..=boundary {
+            let Some(entry) = &evaluation.compiled.segments[index].entry else {
                 continue;
             };
-            let Some(frame) = entry.frame(self, index, cancel)? else {
+            let Some(frame) = entry.frame(&evaluation, index, cancel)? else {
                 continue;
             };
-            self.frame = Some(SpatialFrame {
+            evaluation.frame = Some(SpatialFrame {
                 index,
                 planes: Arc::new(frame),
             });
         }
-        Ok(())
+        Ok(evaluation)
     }
 
     /// Read an operation's prefix with the spatial boundary width selected by the whole recipe.
@@ -1009,7 +982,6 @@ fn clamp_index(value: f64, limit: u32) -> u32 {
 pub(crate) struct SpatialEntry {
     pub(super) operation: SpatialOperation,
     pub(crate) stage: crate::EffectStage,
-    pub(crate) fit_settle: crate::FitSettle,
     /// The SHA-256 of the canonical JSON of the layers before this one, which together with the
     /// source and the stage identifies what a global estimate was prepared from.
     prefix_hash: String,
@@ -1028,7 +1000,6 @@ impl SpatialEntry {
         Self {
             operation,
             stage: crate::EffectStage::Spatial,
-            fit_settle: crate::FitSettle::Proxy,
             prefix_hash,
             globals: None,
             windowed: false,

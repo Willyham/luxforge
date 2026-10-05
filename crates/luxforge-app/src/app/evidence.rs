@@ -564,8 +564,8 @@ enum ExpectedPhotoDraw {
         generation: u64,
         quality: luxforge_ui::RegionQuality,
     },
-    /// The GPU identity hook's draw: the GPU stage's output over the boundary held from the frame
-    /// of this version.
+    /// The GPU stage's output over the boundary of this version: the GPU identity hook's draw, over
+    /// the boundary held from the frame of this version, or the committed stack's view plan at rest.
     Gpu {
         boundary: u64,
     },
@@ -667,10 +667,73 @@ impl Editor {
         // The status bar names the frame the surface drew last, which only that draw can say: a
         // change of drawing path wakes the desktop, whose next update derives the label again.
         let label_current = self.workspace.status.gpu_us == self.gpu_frame_us();
+        let surfaces = self.surfaces();
+        let compare_ready = surfaces.comparison.is_none_or(|(after, _)| {
+            // Compare's After side: the retained GPU picture once drawn — its picture at
+            // rest in tiles, else its view plan's frame once evaluated — or the retained frame.
+            let drawn = luxforge_ui::surface_diagnostics(crate::view::canvas::COMPARE_SURFACE);
+            if let Some(rest) = surfaces.compare_rest
+                && !drawn.gpu_rest.is_some_and(|figures| {
+                    figures.version == rest.version && figures.fallback.is_some()
+                })
+            {
+                return drawn.drawn_rest == Some(rest.version)
+                    && drawn.drawn_rest_dissolve.is_none();
+            }
+            if let Some(plan) = surfaces.compare_gpu
+                && drawn.gpu_ready_boundary == Some(plan.boundary.version())
+            {
+                return photo_drawn(
+                    ExpectedPhotoDraw::Gpu {
+                        boundary: plan.boundary.version(),
+                    },
+                    drawn,
+                );
+            }
+            photo_drawn(
+                ExpectedPhotoDraw::Full {
+                    version: after.version(),
+                    content: None,
+                },
+                drawn,
+            )
+        });
+        // The committed stack at rest, which the GPU draws: its picture at rest in tiles once
+        // its last tile is in and its dissolve has run, where the whole-frame photograph has one
+        // the surface did not refuse; otherwise its view plan's frame once the surface has
+        // evaluated it. A plan the surface fell back from leaves the CPU frame the photograph.
+        if self.gpu_at_rest() {
+            let drawn = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
+            let whole = match self.session.preview.view.zoom {
+                luxforge_core::Zoom::Fit => true,
+                luxforge_core::Zoom::Percent { .. } => surfaces.whole_frame(),
+            };
+            if let Some(rest) = surfaces.gpu_rest.filter(|_| whole)
+                && !drawn.gpu_rest.is_some_and(|figures| {
+                    figures.version == rest.version && figures.fallback.is_some()
+                })
+            {
+                return label_current
+                    && compare_ready
+                    && drawn.drawn_rest == Some(rest.version)
+                    && drawn.drawn_rest_dissolve.is_none();
+            }
+            if let Some((plan, _)) = self.gpu_rest_plan()
+                && drawn.gpu_ready_boundary == Some(plan.boundary.version())
+            {
+                return label_current
+                    && compare_ready
+                    && photo_drawn(
+                        ExpectedPhotoDraw::Gpu {
+                            boundary: plan.boundary.version(),
+                        },
+                        drawn,
+                    );
+            }
+        }
         // A gesture drawn on the GPU: the frame to capture is the GPU draw of its newest tick, once
         // its pipeline is ready. Until the surface has evaluated it, or while it is held behind
         // the CPU frame of its revision, the CPU frame is the one drawn.
-        let surfaces = self.surfaces();
         if let (Some(_), Some(revision), false, Some(boundary)) = (
             surfaces.gpu,
             surfaces.gpu_tag,
@@ -744,15 +807,7 @@ impl Editor {
                     luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE),
                 )
             })
-            && self.surfaces().comparison.is_none_or(|(after, _)| {
-                photo_drawn(
-                    ExpectedPhotoDraw::Full {
-                        version: after.version(),
-                        content: None,
-                    },
-                    luxforge_ui::surface_diagnostics(crate::view::canvas::COMPARE_SURFACE),
-                )
-            })
+            && compare_ready
     }
 
     /// Evidence with clipping enabled must show the requested mask over the current photograph,
@@ -3601,6 +3656,11 @@ impl Editor {
             "drawn_full_version":gpu.drawn_full_version,
             "drawn_stale_photo":gpu.drawn_stale_photo,
             "drawn_fallback_content":gpu.drawn_fallback_content,
+            // Where the photograph drawn comes from: the GPU's picture at rest stands in for the
+            // presenter's frame, which is then drawn by no CPU texture.
+            "picture":self.picture_source(&gpu),
+            "drawn_rest":gpu.drawn_rest,
+            "drawn_gpu_boundary":gpu.drawn_gpu_boundary,
         });
         self.event("view_idle_check", || detail.clone());
         self.note_step(json!({"view_idle_check":detail}));

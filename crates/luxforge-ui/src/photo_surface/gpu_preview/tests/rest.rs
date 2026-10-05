@@ -143,18 +143,23 @@ fn a_picture_at_rest_is_drawn_in_tiles_and_reduced_to_the_view() {
         ..primitive
     };
     assert_cpu_frame(&paint(&device, &queue, &mut pipeline, &primitive));
+    let figures = diagnostics(&pipeline, ID)
+        .gpu_rest
+        .expect("the rest's figures");
     assert_eq!(
-        diagnostics(&pipeline, ID).gpu_rest,
-        Some(RestFigures {
+        figures,
+        RestFigures {
             version: 2,
             tiles: 6,
             drawn: 1,
             done: false,
             waiting: false,
-            paused: false,
+            dissolving: false,
+            prepare_us: figures.prepare_us,
             fallback: None,
-        })
+        }
     );
+    assert!(figures.prepare_us > 0, "its first tile's prepare timed");
     // None lets it go.
     paint(&device, &queue, &mut pipeline, &handing_none());
     assert_eq!(diagnostics(&pipeline, ID).gpu_rest, None);
@@ -226,6 +231,82 @@ fn held_codes(rgba: &[u8]) -> Vec<[u8; 3]> {
             })
         })
         .collect()
+}
+
+/// A picture at rest handed beside a plan drawn in place of the photograph — the desktop's view
+/// plan at rest, or a released gesture's last plan — draws its tiles all the same, a tile a frame,
+/// while the plan's output is drawn; the frame its last tile comes in starts its dissolve over that
+/// output, each frame of which draws the output and then the rest output at the share, and once the
+/// dissolve has run its course the rest output alone is the photograph.
+#[test]
+fn a_picture_at_rest_dissolves_in_over_the_plan_drawn_before_it() {
+    let test = "a_picture_at_rest_dissolves_in_over_the_plan_drawn_before_it";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    if let Err(error) = super::super::rest::RestPasses::new(&device) {
+        panic!("the rest passes: {error}");
+    }
+    let mut pipeline = own_pipeline(&device, &queue);
+    let rgba = codes(WIDTH, HEIGHT);
+    let source = GpuSource::codes(3, Arc::new(rgba), WIDTH, HEIGHT).expect("a source");
+    let tiles = tiles_of(&source);
+    let rest = rest_of(&tiles);
+    let whole = GpuBoundary::derived(
+        &source,
+        Derivation::Cut { origin: (0, 0) },
+        WIDTH,
+        HEIGHT,
+        7,
+    )
+    .expect("a boundary");
+    let view = plan(&whole, vec![identity()]);
+    pipeline.compile_now(&device, &tiles[0]);
+    pipeline.compile_now(&device, &view);
+    let primitive = PhotoPrimitive {
+        source: Some(source.clone()),
+        rest: Some(rest.clone()),
+        ..primitive(ID, Some(view))
+    };
+    let mut frames = 0;
+    let dissolve = loop {
+        paint(&device, &queue, &mut pipeline, &primitive);
+        frames += 1;
+        let seen = diagnostics(&pipeline, ID);
+        let figures = seen.gpu_rest.expect("the rest's figures");
+        assert_eq!(figures.fallback, None, "frame {frames}");
+        if let Some(dissolve) = seen.drawn_rest_dissolve {
+            assert_eq!(seen.drawn_rest, Some(1), "the rest over the plan's output");
+            assert_eq!(seen.drawn_gpu_boundary, Some(7));
+            assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
+            assert!(figures.done && figures.dissolving);
+            break dissolve;
+        }
+        assert_eq!(
+            seen.drawn_rest, None,
+            "frame {frames}: not before its last tile"
+        );
+        assert_eq!(
+            seen.drawn_gpu_boundary,
+            Some(7),
+            "frame {frames}: the plan's output"
+        );
+        assert!(frames < 6, "the rest never dissolved in: {figures:?}");
+    };
+    assert_eq!(frames, 6, "a tile a frame while the plan is drawn");
+    assert_eq!((dissolve.from, dissolve.to), (7, 1));
+    assert!(dissolve.share < DrawnDissolve::WHOLE);
+    // A frame a look, through the one hang-bounded wait, until the dissolve has run its course.
+    luxforge_testbase::wait_until("the dissolve's course", || {
+        paint(&device, &queue, &mut pipeline, &primitive);
+        diagnostics(&pipeline, ID).drawn_rest_dissolve.is_none()
+    });
+    let seen = diagnostics(&pipeline, ID);
+    assert_eq!(seen.drawn_rest, Some(1));
+    assert_eq!(seen.drawn_rest_dissolve, None, "its course run");
+    assert_eq!(seen.drawn_gpu_boundary, None, "the rest output alone");
+    assert!(seen.gpu_rest.is_some_and(|figures| !figures.dissolving));
+    settle(&pipeline);
 }
 
 /// A picture at rest drawn headless ([`HeadlessSurface`]) is the one the surface draws — the codes

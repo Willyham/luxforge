@@ -161,7 +161,6 @@ impl ShrinkModule {
             parameters: vec![extent("width"), extent("height")],
         };
         let effect = |id: &str| EffectDescriptor {
-            fit_settle: Default::default(),
             id: id.into(),
             format: EFFECT_FORMAT,
             stage: EffectStage::Geometry,

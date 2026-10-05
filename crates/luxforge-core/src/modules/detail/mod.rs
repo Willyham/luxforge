@@ -18,7 +18,7 @@ mod exactness;
 mod oracle;
 
 use super::{
-    CompileStage, EffectStage, FitSettle, Processing, SpatialOperation, SpatialUnit,
+    CompileStage, EffectStage, Processing, SpatialOperation, SpatialUnit,
     field_patch::{Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
 };
 use crate::Error;
@@ -58,7 +58,7 @@ fn field(
 impl FieldPatch for Detail {
     fn spec() -> Spec {
         Spec::new("luxforge.detail", "Detail", "Judge fine detail at 100%", DETAIL_EFFECT, EffectStage::Restoration)
-            .maskable().fit_settle(FitSettle::Exact)
+            .maskable()
             .set_notes("merges the named Detail fields into one layer per target before the colour run; omitted fields keep their stored values; noise reduction precedes capture sharpening; a patch that changes nothing is a reported no-op")
             .fields([
                 field(SHARPENING,"Amount","Sharpening",0.0,150.0,"capture-sharpening gain; zero is off"),

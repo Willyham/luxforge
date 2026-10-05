@@ -142,12 +142,11 @@ impl Default for PreviewQueue {
         // One proxy source, keyed by source identity and plan, held by the worker alone. Bounded by
         // construction: a new plan replaces the old entry rather than accumulating beside it.
         let mut cache = ProxyCache::default();
-        let mut restoration = crate::render::RestorationPrefixCache::default();
         let progress = Arc::new(ExactProgress::default());
         let published = progress.clone();
         Self {
             worker: Latest::new("luxforge-preview", move |task, running| {
-                run(&mut cache, &mut restoration, &published, task, running)
+                run(&mut cache, &published, task, running)
             }),
             activity: None,
             progress,

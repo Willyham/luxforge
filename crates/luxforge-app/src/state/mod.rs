@@ -374,6 +374,9 @@ pub(crate) struct Inputs<'a> {
     /// While the photograph on screen is the GPU stage's output, the interface thread's time to
     /// prepare that frame, in microseconds; `None` while it is a CPU frame.
     pub(crate) gpu_frame_us: Option<u64>,
+    /// That GPU frame is the committed stack at rest, the GPU's render of it, rather than a
+    /// gesture's preview.
+    pub(crate) gpu_at_rest: bool,
     /// While the GPU preview is on and the open gesture's latest tick took the CPU path, why: what
     /// the status bar's notice is derived from ([`status::CpuReason::notice`]).
     pub(crate) cpu_reason: Option<status::CpuReason<'a>>,
@@ -781,6 +784,7 @@ mod tests {
                     approximate: false,
                 }),
                 gpu_frame_us: None,
+                gpu_at_rest: false,
                 cpu_reason: None,
                 render_error: self.render_error.as_ref(),
                 analysis: self.analysis.as_ref(),
@@ -2730,7 +2734,8 @@ mod tests {
         assert_eq!(workspace.status.render, "Approximate render \u{b7} 9 ms");
 
         // The GPU stage's output on screen names itself and its own time, whatever CPU frame
-        // stands behind it and whatever render is still running.
+        // stands behind it and whatever render is still running, and no bar is drawn over it:
+        // the exact phase still running is not the picture.
         inputs.gpu_frame_us = Some(1600);
         inputs.rendering = true;
         inputs.render_bar = Some(canvas::RenderBar {
@@ -2739,11 +2744,7 @@ mod tests {
         });
         workspace.derive(&inputs);
         assert_eq!(workspace.status.render, "GPU preview \u{b7} 2 ms");
-        assert_eq!(
-            workspace.canvas.render_bar,
-            Some(0.427),
-            "the bar over the photograph is the CPU render's own"
-        );
+        assert_eq!(workspace.canvas.render_bar, None, "no bar over a GPU frame");
 
         // A gesture drawn on the CPU for a reason that lasts says why beside the render slot, and
         // the next GPU frame on screen clears it.

@@ -1770,12 +1770,6 @@ impl<'a> PointTiles<'a> {
 /// operation's input stage. The reduction is built at most once, and only when a unit that declares
 /// a key is missing from the store: a stack evaluated twice reduces nothing the second time, and
 /// neither does one whose units changed only in coefficients their keys do not name.
-/// Qualification only: the last reduction a global estimate was prepared from, for the corpus to
-/// prepare an estimate from a reduction it changes.
-#[cfg(feature = "qualification")]
-pub(crate) static CAPTURED_REDUCTION: std::sync::Mutex<Option<crate::modules::Reduction>> =
-    std::sync::Mutex::new(None);
-
 pub(crate) fn resolve_globals(
     store: &EstimateStore,
     operation: &SpatialOperation,
@@ -1810,13 +1804,12 @@ pub(crate) fn resolve_globals(
     if missing.is_empty() {
         return Ok(globals);
     }
+    // Qualification only: the reduction this thread builds now is `store`'s render's.
+    #[cfg(any(test, feature = "qualification"))]
+    let reducing = cells::Reducing::store(store);
     let reduction = reduce()?;
-    #[cfg(feature = "qualification")]
-    {
-        *CAPTURED_REDUCTION
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reduction.clone());
-    }
+    #[cfg(any(test, feature = "qualification"))]
+    drop(reducing);
     // Two units of one operation that declare the same key share one preparation, as they would
     // share one stored entry.
     let mut prepared: Vec<(&EstimateKey, Option<Global>)> = Vec::with_capacity(missing.len());
@@ -2003,19 +1996,29 @@ fn reduction_from(stage: Stage, blocks: &[[f32; 3]]) -> Result<Reduction, Error>
     Reduction::new(stage, ESTIMATE_REDUCTION, planes)
 }
 
-/// Qualification only: the exact means of a global estimate's stage over cells of other sides,
-/// for the measurement that chooses the per-frame light's reduction factor (`docs/specs/
-/// performance.md`, "The per-frame light's reduction factor"). Armed on one thread ([`arm`]), each
-/// reduction that thread builds through [`build_reduction_cancellable`] also reads its stage once
-/// per factor asked for, through the same `fill`, and records the cell means beside the reduction
-/// until [`take`]. A thread that is not armed, which is every render outside the measurement,
-/// reads and records nothing. Never built into a binary: only tests and the `qualification`
-/// feature, which only a `[dev-dependencies]` table turns on, compile it.
+/// Qualification only: the reductions one render's global estimates are prepared from, and their
+/// stage's exact means over cells of other sides, for the measurement that chooses the per-frame
+/// light's reduction factor (`docs/specs/performance.md`, "The per-frame light's reduction
+/// factor"). A capture is armed for one render context's estimate store
+/// ([`arm`](crate::render::spatial::cells::arm)). Every reduction
+/// [`resolve_globals`](crate::render::spatial::resolve_globals) builds for that store through
+/// [`build_reduction_cancellable`](crate::render::spatial::build_reduction_cancellable) is
+/// recorded, and its stage read again once per factor asked for through the same `fill`, until
+/// [`take`](crate::render::spatial::cells::take): on whichever thread it is built, since
+/// `resolve_globals` names the store to that thread while it builds it
+/// ([`Reducing`](crate::render::spatial::cells::Reducing)). A reduction for any other store,
+/// which is every other render's, however many run at once, and every render's outside the
+/// measurement, records nothing and reads nothing more, as does one no store names. Never built
+/// into a binary: only tests and the `qualification` feature, which only a `[dev-dependencies]`
+/// table turns on, compile it.
 #[cfg(any(test, feature = "qualification"))]
 pub(crate) mod cells {
-    use super::{Cancel, ESTIMATE_REDUCTION, Error, REDUCTION_SPAN, Reduction, Region, Stage};
+    use super::{
+        Cancel, ESTIMATE_REDUCTION, Error, EstimateStore, REDUCTION_SPAN, Reduction, Region, Stage,
+    };
     use rayon::prelude::*;
-    use std::cell::RefCell;
+    use std::cell::Cell;
+    use std::sync::{Mutex, MutexGuard, PoisonError};
 
     /// A stage's exact means over `factor × factor` cells anchored at its origin, a partial cell at
     /// the right or bottom edge averaged over its actual pixels, row-major: `width × height` of
@@ -2037,14 +2040,34 @@ pub(crate) mod cells {
         pub(crate) cells: Vec<CellMeans>,
     }
 
-    thread_local! {
-        static ARMED: RefCell<Option<Vec<u32>>> = const { RefCell::new(None) };
-        static CAPTURED: RefCell<Vec<Captured>> = const { RefCell::new(Vec::new()) };
+    /// One armed capture: the store it is for, by address, the factors it reads the stage at,
+    /// and what it recorded, oldest reduction first.
+    struct Armed {
+        store: usize,
+        factors: Vec<u32>,
+        captured: Vec<Captured>,
     }
 
-    /// Arm this thread at `factors`, each a divisor of [`ESTIMATE_REDUCTION`], forgetting what an
-    /// earlier arming recorded.
-    pub(crate) fn arm(factors: &[u32]) -> Result<(), Error> {
+    /// Every armed capture. A store is a field of a live render context, so no two live stores
+    /// share an address, and a capture is taken before the context it was armed for is dropped.
+    static ARMED: Mutex<Vec<Armed>> = Mutex::new(Vec::new());
+
+    thread_local! {
+        /// The store whose global estimates this thread is reducing a stage for, while it does.
+        static REDUCING: Cell<Option<usize>> = const { Cell::new(None) };
+    }
+
+    fn address(store: &EstimateStore) -> usize {
+        std::ptr::from_ref(store).addr()
+    }
+
+    fn armed() -> MutexGuard<'static, Vec<Armed>> {
+        ARMED.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Arm a capture for `store`, a render context's estimate store, at `factors`, each a divisor
+    /// of [`ESTIMATE_REDUCTION`], forgetting what an earlier capture for it recorded.
+    pub(crate) fn arm(store: &EstimateStore, factors: &[u32]) -> Result<(), Error> {
         if let Some(factor) = factors
             .iter()
             .find(|&&factor| factor == 0 || !ESTIMATE_REDUCTION.is_multiple_of(factor))
@@ -2053,38 +2076,78 @@ pub(crate) mod cells {
                 "a cell side of {factor} does not divide the {ESTIMATE_REDUCTION} px block"
             )));
         }
-        ARMED.with(|armed| *armed.borrow_mut() = Some(factors.to_vec()));
-        CAPTURED.with(|captured| captured.borrow_mut().clear());
+        let store = address(store);
+        let mut armed = armed();
+        armed.retain(|capture| capture.store != store);
+        armed.push(Armed {
+            store,
+            factors: factors.to_vec(),
+            captured: Vec::new(),
+        });
         Ok(())
     }
 
-    /// Disarm this thread and answer what it recorded, oldest reduction first.
-    pub(crate) fn take() -> Vec<Captured> {
-        ARMED.with(|armed| *armed.borrow_mut() = None);
-        CAPTURED.with(|captured| std::mem::take(&mut *captured.borrow_mut()))
+    /// Disarm the capture for `store` and answer what it recorded, oldest reduction first; nothing
+    /// when none is armed for it.
+    pub(crate) fn take(store: &EstimateStore) -> Vec<Captured> {
+        let store = address(store);
+        let mut armed = armed();
+        match armed.iter().position(|capture| capture.store == store) {
+            Some(at) => armed.swap_remove(at).captured,
+            None => Vec::new(),
+        }
     }
 
-    /// Record `reduction`'s `stage` at every factor this thread is armed at, read through `fill`;
-    /// nothing when it is not armed.
+    /// While it lives, the reduction this thread builds is for `store`'s global estimates:
+    /// [`resolve_globals`](super::resolve_globals) holds one around its reduction, on whichever
+    /// thread resolves them, and the thread's earlier store, if any, is restored after it.
+    pub(crate) struct Reducing {
+        previous: Option<usize>,
+    }
+
+    impl Reducing {
+        pub(crate) fn store(store: &EstimateStore) -> Self {
+            Self {
+                previous: REDUCING.replace(Some(address(store))),
+            }
+        }
+    }
+
+    impl Drop for Reducing {
+        fn drop(&mut self) {
+            REDUCING.set(self.previous);
+        }
+    }
+
+    /// Record `reduction`, and its `stage` at every factor its store's capture asks for, read
+    /// through `fill`, when this thread is reducing for a store a capture is armed for; nothing
+    /// otherwise. The lock is not held while the stage is read.
     pub(super) fn capture(
         stage: Stage,
         cancel: &Cancel,
         fill: &(impl Fn(Region, &mut [f32]) -> Result<(), Error> + Sync),
         reduction: &Reduction,
     ) -> Result<(), Error> {
-        let Some(factors) = ARMED.with(|armed| armed.borrow().clone()) else {
+        let Some(store) = REDUCING.get() else {
+            return Ok(());
+        };
+        let Some(factors) = armed()
+            .iter()
+            .find(|capture| capture.store == store)
+            .map(|capture| capture.factors.clone())
+        else {
             return Ok(());
         };
         let cells = factors
             .iter()
             .map(|&factor| cell_means(stage, factor, cancel, fill))
             .collect::<Result<Vec<_>, _>>()?;
-        CAPTURED.with(|captured| {
-            captured.borrow_mut().push(Captured {
+        if let Some(capture) = armed().iter_mut().find(|capture| capture.store == store) {
+            capture.captured.push(Captured {
                 reduction: reduction.clone(),
                 cells,
             });
-        });
+        }
         Ok(())
     }
 
@@ -2707,7 +2770,6 @@ mod tests {
                 title: "Test spatial".into(),
                 hint: None,
                 effects: vec![EffectDescriptor {
-                    fit_settle: Default::default(),
                     id: TEST_SPATIAL_EFFECT.into(),
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Spatial,
@@ -5060,15 +5122,26 @@ mod tests {
         }
     }
 
-    /// Qualification's cell capture: a reduction built on an armed thread records its stage's
-    /// exact means at each factor asked for — each cell's pixels summed in `f64` row by row and
-    /// averaged over the pixels inside the stage, so at 16 the reduction's own block means bit for
-    /// bit — with partial cells at both edges and on a stage wider than one fill's span. A thread
-    /// that is not armed records nothing, another thread's arming included, and a factor that does
-    /// not divide the block is refused.
+    /// Qualification's capture: a reduction built for an armed store records itself and its
+    /// stage's exact means at each factor asked for — each cell's pixels summed in `f64` row by row
+    /// and averaged over the pixels inside the stage, so at 16 the reduction's own block means bit
+    /// for bit — with partial cells at both edges and on a stage wider than one fill's span, on
+    /// whichever thread it is built. A reduction for another store, or for none, records nothing,
+    /// and a factor that does not divide the block arms nothing.
     #[test]
     fn qualification_cells_are_the_stages_exact_means_at_each_factor() {
+        /// A reduction of `stage` built for `store`'s global estimates, as `resolve_globals`
+        /// builds one, or for none.
+        fn reduced_for(
+            store: Option<&EstimateStore>,
+            stage: Stage,
+            fetch: impl Fn(u32, u32) -> Result<[f32; 3], Error> + Sync,
+        ) -> Reduction {
+            let _reducing = store.map(cells::Reducing::store);
+            build_reduction(stage, fetch).unwrap()
+        }
         let factors = [16, 8, 4, 2, 1];
+        let (store, other) = (EstimateStore::default(), EstimateStore::default());
         for (width, height) in [(1, 1), (37, 23), (200, 131), (2100, 40)] {
             let stage = Stage { width, height };
             let fetch = |x: u32, y: u32| -> Result<[f32; 3], Error> {
@@ -5078,10 +5151,16 @@ mod tests {
                     ((x * y) % 29) as f32 - 3.5,
                 ])
             };
-            cells::arm(&factors).unwrap();
-            let reduction = build_reduction(stage, fetch).unwrap();
-            let captured = cells::take();
-            assert_eq!(captured.len(), 1, "{width}x{height}: one reduction");
+            cells::arm(&store, &factors).unwrap();
+            let reduction = reduced_for(Some(&store), stage, fetch);
+            reduced_for(Some(&other), stage, fetch);
+            reduced_for(None, stage, fetch);
+            let captured = cells::take(&store);
+            assert_eq!(
+                captured.len(),
+                1,
+                "{width}x{height}: one reduction for the store"
+            );
             assert_eq!(captured[0].reduction, reduction);
             assert_eq!(captured[0].cells.len(), factors.len());
             for (cells, factor) in captured[0].cells.iter().zip(factors) {
@@ -5119,35 +5198,39 @@ mod tests {
                     }
                 }
             }
-            build_reduction(stage, fetch).unwrap();
-            assert!(cells::take().is_empty(), "{width}x{height}: not armed");
+            assert!(cells::take(&store).is_empty(), "{width}x{height}: taken");
         }
-        cells::arm(&[2]).unwrap();
-        let elsewhere = std::thread::spawn(|| {
-            build_reduction(
-                Stage {
-                    width: 40,
-                    height: 40,
-                },
-                |_, _| Ok([0.5; 3]),
-            )
-            .unwrap();
-            cells::take().len()
-        })
-        .join()
-        .unwrap();
-        assert_eq!(elsewhere, 0, "another thread is not armed");
+        // Whichever thread builds the armed store's reduction records it, for that store alone.
+        cells::arm(&store, &[2]).unwrap();
+        cells::arm(&other, &[2]).unwrap();
+        let stage = Stage {
+            width: 40,
+            height: 40,
+        };
+        std::thread::scope(|scope| {
+            scope.spawn(|| reduced_for(Some(&store), stage, |_, _| Ok([0.5; 3])));
+        });
+        let captured = cells::take(&store);
+        assert_eq!(
+            captured.len(),
+            1,
+            "built on another thread for the armed store"
+        );
+        assert_eq!(captured[0].cells[0].values, vec![[0.5; 3]; 400]);
         assert!(
-            cells::take().is_empty(),
-            "nothing was reduced on this thread"
+            cells::take(&other).is_empty(),
+            "another store's capture saw none of it"
         );
         for factor in [0, 3, 32] {
             assert!(
-                cells::arm(&[factor]).is_err(),
+                cells::arm(&store, &[factor]).is_err(),
                 "{factor} does not divide 16"
             );
         }
-        assert!(cells::take().is_empty());
+        assert!(
+            cells::take(&store).is_empty(),
+            "a refused factor arms nothing"
+        );
     }
 
     /// Past its capacity a query releases the least recently read tile rather than growing: it

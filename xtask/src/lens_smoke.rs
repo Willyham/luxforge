@@ -295,7 +295,7 @@ fn settled_current(frame: &Frame) -> Result {
             && state["approximate_white_balance"] == false
             && (proxy["presented"] == false
                 || (proxy["presented"] == true
-                    && proxy["settled_from_exact"] == true
+                    && proxy["reduced"] == true
                     && proxy["approximate"] == false
                     && proxy["approximate_reason"].is_null())),
         "The combined current capture has not settled exact pixels and analysis",

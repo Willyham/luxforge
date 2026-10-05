@@ -92,7 +92,10 @@ enum ProxyStep {
 /// frame then renders, to walk back what its output reads. None of them reads a pixel. It runs on
 /// the preview worker, as does building the proxy itself.
 fn plan_proxy(job: &PreviewJob, recipe: &Recipe, exact: &Result<Render<'_>, Error>) -> ProxyStep {
-    if job.intent == PreviewIntent::Settle {
+    // A proxy is a moving frame's: a draft's tick the GPU does not draw, or a crop draft's input
+    // stage. A job at rest renders none: its picture is the GPU's, and the reference frame it hands
+    // over is its exact frame reduced to the view ([`view_frame`]).
+    if job.intent != PreviewIntent::Interactive {
         return ProxyStep::Skipped;
     }
     let Some(bounds) = job.proxy else {
@@ -125,25 +128,25 @@ fn plan_proxy(job: &PreviewJob, recipe: &Recipe, exact: &Result<Render<'_>, Erro
     }
 }
 
-/// One preview job, on the preview worker: the proxy phase when the job has one, handed over as
-/// soon as it is rendered, then the exact phase, returned as the job's last result.
+/// One preview job, on the preview worker: an interactive job's proxy phase, handed over as soon
+/// as it is rendered and ending the job, or else the exact phase — with its frame reduced to the
+/// view's bounds when the job names them ([`view_frame`]) — returned as the job's last result. An
+/// interactive job whose proxy declines takes the exact phase instead.
 ///
 /// The proxy phase reads the job's `abandoned` token and the exact phase its `superseded` one, so
 /// a drag keeps presenting proxy frames while the full-resolution renders behind them are
 /// abandoned.
 pub(super) fn run(
     cache: &mut ProxyCache,
-    restoration: &mut crate::render::RestorationPrefixCache,
     progress: &ExactProgress,
     task: PreviewTask,
     running: &Running<'_, PreviewTask, PreviewResult>,
 ) -> Option<PreviewResult> {
-    restoration.clear_unless_source(&task.job.evaluation.source().identity());
     if task.job.intent == PreviewIntent::Reduce {
         return Some(run_reduce(task, running));
     }
     if task.job.viewport.is_some() && task.job.layer_count.is_none() {
-        return run_viewport(cache, restoration, progress, task, running);
+        return run_viewport(cache, progress, task, running);
     }
     let PreviewTask {
         job,
@@ -232,7 +235,6 @@ pub(super) fn run(
             // job builds belongs to the worker whether or not its frame is still wanted: the next
             // job at the same bounds is a hit either way.
             let built = cache.source_for(&key, evaluation.source(), || {
-                restoration.clear();
                 evaluation
                     .source()
                     .proxy_cancellable(key.plan, proxy_cancel)
@@ -256,23 +258,12 @@ pub(super) fn run(
                         )
                     });
                     let rendered = proxied.as_ref().map_err(Clone::clone).and_then(|proxy| {
-                        let (raster, prefix) = proxy.frame_with_restoration_cache(
-                            snapshot_id.clone(),
-                            evaluation.registry(),
-                            recipe,
-                            &key,
-                            restoration,
-                        )?;
-                        Ok((raster, proxy.approximation(), prefix))
+                        Ok((proxy.frame(snapshot_id.clone())?, proxy.approximation()))
                     });
                     match rendered {
-                        Err(error) => {
-                            restoration.clear();
-                            Some(error.detail)
-                        }
-                        Ok((raster, proxy_approximation, prefix)) => {
+                        Err(error) => Some(error.detail),
+                        Ok((raster, proxy_approximation)) => {
                             let proxy = PreviewResult {
-                                restoration_prefix: prefix,
                                 generation,
                                 entry_id: entry_id.clone(),
                                 identity: job.identity.clone(),
@@ -297,18 +288,15 @@ pub(super) fn run(
                                     + milliseconds_since(started),
                                 queue_wait_ms,
                             };
-                            // A proxy nobody will ever see — the queue was cancelled or dropped —
-                            // means the exact phase is not wanted either.
-                            if !send_phase(restoration, running, proxy) {
-                                return None;
+                            // The proxy is an interactive job's one phase. One nobody will ever
+                            // see — the queue was cancelled or dropped — leaves the activity
+                            // cancelled.
+                            if running.send(proxy)
+                                && let Some(activity) = activity
+                            {
+                                activity.finish(Outcome::Completed);
                             }
-                            if job.intent == PreviewIntent::Interactive {
-                                if let Some(activity) = activity {
-                                    activity.finish(Outcome::Completed);
-                                }
-                                return None;
-                            }
-                            None
+                            return None;
                         }
                     }
                 }
@@ -344,12 +332,7 @@ pub(super) fn run(
         }
         rendered => (rendered, None),
     };
-    let display = settled_display(
-        &job,
-        &result,
-        exact.as_ref().is_ok_and(|r| r.settles_from_exact()),
-        full_cancel,
-    );
+    let display = view_frame(&job, &result, full_cancel);
     let (result, report, display) = match display {
         Ok(display) => (result, report, display),
         Err(error) => (Err(error), None, None),
@@ -370,7 +353,6 @@ pub(super) fn run(
         activity.finish(Outcome::of(&result));
     }
     let exact_result = PreviewResult {
-        restoration_prefix: None,
         generation,
         entry_id,
         identity: job.identity,
@@ -397,7 +379,6 @@ pub(super) fn run(
 /// separate so a newer input supersedes only settlement, never the interactive frame.
 fn run_viewport(
     cache: &mut ProxyCache,
-    restoration: &mut crate::render::RestorationPrefixCache,
     progress: &ExactProgress,
     task: PreviewTask,
     running: &Running<'_, PreviewTask, PreviewResult>,
@@ -438,12 +419,8 @@ fn run_viewport(
     let evaluation = job.evaluation.clone();
     let snapshot_id = evaluation.entry().snapshot.id.clone();
     let compiled = evaluation.exact(cancel);
-    let mut prefix_use = None;
     let region = match compiled.as_ref() {
-        Err(error) => {
-            restoration.clear();
-            Err(error.clone())
-        }
+        Err(error) => Err(error.clone()),
         Ok(exact) if job.intent == PreviewIntent::Interactive => {
             match exact.plan_proxy_region(evaluation.registry(), evaluation.recipe(), requested) {
                 Ok(plan) => {
@@ -456,25 +433,17 @@ fn run_viewport(
                     // accumulate.
                     cache
                         .source_for(&key, evaluation.source(), || {
-                            restoration.clear();
                             evaluation.source().proxy_cancellable(plan.proxy, cancel)
                         })
                         .and_then(|(source, _)| {
-                            exact
-                                .render_proxy_region_cached(
-                                    evaluation.registry(),
-                                    source.input(),
-                                    evaluation.recipe(),
-                                    plan,
-                                    snapshot_id.clone(),
-                                    evaluation.context(),
-                                    &key,
-                                    restoration,
-                                )
-                                .map(|(outcome, prefix)| {
-                                    prefix_use = prefix;
-                                    outcome
-                                })
+                            exact.render_proxy_region(
+                                evaluation.registry(),
+                                source.input(),
+                                evaluation.recipe(),
+                                plan,
+                                snapshot_id.clone(),
+                                evaluation.context(),
+                            )
                         })
                 }
                 Err(reason) => Ok(RegionRenderOutcome::Declined(reason)),
@@ -502,7 +471,6 @@ fn run_viewport(
     match region {
         Ok(RegionRenderOutcome::Rendered(frame)) => {
             let result = PreviewResult {
-                restoration_prefix: prefix_use,
                 generation,
                 entry_id: evaluation.entry().id.clone(),
                 identity: job.identity.clone(),
@@ -514,7 +482,7 @@ fn run_viewport(
                 render_ms: milliseconds_since(started),
                 queue_wait_ms,
             };
-            if !send_phase(restoration, running, result) {
+            if !running.send(result) {
                 return None;
             }
             if job.intent == PreviewIntent::Interactive {
@@ -535,7 +503,6 @@ fn run_viewport(
             }
             let result = run(
                 cache,
-                restoration,
                 progress,
                 PreviewTask {
                     job,
@@ -555,7 +522,6 @@ fn run_viewport(
                     activity.finish(Outcome::Cancelled);
                 }
                 return Some(PreviewResult {
-                    restoration_prefix: None,
                     generation,
                     entry_id: evaluation.entry().id.clone(),
                     identity: job.identity,
@@ -586,7 +552,6 @@ fn run_viewport(
             }
             let result = run(
                 cache,
-                restoration,
                 progress,
                 PreviewTask {
                     job,
@@ -625,7 +590,6 @@ fn run_viewport(
         activity.finish(Outcome::of(&result));
     }
     Some(PreviewResult {
-        restoration_prefix: None,
         generation,
         entry_id: evaluation.entry().id.clone(),
         identity: job.identity,
@@ -645,35 +609,21 @@ fn run_viewport(
     })
 }
 
-/// A completed phase may be abandoned while waiting for room in the bounded delivery queue.
-/// Its processed prefix is released with that refused delivery; normal delivery keeps it reusable.
-pub(super) fn send_phase(
-    restoration: &mut crate::render::RestorationPrefixCache,
-    running: &Running<'_, PreviewTask, PreviewResult>,
-    result: PreviewResult,
-) -> bool {
-    if running.send(result) {
-        true
-    } else {
-        restoration.clear();
-        false
-    }
-}
-
 /// Wall-clock milliseconds since `started`, as [`PreviewResult::render_ms`] reports them.
 fn milliseconds_since(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0
 }
 
-/// Only whole-stack Develop settlement opts into displaying final exact pixels at Fit.
-pub(super) fn settled_display(
+/// The exact phase's whole frame reduced to the view's bounds ([`crate::render::reduce_to_view`]):
+/// the frame the reference renderer draws where the view draws the stage smaller than it is, for
+/// every whole-stack job that names its view; none for a layer prefix, a region, an interactive
+/// job, an approximate white balance, or a stage that already fits the bounds.
+pub(super) fn view_frame(
     job: &PreviewJob,
     result: &Result<crate::Raster, Error>,
-    required: bool,
     cancel: &crate::Cancel,
 ) -> Result<Option<crate::Raster>, Error> {
-    if !required
-        || job.layer_count.is_some()
+    if job.layer_count.is_some()
         || job.viewport.is_some()
         || job.intent == PreviewIntent::Interactive
         || job.evaluation.source().approximate_white_balance()
@@ -683,10 +633,7 @@ pub(super) fn settled_display(
     let (Some(bounds), Ok(raster)) = (job.proxy, result) else {
         return Ok(None);
     };
-    let dimensions = (raster.width, raster.height);
-    crate::ProxyPlan::fit(dimensions, dimensions, bounds)
-        .map(|plan| crate::proxy::downscale_raster(raster, plan, cancel))
-        .transpose()
+    crate::render::reduce_to_view(raster, bounds, cancel)
 }
 
 /// A resized Fit reuses the immutable exact allocation and performs only bounded reduction.
@@ -718,13 +665,7 @@ fn run_reduce(
             let bounds = job
                 .proxy
                 .ok_or_else(|| Error::validation("reduce-only job needs Fit bounds"))?;
-            let dimensions = (raster.width, raster.height);
-            match crate::ProxyPlan::fit(dimensions, dimensions, bounds) {
-                Some(plan) => {
-                    crate::proxy::downscale_raster(raster, plan, running.superseded()).map(Some)
-                }
-                None => Ok(None),
-            }
+            crate::render::reduce_to_view(raster, bounds, running.superseded())
         });
     let (result, display) = match display {
         Ok(display) => (
@@ -734,7 +675,6 @@ fn run_reduce(
         Err(error) => (Err(error), None),
     };
     PreviewResult {
-        restoration_prefix: None,
         generation: running.generation(),
         entry_id: job.evaluation.entry().id.clone(),
         identity: job.identity,

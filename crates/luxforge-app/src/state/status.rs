@@ -36,11 +36,13 @@ impl RenderTime {
     }
 }
 
-/// "GPU preview · 2 ms" while the photograph on screen is the GPU stage's output, beside the CPU
-/// frames' "Approximate render" and "Exact render", with the interface thread's time to prepare
-/// that frame (the desktop's `gpu_settle` says why it is that time).
-pub(crate) fn gpu_text(ms: f64) -> String {
-    format!("GPU preview \u{b7} {}", figure(ms))
+/// "GPU render · 2 ms" while the photograph on screen is the GPU's render of the committed stack at
+/// rest, and "GPU preview · 2 ms" while it is a gesture's GPU frame, beside the CPU frames'
+/// "Approximate render" and "Exact render", with the interface thread's time to prepare that frame,
+/// or the picture at rest's tiles (the desktop's `gpu_settle` says why it is that time).
+pub(crate) fn gpu_text(ms: f64, at_rest: bool) -> String {
+    let kind = if at_rest { "GPU render" } else { "GPU preview" };
+    format!("{kind} \u{b7} {}", figure(ms))
 }
 
 /// How long a gesture's ticks must have named `compiling` before the status bar says the GPU
@@ -85,9 +87,9 @@ struct Class {
 /// Every class the notice names, in the design's order (`docs/design/gpu-preview.md`, "Labels and
 /// overlays during motion"): the one place its wording lives. The first is the reference
 /// renderer's, said from the session's renderer; the rest are a gesture's, said from its latest
-/// tick. A code in none of them says nothing: the reasons that pass within a tick or two
-/// (`boundary-pending`, `boundary-uploading`, `boundary-released` and `surface-pending`, which is
-/// also the session's renderer before the photo surface has checked its GPU stage), the preference
+/// tick. A code in none of them says nothing: the reasons that pass within a tick or two or a job
+/// (`boundary-pending`, `source-uploading`, `source-missing` and `surface-pending`, which is also
+/// the session's renderer before the photo surface has checked its GPU stage), the preference
 /// turned off (`preference-off`), and the two the table does not name (`unchanged` and
 /// `unplannable`).
 const CLASSES: [Class; 6] = [
@@ -126,7 +128,6 @@ const CLASSES: [Class; 6] = [
             "boundary-size",
             "position-range",
             "region-outside",
-            "boundary-failed",
         ],
         phrase: "Not on the GPU",
         tooltip: "The GPU preview cannot draw this layer yet, so this drag is drawn on the CPU.",
@@ -460,7 +461,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatusBarModel {
         // A GPU frame on screen names itself first: the CPU frame behind it, and any render still
         // running, are not what is shown.
         render: if let Some(us) = inputs.gpu_frame_us {
-            gpu_text(us as f64 / 1000.0)
+            gpu_text(us as f64 / 1000.0, inputs.gpu_at_rest)
         } else if let Some(bar) = inputs.render_bar {
             format!("Rendering… {:.0}%", (bar.fraction * 100.0).floor())
         } else if inputs.rendering {
@@ -570,12 +571,14 @@ mod tests {
         );
     }
 
-    /// A GPU frame on screen names itself in the same wording, beside the CPU frames' kinds.
+    /// A GPU frame on screen names itself in the same wording, beside the CPU frames' kinds: a
+    /// gesture's as the GPU preview, the committed stack's at rest as the GPU's render.
     #[test]
     fn the_gpu_frame_names_itself_with_its_time() {
-        assert_eq!(gpu_text(2.4), "GPU preview \u{b7} 2 ms");
-        assert_eq!(gpu_text(0.3), "GPU preview \u{b7} <1 ms");
-        assert_eq!(gpu_text(1500.0), "GPU preview \u{b7} 1.5 s");
+        assert_eq!(gpu_text(2.4, false), "GPU preview \u{b7} 2 ms");
+        assert_eq!(gpu_text(0.3, false), "GPU preview \u{b7} <1 ms");
+        assert_eq!(gpu_text(1500.0, false), "GPU preview \u{b7} 1.5 s");
+        assert_eq!(gpu_text(12.4, true), "GPU render \u{b7} 12 ms");
     }
 
     /// The reason with `code`, naming `layer`, whose `compiling` ticks have run for `compiling`.
@@ -699,7 +702,6 @@ mod tests {
             "boundary-size",
             "position-range",
             "region-outside",
-            "boundary-failed",
         ];
         for code in codes {
             assert_eq!(
@@ -723,14 +725,14 @@ mod tests {
         }
     }
 
-    /// A reason that passes within a tick or two, the preference turned off and a code the table
-    /// does not name say nothing.
+    /// A reason that passes within a tick or two or a job, the preference turned off and a code the
+    /// table does not name say nothing.
     #[test]
     fn passing_reasons_the_preference_off_and_unnamed_codes_say_nothing() {
         for code in [
             "boundary-pending",
-            "boundary-uploading",
-            "boundary-released",
+            "source-uploading",
+            "source-missing",
             "surface-pending",
             "preference-off",
             "unchanged",

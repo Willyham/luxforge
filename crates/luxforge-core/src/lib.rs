@@ -78,8 +78,8 @@ pub use modules::{
     CapabilityModule, ChoiceControl, ChoiceStyle, ColorControl, ColorOperation, ColorStyle,
     CompileStage, Control, ControlVariant, Controls, ControlsModule, CropAspect, CropPayload,
     CropStage, CurveBackground, CurveChannel, CurveControl, DETAIL_EFFECT, Edge, EffectDescriptor,
-    EffectStage, ExactGeometry, FieldPatch, FieldPatchModule, FitSettle, GPU_PROGRAMS,
-    GroupControl, IdentityKind, LENS_EFFECT, LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE,
+    EffectStage, ExactGeometry, FieldPatch, FieldPatchModule, GPU_PROGRAMS, GroupControl,
+    IdentityKind, LENS_EFFECT, LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE,
     MAX_MASKED_SPATIAL_LAYERS, MIN_ANGLE, MIXER_EFFECT, ModuleDescriptor, ModuleLayout,
     ModuleRegistry, NewLayer, NumberControl, NumberStyle, ORIENTATION_EFFECT, OutputRect,
     PERSPECTIVE_EFFECT, PIXEL_EFFECT, PRESENCE_EFFECT, PROOF_GENERATE_PATH, PROOF_PALETTE,
@@ -119,9 +119,9 @@ pub use render::gpu::{
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{
     ContentPoint, GeometryMap, INPUT_GRID_MAX_CELLS, InputGridCache, LinearSettings, MapError,
-    MappingDescriptor, MappingShape, PrefixUse, Raster, RegionFrame, Render, RenderContext,
-    RenderOptions, RenderSource, Sample, ScratchBudget, StageSize, WhiteBalanceApproximation,
-    render, stage_transform,
+    MappingDescriptor, MappingShape, Raster, RegionFrame, Render, RenderContext, RenderOptions,
+    RenderSource, Sample, ScratchBudget, StageSize, WhiteBalanceApproximation, render,
+    stage_transform,
 };
 pub use source::{LinearImage, OpticalIdentity, SourceImage, SourceOptics, open_source};
 
@@ -258,12 +258,7 @@ pub mod qualification {
         prefix: &crate::Recipe,
         colour: &crate::Recipe,
     ) -> Result<(Option<Vec<f64>>, std::time::Duration), crate::Error> {
-        let captured = || {
-            crate::render::spatial::CAPTURED_REDUCTION
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
-        };
+        use crate::render::spatial::cells;
         let context = crate::RenderContext::new();
         let render = crate::render(
             registry,
@@ -272,9 +267,16 @@ pub mod qualification {
             crate::RenderOptions::exact(&crate::Cancel::never()),
             &context,
         )?;
-        captured();
-        render.frame(crate::SnapshotId::new())?;
-        let reduction = captured().ok_or_else(|| crate::Error::internal("no reduction"))?;
+        // This render's own reductions, whatever else renders beside it: the last is the
+        // Presence layer's input.
+        cells::arm(context.estimates(), &[])?;
+        let framed = render.frame(crate::SnapshotId::new());
+        let mut captured = cells::take(context.estimates());
+        framed?;
+        let reduction = captured
+            .pop()
+            .map(|captured| captured.reduction)
+            .ok_or_else(|| crate::Error::internal("no reduction"))?;
         let unit = render
             .estimating_unit()
             .ok_or_else(|| crate::Error::validation("no unit prepares an estimate"))?;
@@ -419,9 +421,9 @@ pub mod qualification {
                     // the others read nothing.
                     hold_estimates(&render, place, &vec![Some(light); HELD_UNITS])?;
                 }
-                cells::arm(&asked)?;
+                cells::arm(context.estimates(), &asked)?;
                 let framed = render.frame(crate::SnapshotId::new());
-                let captured = cells::take();
+                let captured = cells::take(context.estimates());
                 framed?;
                 let captured = captured.last().ok_or_else(|| {
                     crate::Error::internal("the estimating layer's input was not reduced")
@@ -875,6 +877,70 @@ pub mod qualification {
             )
             .unwrap();
             assert_ne!(kept, without, "sharpening moves the cells it is kept in");
+        }
+
+        /// Each capture reads its own render's reduction while other renders, of other stacks over
+        /// other sources, reduce their own stages on other threads at the same time, as the tests
+        /// of a whole workspace do: the light from the reduction and the twin's light are the
+        /// stack's own exact light every time.
+        #[test]
+        fn a_capture_reads_only_its_own_render_while_others_render_beside_it() {
+            let registry = ModuleRegistry::builtin();
+            let source = crate::render::tests::gradient(STAGE.0, STAGE.1);
+            let recipe = Recipe {
+                layers: vec![
+                    Layer::new(BASIC_EFFECT, json!({"exposure": -1.0})),
+                    Layer::new(PRESENCE_EFFECT, json!({"dehaze": 60})),
+                ],
+                ..Recipe::default()
+            };
+            let exact = exact_light(&registry, (&source).into(), &recipe, 1);
+            let prefix = Recipe {
+                layers: vec![recipe.layers[1].clone()],
+                ..recipe.clone()
+            };
+            let colour = Recipe {
+                layers: vec![recipe.layers[0].clone()],
+                ..recipe.clone()
+            };
+            let stop = std::sync::atomic::AtomicBool::new(false);
+            let measured = std::thread::scope(|scope| {
+                for other in 1..=4_u32 {
+                    let (registry, stop) = (&registry, &stop);
+                    scope.spawn(move || {
+                        let source = stripes(STAGE.0 + 8 * other, STAGE.1);
+                        let stack = Recipe {
+                            layers: vec![Layer::new(
+                                PRESENCE_EFFECT,
+                                json!({"dehaze": 20 * other}),
+                            )],
+                            ..Recipe::default()
+                        };
+                        while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                            exact_light(registry, (&source).into(), &stack, 0);
+                        }
+                    });
+                }
+                let measured: Vec<_> = (0..24)
+                    .map(|_| {
+                        (
+                            light_after_reduction(&registry, (&source).into(), &prefix, &colour),
+                            twin_lights(&registry, (&source).into(), &recipe, &[1], &[16], false),
+                        )
+                    })
+                    .collect();
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                measured
+            });
+            for (reduced, twin) in measured {
+                let reduced = reduced.unwrap().0.expect("the light from the reduction");
+                let twin = twin.unwrap()[0][0].clone().expect("the twin's light");
+                assert!(
+                    error(&exact, &reduced) < 1.0e-4,
+                    "{reduced:?} against {exact:?}"
+                );
+                assert_eq!(twin, reduced, "at 16, the colour over the reduction");
+            }
         }
     }
 }
