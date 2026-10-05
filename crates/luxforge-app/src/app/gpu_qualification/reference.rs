@@ -15,8 +15,7 @@
 //! - **The picture in motion**, the frame a drag draws, against the frame it settles to: today the
 //!   CPU frame it stands in for (the proxy at Fit and below 100%, the exact visible region at 100%).
 //!   Its distance from the reference is recorded beside it, which the gate judges instead on
-//!   request, and so are the jump a Detail stack's settlement makes at Fit and the CPU frame of the
-//!   view against the reference.
+//!   request, and so is the CPU frame of the view against the reference.
 //! - **The picture at rest**, against the reference. The GPU draws no picture at rest yet, so the
 //!   kind is recorded as not rendered by it ([`at_rest_kind`] takes the GPU's frame once a stage
 //!   renders one), with its candidate's figures beside it: at Fit, 33% and 50% **process-first**
@@ -715,7 +714,6 @@ fn process_first(
     };
     let options = CellOptions {
         frames: None,
-        settle: false,
         empty_mask: true,
     };
     for y0 in (0..height).step_by(TILE as usize) {
@@ -780,7 +778,6 @@ fn picture(
     let output = &settings.output;
     let options = CellOptions {
         frames: None,
-        settle: view == View::Fit,
         empty_mask: true,
     };
     let drawn = match view {
@@ -796,8 +793,7 @@ fn picture(
         },
         View::Percent(zoom) => region_cell_in(qualifier, opened, zoom, output, options, class)?,
     };
-    let (size, proxy, region, drag, program, charged, settled, shape, gpu, cpu, notes) = match drawn
-    {
+    let (size, proxy, region, drag, program, charged, shape, gpu, cpu, notes) = match drawn {
         Cell::Measured {
             stage,
             proxy,
@@ -805,14 +801,13 @@ fn picture(
             statistics,
             program,
             charged,
-            settled,
             shape,
             gpu,
             cpu,
             notes,
             ..
         } => (
-            stage, proxy, region, statistics, program, charged, settled, shape, gpu, cpu, notes,
+            stage, proxy, region, statistics, program, charged, shape, gpu, cpu, notes,
         ),
         Cell::Gap(reason) => return Ok(json!({"status": "gap", "reason": reason})),
     };
@@ -871,12 +866,6 @@ fn picture(
         "notes": notes,
         "frames": frames,
     });
-    if let Some(settled) = settled {
-        value["settled_from_exact"] = json!({
-            "cpu_proxy": statistics(&settled.proxy),
-            "gpu": statistics(&settled.gpu),
-        });
-    }
     // The picture at rest: the kind, which the GPU does not draw yet, and its candidate. At a view
     // the reference is reduced for, the process-first frame reduced as the reference is, against
     // it, and the jump the motion frame makes to it; at 100% the region plan over the visible

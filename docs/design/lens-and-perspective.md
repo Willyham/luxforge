@@ -315,7 +315,7 @@ The current authentic manifest run resolved and exported the Nikon and DJI selec
 - **Queries.** Detail routes pixel-reading queries through the point worker; Lens warp points stay on the owner.
 - **Shared generated files.** The descriptor snapshot `fixtures/modules/builtin-descriptors.json`, conformance `KNOWN`, smoke `SCENARIOS`, the fixture `TABLE` in `xtask/src/fixtures.rs` and `luxforge-reference`'s `lib.rs` and `tests/studies/main.rs` are regenerated or re-added after each rebase, never hand-merged.
 - **Pass kinds.** Detail uses `RenderPass::Spatial` until measured; Lens adds `RenderPass::Warp`, provisionally at `Resample`'s threshold until measured.
-- **Preview.** Detail's settled-Fit and prefix cache and Lens's mapping identity on overlays both edit `app/preview.rs` and `ProxyApproximation`; they land one at a time.
+- **Preview.** Detail's moving approximation and Lens's mapping identity on overlays both edit `app/preview.rs` and `ProxyApproximation`; they land one at a time.
 - **Landing order.** Tone curve lands any time. The Lens numerics, index import, optics ledger, affine refactor and query-choice control land any time. Detail's host contracts (Restoration stage, compile context, window planner, Fit settlement) land before the Lens warp-chain and render work, which rebase on them.
 - **Measurement.** Timing in all three plans runs only after feature work is complete, one plan at a time on a quiet host, never beside another plan's builds.
 

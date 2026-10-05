@@ -31,10 +31,10 @@ pub(crate) mod parallel;
 mod pipeline;
 mod raster;
 pub(crate) mod reduced;
-mod restoration;
 pub(crate) mod spatial;
 #[cfg(test)]
 pub(crate) mod testing;
+mod view;
 mod window;
 
 #[cfg(test)]
@@ -82,6 +82,4 @@ pub use raster::Raster;
 #[cfg(test)]
 pub(crate) use raster::frame_writes;
 pub(crate) use raster::{frame_mut, zeroed_frame};
-
-pub use restoration::PrefixUse;
-pub(crate) use restoration::RestorationPrefixCache;
+pub(crate) use view::reduce_to_view;

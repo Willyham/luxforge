@@ -122,14 +122,6 @@ impl<S> Evaluation<S> {
         self.bound.compiled.as_ref().map_err(Clone::clone)
     }
 
-    /// Whether Fit needs an exact processed settlement, read from compilation metadata only.
-    pub fn settles_from_exact(&self) -> bool {
-        self.bound
-            .compiled
-            .as_ref()
-            .is_ok_and(Compiled::settles_from_exact)
-    }
-
     /// This evaluation reading `source`.
     fn reading<T>(self, source: T) -> Evaluation<T> {
         Evaluation {
@@ -1113,8 +1105,12 @@ mod tests {
                 .mapping,
             crate::MappingShape::Warp { .. }
         ));
+        // Asked for interactively, as the desktop asks for the stage at Fit, it renders the
+        // prefix's proxy; at rest, the prefix exactly.
         let mut queue = PreviewQueue::default();
-        queue.request(job);
+        let mut moving = job.clone();
+        moving.intent = crate::PreviewIntent::Interactive;
+        queue.request(moving);
         let proxy = luxforge_testbase::wait_for("warp prefix proxy", || queue.poll());
         assert_eq!(proxy.phase(), crate::PreviewPhase::Proxy);
         assert_eq!(
@@ -1124,6 +1120,7 @@ mod tests {
             ),
             (120, 80)
         );
+        queue.request(job);
         let exact = luxforge_testbase::wait_for("warp prefix exact", || queue.poll())
             .into_raster()
             .unwrap();
@@ -1231,8 +1228,9 @@ mod tests {
     }
 
     /// A truncated preview job keeps the display bounds it was offered, so the crop's input stage
-    /// at Fit has a proxy phase: the layer prefix at display size, then the prefix exactly. The
-    /// whole stack's output (100 × 100 after the shrink) never sizes it.
+    /// at Fit, asked for interactively as the desktop asks for it, has a proxy phase: the layer
+    /// prefix at display size; at rest the prefix renders exactly. The whole stack's output
+    /// (100 × 100 after the shrink) never sizes it.
     #[test]
     fn a_truncated_preview_job_with_bounds_gets_a_proxy_phase_of_its_prefix() {
         let catalog = temp("truncated-proxy.sqlite");
@@ -1255,7 +1253,9 @@ mod tests {
             .unwrap();
         assert_eq!(job.proxy, Some(display), "the bounds reach the worker");
         let mut queue = PreviewQueue::default();
-        queue.request(job);
+        let mut moving = job.clone();
+        moving.intent = crate::PreviewIntent::Interactive;
+        queue.request(moving);
         let proxy = luxforge_testbase::wait_for("the proxy phase", || queue.poll());
         assert_eq!(proxy.phase(), crate::PreviewPhase::Proxy);
         let frame = proxy.into_raster().unwrap();
@@ -1264,6 +1264,7 @@ mod tests {
             (120, 80),
             "the 480 × 320 input stage fitted to the bounds"
         );
+        queue.request(job);
         let exact = luxforge_testbase::wait_for("the exact phase", || queue.poll());
         assert_eq!(exact.phase(), crate::PreviewPhase::Exact);
         let frame = exact.into_raster().unwrap();

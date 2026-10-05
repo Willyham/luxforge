@@ -359,6 +359,34 @@ impl Editor {
                 "dissolve":gpu.drawn_dissolve.map(|dissolve| json!({"from":dissolve.from,
                     "to":dissolve.to,"gpu_boundary":dissolve.gpu_boundary,
                     "progress":dissolve.progress()})),
+                // Where the photograph on screen comes from: `rest`, the committed stack's picture
+                // at rest the GPU drew in tiles; `view`, the committed stack's view plan the GPU
+                // drew at rest; `gesture`, a gesture's GPU frame; `reference`, the CPU's frame.
+                "picture":self.picture_source(&gpu),
+                // The picture at rest in tiles handed to the surface, how far it has got, and its
+                // dissolve over the view plan's frame, as the draw drew it.
+                "rest":gpu.gpu_rest.map(|rest| json!({"version":rest.version,"tiles":rest.tiles,
+                    "drawn":rest.drawn,"done":rest.done,"waiting":rest.waiting,
+                    "dissolving":rest.dissolving,"prepare_ms":rest.prepare_us as f64 / 1000.0,
+                    "fallback":rest.fallback.map(gpu_fallback)})),
+                "drawn_rest":gpu.drawn_rest,
+                // Compare's After side while Compare is shown: `rest` or `view` for the GPU picture
+                // of the stack Compare began over, retained, `retained` for its retained frame.
+                "compare":self.presentation.compare_after.as_ref().map(|_| {
+                    let after = luxforge_ui::surface_diagnostics(crate::view::canvas::COMPARE_SURFACE);
+                    let picture = match after.drawn_path {
+                        None => Value::Null,
+                        Some(luxforge_ui::photo_surface::DrawingPath::Cpu) => json!("retained"),
+                        Some(_) if after.drawn_rest.is_some() => json!("rest"),
+                        Some(_) => json!("view"),
+                    };
+                    json!({"picture":picture,"drawn_rest":after.drawn_rest,
+                        "drawn_gpu_boundary":after.drawn_gpu_boundary,
+                        "rest":after.gpu_rest.map(|rest| json!({"version":rest.version,
+                            "done":rest.done,"tiles":rest.tiles}))})
+                }),
+                "rest_dissolve":gpu.drawn_rest_dissolve.map(|dissolve| json!({"from":dissolve.from,
+                    "to":dissolve.to,"progress":dissolve.progress()})),
                 "gpu_preview_budget_bytes":gpu.gpu_preview_budget_bytes,
                 "gpu_preview_in_use_bytes":gpu.gpu_preview_in_use_bytes,
                 // Of the figure in use, the slots' pools of scratch textures, each counted once.
@@ -376,14 +404,32 @@ impl Editor {
                 "visible_region":self.presentation.dimensions
                     .and_then(|stage| self.desired_view_for(stage))
                     .map(|rect| [rect.x0, rect.y0, rect.x1(), rect.y1()]),
-                "plan_region":self.gesture_gpu_plan()
-                    .and_then(|(plan, _)| plan.region)
+                "plan_region":self.surfaces().gpu
+                    .and_then(|plan| plan.region)
                     .map(|region| region.rect),
                 // The settle hand-off: the dissolve the desktop hands the surface and the last settle.
                 "settle":self.gpu_settle.summary(),
             },
             "views": self.log.loop_timing.get().views,
         })
+    }
+
+    /// Where the photograph the surface drew last comes from, as `state.surface.gpu.picture` names
+    /// it: `rest` for the committed stack's picture at rest in tiles, `view` for its view plan
+    /// drawn at rest, `gesture` for a gesture's GPU frame, `reference` for the CPU's frame, and
+    /// `null` before one is drawn.
+    pub(super) fn picture_source(
+        &self,
+        drawn: &luxforge_ui::photo_surface::SurfaceDiagnostics,
+    ) -> Value {
+        use luxforge_ui::photo_surface::DrawingPath;
+        match drawn.drawn_path {
+            None => Value::Null,
+            Some(DrawingPath::Cpu) => json!("reference"),
+            Some(DrawingPath::Gpu) if drawn.drawn_rest.is_some() => json!("rest"),
+            Some(DrawingPath::Gpu) if self.gpu_rest_plan().is_some() => json!("view"),
+            Some(DrawingPath::Gpu) => json!("gesture"),
+        }
     }
 
     /// The display proxy as a captured frame reports it: the bounds the next job will offer, what
@@ -413,8 +459,7 @@ impl Editor {
                 .map(|frame| json!([frame.dimensions.0, frame.dimensions.1])),
             "bounds": bounds.map(|bounds| json!({"width":bounds.width,"height":bounds.height})),
             "presented": self.presentation.presented_proxy,
-            "settled_from_exact": self.presentation.presented_settled,
-            "restoration_prefix": self.presentation.restoration_prefix,
+            "reduced": self.presentation.presented_reduced,
         })
     }
 

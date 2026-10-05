@@ -697,18 +697,49 @@ struct Resident {
     asset: Option<luxforge_core::AssetId>,
 }
 
+/// The committed stack's own view plan over the boundary it is drawn from, which the surface draws
+/// in place of the photograph's frame while the stack is at rest ([`Editor::gpu_rest_plan`]): the
+/// picture at rest at 100% and above and wherever the view draws the stack at its own size, and
+/// elsewhere until its tiles are in. Every committed job sets it or lets it go, so it is never an
+/// earlier stack's.
+struct AtRest {
+    /// The plan as the core planned it, converted again when the clipping overlay changes.
+    core: Box<CorePlan>,
+    boundary: GpuBoundary,
+    origin: (u32, u32),
+    grid: Option<gpu_plan::WarpGrid>,
+    region: Option<luxforge_core::Region>,
+    /// The clipping overlay's classes its marks show.
+    clip: Option<[bool; 2]>,
+    handed: Handed,
+}
+
+/// The GPU picture of the stack on screen when Compare began, retained while Compare is shown:
+/// drawn as its After side, and handed back to the photograph when Compare ends, so that stack is
+/// drawn again at once, before its own job plans it.
+struct Retained {
+    at_rest: Option<AtRest>,
+    rest: Option<HeldRest>,
+}
+
 /// The desktop's GPU previews: the source the surface holds, the open draft's, the boundary held
 /// between drafts and the warm list of the committed stack.
 #[derive(Default)]
 pub(crate) struct GpuPreviews {
     drag: Option<Drag>,
     resident: Option<Resident>,
+    /// The committed stack's view plan, drawn at rest.
+    at_rest: Option<AtRest>,
+    /// The stack on screen when Compare began, its GPU picture retained while Compare is shown.
+    compare: Option<Retained>,
     /// The prepared source of the photograph on screen, which every boundary is derived from.
     source: Option<HeldSource>,
     /// The displayed stack's picture at rest, drawn in tiles at Fit and below 100%.
     rest: Option<HeldRest>,
     /// The last picture at rest's version handed out.
     rests: u64,
+    /// The last picture at rest the surface was found drawing, as evidence records it.
+    rest_drawn: Option<u64>,
     /// The last source version handed out: each source is uploaded once.
     sources: u64,
     /// A lens warp's coordinate grids, by boundary key.
@@ -726,6 +757,10 @@ pub(crate) struct GpuPreviews {
     /// What a test reports of the source the surface holds, which no test uploads.
     #[cfg(test)]
     pub(crate) source_figures: Option<surface::gpu_preview::SourceFigures>,
+    /// A test's committed stacks the GPU draws nothing of at rest, as one it could not plan: the
+    /// CPU's frame is then the photograph, and a gesture's frame settles into it.
+    #[cfg(test)]
+    pub(crate) rest_off: bool,
 }
 
 /// What a tick, or a displayed entry's job, asks the owner to plan its GPU picture for, with its
@@ -1493,20 +1528,26 @@ impl Editor {
     }
 
     /// A committed stack's job, about to be queued: the plan of the stack itself it carries
-    /// (`rest`'s view plan) is held behind the CPU frame over the resident boundary, derived from
-    /// the source the surface holds when no boundary held has its key, so the surface keeps the
-    /// stack's outputs and the next gesture's first tick draws on the GPU. `region` is whether the
-    /// job's view is a percentage zoom's region, and `committed` whether the job draws the whole
-    /// committed stack. Nothing with the preference off, or while a drag holds the boundary.
+    /// (`rest`'s view plan) is the stack's picture at rest's view plan ([`AtRest`]), and is held
+    /// behind the CPU frame over the resident boundary, derived from the source the surface holds
+    /// when no boundary held has its key, so the surface keeps the stack's outputs and the next
+    /// gesture's first tick draws on the GPU. `region` is whether the job's view is a percentage
+    /// zoom's region, and `committed` whether the job draws the whole committed stack. Nothing
+    /// with the preference off; a drag winding down keeps its boundary, which the stack's view
+    /// plan is then drawn from at rest.
     pub(crate) fn gpu_resident_from(
         &mut self,
         rest: Option<Box<luxforge_core::GpuRest>>,
         region: bool,
         committed: bool,
     ) {
-        // A committed stack's job may be queued while the gesture that committed it is still
-        // winding down; that drag keeps its boundary and leaves it resident once released.
-        if self.gpu_preview_allowed().is_err() || !committed {
+        if !committed {
+            return;
+        }
+        // Every committed job sets the picture at rest's view plan or lets the last one go: a plan
+        // of an earlier stack is never drawn at rest.
+        self.gpu.at_rest = None;
+        if self.gpu_preview_allowed().is_err() {
             return;
         }
         let Some(GpuPreview {
@@ -1521,13 +1562,19 @@ impl Editor {
         if region != request.key.region().is_some() {
             return;
         }
-        if self
+        // A committed stack's job may be queued while the gesture that committed it is still
+        // winding down; that drag keeps its boundary and leaves it resident once released, and the
+        // stack's view plan is drawn from it at rest.
+        if let Some(held) = self
             .gpu
             .drag
             .as_ref()
             .and_then(|drag| drag.held.as_ref())
-            .is_some_and(|held| held.serves(&request))
+            .filter(|held| held.serves(&request))
         {
+            let (boundary, origin, grid) = (held.boundary.clone(), held.origin, held.grid.clone());
+            let region = held.key.region();
+            self.gpu_at_rest_over(&plan, boundary, origin, grid, region);
             return;
         }
         let held = match self
@@ -1584,6 +1631,9 @@ impl Editor {
                 evaluated,
             )
         });
+        let (boundary, origin, grid) = (held.boundary.clone(), held.origin, held.grid.clone());
+        let region = held.key.region();
+        self.gpu_at_rest_over(&plan, boundary, origin, grid, region);
         let asset = self
             .document
             .state
@@ -1594,6 +1644,100 @@ impl Editor {
             plan: standby,
             asset,
         });
+    }
+
+    /// The committed stack's view plan `plan` over `boundary`, at `origin` of its stage, through
+    /// `grid` of a lens warp, of `region` at a percentage zoom: converted with the clipping
+    /// overlay's marks shown now and held as the picture at rest's view plan ([`AtRest`]), or
+    /// nothing held where the surface could not run it.
+    fn gpu_at_rest_over(
+        &mut self,
+        plan: &CorePlan,
+        boundary: GpuBoundary,
+        origin: (u32, u32),
+        grid: Option<gpu_plan::WarpGrid>,
+        region: Option<luxforge_core::Region>,
+    ) {
+        let clip = super::gpu_settle::clip_flags(&self.session.workspace);
+        let evaluated = self.surface_report().evaluated;
+        let Ok(converted) =
+            gpu_plan::surface_plan_over(plan, boundary.clone(), origin, grid.as_ref(), region)
+        else {
+            return;
+        };
+        let handed = self.gpu.stamps.hand(
+            super::gpu_settle::marked(converted, plan, clip),
+            0,
+            plan,
+            evaluated,
+        );
+        let version = boundary.version();
+        self.gpu.at_rest = Some(AtRest {
+            core: Box::new(plan.clone()),
+            boundary,
+            origin,
+            grid,
+            region,
+            clip,
+            handed,
+        });
+        self.event("gpu_at_rest", || {
+            json!({"boundary": version, "region": region.map(|rect| [rect.x0, rect.y0,
+                rect.x0 + rect.width, rect.y0 + rect.height])})
+        });
+    }
+
+    /// After every message: the picture at rest's view plan carries the clipping overlay's marks
+    /// shown now, converted again when they change, as a gesture's plans are planned with them.
+    pub(crate) fn gpu_mark_at_rest(&mut self) {
+        let clip = super::gpu_settle::clip_flags(&self.session.workspace);
+        let Some(at_rest) = self.gpu.at_rest.take() else {
+            return;
+        };
+        if at_rest.clip == clip {
+            self.gpu.at_rest = Some(at_rest);
+            return;
+        }
+        let AtRest {
+            core,
+            boundary,
+            origin,
+            grid,
+            region,
+            ..
+        } = at_rest;
+        self.gpu_at_rest_over(&core, boundary, origin, grid, region);
+    }
+
+    /// Whether the photograph is the committed stack at rest, which the GPU draws in place of its
+    /// frame — Compare's Before side among them: the gate lets the GPU stage draw, no gesture's
+    /// draft is open or its plan still drawn, no crop draft is shown, and no evidence hook hands a
+    /// plan of its own.
+    pub(crate) fn gpu_at_rest(&self) -> bool {
+        #[cfg(test)]
+        if self.gpu.rest_off {
+            return false;
+        }
+        self.gpu_preview_allowed().is_ok()
+            && self.core_gesture().is_none()
+            && self.gpu.drag.is_none()
+            && !self.drafting()
+            && self
+                .evidence
+                .as_ref()
+                .is_none_or(|evidence| evidence.gpu_identity.is_none())
+    }
+
+    /// The committed stack's view plan the surface draws at rest ([`AtRest`]), where the view
+    /// shows it: its whole frame at Fit and below 100%, its region at 100% and above while that
+    /// region holds the view.
+    pub(crate) fn gpu_rest_plan(&self) -> Option<(&surface::GpuPlan, surface::GpuChange)> {
+        if !self.gpu_at_rest() {
+            return None;
+        }
+        let at_rest = self.gpu.at_rest.as_ref()?;
+        self.gpu_plan_shown(&at_rest.handed.plan)
+            .then_some((&at_rest.handed.plan, at_rest.handed.change))
     }
 
     /// The displayed stack's picture at rest in tiles, from its job or from its exact phase, which
@@ -1671,6 +1815,135 @@ impl Editor {
             }
         };
         self.event("gpu_rest", || detail);
+    }
+
+    /// The picture at rest in tiles the surfaces are handed: the committed stack's, while no
+    /// gesture's draft is open — a released gesture's last plan may still be drawn, beside which
+    /// the tiles are drawn, to dissolve in over it — and no crop draft or clipping overlay is shown,
+    /// the overlay's marks being the view plan's; Compare's Before side among them. None while the
+    /// gate refuses the GPU stage or an evidence hook hands a plan of its own.
+    pub(crate) fn gpu_rest_handed(&self) -> Option<&surface::GpuRest> {
+        self.gpu_preview_allowed().ok()?;
+        #[cfg(test)]
+        if self.gpu.rest_off {
+            return None;
+        }
+        if self.core_gesture().is_some()
+            || self.drafting()
+            || super::gpu_settle::clip_flags(&self.session.workspace).is_some()
+            || self
+                .evidence
+                .as_ref()
+                .is_some_and(|evidence| evidence.gpu_identity.is_some())
+        {
+            return None;
+        }
+        self.gpu.rest.as_ref()?.gpu.as_ref()
+    }
+
+    /// Compare begins: the GPU picture of the stack on screen — its view plan and its picture at
+    /// rest in tiles — is retained, to be drawn as Compare's After side, and the photograph's
+    /// surface waits for the Before's own committed job to plan its own.
+    pub(crate) fn gpu_compare_begin(&mut self) {
+        if self.gpu.compare.is_some() {
+            return;
+        }
+        let retained = Retained {
+            at_rest: self.gpu.at_rest.take(),
+            rest: self.gpu.rest.take(),
+        };
+        let detail = json!({
+            "view_boundary": retained.at_rest.as_ref().map(|at_rest| at_rest.boundary.version()),
+            "rest": retained.rest.as_ref().map(|rest| rest.version),
+        });
+        self.gpu.compare = Some(retained);
+        self.event("gpu_compare_retained", || detail);
+    }
+
+    /// Compare ends: the stack it began over is on screen again, its retained GPU picture handed
+    /// back to the photograph at once, which that stack's own job then plans again.
+    pub(crate) fn gpu_compare_end(&mut self) {
+        let Some(retained) = self.gpu.compare.take() else {
+            return;
+        };
+        let detail = json!({
+            "view_boundary": retained.at_rest.as_ref().map(|at_rest| at_rest.boundary.version()),
+            "rest": retained.rest.as_ref().map(|rest| rest.version),
+        });
+        self.gpu.at_rest = retained.at_rest;
+        self.gpu.rest = retained.rest;
+        self.event("gpu_compare_restored", || detail);
+    }
+
+    /// Compare's After side on the GPU: the retained view plan, with its serial, where the view
+    /// draws it as a whole frame — at Fit and below 100% — and the retained picture at rest in
+    /// tiles; nothing while the gate refuses the GPU stage, or no Compare runs.
+    pub(crate) fn gpu_compare_after(
+        &self,
+    ) -> (
+        Option<(&surface::GpuPlan, surface::GpuChange)>,
+        Option<&surface::GpuRest>,
+    ) {
+        let Some(retained) = self
+            .gpu
+            .compare
+            .as_ref()
+            .filter(|_| self.presentation.compare_after.is_some())
+            .filter(|_| self.gpu_preview_allowed().is_ok())
+        else {
+            return (None, None);
+        };
+        let whole = match self.session.preview.view.zoom {
+            luxforge_core::Zoom::Fit => true,
+            luxforge_core::Zoom::Percent { value } => value < 100.0,
+        };
+        let plan = retained
+            .at_rest
+            .as_ref()
+            .filter(|at_rest| whole && at_rest.handed.plan.region.is_none())
+            .map(|at_rest| (&at_rest.handed.plan, at_rest.handed.change));
+        let rest = retained
+            .rest
+            .as_ref()
+            .filter(|_| whole && super::gpu_settle::clip_flags(&self.session.workspace).is_none())
+            .and_then(|rest| rest.gpu.as_ref());
+        (plan, rest)
+    }
+
+    /// Whose picture of the displayed content the surface is handed to draw, as `preview_displayed`
+    /// names it: `gpu` while a GPU picture stands in for the CPU's frame — the committed stack's
+    /// view plan or its picture at rest in tiles, a gesture's plan drawn in place of its frame —
+    /// and `reference` while the CPU's frame is the photograph.
+    pub(crate) fn displayed_picture(&self) -> &'static str {
+        let surfaces = self.surfaces();
+        if (surfaces.gpu.is_some() && !surfaces.gpu_hold) || surfaces.gpu_rest.is_some() {
+            "gpu"
+        } else {
+            "reference"
+        }
+    }
+
+    /// After every message: the first draw of each picture at rest in tiles, as evidence records
+    /// it, with the interface thread's time its tiles took.
+    pub(crate) fn gpu_follow_rest_drawn(&mut self) {
+        let Some(version) = self.gpu_rest_handed().map(|rest| rest.version) else {
+            return;
+        };
+        if self.gpu.rest_drawn == Some(version) {
+            return;
+        }
+        let drawn = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
+        if drawn.drawn_rest != Some(version) {
+            return;
+        }
+        self.gpu.rest_drawn = Some(version);
+        let figures = drawn.gpu_rest.filter(|figures| figures.version == version);
+        self.event("gpu_rest_drawn", || {
+            json!({"version": version,
+                "tiles": figures.map(|figures| figures.tiles),
+                "prepare_ms": figures.map(|figures| figures.prepare_us as f64 / 1000.0),
+                "dissolve": drawn.drawn_rest_dissolve.map(|dissolve| dissolve.from)})
+        });
     }
 
     /// A committed stack's job carries the plans its gestures are likely to draw: hand their
@@ -1756,23 +2029,7 @@ impl Editor {
             return None;
         }
         let (plan, revision) = self.gpu.surface_plan()?;
-        let shown = match (&self.session.preview.view.zoom, plan.region) {
-            (luxforge_core::Zoom::Fit, None) => true,
-            // Below 100% the view draws the photograph's frame alone, the displayed-size proxy, as
-            // Fit does, and a whole frame's plan stands in for it; an exact frame or a region the
-            // view still holds from a zoom of 100% or more is the view's own to draw.
-            (luxforge_core::Zoom::Percent { value }, None) if *value < 100.0 => {
-                self.presentation.surfaces(None).whole_frame()
-            }
-            (luxforge_core::Zoom::Percent { value }, Some(region)) if *value >= 100.0 => self
-                .presentation
-                .dimensions
-                .filter(|stage| *stage == region.stage)
-                .and_then(|stage| self.desired_view_for(stage))
-                .is_some_and(|wanted| super::preview::contains_region(rect_of(region), wanted)),
-            _ => false,
-        };
-        if !shown {
+        if !self.gpu_plan_shown(plan) {
             return None;
         }
         // Between drafts the resident boundary's last plan is held behind the CPU frame, which
@@ -1792,6 +2049,26 @@ impl Editor {
             return None;
         }
         self.gpu.surface_plan()
+    }
+
+    /// Whether the view shows what `plan` draws: at Fit a whole frame's; below 100% a whole frame's
+    /// while the view draws its photograph's frame alone, the displayed-size proxy, as Fit does,
+    /// an exact frame or a region it still holds from a zoom of 100% or more being its own to
+    /// draw; at 100% and above a region's while that region holds the view.
+    fn gpu_plan_shown(&self, plan: &surface::GpuPlan) -> bool {
+        match (&self.session.preview.view.zoom, plan.region) {
+            (luxforge_core::Zoom::Fit, None) => true,
+            (luxforge_core::Zoom::Percent { value }, None) if *value < 100.0 => {
+                self.presentation.surfaces(None).whole_frame()
+            }
+            (luxforge_core::Zoom::Percent { value }, Some(region)) if *value >= 100.0 => self
+                .presentation
+                .dimensions
+                .filter(|stage| *stage == region.stage)
+                .and_then(|stage| self.desired_view_for(stage))
+                .is_some_and(|wanted| super::preview::contains_region(rect_of(region), wanted)),
+            _ => false,
+        }
     }
 
     /// Why the desktop hands the surface no plan for the open gesture's newest tick, or why that
@@ -1871,8 +2148,11 @@ pub(super) fn after_message(editor: &mut Editor, _: &super::Before) -> iced::Tas
         );
     }
     // The source of another photograph, or of none, is let go with it: the surfaces are handed
-    // none, and the pipeline lets its textures go; so is the picture at rest drawn from it.
+    // none, and the pipeline lets its textures go; so is the picture at rest drawn from it, its
+    // view plan and its tiles.
     if let Some(source) = editor.gpu.source.take_if(|source| source.asset != asset) {
+        editor.gpu.at_rest = None;
+        editor.gpu.compare = None;
         let version = source.gpu.version();
         editor.event(
             "gpu_source_released",
@@ -1887,6 +2167,16 @@ pub(super) fn after_message(editor: &mut Editor, _: &super::Before) -> iced::Tas
         }
     }
     release_ended_drag(editor, asset);
+    // With the GPU stage refused or the preference off the CPU's frames are the photograph: no
+    // view plan or tiles are kept to be drawn at rest once it is back, before a committed job
+    // plans them for the stack on screen then.
+    if editor.gpu_preview_allowed().is_err() {
+        editor.gpu.at_rest = None;
+        editor.gpu.rest = None;
+        editor.gpu.compare = None;
+    }
+    editor.gpu_mark_at_rest();
+    editor.gpu_follow_rest_drawn();
     editor.gpu_compute_grids()
 }
 

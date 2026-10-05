@@ -263,7 +263,9 @@ pub(crate) struct CanvasModel {
     /// entered from that panel and must not hide it.
     pub(crate) mask_panel: bool,
     /// The share of a long render finished, drawn as a bar along the bottom of the photograph
-    /// ([`render_bar`]). Only over the plain photograph: a crop draft draws its own stage.
+    /// ([`render_bar`]). Only over the plain photograph the reference renderer draws: a crop draft
+    /// draws its own stage, and over a GPU frame the exact phase is not the picture, only the
+    /// histogram and the reference frame behind it.
     pub(crate) render_bar: Option<f32>,
 }
 
@@ -372,7 +374,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
         mask_panel: mask_workspace(&inputs.session.workspace.mode) || inputs.target.is_some(),
         render_bar: inputs
             .render_bar
-            .filter(|_| photo == PhotoView::Plain)
+            .filter(|_| photo == PhotoView::Plain && inputs.gpu_frame_us.is_none())
             .map(|bar| bar.fraction),
     }
 }
