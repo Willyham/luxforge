@@ -2062,9 +2062,10 @@ impl Owner {
             // from the source, which every stack has.
             if let (true, None, Some(view), None) = (request.gpu, draft, view, request.layer_count)
             {
-                job.gpu_warm = crate::render::gpu::plan_warm(&job.evaluation, view)
-                    .ok()
-                    .map(Into::into);
+                if let Ok(warm) = crate::render::gpu::plan_warm_list(&job.evaluation, view) {
+                    job.gpu_warm_open = warm.open;
+                    job.gpu_warm = Some(warm.plans.into());
+                }
                 job.gpu_rest = crate::render::gpu::plan_rest(&job.evaluation, view)
                     .ok()
                     .map(Box::new);

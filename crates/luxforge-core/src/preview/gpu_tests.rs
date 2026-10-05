@@ -740,13 +740,13 @@ fn the_warmed_plans_tell_a_masked_layer_from_an_unmasked_one() {
         );
         let plans =
             crate::render::gpu::plan_warm(&job.evaluation, crate::GpuView::Fit(bounds())).unwrap();
-        // The Presence layer's own drag is the last plan: the committed stack and the first
-        // drags of the colour and finish modules come before it.
+        // The Presence layer's own drag: the committed stack and the drags of the colour and
+        // finish modules hold more, and Detail's first drag holds Detail beside it.
         plans
             .into_iter()
             .rev()
             .find(|plan| {
-                plan.content.is_empty() && !plan.spatial.is_empty() && plan.output.is_empty()
+                plan.content.is_empty() && plan.spatial.len() == 1 && plan.output.is_empty()
             })
             .expect("the Presence layer's drag")
     };
@@ -1038,11 +1038,12 @@ fn the_warmed_plans_hold_a_spatial_layers_drags() {
         let plans =
             crate::render::gpu::plan_warm(&job.evaluation, crate::GpuView::Fit(bounds())).unwrap();
         // The plans that draft the layer itself; the colour candidates before it, and the
-        // vignette's first drag after it, hold it too.
+        // vignette's first drag after it, hold it too, and the other spatial module's first drag
+        // holds it beside its own.
         let own: Vec<&GpuPlan> = plans
             .iter()
             .filter(|plan| {
-                !plan.spatial.is_empty() && plan.content.is_empty() && plan.output.is_empty()
+                plan.spatial.len() == 1 && plan.content.is_empty() && plan.output.is_empty()
             })
             .collect();
         assert_eq!(
