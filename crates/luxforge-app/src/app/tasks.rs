@@ -218,6 +218,43 @@ fn proxied(request: PreviewRequest, proxy: Option<ProxyBounds>) -> PreviewReques
     }
 }
 
+/// Where a displayed entry's frame is drawn, decided in `update` when its job is asked for and
+/// carried by the task that plans it, as the bounds always were: the display bounds, and the view
+/// its GPU picture at rest is planned at (`docs/design/gpu-first.md`, stage 2) — the whole frame at
+/// those bounds at Fit and below 100%, the visible region at 100% and above.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Drawn {
+    pub(crate) proxy: Option<ProxyBounds>,
+    pub(crate) gpu: super::gpu_preview::GpuAsk,
+}
+
+impl From<Option<ProxyBounds>> for Drawn {
+    /// A frame at these display bounds, its GPU picture planned at them, or at none.
+    fn from(proxy: Option<ProxyBounds>) -> Self {
+        Self {
+            proxy,
+            gpu: match proxy {
+                Some(_) => super::gpu_preview::GpuAsk::Fit,
+                None => super::gpu_preview::GpuAsk::Off,
+            },
+        }
+    }
+}
+
+impl Drawn {
+    /// `request` offered these bounds and planned with its GPU picture at this view.
+    fn request(self, request: PreviewRequest) -> PreviewRequest {
+        let request = proxied(request, self.proxy);
+        match self.gpu {
+            super::gpu_preview::GpuAsk::Off => request,
+            super::gpu_preview::GpuAsk::Fit => request.gpu(),
+            super::gpu_preview::GpuAsk::Region(rect, magnification) => {
+                request.gpu_region(rect, magnification)
+            }
+        }
+    }
+}
+
 /// A fresh request identity, so a retry of the same press is recognised and a new press is not.
 fn request_id() -> String {
     format!(
@@ -588,8 +625,9 @@ pub(crate) fn refresh(
     client: ClientId,
     asset_id: AssetId,
     scope: Scope,
-    proxy: Option<ProxyBounds>,
+    drawn: impl Into<Drawn>,
 ) -> Result<Refresh, String> {
+    let drawn = drawn.into();
     let fetch = |method: &str, params: Value| -> Result<Value, String> {
         call(owner, client, method, params).map(|(value, _)| value)
     };
@@ -668,16 +706,15 @@ pub(crate) fn refresh(
     // the histogram needs no second render and an `analysis.request` for this identity is a
     // cache hit. A truncated crop-draft job is the one exception; the core refuses to analyse
     // it, because its identity describes the whole stack rather than the prefix it renders.
-    // The committed stack's job carries the plans its gestures are likely to draw, which the
-    // surface compiles before a drag begins ([`super::gpu_preview`]).
+    // The committed stack's job carries its picture at rest on the GPU and the plans its gestures
+    // are likely to draw, which the surface compiles before a drag begins
+    // ([`super::gpu_preview`]).
     let job = ready_preview_job(
         owner,
-        proxied(
+        drawn.request(
             PreviewRequest::new(client, asset_id)
                 .entry(Some(displayed))
-                .analyse()
-                .gpu(),
-            proxy,
+                .analyse(),
         ),
     )?;
     Ok(Refresh {
@@ -719,7 +756,7 @@ pub(crate) fn import_task(
     path: PathBuf,
     generation: u64,
     open_guard: Arc<OpenGuard>,
-    proxy: Option<ProxyBounds>,
+    proxy: Drawn,
     queued: Option<Result<QueuedImport, String>>,
 ) -> Task<Message> {
     owner_task(
@@ -749,7 +786,7 @@ fn import_now(
     path: &Path,
     generation: u64,
     open_guard: &OpenGuard,
-    proxy: Option<ProxyBounds>,
+    proxy: impl Into<Drawn>,
     queued: Option<Result<QueuedImport, String>>,
 ) -> Result<Refresh, String> {
     let QueuedImport { job_id, request } = match queued {
@@ -825,7 +862,7 @@ pub(crate) fn command_now(
     asset_id: AssetId,
     method: &str,
     params: Value,
-    proxy: Option<ProxyBounds>,
+    proxy: impl Into<Drawn>,
 ) -> Result<Refresh, String> {
     let (answer, request) = call_own(owner, client, method, params)?;
     let scope = Scope::after(method, &answer);
@@ -845,7 +882,7 @@ pub(crate) fn state_task(
     asset_id: AssetId,
     method: String,
     params: Value,
-    proxy: Option<ProxyBounds>,
+    proxy: Drawn,
 ) -> Task<Message> {
     owner_task(
         move || command_now(&owner, client, asset_id, &method, params, proxy),
@@ -862,20 +899,21 @@ pub(crate) fn preview_task(
     entry_id: Option<EntryId>,
     method: &'static str,
     params: Value,
-    proxy: Option<ProxyBounds>,
+    proxy: Drawn,
     answered: fn(Result<Box<PreviewPayload>, String>) -> Message,
 ) -> Task<Message> {
     owner_task(
         move || {
             let (mut result, _) = call(&owner, client, method, params)?;
             let session: ClientSession = parse(result["session"].take())?;
+            // A history selection or a return draws its picture at rest on the GPU, as a commit
+            // does.
             let job = ready_preview_job(
                 &owner,
-                proxied(
+                proxy.request(
                     PreviewRequest::new(client, asset_id)
                         .entry(entry_id)
                         .analyse(),
-                    proxy,
                 ),
             )?;
             Ok(PreviewPayload { job, session })
@@ -892,15 +930,16 @@ fn comparison_preview_now(
     client: ClientId,
     asset_id: AssetId,
     session: ClientSession,
-    proxy: Option<ProxyBounds>,
+    proxy: impl Into<Drawn>,
 ) -> Result<PreviewPayload, String> {
     let entry = session.preview.selected_entry(&asset_id).cloned();
+    // Compare's Before, and the selection an exit restores, draw their pictures at rest on the
+    // GPU as any displayed entry does.
     let job = ready_preview_job(
         owner,
-        proxied(
-            PreviewRequest::new(client, asset_id).entry(entry).analyse(),
-            proxy,
-        ),
+        proxy
+            .into()
+            .request(PreviewRequest::new(client, asset_id).entry(entry).analyse()),
     )?;
     Ok(PreviewPayload { job, session })
 }
@@ -910,7 +949,7 @@ pub(crate) fn comparison_preview_task(
     client: ClientId,
     asset_id: AssetId,
     session: ClientSession,
-    proxy: Option<ProxyBounds>,
+    proxy: Drawn,
 ) -> Task<Message> {
     owner_task(
         move || comparison_preview_now(&owner, client, asset_id, session, proxy),
@@ -1167,7 +1206,7 @@ pub(crate) fn draft_commit_now(
     draft_id: &DraftId,
     asset_id: AssetId,
     mutation: Mutation,
-    proxy: Option<ProxyBounds>,
+    proxy: impl Into<Drawn>,
 ) -> Result<Option<Refresh>, String> {
     let (committed, request) = call_own(
         owner,
@@ -1198,7 +1237,7 @@ pub(crate) fn draft_commit_task(
     draft_id: DraftId,
     asset_id: AssetId,
     mutation: Mutation,
-    proxy: Option<ProxyBounds>,
+    proxy: Drawn,
 ) -> Task<Message> {
     let draft = draft_id.clone();
     owner_task(
@@ -1213,8 +1252,8 @@ pub(crate) fn draft_commit_task(
     )
 }
 
-/// What a cancel reads back after it: the displayed entry's own preview, at these bounds.
-pub(crate) type Reseed = (AssetId, Option<EntryId>, Option<ProxyBounds>);
+/// What a cancel reads back after it: the displayed entry's own preview, drawn there.
+pub(crate) type Reseed = (AssetId, Option<EntryId>, Drawn);
 
 /// What a cancel answers: whether the owner ended the draft, and the frame read back after it.
 pub(crate) type Cancelled = (
@@ -1259,7 +1298,7 @@ pub(crate) fn current_preview_task(
     client: ClientId,
     asset_id: AssetId,
     entry_id: Option<EntryId>,
-    proxy: Option<ProxyBounds>,
+    proxy: Drawn,
 ) -> Task<Message> {
     owner_task(
         move || current_preview(&owner, client, asset_id, entry_id, proxy),
@@ -1367,15 +1406,15 @@ fn current_preview(
     client: ClientId,
     asset_id: AssetId,
     entry_id: Option<EntryId>,
-    proxy: Option<ProxyBounds>,
+    proxy: Drawn,
 ) -> Result<PreviewPayload, String> {
+    // The displayed entry's picture at rest on the GPU, as every displayed entry's job carries it.
     let job = plan_preview(
         owner,
-        proxied(
+        proxy.request(
             PreviewRequest::new(client, asset_id)
                 .entry(entry_id)
                 .analyse(),
-            proxy,
         ),
     )
     .map_err(|error| error.to_string())?;
@@ -1556,7 +1595,7 @@ pub(crate) fn sync_task(
     held: (AssetId, u64),
     after: u64,
     own: Vec<String>,
-    proxy: Option<ProxyBounds>,
+    proxy: Drawn,
 ) -> Task<Message> {
     owner_task(
         move || sync_now(&owner, client, held, after, &own, proxy),
@@ -1631,8 +1670,9 @@ pub(crate) fn sync_now(
     (asset_id, held): (AssetId, u64),
     after: u64,
     own: &[String],
-    proxy: Option<ProxyBounds>,
+    proxy: impl Into<Drawn>,
 ) -> Result<SyncResult, String> {
+    let proxy = proxy.into();
     let (events, _) = call(owner, client, "events.since", json!({"after":after}))?;
     let mut events: EventsResult = parse(events)?;
     let sequence = events.current_sequence;

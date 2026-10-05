@@ -2177,7 +2177,7 @@ impl Editor {
             && job.evaluation.draft_revision().is_none()
             && job.boundary.is_none();
         if let Some(request) =
-            self.gpu_resident_from(job.gpu_resident.take(), job.viewport.is_some(), committed)
+            self.gpu_resident_from(job.gpu_rest.take(), job.viewport.is_some(), committed)
         {
             job.boundary = Some(request);
         }
@@ -2382,13 +2382,17 @@ impl Editor {
         };
         let asset = state.asset.id.clone();
         let entry = self.displayed_entry();
-        tasks::current_preview_task(
-            self.owner.clone(),
-            self.client,
-            asset,
-            entry,
-            self.proxy_bounds(),
-        )
+        tasks::current_preview_task(self.owner.clone(), self.client, asset, entry, self.drawn())
+    }
+
+    /// Where a displayed entry's frame is drawn now ([`tasks::Drawn`]): the display bounds, and
+    /// the view its GPU picture at rest is planned at — the whole frame at those bounds at Fit and
+    /// below 100%, the visible region at 100% and above.
+    pub(crate) fn drawn(&self) -> tasks::Drawn {
+        tasks::Drawn {
+            proxy: self.proxy_bounds(),
+            gpu: self.gpu_ask(),
+        }
     }
 
     /// Make a frame the photograph on the presenter and record that it is on screen: the one

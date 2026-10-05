@@ -2044,16 +2044,15 @@ impl Owner {
             };
             // A committed stack's job carries the plans its gestures are likely to draw at its
             // view, so the desktop warms their pipelines when the stack or the view changes rather
-            // than when a drag begins; and the stack's own plan and the boundary every gesture
-            // starts from, which the desktop holds before a gesture begins.
+            // than when a drag begins; and its picture at rest on the GPU, the stack's own plan
+            // from the source, which every stack has.
             if let (true, None, Some(view), None) = (request.gpu, draft, view, request.layer_count)
             {
                 job.gpu_warm = crate::render::gpu::plan_warm(&job.evaluation, view)
                     .ok()
                     .map(Into::into);
-                job.gpu_resident = crate::render::gpu::plan_resident(&job.evaluation, view)
+                job.gpu_rest = crate::render::gpu::plan_rest(&job.evaluation, view)
                     .ok()
-                    .flatten()
                     .map(Box::new);
             }
             if let (true, Some(draft), Some(view), None) =
