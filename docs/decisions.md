@@ -365,7 +365,7 @@ Decided by the owner on 2026-10-04 after the hover-readout freeze and the audit 
 
 Decided by the owner on 2026-10-05, on the [UI themes](design/ui-themes.md) proposal of 2026-10-04:
 
-- **Themes replace dark only, light ones included.** Luxforge Dark, today's palette, stays the default. The principle that the photograph is the only colour on screen now holds for it alone, so other themes may tint the chrome.
+- **Themes replace dark only, light ones included.** Luxforge Dark, the visual language's palette, stays the default. The principle that the photograph is the only colour on screen now holds for it alone, so other themes may tint the chrome.
 - **The photograph's surround stays neutral** in every theme. A theme chooses its lightness, never its hue.
 - **Each theme keeps its own accent**, even near the clipping or mask colours. The import report notes an accent within 15 ΔE00 of one of them.
 - **A few popular Omarchy themes are bundled** for now, beside themes imported from a folder.
