@@ -14,8 +14,8 @@ use crate::{
     minify_smoke as minify, mixer_smoke as mixer, performance_smoke as performance,
     presence_smoke as presence, presets_smoke as presets, raw_panel_smoke as raw_panel,
     scenario::{Checked, Checks, Fixture, Launch, Plan, Run, Step, launch::Guard},
-    settings_smoke as settings, viewport_smoke as viewport, vignette_smoke as vignette,
-    workspace_smoke as workspace, zoom_smoke as zoom, *,
+    settings_smoke as settings, theme_smoke as theme, viewport_smoke as viewport,
+    vignette_smoke as vignette, workspace_smoke as workspace, zoom_smoke as zoom, *,
 };
 use std::{
     borrow::Borrow,
@@ -850,6 +850,19 @@ pub static SCENARIOS: &[Scenario] = &[
         note: None,
         // The catalog step names a folder inside the launch's own evidence directory.
         own: Some(settings::run),
+    },
+    Scenario {
+        name: theme::SCENARIO,
+        about: "UI themes end to end: the synthetic Omarchy set imported through the Appearance tab, each theme's outcome listed; Luxforge Dark, Nord and both imports drawn and sampled against their tokens, the surround neutral, the photograph's pixels and an export's bytes the same under every theme, Grey kept under a light theme, and a second client switching back",
+        launches: &[LaunchSpec {
+            plan: theme::plan,
+            ..APP
+        }],
+        verify: theme::verify,
+        source: Source::Fixtures(&[theme::FIXTURE]),
+        window: Some(PANELLED),
+        note: None,
+        own: None,
     },
     Scenario {
         name: "gallery",
