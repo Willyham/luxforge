@@ -67,9 +67,6 @@ impl Editor {
                     Some(PaletteAction::ToggleInformation) => {
                         self.dispatch(Message::View(ViewMessage::ToggleInformation))
                     }
-                    Some(PaletteAction::ToggleGpuPreview) => {
-                        self.dispatch(Message::View(ViewMessage::ToggleGpuPreview))
-                    }
                     Some(PaletteAction::Fit) => self.dispatch(Message::View(ViewMessage::Fit)),
                     Some(PaletteAction::HundredPercent) => {
                         self.dispatch(Message::View(ViewMessage::HundredPercent))

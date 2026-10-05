@@ -180,10 +180,9 @@ fn remembered_workspace_is_stored_on_a_toggle_and_not_on_a_mode_or_zoom_change()
                "clip_shadows": false, "clip_highlights": true})
     );
 
-    // Not remembered: the canvas mode, the mask overlay mode, the GPU preview and zoom.
+    // Not remembered: the canvas mode, the mask overlay mode and zoom.
     workspace_set(&mut editor, json!({"mode": luxforge_core::MASK_MODE}));
     workspace_set(&mut editor, json!({"mask_overlay": "tint"}));
-    workspace_set(&mut editor, json!({"gpu_preview": false}));
     let zoomed = call(
         &editor.owner,
         editor.client,

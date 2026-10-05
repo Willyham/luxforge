@@ -211,12 +211,11 @@ impl MaskOverlayColour {
 }
 
 /// Per-client workspace state: which panels are open, which canvas mode is active, whether the
-/// thirds and information overlays are on, which clipping overlays are shown, what the canvas draws
-/// of the selected mask and whether gestures preview on the GPU. It is a client preference the owner holds, never
-/// authoritative edit state: an overlay never alters the raster, saved recipe, histogram population
-/// or a future export, and the GPU preview changes only what is drawn while a gesture moves. The
-/// desktop's developer components gallery is not here: which page it shows is that desktop's own
-/// view state.
+/// thirds and information overlays are on, which clipping overlays are shown and what the canvas
+/// draws of the selected mask. It is a client preference the owner holds, never authoritative edit
+/// state: an overlay never alters the raster, saved recipe, histogram population or a future
+/// export. The desktop's developer components gallery is not here: which page it shows is that
+/// desktop's own view state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceState {
@@ -239,11 +238,6 @@ pub struct WorkspaceState {
     /// The tint [`MaskOverlayMode::Tint`] is drawn in.
     #[serde(default)]
     pub mask_overlay_colour: MaskOverlayColour,
-    /// Draw this client's gestures through the GPU preview stage where it can, on by default.
-    /// Off, every gesture previews on the CPU. Either way the settled frame, the histogram,
-    /// samples, analysis, export and every API answer are the CPU's.
-    #[serde(default = "WorkspaceState::gpu_preview_default")]
-    pub gpu_preview: bool,
 }
 
 /// The pointer mode: the canvas shows the photograph and nothing else.
@@ -269,15 +263,7 @@ impl Default for WorkspaceState {
             clip_highlights: false,
             mask_overlay: MaskOverlayMode::Off,
             mask_overlay_colour: MaskOverlayColour::Green,
-            gpu_preview: Self::gpu_preview_default(),
         }
-    }
-}
-
-impl WorkspaceState {
-    /// The GPU preview's recorded default: on.
-    const fn gpu_preview_default() -> bool {
-        true
     }
 }
 

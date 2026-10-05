@@ -1,15 +1,11 @@
 //! The GPU preview's hand-off on the desktop: the gate every GPU plan passes — the GPU stage able
-//! to draw at all, and the `gpu_preview` preference — and the status bar's figure for a GPU frame
-//! on screen.
+//! to draw at all — and the status bar's figure for a GPU frame on screen.
 //!
-//! The preference is per-client workspace state the owner holds (`workspace.set {gpu_preview}`, on
-//! by default). The palette's toggle sends the same request an API client sends, and the desktop
-//! keeps no copy of it outside the session it adopts back. [`Editor::gpu_preview_allowed`] is the
-//! one question the desktop asks before it hands the photo surface a plan, and [`Editor::gpu_plan`]
-//! the one place a plan is handed from: while the surface's GPU stage cannot draw on its device, or
-//! the launch refused it (`--no-gpu-render`), it hands none and evidence names the stage's reason
-//! (`no-adapter` or `device-lost`, [`super::renderer`]); with the preference off it hands none,
-//! every frame is the CPU's, and evidence names [`PREFERENCE_OFF`].
+//! [`Editor::gpu_preview_allowed`] is the one question the desktop asks before it hands the photo
+//! surface a plan, and [`Editor::gpu_plan`] the one place a plan is handed from: while the
+//! surface's GPU stage cannot draw on its device, or the launch refused it (`--no-gpu-render`), it
+//! hands none, every frame is the reference renderer's, and evidence names the stage's reason
+//! (`no-adapter` or `device-lost`, [`super::renderer`]).
 //!
 //! The status bar's render slot reads "GPU preview · N ms" while the surface draws the GPU stage's
 //! output for a gesture's plan, and "GPU render · N ms" while it draws the committed stack at rest,
@@ -32,16 +28,6 @@ use luxforge_ui::{
     photo_surface::{ClipMarks, Dissolve, DrawingPath, GpuPlan, GpuStep},
 };
 use serde_json::{Value, json};
-
-/// Why the desktop hands the surface no GPU plan while this client's `gpu_preview` preference is
-/// off, as evidence names it beside the surface's own fallback reasons.
-pub(crate) const PREFERENCE_OFF: &str = "preference-off";
-
-/// The `workspace.set` body the palette's GPU preview entry sends: the preference flipped, and
-/// nothing else.
-pub(crate) fn toggle_params(workspace: &WorkspaceState) -> Value {
-    json!({ "gpu_preview": !workspace.gpu_preview })
-}
 
 /// The clipping overlay's classes, shadows and highlights, while this client shows one.
 pub(crate) fn clip_flags(workspace: &WorkspaceState) -> Option<[bool; 2]> {
@@ -84,17 +70,12 @@ pub(crate) fn marked(
 impl Editor {
     /// Whether the desktop may hand the photo surface a GPU plan at all: `Err` with the stage's
     /// reason while the surface's GPU stage cannot draw on its device or the launch refused it
-    /// ([`Editor::gpu_stage_refusal`]), and with [`PREFERENCE_OFF`] while this client's
-    /// `gpu_preview` preference is off, so every frame is the CPU's. Every route that hands the
-    /// surface a plan asks this first.
+    /// ([`Editor::gpu_stage_refusal`]), so every frame is the reference renderer's. Every route
+    /// that hands the surface a plan asks this first.
     pub(crate) fn gpu_preview_allowed(&self) -> Result<(), &'static str> {
-        if let Some(reason) = self.gpu_stage_refusal() {
-            return Err(reason);
-        }
-        if self.session.workspace.gpu_preview {
-            Ok(())
-        } else {
-            Err(PREFERENCE_OFF)
+        match self.gpu_stage_refusal() {
+            Some(reason) => Err(reason),
+            None => Ok(()),
         }
     }
 
@@ -460,53 +441,10 @@ mod tests {
     use super::*;
     use crate::app::{
         gpu_identity::GpuIdentity,
-        message::{Message, palette::PaletteMessage, view::ViewMessage},
-        tasks::call,
         testing::{finish, opened, scripted_evidence},
     };
-    use crate::state::palette::PaletteAction;
-    use luxforge_core::ClientSession;
     use luxforge_ui::photo_surface::GpuBoundary;
     use std::sync::Arc;
-
-    #[test]
-    fn the_toggle_flips_only_the_preference() {
-        let mut workspace = WorkspaceState::default();
-        assert!(workspace.gpu_preview, "on by default");
-        assert_eq!(toggle_params(&workspace), json!({"gpu_preview": false}));
-        workspace.gpu_preview = false;
-        assert_eq!(toggle_params(&workspace), json!({"gpu_preview": true}));
-    }
-
-    /// Run the palette's GPU preview entry as a person does — open, type, Enter — and then the
-    /// `workspace.set` its message sends, on the desktop's own client, as the runtime's executor
-    /// would, adopting the owner's answer. Returns the entry that ran.
-    fn run_palette_entry(editor: &mut Editor) -> crate::state::palette::PaletteEntry {
-        let _ = editor.update(Message::Palette(PaletteMessage::Open));
-        let _ = editor.update(Message::Palette(PaletteMessage::Query(
-            "gpu preview".into(),
-        )));
-        let entry = editor
-            .workspace
-            .palette
-            .entries
-            .first()
-            .cloned()
-            .expect("a GPU preview entry");
-        let before = editor.session.clone();
-        let body = toggle_params(&editor.session.workspace);
-        let _ = editor.update(Message::Palette(PaletteMessage::Run));
-        assert!(!editor.workspace.palette.open, "running an entry closes it");
-        assert!(!editor.busy, "a preference never takes the mutation path");
-        assert_eq!(
-            editor.session, before,
-            "the desktop holds no flag of its own: nothing changes until the owner answers"
-        );
-        let (answer, _) = call(&editor.owner, editor.client, "workspace.set", body).unwrap();
-        let session: ClientSession = serde_json::from_value(answer).unwrap();
-        let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
-        entry
-    }
 
     /// A captured frame reports the GPU-preview budget's figures as the surface counts them, the
     /// slots' scratch pools among them: part of what is in use, each pool counted once.
@@ -523,66 +461,10 @@ mod tests {
         assert!(figure("gpu_preview_in_use_bytes") <= figure("gpu_preview_peak_bytes"));
     }
 
-    /// Pillar 2's parity: the palette entry and an agent's `workspace.set {gpu_preview}` produce the
-    /// same session state, which `session.state`, the desktop's adopted session and its evidence all
-    /// report; with the preference off the desktop names it as the reason it hands no plan.
+    /// With the GPU stage refused the desktop hands the surface no plan, whatever would give one;
+    /// with it able again, the same plan is handed.
     #[test]
-    fn the_palette_entry_and_the_api_produce_the_same_preference() {
-        let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
-        let agent = editor.owner.register();
-        let workspace = |editor: &Editor, client| {
-            call(&editor.owner, client, "session.state", json!({}))
-                .unwrap()
-                .0["workspace"]
-                .clone()
-        };
-        assert_eq!(editor.gpu_preview_allowed(), Ok(()), "on by default");
-        assert_eq!(
-            editor.snapshot()["surface"]["gpu"]["plan_fallback"],
-            Value::Null
-        );
-
-        let entry = run_palette_entry(&mut editor);
-        assert_eq!(entry.label, "Turn off GPU preview");
-        assert_eq!(entry.detail, "workspace.set");
-        assert_eq!(entry.action, PaletteAction::ToggleGpuPreview);
-        let (by_api, _) = call(
-            &editor.owner,
-            agent,
-            "workspace.set",
-            json!({"gpu_preview": false}),
-        )
-        .unwrap();
-        assert_eq!(workspace(&editor, editor.client), by_api["workspace"]);
-        assert_eq!(workspace(&editor, agent), by_api["workspace"]);
-        assert_eq!(editor.snapshot()["workspace"], by_api["workspace"]);
-        assert_eq!(by_api["workspace"]["gpu_preview"], json!(false));
-        assert_eq!(editor.gpu_preview_allowed(), Err(PREFERENCE_OFF));
-        assert_eq!(
-            editor.snapshot()["surface"]["gpu"]["plan_fallback"],
-            json!({"reason": "preference-off"})
-        );
-
-        // And back on, the entry naming what it now does.
-        let entry = run_palette_entry(&mut editor);
-        assert_eq!(entry.label, "Turn on GPU preview");
-        let (by_api, _) = call(
-            &editor.owner,
-            agent,
-            "workspace.set",
-            json!({"gpu_preview": true}),
-        )
-        .unwrap();
-        assert_eq!(workspace(&editor, editor.client), by_api["workspace"]);
-        assert_eq!(editor.snapshot()["workspace"], by_api["workspace"]);
-        assert_eq!(editor.gpu_preview_allowed(), Ok(()));
-        finish(editor, catalog);
-    }
-
-    /// With the preference off the desktop hands the surface no plan, whatever would give one; on
-    /// again, the same plan is handed.
-    #[test]
-    fn with_the_preference_off_no_plan_reaches_the_surface() {
+    fn with_the_stage_refused_no_plan_reaches_the_surface() {
         let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
         let photo = Frame::new(Arc::new(vec![0, 128, 255, 255]), 1, 1, 21).unwrap();
         let mut hook = GpuIdentity::default();
@@ -602,20 +484,15 @@ mod tests {
                 .map(|plan| plan.boundary.version()),
             Some(21)
         );
-        let mut session = editor.session.clone();
-        session.revision += 1;
-        session.workspace.gpu_preview = false;
-        let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
+        editor.renderer.stage = Some(luxforge_ui::photo_surface::GpuStageState::DeviceLost);
+        assert_eq!(editor.gpu_preview_allowed(), Err("device-lost"));
         assert!(editor.gpu_plan(Some(&photo)).is_none());
         assert_eq!(
             editor.gpu_frame_us(),
             None,
             "no GPU frame can be named either"
         );
-        let mut session = editor.session.clone();
-        session.revision += 1;
-        session.workspace.gpu_preview = true;
-        let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
+        editor.renderer.stage = Some(luxforge_ui::photo_surface::GpuStageState::Available);
         assert!(editor.gpu_plan(Some(&photo)).is_some());
         editor.evidence = None;
         finish(editor, catalog);

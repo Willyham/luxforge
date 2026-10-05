@@ -3002,7 +3002,7 @@ mod reduction_tests {
         // directly, so retire that fixture job before exercising the idle reuse path.
         editor.presentation.queue = luxforge_core::PreviewQueue::default();
         // The reference renderer draws the picture at rest, so a resize reduces its exact frame.
-        editor.session.workspace.gpu_preview = false;
+        editor.renderer.stage = Some(luxforge_ui::photo_surface::GpuStageState::DeviceLost);
         let mut original = job(&editor);
         let content = editor.presentation.admit(&mut original);
         editor.presentation.pending_content.insert(8, content);
@@ -3134,7 +3134,7 @@ mod reduction_tests {
         );
 
         editor.presentation.presented_bounds = None;
-        editor.session.workspace.gpu_preview = false;
+        editor.renderer.stage = Some(luxforge_ui::photo_surface::GpuStageState::DeviceLost);
         let _ = editor.refit_proxy();
         assert!(
             !editor.presentation.refit_pending,
@@ -3231,9 +3231,9 @@ mod reduction_tests {
         );
         editor.presentation.queue = luxforge_core::PreviewQueue::default();
         let completed_generation = editor.presentation.queue.cancel();
-        // The reference renderer draws the picture at rest: with the GPU preview off, a resize or
+        // The reference renderer draws the picture at rest: with the GPU stage lost, a resize or
         // a zoom to Fit reduces the retained exact frame rather than planning a GPU picture.
-        editor.session.workspace.gpu_preview = false;
+        editor.renderer.stage = Some(luxforge_ui::photo_surface::GpuStageState::DeviceLost);
         editor.view_state.window = (800.0, 600.0);
         editor.view_state.scale_factor = 1.0;
         editor.session.preview.view.zoom = Zoom::Percent { value: 200.0 };

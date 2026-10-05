@@ -324,7 +324,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: GPU_IDENTITY,
-        about: "One JPEG at Fit drawn by the GPU preview stage's identity program, with its path, budget and label, then the GPU preview turned off and on from the palette",
+        about: "One JPEG at Fit drawn by the GPU preview stage's identity program, with its path, budget and label",
         launches: &[LaunchSpec {
             plan: gpu_identity_plan,
             gpu_identity: true,
@@ -337,8 +337,7 @@ pub static SCENARIOS: &[Scenario] = &[
             "The launch passes `--evidence-gpu-identity`, the evidence run's test hook: the editor \
              holds each Fit frame it presents as an rgba16float boundary and draws the photograph \
              through the photo surface's GPU stage with the identity program, the frame itself \
-             staying the fallback. The palette's GPU preview entry then turns the preference off, \
-             when the desktop hands the stage no plan, and on again.",
+             staying the fallback.",
         ),
         own: None,
     },
@@ -1380,30 +1379,17 @@ fn plain_checks(scenario: &str, launch: &Checked) -> Result {
 
 /// The scenario that draws its photograph through the GPU preview stage.
 const GPU_IDENTITY: &str = "gpu-identity";
-/// Its steps that turn the GPU preview off and on again from the palette.
-const GPU_PREVIEW_OFF: &str = "gpu-preview-off";
-const GPU_PREVIEW_ON: &str = "gpu-preview-on";
 
 /// The GPU-preview budget the editor records, its recorded default.
 const GPU_PREVIEW_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
 
-/// The open's frame, then the palette's GPU preview entry run twice: off, then on again. Each
-/// toggle is captured on the session round trip it sends.
+/// The open's frame of each source.
 fn gpu_identity_plan(sources: &[PathBuf]) -> Plan {
-    let mut steps: Vec<Step> = (1..=sources.len())
-        .map(|number| Step::opened(format!("open-{number}")).label("Original"))
-        .collect();
-    for (name, on) in [(GPU_PREVIEW_OFF, false), (GPU_PREVIEW_ON, true)] {
-        steps.push(
-            Step::new(
-                name,
-                luxforge_evidence::PaletteStep::Run("gpu preview".into()),
-            )
-            .commits(0)
-            .workspace("gpu_preview", json!(on)),
-        );
-    }
-    Plan::new(steps)
+    Plan::new(
+        (1..=sources.len())
+            .map(|number| Step::opened(format!("open-{number}")).label("Original"))
+            .collect(),
+    )
 }
 
 /// `load`'s checks — the fixture at its orientation, size and colours, placed at Fit — over frames
@@ -1411,9 +1397,7 @@ fn gpu_identity_plan(sources: &[PathBuf]) -> Plan {
 /// fixture's own colours are the stage's output. Each such frame's state records the hook, the GPU
 /// drawing path with no fallback, the boundary of the frame on screen with the CPU frame itself not
 /// drawn, at least one encoded pass, GPU-preview figures within the recorded budget, and the status
-/// bar's "GPU preview · N ms" with the frame's own figure. The frame captured with the GPU preview
-/// turned off from the palette is the CPU frame: no plan handed, the preference named as why, the
-/// status bar naming the CPU frame; turned on again, the GPU stage draws it once more.
+/// bar's "GPU preview · N ms" with the frame's own figure.
 fn gpu_identity(run: &mut Run, launches: &[Checked]) -> Result {
     let launch = &launches[0];
     // Every frame is the one fixture, opened once, at its orientation, size and colours at Fit,
@@ -1437,57 +1421,7 @@ fn gpu_identity(run: &mut Run, launches: &[Checked]) -> Result {
         frame.fixture(Fixture::fit(6))?;
     }
     let mut checks = Checks::new();
-    let off = launch.at(GPU_PREVIEW_OFF)?;
-    let state = off.state();
-    let surface = &state["surface"];
-    let gpu = &surface["gpu"];
-    let bar = &state["status_bar"];
-    checks.note(
-        off,
-        "the CPU frame, with the GPU preview turned off",
-        json!({
-            "gpu_preview": state["workspace"]["gpu_preview"],
-            "drawing_path": gpu["drawing_path"],
-            "plan_fallback": gpu["plan_fallback"],
-            "gpu_fallback": gpu["gpu_fallback"],
-            "drawn_gpu_boundary": gpu["drawn_gpu_boundary"],
-            "drawn_full_version": gpu["drawn_full_version"],
-            "surface_version": surface["version"],
-            "render": bar["render"],
-            "gpu_ms": bar["gpu_ms"],
-        }),
-    );
-    ensure(
-        gpu["drawing_path"] == json!("cpu")
-            && gpu["plan_fallback"] == json!({"reason": "preference-off"})
-            && gpu["gpu_fallback"].is_null()
-            && gpu["drawn_gpu_boundary"].is_null()
-            && gpu["drawn_full_version"] == surface["version"],
-        format!(
-            "With the GPU preview off the photograph was not the CPU frame named by the \
-             preference: path {}, plan fallback {}, GPU boundary {}, CPU frame {} of {}",
-            gpu["drawing_path"],
-            gpu["plan_fallback"],
-            gpu["drawn_gpu_boundary"],
-            gpu["drawn_full_version"],
-            surface["version"]
-        ),
-    )?;
-    ensure(
-        bar["gpu_ms"].is_null()
-            && bar["render"]
-                .as_str()
-                .is_some_and(|text| !text.starts_with("GPU preview")),
-        format!(
-            "The status bar names a GPU frame with the GPU preview off: {}",
-            bar["render"]
-        ),
-    )?;
-    for frame in launch
-        .frames
-        .iter()
-        .filter(|frame| frame["file"] != off["file"])
-    {
+    for frame in &launch.frames {
         let surface = &frame.state()["surface"];
         let gpu = &surface["gpu"];
         let bar = &frame.state()["status_bar"];
@@ -1497,7 +1431,6 @@ fn gpu_identity(run: &mut Run, launches: &[Checked]) -> Result {
             "the photograph drawn by the GPU stage",
             json!({
                 "gpu_identity": gpu["gpu_identity"],
-                "gpu_preview": frame.state()["workspace"]["gpu_preview"],
                 "drawing_path": gpu["drawing_path"],
                 "gpu_fallback": gpu["gpu_fallback"],
                 "plan_fallback": gpu["plan_fallback"],

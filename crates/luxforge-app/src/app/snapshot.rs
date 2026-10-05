@@ -335,9 +335,8 @@ impl Editor {
                 // CPU's, and whether the launch refused it (`--no-gpu-render`).
                 "stage":{"state":stage.as_str(),"refused":stage.refused()},
                 // Why the desktop hands the surface no plan, or why the open gesture's newest
-                // tick took the CPU path: this client's `gpu_preview` preference is off, the
-                // plan's own reason, a boundary not held yet, the converter's reason or the
-                // surface's fallback.
+                // tick took the CPU path: the GPU stage refused, the plan's own reason, a boundary
+                // not held yet, the converter's reason or the surface's fallback.
                 "plan_fallback":self.gpu_plan_fallback().map(|reason| json!({"reason":reason})),
                 // What the status bar says of that reason beside its render slot, when it lasts:
                 // the phrase and tooltip of the same frame, `null` when it says nothing.
