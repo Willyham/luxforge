@@ -168,6 +168,9 @@ impl Editor {
                 "reduced": false,
                 "proxy": false,
                 "render_ms": null,
+                // A committed stack's own development: only an open draft's preview approximates
+                // a RAW white balance its planes do not hold, as every presented frame reports.
+                "approximate_white_balance": false,
                 "picture": "gpu",
             })
         });

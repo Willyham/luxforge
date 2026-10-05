@@ -5,7 +5,9 @@
 //!   synchronously on this thread ([`super::tasks::draft_set_now`]), and the catalog owner plans
 //!   the draft's GPU preview with that job (its `gpu` field): the plan in `O(layers)`, or its
 //!   reason, and the boundary it starts from. It is preview state in the desktop's typed owner
-//!   reply, never an API result, and a tick adds no hop for it (performance rule 12).
+//!   reply, never an API result, and a tick adds no hop for it (performance rule 12). A set that
+//!   reads a pixel, a colour-limited stroke's first, answers a hop later instead, with its plan
+//!   ([`super::tasks::draft_set_task`]): this thread never waits on a pixel read.
 //! - **The source and its boundaries.** Every plan starts from the source. The desktop hands the
 //!   photo surface the prepared source of the photograph on screen once ([`GpuSource`]), from the
 //!   pixels the preview jobs already share, and lets its pixels go once the surface holds them; the

@@ -115,7 +115,16 @@ struct OwnerCall {
     client: ClientId,
     request: ApiRequest,
     response: SyncSender<ApiResponse>,
+    /// Whether the call may be parked for a pixel read. A caller that must not wait on one — the
+    /// desktop's synchronous gesture calls ([`OwnerHandle::call_unparked`]) — is answered
+    /// [`PIXEL_READ_REQUIRED`] at once instead, and sends the call again where it may wait.
+    parks: bool,
 }
+
+/// The `not-ready` answer's `data.reason` for a call that reads a pixel, sent where it may not
+/// wait for one ([`OwnerHandle::call_unparked`]): nothing was changed, and the same call, sent
+/// where it may wait, reads the pixel off the owner and is answered.
+pub const PIXEL_READ_REQUIRED: &str = "pixel-read-required";
 
 enum OwnerMessage {
     Call(OwnerCall),
@@ -1145,12 +1154,36 @@ impl OwnerHandle {
     }
 
     pub fn call(&self, client: ClientId, request: ApiRequest) -> Result<ApiResponse, Error> {
+        self.call_parking(client, request, true)
+    }
+
+    /// [`Self::call`] for a caller that must not wait on a pixel read, such as the desktop's
+    /// synchronous gesture calls on its interface thread: a call whose plans read a pixel the
+    /// session's memo does not hold is answered at once with `not-ready` and
+    /// `data.reason` = [`PIXEL_READ_REQUIRED`], having changed nothing, rather than parked until
+    /// the tile service has read it. The caller sends the same call again through [`Self::call`]
+    /// where it may wait. A desktop-internal path, not a JSON method.
+    pub fn call_unparked(
+        &self,
+        client: ClientId,
+        request: ApiRequest,
+    ) -> Result<ApiResponse, Error> {
+        self.call_parking(client, request, false)
+    }
+
+    fn call_parking(
+        &self,
+        client: ClientId,
+        request: ApiRequest,
+        parks: bool,
+    ) -> Result<ApiResponse, Error> {
         let (sender, receiver) = sync_channel(1);
         self.sender
             .send(OwnerMessage::Call(OwnerCall {
                 client,
                 request,
                 response: sender,
+                parks,
             }))
             .map_err(|_| Error::protocol("catalog owner is unavailable"))?;
         receiver
@@ -1655,6 +1688,15 @@ impl Owner {
             *session = before;
             self.announced.clear();
             match replay {
+                // A caller that must not wait is told so at once: nothing changed, and it sends
+                // the call again where it may wait.
+                Replay::First if !call.parks => self.refuse(
+                    call,
+                    Error::not_ready(
+                        "the call reads a pixel off the catalog owner; send it where it may wait",
+                    )
+                    .with_data(json!({ "reason": PIXEL_READ_REQUIRED })),
+                ),
                 Replay::First => self.park(call, read, 1),
                 // The read it parked for is in its memo, so its plans ask for another, such as a
                 // collapse planning against the entry's parent: parked again, a bounded number of
@@ -8530,5 +8572,107 @@ mod tests {
             join.join().unwrap();
             std::fs::remove_file(catalog).unwrap();
         }
+    }
+
+    /// A caller that must not wait on a pixel read is answered at once: a colour-limited stroke's
+    /// first `draft.set`, sent unparked while the tile service is held, answers `not-ready` naming
+    /// the read, reads nothing and leaves the draft as it was; sent again where it may wait, it is
+    /// parked and answered; and the stroke's later ticks, whose seed the session's memo holds, are
+    /// answered unparked with no read.
+    #[test]
+    fn an_unparked_call_that_reads_a_pixel_is_answered_at_once_and_changes_nothing() {
+        let catalog = temp("unparked-read.sqlite");
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        let state = import_asset(&owner, client, &fixture());
+        let asset = state["asset"]["id"].clone();
+        let stroke = json!({"points":[[0.5,0.5]],"size":0.1,"feather":40.0,"flow":80.0,
+            "erase":false,"limit_to_colour":false,"colour_refine":50.0});
+        let mut request = stroke.clone();
+        request["asset_id"] = asset.clone();
+        request["mutation"] = crate::editor::mutation_json(0, "brush");
+        let created = ok(&owner, client, "brush", "mask.add-stroke", request);
+        ok(
+            &owner,
+            client,
+            "bind",
+            "edit.set-basic",
+            json!({"asset_id":asset,"mask":created["mask"],"exposure":0.5,
+            "mutation":crate::editor::mutation_json(1,"bind")}),
+        );
+        let draft = ok(
+            &owner,
+            client,
+            "begin",
+            "draft.begin",
+            json!({"asset_id":asset,"action":"mask.add-stroke",
+            "mask":created["mask"],"component":created["component"]}),
+        );
+        let mut limited = stroke;
+        limited["limit_to_colour"] = json!(true);
+        let set = |id: &str, fields: &Value| ApiRequest {
+            id: id.into(),
+            method: "draft.set".into(),
+            params: json!({"draft_id":draft["draft_id"],"fields":fields}),
+            token: None,
+        };
+        let calls = Arc::new(AtomicU64::new(0));
+        let counted = calls.clone();
+        let (reached, release) = hold_tiles(&owner);
+        let gate: crate::tiles::Hold = Arc::new(move || {
+            counted.fetch_add(1, Ordering::Relaxed);
+        });
+        // The service is held: an unparked call that waited on it would never return.
+        let refused = owner
+            .call_unparked(client, set("unparked", &limited))
+            .unwrap()
+            .error
+            .expect("the read is refused at once");
+        assert_eq!(refused.code, "not-ready", "{refused:?}");
+        assert_eq!(
+            refused.data,
+            Some(json!({"reason": crate::api::PIXEL_READ_REQUIRED}))
+        );
+        assert!(
+            reached.try_recv().is_err(),
+            "nothing was handed to the tile service"
+        );
+        let read = ok(
+            &owner,
+            client,
+            "read",
+            "draft.read",
+            json!({"draft_id":draft["draft_id"]}),
+        );
+        assert_eq!(read["draft_revision"], json!(0), "the draft is as it was");
+        // Sent where it may wait, the same call is parked and answered once the read is.
+        owner.hold_tiles(Some(gate));
+        drop((reached, release));
+        let answered = send(
+            &owner,
+            client,
+            "parked",
+            "draft.set",
+            set("parked", &limited).params,
+        );
+        assert!(answered.error.is_none(), "{:?}", answered.error);
+        assert_eq!(calls.load(Ordering::Relaxed), 1, "one read");
+        // A later tick finds the seed in the memo and is answered unparked, reading nothing.
+        let tick = owner
+            .call_unparked(
+                client,
+                set("tick", &json!({"points":[[0.5,0.5],[0.52,0.5]]})),
+            )
+            .unwrap();
+        assert!(tick.error.is_none(), "{:?}", tick.error);
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            1,
+            "the memo answers the tick"
+        );
+        owner.hold_tiles(None);
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
     }
 }
