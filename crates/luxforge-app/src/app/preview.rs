@@ -2194,7 +2194,7 @@ impl Editor {
         };
         let content = self.presentation.admit(&mut job);
         self.request_mask_coverage(&job, content);
-        self.gpu_warm_from(job.gpu_warm.as_deref());
+        self.gpu_warm_from(job.gpu_warm.as_deref(), job.gpu_warm_open);
         // Every boundary is derived from the job's own source on the GPU: the surface is handed it
         // before any plan over it.
         self.gpu_hold_source(job.evaluation.source());

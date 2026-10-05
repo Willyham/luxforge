@@ -380,6 +380,9 @@ pub(crate) struct Inputs<'a> {
     /// While the GPU preview is on and the open gesture's latest tick took the CPU path, why: what
     /// the status bar's notice is derived from ([`status::CpuReason::notice`]).
     pub(crate) cpu_reason: Option<status::CpuReason<'a>>,
+    /// The photograph at rest is the reference renderer's frame because the GPU's picture at rest
+    /// is compiling its programs ([`status::rest_compiling_notice`]).
+    pub(crate) rest_compiling: bool,
     /// A long render's progress, while it earns the bar over the photograph
     /// ([`canvas::render_bar`]).
     pub(crate) render_bar: Option<canvas::RenderBar>,
@@ -786,6 +789,7 @@ mod tests {
                 gpu_frame_us: None,
                 gpu_at_rest: false,
                 cpu_reason: None,
+                rest_compiling: false,
                 render_error: self.render_error.as_ref(),
                 analysis: self.analysis.as_ref(),
                 analysis_updating: self.analysis_updating,
