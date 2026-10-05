@@ -600,10 +600,9 @@ struct CountsWorst {
     bins: Option<(f64, String)>,
     clipping: Option<(f64, String, String)>,
     exact: usize,
-    /// Diagnostics, never gated: the largest earth mover's distance in codes over the channels
-    /// and luminance, with its cell, and how many stacks pass half a code by it.
-    emd: Option<(f64, String)>,
-    emd_past_half: usize,
+    /// The largest earth mover's distance in codes over R, G, B and luminance, the judged figure,
+    /// with its histogram and its cell.
+    emd: Option<(f64, String, String)>,
 }
 
 impl CountsWorst {
@@ -630,20 +629,13 @@ impl CountsWorst {
         if bins == 0.0 && clipping == 0.0 {
             self.exact += 1;
         }
-        let diagnostics = &measured["diagnostics"];
-        let emd = ["r", "g", "b", "luminance"]
-            .iter()
-            .filter_map(|side| diagnostics[side]["emd_codes"].as_f64())
-            .fold(None, |worst: Option<f64>, emd| {
-                Some(worst.map_or(emd, |worst| worst.max(emd)))
-            });
-        if let Some(emd) = emd {
-            if emd > 0.5 {
-                self.emd_past_half += 1;
-            }
-            if self.emd.as_ref().is_none_or(|(worst, _)| emd > *worst) {
-                self.emd = Some((emd, cell.to_owned()));
-            }
+        let emd = measured["worst_emd"]["codes"].as_f64().unwrap_or(f64::NAN);
+        if self.emd.as_ref().is_none_or(|(worst, _, _)| emd > *worst) {
+            let side = measured["worst_emd"]["side"]
+                .as_str()
+                .unwrap_or("?")
+                .to_owned();
+            self.emd = Some((emd, side, cell.to_owned()));
         }
     }
 
@@ -654,8 +646,9 @@ impl CountsWorst {
                 json!({"share": share, "counter": counter, "cell": cell})
             }),
             "exact": self.exact,
-            "worst_emd": self.emd.as_ref().map(|(codes, cell)| json!({"codes": codes, "cell": cell})),
-            "emd_past_half_a_code": self.emd_past_half,
+            "worst_emd": self.emd.as_ref().map(|(codes, side, cell)| {
+                json!({"codes": codes, "side": side, "cell": cell})
+            }),
         })
     }
 }
@@ -715,7 +708,10 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
             "reference": kind.reference(),
             "limit": kind.limit(),
             "limits": match kind {
-                Kind::Histogram => json!({"share_of_output_pixels": tolerance::HISTOGRAM_FRACTION}),
+                Kind::Histogram => json!({
+                    "emd_codes": tolerance::HISTOGRAM_EMD_CODES,
+                    "clipping_share_of_output_pixels": tolerance::HISTOGRAM_FRACTION,
+                }),
                 _ => json!({
                     "pointwise": limits_value(Class::Pointwise),
                     "spatial": limits_value(Class::Spatial),
@@ -1383,24 +1379,21 @@ pub fn markdown(report: &Value) -> String {
                     .as_f64()
                     .map_or_else(|| "—".to_owned(), |share| format!("{:.4}%", share * 100.0))
             };
-            if counts["worst_bins"].is_object() {
+            if counts["worst_emd"].is_object() {
                 text.push_str(&format!(
-                    "\nHistogram: the GPU's counts over each stack's tiles at full resolution against the reference frame's, by the core's reducer. Largest summed bin difference {} of the output pixels ({}); largest clipping difference {} (`{}`, {}); the reference's counts exactly on {} of {} stacks.\n",
-                    share(&counts["worst_bins"]["share"]),
-                    counts["worst_bins"]["cell"].as_str().unwrap_or("?"),
+                    "\nHistogram: the GPU's counts over each stack's tiles at full resolution against the reference frame's, by the core's reducer, held to an earth mover's distance of {} code on each of R, G, B and luminance and each clipping count within {}% of the output pixels. Largest earth mover's distance {:.4} codes (`{}`, {}); largest clipping difference {} (`{}`, {}); the reference's counts exactly on {} of {} stacks. Reported and not gated: the largest summed bin difference {} of the output pixels ({}); each stack's diagnostics, and the bins of those past a limit, are in the run's cells.\n",
+                    tolerance::HISTOGRAM_EMD_CODES,
+                    tolerance::HISTOGRAM_FRACTION * 100.0,
+                    counts["worst_emd"]["codes"].as_f64().unwrap_or(f64::NAN),
+                    counts["worst_emd"]["side"].as_str().unwrap_or("?"),
+                    counts["worst_emd"]["cell"].as_str().unwrap_or("?"),
                     share(&counts["worst_clipping"]["share"]),
                     counts["worst_clipping"]["counter"].as_str().unwrap_or("?"),
                     counts["worst_clipping"]["cell"].as_str().unwrap_or("?"),
                     counts["exact"],
                     histogram["measured"],
-                ));
-            }
-            if counts["worst_emd"].is_object() {
-                text.push_str(&format!(
-                    "\nHistogram diagnostics, not gated: largest earth mover's distance {:.4} codes ({}); {} stack(s) past half a code. Each stack's figures, and the bins of those past the limit, are in the run's cells.\n",
-                    counts["worst_emd"]["codes"].as_f64().unwrap_or(f64::NAN),
-                    counts["worst_emd"]["cell"].as_str().unwrap_or("?"),
-                    counts["emd_past_half_a_code"],
+                    share(&counts["worst_bins"]["share"]),
+                    counts["worst_bins"]["cell"].as_str().unwrap_or("?"),
                 ));
             }
         }
@@ -1739,24 +1732,32 @@ mod tests {
         assert_eq!(report["missed"][0]["kind"], "histogram");
     }
 
-    /// The histogram's results carry its largest differences over the corpus, each with its cell,
-    /// and how many stacks were counted exactly; a stack the GPU could not count is a gap, never a
-    /// pass.
+    /// The histogram's results carry its largest differences over the corpus, the judged earth
+    /// mover's distance with its histogram, each with its cell, and how many stacks were counted
+    /// exactly; a stack the GPU could not count is a gap, never a pass.
     #[test]
     fn the_histograms_largest_differences_are_reported_with_their_cells() {
-        let counted = |bins: f64, clipping: f64, counter: &str| {
+        let counted = |bins: f64, clipping: f64, counter: &str, emd: f64| {
             json!({"status": "measured", "passed": true, "worst_bins": bins,
-                "worst_clipping": {"counter": counter, "share": clipping}})
+                "worst_clipping": {"counter": counter, "share": clipping},
+                "worst_emd": {"side": "luminance", "codes": emd}})
         };
         let mut exact = pair("a--b", "pointwise", within(), within());
-        exact["kinds"]["histogram"] = counted(0.0, 0.0, "r0");
+        exact["kinds"]["histogram"] = counted(0.0, 0.0, "r0", 0.0);
         let mut off = pair("a--c", "pointwise", within(), within());
-        off["kinds"]["histogram"] = counted(0.0002, 0.0001, "any_highlight");
+        off["kinds"]["histogram"] = counted(0.0002, 0.0001, "any_highlight", 0.01);
         let report = judge(Some(&cells(vec![exact, off])), 2, &options());
         let histogram = rows(&report, Kind::Histogram)[0].clone();
         assert_eq!(histogram["verdict"], "passed", "{histogram:#}");
         assert_eq!(histogram["counts"]["exact"], 1);
         assert_eq!(histogram["counts"]["worst_bins"]["cell"], "a--c");
+        assert_eq!(
+            (
+                histogram["counts"]["worst_emd"]["side"].clone(),
+                histogram["counts"]["worst_emd"]["cell"].clone()
+            ),
+            (json!("luminance"), json!("a--c"))
+        );
         assert_eq!(
             histogram["counts"]["worst_clipping"]["counter"],
             "any_highlight"

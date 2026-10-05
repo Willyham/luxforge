@@ -325,7 +325,8 @@ fn gpu_counted(frame: &Value) -> bool {
     frame["state"]["histogram"]["source"] == json!("gpu")
 }
 
-/// The most a GPU count may differ from the independent reduction's: 0.1% of the output pixels.
+/// The most a GPU clipping count may differ from the independent reduction's: 0.1% of the output
+/// pixels.
 fn tolerated(report: &analysis::Report) -> u64 {
     (luxforge_reference::tolerance::HISTOGRAM_FRACTION * report.pixel_count() as f64).floor() as u64
 }
@@ -470,7 +471,8 @@ fn expect_counts(frame: &Value, report: &analysis::Report, what: &str) -> Result
         .copied()
         .max()
         .unwrap_or(0);
-    // A bin the GPU counts differently moves the tallest by no more than the bins' tolerance.
+    // A bin the GPU counts differently moves the tallest: held here to the clipping counts'
+    // tolerance, which this fixture's tallest bin meets.
     ensure(
         state["plotted_max"] == json!(max) || (gpu && within(&state["plotted_max"], &json!(max))),
         format!(
@@ -1062,21 +1064,27 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let gpu_release = launch.at("gpu-release")?;
     let gpu_released = reduction(root, &displayed_recipe(gpu_release)?)?;
     let gpu_released_detail = expect_counts(gpu_release, &gpu_released, "the release on the GPU")?;
+    // A release whose committed stack adds a layer's units compiles its picture at rest first
+    // ([GPU-first](docs/design/gpu-first.md), proposals): while it does, the stack the GPU
+    // presented is refused, named `compiling`, and the reference counts it.
+    let refused_compiling = launch.events.iter().any(|event| {
+        event["event"] == "gpu_presented_refused" && event["detail"]["why"] == "compiling"
+    });
     ensure(
-        gpu_counted(gpu_release),
+        gpu_counted(gpu_release) || refused_compiling,
         format!(
-            "The release's counts are the {}'s, not the GPU's",
+            "The release's counts are the {}'s, not the GPU's, and nothing was refused while compiling",
             gpu_release["state"]["histogram"]["source"]
         ),
     )?;
     checks.note(
         gpu_release,
-        "the release on the GPU: the stack presented with no CPU render, its tiles' counts within the tolerance of an independent reduction of the composed stack",
-        gpu_released_detail,
+        "the release on the GPU: the stack presented with no CPU render, its tiles' counts within the tolerance of an independent reduction of the composed stack, or, refused while its picture at rest compiled, the reference's exactly",
+        json!({"counts": gpu_released_detail, "refused_compiling": refused_compiling}),
     );
     // The owner's store holds that report under the released stack's identity: an agent's
     // request is answered at once, its bins within the recorded tolerance of the independent
-    // reduction's, channel by channel.
+    // reduction's, channel by channel: the earth mover's distance within a quarter of a code.
     let asked = launch.at("analysis")?;
     let answer = &asked["step"]["result"];
     ensure(
@@ -1099,35 +1107,30 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             .map(|bins| bins.iter().filter_map(Value::as_u64).collect())
             .unwrap_or_default()
     };
-    let summed: Vec<u64> = [
+    let moved: Vec<f64> = [
         (bins("r"), &gpu_released.r),
         (bins("g"), &gpu_released.g),
         (bins("b"), &gpu_released.b),
     ]
     .iter()
-    .map(|(answered, reduced)| {
-        if answered.len() == 256 {
-            answered
-                .iter()
-                .zip(reduced.iter())
-                .map(|(a, b)| a.abs_diff(*b))
-                .sum()
-        } else {
-            u64::MAX
-        }
-    })
+    .map(
+        |(answered, reduced)| match <[u64; 256]>::try_from(answered.as_slice()) {
+            Ok(answered) => luxforge_reference::tolerance::histogram_emd(&answered, reduced),
+            Err(_) => f64::INFINITY,
+        },
+    )
     .collect();
-    let limit = tolerated(&gpu_released);
+    let limit = luxforge_reference::tolerance::HISTOGRAM_EMD_CODES;
     ensure(
-        summed.iter().all(|difference| *difference <= limit),
+        moved.iter().all(|codes| *codes <= limit),
         format!(
-            "analysis.request's bins differ from the independent reduction's by {summed:?} pixels, past {limit}"
+            "analysis.request's bins are {moved:?} codes from the independent reduction's by the earth mover's distance, past {limit}"
         ),
     )?;
     checks.note(
         asked,
-        "analysis.request for the current stack is a ready hit on the GPU's report, each channel's summed bin difference within the tolerance",
-        json!({"status": answer["status"], "summed_bin_differences": summed, "tolerance_pixels": limit}),
+        "analysis.request for the current stack is a ready hit on the GPU's report, each channel within the earth mover's distance tolerance",
+        json!({"status": answer["status"], "emd_codes": moved, "tolerance_codes": limit}),
     );
 
     // Every frame the run presented reports its own render time, and each captured status bar

@@ -35,10 +35,11 @@
 //! **The histogram and clipping counts** are the GPU's ([`histogram_kind`]): the stack at full
 //! resolution in the tiles a committed job plans, drawn by the photo surface's own drawing for
 //! their counts alone, as the editor draws them wherever it does not draw the picture from them,
-//! after the reference frame's render has stored the stack's global estimates, as the picture at
-//! rest's tiles read them; their counts against the reference frame's, from the core's own
-//! reducer, each channel's summed bin difference and each clipping counter within 0.1% of the
-//! output pixel count. A stack whose tiles the GPU cannot draw is a gap naming why. Samples are
+//! and read back whole for the luminance histogram and the diagnostics; their counts against the
+//! reference frame's, from the core's own reducer, by the earth mover's distance within a quarter
+//! of a code on each of R, G, B and luminance and each clipping counter within 0.1% of the output
+//! pixel count (owner, 2026-10-05), the summed bin difference reported beside them. A stack whose
+//! tiles the GPU cannot draw is a gap naming why. Samples are
 //! computed on the reference and recorded as not rendered by the GPU: their comparison
 //! ([`sample_kind`]) takes the GPU's answers once stage 4 supplies them.
 //!
@@ -612,17 +613,16 @@ fn measure(
                 let counted = gpu
                     .as_ref()
                     .ok_or_else(|| "no source held on the GPU".to_owned())
-                    .and_then(|gpu| gpu_counts(surface, &evaluation, gpu));
-                let gpu_report = counted.as_ref().ok().map(|(report, _)| report.clone());
-                let mut measured = histogram_kind(&reference, Some(counted))?;
-                // Beside the gated figure, never gated: how far the counts moved, and the codes
-                // of the frame they came from against the reference frame's.
-                if let (Some(gpu_report), Some(gpu)) = (gpu_report, gpu.as_ref()) {
-                    let frame = gpu_frame(surface, &evaluation, gpu);
-                    let failing = measured["passed"] == false;
-                    measured["diagnostics"] =
-                        histogram_diagnostics(&reference, &gpu_report, frame, failing)?;
-                }
+                    .and_then(|gpu| {
+                        let (report, tiles) = gpu_counts(surface, &evaluation, gpu)?;
+                        let frame = gpu_frame(surface, &evaluation, gpu)?;
+                        Ok(Counted {
+                            report,
+                            tiles,
+                            frame,
+                        })
+                    });
+                let measured = histogram_kind(&reference, Some(counted))?;
                 eprintln!("{cell}: histogram: {measured}");
                 measured
             }
@@ -1005,8 +1005,9 @@ fn rgb(raster: &Raster) -> Vec<u8> {
 }
 
 /// A report's counts, as the independent comparison holds them.
-fn counts(report: &Report) -> tolerance::Counts {
+fn counts(report: &Report, luma: [u64; 256]) -> tolerance::Counts {
     tolerance::Counts {
+        luma,
         bins: [report.r, report.g, report.b],
         clipping: [
             report.r0,
@@ -1127,69 +1128,53 @@ fn gpu_frame(
     Ok(frame)
 }
 
-/// The histogram's diagnostics, reported beside the gated summed bin difference and never gated:
-/// per channel, and for luminance from the two frames, the earth mover's distance in codes, the
-/// signed mean shift and the summed bin difference at bins of 2 and 4 codes, each a share of the
-/// pixel count as the gated figure is; the shares of pixels of the GPU's frame, `frame`, whose
-/// code differs from the reference frame's by exactly one, by two and by more, in any channel, and
-/// whether that frame's own counts are the GPU's counts, `gpu`; and, for a stack past its limit
-/// (`failing`), both sides' 256 bins.
+/// The GPU's counts of a stack, the tiles they were taken over and the frame they came from: the
+/// tiles read back at full resolution ([`gpu_frame`]), whose luminance histogram is judged beside
+/// the counts' channels.
+struct Counted {
+    report: Report,
+    tiles: usize,
+    frame: Vec<u8>,
+}
+
+/// The histogram's diagnostics, reported beside the judged figures and never gated: per channel,
+/// and for luminance, the signed mean shift in codes and the summed bin difference at bins of 2 and
+/// 4 codes, each a share of the pixel count; the shares of pixels of the GPU's frame, `frame`,
+/// whose code differs from the reference frame's by exactly one, by two and by more, in any
+/// channel; and, for a stack past its limit (`failing`), both sides' 256 bins.
 fn histogram_diagnostics(
     reference: &Raster,
-    gpu: &Report,
-    frame: Result<Vec<u8>, String>,
+    expected: &tolerance::Counts,
+    gpu: &tolerance::Counts,
+    frame: &[u8],
     failing: bool,
 ) -> Result<Value, String> {
-    let expected = luxforge_core::analysis::reduce(
-        &reference.rgba,
-        reference.width,
-        reference.height,
-        &Cancel::never(),
-    )
-    .map_err(|error| error.to_string())?;
     let pixels = (u64::from(reference.width) * u64::from(reference.height)) as f64;
     let figures = |candidate: &[u64; 256], against: &[u64; 256]| {
         json!({
-            "emd_codes": tolerance::histogram_emd(candidate, against),
             "mean_shift_codes": tolerance::histogram_mean_shift(candidate, against),
             "bins_at_2": tolerance::histogram_binned(candidate, against, 2) as f64 / pixels,
             "bins_at_4": tolerance::histogram_binned(candidate, against, 4) as f64 / pixels,
         })
     };
-    let sides = [
-        (gpu.r, expected.r),
-        (gpu.g, expected.g),
-        (gpu.b, expected.b),
-    ];
     let mut value = json!({
-        "r": figures(&sides[0].0, &sides[0].1),
-        "g": figures(&sides[1].0, &sides[1].1),
-        "b": figures(&sides[2].0, &sides[2].1),
+        "r": figures(&gpu.bins[0], &expected.bins[0]),
+        "g": figures(&gpu.bins[1], &expected.bins[1]),
+        "b": figures(&gpu.bins[2], &expected.bins[2]),
+        "luminance": figures(&gpu.luma, &expected.luma),
     });
-    match frame {
-        Ok(frame) => {
-            let drawn = tolerance::Counts::of(&frame, 4);
-            value["frame_is_the_counts"] = json!(drawn.bins == [gpu.r, gpu.g, gpu.b]);
-            let luma = tolerance::luma_bins(&frame, 4);
-            let luma_reference = tolerance::luma_bins(&reference.rgba, 4);
-            value["luminance"] = figures(&luma, &luma_reference);
-            let shifts = tolerance::code_shifts(&frame, &reference.rgba, 4)?;
-            value["pixels_differing"] = json!({
-                "by_1": shifts[1] as f64 / pixels,
-                "by_2": shifts[2] as f64 / pixels,
-                "by_more": shifts[3] as f64 / pixels,
-            });
-            if failing {
-                value["luminance_bins"] =
-                    json!({"gpu": luma.to_vec(), "reference": luma_reference.to_vec()});
-            }
-        }
-        Err(reason) => value["frame_gap"] = json!(reason),
-    }
+    let shifts = tolerance::code_shifts(frame, &reference.rgba, 4)?;
+    value["pixels_differing"] = json!({
+        "by_1": shifts[1] as f64 / pixels,
+        "by_2": shifts[2] as f64 / pixels,
+        "by_more": shifts[3] as f64 / pixels,
+    });
     if failing {
         value["bins"] = json!({
-            "gpu": {"r": gpu.r.to_vec(), "g": gpu.g.to_vec(), "b": gpu.b.to_vec()},
-            "reference": {"r": expected.r.to_vec(), "g": expected.g.to_vec(), "b": expected.b.to_vec()},
+            "gpu": {"r": gpu.bins[0].to_vec(), "g": gpu.bins[1].to_vec(),
+                "b": gpu.bins[2].to_vec(), "luminance": gpu.luma.to_vec()},
+            "reference": {"r": expected.bins[0].to_vec(), "g": expected.bins[1].to_vec(),
+                "b": expected.bins[2].to_vec(), "luminance": expected.luma.to_vec()},
         });
     }
     Ok(value)
@@ -1200,13 +1185,16 @@ const HISTOGRAM_NOT_RENDERED: &str = "no GPU counts were taken of this stack";
 
 /// The histogram and clipping counts: the reference frame's, from the core's own reducer
 /// (`luxforge_core::analysis`) over the exact whole frame, and the GPU's counts, `gpu`, against
-/// them with the tiles they were taken over, by each channel's summed bin difference and each
-/// clipping counter within 0.1% of the output pixel count; a gap naming why the GPU took none
-/// where it could not, never a pass. With no counts asked for at all, the kind is not rendered by
-/// the GPU, neither a pass nor a failure.
+/// them with the tiles they were taken over, by the earth mover's distance within
+/// [`tolerance::HISTOGRAM_EMD_CODES`] on each of R, G, B and luminance, the luminance histograms
+/// the two frames', and each clipping counter within 0.1% of the output pixel count (owner,
+/// 2026-10-05). The summed bin difference and the [diagnostics](histogram_diagnostics) are
+/// reported beside them and not judged. A gap naming why the GPU took no counts where it could
+/// not, or why its frame is not the one it counted, never a pass. With no counts asked for at all,
+/// the kind is not rendered by the GPU, neither a pass nor a failure.
 fn histogram_kind(
     reference: &Raster,
-    gpu: Option<Result<(Report, usize), String>>,
+    gpu: Option<Result<Counted, String>>,
 ) -> Result<Value, String> {
     let report = luxforge_core::analysis::reduce(
         &reference.rgba,
@@ -1215,10 +1203,10 @@ fn histogram_kind(
         &Cancel::never(),
     )
     .map_err(|error| error.to_string())?;
-    let expected = counts(&report);
+    let expected = counts(&report, tolerance::luma_bins(&reference.rgba, 4));
     let reference_value =
         json!({"pixels": expected.pixels(), "clipping": clipping(&expected.clipping)});
-    let (gpu, tiles) = match gpu {
+    let counted = match gpu {
         None => {
             return Ok(json!({
                 "status": "not-rendered",
@@ -1231,19 +1219,40 @@ fn histogram_kind(
         }
         Some(Ok(counted)) => counted,
     };
-    let error = tolerance::histogram(&counts(&gpu), &expected)?;
+    // The frame's own counts are the GPU's, or its luminance is not the counted frame's.
+    let drawn = tolerance::Counts::of(&counted.frame, 4);
+    let gpu = counts(&counted.report, drawn.luma);
+    if drawn.bins != gpu.bins {
+        return Ok(json!({
+            "status": "gap",
+            "reason": "the tiles read back are not the frame the GPU counted",
+            "reference": reference_value,
+        }));
+    }
+    let error = tolerance::histogram(&gpu, &expected)?;
     let (counter, share) = error.worst_clipping();
+    let (side, codes) = error.worst_emd();
+    let emd: serde_json::Map<String, Value> = tolerance::HISTOGRAM_SIDES
+        .iter()
+        .zip(error.emd)
+        .map(|(side, emd)| ((*side).to_owned(), json!(emd)))
+        .collect();
+    let passed = error.passed();
     Ok(json!({
         "status": "measured",
         "against": "the reference frame's counts, by the core's reducer",
-        "tiles": tiles,
+        "tiles": counted.tiles,
         "pixels": error.pixels,
+        "limit_emd_codes": tolerance::HISTOGRAM_EMD_CODES,
+        "emd": emd,
+        "worst_emd": {"side": side, "codes": codes},
         "limit_pixels": error.limit(),
-        "bins": error.bins,
-        "worst_bins": error.worst_bins(),
         "clipping": clipping(&error.clipping),
         "worst_clipping": {"counter": counter, "share": share},
-        "passed": error.passed(),
+        "bins": error.bins,
+        "worst_bins": error.worst_bins(),
+        "diagnostics": histogram_diagnostics(reference, &expected, &gpu, &counted.frame, !passed)?,
+        "passed": passed,
     }))
 }
 
@@ -1440,23 +1449,41 @@ fn the_histogram_comparison_takes_the_reference_frames_counts_and_judges_a_gpus(
     assert_eq!(unrendered["status"], "not-rendered");
     assert_eq!(unrendered["reference"]["pixels"], 5000);
     assert_eq!(unrendered["reference"]["clipping"]["b0"], 5000);
-    // Counts equal to the reference's pass; counts four pixels off do not, at 0.1% of 5000.
-    let same = luxforge_core::analysis::reduce(&reference.rgba, 100, 50, &Cancel::never()).unwrap();
-    let judged = histogram_kind(&reference, Some(Ok((same, 1)))).unwrap();
+    // Counts equal to the reference's pass.
+    let counted = |frame: &Raster| Counted {
+        report: luxforge_core::analysis::reduce(&frame.rgba, 100, 50, &Cancel::never()).unwrap(),
+        tiles: 1,
+        frame: frame.rgba.to_vec(),
+    };
+    let judged = histogram_kind(&reference, Some(Ok(counted(&reference)))).unwrap();
     assert_eq!(
         (judged["status"].clone(), judged["passed"].clone()),
         (json!("measured"), json!(true))
     );
+    assert_eq!(judged["worst_emd"]["codes"], 0.0);
+    // Four pixels one code up: far past the summed bin difference's 0.1%, reported and not
+    // judged, and a thousandth of a code by the earth mover's distance, which passes.
     let shifted = raster(100, 50, |x, y| {
         [(x * 2) as u8 + u8::from(x < 2 && y < 2), (y * 5) as u8, 0]
     });
-    let moved = luxforge_core::analysis::reduce(&shifted.rgba, 100, 50, &Cancel::never()).unwrap();
-    let judged = histogram_kind(&reference, Some(Ok((moved, 1)))).unwrap();
+    let judged = histogram_kind(&reference, Some(Ok(counted(&shifted)))).unwrap();
     assert_eq!(
         judged["bins"][0], 8,
         "four pixels moved, counted where they left and arrived"
     );
+    assert_eq!(judged["passed"], true, "{judged:#}");
+    assert!((judged["emd"]["r"].as_f64().unwrap() - 4.0 / 5000.0).abs() < 1e-12);
+    // Every red code three up is past a quarter of a code.
+    let lifted = raster(100, 50, |x, y| [(x * 2) as u8 + 3, (y * 5) as u8, 0]);
+    let judged = histogram_kind(&reference, Some(Ok(counted(&lifted)))).unwrap();
+    assert_eq!(judged["worst_emd"]["side"], "r");
     assert_eq!(judged["passed"], false);
+    assert!(judged["diagnostics"]["bins"]["gpu"]["r"].is_array());
+    // A frame read back that is not the counted one is a gap, never a pass.
+    let mut other = counted(&reference);
+    other.frame = lifted.rgba.to_vec();
+    let gap = histogram_kind(&reference, Some(Ok(other))).unwrap();
+    assert_eq!(gap["status"], "gap");
 }
 
 #[test]
