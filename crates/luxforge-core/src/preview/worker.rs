@@ -364,9 +364,11 @@ pub(super) fn run(
 }
 
 /// A percentage view uses its visible rectangle as the first unit of work. Moving inputs stop
-/// after that frame; a quiet or committed settlement produces exact visible pixels first and
-/// then the whole frame needed by the histogram and future settled pans. The two evaluations are
-/// separate so a newer input supersedes only settlement, never the interactive frame.
+/// after that frame, and so does a paused draft's refined view ([`PreviewIntent::Refine`]), its
+/// exact visible region: no pause in a gesture renders a whole frame. A committed settlement the reference renders produces exact
+/// visible pixels first and then the whole frame its histogram and settled pans need. The two
+/// evaluations are separate so a newer input supersedes only settlement, never the interactive
+/// frame.
 fn run_viewport(
     cache: &mut ProxyCache,
     progress: &ExactProgress,
@@ -381,6 +383,12 @@ fn run_viewport(
     let requested = job.viewport.expect("viewport branch has a region");
     let generation = running.generation();
     let queue_wait_ms = requested_at.map(|at| at.elapsed().as_secs_f64() * 1000.0);
+    // A moving view, or a paused draft's refined one, renders its visible region alone: no pause
+    // in a gesture renders a whole frame (`docs/design/gpu-first.md`, stage 2).
+    let region_only = matches!(
+        job.intent,
+        PreviewIntent::Interactive | PreviewIntent::Refine
+    );
     let cancel = if job.intent == PreviewIntent::Interactive {
         running.abandoned()
     } else {
@@ -475,7 +483,7 @@ fn run_viewport(
             if !running.send(result) {
                 return None;
             }
-            if job.intent == PreviewIntent::Interactive {
+            if region_only {
                 if let Some(activity) = activity {
                     activity.finish(Outcome::Completed);
                 }
@@ -485,7 +493,8 @@ fn run_viewport(
         Ok(RegionRenderOutcome::Declined(reason)) => {
             job.viewport_declined = Some(reason.reason().into());
             job.viewport = None;
-            if job.intent == PreviewIntent::Interactive {
+            if region_only {
+                job.intent = PreviewIntent::Interactive;
                 job.proxy = Some(crate::ProxyBounds {
                     width: requested.width,
                     height: requested.height,
@@ -533,7 +542,8 @@ fn run_viewport(
             // path reports its own error or presents a valid fallback frame.
             job.viewport_declined = Some(error.detail);
             job.viewport = None;
-            if job.intent == PreviewIntent::Interactive {
+            if region_only {
+                job.intent = PreviewIntent::Interactive;
                 job.proxy = Some(crate::ProxyBounds {
                     width: requested.width,
                     height: requested.height,

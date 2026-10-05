@@ -47,6 +47,7 @@ pub(crate) mod gesture;
 mod gesture_tests;
 #[cfg(test)]
 mod gpu_colour_tests;
+pub(crate) mod gpu_counts;
 #[cfg(test)]
 mod gpu_dehaze_tests;
 #[cfg(test)]
@@ -465,7 +466,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 17] = [
+const AFTER_MESSAGE: [AfterMessage; 18] = [
     view_state::after_message,
     performance::after_message,
     slider::after_message,
@@ -474,6 +475,7 @@ const AFTER_MESSAGE: [AfterMessage; 17] = [
     preview::after_message,
     gpu_preview::after_message,
     gpu_settle::after_message,
+    gpu_counts::after_message,
     renderer::after_message,
     mask_panel::after_message,
     crop::after_message,
@@ -918,8 +920,10 @@ impl Editor {
             rest_compiling: self.gpu_rest_compiling(),
             render_bar: self.activity.render_bar,
             render_error: self.presentation.render_error.as_ref(),
-            analysis: self.presentation.analysis.as_ref(),
-            analysis_updating: self.presentation.analysis_updating(),
+            analysis: self.presentation.shown_analysis(),
+            // While a draft is open the counts plotted are updating unless they are an exact
+            // report of its newest revision: the frame in motion's, or the last report, are not.
+            analysis_updating: self.presentation.analysis_updating() || self.draft_counts_behind(),
             capabilities: &self.capabilities,
             presets: &self.presets.library,
             preset_form: &self.presets.form,
@@ -1049,6 +1053,7 @@ impl Editor {
         surfaces.gpu_warm = self.gpu.warm();
         surfaces.gpu_source = self.gpu_source_handed();
         surfaces.gpu_rest = self.gpu_rest_handed();
+        surfaces.gpu_counts = self.gpu_counts_handed();
         let (after, after_rest) = self.gpu_compare_after();
         surfaces.compare_gpu = after.map(|(plan, _)| plan);
         surfaces.compare_change = after.map(|(_, change)| change);
