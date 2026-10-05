@@ -99,6 +99,10 @@ struct DoubleClick {
     /// whose entry is labelled [`AS_SHOT_LABEL`] and whose temperature and tint are the camera's
     /// as-shot equivalent, computed from the frame's own RAW layer by the check.
     shows: Option<&'static str>,
+    /// The reset returns the field to where the double-click found it, so auto-collapse history,
+    /// on by default, keeps no entry for the two commits and moves the current entry back to the
+    /// one before them.
+    collapses_back: bool,
 }
 
 /// As shot: the reset the RAW variants of Temperature and Tint declare, and its history label.
@@ -115,6 +119,7 @@ const DOUBLE_CLICKS: [DoubleClick; 3] = [
         value: 5000.0,
         reset: AS_SHOT,
         shows: None,
+        collapses_back: false,
     },
     DoubleClick {
         step: "tint-reset",
@@ -123,8 +128,10 @@ const DOUBLE_CLICKS: [DoubleClick; 3] = [
         value: 12.0,
         reset: AS_SHOT,
         shows: None,
+        collapses_back: false,
     },
-    // Exposure is Basic's on every kind: its commit does not wait for a redevelopment.
+    // Exposure is Basic's on every kind: its commit does not wait for a redevelopment. It starts
+    // at its default, so its reset returns it there.
     DoubleClick {
         step: "exposure-reset",
         action: "set-basic",
@@ -132,6 +139,7 @@ const DOUBLE_CLICKS: [DoubleClick; 3] = [
         value: 0.4,
         reset: "set-basic",
         shows: Some("0.00"),
+        collapses_back: true,
     },
 ];
 
@@ -222,7 +230,8 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         }
     }
     // A double-click on Temperature's, Tint's and Exposure's rails. The first press moves the
-    // value, which commits on release; the second press resets the field: two entries.
+    // value, which commits on release; the second press resets the field: two commits, two
+    // entries unless the reset returns the field to where it began, which collapses them.
     steps.extend(DOUBLE_CLICKS.iter().map(|click| {
         let step = Step::new(
             click.step,
@@ -232,8 +241,11 @@ pub fn plan(_: &[PathBuf]) -> Plan {
                 value: click.value,
                 gap_ms: GAP_MS,
             },
-        )
-        .commits(2);
+        );
+        let step = match click.collapses_back {
+            true => step.commits_collapsing_back(2),
+            false => step.commits(2),
+        };
         match click.shows {
             Some(default) => step.field(click.action, click.parameter, default),
             None => step.label(AS_SHOT_LABEL),
@@ -553,9 +565,9 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         );
     }
 
-    // Each double-click is two history entries, which the plan counts: the first press's committed
-    // jump, then the reset, sent against the revision that commit produced and never refused as
-    // stale. The plan also holds the field's default, or As shot's label, once the reset has run.
+    // Each double-click is two commits, which the plan counts: the first press's committed jump,
+    // then the reset, sent against the revision that commit produced and never refused as stale;
+    // two entries, or none once auto-collapse returns a field reset to where it began. The plan also holds the field's default, or As shot's label, once the reset has run.
     for click in &DOUBLE_CLICKS {
         let (before, after) = (frame_before(launch, click.step)?, launch.at(click.step)?);
         let field = format!("{}.{}", click.action, click.parameter);
