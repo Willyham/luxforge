@@ -227,31 +227,30 @@ Six resolved values become roles. Luxforge derives everything else by its own ru
 | `foreground` | `text` | |
 | `accent` | `accent` | The terminal's normal blue for an `alacritty.toml` theme, as in Omarchy. A `colors.toml` without an accent is refused by name, since Omarchy's resolver gives it none; so is an `alacritty.toml` missing any of its eight normal colours, for which Omarchy writes no palette |
 
-The theme's name is its folder's slug title-cased, as Omarchy lists it, with a cloned repository's `omarchy-` prefix and `-theme` suffix removed. The person can give another name on import. The report records:
+The theme's name is its folder's slug title-cased, as Omarchy lists it, with a cloned repository's `omarchy-` prefix and `-theme` suffix removed. The client sends the slug as `folder`, since the core never sees the folder itself. The person can give another name on import; with neither a name nor a folder that gives one, the import is refused. The mapping is `omarchy_roles` in `luxforge_core::theme`, and the theme resolves by the import rules. The report's `omarchy` section records:
 
-- which form the palette was in, and how the mode was decided;
-- each role, and the key it came from;
-- each derived role;
-- each ink moved, with its floor and both colours;
-- the surround before and after;
-- the accent note;
-- every key and value not used.
+- which form the palette was in (`omarchy4`, `omarchy3` or `alacritty`), and how the mode was decided (`mode-key`, `theme-type-key`, `light-mode-file` or `background-brightness`);
+- each role, the key it came from and the value Omarchy's resolver gives that key, before any move;
+- each role left to derive, with its reason: the control, `equals-background`;
+- every key and value the reader does not use, with its reason: `unknown-key`, `gradient`, `replaced`, `empty` or `not-a-colour`. The palette's other colours are never read, so they are not listed.
+
+The rest of the report is the model's: each ink moved, with its floor and both colours; each derived tier that stopped short; the surround before and after; and the accent note. A refusal names the file and key, with the reader's coded error (such as `{code: "missing-key", file: "colors.toml", key: "accent"}`) as its data.
 
 ### What the 22 built-in themes become
 
-These figures come from a prototype of the rules above (Python, not the implementation), run on Omarchy's 22 built-in palettes at `035ce29f03`:
+These figures are the implementation's, run on Omarchy's 22 built-in palettes at `035ce29f03bdd97a09af80ef5f2d22d7a98930d6`. The test `the_22_built_in_omarchy_themes_become_the_recorded_figures` pins them, and every one of the 22 meets every floor and the chroma bound after its reported moves.
 
 | Effect | Themes |
 | --- | --- |
-| Surround neutralised: `dark_background` above 0.010 chroma | 11 of 22; most of all Retro 82's navy `#031222` (0.040), which becomes `#0e1215` |
-| Own text moved to its floor | Tokyo Night (0.5 ΔE00), Everforest (2.2), Gruvbox (2.3), Catppuccin Latte (3.4), Rose Pine (3.8) |
-| Own accent moved to its floor | White (1.9 ΔE00), Rose Pine (2.1) |
-| A derived text tier stops short of Luxforge Dark's weight | 18 of 22: the tertiary tier in all 18 and the secondary in 9, because their text-to-background contrast is lower than Luxforge Dark's |
-| Error ink moved in lightness | Catppuccin Latte, Flexoki Light, Everforest, Nord, White |
-| Accent under 15 ΔE00 from a reserved colour | 9 of 22: Tokyo Night 8.7, Nord 9.7, Hackerman 10.6, Ethereal 11.0, Catppuccin Latte 12.6, Catppuccin 12.8, Lupine 13.4, Ristretto 13.9, Kanagawa 14.9 |
+| Surround neutralised: `dark_background` above 0.010 chroma | 12 of 22: Catppuccin, Ethereal, Everforest, Flexoki Light, Hackerman, Kanagawa, Lumon, Nord, Osaka Jade, Retro 82, Rose Pine and Tokyo Night. Most of all Retro 82's navy `#031222` (0.040), which becomes `#0e1215`; least Rose Pine's `#ede7e1` (0.0104) |
+| Own text moved to its floor | Tokyo Night (0.55 ΔE00), Everforest (2.20), Gruvbox (2.26), Catppuccin Latte (3.41), Rose Pine (3.83) |
+| Own accent moved to its floor | White (1.93 ΔE00), Rose Pine (2.11) |
+| A derived text tier stops short of Luxforge Dark's weight | 16 of 22: the tertiary tier in all 16, and the secondary in 8 of them (Catppuccin Latte, Everforest, Gruvbox, Miasma, Nord, Osaka Jade, Rose Pine and Tokyo Night), because their text-to-background contrast is lower than Luxforge Dark's. Ethereal, Hackerman, Last Horizon, Lumon, Retro 82 and Vantablack keep both weights |
+| Error ink moved in lightness | Catppuccin Latte (1.92 ΔE00), Everforest (0.79), Flexoki Light (0.96), Nord (2.79), White (10.91) |
+| Accent under 15 ΔE00 from a reserved colour | 9 of 22: Tokyo Night 8.74, Nord 9.72, Ethereal 11.03, Catppuccin Latte 12.55, Catppuccin 12.85 and Lupine 13.44 from the shadow-clipping blue; Hackerman 10.59 from the mask green; Ristretto 13.90 from the clipping red; Kanagawa 14.87 from the mask white |
 | Control derived, because `lighter_background` equals the background | Last Horizon, Solitude |
 
-The plan's reader task freezes the real rules, and records this table again from the implementation.
+They differ from the earlier prototype's figures (Python, not the implementation) in three places. Rose Pine's surround, at 0.0104, is neutralised, where the prototype counted 11 themes. A derived tier stops short in 16 themes rather than 18, and the secondary tier in 8 rather than 9. And Catppuccin Latte's accent is 12.55 ΔE00 from the blue rather than 12.6.
 
 ### Bundled themes
 
@@ -269,13 +268,15 @@ The owner decided on 2026-10-05 to bundle a few popular Omarchy themes, beside i
 Kanagawa (6.4k stars) is left out because its accent is its text colour, so its state marks would not stand out against its labels. The six together are about 3.6 KB.
 
 - **The files** are Omarchy's own `colors.toml` files, vendored verbatim from the pinned commit beside the core's theme module, never edited. Omarchy's MIT licence and a notice naming each palette's upstream scheme sit beside them, and a test pins each file's SHA-256 to that commit. Changing the set, or the commit, is a deliberate change of its own.
-- **The same reader.** A bundled theme is read by the same reader as an import, so the bundled files are also the reader's real-file tests, and its report is part of what `theme.read` answers.
-- **Built in.** Bundled themes are listed after Luxforge Dark, with ids of the form `omarchy.tokyo-night`. They are never stored and cannot be deleted, and their names are taken. An import that brings the same theme in under the same name is a listed conflict.
-- **Per the prototype** of the rules above:
+- **The same reader.** A bundled theme is read by the same reader and mapping as an import, once, when the library is first used, so the bundled files are also the reader's real-file tests. Its report is part of what `theme.read` answers, and its `source` is the vendored `colors.toml`.
+- **Built in.** Bundled themes are listed after Luxforge Dark, in the order above, with ids of the form `omarchy.tokyo-night` and an origin of `{kind: "omarchy", folder, form: "omarchy4", commit}` naming the pinned commit. They are never stored and cannot be deleted, and their names are taken: an import under the same name, ignoring case, is a conflict, so importing the same folder again is listed as one. `preferences.set {theme: "omarchy.nord"}` chooses one like any other theme.
+- **What they become:**
   - Tokyo Night, Catppuccin, Nord and Everforest have their surround neutralised; Gruvbox and Catppuccin Latte keep theirs.
-  - Tokyo Night, Everforest, Gruvbox and Catppuccin Latte have their text moved to its floor, by 0.5 to 3.4 ΔE00.
+  - Tokyo Night, Everforest, Gruvbox and Catppuccin Latte have their text moved to its floor, by 0.55 to 3.41 ΔE00. No bundled theme's accent is moved.
   - Catppuccin Latte, Everforest and Nord have the error ink moved in lightness.
+  - All six have the tertiary tier stop short, and all but Catppuccin the secondary too.
   - Tokyo Night, Catppuccin, Nord and Catppuccin Latte keep accents under 15 ΔE00 from a reserved colour, as decided.
+  - Each takes its control from `lighter_background`.
 
 ## Library and API
 
@@ -289,7 +290,8 @@ A record is `{id, name, mode, roles, tokens, origin, report, source, actor, crea
 
 - `tokens` holds only the tokens the theme sets explicitly; the rest are derived when the record is read.
 - `origin` is `{kind: "built-in"}` for Luxforge Dark, `{kind: "luxforge"}`, or `{kind: "omarchy", folder, form}`, which for a bundled theme also names the commit its file came from.
-- `source` keeps the imported files' text verbatim, as presets keep theirs, so a later reader can map them again without the folder. Only `theme.read` returns it.
+- `source` keeps the text of each file the import read verbatim, as presets keep theirs, so a later reader can map them again without the folder. An `alacritty.toml` beside a `colors.toml` is not read, so not kept. Only `theme.read` returns it.
+- `report` keeps the import's report. `theme.read` answers the report this build's rules give, with the stored `omarchy` section, which resolving the roles again cannot give.
 
 Names are trimmed and non-empty, have no control characters and at most 64 characters, and are unique ignoring case across Unicode. A duplicate is a `conflict`, and nothing is renamed or replaced automatically. The built-in themes' names are taken.
 
@@ -301,14 +303,14 @@ Every method is a host method listed by `schema.list`. The mutating methods take
 | --- | --- | --- | --- |
 | `theme.list` | no | none | `{themes, active, unrecognized}`. Each theme gives its id, name, mode, origin, whether it is built in, five swatches (surround, background, surface, text, accent) and its report's counts. `unrecognized` lists the stored records this build cannot read, each with its reason |
 | `theme.read` | no | `theme_id` | `{theme}`: the record with every resolved token, the full report and the source |
-| `theme.inspect` | no | `format`, and `files` or `content`; optional `name` | `{theme, report}` as an import would create them; nothing is stored |
-| `theme.import` | yes | `format`, `files` or `content`, `mutation`; optional `name` | `{theme, report, deduplicated}` |
+| `theme.inspect` | no | `format`, and `files` or `content`; optional `folder` and `name` | `{theme, report}` as an import would create them; nothing is stored |
+| `theme.import` | yes | `format`, `files` or `content`, `mutation`; optional `folder` and `name` | `{theme, report, deduplicated}` |
 | `theme.export` | no | `theme_id` | `{file_name, content}`, a Luxforge theme document |
 | `theme.delete` | yes | `theme_id`, `mutation` | `{outcome, deleted, deduplicated}`. A built-in theme and the active theme are refused by name |
 
 `preferences.read` also answers `theme`. `preferences.set {theme}` takes a theme id, or `null` for Luxforge Dark, and refuses an id the library does not hold. It announces its event whenever the theme changes, as it does for the fields a General row shows. The canvas background gains its proposed `theme` choice the same way, checked and announced as its other choices are.
 
-`format` is `omarchy` or `luxforge`. The client reads the files and sends their text, as it does for `preset.import`, because the core reads no user-chosen file ([module capabilities](../decisions.md#module-capabilities)). For Omarchy, `files` maps each file name the reader takes to its text, each at most 64 KiB. A name the reader does not take is refused by name rather than ignored. A Luxforge theme document carries its format marker; a document of another shape or marker is refused without being read further.
+`format` is `omarchy` or `luxforge`. The client reads the files and sends their text, as it does for `preset.import`, because the core reads no user-chosen file ([module capabilities](../decisions.md#module-capabilities)). For Omarchy, `files` maps each file name the reader takes to its text, each at most 64 KiB. A name the reader does not take is refused by name rather than ignored. `folder` is the theme folder's own name, not a path, at most 128 bytes; it names the theme unless `name` does and is kept in the origin, and `format: luxforge` refuses it. A Luxforge theme document carries its format marker; a document of another shape or marker is refused without being read further.
 
 ### Events and other clients
 
