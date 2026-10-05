@@ -1239,6 +1239,9 @@ fn chained_links_take_their_scratch_from_one_pool_and_draw_what_a_fresh_slot_dra
                     .find(|(at, _)| *at == (class, number))
                     .map(|(_, texture)| *texture)
                     .expect("the pool holds the link's scratch"),
+                Some(super::super::spatial::PlaneTexture::Light(k)) => {
+                    panic!("plane {plane} is light {k}, which these links read none of")
+                }
                 None => panic!("plane {plane} is the link's"),
             };
             applied.push(
@@ -1638,6 +1641,9 @@ fn assert_served(steps: &[GpuStep]) -> super::super::spatial::PoolKey {
                         assert_eq!(at, kept, "plane {number}: kept textures in plane order");
                         kept += 1;
                     }
+                    PlaneTexture::Light(k) => {
+                        panic!("plane {number} is light {k}, which these steps read none of")
+                    }
                     PlaneTexture::Pool(held, at) => {
                         assert!(!read, "plane {number}: no plane an apply reads is pooled");
                         assert_eq!(held, Class::of(*declared), "plane {number}: its own class");
@@ -1742,6 +1748,7 @@ fn a_single_link_lays_out_the_textures_it_held_and_charges_them() {
                     (held.format.texture(), held.extent(LAID_AT, LAID))
                 }
                 PlaneTexture::Pool(class, _) => (class.format.texture(), pool.extent(class)),
+                PlaneTexture::Light(_) => (PlaneFormat::Quad.texture(), (1, 1)),
             };
             assert_eq!(
                 (format, extent),
