@@ -177,6 +177,11 @@ pub enum Step {
         #[serde(deserialize_with = "Option::deserialize")]
         value: Option<Value>,
     },
+    /// Change General rows of the Settings sheet as their own controls do, and wait for the
+    /// desktop's preference writer to answer: each field a row shows, with a value its control
+    /// offers — a boolean for a switch, an option's value for a choice. `{"preference":
+    /// {"auto_lens_profile": false, "mask_overlay_colour": "white"}}`.
+    Preference(Map<String, Value>),
     /// Ask nothing of the editor for at least this many milliseconds, then capture. The evidence
     /// tick keeps rebuilding the view meanwhile, as the editor's own event sync does while a
     /// photograph is open, so the frame shows what idling did to the screen.
@@ -316,6 +321,14 @@ impl Step {
             | Self::Performance { .. }
             | Self::Settings { .. } => Ok(()),
             Self::Flag { id, .. } => text(id, "flag id"),
+            Self::Preference(fields) => {
+                if fields.is_empty() {
+                    return Err("preference needs at least one field".into());
+                }
+                fields
+                    .keys()
+                    .try_for_each(|field| text(field, "preference field"))
+            }
             Self::PerformanceCancel { row } => {
                 if *row < 4 {
                     Ok(())
