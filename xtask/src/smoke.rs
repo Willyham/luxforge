@@ -399,7 +399,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: no_gpu_render::SCENARIO,
-        about: "The editor launched with --no-gpu-render: the session names the reference renderer for no-adapter, every frame of an open, a Basic drag and its release is drawn on the CPU path with no plan handed to the surface, and the status bar says the reference renderer draws, at rest too",
+        about: "The editor launched with --no-gpu-render: the session names the reference renderer for no-adapter, every frame of an open, a Basic drag and its release is drawn on the CPU path with no plan handed to the surface, the status bar says the reference renderer draws, at rest too, and an export is the reference renderer's for refused",
         launches: &[LaunchSpec {
             plan: no_gpu_render::plan,
             no_gpu_render: true,
@@ -707,7 +707,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "export",
-        about: "The Export menu, two exports written and read back, and a refused one",
+        about: "The Export menu, two GPU exports and a reference one written and read back, the GPU's within the display limit of the reference's, one GPU export repeated byte for byte, and a refused one",
         launches: &[LaunchSpec {
             plan: export::plan,
             ..APP

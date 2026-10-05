@@ -11,7 +11,9 @@
 //! among them. Every tick of the drag takes the CPU path naming `no-adapter` and asks for no
 //! boundary; no dissolve starts, and the desktop reports no other renderer. The adapter that drew
 //! the window is identified in every frame: the window is still composited by it, and only the
-//! photograph's pixels are the reference renderer's.
+//! photograph's pixels are the reference renderer's. An export, which asks for no renderer, is the
+//! reference renderer's too: its result names the reference for `refused`, and the GPU tile worker
+//! opened no device and drew nothing.
 use crate::{
     gpu_preview_smoke::{named, step_events},
     scenario::{Checked, Checks, Plan, Run, Step, plan::only},
@@ -33,8 +35,11 @@ const REFERENCE_TOOLTIP: &str = "This graphics device cannot run the GPU rendere
 const BASIC: &str = "set-basic";
 const EXPOSURE: &str = "exposure";
 const DRAGGED: [f64; 3] = [0.25, 0.5, 0.75];
+/// The export the launch writes into its evidence directory.
+const EXPORTED: &str = "no-gpu-export.jpg";
 
-/// Every frame, in order: the open, the drag, its release and the frame settled after it.
+/// Every frame, in order: the open, the drag, its release, the frame settled after it and an
+/// export of the committed entry.
 pub fn plan(_: &[PathBuf]) -> Plan {
     Plan::new(vec![
         Step::opened("opened").no_draft(),
@@ -49,6 +54,9 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         .no_draft()
         .payload(BASIC_EFFECT, json!({ EXPOSURE: DRAGGED[2] })),
         Step::new("settled", script::Step::Wait { ms: 500 })
+            .commits(0)
+            .no_draft(),
+        Step::new("exported", script::Step::export(EXPORTED, false))
             .commits(0)
             .no_draft(),
     ])
@@ -171,9 +179,49 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         "every tick of the drag on the CPU path, naming no-adapter",
         json!({"ticks": ticks.len(), "drag": drag.state()["surface"]["gpu"]["gpu_preview"]["drag"]}),
     );
+
+    // The export: the reference renderer's, for the launch's refusal, its file written, and the
+    // GPU tile worker refused, having opened and drawn nothing.
+    let exported = launch.at("exported")?;
+    let export = &exported["step"]["export"];
+    let result = &export["record"]["result"];
+    let refused = json!({"record": "reference", "reason": "refused"});
+    ensure(
+        export["record"]["status"] == "ready" && result["renderer"] == refused,
+        format!("The export is not the reference renderer's for refused: {export}"),
+    )?;
+    ensure(
+        export["queued"]["reference"] == false,
+        format!("The export asked for a renderer: {}", export["queued"]),
+    )?;
+    let bytes = fs::metadata(launch.evidence.join(EXPORTED))?.len();
+    ensure(
+        result["bytes"].as_u64() == Some(bytes),
+        format!(
+            "{EXPORTED} is {bytes} bytes, the job reported {}",
+            result["bytes"]
+        ),
+    )?;
+    let finished = named(step_events(launch, "exported")?, "export_finished");
+    let tiles = finished
+        .first()
+        .map(|event| event["detail"]["tiles"].clone())
+        .unwrap_or_default();
+    ensure(
+        tiles["status"] == json!({"reference": "tiles-unavailable", "unavailable": "refused"})
+            && tiles["adapter"].is_null()
+            && tiles["streams"] == 0
+            && tiles["tiles"] == 0,
+        format!("The GPU tile worker of a launch with no GPU stage did something: {tiles}"),
+    )?;
+    checks.note(
+        exported,
+        "the export is the reference renderer's, for the launch's refusal",
+        json!({"renderer": result["renderer"], "bytes": bytes, "tiles": tiles}),
+    );
     checks.write(
         &launch.evidence,
         run.scenario(),
-        json!({"renderer": reference}),
+        json!({"renderer": reference, "export_renderer": refused}),
     )
 }
