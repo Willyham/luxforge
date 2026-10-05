@@ -76,6 +76,12 @@ pub struct BoundaryKey {
 }
 
 impl BoundaryKey {
+    /// The source the boundary is derived from: its fingerprint, and for a RAW the development and
+    /// the view over its planes.
+    pub fn source(&self) -> &ProxyIdentity {
+        &self.source
+    }
+
     /// The proxy the boundary is rendered at, with its window; `None` at the exact stage.
     pub fn plan(&self) -> Option<ProxyPlan> {
         self.plan
@@ -106,17 +112,17 @@ pub enum GpuView {
     Region { rect: Region, magnification: f64 },
 }
 
-/// The boundary a draft's GPU preview starts from: its key, and where its layer begins in the
-/// compilation the preview worker renders the job's frame from.
+/// The boundary a GPU plan starts from: the source itself at the plan's stage, which the photo
+/// surface derives from the prepared source it holds (`docs/design/gpu-preview.md`, "The GPU
+/// source") — reduced to the proxy plan the key names at Fit and below 100%, and a window of it cut
+/// at full scale at the exact stage, at Fit or over a region at 100% or more. Nothing renders it
+/// on the CPU.
 #[derive(Clone, Debug, PartialEq)]
-pub struct BoundaryRequest {
+pub struct SourceBoundary {
     pub key: BoundaryKey,
-    /// The segment and operation index the boundary layer begins at in the drafted stack's
-    /// compilation at the boundary's stage.
-    pub(crate) position: (usize, usize),
-    /// A lens warp's geometry tail, whose coordinate grid the worker computes with the boundary,
-    /// once per draft and off the interface thread; `None` for an affine or projective tail, which
-    /// the surface evaluates exactly.
+    /// A lens warp's geometry tail, whose coordinate grid is computed off the interface thread
+    /// once per key ([`Self::grid`]); `None` for an affine or projective tail, which the surface
+    /// evaluates exactly.
     pub(crate) warp: Option<super::GpuGeometry>,
     /// How the boundary's texels are held: `f32` for a plan of the linear path, half floats
     /// otherwise.
@@ -125,13 +131,40 @@ pub struct BoundaryRequest {
     /// enough for: one for a whole frame, whose proxy is drawn at about its own size, the zoom
     /// over a region at 100% or more.
     pub(crate) magnification: f64,
-    /// The window of the boundary layer's received stage the boundary holds, so what the boundary
-    /// and a slot drawing over it take is known before it is rendered: at a percentage zoom of 100%
-    /// or more, the one the region reads, the region and every margin after it; at the exact stage
-    /// at Fit, the one the whole output stage reads, when that is less than all of it. `None` at a
-    /// proxy, at Fit or below 100%, whose plan names its window, and for a boundary of the whole
-    /// exact stage.
+    /// The window of the content stage the boundary holds, so what the boundary and a slot drawing
+    /// over it take is known before it is derived: at a percentage zoom of 100% or more, the one
+    /// the region reads, the region and every margin after it; at the exact stage at Fit, the one
+    /// the whole output stage reads, when that is less than all of it. `None` at a proxy, at Fit or
+    /// below 100%, whose plan names its window ([`ProxyPlan::held`]), and for a boundary of the
+    /// whole exact stage.
     pub window: Option<Region>,
+}
+
+impl SourceBoundary {
+    /// Whether the plan's tail is a lens warp, whose coordinate grid the surface reads
+    /// ([`Self::grid`]).
+    pub fn needs_grid(&self) -> bool {
+        self.warp.is_some()
+    }
+
+    /// A lens warp's coordinate grid over what the plan draws — the whole output stage at Fit and
+    /// below 100%, the region at 100% or more — at the plan's magnification, or why it cannot be
+    /// built; `None` for an affine or projective tail. Frame work of up to [`super::GRID_MAX_NODES`]
+    /// nodes: a caller runs it off the interface thread and the catalog owner, once per key.
+    pub fn grid(&self) -> Option<Result<std::sync::Arc<super::CoordinateGrid>, Error>> {
+        let warp = self.warp.as_ref()?;
+        let output = warp.output();
+        let region = self.key.region().unwrap_or(Region {
+            x0: 0,
+            y0: 0,
+            width: output.width,
+            height: output.height,
+        });
+        Some(warp.grid(region, self.magnification).and_then(|grid| {
+            grid.map(std::sync::Arc::new)
+                .ok_or_else(|| Error::internal("a warp tail with no grid"))
+        }))
+    }
 }
 
 /// A draft's GPU preview: the plan a tick is drawn from, or why the gesture takes the CPU path,
@@ -140,7 +173,7 @@ pub struct BoundaryRequest {
 pub struct GpuPreview {
     pub answer: GpuAnswer,
     /// The boundary of [`Self::answer`]'s plan; `None` when there is no plan.
-    pub boundary: Option<BoundaryRequest>,
+    pub boundary: Option<SourceBoundary>,
     /// Over a region at 100% or more, when [`Self::answer`]'s plan holds a drafted restoration or
     /// spatial layer in its GPU shape: the plan of that layer in the CPU's shape, the units its
     /// values need, from the same boundary. Over the region's window the GPU shape charges the
@@ -715,9 +748,16 @@ fn planned_preview(
             cpu_shape = Some(smaller);
         }
     }
+    // Every plan starts from the source: a boundary at a source or geometry layer before the
+    // stack's first content layer names `boundary-stage` and has no plan.
     let boundary_request = match &answer {
         GpuAnswer::Fallback(_) => None,
-        GpuAnswer::Plan(plan) => Some(BoundaryRequest {
+        GpuAnswer::Plan(_) if position != (0, 0) => {
+            return Err(Error::internal(
+                "a GPU plan starts from the source, at the first segment's first operation",
+            ));
+        }
+        GpuAnswer::Plan(plan) => Some(SourceBoundary {
             key: BoundaryKey {
                 source: evaluation.source().identity(),
                 prefix: prefix_hash(&recipe.layers[..before], &recipe.masks, fit.sampling())?,
@@ -726,7 +766,6 @@ fn planned_preview(
                 region: fit.region.map(|(rect, _)| rect),
                 window,
             },
-            position,
             format: crate::BoundaryFormat::of(fit.linear),
             magnification: fit.region.map_or(1.0, |(_, magnification)| magnification),
             window,

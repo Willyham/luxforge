@@ -689,7 +689,9 @@ impl SampleStore for Wide {
 }
 /// Linear light as a JPEG's GPU preview boundary holds it ([`super::boundary`]): four
 /// little-endian half floats a pixel, eight bytes, with the value unclamped and opaque alpha.
+#[cfg(any(test, feature = "qualification"))]
 pub(super) struct Half;
+#[cfg(any(test, feature = "qualification"))]
 impl SampleStore for Half {
     type Sample = u8;
     const SAMPLES: usize = super::boundary::BoundaryFormat::Half.texel_bytes();
@@ -794,6 +796,7 @@ impl<S: SampleStore> SegmentRows for FloatRows<'_, S> {
 /// from `input`, the `stage` frame entering it, through its exact geometry and colour runs, and
 /// stored as half floats without quantizing, so a boundary inside a colour run holds the value
 /// the run hands the next layer.
+#[cfg(any(test, feature = "qualification"))]
 pub(super) fn boundary_pass(
     segment: &Segment,
     input: &ByteFrame,

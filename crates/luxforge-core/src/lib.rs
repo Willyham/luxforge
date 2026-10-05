@@ -92,20 +92,20 @@ pub use presets::{
     PresetSummary, ReportCounts, ReportedSetting, USER_PRESET_GROUP, inspect_preset,
 };
 pub use preview::{
-    AssetSelection, BoundaryOutcome, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,
+    AssetSelection, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,
     MaskCoverageTarget, MaskOverlayOutcome, PREVIEW_PROGRESS_QUIET, PhaseOutcome, PreviewIntent,
     PreviewJob, PreviewPhase, PreviewProgress, PreviewQueue, PreviewResult, PreviewSession,
     PreviewSource, ProxyOutcome, Queued, RegionOutcome, ViewState, Zoom,
 };
 pub use proxy::{ProxyApproximation, ProxyBounds, ProxyCoverage, ProxyIdentity, ProxyPlan};
 pub use render::gpu::{
-    BoundaryKey, BoundaryRequest, CoordinateGrid, EstimateSource, GPU_PASS_INPUTS, GPU_PLAN_LINKS,
+    BoundaryKey, CoordinateGrid, EstimateSource, GPU_PASS_INPUTS, GPU_PLAN_LINKS,
     GPU_SHARED_VALUES, GPU_WARM_LINKS, GPU_WORKGROUP_LANES, GRID_MAX_NODES,
     GRID_SAMPLE_TOLERANCE_PX, GRID_TOLERANCE_PX, GpuAnswer, GpuApply, GpuBoundary, GpuChange,
     GpuClipping, GpuComponent, GpuDescription, GpuEstimates, GpuFallback, GpuGeometry, GpuMask,
     GpuOperation, GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest, GpuPlane, GpuPlaneFormat,
     GpuPlaneSize, GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuRest, GpuSpatial,
-    GpuSpatialUnit, GpuView, gpu_plan, gpu_plan_with,
+    GpuSpatialUnit, GpuView, SourceBoundary, gpu_plan, gpu_plan_with,
 };
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{
@@ -140,6 +140,16 @@ pub mod qualification {
             .window
             .map(|window| [window.x, window.y, window.width, window.height]);
         Some((plan, window))
+    }
+
+    /// The picture at rest of `evaluation` on the GPU at `view`, as a displayed stack's job plans
+    /// it ([`crate::GpuRest`]): the plan of the whole stack from the source, and the boundary it
+    /// starts from.
+    pub fn rest_plan(
+        evaluation: &crate::Evaluation,
+        view: crate::GpuView,
+    ) -> Result<crate::GpuRest, crate::Error> {
+        crate::render::gpu::plan_rest(evaluation, view)
     }
 
     /// A Lens correction layer holding a frozen Poly3 profile of `k1`, resolved for a `stage`, as
@@ -339,7 +349,7 @@ pub mod qualification {
             });
         let context = crate::RenderContext::new();
         let proxy = render.render_proxy(proxied, stage, &crate::Cancel::never(), &context)?;
-        proxy.boundary_reading(&uncut, whole, window, position, format, None)
+        proxy.boundary(&uncut, whole, window, position, format)
     }
 
     /// The global estimates the spatial operation of layer `layer` reads in a frame of `render`,

@@ -82,6 +82,10 @@ pub(crate) struct Surfaces<'a> {
     pub(crate) gpu_change: Option<luxforge_ui::photo_surface::GpuChange>,
     /// The program sequences the committed stack's gestures are likely to need, compiled ahead.
     pub(crate) gpu_warm: Option<&'a luxforge_ui::photo_surface::GpuWarm>,
+    /// The prepared source every GPU boundary is derived from, which the pipeline holds on the GPU
+    /// for every surface that hands it ([`crate::app::gpu_preview`]). None is given while this
+    /// client's `gpu_preview` preference is off.
+    pub(crate) gpu_source: Option<&'a luxforge_ui::photo_surface::GpuSource>,
     /// A settle's dissolve from the GPU frame on screen to the CPU frame that replaces it
     /// ([`crate::app::gpu_settle`]).
     pub(crate) dissolve: Option<luxforge_ui::photo_surface::Dissolve>,

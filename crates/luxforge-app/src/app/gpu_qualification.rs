@@ -573,7 +573,6 @@ pub(crate) fn proxy_cell(
                 (0, 0),
             ),
             PhaseOutcome::Region(_) => return Ok(Cell::Gap("a region at Fit".into())),
-            PhaseOutcome::Boundary(_) => return Ok(Cell::Gap("a boundary for a Fit frame".into())),
         };
         let (width, height) = proxied.dimensions();
         // The boundary: the input of the stack's first layer that processes pixels. Where every

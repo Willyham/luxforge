@@ -774,8 +774,9 @@ impl Editor {
                     }
                     // A tick the surface draws from the GPU plan the answer carries makes no
                     // preview job and no upload ([`super::gpu_preview`]); any other takes the
-                    // CPU path as before.
-                    let (tick, boundary) = self.gpu_tick(&set, job.gpu.take());
+                    // CPU path as before. Its boundary is derived from the job's source.
+                    self.gpu_hold_source(job.evaluation.source());
+                    let tick = self.gpu_tick(&set, job.gpu.take());
                     match tick {
                         super::gpu_preview::Tick::Gpu => {
                             // The mask overlay's coverage follows the tick through its own
@@ -787,8 +788,6 @@ impl Editor {
                             drawn_on_gpu = true;
                         }
                         super::gpu_preview::Tick::Cpu => {
-                            job.boundary = boundary;
-                            let boundary = job.boundary.is_some();
                             let (generation, requested_at) = if self.log.diagnostics.is_some()
                                 && self.mask_gesture().is_some()
                             {
@@ -796,9 +795,6 @@ impl Editor {
                             } else {
                                 (self.request_preview(job), None)
                             };
-                            if boundary {
-                                self.gpu_boundary_requested(generation);
-                            }
                             self.gpu_cpu_tick(&set, generation);
                             self.presentation.preview_generation = generation;
                             self.set_previewed(set.draft_revision, round_trip, requested_at);

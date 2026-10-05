@@ -137,8 +137,8 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         )?;
     }
 
-    // The drag: every tick on the CPU naming the stage's reason, no boundary asked for, no dissolve
-    // at its release, and no renderer reported other than the launch's.
+    // The drag: every tick on the CPU naming the stage's reason, no source held and no boundary
+    // derived, no dissolve at its release, and no renderer reported other than the launch's.
     let events = step_events(launch, "drag")?;
     let ticks = named(events, "gpu_preview_tick");
     ensure(
@@ -146,7 +146,6 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             && ticks.iter().all(|tick| {
                 tick["detail"]["path"] == json!("cpu")
                     && tick["detail"]["reason"] == json!("no-adapter")
-                    && tick["detail"]["boundary_requested"] == json!(false)
             }),
         format!(
             "The drag's ticks were not the CPU's naming no-adapter: {:?}",
@@ -154,6 +153,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         ),
     )?;
     for name in [
+        "gpu_source",
         "gpu_boundary",
         "gpu_boundary_resident",
         "gpu_dissolve_started",

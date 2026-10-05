@@ -441,9 +441,10 @@ pub struct SurfaceDiagnostics {
     /// from ([`PhotoSurface::gpu_source`]): its version, what it is charged and how much of it is
     /// uploaded. `None` while no surface hands one.
     pub gpu_source: Option<gpu_preview::SourceFigures>,
-    /// Why the last source handed could not be held: past the budget, or more tiles than a pass
-    /// binds. Cleared by the next source held.
-    pub gpu_source_refused: Option<GpuFallback>,
+    /// The version of the last source handed that could not be held, and why: past the budget,
+    /// more tiles than a pass binds, or no derivation passes on the device. Cleared by the next
+    /// source held.
+    pub gpu_source_refused: Option<(u64, GpuFallback)>,
     /// How many boundaries the GPU stage has derived from the source it holds, over every frame.
     pub gpu_source_derived: u64,
 }
@@ -1024,7 +1025,9 @@ impl PhotoSurface {
                 && diagnostics
                     .gpu_source
                     .is_none_or(|held| held.version != source.version() || !held.ready)
-                && diagnostics.gpu_source_refused.is_none()
+                && diagnostics
+                    .gpu_source_refused
+                    .is_none_or(|(version, _)| version != source.version())
         });
         boundary || source
     }

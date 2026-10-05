@@ -38,7 +38,7 @@ pub use plan::{
 #[cfg(any(test, feature = "qualification"))]
 pub(crate) use preview::position;
 pub use preview::{
-    BoundaryKey, BoundaryRequest, GPU_PLAN_LINKS, GPU_WARM_LINKS, GpuPreview, GpuRest, GpuView,
+    BoundaryKey, GPU_PLAN_LINKS, GPU_WARM_LINKS, GpuPreview, GpuRest, GpuView, SourceBoundary,
 };
 #[cfg(test)]
 pub(crate) use preview::{output_window, warm_links, warm_sequence};

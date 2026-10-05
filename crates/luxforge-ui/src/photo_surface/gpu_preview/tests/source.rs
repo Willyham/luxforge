@@ -370,3 +370,87 @@ fn a_reduction_across_tiles_is_the_area_average_within_a_code() {
     );
     settle(&pipeline);
 }
+
+/// A boundary derived from the source draws from the slot that holds it, a tick changing only its
+/// words and deriving nothing again, and a plan of another output or tail over it refits the slot
+/// around the boundary it holds; a sequence still compiling leaves the slot, and the boundary it
+/// holds, as they were. A slot let go — by a frame with no plan — derives the boundary again from
+/// the source the pipeline still holds, and draws it once more: nothing is asked of the caller.
+#[test]
+fn a_derived_boundary_draws_from_the_slot_that_holds_it() {
+    let test = "a_derived_boundary_draws_from_the_slot_that_holds_it";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let rgba = codes(SIDE, SIDE);
+    let source = GpuSource::codes(5, Arc::new(rgba.clone()), SIDE, SIDE).expect("a whole source");
+    let boundary = GpuBoundary::derived(&source, Derivation::Cut { origin: (0, 0) }, SIDE, SIDE, 3)
+        .expect("a derived boundary");
+    let expected: Vec<[u8; 3]> = rgba
+        .chunks_exact(4)
+        .map(|pixel| [0, 1, 2].map(|channel| encoded(srgb::decode(pixel[channel]))))
+        .collect();
+    let with = |plan: GpuPlan| handing(Some(plan), Some(&source));
+    let drawn = paint(&device, &queue, &mut pipeline, &with(over(&boundary)));
+    assert_codes(&drawn, &expected);
+    let seen = diagnostics(&pipeline, ID);
+    let (derived, slot_bytes) = (seen.gpu_source_derived, seen.gpu_preview_in_use_bytes);
+    assert_eq!(derived, 1);
+    // The next tick over it is drawn from the slot.
+    let drawn = paint(&device, &queue, &mut pipeline, &with(over(&boundary)));
+    assert_codes(&drawn, &expected);
+    let seen = diagnostics(&pipeline, ID);
+    assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
+    assert_eq!(seen.gpu_ready_boundary, Some(3));
+    assert_eq!(seen.gpu_source_derived, derived, "derived once");
+    // A sequence the frame finds still compiling keeps the slot and the boundary in it.
+    let scaled = plan(&boundary, vec![scale(0.5)]);
+    paint_prepared(&device, &queue, &mut pipeline, &with(scaled.clone()));
+    let seen = diagnostics(&pipeline, ID);
+    assert_eq!(seen.gpu_fallback, Some(GpuFallback::Compiling));
+    assert_eq!(
+        seen.gpu_preview_in_use_bytes, slot_bytes,
+        "the slot is kept"
+    );
+    pipeline.compile_now(&device, &scaled);
+    paint(&device, &queue, &mut pipeline, &with(scaled));
+    let seen = diagnostics(&pipeline, ID);
+    assert_eq!(
+        seen.drawn_path,
+        Some(DrawingPath::Gpu),
+        "drawn from the slot"
+    );
+    assert_eq!(seen.gpu_fallback, None);
+    // A plan of another shape over the same boundary — here the identity tail a colour step after
+    // a stack's last spatial one brings — refits the slot and keeps the boundary it holds.
+    let mut tailed = over(&boundary);
+    tailed.steps.push(GpuStep::Geometry(GpuTail::affine(
+        (SIDE, SIDE),
+        [0, 0, SIDE, SIDE],
+        false,
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+    )));
+    tailed.steps.push(GpuStep::colour(identity()));
+    pipeline.compile_now(&device, &tailed);
+    let drawn = paint(&device, &queue, &mut pipeline, &with(tailed));
+    assert_codes(&drawn, &expected);
+    let seen = diagnostics(&pipeline, ID);
+    assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu), "the kept boundary");
+    assert_eq!(seen.gpu_fallback, None);
+    assert_eq!(seen.gpu_ready_boundary, Some(3));
+    // A frame with no plan lets the slot go, and the source stays while it is handed: the boundary
+    // is derived from it again.
+    assert_cpu_frame(&paint(
+        &device,
+        &queue,
+        &mut pipeline,
+        &handing(None, Some(&source)),
+    ));
+    let drawn = paint(&device, &queue, &mut pipeline, &with(over(&boundary)));
+    assert_codes(&drawn, &expected);
+    let seen = diagnostics(&pipeline, ID);
+    assert_eq!(seen.gpu_fallback, None);
+    assert!(seen.gpu_source_derived > derived, "derived again");
+    settle(&pipeline);
+}

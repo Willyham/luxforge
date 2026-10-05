@@ -31,13 +31,6 @@ pub(super) enum PrefixPixels {
     Byte(ByteFrame),
     Linear(Arc<Vec<f32>>),
 }
-/// A held restoration prefix's output: the input of segment `segment`, a frame of `stage`, shared
-/// with the cache that holds it.
-pub(crate) struct HeldPrefix {
-    pub(super) segment: usize,
-    pub(super) stage: Stage,
-    pub(super) pixels: PrefixPixels,
-}
 struct RestorationPrefixFrame {
     key: RestorationPrefixKey,
     held: Region,
@@ -130,31 +123,6 @@ impl Render<'_> {
             held,
         };
         Ok(Some((boundary, key, stage)))
-    }
-
-    /// The restoration prefix's output `cache` holds under the key this render's frame asks with:
-    /// the input of the segment that output opens, which a GPU preview boundary in that segment
-    /// reads ([`Render::boundary_reading`]), so the boundary job does not evaluate the prefix
-    /// again. `None` when the cache holds another key, or the stack has no active prefix.
-    pub(crate) fn held_prefix(
-        &self,
-        registry: &ModuleRegistry,
-        recipe: &Recipe,
-        proxy: &ProxyKey,
-        cache: &RestorationPrefixCache,
-    ) -> Result<Option<HeldPrefix>, Error> {
-        let Some((boundary, key, stage)) = self.prefix_key(registry, recipe, proxy)? else {
-            return Ok(None);
-        };
-        Ok(cache
-            .frame
-            .as_ref()
-            .filter(|frame| frame.key == key)
-            .map(|frame| HeldPrefix {
-                segment: boundary,
-                stage,
-                pixels: frame.pixels.clone(),
-            }))
     }
 
     fn cached_frame(
@@ -803,7 +771,3 @@ mod tests {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "restoration_held_tests.rs"]
-mod held_tests;

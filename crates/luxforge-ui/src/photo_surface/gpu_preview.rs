@@ -403,10 +403,11 @@ impl BoundaryFormat {
 /// whenever the texels do and never otherwise.
 #[derive(Clone)]
 pub struct GpuBoundary {
-    /// The texels, until the caller lets them go once the slot holds them ([`Self::resident`]).
+    /// The texels of a boundary handed whole ([`Self::new`]).
     texels: Option<Arc<dyn AsRef<[u8]> + Send + Sync>>,
     /// Or, for a boundary derived on the GPU from the source the pipeline holds ([`Self::derived`]),
-    /// that source's version and the derivation: no texels on the CPU at all.
+    /// that source's version and the derivation: no texels on the CPU at all. Exactly one of the
+    /// two is held.
     derived: Option<(u64, Derivation)>,
     width: u32,
     height: u32,
@@ -534,19 +535,8 @@ impl GpuBoundary {
         self.version
     }
 
-    /// This boundary with its texels let go: what a plan names once the surface's slot holds them
-    /// (its `gpu_ready_boundary` is this version), so the caller keeps no copy of them for the
-    /// rest of the gesture. The slot draws it from its own texture; a slot that no longer holds
-    /// it — released, or refitted to another shape — cannot, and the frame is the CPU's with
-    /// [`GpuFallback::BoundaryReleased`], for the caller to bring the texels again.
-    pub fn resident(&self) -> Self {
-        Self {
-            texels: None,
-            ..self.clone()
-        }
-    }
-
-    /// Whether the boundary still holds its texels, which a slot that does not hold them uploads.
+    /// Whether the boundary is handed as texels, which a slot that does not hold them uploads,
+    /// rather than derived on the GPU from the source ([`Self::derived`]).
     pub fn holds_texels(&self) -> bool {
         self.texels.is_some()
     }
@@ -667,9 +657,6 @@ pub enum GpuFallback {
     /// The plan's boundary is still being uploaded, at most [`UPLOAD_PER_FRAME`] a frame: `uploaded`
     /// of its `bytes` so far. The slot is kept, and the frame that writes its last chunk draws it.
     BoundaryUploading { uploaded: u64, bytes: u64 },
-    /// The plan names a boundary whose texels its caller let go ([`GpuBoundary::resident`]), and
-    /// the slot no longer holds them.
-    BoundaryReleased,
     /// The plan's boundary is derived from a source the pipeline is still uploading, at most
     /// [`UPLOAD_PER_FRAME`] a frame: `uploaded` of its `bytes` so far. The frame that writes its
     /// last rows draws the plan.
@@ -690,7 +677,6 @@ impl GpuFallback {
             Self::BudgetExceeded { .. } => "budget-exceeded",
             Self::TextureLimit { .. } => "texture-limit",
             Self::BufferLimit { .. } => "buffer-limit",
-            Self::BoundaryReleased => "boundary-released",
             Self::BoundaryUploading { .. } => "boundary-uploading",
             Self::SourceUploading { .. } => "source-uploading",
             Self::SourceMissing => "source-missing",
@@ -2351,7 +2337,8 @@ impl PhotoPipeline {
         if self.gpu.source.is_none() && source.holds_pixels() {
             let Some(layouts) = self.gpu.layouts.as_ref() else {
                 // No derivation passes on this device: nothing could be derived from it.
-                self.figures.diagnostics().gpu_source_refused = Some(GpuFallback::PipelineFailed);
+                self.figures.diagnostics().gpu_source_refused =
+                    Some((source.version(), GpuFallback::PipelineFailed));
                 return;
             };
             let preview = &self.figures.preview;
@@ -2361,7 +2348,8 @@ impl PhotoPipeline {
                     wake_surface();
                 }
                 Err(fallback) => {
-                    self.figures.diagnostics().gpu_source_refused = Some(fallback);
+                    self.figures.diagnostics().gpu_source_refused =
+                        Some((source.version(), fallback));
                     return;
                 }
             }
@@ -2517,10 +2505,6 @@ impl PhotoPipeline {
             .gpu
             .as_ref()
             .is_some_and(|slot| slot.holds(shape, plan.boundary.version));
-        // A boundary whose texels were let go is drawn only from the slot that holds them.
-        if !plan.boundary.holds_texels() && plan.boundary.derived.is_none() && !held {
-            return Err(GpuFallback::BoundaryReleased);
-        }
         // A derived boundary the slot does not hold yet is drawn from the source the pipeline
         // holds, once all of it is uploaded, by the derivation's pass; nothing is allocated for it
         // before then.
