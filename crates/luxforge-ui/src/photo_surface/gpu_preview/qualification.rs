@@ -10,7 +10,9 @@
 //! slot uploads it. Only the target differs. [`Qualifier::evaluate`] writes `rgba32float`, so a
 //! program's `f32` output is read before any encoding, which is where a non-finite value would be
 //! hidden; [`Qualifier::evaluate_codes`] writes the stage's own output format and reads the codes
-//! its last pass computes as the CPU's quantizer does.
+//! its last pass computes as the CPU's quantizer does. A plan reading a light
+//! ([`GpuPlan::lights`]) reads the one [`Qualifier::set_lights`] gives it in its light plane: the
+//! light the slot's own light link computes on this device ([`Qualifier::light_bench`]), read back.
 //!
 //! Built only with the crate's `qualification` feature, which only a `[dev-dependencies]` table
 //! may turn on (`cargo xtask check-repository`), so no build of the desktop has it: the surface
@@ -34,6 +36,8 @@ pub struct Qualifier {
     support: Support,
     /// Each link's passes start from a sentinel in every pool texture ([`Qualifier::set_poison`]).
     poison: AtomicBool,
+    /// The lights a plan's light planes hold, light `k` the `k`-th ([`Qualifier::set_lights`]).
+    lights: std::sync::Mutex<Vec<[f32; 4]>>,
 }
 
 impl Qualifier {
@@ -48,7 +52,23 @@ impl Qualifier {
             adapter,
             support,
             poison: AtomicBool::new(false),
+            lights: std::sync::Mutex::default(),
         })
+    }
+
+    /// A light link bench on this qualifier's device ([`super::light::LightBench`]): what computes,
+    /// as the slot's own light links do, the lights a plan reads ([`Qualifier::set_lights`]).
+    pub fn light_bench(&self) -> super::light::LightBench {
+        super::light::LightBench::new(&self.device, &self.queue)
+    }
+
+    /// Every later evaluation's light planes hold `lights`, light `k` the `k`-th, each `[r, g, b,
+    /// 1]` as a light link writes it: a plan that reads a light it was not given is refused.
+    pub fn set_lights(&self, lights: Vec<[f32; 4]>) {
+        *self
+            .lights
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = lights;
     }
 
     /// The editor's own surface on this qualifier's device ([`super::headless::HeadlessSurface`]):
@@ -706,6 +726,52 @@ impl Session {
         )
         .map_err(|fallback| fallback.as_str().to_owned())?;
         pool.set_poisoned(qualifier.poison.load(Ordering::Acquire));
+        // The light planes, holding the lights the qualifier was given, as a light link writes them.
+        let lights = qualifier
+            .lights
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let read = plan
+            .steps
+            .iter()
+            .filter_map(|step| match step {
+                GpuStep::Spatial(spatial) => Some(spatial),
+                _ => None,
+            })
+            .flat_map(|spatial| spatial.lights())
+            .collect::<Vec<_>>();
+        if let Some(k) = read.iter().find(|k| **k as usize >= lights.len()) {
+            return Err(format!(
+                "the plan reads light {k}, which the qualifier was not given"
+            ));
+        }
+        for (k, light) in (0u32..).zip(&lights) {
+            if let Some(texture) = pool.light_texture(k) {
+                let bytes: Vec<u8> = light.iter().flat_map(|value| value.to_le_bytes()).collect();
+                qualifier.queue.write_texture(
+                    texture.as_image_copy(),
+                    &bytes,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(16),
+                        rows_per_image: Some(1),
+                    },
+                    wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                let key = {
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = std::hash::DefaultHasher::new();
+                    (k, light.map(f32::to_bits)).hash(&mut hasher);
+                    hasher.finish()
+                };
+                pool.set_light_key(k, key);
+            }
+        }
         for (index, steps) in chain
             .links
             .iter()

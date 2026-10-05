@@ -15,10 +15,11 @@
 //! drawn on the GPU with the coverage overlay following it, and a brush stroke is painted through
 //! the same mask, its positions drawn on the GPU. Last, back in the pointer mode, Presence is
 //! committed with Dehaze and Clarity, and a Texture drag, a Clarity drag and a Basic drag under
-//! Presence are each drawn on the GPU: the two Presence drags read Dehaze's light from the store
-//! and run at most five of Presence's compute passes a tick (the spatial passes the tick's words
-//! change), and the Basic drag, which changes the light's input, takes the light on the GPU and
-//! runs them all.
+//! Presence are each drawn on the GPU, every one reading Dehaze's light from a light link: the two
+//! Presence drags the light at rest, which behind the Detail layer committed earlier the slot
+//! computes by its stand-in with Detail left out, running at most five of Presence's compute passes
+//! a tick (the spatial passes the tick's words change), and the Basic drag, which changes the
+//! light's input, a light computed every tick from the source, running them all.
 //!
 //! **Correlated readbacks.** Every frame drawn on the GPU is checked against the state the editor
 //! recorded with it — the drawing path, the boundary version and the draft revision the surface
@@ -889,14 +890,16 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
 
     // The Presence drags and the Basic drag under Presence: each GPU tick drawn with no preview
-    // job, from a plan whose light is stored or taken on the GPU, running the compute passes its
-    // words change; its pixels the CPU's frame of the same settings.
-    for (name, approximate, gain_only) in [
-        ("texture", false, true),
-        ("clarity", false, true),
-        ("under", true, false),
+    // job, running the compute passes its words change; its pixels the CPU's frame of the same
+    // settings. Detail, committed earlier, sits before Presence: the Presence drags read the light
+    // at rest, which the slot computes by its stand-in with Detail left out, and the Basic drag,
+    // before Detail, computes it every tick from the source with Detail left out.
+    for (name, lights, gain_only) in [
+        ("texture", "stand-in", true),
+        ("clarity", "stand-in", true),
+        ("under", "source", false),
     ] {
-        presence_drag_checks(launch, &mut checks, name, approximate, gain_only, true)?;
+        presence_drag_checks(launch, &mut checks, name, &[lights], gain_only, true)?;
     }
 
     settle_checks(launch, &mut checks)?;
@@ -904,7 +907,9 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
 }
 
 /// The checks of one drag made by [`drag_steps`] named `name`: each GPU tick drawn with no preview
-/// job, from a plan whose light is stored or taken on the GPU as `approximate` says, running at most
+/// job, from a plan each of whose lights is computed as `lights` says, in order — from the source
+/// through the prefix's colour, or by its stand-in with the spatial layers before it left out —
+/// running at most
 /// [`GAIN_PASSES`] compute passes a tick when the drag moves only a gain (`gain_only`), and the
 /// last one's pixels the CPU frame its release commits. When its sequence was `warmed` and the warm
 /// list had finished compiling as the drag began, no frame of the drag waits for it to compile;
@@ -913,7 +918,7 @@ pub(crate) fn presence_drag_checks(
     launch: &Checked,
     checks: &mut Checks,
     name: &str,
-    approximate: bool,
+    lights: &[&str],
     gain_only: bool,
     warmed: bool,
 ) -> Result {
@@ -976,11 +981,15 @@ pub(crate) fn presence_drag_checks(
             ),
         )?;
         let summary = &frame.state()["surface"]["gpu"]["gpu_preview"]["drag"];
+        let computed: Vec<Value> = summary["lights"]
+            .as_array()
+            .map(|read| read.iter().map(|light| light["computed"].clone()).collect())
+            .unwrap_or_default();
         ensure(
-            summary["approximate"] == json!(approximate),
+            computed == lights.iter().map(|light| json!(light)).collect::<Vec<_>>(),
             format!(
-                "{step}'s plan is approximate {}, not {approximate}",
-                summary["approximate"]
+                "{step}'s plan reads lights {}, not {lights:?}",
+                summary["lights"]
             ),
         )?;
         let passes = |frame: &Frame| {
@@ -1006,7 +1015,7 @@ pub(crate) fn presence_drag_checks(
     checks.note(
         launch.at(&format!("{name}-gpu-2"))?,
         &format!("the {name} drag on the GPU, against the CPU frame its release commits"),
-        json!({"approximate": approximate, "ticks": counted, "against_release": compared}),
+        json!({"lights": lights, "ticks": counted, "against_release": compared}),
     );
     Ok(())
 }

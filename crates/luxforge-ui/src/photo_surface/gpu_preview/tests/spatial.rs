@@ -140,6 +140,7 @@ fn spatial_plan(boundary: &GpuBoundary) -> GpuPlan {
             GpuStep::Spatial(Box::new(test_spatial())),
         ],
         region: None,
+        lights: Vec::new(),
     }
 }
 
@@ -366,6 +367,7 @@ fn an_identity_applys_planes_are_written_only_once_it_is_not() {
             texels: TexelMap::IDENTITY,
             steps: vec![GpuStep::Spatial(Box::new(spatial))],
             region: None,
+            lights: Vec::new(),
         }
     };
     let key = PlanesKey::of(&ticks(RADIUS, true).steps, (SIDE, SIDE), (0, 0)).expect("planes");
@@ -781,6 +783,7 @@ fn pass_pipelines_depend_on_their_kernel_and_shape_alone() {
             texels: TexelMap::IDENTITY,
             steps,
             region: None,
+            lights: Vec::new(),
         }
     };
     let created = |pipeline: &PhotoPipeline| {
@@ -855,6 +858,7 @@ fn a_change_to_an_apply_alone_runs_no_pass() {
                 GpuStep::Spatial(Box::new(spatial)),
             ],
             region: None,
+            lights: Vec::new(),
         }
     };
     let dispatched = |pipeline: &PhotoPipeline| {
@@ -1042,6 +1046,7 @@ fn chained_plan(boundary: &GpuBoundary, chained: Chained) -> GpuPlan {
             GpuStep::Spatial(Box::new(worded(last.0, last.1))),
         ],
         region: None,
+        lights: Vec::new(),
     }
 }
 
@@ -1324,6 +1329,7 @@ fn the_pools_generation_rebinds_a_link_once_a_texture_goes() {
                 GpuStep::Spatial(Box::new(last)),
             ],
             region: None,
+            lights: Vec::new(),
         }
     };
     let first_link = |pipeline: &PhotoPipeline| {
@@ -1447,6 +1453,7 @@ fn long_chain(boundary: &GpuBoundary, ends: &[GpuProgram], radius: u32) -> GpuPl
             })
             .collect(),
         region: None,
+        lights: Vec::new(),
     }
 }
 

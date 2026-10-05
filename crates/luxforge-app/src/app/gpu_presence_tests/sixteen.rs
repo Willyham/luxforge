@@ -5,7 +5,7 @@
 //! tick's frame is the whole evaluation's, bit for bit.
 use super::{photograph, stage};
 use crate::app::gpu_plan::surface_plan;
-use crate::app::gpu_qualification::{headless, held_to_whole};
+use crate::app::gpu_qualification::{headless, held_to_whole, lit_fixed};
 use luxforge_core::{
     BASIC_EFFECT, Component, ComponentMode, DETAIL_EFFECT, GPU_PLAN_LINKS, GPU_PROGRAMS,
     GPU_WARM_LINKS, GpuAnswer, GpuPlanRequest, GpuProgramKind, Layer, MASKS_PER_RECIPE,
@@ -124,7 +124,7 @@ fn sixteen() -> Recipe {
 /// The surface's own compile cache holds the largest plan's links and a whole warm list at once:
 /// the core bounds the warm list to the cache less the largest plan, whose links are a content
 /// link and one for each spatial operation, a global layer of each spatial effect and every masked
-/// spatial layer.
+/// spatial layer, and the light link its lights are computed with.
 #[test]
 fn gpu_preview_the_largest_plan_and_a_warm_list_fit_the_compile_cache() {
     let spatial_effects = GPU_PROGRAMS
@@ -133,7 +133,7 @@ fn gpu_preview_the_largest_plan_and_a_warm_list_fit_the_compile_cache() {
         .count();
     assert_eq!(
         GPU_PLAN_LINKS,
-        1 + spatial_effects + MAX_MASKED_SPATIAL_LAYERS
+        1 + spatial_effects + MAX_MASKED_SPATIAL_LAYERS + 1
     );
     assert_eq!(GPU_WARM_LINKS + GPU_PLAN_LINKS, PIPELINE_CACHE);
     const { assert!(MAX_MASKED_SPATIAL_LAYERS <= MASKS_PER_RECIPE) };
@@ -234,6 +234,8 @@ fn gpu_presence_sixteen_masked_layers_of_mixed_shapes_draw_what_a_whole_evaluati
         let plan = surface_plan(&planned(&stack), held.clone()).expect("a runnable plan");
         ticks.push((plan, None));
     }
+    // Every tick held to its whole evaluation, both reading one light, whichever it is.
+    lit_fixed(&qualifier, &ticks[0].0);
     let whole: Vec<_> = ticks
         .iter()
         .map(|(plan, _)| qualifier.evaluate(plan).expect("a readback"))
@@ -250,11 +252,11 @@ fn gpu_presence_sixteen_masked_layers_of_mixed_shapes_draw_what_a_whole_evaluati
         eprintln!("{test}: {}: {ran:?} passes", name(number));
     }
     // Each link's passes, tick by tick: every pass first, Detail's 4, 14 or 13 by its units and
-    // Presence's 13, 5 or 22. A link the tick leaves alone runs none, the link it changes the passes
+    // Presence's 13, 5 or 20. A link the tick leaves alone runs none, the link it changes the passes
     // its words change — sharpening its 4, noise reduction all 13, Clarity none, Texture 5, Dehaze
-    // 20 when a later link holding Dehaze's planes wrote its scratch since, a colour step after a
+    // all 20 when a later link holding Dehaze's planes wrote its scratch since, a colour step after a
     // Detail step none of Detail's — and every link after it, whose input moved, all of its own.
-    const EVERY: [u64; 16] = [4, 14, 13, 4, 14, 13, 13, 5, 22, 13, 5, 22, 13, 5, 22, 13];
+    const EVERY: [u64; 16] = [4, 14, 13, 4, 14, 13, 13, 5, 20, 13, 5, 20, 13, 5, 20, 13];
     let after = |link: usize, ran: u64| {
         let mut passes = EVERY;
         passes[..link].fill(0);
@@ -425,6 +427,8 @@ fn gpu_presence_a_drag_of_each_of_sixteen_masked_layers_finds_its_links_warmed()
     );
     let ticks: Vec<(GpuPlan, Option<[u32; 4]>)> =
         dragged.into_iter().map(|plan| (plan, None)).collect();
+    // Every tick held to its whole evaluation, both reading one light, whichever it is.
+    lit_fixed(&qualifier, &ticks[0].0);
     let whole: Vec<_> = ticks
         .iter()
         .map(|(plan, _)| qualifier.evaluate(plan).expect("a readback"))
@@ -437,7 +441,7 @@ fn gpu_presence_a_drag_of_each_of_sixteen_masked_layers_finds_its_links_warmed()
     }
     // The drafted layer holds Dehaze at its identity, so it runs Texture's and Clarity's 13 passes
     // first and none for a Clarity drag; every link after it runs all of its own.
-    let every = [4, 14, 13, 4, 14, 13, 13, 5, 22, 13, 5, 22, 13, 5, 22, 13];
+    let every = [4, 14, 13, 4, 14, 13, 13, 5, 20, 13, 5, 20, 13, 5, 20, 13];
     let mut moved = every;
     moved[..=DETAILS].fill(0);
     assert_eq!(passes, [every, moved, moved, moved].map(|ran| ran.to_vec()));

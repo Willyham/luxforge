@@ -1774,8 +1774,10 @@ fn a_stream_the_gpu_stops_drawing_is_rendered_again_by_the_reference_naming_why(
 
     for (refusal, reason) in [
         (
-            TileFallback::Plan(GpuFallback::RegionEstimate { layer: 0 }),
-            "region-estimate",
+            TileFallback::Plan(GpuFallback::Unplannable(
+                "a plan the planner cannot cut".into(),
+            )),
+            "unplannable",
         ),
         (
             TileFallback::Budget {
@@ -1816,9 +1818,9 @@ fn a_stream_the_gpu_stops_drawing_is_rendered_again_by_the_reference_naming_why(
         listing(&out),
         [
             "lost.jpg",
-            "region-estimate.jpg",
             "surface-pending.jpg",
-            "tiles-budget.jpg"
+            "tiles-budget.jpg",
+            "unplannable.jpg"
         ],
         "no temporary file and nothing of the failed export"
     );
@@ -1827,7 +1829,7 @@ fn a_stream_the_gpu_stops_drawing_is_rendered_again_by_the_reference_naming_why(
     let frame = reference(&harness.catalog, &asset, &entry);
     for name in [
         "lost.jpg",
-        "region-estimate.jpg",
+        "unplannable.jpg",
         "tiles-budget.jpg",
         "surface-pending.jpg",
     ] {

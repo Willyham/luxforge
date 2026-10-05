@@ -432,9 +432,8 @@ impl<'a> Render<'a> {
     ///
     /// - A spatial operation the boundary is rendered through reads the same whole-stage
     ///   estimates the exact region uses: from the store, or one reduction of its stage.
-    /// - One behind an earlier spatial operation reads the store alone, since no window can reduce
-    ///   its stage, and one the store does not hold is an error. The catalog owner checks the store
-    ///   before it asks for such a boundary (`gpu::preview`).
+    /// - One behind an earlier spatial operation reduces its own whole input, the segments before
+    ///   it kept whole, as a frame does ([`WindowPlan::of_gpu_rect`]).
     ///
     /// A stack the planner cannot cut answers its reason as an error, as a region the boundary
     /// cannot hold is no frame of it. The editor renders none: every plan starts from the source,
@@ -461,18 +460,7 @@ impl<'a> Render<'a> {
                     reason.reason()
                 ))
             })?;
-        let globals = |index: usize| -> Result<Vec<Option<Global>>, Error> {
-            if !self.compiled.spatial_before(index) {
-                return self.spatial_globals(index);
-            }
-            self.held_spatial_globals(index)?.ok_or_else(|| {
-                Error::validation(format!(
-                    "the GPU preview's region boundary: the estimate store does not hold the \
-                     global estimate of the spatial operation entering segment {index}, which \
-                     lies behind an earlier spatial layer that no window can reduce"
-                ))
-            })
-        };
+        let globals = |index: usize| self.spatial_globals(index);
         self.options.cancel.check()?;
         let source = match self.source {
             RenderSource::Byte(image) => RegionSource::Byte(
@@ -979,7 +967,7 @@ impl<'a> Render<'a> {
     /// [`Self::spatial_globals`] from the estimate store alone, under the key a frame of this render
     /// asks with: `None` when the store does not hold every one, which this never reduces.
     /// `O(units)`, and reads no pixel.
-    #[cfg(any(test, feature = "qualification"))]
+    #[cfg(feature = "qualification")]
     pub(crate) fn held_spatial_globals(
         &self,
         index: usize,

@@ -450,11 +450,20 @@ impl GpuSpatial {
             "",
             "",
         ))
-        .chain(
-            self.planes
-                .iter()
-                .map(|plane| (StepKind::Plane(*plane), "", "")),
-        )
+        .chain(self.planes.iter().map(|plane| {
+            // Which of the slot's light planes a step reads or writes is bound when it runs — a
+            // light link's by the view it is handed ([`super::light`]), a link's by its planes'
+            // key, whose locations name the light, so another light is another key and other
+            // groups — never compiled: the same sequence whichever light that is.
+            let plane = match plane.size {
+                PlaneSize::Light(_) => GpuPlane {
+                    size: PlaneSize::Light(0),
+                    ..*plane
+                },
+                _ => *plane,
+            };
+            (StepKind::Plane(plane), "", "")
+        }))
         .chain(self.passes.iter().map(|pass| {
             (
                 StepKind::Pass(PassKey {
@@ -1837,10 +1846,7 @@ impl PoolKey {
 
     /// The pool of `self`'s scratch textures holding `lights` light planes: one fitted for a light
     /// link, which declares the light it writes, beside the links of the plan whose readers do.
-    #[cfg_attr(
-        not(any(test, feature = "qualification")),
-        expect(dead_code, reason = "the slot runs no light link yet")
-    )]
+    #[cfg(any(test, feature = "qualification"))]
     pub(super) fn with_lights(self, lights: u32) -> Self {
         Self {
             lights: self.lights.max(lights),
@@ -1884,8 +1890,8 @@ impl PoolKey {
 
 /// One texture of a [`Pool`], with its view.
 pub(super) struct PoolTexture {
-    /// Held with its view; only the poison writes it directly.
-    #[cfg_attr(not(any(test, feature = "qualification")), allow(dead_code))]
+    /// Held with its view; only the poison and a light written into a light plane write it
+    /// directly.
     texture: wgpu::Texture,
     view: wgpu::TextureView,
 }
@@ -1902,8 +1908,7 @@ impl PoolTexture {
         &self.view
     }
 
-    /// The texture, for a readback.
-    #[cfg(any(test, feature = "qualification"))]
+    /// The texture, for a copy into it or a readback.
     pub(super) fn texture(&self) -> &wgpu::Texture {
         &self.texture
     }
@@ -1917,11 +1922,13 @@ pub(super) struct LightPlane {
     key: Option<u64>,
 }
 
-/// What a light plane is created with: what a plane is, a light link's storage write among it, and
-/// in a build with a readback the copies a test reads it by.
+/// What a light plane is created with: what a plane is, a light link's storage write among it, the
+/// copy a tile runner writes a light it computed into ([`Pool::write_light`]), and in a build with
+/// a readback the copy a test reads it by.
 #[cfg(not(any(test, feature = "qualification")))]
-const LIGHT_USAGE: wgpu::TextureUsages =
-    wgpu::TextureUsages::TEXTURE_BINDING.union(wgpu::TextureUsages::STORAGE_BINDING);
+const LIGHT_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
+    .union(wgpu::TextureUsages::STORAGE_BINDING)
+    .union(wgpu::TextureUsages::COPY_DST);
 #[cfg(any(test, feature = "qualification"))]
 const LIGHT_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
     .union(wgpu::TextureUsages::STORAGE_BINDING)
@@ -2133,6 +2140,37 @@ impl Pool {
         if let Some(light) = self.lights.get_mut(k as usize) {
             light.key = Some(key);
         }
+    }
+
+    /// Write `light`, `[r, g, b, 1]`, into light plane `k` on `queue`, ahead of any submission
+    /// that reads it, and record it as the plane's content: what a tile runner, which computes a
+    /// plan's lights once for every tile it draws, gives each tile's pool. Nothing for a plane the
+    /// pool does not hold.
+    pub(super) fn write_light(&mut self, queue: &wgpu::Queue, k: u32, light: [f32; 4]) {
+        let Some(plane) = self.lights.get_mut(k as usize) else {
+            return;
+        };
+        let bytes: Vec<u8> = light.iter().flat_map(|value| value.to_le_bytes()).collect();
+        queue.write_texture(
+            plane.texture.texture().as_image_copy(),
+            &bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(LIGHT_BYTES as u32),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        plane.key = Some({
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::hash::DefaultHasher::new();
+            (k, light.map(f32::to_bits)).hash(&mut hasher);
+            hasher.finish()
+        });
     }
 
     /// Light plane `k`'s texture, for a readback.
@@ -2678,32 +2716,6 @@ fn hash_of(parts: impl std::hash::Hash) -> u64 {
 
 /// What a light plane its light link has not written yet holds, as a key: no light link's.
 const UNLIT: u64 = u64::MAX;
-
-/// `input`, the content key of what a link's input holds, with the key of every light its `steps`
-/// read ([`Pool::light_key`]): what the link's content key folds in, so a light that changes —
-/// which changes nothing of the link's input, words or blocks — runs the link again, and each
-/// step reading it runs its passes and draws whole ([`GpuSpatial::global`]). `input` itself for
-/// steps that read no light.
-#[cfg_attr(
-    not(any(test, feature = "qualification")),
-    expect(dead_code, reason = "the slot runs no light link yet")
-)]
-pub(super) fn fold_lights(input: u64, steps: &[GpuStep], pool: &Pool) -> u64 {
-    let lights: Vec<(u32, Option<u64>)> = steps
-        .iter()
-        .filter_map(|step| match step {
-            GpuStep::Spatial(spatial) => Some(spatial),
-            _ => None,
-        })
-        .flat_map(|spatial| spatial.lights())
-        .map(|k| (k, pool.light_key(k)))
-        .collect();
-    if lights.is_empty() {
-        input
-    } else {
-        hash_of((input, lights))
-    }
-}
 
 impl Schedule {
     /// A schedule of new planes, which hold nothing yet, with a holder drawn from `pool`.

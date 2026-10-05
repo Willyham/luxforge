@@ -14,9 +14,9 @@
 //!   exact frame, its report and its view reduction — wherever the GPU cannot present the stack
 //!   ([`Editor::gpu_presents`]): before the surface has checked its stage or with the stage refused
 //!   or lost, the preference off, an open (no frame of the photograph on screen yet), a view plan
-//!   or tiles the GPU cannot draw (`region-estimate`, `spatial-unit`, `budget-exceeded`, a
-//!   refused conversion), a comparison, a crop draft's input stage in flight, or a content the
-//!   surface refused after it was presented.
+//!   or tiles the GPU cannot draw (`spatial-unit`, `budget-exceeded`, a refused conversion), a
+//!   comparison, a crop draft's input stage in flight, or a content the surface refused after it
+//!   was presented.
 //! - **Its counts are its report.** The picture at rest's tiles, drawn at full resolution, are
 //!   counted as they are drawn; where the view draws the stage at its own size or larger, or the
 //!   clipping overlay's marks are the view plan's, the same tiles are drawn for their counts alone

@@ -737,7 +737,7 @@ impl PhotoPipeline {
                 tile.forget_evaluation();
             }
             slot.waiting = false;
-            match self.evaluate(&mut slot.tile, device, queue, &plan, None) {
+            match self.evaluate_lit(&mut slot.tile, device, queue, &plan, None) {
                 Ok(_) => {}
                 Err(GpuFallback::Compiling | GpuFallback::SourceUploading { .. }) => {
                     slot.waiting = true;
