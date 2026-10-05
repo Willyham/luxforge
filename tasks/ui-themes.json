@@ -1,0 +1,583 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "ui-themes",
+  "title": "UI themes and Omarchy import",
+  "objective": "Let the person choose the interface's colours: a runtime theme with today's visual language as the default, Luxforge Dark; themes stored outside every catalog and programmable through the command service; and Omarchy theme folders imported as Luxforge themes. No theme may change a photograph, tint its surround or recolour a colour whose meaning is its colour.",
+  "context_summary": "Owner decisions of 2026-10-05 (docs/decisions.md, UI themes), on a plan the owner asked for on 2026-10-04: themes, light ones included, replace dark only, with today's palette as the default, Luxforge Dark; the photograph's surround stays neutral; each theme keeps its own accent; and a few popular Omarchy themes are bundled. The remaining questions run on the design's recorded defaults. The decisions settle the product questions; implementation waits for the owner to ask for it. Today one palette is compiled into crates/luxforge-ui/src/theme.rs: 69 colour constants read in about 230 places across 41 files, style functions and canvas draws that ignore Iced's theme, and eleven canvas caches with colours baked in and no palette in their keys. Omarchy 4 themes are folders whose colors.toml holds a semantic palette with a mode and an accent; Omarchy 3 and older themes use a terminal form or only alacritty.toml. The design is docs/design/ui-themes.md.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Settle the owner decisions the UI themes proposal needs before any implementation.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "Decided by the owner on 2026-10-05 and recorded in docs/decisions.md (UI themes): themes, light ones included, replace dark only, and the principle that the photograph is the only colour on screen holds for Luxforge Dark alone; the surround stays near-neutral in every theme; each theme keeps its own accent, its report noting one under 15 ΔE00 from a reserved colour; and a few popular Omarchy themes are bundled. The Develop workspace design marks its dark-only statements as superseded.",
+        "Left as recorded defaults the plan runs on, and recorded as an open product question: which themes are bundled (Tokyo Night, Catppuccin, Catppuccin Latte, Gruvbox, Nord and Everforest); the contrast floors, with an imported theme's own ink moved and reported; the Omarchy forms read; the Appearance tab; and following Omarchy's current theme or the system appearance later.",
+        "The figures in the design come from a Python prototype of the rules, run on Omarchy's built-in palettes at commit 035ce29f03, not from the implementation. The reader task records them again."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "UI themes design",
+          "target": "docs/design/ui-themes.md",
+          "locator": "Decisions",
+          "relevance": "The questions, recorded defaults and alternatives."
+        },
+        {
+          "kind": "file",
+          "label": "Owner decisions",
+          "target": "docs/decisions.md",
+          "locator": "Develop workspace",
+          "relevance": "The dark-only decision the proposal revises, and where the outcomes are recorded."
+        },
+        {
+          "kind": "file",
+          "label": "Develop workspace design",
+          "target": "docs/design/develop-workspace.md",
+          "locator": "Visual language",
+          "relevance": "The principle, visual language and decisions row the proposal would supersede."
+        }
+      ],
+      "acceptance_criteria": [
+        "Each question is accepted as its default, changed with the design updated to match, or explicitly left open; docs/decisions.md records each outcome with its date.",
+        "If themes are accepted, the design's status says so and the Develop workspace design marks its dark-only statements as superseded by the decision. If they are refused, the design and this plan are deleted and their roadmap, feature status and decisions entries removed.",
+        "No later task starts while the first question is open, and no proposal is reported as accepted."
+      ],
+      "test_strategy": {
+        "approach": "inspection",
+        "steps": [
+          "Review the decisions table with the owner.",
+          "Record each outcome in the decisions document and adjust the design where a default changed."
+        ],
+        "commands": [],
+        "expected_results": [
+          "One current design with explicit accepted decisions and any remaining gates."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Make the palette a runtime value: Luxforge's own Iced theme type in the widget crate, read by every style function and canvas draw, with every canvas cache keyed by its generation and Luxforge Dark drawing exactly what the constants draw today.",
+      "status": "ready",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "crates/luxforge-ui/src/theme.rs holds 69 colour constants (65 colours, TEMPERATURE_RAIL and TINT_RAIL, CHROME_SHADOW and MENU_SHADOW) and the style functions, all of which ignore their &Theme argument. About 230 production reads sit across 41 files, the most in widgets/mask_row.rs, range_slider.rs, notched_slider.rs, mode_control.rs, section_header.rs and histogram.rs; notice_card.rs and overlay_control.rs answer tokens from three const fns. The application installs a fixed value, `.theme(luxforge_ui::theme::theme())` in crates/luxforge-app/src/app/lifecycle.rs. Iced 0.14 also takes a function of the state, which it reads again after every update.",
+        "Implement Iced 0.14's theme::Base, whose mode() iced_winit applies to the native window when it opens and whenever it changes. Implement the catalogs of the widgets the desktop uses: text, container (which the tooltip uses), button, scrollable, text_input, slider, checkbox, pick_list with its menu, and progress_bar. Iced draws some defaults itself: the six unstyled scrollables in view/state_panel.rs, view/settings.rs, view/tools_panel.rs, view/canvas.rs and view/gallery.rs; the checkbox and text input in view/query_choice.rs; the pick list in widgets/menu_choice.rs; and the window's clear colour. Delegate those to an iced::Theme built from the roles and held in the Luxforge theme, so the default draws exactly as before.",
+        "These canvas caches bake colours, and none is keyed by a palette today: icon_button.rs (its key holds the icon's colour, but the overlay glyphs bake black, white and the MASK_GLYPH tokens unkeyed), histogram.rs, curve_editor.rs, slider.rs, range_slider.rs, notched_slider.rs, disclosure_heading.rs, color_swatch.rs, coverage_thumbnail.rs, color_picker.rs and sparkline.rs. Each key gains the theme's generation.",
+        "Never themed (design, Rules): the clipping colours and their overlay palette (app/overlay.rs, app/gpu_settle.rs, photo_surface/gpu_preview/clipping.rs); the mask overlay tints (app/masks.rs); the histogram's channel colours; declared rails; swatches and the colour picker; and the crop, mask and compare canvases' overlays. slider.rs and range_slider.rs lay a rail's stops over theme::PANEL at 85%. That backdrop becomes the panel held to the surround's 0.010 chroma bound, which for Luxforge Dark is the panel itself. The palette's and the Settings sheet's 35% black backdrops (view/palette.rs, view/settings.rs) become a token.",
+        "The layer rules stay as they are: the widget crate never reaches luxforge-core (widget-crate), and state/ holds no Iced value (state-layer). Sizes and fonts stay constants. Answer every performance-rules checklist item for the finished change."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "UI themes design",
+          "target": "docs/design/ui-themes.md",
+          "locator": "A runtime theme",
+          "relevance": "The theme type, what is never themed, and the cache keys."
+        },
+        {
+          "kind": "file",
+          "label": "Theme tokens",
+          "target": "crates/luxforge-ui/src/theme.rs",
+          "relevance": "The constants, the style functions and their value tests."
+        },
+        {
+          "kind": "file",
+          "label": "Application builder",
+          "target": "crates/luxforge-app/src/app/lifecycle.rs",
+          "relevance": "Where the fixed theme value is installed."
+        },
+        {
+          "kind": "file",
+          "label": "Rail compositing",
+          "target": "crates/luxforge-ui/src/widgets/slider.rs",
+          "relevance": "A declared rail laid over the panel token, and the rail's cache."
+        },
+        {
+          "kind": "file",
+          "label": "Develop workspace design",
+          "target": "docs/design/develop-workspace.md",
+          "locator": "Visual language",
+          "relevance": "The values Luxforge Dark must keep."
+        },
+        {
+          "kind": "file",
+          "label": "Repository rules",
+          "target": "xtask/src/repository.rs",
+          "relevance": "The widget-crate and state-layer rules that stay."
+        }
+      ],
+      "acceptance_criteria": [
+        "No themed colour is a constant read outside theme.rs, and the fixed colours are listed in one place with the reason each is fixed.",
+        "Every canvas cache's key includes the theme's generation, and a test per cache proves that a theme change rebuilds it.",
+        "A test theme of distinct colours draws each region of the gallery in its own token.",
+        "Under Luxforge Dark, the release builds from before and after this task capture the gallery's 104 states and the workspace scenario's frames, and the two decode to identical pixels. Frames that show timings are excluded by name."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the widget and view tests and the repository check.",
+          "Capture the gallery and workspace scenarios with the previous release build (--binary) and with the new one, and compare their decoded pixels."
+        ],
+        "commands": [
+          "cargo test --locked -p luxforge-ui",
+          "cargo test --locked -p luxforge-app --lib view",
+          "cargo xtask check-repository",
+          "cargo run --release --locked --package xtask -- smoke --scenario gallery --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- smoke --scenario workspace --output NEW_DIR"
+        ],
+        "expected_results": [
+          "All pass, and Luxforge Dark's captures are pixel-identical to the previous build's."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Add the theme model to the core: roles, derived and explicit tokens and the mode; the surround's and rail backdrop's chroma bound; the contrast floors and the moves they make; CIEDE2000 for the accent note; and Luxforge Dark as the built-in theme, equal to the visual language.",
+      "status": "ready",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "Add a theme module beside crates/luxforge-core/src/flags.rs and preferences.rs. The colour equations are written once in crates/luxforge-core/src/colour.rs: the sRGB transfer, Rec. 709 luminance and Oklab. CIEDE2000 joins them, tested against the independent implementation in crates/luxforge-reference/src/preview_error.rs.",
+        "Fits measured on the current tokens (design, Derived tokens): each of Luxforge Dark's other 40 chrome colours is one mix of two of its surfaces, text, accent and error ink, or of one of those and black or white, within three codes per channel, and 23 are exact. The accent over the panel at 12, 15, 15.5 and 17% gives the selected fills. Text mixed toward the background by 15.5, 32, 56.5 and 73.5% gives the label, secondary, tertiary and faint tiers within five codes; a mix of the text over one surface fits each within two. The accent's ink is the accent 89.5% toward black, or toward white when the accent's WCAG luminance is at most 0.179, and pure black or white where that mix misses 4.5:1. OKLab lightness steps of -0.031, +0.013 and +0.050 place the surround, surface and control; the surround sits below the background in both modes, and the control steps toward the text.",
+        "Floors, against the surround, background, surface and control: 7:1 for primary text, 4.5:1 for labels and secondary text, 3:1 for tertiary text, the accent and the error ink, and 4.5:1 for the accent ink on the accent. A derived tier stops short of its weight where it would miss its floor. An imported theme's own text or accent is moved in OKLab lightness, keeping its hue and chroma, and the move is reported. A native document that misses a floor is refused by name. The error ink is the clipping red, moved in lightness only.",
+        "Token names are the API's: snake_case, stable, and every one listed by theme.read. The fixed colours (clipping, mask overlay, histogram channels, declared rails, swatches, canvas overlays) are not tokens."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "UI themes design",
+          "target": "docs/design/ui-themes.md",
+          "locator": "The theme model",
+          "relevance": "Roles, derivation, legibility and the accent."
+        },
+        {
+          "kind": "file",
+          "label": "Colour equations",
+          "target": "crates/luxforge-core/src/colour.rs",
+          "relevance": "The sRGB, luminance and Oklab equations the model uses."
+        },
+        {
+          "kind": "file",
+          "label": "CIEDE2000 reference",
+          "target": "crates/luxforge-reference/src/preview_error.rs",
+          "relevance": "The independent implementation the core's is tested against."
+        },
+        {
+          "kind": "file",
+          "label": "Develop workspace design",
+          "target": "docs/design/develop-workspace.md",
+          "locator": "Visual language",
+          "relevance": "Luxforge Dark's values."
+        }
+      ],
+      "acceptance_criteria": [
+        "Luxforge Dark's resolved tokens equal the visual language's table exactly, and deriving from its roles alone reproduces each derived token within a tolerance the task records.",
+        "Golden tests cover a dark and a light synthetic theme. No theme's surround or rail backdrop passes 0.010 OKLCh chroma, every ink meets its floor, and each move of a theme's own ink is in its report.",
+        "A native document with a missed floor, a missing required role or an unknown field is refused by name, and a test shows the fixed colours are not tokens."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the core's theme and colour unit tests."
+        ],
+        "commands": [
+          "cargo test --locked -p luxforge-core --lib theme",
+          "cargo test --locked -p luxforge-core --lib colour"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Store and serve themes outside every catalog: themes.json beside preferences.json; theme.list, theme.read, theme.inspect, and theme.import and theme.export for Luxforge documents; theme.delete; the active theme through preferences.read and preferences.set {theme}; and their events.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003"
+      ],
+      "extra_context": [
+        "crates/luxforge-core/src/preferences.rs keeps preferences.json through capabilities/document.rs's JsonDocument, which is bounded, format-marked, locked and atomic. Preferences refuses unknown fields; the new theme field is absent by default. preferences.set (api/owner.rs) announces an event only when auto_collapse_history changes, and must also announce a theme change. preferences.read answers preference_values() (api/methods.rs). Methods are registered in api/methods.rs, and schema.list generates their parameters from host_params! structs.",
+        "Follow the preset library's conventions (docs/design/presets.md, Library and Methods): the {request_id, actor} mutation envelope; deduplication; an event named after each mutating method; names unique ignoring case, a duplicate being a conflict; and imported text kept verbatim and returned only by read.",
+        "Limits: 128 themes of at most 8 KiB each, in a document of at most 1 MiB; imported files of at most 64 KiB each. Luxforge Dark and the bundled Omarchy themes are built in: never stored, never deleted, their names taken. Deleting a built-in theme or the active theme is refused by name. A stored record this build cannot read is kept, listed in unrecognized and never rewritten. Evidence runs resolve the configuration root inside their evidence directory (crates/luxforge-app/src/main.rs), so the store is isolated with them."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "UI themes design",
+          "target": "docs/design/ui-themes.md",
+          "locator": "Library and API",
+          "relevance": "Storage, records, methods and events."
+        },
+        {
+          "kind": "file",
+          "label": "Preferences",
+          "target": "crates/luxforge-core/src/preferences.rs",
+          "relevance": "The preference store the active theme joins."
+        },
+        {
+          "kind": "file",
+          "label": "Bounded document writer",
+          "target": "crates/luxforge-core/src/capabilities/document.rs",
+          "relevance": "The format-marked, locked, atomic writer themes.json uses."
+        },
+        {
+          "kind": "file",
+          "label": "Method table",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "relevance": "Registration and schema.list."
+        },
+        {
+          "kind": "file",
+          "label": "Owner handlers",
+          "target": "crates/luxforge-core/src/api/owner.rs",
+          "locator": "preferences_set",
+          "relevance": "The preference write and its event."
+        },
+        {
+          "kind": "file",
+          "label": "Presets design",
+          "target": "docs/design/presets.md",
+          "locator": "Methods",
+          "relevance": "The library conventions to follow."
+        }
+      ],
+      "acceptance_criteria": [
+        "schema.list lists every method. An owner test imports a theme, lists it, chooses it through preferences.set, reads the event and reads the choice back, and a retry changes nothing twice.",
+        "Each refusal is by name: an unknown theme, a duplicate name (a built-in theme's included), a passed limit, a malformed or wrong-format document, deleting a built-in or the active theme, and preferences.set with an id the library does not hold.",
+        "A record this build cannot read is listed and survives a later write untouched, and no theme method changes an asset revision."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the core's theme, preferences and API tests."
+        ],
+        "commands": [
+          "cargo test --locked -p luxforge-core theme",
+          "cargo test --locked -p luxforge-core preferences"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Read Omarchy theme folders as Luxforge themes through theme.inspect and theme.import {format: omarchy}: colors.toml in each of Omarchy's forms, alacritty.toml where there is none, and light.mode, resolved as Omarchy resolves them and mapped to roles with a report. Bundle six popular Omarchy themes, vendored verbatim and read by the same reader.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "extra_context": [
+        "Omarchy lives at github.com/omacom/omarchy (MIT; formerly basecamp/omarchy). Pin its default branch, quattro, at 035ce29f03 (2026-10-04), whose theme files equal the v4.0.4 release's.",
+        "Its resolver, bin/omarchy-theme-color, takes the Omarchy 4 semantic keys, the Omarchy 3.3 to 3.8 terminal form (accent, cursor, foreground, background, selection_*, color0 to color15), and the short and ANSI aliases. It fills missing keys by fixed mixes, rounded as int(a*(1-t) + b*t + 0.5). It decides the mode from the mode key, then theme_type, then a light.mode file, then the background's brightness. bin/omarchy-theme-colors-from-alacritty derives a palette from alacritty.toml, taking colors.normal.blue as the accent.",
+        "Map six resolved values (design, What Luxforge reads): mode to mode; background to background; dark_background to surround, held to the chroma bound; lighter_background to control, derived instead when it equals the background; foreground to text; and accent to accent. Named colours are not read, because several built-in themes put other colours under them (Matte Black's yellow is a red).",
+        "Every value must be #rrggbb. Hyprland gradient strings and unknown keys are listed in the report and not used. Parse with toml_edit 0.25.15, already in Cargo.lock through proc-macro-crate, pinned in the workspace manifest, and keep its notice. Test fixtures are synthetic files in Omarchy's layout.",
+        "Bundled themes (owner, 2026-10-05: a few popular Omarchy themes; the set is a recorded default, design, Bundled themes): Tokyo Night, Catppuccin, Catppuccin Latte, Gruvbox, Nord and Everforest, about 594 bytes each. Vendor their colors.toml files verbatim from the pinned commit beside the core's theme module, never edited, with Omarchy's MIT licence (Copyright (c) David Heinemeier Hansson) and a notice naming each palette's upstream scheme; a test pins each file's SHA-256. Their ids are omarchy.<slug>; they are listed after Luxforge Dark as built in, read by the same reader as an import, never stored, never deleted, and their names are taken."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "UI themes design",
+          "target": "docs/design/ui-themes.md",
+          "locator": "Omarchy themes",
+          "relevance": "What Omarchy ships, what Luxforge reads, the mapping and the prototype's figures."
+        },
+        {
+          "kind": "url",
+          "label": "Omarchy's resolver",
+          "target": "https://github.com/omacom/omarchy/blob/quattro/bin/omarchy-theme-color",
+          "relevance": "The resolution to port, with its aliases, fallbacks and rounding."
+        },
+        {
+          "kind": "url",
+          "label": "Omarchy's theming notes",
+          "target": "https://github.com/omacom/omarchy/blob/quattro/docs/theming.md",
+          "relevance": "The keys, the mode, the ramp and what an installed theme may ship."
+        },
+        {
+          "kind": "url",
+          "label": "Omarchy's built-in themes",
+          "target": "https://github.com/omacom/omarchy/tree/quattro/themes",
+          "relevance": "The 22 palettes the parity check and the figures are run on."
+        },
+        {
+          "kind": "url",
+          "label": "Omarchy's alacritty fallback",
+          "target": "https://github.com/omacom/omarchy/blob/quattro/bin/omarchy-theme-colors-from-alacritty",
+          "relevance": "How a theme with only alacritty.toml gets its palette."
+        }
+      ],
+      "acceptance_criteria": [
+        "Synthetic fixtures each give their documented roles and report, or their refusal by name: an Omarchy 4 palette, an Omarchy 3 palette, short-name aliases, an alacritty.toml-only theme, each way of deciding the mode, gradient values, unknown keys, a non-hex value, malformed TOML, a missing background, foreground or accent, and an oversized file.",
+        "The reader resolves each of the 22 built-in palettes at the pinned commit to the values Omarchy's resolver gives. The design's table of what they become is recorded again from the implementation, with the commit.",
+        "No file but colors.toml, alacritty.toml and light.mode is ever read, and nothing a theme ships is run.",
+        "theme.list lists the six bundled themes after Luxforge Dark as built in. Each bundled file's SHA-256 equals the pinned commit's, each theme resolves to Omarchy's values and meets every floor after its reported moves, and none can be deleted or have its name taken by an import."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the reader's tests.",
+          "Inspect each built-in theme from a local clone at the pinned commit through theme.inspect, and record the reports."
+        ],
+        "commands": [
+          "cargo test --locked -p luxforge-core theme::omarchy"
+        ],
+        "expected_results": [
+          "All pass, and the 22 reports are recorded in the design."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Draw the active theme from the first frame and follow every change live: the launch read; the Settings sheet's Appearance tab with its rows; import of a Luxforge theme document, export and delete; the palette entries; the status bar's fallback; an event sync that runs with no photograph open; and evidence steps.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002",
+        "TASK-004"
+      ],
+      "extra_context": [
+        "The tab lists Luxforge Dark first, then the bundled Omarchy themes, then the imported themes by name; built-in rows have no Delete (design, Appearance tab).",
+        "The Settings sheet: state/settings.rs (SettingsTab, Settings, derive); app/settings.rs (its messages, read_flags and the coalesced write_preferences); view/settings.rs (the 720 by 480 sheet, its 160 pt tab rail and the hand-written General row); and app/message/settings.rs. Palette entries are built in state/palette.rs. Editor::new in app/mod.rs already reads the preferences synchronously before the first frame, for the Performance section, and the theme joins that read.",
+        "The event sync: app/tasks.rs (sync_now) marks preference and flag events, but app/sync.rs reads them again only while the sheet is open (flags_changed_elsewhere), and its subscription exists only while a photograph is open. Both change for theme and preference events.",
+        "Evidence: Step::Settings opens the sheet at Experiments (crates/luxforge-evidence/src/lib.rs, app/evidence.rs). Give it a tab, and add theme steps that drive the tab's own messages. The settings scenario checks state.settings.general exactly (xtask/src/settings_smoke.rs); that stays valid because General gains nothing.",
+        "state/ holds only the active theme's identity and the rows, as plain data (state-layer); the theme value lives in app/. Answer every performance-rules checklist item."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "UI themes design",
+          "target": "docs/design/ui-themes.md",
+          "locator": "Desktop",
+          "relevance": "The tab, the launch, live changes and the fallback."
+        },
+        {
+          "kind": "file",
+          "label": "Settings design",
+          "target": "docs/design/settings-and-flags.md",
+          "locator": "Settings surface",
+          "relevance": "The sheet the tab joins."
+        },
+        {
+          "kind": "file",
+          "label": "Settings state",
+          "target": "crates/luxforge-app/src/state/settings.rs",
+          "relevance": "The sheet's model."
+        },
+        {
+          "kind": "file",
+          "label": "Settings update",
+          "target": "crates/luxforge-app/src/app/settings.rs",
+          "relevance": "Reads, coalesced writes and the frame summary."
+        },
+        {
+          "kind": "file",
+          "label": "Settings view",
+          "target": "crates/luxforge-app/src/view/settings.rs",
+          "relevance": "The sheet and its tabs."
+        },
+        {
+          "kind": "file",
+          "label": "Event sync",
+          "target": "crates/luxforge-app/src/app/sync.rs",
+          "relevance": "The subscription that waits for a photograph, and the re-read that waits for the sheet."
+        },
+        {
+          "kind": "file",
+          "label": "Evidence steps",
+          "target": "crates/luxforge-evidence/src/lib.rs",
+          "relevance": "The Settings step to extend."
+        }
+      ],
+      "acceptance_criteria": [
+        "Desktop tests cover the Appearance model and rows; the palette entries; request parity for every action; adoption of another client's change with no photograph open; the fallback, naming the theme and its reason; the first frame drawn in the stored theme; and a theme change, counted as sending no asset.state, history.list or preview job.",
+        "The settings scenario passes unchanged."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the desktop's settings and theme tests, then the settings scenario."
+        ],
+        "commands": [
+          "cargo test --locked -p luxforge-app --lib settings",
+          "cargo test --locked -p luxforge-app --lib theme",
+          "cargo run --release --locked --package xtask -- smoke --scenario settings --output NEW_DIR"
+        ],
+        "expected_results": [
+          "All pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Import Omarchy themes from the Appearance tab and prove themes end to end. A folder picker takes one theme folder or a folder of them, reads only the reader's files, off the update loop and within their bounds, and imports each theme with its own report. A theme smoke scenario checks the result.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-005",
+        "TASK-006"
+      ],
+      "extra_context": [
+        "Classifying a folder: one that holds colors.toml, alacritty.toml or light.mode is one theme, and one whose subfolders hold them is a set of at most 256. Read each file, at most 64 KiB, on a task, never on the update loop (performance rule 12). Name a theme after its folder, title-cased, with a cloned repository's omarchy- prefix and -theme suffix removed; a name the library already holds is listed as a conflict. On Linux the picker opens at ~/.config/omarchy/themes, /usr/share/omarchy/themes or ~/.local/share/omarchy/themes, whichever exists first. The native dialogs are rfd's, opened as app/presets.rs opens the preset import's.",
+        "The scenario (design, Verification) runs at 1440 by 900 on a fixture. It imports a dark and a light synthetic Omarchy theme through the tab's own messages, switches between Luxforge Dark, a bundled theme and both imports, and has a second client switch it back. Each frame records the active theme, its resolved surround, background, surface, control and text tokens, and the reports.",
+        "The runner checks sampled pixels of the panels, the title bar, a control and the canvas against those tokens. It also checks the surround's chroma, that the photograph's pixels are identical under every theme, and that one export's SHA-256 is identical under two themes. It finds the photograph by the surround its frame records, because xtask/src/scenario/pixels.rs finds it by Luxforge Dark's canvas colour.",
+        "Importing Omarchy's whole themes directory lists the six bundled themes as conflicts, already built in. Capture the gallery and the workspace in each bundled theme, and in each of Omarchy's other built-in themes imported from a local clone at the pinned commit, as evidence for the owner's review. They are not committed unless the owner asks."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "UI themes design",
+          "target": "docs/design/ui-themes.md",
+          "locator": "Importing a folder",
+          "relevance": "Folder classification, bounds, naming and conflicts."
+        },
+        {
+          "kind": "file",
+          "label": "Scenario registry",
+          "target": "xtask/src/smoke.rs",
+          "relevance": "Where the theme scenario is declared, beside settings and gallery."
+        },
+        {
+          "kind": "file",
+          "label": "Settings scenario",
+          "target": "xtask/src/settings_smoke.rs",
+          "relevance": "The nearest scenario in shape, with its pixel checks of the drawn sheet."
+        },
+        {
+          "kind": "file",
+          "label": "Photograph placement",
+          "target": "xtask/src/scenario/pixels.rs",
+          "relevance": "Finds the photograph by the canvas colour."
+        },
+        {
+          "kind": "file",
+          "label": "Preset import dialog",
+          "target": "crates/luxforge-app/src/app/presets.rs",
+          "relevance": "How the desktop opens a native file dialog and sends the text it reads."
+        }
+      ],
+      "acceptance_criteria": [
+        "Desktop tests cover folder classification, the bounds, naming, a set with a conflict and a set with an unreadable file, each theme with its own report.",
+        "The theme scenario passes with every check above, and the development guide lists it.",
+        "The review captures of the bundled themes and of Omarchy's other built-in themes are recorded with the commit they came from."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the desktop's theme tests and the theme scenario.",
+          "Capture the gallery in each built-in theme."
+        ],
+        "commands": [
+          "cargo test --locked -p luxforge-app --lib theme",
+          "cargo run --release --locked --package xtask -- smoke --scenario theme --output NEW_DIR"
+        ],
+        "expected_results": [
+          "All pass, and the captures are recorded."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Document the delivered themes, verify the integrated work, and measure the runtime theme's cost once.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-007"
+      ],
+      "extra_context": [
+        "Documents to change (design, Documents that change on delivery): the Develop workspace's visual language becomes Luxforge Dark's document, and its principle, decisions row and architecture table change. The Settings design gains the Appearance tab and preferences.set {theme}. The architecture, the user guide, feature status, decisions, the roadmap and the development guide's list of scenarios change too. Keep the documents current, with no change log.",
+        "Measure once, on a quiet host with a release build (performance rule 13): the editor-latency drag's p50 and p95, and the workspace derivation per message, interleaved against the build from before the runtime theme; and measure's launch-to-first-frame. Record them with their scope in docs/specs/performance.md. Delete this plan once its outcome is recorded."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "UI themes design",
+          "target": "docs/design/ui-themes.md",
+          "locator": "Documents that change on delivery",
+          "relevance": "What changes when themes are delivered."
+        },
+        {
+          "kind": "file",
+          "label": "Development guide",
+          "target": "docs/engineering/development.md",
+          "locator": "When to verify",
+          "relevance": "The verification tiers and evidence rules."
+        },
+        {
+          "kind": "file",
+          "label": "Performance measurements",
+          "target": "docs/specs/performance.md",
+          "relevance": "Where the figures are recorded."
+        },
+        {
+          "kind": "file",
+          "label": "Editor latency harness",
+          "target": "xtask/src/editor_latency.rs",
+          "relevance": "The drag measurement and its options."
+        }
+      ],
+      "acceptance_criteria": [
+        "Every document listed describes delivered behaviour only, and feature status, the roadmap and decisions agree with the design.",
+        "The rendered tier passes on the integrated branch.",
+        "The drag latency, the workspace derivation and launch-to-first-frame are recorded before and after, with p50 and p95, load, build and source identity; any regression is reported with its figures."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Update the documents and run the rendered tier.",
+          "Run the measurements one at a time on a quiet host."
+        ],
+        "commands": [
+          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/24mp.jpg --mode drag --samples 30 --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- measure --binary PATH --output NEW_DIR"
+        ],
+        "expected_results": [
+          "The tier passes, and the figures are recorded with their scope."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-002",
+        "TASK-003"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-004"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-005",
+        "TASK-006"
+      ]
+    },
+    {
+      "wave": 5,
+      "task_ids": [
+        "TASK-007"
+      ]
+    },
+    {
+      "wave": 6,
+      "task_ids": [
+        "TASK-008"
+      ]
+    }
+  ]
+}
