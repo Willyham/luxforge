@@ -397,7 +397,7 @@
     },
     {
       "id": "TASK-006",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003",
         "TASK-005"
@@ -406,7 +406,8 @@
       "extra_context": [
         "Today a sample through a spatial layer is planned on the owner and evaluated by the point worker through PointTiles (crates/luxforge-core/src/render/spatial.rs), serially, with deferred pixel-read rounds for mutations (crates/luxforge-core/src/editor/pixels.rs, crates/luxforge-core/src/api/owner/point.rs). On the GPU a sample is one tile of the stack rendered at full resolution with its halos and one pixel read back; a pick's 25 points share one tile set. The owner still plans in O(layers) and hands the read to a GPU worker that owns a device queue; the answer carries the same identity fields.",
         "The sample equals the byte on screen at that pixel by construction when the view shows that tile at 100%, and otherwise the rendered tile's byte; against the reference it is within the display limit. The raw-panel and histogram scenarios already tie their pixels through `render.sample` as api steps.",
-        "Retire PointTiles, the point worker, the parked pixel-read rounds and the point-sample rows of the known costs; rule 4's exception becomes a sentence."
+        "Retire PointTiles, the point worker, the parked pixel-read rounds and the point-sample rows of the known costs; rule 4's exception becomes a sentence.",
+        "Delivered 2026-10-05: render.sample, the neutral pick, mask.sample-input, a colour-limited stroke's seed and edit.set-pixel are planned on the owner and read by its tile service, the desktop's GPU tile worker or the reference for a host without one, each answer naming its renderer; the point worker, PointTiles and the per-read round loop are deleted. Every corpus sample is within its limit and equal to the byte on screen, 6,250 of 6,250 on 250 stacks (artifacts/gpu-first/task-006/gate-merged in the lane's worktree). A mutation parks once per pixel its plans read, at most four, a proposal in docs/design/gpu-first.md beside the renderer field, cross-machine seeds and the RAW neutral patch on the owner. The sample timing is TASK-011's."
       ],
       "context_links": [
         {
