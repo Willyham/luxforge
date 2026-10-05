@@ -147,8 +147,8 @@ impl EditorService {
     /// state. It is where a canvas pick gets the colour a colour range's swatch is, and it exists so
     /// a client never has to decode one: the frame a client can see holds the masked operation's
     /// *output*, and a range selection is evaluated on its *input*, so a colour read from the picture
-    /// would be a different colour. Cost is one `O(layers)` point evaluation and no frame is
-    /// allocated.
+    /// would be a different colour. On the catalog owner the pixel is read by its tile service;
+    /// here, off it, with the reference renderer, which names no reason.
     pub fn mask_input_sample(
         &self,
         asset_id: &AssetId,
@@ -200,6 +200,7 @@ impl EditorService {
                 y,
                 width: stage.width,
                 height: stage.height,
+                renderer: crate::Renderer::headless(),
             })
         })
     }

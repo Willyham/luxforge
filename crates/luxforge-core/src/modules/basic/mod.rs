@@ -283,9 +283,9 @@ impl FieldPatch for Basic {
     /// The patch is read from the stage the Basic layer receives — the stage at that layer's index,
     /// or at the index a first commit would take when no layer exists — so a pick sees the image
     /// before this module's own correction and picking the same patch twice gives the same answer
-    /// whatever is already set. Every sample is a point query through the host's compiled
-    /// evaluation, so at most 25 points are evaluated at `O(layers)` each and no frame is
-    /// allocated.
+    /// whatever is already set. The host reads the 25 points off the catalog owner through one
+    /// session of its tile service, which draws the patch's one tile on the GPU, or with the
+    /// reference renderer evaluates the stage once for all of them.
     fn query(
         &self,
         query_id: &str,

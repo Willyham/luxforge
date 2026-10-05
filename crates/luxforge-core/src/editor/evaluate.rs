@@ -8,11 +8,12 @@ use crate::ErrorKind;
 use crate::{
     AssetId, Cancel, ContentPoint, Draft, EffectStage, EntryId, Error, HistoryEntry,
     MappingDescriptor, ModuleRegistry, PreviewJob, PreviewSource, ProxyBounds, Raster, Recipe,
-    Render, RenderContext, RenderOptions,
+    Region, Render, RenderContext, RenderOptions,
     analysis::AnalysisIdentity,
     export::CaptureMetadata,
     render::{Compiled, locate, transform_of},
     source::PreparedSource,
+    tiles::{ReadStage, ReadValues, ReferenceReads, TileReads},
 };
 use std::{borrow::Cow, sync::Arc};
 
@@ -715,54 +716,51 @@ pub(super) fn source_of(
     }
 }
 
-/// One output pixel planned on the catalog owner and evaluated wherever its caller chooses: the
-/// evaluation it reads, whose entry, snapshot and draft revision the answer names whatever is
-/// committed before it is evaluated. It shares the evaluation and owns nothing that scales with the
+/// One output pixel planned on the catalog owner and read by its tile service ([`crate::tiles`]):
+/// the evaluation it reads, whose entry, snapshot and draft revision the answer names whatever is
+/// committed before it is read. It shares the evaluation and owns nothing that scales with the
 /// image.
 pub(crate) struct PointPlan {
     evaluation: Evaluation,
-    /// Whether the point evaluates a spatial tile: the only point that costs more than
-    /// `O(layers)`, and the one the catalog owner hands to its point worker.
-    spatial: bool,
     x: u32,
     y: u32,
 }
 
 impl PointPlan {
     /// The point `(x, y)` of `evaluation`, refused now when no evaluation of it could answer: a
-    /// stack the host cannot compile, or a source the stack cannot be rendered against.
+    /// stack the host cannot compile, or a source the stack cannot be rendered against. Compiles
+    /// the stack, `O(layers)`, and reads no pixel.
     fn new(evaluation: Evaluation, x: u32, y: u32) -> Result<Self, Error> {
-        let spatial = evaluation.exact(&Cancel::never())?.evaluates_spatial();
-        Ok(Self {
-            evaluation,
-            spatial,
-            x,
-            y,
-        })
+        evaluation.exact(&Cancel::never())?;
+        Ok(Self { evaluation, x, y })
     }
 
-    /// Whether evaluating this point evaluates a spatial tile, the declared exception to point
-    /// queries costing `O(layers)`.
-    pub(crate) fn evaluates_spatial(&self) -> bool {
-        self.spatial
-    }
-
-    /// Evaluate the point from the plan's own compilation: `O(layers)`, and through a spatial
-    /// layer the one tile that contains it, whose byte is the byte a render writes there. A point
-    /// outside the rendered image is a validation error naming the stage it missed.
+    /// Evaluate the point here, through the reference renderer's reads ([`ReferenceReads`]): the
+    /// service's own answer, for a caller that holds no tile service.
     pub(crate) fn evaluate(self) -> Result<PixelSample, Error> {
-        self.evaluate_cancelled(&Cancel::never())
+        self.read(&ReferenceReads, &Cancel::never())
     }
 
-    pub(crate) fn evaluate_cancelled(self, cancel: &Cancel) -> Result<PixelSample, Error> {
-        let Self {
-            evaluation, x, y, ..
-        } = self;
-        let sampled = evaluation.exact(cancel)?.sample(x, y)?;
-        let rgba = sampled.rgba.ok_or_else(|| {
+    /// Read the point with `reads`, a tile service's renderer: the output stage's code there, as
+    /// that renderer draws it, with the identities of the entry, snapshot, source and draft the
+    /// plan was made against and the renderer that drew it. A point outside the rendered image
+    /// is a validation error naming the stage it missed.
+    pub(crate) fn read(self, reads: &dyn TileReads, cancel: &Cancel) -> Result<PixelSample, Error> {
+        let Self { evaluation, x, y } = self;
+        let answer = reads.session(&evaluation, cancel).read(
+            ReadStage::Output,
+            Region {
+                x0: x,
+                y0: y,
+                width: 1,
+                height: 1,
+            },
+            ReadValues::Codes,
+        )?;
+        let (width, height) = (answer.stage.width, answer.stage.height);
+        let rgba = answer.code(x, y).ok_or_else(|| {
             Error::validation(format!(
-                "sample ({x}, {y}) is outside the {}x{} rendered image",
-                sampled.width, sampled.height
+                "sample ({x}, {y}) is outside the {width}x{height} rendered image"
             ))
         })?;
         let entry = evaluation.entry();
@@ -770,12 +768,13 @@ impl PointPlan {
             entry_id: entry.id.clone(),
             snapshot_id: entry.snapshot.id.clone(),
             source_fingerprint: evaluation.source().fingerprint().to_owned(),
-            width: sampled.width,
-            height: sampled.height,
+            width,
+            height,
             x,
             y,
             rgba,
             draft: evaluation.draft().cloned(),
+            renderer: (&answer.answered).into(),
         })
     }
 }

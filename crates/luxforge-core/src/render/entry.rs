@@ -333,12 +333,6 @@ impl<'a> Render<'a> {
         })
     }
 
-    /// Whether a point of this stack evaluates a spatial tile, the declared exception to a point
-    /// query costing `O(layers)`. `O(segments)` and reads no pixel.
-    pub(crate) fn evaluates_spatial(&self) -> bool {
-        self.compiled.evaluates_spatial()
-    }
-
     /// The output stage's dimensions.
     pub(crate) fn stage(&self) -> (u32, u32) {
         let stage = self.compiled.stage();
