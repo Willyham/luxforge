@@ -176,11 +176,11 @@ fn gpu_preview_a_fit_drag_derives_its_boundary_and_makes_no_job_per_tick() {
 }
 
 /// A drag that starts from the resident boundary is drawn on the GPU from its first tick, so no
-/// CPU frame of it is presented on the way; the shared quiet policy still starts settling its
-/// drafted settings on the CPU once input pauses, from the GPU tick, though the frame on screen
-/// is the committed stack's exact one.
+/// CPU frame of it is presented on the way; a pause in it settles nothing on the CPU, whatever
+/// frame is on screen behind it: no whole frame is rendered on a pause (`docs/design/gpu-first.md`,
+/// stage 2).
 #[test]
-fn gpu_preview_a_drag_drawn_on_the_gpu_from_its_first_tick_settles_when_input_pauses() {
+fn gpu_preview_a_pause_in_a_drag_drawn_on_the_gpu_settles_nothing() {
     let catalog = catalog("quiet");
     let (mut editor, _, _) = real_photo(&catalog);
     editor.gpu.surface = Some(SurfaceReport::default());
@@ -214,13 +214,21 @@ fn gpu_preview_a_drag_drawn_on_the_gpu_from_its_first_tick_settles_when_input_pa
         Some(std::time::Instant::now() - std::time::Duration::from_millis(150));
     let _ = editor.update(Message::Preview(PreviewMessage::QuietTick));
     assert!(
-        editor.view_plan.quiet_settle_requested && editor.view_plan.in_flight,
-        "the draft's settlement starts: quiet={} plan={}",
+        !editor.view_plan.quiet_settle_requested && !editor.view_plan.in_flight,
+        "no settlement starts: quiet={} plan={}",
         editor.view_plan.quiet_settle_requested,
         editor.view_plan.in_flight
     );
+    assert_eq!(
+        editor.view_plan.quiet_since, None,
+        "nor is it waited for again"
+    );
+    assert!(
+        !editor.presentation.queue.is_busy(),
+        "no job renders on the pause"
+    );
     let records = logged(&mut editor, &log);
-    assert_eq!(events(&records, "preview_quiet_refine").len(), 1);
+    assert!(events(&records, "preview_quiet_refine").is_empty());
     let _ = let_go(&mut editor, ACTION, FIELD);
     assert!(run_commit(&mut editor));
     finish(editor, catalog);

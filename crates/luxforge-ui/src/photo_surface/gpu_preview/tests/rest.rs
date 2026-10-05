@@ -4,8 +4,12 @@
 //! reference's area average reduces the frame they make, and drawn in place of the photograph once
 //! the last is in.
 use super::super::headless::HeadlessSurface;
+use super::super::histogram::Counts;
 use super::*;
-use crate::photo_surface::{GpuRegion, GpuRest, GpuSource, RestFigures};
+use crate::photo_surface::{
+    CountsOutcome, GpuRegion, GpuRest, GpuSource, RestFigures, RestReduction,
+};
+use luxforge_reference::tolerance;
 
 /// Codes that vary along both axes, `width` × `height` pixels of four bytes each.
 fn codes(width: u32, height: u32) -> Vec<u8> {
@@ -134,6 +138,10 @@ fn a_picture_at_rest_is_drawn_in_tiles_and_reduced_to_the_view() {
         "{test}: {exact} of {} view pixels equal to the f64 reference's codes",
         SIDE * SIDE
     );
+    // Its tiles' counts are the whole stage's, every pixel once, exactly the reference's.
+    let counts = rest_counts(&device, &pipeline, 1);
+    assert_eq!(counts.pixels, u64::from(width * height));
+    assert_eq!(compared(&counts), reference_counts(&held));
     // Drawn again, the same bytes, and no tile drawn again.
     let again = paint(&device, &queue, &mut pipeline, &primitive);
     assert_eq!(again, drawn);
@@ -157,6 +165,7 @@ fn a_picture_at_rest_is_drawn_in_tiles_and_reduced_to_the_view() {
             dissolving: false,
             prepare_us: figures.prepare_us,
             fallback: None,
+            counts_only: false,
         }
     );
     assert!(figures.prepare_us > 0, "its first tile's prepare timed");
@@ -213,10 +222,58 @@ fn rest_of(tiles: &[GpuPlan]) -> GpuRest {
     GpuRest {
         version: 1,
         tiles: tiles.to_vec().into(),
-        view: (SIDE, SIDE),
-        across: axis(&coverage(WIDTH, SIDE)),
-        down: axis(&coverage(HEIGHT, SIDE)),
+        reduction: Some(RestReduction {
+            view: (SIDE, SIDE),
+            across: axis(&coverage(WIDTH, SIDE)),
+            down: axis(&coverage(HEIGHT, SIDE)),
+        }),
     }
+}
+
+/// The independent reference's counts of `codes`, three codes a pixel
+/// (`luxforge_reference::tolerance`), the reduction the release gate holds the GPU's to.
+fn reference_counts(codes: &[[u8; 3]]) -> tolerance::Counts {
+    let rgba: Vec<u8> = codes
+        .iter()
+        .flat_map(|[r, g, b]| [*r, *g, *b, 255])
+        .collect();
+    tolerance::Counts::of(&rgba, 4)
+}
+
+/// `counts` as the independent comparison holds them.
+fn compared(counts: &Counts) -> tolerance::Counts {
+    tolerance::Counts {
+        bins: [counts.r, counts.g, counts.b],
+        clipping: [
+            counts.r0,
+            counts.g0,
+            counts.b0,
+            counts.r255,
+            counts.g255,
+            counts.b255,
+            counts.any_shadow,
+            counts.any_highlight,
+            counts.all_shadow,
+            counts.all_highlight,
+            counts.both,
+        ],
+    }
+}
+
+/// The counts `pipeline`'s surface [`ID`] holds of its picture at rest of `version`, once read
+/// back, the device polled meanwhile.
+fn rest_counts(device: &wgpu::Device, pipeline: &PhotoPipeline, version: u64) -> Counts {
+    luxforge_testbase::wait_for("the picture at rest's counts", || {
+        let _ = device.poll(wgpu::PollType::Poll);
+        let held = pipeline.figures.counts.lock().unwrap().get(&ID).cloned()?;
+        let (counted, counts) = held.rest?;
+        assert_eq!(counted, version);
+        match counts.outcome() {
+            CountsOutcome::Counting => None,
+            CountsOutcome::Ready(counts) => Some(*counts),
+            CountsOutcome::Failed(error) => panic!("no counts: {error}"),
+        }
+    })
 }
 
 /// The identity's codes of `rgba`: each pixel's code decoded and held as the nearest half float,
@@ -377,5 +434,140 @@ fn a_picture_at_rest_drawn_headless_is_the_one_the_surface_draws() {
             );
         }
     }
+    settle(&pipeline);
+}
+
+/// A picture at rest with no reduction is drawn for its counts alone, a tile a frame: the CPU
+/// frame stays the photograph, no rest output is made or drawn, and once its last tile is in its
+/// counts are the whole stage's, exactly the reference's; drawn headless, the same counts.
+#[test]
+fn tiles_drawn_for_their_counts_alone_count_the_stage_and_draw_nothing() {
+    let test = "tiles_drawn_for_their_counts_alone_count_the_stage_and_draw_nothing";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let rgba = codes(WIDTH, HEIGHT);
+    let source = GpuSource::codes(3, Arc::new(rgba.clone()), WIDTH, HEIGHT).expect("a source");
+    let tiles = tiles_of(&source);
+    let rest = GpuRest {
+        reduction: None,
+        ..rest_of(&tiles)
+    };
+    pipeline.compile_now(&device, &tiles[0]);
+    let primitive = PhotoPrimitive {
+        source: Some(source.clone()),
+        rest: Some(rest.clone()),
+        ..primitive(ID, None)
+    };
+    let mut frames = 0;
+    loop {
+        assert_cpu_frame(&paint(&device, &queue, &mut pipeline, &primitive));
+        frames += 1;
+        let seen = diagnostics(&pipeline, ID);
+        let figures = seen.gpu_rest.expect("the rest's figures");
+        assert_eq!(figures.fallback, None, "frame {frames}");
+        assert!(figures.counts_only);
+        assert_eq!(seen.drawn_rest, None, "frame {frames}: nothing drawn");
+        if figures.done {
+            break;
+        }
+        assert!(frames < 6, "the tiles were never all drawn: {figures:?}");
+    }
+    assert_eq!(frames, 6, "one tile a frame");
+    let expected = reference_counts(&held_codes(&rgba));
+    let counts = rest_counts(&device, &pipeline, 1);
+    assert_eq!(compared(&counts), expected);
+    let mut surface = HeadlessSurface::new(&device, &queue);
+    let drawn = surface.rest(&source, &rest).expect("drawn headless");
+    assert!(drawn.codes.is_empty(), "no picture");
+    assert_eq!(
+        compared(&drawn.counts.expect("the counts headless")),
+        expected
+    );
+    paint(&device, &queue, &mut pipeline, &handing_none());
+    settle(&pipeline);
+}
+
+/// A gesture's tick is counted once, from the frame it drew, the frame on screen in motion, and
+/// read back tagged with its boundary and revision; a plan drawn with the clipping overlay's marks
+/// over its output, or with no tag, is not counted.
+#[test]
+fn a_gestures_tick_is_counted_once_from_the_frame_it_drew() {
+    let test = "a_gestures_tick_is_counted_once_from_the_frame_it_drew";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let (boundary, codes) = boundary_with_codes(9);
+    let tick = |tag: Option<u64>, steps: Vec<GpuStep>| {
+        let mut primitive = primitive(
+            ID,
+            Some(GpuPlan {
+                steps,
+                ..plan(&boundary, Vec::new())
+            }),
+        );
+        primitive.gpu_options.tag = tag;
+        primitive
+    };
+    let held = |pipeline: &PhotoPipeline| {
+        pipeline
+            .figures
+            .counts
+            .lock()
+            .unwrap()
+            .get(&ID)
+            .and_then(|held| held.tick.clone())
+    };
+    // No tag: the view plan at rest, which a picture at rest's tiles count instead.
+    paint(
+        &device,
+        &queue,
+        &mut pipeline,
+        &tick(None, vec![GpuStep::colour(identity())]),
+    );
+    assert!(held(&pipeline).is_none());
+    // The clipping overlay's marks over the output: not output codes.
+    let marks = GpuStep::Clipping(ClipMarks {
+        shadows: true,
+        highlights: true,
+        shadow_below: 0.0,
+        highlight_from: 1.0,
+        palette: [[0, 0, 255, 255], [255, 0, 0, 255], [255, 0, 255, 255]],
+    });
+    paint(
+        &device,
+        &queue,
+        &mut pipeline,
+        &tick(Some(3), vec![GpuStep::colour(identity()), marks]),
+    );
+    assert!(held(&pipeline).is_none());
+    // A tick: counted from its frame, exactly the reference's counts of the codes it drew.
+    let drawn = tick(Some(4), vec![GpuStep::colour(identity())]);
+    assert_codes(&paint(&device, &queue, &mut pipeline, &drawn), &codes);
+    let counts = luxforge_testbase::wait_for("the tick's counts", || {
+        let _ = device.poll(wgpu::PollType::Poll);
+        let tick = held(&pipeline)?;
+        assert_eq!(
+            (tick.boundary, tick.revision),
+            (9, 4),
+            "the boundary and the revision"
+        );
+        assert_eq!(tick.size, (SIDE, SIDE), "the frame drawn");
+        match tick.counts.outcome() {
+            CountsOutcome::Counting => None,
+            CountsOutcome::Ready(counts) => Some(*counts),
+            CountsOutcome::Failed(error) => panic!("no counts: {error}"),
+        }
+    });
+    assert_eq!(compared(&counts), reference_counts(&codes));
+    // Drawn again, the same tick is not counted again.
+    paint(&device, &queue, &mut pipeline, &drawn);
+    assert!(matches!(
+        held(&pipeline).map(|tick| tick.counts),
+        Some(RestCounts::Reading(_))
+    ));
+    paint(&device, &queue, &mut pipeline, &handing_none());
     settle(&pipeline);
 }

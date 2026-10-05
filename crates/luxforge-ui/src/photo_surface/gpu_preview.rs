@@ -3640,8 +3640,11 @@ pub use clipping::ClipMarks;
 pub mod histogram;
 
 mod rest;
-pub(super) use rest::RestSlot;
-pub use rest::{GpuRest, REST_TILES_PER_FRAME, REST_VIEW_PIXELS, RestFigures};
+pub use rest::{
+    CountsOutcome, GpuRest, REST_TILES_PER_FRAME, REST_VIEW_PIXELS, RestFigures, RestReduction,
+    TickCounts,
+};
+pub(super) use rest::{RestCounts, RestSlot, TickCounted};
 pub mod tiles;
 
 #[cfg(any(test, feature = "qualification"))]

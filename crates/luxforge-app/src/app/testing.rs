@@ -893,6 +893,7 @@ pub(crate) fn analysed(
             generation,
             identity,
             report,
+            source: Default::default(),
         },
         raster,
     )

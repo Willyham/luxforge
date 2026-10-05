@@ -125,6 +125,68 @@ impl Report {
     pub fn pixel_count(&self) -> u64 {
         self.r.iter().sum()
     }
+
+    /// The report of counts another reduction gave the codes of a `width × height` output — the
+    /// GPU's reduction over the stack's tiles (`docs/design/gpu-first.md`, stage 2) — in this
+    /// shape and domain: `bins` each channel's 256 bins, red, green and blue, and `clipping` the
+    /// endpoint counters in the report's order (`r0`, `g0`, `b0`, `r255`, `g255`, `b255`,
+    /// `any_shadow`, `any_highlight`, `all_shadow`, `all_highlight`, `both`). Refused unless every
+    /// channel's bins add up to the output's pixels and each channel's endpoint counters are its
+    /// first and last bins, so a report never describes another frame's pixel count.
+    pub fn of_counts(
+        bins: [[u64; 256]; 3],
+        clipping: [u64; 11],
+        width: u32,
+        height: u32,
+    ) -> Result<Self, Error> {
+        let pixels = u64::from(width) * u64::from(height);
+        for (channel, counted) in bins.iter().map(|bins| bins.iter().sum::<u64>()).enumerate() {
+            if counted != pixels {
+                return Err(Error::validation(format!(
+                    "channel {channel}'s bins count {counted} pixels, not the {pixels} of a \
+                     {width}x{height} output"
+                )));
+            }
+        }
+        let [r, g, b] = bins;
+        let [
+            r0,
+            g0,
+            b0,
+            r255,
+            g255,
+            b255,
+            any_shadow,
+            any_highlight,
+            all_shadow,
+            all_highlight,
+            both,
+        ] = clipping;
+        if [r0, g0, b0, r255, g255, b255] != [r[0], g[0], b[0], r[255], g[255], b[255]] {
+            return Err(Error::validation(
+                "a channel's endpoint counters are not its first and last bins",
+            ));
+        }
+        Ok(Self {
+            r,
+            g,
+            b,
+            r0,
+            g0,
+            b0,
+            r255,
+            g255,
+            b255,
+            any_shadow,
+            any_highlight,
+            all_shadow,
+            all_highlight,
+            both,
+            width,
+            height,
+            domain: DOMAIN,
+        })
+    }
 }
 
 /// A pixel's output clipping class: which endpoint(s) it has a channel at. This is the one
@@ -802,6 +864,39 @@ mod tests {
         let error = reduce(&[], u32::MAX, u32::MAX, &Cancel::never())
             .expect_err("overflowing dimensions must be rejected");
         assert_eq!(error.kind, ErrorKind::ResourceLimit);
+    }
+
+    /// A report of counts another reduction gave is the reducer's own report of the same codes,
+    /// and counts that do not describe the output's pixels are refused.
+    #[test]
+    fn a_report_of_counts_reduced_elsewhere_is_the_reducers_and_refuses_another_frames() {
+        let (width, height) = (61, 37);
+        let rgba = synthetic_buffer(width, height);
+        let reduced = reduce(&rgba, width, height, &Cancel::never()).unwrap();
+        let clipping = [
+            reduced.r0,
+            reduced.g0,
+            reduced.b0,
+            reduced.r255,
+            reduced.g255,
+            reduced.b255,
+            reduced.any_shadow,
+            reduced.any_highlight,
+            reduced.all_shadow,
+            reduced.all_highlight,
+            reduced.both,
+        ];
+        let bins = [reduced.r, reduced.g, reduced.b];
+        assert_eq!(
+            Report::of_counts(bins, clipping, width, height).unwrap(),
+            reduced
+        );
+        let error = Report::of_counts(bins, clipping, width + 1, height).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Validation, "another frame's size");
+        let mut moved = clipping;
+        moved[0] += 1;
+        let error = Report::of_counts(bins, moved, width, height).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Validation, "a counter not its bins'");
     }
 
     #[test]

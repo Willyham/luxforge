@@ -805,12 +805,12 @@ fn picture(
     // The picture at rest: its tiles reduced to the view where the job plans them, else the view
     // plan, the motion frame's own.
     let (at_rest, renderer, tiles) = match (rest.tiles, region) {
-        (Some(Ok(tiles)), None) => {
+        (Some(Ok(tiles)), None) if tiles.reduction.is_some() => {
             let handed = rest_now(gpu, &tiles, 1)?;
-            if handed.view != size {
+            let view = handed.reduction.as_ref().map(|reduction| reduction.view);
+            if view != Some(size) {
                 return Err(format!(
-                    "the tiles are reduced to {:?}, the view plan draws {size:?}",
-                    handed.view
+                    "the tiles are reduced to {view:?}, the view plan draws {size:?}"
                 ));
             }
             let drawn = surface
