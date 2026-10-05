@@ -212,6 +212,22 @@ fn a_light_links_steps_name_its_light() {
         tiled,
         160 * 160 * 16 + 19 * 13 * 16 + (1024 + 1024 + 2048) + 4 * 1024
     );
+    // A light whose blocks grow — a stroke on a mask before it — keeps its link, whose blocks
+    // buffer grows in place; another stage does not.
+    let shape = |light: &GpuLight| {
+        super::Shape::of(light, crate::photo_surface::BoundaryFormat::Half, 8192).expect("a shape")
+    };
+    let mut grown = light.clone();
+    if let GpuStep::Spatial(spatial) = &mut grown.steps[0] {
+        spatial.program.block = std::sync::Arc::from(vec![7u32; 4096]);
+    }
+    assert_ne!(shape(&grown), shape(&light));
+    assert!(shape(&light).holds(&shape(&grown)));
+    let wider = GpuLight {
+        stage: (316, 200),
+        ..light.clone()
+    };
+    assert!(!shape(&light).holds(&shape(&wider)));
 }
 
 /// A light that changes runs again the passes that read it, and nothing else; the content key a
