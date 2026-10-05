@@ -103,7 +103,7 @@ No parameters (refused like `activity.list`'s), no asset required, mutates nothi
     "reduced_planes": {
       "limit_bytes": 67108864, "retained_bytes": 12000096, "entries": 1,
       "render_hits": 6, "render_misses": 1, "tile_hits": 576, "tile_misses": 96,
-      "point_hits": 2, "point_misses": 0, "cells_handed_back": 1500000,
+      "cells_handed_back": 1500000,
       "publishes": 1, "evictions": 0, "refusals": 0
     }
   }
