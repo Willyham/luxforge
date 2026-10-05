@@ -93,11 +93,9 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 ## Interface
 
-**UI themes** ([design](design/ui-themes.md), [plan](../tasks/ui-themes.json)). Let the person choose the interface's colours, with today's palette kept as the default. Decided by the owner on 2026-10-05: themes, light ones included, in place of dark only; a neutral surround; each theme's own accent; and a few bundled Omarchy themes ([decisions](decisions.md#ui-themes)).
-- A runtime theme in the widget crate, with Luxforge Dark pixel-identical to today
-- A theme library and `theme.*` methods outside every catalog
-- Omarchy theme import, six bundled Omarchy themes and the Settings › Appearance tab
-- Owner review of the recorded defaults: which themes are bundled, the contrast floors, the Omarchy forms read and the Appearance tab
+**UI themes** ([design](design/ui-themes.md)) are implemented, with Omarchy import and six bundled Omarchy themes ([feature status](features.md)). Outstanding:
+- Owner review of the recorded defaults: which themes are bundled, the contrast floors, the Omarchy forms read, the canvas background's Theme default and the Appearance tab
+- Later, if the owner wants them: following Omarchy's current theme on Linux, following the system's light or dark appearance
 
 ## Programmability
 
