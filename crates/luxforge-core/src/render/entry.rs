@@ -162,6 +162,7 @@ impl ProxyStage {
 
     /// The stack's compilation at the whole proxy stage, before any window cuts it, or why it
     /// does not compile there.
+    #[cfg(feature = "qualification")]
     pub(crate) fn compiled(&self) -> Result<&Compiled, Error> {
         self.compiled.as_ref().map_err(Clone::clone)
     }
