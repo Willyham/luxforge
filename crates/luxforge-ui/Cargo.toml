@@ -22,6 +22,10 @@ half = { version = "=2.7.1", default-features = false, features = ["std"] }
 # allocation with no copy. Already in the build through wgpu, pinned to that version, so it adds no
 # package; the workspace forbids the unsafe a cast would otherwise take.
 bytemuck = { version = "=1.25.2", default-features = false }
+# The one hang-bounded wait, for the headless surface the qualification feature builds
+# (`photo_surface::gpu_preview::headless`), which waits for the compile thread as a test does.
+# Core-free, so the widget crate still never reaches the core.
+luxforge-testbase = { path = "../luxforge-testbase", optional = true }
 
 [features]
 # Qualification only: `photo_surface::gpu_preview::qualification`, which evaluates a GPU plan on a
@@ -29,7 +33,7 @@ bytemuck = { version = "=1.25.2", default-features = false }
 # GPU preview corpus harness. Only a `[dev-dependencies]` table may turn it on (`cargo xtask
 # check-repository`'s `gpu-qualification-only-in-tests` rule), so no build of the desktop reads a
 # GPU pixel back.
-qualification = []
+qualification = ["dep:luxforge-testbase"]
 
 [dev-dependencies]
 # The one gate and wait. Core-free, so the widget crate, which may not reach the core, can use it.
