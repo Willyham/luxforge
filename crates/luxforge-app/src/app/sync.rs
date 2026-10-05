@@ -301,7 +301,7 @@ impl Editor {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
         self.event("open_requested", || json!({"file":file}));
-        let proxy = self.proxy_bounds();
+        let proxy = self.drawn();
         import_task(
             self.owner.clone(),
             self.client,
@@ -389,7 +389,7 @@ impl Editor {
         if self.sync.poll.start().is_none() {
             return Task::none();
         }
-        let proxy = self.proxy_bounds();
+        let proxy = self.drawn();
         sync_task(
             self.owner.clone(),
             self.client,
@@ -597,7 +597,7 @@ impl Editor {
         let asset = state.asset.id.clone();
         self.busy = true;
         self.status.text = format!("Running {method}…");
-        let proxy = self.proxy_bounds();
+        let proxy = self.drawn();
         state_task(
             self.owner.clone(),
             self.client,

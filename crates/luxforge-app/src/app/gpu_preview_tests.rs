@@ -454,9 +454,9 @@ fn gpu_preview_a_drag_below_100_percent_draws_its_proxy_with_no_job_per_tick() {
         .unwrap();
         let key = refreshed
             .job
-            .gpu_resident
+            .gpu_rest
             .as_ref()
-            .and_then(|resident| resident.boundary.as_ref())
+            .and_then(|rest| rest.view.boundary.as_ref())
             .map(|request| request.key.clone())
             .expect("the resident boundary's request");
         let proxy = key.plan().expect("a proxy");
