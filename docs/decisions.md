@@ -97,7 +97,8 @@ Decided on 2026-09-23 under the owner's delegation for the [shared module capabi
 - Sending image data is consented **per asset**: a grant names the module, profile, adapter, endpoint origin, data class and asset, and is not remembered for later photos. Downloads are granted per resource version and origin.
 - Only the desktop (after Allow) or `luxforge-json --permission-authority` may grant. Live-session clients cannot; anyone may deny or revoke. Revocation cancels dependent jobs and never touches recipes, history or accepted artifacts; an endpoint change revokes the old grants.
 - Remote endpoints require HTTPS and public addresses; plain HTTP is allowed only to loopback, labelled as such. No proxies.
-- No remote provider adapter ships with the framework; the first real adapters arrive with Corrections. `managed-storage` and `local-runtime` wait for their first consumer.
+- No remote provider adapter ships with the framework; the first real adapters arrive with [AI editing](design/ai-editing.md). `managed-storage` waits for its first consumer; `local-runtime` is defined by AI editing.
+- Revised by the owner on 2026-10-05: consent to send photo data to a provider is remembered per provider profile and data class until revoked, in place of per asset; the change lands with AI editing's remote tier.
 - Derived artifacts live in a directory beside the catalog and move with it; the [current catalog format](design/versions-and-lineage.md#storage-catalog-format-12) holds their references beside the preset library, the mask table and the stroke store, and earlier formats are refused.
 
 Revised by the owner on 2026-09-24, after the [architecture review](#architecture-review):
@@ -350,6 +351,25 @@ Decided by the owner on 2026-10-04 after the hover-readout freeze and the audit 
 - The convergence is staged, each stage deleting a cache, a phase or a fallback; the tolerance numbers, the no-GPU fallback, the export device policy and the counts' cadence during motion run on the design's recorded defaults until recorded here.
 - Settled pixels and reports from the reference keep their exactness tests against frozen fixtures; the pillars' exact-buffer wording now reads reference-buffer within a declared tolerance.
 
+## AI editing
+
+Decided by the owner on 2026-10-05, on the [AI editing](design/ai-editing.md) proposal of 2026-10-04, together with the two Corrections decisions it depends on:
+
+- **AI editing is in scope**: Remove, Select, generative fill and Replace, and sky replacement, on local models the person downloads on request. The roadmap's exclusion of generative editing is lifted.
+- **Quality first; no licence or provenance gate on models.** Models are chosen and ranked by measured results. A weight licence keeps no model out of the lists and the terms of a model's training data are neither a criterion nor disclosed. The one thing shown is what affects the person: when a licence restricts how they may use their own results, the model's card says so in one line, and each feature's default pick is the best model without such a restriction. Weights are the person's downloads from their publishers, not project dependencies.
+- **The Fast fill model is the best measured result**, LaMa or MI-GAN, whatever its source.
+- **A stale AI patch keeps rendering.** When a RAW white-balance change or an earlier repair invalidates a frozen patch, it is marked stale, the row and the status bar say so, and export asks for an acknowledgement; render, sample and export do not fail. The Corrections design's fail-explicitly rule is replaced.
+- **The inference runtime is delegated**, to be chosen for quality first, then performance, then maintainability; ONNX Runtime through `ort` with Core ML is the measured choice under that order.
+- **Every choice between models is presented as a plain trade-off** ("Finds smaller objects; slower to start", "Higher quality, needs 24 GB of memory"), never by a model's technical name alone.
+- **The shadow and reflection region is an editable part of the selection**, suggested by a heuristic, where the models allow it.
+- **Budgets are accepted as starting figures under a quality-first rule**: the 256 MiB analysis cache and the 1 GiB of held candidates are accepted; a budget that would degrade a result is raised, with the measurement, rather than the result reduced; optimisation comes after the quality is right.
+- **The generative tier refuses to install below a model's declared minimum**, 24 GB of unified memory by default, with the requirement shown.
+- **Consent to send photo data to a remote provider is remembered** per provider profile and data class until revoked, in place of the per-asset default of 2026-09-23; the capability contract changes with the remote tier.
+- **The repair stage** sits after source development and before colour, in content coordinates, and the developer-only `PointReplace` primitive is deleted rather than reused (the Corrections decision).
+- **Sky replacement** is a deterministic layer over the Select Sky mask, with imported skies or a CC0 set.
+
+Recorded defaults and the remaining open questions (the first hosted provider, a removal fine-tune, a macOS 27 Swift shim, what a CPU-only machine is offered) are in the [design](design/ai-editing.md#decisions).
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/product-decisions.json).
@@ -359,7 +379,7 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 - Masking is authorized (2026-09-23) and is being implemented. Decided the same day: brush strokes are held in a **content-addressed stroke store** keyed by a hash of their contents, because every history entry stores a complete recipe and embedded strokes grow quadratically — about 37.5 MB across history for 200 strokes against 1.08 MB addressed. Entries stay full snapshots and pure deltas are rejected; a missing or corrupt stroke fails explicitly. It lands in phase C before the first brush ships, in the [current catalog format](design/versions-and-lineage.md#storage-catalog-format-12). The `points` kind, the stroke list and the `brush-paint` interaction are host primitives shared with the corrections proposal, not mask-private ones. See [masking](design/masking.md#stroke-storage).
 - Do masking's remaining recorded defaults stand — masks as a target for the delivered modules rather than a local-adjustment module of their own, the idempotent component algebra, a radial that selects inside, one stroke amount instead of Flow and Density, and the A-to-D phase order with brushes before range selections?
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
-- For the proposed [Corrections module](design/corrections.md), should AI Remove enter the accepted scope, and should a changed RAW source-development prefix require regeneration of a saved AI patch? Remote-photo consent is per asset by the [module capabilities](#module-capabilities) default.
+- [AI editing](design/ai-editing.md) was decided on 2026-10-05 ([above](#ai-editing)); still open: the first hosted provider, whether to fund a removal fine-tune, whether a macOS 27 Swift shim is worth a Mac-only accelerator, and what a CPU-only machine is offered.
 - Which measured workloads and responsiveness budgets become acceptance requirements?
 - For interactive previews, which additional measured quality levels and approximation error bounds are acceptable beyond the authorized viewport baseline? Temporary softness, the updating histogram, and viewport-bounded clipping are accepted above. For GPU previews the owner chose speed first ([above](#gpu-previews)); do the [proposed limits](design/gpu-preview.md#the-preview-error-limit) stand?
 - Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand? RAW white balance import converts values without calibration ([source-kind controls](#source-kind-controls)).

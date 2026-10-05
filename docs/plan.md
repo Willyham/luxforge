@@ -71,10 +71,19 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 **Lens and perspective correction** (implemented; qualification in progress, [design](design/lens-and-perspective.md), [plan](../tasks/lens-and-perspective.json)). Offline Lensfun profile distortion and manual two-axis perspective, with a fixed covered canvas, shared nonlinear mapping for crop and masks, and explicit prevention of duplicate embedded DNG correction. Functional implementation is verified; performance and photographic qualification remain outstanding. Coverage and read bounds are closed forms; the pinned index ships as a separate resource; Perspective is not presettable and strong minification is refused. Qualification needs authentic photographs for the qualified camera, lens and focal combinations.
 
-**Corrections** (proposal, [design](design/corrections.md), [plan](../tasks/corrections.json)). Remove blemishes and objects.
+**Corrections** (proposal, [design](design/corrections.md), [plan](../tasks/corrections.json)). Remove blemishes by hand.
 - Owner decisions: behaviour, repair-stage order, scope
 - Offline Clone and Heal: numerical contract, repair stage, brush masks, desktop workflow
-- AI Remove: provider qualification, local and remote adapters, candidate review and acceptance
+- The repair layer's frozen-patch operation with prefix invalidation, which AI editing's fills commit through
+
+**AI editing** (decided 2026-10-05, [design](design/ai-editing.md), [plan](../tasks/ai-editing.json)). Local, user-downloaded models behind one inference port and one analysis cache; nothing bundled, nothing sent without consent. The plan runs once the GPU-first integration branch has merged, with the Corrections foundation beside its first stage.
+- Decided: scope, quality-first model policy with no licence or provenance gate beyond a one-line use restriction, the runtime by quality then performance then maintainability, plain-language model choices, the effect region, stale patches kept rendering, budgets raised for quality, the 24 GB generative minimum, consent remembered per provider, the repair stage, sky replacement. Open: the first hosted provider, a fine-tune, a Swift shim, CPU-only machines
+- Groundwork: the prototype on `main` as the harness; the fill-quality study (the 512 px fill's softness on large objects), the Select model qualification and the generative qualification (Moebius, FLUX.2 klein 4B) on the M4
+- Foundation: the inference port and ONNX Runtime crate, `local-runtime` with activation and unload, the model manager with resumable multi-file downloads and a Models tab, the analysis task and cache, the hover worker and picker, the model-selection mask kind
+- **Remove** on the Fast tier through the Corrections repair stage; **Select** with a class menu that follows the photograph (Subject, Background, Sky, People, Water, Mountains, Vegetation, Ground, Architecture, Objects)
+- **Generative fill and Replace** on the local model, with variations, behind an experiment flag until qualified
+- Optional: **sky replacement** as a deterministic layer over the Select Sky mask; people parts and depth-range masks
+- Last: the typed remote-provider adapter and loopback protocol, Windows and Linux functional checks, qualification and measurement, documentation
 
 **Presets follow-ups** ([design](design/presets.md#later)). The library, apply, create and Lightroom import are delivered.
 - Owner review of the recorded defaults
@@ -87,7 +96,7 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - [Mask performance](design/mask-performance.md) reduces overlay handoff and preview-worker cost within the existing buffer bounds. General photo/coverage tail latency remains open; the [matched native comparison](specs/performance.md#mask-feedback-and-the-coverage-handoff) keeps loaded runs and delayed positions visible
 - A paint gesture's latency misses the provisional p95 bound on every recipe measured; the figures and their scope are in [performance](specs/performance.md#a-painted-strokes-own-latency)
 - The range selections have no photographic corpus: every figure in the [range study](design/range-study.md) is over flat synthetic patches
-- Density, edge-aware refinement, model-based selections, copying masks between photographs and mask presets are out of scope with their reasons recorded
+- Density, edge-aware refinement, copying masks between photographs and mask presets are out of scope with their reasons recorded; model-based selections are the [AI editing](design/ai-editing.md) proposal's Select
 
 **Tuning delivered tools.** Refine the recorded defaults of Presence, the colour mixer and the vignette (decision pending).
 
@@ -100,13 +109,13 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 ## Extensibility
 
 **Shared module capabilities follow-ups** ([design](design/module-capabilities.md)). Settings and secrets, consent, the transport, resources, tasks and derived artifacts are delivered on macOS; activation is deferred until a module needs `local-runtime`.
-- Owner review of the recorded defaults: per-asset photo consent, who may grant, loopback-only plain HTTP ([decisions](decisions.md#module-capabilities))
+- Owner review of the recorded defaults: who may grant, loopback-only plain HTTP ([decisions](decisions.md#module-capabilities)); per-asset photo consent was revised on 2026-10-05 to consent remembered per provider, landing with AI editing's remote tier
 - Windows Credential Manager and Linux Secret Service for module secrets, verified natively; both refuse with `not-ready` today
 - Native Windows and Linux checks of the transport's certificate verification and of resource removal, which on Windows must release a module's files before deleting them
-- The first reviewed provider adapters and their crop and mask data classes, with Corrections
+- The first reviewed provider adapters and their crop and mask data classes, with [AI editing](design/ai-editing.md)
 - Resumable, hash-checked downloads for large model files; an interrupted download restarts today
 - Setting and clearing secrets off the catalog owner, so an OS keychain prompt never holds other clients
-- `managed-storage` and `local-runtime` capabilities, when a module first needs them
+- `managed-storage` when a module first needs it; `local-runtime` is defined by the [AI editing](design/ai-editing.md) proposal as its first consumer
 
 **External modules.** Load separately authored modules.
 - Measure optional-module activation cost
@@ -137,4 +146,4 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 ## Not in scope
 
-Map, Book, Slideshow, Print, Web and Publish Services. Accounts, cloud sync, built-in AI chat, a plugin marketplace, a public compatibility framework and a generalized processing graph. General bitmap layers with blend modes. Generative editing, pending the owner's review of the Corrections proposal.
+Map, Book, Slideshow, Print, Web and Publish Services. Accounts, cloud sync, built-in AI chat, a plugin marketplace, a public compatibility framework and a generalized processing graph. General bitmap layers with blend modes. AI denoise, upscaling, generative expand, text-to-image and face retouching are not proposed ([AI editing](design/ai-editing.md) covers removal, selection, generative fill and sky replacement).

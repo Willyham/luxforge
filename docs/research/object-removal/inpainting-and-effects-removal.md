@@ -329,7 +329,7 @@ Only a few candidates are fully permissive in both code and weights: **LaMa** (A
 
 ### Cited Findings
 - Big-LaMa: 51M parameters, 256-px training, coherent at 1536², Apache-2.0 code — [LaMa](https://arxiv.org/pdf/2109.07161), [repo](https://github.com/advimman/lama). Core ML port runs on the macOS GPU — [CoreMLaMa](https://github.com/mallman/CoreMLaMa)
-- MI-GAN: 5.95M parameters, 1.2 s at 2048² on an iPad Pro M2, MIT weights — [RETHINED](https://arxiv.org/html/2503.14757), [MI-GAN](https://github.com/Picsart-AI-Research/MI-GAN)
+- MI-GAN: 5.95M parameters, 1.2 s at 1024² and 3.9 s at 2048² on an iPad Pro M2 (RETHINED's Table 2 and Figure 3), MIT weights — [RETHINED](https://arxiv.org/html/2503.14757), [MI-GAN](https://github.com/Picsart-AI-Research/MI-GAN)
 - OSOR-SDXL: one step, 0.42 s on A100 at up to 1024, effect-aware alpha head, MIT code, OpenRAIL++-M weights, ECCV 2026 — [OSOR](https://arxiv.org/html/2606.28094), [repo](https://github.com/Zhouqm-Git/osor)
 - RORem: 4 steps, <1 s on GPU, 76.2% success rate, Apache code and weights tag, SDXL-inpainting based — [RORem](https://arxiv.org/abs/2501.00740), [HF](https://huggingface.co/LetsThink/RORem)
 - FLUX.2 klein 4B: Apache-2.0, 4 steps, about 13 GB VRAM, about 17 s at 1024 on an M4 Max (4-bit, including load), and a diffusers inpaint pipeline exists — [HF](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B), [Runpod card](https://huggingface.co/Runpod/FLUX.2-klein-4B-mflux-4bit), [diffusers #13005](https://github.com/huggingface/diffusers/issues/13005). Training-free effect removal on klein works (PredErase) but depends on an NC I-JEPA component — [PredErase](https://arxiv.org/html/2609.00956)

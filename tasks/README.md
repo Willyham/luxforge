@@ -32,11 +32,14 @@ The three modules share the restoration stage, compile context, window planner, 
 
 | Plan | Purpose |
 | --- | --- |
-| [Corrections](corrections.json) | Proposed offline Clone/Heal and optional provider-agnostic AI Remove, with a qualified local-model path and explicit owner decisions |
+| [Corrections](corrections.json) | Proposed offline Clone/Heal, the repair stage, the shared brush and the repair layer's frozen-patch operation; its AI Remove is planned under AI editing |
+| [AI editing](ai-editing.json) | Proposed Remove, Select, generative fill and Replace, and optional sky replacement on local, user-downloaded models: the inference port and runtime, the model manager, the analysis cache and picker, the model-selection mask kind, the fill tiers, the remote-provider shape, portability, qualification and documentation |
 | [Dependency advisories](dependency-advisories.json) | Remove or re-review the two expiring advisory exceptions the dependency audit enforces |
 | [Product decisions](product-decisions.json) | Open product questions |
 
-The Corrections plan is a planning proposal. Its AI implementation builds on the implemented [module capabilities](../docs/design/module-capabilities.md) and depends on owner acceptance of the scope and consequential product choices in the [Corrections design](../docs/design/corrections.md).
+The Corrections plan covers Clone and Heal, the repair stage, the shared brush and the frozen-patch operation; its provider qualification, local and remote adapters and AI Remove workflow are cancelled there and carried by the AI editing plan, which depends by name on that foundation. The owner decided the repair stage, the deletion of `PointReplace` and the stale-patch rule on 2026-10-05 ([decisions](../docs/decisions.md#ai-editing)); its first task now freezes the Clone/Heal contract on those decisions.
+
+The AI editing plan runs on the owner's decisions of 2026-10-05 in [decisions](../docs/decisions.md#ai-editing): quality-first model choice with no licence or provenance gate, ONNX Runtime, stale patches kept rendering, budgets raised for quality, consent remembered per provider, sky replacement in scope. It builds on the object removal research, the standalone prototype measured on the M4 (on the `claude/object-removal-research-d3374b` branch until its harness task brings it onto `main`), the implemented module capabilities and the delivered mask model. The decisions task is complete; the harness task and the two foundation tasks that enter `crates/` are ready, the qualification tasks need only the harness, and the plan is sequenced after the GPU-first integration branch merges, with the Corrections foundation beside its first stage.
 
 RAW editing is implemented with initial native M4 verification. Its [design](../docs/design/initial-raw.md) records the owner's continuous RAW editing requirement, the pinned processing path, and outstanding controlled quality, resource and platform qualification, which the RAW plan carries. The supplied FC3411 DNG has required gain/warp corrections and continuous editor support; its [contract](../docs/design/air2s-dng.md) records the qualified encoding, numerical interpretation and limits. RAW recipes export through the shared [JPEG exporter](../docs/design/export.md).
 
