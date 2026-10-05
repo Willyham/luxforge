@@ -1,11 +1,12 @@
 //! The declared tolerance of every output kind against the reference renderer, as the
 //! [GPU-first design](../../../docs/design/gpu-first.md#the-contract) states it (owner,
-//! 2026-10-04): the GPU is the renderer of record, and what it produces — the picture on screen,
-//! the histogram and clipping counts, a sample and an export — is held to a declared limit against
-//! what the whole-frame CPU reference renders. This module names each [`Kind`], what it is
-//! compared with and its limit, and holds the comparisons: the picture through [`reduce_srgb8`]
-//! and the [`preview_error`] measure, the counts through [`histogram`], samples through
-//! [`samples`] and an export through [`export`].
+//! 2026-10-04): the GPU is the renderer of record, and what it produces — the picture on screen at
+//! rest and in motion, the histogram and clipping counts, a sample and an export — is held to a
+//! declared limit against what the whole-frame CPU reference renders. The picture in motion is held
+//! to the frame it settles to, by the design's recorded default of 2026-10-05, and on request to
+//! the reference. This module names each [`Kind`], what it is compared with and its limit, and holds
+//! the comparisons: the picture through [`reduce_srgb8`] and the [`preview_error`] measure, the
+//! counts through [`histogram`], samples through [`samples`] and an export through [`export`].
 //!
 //! Like the rest of this crate it is written from the design, never from production code, and
 //! depends on nothing. `cargo xtask gpu-qualification`, the release gate that renders the corpus
@@ -19,8 +20,10 @@ use crate::{
 /// One output the renderer of record produces, each with its own reference and limit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
-    /// The picture on screen, at rest and in motion, at every view.
-    Picture,
+    /// The picture on screen at rest, at every view.
+    PictureAtRest,
+    /// The picture on screen during a gesture: the frame a drag draws, at every view.
+    PictureInMotion,
     /// The histogram's bins and the clipping counts.
     Histogram,
     /// A sample or another pixel read.
@@ -31,11 +34,18 @@ pub enum Kind {
 
 impl Kind {
     /// Every kind, in the order a report lists them.
-    pub const ALL: [Self; 4] = [Self::Picture, Self::Histogram, Self::Sample, Self::Export];
+    pub const ALL: [Self; 5] = [
+        Self::PictureAtRest,
+        Self::PictureInMotion,
+        Self::Histogram,
+        Self::Sample,
+        Self::Export,
+    ];
 
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Picture => "picture",
+            Self::PictureAtRest => "picture-at-rest",
+            Self::PictureInMotion => "picture-in-motion",
             Self::Histogram => "histogram",
             Self::Sample => "sample",
             Self::Export => "export",
@@ -46,13 +56,24 @@ impl Kind {
         Self::ALL.into_iter().find(|kind| kind.name() == name)
     }
 
+    /// Whether the kind is a picture on screen, which a view of the corpus measures.
+    pub const fn picture(self) -> bool {
+        matches!(self, Self::PictureAtRest | Self::PictureInMotion)
+    }
+
     /// What the kind is compared with.
     pub const fn reference(self) -> &'static str {
         match self {
-            Self::Picture => {
+            Self::PictureAtRest => {
                 "The reference frame reduced to the view's size: the stack's exact whole frame, as \
                  export renders it, reduced by an area-weighted box average of its linear light at \
                  Fit and at percentages below 100%, and its visible region, unreduced, at 100%"
+            }
+            Self::PictureInMotion => {
+                "The frame the drag settles to: the CPU frame it stands in for until the GPU draws \
+                 the picture at rest (the proxy at Fit and below 100%, the exact visible region at \
+                 100%), then the GPU's frame at rest; or, on request, the reference frame at the \
+                 view's size"
             }
             Self::Histogram => "The reference frame's counts, from the exact whole frame",
             Self::Sample => {
@@ -66,7 +87,7 @@ impl Kind {
     /// The limit, as a report states it.
     pub const fn limit(self) -> &'static str {
         match self {
-            Self::Picture => {
+            Self::PictureAtRest | Self::PictureInMotion => {
                 "The preview error limit of the recipe's class: mean ΔE00, worst 16 × 16 block \
                  mean ΔE00, p99 ΔE00 and signed mean ΔL*"
             }
@@ -542,7 +563,9 @@ mod tests {
             assert_eq!(Kind::parse(kind.name()), Some(kind));
             assert!(!kind.reference().is_empty() && !kind.limit().is_empty());
         }
-        assert_eq!(Kind::parse("frame"), None);
+        assert_eq!(Kind::parse("picture"), None, "the picture is two kinds");
+        let pictures: Vec<Kind> = Kind::ALL.into_iter().filter(|k| k.picture()).collect();
+        assert_eq!(pictures, [Kind::PictureAtRest, Kind::PictureInMotion]);
     }
 
     #[test]
