@@ -27,6 +27,29 @@ impl Harness {
         Self::open(dir, catalog, Arc::new(ModuleRegistry::developer()))
     }
 
+    /// [`Self::start`] with the person's preferences kept in `<dir>/config`.
+    fn with_preferences(name: &str) -> Self {
+        let dir = temp_dir(&format!("export-{name}")).canonicalize().unwrap();
+        let catalog = dir.join("catalog.sqlite");
+        let (owner, join) = OwnerHandle::start_with_host(
+            &catalog,
+            Arc::new(ModuleRegistry::developer()),
+            HostConfig {
+                preferences_dir: Some(dir.join("config")),
+                ..HostConfig::unconfigured()
+            },
+        )
+        .unwrap();
+        let client = owner.register();
+        Self {
+            owner,
+            join: Some(join),
+            client,
+            dir,
+            catalog,
+        }
+    }
+
     fn open(dir: PathBuf, catalog: PathBuf, registry: Arc<ModuleRegistry>) -> Self {
         let (owner, join) = OwnerHandle::start_observed(
             &catalog,
@@ -416,6 +439,33 @@ fn detail_export_evaluates_exact_detail_once() {
         format!("{:x}", Sha256::digest(fs::read(&original).unwrap())),
         original_hash
     );
+}
+
+/// With an export folder remembered, `export.plan` suggests a name there, counting up within it,
+/// while it is a folder that exists; otherwise beside the original, as with none remembered.
+#[test]
+fn export_plan_suggests_the_remembered_folder_only_while_it_exists() {
+    let harness = Harness::with_preferences("remembered-folder");
+    let state = harness.import("DSC_0042.jpg");
+    let asset = state["asset"]["id"].clone();
+    let suggested = || harness.ok("export.plan", json!({"asset_id": asset}))["suggested"].clone();
+    let beside = json!(harness.dir.join("DSC_0042-edited.jpg"));
+    assert_eq!(suggested(), beside, "nothing remembered");
+    let folder = harness.dir.join("Exports");
+    harness.ok("preferences.set", json!({"export_folder": folder}));
+    assert_eq!(suggested(), beside, "a missing folder is not suggested");
+    fs::create_dir(&folder).unwrap();
+    assert_eq!(suggested(), json!(folder.join("DSC_0042-edited.jpg")));
+    fs::write(folder.join("DSC_0042-edited.jpg"), b"taken").unwrap();
+    assert_eq!(suggested(), json!(folder.join("DSC_0042-edited-2.jpg")));
+    // A file where the folder was is not a folder.
+    fs::remove_dir_all(&folder).unwrap();
+    fs::write(&folder, b"not a folder").unwrap();
+    assert_eq!(suggested(), beside);
+    fs::remove_file(&folder).unwrap();
+    fs::create_dir(&folder).unwrap();
+    harness.ok("preferences.set", json!({"export_folder": null}));
+    assert_eq!(suggested(), beside, "forgotten");
 }
 
 /// An export plans the entry's output stage and suggests a name beside the original, writes the

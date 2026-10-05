@@ -94,7 +94,7 @@ fn grid(
             .width(Length::Fixed(WIDTH))
             .height(Length::Fixed(height)),
     )
-    .style(theme::canvas_surface)
+    .style(theme::canvas_surface(theme::CANVAS))
     .into()
 }
 

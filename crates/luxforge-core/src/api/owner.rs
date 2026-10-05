@@ -11,14 +11,15 @@ use super::{
 use crate::ErrorKind;
 use crate::{
     AnalysisPlan, AnalysisSelection, AssetId, DraftId, EditorService, EditorState, EntryId, Error,
-    HostConfig, JobId, JobStatus, ModuleRegistry, Preparation, PreparationNeeds, PreviewJob,
-    ProxyBounds,
+    HostConfig, JobId, JobStatus, MaskOverlayColour, ModuleRegistry, Preparation, PreparationNeeds,
+    PreviewJob, ProxyBounds,
     activity::{ActivityBoard, ActivitySpec, Outcome},
     analysis::{AnalysisIdentity, AnalysisJob, AnalysisQueue, Report},
     artifacts::{self, ArtifactId, ArtifactRead, Collected, Collection},
     capabilities::host::CapabilityHost,
     editor::{Prepared, Preparing, SourceSignature, SourceWork},
     jobs::{CANCELLED, Family, JobControl, JobKind, Jobs, JoinKey, Opened, Output, Release},
+    preferences::CanvasBackground,
     source::PlaneGate,
 };
 use point::{POINT_QUEUE_CAPACITY, PointWorker};
@@ -56,6 +57,8 @@ pub(super) mod files;
 mod first_open_tests;
 pub(super) mod library;
 mod point;
+#[cfg(test)]
+mod preferences_tests;
 pub(super) mod previews;
 mod requests;
 pub(super) mod views;
@@ -1157,14 +1160,13 @@ fn owner_loop(
         let _ = completions.send(OwnerMessage::AnalysisReady);
     }));
     queue.set_activity(activity.clone());
-    // History collapses as the person chose, or by default when the preferences cannot be read:
-    // the desktop reports that failure when it reads them itself.
+    // History collapses and new RAW photos get their lens profile as the person chose, or by
+    // default when the preferences cannot be read: the desktop reports that failure when it reads
+    // them itself.
     let mut service = service;
-    service.set_auto_collapse(
-        host.preferences
-            .read()
-            .map_or(true, |preferences| preferences.auto_collapse_history),
-    );
+    let preferences = host.preferences.read().unwrap_or_default();
+    service.set_auto_collapse(preferences.auto_collapse_history());
+    service.set_auto_lens_profile(preferences.auto_lens_profile());
     let mut owner = Owner {
         service,
         host,
@@ -2414,30 +2416,62 @@ pub(super) fn flags_set(
 
 host_params! {
     pub(super) struct PreferencesSet {
-        performance_expanded: Option<bool> = boolean(),
-        auto_collapse_history: Option<bool> = boolean(),
+        performance_expanded: Option<Option<bool>> = boolean().notes("null resets it to expanded"),
+        auto_collapse_history: Option<Option<bool>> = boolean().notes("null resets it to on"),
+        auto_lens_profile: Option<Option<bool>> = boolean().notes("null resets it to on"),
+        mask_overlay_colour: Option<Option<MaskOverlayColour>> = enumeration(MaskOverlayColour::ALL.map(MaskOverlayColour::as_str)).notes("null resets it to green"),
+        canvas_background: Option<Option<CanvasBackground>> = enumeration(CanvasBackground::ALL.map(CanvasBackground::as_str)).notes("null resets it to dark"),
+        interface_size: Option<Option<u16>> = integer(100, 150).notes("percent: one of 100, 110, 125 or 150; null resets it to 100"),
+        catalog: Option<Option<PathBuf>> = path().notes("the absolute path of the catalog file the desktop opens at its next launch, which need not exist; null resets it to the default catalog"),
+        workspace: Option<Option<Value>> = json("{state_panel, tools_panel, thirds, clip_shadows, clip_highlights}, all booleans; null resets it to the workspace's defaults"),
+        brush: Option<Option<Value>> = json("{size, feather, flow}, each within the range mask.add-stroke declares for it; null resets it to the neutral brush"),
+        window: Option<Option<Value>> = json("{width, height, x, y} in the system's points: width and height within 320..=16384 and a finite position; null resets it to the default frame"),
+        export_folder: Option<Option<PathBuf>> = path().notes("the absolute path of the folder export.plan suggests while it exists, which need not exist now; null resets it to the original's folder"),
     }
 }
 
-/// `preferences.set`: one write of the preferences named. A change to auto-collapse reaches the
-/// catalog writer at once, for the next edit, and is announced, so a client showing it reads it
-/// again.
+/// `preferences.set`: one checked write of the preferences named, where `null` removes a stored
+/// value. The lens and auto-collapse switches reach the catalog writer at once, for the next
+/// import and edit. A change to anything the Settings sheet's General rows show is announced, so
+/// a client showing them reads them again; the desktop's remembered state announces nothing.
 pub(super) fn preferences_set(
     owner: &mut Owner,
     call: &Call<'_>,
     params: PreferencesSet,
 ) -> Result<Value, Error> {
-    let stored = owner
-        .host
-        .preferences
-        .set(crate::preferences::PreferenceChange {
-            performance_expanded: params.performance_expanded,
-            auto_collapse_history: params.auto_collapse_history,
-        })?;
-    if stored.auto_collapse_history != owner.service.auto_collapse() {
-        owner
-            .service
-            .set_auto_collapse(stored.auto_collapse_history);
+    fn decoded<T: serde::de::DeserializeOwned>(
+        name: &str,
+        value: Option<Option<Value>>,
+    ) -> Result<Option<Option<T>>, Error> {
+        value
+            .map(|value| {
+                value
+                    .map(|value| crate::preferences::decode(name, value))
+                    .transpose()
+            })
+            .transpose()
+    }
+    let change = crate::preferences::PreferenceChange {
+        performance_expanded: params.performance_expanded,
+        auto_collapse_history: params.auto_collapse_history,
+        auto_lens_profile: params.auto_lens_profile,
+        mask_overlay_colour: params.mask_overlay_colour,
+        canvas_background: params.canvas_background,
+        interface_size: params.interface_size,
+        catalog: params.catalog,
+        workspace: decoded("workspace", params.workspace)?,
+        brush: decoded("brush", params.brush)?,
+        window: decoded("window", params.window)?,
+        export_folder: params.export_folder,
+    };
+    let (before, stored) = owner.host.preferences.set(change)?;
+    owner
+        .service
+        .set_auto_collapse(stored.auto_collapse_history());
+    owner
+        .service
+        .set_auto_lens_profile(stored.auto_lens_profile());
+    if before.general() != stored.general() {
         announce_once(&mut owner.announced, &call.origin);
     }
     Ok(methods::preference_values(&stored))

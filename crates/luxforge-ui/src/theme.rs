@@ -10,8 +10,13 @@ use iced::{Background, Border, Color, Font, Padding, Shadow, Theme};
 
 // -- Surfaces ---------------------------------------------------------------------------------
 
-/// The darkest surface; the photograph sits on it.
+/// The darkest surface; the photograph sits on it. Also the `dark` canvas background, the one
+/// nobody chose.
 pub const CANVAS: Color = Color::from_rgb8(0x19, 0x19, 0x1b);
+/// The `black` canvas background.
+pub const CANVAS_BLACK: Color = Color::from_rgb8(0x00, 0x00, 0x00);
+/// The `grey` canvas background: an 18% grey, L* 50, for judging tone the way a print is judged.
+pub const CANVAS_GREY: Color = Color::from_rgb8(0x77, 0x77, 0x77);
 /// Side panels and status bar.
 pub const PANEL: Color = Color::from_rgb8(0x20, 0x20, 0x23);
 /// Title bar, floating strips, notices.
@@ -1686,9 +1691,10 @@ fn bordered_surface(background: Color) -> container::Style {
     })
 }
 
-/// The canvas surface: flat, no border (the photograph's own edge reads as the boundary).
-pub fn canvas_surface(_theme: &Theme) -> container::Style {
-    surface(CANVAS)
+/// The canvas surface in the chosen canvas background — [`CANVAS`], [`CANVAS_BLACK`] or
+/// [`CANVAS_GREY`]: flat, no border (the photograph's own edge reads as the boundary).
+pub fn canvas_surface(background: Color) -> impl Fn(&Theme) -> container::Style {
+    move |_theme| surface(background)
 }
 
 /// A side panel or the status bar: flat, no border.
@@ -2217,6 +2223,21 @@ impl DisabledStyle for button::Style {
     }
 }
 
+/// A control row the command palette has just revealed: an amber step well above
+/// [`MASK_ROW_SELECTED`], since the mark lasts a moment and must be seen at a glance, opaque so it
+/// reads the same on every renderer.
+pub const REVEALED_ROW: Color = Color::from_rgb8(91, 73, 50);
+
+/// A row the command palette has just revealed: [`REVEALED_ROW`], rounded, for the moment the
+/// mark lasts.
+pub fn revealed_surface(_theme: &Theme) -> container::Style {
+    surface(REVEALED_ROW).border(Border {
+        color: Color::TRANSPARENT,
+        width: 0.0,
+        radius: RADIUS.into(),
+    })
+}
+
 /// A group header's hairline rule.
 pub fn rule_surface(_theme: &Theme) -> container::Style {
     surface(RULE)
@@ -2447,9 +2468,27 @@ mod tests {
     #[test]
     fn surface_tokens_match_the_visual_language_table() {
         assert_eq!(CANVAS, Color::from_rgb8(0x19, 0x19, 0x1b));
+        assert_eq!(CANVAS_BLACK, Color::from_rgb8(0x00, 0x00, 0x00));
+        assert_eq!(CANVAS_GREY, Color::from_rgb8(0x77, 0x77, 0x77));
         assert_eq!(PANEL, Color::from_rgb8(0x20, 0x20, 0x23));
         assert_eq!(BAR, Color::from_rgb8(0x23, 0x23, 0x26));
         assert_eq!(CONTROL, Color::from_rgb8(0x2c, 0x2c, 0x31));
+    }
+
+    /// The canvas surface fills with whichever background it is given, and the grey one is the
+    /// 18% grey it claims: L* 50.
+    #[test]
+    fn canvas_surface_fills_each_canvas_background() {
+        let theme = theme();
+        for background in [CANVAS, CANVAS_BLACK, CANVAS_GREY] {
+            let style = canvas_surface(background)(&theme);
+            assert_eq!(style.background, Some(Background::Color(background)));
+            assert_eq!(style.border, Border::default());
+        }
+        let linear = ((CANVAS_GREY.r + 0.055) / 1.055).powf(2.4);
+        let lightness = 116.0 * linear.cbrt() - 16.0;
+        assert!((linear - 0.18).abs() < 0.01, "{linear}");
+        assert!((lightness - 50.0).abs() < 0.5, "{lightness}");
     }
 
     #[test]

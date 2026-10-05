@@ -47,6 +47,8 @@ pub(crate) use crate::state::ACTOR;
 #[derive(Clone, Debug)]
 pub(crate) struct Refresh {
     pub(crate) state: EditorState,
+    /// Original capture metadata on open; other refreshes keep the per-photo readout.
+    pub(crate) capture: Option<luxforge_core::CaptureInfo>,
     /// The newest page of history rows, read when an asset opens or changed elsewhere. `None`
     /// merges the current entry's row into the loaded page.
     pub(crate) history: Option<HistoryPage>,
@@ -154,9 +156,11 @@ pub(crate) struct SyncResult {
     /// The listing and the event sequence it was read at.
     pub(crate) presets: Option<(Vec<PresetSummary>, u64)>,
     pub(crate) capabilities: bool,
-    /// A `flags.set` or `preferences.set` changed the person's flags or preferences, which an open
-    /// Settings sheet reads again.
+    /// A `flags.set` changed the person's flags, which an open Settings sheet reads again.
     pub(crate) flags: bool,
+    /// A `preferences.set` changed a preference a General row shows, which the desktop reads
+    /// again whether or not the sheet is open.
+    pub(crate) preferences: bool,
     /// This desktop's own requests whose events the poll read and skipped, because the answer to
     /// each had already read its change back.
     pub(crate) own: Vec<String>,
@@ -173,6 +177,7 @@ impl SyncResult {
             presets: None,
             capabilities: false,
             flags: false,
+            preferences: false,
             own: Vec::new(),
         }
     }
@@ -673,15 +678,23 @@ pub(crate) fn refresh(
     let job = ready_preview_job(
         owner,
         proxied(
-            PreviewRequest::new(client, asset_id)
+            PreviewRequest::new(client, asset_id.clone())
                 .entry(Some(displayed))
                 .analyse()
                 .gpu(),
             proxy,
         ),
     )?;
+    let capture = if matches!(scope, Scope::Open) {
+        parse::<Option<luxforge_core::CaptureInfo>>(
+            fetch("source.inspect", json!({"asset_id":asset_id}))?["capture"].take(),
+        )?
+    } else {
+        None
+    };
     Ok(Refresh {
         state,
+        capture,
         history,
         versions,
         lineage,
@@ -1741,12 +1754,18 @@ pub(crate) fn sync_now(
             .events
             .iter()
             .any(|event| capability_event(&event.method));
-    // A flag or preference change touches no asset, so it alone reads only the flags and the
-    // preferences, and only while shown.
+    // A flag or preference change touches no asset, so it alone reads only the flags, while
+    // shown, and the preferences.
     let flags = events.gap
-        || events.events.iter().any(|event| {
-            event.method.starts_with("flags.") || event.method.starts_with("preferences.")
-        });
+        || events
+            .events
+            .iter()
+            .any(|event| event.method.starts_with("flags."));
+    let preferences = events.gap
+        || events
+            .events
+            .iter()
+            .any(|event| event.method.starts_with("preferences."));
     let asset = events.gap
         || events.events.iter().any(|event| {
             event.asset_id.as_ref() == Some(&asset_id)
@@ -1774,6 +1793,7 @@ pub(crate) fn sync_now(
         presets,
         capabilities,
         flags,
+        preferences,
         own: read.into_iter().map(|event| event.request_id).collect(),
     })
 }
@@ -2180,6 +2200,7 @@ mod tests {
                 "recipe.describe",
                 "mask.list",
                 "preview_job",
+                "source.inspect",
             ],
             "an open finds the Original on the page it read"
         );
@@ -2491,6 +2512,7 @@ mod tests {
             presets: None,
             capabilities: false,
             flags: false,
+            preferences: false,
             own: Vec::new(),
         };
         let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(stale))));

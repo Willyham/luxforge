@@ -1,7 +1,7 @@
 //! The reader and writer against an independent EXIF implementation (`kamadak-exif`): it writes
 //! every input, and reads back every payload the export writes.
 
-use super::{CaptureMetadata, FIELDS, Ifd, MAX_PAYLOAD, Value, jpeg_orientation};
+use super::{CaptureInfo, CaptureMetadata, FIELDS, Ifd, MAX_PAYLOAD, Value, jpeg_orientation};
 use exif::experimental::Writer;
 use exif::{Field, In, Rational, Reader, SRational, Tag, Value as ExifValue};
 use std::io::Cursor;
@@ -243,6 +243,44 @@ fn every_kept_field_round_trips_from_each_container() {
             );
         }
     }
+}
+
+#[test]
+fn information_reads_validated_capture_values_from_jpeg_tiff_and_raf() {
+    for little_endian in [false, true] {
+        let tiff = tiff(&kept(), little_endian, true);
+        for capture in [
+            CaptureMetadata::from_jpeg(&jpeg(&tiff)),
+            CaptureMetadata::from_raw(&tiff),
+            CaptureMetadata::from_raw(&raf(&jpeg(&tiff))),
+        ] {
+            let info = capture.information();
+            assert_eq!(info.make.as_deref(), Some("NIKON CORPORATION"));
+            assert_eq!(info.model.as_deref(), Some("NIKON Z 6"));
+            assert_eq!(info.lens_make.as_deref(), Some("Nikon"));
+            assert_eq!(info.lens_model.as_deref(), Some("NIKKOR Z 24-70mm f/4 S"));
+            assert_eq!(info.aperture, Some(2.8));
+            assert_eq!(info.exposure_seconds, Some(1.0 / 250.0));
+            assert_eq!(info.iso, Some(400));
+            assert_eq!(info.focal_mm, Some(35.0));
+            assert_eq!(info.focal_35mm, Some(35));
+            assert_eq!(info.captured_at.as_deref(), Some("2026:09:27 18:04:05"));
+        }
+    }
+    assert_eq!(
+        CaptureMetadata::from_jpeg(b"malformed").information(),
+        CaptureInfo::default()
+    );
+    let invalid = [
+        (Tag::ExposureTime, rationals(&[(1, 0)])),
+        (Tag::FNumber, rationals(&[(0, 1)])),
+        (Tag::PhotographicSensitivity, ExifValue::Short(vec![0])),
+        (Tag::FocalLength, rationals(&[(0, 0)])),
+    ];
+    assert_eq!(
+        CaptureMetadata::from_raw(&tiff(&invalid, true, false)).information(),
+        CaptureInfo::default()
+    );
 }
 
 #[test]

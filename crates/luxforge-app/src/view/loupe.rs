@@ -85,7 +85,7 @@ pub(crate) fn loupe<'a>(model: &'a LoupeModel, images: LoupeImages<'a>) -> Eleme
     container(body)
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(theme::canvas_surface)
+        .style(theme::canvas_surface(theme::CANVAS))
         .into()
 }
 

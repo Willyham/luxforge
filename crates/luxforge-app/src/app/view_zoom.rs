@@ -304,6 +304,44 @@ mod tests {
         );
     }
 
+    /// AppKit reports a pinch in the system's points; at an interface scale of 125% the layout is
+    /// in logical pixels 1.25 points wide, so a pinch near the canvas's far corner, which in points
+    /// lies beyond the canvas's logical rectangle, still zooms about that corner.
+    #[test]
+    fn a_pinch_at_an_interface_scale_reads_the_pointer_in_the_systems_points() {
+        use crate::app::testing::{boot, finish, real_photo};
+        let (empty, catalog) = boot();
+        finish(empty, catalog.clone());
+        let (mut editor, _, _) = real_photo(&catalog);
+        show_picture(&mut editor, (480, 320));
+        editor.view_state.window = (1440.0, 900.0);
+        editor.view_state.set_system_scale_factor(2.0);
+        editor.view_state.set_interface_size(125);
+        assert_eq!(editor.view_state.window, (1152.0, 720.0));
+        let [_, _, right, bottom] = layout::canvas_logical(
+            editor.view_state.window,
+            editor.session.workspace.state_panel,
+            editor.session.workspace.tools_panel,
+            editor.filmstrip_shown(),
+        );
+        let (x, y) = (right - 10.0, bottom - 10.0);
+        assert!(
+            x * 1.25 > right,
+            "in points the corner lies beyond the canvas"
+        );
+        let _ = editor.update(Message::View(
+            super::super::message::view::ViewMessage::Pinch(Pinch {
+                delta: 0.1,
+                x: f64::from(x * 1.25),
+                y: f64::from(y * 1.25),
+            }),
+        ));
+        assert!(
+            matches!(editor.session.preview.view.zoom, Zoom::Percent { .. }),
+            "the pinch zoomed"
+        );
+    }
+
     #[test]
     fn pinch_uses_the_same_session_command_as_an_api_client_and_commits_nothing() {
         use crate::app::testing::{boot, finish, real_photo};

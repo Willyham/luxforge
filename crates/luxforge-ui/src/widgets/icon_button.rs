@@ -40,6 +40,7 @@ pub enum Icon {
     Mask,
     Spark,
     Thirds,
+    Information,
     // The shell's title bar and status bar.
     Folder,
     Export,
@@ -89,7 +90,7 @@ pub enum Icon {
 
 impl Icon {
     /// Every icon with its name, in the order the gallery's icon board lists them.
-    pub const NAMED: [(&'static str, Icon); 72] = [
+    pub const NAMED: [(&'static str, Icon); 73] = [
         ("rotate-left", Self::RotateLeft),
         ("rotate-right", Self::RotateRight),
         ("flip", Self::Flip),
@@ -121,6 +122,7 @@ impl Icon {
         ("mask", Self::Mask),
         ("spark", Self::Spark),
         ("thirds", Self::Thirds),
+        ("information", Self::Information),
         // The shell's title bar and status bar.
         ("folder", Self::Folder),
         ("export", Self::Export),
@@ -404,6 +406,12 @@ pub(crate) fn draw_icon(frame: &mut canvas::Frame, icon: Icon, size: f32, color:
         }
     };
     match icon {
+        Icon::Information => {
+            frame.stroke(&canvas::Path::circle(p(8.0, 8.0), 6.0 * s), stroke);
+            frame.fill(&canvas::Path::circle(p(8.0, 4.8), 0.8 * s), color);
+            poly(frame, &[(6.5, 7.2), (8.0, 7.2), (8.0, 11.4)]);
+            line(frame, (6.5, 11.4), (9.5, 11.4));
+        }
         Icon::Plus => {
             line(frame, (8.0, 3.0), (8.0, 13.0));
             line(frame, (3.0, 8.0), (13.0, 8.0));

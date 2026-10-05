@@ -106,7 +106,9 @@ pub(crate) fn workspace<'a>(
     let canvas_area = container(canvas::surface(&model.canvas, surfaces))
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(theme::canvas_surface);
+        .style(theme::canvas_surface(canvas::background_colour(
+            model.canvas.background,
+        )));
     // Develop's filmstrip under the canvas, between the side panels, while it holds a set.
     let canvas_area: Element<'a, Message> = match &model.develop.strip {
         Some(model) => column![canvas_area, develop::strip(model, strip)]

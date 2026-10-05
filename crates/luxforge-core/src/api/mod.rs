@@ -252,8 +252,8 @@ impl MaskOverlayColour {
 }
 
 /// Per-client workspace state: which panels are open, which canvas mode is active, whether the
-/// thirds overlay is on, which clipping overlays are shown, what the canvas draws of the selected
-/// mask and whether gestures preview on the GPU. It is a client preference the owner holds, never
+/// thirds and information overlays are on, which clipping overlays are shown, what the canvas draws
+/// of the selected mask and whether gestures preview on the GPU. It is a client preference the owner holds, never
 /// authoritative edit state: an overlay never alters the raster, saved recipe, histogram population
 /// or a future export, and the GPU preview changes only what is drawn while a gesture moves. The
 /// desktop's developer components gallery is not here: which page it shows is that desktop's own
@@ -266,6 +266,8 @@ pub struct WorkspaceState {
     /// `pointer`, or the id of an available module that declares a canvas interaction.
     pub mode: String,
     pub thirds: bool,
+    /// Show the image-information overlay, off by default. Changes no recipe or preview generation.
+    pub information: bool,
     /// Show the shadow (any channel at code 0) clipping overlay.
     #[serde(default)]
     pub clip_shadows: bool,
@@ -303,6 +305,7 @@ impl Default for WorkspaceState {
             tools_panel: true,
             mode: POINTER_MODE.into(),
             thirds: false,
+            information: false,
             clip_shadows: false,
             clip_highlights: false,
             mask_overlay: MaskOverlayMode::Off,

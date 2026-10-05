@@ -627,6 +627,13 @@ impl EditorService {
             Some(gains) => cached && self.raw_development(asset_id, gains)?.is_some(),
             None => false,
         };
+        let capture = cached.then(|| {
+            let cache = self.source_cache.borrow();
+            match &cache.as_ref().expect("verified cached source").source {
+                PreparedSource::Jpeg(source) => source.capture.information(),
+                PreparedSource::Raw(source) => source.capture.information(),
+            }
+        });
         Ok(json!({
             "asset_id": asset_id,
             "entry_id": entry.id,
@@ -634,6 +641,7 @@ impl EditorService {
             "width": asset.width,
             "height": asset.height,
             "source": asset.source,
+            "capture": capture,
             "readiness": if !cached { "preparation-required" } else if needs_development { "development-required" } else { "ready" },
         }))
     }

@@ -97,7 +97,7 @@ pub(crate) fn centre(model: &MissingModel) -> Element<'_, Message> {
         )
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(theme::canvas_surface)
+        .style(theme::canvas_surface(theme::CANVAS))
     ];
     if let Some(note) = &model.note {
         layers = layers.push(container(caption(note.clone())).center(Length::Fill));

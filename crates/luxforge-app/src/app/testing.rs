@@ -230,6 +230,7 @@ pub(crate) fn refresh_for(
     truncated: bool,
 ) -> Refresh {
     Refresh {
+        capture: None,
         state: EditorState {
             asset: AssetRecord {
                 id: asset.clone(),

@@ -86,6 +86,8 @@ pub(crate) mod job_reads;
 #[cfg(test)]
 mod job_reads_tests;
 pub(crate) mod keymap;
+#[cfg(test)]
+mod launch_tests;
 mod lifecycle;
 #[cfg(test)]
 mod lifecycle_tests;
@@ -110,6 +112,9 @@ pub(crate) mod performance;
 mod pointer;
 #[cfg(test)]
 mod pointer_tests;
+mod preferences;
+#[cfg(test)]
+mod preferences_tests;
 pub(crate) mod presenter;
 pub(crate) mod presets;
 #[cfg(test)]
@@ -122,6 +127,9 @@ mod preview_tests;
 #[cfg(test)]
 mod proof_controls_tests;
 mod query_choice;
+mod remembered;
+#[cfg(test)]
+mod remembered_tests;
 pub(crate) mod select;
 pub(crate) mod select_catalog;
 #[cfg(test)]
@@ -153,6 +161,7 @@ mod view_state;
 mod view_state_tests;
 mod view_zoom;
 pub(crate) mod waker;
+mod window;
 
 pub(crate) use lifecycle::{Boot, run};
 
@@ -363,6 +372,9 @@ pub(crate) struct Editor {
     pub(crate) palette: state::palette::Palette,
     /// The Settings sheet: its tab, the flags it last read and the writes waiting.
     pub(crate) settings: state::settings::Settings,
+    /// The person's preferences, read once at launch and held whether or not the sheet is open,
+    /// and the one writer every `preferences.set` the desktop sends goes through.
+    pub(crate) preferences: state::preferences::PreferenceWriter,
     /// The version chip row's naming form.
     pub(crate) version_form: state::VersionForm,
     /// The Presets section: the library and its create form.
@@ -473,15 +485,16 @@ const AFTER_MESSAGE: [AfterMessage; 21] = [
 
 /// The seams whose work reads the screen just derived: what a capability section or a curve shows
 /// is the derived model's answer, so they run after [`Editor::rederive`], in this order.
-const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 3] = [
+const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 4] = [
     capabilities::after_derive,
     controls::after_derive,
+    palette::after_derive,
     loupe::after_derive,
 ];
 
 /// Every seam's subscription, each listed once. A seam with nothing to listen to returns
 /// [`Subscription::none`], so no timer or stream exists that no seam gates.
-const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 13] = [
+const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 14] = [
     keymap::subscription,
     view_state::subscription,
     mask_panel::subscription,
@@ -495,6 +508,7 @@ const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 13] = [
     loupe::subscription,
     develop::subscription,
     long_work::subscription,
+    palette::subscription,
 ];
 
 /// The graphics backend and adapter, asked of the renderer only by an evidence run, which is the
@@ -531,12 +545,14 @@ impl Editor {
             evidence
         });
         let initial = config.files.pop_front();
-        let preferences = tasks::call(&owner, client, "preferences.read", json!({}));
+        // The whole answer is held from launch: the Performance section starts from it, and so
+        // does anything else that applies a preference.
+        let preferences = tasks::call(&owner, client, "preferences.read", json!({}))
+            .and_then(|(value, _)| state::preferences::parse(value));
         let expanded = preferences
             .as_ref()
-            .ok()
-            .and_then(|(value, _)| value["performance_expanded"].as_bool())
-            .unwrap_or(true);
+            .map_or(true, |preferences| preferences.performance_expanded);
+        let failed = preferences.as_ref().err().cloned();
         let mut editor = Self {
             owner: owner.clone(),
             owner_join: Some(join),
@@ -574,6 +590,7 @@ impl Editor {
             coverage_worker: Default::default(),
             palette: Default::default(),
             settings: Default::default(),
+            preferences: state::preferences::PreferenceWriter::new(preferences),
             version_form: Default::default(),
             presets: Default::default(),
             capabilities: Default::default(),
@@ -612,22 +629,50 @@ impl Editor {
             .presentation
             .queue
             .set_activity(editor.owner.activity());
+        // The remembered panels, overlays and brush are in place before the first frame.
+        editor.seed_remembered();
         if editor.live_server.is_none() {
             editor.status.text = "Editor ready; live API unavailable on this host".into();
         }
+        // The Catalog row shows the catalog this launch opened, and a stored location whose folder
+        // was missing says so here too.
+        editor.preferences.catalog = config.launch_catalog.take().unwrap_or_default();
+        if let Some(note) = editor.preferences.catalog.missing_note() {
+            editor.status.text = note;
+        }
+        editor.view_state.memory.remember = config.remember_window;
         // The launch flags and the Performance preference share one file, so one sentence covers
         // both: every flag took its default for this launch and the section starts open.
-        if let Err(reason) = preferences {
+        if let Some(reason) = failed {
             editor.status.text = format!("Could not read preferences; using defaults: {reason}");
         }
+        // The first frame is drawn at the stored interface size and canvas background: Iced reads
+        // the application's scale factor from this state before it opens the window.
+        editor.apply_display_preferences();
         editor.event(
             "startup",
             || json!({"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"version":env!("CARGO_PKG_VERSION"),"debug_assertions":cfg!(debug_assertions),"mode":if editor.evidence.is_some() {"evidence"} else {"editor"}}),
         );
+        if let Some(stored) = &editor.preferences.catalog.missing {
+            editor.event(
+                "catalog_folder_missing",
+                || json!({"stored": stored, "opened": editor.preferences.catalog.path}),
+            );
+        }
         let scale = iced::window::oldest()
             .and_then(iced::window::scale_factor)
             .map(|value| Message::View(ViewMessage::ScaleFactor(value)));
         let trackpad = view_state::install_trackpad();
+        // A window opened at its remembered frame is checked against the display it opened on.
+        let placed = match config.opening {
+            Some(_) => crate::window_frame::report().map(|report| {
+                Message::View(ViewMessage::Placed {
+                    report,
+                    on_main: false,
+                })
+            }),
+            None => Task::none(),
+        };
         let backend = system_information(editor.evidence.is_some());
         // Tool controls are discovered once, through the same API every other client uses, and the
         // preset library is listed the same way; the event sync keeps it current afterwards.
@@ -648,7 +693,7 @@ impl Editor {
         editor.rederive();
         (
             editor,
-            Task::batch([scale, trackpad, backend, modules, presets, first]),
+            Task::batch([scale, trackpad, placed, backend, modules, presets, first]),
         )
     }
 
@@ -854,6 +899,7 @@ impl Editor {
             hover: &self.hover,
             palette: &self.palette,
             settings: &self.settings,
+            preferences: &self.preferences,
             version_form: &self.version_form,
             dimensions: self.presentation.dimensions,
             photo: self.presentation.has_picture(),
@@ -913,6 +959,7 @@ impl Editor {
             Message::Capability(message) => self.capability_update(message),
             Message::Performance(message) => self.performance_update(message),
             Message::Settings(message) => self.settings_update(message),
+            Message::Preferences(message) => self.preferences_update(message),
             Message::Export(message) => self.export_update(message),
             Message::Evidence(message) => self.evidence_update(message),
             Message::Select(message) => self.select_update(message),
