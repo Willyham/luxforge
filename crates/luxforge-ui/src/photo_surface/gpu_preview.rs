@@ -583,14 +583,20 @@ pub struct GpuPlan {
 }
 
 /// The rectangle of a plan's output stage its frame holds at a percentage zoom of 100% or more:
-/// the visible region at full scale. The last pass draws only these pixels, and the draw places them at the rectangle
-/// in the whole stage, as a region of the photograph is placed.
+/// the visible region at full scale. The last pass draws only these pixels, and the draw places
+/// them at the rectangle in the whole stage, as a region of the photograph is placed. A reduced
+/// whole frame drawn at such a zoom — the softer drag frame, a stage the photograph's output
+/// reduced — is a region of its own stage holding all of it, placed over the photograph's
+/// full output stage, which it is magnified to fill.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GpuRegion {
-    /// `[x0, y0, x1, y1]` of the output stage, half-open.
+    /// `[x0, y0, x1, y1]` of the plan's output stage, half-open.
     pub rect: [u32; 4],
-    /// The whole output stage.
+    /// The plan's whole output stage.
     pub stage: (u32, u32),
+    /// The photograph's full output stage the frame is placed over: [`Self::stage`] for a region
+    /// at full scale, the full stage a reduced whole frame's is a reduction of.
+    pub full_stage: (u32, u32),
 }
 
 impl GpuRegion {
@@ -2638,7 +2644,7 @@ impl PhotoPipeline {
         slot.output.region_key = plan.region.map(|region| super::RegionKey {
             rect: region.rect,
             stage: region.stage,
-            full_stage: region.stage,
+            full_stage: region.full_stage,
             quality: crate::RegionQuality::Interactive,
             content_id: 0,
             generation: 0,

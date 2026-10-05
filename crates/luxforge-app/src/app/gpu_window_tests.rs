@@ -622,7 +622,9 @@ fn gpu_window_an_exact_fit_crop_holds_the_window_its_output_reads() {
 fn gpu_window_an_exact_fit_slot_over_the_budget_keeps_the_cpu_path() {
     let catalog = catalog("budget");
     let mut editor = cropped_photo(&catalog);
-    editor.gpu.budget = Some(1);
+    // A byte beside the source the surface holds, which the budget charges too.
+    let source = editor.gpu.source().map_or(0, |source| source.bytes());
+    editor.gpu.budget = Some(source + 1);
     let log = attach_log(&mut editor);
     let _ = slide(&mut editor, "set-basic", "exposure", 0.2);
     let _ = slide(&mut editor, "set-basic", "exposure", 0.3);
@@ -850,11 +852,12 @@ fn gpu_window_a_chained_masked_plan_is_held_to_the_slots_own_charge() {
 }
 
 /// The budget a chained masked plan's boundary is held to before it is derived reads the pooled
-/// figure. Over a 100% region, a budget the slot fits to the byte derives the boundary, though the
-/// figure the desktop held a plan to before the pool — every plane of every spatial step in a
-/// texture of its own, with the passes' parameters and no link's intermediate — passes it, and so
-/// does that figure with the intermediates, what each link holding its own scratch charged. A byte
-/// less names `budget-exceeded`, with the pooled figure and the budget in `over_budget`.
+/// figure, beside the source the surface holds, which the same budget charges. Over a 100% region,
+/// a budget the slot and the source fit to the byte derives the boundary, though the figure the
+/// desktop held a plan to before the pool — every plane of every spatial step in a texture of its
+/// own, with the passes' parameters and no link's intermediate — passes it, and so does that figure
+/// with the intermediates, what each link holding its own scratch charged. A byte less names
+/// `budget-exceeded`, with the pooled figure and what the budget leaves the slot in `over_budget`.
 #[test]
 fn gpu_window_a_chained_masked_plan_derives_its_boundary_when_its_pooled_slot_fits() {
     use luxforge_ui::photo_surface::gpu_preview::chain_charge;
@@ -896,8 +899,9 @@ fn gpu_window_a_chained_masked_plan_derives_its_boundary_when_its_pooled_slot_fi
         unshared + intermediates
     );
     assert!(pooled < unshared, "{pooled} B, {unshared} B apart");
-    // A byte less than the pooled figure.
-    editor.gpu.budget = Some(pooled - 1);
+    // A byte less than the pooled figure beside the source.
+    let source = editor.gpu.source().map_or(0, |source| source.bytes());
+    editor.gpu.budget = Some(source + pooled - 1);
     let log = attach_log(&mut editor);
     let _ = slide(&mut editor, "set-basic", "exposure", 0.5);
     let records = logged(&mut editor, &log);
@@ -915,7 +919,7 @@ fn gpu_window_a_chained_masked_plan_derives_its_boundary_when_its_pooled_slot_fi
         serde_json::json!({"requested": pooled, "budget": pooled - 1})
     );
     // The pooled figure exactly, which the old figure and the slot of unshared links both pass.
-    editor.gpu.budget = Some(pooled);
+    editor.gpu.budget = Some(source + pooled);
     let _ = slide(&mut editor, "set-basic", "exposure", 0.6);
     let summary = editor.gpu.summary();
     assert_eq!(editor.gpu.ticks().2, 1, "the boundary is derived");
@@ -924,6 +928,125 @@ fn gpu_window_a_chained_masked_plan_derives_its_boundary_when_its_pooled_slot_fi
     let _ = editor.update(Message::Draft(
         crate::app::message::draft::DraftMessage::Cancel,
     ));
+    finish(editor, catalog);
+}
+
+/// A photograph of `width` × `height` with detail at every scale, written as a JPEG into a directory
+/// of its own: one the view shows a part of at 100%.
+fn written(name: &str, width: u32, height: u32) -> std::path::PathBuf {
+    let dir = luxforge_testbase::paths::temp_dir(&format!("gpu-window-{name}"));
+    let path = dir.join("photograph.jpg");
+    let image = image::RgbImage::from_fn(width, height, |x, y| {
+        image::Rgb([0, 1, 2].map(|channel| (value(x, y, channel) * 255.0).round() as u8))
+    });
+    let file = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
+    image::codecs::jpeg::JpegEncoder::new_with_quality(file, 95)
+        .encode_image(&image)
+        .expect("the photograph is written");
+    path
+}
+
+/// A region drag at 100% whose slot, beside the source, passes the budget is drawn from the draft's
+/// plan at the reduced stage of the view's area, the softer frame: the boundary is the source
+/// reduced to that stage, the plan's frame its whole output placed over the photograph's full
+/// stage, every tick drawn on the GPU while the notice says the frame is softer, and the drag stays
+/// at that stage at this zoom; the picture at rest after its release is the region's, its own plan
+/// at full scale.
+#[test]
+fn gpu_window_a_region_past_the_budget_draws_the_reduced_stage_scaled_to_the_view() {
+    use super::gpu_preview_tests::surface_ready;
+    // Every region plan carries its reduced stage, as one past the figure does.
+    luxforge_core::qualification::reduce_regions_after(Some(0));
+    let catalog = catalog("softer");
+    let photograph = written("softer", 3000, 2000);
+    let (mut editor, asset, agent) = crate::app::testing::real_photo_at(&catalog, &photograph);
+    masked_chain(&mut editor, &asset, agent);
+    at_100(&mut editor);
+    let stage = editor
+        .presentation
+        .dimensions
+        .expect("the photograph's stage");
+    let wanted = editor.desired_view_for(stage).expect("a visible region");
+    assert!(
+        wanted.width < stage.0 && wanted.height < stage.1,
+        "the view shows part of the photograph: {wanted:?} of {stage:?}"
+    );
+    editor.gpu.surface = Some(SurfaceReport::default());
+    // Within the budget: the region at full scale.
+    let _ = slide(&mut editor, "set-basic", "exposure", 0.4);
+    let (_, region) = editor.gpu.region_charge().expect("a region plan");
+    assert!(
+        editor.gpu.planned().unwrap().1.key.region().is_some(),
+        "the region"
+    );
+    // A byte less than the region's slot beside the source.
+    let source = editor.gpu.source().map_or(0, |source| source.bytes());
+    editor.gpu.budget = Some(source + region - 1);
+    let _ = slide(&mut editor, "set-basic", "exposure", 0.5);
+    let summary = editor.gpu.summary();
+    assert_eq!(
+        summary["drag"]["softer"],
+        serde_json::json!(100.0),
+        "{summary}"
+    );
+    let (_, request) = editor.gpu.planned().expect("the tick's plan");
+    let reduced = request.key.plan().expect("the reduced stage");
+    assert_eq!(request.key.region(), None, "a whole frame");
+    assert!(
+        reduced.width < stage.0 && reduced.height < stage.1,
+        "{reduced:?} of {stage:?}"
+    );
+    eprintln!(
+        "softer: the region's slot {region} B, the reduced stage {}x{} of {stage:?}",
+        reduced.width, reduced.height
+    );
+    // Its boundary is derived; once the surface has evaluated it, the tick draws on the GPU.
+    assert!(editor.gpu.holds_boundary(), "the reduced source, derived");
+    surface_ready(&mut editor);
+    let _ = slide(&mut editor, "set-basic", "exposure", 0.6);
+    assert_eq!(editor.gpu.ticks().0, 1, "a tick on the GPU");
+    let (plan, _) = editor
+        .gpu
+        .surface_plan()
+        .expect("the plan the surface draws");
+    let placed = plan.region.expect("placed as a region");
+    assert_eq!(placed.full_stage, stage, "over the photograph's full stage");
+    assert_eq!(
+        placed.stage,
+        (reduced.width, reduced.height),
+        "the reduced stage"
+    );
+    assert_eq!(
+        placed.rect,
+        [0, 0, reduced.width, reduced.height],
+        "all of it"
+    );
+    assert!(
+        editor.gpu_draws_view(wanted),
+        "the GPU frame holds the view"
+    );
+    assert_eq!(
+        editor.gpu_plan_fallback().as_deref(),
+        Some(super::gpu_preview::SOFTER)
+    );
+    assert_eq!(
+        editor
+            .workspace
+            .status
+            .fallback
+            .as_ref()
+            .map(|notice| notice.phrase.as_str()),
+        Some("Softer while dragging")
+    );
+    // At this zoom the drag stays at the reduced stage, whatever the budget does.
+    editor.gpu.budget = Some(u64::MAX);
+    let _ = slide(&mut editor, "set-basic", "exposure", 0.7);
+    assert!(editor.gpu.planned().unwrap().1.key.plan().is_some());
+    assert_eq!(editor.gpu.ticks().0, 2, "on the GPU");
+    let _ = editor.update(Message::Draft(
+        crate::app::message::draft::DraftMessage::Cancel,
+    ));
+    luxforge_core::qualification::reduce_regions_after(None);
     finish(editor, catalog);
 }
 
