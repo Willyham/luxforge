@@ -348,9 +348,9 @@ pub mod qualification {
                     // the others read nothing.
                     hold_estimates(&render, place, &vec![Some(light); HELD_UNITS])?;
                 }
-                cells::arm(context.estimates(), &asked)?;
+                cells::arm(&context, &asked)?;
                 let framed = render.frame(crate::SnapshotId::new());
-                let captured = cells::take(context.estimates());
+                let captured = cells::take(&context);
                 framed?;
                 let captured = captured.last().ok_or_else(|| {
                     crate::Error::internal("the estimating layer's input was not reduced")
