@@ -886,6 +886,7 @@ enum Held {
     Link(Box<chain::LinkSlot>),
     Pool(Vec<spatial::PoolTexture>),
     Source(Box<SourceSlot>),
+    Rest(Box<rest::RestParts>),
 }
 
 /// A GPU-preview resource on its way out, with its charge, which ends when the GPU is done with it,
@@ -1417,6 +1418,22 @@ impl GpuSlot {
         &self.output
     }
 
+    /// Forget what the slot holds of the plans it evaluated, keeping its textures: the next plan
+    /// is evaluated whole, every link, every spatial pass and the output, the pool's records of
+    /// who wrote each scratch plane reset, so nothing an earlier plan left is read by it. What a
+    /// picture at rest's tiles are drawn through, each a fresh evaluation.
+    pub(super) fn forget_evaluation(&mut self) {
+        self.evaluated = None;
+        self.evaluated_serial = None;
+        self.input_key = None;
+        for link in &mut self.chain {
+            link.forget(&mut self.pool);
+        }
+        if let Some(spatial) = self.spatial.as_mut() {
+            spatial.forget(&mut self.pool);
+        }
+    }
+
     pub(super) fn frame_us(&self) -> u64 {
         self.frame_us
     }
@@ -1517,6 +1534,9 @@ pub(super) struct GpuStage {
     /// end. And the bytes of it written this frame, which every surface's `prepare` shares.
     source_handed: bool,
     source_written: u64,
+    /// The picture at rest's reduction and quantization, made the first time a surface is handed
+    /// one ([`rest`]), or why they could not be.
+    rest_passes: Option<Result<Arc<rest::RestPasses>, String>>,
 }
 
 /// Whether a device with `limits`, drawing to a target of `format`, can run the stage.
@@ -1604,7 +1624,21 @@ impl GpuStage {
             layouts,
             source_handed: false,
             source_written: 0,
+            rest_passes: None,
         }
+    }
+
+    /// The picture at rest's passes, made on first use, or why there are none: a stage that cannot
+    /// run at all has none either.
+    fn rest_passes(
+        &mut self,
+        device: &wgpu::Device,
+    ) -> Option<&Result<Arc<rest::RestPasses>, String>> {
+        self.support.as_ref()?;
+        if self.rest_passes.is_none() {
+            self.rest_passes = Some(rest::RestPasses::new(device).map(Arc::new));
+        }
+        self.rest_passes.as_ref()
     }
 
     /// The ready pipeline for `steps`, or why the frame draws the CPU's: never compiled here, on
@@ -3345,7 +3379,9 @@ impl PhotoPipeline {
         let scratch = match &held {
             Held::Slot(slot) => slot.pool.bytes(),
             Held::Pool(_) => bytes,
-            Held::Buffer(_) | Held::Planes(_) | Held::Link(_) | Held::Source(_) => 0,
+            Held::Buffer(_) | Held::Planes(_) | Held::Link(_) | Held::Source(_) | Held::Rest(_) => {
+                0
+            }
         };
         if let Err(error) = self
             .retirement_sender
@@ -3596,6 +3632,10 @@ pub(crate) use timing::PassClock;
 mod clipping;
 pub use clipping::ClipMarks;
 pub mod histogram;
+
+mod rest;
+pub(super) use rest::RestSlot;
+pub use rest::{GpuRest, REST_TILES_PER_FRAME, REST_VIEW_PIXELS, RestFigures};
 
 #[cfg(any(test, feature = "qualification"))]
 pub mod qualification;

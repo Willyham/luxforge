@@ -193,7 +193,7 @@ impl Render<'_> {
     /// The boundary at the source of this render's stack — the first segment's input before its
     /// first operation — over `window` of the content stage, held as `format`: the reference the
     /// GPU's cut of the source it holds is held to, bit for bit.
-    #[cfg(feature = "qualification")]
+    #[cfg(any(test, feature = "qualification"))]
     pub(crate) fn source_boundary(
         &self,
         window: Region,

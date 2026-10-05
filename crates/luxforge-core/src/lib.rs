@@ -105,7 +105,7 @@ pub use render::gpu::{
     GpuClipping, GpuComponent, GpuDescription, GpuEstimates, GpuFallback, GpuGeometry, GpuMask,
     GpuOperation, GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest, GpuPlane, GpuPlaneFormat,
     GpuPlaneSize, GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuRest, GpuSpatial,
-    GpuSpatialUnit, GpuView, SourceBoundary, gpu_plan, gpu_plan_with,
+    GpuSpatialUnit, GpuView, SourceBoundary, anchored, gpu_plan, gpu_plan_with,
 };
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{

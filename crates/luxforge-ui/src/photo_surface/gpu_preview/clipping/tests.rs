@@ -116,6 +116,7 @@ fn primitive(steps: Vec<GpuStep>) -> PhotoPrimitive {
         gpu_options: Default::default(),
         dissolve: None,
         source: None,
+        rest: None,
         offset: Vector::new(0.0, 0.0),
         size: Size::new(SIDE as f32, SIDE as f32),
         clip_size: Size::new(SIDE as f32, SIDE as f32),

@@ -117,6 +117,16 @@ struct Held {
     /// tail's words once, as it is held, for every tick drawn from it to share; `None` for an
     /// affine tail, or a warp whose grid could not be built, which then keeps the CPU path.
     grid: Option<gpu_plan::WarpGrid>,
+    /// What that grid is a function of.
+    grid_key: Option<GridKey>,
+}
+
+impl Held {
+    /// Whether a plan asking for `request` draws from this boundary: its key, and the grid of its
+    /// lens warp, which a committed lens change over the same key makes another.
+    fn serves(&self, request: &SourceBoundary) -> bool {
+        self.key == request.key && self.grid_key == GridKey::of(request)
+    }
 }
 
 /// The prepared source of the photograph on screen as the photo surface holds it on the GPU
@@ -245,10 +255,10 @@ fn derive_held(
     }
     // A warp whose grid could not be built is held with none, and its conversion names
     // `warp-grid`, as before.
-    let grid = match request.needs_grid() {
-        false => None,
-        true => grids
-            .of(request)
+    let grid = match GridKey::of(request) {
+        None => None,
+        Some(key) => grids
+            .of(key)
             .map_err(|()| "boundary-pending")?
             .map(|grid| gpu_plan::WarpGrid::new(&grid)),
     };
@@ -265,6 +275,7 @@ fn derive_held(
         boundary,
         origin,
         grid,
+        grid_key: GridKey::of(request),
     })
 }
 
@@ -287,19 +298,44 @@ fn derived_evidence(held: &Held, resident: bool) -> Value {
         "source": held.boundary.derivation().map(|(source, _)| *source)})
 }
 
-/// A lens warp's grid for `request`, or why it could not be built. Frame work: run off the
-/// interface thread.
-fn grid_of(request: &SourceBoundary) -> Result<Arc<CoordinateGrid>, String> {
-    match request.grid() {
-        Some(grid) => grid.map_err(|error| error.to_string()),
-        None => Err("a boundary with no warp".into()),
+/// A lens warp's grid for `key`, or why it could not be built: the part over its region of the whole
+/// output stage's grid at its magnification ([`luxforge_core::GpuGeometry::grid`]). Frame work: run
+/// off the interface thread.
+fn grid_of(key: &GridKey) -> Result<Arc<CoordinateGrid>, String> {
+    key.warp
+        .grid(key.region, f64::from_bits(key.magnification))
+        .map_err(|error| error.to_string())?
+        .map(Arc::new)
+        .ok_or_else(|| "a warp tail with no grid".into())
+}
+
+/// What a lens warp's coordinate grid is a function of: the warp's geometry tail, the
+/// magnification the grid is made dense enough for, and the region of the output stage it covers.
+/// A boundary key does not name the geometry after the source, so a committed lens change over the
+/// same source and view is another grid of the same key.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct GridKey {
+    warp: luxforge_core::GpuGeometry,
+    magnification: u64,
+    region: Region,
+}
+
+impl GridKey {
+    /// The grid `request`'s plan draws through; `None` for a plan with no lens warp.
+    pub(crate) fn of(request: &SourceBoundary) -> Option<Self> {
+        let (warp, magnification) = request.warp()?;
+        Some(Self {
+            warp: warp.clone(),
+            magnification: magnification.to_bits(),
+            region: request.grid_region()?,
+        })
     }
 }
 
-/// A lens warp's coordinate grid for one boundary key, computed off the interface thread.
+/// A lens warp's coordinate grid for one grid key, computed off the interface thread.
 enum GridState {
     /// Asked for; the task that computes it starts after the message that asked.
-    Wanted(Box<SourceBoundary>),
+    Wanted,
     Computing,
     Ready(Arc<CoordinateGrid>),
     /// The warp needs more nodes than a grid holds, or a degenerate map: the drag keeps the CPU
@@ -307,21 +343,21 @@ enum GridState {
     Failed,
 }
 
-/// The coordinate grids of the last few boundary keys a lens warp's plan named.
+/// The coordinate grids of the last few grid keys a lens warp's plan named.
 #[derive(Default)]
 struct Grids {
-    states: std::collections::VecDeque<(BoundaryKey, GridState)>,
+    states: std::collections::VecDeque<(GridKey, GridState)>,
 }
 
-/// How many keys' grids are kept: a drag at one view, the resident boundary and a view or two
-/// beside them.
-const GRID_KEYS: usize = 4;
+/// How many keys' grids are kept: a drag at one view, the resident boundary, the picture at rest's
+/// stage and a view or two beside them.
+const GRID_KEYS: usize = 6;
 
 impl Grids {
-    /// The grid of `request`'s key: `Ok(Some)` once computed, `Ok(None)` when it could not be
-    /// built, and `Err` while it is still to come, asked for here the first time.
-    fn of(&mut self, request: &SourceBoundary) -> Result<Option<Arc<CoordinateGrid>>, ()> {
-        match self.states.iter().find(|(key, _)| *key == request.key) {
+    /// The grid of `key`: `Ok(Some)` once computed, `Ok(None)` when it could not be built, and
+    /// `Err` while it is still to come, asked for here the first time.
+    fn of(&mut self, key: GridKey) -> Result<Option<Arc<CoordinateGrid>>, ()> {
+        match self.states.iter().find(|(held, _)| *held == key) {
             Some((_, GridState::Ready(grid))) => Ok(Some(Arc::clone(grid))),
             Some((_, GridState::Failed)) => Ok(None),
             Some(_) => Err(()),
@@ -329,30 +365,26 @@ impl Grids {
                 if self.states.len() == GRID_KEYS {
                     self.states.pop_front();
                 }
-                self.states.push_back((
-                    request.key.clone(),
-                    GridState::Wanted(Box::new(request.clone())),
-                ));
+                self.states.push_back((key, GridState::Wanted));
                 Err(())
             }
         }
     }
 
-    /// The boundaries whose grids are wanted, now computing.
-    fn start(&mut self) -> Vec<SourceBoundary> {
+    /// The keys whose grids are wanted, now computing.
+    fn start(&mut self) -> Vec<GridKey> {
         let mut started = Vec::new();
-        for (_, state) in &mut self.states {
-            if matches!(state, GridState::Wanted(_))
-                && let GridState::Wanted(request) = std::mem::replace(state, GridState::Computing)
-            {
-                started.push(*request);
+        for (key, state) in &mut self.states {
+            if matches!(state, GridState::Wanted) {
+                *state = GridState::Computing;
+                started.push(key.clone());
             }
         }
         started
     }
 
     /// The grid of `key` computed, or why it could not be.
-    fn finish(&mut self, key: &BoundaryKey, grid: Result<Arc<CoordinateGrid>, String>) {
+    fn finish(&mut self, key: &GridKey, grid: Result<Arc<CoordinateGrid>, String>) {
         if let Some((_, state)) = self.states.iter_mut().find(|(held, _)| held == key) {
             *state = match grid {
                 Ok(grid) => GridState::Ready(grid),
@@ -362,11 +394,11 @@ impl Grids {
     }
 }
 
-/// A lens warp's coordinate grid computed for a boundary key off the interface thread, or why it
-/// could not be.
+/// A lens warp's coordinate grid computed for a grid key off the interface thread, or why it could
+/// not be.
 #[derive(Clone, Debug)]
 pub(crate) struct GridAnswer {
-    pub(crate) key: BoundaryKey,
+    pub(crate) key: GridKey,
     pub(crate) grid: Result<Arc<CoordinateGrid>, String>,
 }
 
@@ -1020,7 +1052,7 @@ impl Editor {
                     drag.cpu_ticks += 1;
                     return Tick::Cpu;
                 };
-                if let Some(held) = drag.held.take_if(|held| held.key != request.key) {
+                if let Some(held) = drag.held.take_if(|held| !held.serves(&request)) {
                     // The plan needs another boundary: the window moved, the bounds changed, or
                     // the source did.
                     drag.surface = None;
@@ -1150,6 +1182,17 @@ impl Editor {
                     .draft
                     .as_ref()
                     .map(|draft| draft.draft_revision)
+    }
+
+    /// Whether the photograph on screen is the GPU's frame of the open draft's newest revision,
+    /// `revision`: the surface is handed that tick's plan, not held behind a CPU frame, and its
+    /// last frame drew it.
+    pub(crate) fn gpu_shows_revision(&self, revision: u64) -> bool {
+        self.gpu_draws_newest_tick()
+            && self
+                .surface_report()
+                .drawn
+                .is_some_and(|(_, drawn)| drawn == revision)
     }
 
     /// A tick drawn on the GPU puts the gesture's frame on screen as a CPU frame of it would, for
@@ -1311,10 +1354,12 @@ impl Editor {
         }
         let count = started.len();
         self.event("gpu_grid_requested", || json!({"grids": count}));
-        iced::Task::batch(started.into_iter().map(|request| {
-            let key = request.key.clone();
+        iced::Task::batch(started.into_iter().map(|key| {
             super::tasks::owner_task(
-                move || grid_of(&request),
+                {
+                    let key = key.clone();
+                    move || grid_of(&key)
+                },
                 move |grid| {
                     super::Message::Preview(super::message::preview::PreviewMessage::GridReady(
                         Box::new(GridAnswer { key, grid }),
@@ -1369,14 +1414,14 @@ impl Editor {
             .drag
             .as_ref()
             .and_then(|drag| drag.held.as_ref())
-            .is_some_and(|held| held.key == request.key)
+            .is_some_and(|held| held.serves(&request))
         {
             return;
         }
         let held = match self
             .gpu
             .resident
-            .take_if(|resident| resident.held.key == request.key)
+            .take_if(|resident| resident.held.serves(&request))
         {
             Some(resident) => resident.held,
             None => {

@@ -1321,6 +1321,19 @@ impl Editor {
         {
             return Task::none();
         }
+        // A draft whose newest revision the GPU draws on screen settles nothing: the picture is the
+        // GPU's frame of those settings, which a CPU frame of them would only replace — below 100%
+        // with an exact frame the whole frame's plan cannot stand in for — and nothing renders the
+        // whole frame on the CPU behind a gesture (`docs/design/gpu-first.md`, stage 2).
+        if self
+            .session
+            .draft
+            .as_ref()
+            .is_some_and(|draft| self.gpu_shows_revision(draft.draft_revision))
+        {
+            self.view_plan.quiet_since = None;
+            return Task::none();
+        }
         // A draft whose newest revision only the GPU has drawn has no CPU frame yet, whatever the
         // frame on screen is.
         let drawn_on_gpu_only = self.session.draft.as_ref().is_some_and(|draft| {

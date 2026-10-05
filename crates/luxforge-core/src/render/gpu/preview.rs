@@ -147,19 +147,33 @@ impl SourceBoundary {
         self.warp.is_some()
     }
 
-    /// A lens warp's coordinate grid over what the plan draws — the whole output stage at Fit and
-    /// below 100%, the region at 100% or more — at the plan's magnification, or why it cannot be
-    /// built; `None` for an affine or projective tail. Frame work of up to [`super::GRID_MAX_NODES`]
-    /// nodes: a caller runs it off the interface thread and the catalog owner, once per key.
-    pub fn grid(&self) -> Option<Result<std::sync::Arc<super::CoordinateGrid>, Error>> {
-        let warp = self.warp.as_ref()?;
-        let output = warp.output();
-        let region = self.key.region().unwrap_or(Region {
+    /// A lens warp's geometry tail and the magnification its coordinate grid is made dense enough
+    /// for: what the whole output stage's grid, which every window of it takes its part of, is
+    /// computed from ([`super::GpuGeometry::stage_grid`]). `None` for an affine or projective tail.
+    pub fn warp(&self) -> Option<(&super::GpuGeometry, f64)> {
+        self.warp.as_ref().map(|warp| (warp, self.magnification))
+    }
+
+    /// What of the output stage a lens warp's grid covers: the region at 100% or more, the whole
+    /// stage at Fit and below 100%. `None` for a plan with no lens warp.
+    pub fn grid_region(&self) -> Option<Region> {
+        let output = self.warp.as_ref()?.output();
+        Some(self.key.region().unwrap_or(Region {
             x0: 0,
             y0: 0,
             width: output.width,
             height: output.height,
-        });
+        }))
+    }
+
+    /// A lens warp's coordinate grid over what the plan draws ([`Self::grid_region`]) at the plan's
+    /// magnification, the part of the whole stage's grid there ([`super::GpuGeometry::grid`]), or
+    /// why it cannot be built; `None` for an affine or projective tail. Frame work of up to
+    /// [`super::GRID_MAX_NODES`] nodes: a caller runs it off the interface thread and the catalog
+    /// owner.
+    pub fn grid(&self) -> Option<Result<std::sync::Arc<super::CoordinateGrid>, Error>> {
+        let warp = self.warp.as_ref()?;
+        let region = self.grid_region()?;
         Some(warp.grid(region, self.magnification).and_then(|grid| {
             grid.map(std::sync::Arc::new)
                 .ok_or_else(|| Error::internal("a warp tail with no grid"))
@@ -747,6 +761,13 @@ fn planned_preview(
         {
             cpu_shape = Some(smaller);
         }
+    }
+    // Every window is anchored, its origin a multiple of the plan's anchor, so each texel it holds
+    // is the whole stage's, bit for bit, whichever window holds it ([`GpuPlan::anchor`]).
+    if let GpuAnswer::Plan(plan) = &answer {
+        let anchor =
+            super::plan::common_anchor(std::iter::once(&**plan).chain(cpu_shape.as_deref()));
+        window = window.map(|window| super::plan::anchored(window, anchor));
     }
     // Every plan starts from the source: a boundary at a source or geometry layer before the
     // stack's first content layer names `boundary-stage` and has no plan.

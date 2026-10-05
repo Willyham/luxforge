@@ -1533,3 +1533,77 @@ fn chained_spatial_operations_draw_the_cpu_frame() {
     ));
     assert_eq!(plan.spatial.len(), 5);
 }
+
+/// A plan's anchor is the least common multiple of every running pass's span over its plane's
+/// blocks: one for a plan with no spatial operation and for Detail, whose passes run over every
+/// texel at full resolution; Presence's runs of 16 over its 4x reductions make it 64. A window
+/// anchored keeps its far edges.
+#[test]
+fn a_plans_anchor_starts_every_run_and_block_where_the_whole_stage_does() {
+    let registry = colour_registry();
+    let plan_of = |layers: Vec<Layer>| {
+        planned(answer(
+            &registry,
+            &colour_recipe(layers),
+            GpuPlanRequest::exact(0, stage(400, 300))
+                .from_source()
+                .qualifying(),
+        ))
+    };
+    assert_eq!(plan_of(Vec::new()).anchor(), (1, 1));
+    assert_eq!(
+        plan_of(vec![Layer::new(
+            crate::DETAIL_EFFECT,
+            json!({"sharpening": 60.0, "luminance": 40.0, "colour": 40.0}),
+        )])
+        .anchor(),
+        (1, 1)
+    );
+    for presence in [
+        json!({"texture": 30.0}),
+        json!({"clarity": -20.0}),
+        json!({"dehaze": 15.0}),
+        json!({"texture": 30.0, "clarity": -20.0, "dehaze": 15.0}),
+    ] {
+        let plan = plan_of(vec![Layer::new(crate::PRESENCE_EFFECT, presence.clone())]);
+        let anchor = plan.anchor();
+        assert!(anchor.0 <= 64 && anchor.1 <= 64, "{presence}: {anchor:?}");
+        // Every running pass starts on a multiple of its span over the whole plane.
+        for spatial in &plan.spatial {
+            for pass in &spatial.passes {
+                if let super::spatial::GpuPassShape::Texels { span } = pass.shape
+                    && let super::spatial::GpuPlaneSize::Reduced(s) =
+                        spatial.planes[pass.output].size
+                {
+                    assert_eq!(anchor.0 % (span[0] * s), 0, "{presence}");
+                    assert_eq!(anchor.1 % (span[1] * s), 0, "{presence}");
+                }
+            }
+        }
+    }
+    assert_eq!(
+        plan_of(vec![Layer::new(
+            crate::PRESENCE_EFFECT,
+            json!({"texture": 30.0, "clarity": -20.0, "dehaze": 15.0}),
+        )])
+        .anchor(),
+        (64, 64)
+    );
+    let window = Region {
+        x0: 131,
+        y0: 51,
+        width: 298,
+        height: 238,
+    };
+    let held = super::anchored(window, (64, 64));
+    assert_eq!(
+        held,
+        Region {
+            x0: 128,
+            y0: 0,
+            width: 301,
+            height: 289
+        }
+    );
+    assert_eq!((held.x1(), held.y1()), (window.x1(), window.y1()));
+}

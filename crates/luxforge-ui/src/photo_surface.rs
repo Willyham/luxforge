@@ -115,9 +115,10 @@ pub mod gpu_preview;
 pub use gpu_preview::{
     AxisCoverage, BoundaryFormat, ClipMarks, Coverage, CoverageComponent, CoverageMode,
     DISSOLVE_DURATION, Derivation, Dissolve, DrawingPath, DrawnDissolve, GPU_PREVIEW_BUDGET,
-    GpuBoundary, GpuChange, GpuFallback, GpuPlan, GpuProgram, GpuRegion, GpuSource, GpuStageState,
-    GpuStep, GpuTail, GpuWarm, MaskedColour, OutputEncoding, PIPELINE_CACHE, PRELUDE, PositionMap,
-    Reduction, SourceFigures, SourceKind, TexelMap, install_output_encoding, output_encoding,
+    GpuBoundary, GpuChange, GpuFallback, GpuPlan, GpuProgram, GpuRegion, GpuRest, GpuSource,
+    GpuStageState, GpuStep, GpuTail, GpuWarm, MaskedColour, OutputEncoding, PIPELINE_CACHE,
+    PRELUDE, PositionMap, REST_TILES_PER_FRAME, REST_VIEW_PIXELS, Reduction, RestFigures,
+    SourceFigures, SourceKind, TexelMap, install_output_encoding, output_encoding,
     refuse_gpu_stage, validate_step,
 };
 
@@ -182,6 +183,8 @@ impl SurfaceFigures {
         overall.gpu_evaluated_serial = drawn.gpu_evaluated_serial;
         overall.gpu_preview_frame_us = drawn.gpu_preview_frame_us;
         overall.drawn_dissolve = drawn.drawn_dissolve;
+        overall.drawn_rest = drawn.drawn_rest;
+        overall.gpu_rest = drawn.gpu_rest;
         overall.drawn_clipping_marks = drawn.drawn_clipping_marks;
         overall.first_drawn = drawn.first_drawn;
         // Read live: a lost device's callback changes it between draws.
@@ -447,6 +450,11 @@ pub struct SurfaceDiagnostics {
     pub gpu_source_refused: Option<(u64, GpuFallback)>,
     /// How many boundaries the GPU stage has derived from the source it holds, over every frame.
     pub gpu_source_derived: u64,
+    /// The picture at rest this surface draws in tiles: how far it has got, or why it stopped
+    /// ([`PhotoSurface::gpu_rest`]).
+    pub gpu_rest: Option<RestFigures>,
+    /// The version of the picture at rest the last draw drew in place of the photograph's frame.
+    pub drawn_rest: Option<u64>,
 }
 
 /// Aggregate resource counters with the requested surface's own last draw identity.
@@ -772,6 +780,8 @@ pub struct PhotoSurface {
     dissolve: Option<Dissolve>,
     /// The prepared source the pipeline holds on the GPU; see [`PhotoSurface::gpu_source`].
     source: Option<GpuSource>,
+    /// The picture at rest the GPU stage draws in tiles; see [`PhotoSurface::gpu_rest`].
+    rest: Option<GpuRest>,
     /// The time of the redraw this widget last saw, which its draw takes the dissolve's share at.
     clock: Option<Instant>,
     width: Length,
@@ -823,6 +833,7 @@ pub fn photo_surface(
         gpu_options: Default::default(),
         dissolve: None,
         source: None,
+        rest: None,
         clock: None,
         width,
         height,
@@ -862,6 +873,7 @@ pub fn viewport_surface(
         gpu_options: Default::default(),
         dissolve: None,
         source: None,
+        rest: None,
         clock: None,
         width,
         height,
@@ -890,6 +902,7 @@ pub fn stage_surface(
         gpu_options: Default::default(),
         dissolve: None,
         source: None,
+        rest: None,
         clock: None,
         width,
         height,
@@ -1003,6 +1016,17 @@ impl PhotoSurface {
         self
     }
 
+    /// Draw the picture at rest on the GPU, process-first ([`GpuRest`]): its tiles a frame at a
+    /// time through a slot of the surface's own, reduced into the view's size, and, once the last
+    /// is in, the photograph drawn from the rest output in place of its frame, through the same
+    /// placement, whenever no gesture's plan is drawn. A whole-frame photograph's only; another
+    /// version starts over, and none lets it go. While tiles remain the widget asks for the next
+    /// frame.
+    pub fn gpu_rest(mut self, rest: Option<&GpuRest>) -> Self {
+        self.rest = rest.cloned();
+        self
+    }
+
     /// Whether the GPU stage is still uploading the boundary of the plan this surface is handed: its
     /// last frame said so, and the plan still names that boundary with its texels. The widget then
     /// asks for the next frame, whose `prepare` writes the next chunks; an upload's start wakes the
@@ -1029,7 +1053,17 @@ impl PhotoSurface {
                     .gpu_source_refused
                     .is_none_or(|(version, _)| version != source.version())
         });
-        boundary || source
+        // A picture at rest whose tiles remain, the next one ready to draw: one a frame until the
+        // last. A tile that waits for its sequence to compile asks for nothing; the compile's end
+        // wakes the desktop.
+        let rest = self.rest.as_ref().is_some_and(|rest| {
+            diagnostics.gpu_stage == GpuStageState::Available
+                && diagnostics.gpu_rest.is_none_or(|figures| {
+                    figures.version != rest.version
+                        || (!figures.done && !figures.waiting && figures.fallback.is_none())
+                })
+        });
+        boundary || source || rest
     }
 
     /// The dissolve this surface draws at `now`, if one runs: into a whole-frame photograph's
@@ -1117,6 +1151,12 @@ impl PhotoSurface {
             gpu_options: self.gpu_options.clone(),
             dissolve: self.dissolving(self.clock.unwrap_or_else(Instant::now)),
             source: self.source.clone(),
+            // A whole-frame photograph's picture at rest; a percentage view's region and a crop
+            // stage draw none.
+            rest: match (&self.base, &self.viewport) {
+                (Base::Photo(_), None) => self.rest.clone(),
+                _ => None,
+            },
             offset: visible.offset,
             size: visible.size,
             clip_size: visible.clip.size(),
@@ -1319,6 +1359,8 @@ pub struct PhotoPrimitive {
     dissolve: Option<gpu_preview::DissolveFrame>,
     /// The prepared source the pipeline holds for every surface ([`PhotoSurface::gpu_source`]).
     source: Option<GpuSource>,
+    /// A whole-frame photograph's picture at rest on the GPU ([`PhotoSurface::gpu_rest`]).
+    rest: Option<GpuRest>,
     offset: Vector,
     size: Size,
     clip_size: Size,
@@ -1691,6 +1733,10 @@ impl shader::Primitive for PhotoPrimitive {
             surface.dissolving = None;
         }
         surface.gpu_hold = self.gpu_options.hold;
+        // The picture at rest draws its tiles only while no gesture's plan, and no dissolve from
+        // one, is drawn this frame.
+        let idle = surface.gpu_output().is_none() && surface.dissolving.is_none();
+        pipeline.prepare_rest(&mut surface, device, queue, self.rest.as_ref(), idle);
         surface.gpu_tag = self.gpu.as_ref().and(self.gpu_options.tag);
         surface.gpu_marks = self.gpu.as_ref().and_then(|plan| match plan.steps.last() {
             Some(GpuStep::Clipping(marks)) => Some([marks.shadows, marks.highlights]),
@@ -1703,6 +1749,9 @@ impl shader::Primitive for PhotoPrimitive {
         let [x0, y0, x1, y1, dim] = physical_bright(*bounds, self.bright, scale);
         let turn = turn_uniform(self.angle, dim, self.snap);
         if let Some(output) = surface.gpu_output().or(surface.dissolved_output()) {
+            write_uniforms(queue, output, viewport, destination, [x0, y0, x1, y1], turn);
+        }
+        if let Some(output) = surface.rest_output() {
             write_uniforms(queue, output, viewport, destination, [x0, y0, x1, y1], turn);
         }
         for (layer, _) in &self.layers {
@@ -1811,6 +1860,7 @@ impl shader::Primitive for PhotoPrimitive {
         let mut gpu_clock = None;
         let mut drawn_clipping_marks = None;
         let mut drawn_dissolve = None;
+        let mut drawn_rest = None;
         let mut drew_photo = false;
         let mut stale_photo = false;
         // At a percentage zoom, a region plan's GPU frame is the photograph: drawn alone, so no
@@ -2013,6 +2063,17 @@ impl shader::Primitive for PhotoPrimitive {
                     drawn_clipping_marks = surface.gpu_marks;
                     continue;
                 }
+                // The picture at rest, once its last tile is in, in place of the photograph's
+                // frame, unless a dissolve from a gesture's frame runs.
+                if *layer == Layer::Photo
+                    && surface.dissolving.is_none()
+                    && let Some(output) = surface.rest_output()
+                {
+                    draw_picture(render_pass, output);
+                    drew_photo = true;
+                    drawn_rest = Some(output.version);
+                    continue;
+                }
                 // A dissolve draws the GPU frame it starts from first; the photograph's own draw
                 // below lays the CPU frame over it at the dissolve's share.
                 if *layer == Layer::Photo
@@ -2052,7 +2113,7 @@ impl shader::Primitive for PhotoPrimitive {
         let blank_photo = expects_photo && !drew_photo;
         // Under a dissolve the photograph is the CPU frame, laid over the GPU frame it replaces.
         let drawn_path = drew_photo.then_some(
-            if drawn_gpu_boundary.is_some() && drawn_dissolve.is_none() {
+            if (drawn_gpu_boundary.is_some() && drawn_dissolve.is_none()) || drawn_rest.is_some() {
                 DrawingPath::Gpu
             } else {
                 DrawingPath::Cpu
@@ -2111,6 +2172,8 @@ impl shader::Primitive for PhotoPrimitive {
         diagnostic.gpu_preview_frame_us = gpu_frame_us;
         diagnostic.drawn_clipping_marks = drawn_clipping_marks;
         diagnostic.drawn_dissolve = drawn_dissolve;
+        diagnostic.drawn_rest = drawn_rest;
+        diagnostic.gpu_rest = surface.rest_figures();
         diagnostic.drawn_content = drawn_content;
         diagnostic.drawn_full_version = drawn_full_version;
         diagnostic.drawn_region_version = drawn_region_version;
@@ -2391,9 +2454,32 @@ struct SurfaceSlots {
     dissolving: Option<gpu_preview::DissolveFrame>,
     /// The classes of the clipping marks the plan this frame was handed draws.
     gpu_marks: Option<[bool; 2]>,
+    /// The picture at rest the GPU stage draws in tiles ([`PhotoSurface::gpu_rest`]), with the
+    /// slot its tiles are drawn through, charged to the GPU-preview budget.
+    rest: Option<Box<gpu_preview::RestSlot>>,
+    /// The version of a picture at rest whose own parts could not be created, and why.
+    rest_refused: Option<(u64, GpuFallback)>,
 }
 
 impl SurfaceSlots {
+    /// The picture at rest's output, once its last tile is in it.
+    fn rest_output(&self) -> Option<&Picture> {
+        self.rest.as_ref().and_then(|rest| rest.output())
+    }
+
+    /// What the surface's diagnostics say of its picture at rest.
+    fn rest_figures(&self) -> Option<RestFigures> {
+        match (&self.rest, self.rest_refused) {
+            (Some(rest), _) => Some(rest.figures()),
+            (None, Some((version, fallback))) => Some(RestFigures {
+                version,
+                fallback: Some(fallback),
+                ..RestFigures::default()
+            }),
+            (None, None) => None,
+        }
+    }
+
     /// The GPU stage's output, when this frame draws it in place of the photograph's frame.
     fn gpu_output(&self) -> Option<&Picture> {
         if matches!(self.gpu_outcome, Some(Ok(_))) && !self.gpu_hold {
@@ -2598,6 +2684,8 @@ impl PhotoPipeline {
             gpu_tag: None,
             dissolving: None,
             gpu_marks: None,
+            rest: None,
+            rest_refused: None,
         }
     }
 
@@ -2643,6 +2731,7 @@ impl PhotoPipeline {
             }
         }
         self.release_gpu(&mut surface);
+        self.release_rest(&mut surface);
     }
 
     /// Every surface in the map. While `prepare` writes one it is out of the map, so these are
@@ -4688,6 +4777,7 @@ mod gpu_surface_tests {
             gpu_options: Default::default(),
             dissolve: None,
             source: None,
+            rest: None,
             offset: Vector::new(0.0, 0.0),
             size: Size::new(64.0, 64.0),
             clip_size: Size::new(64.0, 64.0),
@@ -4717,6 +4807,7 @@ mod gpu_surface_tests {
             gpu_options: Default::default(),
             dissolve: None,
             source: None,
+            rest: None,
             offset: Vector::new(0.0, 0.0),
             size: Size::new(64.0, 64.0),
             clip_size: Size::new(64.0, 64.0),

@@ -1647,6 +1647,54 @@ fn gpu_preview_a_tick_the_budget_refuses_while_a_slot_retires_keeps_its_boundary
     finish(editor, catalog);
 }
 
+/// A pause in a drag the GPU draws settles nothing: the photograph is the GPU's frame of the
+/// draft's newest settings, which the quiet policy leaves on screen, rendering no whole frame on
+/// the CPU behind it. Below 100%, where the CPU's exact frame would replace the whole frame the
+/// plan stands in for, the next tick is drawn on the GPU too.
+#[test]
+fn gpu_preview_a_pause_in_a_drag_the_gpu_draws_settles_nothing() {
+    let catalog = catalog("pause");
+    let (mut editor, _, _) = real_photo(&catalog);
+    editor.gpu.surface = Some(SurfaceReport::default());
+    zoomed_out(&mut editor, 33.0);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.1);
+    deliver_until(&mut editor, "the first tick's frame", |editor| {
+        !editor.presentation.queue.is_busy() && !editor.presentation.queue.ready()
+    });
+    surface_ready(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.2);
+    assert_eq!(editor.gpu.ticks().0, 1, "drawn on the GPU");
+    let draft = editor.session.draft.clone().expect("the open draft");
+    let version = editor.gpu.held_version().expect("the boundary");
+    // The surface's last frame drew that tick.
+    editor.gpu.surface = Some(SurfaceReport {
+        ready_boundary: Some(version),
+        fallback: None,
+        drawn: Some((version, draft.draft_revision)),
+        evaluated: None,
+    });
+    assert!(editor.gpu_shows_revision(draft.draft_revision));
+    // The quiet policy's interval passes.
+    editor.view_plan.quiet_since =
+        Some(std::time::Instant::now() - std::time::Duration::from_millis(150));
+    let log = attach_log(&mut editor);
+    let _ = editor.update(Message::Preview(PreviewMessage::QuietTick));
+    let records = logged(&mut editor, &log);
+    assert!(events(&records, "preview_quiet_refine").is_empty());
+    assert!(!editor.view_plan.in_flight, "no settlement is asked for");
+    assert_eq!(editor.view_plan.quiet_since, None, "nor waited for again");
+    let surfaces = editor.surfaces();
+    assert!(surfaces.gpu.is_some() && !surfaces.gpu_hold, "still drawn");
+    // The next tick is drawn on the GPU, with no job.
+    let log = attach_log(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.3);
+    let records = logged(&mut editor, &log);
+    assert_eq!(jobs(&records), 0);
+    assert_eq!(editor.gpu.ticks().0, 2);
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    finish(editor, catalog);
+}
+
 /// A lens warp's plan needs its coordinate grid, computed once for its boundary's key off the
 /// interface thread: until it arrives no boundary is derived and the resting stack names
 /// `boundary-pending`; the message after asks for it on the runtime's blocking pool, once, and
@@ -1715,7 +1763,7 @@ fn gpu_preview_a_lens_warps_grid_is_computed_once_off_the_interface_thread() {
     let log = attach_log(&mut editor);
     let _ = editor.update(Message::Preview(PreviewMessage::GridReady(Box::new(
         super::gpu_preview::GridAnswer {
-            key: request.key.clone(),
+            key: super::gpu_preview::GridKey::of(&request).expect("a lens warp's key"),
             grid,
         },
     ))));

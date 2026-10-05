@@ -559,6 +559,8 @@ fn drawn_on_the_gpu_below_100(launch: &Checked, checks: &mut Checks) -> Result {
         let state = held.state();
         let summary = &state["surface"]["gpu"]["gpu_preview"]["drag"];
         let boundary = &summary["boundary"];
+        // The view's proxy at its bounds, the size of the frame the CPU's proxy phase draws there,
+        // whichever frame the CPU last presented.
         let (bounds, raster) = (&state["proxy"]["bounds"], &state["surface"]["raster"]);
         ensure(
             summary["boundaries_derived"] == derived
@@ -566,8 +568,16 @@ fn drawn_on_the_gpu_below_100(launch: &Checked, checks: &mut Checks) -> Result {
                 && boundary["derived"] == json!("reduce")
                 && boundary["region"].is_null()
                 && boundary["proxy"]["bounds"] == json!([bounds["width"], bounds["height"]])
-                && json!([boundary["width"], boundary["height"]]) == *raster
-                && json!([boundary["proxy"]["width"], boundary["proxy"]["height"]]) == *raster,
+                && json!([boundary["width"], boundary["height"]])
+                    == json!([boundary["proxy"]["width"], boundary["proxy"]["height"]])
+                && boundary["width"]
+                    .as_u64()
+                    .zip(bounds["width"].as_u64())
+                    .is_some_and(|(width, bound)| width <= bound)
+                && boundary["height"]
+                    .as_u64()
+                    .zip(bounds["height"].as_u64())
+                    .is_some_and(|(height, bound)| height <= bound),
             format!(
                 "At {zoom}% the boundary held is not the source reduced to the view's proxy: \
                  {summary}, the view's bounds {bounds}, the CPU frame {raster}"
