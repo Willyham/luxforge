@@ -18,7 +18,7 @@ use crate::{
         outcome::Outcome,
         tasks::{PerformanceRead, performance_task},
     },
-    state::performance::PerformanceHistory,
+    state::{performance::PerformanceHistory, preferences::PreferenceChange},
 };
 use iced::{Subscription, Task};
 use luxforge_core::{ActivitySnapshot, JobId, resources::ResourceReport};
@@ -43,10 +43,7 @@ pub(crate) struct Sampler {
     /// Collapsing it, or hiding the state panel, stops the timer, which is the only way the
     /// section costs anything.
     pub(crate) expanded: bool,
-    pub(crate) saving: Coalesce<bool>,
     pub(crate) cancelling: BTreeSet<JobId>,
-    /// A window close waits for the newest preference write before stopping the owner.
-    pub(crate) closing: bool,
     pub(crate) history: PerformanceHistory,
     /// The one read in flight: a read is never duplicated beside it.
     pub(crate) read: Coalesce<()>,
@@ -98,23 +95,13 @@ impl Editor {
     pub(super) fn performance_update(&mut self, message: PerformanceMessage) -> Task<Message> {
         match message {
             PerformanceMessage::Toggle => {
+                // The next launch starts the section as this one leaves it: the desktop's
+                // preference writer stores it, and closing the window waits for it.
                 self.performance.expanded = !self.performance.expanded;
-                self.performance.saving.offer(self.performance.expanded);
-                self.save_performance_preference()
-            }
-            PerformanceMessage::Saved(result) => {
-                self.performance.saving.answered();
-                if let Err(reason) = result {
-                    self.status.text = format!("Could not save Performance preference: {reason}");
-                    self.event(
-                        "performance_preference_failed",
-                        || json!({"reason": reason}),
-                    );
-                }
-                if self.performance.closing && self.performance.saving.idle() {
-                    return self.close();
-                }
-                self.save_performance_preference()
+                self.store_preferences(PreferenceChange {
+                    performance_expanded: Some(self.performance.expanded),
+                    ..PreferenceChange::default()
+                })
             }
             PerformanceMessage::Cancel(job_id) => {
                 if self.performance.cancelling.len() >= crate::state::performance::MAX_JOB_ROWS
@@ -169,26 +156,6 @@ impl Editor {
                 self.performance_sampled(epoch, result)
             }
         }
-    }
-
-    fn save_performance_preference(&mut self) -> Task<Message> {
-        let Some(expanded) = self.performance.saving.start() else {
-            return Task::none();
-        };
-        let owner = self.owner.clone();
-        let client = self.client;
-        crate::app::tasks::owner_task(
-            move || {
-                crate::app::tasks::call(
-                    &owner,
-                    client,
-                    "preferences.set",
-                    json!({"performance_expanded": expanded}),
-                )
-                .map(|_| ())
-            },
-            |result| Message::Performance(PerformanceMessage::Saved(result)),
-        )
     }
 
     /// Whether the Performance section samples now: expanded, with the state panel on screen. The
@@ -454,16 +421,23 @@ mod tests {
         );
         let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
         assert!(!editor.performance_sampling());
-        let (saved, _) = call(
-            &editor.owner,
-            editor.client,
-            "preferences.set",
-            json!({"performance_expanded": false}),
-        )
-        .unwrap();
-        assert_eq!(saved["performance_expanded"], false);
-        let _ = editor.update(Message::Performance(PerformanceMessage::Saved(Ok(()))));
-        assert!(editor.performance.saving.idle());
+        // The toggle's write goes through the desktop's one preference writer.
+        let params = editor
+            .preferences
+            .writing()
+            .expect("a write in flight")
+            .params();
+        assert_eq!(params, json!({"performance_expanded": false}));
+        let answer =
+            crate::app::tasks::call_own(&editor.owner, editor.client, "preferences.set", params)
+                .and_then(|(saved, request)| {
+                    Ok((crate::state::preferences::parse(saved)?, request))
+                });
+        let _ = editor.update(Message::Preferences(
+            crate::app::message::preferences::PreferenceMessage::Saved(answer),
+        ));
+        assert!(editor.preferences.idle());
+        assert!(!editor.preferences.stored().unwrap().performance_expanded);
         assert!(
             editor.document.state.is_none(),
             "a user preference requires no photo or history"

@@ -117,8 +117,45 @@ impl Step {
         Self::Performance { expanded }
     }
 
+    /// Open the Settings sheet at Experiments, or close it.
     pub fn settings(open: bool) -> Self {
-        Self::Settings { open }
+        Self::Settings { open, tab: None }
+    }
+
+    /// Open the Settings sheet at one of [`crate::SETTINGS_TABS`].
+    pub fn settings_tab(tab: impl Into<String>) -> Self {
+        Self::Settings {
+            open: true,
+            tab: Some(tab.into()),
+        }
+    }
+
+    /// Choose a theme by its id, as its Appearance row does.
+    pub fn theme(id: impl Into<String>) -> Self {
+        Self::Theme(ThemePick {
+            id: Some(id.into()),
+            name: None,
+        })
+    }
+
+    /// Choose a theme by its name, as its Appearance row does: an imported theme's id is new on
+    /// every run.
+    pub fn theme_named(name: impl Into<String>) -> Self {
+        Self::Theme(ThemePick {
+            id: None,
+            name: Some(name.into()),
+        })
+    }
+
+    /// Import one Luxforge theme document through the Appearance tab's import task.
+    pub fn theme_import(path: impl Into<String>) -> Self {
+        Self::ThemeImport { path: path.into() }
+    }
+
+    /// Import an Omarchy theme folder, or a folder of them, through the Appearance tab's Import
+    /// Omarchy theme… task.
+    pub fn theme_import_omarchy(path: impl Into<String>) -> Self {
+        Self::ThemeImportOmarchy { path: path.into() }
     }
 
     /// Change one flag through its row, or Reset it for `None`.
@@ -127,6 +164,16 @@ impl Step {
             id: id.into(),
             value,
         }
+    }
+
+    /// Change General rows through their own controls: each field with the value to set.
+    pub fn preference<K: Into<String>>(fields: impl IntoIterator<Item = (K, Value)>) -> Self {
+        Self::Preference(
+            fields
+                .into_iter()
+                .map(|(field, value)| (field.into(), value))
+                .collect(),
+        )
     }
 
     pub fn preset(name: impl Into<String>) -> Self {

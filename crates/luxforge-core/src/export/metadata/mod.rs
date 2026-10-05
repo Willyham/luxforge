@@ -19,6 +19,8 @@
 mod read;
 mod write;
 
+use serde::{Deserialize, Serialize};
+
 #[cfg(test)]
 mod tests;
 
@@ -151,6 +153,23 @@ pub struct CaptureMetadata {
     fields: Vec<(usize, Value)>,
 }
 
+/// The image-information readout of the original's validated capture metadata. Missing or
+/// invalid fields are `None`; these values never describe edited pixels or a selected profile.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureInfo {
+    pub make: Option<String>,
+    pub model: Option<String>,
+    pub lens_make: Option<String>,
+    pub lens_model: Option<String>,
+    pub aperture: Option<f64>,
+    pub exposure_seconds: Option<f64>,
+    pub iso: Option<u16>,
+    pub focal_mm: Option<f64>,
+    pub focal_35mm: Option<u16>,
+    pub captured_at: Option<String>,
+}
+
 /// The EXIF orientation of a JPEG file's first `Exif` APP1 segment before its scan, read with the
 /// same bounded reader as the kept fields: IFD0's first Orientation entry that is one SHORT from 1
 /// to 8, else 1.
@@ -161,6 +180,36 @@ pub(crate) fn jpeg_orientation(bytes: &[u8]) -> u8 {
 }
 
 impl CaptureMetadata {
+    fn positive_rational(&self, tag: u16) -> Option<f64> {
+        match self.value(Ifd::Exif, tag)? {
+            Value::Rational(values) => {
+                let [numerator, denominator] = *values.first()?;
+                (numerator > 0 && denominator > 0)
+                    .then(|| f64::from(numerator) / f64::from(denominator))
+            }
+            _ => None,
+        }
+    }
+
+    /// A small projection of fields read once with the verified source, without file or pixel work.
+    pub fn information(&self) -> CaptureInfo {
+        CaptureInfo {
+            make: self.make().map(str::to_owned),
+            model: self.model().map(str::to_owned),
+            lens_make: self.lens_make().map(str::to_owned),
+            lens_model: self.lens_model().map(str::to_owned),
+            aperture: self.positive_rational(0x829d),
+            exposure_seconds: self.positive_rational(0x829a),
+            iso: match self.value(Ifd::Exif, 0x8827) {
+                Some(Value::Short(value)) if *value > 0 => Some(*value),
+                _ => None,
+            },
+            focal_mm: self.focal_length_mm(),
+            focal_35mm: self.focal_length_35mm(),
+            captured_at: self.text(Ifd::Exif, 0x9003).map(str::to_owned),
+        }
+    }
+
     fn value(&self, ifd: Ifd, tag: u16) -> Option<&Value> {
         self.fields.iter().find_map(|(index, value)| {
             let field = &FIELDS[*index];
@@ -197,14 +246,7 @@ impl CaptureMetadata {
 
     /// The physical focal length in millimetres. A zero or invalid rational is absent.
     pub fn focal_length_mm(&self) -> Option<f64> {
-        match self.value(Ifd::Exif, 0x920a)? {
-            Value::Rational(values) => {
-                let [numerator, denominator] = *values.first()?;
-                (numerator > 0 && denominator > 0)
-                    .then(|| f64::from(numerator) / f64::from(denominator))
-            }
-            _ => None,
-        }
+        self.positive_rational(0x920a)
     }
 
     /// The 35 mm equivalent focal length. EXIF zero means unknown.

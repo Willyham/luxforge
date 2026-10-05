@@ -39,7 +39,7 @@ Accepted on 2026-09-20 for the [Develop workspace](design/develop-workspace.md) 
 - Modules render as stacked collapsible sections in registry order. A build lists only registered modules; nothing is drawn for modules that do not exist.
 - A history row shows the action title plus a one-value summary supplied by the module; the host stores the rendered label with the entry. The module supplies it through `label()` since the [post-consolidation review](#post-consolidation-review), which replaced declared `summary` templates.
 - Test modules (pixel proof) live in a Developer section that is hidden unless the desktop is launched with `--developer`; the registry marks them `developer: true`, and since the [post-consolidation review](#post-consolidation-review) they register only in developer mode, so a normal build's API lists none of their methods.
-- Compare is hold-`\` for the Original entry framed by the displayed entry's geometry (`preview.select` with `keep_geometry`), and Shift+`\` for the uncropped Original, released through `preview.return-current` or the previous selection. A tap of `\` (release within 200 ms) or a click of Compare toggles an aligned Before/After divider, with another tap of `\` or Escape to exit; `preview.compare` owns its fixed After entry, prior selection and divider position. Holding `\` during the slider temporarily shows Before across the photograph. Dark theme only; a light theme is not planned.
+- Compare is hold-`\` for the Original entry framed by the displayed entry's geometry (`preview.select` with `keep_geometry`), and Shift+`\` for the uncropped Original, released through `preview.return-current` or the previous selection. A tap of `\` (release within 200 ms) or a click of Compare toggles an aligned Before/After divider, with another tap of `\` or Escape to exit; `preview.compare` owns its fixed After entry, prior selection and divider position. Holding `\` during the slider temporarily shows Before across the photograph. Dark theme only; a light theme is not planned. Superseded on 2026-10-05 by [UI themes](#ui-themes).
 - Basic, histogram, export, Locate, heal and mask are outside this work. Their sections, buttons and notices are left out of the build entirely rather than drawn as placeholders. The generated tools panel must accept a `number` slider module without desktop changes, which is how Basic lands later.
 
 Decided on 2026-09-21:
@@ -48,7 +48,7 @@ Decided on 2026-09-21:
 
 Decided on 2026-09-23:
 
-- The state panel's [Performance section](design/performance-panel.md#decisions) starts open on every launch. Memory is shown in binary units with Activity Monitor's MB and GB labels, and CPU as a percentage of one core, so it passes 100% whenever more than one core is busy.
+- The state panel's [Performance section](design/performance-panel.md#decisions) starts open on first use and then remembers whether it was left open (owner, 2026-10-02). Memory is shown in binary units with Activity Monitor's MB and GB labels, and CPU as a percentage of one core, so it passes 100% whenever more than one core is busy.
 - A module whose controls are a single group shows them without a sub-group header: a header naming the module's only group, such as Presence's "Presence" or Vignette's "Vignette", repeats the band above it. The band keeps the module's reset. Descriptors and the API are unchanged.
 
 Decided on 2026-09-26, aligning the shell with the boards:
@@ -211,6 +211,7 @@ Accepted on 2026-09-27 for the delivered [JPEG export](design/export.md#decision
 - JPEG import stays strict (owner, 2026-09-27): extraneous bytes after a scan, an unknown Adobe colour transform, non-sequential scans and any data after the end-of-image marker are refused. Accepting trailing data (for example the video a Motion Photo appends) would mean reading past the image, a denial-of-service and parsing surface the owner does not want now; each relaxation is added deliberately, with its own review, only when a real file needs it.
 - The methods are `export.plan`, `export.jpeg`, `export.read` and `export.cancel`; the export lane is its own instance of the lane runner until one job table exists.
 - The earlier state-panel export proposal (presets, resizing, unique names by default, durable export records) is not adopted.
+- The desktop's export records 72 pixels per inch for each physical pixel of a point on the window's display, 144 on Retina, on macOS only (owner, 2026-10-05), so Preview's Actual Size matches the editor's 100%; `export.jpeg` takes the density as an optional parameter and the core never reads a display.
 
 ## Source-kind controls
 
@@ -342,6 +343,17 @@ Settings gained a **General** tab for the person's preferences, which are not ex
 
 The gear button and Cmd+,, launch flags applying at the next launch, storing only explicit choices, `luxforge-json` reading no flag at launch and the two developer-only proof flags are proposals with recorded defaults in the [design](design/settings-and-flags.md#decisions).
 
+## Preferences
+
+Decided by the owner on 2026-10-04, choosing from a list of proposed settings ([design](design/preferences.md)):
+
+- **Remembered across launches, with no Settings row:** panel visibility, the thirds and clipping overlays, the brush's size, feather and flow, the window's frame and the last export folder.
+- **Settings › General gains** the mask overlay colour, the canvas background, a switch for automatic lens correction of new RAW photos, an interface size and the catalog location.
+- **The GPU preview stays a per-session switch**, not a preference.
+- **Export defaults** (JPEG quality, Keep metadata) wait for the export work.
+
+The field shapes, the three canvas colours, the four interface sizes, the catalog as a folder holding `catalog.sqlite` applied at the next launch with a fallback to the default catalog when its folder is missing, and the other details are proposals with recorded defaults in the [design](design/preferences.md#decisions).
+
 ## GPU-first rendering
 
 Decided by the owner on 2026-10-04 after the hover-readout freeze and the audit that followed it ([design](design/gpu-first.md)):
@@ -350,6 +362,17 @@ Decided by the owner on 2026-10-04 after the hover-readout freeze and the audit 
 - Image correctness is a declared tolerance against the reference render for every output kind, measured on the qualification corpus before each stage lands. Bit identity is not required of the GPU; on one machine and driver the GPU is deterministic, and across machines an export or a histogram may differ in the last digit.
 - The convergence is staged, each stage deleting a cache, a phase or a fallback; the tolerance numbers, the no-GPU fallback, the export device policy and the counts' cadence during motion run on the design's recorded defaults until recorded here.
 - Settled pixels and reports from the reference keep their exactness tests against frozen fixtures; the pillars' exact-buffer wording now reads reference-buffer within a declared tolerance.
+
+## UI themes
+
+Decided by the owner on 2026-10-05, on the [UI themes](design/ui-themes.md) proposal of 2026-10-04:
+
+- **Themes replace dark only, light ones included.** Luxforge Dark, the visual language's palette, stays the default. The principle that the photograph is the only colour on screen now holds for it alone, so other themes may tint the chrome.
+- **The photograph's surround stays neutral** in every theme. A theme chooses its lightness, never its hue.
+- **Each theme keeps its own accent**, even near the clipping or mask colours. The import report notes an accent within 15 ΔE00 of one of them.
+- **A few popular Omarchy themes are bundled** for now, beside themes imported from a folder.
+
+The rest are proposals with recorded defaults in the [design](design/ui-themes.md#proposals-with-recorded-defaults): which themes are bundled (Tokyo Night, Catppuccin, Catppuccin Latte, Gruvbox, Nord and Everforest), the contrast floors, which Omarchy forms are read, a Theme choice for the canvas background as its default, the Appearance tab, and leaving Omarchy's current theme and the system appearance for later.
 
 ## AI editing
 
@@ -379,6 +402,7 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 - Masking is authorized (2026-09-23) and is being implemented. Decided the same day: brush strokes are held in a **content-addressed stroke store** keyed by a hash of their contents, because every history entry stores a complete recipe and embedded strokes grow quadratically — about 37.5 MB across history for 200 strokes against 1.08 MB addressed. Entries stay full snapshots and pure deltas are rejected; a missing or corrupt stroke fails explicitly. It lands in phase C before the first brush ships, in the [current catalog format](design/versions-and-lineage.md#storage-catalog-format-12). The `points` kind, the stroke list and the `brush-paint` interaction are host primitives shared with the corrections proposal, not mask-private ones. See [masking](design/masking.md#stroke-storage).
 - Do masking's remaining recorded defaults stand — masks as a target for the delivered modules rather than a local-adjustment module of their own, the idempotent component algebra, a radial that selects inside, one stroke amount instead of Flow and Density, and the A-to-D phase order with brushes before range selections?
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
+- Which of the [UI themes proposals](design/ui-themes.md#proposals-with-recorded-defaults) stand? They are the six bundled Omarchy themes; the contrast floors, with an imported theme's own text or accent moved to meet them; the Omarchy forms read; a Theme choice for the canvas background as its default; the Appearance tab; and leaving Omarchy's current theme and the system appearance for later.
 - [AI editing](design/ai-editing.md) was decided on 2026-10-05 ([above](#ai-editing)); still open: the first hosted provider, whether to fund a removal fine-tune, whether a macOS 27 Swift shim is worth a Mac-only accelerator, and what a CPU-only machine is offered.
 - Which measured workloads and responsiveness budgets become acceptance requirements?
 - For interactive previews, which additional measured quality levels and approximation error bounds are acceptable beyond the authorized viewport baseline? Temporary softness, the updating histogram, and viewport-bounded clipping are accepted above. For GPU previews the owner chose speed first ([above](#gpu-previews)); do the [proposed limits](design/gpu-preview.md#the-preview-error-limit) stand?

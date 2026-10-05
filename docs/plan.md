@@ -100,6 +100,12 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 **Tuning delivered tools.** Refine the recorded defaults of Presence, the colour mixer and the vignette (decision pending).
 
+## Interface
+
+**UI themes** ([design](design/ui-themes.md)) are implemented, with Omarchy import and six bundled Omarchy themes ([feature status](features.md)). Outstanding:
+- Owner review of the recorded defaults: which themes are bundled, the contrast floors, the Omarchy forms read, the canvas background's Theme default and the Appearance tab
+- Later, if the owner wants them: following Omarchy's current theme on Linux, following the system's light or dark appearance
+
 ## Programmability
 
 **MCP adapter.** Expose the whole operation registry to agents through a standards-compliant MCP server over the existing command service.

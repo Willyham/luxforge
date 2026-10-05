@@ -3,6 +3,7 @@
 //! the group rules, the two-column fields, the toggle rows with hints, the colour range's swatches
 //! and a brush component's strokes. Widget states only: no composed panel.
 
+use crate::Element;
 use crate::{
     CombineMode, ComponentRowMessages, ComponentRowModel, CoverageThumbnailModel,
     DropdownButtonModel, GridField, GroupRuleModel, Icon, MaskRowMessages, MaskRowModel, MenuEntry,
@@ -13,7 +14,7 @@ use crate::{
     theme,
 };
 use iced::widget::{Column, Row, Space, container, row};
-use iced::{Alignment, Element, Length, Padding};
+use iced::{Alignment, Length, Padding};
 use std::sync::Arc;
 
 /// The width of the board's panels; the rows sit in its body's 12 pt side padding.

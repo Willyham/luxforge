@@ -459,7 +459,7 @@ fn another_clients_preset_event_refreshes_the_library_in_the_same_poll() {
     let caught_up = tasks::sync_now(
         &library.owner(),
         library.editor.client,
-        library.held(),
+        Some(library.held()),
         library.editor.sync.sequence,
         &[],
         None,
@@ -471,7 +471,7 @@ fn another_clients_preset_event_refreshes_the_library_in_the_same_poll() {
     let quiet = tasks::sync_now(
         &library.owner(),
         library.editor.client,
-        library.held(),
+        Some(library.held()),
         library.editor.sync.sequence,
         &[],
         None,
@@ -493,7 +493,7 @@ fn another_clients_preset_event_refreshes_the_library_in_the_same_poll() {
     let polled = tasks::sync_now(
         &library.owner(),
         library.editor.client,
-        library.held(),
+        Some(library.held()),
         library.editor.sync.sequence,
         &[],
         None,
@@ -522,7 +522,7 @@ fn another_clients_preset_event_refreshes_the_library_in_the_same_poll() {
     let polled = tasks::sync_now(
         &library.owner(),
         library.editor.client,
-        library.held(),
+        Some(library.held()),
         library.editor.sync.sequence,
         &[],
         None,

@@ -3,7 +3,7 @@
   "plan_id": "product-decisions",
   "title": "Open product decisions",
   "objective": "Resolve the product questions that gate later roadmap phases, recording each answer in docs/decisions.md and the affected specification.",
-  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks are the open questions: storage/backup workflow, RAW recording-mode and quality priorities, the first external module use case, accepted performance workloads and budgets, the Presence, colour mixer and vignette defaults, and interactive-preview quality levels beyond the authorized baseline, and the GPU-first rendering questions left open by the owner's decision of 2026-10-04, and the AI editing decisions of the 2026-10-04 proposal (scope, weights licence policy, training-data provenance, runtime, models, the effect region, stale patches, budgets, the generative hardware minimum, sky replacement and remote consent).",
+  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks are the open questions: storage/backup workflow, RAW recording-mode and quality priorities, the first external module use case, accepted performance workloads and budgets, the Presence, colour mixer and vignette defaults, and interactive-preview quality levels beyond the authorized baseline, and the GPU-first rendering questions left open by the owner's decision of 2026-10-04, and the UI themes questions left as recorded defaults by the owner's decisions of 2026-10-05, and the AI editing decisions of the 2026-10-04 proposal, taken on 2026-10-05.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -437,14 +437,53 @@
     },
     {
       "id": "TASK-009",
+      "description": "Decide the remaining UI themes questions: which Omarchy themes are bundled, the contrast floors and moving an imported theme's own ink, the Omarchy forms read, a Theme choice for the canvas background as its default, the Appearance tab, and whether following Omarchy's current theme or the system appearance is built next.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "The owner decided on 2026-10-05 (docs/decisions.md, UI themes) that themes, light ones included, replace dark only; that the surround stays neutral; that each theme keeps its own accent; and that a few popular Omarchy themes are bundled. Themes are implemented on the design's default for each remaining question, and each is a proposal until it is recorded here.",
+        "The recorded defaults: Tokyo Night, Catppuccin, Catppuccin Latte, Gruvbox, Nord and Everforest bundled; floors of 7:1 for primary text, 4.5:1 for labels and secondary text, and 3:1 for tertiary text, the accent and the error ink, with an imported theme's own text or accent moved to its floor and reported (6 of Omarchy's 22 built-in themes); Omarchy 4 and 3 palettes, light.mode and alacritty.toml read; a fourth canvas background choice, Theme, as its default, with Dark, Black and Grey kept as fixed greys; a Settings › Appearance tab for the theme list, the canvas background and interface size staying General rows; following Omarchy's current theme and the system appearance left for later."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "UI themes design",
+          "target": "docs/design/ui-themes.md",
+          "locator": "Proposals with recorded defaults",
+          "relevance": "The questions, defaults and alternatives to decide."
+        },
+        {
+          "kind": "file",
+          "label": "Owner decisions",
+          "target": "docs/decisions.md",
+          "locator": "UI themes",
+          "relevance": "The decisions taken and where the remaining answers are recorded."
+        }
+      ],
+      "acceptance_criteria": [
+        "Each question is accepted as its default, changed with the design updated to match, or explicitly left as a recorded default the plan runs on.",
+        "The decisions document records each outcome with its date."
+      ],
+      "test_strategy": {
+        "approach": "manual",
+        "steps": [
+          "Review the proposals table with the owner.",
+          "Record the outcome in the decisions document and adjust the design where a default changed."
+        ],
+        "commands": [],
+        "expected_results": [
+          "No proposal is silently treated as accepted."
+        ]
+      }
+    },
+    {
+      "id": "TASK-010",
       "description": "Decide the AI editing questions: scope, the weights licence policy and training-data provenance, the inference runtime, the segmenter, Fast fill and generative models, the effect region, stale patches, budgets, the generative hardware minimum, sky replacement and remote consent.",
       "status": "completed",
       "dependencies": [],
       "extra_context": [
-        "Completed on 2026-10-05: every question is recorded in docs/decisions.md under AI editing, with the open questions that remain named there.",
-        "The AI editing design of 2026-10-04 proposes Remove, Select, generative fill and Replace, and optional sky replacement on local, user-downloaded models, and records a recommendation for each of its twelve decisions so its plan can run; each is a proposal until recorded in docs/decisions.md.",
-        "Two decisions are consequential beyond engineering: the weights licence policy (permissive by default; whether OpenRAIL++-M and the SAM License may be offered as explicit, off-by-default downloads; non-commercial never) and training-data provenance (Places2, SA-1B, DIS5K and ADE20K carry non-commercial terms on their images while the weights are Apache or MIT). Refusing disclosed academic data removes every strong model the research found.",
-        "The stale-patch decision chooses between keeping a stale AI patch rendering with a mark and an export acknowledgement (the AI editing design) and failing render, sample and export explicitly (the Corrections design); the design not chosen is updated to match."
+        "Completed on 2026-10-05: every question is recorded in docs/decisions.md under AI editing, with the open questions that remain named there (the first hosted provider, a removal fine-tune, a macOS 27 Swift shim, what a CPU-only machine is offered).",
+        "The AI editing design of 2026-10-04 proposed Remove, Select, generative fill and Replace, and optional sky replacement on local, user-downloaded models, with a recommendation for each of its twelve decisions; the owner chose quality-first model selection with no licence or provenance gate beyond a one-line use restriction, stale patches kept rendering, budgets raised for quality, consent remembered per provider, and sky replacement in scope."
       ],
       "context_links": [
         {
@@ -452,32 +491,25 @@
           "label": "AI editing design",
           "target": "docs/design/ai-editing.md",
           "locator": "Decisions",
-          "relevance": "The thirteen questions, their recommendations, the recorded defaults and the open questions."
-        },
-        {
-          "kind": "file",
-          "label": "Object removal research",
-          "target": "docs/research/object-removal/README.md",
-          "locator": "Licences eliminate more candidates than quality does",
-          "relevance": "The licence and provenance evidence behind decisions 2 and 3."
+          "relevance": "The questions and their outcomes."
         },
         {
           "kind": "file",
           "label": "Corrections proposal",
           "target": "docs/design/corrections.md",
-          "relevance": "The stale-prefix rule the stale-patch decision weighs against."
+          "relevance": "The repair-stage and stale-patch decisions taken with these."
         },
         {
           "kind": "file",
           "label": "Owner decisions",
           "target": "docs/decisions.md",
-          "locator": "Open product questions",
+          "locator": "AI editing",
           "relevance": "Where each answer is recorded."
         }
       ],
       "acceptance_criteria": [
         "Each question is accepted as its recommendation, changed with the design updated to match, or explicitly left as a recorded default the plan runs on, and docs/decisions.md records the outcome with its date.",
-        "The roadmap's exclusion of generative editing is lifted or kept according to the scope decision, and the Corrections design agrees with the stale-patch decision."
+        "The roadmap's exclusion of generative editing is lifted and the Corrections design agrees with the stale-patch decision."
       ],
       "test_strategy": {
         "approach": "manual",
@@ -504,7 +536,8 @@
         "TASK-006",
         "TASK-007",
         "TASK-008",
-        "TASK-009"
+        "TASK-009",
+        "TASK-010"
       ]
     }
   ]

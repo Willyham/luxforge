@@ -31,7 +31,7 @@ use crate::{
     },
 };
 use iced::{
-    Alignment, Element, Length, Padding,
+    Alignment, Length, Padding,
     widget::{Column, Space, column, container, mouse_area, row},
 };
 use luxforge_ui::{
@@ -43,6 +43,7 @@ use luxforge_ui::{
     dropdown_button, field_grid, group_rule, mask_row, menu_list, mode_control, overlay_control,
     popover, slider, stroke_row, swatch_slots, theme, with_tooltip,
 };
+use luxforge_ui::{Element, Token};
 
 /// The panel's own module key, for the generated controls' group and focus keys. The mask commands
 /// belong to the host rather than to a module, and this is the name the host goes by.
@@ -120,7 +121,7 @@ fn note<'a>(content: impl Into<String>) -> Element<'a, Message> {
     iced::widget::text(content.into())
         .size(theme::SIZE_SMALL_CAPTION)
         .wrapping(iced::widget::text::Wrapping::None)
-        .color(theme::TEXT_TERTIARY)
+        .style(theme::ink(Token::TextTertiary))
         .into()
 }
 
@@ -220,7 +221,10 @@ pub(crate) fn masks_panel<'a>(
 
 /// The list while a row is dragged: leaving it lets go of the row under the pointer, so a release
 /// outside the list reorders nothing.
-fn drop_zone<'a>(list: Column<'a, Message>, model: &MasksModel) -> Element<'a, Message> {
+fn drop_zone<'a>(
+    list: Column<'a, Message, luxforge_ui::Theme>,
+    model: &MasksModel,
+) -> Element<'a, Message> {
     if model.drag.is_some() {
         mouse_area(list)
             .on_exit(mask(MaskMessage::Drag(DragEdit::Over(None))))

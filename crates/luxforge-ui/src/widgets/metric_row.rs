@@ -8,10 +8,11 @@
 use super::sparkline::{SparklineModel, sparkline};
 use super::truncated_text::truncated_text;
 use crate::theme;
+use crate::{Element, Token};
 use iced::alignment::Horizontal;
 use iced::widget::text::{Span, Wrapping};
-use iced::widget::{container, rich_text, row, span, text, tooltip};
-use iced::{Alignment, Element, Length};
+use iced::widget::{container, rich_text, row, span, stack, text, tooltip};
+use iced::{Alignment, Color, Length};
 
 /// Plain data for one metric row.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -35,31 +36,44 @@ pub fn metric_row<'a, M: Clone + 'a>(model: &MetricRowModel) -> Element<'a, M> {
         model.label.clone(),
         theme::SIZE_CAPTION,
         theme::FONT,
-        theme::TEXT_SECONDARY,
+        Token::TextSecondary,
     ))
     .width(Length::Fixed(theme::METRIC_LABEL_WIDTH));
 
     // One paragraph rather than two text widgets, so the 12 pt figure and the 10.5 pt unit share a
-    // baseline, and the unit follows the figure by one space of its own size.
-    let mut spans: Vec<Span<'a, ()>> = vec![
-        span(model.value.clone())
-            .size(theme::SIZE_CONTROL)
-            .color(theme::TEXT_PRIMARY),
-    ];
-    if !model.unit.is_empty() {
-        spans.push(
-            span(format!(" {}", model.unit))
-                .size(theme::SIZE_SMALL_CAPTION)
-                .color(theme::TEXT_TERTIARY),
-        );
-    }
-    let value = container(
+    // baseline, and the unit follows the figure by one space of its own size. A span's colour is
+    // fixed when the paragraph is laid out, before the theme is known, while the paragraph's own
+    // colour is read from the theme as it draws. So each ink is its own layer of the same
+    // paragraph, which lays out identically: the figure's layer draws the unit transparent, and
+    // the unit's layer the figure.
+    let paragraph = |figure: Option<Color>, unit: Option<Color>, ink: Token| {
+        let mut spans: Vec<Span<'a, ()>> = vec![
+            span(model.value.clone())
+                .size(theme::SIZE_CONTROL)
+                .color_maybe(figure),
+        ];
+        if !model.unit.is_empty() {
+            spans.push(
+                span(format!(" {}", model.unit))
+                    .size(theme::SIZE_SMALL_CAPTION)
+                    .color_maybe(unit),
+            );
+        }
         rich_text(spans)
             .wrapping(Wrapping::None)
             .align_x(Horizontal::Right)
-            .width(Length::Fill),
-    )
-    .width(Length::Fixed(theme::METRIC_VALUE_WIDTH));
+            .width(Length::Fill)
+            .style(theme::ink(ink))
+    };
+    let mut layers = stack![paragraph(None, Some(Color::TRANSPARENT), Token::Text)];
+    if !model.unit.is_empty() {
+        layers = layers.push(paragraph(
+            Some(Color::TRANSPARENT),
+            None,
+            Token::TextTertiary,
+        ));
+    }
+    let value = container(layers).width(Length::Fixed(theme::METRIC_VALUE_WIDTH));
 
     let content = row![label, sparkline(&model.series), value]
         .spacing(theme::SPACING)
@@ -75,7 +89,7 @@ pub fn metric_row<'a, M: Clone + 'a>(model: &MetricRowModel) -> Element<'a, M> {
         container(
             text(model.tooltip.clone())
                 .size(theme::SIZE_CAPTION)
-                .color(theme::TEXT_PRIMARY),
+                .style(theme::ink(Token::Text)),
         )
         .padding(theme::TOOLTIP_PADDING)
         .style(theme::bar_surface),
