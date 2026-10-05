@@ -10,6 +10,7 @@ use crate::{
 use luxforge_core::{
     Availability, CanvasInteraction, ComponentMode, ErrorKind, MASK_MODE, ModuleDescriptor,
     POINTER_MODE, PREVIEW_PROGRESS_QUIET, PreviewProgress, Zoom, mask::commands::MaskListing,
+    preferences::CanvasBackground,
 };
 use std::time::Duration;
 
@@ -209,14 +210,39 @@ pub(crate) struct Notice {
     pub(crate) actions: Vec<(String, NoticeAction)>,
 }
 
+/// The canvas background the person chose, as the view draws it: each names one of the theme's
+/// canvas tokens.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum CanvasFill {
+    #[default]
+    Dark,
+    Black,
+    Grey,
+}
+
+impl From<CanvasBackground> for CanvasFill {
+    fn from(background: CanvasBackground) -> Self {
+        match background {
+            CanvasBackground::Dark => Self::Dark,
+            CanvasBackground::Black => Self::Black,
+            CanvasBackground::Grey => Self::Grey,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct CanvasModel {
     pub(crate) photo: PhotoView,
     pub(crate) zoom: ZoomView,
     pub(crate) scale_factor: f32,
+    /// The colour around the photograph, which fills the canvas region, the photo surface outside
+    /// the photograph and the compare canvas.
+    pub(crate) background: CanvasFill,
     pub(crate) dimensions: Option<(u32, u32)>,
     pub(crate) modes: Vec<ModeEntry>,
     pub(crate) thirds: bool,
+    pub(crate) information_on: bool,
+    pub(crate) information: Option<super::information::Information>,
     pub(crate) draft_bar: Option<DraftBar>,
     pub(crate) notices: Vec<Notice>,
     /// A module declares a pick and the current state can be edited. The view's whole share of the
@@ -309,9 +335,12 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
             Zoom::Percent { value } => ZoomView::Percent(value),
         },
         scale_factor: inputs.view_state.scale_factor,
+        background: inputs.view_state.canvas_background.into(),
         dimensions: inputs.dimensions,
         modes,
         thirds: inputs.session.workspace.thirds,
+        information_on: inputs.session.workspace.information,
+        information: super::information::derive(inputs),
         draft_bar: draft_bar(inputs),
         notices: notices(inputs),
         // A click on the photograph belongs to the canvas mode that is on screen, so the surface
