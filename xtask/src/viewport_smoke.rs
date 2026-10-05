@@ -535,8 +535,17 @@ pub fn verify_chained(run: &mut Run, launches: &[Checked]) -> Result {
         ),
     )?;
     let lights = &launch.at("gpu-tick")?.state()["surface"]["gpu"]["gpu_preview"]["drag"]["lights"];
-    let refined = event(&launch.events, "preview_displayed")
-        .any(|e| e["detail"]["path"] == "region" && e["detail"]["draft_revision"].is_null());
+    // The released view's exact region: the reference's, or, where the GPU presents the released
+    // stack, the GPU's region of it with no CPU render, displayed after the draft's last frame.
+    let displayed: Vec<_> = event(&launch.events, "preview_displayed").collect();
+    let last_draft = displayed
+        .iter()
+        .rposition(|e| !e["detail"]["draft_revision"].is_null());
+    let refined = displayed.iter().enumerate().any(|(index, e)| {
+        e["detail"]["draft_revision"].is_null()
+            && (e["detail"]["path"] == "region"
+                || (e["detail"]["path"] == "gpu" && last_draft.is_some_and(|last| index > last)))
+    });
     ensure(
         refined,
         "The released view's exact region was never displayed",

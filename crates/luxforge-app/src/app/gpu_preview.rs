@@ -2293,19 +2293,26 @@ impl Editor {
     /// Whether the view shows what `plan` draws: at Fit a whole frame's; below 100% a whole frame's
     /// while the view draws its photograph's frame alone, the displayed-size proxy, as Fit does,
     /// an exact frame or a region it still holds from a zoom of 100% or more being its own to
-    /// draw; at 100% and above a region's while that region holds the view.
+    /// draw; at 100% and above a region's while that region holds the view, or, over a stack the
+    /// GPU presented with no CPU frame, while a pan's region is planned: the region is the only
+    /// picture of that stack, and the frame under it an earlier stack's.
     fn gpu_plan_shown(&self, plan: &surface::GpuPlan) -> bool {
         match (&self.session.preview.view.zoom, plan.region) {
             (luxforge_core::Zoom::Fit, None) => true,
             (luxforge_core::Zoom::Percent { value }, None) if *value < 100.0 => {
                 self.presentation.surfaces(None).whole_frame()
             }
-            (luxforge_core::Zoom::Percent { value }, Some(region)) if *value >= 100.0 => self
-                .presentation
-                .dimensions
-                .filter(|stage| *stage == region.stage)
-                .and_then(|stage| self.desired_view_for(stage))
-                .is_some_and(|wanted| super::preview::contains_region(rect_of(region), wanted)),
+            (luxforge_core::Zoom::Percent { value }, Some(region)) if *value >= 100.0 => {
+                let presented =
+                    self.presentation.gpu_presented == Some(self.presentation.presented_content);
+                self.presentation
+                    .dimensions
+                    .filter(|stage| *stage == region.stage)
+                    .and_then(|stage| self.desired_view_for(stage))
+                    .is_some_and(|wanted| {
+                        presented || super::preview::contains_region(rect_of(region), wanted)
+                    })
+            }
             _ => false,
         }
     }
