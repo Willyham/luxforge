@@ -88,7 +88,7 @@ impl Editor {
                 entry.as_ref(),
             );
         }
-        json!({"run_id":self.log.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.shown_selection(),"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.presentation.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"renderer":self.session.renderer,"status":self.status.text,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.controls.fields.summary(),"control_ui":{"query_choices":self.controls.ui.query_choices,"group_expanded":self.controls.ui.group_expanded,"selected_tab":self.controls.ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(&sections),"masks":self.workspace.masks.summary(),"mask_draft":self.mask_draft_summary(),"mask_tool":self.mask_shape().map(|shape| shape.summary()),"mask_handles":self.resting.as_ref().map(|resting| json!({"summary":resting.mask.shape.summary(),"mapped":resting.mask.map.is_some(),"stale":resting.stale()})),"mask_overlay":self.mask_overlay_summary(),"last_mask_request":self.mask_panel.last_request.as_ref().map(|(method, params)| json!({"method":method,"params":params})),"draft":self.draft_summary(),"stack":self.stack_summary(),"geometry":self.document.recipe.as_ref().and_then(|r|r.geometry.clone()),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":state::Workspace::pickers(&sections),"section_controls":state::Workspace::section_controls(&sections),"information":self.workspace.canvas.information,"notices":self.notice_titles(),"draft_bar":self.draft_bar_summary(),"compare":self.document.compare_return.is_some(),"comparison":self.session.preview.comparison,"compare_after":self.presentation.compare_after.as_ref().map(|after| json!(after.full().size())),"compare_after_reduced_at_fit":self.presentation.compare_after.as_ref().map(super::compare_after::CompareAfter::reduced_at_fit),"compare_hold":self.document.compare_hold,"compare_key_pending":self.compare_key.pending().is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette.open,"query":self.palette.query},"presets":self.presets_summary(&sections),"histogram":self.histogram_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"approximate_white_balance":self.presentation.presented_approximate_white_balance,"surface":self.surface_summary(),"active":self.workspace.active(),"scopes":self.workspace.scopes(),"scratch":self.scratch_summary(),"capabilities":state::capabilities::summary(&self.capabilities,&self.modules,self.document.state.as_ref()),"performance":self.performance_summary(),"settings":self.settings_summary(),"preferences":self.preferences_summary(),"theme":self.theme_summary(),"export":self.export_summary()})
+        json!({"run_id":self.log.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.shown_selection(),"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.presentation.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"renderer":self.session.renderer,"status":self.status.text,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.controls.fields.summary(),"control_ui":{"query_choices":self.controls.ui.query_choices,"group_expanded":self.controls.ui.group_expanded,"selected_tab":self.controls.ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(&sections),"masks":self.workspace.masks.summary(),"mask_draft":self.mask_draft_summary(),"mask_tool":self.mask_shape().map(|shape| shape.summary()),"mask_handles":self.resting.as_ref().map(|resting| json!({"summary":resting.mask.shape.summary(),"mapped":resting.mask.map.is_some(),"stale":resting.stale()})),"mask_overlay":self.mask_overlay_summary(),"last_mask_request":self.mask_panel.last_request.as_ref().map(|(method, params)| json!({"method":method,"params":params})),"draft":self.draft_summary(),"stack":self.stack_summary(),"geometry":self.document.recipe.as_ref().and_then(|r|r.geometry.clone()),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":state::Workspace::pickers(&sections),"section_controls":state::Workspace::section_controls(&sections),"information":self.workspace.canvas.information,"notices":self.notice_titles(),"draft_bar":self.draft_bar_summary(),"compare":self.document.compare_return.is_some(),"comparison":self.session.preview.comparison,"compare_after":self.presentation.compare_after.as_ref().map(|after| json!(after.full().size())),"compare_after_reduced_at_fit":self.presentation.compare_after.as_ref().map(super::compare_after::CompareAfter::reduced_at_fit),"compare_hold":self.document.compare_hold,"compare_key_pending":self.compare_key.pending().is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette.open,"query":self.palette.query},"presets":self.presets_summary(&sections),"histogram":self.histogram_summary(),"status_bar":self.status_bar_summary(),"reference":self.reference_summary(),"approximate_white_balance":self.presentation.presented_approximate_white_balance,"surface":self.surface_summary(),"active":self.workspace.active(),"scopes":self.workspace.scopes(),"scratch":self.scratch_summary(),"capabilities":state::capabilities::summary(&self.capabilities,&self.modules,self.document.state.as_ref()),"performance":self.performance_summary(),"settings":self.settings_summary(),"preferences":self.preferences_summary(),"theme":self.theme_summary(),"export":self.export_summary()})
     }
 
     /// The Presets section as the frame drew it: its rows, the create form and whether the section
@@ -209,44 +209,22 @@ impl Editor {
                 let gpu = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
                 let clipping_drawn = surface
                     .is_some_and(|overlay| gpu.drawn_clipping_version == Some(overlay.version()));
+                // Fit uses the surface's ordinary (non-viewport) path, which has no content ID.
+                // Its exact photo Frame version and clipping Frame version still prove both draw
+                // calls were encoded together.
                 let drawn = clipping_drawn
-                    && match request.region {
-                        Some(rect) => {
-                            self.presentation
-                                .region_raster
-                                .as_ref()
-                                .is_some_and(|region| {
-                                    region.rect == rect
-                                        && self.presentation.presenter.region().is_some_and(
-                                            |surface_region| {
-                                                gpu.drawn_regions.iter().flatten().any(|drawn| {
-                                                    drawn.version == surface_region.frame.version()
-                                                        && drawn.content_id == region.content
-                                                        && drawn.generation == region.generation
-                                                        && drawn.quality == region.quality
-                                                })
-                                            },
-                                        )
-                                })
-                        }
-                        None => {
-                            // Fit uses the surface's ordinary (non-viewport) path, which has
-                            // no content ID. Its exact photo Frame version and clipping Frame
-                            // version still prove both draw calls were encoded together.
-                            gpu.drawn_content.is_none_or(|content| {
-                                content == self.presentation.presented_content
-                            }) && gpu.drawn_full_version
-                                == self
-                                    .presentation
-                                    .presenter
-                                    .photo()
-                                    .map(luxforge_ui::Frame::version)
-                        }
-                    };
+                    && gpu
+                        .drawn_content
+                        .is_none_or(|content| content == self.presentation.presented_content)
+                    && gpu.drawn_full_version
+                        == self
+                            .presentation
+                            .presenter
+                            .photo()
+                            .map(luxforge_ui::Frame::version);
                 json!({"cells":[request.cells_w,request.cells_h],"shadows":request.shadows,
                     "highlights":request.highlights,"generation":request.generation,
-                    "approximate":request.approximate,"region":request.region.map(|region|
-                        [region.x0,region.y0,region.x1(),region.y1()]),
+                    "approximate":request.approximate,
                     "source_assigned":assigned,"version":version,"drawn":drawn})
             }
             None => Value::Null,
@@ -286,20 +264,18 @@ impl Editor {
             "desired_view_dirty":self.view_plan.dirty,
             "view_plan_in_flight":self.view_plan.in_flight,
             "view_request_generation":self.view_plan.request_generation,
-            "quiet_timer_armed":self.view_plan.quiet_since.is_some() && !self.view_plan.quiet_settle_requested,
-            "quiet_elapsed_ms":self.view_plan.quiet_since.map(|at| at.elapsed().as_secs_f64()*1000.0),
+            // The open draft's newest tick holds its frame, or waits for its reference frame.
+            "drag_frame_waiting":self.drag_frame_waiting(),
             "gpu": {
                 "photo_writes":gpu.photo_writes,
                 "upload_bytes":gpu.upload_bytes,
                 "full_resident_bytes":gpu.full_resident_bytes,
-                "region_resident_bytes":gpu.region_resident_bytes,
                 "mip_resident_bytes":gpu.mip_resident_bytes,
                 "mip_generations":gpu.mip_generations,
                 "stage_resident_bytes":gpu.stage_resident_bytes,
                 "retiring_bytes":gpu.retiring_bytes,
                 "deferred_uploads":gpu.deferred_uploads,
                 "rejected_full_uploads":gpu.rejected_full_uploads,
-                "rejected_region_uploads":gpu.rejected_region_uploads,
                 "gpu_retirement_failures":gpu.gpu_retirement_failures,
                 "drawn_frames":gpu.drawn_frames,
                 "blank_photo_draws":gpu.blank_photo_draws,
@@ -309,21 +285,6 @@ impl Editor {
                 "drawn_fallback_content":gpu.drawn_fallback_content,
                 "drawn_content":gpu.drawn_content,
                 "drawn_full_version":gpu.drawn_full_version,
-                "drawn_region_version":gpu.drawn_region_version,
-                "drawn_region_generation":gpu.drawn_region_generation,
-                "drawn_region_quality":gpu.drawn_region_quality.map(|quality| match quality {
-                    luxforge_ui::RegionQuality::Interactive => "interactive",
-                    luxforge_ui::RegionQuality::Exact => "exact",
-                }),
-                "drawn_regions":gpu.drawn_regions.map(|region| region.map(|region| json!({
-                    "version":region.version,
-                    "content":region.content_id,
-                    "generation":region.generation,
-                    "quality":match region.quality {
-                        luxforge_ui::RegionQuality::Interactive => "interactive",
-                        luxforge_ui::RegionQuality::Exact => "exact",
-                    },
-                }))),
                 "drawn_clipping_version":gpu.drawn_clipping_version,
                 // The GPU stage, beside the photo-texture figures: which path drew the photograph,
                 // why a frame handed a GPU plan drew the CPU frame instead, the boundary the GPU
@@ -443,33 +404,13 @@ impl Editor {
         }
     }
 
-    /// The display proxy as a captured frame reports it: the bounds the next job will offer, what
-    /// the core did with the last one, and whether the texture on screen is a proxy.
-    ///
-    /// `eligible` is whether the newest job took the proxy path at all, and is `null` until one
-    /// has reported either way. `declined` names why it did not — an ineligible layer, a stage
-    /// already inside the bounds, or a failure building or rendering the proxy — so a stack that
-    /// took the exact path says so rather than being silently identical to one that did not.
-    pub(super) fn proxy_summary(&self) -> Value {
+    /// The reference renderer's frame as a captured frame reports it: the bounds the view reduces
+    /// it to, which the GPU's picture at rest is planned at too, and whether the texture on screen
+    /// is that reduction.
+    pub(super) fn reference_summary(&self) -> Value {
         let bounds = self.proxy_bounds();
         json!({
-            "eligible": match (&self.presentation.proxy_declined, self.presentation.proxy().is_some()) {
-                (Some(_), _) => Some(false),
-                (None, true) => Some(true),
-                (None, false) => None,
-            },
-            "declined": self.presentation.proxy_declined,
-            "approximate": self
-                .presentation.proxy()
-                .map(|frame| frame.approximation.is_approximate()),
-            "approximate_reason": self
-                .presentation.proxy()
-                .and_then(|frame| frame.approximation.reason()),
-            "dimensions": self
-                .presentation.proxy()
-                .map(|frame| json!([frame.dimensions.0, frame.dimensions.1])),
             "bounds": bounds.map(|bounds| json!({"width":bounds.width,"height":bounds.height})),
-            "presented": self.presentation.presented_proxy,
             "reduced": self.presentation.presented_reduced,
         })
     }
@@ -478,7 +419,7 @@ impl Editor {
     /// picture on screen.
     pub(super) fn status_bar_summary(&self) -> Value {
         let model = &self.workspace.status;
-        json!({"message":model.message,"render":model.render,"fallback":state::status::Fallback::evidence(model.fallback.as_ref()),"gpu_ms":model.gpu_us.map(|us| us as f64 / 1000.0),"render_ms":self.activity.render.map(|time| time.ms),"render_proxy":self.activity.render.map(|time| time.proxy),"render_approximate":self.activity.render.map(|time| time.approximate)})
+        json!({"message":model.message,"render":model.render,"fallback":state::status::Fallback::evidence(model.fallback.as_ref()),"gpu_ms":model.gpu_us.map(|us| us as f64 / 1000.0),"render_ms":self.activity.render.map(|time| time.ms),"render_approximate":self.activity.render.map(|time| time.approximate)})
     }
 
     /// The notices the captured frame drew, by title, so a frame's chrome is observable.

@@ -42,12 +42,10 @@ pub(crate) struct OverlayRequest {
     pub(crate) cells_h: u32,
     pub(crate) shadows: bool,
     pub(crate) highlights: bool,
-    /// The mask was derived from the display proxy of this generation rather than from its exact
-    /// raster, because the exact phase has not landed yet. It follows the drag; the exact phase
-    /// replaces it. It is part of the request so that the arrival of the exact raster is a
-    /// different request and re-derives the mask instead of leaving the approximate one on screen.
+    /// The mask was derived from a frame that approximates a drafted RAW white balance. It is part
+    /// of the request so that the arrival of an exact frame is a different request and re-derives
+    /// the mask instead of leaving the approximate one on screen.
     pub(crate) approximate: bool,
-    pub(crate) region: Option<luxforge_core::Region>,
 }
 
 /// One derived overlay: an RGBA buffer of exactly `cells_w * cells_h` pixels, ready to show.
@@ -255,20 +253,10 @@ impl Editor {
         let mut failure = None;
         match done.result {
             Ok(rgba) => {
-                let shown = match self.presentation.region_raster.as_ref().filter(|region| {
-                    region.generation == generation && done.request.region == Some(region.rect)
-                }) {
-                    Some(region) => self.presentation.presenter.show_region_clipping(
-                        rgba,
-                        (width, height),
-                        region,
-                    ),
-                    None => {
-                        self.presentation
-                            .presenter
-                            .show_clipping(generation, rgba, (width, height))
-                    }
-                };
+                let shown =
+                    self.presentation
+                        .presenter
+                        .show_clipping(generation, rgba, (width, height));
                 if shown {
                     self.event(
                         "clipping_overlay",
@@ -302,30 +290,12 @@ impl Editor {
         if !(shadows || highlights) {
             return None;
         }
-        // The mask describes the photograph on screen. That is the exact raster of the presented
-        // generation when its exact phase has landed, and the proxy of that generation while it has
-        // not — which is what lets the overlay follow a drag. A proxy-derived mask says so.
+        // The mask describes the photograph on screen: the exact raster of the presented
+        // generation, or its reduction to the view where that is all there is. A mask derived from
+        // a frame that approximates a drafted RAW white balance says so.
         let (generation, raster, approximate) = self.overlay_source()?;
         let source = (raster.width, raster.height);
-        let region = self
-            .presentation
-            .region_raster
-            .as_ref()
-            .filter(|region| region.generation == generation);
-        let displayed = if let Some(region) = region {
-            let scale = match self.session.preview.view.zoom {
-                // Percent zoom is specified in physical pixels. The scrollable uses logical
-                // coordinates, but a cell grid describes the pixels actually displayed.
-                luxforge_core::Zoom::Percent { value } => value / 100.0,
-                luxforge_core::Zoom::Fit => 1.0,
-            };
-            Some((
-                region.rect.width as f32 * scale,
-                region.rect.height as f32 * scale,
-            ))
-        } else {
-            self.displayed_size(source)
-        }?;
+        let displayed = self.displayed_size(source)?;
         let (cells_w, cells_h) = state::histogram::overlay_cells(source, displayed)?;
         Some(OverlayRequest {
             generation,
@@ -334,7 +304,6 @@ impl Editor {
             shadows,
             highlights,
             approximate,
-            region: region.map(|region| region.rect),
         })
     }
 
@@ -375,29 +344,21 @@ impl Editor {
         state::histogram::overlay_cells(source, displayed)
     }
 
-    /// The raster a clipping overlay is derived from, with whether the mask is approximate: derived
-    /// from the display proxy, or from a frame that approximates a drafted RAW white balance.
+    /// The raster a clipping overlay is derived from, with whether the mask is approximate:
+    /// derived from a frame that approximates a drafted RAW white balance.
     ///
     /// Only the frame on screen qualifies: a mask is never derived from an image the person is not
-    /// looking at. The exact raster is preferred, and the proxy stands in for it until that phase
-    /// lands, at which point the request changes and the mask is re-derived exactly. The full-size
-    /// phase of an approximate white balance is still approximate, and says so.
+    /// looking at. The exact raster is preferred, and its reduction to the view stands in for it
+    /// where it is not retained.
     pub(super) fn overlay_source(&self) -> Option<(u64, &Arc<luxforge_core::Raster>, bool)> {
         let presentation = &self.presentation;
         let generation = presentation.presented_generation;
-        if let Some(region) = presentation
-            .region_raster
-            .as_ref()
-            .filter(|region| region.generation == generation)
-        {
-            return Some((generation, &region.raster, region.approximate));
-        }
         if let Some(frame) = presentation.exact() {
             return Some((generation, &frame.raster, frame.approximate_white_balance));
         }
         presentation
-            .proxy()
-            .map(|frame| (generation, &frame.raster, true))
+            .reduced()
+            .map(|frame| (generation, &frame.raster, frame.approximate_white_balance))
     }
 
     /// The clipping overlay to draw over the photograph: the one on the presenter, when it was
@@ -506,7 +467,6 @@ mod tests {
             shadows: true,
             highlights: true,
             approximate: false,
-            region: None,
         }
     }
 

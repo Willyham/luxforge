@@ -783,7 +783,6 @@ mod tests {
                 render_bar: None,
                 render: Some(status::RenderTime {
                     ms: 41.0,
-                    proxy: false,
                     approximate: false,
                 }),
                 gpu_frame_us: None,
@@ -2717,21 +2716,11 @@ mod tests {
         assert_eq!(workspace.status.render, "Rendering… 42%");
         assert_eq!(workspace.canvas.render_bar, Some(0.427));
 
-        // A display-size proxy on screen says it is approximate beside its own time.
-        let mut inputs = scene.inputs();
-        inputs.render = Some(status::RenderTime {
-            ms: 7.6,
-            proxy: true,
-            approximate: false,
-        });
-        workspace.derive(&inputs);
-        assert_eq!(workspace.status.render, "Approximate render \u{b7} 8 ms");
-
-        // A drafted RAW white balance approximated on the developed planes says that too.
+        // A drafted RAW white balance approximated on the developed planes says it is
+        // approximate beside its own time.
         let mut inputs = scene.inputs();
         inputs.render = Some(status::RenderTime {
             ms: 9.4,
-            proxy: true,
             approximate: true,
         });
         workspace.derive(&inputs);

@@ -137,7 +137,8 @@ struct Shown {
 /// What a dissolve's CPU frame shows, which a newer frame of the same content keeps it running to.
 #[derive(Clone, Debug, PartialEq)]
 enum Content {
-    /// A frame of the open draft at this revision: the shared quiet policy's settlement.
+    /// A frame of the open draft at this revision: the reference's frame of a tick the GPU did
+    /// not draw.
     Draft(DraftId, u64),
     /// The frame of the entry the draft committed.
     Committed(Option<EntryId>),
@@ -234,8 +235,8 @@ impl Editor {
     fn shown_content(&self, shown: &Shown) -> Option<Content> {
         let displayed = &self.presentation;
         if displayed.displayed_draft_id.as_ref() == Some(&shown.draft) {
-            // The shared quiet policy, or the release, settled the drafted settings on the CPU:
-            // never a revision older than the GPU frame's.
+            // The reference drew the drafted settings on the CPU: never a revision older than the
+            // GPU frame's.
             let revision = displayed.displayed_draft_revision?;
             return (revision >= shown.revision)
                 .then(|| Content::Draft(shown.draft.clone(), revision));
@@ -251,7 +252,7 @@ impl Editor {
     }
 
     /// Whether the CPU frame on screen still shows `content`: a newer frame of the same settings,
-    /// such as the exact phase after the proxy, keeps the dissolve running to it.
+    /// such as the exact frame after its reduction, keeps the dissolve running to it.
     fn shows(&self, content: &Content) -> bool {
         let displayed = &self.presentation;
         match content {
@@ -277,21 +278,16 @@ impl Editor {
     }
 
     /// The version of the CPU frame the photograph is drawn from now: at Fit and below 100% its
-    /// frame, the displayed-size proxy below 100%; at 100% or more the view's whole frame of the
-    /// current content, or else its region of it, as the canvas hands them to the percentage view.
+    /// frame, the reference's reduction to the view; at 100% or more the view's whole frame of the
+    /// current content, which a GPU region frame dissolves into, as the canvas hands it to the
+    /// percentage view.
     fn settle_frame(&self, zoom: SettleZoom) -> Option<u64> {
         let surfaces = self.surfaces();
         match zoom {
-            SettleZoom::Percent(value) if value >= 100.0 => {
-                if surfaces.photo_content == Some(surfaces.current_content) {
-                    surfaces.photo.map(Frame::version)
-                } else {
-                    surfaces
-                        .region
-                        .filter(|region| region.content_id == surfaces.current_content)
-                        .map(|region| region.frame.version())
-                }
-            }
+            SettleZoom::Percent(value) if value >= 100.0 => surfaces
+                .photo
+                .filter(|_| surfaces.photo_content == Some(surfaces.current_content))
+                .map(Frame::version),
             SettleZoom::Fit | SettleZoom::Percent(_) | SettleZoom::Other => {
                 surfaces.photo.map(Frame::version)
             }

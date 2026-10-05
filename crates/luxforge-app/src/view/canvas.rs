@@ -681,16 +681,15 @@ fn plain<'a>(
                 let (box_width, box_height) =
                     (Length::Fixed(size.width), Length::Fixed(size.height));
                 // `Fill` rather than a fit: the box is the exact stage's displayed size and the
-                // texture may be the display proxy, which is smaller. Filling stretches it to
-                // exactly that box, and the overlays with it, whichever texture is on screen. The
-                // box may be far larger than the window; the surface hands the renderer only its
-                // visible part.
-                let photo: Element<'a, Message> = if surfaces.whole_frame() {
-                    // A whole-output proxy is still a valid percentage frame, including at 50%
-                    // and when a region request named a fallback. It is not an exact full
-                    // texture slot. Below 100% a gesture's whole-frame plan, drawn from the
-                    // same proxy, stands in for it through the same placement, and settles
-                    // into the next CPU frame through the dissolve, as at Fit.
+                // texture may be the reference's reduction to the view, which is smaller. Filling
+                // stretches it to exactly that box, and the overlays with it, whichever texture is
+                // on screen. The box may be far larger than the window; the surface hands the
+                // renderer only its visible part.
+                let photo: Element<'a, Message> = if value < 100.0 || surfaces.whole_frame() {
+                    // Below 100% the photograph is a whole frame, as at Fit: the reduction to the
+                    // view, or an exact frame drawn smaller than it is. A gesture's whole-frame
+                    // plan stands in for it through the same placement, and settles into the next
+                    // CPU frame through the dissolve, as at Fit.
                     match raster {
                         Some(raster) => luxforge_ui::photo_surface(
                             DEVELOP_SURFACE,

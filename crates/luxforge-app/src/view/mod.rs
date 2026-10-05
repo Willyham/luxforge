@@ -106,11 +106,10 @@ pub(crate) struct Surfaces<'a> {
 }
 
 impl Surfaces<'_> {
-    /// Whether a percentage view draws the photograph as a whole frame, as Fit does: no region and
-    /// no exact frame is held for the view's own surface to draw, so the photograph's frame alone
-    /// fills the view's box. Below 100% that frame is the displayed-size proxy, which a whole
-    /// frame's GPU plan stands in for. A GPU region plan — the picture at rest the GPU presents at
-    /// 100% and above with no CPU frame of it — is drawn through the view's own surface instead.
+    /// Whether a percentage view of 100% or more draws the photograph as a whole frame, as Fit and
+    /// every view below 100% do: no exact frame is held for the view's own surface to draw, so the
+    /// photograph's frame alone fills the view's box. A GPU region plan — the GPU's picture of the
+    /// view at 100% and above — is drawn through the view's own surface instead.
     pub(crate) fn whole_frame(&self) -> bool {
         self.region.is_none()
             && self.photo_content.is_none()

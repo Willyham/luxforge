@@ -91,45 +91,45 @@ fn failed_discovery_is_reported_and_never_blocks_evidence() {
     finish(editor, catalog);
 }
 
-/// An open can complete its exact analysis while the first proxy is still being refitted
-/// for the display scale. Its outcome arms evidence, but the old proxy is not a settled frame.
+/// An open can complete its exact analysis while its first reduction is still being refitted
+/// for the display scale. Its outcome arms evidence, but the old reduction is not a settled frame.
 #[test]
-fn evidence_capture_waits_for_the_proxy_at_current_bounds() {
+fn evidence_capture_waits_for_the_reduction_at_current_bounds() {
     let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"wait":{"ms":1}}]"#);
     editor.view_state.window = (1440.0, 900.0);
     editor.session.preview.view.zoom = Zoom::Fit;
     editor.view_state.scale_factor = 1.0;
-    editor.presentation.presented_proxy = true;
+    editor.presentation.presented_reduced = true;
     editor.presentation.presented_bounds = editor.proxy_bounds();
     editor.view_state.scale_factor = 2.0;
     editor.presentation.refit_pending = true;
     editor.outcome(crate::app::outcome::Outcome::RequestEnded { failed: false });
     assert!(crate::app::testing::evidence(&editor).capture_pending);
     assert!(
-        !editor.capture_proxy_ready(),
-        "the old 1× proxy is not ready"
+        !editor.capture_refit_ready(),
+        "the old 1× reduction is not ready"
     );
 
     editor.presentation.presented_bounds = editor.proxy_bounds();
-    assert!(!editor.capture_proxy_ready(), "the refit is still pending");
+    assert!(!editor.capture_refit_ready(), "the refit is still pending");
     editor.presentation.render_error = Some(luxforge_core::Error::resource_limit("refit failed"));
     assert!(
-        editor.capture_proxy_ready(),
+        editor.capture_refit_ready(),
         "a failed refit is captured as an error"
     );
     editor.presentation.render_error = None;
     editor.presentation.refit_pending = false;
-    assert!(editor.capture_proxy_ready(), "the 2× proxy is ready");
+    assert!(editor.capture_refit_ready(), "the 2× reduction is ready");
 
     editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
     assert!(
-        editor.capture_proxy_ready(),
-        "100% does not require a proxy"
+        editor.capture_refit_ready(),
+        "100% does not require a reduction"
     );
-    editor.presentation.presented_proxy = false;
+    editor.presentation.presented_reduced = false;
     assert!(
-        editor.capture_proxy_ready(),
-        "an exact frame needs no proxy refit"
+        editor.capture_refit_ready(),
+        "an exact frame needs no refit"
     );
     finish(editor, catalog);
 }
@@ -144,25 +144,25 @@ fn evidence_capture_accepts_bounds_deferred_by_slider_and_crop_drafts() {
     editor.view_state.window = (1440.0, 900.0);
     editor.session.preview.view.zoom = Zoom::Fit;
     editor.view_state.scale_factor = 2.0;
-    editor.presentation.presented_proxy = true;
+    editor.presentation.presented_reduced = true;
     editor.presentation.presented_generation = 7;
     editor.session.workspace.tools_panel = true;
     editor.presentation.presented_bounds = editor.proxy_bounds();
     editor.session.workspace.tools_panel = false;
     assert_ne!(editor.presentation.presented_bounds, editor.proxy_bounds());
     assert!(
-        !editor.capture_proxy_ready(),
+        !editor.capture_refit_ready(),
         "outside a draft, refit is required"
     );
 
     crate::app::testing::hold_slider(&mut editor, "set-basic", "exposure");
-    let _ = editor.refit_proxy();
+    let _ = editor.refit_view();
     assert!(
         !editor.presentation.refit_pending,
         "the slider defers refit"
     );
     assert!(
-        editor.capture_proxy_ready(),
+        editor.capture_refit_ready(),
         "the slider's frame can be captured"
     );
     editor.gesture = None;
@@ -181,18 +181,18 @@ fn evidence_capture_accepts_bounds_deferred_by_slider_and_crop_drafts() {
     );
     editor.presentation.refit_pending = true; // The queued refit was superseded by crop input-stage work.
     assert!(
-        editor.capture_proxy_ready(),
+        editor.capture_refit_ready(),
         "the crop frame can be captured"
     );
     editor.gesture = None;
     assert!(
-        !editor.capture_proxy_ready(),
+        !editor.capture_refit_ready(),
         "a pending refit blocks ordinary captures"
     );
     finish(editor, catalog);
 }
 
-/// A screenshot requested against one proxy may return after the refit proxy is presented.
+/// A screenshot requested against one frame may return after the refit frame is presented.
 /// That readback is discarded before a frame event or file is published and retried on a
 /// newly drawn frame. An overlay capture keeps its overlay requirement across the retry.
 #[test]
@@ -201,7 +201,7 @@ fn evidence_retries_a_readback_superseded_by_new_pixels() {
     editor.view_state.window = (1440.0, 900.0);
     editor.session.preview.view.zoom = Zoom::Fit;
     editor.view_state.scale_factor = 2.0;
-    editor.presentation.presented_proxy = true;
+    editor.presentation.presented_reduced = true;
     editor.presentation.presented_bounds = editor.proxy_bounds();
     // Two photographs have reached the surface since the capture recorded the first.
     for _ in 0..2 {
@@ -269,7 +269,6 @@ fn evidence_retries_a_readback_superseded_only_by_clipping() {
         shadows: false,
         highlights: true,
         approximate: false,
-        region: None,
     });
     assert!(
         editor
