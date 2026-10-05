@@ -317,6 +317,7 @@ fn the_words_are_the_map_then_each_steps_bases_and_position_then_their_words() {
     region.region = Some(GpuRegion {
         rect: [10, 20, 30, 40],
         stage: (64, 64),
+        full_stage: (64, 64),
     });
     pack(&region, &mut words, &mut blocks);
     assert_eq!(words[4..MAP_WORDS], [7, 16]);
@@ -882,6 +883,7 @@ fn below_100_percent_a_whole_frames_plan_draws_where_the_cpu_proxy_frame_draws()
     region.region = Some(GpuRegion {
         rect: [0, 0, width, height],
         stage: (width, height),
+        full_stage: (width, height),
     });
     assert!(
         drawn(ID, Some(&whole)).gpu.is_some(),
@@ -1565,6 +1567,7 @@ fn a_percentage_view_draws_a_region_plans_frame_at_its_rectangle() {
     region.region = Some(GpuRegion {
         rect: [half, half, half + SIDE, half + SIDE],
         stage,
+        full_stage: stage,
     });
     let drawn = paint(&device, &queue, &mut pipeline, &viewed(ID, Some(region)));
     assert_codes(&drawn, &codes);
@@ -1578,6 +1581,7 @@ fn a_percentage_view_draws_a_region_plans_frame_at_its_rectangle() {
     elsewhere.region = Some(GpuRegion {
         rect: [0, 0, SIDE, SIDE],
         stage: (SIDE, SIDE),
+        full_stage: (SIDE, SIDE),
     });
     for (index, plan) in [plan(&boundary, vec![identity()]), elsewhere]
         .into_iter()
@@ -1589,6 +1593,25 @@ fn a_percentage_view_draws_a_region_plans_frame_at_its_rectangle() {
         assert_ne!(seen.drawn_path, Some(DrawingPath::Gpu), "plan {index}");
         assert_eq!(seen.drawn_gpu_boundary, None, "plan {index}");
     }
+    // A reduced whole frame placed over the full stage, the softer drag frame, is the photograph
+    // too: its own stage's every pixel, magnified to fill the full stage's placement.
+    let mut softer = plan(&boundary, vec![identity()]);
+    softer.region = Some(GpuRegion {
+        rect: [0, 0, SIDE, SIDE],
+        stage: (SIDE, SIDE),
+        full_stage: stage,
+    });
+    let surface = SurfaceId::new(12);
+    paint(
+        &device,
+        &queue,
+        &mut pipeline,
+        &viewed(surface, Some(softer)),
+    );
+    let seen = diagnostics(&pipeline, surface);
+    assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu), "the softer frame");
+    assert_eq!(seen.drawn_gpu_boundary, Some(9));
+    assert_eq!(seen.drawn_full_version, None, "no CPU frame was drawn");
     settle(&pipeline);
 }
 
@@ -1640,7 +1663,11 @@ fn a_region_plans_output_takes_the_cpu_regions_bucket_and_draws_as_it_does() {
     };
     let mut region = plan(&boundary, vec![identity()]);
     region.texels.origin = [rect[0] as f32, rect[1] as f32];
-    region.region = Some(GpuRegion { rect, stage });
+    region.region = Some(GpuRegion {
+        rect,
+        stage,
+        full_stage: stage,
+    });
     // At 250%, the region's far corner 100 pixels into a 128 × 128 target: the last texels'
     // outer halves are drawn, blending in the column and row past them.
     let target = (2 * SIDE, 2 * SIDE);

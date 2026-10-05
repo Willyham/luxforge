@@ -213,6 +213,7 @@ fn tiles_of(source: &GpuSource) -> Vec<GpuPlan> {
                 region: Some(GpuRegion {
                     rect: [x0, y0, x1, y1],
                     stage: (WIDTH, HEIGHT),
+                    full_stage: (WIDTH, HEIGHT),
                 }),
                 lights: Vec::new(),
             });

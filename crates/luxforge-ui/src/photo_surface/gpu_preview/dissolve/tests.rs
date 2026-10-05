@@ -662,6 +662,7 @@ fn region_plan() -> GpuPlan {
     region.region = Some(crate::photo_surface::GpuRegion {
         rect: MIDDLE,
         stage: STAGE,
+        full_stage: STAGE,
     });
     region
 }
