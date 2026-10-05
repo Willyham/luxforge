@@ -3641,6 +3641,7 @@ pub mod histogram;
 mod rest;
 pub(super) use rest::RestSlot;
 pub use rest::{GpuRest, REST_TILES_PER_FRAME, REST_VIEW_PIXELS, RestFigures};
+pub mod tiles;
 
 #[cfg(any(test, feature = "qualification"))]
 pub mod headless;
