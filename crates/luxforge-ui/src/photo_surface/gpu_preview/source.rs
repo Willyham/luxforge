@@ -44,7 +44,7 @@ impl SourceKind {
     }
 
     /// Bytes a held pixel takes on the GPU.
-    const fn pixel_bytes(self) -> u64 {
+    pub(super) const fn pixel_bytes(self) -> u64 {
         match self {
             Self::Codes => 4,
             Self::Planes => 12,

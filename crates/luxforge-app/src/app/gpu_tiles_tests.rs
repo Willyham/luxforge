@@ -12,6 +12,10 @@
 //!   runner draws each tile twice, every scratch plane of every link starting from NaN the second
 //!   time, so no pass of its own read scratch it did not write.
 //! - **Run to run.** Two runs of one tile read back the same codes and the same linear bits.
+//! - **Lights.** The Presence families read Dehaze's light, which the surface's light link computes
+//!   from the whole source it holds and the runner from the source a window of each of the link's
+//!   tiles at a time, read back once and written into every tile's light plane: the same light, so
+//!   the same codes.
 //!
 //! A GPU test with no adapter prints that it was skipped and asserts nothing.
 use super::{
@@ -170,13 +174,12 @@ pub(super) fn families() -> Vec<(&'static str, Recipe)> {
                 vec![(1, radial()), (2, gradient())],
             ),
         ),
-        // Presence without Dehaze here and below: Dehaze's light is computed from the whole stage,
-        // which the tile runner holds a window of, so a plan that reads a light is the reference's
-        // (`luxforge_core::plan_read`).
         (
             "Presence",
             recipe(
-                vec![presence(json!({"texture": 35.0, "clarity": 30.0}))],
+                vec![presence(
+                    json!({"texture": 35.0, "clarity": 30.0, "dehaze": 20.0}),
+                )],
                 Vec::new(),
             ),
         ),
@@ -226,7 +229,10 @@ pub(super) fn families() -> Vec<(&'static str, Recipe)> {
         (
             "a masked Presence after Basic",
             recipe(
-                vec![basic, presence(json!({"texture": 30.0, "clarity": 40.0}))],
+                vec![
+                    basic,
+                    presence(json!({"texture": 30.0, "clarity": 40.0, "dehaze": 15.0})),
+                ],
                 vec![(1, radial())],
             ),
         ),
@@ -294,7 +300,6 @@ fn cases() -> Vec<Case> {
                 GpuAnswer::Plan(plan) => *plan,
                 GpuAnswer::Fallback(reason) => panic!("{name}: {reason}"),
             };
-            assert!(!plan.reads_lights(), "{name}: the runner computes no light");
             let anchor = plan.anchor();
             let output = plan.geometry.output();
             let stage_grid = plan.geometry.stage_grid(1.0).expect("a stage grid");

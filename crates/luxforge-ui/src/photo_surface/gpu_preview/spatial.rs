@@ -1890,8 +1890,8 @@ impl PoolKey {
 
 /// One texture of a [`Pool`], with its view.
 pub(super) struct PoolTexture {
-    /// Held with its view; only the poison writes it directly.
-    #[cfg_attr(not(any(test, feature = "qualification")), allow(dead_code))]
+    /// Held with its view; only the poison and a light written into a light plane write it
+    /// directly.
     texture: wgpu::Texture,
     view: wgpu::TextureView,
 }
@@ -1908,8 +1908,7 @@ impl PoolTexture {
         &self.view
     }
 
-    /// The texture, for a readback.
-    #[cfg(any(test, feature = "qualification"))]
+    /// The texture, for a copy into it or a readback.
     pub(super) fn texture(&self) -> &wgpu::Texture {
         &self.texture
     }
@@ -1923,11 +1922,13 @@ pub(super) struct LightPlane {
     key: Option<u64>,
 }
 
-/// What a light plane is created with: what a plane is, a light link's storage write among it, and
-/// in a build with a readback the copies a test reads it by.
+/// What a light plane is created with: what a plane is, a light link's storage write among it, the
+/// copy a tile runner writes a light it computed into ([`Pool::write_light`]), and in a build with
+/// a readback the copy a test reads it by.
 #[cfg(not(any(test, feature = "qualification")))]
-const LIGHT_USAGE: wgpu::TextureUsages =
-    wgpu::TextureUsages::TEXTURE_BINDING.union(wgpu::TextureUsages::STORAGE_BINDING);
+const LIGHT_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
+    .union(wgpu::TextureUsages::STORAGE_BINDING)
+    .union(wgpu::TextureUsages::COPY_DST);
 #[cfg(any(test, feature = "qualification"))]
 const LIGHT_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
     .union(wgpu::TextureUsages::STORAGE_BINDING)
@@ -2139,6 +2140,37 @@ impl Pool {
         if let Some(light) = self.lights.get_mut(k as usize) {
             light.key = Some(key);
         }
+    }
+
+    /// Write `light`, `[r, g, b, 1]`, into light plane `k` on `queue`, ahead of any submission
+    /// that reads it, and record it as the plane's content: what a tile runner, which computes a
+    /// plan's lights once for every tile it draws, gives each tile's pool. Nothing for a plane the
+    /// pool does not hold.
+    pub(super) fn write_light(&mut self, queue: &wgpu::Queue, k: u32, light: [f32; 4]) {
+        let Some(plane) = self.lights.get_mut(k as usize) else {
+            return;
+        };
+        let bytes: Vec<u8> = light.iter().flat_map(|value| value.to_le_bytes()).collect();
+        queue.write_texture(
+            plane.texture.texture().as_image_copy(),
+            &bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(LIGHT_BYTES as u32),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        plane.key = Some({
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::hash::DefaultHasher::new();
+            (k, light.map(f32::to_bits)).hash(&mut hasher);
+            hasher.finish()
+        });
     }
 
     /// Light plane `k`'s texture, for a readback.
