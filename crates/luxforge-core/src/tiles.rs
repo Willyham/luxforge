@@ -40,7 +40,11 @@ use crate::{
 use serde_json::Value;
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::mpsc::{Receiver, SyncSender, sync_channel},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{Receiver, SyncSender, sync_channel},
+    },
 };
 
 mod reference;
@@ -118,6 +122,12 @@ pub enum TileFallback {
     Plan(GpuFallback),
     /// The GPU work would hold `requested` bytes, past the provider's `budget` (`tiles-budget`).
     Budget { requested: u64, budget: u64 },
+    /// The provider's GPU stage cannot run the plan, for the reason the stage names, whose code it
+    /// answers: the photo surface's own `pipeline-failed`, `texture-limit`, `buffer-limit` or
+    /// `source-missing`, or one the desktop's conversion of the plan names (`warp-grid`,
+    /// `boundary-size`, `position-range`, `region-outside`). The codes are the stage's; this crate
+    /// names none of them.
+    Stage(&'static str),
 }
 
 impl TileFallback {
@@ -128,6 +138,7 @@ impl TileFallback {
             Self::Unavailable(_) => "tiles-unavailable",
             Self::Plan(fallback) => fallback.code(),
             Self::Budget { .. } => "tiles-budget",
+            Self::Stage(code) => code,
         }
     }
 }
@@ -460,24 +471,59 @@ pub struct BandStream {
     /// The first row of the band expected next; the stage's height once the stream has ended.
     next: u32,
     answered: Answered,
+    /// Called each time the stream hands a band to its encoder, which leaves room for one more,
+    /// and once when it is dropped ([`Self::waking`]).
+    wake: Option<Box<dyn Fn() + Send>>,
+    /// Set when the stream is dropped, which its provider reads ([`BandSender::abandoned`]).
+    abandoned: Arc<AtomicBool>,
 }
 
 /// A provider's end of a [`BandStream`].
-pub struct BandSender(SyncSender<Result<Band, Error>>);
+pub struct BandSender {
+    sender: SyncSender<Result<Band, Error>>,
+    abandoned: Arc<AtomicBool>,
+}
 
 impl BandStream {
     /// A stream of a `width` × `height` output stage drawn by the renderer `answered` names, and
     /// the end its provider sends the bands into.
     pub fn channel(width: u32, height: u32, answered: Answered) -> (BandSender, Self) {
+        Self::with_wake(width, height, answered, None)
+    }
+
+    /// [`Self::channel`] for a provider that renders on a thread of its own which must never wait
+    /// on its encoder, such as one that answers pixel reads between an export's tiles: `wake` is
+    /// called each time the stream hands a band to its encoder, which leaves room for one more,
+    /// and once when the stream is dropped, so the provider sends a band only when the stream has
+    /// room for it and sleeps, rather than blocking on a full channel, until it does. `wake` runs
+    /// on the encoder's thread: it only notes the room and wakes the provider.
+    pub fn waking(
+        width: u32,
+        height: u32,
+        answered: Answered,
+        wake: impl Fn() + Send + 'static,
+    ) -> (BandSender, Self) {
+        Self::with_wake(width, height, answered, Some(Box::new(wake)))
+    }
+
+    fn with_wake(
+        width: u32,
+        height: u32,
+        answered: Answered,
+        wake: Option<Box<dyn Fn() + Send>>,
+    ) -> (BandSender, Self) {
         let (sender, bands) = sync_channel(EXPORT_BANDS_IN_FLIGHT);
+        let abandoned = Arc::new(AtomicBool::new(false));
         let stream = Self {
             bands,
             width,
             height,
             next: 0,
             answered,
+            wake,
+            abandoned: Arc::clone(&abandoned),
         };
-        (BandSender(sender), stream)
+        (BandSender { sender, abandoned }, stream)
     }
 
     /// The renderer that drew the bands, and why the reference did.
@@ -499,7 +545,13 @@ impl Iterator for BandStream {
         }
         let row = self.next;
         self.next = self.height;
-        let band = match self.bands.recv() {
+        let received = self.bands.recv();
+        if received.is_ok()
+            && let Some(wake) = &self.wake
+        {
+            wake();
+        }
+        let band = match received {
             Ok(Ok(band)) => band,
             Ok(Err(error)) => return Some(Err(error)),
             Err(_) => {
@@ -536,6 +588,21 @@ impl BandSender {
     /// [`EXPORT_BANDS_IN_FLIGHT`] bands wait in it. `false` once the stream has been dropped: its
     /// export was abandoned, and the provider renders nothing more for it.
     pub fn send(&self, band: Result<Band, Error>) -> bool {
-        self.0.send(band).is_ok()
+        self.sender.send(band).is_ok()
+    }
+
+    /// Whether the stream has been dropped: its export was abandoned, and the provider renders
+    /// nothing more for it.
+    pub fn abandoned(&self) -> bool {
+        self.abandoned.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for BandStream {
+    fn drop(&mut self) {
+        self.abandoned.store(true, Ordering::Release);
+        if let Some(wake) = &self.wake {
+            wake();
+        }
     }
 }
