@@ -11,9 +11,11 @@ The visual language's first principle, "the photograph is the only colour on scr
 
 ## Today
 
-The workspace has one palette, compiled in. `crates/luxforge-ui/src/theme.rs` holds 69 colour constants (65 colours, the two three-stop white-balance rails and two shadows), copied from the [visual language](develop-workspace.md#visual-language) and each pinned by a unit test. They are read in about 230 places across 41 files of the widget crate and the desktop's views. About twenty of them are opaque composites of another token over one surface, stored opaque because Iced blends in linear light. Every style function and every canvas program's `draw` receives Iced's theme and ignores it. Eleven `canvas::Cache`s keep geometry with a colour baked in, and none of their keys holds a palette.
+The workspace has one palette, compiled in. `crates/luxforge-ui/src/theme.rs` holds 72 colour constants (68 colours, the two three-stop white-balance rails and two shadows), copied from the [visual language](develop-workspace.md#visual-language) and each pinned by a unit test. They are read in about 240 places across 42 files of the widget crate and the desktop's views. About twenty of them are opaque composites of another token over one surface, stored opaque because Iced blends in linear light. Every style function and every canvas program's `draw` receives Iced's theme and ignores it. Eleven `canvas::Cache`s keep geometry with a colour baked in, and none of their keys holds a palette.
 
-The application installs one fixed `iced::Theme` whose palette carries four of the tokens for what Iced styles itself: the window's clear colour, the six unstyled scrollables, a checkbox, a text input and a pick list. Iced reports that theme's mode as dark, and iced_winit sets the native window's appearance from the mode when the window opens and whenever it changes. On macOS the window is therefore DarkAqua because the palette is dark, not by any decision of Luxforge's. Changing any colour means rebuilding. Type, sizes, spacing and radii are constants in the same file and are not part of this proposal.
+The application installs one fixed `iced::Theme` whose palette carries four of the tokens for what Iced styles itself: the window's clear colour, the six unstyled scrollables, a checkbox, a text input and a pick list. Iced reports that theme's mode as dark, and iced_winit sets the native window's appearance from the mode when the window opens and whenever it changes. On macOS the window is therefore DarkAqua because the palette is dark, not by any decision of Luxforge's. Changing any colour means rebuilding. Type, sizes, spacing and radii are constants in the same file and are not part of this design.
+
+Two [preferences](preferences.md) the owner decided on 2026-10-04 touch it. The **canvas background** fills the canvas around the photograph, through a view-model value: Dark, the canvas token `#19191b`; Black; or an 18% grey, `#777777`. The **interface size** scales everything Iced draws.
 
 ## What a theme is
 
@@ -22,12 +24,16 @@ A theme is a named set of colours for the interface, chosen by the person and ke
 ## Rules
 
 - **A theme never changes a photograph.** It changes no recipe, history entry, render, histogram, sample or export byte. No catalog or recipe names it, and switching theme reads no asset, starts no preview job and writes no catalog. This is the [flags'](settings-and-flags.md#rules) rule, applied to the person's appearance.
-- **Only colours.** Type, sizes, spacing, radii and the panel density are the visual language's in every theme and keep their tests. The density acceptance (the histogram, Basic and every section header on screen at 1440 × 900) holds unchanged.
-- **The photograph's surround stays neutral.** The canvas around the photograph and the histogram plot are held to at most 0.010 OKLCh chroma in every theme, at the theme's own lightness. Luxforge Dark's canvas, `#19191b`, carries 0.004, and none of its surfaces reaches 0.010. A tinted surround shifts how the photograph's colours are seen, which is why colour-critical viewing asks for a neutral one. A theme chooses how dark or light the surround is, never its hue.
+- **Only colours.** Type, sizes, spacing, radii and the panel density are the visual language's in every theme and keep their tests, and the interface size preference scales them alike whatever the theme. The density acceptance (the histogram, Basic and every section header on screen at 1440 × 900 at 100%) holds unchanged.
+- **The photograph's surround stays neutral.** A theme's surround is held to at most 0.010 OKLCh chroma, at the theme's own lightness. Luxforge Dark's canvas, `#19191b`, carries 0.004, and none of its surfaces reaches 0.010. A tinted surround shifts how the photograph's colours are seen, which is why colour-critical viewing asks for a neutral one. A theme chooses how dark or light the surround is, never its hue.
+  - The histogram plot always draws the theme's surround.
+  - Around the photograph, the canvas background preference decides. Its Dark, Black and Grey choices stay the fixed greys they are in every theme.
+  - A fourth choice, **Theme**, proposed as the new default, draws the theme's surround. For Luxforge Dark, Theme and Dark are the same `#19191b`, so nothing on screen changes for a person who never chose.
 - **Colours whose meaning is their colour are never themed.** These are:
   - the clipping red, blue and both-endpoint magenta of the triangles and overlays;
   - the mask overlay's green and white;
   - the histogram's channel fills;
+  - the canvas background's Dark, Black and Grey;
   - the status bar's green dot for a connected agent;
   - every colour rail a module declares, which keeps its own stops;
   - colour swatches and the colour picker;
@@ -47,7 +53,7 @@ A theme declares roles. Every colour the widgets draw is a role, a token derived
 | Role | Luxforge Dark | Drawn as |
 | --- | --- | --- |
 | `background` | `#202023` | Panel: the side panels, the status bar and the Settings sheet; the origin of the surface ramp |
-| `surround` | `#19191b` | Canvas: around the photograph and behind the histogram plot, held near-neutral |
+| `surround` | `#19191b` | Canvas: behind the histogram plot, and around the photograph when the canvas background is Theme; held near-neutral |
 | `surface` | `#232326` | Bar: the title bar, floating strips, notices and module bands |
 | `control` | `#2c2c31` | Buttons, chips and text fields |
 | `text` | `#e8e8ea` | Primary text |
@@ -73,7 +79,7 @@ The remaining tokens derive from the roles, each by one rule: either a mix of tw
 - the notice outlines;
 - the mode strip's icon ink.
 
-The weights are fitted to Luxforge Dark so that a derived theme keeps its hierarchy. Fitted on the current tokens, each of Luxforge Dark's other 40 chrome colours is one mix of two of its surfaces, text, accent and error ink, or of one of those and black or white, within three codes per channel; 23 of them are exact. For example:
+The weights are fitted to Luxforge Dark so that a derived theme keeps its hierarchy. Fitted on the current tokens, each of Luxforge Dark's other 41 chrome colours is one mix of two of its surfaces, text, accent and error ink, or of one of those and black or white, within three codes per channel; 23 of them are exact. For example:
 
 - The accent over the panel at 12%, 15%, 15.5% and 17% gives, within one code, the fills of the mask row, the selected icon button, the selected chip and the selected mode-strip tool.
 - The text at 7.5% over the panel gives the current history row and the band border exactly, and at 4.5% the row hover.
@@ -230,16 +236,16 @@ Every method is a host method listed by `schema.list`. The mutating methods take
 | `theme.export` | no | `theme_id` | `{file_name, content}`, a Luxforge theme document |
 | `theme.delete` | yes | `theme_id`, `mutation` | `{outcome, deleted, deduplicated}`. A built-in theme and the active theme are refused by name |
 
-`preferences.read` also answers `theme`. `preferences.set {theme}` takes a theme id, or `null` for Luxforge Dark, and refuses an id the library does not hold. It announces its event whenever the theme changes; today it announces one only when Auto collapse history changes.
+`preferences.read` also answers `theme`. `preferences.set {theme}` takes a theme id, or `null` for Luxforge Dark, and refuses an id the library does not hold. It announces its event whenever the theme changes, as it does for the fields a General row shows. The canvas background gains its proposed `theme` choice the same way, checked and announced as its other choices are.
 
 `format` is `omarchy` or `luxforge`. The client reads the files and sends their text, as it does for `preset.import`, because the core reads no user-chosen file ([module capabilities](../decisions.md#module-capabilities)). For Omarchy, `files` maps each file name the reader takes to its text, each at most 64 KiB. A name the reader does not take is refused by name rather than ignored. A Luxforge theme document carries its format marker; a document of another shape or marker is refused without being read further.
 
 ### Events and other clients
 
-A client of the desktop's live session that imports, deletes or chooses a theme changes the desktop's window at once. Two changes to the event sync make that true:
+A client of the desktop's live session that imports, deletes or chooses a theme changes the desktop's window at once. The event sync already reads the preferences again on a `preferences.set` event whatever is on screen, because the desktop applies the canvas background, the interface size and the mask overlay colour from them. Two changes make the rest true:
 
-- It reads the preferences and the library again on a `theme.*` or `preferences.set` event whether or not the Settings sheet is open. Today it reads them only while the sheet is open.
-- It runs whether or not a photograph is open. Today its subscription exists only while an asset is open.
+- It reads the library again on a `theme.*` event, whether or not the Settings sheet is open.
+- It runs whether or not a photograph is open. Today its subscription exists only while an asset is open, so another client's change to any preference waits for the next photograph.
 
 A separate `luxforge-json` process runs its own catalog owner over the same configuration directory and logs its events in its own log. What it stores therefore reaches the desktop only when the desktop next launches or opens Settings.
 
@@ -254,6 +260,7 @@ The recorded engineering default is that the widget crate gains its own Iced the
 - Iced's own defaults for what it styles itself (the scrollbars, the checkbox, the text input's selection, the pick list's menu) come from an `iced::Theme` built from the roles and held inside the Luxforge theme. Luxforge Dark therefore draws exactly what it draws today.
 - Every canvas cache gains the theme's generation in its key: the icons, histogram, curve editor, slider, range slider, notched slider, disclosure heading, colour swatch, coverage thumbnail, colour picker and sparkline.
 - The three `const fn`s that answer a token stop being `const`.
+- The canvas fill keeps its view-model value (`CanvasFill` in `state/canvas.rs`) and gains Theme, which the view maps to the theme's surround; Dark, Black and Grey keep their constants.
 - `state/` holds only the active theme's identity and the Appearance tab's rows as plain data, as its layer rule requires. The theme value itself lives in `app/`.
 
 The alternative is to keep `iced::Theme` and pass a borrowed palette through every view function and widget model. That changes every view signature to carry what Iced already passes.
@@ -281,7 +288,7 @@ The desktop reads only the files the reader takes: each at most 64 KiB, from at 
 
 ### Launch, changes and fallback
 
-- **Launch.** The desktop reads the active theme before its first frame, beside the preferences it already reads synchronously there for the Performance section. It therefore never draws Luxforge Dark first and then changes. The extra cost is one read of `themes.json`, which `measure`'s launch-to-first-frame records.
+- **Launch.** The desktop reads the active theme before its first frame, with the preferences it already reads synchronously there (the remembered workspace, the canvas background and the interface size among them). It therefore never draws Luxforge Dark first and then changes. The extra cost is one read of `themes.json`, which `measure`'s launch-to-first-frame records.
 - **A change** by this desktop or by a client of its session redraws the window in the next update. It reads no asset, history page, preview or upload, and each canvas cache rebuilds once.
 - **A missing or unreadable active theme** leaves Luxforge Dark on screen. The status bar names the theme and the reason, and the stored choice stays until the person chooses another.
 - **Native appearance.** iced_winit sets the window's appearance from the theme's mode when the window opens and whenever the mode changes (`synchronize` in `window/state.rs`). A light theme therefore turns the macOS window Aqua with no code of Luxforge's. The native file dialogs open without a parent window, so they presumably follow the system's appearance rather than the window's; that is not verified.
@@ -309,6 +316,7 @@ The desktop reads only the files the reader takes: each at most 64 KiB, from at 
   - It opens the fixture at 1440 × 900 and imports a dark and a light synthetic Omarchy fixture through the Appearance tab's own messages. It switches between Luxforge Dark, a bundled theme and both imports, and then a second client switches it back.
   - Each frame records the active theme, its resolved surround, background, surface, control and text tokens, and the reports.
   - The runner checks sampled pixels of the panels, the title bar, a control and the canvas against those tokens. It also checks the surround's chroma, that the photograph's pixels are identical under every theme, and that one export's SHA-256 is identical under two themes.
+  - With the canvas background at Theme the canvas draws each theme's surround; set to Grey, it stays `#777777` under a light theme.
   - The existing scenarios keep finding the photograph by Luxforge Dark's canvas colour, because evidence runs keep their own preferences. The theme scenario finds it by the surround its frame records.
 - **Review captures.** The gallery and the workspace are captured in each bundled theme, and in each of Omarchy's other built-in themes, for the owner's review. They are evidence, not committed boards, unless the owner asks for them.
 - **Timing**, once, at the end: the `editor-latency` drag's p50 and p95 and the workspace derivation, interleaved against the build before the runtime theme, and `measure`'s launch-to-first-frame.
@@ -346,7 +354,8 @@ The plan runs on these until the owner revises them.
 | Which themes are bundled | Tokyo Night, Catppuccin, Catppuccin Latte, Gruvbox, Nord and Everforest ([bundled themes](#bundled-themes)) | Another set, such as all 22 of Omarchy's built-in themes, or a second light theme (Rose Pine or Flexoki Light) |
 | Contrast | 7:1 for primary text; 4.5:1 for labels and secondary text; 3:1 for tertiary text, the accent and the error ink. An imported theme's own ink is moved to its floor and reported (6 of the 22). A Luxforge document that misses a floor is refused | Refuse an import that misses a floor; or accept it and only warn |
 | Omarchy forms | Omarchy 4 and Omarchy 3 palettes, `light.mode`, and `alacritty.toml` where there is no palette (37 of the 145 reachable curated community themes) | The Omarchy 4 palette only |
-| Where | A Settings › Appearance tab | A row in General |
+| The canvas background | A fourth choice, Theme, the theme's surround, as the new default; Dark, Black and Grey stay fixed greys | No Theme choice: themes never set the canvas around the photograph, only the histogram plot |
+| Where | A Settings › Appearance tab for the theme list. The canvas background and interface size stay General rows, as decided on 2026-10-04 | A Theme row in General, with the library managed elsewhere |
 | Following Omarchy's current theme on Linux | Later | In this plan: read `~/.local/state/omarchy/current/theme/colors.toml` (in Omarchy 3, `~/.config/omarchy/current/theme`) at launch and whenever the window gains focus, with no watcher thread or poll |
 | Following the system's light or dark appearance | Later | In this plan, with a theme chosen for each |
 
@@ -378,6 +387,7 @@ These are implementation choices the plan runs on; the owner can revise any of t
 
 - The [Develop workspace](develop-workspace.md): the visual language and its principle, its decisions row, and its architecture table.
 - The Settings design: its tabs, and `preferences.set`.
+- The [preferences](preferences.md) design: the canvas background's Theme choice and the `theme` field.
 - [Architecture](architecture.md).
 - The [user guide](../user-guide.md).
 - [Feature status](../features.md).
