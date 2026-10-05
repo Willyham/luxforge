@@ -675,6 +675,11 @@ impl Editor {
         if self.gpu_counts_pending() {
             return false;
         }
+        // Compare waits for the reference's frame of a content the GPU presented, and begins when
+        // it lands: the capture is of Compare.
+        if self.gpu.compare_waits {
+            return false;
+        }
         // The status bar names the frame the surface drew last, which only that draw can say: a
         // change of drawing path wakes the desktop, whose next update derives the label again.
         let label_current = self.workspace.status.gpu_us == self.gpu_frame_us();
