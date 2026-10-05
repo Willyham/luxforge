@@ -57,7 +57,7 @@ fn recipe(payload: Value) -> Recipe {
 // ---- Without a device -------------------------------------------------------------------------
 
 /// Every spatial program the core ships, in every shape its units describe it (each unit alone and
-/// together, the atmospheric light stored and taken on the GPU), passes the surface's own spatial
+/// together, Dehaze reading its light from the plane its light link writes), passes the surface's own spatial
 /// convention through the conversion.
 #[test]
 fn gpu_presence_the_program_passes_the_surfaces_own_convention() {
@@ -1617,7 +1617,7 @@ fn gpu_presence_a_neutral_unit_runs_no_pass_until_it_leaves_zero() {
 /// its input through that unit's apply, in pass and frame modules of their own, where Metal's fast
 /// math compiles the same arithmetic a little differently: that difference is measured and held
 /// far inside the spatial limits. At full resolution and at a Fit proxy's scale, on the linear
-/// path, the atmospheric light taken on the GPU.
+/// path, both shapes reading one light.
 #[test]
 fn gpu_presence_the_drafted_shape_draws_what_the_cpus_does() {
     let test = "gpu_presence_the_drafted_shape_draws_what_the_cpus_does";

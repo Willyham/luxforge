@@ -19,7 +19,8 @@
 //! - **Keys.** The light plane keeps the content key of what its light link wrote — the source,
 //!   the stage, the steps' words and blocks and the pipeline — and a link whose key did not change
 //!   encodes nothing. A step reading the light folds that key into its passes' keys and draws whole
-//!   when it changes ([`spatial::GpuSpatial::global`], [`spatial::fold_lights`]).
+//!   when it changes ([`spatial::GpuSpatial::global`]), the slot evaluating its plan whole then
+//!   ([`PhotoPipeline::evaluate_lit`]).
 //! - **Bounds.** A link holds the tile texture, the stage's block plane, every tile's words and
 //!   cut's words, the blocks and the passes' parameters, charged to the GPU-preview budget before
 //!   they are created ([`light_charge`]); the light plane is the slot's pool's, one texel. Nothing
@@ -785,8 +786,8 @@ mod bench {
     }
 
     /// One surface of a pipeline of its own on a headless device, its slot drawing a plan as the
-    /// desktop's does, and a light link beside it: what the slot runs before its chain once it runs
-    /// light links ([`PhotoPipeline::encode_light`]).
+    /// desktop's does, its light links run before its chain, and a light link of its own beside it
+    /// that computes a light alone ([`PhotoPipeline::encode_light`]).
     pub struct LightBench {
         device: wgpu::Device,
         queue: wgpu::Queue,
@@ -963,7 +964,7 @@ mod bench {
             // its source's rows are written.
             luxforge_testbase::try_wait_for("a plan's evaluation", || {
                 self.hand(source);
-                let outcome = self.pipeline.evaluate(
+                let outcome = self.pipeline.evaluate_lit(
                     &mut self.surface,
                     &self.device,
                     &self.queue,
@@ -988,12 +989,9 @@ mod bench {
             .unwrap_or(Err(waited))
         }
 
-        /// `plan` drawn over `source` through the surface's own slot, reading `light`, when given,
-        /// from the slot's light plane: the slot fitted to the plan and drawn, the light encoded into
-        /// its pool's light plane, then the plan drawn again with `change` as the slot draws a tick
-        /// whose link's content key folds the light's in — what the slot's chain does once it runs
-        /// light links itself ([`spatial::fold_lights`]), which a bench stands in for here by
-        /// setting the input key the slot compares. Its output's codes, RGBA row by row.
+        /// `plan` drawn over `source` through the surface's own slot with `change`, reading
+        /// `light`, when given, in place of the light links it carries, as the slot runs them
+        /// before its chain ([`PhotoPipeline::evaluate_lit`]). Its output's codes, RGBA row by row.
         pub fn draw(
             &mut self,
             source: &GpuSource,
@@ -1001,28 +999,14 @@ mod bench {
             plan: &GpuPlan,
             change: Option<GpuChange>,
         ) -> Result<Vec<[u8; 4]>, GpuFallback> {
-            if let Some(light) = light {
-                // The slot's pool holds the light plane once the slot is fitted to a plan of this
-                // one's shape and boundary that reads it: the slot a plan's own tick keeps.
-                let k = light.index().ok_or(GpuFallback::PipelineFailed)?;
-                let fitted = self.surface.gpu.as_ref().is_some_and(|slot| {
-                    slot.shape == super::super::Shape::of(plan)
-                        && slot.boundary_version == Some(plan.boundary.version())
-                        && slot.pool.light_view(k).is_some()
-                });
-                if !fitted {
-                    self.evaluate(source, plan, None)?;
-                }
-                self.encode(source, light, true)?;
-                let slot = self
-                    .surface
-                    .gpu
-                    .as_mut()
-                    .ok_or(GpuFallback::PipelineFailed)?;
-                let held = slot.input_key.unwrap_or_default();
-                slot.input_key = Some(spatial::fold_lights(held, &plan.steps, &slot.pool));
-            }
-            self.evaluate(source, plan, change)?;
+            let plan = match light {
+                Some(light) => GpuPlan {
+                    lights: vec![light.clone()],
+                    ..plan.clone()
+                },
+                None => plan.clone(),
+            };
+            self.evaluate(source, &plan, change)?;
             let slot = self
                 .surface
                 .gpu
