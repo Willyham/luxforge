@@ -590,13 +590,37 @@ pub(crate) mod oklab {
             let grey = lab.l * lab.l * lab.l;
             return [grey, grey, grey];
         }
-        let lms_root = matvec_f32(&M2_INV, [lab.l, lab.a, lab.b]);
-        let lms = [
-            lms_root[0] * lms_root[0] * lms_root[0],
-            lms_root[1] * lms_root[1] * lms_root[1],
-            lms_root[2] * lms_root[2] * lms_root[2],
-        ];
-        matvec_f32(&M1_INV, lms)
+        rgb_f32([lab.l, lab.a, lab.b])
+    }
+
+    /// Oklab `[L, a, b]` to linear sRGB at one working precision, `M1⁻¹ · (M2⁻¹ · lab)³`, with no
+    /// special case for an achromatic colour; [`from_oklab`] and [`from_lab_f64`] add it.
+    macro_rules! rgb {
+        ($name:ident, $float:ty, $m2_inv:expr, $m1_inv:expr, $matvec:ident) => {
+            #[inline]
+            fn $name(lab: [$float; 3]) -> [$float; 3] {
+                let lms_root = $matvec(&$m2_inv, lab);
+                let lms = [
+                    lms_root[0] * lms_root[0] * lms_root[0],
+                    lms_root[1] * lms_root[1] * lms_root[1],
+                    lms_root[2] * lms_root[2] * lms_root[2],
+                ];
+                $matvec(&$m1_inv, lms)
+            }
+        };
+    }
+
+    rgb!(rgb_f32, f32, M2_INV, M1_INV, matvec_f32);
+    rgb!(rgb_f64, f64, M2_INV_F64, M1_INV_F64, matvec_f64);
+
+    /// [`from_oklab`] at `f64`, for a caller that reasons about single colours off the per-pixel
+    /// path: an achromatic colour reconstructs to exactly `L^3` in all three channels.
+    pub(crate) fn from_lab_f64(lab: [f64; 3]) -> [f64; 3] {
+        if lab[1] == 0.0 && lab[2] == 0.0 {
+            let grey = lab[0] * lab[0] * lab[0];
+            return [grey, grey, grey];
+        }
+        rgb_f64(lab)
     }
 
     pub(crate) fn chroma(lab: Oklab) -> f32 {
@@ -735,6 +759,101 @@ pub(crate) mod mat3 {
         } else {
             Err(singular())
         }
+    }
+}
+
+/// CIE XYZ and CIELAB under D65, and the CIEDE2000 colour difference measured in CIELAB.
+pub(crate) mod cielab {
+    /// Linear sRGB (D65) to CIE XYZ, the IEC 61966-2-1 primaries and white point.
+    pub(crate) const RGB_TO_XYZ: [[f64; 3]; 3] = [
+        [0.4124564, 0.3575761, 0.1804375],
+        [0.2126729, 0.7151522, 0.0721750],
+        [0.0193339, 0.1191920, 0.9503041],
+    ];
+
+    /// The white CIELAB is relative to: linear white through [`RGB_TO_XYZ`], its row sums, so a
+    /// neutral is exactly neutral.
+    const WHITE: [f64; 3] = [
+        RGB_TO_XYZ[0][0] + RGB_TO_XYZ[0][1] + RGB_TO_XYZ[0][2],
+        RGB_TO_XYZ[1][0] + RGB_TO_XYZ[1][1] + RGB_TO_XYZ[1][2],
+        RGB_TO_XYZ[2][0] + RGB_TO_XYZ[2][1] + RGB_TO_XYZ[2][2],
+    ];
+
+    /// CIELAB `[L*, a*, b*]` of a linear sRGB colour: the cube root of each white-relative XYZ
+    /// component above `(6/29)³`, and the straight line that continues it below.
+    pub(crate) fn from_linear(rgb: [f64; 3]) -> [f64; 3] {
+        let xyz = super::mat3::matvec_f64(&RGB_TO_XYZ, rgb);
+        let compress = |ratio: f64| {
+            let delta = 6.0 / 29.0;
+            if ratio > delta * delta * delta {
+                ratio.cbrt()
+            } else {
+                ratio / (3.0 * delta * delta) + 4.0 / 29.0
+            }
+        };
+        let [fx, fy, fz] = [0, 1, 2].map(|axis| compress(xyz[axis] / WHITE[axis]));
+        [116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)]
+    }
+
+    /// The CIEDE2000 difference between two CIELAB colours with `kL = kC = kH = 1` (Sharma, Wu and
+    /// Dalal, Color Research and Application 30(1), 2005): an achromatic colour's hue is zero and
+    /// takes no part in the mean hue, and two hues more than 180° apart are averaged across 0°.
+    pub(crate) fn ciede2000(first: [f64; 3], second: [f64; 3]) -> f64 {
+        const TWENTY_FIVE_7: f64 = 6_103_515_625.0;
+        let seventh = |chroma: f64| chroma.powi(7);
+        let (l1, l2) = (first[0], second[0]);
+        let chroma_mean = (first[1].hypot(first[2]) + second[1].hypot(second[2])) / 2.0;
+        let g =
+            0.5 * (1.0 - (seventh(chroma_mean) / (seventh(chroma_mean) + TWENTY_FIVE_7)).sqrt());
+        // Each colour with its a* stretched by 1 + G, as chroma and a hue in [0, 360).
+        let polar = |lab: [f64; 3]| {
+            let a = lab[1] * (1.0 + g);
+            let chroma = a.hypot(lab[2]);
+            let hue = if chroma == 0.0 {
+                0.0
+            } else {
+                lab[2].atan2(a).to_degrees().rem_euclid(360.0)
+            };
+            (chroma, hue)
+        };
+        let ((c1, h1), (c2, h2)) = (polar(first), polar(second));
+        let chromatic = c1 * c2 != 0.0;
+        let hue_step = match h2 - h1 {
+            _ if !chromatic => 0.0,
+            step if step > 180.0 => step - 360.0,
+            step if step < -180.0 => step + 360.0,
+            step => step,
+        };
+        let hue_mean = if !chromatic {
+            h1 + h2
+        } else if (h1 - h2).abs() <= 180.0 {
+            (h1 + h2) / 2.0
+        } else if h1 + h2 < 360.0 {
+            (h1 + h2 + 360.0) / 2.0
+        } else {
+            (h1 + h2 - 360.0) / 2.0
+        };
+        let delta_l = l2 - l1;
+        let delta_c = c2 - c1;
+        let delta_h = 2.0 * (c1 * c2).sqrt() * (hue_step / 2.0).to_radians().sin();
+
+        let lightness_mean = (l1 + l2) / 2.0;
+        let chroma_prime_mean = (c1 + c2) / 2.0;
+        let cosine = |degrees: f64| degrees.to_radians().cos();
+        let t = 1.0 - 0.17 * cosine(hue_mean - 30.0)
+            + 0.24 * cosine(2.0 * hue_mean)
+            + 0.32 * cosine(3.0 * hue_mean + 6.0)
+            - 0.20 * cosine(4.0 * hue_mean - 63.0);
+        let offset = (lightness_mean - 50.0) * (lightness_mean - 50.0);
+        let s_l = 1.0 + 0.015 * offset / (20.0 + offset).sqrt();
+        let s_c = 1.0 + 0.045 * chroma_prime_mean;
+        let s_h = 1.0 + 0.015 * chroma_prime_mean * t;
+        let rotation = 30.0 * (-((hue_mean - 275.0) / 25.0).powi(2)).exp();
+        let r_c = 2.0
+            * (seventh(chroma_prime_mean) / (seventh(chroma_prime_mean) + TWENTY_FIVE_7)).sqrt();
+        let r_t = -(2.0 * rotation).to_radians().sin() * r_c;
+        let (lightness, chroma, hue) = (delta_l / s_l, delta_c / s_c, delta_h / s_h);
+        (lightness * lightness + chroma * chroma + hue * hue + r_t * chroma * hue).sqrt()
     }
 }
 
@@ -1076,6 +1195,95 @@ mod tests {
         let back = oklab::from_oklab(lab);
         for channel in back {
             assert!((channel - 0.5).abs() < 1e-5, "{back:?}");
+        }
+    }
+
+    /// The `f64` inverse undoes the forward conversion, and a neutral is exactly `L^3`.
+    #[test]
+    fn oklab_f64_round_trips_every_8_bit_grey_and_a_spread_of_colours() {
+        for code in 0..=255u8 {
+            let grey = srgb::decode_u8(code);
+            let [l, ..] = oklab::lab_f64([grey; 3]);
+            let back = oklab::from_lab_f64([l, 0.0, 0.0]);
+            assert_eq!(back[0].to_bits(), back[1].to_bits());
+            assert_eq!(back[1].to_bits(), back[2].to_bits());
+            assert!((back[0] - grey).abs() < 1e-6, "{code}");
+        }
+        for rgb in [
+            [0.8, 0.1, 0.05],
+            [0.02, 0.4, 0.9],
+            [0.5, 0.5, 0.2],
+            [1.0, 1.0, 0.0],
+        ] {
+            let back = oklab::from_lab_f64(oklab::lab_f64(rgb));
+            for channel in 0..3 {
+                assert!(
+                    (back[channel] - rgb[channel]).abs() < 1e-6,
+                    "{rgb:?} {back:?}"
+                );
+            }
+        }
+    }
+
+    /// Sharma, Wu and Dalal's (2005) published pairs that probe the hue conventions: across 0°,
+    /// across 180°, achromatic against chromatic, and a large difference.
+    #[test]
+    fn ciede2000_reproduces_published_pairs() {
+        for (first, second, expected) in [
+            ([50.0, 2.6772, -79.7751], [50.0, 0.0, -82.7485], 2.0425),
+            ([50.0, 0.0, 0.0], [50.0, -1.0, 2.0], 2.3669),
+            ([50.0, 2.49, -0.001], [50.0, -2.49, 0.0011], 7.2195),
+            ([50.0, -0.001, 2.49], [50.0, 0.0011, -2.49], 4.7461),
+            ([50.0, 2.5, 0.0], [73.0, 25.0, -18.0], 27.1492),
+            ([2.0776, 0.0795, -1.135], [0.9033, -0.0636, -0.5514], 0.9082),
+        ] {
+            let difference = cielab::ciede2000(first, second);
+            assert!(
+                (difference - expected).abs() < 1e-4,
+                "{first:?}: {difference}"
+            );
+            assert_eq!(difference, cielab::ciede2000(second, first));
+        }
+    }
+
+    /// The colour difference and the CIELAB conversion agree with `luxforge-reference`'s
+    /// independent implementation of both, over pairs of 8-bit sRGB colours that cover the gamut,
+    /// the neutrals, and the reserved colours the theme's accent note measures against.
+    #[test]
+    fn ciede2000_matches_the_independent_reference() {
+        use luxforge_reference::preview_error;
+        let mut colours: Vec<[u8; 3]> = Vec::new();
+        for r in (0..=255u16).step_by(51) {
+            for g in (0..=255u16).step_by(51) {
+                for b in (0..=255u16).step_by(51) {
+                    colours.push([r as u8, g as u8, b as u8]);
+                }
+            }
+        }
+        colours.extend([
+            [0xe5, 0x53, 0x4b],
+            [0x4c, 0x8b, 0xe0],
+            [0x3f, 0xd0, 0x7a],
+            [0xf2, 0xf2, 0xf5],
+            [0xe2, 0xb4, 0x6a],
+            [0x7a, 0xa2, 0xf7],
+            [0x19, 0x19, 0x1b],
+        ]);
+        let lab = |rgb: [u8; 3]| cielab::from_linear(rgb.map(srgb::decode_u8));
+        for first in &colours {
+            let ours = lab(*first);
+            let theirs = preview_error::lab_from_srgb8(*first);
+            for axis in 0..3 {
+                assert!((ours[axis] - theirs[axis]).abs() < 1e-9, "{first:?}");
+            }
+            for second in &colours {
+                let difference = cielab::ciede2000(ours, lab(*second));
+                let expected = preview_error::delta_e00_srgb8(*first, *second);
+                assert!(
+                    (difference - expected).abs() < 1e-9,
+                    "{first:?} {second:?}: {difference} against {expected}"
+                );
+            }
         }
     }
 
