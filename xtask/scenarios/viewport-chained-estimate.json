@@ -9,6 +9,7 @@
   {"slider":{"action":"set-basic","parameter":"exposure","values":[0.35]}},
   {"pan":{"x":0.7,"y":0.35}},
   {"wait":{"ms":1200}},
+  {"slider":{"action":"set-basic","parameter":"exposure","values":[0.42]}},
   {"slider":{"action":"set-basic","parameter":"exposure","values":[0.5],"release":true}},
   {"wait":{"ms":1800}}
 ]
