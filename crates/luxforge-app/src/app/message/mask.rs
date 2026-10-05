@@ -42,9 +42,10 @@ pub(crate) enum MaskPointer {
 
 /// One change to the brush the next stroke will be drawn with.
 ///
-/// It is per-client gesture state and sends nothing on its own: the brush reaches the host as the
-/// settings of the stroke it drew, on that stroke's own request. Every one of these is reachable
-/// from the panel as well as from a key, so nothing here is reachable only by pointer.
+/// It is per-client gesture state and sends no mask command on its own: the brush reaches the host
+/// as the settings of the stroke it drew, on that stroke's own request. A new size, feather or flow
+/// is remembered as the `brush` preference. Every one of these is reachable from the panel as well
+/// as from a key, so nothing here is reachable only by pointer.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum BrushEdit {
     /// Move one declared number by that many of its own declared steps: the bracket keys and the

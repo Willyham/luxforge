@@ -299,6 +299,8 @@ pub(crate) struct SectionModel {
     pub(crate) enabled: bool,
     /// Why editing is disabled, in the words the status bar would use.
     pub(crate) disabled_reason: Option<String>,
+    /// What the palette's last reveal marks here, on the revealed section only.
+    pub(crate) mark: Option<SectionMark>,
 }
 
 impl SectionModel {
@@ -723,6 +725,64 @@ pub(crate) enum ControlModel {
     Presets(Box<PresetsModel>),
 }
 
+/// What a palette reveal marks a control by: a group by its declared path, a value control by the
+/// field it edits ([`ControlKey`]), a band by its low edge's and a curve by its first channel's,
+/// as [`CurveControl::id`] is. The same key is read off the declared control the entry was built
+/// from and off the model the panel draws, so the two meet without a search by label.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RevealKey {
+    Group(Vec<usize>),
+    Field(ControlKey),
+}
+
+impl RevealKey {
+    /// The key of a declared control at `path`, for the kinds a reveal can mark. Actions, pickers,
+    /// tasks, query choices and the preset library are run or used where they are, not revealed.
+    fn of_declared<'a>(control: &'a Control, path: &[usize]) -> Option<(Self, &'a str)> {
+        let field = |action: &str, parameter: &str| Self::Field((action.into(), parameter.into()));
+        Some(match control {
+            Control::Group(group) => (Self::Group(path.to_vec()), &group.label),
+            Control::Number(number) => (field(&number.action, &number.parameter), &number.label),
+            Control::Toggle(toggle) => (field(&toggle.action, &toggle.parameter), &toggle.label),
+            Control::Choice(choice) => (field(&choice.action, &choice.parameter), &choice.label),
+            Control::Color(color) => (field(&color.action, &color.parameter), &color.label),
+            Control::Range(range) => (field(&range.action, &range.low), &range.label),
+            Control::Curve(curve) => (
+                field(&curve.action, &curve.channels.first()?.parameter),
+                &curve.label,
+            ),
+            _ => return None,
+        })
+    }
+}
+
+impl ControlModel {
+    /// This control's [`RevealKey`], when it is a kind a reveal can mark.
+    pub(crate) fn reveal_key(&self) -> Option<RevealKey> {
+        let field = |action: &str, parameter: &str| {
+            Some(RevealKey::Field((action.into(), parameter.into())))
+        };
+        match self {
+            Self::Group(group) => Some(RevealKey::Group(group.path.clone())),
+            Self::Slider(slider) => field(&slider.action, &slider.parameter),
+            Self::Toggle(toggle) => field(&toggle.action, &toggle.parameter),
+            Self::Enum(choice) => field(&choice.action, &choice.parameter),
+            Self::Color(color) => field(&color.action, &color.parameter),
+            Self::Range(range) => field(&range.action, &range.low.parameter),
+            Self::Curve(curve) => Some(RevealKey::Field(curve.id.clone())),
+            _ => None,
+        }
+    }
+}
+
+/// What the palette's last reveal marks in a section until the mark times out: the section itself,
+/// or one control in it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SectionMark {
+    Section,
+    Control(RevealKey),
+}
+
 /// One generated ratio preset button.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PresetChip {
@@ -900,6 +960,15 @@ fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionModel {
         scope: scope.map(str::to_owned),
         enabled,
         disabled_reason,
+        mark: inputs
+            .palette
+            .revealed
+            .as_ref()
+            .filter(|revealed| revealed.target.module_id == module.id)
+            .map(|revealed| match &revealed.target.control {
+                Some((_, key)) => SectionMark::Control(key.clone()),
+                None => SectionMark::Section,
+            }),
     }
 }
 
@@ -2742,6 +2811,76 @@ pub(crate) fn palette_entries(
                     PaletteAction::Mode(module.id.clone()),
                 ));
             }
+        }
+    }
+    entries
+}
+
+/// The palette's reveal entries: each section the panel draws, followed by every group and value
+/// control in it, in panel order. A control is named under its section and the groups that hold
+/// it, so "Colour mixer · Red · Hue" and "Colour mixer · Blue · Hue" stay apart; the one group a
+/// headerless section consists of names nothing, as the panel draws no header for it. An
+/// unavailable section cannot expand, so it is not offered.
+pub(crate) fn reveal_entries(
+    tools: &ToolsModel,
+    modules: &[ModuleDescriptor],
+    state: Option<&EditorState>,
+    target: Option<&MaskId>,
+) -> Vec<(String, String, PaletteAction)> {
+    use crate::state::palette::RevealTarget;
+    let kind = source_kind(state);
+    let mut entries = Vec::new();
+    for section in tools.all().filter(|section| section.unavailable.is_none()) {
+        let Some(module) = module_of(modules, &section.module_id) else {
+            continue;
+        };
+        entries.push((
+            section.title.clone(),
+            "section".to_owned(),
+            PaletteAction::Reveal(RevealTarget {
+                module_id: module.id.clone(),
+                control: None,
+            }),
+        ));
+        let headerless = headerless_group(module).is_some();
+        // The labels of the groups enclosing the control visited, by depth.
+        let mut groups: Vec<&str> = Vec::new();
+        let mut controls = walk(&module.controls);
+        while let Some(declared) = controls.next() {
+            let path = controls.path();
+            groups.truncate(controls.depth() - 1);
+            if headerless && path == [0] {
+                groups.push("");
+                continue;
+            }
+            let Some((_, control)) = resolved(modules, module, declared, kind, target) else {
+                continue;
+            };
+            let Some((key, label)) = RevealKey::of_declared(control, &path) else {
+                continue;
+            };
+            let mut name = section.title.clone();
+            for group in groups.iter().filter(|group| !group.is_empty()) {
+                name.push_str(" \u{b7} ");
+                name.push_str(group);
+            }
+            name.push_str(" \u{b7} ");
+            name.push_str(label);
+            let detail = match &key {
+                RevealKey::Group(_) => "group".to_owned(),
+                RevealKey::Field((action, _)) => format!("edit.{action}"),
+            };
+            if let Control::Group(group) = control {
+                groups.push(&group.label);
+            }
+            entries.push((
+                name,
+                detail,
+                PaletteAction::Reveal(RevealTarget {
+                    module_id: module.id.clone(),
+                    control: Some((path, key)),
+                }),
+            ));
         }
     }
     entries
