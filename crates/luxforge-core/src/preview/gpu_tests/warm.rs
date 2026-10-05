@@ -265,3 +265,75 @@ fn past_its_bound_the_warm_list_keeps_every_spatial_drag_and_leaves_out_colour_o
         "the first drags are left out: {firsts:?}"
     );
 }
+
+/// The warm list's own order: the open stack's plans first — a drag of each layer it holds — then
+/// the rest of the program set, the first drag of each module it does not hold, Detail's and
+/// Presence's among them, so the surface compiles what a gesture over the photograph on screen
+/// draws before anything else. Every drag of a layer the stack holds draws only links the open
+/// part warms, and the first drag of a module it does not hold, a spatial one included, draws a
+/// link only the rest warms.
+#[test]
+fn the_open_stacks_drags_warm_before_the_first_drags_of_the_rest() {
+    let stack = recipe(vec![basic(json!({"exposure": 0.3}))]);
+    let context = RenderContext::new();
+    let (job, _) = draft_job_of(
+        context.clone(),
+        source(),
+        "set-basic",
+        stack.clone(),
+        stack.clone(),
+        0,
+    );
+    let warm =
+        crate::render::gpu::plan_warm_list(&job.evaluation, crate::GpuView::Fit(bounds())).unwrap();
+    assert!(
+        warm.open > 0 && warm.open < warm.plans.len(),
+        "{}",
+        warm.open
+    );
+    let links_of = |plans: &[GpuPlan]| {
+        let mut links: Vec<Vec<String>> = Vec::new();
+        for link in plans.iter().flat_map(warm_links) {
+            if !links.contains(&link) {
+                links.push(link);
+            }
+        }
+        links
+    };
+    let (open, all) = (links_of(&warm.plans[..warm.open]), links_of(&warm.plans));
+    assert!(all.len() <= GPU_WARM_LINKS);
+    let held = drag_links(
+        &stack,
+        &context,
+        "set-basic",
+        Some(0),
+        json!({"exposure": 0.6}),
+    );
+    assert_eq!(
+        unwarmed(&held, &open),
+        0,
+        "the Basic layer's drag is the open stack's"
+    );
+    let firsts = [
+        "set-curve",
+        "set-mixer",
+        "set-vignette",
+        "set-detail",
+        "set-presence",
+    ];
+    for action in firsts {
+        let first = drag_links(&stack, &context, action, None, json!({}));
+        assert_eq!(unwarmed(&first, &all), 0, "{action}'s first drag is warmed");
+        assert!(
+            unwarmed(&first, &open) > 0,
+            "{action}'s first drag is the rest's, after the open stack's"
+        );
+    }
+    eprintln!(
+        "a Basic stack's warm list: {} plans, the first {} the open stack's, {} links; the rest \
+         warms the first drags of {firsts:?}",
+        warm.plans.len(),
+        warm.open,
+        all.len()
+    );
+}
