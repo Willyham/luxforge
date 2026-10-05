@@ -65,7 +65,8 @@
       "extra_context": [
         "RAW editing is implemented for the Nikon Z6, the Fujifilm X100VI and the supplied DJI Air 2S DNG, with neutral development as the initial direction; camera-look or Adobe matching is not selected (docs/decisions.md, Product and platform). Whether RAW precedes the tonal suite is settled by delivery, and the owner's private RAW manifest already feeds `raw-corpus`, `verify --manifest` and the `raw-editor` scenario.",
         "Still open: which recording modes, firmware and controlled quality scenes to prioritise, how much camera JPEG or film-simulation matching matters beyond neutral, and whether lens correction, denoise or sharpening are essential (docs/decisions.md, Open product questions; docs/design/initial-raw.md, Remaining qualification and decisions). Bayer highlight latitude and the RAW memory budget have their own tasks in this plan.",
-        "The owner accepted this narrowing on 2026-09-28 (docs/decisions.md, \"Plan refresh\")."
+        "The owner accepted this narrowing on 2026-09-28 (docs/decisions.md, \"Plan refresh\").",
+        "Decided 2026-10-05 (docs/decisions.md, RAW looks): new RAW photos start from a Luxforge Standard look on the neutral development, and matching the camera's embedded preview (tone and a global chroma gain, not film-simulation colour) is a setting. Film-simulation and Picture Control reproduction stays out of scope."
       ],
       "context_links": [
         {

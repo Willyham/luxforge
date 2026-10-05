@@ -52,6 +52,10 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - End-to-end RAW editing journey
 - Measure the cost and accuracy of a clip-aware white-balance draft on Bayer developments, then reconsider it against the highlight-clipped exception to the `raw-panel` gates. The candidate is in [instant previews](design/instant-preview.md#popular-cameras) and the exception in [decisions](decisions.md#raw-white-balance-drafts)
 
+**RAW looks** ([design](design/raw-looks.md), [plan](../tasks/raw-looks.json)). Planned, decided 2026-10-05. New RAW photos start from a Luxforge look instead of the bare neutral development.
+- Phase 1: the Standard look, chosen on the corpus and reviewed by the owner, in every new RAW photograph's Original; a Look section with Standard, Neutral and Amount; a Settings row for the starting look
+- Phase 2: Match camera, a tone curve and chroma gain fitted per photo to its embedded camera preview off the owner, as a first-open entry or on request
+
 **Camera coverage follow-ups** ([popular camera support](design/popular-camera-support.md)).
 - Nikon High Efficiency NEF once upstream LibRaw decodes it; refused explicitly until then
 - Sony A7 V compressed ARW once a pinned decoder reads it
