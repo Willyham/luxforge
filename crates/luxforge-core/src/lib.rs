@@ -626,7 +626,7 @@ pub mod qualification {
         };
         use serde_json::json;
 
-        const FACTORS: [u32; 4] = [16, 8, 4, 2];
+        const FACTORS: [u32; 5] = [16, 8, 4, 2, 1];
 
         /// The light a render of `recipe` over `source` prepares for layer `layer`, exactly.
         fn exact_light(
@@ -728,7 +728,8 @@ pub mod qualification {
 
         /// Three stops clip the bright stripes and not the dark ones, so the colour over a cell's
         /// mean is not the mean of the colour over its pixels where a cell holds both: the twin's
-        /// light misses the exact light by that gap, and less over cells finer than a stripe.
+        /// light misses the exact light by that gap, less over cells finer than a stripe, and not
+        /// at all over cells of one pixel, where the colour is the CPU's over every pixel.
         #[test]
         fn the_twins_light_misses_by_the_colour_runs_gap_which_finer_cells_narrow() {
             let registry = ModuleRegistry::builtin();
@@ -749,6 +750,7 @@ pub mod qualification {
                 .collect();
             assert!(gaps[0] > 1.0e-3, "the colour run's gap at 16: {gaps:?}");
             assert!(gaps[3] < gaps[0], "finer cells narrow the gap: {gaps:?}");
+            assert!(gaps[4] < 1.0e-4, "cells of one pixel have none: {gaps:?}");
         }
 
         /// A light whose stage passes through an earlier estimating layer reads that layer's

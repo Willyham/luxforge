@@ -8,7 +8,9 @@
 //! reference's by that gap, which finer cells narrow.
 //!
 //! Each candidate light is emulated on the CPU (`luxforge_core::qualification::twin_lights`): the
-//! twin's at f = 16, 8, 4 and 2, and, where the stage a light reads passes through Detail, the
+//! twin's at f = 16, 8, 4 and 2; at f = 1, a control, where the cells are pixels and the colour run
+//! is the CPU's over every pixel, so for a colour run alone the light is the reference's but for
+//! the byte path's 16-bit hand-off; and, where the stage a light reads passes through Detail, the
 //! same with Detail left out, which is what the twin at f = 16 nearly computes (Detail at a
 //! sixteenth of its scale barely filters). Each is handed to the GPU plan through the estimate
 //! store under the drafted stack's own keys, as the measurements beside it hand theirs, with the
@@ -49,8 +51,9 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// The factors the twin is emulated at, coarsest first.
-const FACTORS: [u32; 4] = [16, 8, 4, 2];
+/// The factors the twin is emulated at, coarsest first: the four the plan measures, then 1, the
+/// control, whose cells are pixels.
+const FACTORS: [u32; 5] = [16, 8, 4, 2, 1];
 
 /// The side of the tiles a process-first frame is drawn in, as the release gate draws it.
 const TILE: u32 = 2048;
