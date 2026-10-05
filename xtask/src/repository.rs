@@ -361,6 +361,9 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-app/src/app/gesture.rs",
             "crates/luxforge-app/src/app/thumbnails.rs",
             "crates/luxforge-app/src/app/mask_coverage.rs",
+            // The preview request's GPU presentation: a committed job the GPU presents is read
+            // where it is requested and kept only as its identity.
+            "crates/luxforge-app/src/app/gpu_counts.rs",
         ],
         mode: Match::Whole,
         tests: false,

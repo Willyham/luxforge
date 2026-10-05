@@ -503,8 +503,24 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         };
         let raster: [u32; 2] = serde_json::from_value(surface["raster"].clone())
             .map_err(|_| format!("{what}: no raster on the surface"))?;
+        // Where the GPU presents the stack at rest (`docs/design/gpu-first.md`, stage 2), a zoom
+        // renders nothing on the CPU: the GPU's picture of the view is the photograph, drawn over
+        // the frame the surface already holds, and the CPU texture checks below do not apply.
+        let gpu_picture = matches!(
+            state["surface"]["gpu"]["picture"].as_str(),
+            Some("rest" | "view")
+        );
+        if gpu_picture && *kind != Kind::Open {
+            ensure(
+                state["surface"]["gpu"]["drawing_path"] == "gpu",
+                format!(
+                    "{what}: the GPU's picture at rest is handed but the surface drew {}",
+                    state["surface"]["gpu"]["drawing_path"]
+                ),
+            )?;
+        }
         ensure(
-            state["proxy"]["presented"] == json!(proxy),
+            (gpu_picture && *kind != Kind::Open) || state["proxy"]["presented"] == json!(proxy),
             format!("{what}: proxy presented is {}", state["proxy"]["presented"]),
         )?;
         // A proxy is the stage scaled into the bounds the view asks for now — never one left over
@@ -512,7 +528,8 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         // exception: the open request is sent before the display scale is known, so its proxy is
         // made for the bounds at scale 1 and the refit that follows is what the settling wait
         // lets land.
-        let expected_raster = if proxy && *kind == Kind::Open {
+        let cpu_picture = !(gpu_picture && *kind != Kind::Open);
+        let expected_raster = if !cpu_picture || (proxy && *kind == Kind::Open) {
             raster
         } else if proxy {
             let bounds = &state["proxy"]["bounds"];
@@ -531,17 +548,22 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             [stage.0, stage.1]
         };
         ensure(
-            raster == expected_raster && (!proxy || (raster[0] < stage.0 && raster[1] < stage.1)),
+            !cpu_picture
+                || (raster == expected_raster
+                    && (!proxy || (raster[0] < stage.0 && raster[1] < stage.1))),
             format!(
                 "{what}: the surface holds a {raster:?} raster of a {stage:?} stage, expected {expected_raster:?}"
             ),
         )?;
         // Every raster handed to the surface is one `preview_displayed` and one new version, so
-        // the event that put this frame's raster on screen is the version-th of them.
+        // the event that put this frame's raster on screen is the version-th of them; a picture the
+        // GPU presents hands no raster.
         let version = number(&surface["version"], "surface version")?;
         let displayed = events
             .iter()
-            .filter(|event| event["event"] == "preview_displayed")
+            .filter(|event| {
+                event["event"] == "preview_displayed" && event["detail"]["path"] != "gpu"
+            })
             .nth(
                 usize::try_from(version)?
                     .checked_sub(1)
@@ -550,10 +572,12 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             .ok_or_else(|| format!("{what}: no preview_displayed for version {version}"))?;
         let detail = &displayed["detail"];
         ensure(
-            detail["proxy"] == json!(proxy)
-                && detail["path"] == "surface"
-                && detail["dimensions"] == json!([stage.0, stage.1])
-                && detail["proxy_dimensions"] == if proxy { json!(raster) } else { Value::Null },
+            !cpu_picture
+                || (detail["proxy"] == json!(proxy)
+                    && detail["path"] == "surface"
+                    && detail["dimensions"] == json!([stage.0, stage.1])
+                    && detail["proxy_dimensions"]
+                        == if proxy { json!(raster) } else { Value::Null }),
             format!("{what}: the raster on screen was displayed as {detail}"),
         )?;
 

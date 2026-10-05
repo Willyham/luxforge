@@ -92,8 +92,8 @@ impl Kind {
                  mean ΔE00, p99 ΔE00 and signed mean ΔL*"
             }
             Self::Histogram => {
-                "Each channel's summed absolute bin difference and each clipping count within 0.1% \
-                 of the output pixel count"
+                "The earth mover's distance between the histograms within 0.25 code on each of R, \
+                 G, B and luminance, and each clipping count within 0.1% of the output pixel count"
             }
             Self::Sample => {
                 "Equal to the byte on screen; against the reference, the display limit of the \
@@ -319,14 +319,25 @@ pub const CLIPPING: [&str; 11] = [
     "both",
 ];
 
-/// The share of the output pixel count each of the histogram's differences may reach: 0.1%.
+/// The share of the output pixel count each clipping counter's difference may reach: 0.1%.
 pub const HISTOGRAM_FRACTION: f64 = 0.001;
 
-/// One frame's counts: each channel's 256 bins and the clipping counters of [`CLIPPING`].
+/// The most each of the histograms of R, G, B and luminance may move from the reference's, by the
+/// earth mover's distance in codes ([`histogram_emd`]): a quarter of a code (owner, 2026-10-05).
+/// A whole frame one code off is 1.0; a share of its pixels one code off is that share.
+pub const HISTOGRAM_EMD_CODES: f64 = 0.25;
+
+/// The histograms the earth mover's distance is judged on, in the order [`HistogramError::emd`]
+/// holds them.
+pub const HISTOGRAM_SIDES: [&str; 4] = ["r", "g", "b", "luminance"];
+
+/// One frame's counts: each channel's 256 bins, the clipping counters of [`CLIPPING`] and the
+/// luminance histogram of [`luma_bins`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Counts {
     pub bins: [[u64; 256]; 3],
     pub clipping: [u64; 11],
+    pub luma: [u64; 256],
 }
 
 impl Counts {
@@ -335,6 +346,7 @@ impl Counts {
         let mut counts = Self {
             bins: [[0; 256]; 3],
             clipping: [0; 11],
+            luma: luma_bins(pixels, stride),
         };
         for pixel in pixels.chunks_exact(stride.max(3)) {
             let rgb = [pixel[0], pixel[1], pixel[2]];
@@ -360,22 +372,42 @@ impl Counts {
     }
 }
 
-/// How far one frame's counts are from the reference frame's, in pixels.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// How far one frame's counts are from the reference frame's: in pixels, and by the earth mover's
+/// distance in codes.
+#[derive(Clone, Debug, PartialEq)]
 pub struct HistogramError {
     /// The output pixel count both frames hold.
     pub pixels: u64,
     /// Each channel's summed absolute bin difference. A pixel that moves from one bin to another
-    /// counts twice: once where it left and once where it arrived.
+    /// counts twice: once where it left and once where it arrived. Reported, not judged.
     pub bins: [u64; 3],
     /// Each clipping counter's absolute difference, in the order of [`CLIPPING`].
     pub clipping: [u64; 11],
+    /// The earth mover's distance in codes of each histogram of [`HISTOGRAM_SIDES`].
+    pub emd: [f64; 4],
 }
 
 impl HistogramError {
-    /// The limit, in pixels: [`HISTOGRAM_FRACTION`] of the output pixel count.
+    /// The clipping counters' limit, in pixels: [`HISTOGRAM_FRACTION`] of the output pixel count.
     pub fn limit(&self) -> f64 {
         HISTOGRAM_FRACTION * self.pixels as f64
+    }
+
+    /// The largest earth mover's distance, in codes, and its histogram: the first in the order of
+    /// [`HISTOGRAM_SIDES`] among equal ones.
+    pub fn worst_emd(&self) -> (&'static str, f64) {
+        let (index, worst) =
+            self.emd
+                .iter()
+                .enumerate()
+                .fold((0, 0.0), |(best, worst), (index, emd)| {
+                    if *emd > worst {
+                        (index, *emd)
+                    } else {
+                        (best, worst)
+                    }
+                });
+        (HISTOGRAM_SIDES[index], worst)
     }
 
     /// The largest channel's summed bin difference, as a share of the pixel count.
@@ -400,14 +432,16 @@ impl HistogramError {
         (CLIPPING[index], worst as f64 / self.pixels as f64)
     }
 
-    /// Every channel's summed bin difference and every clipping difference within the limit, which
-    /// is inclusive.
+    /// Every histogram's earth mover's distance within [`HISTOGRAM_EMD_CODES`] and every clipping
+    /// difference within [`Self::limit`], both inclusive. The summed bin difference is reported
+    /// beside them and not judged.
     pub fn passed(&self) -> bool {
         let limit = self.limit();
-        self.bins
-            .iter()
-            .chain(&self.clipping)
-            .all(|difference| *difference as f64 <= limit)
+        self.emd.iter().all(|emd| *emd <= HISTOGRAM_EMD_CODES)
+            && self
+                .clipping
+                .iter()
+                .all(|difference| *difference as f64 <= limit)
     }
 }
 
@@ -433,11 +467,107 @@ pub fn histogram(candidate: &Counts, reference: &Counts) -> Result<HistogramErro
     let clipping = std::array::from_fn(|counter| {
         candidate.clipping[counter].abs_diff(reference.clipping[counter])
     });
+    if candidate.luma.iter().sum::<u64>() != pixels || reference.luma.iter().sum::<u64>() != pixels
+    {
+        return Err(format!(
+            "the luminance histograms do not count {pixels} pixels each"
+        ));
+    }
+    let emd = [
+        histogram_emd(&candidate.bins[0], &reference.bins[0]),
+        histogram_emd(&candidate.bins[1], &reference.bins[1]),
+        histogram_emd(&candidate.bins[2], &reference.bins[2]),
+        histogram_emd(&candidate.luma, &reference.luma),
+    ];
     Ok(HistogramError {
         pixels,
         bins,
         clipping,
+        emd,
     })
+}
+
+// ---- Histogram diagnostics, reported beside the gated figures and never gated -------------------
+
+/// The earth mover's distance between two histograms of the same pixel count, in codes: the L1
+/// distance of their cumulative histograms over the pixel count, which is the mean distance each
+/// pixel's code must move to turn one into the other. A whole frame shifted by one code is 1.0;
+/// a share `s` of the pixels shifted by one code is `s`.
+pub fn histogram_emd(candidate: &[u64; 256], reference: &[u64; 256]) -> f64 {
+    let pixels: u64 = reference.iter().sum();
+    if pixels == 0 {
+        return 0.0;
+    }
+    let (mut a, mut b, mut moved) = (0i128, 0i128, 0u128);
+    for (x, y) in candidate.iter().zip(reference) {
+        a += i128::from(*x);
+        b += i128::from(*y);
+        moved += (a - b).unsigned_abs();
+    }
+    moved as f64 / pixels as f64
+}
+
+/// The signed mean code of `candidate` less `reference`'s over the same pixel count: a systematic
+/// shift shows here, a spread of shifts in both directions does not.
+pub fn histogram_mean_shift(candidate: &[u64; 256], reference: &[u64; 256]) -> f64 {
+    let pixels: u64 = reference.iter().sum();
+    if pixels == 0 {
+        return 0.0;
+    }
+    let sum = |bins: &[u64; 256]| -> f64 {
+        bins.iter()
+            .enumerate()
+            .map(|(code, count)| code as f64 * *count as f64)
+            .sum()
+    };
+    (sum(candidate) - sum(reference)) / pixels as f64
+}
+
+/// The summed absolute bin difference after both histograms are binned at `width` codes, the bins
+/// aligned at code 0: as [`histogram`]'s, a pixel that moves between bins counts twice.
+pub fn histogram_binned(candidate: &[u64; 256], reference: &[u64; 256], width: usize) -> u64 {
+    let width = width.max(1);
+    candidate
+        .chunks(width)
+        .zip(reference.chunks(width))
+        .map(|(a, b)| a.iter().sum::<u64>().abs_diff(b.iter().sum::<u64>()))
+        .sum()
+}
+
+/// The luminance histogram of an 8-bit frame, `stride` bytes a pixel: each pixel's Rec. 709
+/// weighting of its three codes, rounded to a code. A diagnostic of the frames, not a figure the
+/// report or the reducer holds.
+pub fn luma_bins(pixels: &[u8], stride: usize) -> [u64; 256] {
+    let mut bins = [0u64; 256];
+    for pixel in pixels.chunks_exact(stride.max(3)) {
+        let y = 0.2126 * f64::from(pixel[0])
+            + 0.7152 * f64::from(pixel[1])
+            + 0.0722 * f64::from(pixel[2]);
+        bins[(y.round() as usize).min(255)] += 1;
+    }
+    bins
+}
+
+/// How many pixels of `candidate` differ from `reference`'s at the same place by their largest
+/// channel difference: equal, by exactly one code, by exactly two, and by more than two. Both are
+/// 8-bit frames of the same size, `stride` bytes a pixel.
+pub fn code_shifts(candidate: &[u8], reference: &[u8], stride: usize) -> Result<[u64; 4], String> {
+    if candidate.len() != reference.len() {
+        return Err(format!(
+            "the frames hold {} and {} bytes",
+            candidate.len(),
+            reference.len()
+        ));
+    }
+    let mut shifts = [0u64; 4];
+    for (a, b) in candidate
+        .chunks_exact(stride.max(3))
+        .zip(reference.chunks_exact(stride.max(3)))
+    {
+        let largest = (0..3).map(|c| a[c].abs_diff(b[c])).max().unwrap_or(0);
+        shifts[usize::from(largest.min(3))] += 1;
+    }
+    Ok(shifts)
 }
 
 // ---- Samples ------------------------------------------------------------------------------------
@@ -677,25 +807,33 @@ mod tests {
     }
 
     #[test]
-    fn the_histogram_limit_is_a_tenth_of_a_percent_of_the_pixels() {
+    fn the_histogram_is_held_to_a_quarter_code_and_clipping_to_a_tenth_of_a_percent() {
         let pixels = 4000;
         let reference = Counts::of(&vec![100; pixels * 3], 3);
-        // Two pixels move one code: four bins' worth of difference in each channel, at the limit
-        // of 4 pixels, which is inclusive.
+        // A quarter of the pixels one code up: a quarter of a code by the earth mover's distance on
+        // every channel and on luminance, at the limit, which is inclusive, while the summed bin
+        // difference, reported and not judged, is half the pixel count.
         let mut moved = vec![100; pixels * 3];
-        moved[..6].fill(101);
+        moved[..pixels / 4 * 3].fill(101);
         let error = histogram(&Counts::of(&moved, 3), &reference).unwrap();
-        assert_eq!(error.bins, [4; 3]);
-        assert_eq!(error.limit(), 4.0);
+        assert_eq!(error.bins, [2000; 3]);
+        assert_eq!(error.emd, [0.25; 4]);
+        assert_eq!(error.worst_emd(), ("r", 0.25));
         assert!(error.passed());
-        assert_eq!(error.worst_bins(), 0.001);
-        // A third moves past it.
-        moved[..9].fill(101);
+        assert_eq!(error.worst_bins(), 0.5);
+        // One pixel more moves past it.
+        moved[..(pixels / 4 + 1) * 3].fill(101);
         assert!(
             !histogram(&Counts::of(&moved, 3), &reference)
                 .unwrap()
                 .passed()
         );
+        // A tenth of the pixels two codes up is a fifth of a code, within it.
+        let mut far = vec![100; pixels * 3];
+        far[..pixels / 10 * 3].fill(102);
+        let error = histogram(&Counts::of(&far, 3), &reference).unwrap();
+        assert!((error.emd[0] - 0.2).abs() < 1e-12 && error.passed());
+        assert_eq!(error.limit(), 4.0);
         // Clipping is held to the same limit, counter by counter.
         let mut clipped = vec![100; pixels * 3];
         clipped[..15].fill(0);
@@ -750,5 +888,56 @@ mod tests {
         let repeat = Rgb8::new(20, 20, &other).unwrap();
         let error = export(same, repeat, same).unwrap();
         assert!(!error.repeatable && !error.passed(Class::Spatial));
+    }
+
+    /// A share of a frame moved by one code is that share in codes by the earth mover's distance,
+    /// counts twice in the summed bin difference, and mostly vanishes when the bins are widened;
+    /// a far move costs its distance.
+    #[test]
+    fn the_histogram_diagnostics_measure_how_far_counts_moved() {
+        let mut reference = [0u64; 256];
+        reference[100] = 600;
+        reference[101] = 400;
+        let mut candidate = reference;
+        // 100 pixels from 100 to 101: a tenth of the frame by one code.
+        candidate[100] -= 100;
+        candidate[101] += 100;
+        assert!((histogram_emd(&candidate, &reference) - 0.1).abs() < 1e-12);
+        assert!((histogram_mean_shift(&candidate, &reference) - 0.1).abs() < 1e-12);
+        assert_eq!(
+            histogram(
+                &Counts {
+                    bins: [candidate; 3],
+                    clipping: [0; 11],
+                    luma: candidate,
+                },
+                &Counts {
+                    bins: [reference; 3],
+                    clipping: [0; 11],
+                    luma: reference,
+                }
+            )
+            .unwrap()
+            .bins[0],
+            200
+        );
+        // 100 and 101 share a bin of two codes and of four.
+        assert_eq!(histogram_binned(&candidate, &reference, 2), 0);
+        assert_eq!(histogram_binned(&candidate, &reference, 4), 0);
+        assert_eq!(histogram_binned(&candidate, &reference, 1), 200);
+        // Ten pixels moved by fifty codes are half a code by the distance.
+        let mut far = reference;
+        far[100] -= 10;
+        far[150] += 10;
+        assert!((histogram_emd(&far, &reference) - 0.5).abs() < 1e-12);
+        assert_eq!(histogram_binned(&far, &reference, 4), 20);
+        // Pixel by pixel, by the largest channel difference.
+        let a = [10u8, 10, 10, 0, 20, 20, 20, 0, 30, 30, 30, 0, 40, 40, 40, 0];
+        let b = [10u8, 10, 10, 0, 21, 20, 20, 0, 30, 28, 30, 0, 40, 40, 47, 0];
+        assert_eq!(code_shifts(&a, &b, 4).unwrap(), [1, 1, 1, 1]);
+        assert!(code_shifts(&a, &b[..8], 4).is_err());
+        // Luminance by Rec. 709 weights over the codes.
+        let luma = luma_bins(&[255, 255, 255, 0, 0, 0, 0, 0], 4);
+        assert_eq!((luma[255], luma[0]), (1, 1));
     }
 }

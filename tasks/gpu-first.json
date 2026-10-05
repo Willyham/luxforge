@@ -237,7 +237,7 @@
     },
     {
       "id": "TASK-004",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-003"
@@ -247,7 +247,8 @@
         "Today every non-interactive job runs the exact phase for the histogram (crates/luxforge-core/src/preview/worker.rs; crates/luxforge-core/src/analysis.rs reduces the exact frame), and a 120 ms pause in a drag starts one too (crates/luxforge-app/src/app/preview.rs `quiet_refine`). Estimated at about 1 s at 24 MP and 3 s at 60 MP with Detail, Presence and three masked layers, per commit and per pause.",
         "On the GPU the counts are a reduction over full-resolution tiles of the stack rendered with halos, inside the GPU budget, run after each commit and release; during motion the counts come from the displayed frame and the inspector says updating, as the accepted baseline already allows (docs/decisions.md, Interactive previews at 100%). The report keeps its shape, identity and the owner's cache so an API client's `analysis.request` is a hit.",
         "Tolerance: the summed absolute bin difference and each clipping count within 0.1% of the output pixel count against the reference, measured by the harness on the corpus; the quiet timer stays for 100% region refinement only if stage 5 still needs it.",
-        "The full-stage tiles stage 2's at-rest picture renders (TASK-003, process-first) are the reduction's renderer: the counts are one more reduction over the same tiles, run after each commit and release."
+        "The full-stage tiles stage 2's at-rest picture renders (TASK-003, process-first) are the reduction's renderer: the counts are one more reduction over the same tiles, run after each commit and release.",
+        "Delivered 2026-10-05: a committed stack the GPU presents is counted from its own tiles at full resolution (at 100% and above the same tiles drawn for their counts alone) with no CPU frame rendered or reduced, the counts reaching the owner's analysis cache in the report's shape; during motion the counts come from the tick's output, labelled updating; the quiet-settle whole-frame render is gone, a pause refining only a CPU-drawn draft's 100% region. The owner set the tolerance on 2026-10-05: the earth mover's distance at most 0.25 code per channel and luminance and each clipping count within 0.1%, within it on all 250 corpus stacks (largest 0.13 code; artifacts/gpu-first/task-004/gate-4 in the lane's worktree). The reference renderer still renders the whole frame for an open, while the stack's programs compile, for Compare's After side and for a stack the GPU refuses, each named."
       ],
       "context_links": [
         {

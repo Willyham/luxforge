@@ -147,16 +147,27 @@ struct HeldSource {
 
 /// The picture at rest the surfaces draw in tiles (`docs/design/gpu-preview.md`, "The picture at
 /// rest"): the core's tiles for the displayed stack, from its job or its exact phase, and the
-/// surfaces' plain data once converted.
+/// surfaces' plain data once converted — the picture, reduced to the view, where the view draws
+/// the stage smaller than it is, and the same tiles for their histogram and clipping counts alone
+/// (`docs/design/gpu-first.md`, stage 2).
 struct HeldRest {
     tiles: Box<luxforge_core::RestTiles>,
-    /// Handed to the surfaces, which start over whenever it changes.
+    /// Handed to the surfaces, which start over whenever it changes: the picture's version.
     version: u64,
-    /// As the surfaces are handed it; `None` until a lens warp's stage grid is held.
+    /// The counts' own variant's version, for the tiles drawn with no reduction.
+    counts_version: u64,
+    /// The picture as the surfaces are handed it, or the counts' variant where the tiles have no
+    /// reduction; `None` until a lens warp's stage grid is held.
     gpu: Option<surface::GpuRest>,
+    /// The tiles drawn for their counts alone: handed where the picture is not, while the counts
+    /// are wanted.
+    counts: Option<surface::GpuRest>,
     /// Why the tiles cannot be drawn on the GPU: their source is not the one the surface holds, or
     /// a tile's plan is one the surface cannot run.
     refused: Option<&'static str>,
+    /// The content the GPU presents is this stack's, whose counts are its report
+    /// ([`Editor::present_on_gpu`]), and they have not been taken up yet.
+    wanted: bool,
 }
 
 /// `tiles` as the surfaces draw them under `version`: each tile's plan over its window cut from the
@@ -234,9 +245,14 @@ fn rest_over(
     Ok(surface::GpuRest {
         version,
         tiles: plans.into(),
-        view: tiles.view,
-        across: axis(tiles.across.clone()),
-        down: axis(tiles.down.clone()),
+        reduction: tiles
+            .reduction
+            .as_ref()
+            .map(|reduction| surface::RestReduction {
+                view: reduction.view,
+                across: axis(reduction.across.clone()),
+                down: axis(reduction.down.clone()),
+            }),
     })
 }
 
@@ -829,11 +845,28 @@ pub(crate) struct GpuPreviews {
     /// The last boundary version handed out: each held boundary is derived once.
     versions: u64,
     warm: Option<GpuWarm>,
+    /// The content the GPU presents with no CPU render, whose report its tiles' counts are
+    /// ([`super::gpu_counts`]), until they are taken up.
+    pub(crate) counts: Option<super::gpu_counts::CountsTarget>,
+    /// The content the surface could not draw or count after the GPU presented it: the reference
+    /// renders it instead, and the GPU presents it no more.
+    pub(crate) refused_content: Option<u64>,
+    /// The last tick whose counts are shown in motion, by boundary and revision.
+    pub(crate) motion_tick: Option<(u64, u64)>,
+    /// Compare waits for the reference's frame of a content the GPU presented without one, its
+    /// After side.
+    pub(crate) compare_waits: bool,
+    /// The Fit bounds the displayed stack's picture at rest was planned at by its job's owner
+    /// task: a refit plans it again once they are not the view's ([`Editor::refit_proxy`]).
+    pub(crate) rest_planned_at: Option<luxforge_core::ProxyBounds>,
     /// The compile thread's warm-up as the desktop follows it ([`super::gpu_warm`]).
     pub(crate) warm_up: super::gpu_warm::WarmUpFollow,
     /// What a test reports for the surface, which no test draws.
     #[cfg(test)]
     pub(crate) surface: Option<SurfaceReport>,
+    /// The counts a test reports the surface took, which no test draws.
+    #[cfg(test)]
+    pub(crate) counts_report: Option<surface::SurfaceCounts>,
     /// The budget a test holds a region's boundary to, in place of the surface's.
     #[cfg(test)]
     pub(crate) budget: Option<u64>,
@@ -1079,6 +1112,28 @@ impl GpuPreviews {
             .map(|held| held.boundary.version())
     }
 
+    /// Whether the committed stack's view plan is held to be drawn at rest.
+    pub(crate) fn at_rest_drawable(&self) -> bool {
+        self.at_rest.is_some()
+    }
+
+    /// The versions the held picture at rest is handed under — the picture's and its counts'
+    /// variant's — when its tiles are cut from `source` and the surface can run them.
+    pub(crate) fn rest_versions(&self, source: &ProxyIdentity) -> Option<[u64; 2]> {
+        self.rest
+            .as_ref()
+            .filter(|held| held.tiles.source == *source && held.refused.is_none())
+            .map(|held| [held.version, held.counts_version])
+    }
+
+    /// Mark the held picture at rest's counts as wanted, or no longer: the surfaces are handed its
+    /// tiles for their counts alone while they are wanted and the picture is not handed.
+    pub(crate) fn want_rest_counts(&mut self, wanted: bool) {
+        if let Some(held) = self.rest.as_mut() {
+            held.wanted = wanted;
+        }
+    }
+
     /// The open drag's figures, as evidence and the tests read them, with the source the surface
     /// holds.
     pub(crate) fn summary(&self) -> Value {
@@ -1095,10 +1150,13 @@ impl GpuPreviews {
         });
         // The picture at rest in tiles: what the surfaces are handed, or why not yet.
         let rest = self.rest.as_ref().map(|held| {
-            json!({"version": held.version, "tiles": held.tiles.tiles.len(),
-                "view": [held.tiles.view.0, held.tiles.view.1],
+            json!({"version": held.version, "counts_version": held.counts_version,
+                "tiles": held.tiles.tiles.len(),
+                "view": held.tiles.reduction.as_ref().map(|reduction| [reduction.view.0,
+                    reduction.view.1]),
                 "output": [held.tiles.output.width, held.tiles.output.height],
-                "handed": held.gpu.is_some(), "refused": held.refused})
+                "handed": held.gpu.is_some(), "refused": held.refused,
+                "counts_wanted": held.wanted})
         });
         let Some(drag) = &self.drag else {
             return json!({"drag": null, "resident": resident, "source": source, "rest": rest,
@@ -1886,12 +1944,15 @@ impl Editor {
         {
             return;
         }
-        self.gpu.rests += 1;
+        self.gpu.rests += 2;
         self.gpu.rest = Some(HeldRest {
             tiles,
-            version: self.gpu.rests,
+            version: self.gpu.rests - 1,
+            counts_version: self.gpu.rests,
             gpu: None,
+            counts: None,
             refused: None,
+            wanted: false,
         });
         self.gpu_convert_rest();
     }
@@ -1918,10 +1979,21 @@ impl Editor {
             Ok(Some(converted)) => {
                 let anchor = held.tiles.plan.anchor();
                 let detail = json!({"version": held.version, "tiles": converted.tiles.len(),
-                    "view": [converted.view.0, converted.view.1],
+                    "view": converted.reduction.as_ref().map(|reduction| [reduction.view.0,
+                        reduction.view.1]),
                     "output": [held.tiles.output.width, held.tiles.output.height],
                     "side": held.tiles.tiles.first().map(|tile| tile.rect.width.max(tile.rect.height)),
                     "anchor": anchor.multiple, "lead": anchor.lead});
+                // The same tiles for their counts alone, under a version of their own, so a
+                // surface handed one after the other starts over rather than drawing the picture.
+                held.counts = Some(match converted.reduction {
+                    Some(_) => surface::GpuRest {
+                        version: held.counts_version,
+                        tiles: Arc::clone(&converted.tiles),
+                        reduction: None,
+                    },
+                    None => converted.clone(),
+                });
                 held.gpu = Some(converted);
                 detail
             }
@@ -1956,7 +2028,38 @@ impl Editor {
         {
             return None;
         }
-        self.gpu.rest.as_ref()?.gpu.as_ref()
+        self.gpu
+            .rest
+            .as_ref()?
+            .gpu
+            .as_ref()
+            .filter(|rest| rest.reduction.is_some())
+    }
+
+    /// The picture at rest's tiles for their histogram and clipping counts alone, which the
+    /// surfaces are handed while the counts of the content the GPU presents are still to come and
+    /// the picture, which counts its tiles as it draws them, is not handed: at 100% and above,
+    /// where the view draws the stage at its own size, and while the clipping overlay's marks are
+    /// the view plan's. None while a gesture or a crop draft is open, the gate refuses the GPU
+    /// stage or an evidence hook hands a plan of its own.
+    pub(crate) fn gpu_counts_handed(&self) -> Option<&surface::GpuRest> {
+        self.gpu_preview_allowed().ok()?;
+        #[cfg(test)]
+        if self.gpu.rest_off {
+            return None;
+        }
+        if self.gpu_rest_handed().is_some()
+            || self.core_gesture().is_some()
+            || self.drafting()
+            || self
+                .evidence
+                .as_ref()
+                .is_some_and(|evidence| evidence.gpu_identity.is_some())
+        {
+            return None;
+        }
+        let held = self.gpu.rest.as_ref().filter(|held| held.wanted)?;
+        held.counts.as_ref()
     }
 
     /// Compare begins: the GPU picture of the stack on screen — its view plan and its picture at
@@ -2024,7 +2127,9 @@ impl Editor {
             .rest
             .as_ref()
             .filter(|_| whole && super::gpu_settle::clip_flags(&self.session.workspace).is_none())
-            .and_then(|rest| rest.gpu.as_ref());
+            .and_then(|rest| rest.gpu.as_ref())
+            // Tiles with no reduction are the counts' alone: they draw no After side.
+            .filter(|rest| rest.reduction.is_some());
         (plan, rest)
     }
 
@@ -2191,19 +2296,26 @@ impl Editor {
     /// Whether the view shows what `plan` draws: at Fit a whole frame's; below 100% a whole frame's
     /// while the view draws its photograph's frame alone, the displayed-size proxy, as Fit does,
     /// an exact frame or a region it still holds from a zoom of 100% or more being its own to
-    /// draw; at 100% and above a region's while that region holds the view.
+    /// draw; at 100% and above a region's while that region holds the view, or, over a stack the
+    /// GPU presented with no CPU frame, while a pan's region is planned: the region is the only
+    /// picture of that stack, and the frame under it an earlier stack's.
     fn gpu_plan_shown(&self, plan: &surface::GpuPlan) -> bool {
         match (&self.session.preview.view.zoom, plan.region) {
             (luxforge_core::Zoom::Fit, None) => true,
             (luxforge_core::Zoom::Percent { value }, None) if *value < 100.0 => {
                 self.presentation.surfaces(None).whole_frame()
             }
-            (luxforge_core::Zoom::Percent { value }, Some(region)) if *value >= 100.0 => self
-                .presentation
-                .dimensions
-                .filter(|stage| *stage == region.stage)
-                .and_then(|stage| self.desired_view_for(stage))
-                .is_some_and(|wanted| super::preview::contains_region(rect_of(region), wanted)),
+            (luxforge_core::Zoom::Percent { value }, Some(region)) if *value >= 100.0 => {
+                let presented =
+                    self.presentation.gpu_presented == Some(self.presentation.presented_content);
+                self.presentation
+                    .dimensions
+                    .filter(|stage| *stage == region.stage)
+                    .and_then(|stage| self.desired_view_for(stage))
+                    .is_some_and(|wanted| {
+                        presented || super::preview::contains_region(rect_of(region), wanted)
+                    })
+            }
             _ => false,
         }
     }

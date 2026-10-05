@@ -4,7 +4,7 @@
 use super::super::{PhotoPipeline, PhotoPrimitive, SurfaceId};
 use super::tests::{
     assert_codes, assert_cpu_frame, boundary_with_codes, diagnostics, headless, own_pipeline,
-    paint_prepared, primitive,
+    paint_prepared, primitive, settle,
 };
 use super::*;
 use luxforge_testbase::wait_until;
@@ -250,6 +250,9 @@ fn a_held_plan_draws_the_cpu_frame_and_keeps_its_slot() {
         &paint_prepared(&device, &queue, &mut pipeline, &drawn(false, 11)),
         &codes,
     );
+    // A tick drawn on the GPU is counted for the histogram, whose readback's staging copy is
+    // charged until the retirement worker takes it back: the figures are compared once it has.
+    settle(&pipeline);
     let first = diagnostics(&pipeline, ID);
     assert_eq!(first.drawn_gpu_tag, Some(11));
     assert_cpu_frame(&paint_prepared(
@@ -258,6 +261,7 @@ fn a_held_plan_draws_the_cpu_frame_and_keeps_its_slot() {
         &mut pipeline,
         &drawn(true, 12),
     ));
+    settle(&pipeline);
     let held = diagnostics(&pipeline, ID);
     assert_eq!(held.drawn_path, Some(DrawingPath::Cpu));
     assert_eq!(held.gpu_fallback, None, "holding is no fallback");
