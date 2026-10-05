@@ -45,12 +45,14 @@ pub fn device(
     Some((device, queue, adapter.get_info()))
 }
 
-/// A picture at rest drawn headless: the view's codes, RGBA row by row, and the frames it took,
-/// those that waited for a compile or the upload among them.
+/// A picture at rest drawn headless: the view's codes, RGBA row by row — none for tiles drawn for
+/// their counts alone — the frames it took, those that waited for a compile or the upload among
+/// them, and its tiles' histogram and clipping counts, read back, or why there are none.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RestDrawn {
     pub codes: Vec<[u8; 4]>,
     pub frames: u32,
+    pub counts: Result<super::histogram::Counts, super::histogram::HistogramError>,
 }
 
 /// A plan drawn headless: its output's codes, RGBA row by row, and its size.
@@ -123,19 +125,33 @@ impl HeadlessSurface {
         let codes = drawn
             .map_err(|_| GpuFallback::Compiling)
             .and_then(|drawn| drawn)
-            .and_then(|()| {
-                let output = self
-                    .surface
-                    .rest_output()
-                    .ok_or(GpuFallback::PipelineFailed)?;
-                self.read(&output.tiles[0].texture, (output.width, output.height))
+            .and_then(|()| match self.surface.rest_output() {
+                Some(output) => self.read(&output.tiles[0].texture, (output.width, output.height)),
+                None if rest.reduction.is_none() => Ok(Vec::new()),
+                None => Err(GpuFallback::PipelineFailed),
             });
+        let counts = self.surface.rest.as_ref().map(|slot| slot.counts().1);
         // Whatever stopped it, the rest's slot goes with its charge.
         self.pipeline.release_rest(&mut self.surface);
+        let codes = codes?;
+        // The counts' readback, its mapping taken up by the polls that complete it.
+        let counts = match counts {
+            None => Err(super::histogram::HistogramError::ReadbackFailed),
+            Some(counts) => luxforge_testbase::try_wait_for("the picture at rest's counts", || {
+                let _ = self.device.poll(wgpu::PollType::Poll);
+                match counts.outcome() {
+                    super::CountsOutcome::Counting => None,
+                    super::CountsOutcome::Ready(counts) => Some(Ok(*counts)),
+                    super::CountsOutcome::Failed(error) => Some(Err(error)),
+                }
+            })
+            .unwrap_or(Err(super::histogram::HistogramError::ReadbackFailed)),
+        };
         self.retired();
         Ok(RestDrawn {
-            codes: codes?,
+            codes,
             frames,
+            counts,
         })
     }
 

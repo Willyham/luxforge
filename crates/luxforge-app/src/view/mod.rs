@@ -90,6 +90,10 @@ pub(crate) struct Surfaces<'a> {
     /// The displayed stack's picture at rest the GPU draws in tiles, which a whole-frame
     /// photograph draws in place of its frame once the last tile is in.
     pub(crate) gpu_rest: Option<&'a luxforge_ui::photo_surface::GpuRest>,
+    /// The same tiles drawn for their histogram and clipping counts alone, which put nothing on
+    /// screen: handed to whichever surface draws the photograph, a percentage view's included,
+    /// while the counts of the content the GPU presents are to come and the picture is not handed.
+    pub(crate) gpu_counts: Option<&'a luxforge_ui::photo_surface::GpuRest>,
     /// Compare's After side on the GPU: the GPU picture of the stack on screen when Compare
     /// began, retained while it is shown — its view plan, with its serial, and its picture at rest
     /// in tiles — drawn in place of the retained After frame, which stays the surface's fallback.
@@ -105,9 +109,12 @@ impl Surfaces<'_> {
     /// Whether a percentage view draws the photograph as a whole frame, as Fit does: no region and
     /// no exact frame is held for the view's own surface to draw, so the photograph's frame alone
     /// fills the view's box. Below 100% that frame is the displayed-size proxy, which a whole
-    /// frame's GPU plan stands in for.
+    /// frame's GPU plan stands in for. A GPU region plan — the picture at rest the GPU presents at
+    /// 100% and above with no CPU frame of it — is drawn through the view's own surface instead.
     pub(crate) fn whole_frame(&self) -> bool {
-        self.region.is_none() && self.photo_content.is_none()
+        self.region.is_none()
+            && self.photo_content.is_none()
+            && self.gpu.is_none_or(|plan| plan.region.is_none())
     }
 }
 

@@ -1639,6 +1639,12 @@ pub fn expect_render_times<F: Borrow<Value>>(events: &[Value], frames: &[F]) -> 
     let mut displayed = Vec::new();
     for event in events.iter().filter(|e| e["event"] == "preview_displayed") {
         let detail = &event["detail"];
+        // A committed stack the GPU presents with no CPU render has no worker time of its own:
+        // its frames name the interface thread's time to draw it, checked below.
+        if detail["path"] == "gpu" && detail["render_ms"].is_null() {
+            displayed.push(json!({"generation":detail["generation"],"path":"gpu"}));
+            continue;
+        }
         let ms = detail["render_ms"]
             .as_f64()
             .ok_or_else(|| format!("A preview_displayed event carries no render_ms: {detail}"))?;

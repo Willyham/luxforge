@@ -45,7 +45,7 @@ pub(crate) use preview::plan_warm;
 pub(crate) use preview::position;
 pub use preview::{
     BoundaryKey, GPU_PLAN_LINKS, GPU_WARM_LINKS, GpuPreview, GpuRest, GpuView, GpuWarmList,
-    REST_TILE_BYTES, REST_TILE_SIDES, RestTile, RestTiles, SourceBoundary,
+    REST_TILE_BYTES, REST_TILE_SIDES, RestReduction, RestTile, RestTiles, SourceBoundary,
 };
 #[cfg(test)]
 pub(crate) use preview::{light_link, output_window, warm_links, warm_sequence};

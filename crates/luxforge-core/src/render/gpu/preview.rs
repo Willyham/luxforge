@@ -704,10 +704,13 @@ pub struct GpuRest {
     /// view's size, as a drag's frame is, until the picture at rest lands, and kept behind it for
     /// the next gesture.
     pub view: GpuPreview,
-    /// At Fit and below 100%, where the view draws the output stage smaller than it is, the
-    /// picture at rest process-first ([`RestTiles`]), or why the GPU cannot draw it so. `None`
-    /// where the view draws the output stage at its own size or larger, whose picture at rest is
-    /// [`Self::view`]'s plan.
+    /// The stack at full resolution in tiles ([`RestTiles`]), which the histogram and clipping
+    /// counts are reduced from at every view, and which at Fit and below 100%, where the view
+    /// draws the output stage smaller than it is, are reduced to the view's size as the picture at
+    /// rest process-first ([`RestTiles::reduction`]); or why the GPU cannot draw them. Where the
+    /// view draws the output stage at its own size or larger, the picture at rest is
+    /// [`Self::view`]'s plan and the tiles are the counts' alone. `None` only from a caller that
+    /// plans no tiles.
     pub tiles: Option<Result<Box<RestTiles>, GpuFallback>>,
 }
 
@@ -722,30 +725,40 @@ pub const REST_TILE_SIDES: [u32; 4] = [2048, 1024, 512, 256];
 /// the bytes in use.
 pub const REST_TILE_BYTES: u64 = 512 << 20;
 
-/// The picture at rest at Fit and below 100%, process-first (`docs/design/gpu-preview.md`, "The
-/// picture at rest"): the stack at full resolution in tiles of the output stage, each the whole
-/// stack's plan over its tile at full scale from its own window of the source, reduced to the
-/// view's size by an area-weighted average of their linear light — the frame the reference is held
-/// to at those views.
+/// The stack at full resolution in tiles of the output stage, each the whole stack's plan over its
+/// tile at full scale from its own window of the source (`docs/design/gpu-preview.md`, "The
+/// picture at rest"; `docs/design/gpu-first.md`, stage 2): what the histogram and clipping counts
+/// are reduced from at every view, and at Fit and below 100% the picture at rest process-first,
+/// the tiles reduced to the view's size by an area-weighted average of their linear light — the
+/// frame the reference is held to at those views.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RestTiles {
     /// The plan of the whole stack at the exact stage, from the source, reading its lights: every
     /// tile's plan, which a tile's region and window place.
     pub plan: Box<GpuPlan>,
     /// The tiles, row by row: each its rectangle of the output stage and the window of the source
-    /// it reads, anchored ([`GpuPlan::anchor`]).
+    /// it reads, anchored ([`GpuPlan::anchor`]). They cover every pixel of the output stage once.
     pub tiles: Vec<RestTile>,
     /// The output stage the tiles cover.
     pub output: Stage,
+    /// Where the view draws the output stage smaller than it is, the reduction of the tiles to the
+    /// view's size, the picture at rest; `None` where it draws the stage at its own size or larger,
+    /// at 100% and above among them, whose tiles are the counts' alone.
+    pub reduction: Option<RestReduction>,
+    /// The source every tile's boundary is cut from, and how its texels are held.
+    pub source: ProxyIdentity,
+    pub format: crate::BoundaryFormat,
+}
+
+/// The picture at rest's reduction of the output stage to the view's size.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RestReduction {
     /// The view's size the output stage is reduced to: the frame the CPU's proxy phase draws at the
     /// view's bounds, or, for a stack drawn at its exact stage, the output stage fitted to them.
     pub view: (u32, u32),
     /// The reduction's coverage of the output stage across and down.
     pub across: crate::ProxyCoverage,
     pub down: crate::ProxyCoverage,
-    /// The source every tile's boundary is cut from, and how its texels are held.
-    pub source: ProxyIdentity,
-    pub format: crate::BoundaryFormat,
 }
 
 /// One tile of a picture at rest.
@@ -806,10 +819,7 @@ pub(crate) fn plan_rest_tiles(
     bounds: ProxyBounds,
     side: Option<u32>,
 ) -> Result<Option<Result<Box<RestTiles>, GpuFallback>>, Error> {
-    let registry = evaluation.registry();
-    let recipe = evaluation.recipe();
-    let compiled = evaluation.compiled()?;
-    let output = compiled.stage();
+    let output = evaluation.compiled()?.stage();
     // The view's size: the CPU proxy frame's, which a gesture's frame draws at too, or the output
     // stage fitted to the bounds for a stack drawn at its exact stage.
     let fit = FitStage::of_view(evaluation, GpuView::Fit(bounds))?;
@@ -823,6 +833,30 @@ pub(crate) fn plan_rest_tiles(
             None => return Ok(None),
         },
     };
+    plan_tiles(evaluation, Some(view), side).map(Some)
+}
+
+/// The stack of `evaluation` at full resolution in tiles with no reduction to a view
+/// ([`RestTiles`]): the tiles the histogram and clipping counts are reduced from where the view
+/// draws the output stage at its own size or larger. The reason when the stack cannot be drawn so
+/// now, as [`plan_rest_tiles`] names it. `O(tiles × segments)`, no pixel read.
+pub(crate) fn plan_count_tiles(
+    evaluation: &Evaluation,
+    side: Option<u32>,
+) -> Result<Result<Box<RestTiles>, GpuFallback>, Error> {
+    plan_tiles(evaluation, None, side)
+}
+
+/// The stack of `evaluation` at full resolution in tiles, reduced to `view` where it names one.
+fn plan_tiles(
+    evaluation: &Evaluation,
+    view: Option<(u32, u32)>,
+    side: Option<u32>,
+) -> Result<Result<Box<RestTiles>, GpuFallback>, Error> {
+    let registry = evaluation.registry();
+    let recipe = evaluation.recipe();
+    let compiled = evaluation.compiled()?;
+    let output = compiled.stage();
     let full = evaluation.source().dimensions();
     let full = Stage {
         width: full.0,
@@ -833,7 +867,7 @@ pub(crate) fn plan_rest_tiles(
     let request = if linear { request.linear() } else { request };
     let plan = match gpu_plan(registry, recipe, request)? {
         GpuAnswer::Plan(plan) => plan,
-        GpuAnswer::Fallback(reason) => return Ok(Some(Err(reason))),
+        GpuAnswer::Fallback(reason) => return Ok(Err(reason)),
     };
     let anchor = plan.anchor();
     let format = crate::BoundaryFormat::of(linear);
@@ -872,39 +906,48 @@ pub(crate) fn plan_rest_tiles(
             match window_of(rect) {
                 Ok(window) => tiles.push(RestTile { rect, window }),
                 Err(reason) => {
-                    return Ok(Some(Err(GpuFallback::Unplannable(format!(
+                    return Ok(Err(GpuFallback::Unplannable(format!(
                         "the picture at rest's tile at ({x0}, {y0}): {}",
                         reason.reason()
-                    )))));
+                    ))));
                 }
             }
         }
     }
-    Ok(Some(Ok(Box::new(RestTiles {
+    Ok(Ok(Box::new(RestTiles {
         plan,
         tiles,
         output,
-        view,
-        across: crate::area_coverage(output.width, view.0),
-        down: crate::area_coverage(output.height, view.1),
+        reduction: view.map(|view| RestReduction {
+            view,
+            across: crate::area_coverage(output.width, view.0),
+            down: crate::area_coverage(output.height, view.1),
+        }),
         source: evaluation.source().identity(),
         format,
-    }))))
+    })))
 }
 
 /// The GPU picture at rest of a committed stack, `evaluation` a job of no draft, drawn as `view`
 /// says ([`GpuRest`]): every stack has one, the empty stack and a stack of geometry alone included,
-/// since it is planned from the source. `O(layers)` on the catalog owner, and no pixel read, and at
-/// Fit and below 100% `O(tiles × segments)` for its tiles.
+/// since it is planned from the source; and its tiles at full resolution, which the histogram and
+/// clipping counts are reduced from at every view and which at Fit and below 100% are the picture
+/// at rest. `O(layers)` on the catalog owner and `O(tiles × segments)` for its tiles, no pixel
+/// read.
 pub(crate) fn plan_rest(evaluation: &Evaluation, view: GpuView) -> Result<GpuRest, Error> {
     let recipe = evaluation.recipe();
     let fit = FitStage::of_view(evaluation, view)?;
     let request = fit.request(None);
     let planned = planned_preview(evaluation, &fit, recipe, None, request, None, None)?;
-    let tiles = match view {
+    // Reduced to the view where it draws the stage smaller than it is; the counts' alone elsewhere.
+    let reduced = match view {
         GpuView::Fit(bounds) => plan_rest_tiles(evaluation, bounds, None)?,
         GpuView::Region { .. } => None,
     };
+    let tiles = Some(match reduced {
+        Some(tiles) => tiles,
+        None => plan_count_tiles(evaluation, None)?,
+    });
     Ok(GpuRest {
         view: planned,
         tiles,

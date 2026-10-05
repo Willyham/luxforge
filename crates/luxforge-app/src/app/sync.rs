@@ -513,8 +513,10 @@ impl Editor {
         self.document.state = Some(refresh.state);
         self.show_entry(refresh.job.evaluation.entry().id.clone());
         self.outcome(Outcome::EntryRequested(refresh.job.evaluation.entry()));
-        self.presentation.preview_generation = self.request_preview(refresh.job);
+        // Said before the request, which a picture the GPU presents at once answers with what is on
+        // screen.
         self.status.text = "Rendering selected history state…".into();
+        self.presentation.preview_generation = self.request_preview(refresh.job);
         // Generated fields follow the displayed entry, so a slider shows the authoritative current
         // or historical value of the module's one layer. This reads the values already fetched with
         // the recipe: no extra request, no render.

@@ -189,7 +189,13 @@ impl Editor {
         };
         let tooltips =
             json!({"shadow":model.shadow_tooltip(),"highlight":model.highlight_tooltip()});
-        json!({"status":model.status.as_str(),"stale":model.stale,"notice":model.notice(),"tooltips":tooltips,"identity":identity,"plotted_max":model.plotted_max,"reason":model.reason,"counters":{"r0":counters.r0,"g0":counters.g0,"b0":counters.b0,"r255":counters.r255,"g255":counters.g255,"b255":counters.b255,"any_shadow":counters.any_shadow,"any_highlight":counters.any_highlight,"all_shadow":counters.all_shadow,"all_highlight":counters.all_highlight,"both":counters.both},"overlay":self.overlay_summary()})
+        // Which reduction gave the counts plotted: the reference renderer's, the GPU's over the
+        // stack's tiles, or the GPU's of the frame in motion; and whether the GPU's are to come.
+        let source = self
+            .presentation
+            .shown_analysis()
+            .map(|analysis| analysis.source.as_str());
+        json!({"status":model.status.as_str(),"stale":model.stale,"notice":model.notice(),"tooltips":tooltips,"identity":identity,"source":source,"gpu_counts_pending":self.gpu_counts_pending(),"plotted_max":model.plotted_max,"reason":model.reason,"counters":{"r0":counters.r0,"g0":counters.g0,"b0":counters.b0,"r255":counters.r255,"g255":counters.g255,"b255":counters.b255,"any_shadow":counters.any_shadow,"any_highlight":counters.any_highlight,"all_shadow":counters.all_shadow,"all_highlight":counters.all_highlight,"both":counters.both},"overlay":self.overlay_summary()})
     }
 
     /// The clipping overlay a captured frame was drawn with: its cell grid, which flags it covers

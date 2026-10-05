@@ -335,7 +335,7 @@ impl Editor {
         true
     }
 
-    fn compare_toggle(&mut self) -> Task<Message> {
+    pub(super) fn compare_toggle(&mut self) -> Task<Message> {
         if self.presentation.compare_after.is_some() {
             return self.compare_exit();
         }
@@ -349,6 +349,17 @@ impl Editor {
         if self.document.display_entry != self.presentation.presented_entry {
             self.status.text = "Wait for the photograph before comparing".into();
             return Task::none();
+        }
+        // Compare's After side is a frame of the content on screen, which the GPU presented
+        // without one: the photograph under its picture is an earlier content's, drawn wherever
+        // the GPU's picture is not the After side (at 100% and above, under clipping marks). The
+        // reference renders the content first, and Compare begins when it lands
+        // (`Editor::frame_ready`).
+        if self.presentation.gpu_presented == Some(self.presentation.presented_content) {
+            self.gpu.refused_content = Some(self.presentation.presented_content);
+            self.gpu.compare_waits = true;
+            self.status.text = "Rendering the photograph to compare…".into();
+            return self.request_current_preview();
         }
         // Prefer an already-rendered whole-detail frame. Retaining it clones only its Arc;
         // the existing 512 MiB raster and aggregate photo-texture limits still bound both sides.

@@ -1665,7 +1665,8 @@ fn committed_over(context: RenderContext, source: PreviewSource, layers: Vec<Lay
 /// at rest is planned process-first: the whole stack's plan at the exact stage from the source,
 /// over tiles that cover the output stage once, row by row, each with the window of the source it
 /// reads, anchored to the plan; reduced to the proxy frame's size by the proxy build's own area
-/// average. A view that draws the stage at its own size plans none, and a Presence stack's
+/// average. A view that draws the stage at its own size, or 100%, plans the same tiles unreduced,
+/// the histogram's alone, and a Presence stack's
 /// windows start on its anchor's multiples.
 #[test]
 fn a_picture_at_rest_is_planned_in_anchored_tiles_of_the_output_stage() {
@@ -1702,9 +1703,10 @@ fn a_picture_at_rest_is_planned_in_anchored_tiles_of_the_output_stage() {
             .as_ref()
             .and_then(|request| request.key.plan())
             .expect("a proxy");
-        assert_eq!(tiles.view, (proxy.width, proxy.height), "{what}");
-        assert_eq!(tiles.across.first.len(), proxy.width as usize);
-        assert_eq!(tiles.down.first.len(), proxy.height as usize);
+        let reduction = tiles.reduction.as_ref().expect("reduced to the view");
+        assert_eq!(reduction.view, (proxy.width, proxy.height), "{what}");
+        assert_eq!(reduction.across.first.len(), proxy.width as usize);
+        assert_eq!(reduction.down.first.len(), proxy.height as usize);
         let area: u64 = tiles.tiles.iter().map(|tile| tile.rect.pixels()).sum();
         assert_eq!(area, u64::from(WIDTH * HEIGHT), "{what}: every pixel once");
         for (index, tile) in tiles.tiles.iter().enumerate() {
@@ -1732,17 +1734,39 @@ fn a_picture_at_rest_is_planned_in_anchored_tiles_of_the_output_stage() {
             }
         }
     }
-    // A view that draws the stage at its own size: the view's plan is the picture at rest.
+    // A view that draws the stage at its own size, and one at 100%: the view's plan is the picture
+    // at rest, and the tiles, the same at every view, are the histogram's alone, reduced to none.
     let evaluation = committed(RenderContext::new(), vec![basic(json!({"exposure": 0.5}))]);
-    let rest = crate::render::gpu::plan_rest(
-        &evaluation,
+    let fit = crate::render::gpu::plan_rest(&evaluation, GpuView::Fit(bounds())).unwrap();
+    let Some(Ok(reduced)) = fit.tiles else {
+        panic!("tiles at Fit");
+    };
+    for view in [
         GpuView::Fit(ProxyBounds {
             width: 2000,
             height: 2000,
         }),
-    )
-    .unwrap();
-    assert!(rest.tiles.is_none());
+        GpuView::Region {
+            rect: crate::Region {
+                x0: 8,
+                y0: 4,
+                width: 40,
+                height: 30,
+            },
+            magnification: 1.0,
+        },
+    ] {
+        let rest = crate::render::gpu::plan_rest(&evaluation, view).unwrap();
+        let Some(Ok(tiles)) = rest.tiles else {
+            panic!("the counts' tiles at {view:?}: {:?}", rest.tiles);
+        };
+        assert_eq!(tiles.reduction, None, "{view:?}");
+        assert_eq!(
+            (&tiles.plan, &tiles.tiles, tiles.output),
+            (&reduced.plan, &reduced.tiles, reduced.output),
+            "{view:?}: the tiles Fit reduces"
+        );
+    }
 }
 
 /// A picture at rest of a Dehaze stack is planned at once, nothing rendered or stored: its tiles'

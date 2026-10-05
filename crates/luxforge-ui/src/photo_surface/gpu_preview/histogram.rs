@@ -2,9 +2,10 @@
 //! into the counts the core's analysis reducer gives the same codes, integer for integer, and their
 //! readback to the CPU without a wait.
 //!
-//! Built and tested, not yet wired to the inspector: the counts the inspector shows are still the
-//! reference reduction's ([GPU-first](../../../../../docs/design/gpu-first.md), stage 2). Nothing in
-//! the desktop creates a [`HistogramReduction`] yet.
+//! The counts the inspector shows and `analysis.request` answers wherever the GPU draws the stack
+//! ([GPU-first](../../../../../docs/design/gpu-first.md), stage 2): a surface keeps one reduction
+//! for its pictures at rest, which counts each tile of the stack at full resolution as it is drawn
+//! ([`super::rest`]), and one for a gesture's ticks, which counts the frame each tick drew.
 //!
 //! # What it counts
 //!

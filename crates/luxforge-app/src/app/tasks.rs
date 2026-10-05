@@ -1320,6 +1320,19 @@ pub(crate) fn draft_reapply_now(
 /// gesture ended without committing. One preview job and one session read, no state or history
 /// request and no history refresh. It is a displayed target, so its own worker reduces it and the
 /// inspector follows the committed pixels back rather than emptying itself.
+/// [`current_preview_task`]'s work on the calling thread, for a test that runs what the runtime's
+/// executor would.
+#[cfg(test)]
+pub(crate) fn current_preview_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    asset_id: AssetId,
+    entry_id: Option<EntryId>,
+    proxy: Drawn,
+) -> Result<PreviewPayload, String> {
+    current_preview(owner, client, asset_id, entry_id, proxy)
+}
+
 pub(crate) fn current_preview_task(
     owner: OwnerHandle,
     client: ClientId,
