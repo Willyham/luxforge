@@ -1977,6 +1977,20 @@ impl shader::Primitive for PhotoPrimitive {
                     draw_picture(render_pass, picture);
                 }
             }
+            // A whole frame's coverage handed with the plan — the committed stack's, which the GPU
+            // presents at 100% and above with no CPU frame to tie it to — is laid over it across
+            // the stage, as over a CPU frame. The desktop hands only the coverage of the content on
+            // screen.
+            if self.region_overlays[1].is_none()
+                && self
+                    .layers
+                    .iter()
+                    .any(|(layer, _)| *layer == Layer::Coverage)
+                && let Some(picture) = &surface.slots[Layer::Coverage.index()]
+                && picture.region_key.is_none()
+            {
+                draw_picture(render_pass, picture);
+            }
         } else if let Some(view) = &self.viewport {
             // A dissolve draws the GPU region frame it starts from first; the view's own pictures
             // below are laid over it at the dissolve's share.

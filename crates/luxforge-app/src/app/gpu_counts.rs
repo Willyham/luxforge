@@ -147,6 +147,9 @@ impl Editor {
         }
         self.outcome(Outcome::EntryShown(&entry));
         self.show_entry(entry.clone());
+        if self.activity.pending {
+            self.activity.preview_dimensions = Some(stage);
+        }
         // The status bar names the GPU's picture once the surface draws it; until then it renders.
         self.activity.render = None;
         let snapshot = job.identity.snapshot_id.to_string();

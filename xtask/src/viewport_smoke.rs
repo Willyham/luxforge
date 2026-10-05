@@ -394,12 +394,19 @@ pub fn verify_region(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
     let final_state = at("release-pause")?;
     let histogram = &final_state["histogram"];
+    // Where the GPU presents the released stack its region at full scale carries the overlay's
+    // marks, pixel for pixel, in place of an overlay derived from a CPU frame it never rendered.
+    let gpu_marked = matches!(
+        final_state["surface"]["gpu"]["picture"].as_str(),
+        Some("view" | "rest")
+    ) && final_state["surface"]["gpu"]["clipping_marks"]["shadows"] == true
+        && final_state["surface"]["gpu"]["clipping_marks"]["highlights"] == true;
     ensure(
         histogram["stale"] == false
             && histogram["identity"]["draft_revision"].is_null()
             && histogram["identity"]["width"] == final_state["preview_dimensions"][0]
             && histogram["identity"]["height"] == final_state["preview_dimensions"][1]
-            && histogram["overlay"]["approximate"] == false,
+            && (histogram["overlay"]["approximate"] == false || gpu_marked),
         "Release lacks exact full-stage histogram and clipping overlay",
     )?;
     // The pan writes no photograph texture. Released, the photograph at rest was the GPU's region
@@ -407,7 +414,11 @@ pub fn verify_region(run: &mut Run, launches: &[Checked]) -> Result {
     // CPU at release, the same full texture is drawn again.
     let released = &final_state["surface"]["gpu"];
     let settled = &at("settled-pause")?["surface"]["gpu"];
-    let full_reused = if released["picture"] == "view" || released["picture"] == "rest" {
+    // Where the GPU presents the stack the settled pan is its region of the new view, planned at
+    // rest with nothing written to the photograph texture.
+    let full_reused = if settled["picture"] == "view" {
+        settled["drawing_path"] == "gpu"
+    } else if released["picture"] == "view" || released["picture"] == "rest" {
         !settled["drawn_full_version"].is_null()
     } else {
         released["drawn_full_version"] == settled["drawn_full_version"]
@@ -421,18 +432,25 @@ pub fn verify_region(run: &mut Run, launches: &[Checked]) -> Result {
     let tint_pixels = changed_pixels(launch.at("settled-pause")?, launch.at("mask-overlay-off")?)?;
     let clipping_state = at("mask-overlay-off")?;
     let clipping = &clipping_state["histogram"]["overlay"];
+    // Where the GPU presents the stack its view plan draws the marks itself, with no clipping frame.
+    let clipping_gpu = &clipping_state["surface"]["gpu"];
+    let gpu_marks = clipping_gpu["picture"] == "view"
+        && clipping_gpu["clipping_marks"]["shadows"] == true
+        && clipping_gpu["clipping_marks"]["highlights"] == true;
     ensure(
-        clipping["source_assigned"] == true
-            && clipping["drawn"] == true
-            && clipping["version"].as_u64().is_some()
-            && clipping["version"] == clipping_state["surface"]["gpu"]["drawn_clipping_version"]
-            && clipping["generation"] == clipping_state["surface"]["generation"],
+        gpu_marks
+            || (clipping["source_assigned"] == true
+                && clipping["drawn"] == true
+                && clipping["version"].as_u64().is_some()
+                && clipping["version"] == clipping_gpu["drawn_clipping_version"]
+                && clipping["generation"] == clipping_state["surface"]["generation"]),
         "Mask-off capture lacked the current clipping frame's GPU draw",
     )?;
     let unclipped_state = at("clipping-off")?;
     ensure(
         unclipped_state["histogram"]["overlay"].is_null()
-            && unclipped_state["surface"]["gpu"]["drawn_clipping_version"].is_null(),
+            && unclipped_state["surface"]["gpu"]["drawn_clipping_version"].is_null()
+            && unclipped_state["surface"]["gpu"]["clipping_marks"].is_null(),
         "Clipping-off capture still drew a clipping frame",
     )?;
     let clipping_pixels =
