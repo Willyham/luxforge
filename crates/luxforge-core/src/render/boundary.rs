@@ -179,6 +179,7 @@ impl Render<'_> {
     /// frame of this render builds it, and its pass is the segment's own over the operations
     /// before the layer, so every byte the CPU would hand the layer is the value held. `format` is
     /// the path's: half floats on the byte path, `f32` on the linear path.
+    #[cfg(test)]
     pub(crate) fn boundary(
         &self,
         uncut: &Compiled,

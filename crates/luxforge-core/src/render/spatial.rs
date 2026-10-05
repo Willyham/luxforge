@@ -7,7 +7,7 @@
 //! planes come from. A read of a pixel through a spatial operation is the reference renderer's
 //! whole frame of it ([`super::pipeline::Evaluation::framed`]), never a tile of its own.
 
-use super::context::{EstimateKey, EstimateStore, SpatialBudget, SpatialReservation};
+use super::context::{EstimateKey, SpatialBudget, SpatialReservation};
 use super::reduced::ReducedEntry;
 use crate::Cancel;
 #[cfg(test)]
@@ -1452,18 +1452,19 @@ pub(crate) fn tile_parallelism(large: bool, tiles: usize, workers: usize) -> Par
 
 /// The global estimate of every unit of an operation, in unit order: `None` for a unit that
 /// declares no estimate key, which is never prepared and never reduces anything, and for every
-/// other unit the store's entry under its key, or else one preparation from one reduction of the
+/// other unit the entry under its key in `context`'s estimate store, or else one preparation from one reduction of the
 /// operation's input stage. The reduction is built at most once, and only when a unit that declares
 /// a key is missing from the store: a stack evaluated twice reduces nothing the second time, and
 /// neither does one whose units changed only in coefficients their keys do not name.
 pub(crate) fn resolve_globals(
-    store: &EstimateStore,
+    context: &super::RenderContext,
     operation: &SpatialOperation,
     stage: Stage,
     fingerprint: &str,
     prefix_hash: &str,
     reduce: impl FnOnce() -> Result<Reduction, Error>,
 ) -> Result<Vec<Option<Global>>, Error> {
+    let store = context.estimates();
     let units = operation.units();
     let keys: Vec<Option<EstimateKey>> = units
         .iter()
@@ -1490,9 +1491,9 @@ pub(crate) fn resolve_globals(
     if missing.is_empty() {
         return Ok(globals);
     }
-    // Qualification only: the reduction this thread builds now is `store`'s render's.
+    // Qualification only: the reduction this thread builds now is `context`'s render's.
     #[cfg(any(test, feature = "qualification"))]
-    let reducing = cells::Reducing::store(store);
+    let reducing = cells::Reducing::context(context);
     let reduction = reduce()?;
     #[cfg(any(test, feature = "qualification"))]
     drop(reducing);
@@ -1649,23 +1650,22 @@ fn reduction_from(stage: Stage, blocks: &[[f32; 3]]) -> Result<Reduction, Error>
 /// Qualification only: the reductions one render's global estimates are prepared from, and their
 /// stage's exact means over cells of other sides, for the measurement that chooses the per-frame
 /// light's reduction factor (`docs/specs/performance.md`, "The per-frame light's reduction
-/// factor"). A capture is armed for one render context's estimate store
+/// factor"). A capture is armed for one render context
 /// ([`arm`](crate::render::spatial::cells::arm)). Every reduction
-/// [`resolve_globals`](crate::render::spatial::resolve_globals) builds for that store through
+/// [`resolve_globals`](crate::render::spatial::resolve_globals) builds for that context through
 /// [`build_reduction_cancellable`](crate::render::spatial::build_reduction_cancellable) is
 /// recorded, and its stage read again once per factor asked for through the same `fill`, until
 /// [`take`](crate::render::spatial::cells::take): on whichever thread it is built, since
-/// `resolve_globals` names the store to that thread while it builds it
-/// ([`Reducing`](crate::render::spatial::cells::Reducing)). A reduction for any other store,
+/// `resolve_globals` names the context to that thread while it builds it
+/// ([`Reducing`](crate::render::spatial::cells::Reducing)). A reduction for any other context,
 /// which is every other render's, however many run at once, and every render's outside the
-/// measurement, records nothing and reads nothing more, as does one no store names. Never built
+/// measurement, records nothing and reads nothing more, as does one no context names. Never built
 /// into a binary: only tests and the `qualification` feature, which only a `[dev-dependencies]`
 /// table turns on, compile it.
 #[cfg(any(test, feature = "qualification"))]
 pub(crate) mod cells {
-    use super::{
-        Cancel, ESTIMATE_REDUCTION, Error, EstimateStore, REDUCTION_SPAN, Reduction, Region, Stage,
-    };
+    use super::{Cancel, ESTIMATE_REDUCTION, Error, REDUCTION_SPAN, Reduction, Region, Stage};
+    use crate::render::RenderContext;
     use rayon::prelude::*;
     use std::cell::Cell;
     use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -1690,34 +1690,35 @@ pub(crate) mod cells {
         pub(crate) cells: Vec<CellMeans>,
     }
 
-    /// One armed capture: the store it is for, by address, the factors it reads the stage at,
-    /// and what it recorded, oldest reduction first.
+    /// One armed capture: the render context it is for, by address, the factors it reads the
+    /// stage at, and what it recorded, oldest reduction first.
     struct Armed {
-        store: usize,
+        context: usize,
         factors: Vec<u32>,
         captured: Vec<Captured>,
     }
 
-    /// Every armed capture. A store is a field of a live render context, so no two live stores
-    /// share an address, and a capture is taken before the context it was armed for is dropped.
+    /// Every armed capture. No two live render contexts share an address, and a capture is taken
+    /// before the context it was armed for is dropped.
     static ARMED: Mutex<Vec<Armed>> = Mutex::new(Vec::new());
 
     thread_local! {
-        /// The store whose global estimates this thread is reducing a stage for, while it does.
+        /// The render context whose global estimates this thread is reducing a stage for, while
+        /// it does.
         static REDUCING: Cell<Option<usize>> = const { Cell::new(None) };
     }
 
-    fn address(store: &EstimateStore) -> usize {
-        std::ptr::from_ref(store).addr()
+    fn address(context: &RenderContext) -> usize {
+        std::ptr::from_ref(context).addr()
     }
 
     fn armed() -> MutexGuard<'static, Vec<Armed>> {
         ARMED.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Arm a capture for `store`, a render context's estimate store, at `factors`, each a divisor
-    /// of [`ESTIMATE_REDUCTION`], forgetting what an earlier capture for it recorded.
-    pub(crate) fn arm(store: &EstimateStore, factors: &[u32]) -> Result<(), Error> {
+    /// Arm a capture for `context`, a render context, at `factors`, each a divisor of
+    /// [`ESTIMATE_REDUCTION`], forgetting what an earlier capture for it recorded.
+    pub(crate) fn arm(context: &RenderContext, factors: &[u32]) -> Result<(), Error> {
         if let Some(factor) = factors
             .iter()
             .find(|&&factor| factor == 0 || !ESTIMATE_REDUCTION.is_multiple_of(factor))
@@ -1726,39 +1727,39 @@ pub(crate) mod cells {
                 "a cell side of {factor} does not divide the {ESTIMATE_REDUCTION} px block"
             )));
         }
-        let store = address(store);
+        let context = address(context);
         let mut armed = armed();
-        armed.retain(|capture| capture.store != store);
+        armed.retain(|capture| capture.context != context);
         armed.push(Armed {
-            store,
+            context,
             factors: factors.to_vec(),
             captured: Vec::new(),
         });
         Ok(())
     }
 
-    /// Disarm the capture for `store` and answer what it recorded, oldest reduction first; nothing
-    /// when none is armed for it.
-    pub(crate) fn take(store: &EstimateStore) -> Vec<Captured> {
-        let store = address(store);
+    /// Disarm the capture for `context` and answer what it recorded, oldest reduction first;
+    /// nothing when none is armed for it.
+    pub(crate) fn take(context: &RenderContext) -> Vec<Captured> {
+        let context = address(context);
         let mut armed = armed();
-        match armed.iter().position(|capture| capture.store == store) {
+        match armed.iter().position(|capture| capture.context == context) {
             Some(at) => armed.swap_remove(at).captured,
             None => Vec::new(),
         }
     }
 
-    /// While it lives, the reduction this thread builds is for `store`'s global estimates:
+    /// While it lives, the reduction this thread builds is for `context`'s global estimates:
     /// [`resolve_globals`](super::resolve_globals) holds one around its reduction, on whichever
-    /// thread resolves them, and the thread's earlier store, if any, is restored after it.
+    /// thread resolves them, and the thread's earlier context, if any, is restored after it.
     pub(crate) struct Reducing {
         previous: Option<usize>,
     }
 
     impl Reducing {
-        pub(crate) fn store(store: &EstimateStore) -> Self {
+        pub(crate) fn context(context: &RenderContext) -> Self {
             Self {
-                previous: REDUCING.replace(Some(address(store))),
+                previous: REDUCING.replace(Some(address(context))),
             }
         }
     }
@@ -1769,8 +1770,8 @@ pub(crate) mod cells {
         }
     }
 
-    /// Record `reduction`, and its `stage` at every factor its store's capture asks for, read
-    /// through `fill`, when this thread is reducing for a store a capture is armed for; nothing
+    /// Record `reduction`, and its `stage` at every factor its context's capture asks for, read
+    /// through `fill`, when this thread is reducing for a context a capture is armed for; nothing
     /// otherwise. The lock is not held while the stage is read.
     pub(super) fn capture(
         stage: Stage,
@@ -1778,12 +1779,12 @@ pub(crate) mod cells {
         fill: &(impl Fn(Region, &mut [f32]) -> Result<(), Error> + Sync),
         reduction: &Reduction,
     ) -> Result<(), Error> {
-        let Some(store) = REDUCING.get() else {
+        let Some(context) = REDUCING.get() else {
             return Ok(());
         };
         let Some(factors) = armed()
             .iter()
-            .find(|capture| capture.store == store)
+            .find(|capture| capture.context == context)
             .map(|capture| capture.factors.clone())
         else {
             return Ok(());
@@ -1792,7 +1793,10 @@ pub(crate) mod cells {
             .iter()
             .map(|&factor| cell_means(stage, factor, cancel, fill))
             .collect::<Result<Vec<_>, _>>()?;
-        if let Some(capture) = armed().iter_mut().find(|capture| capture.store == store) {
+        if let Some(capture) = armed()
+            .iter_mut()
+            .find(|capture| capture.context == context)
+        {
             capture.captured.push(Captured {
                 reduction: reduction.clone(),
                 cells,
@@ -4048,7 +4052,7 @@ mod tests {
         let context = RenderContext::new();
         for _ in 0..2 {
             let globals = resolve_globals(
-                context.estimates(),
+                &context,
                 &operation,
                 stage,
                 "sha256:no-estimate-key",
@@ -4114,7 +4118,7 @@ mod tests {
         let context = RenderContext::new();
         let mut reductions = 0;
         let globals = resolve_globals(
-            context.estimates(),
+            &context,
             &operation,
             stage,
             "sha256:one-key",
@@ -4169,7 +4173,7 @@ mod tests {
         let reductions = AtomicUsize::new(0);
         let resolve = |payload: &Value| {
             resolve_globals(
-                context.estimates(),
+                &context,
                 &compile(payload),
                 stage,
                 "sha256:presence-amounts",
@@ -4446,22 +4450,22 @@ mod tests {
     /// stage's exact means at each factor asked for — each cell's pixels summed in `f64` row by row
     /// and averaged over the pixels inside the stage, so at 16 the reduction's own block means bit
     /// for bit — with partial cells at both edges and on a stage wider than one fill's span, on
-    /// whichever thread it is built. A reduction for another store, or for none, records nothing,
-    /// and a factor that does not divide the block arms nothing.
+    /// whichever thread it is built. A reduction for another render context, or for none, records
+    /// nothing, and a factor that does not divide the block arms nothing.
     #[test]
     fn qualification_cells_are_the_stages_exact_means_at_each_factor() {
-        /// A reduction of `stage` built for `store`'s global estimates, as `resolve_globals`
+        /// A reduction of `stage` built for `context`'s global estimates, as `resolve_globals`
         /// builds one, or for none.
         fn reduced_for(
-            store: Option<&EstimateStore>,
+            context: Option<&RenderContext>,
             stage: Stage,
             fetch: impl Fn(u32, u32) -> Result<[f32; 3], Error> + Sync,
         ) -> Reduction {
-            let _reducing = store.map(cells::Reducing::store);
+            let _reducing = context.map(cells::Reducing::context);
             build_reduction(stage, fetch).unwrap()
         }
         let factors = [16, 8, 4, 2, 1];
-        let (store, other) = (EstimateStore::default(), EstimateStore::default());
+        let (context, other) = (RenderContext::new(), RenderContext::new());
         for (width, height) in [(1, 1), (37, 23), (200, 131), (2100, 40)] {
             let stage = Stage { width, height };
             let fetch = |x: u32, y: u32| -> Result<[f32; 3], Error> {
@@ -4471,15 +4475,15 @@ mod tests {
                     ((x * y) % 29) as f32 - 3.5,
                 ])
             };
-            cells::arm(&store, &factors).unwrap();
-            let reduction = reduced_for(Some(&store), stage, fetch);
+            cells::arm(&context, &factors).unwrap();
+            let reduction = reduced_for(Some(&context), stage, fetch);
             reduced_for(Some(&other), stage, fetch);
             reduced_for(None, stage, fetch);
-            let captured = cells::take(&store);
+            let captured = cells::take(&context);
             assert_eq!(
                 captured.len(),
                 1,
-                "{width}x{height}: one reduction for the store"
+                "{width}x{height}: one reduction for the context"
             );
             assert_eq!(captured[0].reduction, reduction);
             assert_eq!(captured[0].cells.len(), factors.len());
@@ -4518,37 +4522,37 @@ mod tests {
                     }
                 }
             }
-            assert!(cells::take(&store).is_empty(), "{width}x{height}: taken");
+            assert!(cells::take(&context).is_empty(), "{width}x{height}: taken");
         }
-        // Whichever thread builds the armed store's reduction records it, for that store alone.
-        cells::arm(&store, &[2]).unwrap();
+        // Whichever thread builds the armed context's reduction records it, for that context alone.
+        cells::arm(&context, &[2]).unwrap();
         cells::arm(&other, &[2]).unwrap();
         let stage = Stage {
             width: 40,
             height: 40,
         };
         std::thread::scope(|scope| {
-            scope.spawn(|| reduced_for(Some(&store), stage, |_, _| Ok([0.5; 3])));
+            scope.spawn(|| reduced_for(Some(&context), stage, |_, _| Ok([0.5; 3])));
         });
-        let captured = cells::take(&store);
+        let captured = cells::take(&context);
         assert_eq!(
             captured.len(),
             1,
-            "built on another thread for the armed store"
+            "built on another thread for the armed context"
         );
         assert_eq!(captured[0].cells[0].values, vec![[0.5; 3]; 400]);
         assert!(
             cells::take(&other).is_empty(),
-            "another store's capture saw none of it"
+            "another context's capture saw none of it"
         );
         for factor in [0, 3, 32] {
             assert!(
-                cells::arm(&store, &[factor]).is_err(),
+                cells::arm(&context, &[factor]).is_err(),
                 "{factor} does not divide 16"
             );
         }
         assert!(
-            cells::take(&store).is_empty(),
+            cells::take(&context).is_empty(),
             "a refused factor arms nothing"
         );
     }

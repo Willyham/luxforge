@@ -16,7 +16,7 @@
 //! and `cargo test` counting it as passed does not make it GPU evidence.
 use super::gpu_plan::surface_plan;
 use super::gpu_qualification::{
-    Stream, codes, corpus_at_fit, differing, drafted_against_cpu, figures, lit, lit_fixed, worst,
+    Stream, codes, differing, drafted_against_cpu, figures, lit, lit_fixed, worst,
 };
 use luxforge_core::{
     Cancel, GPU_PROGRAMS, GpuAnswer, GpuPlanRequest, GpuProgramKind, Layer, LinearImage,
@@ -1327,25 +1327,6 @@ fn gpu_presence_texture_band_in_one_channel_draws_what_two_did() {
             }
         }
     }
-}
-
-// ---- The corpus at Fit ------------------------------------------------------------------------
-
-/// The qualification corpus's Presence recipes at Fit through the shared harness
-/// ([`corpus_at_fit`]), each held to the spatial limits.
-///
-/// ```sh
-/// LUXFORGE_GPU_CORPUS_OUTPUT=/tmp/new-dir \
-/// LUXFORGE_GENERATED_FIXTURES=fixtures/generated \
-/// LUXFORGE_RAW_MANIFEST=/path/to/raw-manifest.json \
-/// cargo test -p luxforge-app gpu_presence_corpus -- --ignored --nocapture
-/// ```
-#[test]
-#[ignore = "the GPU preview corpus at Fit: set LUXFORGE_GPU_CORPUS_OUTPUT to a new directory, \
-            LUXFORGE_GENERATED_FIXTURES to the generated JPEGs and, for the RAWs, \
-            LUXFORGE_RAW_MANIFEST"]
-fn gpu_presence_corpus_at_fit() {
-    corpus_at_fit("gpu_presence_corpus_at_fit", &["presence"]);
 }
 
 /// A tick runs only the passes whose words or inputs changed: after the plan a drag started from,
