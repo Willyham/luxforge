@@ -576,11 +576,23 @@ pub(crate) fn proxy_cell(
             PhaseOutcome::Boundary(_) => return Ok(Cell::Gap("a boundary for a Fit frame".into())),
         };
         let (width, height) = proxied.dimensions();
-        let boundary_layer = match boundary_layer(&registry, &recipe, (width, height))? {
-            Ok(layer) => layer,
-            Err(gap) => return Ok(Cell::Gap(gap)),
-        };
+        // The boundary: the input of the stack's first layer that processes pixels. Where every
+        // layer before it is the identity over this source, that is the source the frame was
+        // rendered from; where one is not, a lens warp before a finishing layer, it is that layer's
+        // input at the frame's stage, which the worker's boundary job renders through the stack's
+        // prefix, and so does this cell.
+        let (boundary_layer, through_prefix) =
+            match boundary_layer(&registry, &recipe, (width, height))? {
+                Ok(layer) => (layer, false),
+                Err(_) => (first_pixel_layer(&registry, &recipe)?, true),
+            };
+        if let PreviewSource::Raw { settings, .. } = &proxied
+            && settings.white_balance.is_some()
+        {
+            return Ok(Cell::Gap("an approximated white balance".into()));
+        }
         let texels: Vec<[f32; 3]> = match &proxied {
+            _ if through_prefix => Vec::new(),
             PreviewSource::Jpeg(image) => {
                 let table = luxforge_core::colour::srgb::decode_table();
                 image
@@ -589,15 +601,10 @@ pub(crate) fn proxy_cell(
                     .map(|pixel| [0, 1, 2].map(|c| table[usize::from(pixel[c])]))
                     .collect()
             }
-            PreviewSource::Raw { image, settings } => {
-                if settings.white_balance.is_some() {
-                    return Ok(Cell::Gap("an approximated white balance".into()));
-                }
-                (0..height)
-                    .flat_map(|y| (0..width).map(move |x| (x, y)))
-                    .map(|(x, y)| image.pixel(x, y).expect("a viewed pixel"))
-                    .collect()
-            }
+            PreviewSource::Raw { image, .. } => (0..height)
+                .flat_map(|y| (0..width).map(move |x| (x, y)))
+                .map(|(x, y)| image.pixel(x, y).expect("a viewed pixel"))
+                .collect(),
         };
         let request = if is_proxy {
             GpuPlanRequest::fit(
@@ -656,7 +663,9 @@ pub(crate) fn proxy_cell(
             BoundaryFormat::Float => luxforge_core::BoundaryFormat::Float,
             BoundaryFormat::Half => luxforge_core::BoundaryFormat::Half,
         };
-        let (held, origin) = if !is_proxy && !plan.spatial.iter().any(|spatial| spatial.estimated) {
+        let (held, origin) = if through_prefix
+            || (!is_proxy && !plan.spatial.iter().any(|spatial| spatial.estimated))
+        {
             let context = RenderContext::new();
             let exact = render(
                 &registry,
@@ -666,12 +675,27 @@ pub(crate) fn proxy_cell(
                 &context,
             )
             .map_err(|error| error.to_string())?;
-            let frame = match luxforge_core::qualification::region_boundary(
-                &exact,
-                boundary_layer,
-                [0, 0, out_width, out_height],
-                core_format,
-            ) {
+            // Through the prefix at the proxy stage, the boundary the worker's proxy phase reads
+            // from its own render; at the exact stage, the exact render's.
+            let frame = if is_proxy {
+                luxforge_core::qualification::proxy_boundary(
+                    &exact,
+                    &registry,
+                    evaluation.recipe(),
+                    bounds,
+                    (&proxied).into(),
+                    boundary_layer,
+                    core_format,
+                )
+            } else {
+                luxforge_core::qualification::region_boundary(
+                    &exact,
+                    boundary_layer,
+                    [0, 0, out_width, out_height],
+                    core_format,
+                )
+            };
+            let frame = match frame {
                 Ok(frame) => frame,
                 Err(error) if error.kind == luxforge_core::ErrorKind::ResourceLimit => {
                     return Ok(Cell::Gap(format!(
@@ -833,6 +857,32 @@ pub(crate) fn proxy_cell(
             notes,
         })
     }
+}
+
+/// The index of `recipe`'s first layer that processes pixels: restoration, colour, spatial or
+/// finish.
+pub(crate) fn first_pixel_layer(
+    registry: &luxforge_core::ModuleRegistry,
+    recipe: &luxforge_core::Recipe,
+) -> Result<usize, String> {
+    use luxforge_core::EffectStage;
+    recipe
+        .layers
+        .iter()
+        .position(|layer| {
+            matches!(
+                registry
+                    .effect(&layer.effect_id)
+                    .map(|(_, effect)| effect.stage),
+                Some(
+                    EffectStage::Restoration
+                        | EffectStage::Color
+                        | EffectStage::Spatial
+                        | EffectStage::Finish
+                )
+            )
+        })
+        .ok_or_else(|| "no layer that processes pixels".to_owned())
 }
 
 /// The boundary of `recipe` over a source of `size`: the input of the first layer that processes
@@ -1150,23 +1200,7 @@ pub(crate) fn draw_region(
     // The boundary: the input of the first layer that processes pixels, whatever runs before
     // it — a RAW's lens warp before its vignette included — since the worker's region boundary
     // holds that layer's own input.
-    let boundary_layer = recipe
-        .layers
-        .iter()
-        .position(|layer| {
-            matches!(
-                registry
-                    .effect(&layer.effect_id)
-                    .map(|(_, effect)| effect.stage),
-                Some(
-                    luxforge_core::EffectStage::Restoration
-                        | luxforge_core::EffectStage::Color
-                        | luxforge_core::EffectStage::Spatial
-                        | luxforge_core::EffectStage::Finish
-                )
-            )
-        })
-        .ok_or("no layer that processes pixels")?;
+    let boundary_layer = first_pixel_layer(registry, recipe)?;
     let format = if linear {
         luxforge_core::BoundaryFormat::Float
     } else {
