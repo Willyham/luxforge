@@ -16,9 +16,10 @@
 //! may turn on (`cargo xtask check-repository`), so no build of the desktop has it: the surface
 //! itself never reads a pixel back or waits on the GPU. Everything here blocks the calling test.
 use super::{
-    BoundaryFormat, Compiled, GpuBoundary, GpuFallback, GpuPlan, GpuStep, GpuTail, OUTPUT_FORMAT,
-    SpatialSlot, Support, answered, assemble_passes, chain, compile, encode_pass_over, le_bytes,
-    slot_buffers, slot_charge, spatial, upload_rows, validate, validate_step,
+    BoundaryFormat, Compiled, GpuBoundary, GpuFallback, GpuPlan, GpuSource, GpuStep, GpuTail,
+    OUTPUT_FORMAT, SourceLayouts, SourceSlot, SpatialSlot, Support, answered, assemble_passes,
+    chain, compile, encode_pass_over, le_bytes, slot_buffers, slot_charge, spatial, upload_rows,
+    validate, validate_step,
 };
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -194,6 +195,132 @@ impl Qualifier {
     ) -> Result<Vec<[u8; 4]>, String> {
         let (bytes, _) = self.run(&[], plan, Some(pixels), OUTPUT_FORMAT, 4)?;
         Ok(codes(&bytes))
+    }
+
+    /// `boundary`'s texels as a slot derives them from `source` ([`GpuBoundary::derived`]): the
+    /// source held as the pipeline holds it, tile by tile, and uploaded whole; the derivation's own
+    /// pass run into a texture of the boundary's format; its bytes read back row by row, eight a
+    /// texel of half floats from a JPEG's codes, sixteen of `f32` from a RAW's planes, exactly as
+    /// the CPU's `BoundaryFrame` holds them.
+    pub fn derive(&self, source: &GpuSource, boundary: &GpuBoundary) -> Result<Vec<u8>, String> {
+        let device = &self.device;
+        let layouts = SourceLayouts::new(device)?;
+        let mut held = SourceSlot::new(device, source, &layouts, |_| Ok(()))
+            .map_err(|fallback| format!("the source is not held: {}", fallback.as_str()))?;
+        while !held.ready() {
+            if held.upload(&self.queue, source, u64::MAX) == 0 {
+                return Err("the source's pixels were let go".into());
+            }
+        }
+        let (_, derivation) = boundary
+            .derivation()
+            .ok_or("a boundary of texels, not a derived one")?;
+        let size = boundary.size();
+        let words = held
+            .words(derivation, size)
+            .ok_or("the derivation does not fit the source")?;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("luxforge.qualification.derivation"),
+            size: (words.len() * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&buffer, 0, &le_bytes(&words));
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("luxforge.qualification.derived"),
+            size: wgpu::Extent3d {
+                width: size.0,
+                height: size.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: boundary.format().texture(),
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("luxforge.qualification.derive"),
+        });
+        held.encode(
+            device,
+            &mut encoder,
+            &layouts,
+            derivation,
+            &buffer,
+            &view,
+            size,
+        );
+        self.read_texture(
+            &target,
+            size,
+            boundary.format().texel_bytes() as u32,
+            encoder,
+        )
+    }
+
+    /// `texture`'s `size` texels after `encoder`'s passes, read back unpadded, `texel_bytes` a
+    /// texel: the encoder is submitted with the copy and waited for.
+    fn read_texture(
+        &self,
+        texture: &wgpu::Texture,
+        (width, height): (u32, u32),
+        texel_bytes: u32,
+        mut encoder: wgpu::CommandEncoder,
+    ) -> Result<Vec<u8>, String> {
+        let device = &self.device;
+        let row = width * texel_bytes;
+        let padded =
+            row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("luxforge.qualification.readback"),
+            size: u64::from(padded) * u64::from(height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let index = self.queue.submit([encoder.finish()]);
+        let (sender, receiver) = mpsc::channel();
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let _ = sender.send(result);
+            });
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(index),
+                timeout: None,
+            })
+            .map_err(|error| format!("waiting for the readback: {error}"))?;
+        receiver
+            .try_recv()
+            .map_err(|_| "the readback was not mapped once its submission finished".to_owned())?
+            .map_err(|error| format!("mapping the readback: {error}"))?;
+        let mapped = readback.slice(..).get_mapped_range();
+        let mut bytes = Vec::with_capacity((row * height) as usize);
+        for line in mapped.chunks_exact(padded as usize) {
+            bytes.extend_from_slice(&line[..row as usize]);
+        }
+        drop(mapped);
+        readback.unmap();
+        Ok(bytes)
     }
 
     /// `plan` checked as `prepare` checks it: every step and every pass of its chain validated,
@@ -956,6 +1083,12 @@ pub fn boundary_as(
 /// `value` as the boundary holds it: the nearest half float, widened.
 pub fn held(value: f32) -> f32 {
     half::f16::from_f32(value).to_f32()
+}
+
+/// The half float of `bits`, little-endian as a boundary holds it, widened: how a derived JPEG
+/// boundary's texel reads back ([`Qualifier::derive`]).
+pub fn half_value(bits: [u8; 2]) -> f32 {
+    half::f16::from_bits(u16::from_le_bytes(bits)).to_f32()
 }
 
 /// The links of `plan`'s chain, by their place in it, whose sequence no plan of `warm` holds: what

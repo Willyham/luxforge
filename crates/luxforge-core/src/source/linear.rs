@@ -371,6 +371,22 @@ impl LinearImage {
         self.planes.as_slice()
     }
 
+    /// What the GPU holds of this development (`docs/design/gpu-preview.md`, "The GPU source"):
+    /// the planes every view of it shares, red then green then blue, each `base.0 × base.1` values
+    /// row by row, borrowed, never copied; the base size; and this view's crop window
+    /// `[x, y, width, height]` of the base planes and its EXIF orientation, which map the content
+    /// stage a recipe is compiled against onto them. A caller that keeps the planes past this
+    /// borrow keeps a clone of the image, so the source worker's memory gate still counts them.
+    pub fn shared_planes(&self) -> (&[f32], (u32, u32), [u32; 4], u8) {
+        let (crop, orientation) = self.view();
+        (
+            self.planes.as_slice(),
+            (self.base_width, self.base_height),
+            crop,
+            orientation,
+        )
+    }
+
     /// A new development whose every base pixel is `map` of this one's, under the same view: a
     /// measurement's stand-in for a per-pixel evaluator setting that does not exist.
     #[cfg(test)]

@@ -467,7 +467,7 @@ impl Editor {
             .state
             .as_ref()
             .map(|state| (state.asset.id.clone(), self.displayed_entry()))
-            .map(|(asset, entry)| (asset, entry, self.proxy_bounds()));
+            .map(|(asset, entry)| (asset, entry, self.drawn()));
         let (cancelled, reseed) = self.cancel_request(draft_id, reseed);
         if let Err(error) = cancelled {
             self.event(
@@ -942,7 +942,7 @@ impl Editor {
         self.event(format_args!("{prefix}_commit"),
             || json!({"draft_id":draft_id.as_str(),"request_id":mutation.request_id,"expected_revision":expected_revision}),
         );
-        let proxy = self.proxy_bounds();
+        let proxy = self.drawn();
         tasks::draft_commit_task(
             self.owner.clone(),
             self.client,
@@ -1046,13 +1046,12 @@ impl Editor {
         let asset = self.document.state.as_ref()?.asset.id.clone();
         let entry = self.displayed_entry();
         self.seed_values();
-        let proxy = self.proxy_bounds();
         Some(tasks::current_preview_task(
             self.owner.clone(),
             self.client,
             asset,
             entry,
-            proxy,
+            self.drawn(),
         ))
     }
 

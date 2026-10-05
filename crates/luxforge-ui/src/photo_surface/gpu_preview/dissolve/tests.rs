@@ -377,6 +377,7 @@ fn primitive(plan: Option<GpuPlan>, dissolve: Option<(u64, f32)>) -> PhotoPrimit
             dissolve: Dissolve::start(from, CPU_VERSION),
             share,
         }),
+        source: None,
         offset: Vector::new(0.0, 0.0),
         size: Size::new(SIDE as f32, SIDE as f32),
         clip_size: Size::new(SIDE as f32, SIDE as f32),

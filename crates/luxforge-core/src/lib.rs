@@ -97,15 +97,15 @@ pub use preview::{
     PreviewJob, PreviewPhase, PreviewProgress, PreviewQueue, PreviewResult, PreviewSession,
     PreviewSource, ProxyOutcome, Queued, RegionOutcome, ViewState, Zoom,
 };
-pub use proxy::{ProxyApproximation, ProxyBounds, ProxyIdentity, ProxyPlan};
+pub use proxy::{ProxyApproximation, ProxyBounds, ProxyCoverage, ProxyIdentity, ProxyPlan};
 pub use render::gpu::{
     BoundaryKey, BoundaryRequest, CoordinateGrid, EstimateSource, GPU_PASS_INPUTS, GPU_PLAN_LINKS,
     GPU_SHARED_VALUES, GPU_WARM_LINKS, GPU_WORKGROUP_LANES, GRID_MAX_NODES,
     GRID_SAMPLE_TOLERANCE_PX, GRID_TOLERANCE_PX, GpuAnswer, GpuApply, GpuBoundary, GpuChange,
     GpuClipping, GpuComponent, GpuDescription, GpuEstimates, GpuFallback, GpuGeometry, GpuMask,
     GpuOperation, GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest, GpuPlane, GpuPlaneFormat,
-    GpuPlaneSize, GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuSpatial, GpuSpatialUnit,
-    GpuView, gpu_plan, gpu_plan_with,
+    GpuPlaneSize, GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuRest, GpuSpatial,
+    GpuSpatialUnit, GpuView, gpu_plan, gpu_plan_with,
 };
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{
@@ -177,6 +177,37 @@ pub mod qualification {
     /// `plan` over its whole proxy stage, with no window.
     pub fn whole_proxy(plan: crate::ProxyPlan) -> crate::ProxyPlan {
         plan.whole()
+    }
+
+    /// The boundary at the source of `render`'s stack — the first segment's input before its
+    /// first operation, the content stage the source fills — over `window` (`[x, y, width,
+    /// height]`) of it, held as `format`: what the GPU's cut of the source it holds is held to,
+    /// bit for bit (`docs/design/gpu-preview.md`, "The GPU source").
+    pub fn source_boundary(
+        render: &crate::Render,
+        window: [u32; 4],
+        format: crate::BoundaryFormat,
+    ) -> Result<crate::BoundaryFrame, crate::Error> {
+        let [x0, y0, width, height] = window;
+        render.source_boundary(
+            crate::modules::Region {
+                x0,
+                y0,
+                width,
+                height,
+            },
+            format,
+        )
+    }
+
+    /// `image` viewed through the crop window `[x, y, width, height]` of its base planes under EXIF
+    /// `orientation`, sharing its planes, as a RAW adapter views its development.
+    pub fn viewed(
+        image: &crate::LinearImage,
+        crop: [u32; 4],
+        orientation: u8,
+    ) -> Result<crate::LinearImage, crate::Error> {
+        image.with_view(crop, orientation)
     }
 
     /// A light for a colour drag under Dehaze from a held reduced stage: the atmospheric light
