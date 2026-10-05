@@ -6,8 +6,12 @@
 //!   ignored; it is always 255) at [`super::QUALITY`], writes the JFIF header, the optional EXIF
 //!   APP1 payload (`exif` excludes the `Exif\0\0` header) and the ICC profile, and streams the
 //!   output into `out` without building the whole file in memory. `progress` receives the encoded
-//!   fraction in `0..=1`, at most about once per 1% of rows; `cancel` is checked about as often, and
-//!   a cancelled encode returns its error and writes nothing more.
+//!   fraction in `0..=1`, at most about once per 1% of rows; `cancel` is checked before every strip
+//!   of 16 rows, and a cancelled encode returns its error and writes nothing more.
+//! - `encode_jpeg_rows(out, width, height, bands, exif, progress, cancel)` is the same encode for a
+//!   frame that arrives in bands of whole rows, in order from the top, pulled one at a time: the
+//!   same bytes, progress and checks whatever the bands, and `encode_jpeg` is it given the whole
+//!   frame as one band. A band the source fails to produce stops the encode with its error.
 //! - The file is baseline (SOF0) with full-resolution chroma (4:4:4 at every component's 1×1
 //!   sampling), one interleaved scan and the standard Huffman tables: libjpeg's own fastest
 //!   settings, accepted in `docs/design/export.md#decisions`.
@@ -18,14 +22,45 @@
 //!   writes it as ICC chunks numbered from 1.
 
 use crate::{Error, Raster};
-use luxforge_jpeg::Settings;
+use luxforge_jpeg::{Encoder, Settings};
 use std::{io::Write, sync::OnceLock};
 
 const EXIF_HEADER: &[u8] = b"Exif\0\0";
 
+/// Encode one rendered frame: [`encode_jpeg_rows`] given the whole frame as one band, which the
+/// encoder reads in place.
 pub(crate) fn encode_jpeg<W: Write>(
     out: W,
     frame: &Raster,
+    exif: Option<&[u8]>,
+    progress: &mut dyn FnMut(f64),
+    cancel: &dyn Fn() -> Result<(), Error>,
+) -> Result<(), Error> {
+    let whole = std::iter::once(Ok((frame.height, frame.rgba.as_slice())));
+    encode_jpeg_rows(
+        out,
+        frame.width,
+        frame.height,
+        whole,
+        exif,
+        progress,
+        cancel,
+    )
+}
+
+/// Encode a `width` × `height` frame that arrives in bands: `bands` yields its rows in order from
+/// the top, each band `(rows, rgba)` holding `rows` whole rows of RGBA8, and is pulled one band at
+/// a time as the encoder takes them. The encoder hands libjpeg the same 16-row strips whatever the
+/// bands, so the bytes are the whole frame's, and before each strip it checks `cancel` and reports
+/// `rows / height` to `progress`, at most about once per 1%. An error the source yields stops the
+/// encode and is returned as it is; a band that is not its rows, rows past the frame and a source
+/// that ends before the last row are refused as `internal`. However the encode stops, what libjpeg
+/// still buffers is discarded and `out` receives nothing more.
+pub(crate) fn encode_jpeg_rows<W: Write, B: AsRef<[u8]>>(
+    out: W,
+    width: u32,
+    height: u32,
+    bands: impl IntoIterator<Item = Result<(u32, B), Error>>,
     exif: Option<&[u8]>,
     progress: &mut dyn FnMut(f64),
     cancel: &dyn Fn() -> Result<(), Error>,
@@ -38,28 +73,28 @@ pub(crate) fn encode_jpeg<W: Write>(
         segments: &segments,
         icc: Some(srgb_profile()),
     };
-    let rows = frame.height as usize;
+    let rows = height as usize;
     let mut last_reported = 0.0;
-    luxforge_jpeg::encode(
-        out,
-        frame.width,
-        frame.height,
-        &frame.rgba,
-        &settings,
-        &mut |rows_done| {
-            if cancel().is_err() {
-                return Err(Error::cancelled("export encode cancelled"));
+    let mut step = |rows_done: usize| {
+        if cancel().is_err() {
+            return Err(Error::cancelled("export encode cancelled"));
+        }
+        if rows_done > 0 {
+            let fraction = rows_done as f64 / rows as f64;
+            if fraction - last_reported >= 0.01 || rows_done == rows {
+                last_reported = fraction;
+                progress(fraction);
             }
-            if rows_done > 0 {
-                let fraction = rows_done as f64 / rows as f64;
-                if fraction - last_reported >= 0.01 || rows_done == rows {
-                    last_reported = fraction;
-                    progress(fraction);
-                }
-            }
-            Ok(())
-        },
-    )
+        }
+        Ok(())
+    };
+    // Dropped on any error, the session is abandoned as `Encoder::abort` abandons it.
+    let mut encoder = Encoder::start(out, width, height, &settings)?;
+    for band in bands {
+        let (count, rgba) = band?;
+        encoder.write_rows(count as usize, rgba.as_ref(), &mut step)?;
+    }
+    Ok(encoder.finish()?)
 }
 
 /// The one embedded sRGB ICC profile, built once from `moxcms`'s own sRGB definition (which
@@ -404,6 +439,104 @@ mod tests {
             out.len(),
             full.len()
         );
+    }
+
+    /// `frame` in bands of `size` rows, the last cut short where the frame ends, each an owned
+    /// buffer, as a renderer that produces bands hands them over.
+    fn bands(frame: &Raster, size: usize) -> Vec<Result<(u32, Vec<u8>), Error>> {
+        let stride = frame.width as usize * 4;
+        frame
+            .rgba
+            .chunks(size * stride)
+            .map(|band| Ok(((band.len() / stride) as u32, band.to_vec())))
+            .collect()
+    }
+
+    /// Bands of 1, 7, 16 and 296 rows encode the bytes the whole frame does, EXIF and profile
+    /// included, with the same progress and the same checks of the cancel: one before each 16-row
+    /// strip and one after the last.
+    #[test]
+    fn bands_encode_the_whole_frames_bytes_with_its_progress_and_checks() {
+        let frame = gradient_frame(257, 131);
+        let exif = [0x4d, 0x4d, 0, 42, 1, 2, 3, 4];
+        let checks = Cell::new(0u32);
+        let check = || {
+            checks.set(checks.get() + 1);
+            Ok(())
+        };
+        let mut whole = Vec::new();
+        let mut whole_progress = Vec::new();
+        encode_jpeg(
+            &mut whole,
+            &frame,
+            Some(&exif),
+            &mut |fraction| whole_progress.push(fraction),
+            &check,
+        )
+        .unwrap();
+        let whole_checks = checks.replace(0);
+        assert_eq!(whole_checks, 131_u32.div_ceil(16) + 1);
+        for size in [1, 7, 16, 296] {
+            let mut out = Vec::new();
+            let mut progress = Vec::new();
+            encode_jpeg_rows(
+                &mut out,
+                frame.width,
+                frame.height,
+                bands(&frame, size),
+                Some(&exif),
+                &mut |fraction| progress.push(fraction),
+                &check,
+            )
+            .unwrap();
+            assert!(out == whole, "bands of {size} encode other bytes");
+            assert_eq!(progress, whole_progress, "bands of {size}");
+            assert_eq!(checks.replace(0), whole_checks, "bands of {size}");
+        }
+    }
+
+    /// A band the source cannot produce stops the encode with the source's own error; a band that
+    /// is not the rows it declares and a source that ends before the last row are refused as
+    /// `internal`. None is an abort, and each leaves only the start of the file in the writer.
+    #[test]
+    fn a_band_source_that_fails_or_falls_short_stops_the_encode() {
+        let frame = gradient_frame(257, 131);
+        let (whole, _) = encode(&frame, None);
+        let mut failing = bands(&frame, 16);
+        failing[3] = Err(Error::render("the renderer stopped"));
+        let mut declared = bands(&frame, 16);
+        if let Ok((rows, _)) = &mut declared[2] {
+            *rows += 1;
+        }
+        let mut short = bands(&frame, 16);
+        short.pop();
+        for (source, kind, detail) in [
+            (failing, ErrorKind::Render, "the renderer stopped"),
+            (
+                declared,
+                ErrorKind::Internal,
+                "a band's pixels are not the rows it declares",
+            ),
+            (short, ErrorKind::Internal, "finished before the last row"),
+        ] {
+            let mut out = Vec::new();
+            let error = encode_jpeg_rows(
+                &mut out,
+                frame.width,
+                frame.height,
+                source,
+                None,
+                &mut |_| {},
+                &|| Ok(()),
+            )
+            .unwrap_err();
+            assert_eq!(error.kind, kind, "{error:?}");
+            assert!(error.detail.contains(detail), "{error:?}");
+            assert!(
+                out.len() < whole.len() && whole.starts_with(&out),
+                "{detail}"
+            );
+        }
     }
 
     #[test]
