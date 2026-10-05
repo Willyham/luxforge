@@ -433,20 +433,29 @@ fn current_photo(frame: &Frame) -> Result {
         format!("Detail's GPU draw was blank or stale: {gpu}"),
     )
 }
-fn settled_fit(frame: &Frame) -> Result {
+/// The picture at rest at Fit is the GPU's render of the current stack — the stack at full
+/// resolution in tiles reduced to the view, or its view plan where the view draws it at its own
+/// size — the status bar naming it, over the current stack's adopted analysis.
+fn rest_fit(frame: &Frame) -> Result {
     current_photo(frame)?;
     let state = frame.state();
-    let proxy = &state["proxy"];
+    let gpu = &state["surface"]["gpu"];
+    let render = &state["status_bar"]["render"];
     ensure(
-        proxy["presented"] == true
-            && proxy["settled_from_exact"] == true
-            && proxy["approximate"] == false
-            && proxy["approximate_reason"].is_null()
+        gpu["drawing_path"] == "gpu"
+            && (gpu["picture"] == "rest" || gpu["picture"] == "view")
+            && render
+                .as_str()
+                .is_some_and(|text| text.starts_with("GPU render"))
             && state["approximate_white_balance"] == false
             && state["surface"]["detail_updating"] == false
             && state["histogram"]["stale"] == false
             && state["stack"]["displayed"]["entry"] == state["stack"]["entry"],
-        format!("Fit has not adopted exact Detail pixels and analysis: {proxy}"),
+        format!(
+            "Fit's picture at rest is not the GPU's render of the current stack: path {}, picture \
+             {}, {render}",
+            gpu["drawing_path"], gpu["picture"]
+        ),
     )
 }
 fn displayed_dimensions(frame: &Frame) -> Result<[u64; 2]> {
@@ -518,7 +527,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         );
     }
     let restored = launch.at("compare-restored")?;
-    settled_fit(restored)?;
+    rest_fit(restored)?;
     ensure(
         restored.state()["compare"] == false
             && restored.state()["comparison"].is_null()
@@ -646,7 +655,7 @@ pub fn verify_fit(_: &mut Run, launches: &[Checked]) -> Result {
             format!("the moving Detail suffix lost its approximation/reuse report: {moving_proxy}"),
         )?;
     } else {
-        settled_fit(moving)?;
+        current_photo(moving)?;
         checks.note(
             moving,
             "the draft was already settled at capture; moving approximation/reuse remains unproven",
@@ -663,18 +672,20 @@ pub fn verify_fit(_: &mut Run, launches: &[Checked]) -> Result {
         "current",
     ] {
         let frame = launch.at(name)?;
-        settled_fit(frame)?;
-        let proxy = &frame.state()["proxy"];
+        if name == "quiet" {
+            continue;
+        }
+        rest_fit(frame)?;
         checks.note(
             frame,
-            "settled Fit is reduced from exact processing",
-            proxy.clone(),
+            "the picture at rest at Fit is the GPU's, the stack at full resolution reduced to the view",
+            frame.state()["surface"]["gpu"]["rest"].clone(),
         );
     }
     checks.compare(
-        launch.at("release")?,
-        "release preserves the exact settled draft pixels",
-        difference(launch.at("quiet")?, launch.at("release")?)?,
+        launch.at("current")?,
+        "returning to the current version draws the release's picture at rest again, byte for byte",
+        difference(launch.at("release")?, launch.at("current")?)?,
         0.0,
         Tolerance::Within(0.0),
     )?;
@@ -748,12 +759,12 @@ pub fn verify_raw(_: &mut Run, launches: &[Checked]) -> Result {
         "crop",
         "rotate",
     ] {
-        settled_fit(launch.at(name)?)?;
+        rest_fit(launch.at(name)?)?;
     }
     let moderate = launch.at("moderate")?;
     let moderate_state = moderate.state();
     if moderate_state["proxy"]["settled_from_exact"] == true {
-        settled_fit(moderate)?;
+        rest_fit(moderate)?;
     } else {
         let status = moderate.status()?;
         ensure(

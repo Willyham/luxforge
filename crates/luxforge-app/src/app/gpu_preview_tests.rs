@@ -149,10 +149,17 @@ fn gpu_preview_a_fit_drag_derives_its_boundary_and_makes_no_job_per_tick() {
     let resident = events(&records, "gpu_boundary_resident");
     assert_eq!(resident.len(), 1);
     assert_eq!(resident[0]["why"], "draft-ended");
+    // At rest the committed stack's own view plan is drawn in place of the CPU frame, over the
+    // boundary the drag held, which keeps the surface's slot for the next draft.
     let surfaces = editor.surfaces();
     assert!(
-        surfaces.gpu.is_some() && surfaces.gpu_hold,
-        "held behind the CPU frame between drafts, which keeps the surface's slot"
+        surfaces.gpu.is_some() && !surfaces.gpu_hold && surfaces.gpu_tag.is_none(),
+        "the committed stack's view plan drawn at rest"
+    );
+    assert_eq!(
+        surfaces.gpu.map(|plan| plan.boundary.version()),
+        editor.gpu.held_version(),
+        "over the boundary the drag held"
     );
     // The next drag starts from the resident boundary: its first tick is drawn on the GPU.
     let log = attach_log(&mut editor);
@@ -446,11 +453,14 @@ fn gpu_preview_a_drag_below_100_percent_draws_its_proxy_with_no_job_per_tick() {
             resident["proxy"]["bounds"],
             json!([bounds.width, bounds.height])
         );
+        // At rest the committed stack's own view plan is drawn in place of the CPU frame, over
+        // the boundary the drag held.
         let surfaces = editor.surfaces();
         assert!(
-            surfaces.gpu.is_some() && surfaces.gpu_hold,
-            "{value}%: held behind the CPU frame between drafts"
+            surfaces.gpu.is_some() && !surfaces.gpu_hold,
+            "{value}%: the committed stack's view plan drawn at rest"
         );
+        assert_eq!(surfaces.gpu.map(|plan| plan.boundary.version()), version);
         // The committed stack's job at the view's bounds: its resident plan is the proxy's, and so
         // is every plan of its warm list.
         let refreshed = crate::app::tasks::refresh(

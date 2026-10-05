@@ -98,13 +98,8 @@ impl HeadlessSurface {
             frames += 1;
             self.pipeline
                 .fit_source(&self.device, &self.queue, Some(source));
-            self.pipeline.prepare_rest(
-                &mut self.surface,
-                &self.device,
-                &self.queue,
-                Some(rest),
-                true,
-            );
+            self.pipeline
+                .prepare_rest(&mut self.surface, &self.device, &self.queue, Some(rest));
             self.pipeline.trim_source();
             let Some(figures) = self.surface.rest_figures() else {
                 return Some(Err(GpuFallback::PipelineFailed));

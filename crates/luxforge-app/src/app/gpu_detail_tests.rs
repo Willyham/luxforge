@@ -1582,8 +1582,9 @@ mod drags {
         let ticks = events(&records, "gpu_preview_tick");
         assert_eq!(ticks.len(), 3);
         assert!(ticks.iter().all(|tick| tick["path"] == "gpu"));
-        // The release commits. The CPU's frames take over: the moving proxy, then the reduction
-        // of the exact render, after which the boundary stays resident behind them.
+        // The release commits. The CPU's frames still arrive behind the GPU's: the moving proxy,
+        // then the reduction of the exact render; the boundary stays resident, and at rest the
+        // GPU draws the committed stack itself, its view plan and then its tiles.
         let log = attach_log(&mut editor);
         let _ = let_go(&mut editor, "set-detail", "sharpening");
         assert!(run_commit(&mut editor));
@@ -1606,7 +1607,15 @@ mod drags {
             events(&records, "gpu_boundary_resident")[0]["why"],
             "draft-ended"
         );
-        assert!(editor.surfaces().gpu.is_some() && editor.surfaces().gpu_hold);
+        let surfaces = editor.surfaces();
+        assert!(
+            editor.gpu_rest_plan().is_some() && surfaces.gpu.is_some() && !surfaces.gpu_hold,
+            "the committed Detail stack's view plan drawn at rest"
+        );
+        assert!(
+            surfaces.gpu_rest.is_some(),
+            "and its picture at rest in tiles, the Fit frame being smaller than the stage"
+        );
         finish(editor, catalog);
     }
 

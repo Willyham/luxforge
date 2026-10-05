@@ -12,7 +12,9 @@
 //! every frame is the CPU's, and evidence names [`PREFERENCE_OFF`].
 //!
 //! The status bar's render slot reads "GPU preview · N ms" while the surface draws the GPU stage's
-//! output for the plan the desktop handed it ([`Editor::gpu_frame_us`]). Iced's compositor creates
+//! output for a gesture's plan, and "GPU render · N ms" while it draws the committed stack at rest,
+//! its view plan or its picture at rest in tiles, N then the interface thread's time over the
+//! frames that drew the tiles ([`Editor::gpu_frame_us`]). Iced's compositor creates
 //! its device with no optional features, so the device the surface receives has no timestamp
 //! queries on any adapter; N is therefore the interface thread's own time to prepare that frame in
 //! the surface's `prepare` — writing its words, uploading a new boundary, encoding and submitting
@@ -116,8 +118,18 @@ impl Editor {
     /// when that draw was the GPU stage's output over the boundary of the plan handed to it now.
     /// `None` whenever the photograph is the CPU's frame, a fallback's or a dissolve's included.
     pub(crate) fn gpu_frame_us(&self) -> Option<u64> {
-        let plan = self.surfaces().gpu?;
         let drawn = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
+        // The picture at rest in tiles, once the surface draws it: the interface thread's time
+        // its tiles and their quantization took over the frames that drew them.
+        if let Some(rest) = self.gpu_rest_handed()
+            && drawn.drawn_rest == Some(rest.version)
+        {
+            return drawn
+                .gpu_rest
+                .filter(|figures| figures.version == rest.version)
+                .map(|figures| figures.prepare_us);
+        }
+        let plan = self.surfaces().gpu?;
         if drawn.drawn_path == Some(DrawingPath::Gpu)
             && drawn.drawn_gpu_boundary == Some(plan.boundary.version())
         {
