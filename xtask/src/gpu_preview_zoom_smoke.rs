@@ -4,16 +4,17 @@
 //! (`docs/design/gpu-preview.md`, "At 100% and above" and "Below 100%").
 //!
 //! One launch over the quadrant fixture the `gpu-preview` scenario uses. A Basic exposure drag at
-//! 100% opens with a CPU tick whose region job carries the one boundary request, for the region the
-//! view shows; once the boundary is held and the sequence compiled, its ticks are drawn on the GPU
-//! with no preview job — no tick's, and no region job for the view — the plan's region holding the
-//! view, their pixels against the CPU frame the release commits. The boundary stays on the GPU as
-//! the resident one when the drag ends, and at 200%, where the view still shows the whole
-//! photograph, the same region at full scale, a drag draws from it at its first tick, asking for
-//! nothing. At 800%, where the view shows a corner of the photograph, the drag is panned across it
-//! while it ticks: the pan past the held region lets that boundary go and a later tick asks for the
-//! new region's, and every frame drawn on the GPU draws a region that holds the view it was
-//! captured with. Before that, back at 100%, Presence is committed with Dehaze and Clarity: a
+//! 100% draws from the region's boundary, a window of the source cut at full scale, which the
+//! view's own job or the drag's first tick derives on the GPU; its first tick is on the CPU only
+//! until the surface has evaluated the plan and compiled its sequence, and its later ticks are
+//! drawn on the GPU with no preview job — no tick's, and no region job for the view — the plan's
+//! region holding the view, their pixels against the CPU frame the release commits. The boundary
+//! stays on the GPU as the resident one when the drag ends, and at 200%, where the view still
+//! shows the whole photograph, the same region at full scale, a drag draws from it at its first
+//! tick, deriving nothing. At 800%, where the view shows a corner of the photograph, the drag is
+//! panned across it while it ticks: the pan past the held region lets that boundary go and a later
+//! tick derives the new region's, and every frame drawn on the GPU draws a region that holds the
+//! view it was captured with. Before that, back at 100%, Presence is committed with Dehaze and Clarity: a
 //! Texture and a Clarity drag read Dehaze's light from the store the exact frames filled and run at
 //! most five compute passes a tick; a Basic drag under it, whose light the region alone cannot
 //! give, keeps the CPU path and names `region-estimate`; and with Dehaze back at neutral a Basic
@@ -27,9 +28,10 @@
 //! shows it running or follows its end, which a capture after 150 ms allows.
 //!
 //! A second, short launch drags Basic's exposure at 50% and then at 33%, where the view draws the
-//! displayed-size proxy of the whole stage, as Fit draws the display-bounded one. Each drag's first
-//! tick takes the CPU path and its job carries the one boundary request, for that proxy; once the
-//! boundary is held its ticks are drawn on the GPU from a whole frame's plan with no preview job,
+//! displayed-size proxy of the whole stage, as Fit draws the display-bounded one. Each drag draws
+//! from the source reduced to that proxy on the GPU, derived by the view's own job or the drag's
+//! first tick; once the surface has evaluated the plan its ticks are drawn on the GPU from a whole
+//! frame's plan with no preview job,
 //! each GPU frame's boundary, draft revision, budget figures and label checked against its state,
 //! the same settings drawn twice to the same bytes, and the status bar saying nothing of the zoom.
 //! The release's committed proxy frame dissolves in from the drag's last GPU frame, whose pixels
@@ -53,7 +55,7 @@ pub use crate::gpu_preview_smoke::FIXTURE;
 struct Zoomed {
     zoom: f32,
     /// Whether the drag's first tick draws from the resident boundary an earlier drag left over the
-    /// same region, rather than asking for one.
+    /// same region, rather than deriving one.
     resident: bool,
     /// The first tick's value, then the GPU ticks' values.
     first: f64,
@@ -163,7 +165,7 @@ const BELOW: [Below; 2] = [
 ];
 
 /// The second launch's frames, in order: the open, then for each zoom below 100% the zoom, the
-/// drag's first tick, the wait while its boundary arrives, its GPU ticks, the same ticks again, its
+/// drag's first tick, the wait while the surface evaluates its plan, its GPU ticks, the same ticks again, its
 /// release and the settle after it.
 pub fn below_plan(_: &[PathBuf]) -> Plan {
     let mut steps = vec![Step::opened("opened-below").no_draft().masks(0)];
@@ -500,14 +502,26 @@ fn same_bytes(first: &Frame, second: &Frame) -> Result<Value> {
     )
 }
 
+/// Whether a tick's reason for the CPU path is one that passes within a frame or two: the surface
+/// has not evaluated the plan, its sequence still compiles, or the source still uploads. A tick on
+/// the GPU names none.
+fn passing(reason: &Value) -> bool {
+    reason.is_null()
+        || ["surface-pending", "compiling", "source-uploading"]
+            .iter()
+            .any(|passing| reason == passing)
+}
+
 /// The drags below 100%, each over the displayed-size proxy of the whole stage, planned as Fit's
-/// is at the view's bounds: the first tick a CPU frame whose job asks for that proxy's one
-/// boundary, with nothing said of the zoom; the boundary held the whole proxy stage at the view's
+/// is at the view's bounds: the first tick drawn from the boundary the view's own job derived from
+/// the source, reduced to that proxy, or one the tick derives, on the CPU only for a reason that
+/// passes, with nothing said of the zoom; the boundary held the whole proxy stage at the view's
 /// bounds, the size of the CPU frame the view draws; the later ticks drawn on the GPU from a whole
-/// frame's plan with no preview job, each frame's boundary, revision, budget figures and label its
-/// state's, the same settings drawn twice to the same bytes; the release's committed proxy frame
-/// dissolving in from the last GPU frame, whose pixels are the CPU frame's of the same settings
-/// within the pointwise limits; and the boundary kept as the resident one, the view's.
+/// frame's plan with no preview job and nothing derived again, each frame's boundary, revision,
+/// budget figures and label its state's, the same settings drawn twice to the same bytes; the
+/// release's committed proxy frame dissolving in from the last GPU frame, whose pixels are the CPU
+/// frame's of the same settings within the pointwise limits; and the boundary kept as the
+/// resident one, the view's.
 fn drawn_on_the_gpu_below_100(launch: &Checked, checks: &mut Checks) -> Result {
     for Below { zoom, names, .. } in BELOW {
         let [
@@ -523,28 +537,21 @@ fn drawn_on_the_gpu_below_100(launch: &Checked, checks: &mut Checks) -> Result {
         let events = step_events(launch, first_name)?;
         let (gpu_ticks, cpu_ticks, _) = ticks(events);
         let first_ticks = named(events, "gpu_preview_tick");
-        let asked = first_ticks
-            .iter()
-            .filter(|tick| tick["detail"]["boundary_requested"] == json!(true))
-            .count();
         let reasons: Vec<&Value> = first_ticks
             .iter()
             .map(|tick| &tick["detail"]["reason"])
             .collect();
         let state = first.state();
+        let derived = state["surface"]["gpu"]["gpu_preview"]["drag"]["boundaries_derived"].clone();
         ensure(
-            state["surface"]["gpu"]["drawing_path"] == json!("cpu")
-                && gpu_ticks == 0
-                && cpu_ticks >= 1
-                && asked == 1
-                && reasons
-                    .iter()
-                    .all(|reason| **reason == json!("boundary-pending"))
+            gpu_ticks + cpu_ticks >= 1
+                && derived.as_u64().is_some_and(|derived| derived <= 1)
+                && reasons.iter().all(|reason| passing(reason))
                 && state["status_bar"]["fallback"].is_null(),
             format!(
-                "At {zoom}% the first tick was not a CPU frame asking for the proxy's boundary and \
-                 saying nothing: {gpu_ticks} GPU and {cpu_ticks} CPU ticks, {asked} asking, for \
-                 {reasons:?}, the status bar saying {}",
+                "At {zoom}% the first tick did not draw from the proxy's boundary saying nothing: \
+                 {gpu_ticks} GPU and {cpu_ticks} CPU ticks for {reasons:?}, {derived} derived, the \
+                 status bar saying {}",
                 state["status_bar"]["fallback"]
             ),
         )?;
@@ -552,17 +559,28 @@ fn drawn_on_the_gpu_below_100(launch: &Checked, checks: &mut Checks) -> Result {
         let state = held.state();
         let summary = &state["surface"]["gpu"]["gpu_preview"]["drag"];
         let boundary = &summary["boundary"];
+        // The view's proxy at its bounds, the size of the frame the CPU's proxy phase draws there,
+        // whichever frame the CPU last presented.
         let (bounds, raster) = (&state["proxy"]["bounds"], &state["surface"]["raster"]);
         ensure(
-            summary["boundary_requests"] == json!(1)
+            summary["boundaries_derived"] == derived
                 && summary["zoom"] == json!(zoom)
+                && boundary["derived"] == json!("reduce")
                 && boundary["region"].is_null()
                 && boundary["proxy"]["bounds"] == json!([bounds["width"], bounds["height"]])
-                && json!([boundary["width"], boundary["height"]]) == *raster
-                && json!([boundary["proxy"]["width"], boundary["proxy"]["height"]]) == *raster,
+                && json!([boundary["width"], boundary["height"]])
+                    == json!([boundary["proxy"]["width"], boundary["proxy"]["height"]])
+                && boundary["width"]
+                    .as_u64()
+                    .zip(bounds["width"].as_u64())
+                    .is_some_and(|(width, bound)| width <= bound)
+                && boundary["height"]
+                    .as_u64()
+                    .zip(bounds["height"].as_u64())
+                    .is_some_and(|(height, bound)| height <= bound),
             format!(
-                "At {zoom}% the boundary held is not the view's proxy from one request: {summary}, \
-                 the view's bounds {bounds}, the CPU frame {raster}"
+                "At {zoom}% the boundary held is not the source reduced to the view's proxy: \
+                 {summary}, the view's bounds {bounds}, the CPU frame {raster}"
             ),
         )?;
         let (dragged, again) = (launch.at(gpu_name)?, launch.at(again_name)?);
@@ -576,7 +594,7 @@ fn drawn_on_the_gpu_below_100(launch: &Checked, checks: &mut Checks) -> Result {
                 gpu_ticks >= 1
                     && cpu_ticks == 0
                     && jobs == 0
-                    && gpu["gpu_preview"]["drag"]["boundary_requests"] == json!(1)
+                    && gpu["gpu_preview"]["drag"]["boundaries_derived"] == derived
                     && gpu["gpu_preview"]["drag"]["boundary"]["version"] == boundary["version"]
                     && gpu["plan_region"].is_null()
                     && gpu["visible_region"].is_null()
@@ -612,7 +630,7 @@ fn drawn_on_the_gpu_below_100(launch: &Checked, checks: &mut Checks) -> Result {
         checks.note(
             again,
             &format!("the drag at {zoom}% drawn on the GPU from the displayed-size proxy"),
-            json!({"first": {"asked": asked, "reasons": reasons}, "boundary": boundary,
+            json!({"first": {"derived": derived, "reasons": reasons}, "boundary": boundary,
                 "view_bounds": bounds, "cpu_frame": raster, "drawn": drawn,
                 "same_bytes": repeated, "settled": dissolved, "against_release": compared,
                 "jump": jumped, "resident": kept}),
@@ -627,9 +645,10 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     };
     let mut checks = Checks::new();
 
-    // At 100% the region's boundary from one request, and at 200% the resident boundary the 100%
-    // drag left over the same region, asking for none: the ticks drawn on the GPU with no preview
-    // job, and their pixels the CPU's.
+    // At 100% the region's boundary, a window of the source cut at full scale, derived by the
+    // view's own job or the drag's first tick, and at 200% the resident boundary the 100% drag
+    // left over the same region, deriving none: the ticks drawn on the GPU with no preview job,
+    // and their pixels the CPU's.
     let mut left: Option<Value> = None;
     for Zoomed {
         zoom,
@@ -643,11 +662,13 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         let events = step_events(launch, first_name)?;
         let (gpu_ticks, cpu_ticks, _) = ticks(events);
         let first_ticks = named(events, "gpu_preview_tick");
-        let asked = first_ticks
+        let reasons: Vec<&Value> = first_ticks
             .iter()
-            .filter(|tick| tick["detail"]["boundary_requested"] == json!(true))
-            .count();
-        let requests = if resident {
+            .map(|tick| &tick["detail"]["reason"])
+            .collect();
+        let derived =
+            first.state()["surface"]["gpu"]["gpu_preview"]["drag"]["boundaries_derived"].clone();
+        if resident {
             let left = left
                 .as_ref()
                 .ok_or("a boundary an earlier drag left resident")?;
@@ -655,29 +676,26 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             ensure(
                 gpu_ticks >= 1
                     && cpu_ticks == 0
-                    && asked == 0
+                    && derived == json!(0)
                     && first_ticks
                         .iter()
                         .all(|tick| &tick["detail"]["boundary"] == left),
                 format!(
                     "At {zoom}% the first tick was not drawn from the resident boundary {left}: \
-                     {gpu_ticks} GPU and {cpu_ticks} CPU ticks, {asked} asking"
+                     {gpu_ticks} GPU and {cpu_ticks} CPU ticks, {derived} derived"
                 ),
             )?;
-            0
         } else {
             ensure(
-                first.state()["surface"]["gpu"]["drawing_path"] == json!("cpu")
-                    && gpu_ticks == 0
-                    && cpu_ticks >= 1
-                    && asked == 1,
+                gpu_ticks + cpu_ticks >= 1
+                    && derived.as_u64().is_some_and(|derived| derived <= 1)
+                    && reasons.iter().all(|reason| passing(reason)),
                 format!(
-                    "At {zoom}% the first tick was not a CPU frame asking for the boundary: \
-                     {gpu_ticks} GPU and {cpu_ticks} CPU ticks, {asked} asking"
+                    "At {zoom}% the first tick did not draw from the region's boundary: \
+                     {gpu_ticks} GPU and {cpu_ticks} CPU ticks for {reasons:?}, {derived} derived"
                 ),
             )?;
-            1
-        };
+        }
         let held = launch.at(held_name)?;
         let summary = &held.state()["surface"]["gpu"]["gpu_preview"]["drag"];
         let (visible, _) = regions(held);
@@ -685,13 +703,14 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             .ok()
             .map(|[x, y, width, height]| [x, y, x + width, y + height]);
         ensure(
-            summary["boundary_requests"] == json!(requests)
+            summary["boundaries_derived"] == derived
+                && summary["boundary"]["derived"] == json!("cut")
                 && summary["zoom"] == json!(zoom)
                 && region.is_some()
                 && region == visible,
             format!(
-                "At {zoom}% the boundary held is not the visible region's from {requests} \
-                 requests: {summary}, the view {visible:?}"
+                "At {zoom}% the boundary held is not the visible region's, cut from the source: \
+                 {summary}, the view {visible:?}"
             ),
         )?;
         left = Some(summary["boundary"]["version"].clone());
@@ -717,7 +736,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         );
     }
 
-    // At 800%: the pan past the held region lets it go and asks for the new one; every frame
+    // At 800%: the pan past the held region lets it go and derives the new one; every frame
     // drawn on the GPU drew a region holding its view.
     let panned = launch.at("pan-drag")?;
     let events = step_events(launch, "pan-drag")?;
@@ -729,12 +748,12 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let summary = &held.state()["surface"]["gpu"]["gpu_preview"]["drag"];
     ensure(
         changed >= 1
-            && summary["boundary_requests"]
+            && summary["boundaries_derived"]
                 .as_u64()
-                .is_some_and(|requests| requests >= 2),
+                .is_some_and(|derived| derived >= 1),
         format!(
-            "The pan let {changed} boundaries go for a new key, and the drag asked {} times",
-            summary["boundary_requests"]
+            "The pan let {changed} boundaries go for a new key, and the drag derived {}",
+            summary["boundaries_derived"]
         ),
     )?;
     let moved = launch.at("pan-gpu")?;
@@ -780,7 +799,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         moved,
         "the drag at 800% panned past its region, then drawn over the new one",
         json!({"drawn": drawn, "released_for_a_new_key": changed,
-            "boundary_requests": summary["boundary_requests"], "views": views,
+            "boundaries_derived": summary["boundaries_derived"], "views": views,
             "settled": settled}),
     );
 
@@ -812,11 +831,11 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             && reasons
                 .iter()
                 .all(|reason| **reason == json!("region-estimate"))
-            && summary["boundary_requests"] == json!(0),
+            && summary["boundaries_derived"] == json!(0),
         format!(
             "The Basic drag under Presence with Dehaze at 100% was {gpu_ticks} GPU and \
-             {cpu_ticks} CPU ticks for {reasons:?}, asking for {} boundaries",
-            summary["boundary_requests"]
+             {cpu_ticks} CPU ticks for {reasons:?}, deriving {} boundaries",
+            summary["boundaries_derived"]
         ),
     )?;
     checks.note(

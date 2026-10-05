@@ -17,9 +17,9 @@
 //! itself never reads a pixel back or waits on the GPU. Everything here blocks the calling test.
 use super::{
     BoundaryFormat, Compiled, GpuBoundary, GpuFallback, GpuPlan, GpuSource, GpuStep, GpuTail,
-    OUTPUT_FORMAT, SourceLayouts, SourceSlot, SpatialSlot, Support, answered, assemble_passes,
-    chain, compile, encode_pass_over, le_bytes, slot_buffers, slot_charge, spatial, upload_rows,
-    validate, validate_step,
+    OUTPUT_FORMAT, SourceLayouts, SourceSlot, SpatialSlot, Support, assemble_passes, chain,
+    compile, encode_pass_over, le_bytes, slot_buffers, slot_charge, spatial, upload_rows, validate,
+    validate_step,
 };
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -40,29 +40,21 @@ impl Qualifier {
     /// A device of this host's default adapter, or `None` after printing that `test` was skipped:
     /// a test without one ran nothing and is not GPU evidence.
     pub fn headless(test: &str) -> Option<Self> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-        let Some(Ok(adapter)) =
-            answered(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-        else {
-            eprintln!("skipped: no GPU adapter; {test} ran nothing and is not GPU evidence");
-            return None;
-        };
-        let Some(Ok((device, queue))) =
-            answered(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-        else {
-            eprintln!(
-                "skipped: no device for the adapter; {test} ran nothing and is not GPU evidence"
-            );
-            return None;
-        };
+        let (device, queue, adapter) = super::headless::device(test, wgpu::Limits::default())?;
         let support = Support::new(&device);
         Some(Self {
             device,
             queue,
-            adapter: adapter.get_info(),
+            adapter,
             support,
             poison: AtomicBool::new(false),
         })
+    }
+
+    /// The editor's own surface on this qualifier's device ([`super::headless::HeadlessSurface`]):
+    /// a picture at rest, or one of its tiles, drawn as the desktop draws it.
+    pub fn surface(&self) -> super::headless::HeadlessSurface {
+        super::headless::HeadlessSurface::new(&self.device, &self.queue)
     }
 
     /// While `poisoned`, every later evaluation starts each link's passes from NaN bits in every

@@ -1531,9 +1531,9 @@ mod drags {
         })
     }
 
-    /// A Detail Amount drag at Fit on a photograph drawn as a proxy. Its first tick takes the CPU
-    /// path and asks for the boundary: the input of the restoration layer, which is the proxy
-    /// source itself. Once the boundary is held and the surface has evaluated it, every tick is
+    /// A Detail Amount drag at Fit on a photograph drawn as a proxy. Its first tick derives the
+    /// boundary — the input of the restoration layer, which is the source reduced to the proxy —
+    /// and takes the CPU path until the surface has evaluated its plan. From then on every tick is
     /// Detail's spatial step drawn on the GPU with no preview job. The release commits, and the
     /// CPU's frames replace the GPU's: the moving proxy, then the reduction of the exact render
     /// the stack settles to; the boundary then stays resident for the next draft.
@@ -1547,14 +1547,13 @@ mod drags {
         editor.gpu.surface = Some(SurfaceReport::default());
         let log = attach_log(&mut editor);
         let _ = slide(&mut editor, "set-detail", "sharpening", 40.0);
-        deliver_until(&mut editor, "the boundary", |editor| {
-            editor.gpu.holds_boundary()
-        });
         let records = logged(&mut editor, &log);
         let ticks = events(&records, "gpu_preview_tick");
         assert_eq!(ticks[0]["path"], "cpu");
-        assert_eq!(ticks[0]["reason"], "boundary-pending");
-        assert_eq!(ticks[0]["boundary_requested"], true);
+        assert_eq!(ticks[0]["reason"], "surface-pending");
+        let derived = events(&records, "gpu_boundary");
+        assert_eq!(derived.len(), 1, "the proxy's boundary derived at the tick");
+        assert_eq!(derived[0]["derived"], "reduce");
         // The boundary is the Detail layer's input at the proxy's size.
         let summary = editor.gpu.summary();
         let boundary = &summary["drag"]["boundary"];
@@ -1613,7 +1612,7 @@ mod drags {
 
     /// A drag of a layer after a committed Detail layer starts from the same boundary as the
     /// Detail drag, the stack's first layer's input, which stays resident between the two: no
-    /// boundary is asked for again, and its plan runs Detail's spatial step, which the surface
+    /// boundary is derived again, and its plan runs Detail's spatial step, which the surface
     /// keeps by content, then Basic's colour, every tick drawn on the GPU with no preview job.
     #[test]
     fn gpu_detail_a_drag_after_detail_starts_from_the_restoration_prefix() {
@@ -1635,7 +1634,7 @@ mod drags {
         let _ = slide(&mut editor, "set-basic", "exposure", 0.2);
         let records = logged(&mut editor, &log);
         assert_eq!(editor.gpu.summary()["drag"]["boundary"]["layer"], 0);
-        assert_eq!(editor.gpu.ticks().2, 0, "no boundary is asked for");
+        assert_eq!(editor.gpu.ticks().2, 0, "no boundary is derived");
         assert_eq!(jobs(&records), 0, "its first tick is drawn on the GPU");
         // The plan runs from Detail's input: Detail's spatial step, then Basic's colour.
         assert!(editor.surfaces().gpu.is_some());
@@ -1761,10 +1760,11 @@ mod drags {
     }
 
     /// A Detail Amount drag at 100% is drawn over the visible region at full scale, here the whole
-    /// 480 × 320 photograph, which the window shows at that zoom: its first tick takes the CPU path and its region job carries the one boundary request, the Detail layer's
-    /// input over the window the region reads; once that is held and the surface has evaluated it,
-    /// every tick is Detail's spatial step in its GPU shape, drawn on the GPU with no preview job
-    /// and no region job.
+    /// 480 × 320 photograph, which the window shows at that zoom: its first tick derives the
+    /// boundary, the Detail layer's input over the window the region reads, cut from the source,
+    /// and takes the CPU path with its region job until the surface has evaluated the plan; from
+    /// then on every tick is Detail's spatial step in its GPU shape, drawn on the GPU with no
+    /// preview job and no region job.
     #[test]
     fn gpu_detail_a_drag_at_100_percent_is_drawn_on_the_gpu_with_no_job_per_tick() {
         let catalog = catalog("zoom");
@@ -1781,13 +1781,17 @@ mod drags {
         editor.gpu.surface = Some(SurfaceReport::default());
         let log = attach_log(&mut editor);
         let _ = slide(&mut editor, "set-detail", "sharpening", 40.0);
-        deliver_until(&mut editor, "the region's boundary", |editor| {
-            editor.gpu.holds_boundary()
-        });
         let records = logged(&mut editor, &log);
         let ticks = events(&records, "gpu_preview_tick");
         assert_eq!(ticks[0]["path"], "cpu");
-        assert_eq!(ticks[0]["boundary_requested"], true);
+        assert_eq!(ticks[0]["reason"], "surface-pending");
+        let derived = events(&records, "gpu_boundary");
+        assert_eq!(
+            derived.len(),
+            1,
+            "the region's boundary derived at the tick"
+        );
+        assert_eq!(derived[0]["derived"], "cut");
         let summary = editor.gpu.summary();
         assert_eq!(summary["drag"]["zoom"], 100.0, "{summary}");
         assert_eq!(summary["drag"]["boundary"]["layer"], 0, "{summary}");

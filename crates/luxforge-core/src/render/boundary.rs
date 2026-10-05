@@ -1,11 +1,13 @@
-//! A GPU preview's held input boundary (`docs/design/gpu-preview.md`, "The held input boundary"):
-//! the input of the earliest layer a draft changes, rendered once per draft by the preview worker
-//! and held by the photo surface while the draft is open.
+//! A GPU plan's input boundary as the CPU renders it (`docs/design/gpu-preview.md`, "The GPU
+//! source"). The editor renders none: every plan starts from the source, which the photo surface
+//! holds and derives each boundary from on the GPU. What is here is the boundary format, and, for
+//! tests and the qualification harness alone, the CPU's render of a layer's input boundary, which
+//! a GPU-derived boundary is held to bit for bit.
 //!
 //! The boundary is the stage that layer receives — its segment's input through the exact steps
 //! before it — with every colour operation before it in the same segment applied and nothing
 //! quantized after them, so a boundary inside a colour run holds the unclamped `f32` value the run
-//! hands the layer. It is written in the format the surface uploads ([`BoundaryFormat`]), in one
+//! hands the layer. It is written in the format the surface holds ([`BoundaryFormat`]), in one
 //! pass over the rows it holds, on either pixel domain:
 //!
 //! - **The segment's input** is whatever the CPU render reads there: the (proxy) source for the
@@ -24,12 +26,16 @@
 //! finite. A developed RAW's, on the linear path, is `rgba32float`, every value as the CPU holds
 //! it: half rounding of a near-black value can flip the sign of a luminance a spatial operation
 //! divides by (`docs/specs/performance.md`, "Isolated near-black pixels").
-use super::{Compiled, Entry, Render, RenderSource, Segment, linear, restoration::PrefixPixels};
-use crate::{
-    Error,
-    modules::{ExactGeometry, Processing, Region, Stage},
-};
-use std::{borrow::Cow, sync::Arc};
+#[cfg(any(test, feature = "qualification"))]
+use super::{Compiled, Entry, Render, RenderSource, Segment, linear};
+#[cfg(any(test, feature = "qualification"))]
+use crate::Error;
+use crate::modules::Stage;
+#[cfg(any(test, feature = "qualification"))]
+use crate::modules::{ExactGeometry, Processing, Region};
+#[cfg(any(test, feature = "qualification"))]
+use std::borrow::Cow;
+use std::sync::Arc;
 
 /// How a boundary's texels are held: four little-endian half floats (`rgba16float`), or four
 /// little-endian `f32` (`rgba32float`), red, green, blue and an opaque alpha.
@@ -59,15 +65,16 @@ impl BoundaryFormat {
 /// The most bytes one boundary may hold: 32 MP of half-float texels, 16 MP of `f32` ones (owner,
 /// 2026-10-02). A Fit proxy is at most 8 MP, and a windowed proxy's or a percentage zoom's window
 /// is what the display shows plus the margins its boundaries need: a RAW region's `f32` boundary
-/// with Clarity's margin is up to 212 MB in the largest window the M4's display holds. The desktop
-/// lets its copy go once the photo surface holds it, and the surface uploads it a few chunks a
-/// frame, so its arrival holds about twice its bytes, not three times.
+/// with Clarity's margin is up to 212 MB in the largest window the M4's display holds. The photo
+/// surface derives it on the GPU from the source it holds, into its slot's boundary texture.
 pub const BOUNDARY_MAX_BYTES: u64 = 256 * 1024 * 1024;
 
 /// The largest finite half float.
+#[cfg(any(test, feature = "qualification"))]
 const HALF_MAX: f32 = 65504.0;
 
 /// The byte length of a `width` × `height` boundary of `format`, or the limit it passes.
+#[cfg(any(test, feature = "qualification"))]
 pub(super) fn frame_len(width: u32, height: u32, format: BoundaryFormat) -> Result<usize, Error> {
     let bytes = u64::from(width)
         .checked_mul(u64::from(height))
@@ -85,6 +92,7 @@ pub(super) fn frame_len(width: u32, height: u32, format: BoundaryFormat) -> Resu
 /// One texel of `format` written into the start of `bytes`, little-endian with opaque alpha: each
 /// channel as the nearest half float, a finite value past the half range held at its largest
 /// finite value, or as the `f32` it is.
+#[cfg(any(test, feature = "qualification"))]
 #[inline]
 pub(super) fn write_texel(format: BoundaryFormat, bytes: &mut [u8], rgb: [f32; 3]) {
     match format {
@@ -160,6 +168,7 @@ impl BoundaryFrame {
     }
 }
 
+#[cfg(any(test, feature = "qualification"))]
 impl Render<'_> {
     /// The input of the layer that begins at `position` — a segment and an operation index of
     /// `uncut` — as a boundary ([`BoundaryFrame`]).
@@ -178,29 +187,13 @@ impl Render<'_> {
         position: (usize, usize),
         format: BoundaryFormat,
     ) -> Result<BoundaryFrame, Error> {
-        self.boundary_reading(uncut, source, source_window, position, format, None)
-    }
-
-    /// [`Self::boundary`], its segment's input read from `held` when that is the held
-    /// restoration prefix's output this render's frame read ([`Render::held_prefix`]) and the
-    /// boundary lies in the segment it opens: the same frame the render would build, so the
-    /// prefix is not evaluated again.
-    pub(crate) fn boundary_reading(
-        &self,
-        uncut: &Compiled,
-        source: Stage,
-        source_window: Region,
-        position: (usize, usize),
-        format: BoundaryFormat,
-        held: Option<&super::restoration::HeldPrefix>,
-    ) -> Result<BoundaryFrame, Error> {
-        self.boundary_kept(uncut, source, source_window, position, format, held, None)
+        self.boundary_kept(uncut, source, source_window, position, format, None)
     }
 
     /// The boundary at the source of this render's stack — the first segment's input before its
     /// first operation — over `window` of the content stage, held as `format`: the reference the
     /// GPU's cut of the source it holds is held to, bit for bit.
-    #[cfg(feature = "qualification")]
+    #[cfg(any(test, feature = "qualification"))]
     pub(crate) fn source_boundary(
         &self,
         window: Region,
@@ -214,16 +207,14 @@ impl Render<'_> {
             Region::whole(whole),
             (0, 0),
             format,
-            None,
             Some(window),
         )
     }
 
-    /// [`Self::boundary_reading`], holding `keep` of the whole stage the layer's segment receives
-    /// when it is given: a rectangle inside the one this render's cut frame holds there, such as
-    /// the part a GPU preview's region reads past a spatial operation's tile-aligned cut
+    /// [`Self::boundary`], holding `keep` of the whole stage the layer's segment receives when it
+    /// is given: a rectangle inside the one this render's cut frame holds there, such as the part
+    /// a GPU preview's region reads past a spatial operation's tile-aligned cut
     /// ([`super::window::WindowPlan::reads`]).
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn boundary_kept(
         &self,
         uncut: &Compiled,
@@ -231,7 +222,6 @@ impl Render<'_> {
         source_window: Region,
         position: (usize, usize),
         format: BoundaryFormat,
-        held: Option<&super::restoration::HeldPrefix>,
         keep: Option<Region>,
     ) -> Result<BoundaryFrame, Error> {
         let path = match self.source {
@@ -299,24 +289,8 @@ impl Render<'_> {
             }
         };
         let cancel = &self.options.cancel;
-        let held = held.filter(|held| held.segment == first);
-        let texels = match (self.source, held.map(|held| (&held.pixels, held.stage))) {
-            (RenderSource::Byte(_), Some((PrefixPixels::Byte(frame), stage))) => {
-                super::byte::boundary_pass(&stand_in, frame, stage, cancel, self.context)?
-            }
-            (RenderSource::Linear { image, settings }, Some((PrefixPixels::Linear(planes), _))) => {
-                let evaluation = super::Evaluation::frames_held(
-                    linear::Linear::new(image, settings)?,
-                    Cow::Borrowed(cut),
-                    self.options.tiling,
-                    cancel,
-                    self.context,
-                    first,
-                    planes.clone(),
-                )?;
-                linear::boundary_pass(&evaluation, first, &stand_in, cancel, self.context)?
-            }
-            (RenderSource::Byte(image), _) => {
+        let texels = match self.source {
+            RenderSource::Byte(image) => {
                 let (frame, stage) = super::byte::frames(
                     image,
                     cut,
@@ -328,7 +302,7 @@ impl Render<'_> {
                 )?;
                 super::byte::boundary_pass(&stand_in, &frame, stage, cancel, self.context)?
             }
-            (RenderSource::Linear { image, settings }, _) => {
+            RenderSource::Linear { image, settings } => {
                 let evaluation = super::Evaluation::frames_prefix(
                     linear::Linear::new(image, settings)?,
                     Cow::Borrowed(cut),
@@ -359,6 +333,7 @@ impl Render<'_> {
 /// them as an exact step of its own, so a masked operation maps its frame coordinate back to its
 /// mask's own pixel exactly as a windowed proxy's cut segment does ([`super::window`]); the
 /// rectangle's origin is the coordinate the pointwise units are handed.
+#[cfg(any(test, feature = "qualification"))]
 fn stand_in(
     cut: &Segment,
     segment: &Segment,

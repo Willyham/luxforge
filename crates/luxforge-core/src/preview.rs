@@ -28,8 +28,7 @@ pub use coverage::{MaskCoverage, MaskCoverageTarget, MaskOverlayOutcome};
 pub use job::{PreviewIntent, PreviewJob, PreviewSource};
 pub use queue::{PreviewProgress, PreviewQueue, Queued};
 pub use result::{
-    BoundaryOutcome, ExactOutcome, PhaseOutcome, PreviewPhase, PreviewResult, ProxyOutcome,
-    RegionOutcome,
+    ExactOutcome, PhaseOutcome, PreviewPhase, PreviewResult, ProxyOutcome, RegionOutcome,
 };
 pub use worker::PROGRESS_QUIET as PREVIEW_PROGRESS_QUIET;
 

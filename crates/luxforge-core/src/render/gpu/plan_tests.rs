@@ -1533,3 +1533,83 @@ fn chained_spatial_operations_draw_the_cpu_frame() {
     ));
     assert_eq!(plan.spatial.len(), 5);
 }
+
+/// A plan's anchor rounds a window's origin to the least common multiple of every running pass's
+/// span over its plane's blocks, after moving it by the sum of every run's length but its first
+/// texel: nothing for a plan with no spatial operation and for Detail, whose passes run over every
+/// texel at full resolution; Texture's four runs of 16 a direction at full resolution make 16 and
+/// 60, Clarity's and Dehaze's two over their 4x reductions 64 and 120 each, and the three together
+/// 64 and 300. A window anchored keeps its far edges, and its origin stays within the stage.
+#[test]
+fn a_plans_anchor_starts_every_run_and_block_where_the_whole_stage_does() {
+    let registry = colour_registry();
+    let plan_of = |layers: Vec<Layer>| {
+        planned(answer(
+            &registry,
+            &colour_recipe(layers),
+            GpuPlanRequest::exact(0, stage(400, 300))
+                .from_source()
+                .qualifying(),
+        ))
+    };
+    let anchor = |multiple: u32, lead: u32| super::GpuAnchor {
+        multiple: (multiple, multiple),
+        lead: (lead, lead),
+    };
+    assert_eq!(plan_of(Vec::new()).anchor(), super::GpuAnchor::NONE);
+    assert_eq!(
+        plan_of(vec![Layer::new(
+            crate::DETAIL_EFFECT,
+            json!({"sharpening": 60.0, "luminance": 40.0, "colour": 40.0}),
+        )])
+        .anchor(),
+        super::GpuAnchor::NONE
+    );
+    for (presence, expected) in [
+        (json!({"texture": 30.0}), anchor(16, 60)),
+        (json!({"clarity": -20.0}), anchor(64, 120)),
+        (json!({"dehaze": 15.0}), anchor(64, 120)),
+        (
+            json!({"texture": 30.0, "clarity": -20.0, "dehaze": 15.0}),
+            anchor(64, 300),
+        ),
+    ] {
+        let plan = plan_of(vec![Layer::new(crate::PRESENCE_EFFECT, presence.clone())]);
+        assert_eq!(plan.anchor(), expected, "{presence}");
+        // Every running pass starts on a multiple of its span over the whole plane.
+        for spatial in &plan.spatial {
+            for pass in &spatial.passes {
+                if let super::spatial::GpuPassShape::Texels { span } = pass.shape
+                    && let super::spatial::GpuPlaneSize::Reduced(s) =
+                        spatial.planes[pass.output].size
+                {
+                    assert_eq!(expected.multiple.0 % (span[0] * s), 0, "{presence}");
+                    assert_eq!(expected.multiple.1 % (span[1] * s), 0, "{presence}");
+                }
+            }
+        }
+    }
+    assert_eq!(anchor(16, 60).join(anchor(64, 120)), anchor(64, 120));
+    let window = Region {
+        x0: 431,
+        y0: 351,
+        width: 298,
+        height: 238,
+    };
+    let held = super::anchored(window, anchor(64, 300));
+    assert_eq!(
+        held,
+        Region {
+            x0: 128,
+            y0: 0,
+            width: 601,
+            height: 589
+        }
+    );
+    assert_eq!((held.x1(), held.y1()), (window.x1(), window.y1()));
+    assert_eq!(
+        super::anchored(window, super::GpuAnchor::NONE),
+        window,
+        "a plan with no running sum reads the halos' window"
+    );
+}

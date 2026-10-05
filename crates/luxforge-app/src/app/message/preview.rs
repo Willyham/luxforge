@@ -26,4 +26,7 @@ pub(crate) enum PreviewMessage {
         epoch: u64,
         result: Result<Box<luxforge_core::PreviewJob>, String>,
     },
+    /// A lens warp's coordinate grid for a GPU boundary key, computed on the runtime's blocking
+    /// pool. Handled in `app/gpu_preview.rs`.
+    GridReady(Box<crate::app::gpu_preview::GridAnswer>),
 }

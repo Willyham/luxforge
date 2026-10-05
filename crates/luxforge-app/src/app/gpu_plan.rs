@@ -69,8 +69,9 @@ pub(crate) fn boundary_format(
 /// have yet, or a boundary that does not fit the plan; the gesture takes the CPU path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Unrunnable {
-    /// A lens warp's tail with no coordinate grid held for it: the grid is computed with the
-    /// boundary, and a warp that needs more nodes than a grid holds has none.
+    /// A lens warp's tail with no coordinate grid held for it: the grid is computed once for the
+    /// boundary's key, off the interface thread, and a warp that needs more nodes than a grid holds
+    /// has none.
     Grid,
     /// The boundary held does not lie inside the stage the plan's boundary layer receives.
     Boundary { held: (u32, u32), stage: (u32, u32) },

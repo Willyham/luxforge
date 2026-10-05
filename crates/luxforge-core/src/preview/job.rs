@@ -138,10 +138,10 @@ pub struct PreviewJob {
     /// ([`crate::GpuRest`]). Every committed stack has one, the empty stack included. Preview
     /// state, never an API result.
     pub gpu_rest: Option<Box<crate::GpuRest>>,
-    /// Render this GPU preview boundary after the job's whole frame, as one more result of the job
-    /// ([`super::BoundaryOutcome`]). The desktop asks for it on a draft's job until the draft holds
-    /// one, and on a committed stack's job when it holds none of that key.
-    pub boundary: Option<crate::BoundaryRequest>,
+    /// The Fit bounds whose picture at rest's tiles the worker plans again once the exact phase
+    /// has stored the global estimates the owner's plan could not read
+    /// ([`crate::ExactOutcome::rest`]): set by the owner when its tiles named `region-estimate`.
+    pub rest_bounds: Option<crate::ProxyBounds>,
 }
 
 impl PreviewJob {
@@ -162,7 +162,7 @@ impl PreviewJob {
             gpu: None,
             gpu_warm: None,
             gpu_rest: None,
-            boundary: None,
+            rest_bounds: None,
         })
     }
 }

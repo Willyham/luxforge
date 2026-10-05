@@ -187,12 +187,14 @@ pub(crate) fn real_photo_launched(
         window: (1440.0, 900.0),
     });
     let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(descriptors()))));
+    // Drawn where the editor draws it, as an open asks: at the display bounds, with the picture at
+    // rest planned on the GPU at the view.
     let refreshed = crate::app::tasks::refresh(
         &owner,
         editor.client,
         asset.clone(),
         crate::app::tasks::Scope::Open,
-        None,
+        editor.drawn(),
     )
     .unwrap();
     let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
