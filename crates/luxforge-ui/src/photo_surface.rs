@@ -113,11 +113,12 @@ use std::time::Instant;
 
 pub mod gpu_preview;
 pub use gpu_preview::{
-    BoundaryFormat, ClipMarks, Coverage, CoverageComponent, CoverageMode, DISSOLVE_DURATION,
-    Dissolve, DrawingPath, DrawnDissolve, GPU_PREVIEW_BUDGET, GpuBoundary, GpuChange, GpuFallback,
-    GpuPlan, GpuProgram, GpuRegion, GpuStageState, GpuStep, GpuTail, GpuWarm, MaskedColour,
-    OutputEncoding, PIPELINE_CACHE, PRELUDE, PositionMap, TexelMap, install_output_encoding,
-    output_encoding, refuse_gpu_stage, validate_step,
+    AxisCoverage, BoundaryFormat, ClipMarks, Coverage, CoverageComponent, CoverageMode,
+    DISSOLVE_DURATION, Derivation, Dissolve, DrawingPath, DrawnDissolve, GPU_PREVIEW_BUDGET,
+    GpuBoundary, GpuChange, GpuFallback, GpuPlan, GpuProgram, GpuRegion, GpuSource, GpuStageState,
+    GpuStep, GpuTail, GpuWarm, MaskedColour, OutputEncoding, PIPELINE_CACHE, PRELUDE, PositionMap,
+    Reduction, SourceFigures, SourceKind, TexelMap, install_output_encoding, output_encoding,
+    refuse_gpu_stage, validate_step,
 };
 
 /// Which photo surface a primitive draws. The pipeline keeps one set of textures per id, so two
@@ -201,6 +202,7 @@ impl SurfaceFigures {
         overall.gpu_preview_passes = self.preview.passes();
         overall.gpu_preview_spatial_passes = self.preview.spatial_passes();
         overall.gpu_preview_staged_bytes = self.preview.staged();
+        overall.gpu_source_derived = self.preview.derived();
         overall.gpu_preview_compiles = self.preview.compiles();
         (
             overall.gpu_preview_compiled,
@@ -435,6 +437,15 @@ pub struct SurfaceDiagnostics {
     pub gpu_preview_warmed: Option<u64>,
     /// Whether the GPU stage can draw at all on the pipeline's device ([`gpu_stage`]).
     pub gpu_stage: GpuStageState,
+    /// The prepared source the pipeline holds on the GPU, which every derived boundary is drawn
+    /// from ([`PhotoSurface::gpu_source`]): its version, what it is charged and how much of it is
+    /// uploaded. `None` while no surface hands one.
+    pub gpu_source: Option<gpu_preview::SourceFigures>,
+    /// Why the last source handed could not be held: past the budget, or more tiles than a pass
+    /// binds. Cleared by the next source held.
+    pub gpu_source_refused: Option<GpuFallback>,
+    /// How many boundaries the GPU stage has derived from the source it holds, over every frame.
+    pub gpu_source_derived: u64,
 }
 
 /// Aggregate resource counters with the requested surface's own last draw identity.
@@ -758,6 +769,8 @@ pub struct PhotoSurface {
     gpu_options: gpu_preview::GpuOptions,
     /// A settle's dissolve from the GPU frame to this frame; see [`PhotoSurface::dissolve`].
     dissolve: Option<Dissolve>,
+    /// The prepared source the pipeline holds on the GPU; see [`PhotoSurface::gpu_source`].
+    source: Option<GpuSource>,
     /// The time of the redraw this widget last saw, which its draw takes the dissolve's share at.
     clock: Option<Instant>,
     width: Length,
@@ -808,6 +821,7 @@ pub fn photo_surface(
         gpu: None,
         gpu_options: Default::default(),
         dissolve: None,
+        source: None,
         clock: None,
         width,
         height,
@@ -846,6 +860,7 @@ pub fn viewport_surface(
         gpu: None,
         gpu_options: Default::default(),
         dissolve: None,
+        source: None,
         clock: None,
         width,
         height,
@@ -873,6 +888,7 @@ pub fn stage_surface(
         gpu: None,
         gpu_options: Default::default(),
         dissolve: None,
+        source: None,
         clock: None,
         width,
         height,
@@ -976,18 +992,41 @@ impl PhotoSurface {
         self
     }
 
+    /// Hold `source` on the GPU, the prepared source every boundary derived from it is drawn from
+    /// ([`GpuBoundary::derived`]): the pipeline holds one source for every surface, uploads a new
+    /// version a frame's rows at a time, charged to the GPU-preview budget, and retires it at the
+    /// end of a frame in which no surface hands one. While it uploads, the widget asks for the
+    /// next frame.
+    pub fn gpu_source(mut self, source: Option<&GpuSource>) -> Self {
+        self.source = source.cloned();
+        self
+    }
+
     /// Whether the GPU stage is still uploading the boundary of the plan this surface is handed: its
     /// last frame said so, and the plan still names that boundary with its texels. The widget then
     /// asks for the next frame, whose `prepare` writes the next chunks; an upload's start wakes the
     /// desktop, whose update draws the frame that asks.
     fn uploading(&self) -> bool {
-        self.gpu
+        let diagnostics = surface_diagnostics(self.id);
+        let boundary = self
+            .gpu
             .as_ref()
             .is_some_and(|plan| plan.boundary.holds_texels())
             && matches!(
-                surface_diagnostics(self.id).gpu_fallback,
+                diagnostics.gpu_fallback,
                 Some(GpuFallback::BoundaryUploading { .. })
-            )
+            );
+        // The source this surface hands, still being uploaded a frame's rows at a time, on a
+        // stage that can hold it.
+        let source = self.source.as_ref().is_some_and(|source| {
+            source.holds_pixels()
+                && diagnostics.gpu_stage == GpuStageState::Available
+                && diagnostics
+                    .gpu_source
+                    .is_none_or(|held| held.version != source.version() || !held.ready)
+                && diagnostics.gpu_source_refused.is_none()
+        });
+        boundary || source
     }
 
     /// The dissolve this surface draws at `now`, if one runs: into a whole-frame photograph's
@@ -1074,6 +1113,7 @@ impl PhotoSurface {
             },
             gpu_options: self.gpu_options.clone(),
             dissolve: self.dissolving(self.clock.unwrap_or_else(Instant::now)),
+            source: self.source.clone(),
             offset: visible.offset,
             size: visible.size,
             clip_size: visible.clip.size(),
@@ -1274,6 +1314,8 @@ pub struct PhotoPrimitive {
     gpu_options: gpu_preview::GpuOptions,
     /// A whole-frame photograph's dissolve from the GPU frame last drawn, at this frame's share.
     dissolve: Option<gpu_preview::DissolveFrame>,
+    /// The prepared source the pipeline holds for every surface ([`PhotoSurface::gpu_source`]).
+    source: Option<GpuSource>,
     offset: Vector,
     size: Size,
     clip_size: Size,
@@ -1619,6 +1661,9 @@ impl shader::Primitive for PhotoPrimitive {
         // texture keeps it for the GPU frame it dissolves from. A dissolve runs beside a plan only
         // while the plan is held behind the CPU frame: a plan drawn cancels it.
         pipeline.warm_gpu(device, self.gpu_options.warm.as_ref());
+        // The source every derived boundary is drawn from, before any plan derives one: held for
+        // every surface, a frame's rows of it written.
+        pipeline.fit_source(device, queue, self.source.as_ref());
         let dissolve = self.dissolve.filter(|frame| {
             self.dissolve_ready(&surface, frame.dissolve.to)
                 && (self.gpu.is_none() || self.gpu_options.hold)
@@ -3322,6 +3367,8 @@ impl shader::Pipeline for PhotoPipeline {
     /// it. A surface every frame draws keeps its textures, and an unchanged frame on it is never
     /// uploaded again.
     fn trim(&mut self) {
+        // A source no surface handed this frame retires, whatever else the frame drew.
+        self.trim_source();
         let hidden: Vec<SurfaceId> = self
             .surfaces
             .iter_mut()
@@ -4637,6 +4684,7 @@ mod gpu_surface_tests {
             gpu: None,
             gpu_options: Default::default(),
             dissolve: None,
+            source: None,
             offset: Vector::new(0.0, 0.0),
             size: Size::new(64.0, 64.0),
             clip_size: Size::new(64.0, 64.0),
@@ -4665,6 +4713,7 @@ mod gpu_surface_tests {
             gpu: None,
             gpu_options: Default::default(),
             dissolve: None,
+            source: None,
             offset: Vector::new(0.0, 0.0),
             size: Size::new(64.0, 64.0),
             clip_size: Size::new(64.0, 64.0),

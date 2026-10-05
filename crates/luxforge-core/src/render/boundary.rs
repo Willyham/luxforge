@@ -197,6 +197,28 @@ impl Render<'_> {
         self.boundary_kept(uncut, source, source_window, position, format, held, None)
     }
 
+    /// The boundary at the source of this render's stack — the first segment's input before its
+    /// first operation — over `window` of the content stage, held as `format`: the reference the
+    /// GPU's cut of the source it holds is held to, bit for bit.
+    #[cfg(feature = "qualification")]
+    pub(crate) fn source_boundary(
+        &self,
+        window: Region,
+        format: BoundaryFormat,
+    ) -> Result<BoundaryFrame, Error> {
+        let (width, height) = self.source.dimensions();
+        let whole = Stage { width, height };
+        self.boundary_kept(
+            &self.compiled,
+            whole,
+            Region::whole(whole),
+            (0, 0),
+            format,
+            None,
+            Some(window),
+        )
+    }
+
     /// [`Self::boundary_reading`], holding `keep` of the whole stage the layer's segment receives
     /// when it is given: a rectangle inside the one this render's cut frame holds there, such as
     /// the part a GPU preview's region reads past a spatial operation's tile-aligned cut
