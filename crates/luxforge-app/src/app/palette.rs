@@ -89,9 +89,13 @@ impl Editor {
                     Some(PaletteAction::Compare) => {
                         self.dispatch(Message::History(HistoryMessage::CompareToggle))
                     }
-                    Some(PaletteAction::Export { keep_metadata }) => {
-                        self.dispatch(Message::Export(ExportMessage::Start { keep_metadata }))
-                    }
+                    Some(PaletteAction::Export {
+                        keep_metadata,
+                        reference,
+                    }) => self.dispatch(Message::Export(ExportMessage::Start {
+                        keep_metadata,
+                        reference,
+                    })),
                     Some(PaletteAction::Settings(tab)) => {
                         self.dispatch(Message::Settings(SettingsMessage::Open(tab)))
                     }
