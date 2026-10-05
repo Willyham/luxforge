@@ -15,10 +15,11 @@
 //! drawn on the GPU with the coverage overlay following it, and a brush stroke is painted through
 //! the same mask, its positions drawn on the GPU. Last, back in the pointer mode, Presence is
 //! committed with Dehaze and Clarity, and a Texture drag, a Clarity drag and a Basic drag under
-//! Presence are each drawn on the GPU, every one reading Dehaze's light from its light link over
-//! the source: the two Presence drags the light at rest, running at most five of Presence's compute
-//! passes a tick (the spatial passes the tick's words change), and the Basic drag, which changes
-//! the light's input, a light computed every tick, running them all.
+//! Presence are each drawn on the GPU, every one reading Dehaze's light from a light link: the two
+//! Presence drags the light at rest, which behind the Detail layer committed earlier the slot
+//! computes by its stand-in with Detail left out, running at most five of Presence's compute passes
+//! a tick (the spatial passes the tick's words change), and the Basic drag, which changes the
+//! light's input, a light computed every tick from the source, running them all.
 //!
 //! **Correlated readbacks.** Every frame drawn on the GPU is checked against the state the editor
 //! recorded with it — the drawing path, the boundary version and the draft revision the surface
@@ -867,10 +868,16 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
 
     // The Presence drags and the Basic drag under Presence: each GPU tick drawn with no preview
-    // job, from a plan reading Dehaze's light from its light link over the source, running the
-    // compute passes its words change; its pixels the CPU's frame of the same settings.
-    for (name, gain_only) in [("texture", true), ("clarity", true), ("under", false)] {
-        presence_drag_checks(launch, &mut checks, name, &["source"], gain_only, true)?;
+    // job, running the compute passes its words change; its pixels the CPU's frame of the same
+    // settings. Detail, committed earlier, sits before Presence: the Presence drags read the light
+    // at rest, which the slot computes by its stand-in with Detail left out, and the Basic drag,
+    // before Detail, computes it every tick from the source with Detail left out.
+    for (name, lights, gain_only) in [
+        ("texture", "stand-in", true),
+        ("clarity", "stand-in", true),
+        ("under", "source", false),
+    ] {
+        presence_drag_checks(launch, &mut checks, name, &[lights], gain_only, true)?;
     }
 
     settle_checks(launch, &mut checks)?;

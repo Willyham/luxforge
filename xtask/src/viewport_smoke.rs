@@ -46,7 +46,7 @@ const REGION_NAMES: [&str; 29] = [
     "history-current",
     "final-pause",
 ];
-const CHAINED_NAMES: [&str; 12] = [
+const CHAINED_NAMES: [&str; 13] = [
     "panel-hidden",
     "performance-expanded",
     "linear-mask",
@@ -57,6 +57,7 @@ const CHAINED_NAMES: [&str; 12] = [
     "draft",
     "pan",
     "pan-pause",
+    "gpu-tick",
     "release",
     "release-pause",
 ];
@@ -467,9 +468,9 @@ pub fn verify_region(run: &mut Run, launches: &[Checked]) -> Result {
     checks.write(run.out(), REGION, json!({"gpu": all_draws(launch)?}))
 }
 
-/// Two separately masked Presence layers, Dehaze on the second, at 100%: the drag's ticks are drawn
-/// on the GPU, the second layer's light computed from the whole stage by its stand-in with the
-/// first layer left out; nothing names a global estimate as a reason to refuse the view's region;
+/// Two separately masked Presence layers, Dehaze on the second, at 100%: a tick of the drag after
+/// the pan's pause, once the surface has evaluated its plan, is drawn on the GPU, the second
+/// layer's light computed from the whole stage by its stand-in with the first layer left out; nothing names a global estimate as a reason to refuse the view's region;
 /// and once released the exact visible region is rendered, the layers before Dehaze kept whole so
 /// it reduces its own input, with exact full histogram counts.
 pub fn verify_chained(run: &mut Run, launches: &[Checked]) -> Result {
@@ -508,17 +509,23 @@ pub fn verify_chained(run: &mut Run, launches: &[Checked]) -> Result {
                 .collect::<Vec<_>>()
         ),
     )?;
-    let lights = &launch.at("pan")?.state()["surface"]["gpu"]["gpu_preview"]["drag"]["lights"];
+    let lights = &launch.at("gpu-tick")?.state()["surface"]["gpu"]["gpu_preview"]["drag"]["lights"];
     let refined = event(&launch.events, "preview_displayed")
         .any(|e| e["detail"]["path"] == "region" && e["detail"]["draft_revision"].is_null());
     ensure(
         refined,
         "The released view's exact region was never displayed",
     )?;
-    let revision = launch.at("draft")?.state()["displayed_draft_revision"]
-        .as_u64()
+    // The draft's first frame: its region now renders the first Presence layer over its whole
+    // stage before Dehaze, so it may land after the draft step's own capture.
+    let (shown, revision) = ["draft", "pan", "pan-pause"]
+        .into_iter()
+        .find_map(|name| {
+            let revision = launch.at(name).ok()?.state()["displayed_draft_revision"].as_u64()?;
+            Some((name, revision))
+        })
         .ok_or("The draft had no displayed revision")?;
-    let draft_histogram = drafted_histogram(launch, "draft", revision)?;
+    let draft_histogram = drafted_histogram(launch, shown, revision)?;
     ensure(
         launch.at("release-pause")?.state()["histogram"]["stale"] == false
             && launch.at("release-pause")?.state()["histogram"]["identity"]["draft_revision"]
@@ -527,12 +534,12 @@ pub fn verify_chained(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
     let mut checks = Checks::new();
     checks.note(
-        launch.at("draft")?,
+        launch.at(shown)?,
         "the draft's histogram: updating, or settled for its own revision by the quiet policy",
-        draft_histogram,
+        json!({"step": shown, "histogram": draft_histogram}),
     );
     checks.note(
-        launch.at("pan")?,
+        launch.at("gpu-tick")?,
         "the drag on the GPU, its lights, and the exact region after the release",
         json!({"gpu_ticks": gpu_ticks, "ticks": ticks.len(), "lights": lights,
             "exact_region_displayed": refined}),
