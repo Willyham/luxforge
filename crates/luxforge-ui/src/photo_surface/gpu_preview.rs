@@ -3348,6 +3348,7 @@ pub(crate) use timing::PassClock;
 
 mod clipping;
 pub use clipping::ClipMarks;
+pub mod histogram;
 
 #[cfg(any(test, feature = "qualification"))]
 pub mod qualification;
