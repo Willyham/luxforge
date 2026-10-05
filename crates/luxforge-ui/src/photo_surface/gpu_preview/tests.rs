@@ -9,7 +9,7 @@ use super::*;
 use iced::widget::shader::{Pipeline as _, Primitive as _, Viewport};
 use iced::{Rectangle, Size, Vector};
 use luxforge_reference::srgb;
-use luxforge_testbase::{wait_for, wait_until};
+use luxforge_testbase::wait_until;
 use std::time::Duration;
 
 /// The identity program: a pointwise colour program that returns its input.
@@ -455,40 +455,17 @@ fn a_device_without_fragment_storage_or_an_srgb_target_has_no_stage() {
 
 // ---- On a headless device ---------------------------------------------------------------------
 
-fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    let mut future = std::pin::pin!(future);
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    wait_for("the GPU request", || {
-        match future.as_mut().poll(&mut context) {
-            std::task::Poll::Ready(value) => Some(value),
-            std::task::Poll::Pending => None,
-        }
-    })
-}
-
 /// A device of this host's default adapter, or `None` after printing the skip.
 pub(super) fn headless(test: &str) -> Option<(wgpu::Device, wgpu::Queue)> {
     headless_with(test, wgpu::Limits::default())
 }
 
+/// [`headless`] at `limits`, through the one headless device the qualification code makes
+/// ([`super::headless::device`]).
 fn headless_with(test: &str, limits: wgpu::Limits) -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let Some(adapter) =
-        block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()
-    else {
-        eprintln!("skipped: no GPU adapter; {test} ran nothing and is not GPU evidence");
-        return None;
-    };
-    eprintln!("{test}: adapter {:?}", adapter.get_info());
-    let descriptor = wgpu::DeviceDescriptor {
-        required_limits: limits,
-        ..wgpu::DeviceDescriptor::default()
-    };
-    let device = block_on(adapter.request_device(&descriptor));
-    if device.is_err() {
-        eprintln!("skipped: no device for the adapter; {test} ran nothing and is not GPU evidence");
-    }
-    device.ok()
+    let (device, queue, adapter) = super::headless::device(test, limits)?;
+    eprintln!("{test}: adapter {adapter:?}");
+    Some((device, queue))
 }
 
 /// A pipeline counting into figures of its own, drawing to an sRGB target as the desktop's does.
@@ -530,6 +507,7 @@ pub(super) fn primitive(surface: SurfaceId, plan: Option<GpuPlan>) -> PhotoPrimi
         gpu_options: Default::default(),
         dissolve: None,
         source: None,
+        rest: None,
         offset: Vector::new(0.0, 0.0),
         size: Size::new(SIDE as f32, SIDE as f32),
         clip_size: Size::new(SIDE as f32, SIDE as f32),
@@ -1547,6 +1525,7 @@ fn a_boundary_past_the_texture_limit_makes_the_frame_the_cpus() {
 
 mod blocks;
 mod masked;
+mod rest;
 mod source;
 mod spatial;
 
@@ -1759,98 +1738,6 @@ fn a_region_plans_output_takes_the_cpu_regions_bucket_and_draws_as_it_does() {
     settle(&pipeline);
 }
 
-/// A boundary whose texels its caller let go once the slot held them draws from that slot, a tick
-/// changing only its words, and a plan of another output or tail over it refits the slot around
-/// the boundary it holds; a slot that no longer holds it — released by a frame with no plan —
-/// falls back naming it, drawing the CPU frame, and the texels uploaded again draw once more. A
-/// sequence still compiling leaves the slot, and the boundary it holds, as they were.
-#[test]
-fn a_resident_boundary_draws_from_the_slot_that_holds_it() {
-    let test = "a_resident_boundary_draws_from_the_slot_that_holds_it";
-    let Some((device, queue)) = headless(test) else {
-        return;
-    };
-    let mut pipeline = own_pipeline(&device, &queue);
-    let (boundary, codes) = boundary_with_codes(3);
-    let resident = boundary.resident();
-    assert!(boundary.holds_texels() && !resident.holds_texels());
-    assert_eq!(
-        (resident.size(), resident.version(), resident.bytes()),
-        (boundary.size(), boundary.version(), boundary.bytes())
-    );
-    let identity_of =
-        |boundary: &GpuBoundary| primitive(ID, Some(plan(boundary, vec![identity()])));
-    let drawn = paint(&device, &queue, &mut pipeline, &identity_of(&boundary));
-    assert_codes(&drawn, &codes);
-    let slot_bytes = diagnostics(&pipeline, ID).gpu_preview_in_use_bytes;
-    // The next tick names the resident boundary: drawn from the slot.
-    let drawn = paint(&device, &queue, &mut pipeline, &identity_of(&resident));
-    assert_codes(&drawn, &codes);
-    let seen = diagnostics(&pipeline, ID);
-    assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
-    assert_eq!(seen.gpu_ready_boundary, Some(3));
-    // A sequence the frame finds still compiling keeps the slot and the boundary in it.
-    let scaled = plan(&resident, vec![scale(0.5)]);
-    paint_prepared(
-        &device,
-        &queue,
-        &mut pipeline,
-        &primitive(ID, Some(scaled.clone())),
-    );
-    let seen = diagnostics(&pipeline, ID);
-    assert_eq!(seen.gpu_fallback, Some(GpuFallback::Compiling));
-    assert_eq!(
-        seen.gpu_preview_in_use_bytes, slot_bytes,
-        "the slot is kept"
-    );
-    pipeline.compile_now(&device, &scaled);
-    paint(&device, &queue, &mut pipeline, &primitive(ID, Some(scaled)));
-    let seen = diagnostics(&pipeline, ID);
-    assert_eq!(
-        seen.drawn_path,
-        Some(DrawingPath::Gpu),
-        "drawn from the slot it kept"
-    );
-    assert_eq!(seen.gpu_fallback, None);
-    // A plan of another shape over the same boundary — here the identity tail a colour step after
-    // a stack's last spatial one brings — refits the slot and keeps the boundary it holds.
-    let (width, height) = resident.size();
-    let mut tailed = plan(&resident, vec![identity()]);
-    tailed.steps.push(GpuStep::Geometry(GpuTail::affine(
-        (width, height),
-        [0, 0, width, height],
-        false,
-        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-    )));
-    tailed.steps.push(GpuStep::colour(identity()));
-    pipeline.compile_now(&device, &tailed);
-    let drawn = paint(&device, &queue, &mut pipeline, &primitive(ID, Some(tailed)));
-    assert_codes(&drawn, &codes);
-    let seen = diagnostics(&pipeline, ID);
-    assert_eq!(
-        seen.drawn_path,
-        Some(DrawingPath::Gpu),
-        "drawn from the kept boundary"
-    );
-    assert_eq!(seen.gpu_fallback, None);
-    assert_eq!(seen.gpu_ready_boundary, Some(3));
-    // A frame with no plan lets the slot go; the resident boundary cannot be drawn then.
-    assert_cpu_frame(&paint(&device, &queue, &mut pipeline, &primitive(ID, None)));
-    let drawn = paint(&device, &queue, &mut pipeline, &identity_of(&resident));
-    assert_cpu_frame(&drawn);
-    let seen = diagnostics(&pipeline, ID);
-    assert_eq!(seen.gpu_fallback, Some(GpuFallback::BoundaryReleased));
-    assert_eq!(
-        seen.gpu_fallback.map(GpuFallback::as_str),
-        Some("boundary-released")
-    );
-    assert_eq!(seen.gpu_ready_boundary, None);
-    // Its texels, brought again, draw.
-    let drawn = paint(&device, &queue, &mut pipeline, &identity_of(&boundary));
-    assert_codes(&drawn, &codes);
-    settle(&pipeline);
-}
-
 /// A plan over a boundary of another version, handed with a change measured from the plan the
 /// slot holds — no change, as a caller comparing only the plans' operations measures it — is
 /// evaluated whole: the new boundary's texels differ everywhere, so the frame is all of its codes,
@@ -1977,8 +1864,8 @@ fn a_boundary_arrives_a_frames_chunks_at_a_time() {
 
 /// A functional measurement of one boundary's arrival, not a timing: the largest `f32` boundary a
 /// RAW region with Clarity's margin reads in the largest window, 4705 × 2817 texels (212 MB), held
-/// as the desktop holds it, handed to the surface frame by frame until the surface has it, then let
-/// go as the desktop lets it go. Each frame records what the surface has staged, what the
+/// as a caller holds a boundary handed as texels, handed to the surface frame by frame until the
+/// surface has it, then let go. Each frame records what the surface has staged, what the
 /// GPU-preview slot holds and the process's footprint; the process's own peak footprint catches
 /// what falls between frames. `LUXFORGE_ARRIVAL=whole` uploads the boundary in its first frame, as
 /// before the upload was spread; anything else spreads it at [`UPLOAD_PER_FRAME`]. Run each in its
@@ -2053,24 +1940,17 @@ fn a_boundary_arrival_measured() {
         }
         assert!(frames < 64, "the boundary never arrived");
     }
-    // The desktop lets its copy go once the surface holds the boundary.
-    let resident = boundary.resident();
+    // The caller lets its copy go once the surface holds the boundary, which its slot keeps.
     assert_eq!(
         boundary.texels.as_ref().map(Arc::strong_count),
         Some(1),
-        "nothing but the desktop's copy holds the texels"
+        "nothing but the caller's copy holds the texels"
     );
     drop(boundary);
     let (dropped, _) = footprint();
     eprintln!(
         "{test}: the copy let go: footprint {:+.1} MB",
         mb(dropped - baseline)
-    );
-    paint(
-        &device,
-        &queue,
-        &mut pipeline,
-        &primitive(ID, Some(plan(&resident, vec![identity()]))),
     );
     settle(&pipeline);
     let (after, peak) = footprint();

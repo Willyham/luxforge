@@ -31,18 +31,19 @@ mod wgsl_tests;
 pub use changes::GpuChange;
 pub use grid::{CoordinateGrid, GRID_MAX_NODES, GRID_SAMPLE_TOLERANCE_PX, GRID_TOLERANCE_PX};
 pub use plan::{
-    EstimateSource, GpuAnswer, GpuBoundary, GpuClipping, GpuComponent, GpuEstimates, GpuFallback,
-    GpuGeometry, GpuMask, GpuOperation, GpuPlan, GpuPlanRequest, GpuPosition, gpu_plan,
-    gpu_plan_with,
+    EstimateSource, GpuAnchor, GpuAnswer, GpuBoundary, GpuClipping, GpuComponent, GpuEstimates,
+    GpuFallback, GpuGeometry, GpuMask, GpuOperation, GpuPlan, GpuPlanRequest, GpuPosition,
+    anchored, gpu_plan, gpu_plan_with,
 };
 #[cfg(any(test, feature = "qualification"))]
 pub(crate) use preview::position;
 pub use preview::{
-    BoundaryKey, BoundaryRequest, GPU_PLAN_LINKS, GPU_WARM_LINKS, GpuPreview, GpuRest, GpuView,
+    BoundaryKey, GPU_PLAN_LINKS, GPU_WARM_LINKS, GpuPreview, GpuRest, GpuView, REST_TILE_BYTES,
+    REST_TILE_SIDES, RestTile, RestTiles, SourceBoundary,
 };
 #[cfg(test)]
 pub(crate) use preview::{output_window, warm_links, warm_sequence};
-pub(crate) use preview::{plan_preview, plan_rest, plan_warm};
+pub(crate) use preview::{plan_preview, plan_rest, plan_rest_tiles, plan_warm};
 #[cfg(test)]
 pub(crate) use program::testing;
 pub use program::{GpuDescription, GpuProgram, GpuProgramKind};

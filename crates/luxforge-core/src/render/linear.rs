@@ -806,6 +806,7 @@ pub(super) struct LinearRows<'e, 'x, 's> {
 #[derive(Clone, Copy)]
 pub(super) enum LinearOutput {
     Terminal(&'static srgb::Quantizer),
+    #[cfg(any(test, feature = "qualification"))]
     Boundary,
 }
 
@@ -814,6 +815,7 @@ impl LinearOutput {
     fn bytes(self) -> usize {
         match self {
             Self::Terminal(_) => 4,
+            #[cfg(any(test, feature = "qualification"))]
             Self::Boundary => super::boundary::BoundaryFormat::Float.texel_bytes(),
         }
     }
@@ -825,6 +827,7 @@ impl LinearOutput {
             Self::Terminal(quantizer) => {
                 bytes[..4].copy_from_slice(&terminal_pixel_in(quantizer, pixel)?);
             }
+            #[cfg(any(test, feature = "qualification"))]
             Self::Boundary => {
                 super::boundary::write_texel(
                     super::boundary::BoundaryFormat::Float,
@@ -952,6 +955,7 @@ impl LinearRows<'_, '_, '_> {
                     Ok(())
                 })
             }
+            #[cfg(any(test, feature = "qualification"))]
             (false, None, LinearOutput::Boundary) => reader.visit(walk, |offset, rgb| {
                 super::boundary::write_texel(
                     super::boundary::BoundaryFormat::Float,
@@ -1125,6 +1129,7 @@ impl SegmentRows for LinearRows<'_, '_, '_> {
                         rgba.copy_from_slice(&terminal_f32(quantizer, *pixel)?);
                     }
                 }
+                #[cfg(any(test, feature = "qualification"))]
                 LinearOutput::Boundary => {
                     let format = super::boundary::BoundaryFormat::Float;
                     for (texel, pixel) in chunk
@@ -1144,6 +1149,7 @@ impl SegmentRows for LinearRows<'_, '_, '_> {
 /// stands in for segment `index` of `evaluation`'s compilation and reads what that segment's entry
 /// reads, written as `f32` texels without quantizing, so a boundary inside a colour run holds the
 /// value the run hands the next layer, exactly.
+#[cfg(any(test, feature = "qualification"))]
 pub(super) fn boundary_pass(
     evaluation: &Evaluation<'_, Linear<'_>>,
     index: usize,

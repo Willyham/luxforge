@@ -88,6 +88,9 @@ pub struct GpuSource {
     crop: (u32, u32),
     /// The content stage the source fills: the held texels through the view's orientation.
     stage: (u32, u32),
+    /// The rectangle of the content stage whose texels it holds, `[x, y, width, height]`: the
+    /// whole stage, or the window [`Self::window`] keeps of it.
+    window: [u32; 4],
     /// The map from a content-stage pixel to the held texel it reads: `(a·x + b·y + tx,
     /// c·x + d·y + ty)`, a signed permutation and a translation.
     map: [i32; 6],
@@ -101,6 +104,7 @@ impl std::fmt::Debug for GpuSource {
             .field("kind", &self.kind)
             .field("held", &self.held)
             .field("stage", &self.stage)
+            .field("window", &self.window)
             .field("pixels", &self.pixels.is_some())
             .finish()
     }
@@ -144,6 +148,7 @@ impl GpuSource {
             base: (width, height),
             crop: (0, 0),
             stage: (width, height),
+            window: [0, 0, width, height],
             map: [1, 0, 0, 0, 1, 0],
         })
     }
@@ -181,6 +186,7 @@ impl GpuSource {
             base,
             crop: (x, y),
             stage,
+            window: [0, 0, stage.0, stage.1],
             map,
         })
     }
@@ -217,6 +223,66 @@ impl GpuSource {
     /// Whether the source still holds its pixels.
     pub fn holds_pixels(&self) -> bool {
         self.pixels.is_some()
+    }
+
+    /// This source holding only `rect`, `[x, y, width, height]` of the content stage: the same
+    /// pixels, shared, of which a pipeline uploads and holds only the texels the rectangle reads
+    /// through the view's orientation, charged for those alone; or `None` when the rectangle is
+    /// empty or leaves the rectangle this source holds. Its stage is still the whole content
+    /// stage, so a cut is addressed as it is over the whole source, and is bit for bit the whole
+    /// source's wherever the window holds it: a cut that leaves the window, and any reduction,
+    /// which reads the whole source, derives nothing from it. Its version is the source's; a
+    /// pipeline tells it from the whole source, or another window, by the rectangle it holds.
+    pub fn window(&self, rect: [u32; 4]) -> Option<Self> {
+        let [x, y, width, height] = rect;
+        let inside = width > 0
+            && height > 0
+            && x.checked_add(width)? <= self.window[0] + self.window[2]
+            && y.checked_add(height)? <= self.window[1] + self.window[3]
+            && x >= self.window[0]
+            && y >= self.window[1];
+        if !inside {
+            return None;
+        }
+        // The held texels of the rectangle's corners, as the map reads them: a signed permutation
+        // takes a rectangle to a rectangle.
+        let [a, b, tx, c, d, ty] = self.map.map(i64::from);
+        let held = |px: u32, py: u32| {
+            let (px, py) = (i64::from(px), i64::from(py));
+            (a * px + b * py + tx, c * px + d * py + ty)
+        };
+        let corners = [held(x, y), held(x + width - 1, y + height - 1)];
+        let (hx0, hx1) = (
+            corners[0].0.min(corners[1].0),
+            corners[0].0.max(corners[1].0),
+        );
+        let (hy0, hy1) = (
+            corners[0].1.min(corners[1].1),
+            corners[0].1.max(corners[1].1),
+        );
+        if hx0 < 0 || hy0 < 0 || hx1 >= i64::from(self.held.0) || hy1 >= i64::from(self.held.1) {
+            return None;
+        }
+        let (hx0, hy0) = (u32::try_from(hx0).ok()?, u32::try_from(hy0).ok()?);
+        let mut map = self.map;
+        map[2] -= i32::try_from(hx0).ok()?;
+        map[5] -= i32::try_from(hy0).ok()?;
+        Some(Self {
+            held: (
+                u32::try_from(hx1).ok()? - hx0 + 1,
+                u32::try_from(hy1).ok()? - hy0 + 1,
+            ),
+            crop: (self.crop.0 + hx0, self.crop.1 + hy0),
+            window: rect,
+            map,
+            ..self.clone()
+        })
+    }
+
+    /// The rectangle of the content stage it holds, `[x, y, width, height]`: the whole stage, or
+    /// a window's ([`Self::window`]).
+    pub fn held_rect(&self) -> [u32; 4] {
+        self.window
     }
 }
 
@@ -299,15 +365,25 @@ pub(super) struct SourceSlot {
     /// The rows written so far.
     rows: u32,
     bytes: u64,
-    /// The base planes' size and the crop's origin, for the rows' offsets in the caller's buffer.
+    /// The base planes' size, or the image's, and the held texels' origin in them, for the rows'
+    /// offsets in the caller's buffer.
     base: (u32, u32),
     crop: (u32, u32),
     map: [i32; 6],
+    /// The rectangle of the content stage it holds ([`GpuSource::held_rect`]).
+    window: [u32; 4],
+    /// It holds the whole content stage, not a window of it.
+    whole: bool,
 }
 
 impl SourceSlot {
     pub(super) fn version(&self) -> u64 {
         self.version
+    }
+
+    /// Whether it holds `source`'s texels: its version, and the same rectangle of it.
+    pub(super) fn holds(&self, source: &GpuSource) -> bool {
+        self.version == source.version && self.window == source.window
     }
 
     pub(super) fn bytes(&self) -> u64 {
@@ -400,6 +476,8 @@ impl SourceSlot {
             base: source.base,
             crop: source.crop,
             map: source.map,
+            window: source.window,
+            whole: source.window == [0, 0, source.stage.0, source.stage.1],
         })
     }
 
@@ -438,9 +516,11 @@ impl SourceSlot {
                             destination,
                             (**rgba).as_ref(),
                             wgpu::TexelCopyBufferLayout {
-                                offset: (u64::from(self.rows) * u64::from(width) + u64::from(x0))
+                                offset: (u64::from(self.crop.1 + self.rows)
+                                    * u64::from(self.base.0)
+                                    + u64::from(self.crop.0 + x0))
                                     * 4,
-                                bytes_per_row: Some(width * 4),
+                                bytes_per_row: Some(self.base.0 * 4),
                                 rows_per_image: Some(rows),
                             },
                             extent,
@@ -486,21 +566,21 @@ impl SourceSlot {
     }
 
     /// The words `derivation`'s pass reads over a boundary of `size`: the header, and for a
-    /// reduction the six table offsets then the tables. `None` when a reduction's coverage does
-    /// not cover the boundary.
+    /// reduction the six table offsets then the tables. `None` when a cut leaves the rectangle of
+    /// the content stage the slot holds, or a reduction's coverage does not cover the boundary,
+    /// or the slot holds a window, which no reduction reads.
     pub(super) fn words(&self, derivation: &Derivation, size: (u32, u32)) -> Option<Vec<u32>> {
+        let [x, y, width, height] = self.window;
         match derivation {
             Derivation::Cut { origin } => {
-                let stage = match self.map {
-                    [0, ..] => (self.held.1, self.held.0),
-                    _ => self.held,
-                };
-                let inside = origin.0.checked_add(size.0)? <= stage.0
-                    && origin.1.checked_add(size.1)? <= stage.1;
+                let inside = origin.0 >= x
+                    && origin.1 >= y
+                    && origin.0.checked_add(size.0)? <= x + width
+                    && origin.1.checked_add(size.1)? <= y + height;
                 inside.then(|| self.header(*origin))
             }
             Derivation::Reduce(reduction) => {
-                if !reduction.valid(size) {
+                if !self.whole || !reduction.valid(size) {
                     return None;
                 }
                 let mut words = self.header(reduction.origin);

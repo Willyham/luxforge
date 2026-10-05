@@ -562,7 +562,8 @@ fn plain<'a>(
     let mask_map = surfaces.mask_map;
     let gpu = surfaces.gpu;
     let (gpu_hold, gpu_tag, gpu_warm) = (surfaces.gpu_hold, surfaces.gpu_tag, surfaces.gpu_warm);
-    let gpu_change = surfaces.gpu_change;
+    let (gpu_change, gpu_source) = (surfaces.gpu_change, surfaces.gpu_source);
+    let gpu_rest = surfaces.gpu_rest;
     let dissolve = surfaces.dissolve;
     match model.zoom {
         ZoomView::Fit => {
@@ -588,6 +589,8 @@ fn plain<'a>(
                 .gpu_tag(gpu_tag)
                 .gpu_change(gpu_change)
                 .gpu_warm(gpu_warm)
+                .gpu_source(gpu_source)
+                .gpu_rest(gpu_rest)
                 .dissolve(dissolve)
                 .into();
                 // The open gesture's handles sit above the photograph and its overlays, mapped
@@ -678,6 +681,8 @@ fn plain<'a>(
                         .gpu_tag(gpu_tag)
                         .gpu_change(gpu_change)
                         .gpu_warm(gpu_warm)
+                        .gpu_source(gpu_source)
+                        .gpu_rest(gpu_rest)
                         .dissolve(dissolve)
                         .into(),
                         None => empty("Rendering photograph…"),
@@ -704,6 +709,7 @@ fn plain<'a>(
                     .gpu_tag(gpu_tag)
                     .gpu_change(gpu_change)
                     .gpu_warm(gpu_warm)
+                    .gpu_source(gpu_source)
                     .dissolve(dissolve)
                     .into()
                 };
@@ -774,6 +780,7 @@ fn comparison<'a>(
                 Length::Fixed(size.width),
                 Length::Fixed(size.height),
             )
+            .gpu_source(surfaces.gpu_source)
             .into()
         } else {
             match before {
@@ -785,10 +792,12 @@ fn comparison<'a>(
                     Length::Fixed(size.height),
                 )
                 .exact_stage(dimensions)
+                .gpu_source(surfaces.gpu_source)
                 .into(),
                 None => empty("Rendering Before…"),
             }
         };
+        // Both sides hand the source, so the pipeline keeps it on the GPU while Compare is shown.
         let after: Element<'a, Message> = luxforge_ui::photo_surface(
             COMPARE_SURFACE,
             after,
@@ -798,6 +807,7 @@ fn comparison<'a>(
         )
         .exact_stage(dimensions)
         .reveal_from(if position == 1.0 { 0.0 } else { position })
+        .gpu_source(surfaces.gpu_source)
         .into();
         let divider = canvas(super::compare_canvas::CompareCanvas {
             photo: rect,
@@ -1356,6 +1366,8 @@ mod tests {
             gpu_change: None,
             dissolve: None,
             gpu_warm: None,
+            gpu_source: None,
+            gpu_rest: None,
         };
         let model = CanvasModel {
             photo: PhotoView::Plain,

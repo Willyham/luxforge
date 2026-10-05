@@ -437,7 +437,10 @@ impl<'a> Render<'a> {
     ///   before it asks for such a boundary (`gpu::preview`).
     ///
     /// A stack the planner cannot cut answers its reason as an error, as a region the boundary
-    /// cannot hold is no frame of it.
+    /// cannot hold is no frame of it. The editor renders none: every plan starts from the source,
+    /// which the photo surface cuts on the GPU; this is the reference for tests and the
+    /// qualification harness.
+    #[cfg(any(test, feature = "qualification"))]
     pub(crate) fn region_boundary(
         &self,
         rect: Region,
@@ -506,7 +509,6 @@ impl<'a> Render<'a> {
             windows.source,
             position,
             format,
-            None,
             Some(windows.reads(position.0)),
         )
     }
@@ -515,6 +517,7 @@ impl<'a> Render<'a> {
     /// `position`, held over the window of its received stage that the whole output reads — what
     /// a crop, a straightening and a warp read, with their taps — which a Fit frame drawn at the
     /// exact stage starts from.
+    #[cfg(test)]
     pub(crate) fn output_boundary(
         &self,
         position: (usize, usize),
@@ -1096,6 +1099,7 @@ impl<'a> Render<'a> {
     /// [`Self::spatial_globals`] from the estimate store alone, under the key a frame of this render
     /// asks with: `None` when the store does not hold every one, which this never reduces.
     /// `O(units)`, and reads no pixel.
+    #[cfg(any(test, feature = "qualification"))]
     pub(crate) fn held_spatial_globals(
         &self,
         index: usize,

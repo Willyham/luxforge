@@ -355,11 +355,11 @@ pub static SCENARIOS: &[Scenario] = &[
         source: Source::Fixtures(&[gpu_preview::FIXTURE]),
         window: Some(PANELLED),
         note: Some(
-            "Each gesture opens with a CPU tick whose preview job carries the one boundary \
-             request; a scripted wait lets the boundary arrive and the sequence compile, and the \
-             gesture's later ticks are drawn on the GPU with no preview job. The checks read the \
-             tick and job events of each step and compare each GPU frame with the CPU frame of \
-             the same settings.",
+            "Each gesture draws from a boundary derived on the GPU from the source the photograph's \
+             own job handed the surface; a scripted wait lets the surface evaluate the plan and \
+             the sequence compile, and the gesture's later ticks are drawn on the GPU with no \
+             preview job. The checks read the tick and job events of each step and compare each \
+             GPU frame with the CPU frame of the same settings.",
         ),
         own: None,
     },
@@ -386,10 +386,11 @@ pub static SCENARIOS: &[Scenario] = &[
         source: Source::Fixtures(&[gpu_preview_zoom::FIXTURE]),
         window: Some(PANELLED),
         note: Some(
-            "Each drag opens with a CPU tick whose job carries the one boundary request, for the \
-             region the view shows at 100% and above and for the displayed-size proxy below 100%; \
-             a scripted wait lets the boundary arrive and the sequence compile, and the drag's \
-             later ticks are drawn on the GPU with no preview job of any kind. The checks read \
+            "Each drag draws from a boundary derived on the GPU from the source the surface holds, \
+             a window of it cut at full scale over the region the view shows at 100% and above and \
+             the source reduced to the displayed-size proxy below 100%; a scripted wait lets the \
+             surface evaluate the plan and the sequence compile, and the drag's later ticks are \
+             drawn on the GPU with no preview job of any kind. The checks read \
              each step's tick and job events, the visible region and the plan's region recorded \
              with each frame, or below 100% the proxy the boundary holds against the view's bounds \
              and the CPU frame, and compare each GPU frame with the CPU frame its release commits.",

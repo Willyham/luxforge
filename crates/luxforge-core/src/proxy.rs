@@ -203,6 +203,22 @@ impl ProxyPlan {
     }
 }
 
+/// One axis of an area average of `from` samples into `to`, `to` at most `from`: the weights a
+/// proxy's build reduces a source with, which the picture at rest reduces the output stage to the
+/// view's size with too. `O(from + to)`.
+pub fn area_coverage(from: u32, to: u32) -> ProxyCoverage {
+    let coverage = Coverage::new(from.max(1), to.clamp(1, from.max(1)));
+    ProxyCoverage {
+        first: coverage.first,
+        offsets: coverage
+            .offsets
+            .into_iter()
+            .map(|offset| offset as u32)
+            .collect(),
+        weights: coverage.weights,
+    }
+}
+
 /// One axis of a proxy's area average, as its build weighs it: for each output index the first
 /// source index it reads, and the half-open range of `weights` that belongs to it — each weight
 /// the share of the output's interval `[i·S/o, (i+1)·S/o)` its source sample covers, over the

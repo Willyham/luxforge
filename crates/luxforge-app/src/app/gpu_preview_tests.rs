@@ -1,8 +1,9 @@
-//! A gesture drawn on the GPU, end to end against a real owner and preview worker: one boundary
-//! job at draft begin and no preview job per tick once the boundary is held and the surface has
-//! evaluated it; CPU frames until then and whenever the surface cannot draw; the boundary released
-//! at commit, cancel and a key change; at Fit, below 100% over the displayed-size proxy, and at
-//! 100% and above over the visible region.
+//! A gesture drawn on the GPU, end to end against a real owner and preview worker: the boundary
+//! derived from the source the surface holds, by the photograph's own job or the first tick that
+//! needs another, and no preview job per tick once the surface has evaluated it; CPU frames until
+//! then and whenever the surface cannot draw; the boundary released at a key change and kept
+//! resident at commit and cancel; the source's pixels let go once the surface holds them; at Fit,
+//! below 100% over the displayed-size proxy, and at 100% and above over the visible region.
 use super::{
     gpu_preview::SurfaceReport,
     message::{draft::DraftMessage, preview::PreviewMessage, sync::SyncMessage, view::ViewMessage},
@@ -52,60 +53,66 @@ fn jobs(records: &[Value]) -> usize {
     events(records, "preview_job_requested").len()
 }
 
-/// A Fit drag of Basic's exposure: its first tick takes the CPU path and its job carries the
-/// boundary request; ticks before the boundary arrives take the CPU path, and one is rendered, by
-/// the last job that asked, so no request is made while another is in flight; once it is held and
-/// the surface has evaluated it, every tick is drawn on the GPU with no preview job, each GPU frame
-/// tagged with its tick's draft revision; the release commits, and once the committed frame is
-/// presented the boundary stays resident behind it, so the next drag's first tick is drawn on the
-/// GPU with no job and no boundary request.
+/// A Fit drag of Basic's exposure. The photograph's own job held its source and derived from it on
+/// the GPU the boundary every gesture over this source and view starts from, so the drag derives
+/// none and no job carries one: its ticks take the CPU path, each with its job, only until the
+/// surface reports it evaluated the plan (`surface-pending`); from then on every tick is drawn on
+/// the GPU with no preview job, each GPU frame tagged with its tick's draft revision. The release
+/// commits, and once the committed frame is presented the boundary stays resident behind it, so
+/// the next drag's first tick is drawn on the GPU with no job.
 #[test]
-fn gpu_preview_a_fit_drag_makes_one_boundary_job_and_no_job_per_tick() {
+fn gpu_preview_a_fit_drag_derives_its_boundary_and_makes_no_job_per_tick() {
     let catalog = catalog("drag");
     let (mut editor, _, _) = real_photo(&catalog);
     // The surface has not drawn anything yet.
     editor.gpu.surface = Some(SurfaceReport::default());
+    let summary = editor.gpu.summary();
+    assert!(
+        summary["resident"]["version"].is_u64() && summary["resident"]["proxy"].is_null(),
+        "the photograph's job derived the resident boundary, at the exact stage at Fit: {summary}"
+    );
+    assert_eq!(
+        summary["source"]["pixels_held"], true,
+        "the source's pixels are held until the surface holds them"
+    );
     let log = attach_log(&mut editor);
     let _ = slide(&mut editor, ACTION, FIELD, 0.1);
     let _ = slide(&mut editor, ACTION, FIELD, 0.15);
-    deliver_until(&mut editor, "the boundary", |editor| {
-        editor.gpu.holds_boundary()
-    });
-    let (gpu, cpu, requests) = editor.gpu.ticks();
-    assert_eq!((gpu, cpu), (0, 2));
+    assert_eq!(
+        editor.gpu.ticks(),
+        (0, 2, 0),
+        "the drag derives no boundary"
+    );
     let records = logged(&mut editor, &log);
     assert_eq!(
         jobs(&records),
         2,
-        "each tick before the boundary has its job"
+        "each tick the surface has not evaluated has its job"
     );
     let ticks = events(&records, "gpu_preview_tick");
     assert!(ticks.iter().all(|tick| tick["path"] == "cpu"));
-    assert_eq!(ticks[0]["reason"], "boundary-pending");
-    // The first tick asks for the boundary. The second asks again only if the first's job was
-    // still waiting in the pending slot, where the second's replaces it so it never starts; which
-    // it was depends on how soon the worker took the first job up. Either way one boundary is
-    // rendered, by the last job that asked: had a job that asked earlier started, its boundary
-    // would have been delivered first.
-    let asked: Vec<&Value> = ticks
-        .iter()
-        .copied()
-        .filter(|tick| tick["boundary_requested"] == true)
-        .collect();
-    assert_eq!(ticks[0]["boundary_requested"], true, "the first tick asks");
-    assert_eq!(asked.len() as u64, requests);
-    let held = events(&records, "gpu_boundary");
-    assert_eq!(held.len(), 1, "one boundary rendered");
-    assert_eq!(held[0]["held"], true);
-    assert_eq!(
-        held[0]["generation"],
-        asked.last().unwrap()["generation"],
-        "rendered by the last job that asked"
+    assert!(
+        ticks.iter().all(|tick| tick["reason"] == "surface-pending"),
+        "{ticks:?}"
     );
-    // The boundary is drawn at once, under the newest tick's revision; a tick waits for the
-    // surface's report that it evaluated it.
+    assert!(
+        events(&records, "gpu_boundary").is_empty(),
+        "no boundary is derived or rendered"
+    );
+    let boundary = &editor.gpu.summary()["drag"]["boundary"];
+    assert_eq!(boundary["derived"], "cut", "the source at full scale");
+    assert_eq!(
+        (&boundary["width"], &boundary["height"]),
+        (&json!(480), &json!(320))
+    );
+    // The plan is drawn at once, under the newest tick's revision; a tick waits for the surface's
+    // report that it evaluated it.
     let revision = editor.session.draft.as_ref().unwrap().draft_revision;
     assert_eq!(editor.surfaces().gpu_tag, Some(revision));
+    assert!(
+        editor.surfaces().gpu_source.is_some(),
+        "the surface is handed the source the boundary is derived from"
+    );
     surface_ready(&mut editor);
     let log = attach_log(&mut editor);
     for value in [0.2, 0.3, 0.45, 0.6] {
@@ -121,7 +128,7 @@ fn gpu_preview_a_fit_drag_makes_one_boundary_job_and_no_job_per_tick() {
     let ticks = events(&records, "gpu_preview_tick");
     assert_eq!(ticks.len(), 4);
     assert!(ticks.iter().all(|tick| tick["path"] == "gpu"));
-    assert_eq!(editor.gpu.ticks(), (4, 2, requests), "and asks for none");
+    assert_eq!(editor.gpu.ticks(), (4, 2, 0), "and derives none");
     // The release commits; the boundary is held until the committed frame replaces the drafted
     // one, then released.
     let log = attach_log(&mut editor);
@@ -257,15 +264,13 @@ fn gpu_preview_a_tick_the_surface_cannot_draw_takes_the_cpu_path() {
 
 /// Cancel keeps the boundary resident once the frame read back after the cancel is presented, and
 /// a changed key — a smaller window gives the drag a proxy, and so another boundary — releases the
-/// held one and asks for the new one.
+/// held one and derives the new one.
 #[test]
 fn gpu_preview_the_boundary_is_released_at_cancel_and_on_a_key_change() {
     let catalog = catalog("release");
     let (mut editor, _, _) = real_photo(&catalog);
     let _ = slide(&mut editor, ACTION, FIELD, 0.1);
-    deliver_until(&mut editor, "the boundary", |editor| {
-        editor.gpu.holds_boundary()
-    });
+    assert!(editor.gpu.holds_boundary(), "the resident boundary");
     surface_ready(&mut editor);
     let first = editor.gpu.held_version();
     // A window too small for the photograph at its own size: the Fit frame becomes a proxy.
@@ -276,11 +281,12 @@ fn gpu_preview_the_boundary_is_released_at_cancel_and_on_a_key_change() {
     let released = events(&records, "gpu_boundary_released");
     assert_eq!(released.len(), 1, "the old boundary goes");
     assert_eq!(released[0]["why"], "key-changed");
-    assert_eq!(jobs(&records), 1, "the tick asks for the new one");
-    assert_eq!(editor.gpu.ticks().2, 2);
-    deliver_until(&mut editor, "the new boundary", |editor| {
-        editor.gpu.holds_boundary()
-    });
+    assert_eq!(
+        jobs(&records),
+        1,
+        "the tick's job, until the surface evaluates the new plan"
+    );
+    assert_eq!(editor.gpu.ticks().2, 1, "the tick derives the new one");
     assert_ne!(editor.gpu.held_version(), first);
     let log = attach_log(&mut editor);
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
@@ -323,14 +329,14 @@ pub(super) fn zoomed_out(editor: &mut Editor, value: f32) -> luxforge_core::Prox
 }
 
 /// Below 100% the view draws the displayed-size proxy of the whole stage, and a drag there is
-/// planned as at Fit, at the job's bounds, which are that displayed size: its first tick takes the
-/// CPU path and its job carries the one boundary request, for that proxy, the frame the view
-/// draws; once the boundary is held and the surface has evaluated it, every tick is drawn on the
-/// GPU from a whole frame's plan with no preview job, and the status bar says nothing of the zoom.
-/// A pan leaves the proxy as it is, and keeps the boundary. The release commits; the committed
-/// stack's job, planned at the view's bounds, keeps the drag's boundary as the resident one and
-/// plans its warm list at the same proxy, so the next drag at that zoom is drawn on the GPU from
-/// its first tick.
+/// planned as at Fit, at the job's bounds, which are that displayed size: its first tick derives
+/// the boundary from the source, reduced to that proxy, the frame the view draws, and takes the
+/// CPU path until the surface has evaluated it; from then on every tick is drawn on the GPU from a
+/// whole frame's plan with no preview job, and the status bar says nothing of the zoom. A pan
+/// leaves the proxy as it is, and keeps the boundary. The release commits; the committed stack's
+/// job, planned at the view's bounds, keeps the drag's boundary as the resident one and plans its
+/// warm list at the same proxy, so the next drag at that zoom is drawn on the GPU from its first
+/// tick.
 #[test]
 fn gpu_preview_a_drag_below_100_percent_draws_its_proxy_with_no_job_per_tick() {
     for value in [50.0, 33.0] {
@@ -344,14 +350,17 @@ fn gpu_preview_a_drag_below_100_percent_draws_its_proxy_with_no_job_per_tick() {
         assert_eq!(jobs(&records), 1, "{value}%");
         let ticks = events(&records, "gpu_preview_tick");
         assert_eq!(ticks[0]["path"], "cpu", "{value}%");
-        assert_eq!(ticks[0]["reason"], "boundary-pending", "{value}%");
-        assert_eq!(ticks[0]["boundary_requested"], true, "{value}%");
+        assert_eq!(ticks[0]["reason"], "surface-pending", "{value}%");
+        let derived = events(&records, "gpu_boundary");
+        assert_eq!(derived.len(), 1, "{value}%: one boundary derived");
+        assert_eq!(derived[0]["derived"], "reduce", "{value}%");
         assert_eq!(
             editor.workspace.status.fallback, None,
             "{value}%: it passes"
         );
-        deliver_until(&mut editor, "the proxy's boundary", |editor| {
-            editor.gpu.holds_boundary()
+        // The tick's own frame, the view's proxy, on screen.
+        deliver_until(&mut editor, "the tick's frame", |editor| {
+            !editor.presentation.queue.is_busy() && !editor.presentation.queue.ready()
         });
         // The boundary is the view's proxy, the CPU frame the view draws, whole.
         let drag = editor.gpu.summary()["drag"].clone();
@@ -488,7 +497,7 @@ fn gpu_preview_a_drag_below_100_percent_draws_its_proxy_with_no_job_per_tick() {
     }
 }
 
-/// A zoom from one percentage below 100% to another changes the proxy, so the next drag asks for
+/// A zoom from one percentage below 100% to another changes the proxy, so the next drag derives
 /// that proxy's boundary once, letting the other go, and then draws on the GPU.
 #[test]
 fn gpu_preview_each_view_below_100_percent_holds_its_own_proxys_boundary() {
@@ -500,16 +509,14 @@ fn gpu_preview_each_view_below_100_percent_holds_its_own_proxys_boundary() {
         let bounds = zoomed_out(&mut editor, value);
         let log = attach_log(&mut editor);
         let _ = slide(&mut editor, ACTION, FIELD, 0.1);
-        deliver_until(&mut editor, "the boundary", |editor| {
-            editor.gpu.holds_boundary()
-        });
+        assert!(editor.gpu.holds_boundary(), "derived at the tick");
         surface_ready(&mut editor);
         let _ = slide(&mut editor, ACTION, FIELD, 0.2);
         let records = logged(&mut editor, &log);
         assert_eq!(
             editor.gpu.ticks(),
             (1, 1, 1),
-            "{value}%: one request, then the GPU"
+            "{value}%: one boundary derived, then the GPU"
         );
         let released: Vec<&Value> = events(&records, "gpu_boundary_released")
             .into_iter()
@@ -517,8 +524,8 @@ fn gpu_preview_each_view_below_100_percent_holds_its_own_proxys_boundary() {
             .collect();
         assert_eq!(
             released.len(),
-            held.len().min(1),
-            "{value}%: the other view's boundary goes"
+            1,
+            "{value}%: the other view's boundary goes, Fit's resident one first"
         );
         assert_eq!(
             editor.gpu.summary()["drag"]["boundary"]["proxy"]["bounds"],
@@ -567,11 +574,11 @@ fn gpu_preview_a_gpu_tick_settles_the_slider_step_waiting_for_it() {
 }
 
 /// A first tick that leaves the photograph's pixels as they are reuses the frame on screen and
-/// asks the worker for nothing, and needs nothing: the committed stack's own job brought the
+/// asks the worker for nothing, and needs nothing: the committed stack's own job derived the
 /// boundary every gesture over this source and view starts from, which is held before the drag
 /// begins, so the drag draws on the GPU as soon as the surface has evaluated it.
 #[test]
-fn gpu_preview_a_tick_that_changes_no_pixel_still_asks_for_its_boundary() {
+fn gpu_preview_a_tick_that_changes_no_pixel_starts_from_the_resident_boundary() {
     let catalog = catalog("unchanged");
     let (mut editor, _, _) = real_photo(&catalog);
     editor.gpu.surface = Some(SurfaceReport::default());
@@ -583,14 +590,14 @@ fn gpu_preview_a_tick_that_changes_no_pixel_still_asks_for_its_boundary() {
     });
     assert!(
         editor.gpu.holds_boundary(),
-        "the committed stack's job brought the resident boundary"
+        "the committed stack's job derived the resident boundary"
     );
     // A new drag whose first value is the one committed: the same pixels.
     let log = attach_log(&mut editor);
     let _ = slide(&mut editor, ACTION, FIELD, 0.1);
     let records = logged(&mut editor, &log);
     assert_eq!(jobs(&records), 0, "the frame on screen answers it");
-    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is asked for");
+    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is derived");
     surface_ready(&mut editor);
     let _ = slide(&mut editor, ACTION, FIELD, 0.2);
     assert_eq!(editor.gpu.ticks().0, 1, "the next tick is drawn on the GPU");
@@ -608,9 +615,9 @@ pub(super) fn commit(editor: &mut Editor, action: &str, field: &str, value: f64)
     });
 }
 
-/// A Presence drag, and a Basic drag under Presence, at Fit: each opens with one CPU tick whose
-/// job asks for the boundary, then draws every tick on the GPU from a plan holding Presence's
-/// spatial step, with no preview job. The Presence drag's plan reads Dehaze's light from the store
+/// A Presence drag, and a Basic drag under Presence, at Fit: each opens with one CPU tick, until
+/// the surface has evaluated its plan, then draws every tick on the GPU from a plan holding
+/// Presence's spatial step, with no preview job. The Presence drag's plan reads Dehaze's light from the store
 /// the committed frame filled; the Basic drag changes the input the light is estimated from, so
 /// its plan takes the light on the GPU and says it is approximate.
 #[test]
@@ -637,9 +644,9 @@ fn gpu_preview_presence_drags_draw_on_the_gpu_with_no_job_per_tick() {
 }
 
 /// One drag drawn on the GPU through a plan holding Presence's spatial step, then committed: its
-/// first tick's job asks for the boundary, and once the boundary is held and the surface has
-/// evaluated it every later tick is drawn on the GPU with no preview job, the plan's light stored
-/// or taken on the GPU as `approximate` says. Answers the last tick's plan.
+/// first tick holds the boundary and its job goes to the worker, and once the surface has
+/// evaluated the plan every later tick is drawn on the GPU with no preview job, the plan's light
+/// stored or taken on the GPU as `approximate` says. Answers the last tick's plan.
 fn gpu_drag(
     editor: &mut Editor,
     action: &str,
@@ -650,12 +657,12 @@ fn gpu_drag(
     editor.gpu.surface = Some(SurfaceReport::default());
     let log = attach_log(editor);
     let _ = slide(editor, action, field, values[0]);
-    deliver_until(editor, "the boundary", |editor| editor.gpu.holds_boundary());
+    assert!(editor.gpu.holds_boundary(), "{field}: the boundary is held");
     let records = logged(editor, &log);
     assert_eq!(
         jobs(&records),
         1,
-        "{field}: the first tick's job asks for the boundary"
+        "{field}: the first tick's job, until the surface evaluates the plan"
     );
     surface_ready(editor);
     let log = attach_log(editor);
@@ -1060,10 +1067,10 @@ fn corners(rect: luxforge_core::Region) -> Value {
 }
 
 /// A drag at a percentage zoom of 100% or more is drawn over the visible region at full scale: its
-/// first tick takes the CPU path and its region job carries the one boundary request, for that
-/// region; once the boundary is held and the surface has evaluated it, every tick is drawn on the
-/// GPU with no preview job — no tick's, and no region job for the view, which the GPU frame holds —
-/// and the plan handed to the surface draws that region of the stage.
+/// first tick derives the region's boundary, a window of the source cut at full scale, and takes
+/// the CPU path with its region job until the surface has evaluated it; from then on every tick is
+/// drawn on the GPU with no preview job — no tick's, and no region job for the view, which the GPU
+/// frame holds — and the plan handed to the surface draws that region of the stage.
 #[test]
 fn gpu_preview_a_percentage_drag_draws_its_region_with_no_job_per_tick() {
     let catalog = catalog("region");
@@ -1076,11 +1083,14 @@ fn gpu_preview_a_percentage_drag_draws_its_region_with_no_job_per_tick() {
     assert_eq!(jobs(&records), 1);
     let ticks = events(&records, "gpu_preview_tick");
     assert_eq!(ticks[0]["path"], "cpu");
-    assert_eq!(ticks[0]["reason"], "boundary-pending");
-    assert_eq!(ticks[0]["boundary_requested"], true);
-    deliver_until(&mut editor, "the region's boundary", |editor| {
-        editor.gpu.holds_boundary()
-    });
+    assert_eq!(ticks[0]["reason"], "surface-pending");
+    let derived = events(&records, "gpu_boundary");
+    assert_eq!(
+        derived.len(),
+        1,
+        "the region's boundary derived at the tick"
+    );
+    assert_eq!(derived[0]["derived"], "cut");
     assert_eq!(held_region(&editor), corners(wanted));
     assert_eq!(editor.gpu.summary()["drag"]["zoom"], 400.0);
     surface_ready(&mut editor);
@@ -1122,9 +1132,9 @@ fn gpu_preview_a_percentage_drag_draws_its_region_with_no_job_per_tick() {
 
 /// A pan during a GPU-drawn drag at a percentage zoom to where the held region does not reach
 /// withdraws the plan at once, so the surface draws the CPU's frames and never the GPU frame of one
-/// region beside them; the next tick asks for the new region's boundary and takes the CPU path,
-/// handing the surface no plan until that boundary is held, and then draws the new region on the
-/// GPU.
+/// region beside them; the next tick derives the new region's boundary and hands the surface its
+/// plan, taking the CPU path until the surface has evaluated it, and then draws the new region on
+/// the GPU.
 #[test]
 fn gpu_preview_a_pan_past_the_held_region_draws_the_cpu_frame_until_the_new_boundary() {
     let catalog = catalog("pan");
@@ -1132,9 +1142,7 @@ fn gpu_preview_a_pan_past_the_held_region_draws_the_cpu_frame_until_the_new_boun
     editor.gpu.surface = Some(SurfaceReport::default());
     let first = zoomed(&mut editor);
     let _ = slide(&mut editor, ACTION, FIELD, 0.1);
-    deliver_until(&mut editor, "the region's boundary", |editor| {
-        editor.gpu.holds_boundary()
-    });
+    assert!(editor.gpu.holds_boundary(), "derived at the tick");
     surface_ready(&mut editor);
     let _ = slide(&mut editor, ACTION, FIELD, 0.2);
     assert!(editor.surfaces().gpu.is_some(), "drawn on the GPU");
@@ -1149,7 +1157,7 @@ fn gpu_preview_a_pan_past_the_held_region_draws_the_cpu_frame_until_the_new_boun
         "the plan is withdrawn the moment the view leaves its region"
     );
     assert!(!editor.gpu_draws_view(second));
-    // The next tick plans the new region: the old boundary goes and the new one is asked for.
+    // The next tick plans the new region: the old boundary goes and the new one is derived.
     let log = attach_log(&mut editor);
     let _ = slide(&mut editor, ACTION, FIELD, 0.3);
     let records = logged(&mut editor, &log);
@@ -1157,22 +1165,20 @@ fn gpu_preview_a_pan_past_the_held_region_draws_the_cpu_frame_until_the_new_boun
     assert_eq!(released.len(), 1);
     assert_eq!(released[0]["why"], "key-changed");
     assert_eq!(released[0]["version"], json!(version));
-    assert_eq!(
-        jobs(&records),
-        1,
-        "the tick's region job carries the request"
-    );
+    assert_eq!(jobs(&records), 1, "the tick's region job");
     let ticks = events(&records, "gpu_preview_tick");
     assert_eq!(ticks[0]["path"], "cpu");
-    assert_eq!(ticks[0]["reason"], "boundary-pending");
-    assert!(
-        editor.surfaces().gpu.is_none(),
-        "no plan until the new boundary"
-    );
-    deliver_until(&mut editor, "the new region's boundary", |editor| {
-        editor.gpu.holds_boundary()
-    });
+    assert_eq!(ticks[0]["reason"], "surface-pending");
     assert_eq!(held_region(&editor), corners(second));
+    let plan = editor
+        .surfaces()
+        .gpu
+        .expect("the new region's plan, handed at once");
+    assert_ne!(Some(plan.boundary.version()), version);
+    assert!(
+        !editor.gpu_draws_view(second),
+        "the CPU's frames answer the view until the surface has evaluated it"
+    );
     surface_ready(&mut editor);
     let _ = slide(&mut editor, ACTION, FIELD, 0.4);
     let plan = editor.surfaces().gpu.expect("the new region's plan");
@@ -1180,7 +1186,8 @@ fn gpu_preview_a_pan_past_the_held_region_draws_the_cpu_frame_until_the_new_boun
         plan.region.map(|region| region.rect),
         Some([second.x0, second.y0, second.x1(), second.y1()])
     );
-    assert_eq!(editor.gpu.ticks().2, 2, "one boundary request a region");
+    assert!(editor.gpu_draws_view(second));
+    assert_eq!(editor.gpu.ticks().2, 2, "one boundary derived a region");
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     finish(editor, catalog);
 }
@@ -1213,7 +1220,7 @@ fn gpu_preview_a_region_over_the_budget_keeps_the_cpu_path_and_names_it() {
             .all(|tick| tick["path"] == "cpu" && tick["reason"] == "budget-exceeded"),
         "{ticks:?}"
     );
-    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is asked for");
+    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is derived");
     assert_eq!(
         editor.gpu.summary()["drag"]["over_budget"],
         json!({"requested": needed, "budget": needed - 1})
@@ -1257,7 +1264,7 @@ fn gpu_preview_a_percentage_spatial_drag_draws_the_shape_the_budget_holds() {
     assert_eq!(summary["drag"]["reason"], "budget-exceeded");
     assert_eq!(shape(&editor), "cpu");
     assert_eq!(summary["drag"]["over_budget"]["requested"], json!(cpu));
-    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is asked for");
+    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is derived");
     // The budget holds the GPU shape.
     editor.gpu.budget = Some(u64::MAX);
     let _ = slide(&mut editor, PRESENCE, "clarity", 25.0);
@@ -1362,7 +1369,7 @@ fn gpu_preview_presence_drags_at_100_percent() {
             .all(|tick| tick["path"] == "cpu" && tick["reason"] == "region-estimate"),
         "{ticks:?}"
     );
-    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is asked for");
+    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is derived");
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     deliver_until(&mut editor, "the cancelled drag's frame", |editor| {
         !editor.gpu.has_drag() && !editor.presentation.queue.is_busy()
@@ -1467,85 +1474,81 @@ fn gpu_preview_corpus_at_100_percent() {
     );
 }
 
-/// Once the surface reports that its slot holds the boundary, the desktop lets the texels go and
-/// hands the surface the resident boundary from then on, keeping no copy for the rest of the
-/// gesture. A slot that lets it go — the surface names `boundary-released` — makes the next tick
-/// ask for the boundary again, on the CPU path, and the texels it brings are held until the slot
-/// holds them once more.
+/// What the surface reports of the source the desktop hands it: `version`, every row uploaded.
+fn source_held(editor: &Editor) -> luxforge_ui::photo_surface::SourceFigures {
+    let source = editor.gpu.source().expect("a source");
+    luxforge_ui::photo_surface::SourceFigures {
+        version: source.version(),
+        bytes: source.bytes(),
+        uploaded: source.bytes(),
+        ready: true,
+    }
+}
+
+/// The desktop hands the surfaces the photograph's source with its pixels, the preview job's own,
+/// until the surface reports it holds every row; the message that report wakes lets them go, and
+/// from then on the surfaces are handed it without them, so the desktop keeps no reference to the
+/// pixels. Should the pipeline let the source go — a frame no surface handed it, as a gallery page
+/// draws — the next job hands its pixels again under the same version, which no boundary derived
+/// from it changes.
 #[test]
-fn gpu_preview_the_texels_are_let_go_once_the_slot_holds_them_and_asked_again_if_it_lets_go() {
-    let catalog = catalog("resident");
+fn gpu_preview_the_sources_pixels_are_let_go_once_the_surface_holds_them() {
+    let catalog = catalog("source");
     let (mut editor, _, _) = real_photo(&catalog);
     editor.gpu.surface = Some(SurfaceReport::default());
-    let _ = slide(&mut editor, ACTION, FIELD, 0.1);
-    deliver_until(&mut editor, "the boundary", |editor| {
-        editor.gpu.holds_boundary()
-    });
-    let texels_held =
-        |editor: &Editor| editor.gpu.summary()["drag"]["boundary"]["texels_held"].clone();
+    let pixels_held = |editor: &Editor| editor.gpu.summary()["source"]["pixels_held"].clone();
     assert_eq!(
-        texels_held(&editor),
+        pixels_held(&editor),
         json!(true),
-        "until the slot holds them"
+        "until the surface holds them"
     );
-    let version = editor.gpu.held_version().unwrap();
-    surface_ready(&mut editor);
-    // The message the surface's draw wakes the desktop with lets them go, with no tick.
+    let version = editor.gpu.source().expect("the source").version();
+    assert!(
+        editor
+            .surfaces()
+            .gpu_source
+            .is_some_and(|source| source.holds_pixels() && source.version() == version)
+    );
+    // The surface holds every row: the message its draw wakes lets the pixels go, with no tick.
+    editor.gpu.source_figures = Some(source_held(&editor));
     let log = attach_log(&mut editor);
     let _ = editor.update(Message::Preview(PreviewMessage::Poll));
-    assert_eq!(texels_held(&editor), json!(false));
-    let _ = slide(&mut editor, ACTION, FIELD, 0.2);
-    let plan = editor.surfaces().gpu.expect("the plan is drawn");
-    assert!(!plan.boundary.holds_texels(), "the resident boundary");
-    assert_eq!(plan.boundary.version(), version);
+    assert_eq!(pixels_held(&editor), json!(false));
     let records = logged(&mut editor, &log);
-    assert_eq!(events(&records, "gpu_boundary_resident").len(), 1);
-    assert_eq!(jobs(&records), 0, "the tick was drawn on the GPU");
-    // The slot let it go.
-    editor.gpu.surface = Some(SurfaceReport {
-        ready_boundary: None,
-        fallback: Some(SurfaceFallback::BoundaryReleased),
-        drawn: None,
-        evaluated: None,
-    });
+    let resident = events(&records, "gpu_source_resident");
+    assert_eq!(resident.len(), 1);
+    assert_eq!(resident[0]["version"], json!(version));
+    let handed = editor.surfaces().gpu_source.expect("still handed");
+    assert!(!handed.holds_pixels() && handed.version() == version);
+    // A tick over it changes nothing of the source.
+    surface_ready(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.2);
+    assert_eq!(pixels_held(&editor), json!(false));
+    // The pipeline let it go: the next job hands the pixels again, under the same version.
+    editor.gpu.source_figures = None;
     let log = attach_log(&mut editor);
     let _ = slide(&mut editor, ACTION, FIELD, 0.3);
     let records = logged(&mut editor, &log);
-    let released = events(&records, "gpu_boundary_released");
-    assert_eq!(released.len(), 1, "{records:?}");
-    assert_eq!(released[0]["why"], "slot-released");
-    let ticks = events(&records, "gpu_preview_tick");
-    assert_eq!(ticks[0]["path"], "cpu");
-    assert_eq!(ticks[0]["reason"], "boundary-pending");
-    assert_eq!(ticks[0]["boundary_requested"], true);
-    assert_eq!(editor.gpu.ticks().2, 2, "asked again");
-    deliver_until(&mut editor, "the boundary again", |editor| {
-        editor.gpu.holds_boundary()
-    });
-    assert_eq!(texels_held(&editor), json!(true));
+    let again = events(&records, "gpu_source");
+    assert_eq!(again.len(), 1, "{records:?}");
+    assert_eq!(again[0]["why"], "surface-let-go");
+    assert_eq!(again[0]["version"], json!(version));
+    assert_eq!(pixels_held(&editor), json!(true));
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     finish(editor, catalog);
 }
 
-/// While the surface is still uploading the boundary, a few chunks a frame, a tick takes the CPU
-/// path naming `boundary-uploading`, its job going to the worker and no boundary asked for again,
-/// and the desktop keeps the texels the next frames upload; once the surface holds the boundary the
-/// message its draw wakes lets them go.
+/// While the surface still uploads the source, a frame's rows at a time, a tick takes the CPU path
+/// naming `source-uploading`, its job going to the worker, and the plan stays handed over with the
+/// boundary it derives, which the surface draws from once every row is held; the reason passes,
+/// so nothing is said of it.
 #[test]
-fn gpu_preview_a_tick_during_the_upload_keeps_the_texels_and_names_it() {
+fn gpu_preview_a_tick_during_the_sources_upload_names_it() {
     let catalog = catalog("uploading");
     let (mut editor, _, _) = real_photo(&catalog);
-    editor.gpu.surface = Some(SurfaceReport::default());
-    let _ = slide(&mut editor, ACTION, FIELD, 0.1);
-    deliver_until(&mut editor, "the boundary", |editor| {
-        editor.gpu.holds_boundary()
-    });
-    let texels_held =
-        |editor: &Editor| editor.gpu.summary()["drag"]["boundary"]["texels_held"].clone();
-    let version = editor.gpu.held_version().unwrap();
     editor.gpu.surface = Some(SurfaceReport {
         ready_boundary: None,
-        fallback: Some(SurfaceFallback::BoundaryUploading {
+        fallback: Some(SurfaceFallback::SourceUploading {
             uploaded: 1,
             bytes: 2,
         }),
@@ -1557,24 +1560,29 @@ fn gpu_preview_a_tick_during_the_upload_keeps_the_texels_and_names_it() {
     let records = logged(&mut editor, &log);
     let ticks = events(&records, "gpu_preview_tick");
     assert_eq!(ticks[0]["path"], "cpu");
-    assert_eq!(ticks[0]["reason"], "boundary-uploading");
-    assert_eq!(ticks[0]["boundary_requested"], false);
+    assert_eq!(ticks[0]["reason"], "source-uploading");
     assert_eq!(jobs(&records), 1, "the tick's job goes to the worker");
-    assert_eq!(editor.gpu.ticks().2, 1, "asked once");
-    assert_eq!(
-        texels_held(&editor),
-        json!(true),
-        "the frames still upload them"
-    );
+    assert_eq!(editor.workspace.status.fallback, None, "it passes");
+    let version = editor.gpu.held_version().expect("the boundary");
     let plan = editor
         .surfaces()
         .gpu
         .expect("the plan is still handed over");
-    assert!(plan.boundary.holds_texels());
     assert_eq!(plan.boundary.version(), version);
+    assert!(
+        plan.boundary.derivation().is_some(),
+        "derived from the source"
+    );
+    assert!(
+        editor
+            .surfaces()
+            .gpu_source
+            .is_some_and(luxforge_ui::photo_surface::GpuSource::holds_pixels),
+        "the frames still upload its pixels"
+    );
     surface_ready(&mut editor);
-    let _ = editor.update(Message::Preview(PreviewMessage::Poll));
-    assert_eq!(texels_held(&editor), json!(false));
+    let _ = slide(&mut editor, ACTION, FIELD, 0.3);
+    assert_eq!(editor.gpu.ticks().0, 1, "drawn on the GPU");
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     finish(editor, catalog);
 }
@@ -1582,20 +1590,15 @@ fn gpu_preview_a_tick_during_the_upload_keeps_the_texels_and_names_it() {
 /// While the slot a drag's plan replaces still retires, the surface refuses the new slot naming
 /// the budget (`a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own`): each such
 /// tick takes the CPU path naming `budget-exceeded`, its job going to the worker, and keeps the
-/// boundary, its texels and the plan handed over, asking for nothing again; once the retirement
-/// has ended and the surface holds the boundary, the next tick is drawn on the GPU. Nothing is
-/// asked for, let go or allocated twice: the drag falls back for those ticks and does not thrash.
+/// boundary and the plan handed over, deriving nothing again; once the retirement has ended and
+/// the surface holds the boundary, the next tick is drawn on the GPU. Nothing is derived, let go
+/// or allocated twice: the drag falls back for those ticks and does not thrash.
 #[test]
 fn gpu_preview_a_tick_the_budget_refuses_while_a_slot_retires_keeps_its_boundary() {
     let catalog = catalog("retiring");
     let (mut editor, _, _) = real_photo(&catalog);
     editor.gpu.surface = Some(SurfaceReport::default());
     let _ = slide(&mut editor, ACTION, FIELD, 0.1);
-    deliver_until(&mut editor, "the boundary", |editor| {
-        editor.gpu.holds_boundary()
-    });
-    let texels_held =
-        |editor: &Editor| editor.gpu.summary()["drag"]["boundary"]["texels_held"].clone();
     let version = editor.gpu.held_version().unwrap();
     let refused = SurfaceReport {
         ready_boundary: None,
@@ -1616,20 +1619,22 @@ fn gpu_preview_a_tick_the_budget_refuses_while_a_slot_retires_keeps_its_boundary
         let last = ticks.last().expect("a tick");
         assert_eq!(last["path"], "cpu", "tick {tick}");
         assert_eq!(last["reason"], "budget-exceeded", "tick {tick}");
-        assert_eq!(last["boundary_requested"], false, "tick {tick}");
         assert_eq!(jobs(&records), 1, "tick {tick}: its job goes to the worker");
         assert!(
             events(&records, "gpu_boundary_released").is_empty(),
             "tick {tick}: the boundary is kept"
         );
-        assert_eq!(texels_held(&editor), json!(true), "tick {tick}");
         let plan = editor
             .surfaces()
             .gpu
             .expect("the plan is still handed over");
         assert_eq!(plan.boundary.version(), version);
     }
-    assert_eq!(editor.gpu.ticks().2, 1, "the boundary was asked for once");
+    assert_eq!(
+        editor.gpu.ticks().2,
+        0,
+        "the resident boundary, derived once by the photograph's job"
+    );
     // The retirement ended and the next frame holds the slot.
     surface_ready(&mut editor);
     let log = attach_log(&mut editor);
@@ -1639,5 +1644,152 @@ fn gpu_preview_a_tick_the_budget_refuses_while_a_slot_retires_keeps_its_boundary
     assert_eq!(ticks.last().expect("a tick")["path"], "gpu");
     assert_eq!(jobs(&records), 0, "the drawn tick sends no job");
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    finish(editor, catalog);
+}
+
+/// A pause in a drag the GPU draws settles nothing: the photograph is the GPU's frame of the
+/// draft's newest settings, which the quiet policy leaves on screen, rendering no whole frame on
+/// the CPU behind it. Below 100%, where the CPU's exact frame would replace the whole frame the
+/// plan stands in for, the next tick is drawn on the GPU too.
+#[test]
+fn gpu_preview_a_pause_in_a_drag_the_gpu_draws_settles_nothing() {
+    let catalog = catalog("pause");
+    let (mut editor, _, _) = real_photo(&catalog);
+    editor.gpu.surface = Some(SurfaceReport::default());
+    zoomed_out(&mut editor, 33.0);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.1);
+    deliver_until(&mut editor, "the first tick's frame", |editor| {
+        !editor.presentation.queue.is_busy() && !editor.presentation.queue.ready()
+    });
+    surface_ready(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.2);
+    assert_eq!(editor.gpu.ticks().0, 1, "drawn on the GPU");
+    let draft = editor.session.draft.clone().expect("the open draft");
+    let version = editor.gpu.held_version().expect("the boundary");
+    // The surface's last frame drew that tick.
+    editor.gpu.surface = Some(SurfaceReport {
+        ready_boundary: Some(version),
+        fallback: None,
+        drawn: Some((version, draft.draft_revision)),
+        evaluated: None,
+    });
+    assert!(editor.gpu_shows_revision(draft.draft_revision));
+    // The quiet policy's interval passes.
+    editor.view_plan.quiet_since =
+        Some(std::time::Instant::now() - std::time::Duration::from_millis(150));
+    let log = attach_log(&mut editor);
+    let _ = editor.update(Message::Preview(PreviewMessage::QuietTick));
+    let records = logged(&mut editor, &log);
+    assert!(events(&records, "preview_quiet_refine").is_empty());
+    assert!(!editor.view_plan.in_flight, "no settlement is asked for");
+    assert_eq!(editor.view_plan.quiet_since, None, "nor waited for again");
+    let surfaces = editor.surfaces();
+    assert!(surfaces.gpu.is_some() && !surfaces.gpu_hold, "still drawn");
+    // The next tick is drawn on the GPU, with no job.
+    let log = attach_log(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.3);
+    let records = logged(&mut editor, &log);
+    assert_eq!(jobs(&records), 0);
+    assert_eq!(editor.gpu.ticks().0, 2);
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    finish(editor, catalog);
+}
+
+/// A lens warp's plan needs its coordinate grid, computed once for its boundary's key off the
+/// interface thread: until it arrives no boundary is derived and the resting stack names
+/// `boundary-pending`; the message after asks for it on the runtime's blocking pool, once, and
+/// once it is answered the boundary is derived and the plan drawn through the grid, nothing asked
+/// for again.
+#[test]
+fn gpu_preview_a_lens_warps_grid_is_computed_once_off_the_interface_thread() {
+    let catalog = catalog("lens");
+    let (mut editor, asset, _) = real_photo(&catalog);
+    let refreshed = crate::app::tasks::refresh(
+        &editor.owner,
+        editor.client,
+        asset,
+        crate::app::tasks::Scope::Open,
+        editor.drawn(),
+    )
+    .unwrap();
+    let stack = &refreshed.job.evaluation;
+    // The same source under a lens warp.
+    let lensed = luxforge_core::Evaluation::new(
+        stack.registry().clone(),
+        stack.context().clone(),
+        stack.source().clone(),
+        stack.entry().clone(),
+        luxforge_core::Recipe {
+            layers: vec![luxforge_core::qualification::lens_layer(-0.06, (480, 320))],
+            ..stack.recipe().clone()
+        },
+        None,
+    );
+    let bounds = editor.proxy_bounds().expect("the view's bounds");
+    let rest =
+        luxforge_core::qualification::rest_plan(&lensed, luxforge_core::GpuView::Fit(bounds))
+            .expect("a plan");
+    let request = rest.view.boundary.clone().expect("a boundary");
+    assert!(request.needs_grid(), "a lens warp's tail");
+    let resident = |editor: &Editor| editor.gpu.summary()["resident"]["version"].clone();
+    let before = resident(&editor);
+    let log = attach_log(&mut editor);
+    editor.gpu_resident_from(Some(Box::new(rest.clone())), false, true);
+    let records = logged(&mut editor, &log);
+    let refused = events(&records, "gpu_boundary");
+    assert_eq!(refused.len(), 1, "{records:?}");
+    assert_eq!(
+        (&refused[0]["held"], &refused[0]["why"]),
+        (&json!(false), &json!("boundary-pending"))
+    );
+    assert_eq!(
+        resident(&editor),
+        before,
+        "nothing derived without the grid"
+    );
+    // The message after asks for the grid, once.
+    let log = attach_log(&mut editor);
+    let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    let records = logged(&mut editor, &log);
+    let asked = events(&records, "gpu_grid_requested");
+    assert_eq!(asked.len(), 1, "{records:?}");
+    assert_eq!(asked[0]["grids"], 1);
+    // Answered as the blocking pool answers it: the boundary is derived with the grid.
+    let grid = request
+        .grid()
+        .expect("a lens warp's grid")
+        .map_err(|error| error.to_string());
+    let log = attach_log(&mut editor);
+    let _ = editor.update(Message::Preview(PreviewMessage::GridReady(Box::new(
+        super::gpu_preview::GridAnswer {
+            key: super::gpu_preview::GridKey::of(&request).expect("a lens warp's key"),
+            grid,
+        },
+    ))));
+    editor.gpu_resident_from(Some(Box::new(rest)), false, true);
+    let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    let records = logged(&mut editor, &log);
+    let held = events(&records, "gpu_grid");
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0]["held"], true);
+    let derived = events(&records, "gpu_boundary");
+    assert_eq!(derived.len(), 1, "{records:?}");
+    assert_eq!(
+        (&derived[0]["held"], &derived[0]["resident"]),
+        (&json!(true), &json!(true))
+    );
+    assert_ne!(resident(&editor), before);
+    assert!(
+        events(&records, "gpu_grid_requested").is_empty(),
+        "nothing asked for again"
+    );
+    let (plan, _) = editor.gpu.surface_plan().expect("the resting stack's plan");
+    assert!(
+        plan.steps
+            .iter()
+            .any(|step| matches!(step, luxforge_ui::photo_surface::GpuStep::Geometry(_))),
+        "the warp's tail, drawn through the grid"
+    );
     finish(editor, catalog);
 }

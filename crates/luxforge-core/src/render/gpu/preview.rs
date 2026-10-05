@@ -76,6 +76,12 @@ pub struct BoundaryKey {
 }
 
 impl BoundaryKey {
+    /// The source the boundary is derived from: its fingerprint, and for a RAW the development and
+    /// the view over its planes.
+    pub fn source(&self) -> &ProxyIdentity {
+        &self.source
+    }
+
     /// The proxy the boundary is rendered at, with its window; `None` at the exact stage.
     pub fn plan(&self) -> Option<ProxyPlan> {
         self.plan
@@ -106,17 +112,17 @@ pub enum GpuView {
     Region { rect: Region, magnification: f64 },
 }
 
-/// The boundary a draft's GPU preview starts from: its key, and where its layer begins in the
-/// compilation the preview worker renders the job's frame from.
+/// The boundary a GPU plan starts from: the source itself at the plan's stage, which the photo
+/// surface derives from the prepared source it holds (`docs/design/gpu-preview.md`, "The GPU
+/// source") — reduced to the proxy plan the key names at Fit and below 100%, and a window of it cut
+/// at full scale at the exact stage, at Fit or over a region at 100% or more. Nothing renders it
+/// on the CPU.
 #[derive(Clone, Debug, PartialEq)]
-pub struct BoundaryRequest {
+pub struct SourceBoundary {
     pub key: BoundaryKey,
-    /// The segment and operation index the boundary layer begins at in the drafted stack's
-    /// compilation at the boundary's stage.
-    pub(crate) position: (usize, usize),
-    /// A lens warp's geometry tail, whose coordinate grid the worker computes with the boundary,
-    /// once per draft and off the interface thread; `None` for an affine or projective tail, which
-    /// the surface evaluates exactly.
+    /// A lens warp's geometry tail, whose coordinate grid is computed off the interface thread
+    /// once per key ([`Self::grid`]); `None` for an affine or projective tail, which the surface
+    /// evaluates exactly.
     pub(crate) warp: Option<super::GpuGeometry>,
     /// How the boundary's texels are held: `f32` for a plan of the linear path, half floats
     /// otherwise.
@@ -125,13 +131,54 @@ pub struct BoundaryRequest {
     /// enough for: one for a whole frame, whose proxy is drawn at about its own size, the zoom
     /// over a region at 100% or more.
     pub(crate) magnification: f64,
-    /// The window of the boundary layer's received stage the boundary holds, so what the boundary
-    /// and a slot drawing over it take is known before it is rendered: at a percentage zoom of 100%
-    /// or more, the one the region reads, the region and every margin after it; at the exact stage
-    /// at Fit, the one the whole output stage reads, when that is less than all of it. `None` at a
-    /// proxy, at Fit or below 100%, whose plan names its window, and for a boundary of the whole
-    /// exact stage.
+    /// The window of the content stage the boundary holds, so what the boundary and a slot drawing
+    /// over it take is known before it is derived: at a percentage zoom of 100% or more, the one
+    /// the region reads, the region and every margin after it; at the exact stage at Fit, the one
+    /// the whole output stage reads, when that is less than all of it. `None` at a proxy, at Fit or
+    /// below 100%, whose plan names its window ([`ProxyPlan::held`]), and for a boundary of the
+    /// whole exact stage.
     pub window: Option<Region>,
+}
+
+impl SourceBoundary {
+    /// Whether the plan's tail is a lens warp, whose coordinate grid the surface reads
+    /// ([`Self::grid`]).
+    pub fn needs_grid(&self) -> bool {
+        self.warp.is_some()
+    }
+
+    /// A lens warp's geometry tail and the magnification its coordinate grid is made dense enough
+    /// for: what the whole output stage's grid, which every window of it takes its part of, is
+    /// computed from ([`super::GpuGeometry::stage_grid`]). `None` for an affine or projective tail.
+    pub fn warp(&self) -> Option<(&super::GpuGeometry, f64)> {
+        self.warp.as_ref().map(|warp| (warp, self.magnification))
+    }
+
+    /// What of the output stage a lens warp's grid covers: the region at 100% or more, the whole
+    /// stage at Fit and below 100%. `None` for a plan with no lens warp.
+    pub fn grid_region(&self) -> Option<Region> {
+        let output = self.warp.as_ref()?.output();
+        Some(self.key.region().unwrap_or(Region {
+            x0: 0,
+            y0: 0,
+            width: output.width,
+            height: output.height,
+        }))
+    }
+
+    /// A lens warp's coordinate grid over what the plan draws ([`Self::grid_region`]) at the plan's
+    /// magnification, the part of the whole stage's grid there ([`super::GpuGeometry::grid`]), or
+    /// why it cannot be built; `None` for an affine or projective tail. Frame work of up to
+    /// [`super::GRID_MAX_NODES`] nodes: a caller runs it off the interface thread and the catalog
+    /// owner.
+    pub fn grid(&self) -> Option<Result<std::sync::Arc<super::CoordinateGrid>, Error>> {
+        let warp = self.warp.as_ref()?;
+        let region = self.grid_region()?;
+        Some(warp.grid(region, self.magnification).and_then(|grid| {
+            grid.map(std::sync::Arc::new)
+                .ok_or_else(|| Error::internal("a warp tail with no grid"))
+        }))
+    }
 }
 
 /// A draft's GPU preview: the plan a tick is drawn from, or why the gesture takes the CPU path,
@@ -140,7 +187,7 @@ pub struct BoundaryRequest {
 pub struct GpuPreview {
     pub answer: GpuAnswer,
     /// The boundary of [`Self::answer`]'s plan; `None` when there is no plan.
-    pub boundary: Option<BoundaryRequest>,
+    pub boundary: Option<SourceBoundary>,
     /// Over a region at 100% or more, when [`Self::answer`]'s plan holds a drafted restoration or
     /// spatial layer in its GPU shape: the plan of that layer in the CPU's shape, the units its
     /// values need, from the same boundary. Over the region's window the GPU shape charges the
@@ -589,17 +636,230 @@ pub struct GpuRest {
     /// view's size, as a drag's frame is, until the picture at rest lands, and kept behind it for
     /// the next gesture.
     pub view: GpuPreview,
+    /// At Fit and below 100%, where the view draws the output stage smaller than it is, the
+    /// picture at rest process-first ([`RestTiles`]), or why it cannot be drawn so now: a global
+    /// estimate the store does not hold yet for the stack, which its exact phase stores, after which
+    /// the worker plans the tiles again ([`ExactOutcome::rest`]), or a stack the GPU cannot draw.
+    /// `None` where the view draws the output stage at its own size or larger, whose picture at
+    /// rest is [`Self::view`]'s plan.
+    ///
+    /// [`ExactOutcome::rest`]: crate::ExactOutcome::rest
+    pub tiles: Option<Result<Box<RestTiles>, GpuFallback>>,
+}
+
+/// The sides a picture at rest's tiles of the output stage take, longest first: the first whose
+/// tile's slot the plan's own figures hold within [`REST_TILE_BYTES`].
+pub const REST_TILE_SIDES: [u32; 4] = [2048, 1024, 512, 256];
+
+/// What one tile's evaluation may take on the GPU by the plan's own figures — the boundary over the
+/// tile's window, an intermediate for each link and a tail, the spatial planes and the tile's
+/// output — a quarter of the photo surface's 2 GiB GPU-preview budget, so a tile's slot sits beside
+/// a gesture's, the source and the picture at rest's own accumulator. A constant and the plan: never
+/// the bytes in use.
+pub const REST_TILE_BYTES: u64 = 512 << 20;
+
+/// The picture at rest at Fit and below 100%, process-first (`docs/design/gpu-preview.md`, "The
+/// picture at rest"): the stack at full resolution in tiles of the output stage, each the whole
+/// stack's plan over its tile at full scale from its own window of the source, reduced to the
+/// view's size by an area-weighted average of their linear light — the frame the reference is held
+/// to at those views.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RestTiles {
+    /// The plan of the whole stack at the exact stage, from the source, its global estimates read
+    /// from the store: every tile's plan, which a tile's region and window place.
+    pub plan: Box<GpuPlan>,
+    /// The tiles, row by row: each its rectangle of the output stage and the window of the source
+    /// it reads, anchored ([`GpuPlan::anchor`]).
+    pub tiles: Vec<RestTile>,
+    /// The output stage the tiles cover.
+    pub output: Stage,
+    /// The view's size the output stage is reduced to: the frame the CPU's proxy phase draws at the
+    /// view's bounds, or, for a stack drawn at its exact stage, the output stage fitted to them.
+    pub view: (u32, u32),
+    /// The reduction's coverage of the output stage across and down.
+    pub across: crate::ProxyCoverage,
+    pub down: crate::ProxyCoverage,
+    /// The source every tile's boundary is cut from, and how its texels are held.
+    pub source: ProxyIdentity,
+    pub format: crate::BoundaryFormat,
+}
+
+/// One tile of a picture at rest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RestTile {
+    /// Its rectangle of the output stage.
+    pub rect: Region,
+    /// The window of the source it reads, the rectangle and every margin after it, its origin a
+    /// multiple of the plan's anchor.
+    pub window: Region,
+}
+
+impl RestTiles {
+    /// A lens warp's geometry tail, whose whole output stage's grid at one display pixel an output
+    /// pixel every tile takes its part of; `None` for an affine or projective tail.
+    pub fn warp(&self) -> Option<&super::GpuGeometry> {
+        self.plan
+            .geometry
+            .needs_grid()
+            .then_some(&self.plan.geometry)
+    }
+}
+
+/// `output` fitted to `bounds` when the bounds draw it smaller: its size at the scale the view
+/// draws it at.
+fn fitted(output: Stage, bounds: ProxyBounds) -> Option<(u32, u32)> {
+    let bounds = bounds.clamped();
+    let scale = (f64::from(bounds.width) / f64::from(output.width))
+        .min(f64::from(bounds.height) / f64::from(output.height));
+    (scale.is_finite() && scale < 1.0).then(|| {
+        (
+            ((f64::from(output.width) * scale).round() as u32).clamp(1, output.width),
+            ((f64::from(output.height) * scale).round() as u32).clamp(1, output.height),
+        )
+    })
+}
+
+/// What a tile's evaluation over `window` of a `format` boundary takes by `plan`'s own figures: the
+/// boundary, an intermediate for every link and a tail's, the spatial planes and a `side` square
+/// output's codes.
+fn tile_bytes(plan: &GpuPlan, window: Region, format: crate::BoundaryFormat, side: u32) -> u64 {
+    let texels = u64::from(window.width) * u64::from(window.height);
+    let links = plan.spatial.len() as u64 + 1;
+    let planes: u64 = plan
+        .spatial
+        .iter()
+        .map(|spatial| spatial.plane_bytes((window.x0, window.y0), (window.width, window.height)))
+        .sum();
+    texels * format.texel_bytes() as u64 * (links + 1) + planes + u64::from(side).pow(2) * 4
+}
+
+/// The picture at rest of `evaluation` at Fit bounds `bounds`, process-first ([`RestTiles`]):
+/// `None` when the bounds draw the output stage at its own size; the reason when the stack cannot
+/// be drawn so now — a global estimate the store does not hold yet, which names `region-estimate`,
+/// or a stack the window planner cannot cut. `O(tiles × segments)` on the catalog owner: one plan,
+/// a window per tile, no pixel read.
+pub(crate) fn plan_rest_tiles(
+    evaluation: &Evaluation,
+    bounds: ProxyBounds,
+    side: Option<u32>,
+) -> Result<Option<Result<Box<RestTiles>, GpuFallback>>, Error> {
+    let registry = evaluation.registry();
+    let recipe = evaluation.recipe();
+    let compiled = evaluation.compiled()?;
+    let output = compiled.stage();
+    // The view's size: the CPU proxy frame's, which a gesture's frame draws at too, or the output
+    // stage fitted to the bounds for a stack drawn at its exact stage.
+    let fit = FitStage::of_view(evaluation, GpuView::Fit(bounds))?;
+    let view = match fit.plan {
+        Some(_) => {
+            let stage = fit.compiled.stage();
+            (stage.width, stage.height)
+        }
+        None => match fitted(output, bounds) {
+            Some(view) => view,
+            None => return Ok(None),
+        },
+    };
+    let full = evaluation.source().dimensions();
+    let full = Stage {
+        width: full.0,
+        height: full.1,
+    };
+    let linear = matches!(evaluation.source(), crate::PreviewSource::Raw { .. });
+    let request = GpuPlanRequest::exact(0, full).from_source();
+    let request = if linear { request.linear() } else { request };
+    let estimates = GpuEstimates {
+        context: evaluation.context(),
+        source: EstimateSource::Render(evaluation.source().into()),
+    };
+    let plan = match gpu_plan_holding(registry, recipe, request, Some(estimates), &[])? {
+        GpuAnswer::Plan(plan) => plan,
+        GpuAnswer::Fallback(reason) => return Ok(Some(Err(reason))),
+    };
+    // Every global estimate is the exact stage's, read from the store: one the GPU would take from
+    // a tile alone is not the whole stage's.
+    if let Some(spatial) = plan.spatial.iter().find(|spatial| spatial.estimated) {
+        return Ok(Some(Err(GpuFallback::RegionEstimate {
+            layer: spatial.layer,
+        })));
+    }
+    if let Some(layer) = compiled.unheld_estimate(0, &estimates)? {
+        return Ok(Some(Err(GpuFallback::RegionEstimate { layer })));
+    }
+    let anchor = plan.anchor();
+    let format = crate::BoundaryFormat::of(linear);
+    let source = (full.width, full.height);
+    let window_of = |rect: Region| {
+        WindowPlan::of_gpu_rect(compiled, source, rect, 0)
+            .map(|windows| super::plan::anchored(windows.reads(0), anchor))
+    };
+    // The longest side whose tile in the middle of the stage, its window grown on every side, the
+    // plan's own figures hold; a test may name its own.
+    let side = side.unwrap_or_else(|| {
+        REST_TILE_SIDES
+            .into_iter()
+            .find(|side| {
+                let (width, height) = ((*side).min(output.width), (*side).min(output.height));
+                let middle = Region {
+                    x0: (output.width - width) / 2,
+                    y0: (output.height - height) / 2,
+                    width,
+                    height,
+                };
+                window_of(middle)
+                    .is_ok_and(|window| tile_bytes(&plan, window, format, *side) <= REST_TILE_BYTES)
+            })
+            .unwrap_or(REST_TILE_SIDES[REST_TILE_SIDES.len() - 1])
+    });
+    let mut tiles = Vec::new();
+    for y0 in (0..output.height).step_by(side as usize) {
+        for x0 in (0..output.width).step_by(side as usize) {
+            let rect = Region {
+                x0,
+                y0,
+                width: side.min(output.width - x0),
+                height: side.min(output.height - y0),
+            };
+            match window_of(rect) {
+                Ok(window) => tiles.push(RestTile { rect, window }),
+                Err(reason) => {
+                    return Ok(Some(Err(GpuFallback::Unplannable(format!(
+                        "the picture at rest's tile at ({x0}, {y0}): {}",
+                        reason.reason()
+                    )))));
+                }
+            }
+        }
+    }
+    Ok(Some(Ok(Box::new(RestTiles {
+        plan,
+        tiles,
+        output,
+        view,
+        across: crate::area_coverage(output.width, view.0),
+        down: crate::area_coverage(output.height, view.1),
+        source: evaluation.source().identity(),
+        format,
+    }))))
 }
 
 /// The GPU picture at rest of a committed stack, `evaluation` a job of no draft, drawn as `view`
 /// says ([`GpuRest`]): every stack has one, the empty stack and a stack of geometry alone included,
-/// since it is planned from the source. `O(layers)` on the catalog owner, and no pixel read.
+/// since it is planned from the source. `O(layers)` on the catalog owner, and no pixel read, and at
+/// Fit and below 100% `O(tiles × segments)` for its tiles.
 pub(crate) fn plan_rest(evaluation: &Evaluation, view: GpuView) -> Result<GpuRest, Error> {
     let recipe = evaluation.recipe();
     let fit = FitStage::of_view(evaluation, view)?;
     let request = fit.request(None);
-    let view = planned_preview(evaluation, &fit, recipe, None, request, None)?;
-    Ok(GpuRest { view })
+    let planned = planned_preview(evaluation, &fit, recipe, None, request, None)?;
+    let tiles = match view {
+        GpuView::Fit(bounds) => plan_rest_tiles(evaluation, bounds, None)?,
+        GpuView::Region { .. } => None,
+    };
+    Ok(GpuRest {
+        view: planned,
+        tiles,
+    })
 }
 
 /// The plan of `planned` from layer `boundary`'s input, or from the source for `None`, at `fit`'s
@@ -715,9 +975,23 @@ fn planned_preview(
             cpu_shape = Some(smaller);
         }
     }
+    // Every window is anchored, its origin a multiple of the plan's anchor, so each texel it holds
+    // is the whole stage's, bit for bit, whichever window holds it ([`GpuPlan::anchor`]).
+    if let GpuAnswer::Plan(plan) = &answer {
+        let anchor =
+            super::plan::common_anchor(std::iter::once(&**plan).chain(cpu_shape.as_deref()));
+        window = window.map(|window| super::plan::anchored(window, anchor));
+    }
+    // Every plan starts from the source: a boundary at a source or geometry layer before the
+    // stack's first content layer names `boundary-stage` and has no plan.
     let boundary_request = match &answer {
         GpuAnswer::Fallback(_) => None,
-        GpuAnswer::Plan(plan) => Some(BoundaryRequest {
+        GpuAnswer::Plan(_) if position != (0, 0) => {
+            return Err(Error::internal(
+                "a GPU plan starts from the source, at the first segment's first operation",
+            ));
+        }
+        GpuAnswer::Plan(plan) => Some(SourceBoundary {
             key: BoundaryKey {
                 source: evaluation.source().identity(),
                 prefix: prefix_hash(&recipe.layers[..before], &recipe.masks, fit.sampling())?,
@@ -726,7 +1000,6 @@ fn planned_preview(
                 region: fit.region.map(|(rect, _)| rect),
                 window,
             },
-            position,
             format: crate::BoundaryFormat::of(fit.linear),
             magnification: fit.region.map_or(1.0, |(_, magnification)| magnification),
             window,

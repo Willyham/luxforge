@@ -627,8 +627,9 @@ mod tests {
     /// is noted; entering Mask mode plans that stack again once, and its delivered thumbnails reach
     /// each mask's row; in Mask mode a new settled stack is handed to the worker as its frame is
     /// requested; the same stack again asks for nothing; and a stack without masks clears the
-    /// thumbnails. At no point does the desktop hold a stack's pixels once the workers are done
-    /// with them: a kept RAW development would hold the source worker's memory gate.
+    /// thumbnails. At no point does the desktop hold a stack's pixels once the workers, and the
+    /// photo surface it hands them to as the GPU source, are done with them: a kept RAW development
+    /// would hold the source worker's memory gate.
     #[test]
     fn mask_mode_thumbnails_every_listed_mask_from_the_settled_stack_once() {
         use crate::app::message::{Message, preview::PreviewMessage};
@@ -682,6 +683,21 @@ mod tests {
             });
         };
         let identity = PreviewJob::new(stack.clone()).expect("a job").identity;
+        // The photo surface holds the GPU source the job's pixels are handed as, and the desktop
+        // then lets them go: what the frame the surface draws reports.
+        let surface_holds_source = |editor: &mut Editor| {
+            editor.gpu.source_figures =
+                editor
+                    .gpu
+                    .source()
+                    .map(|source| luxforge_ui::photo_surface::SourceFigures {
+                        version: source.version(),
+                        bytes: source.bytes(),
+                        uploaded: source.bytes(),
+                        ready: true,
+                    });
+            let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+        };
 
         // Outside Mask mode: nothing is filled, and nothing of the stack outlives its frame.
         let (settled, pixels) = fresh_stack(&stack);
@@ -691,6 +707,7 @@ mod tests {
             "outside Mask mode no thumbnail is filled"
         );
         idle(&mut editor);
+        surface_holds_source(&mut editor);
         assert_eq!(editor.thumbnailer.source.latest.as_ref(), Some(&identity));
         assert!(editor.thumbnailer.source.requested.is_none());
         assert_eq!(
@@ -770,6 +787,7 @@ mod tests {
             "nothing planned"
         );
         idle(&mut editor);
+        surface_holds_source(&mut editor);
         assert_eq!(pixels.strong_count(), 0, "nothing of it is kept");
 
         // A settled stack without masks clears the thumbnails of the stack before it.

@@ -394,33 +394,6 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         Ok(evaluation)
     }
 
-    /// The evaluation [`Self::frames_prefix`] would end with at `boundary`, from that segment's
-    /// input `planes` already held: nothing is evaluated.
-    pub(super) fn frames_held(
-        domain: D,
-        compiled: Cow<'a, Compiled>,
-        tiling: Tiling,
-        cancel: &Cancel,
-        context: &'a RenderContext,
-        boundary: usize,
-        planes: Arc<D::SpatialFrame>,
-    ) -> Result<Self, Error> {
-        let mut evaluation = Self::new(
-            domain,
-            compiled,
-            tiling,
-            SpatialMode::Point,
-            cancel,
-            context,
-        )?;
-        evaluation.tiles = None;
-        evaluation.frame = Some(SpatialFrame {
-            index: boundary,
-            planes,
-        });
-        Ok(evaluation)
-    }
-
     fn materialize(&mut self, start: usize, end: usize, cancel: &Cancel) -> Result<(), Error> {
         for index in start..end {
             let Some(entry) = &self.compiled.segments[index].entry else {
@@ -511,6 +484,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     /// [`Self::globals_of`] from the estimate store alone, under the key a frame of this
     /// compilation asks with: `None` when the store does not hold every one, which nothing here
     /// reduces. `O(units)`, and reads no pixel.
+    #[cfg(any(test, feature = "qualification"))]
     pub(crate) fn held_globals_of(&self, index: usize) -> Option<Vec<Option<Global>>> {
         match &self.compiled.segments[index].entry {
             Some(super::Entry::Spatial(entry)) => entry

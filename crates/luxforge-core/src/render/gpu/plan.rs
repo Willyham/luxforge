@@ -657,18 +657,39 @@ impl GpuGeometry {
 
     /// A lens warp's coordinate grid over `region` of the output stage, within
     /// [`super::GRID_TOLERANCE_PX`] of the map, drawn at `magnification` display pixels per output
-    /// pixel ([`CoordinateGrid::new`]). `None` for an affine or projective tail, whose matrix the
-    /// surface evaluates exactly at every pixel. Once per draft, not per tick: the geometry does not
-    /// change while a colour draft is open.
+    /// pixel: the part over the region of the whole stage's grid at that magnification
+    /// ([`CoordinateGrid::stage`], [`CoordinateGrid::part`]), so every window of the stage
+    /// interpolates the same nodes and draws the same pixel alike. Where the whole stage's grid
+    /// would need more nodes than a grid holds, as far into a zoom, the region's own grid
+    /// ([`CoordinateGrid::new`]). `None` for an affine or projective tail, whose matrix the surface
+    /// evaluates exactly at every pixel. Frame work, once per draft, not per tick: the geometry
+    /// does not change while a colour draft is open.
     pub fn grid(
         &self,
         region: Region,
         magnification: f64,
     ) -> Result<Option<CoordinateGrid>, Error> {
+        match self.stage_grid(magnification) {
+            Ok(None) => Ok(None),
+            Ok(Some(stage)) => stage.part(region).map(Some).ok_or_else(|| {
+                Error::validation(format!(
+                    "a coordinate grid's region {region:?} is outside the output stage"
+                ))
+            }),
+            Err(error) if error.kind == crate::ErrorKind::ResourceLimit => {
+                CoordinateGrid::new(&self.map, region, magnification).map(Some)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// A lens warp's coordinate grid over the whole output stage at `magnification`, which every
+    /// window takes its part of ([`Self::grid`]); `None` for an affine or projective tail.
+    pub fn stage_grid(&self, magnification: f64) -> Result<Option<CoordinateGrid>, Error> {
         if !self.needs_grid() {
             return Ok(None);
         }
-        CoordinateGrid::new(&self.map, region, magnification).map(Some)
+        CoordinateGrid::stage(&self.map, magnification).map(Some)
     }
 }
 
@@ -738,6 +759,121 @@ impl GpuPlan {
         self.spatial
             .iter()
             .any(|spatial| spatial.estimated || spatial.held)
+    }
+
+    /// Where every window of the boundary stage the plan is evaluated over — a 100% region's, a
+    /// tile's of the picture at rest, a crop's at Fit — starts, so that each texel it holds is the
+    /// whole stage's, bit for bit, whatever window holds it: tiles carry no seam, and a pixel read
+    /// back from one is the pixel any other window draws ([`GpuAnchor`]). `O(passes)`.
+    pub fn anchor(&self) -> GpuAnchor {
+        let mut anchor = GpuAnchor::NONE;
+        for spatial in &self.spatial {
+            for pass in &spatial.passes {
+                let spatial::GpuPassShape::Texels { span } = pass.shape else {
+                    continue;
+                };
+                let Some(spatial::GpuPlaneSize::Reduced(s)) =
+                    spatial.planes.get(pass.output).map(|plane| plane.size)
+                else {
+                    continue;
+                };
+                let (span, s) = (span.map(|n| n.max(1)), s.max(1));
+                anchor.multiple = (
+                    lcm(anchor.multiple.0, span[0] * s),
+                    lcm(anchor.multiple.1, span[1] * s),
+                );
+                anchor.lead = (
+                    anchor.lead.0 + (span[0] - 1) * s,
+                    anchor.lead.1 + (span[1] - 1) * s,
+                );
+            }
+        }
+        anchor
+    }
+}
+
+/// Where a window of the boundary stage a plan is evaluated over starts ([`GpuPlan::anchor`]):
+/// its origin moved `lead` pixels up and left of the window the stack's halos read, then down to a
+/// multiple of `multiple`, per axis; its far edges where they were ([`anchored`]).
+///
+/// A pass that runs once a `span` of an output plane of `s × s`-pixel blocks
+/// ([`spatial::GpuPassShape::Texels`], [`spatial::GpuPlaneSize::Reduced`]) is a running sum: its
+/// drift depends on where its run starts and a reduced plane's block on where it lies, so the
+/// origin is a multiple of the least common multiple of every such pass's `span × s`, and every
+/// run and every block starts where it does over the whole stage. And a run's `f32` sum carries
+/// the rounding of every value it has added and subtracted since its seed, which reads its radius
+/// before the run's first output: a texel late in a run depends on values up to `(span − 1) × s`
+/// pixels further toward the origin than its halo, through every such pass before it. Over a
+/// window short of that, the runs at its top and left seed from texels the edge clamps, or from
+/// an earlier pass's texels that did, and their sums differ from the whole stage's by a rounding
+/// that a frame's codes show at a pixel in a few thousand. So the origin moves first by the sum of
+/// `(span − 1) × s` over every such pass. A fixed plane, a global estimate's, is whole in every
+/// window. Presence's three units, running 16 texels a pass over the full stage and its 4x
+/// reduction, take a multiple of 64 and a lead of 300 pixels; a plan with no running sum takes 1
+/// and 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GpuAnchor {
+    /// What the origin is rounded down to a multiple of, across and down.
+    pub multiple: (u32, u32),
+    /// How far the origin moves up and left of the halos' window first, across and down.
+    pub lead: (u32, u32),
+}
+
+impl GpuAnchor {
+    /// A plan's with no running sum: every window where its halos put it.
+    pub const NONE: Self = Self {
+        multiple: (1, 1),
+        lead: (0, 0),
+    };
+
+    /// The anchor two plans drawn over one boundary are evaluated alike over: the least common
+    /// multiple of their multiples and the larger lead, per axis.
+    pub fn join(self, other: Self) -> Self {
+        Self {
+            multiple: (
+                lcm(self.multiple.0, other.multiple.0),
+                lcm(self.multiple.1, other.multiple.1),
+            ),
+            lead: (self.lead.0.max(other.lead.0), self.lead.1.max(other.lead.1)),
+        }
+    }
+}
+
+fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 { a } else { gcd(b, a % b) }
+}
+
+/// The least common multiple of two positive integers.
+fn lcm(a: u32, b: u32) -> u32 {
+    a / gcd(a, b) * b
+}
+
+/// The anchor every plan of `plans` is evaluated alike over ([`GpuAnchor::join`]), for plans
+/// drawn over one boundary.
+pub(crate) fn common_anchor<'a>(plans: impl IntoIterator<Item = &'a GpuPlan>) -> GpuAnchor {
+    plans
+        .into_iter()
+        .fold(GpuAnchor::NONE, |anchor, plan| anchor.join(plan.anchor()))
+}
+
+/// `window` of a boundary stage, the one the stack's halos read, with its origin moved by
+/// `anchor`'s lead and rounded down to its multiple, within the stage ([`GpuAnchor`]); its far
+/// edges where they were: the window an evaluation over it holds, at most `lead + multiple − 1`
+/// texels more on its top and left.
+pub fn anchored(window: Region, anchor: GpuAnchor) -> Region {
+    let start = |origin: u32, lead: u32, multiple: u32| {
+        let multiple = multiple.max(1);
+        origin.saturating_sub(lead) / multiple * multiple
+    };
+    let (x0, y0) = (
+        start(window.x0, anchor.lead.0, anchor.multiple.0),
+        start(window.y0, anchor.lead.1, anchor.multiple.1),
+    );
+    Region {
+        x0,
+        y0,
+        width: window.x1() - x0,
+        height: window.y1() - y0,
     }
 }
 
