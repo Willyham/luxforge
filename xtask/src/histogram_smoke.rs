@@ -123,16 +123,10 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         view("original", script::Step::Preview(PreviewStep::Sequence(0))),
         // Back to current, because a gesture is refused while a historical entry is shown.
         view("current", script::Step::Preview(PreviewStep::Current)),
-        // The drafted render's counts are the reference's: with the GPU preview off a drag is
-        // drawn by the reference renderer, whose frames of this small fixture are its exact
-        // frames, each reduced into a report. With it on, the plot shows the counts of the frame
-        // in motion, marked updating, which the GPU steps below hold.
-        Step::new(
-            "gpu-preview-off",
-            luxforge_evidence::PaletteStep::Run("gpu preview".into()),
-        )
-        .commits(0)
-        .workspace("gpu_preview", json!(false)),
+        // The drafted render's counts are the reference's: the stack holds the pixel proof, which
+        // no GPU program draws (`pixel-stage`), so each tick of a drag is a reference frame of the
+        // whole drafted stack, reduced into a report. On the GPU the plot shows the counts of the
+        // frame in motion, marked updating, which the GPU steps below hold.
         // An Exposure drag left open, so the photograph on screen is the drafted render.
         Step::new("drag", SliderStep::new("set-basic", "exposure", [0.5, 1.0]))
             .commits(0)
@@ -147,14 +141,8 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         .no_draft()
         .label("Exposure +1.00 EV")
         .payload(BASIC_EFFECT, json!({"exposure": 1.0})),
-        // The GPU preview back on, and the history undone to the Original, whose stack the GPU
-        // draws: its counts are the GPU's.
-        Step::new(
-            "gpu-preview-on",
-            luxforge_evidence::PaletteStep::Run("gpu preview".into()),
-        )
-        .commits(0)
-        .workspace("gpu_preview", json!(true)),
+        // The history undone to the Original, whose stack the GPU draws: its counts are the
+        // GPU's.
         Step::new("undo-exposure", script::Step::api("history.undo")).commits(1),
         Step::new("undo-pixel", script::Step::api("history.undo"))
             .commits(1)

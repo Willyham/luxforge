@@ -1281,8 +1281,8 @@ impl Editor {
     /// the surface holds at once ([`derive_held`]), so the next frame evaluates it.
     pub(crate) fn gpu_tick(&mut self, set: &Draft, preview: Option<Box<GpuPreview>>) -> Tick {
         let now = Instant::now();
-        // With the gate refusing — the preference off, or a GPU stage that cannot draw at all — the
-        // plan is never handed over, so nothing is asked for it.
+        // With the gate refusing — a GPU stage that cannot draw at all — the plan is never handed
+        // over, so nothing is asked for it.
         let allowed = self.gpu_preview_allowed();
         // The clipping overlay is derived from the CPU's frames, so over a GPU frame the plan marks
         // its own clipped pixels instead.
@@ -1319,7 +1319,7 @@ impl Editor {
         };
         // A tick with no plan draws nothing of its own; the boundary stays held, behind the CPU
         // frame, for the next tick or draft that plans from it. Only the gate's refusal lets it go:
-        // the preference turned off, or a GPU stage that cannot draw at all — a lost device, an
+        // a GPU stage that cannot draw at all — a lost device, an
         // adapter that cannot run it, a launch that refused it — hands the surface no plan, so
         // nothing would ever draw from it.
         let unplanned =
@@ -1341,7 +1341,7 @@ impl Editor {
         let tick = match preview.map(|preview| *preview) {
             _ if allowed.is_err() => unplanned(
                 drag,
-                allowed.err().unwrap_or(super::gpu_settle::PREFERENCE_OFF),
+                allowed.err().unwrap_or("no-adapter"),
                 None,
                 &mut released,
             ),
@@ -1702,7 +1702,7 @@ impl Editor {
     /// when no boundary held has its key, so the surface keeps the stack's outputs and the next
     /// gesture's first tick draws on the GPU. `region` is whether the job's view is a percentage
     /// zoom's region, and `committed` whether the job draws the whole committed stack. Nothing
-    /// with the preference off; a drag winding down keeps its boundary, which the stack's view
+    /// while the GPU stage is refused; a drag winding down keeps its boundary, which the stack's view
     /// plan is then drawn from at rest.
     pub(crate) fn gpu_resident_from(
         &mut self,
@@ -1925,7 +1925,7 @@ impl Editor {
     /// The displayed stack's picture at rest in tiles, from its job: held for the surfaces to draw
     /// ([`surface::GpuRest`]), under a new version unless they are the tiles held. `None` lets the
     /// one held go: a view that draws the stack at its own size or larger, or tiles the GPU cannot
-    /// draw. Nothing with the preference off.
+    /// draw. Nothing while the GPU stage is refused.
     pub(crate) fn gpu_rest_from(&mut self, tiles: Option<Box<luxforge_core::RestTiles>>) {
         if self.gpu_preview_allowed().is_err() {
             self.gpu.rest = None;
@@ -2326,7 +2326,7 @@ impl Editor {
     }
 
     /// Why the desktop hands the surface no plan for the open gesture's newest tick, or why that
-    /// tick took the CPU path: the preference, the plan's reason, a boundary not yet held, the
+    /// tick took the CPU path: the GPU stage refused, the plan's reason, a boundary not yet held, the
     /// converter's reason or the surface's fallback.
     pub(crate) fn gpu_plan_fallback(&self) -> Option<String> {
         self.gpu_cpu_reason().map(|reason| reason.code.to_owned())
@@ -2421,7 +2421,7 @@ pub(super) fn after_message(editor: &mut Editor, _: &super::Before) -> iced::Tas
         }
     }
     release_ended_drag(editor, asset);
-    // With the GPU stage refused or the preference off the CPU's frames are the photograph: no
+    // With the GPU stage refused the reference renderer's frames are the photograph: no
     // view plan or tiles are kept to be drawn at rest once it is back, before a committed job
     // plans them for the stack on screen then.
     if editor.gpu_preview_allowed().is_err() {

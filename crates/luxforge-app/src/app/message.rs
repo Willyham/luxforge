@@ -98,7 +98,6 @@ impl Message {
                 V::TogglePanel(_)
                     | V::ToggleThirds
                     | V::ToggleInformation
-                    | V::ToggleGpuPreview
                     | V::SetMode(_)
                     | V::Gallery(_)
                     | V::OpenMenu(_)

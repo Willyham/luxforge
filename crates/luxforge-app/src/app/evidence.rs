@@ -4059,7 +4059,6 @@ impl Editor {
             | PaletteAction::TogglePanel(_)
             | PaletteAction::ToggleThirds
             | PaletteAction::ToggleInformation
-            | PaletteAction::ToggleGpuPreview
             | PaletteAction::Fit
             | PaletteAction::HundredPercent => self.await_step(Settle::Session),
             PaletteAction::TogglePerformance => self.arm_performance_settle(),

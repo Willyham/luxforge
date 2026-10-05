@@ -93,9 +93,8 @@ struct Class {
 /// renderer's, said from the session's renderer; the rest are a gesture's, said from its latest
 /// tick. A code in none of them says nothing: the reasons that pass within a tick or two or a job
 /// (`boundary-pending`, `source-uploading`, `source-missing` and `surface-pending`, which is also
-/// the session's renderer before the photo surface has checked its GPU stage), the preference
-/// turned off (`preference-off`), and the two the table does not name (`unchanged` and
-/// `unplannable`). The last is the picture at rest's while its programs compile, said at rest
+/// the session's renderer before the photo surface has checked its GPU stage), and the two the
+/// table does not name (`unchanged` and `unplannable`). The last is the picture at rest's while its programs compile, said at rest
 /// alone.
 const CLASSES: [Class; 6] = [
     Class {
@@ -740,16 +739,15 @@ mod tests {
         }
     }
 
-    /// A reason that passes within a tick or two or a job, the preference turned off and a code the
-    /// table does not name say nothing.
+    /// A reason that passes within a tick or two or a job, and a code the table does not name, say
+    /// nothing.
     #[test]
-    fn passing_reasons_the_preference_off_and_unnamed_codes_say_nothing() {
+    fn passing_reasons_and_unnamed_codes_say_nothing() {
         for code in [
             "boundary-pending",
             "source-uploading",
             "source-missing",
             "surface-pending",
-            "preference-off",
             "unchanged",
             "unplannable",
             "a-code-of-another-day",

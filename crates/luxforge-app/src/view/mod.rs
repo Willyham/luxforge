@@ -73,7 +73,7 @@ pub(crate) struct Surfaces<'a> {
     /// A GPU plan the photograph is drawn from in place of its frame, which stays the surface's
     /// fallback: a whole frame's at Fit and below 100%, a region's at 100% or more. An open
     /// gesture's ([`crate::app::gpu_preview`]), or an evidence run's GPU identity hook's. None is
-    /// given while this client's `gpu_preview` preference is off (`Editor::gpu_plan`).
+    /// given while the GPU stage is refused (`Editor::gpu_plan`).
     pub(crate) gpu: Option<&'a luxforge_ui::photo_surface::GpuPlan>,
     /// Keep the plan's slot but draw the frame: the CPU frame of the plan's revision is presented.
     pub(crate) gpu_hold: bool,
@@ -84,8 +84,8 @@ pub(crate) struct Surfaces<'a> {
     /// The program sequences the committed stack's gestures are likely to need, compiled ahead.
     pub(crate) gpu_warm: Option<&'a luxforge_ui::photo_surface::GpuWarm>,
     /// The prepared source every GPU boundary is derived from, which the pipeline holds on the GPU
-    /// for every surface that hands it ([`crate::app::gpu_preview`]). None is given while this
-    /// client's `gpu_preview` preference is off.
+    /// for every surface that hands it ([`crate::app::gpu_preview`]). None is given while the GPU
+    /// stage is refused.
     pub(crate) gpu_source: Option<&'a luxforge_ui::photo_surface::GpuSource>,
     /// The displayed stack's picture at rest the GPU draws in tiles, which a whole-frame
     /// photograph draws in place of its frame once the last tile is in.
