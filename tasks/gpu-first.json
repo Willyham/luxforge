@@ -312,7 +312,7 @@
     },
     {
       "id": "TASK-005",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
@@ -320,7 +320,8 @@
       "extra_context": [
         "Dehaze's atmospheric light is prepared from a 1/16-per-side block reduction of its input stage (crates/luxforge-core/src/modules/presence/dehaze.rs `prepare`); Clarity's reduced grid is a 4x block grid of encoded luminance. Both are anchored at the stage origin and independent of the unit's amount. The CPU keeps them in the estimate store (8 entries) and the reduced-grid store (64 MiB) and falls back when they are missing: `EstimateAfterSpatial` (crates/luxforge-core/src/render/compiled.rs), `region-estimate` and `window-estimate` (crates/luxforge-core/src/render/gpu/preview.rs).",
         "On the GPU the drafted prefix's reduced stage is a mip-level render of the colour run over the reduced source planes, a fraction of a megapixel at 60 MP, computed per frame; the light and the grid follow from it on the GPU. For a Detail prefix the reduced stage is Detail's output reduced, which the design of Detail measured to barely move the light; the harness measures it against the reference's exact light on the corpus, and the display limit decides.",
-        "With estimates per frame the stores, their keys, their eviction tests and the three fallbacks go; the window planner no longer refuses the cut behind an estimating unit."
+        "With estimates per frame the stores, their keys, their eviction tests and the three fallbacks go; the window planner no longer refuses the cut behind an estimating unit.",
+        "Delivered 2026-10-05: every view's plan and the desktop's tile worker compute Dehaze's light on the GPU per frame from the full-resolution source through light links run before the chain; the GPU estimate plumbing, the region-estimate and window-estimate fallbacks, EstimateAfterSpatial and the Dehaze notice class are gone. The release gate holds the picture at rest within its limit on all 1,000 cells and every export to the reference export on all 250 stacks, all drawn on the GPU (artifacts/gpu-first/task-005 in the lane's worktree). Not delivered: the exact-prefix sweep the recorded default asks for at rest, so a light behind Detail or an earlier Presence layer is the stand-in light with those layers left out, at rest, in motion and in export (within limits on the corpus; about 1,000 to 1,500 lines to build, an owner choice), and the CPU estimate and reduced-grid stores, which the reference renderer's exact and CPU-tile paths still read until TASK-004 and TASK-010 retire them."
       ],
       "context_links": [
         {
@@ -471,7 +472,7 @@
     },
     {
       "id": "TASK-007",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003",
         "TASK-005"
@@ -669,7 +670,8 @@
       "extra_context": [
         "What remains of crates/luxforge-core/src/render after stages 2 to 4 is the whole-frame reference renderer (compile, one pass per segment, spatial tiles for memory alone) and the geometry mapping the owner uses for picks and crops. The proxy and exact phases, the windowed proxy and region paths, the restoration-prefix cache, PointTiles and the settle machinery in the preview worker are deleted with their tests; the reference keeps its exactness tests against frozen fixtures.",
         "Docs to rewrite: architecture (layout and limits), performance rules (rules 4, 11, 14 and the known costs and anti-patterns), instant previews (now the GPU's contract), Detail, Presence and the user guide's rendering text. The Detail plan's open measurement of the settled Fit and the prefix cache was cancelled in favour of this plan's measurement.",
-        "Keep the diagnostics the stages added: the fallback notice, the warm-up record, the reference option."
+        "Keep the diagnostics the stages added: the fallback notice, the warm-up record, the reference option.",
+        "Carried from TASK-005 (2026-10-05): delete the CPU estimate store and the reduced-grid store with their keys, eviction tests, budgets.reduced_planes and the one-spatial-entry rule once the exact phase and the CPU tiles leave production; the test helper stack(.., stored) in gpu_tiles_worker_tests fills the estimate store and goes with it."
       ],
       "context_links": [
         {
