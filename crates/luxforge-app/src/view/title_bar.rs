@@ -24,7 +24,7 @@ use crate::{
     window_frame,
 };
 use iced::{
-    Alignment, Element, Length, Padding,
+    Alignment, Length, Padding,
     widget::{Space, container, mouse_area, row, stack, text, text_input},
 };
 use luxforge_ui::{
@@ -32,6 +32,7 @@ use luxforge_ui::{
     hover_panel, inline_menu, notched_panel, popover, segment, segment_track, text_button, theme,
     title_bar_icon_button,
 };
+use luxforge_ui::{Element, Token};
 
 /// The typed zoom field's focus target, so opening it puts the caret in it.
 pub(crate) const ZOOM_FIELD: &str = "luxforge.title.zoom";
@@ -80,7 +81,7 @@ fn identity(model: &TitleBarModel) -> Element<'_, Message> {
         )
         .size(theme::SIZE_TITLE)
         .font(theme::FONT_SEMIBOLD)
-        .color(theme::TEXT_BRIGHT)
+        .style(theme::ink(Token::TextBright))
         .wrapping(text::Wrapping::None),
     ]
     .spacing(theme::TITLE_GROUP_SPACING)
@@ -89,7 +90,7 @@ fn identity(model: &TitleBarModel) -> Element<'_, Message> {
         content = content.push(
             text(identity.clone())
                 .size(theme::SIZE_IDENTITY)
-                .color(theme::TEXT_IDENTITY)
+                .style(theme::ink(Token::TextIdentity))
                 .wrapping(text::Wrapping::None),
         );
     }
@@ -236,7 +237,7 @@ fn actions(model: &TitleBarModel) -> Element<'_, Message> {
         container(Space::new())
             .width(Length::Fixed(theme::BORDER_WIDTH))
             .height(Length::Fixed(theme::TOOLBAR_RULE_HEIGHT))
-            .style(|_: &iced::Theme| container::Style::default().background(theme::STRIP_RULE)),
+            .style(theme::fill(Token::StripRule)),
     )
     .padding([
         0.0,

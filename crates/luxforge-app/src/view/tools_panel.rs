@@ -23,7 +23,7 @@ use crate::{
     },
 };
 use iced::{
-    Alignment, Color, Element, Length, Rectangle, Task, Vector,
+    Alignment, Color, Length, Rectangle, Task, Vector,
     advanced::widget::{
         Id, Operation,
         operation::{Outcome, Scrollable, scrollable::scroll_to},
@@ -33,6 +33,7 @@ use iced::{
         text_input,
     },
 };
+use luxforge_ui::Element;
 use luxforge_ui::{
     BINS, BadgeModel, ButtonSize, ButtonTone, ChipModel, ClipTriangleModel, ColorPickerModel,
     ColorSwatchModel, ControlKey, ControlKeyEvent, CurveEditorModel, CurvePointRow,

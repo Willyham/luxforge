@@ -8,9 +8,11 @@
 
 use super::icon_button::{CHEVRON_DOWN, CHEVRON_RIGHT, Icon, draw_icon};
 use crate::theme;
+use crate::widgets::curve_editor::invalidate_on_version_change;
+use crate::{Element, Theme, Token};
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, button, canvas, row, stack, text};
-use iced::{Alignment, Element, Length, Rectangle, Renderer, Size, Theme, Vector};
+use iced::{Alignment, Length, Rectangle, Renderer, Size, Vector};
 use std::cell::Cell;
 
 /// Renders a disclosure heading. `trailing` is a short caption right-aligned before the chevron,
@@ -39,7 +41,7 @@ pub fn disclosure_heading<'a, M: Clone + 'a>(
             text(trailing)
                 .size(theme::SIZE_SMALL_CAPTION)
                 .wrapping(Wrapping::None)
-                .color(theme::TEXT_TERTIARY),
+                .style(theme::ink(Token::TextTertiary)),
         );
     }
     // Room for the chevron, which the layer above draws against the row's right edge.
@@ -87,21 +89,37 @@ struct Chevron {
     expanded: bool,
 }
 
-/// The tessellated chevron and the direction and hover it was drawn for.
+/// The tessellated chevron and the direction, hover and theme generation it was drawn for.
 #[derive(Default)]
 struct ChevronState {
     cache: canvas::Cache,
-    key: Cell<Option<(bool, bool)>>,
+    key: Cell<Option<ChevronKey>>,
 }
 
-impl<M> canvas::Program<M> for Chevron {
+/// What a chevron's drawing depends on: its direction, the hover and the theme's generation.
+type ChevronKey = (bool, bool, u64);
+
+impl Chevron {
+    /// Calls `clear` when the direction, the hover or the theme changed since the cache was drawn.
+    fn refresh(
+        &self,
+        key: &Cell<Option<ChevronKey>>,
+        hovered: bool,
+        theme: &Theme,
+        clear: impl FnOnce(),
+    ) {
+        invalidate_on_version_change(key, (self.expanded, hovered, theme.generation()), clear);
+    }
+}
+
+impl<M> canvas::Program<M, Theme> for Chevron {
     type State = ChevronState;
 
     fn draw(
         &self,
         state: &Self::State,
         renderer: &Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         bounds: Rectangle,
         cursor: iced::mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
@@ -111,11 +129,8 @@ impl<M> canvas::Program<M> for Chevron {
         // The layer covers the row, so the pointer over it is the pointer over the button, whose
         // own status change is what requests this redraw.
         let hovered = cursor.is_over(bounds);
-        let key = (self.expanded, hovered);
-        if state.key.get() != Some(key) {
-            state.cache.clear();
-            state.key.set(Some(key));
-        }
+        self.refresh(&state.key, hovered, theme, || state.cache.clear());
+        let colour = theme::disclosure_color(theme, hovered);
         let icon = if self.expanded {
             Icon::ChevronDown
         } else {
@@ -125,12 +140,7 @@ impl<M> canvas::Program<M> for Chevron {
         vec![state.cache.draw(renderer, bounds.size(), |frame| {
             frame.with_save(|frame| {
                 frame.translate(origin);
-                draw_icon(
-                    frame,
-                    icon,
-                    theme::DISCLOSURE_CHEVRON_SIZE,
-                    theme::disclosure_color(hovered),
-                );
+                draw_icon(frame, icon, theme::DISCLOSURE_CHEVRON_SIZE, colour);
             });
         })]
     }
@@ -160,6 +170,20 @@ mod tests {
             // The square itself may overhang the row's edge, never the ink.
             assert!(origin.x + theme::DISCLOSURE_CHEVRON_SIZE > size.width - 4.0);
         }
+    }
+
+    /// The chevron is drawn again when the theme changes, since its ink is the theme's.
+    #[test]
+    fn a_theme_change_redraws_the_chevron() {
+        let chevron = Chevron { expanded: true };
+        let (first, second) = (Theme::luxforge_dark(), Theme::luxforge_dark());
+        let key = Cell::new(None);
+        let mut clears = 0;
+        chevron.refresh(&key, false, &first, || clears += 1);
+        chevron.refresh(&key, false, &first, || clears += 1);
+        assert_eq!(clears, 1, "an unchanged theme keeps the drawing");
+        chevron.refresh(&key, false, &second, || clears += 1);
+        assert_eq!(clears, 2, "a new generation redraws it");
     }
 
     #[test]

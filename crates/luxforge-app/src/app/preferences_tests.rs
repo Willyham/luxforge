@@ -527,3 +527,15 @@ fn at_an_interface_scale_of_125_percent_100_percent_zoom_is_one_source_pixel_per
     answer_preference(&mut editor);
     finish(editor, root);
 }
+
+/// The editor launches in Luxforge Dark, and the theme Iced reads from it after every update is
+/// the editor's own, not a new one each time: its generation stays put, so no canvas redraws.
+#[test]
+fn the_editor_hands_iced_its_own_luxforge_dark_theme() {
+    let (editor, root) = launch();
+    let theme = editor.theme();
+    assert_eq!(*theme.palette(), luxforge_ui::Palette::luxforge_dark());
+    assert_eq!(theme.mode(), luxforge_ui::Mode::Dark);
+    assert_eq!(theme.generation(), editor.theme().generation());
+    finish(editor, root);
+}

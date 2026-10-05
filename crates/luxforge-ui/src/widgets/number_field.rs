@@ -9,10 +9,11 @@
 use crate::theme;
 use crate::widgets::double_click::double_click_when;
 use crate::widgets::text::{control_label, error_caption, value_text};
+use crate::{Element, Theme, Token};
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::text::{LineHeight, Wrapping};
 use iced::widget::{Row, button, column, container, row, text, text_input};
-use iced::{Alignment, Element, Length, Padding};
+use iced::{Alignment, Length, Padding};
 
 /// The value field's visible state. Parsing and validation belong to the caller.
 #[derive(Debug, Clone, PartialEq)]
@@ -45,7 +46,7 @@ pub fn value_input<'a, M: Clone + 'a>(
     enabled: bool,
     on_text: impl Fn(String) -> M + 'a,
     on_submit: M,
-) -> iced::widget::TextInput<'a, M> {
+) -> iced::widget::TextInput<'a, M, crate::Theme> {
     text_input(placeholder, value)
         .size(theme::SIZE_CONTROL)
         .style(theme::text_input_style(invalid))
@@ -64,7 +65,7 @@ pub fn boxed_input<'a, M: Clone + 'a>(
     enabled: bool,
     on_text: impl Fn(String) -> M + 'a,
     on_submit: M,
-) -> iced::widget::TextInput<'a, M> {
+) -> iced::widget::TextInput<'a, M, crate::Theme> {
     let size = BoxSize {
         width,
         ..BoxSize::FIELD
@@ -115,7 +116,7 @@ fn sized_input<'a, M: Clone + 'a>(
     enabled: bool,
     on_text: impl Fn(String) -> M + 'a,
     on_submit: M,
-) -> iced::widget::TextInput<'a, M> {
+) -> iced::widget::TextInput<'a, M, crate::Theme> {
     let radius = size.radius;
     value_input(placeholder, value, invalid, enabled, on_text, on_submit)
         .size(size.text_size)
@@ -130,7 +131,7 @@ fn sized_input<'a, M: Clone + 'a>(
             left: theme::FIELD_INSET,
         })
         .align_x(Horizontal::Right)
-        .style(move |iced_theme: &iced::Theme, status| {
+        .style(move |iced_theme: &Theme, status| {
             let mut style = theme::field_input_style(invalid)(iced_theme, status);
             style.border.radius = radius.into();
             style
@@ -278,11 +279,11 @@ pub(crate) fn sized_field_box<'a, M: Clone + 'a>(
                     .align_y(Vertical::Center)
                     .width(Length::Fill)
                     .height(Length::Fill)
-                    .color(if model.enabled {
-                        theme::TEXT_PRIMARY
+                    .style(theme::ink(if model.enabled {
+                        Token::Text
                     } else {
-                        theme::TEXT_TERTIARY
-                    }),
+                        Token::TextTertiary
+                    })),
             )
             .padding(Padding {
                 top: 0.0,
@@ -292,7 +293,7 @@ pub(crate) fn sized_field_box<'a, M: Clone + 'a>(
             })
             .width(Length::Fixed(size.width))
             .height(Length::Fixed(size.height))
-            .style(move |iced_theme: &iced::Theme, status| {
+            .style(move |iced_theme: &Theme, status| {
                 let mut style = theme::button_field(iced_theme, status);
                 style.border.radius = size.radius.into();
                 style
@@ -327,7 +328,7 @@ pub(crate) fn outside_unit<'a, M: 'a>(unit: &Option<String>) -> Option<Element<'
                 text(unit.clone())
                     .size(theme::SIZE_CAPTION)
                     .wrapping(Wrapping::None)
-                    .color(theme::TEXT_TERTIARY),
+                    .style(theme::ink(Token::TextTertiary)),
             )
             .padding(Padding {
                 left: unit_lead(),

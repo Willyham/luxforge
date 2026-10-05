@@ -156,11 +156,12 @@ use crate::{
 };
 use evidence::Evidence;
 use gesture::{CoreGesture, Starting};
-use iced::{Element, Subscription, Task};
+use iced::{Subscription, Task};
 use luxforge_core::{
     ClientAuthority, ClientId, ClientSession, LocalServer, ModuleDescriptor, OwnerHandle,
     POINTER_MODE,
 };
+use luxforge_ui::Element;
 use message::{
     Message, capability::CapabilityMessage, evidence::EvidenceMessage,
     performance::PerformanceMessage, preview::PreviewMessage, view::ViewMessage,
@@ -388,6 +389,9 @@ pub(crate) struct Editor {
     drawn_frames: drawn_frames::DrawnFrames,
     /// The whole screen as plain data, derived again after every message.
     pub(crate) workspace: Workspace,
+    /// The interface's theme, which Iced reads again after every update and hands to every style
+    /// function and canvas draw. An Iced value, so it lives here rather than in the view model.
+    pub(crate) theme: luxforge_ui::Theme,
 }
 
 /// What the hooks compare the state a message left behind with: the state before it was
@@ -568,6 +572,7 @@ impl Editor {
             gpu_settle: Default::default(),
             drawn_frames: Default::default(),
             workspace: Default::default(),
+            theme: luxforge_ui::Theme::luxforge_dark(),
         };
         // The workers wake the event loop through one channel instead of a poll. The closure is
         // installed once and stays valid for the life of the process; the subscription that carries

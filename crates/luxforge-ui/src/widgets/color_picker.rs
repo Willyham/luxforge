@@ -2,8 +2,9 @@
 
 use super::curve_editor::invalidate_on_version_change;
 use crate::{ColorSwatchModel, ValueEdit, color_swatch, theme, value_input};
+use crate::{Element, Theme};
 use iced::{
-    Alignment, Color, Element, Length, Point, Rectangle, Renderer, Theme,
+    Alignment, Color, Length, Point, Rectangle, Renderer,
     mouse::{self, Cursor},
     widget::{
         canvas::{self, Action, Event, Path, Stroke},
@@ -195,11 +196,20 @@ struct PickerCanvas<'a, M> {
 #[derive(Default)]
 struct PickerState {
     cache: canvas::Cache,
-    version: Cell<Option<u64>>,
+    key: Cell<Option<(u64, u64)>>,
     dragging: bool,
 }
 
-impl<M: Clone> canvas::Program<M> for PickerCanvas<'_, M> {
+impl<M> PickerCanvas<'_, M> {
+    /// Calls `clear` when the colour or the theme changed since the cache was drawn: the plane
+    /// and the hue rail are the colour's own, while the marker and the disabled veil are the
+    /// theme's.
+    fn refresh(&self, key: &Cell<Option<(u64, u64)>>, theme: &Theme, clear: impl FnOnce()) {
+        invalidate_on_version_change(key, (self.model.version, theme.generation()), clear);
+    }
+}
+
+impl<M: Clone> canvas::Program<M, Theme> for PickerCanvas<'_, M> {
     type State = PickerState;
 
     fn update(
@@ -241,14 +251,14 @@ impl<M: Clone> canvas::Program<M> for PickerCanvas<'_, M> {
         &self,
         state: &Self::State,
         renderer: &Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         bounds: Rectangle,
         _cursor: Cursor,
     ) -> Vec<canvas::Geometry> {
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
             return Vec::new();
         }
-        invalidate_on_version_change(&state.version, self.model.version, || state.cache.clear());
+        self.refresh(&state.key, theme, || state.cache.clear());
         let part = self.part;
         let hue = self.model.hue;
         let geometry = state.cache.draw(renderer, bounds.size(), |frame| {
@@ -298,9 +308,9 @@ impl<M: Clone> canvas::Program<M> for PickerCanvas<'_, M> {
                 ),
                 Stroke::default()
                     .with_color(if self.model.dragging {
-                        theme::ACCENT
+                        theme.palette().accent
                     } else {
-                        theme::TEXT_PRIMARY
+                        theme.palette().text
                     })
                     .with_width(2.0),
             );
@@ -310,7 +320,7 @@ impl<M: Clone> canvas::Program<M> for PickerCanvas<'_, M> {
                     size,
                     Color {
                         a: 0.58,
-                        ..theme::PANEL
+                        ..theme.palette().background
                     },
                 );
             }
@@ -360,6 +370,26 @@ mod tests {
             version: 0,
         }
     }
+
+    /// The picker is drawn again when the theme changes, since its marker and veil are the
+    /// theme's, as well as when the colour's version moves.
+    #[test]
+    fn a_theme_change_redraws_the_picker() {
+        let canvas = PickerCanvas {
+            model: model(),
+            part: Part::Plane,
+            on_event: Rc::new(|event| event),
+        };
+        let (first, second) = (Theme::luxforge_dark(), Theme::luxforge_dark());
+        let key = Cell::new(None);
+        let mut clears = 0;
+        canvas.refresh(&key, &first, || clears += 1);
+        canvas.refresh(&key, &first, || clears += 1);
+        assert_eq!(clears, 1, "an unchanged theme keeps the drawing");
+        canvas.refresh(&key, &second, || clears += 1);
+        assert_eq!(clears, 2, "a new generation redraws it");
+    }
+
     #[test]
     fn slow_every_rgb_triple_round_trips_through_hsv_and_hex() {
         for r in 0..=255 {

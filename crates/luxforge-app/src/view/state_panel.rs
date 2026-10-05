@@ -17,7 +17,7 @@ use crate::{
     },
 };
 use iced::{
-    Alignment, Element, Length, Padding,
+    Alignment, Length, Padding,
     widget::{Column, Row, Space, button, column, container, row, scrollable, text, text_input},
 };
 use luxforge_ui::{
@@ -25,6 +25,7 @@ use luxforge_ui::{
     MetricRowModel, SparklineModel, compact_chip, disclosure_heading, header_icon_button,
     inline_menu, job_row, list_row, metric_row, panel_heading, text_button, theme,
 };
+use luxforge_ui::{Element, Token};
 
 /// Where a row's text starts inside the panel's padding: the grid unit a list row pads itself by.
 const ROW_INSET: f32 = theme::SPACING;
@@ -147,7 +148,7 @@ fn performance(model: &PerformanceModel, enabled: bool) -> Element<'_, Message> 
                     .line_height(text::LineHeight::Absolute(
                         theme::CAPTION_LINE_HEIGHT.into(),
                     ))
-                    .color(theme::TEXT_TERTIARY),
+                    .style(theme::ink(Token::TextTertiary)),
             )
             .padding(Padding::default().left(theme::JOB_LABEL_INSET)),
         );
@@ -276,7 +277,7 @@ fn history(model: &StatePanelModel) -> Element<'_, Message> {
     let revision = model.revision.clone().map(|revision| {
         text(revision)
             .size(theme::SIZE_SMALL_CAPTION)
-            .color(theme::TEXT_TERTIARY)
+            .style(theme::ink(Token::TextTertiary))
             .wrapping(text::Wrapping::None)
             .into()
     });

@@ -25,7 +25,7 @@ use crate::{
     },
 };
 use iced::{
-    Alignment, ContentFit, Element, Length, Padding, Point, Rectangle, Renderer, Size, Theme,
+    Alignment, ContentFit, Length, Padding, Point, Rectangle, Renderer, Size,
     alignment::{Horizontal, Vertical},
     mouse::{self, Cursor},
     widget::{Column, Row, canvas, container, mouse_area, responsive, scrollable, stack, text},
@@ -35,6 +35,7 @@ use luxforge_ui::{
     ModeEntry, NoticeCardModel, ToggleEntry, Tone, chip, draft_bar_with_controls, focus_control,
     mode_strip, notice_card, theme,
 };
+use luxforge_ui::{Element, Theme, Token};
 
 /// The Develop canvas's one photo surface. The plain photograph at every zoom and a crop draft's
 /// input stage all draw on it, so the photograph's textures stay while a draft shows the stage, and
@@ -187,16 +188,25 @@ fn strip<'a>(model: &'a CanvasModel) -> Element<'a, Message> {
 fn information(model: &CanvasModel) -> Option<Element<'_, Message>> {
     let information = model.information.as_ref()?;
     let mut content = Column::new().spacing(5);
-    content = content.push(text("Information").size(12).color(theme::TEXT_BRIGHT));
+    content = content.push(
+        text("Information")
+            .size(12)
+            .style(theme::ink(Token::TextBright)),
+    );
     for (label, value) in &information.rows {
         content = content.push(
             Row::new()
                 .spacing(10)
-                .push(text(*label).size(11).color(theme::TEXT_SECONDARY).width(80))
+                .push(
+                    text(*label)
+                        .size(11)
+                        .style(theme::ink(Token::TextSecondary))
+                        .width(80),
+                )
                 .push(
                     text(value)
                         .size(11)
-                        .color(theme::TEXT_PRIMARY)
+                        .style(theme::ink(Token::Text))
                         .width(Length::Fill),
                 ),
         );
@@ -204,7 +214,9 @@ fn information(model: &CanvasModel) -> Option<Element<'_, Message>> {
     let card = container(content)
         .padding(12)
         .width(320)
-        .style(|_: &Theme| theme::chrome_surface(theme::CHROME_BORDER, theme::CHROME_RADIUS));
+        .style(|theme: &Theme| {
+            theme::chrome_surface(theme, Token::ChromeBorder, theme::CHROME_RADIUS)
+        });
     Some(
         container(card)
             .width(Length::Fill)
@@ -385,7 +397,7 @@ struct Thirds {
     dimensions: (u32, u32),
 }
 
-impl canvas::Program<Message> for Thirds {
+impl canvas::Program<Message, Theme> for Thirds {
     type State = ();
 
     fn draw(
@@ -487,14 +499,14 @@ struct RenderBar {
     fraction: f32,
 }
 
-impl canvas::Program<Message> for RenderBar {
+impl canvas::Program<Message, Theme> for RenderBar {
     type State = ();
 
     fn draw(
         &self,
         _state: &Self::State,
         renderer: &Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         bounds: Rectangle,
         _cursor: Cursor,
     ) -> Vec<canvas::Geometry> {
@@ -509,7 +521,7 @@ impl canvas::Program<Message> for RenderBar {
         frame.fill_rectangle(
             track.position(),
             Size::new(filled, track.height),
-            theme::ACCENT,
+            theme.palette().accent,
         );
         vec![frame.into_geometry()]
     }
@@ -530,7 +542,7 @@ fn empty(message: &str) -> Element<'_, Message> {
     container(
         text(message.to_owned())
             .size(luxforge_ui::theme::SIZE_TITLE)
-            .color(luxforge_ui::theme::TEXT_SECONDARY),
+            .style(theme::ink(Token::TextSecondary)),
     )
     .center(Length::Fill)
     .into()

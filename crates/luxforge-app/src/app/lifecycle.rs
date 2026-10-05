@@ -130,7 +130,8 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
     // The interface size scales everything Iced draws. Every physical-pixel computation reads the
     // view state's combined factor, so 100% zoom stays one source pixel per display pixel.
     .scale_factor(Editor::interface_scale)
-    .theme(luxforge_ui::theme::theme())
+    // A function of the state, which Iced reads again after every update.
+    .theme(Editor::theme)
     .subscription(Editor::subscription);
     // The bundled typeface is registered once, before the first frame, from bytes compiled into
     // the binary; every text run after that resolves it from the renderer's font database.

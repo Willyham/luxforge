@@ -10,10 +10,11 @@
 use super::icon_button::{Icon, IconButtonModel, header_icon_button};
 use super::number_field::{NumberFieldModel, ValueEdit, field_box, field_label, outside_unit};
 use super::slider::{RailDecoration, RailLine, rail_line};
+use crate::Element;
 use crate::theme;
 use crate::widgets::text::error_caption;
 use iced::widget::{Row, column, container};
-use iced::{Alignment, Element, Length};
+use iced::{Alignment, Length};
 
 /// A stepper's optional rail, as plain data: the soft range it spans, the value on it, the step
 /// Iced snaps its handle to, the zero its fill grows from, and whether its gesture is live (the

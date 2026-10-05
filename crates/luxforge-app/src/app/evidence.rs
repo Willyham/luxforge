@@ -37,6 +37,7 @@ use crate::{
 use iced::advanced::{Layout, Widget, layout, mouse, renderer, widget::Tree};
 use iced::{Subscription, Task};
 use luxforge_core::{ClientId, HistoryEntry, Mutation};
+use luxforge_ui::Element;
 use luxforge_ui::{ColorPickerEvent, CurveEditorEvent};
 use serde_json::{Map, Value, json};
 use std::{
@@ -342,13 +343,13 @@ where
 
 /// `content` with a [`DrawnMarker`] over it, for an evidence run's window.
 pub(crate) fn marked<'a>(
-    content: iced::Element<'a, Message>,
+    content: Element<'a, Message>,
     sync: &CaptureSync,
-) -> iced::Element<'a, Message> {
+) -> Element<'a, Message> {
     view::cursor_probe::wrap(
         iced::widget::stack![
             content,
-            iced::Element::new(DrawnMarker {
+            Element::new(DrawnMarker {
                 updates: sync.updates,
                 sink: sync.drawn.clone(),
             })

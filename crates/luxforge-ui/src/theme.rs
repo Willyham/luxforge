@@ -1,99 +1,68 @@
 //! Design tokens for the Develop workspace and the styling functions built from them.
 //!
 //! Every colour, size, spacing and radius a widget uses comes from this module, so the app never
-//! writes an ad hoc colour or size. Values are copied from the visual language table in
-//! `docs/design/develop-workspace.md`; the unit tests in this module assert the copy is exact.
+//! writes an ad hoc colour or size. Sizes, spacing and type are constants copied from the visual
+//! language table in `docs/design/develop-workspace.md`; the unit tests in this module assert the
+//! copy is exact.
+//!
+//! Colours are of two kinds ([UI themes](../../../docs/design/ui-themes.md#rules)). A themed
+//! colour is a token of the [`Palette`] the running [`Theme`] holds: Iced hands that theme to every
+//! style function and every canvas `draw`, which read it there. A colour whose meaning is its
+//! colour is fixed, the same in every theme, and is one of the constants under "Fixed colours"
+//! below, each with the reason it is fixed.
+
+mod palette;
+mod runtime;
+
+pub use palette::{Ink, Palette, Token};
+pub use runtime::{Mode, Theme};
 
 use iced::font::Weight;
 use iced::widget::{button, container, slider, text_input};
-use iced::{Background, Border, Color, Font, Padding, Shadow, Theme};
+use iced::{Background, Border, Color, Font, Padding, Shadow};
 
-// -- Surfaces ---------------------------------------------------------------------------------
+// -- Fixed colours ------------------------------------------------------------------------------
+//
+// Never themed: each says something by its colour, so a theme that moved it would change what it
+// says. Every other colour a widget draws is a token of the theme's palette.
 
-/// The darkest surface; the photograph sits on it. Also the `dark` canvas background, the one
-/// nobody chose.
+/// The canvas background's `dark` choice, the one nobody chose. Fixed because the canvas
+/// background is the person's own choice of grey around the photograph, the same in every theme.
+/// Luxforge Dark's surround has this value.
 pub const CANVAS: Color = Color::from_rgb8(0x19, 0x19, 0x1b);
-/// The `black` canvas background.
+/// The `black` canvas background; fixed for the same reason as [`CANVAS`].
 pub const CANVAS_BLACK: Color = Color::from_rgb8(0x00, 0x00, 0x00);
-/// The `grey` canvas background: an 18% grey, L* 50, for judging tone the way a print is judged.
+/// The `grey` canvas background: an 18% grey, L* 50, for judging tone the way a print is judged;
+/// fixed for the same reason as [`CANVAS`].
 pub const CANVAS_GREY: Color = Color::from_rgb8(0x77, 0x77, 0x77);
-/// Side panels and status bar.
-pub const PANEL: Color = Color::from_rgb8(0x20, 0x20, 0x23);
-/// Title bar, floating strips, notices.
-pub const BAR: Color = Color::from_rgb8(0x23, 0x23, 0x26);
-/// Buttons, chips, text fields.
-pub const CONTROL: Color = Color::from_rgb8(0x2c, 0x2c, 0x31);
-/// All dividers and outlines: 6% white.
-pub const BORDER: Color = Color {
-    r: 1.0,
-    g: 1.0,
-    b: 1.0,
-    a: 0.06,
-};
 
-// -- Text ---------------------------------------------------------------------------------------
-
-/// Primary text.
-pub const TEXT_PRIMARY: Color = Color::from_rgb8(0xe8, 0xe8, 0xea);
-/// Secondary text.
-pub const TEXT_SECONDARY: Color = Color::from_rgb8(0xa8, 0xa8, 0xae);
-/// Tertiary text.
-pub const TEXT_TERTIARY: Color = Color::from_rgb8(0x77, 0x77, 0x7f);
-/// A slider or field label: a step under primary, so the value on the same line reads first.
-pub const TEXT_LABEL: Color = Color::from_rgb8(0xc9, 0xc9, 0xce);
-/// Faint text, a step under tertiary: a finished job's duration, which matters less than the dimmed
-/// label beside it, as the performance mockup draws it. Opaque for the same reason as [`RULE`].
-pub const TEXT_FAINT: Color = Color::from_rgb8(0x55, 0x55, 0x5c);
-
-// -- Slider rail and rules ----------------------------------------------------------------------
-
-/// The empty rail.
-pub const RAIL: Color = Color::from_rgb8(0x3a, 0x3a, 0x40);
-/// The rail's fill between the zero tick (or the rail's start) and the handle, in every state.
-pub const RAIL_FILL: Color = Color::from_rgb8(0xa3, 0xa3, 0xaa);
-/// The zero tick across the rail.
-pub const ZERO_TICK: Color = Color::from_rgb8(0x5a, 0x5a, 0x62);
-/// The resting handle.
-pub const THUMB: Color = Color::from_rgb8(0xec, 0xec, 0xee);
-/// The dark ring around the handle that separates it from a light or colour rail.
-pub const THUMB_OUTLINE: Color = Color::from_rgb8(0x11, 0x11, 0x13);
-/// The `temperature` rail hint's stops, blue through a neutral grey to amber. A colour rail is
-/// drawn at [`DECORATED_RAIL_OPACITY`] over the panel, so these are the colours that composite to
-/// the module references' samples (asserted in the tests below).
+/// The `temperature` rail hint's stops, blue through a neutral grey to amber. Fixed because a
+/// declared rail's colours are the module's meaning. A colour rail is drawn at
+/// [`DECORATED_RAIL_OPACITY`] over the theme's rail backdrop, so these are the colours that
+/// composite to the module references' samples over Luxforge Dark (asserted in the tests below).
 pub const TEMPERATURE_RAIL: [Color; 3] = [
     Color::from_rgb8(77, 139, 223),
     Color::from_rgb8(143, 143, 148),
     Color::from_rgb8(226, 179, 107),
 ];
-/// The `tint` rail hint's stops, green through a neutral grey to magenta.
+/// The `tint` rail hint's stops, green through a neutral grey to magenta; fixed as
+/// [`TEMPERATURE_RAIL`] is.
 pub const TINT_RAIL: [Color; 3] = [
     Color::from_rgb8(87, 181, 107),
     Color::from_rgb8(141, 144, 147),
     Color::from_rgb8(217, 95, 208),
 ];
-/// A group header's hairline rule. Opaque rather than a white alpha like [`BORDER`]: Iced blends
-/// in linear light, which renders a small white alpha far brighter than the references do.
-pub const RULE: Color = Color::from_rgb8(0x31, 0x31, 0x34);
-/// The 1 px border above each module band, opaque for the same reason as [`RULE`].
-pub const BAND_BORDER: Color = Color::from_rgb8(0x2f, 0x2f, 0x32);
-/// A value's inset from the right edge of its box, so a typed value does not jump when the field
-/// opens for editing.
-pub const VALUE_INSET: f32 = 3.0;
 
-// -- Ink and accent -------------------------------------------------------------------------
-
-/// The one warm accent. Used only for: the current history entry, an active canvas mode, a
-/// non-neutral module dot, a slider being dragged, a Custom group caption, and Apply. Never for a
-/// slider's rail fill, which uses [`RAIL_FILL`] instead (see [`slider_style`]).
-pub const ACCENT: Color = Color::from_rgb8(0xe2, 0xb4, 0x6a);
-/// Highlight clipping indicator. Reserved for clipping; never reused as a general warning tint.
+/// Highlight clipping indicator. Fixed and reserved for clipping: the histogram's corners and the
+/// overlay say "clipped" by this red in every theme. The theme's error ink starts from it and is
+/// never reused for clipping.
 pub const CLIPPING_HIGHLIGHT: Color = Color::from_rgb8(0xe5, 0x53, 0x4b);
-/// Shadow clipping indicator. Reserved for clipping.
+/// Shadow clipping indicator. Fixed and reserved for clipping, as [`CLIPPING_HIGHLIGHT`] is.
 pub const CLIPPING_SHADOW: Color = Color::from_rgb8(0x4c, 0x8b, 0xe0);
 /// The overlay colour of a cell that holds both endpoints. It is not a third invented colour: it
 /// takes its red and green from [`CLIPPING_HIGHLIGHT`] and its blue from [`CLIPPING_SHADOW`], which
 /// is exactly what "red and blue at once" means and reads as magenta over a photograph. The
-/// composition is asserted in this module's tests rather than written out twice.
+/// composition is asserted in this module's tests rather than written out twice. Fixed with them.
 pub const CLIPPING_BOTH: Color = Color {
     r: CLIPPING_HIGHLIGHT.r,
     g: CLIPPING_HIGHLIGHT.g,
@@ -101,8 +70,9 @@ pub const CLIPPING_BOTH: Color = Color {
     a: 1.0,
 };
 
-/// The mask overlay tints, one per name in the core's `MaskOverlayColour`. Reserved for the mask
-/// overlay: they say "this is the selection", never "this is clipped".
+/// The mask overlay tints, one per name in the core's `MaskOverlayColour`. Fixed and reserved for
+/// the mask overlay: they say "this is the selection", never "this is clipped", over the
+/// photograph's own pixels.
 ///
 /// They are deliberately not red. Clipping already owns red, blue and the magenta between them on
 /// this canvas, and an overlay a person cannot tell apart from a clipping indicator is worse than
@@ -114,9 +84,9 @@ pub const MASK_OVERLAY_GREEN: Color = Color::from_rgb8(0x3f, 0xd0, 0x7a);
 /// The neutral mask overlay tint, for a scene the green reads into.
 pub const MASK_OVERLAY_WHITE: Color = Color::from_rgb8(0xf2, 0xf2, 0xf5);
 
-/// The three histogram channel fills. They are the plain additive primaries rather than tinted
-/// versions of them, because the plot's whole job is to say which channel a count belongs to and
-/// what their overlap is; the alpha below is what makes the overlap readable.
+/// The three histogram channel fills. Fixed: they are the plain additive primaries rather than
+/// tinted versions of them, because the plot's whole job is to say which channel a count belongs
+/// to and what their overlap is; the alpha below is what makes the overlap readable.
 pub const CHANNEL_RED: Color = Color::from_rgb8(0xff, 0x4d, 0x4d);
 pub const CHANNEL_GREEN: Color = Color::from_rgb8(0x4d, 0xff, 0x7a);
 pub const CHANNEL_BLUE: Color = Color::from_rgb8(0x4d, 0x9a, 0xff);
@@ -125,9 +95,8 @@ pub const CHANNEL_BLUE: Color = Color::from_rgb8(0x4d, 0x9a, 0xff);
 pub const CHANNEL_ALPHA: f32 = 0.55;
 
 /// The colour of a composition guide drawn over the photograph (the thirds overlay, the crop
-/// overlay's own thirds). It is [`BORDER`]'s white at the opacity a line needs to stay readable
-/// over an image rather than over a panel, which is why it is its own token and not a reuse of a
-/// chrome colour.
+/// overlay's own thirds): white at the opacity a line needs to stay readable over an image. Fixed
+/// because it is drawn over the photograph, not over the theme's surfaces.
 pub const GUIDE: Color = Color {
     r: 1.0,
     g: 1.0,
@@ -136,7 +105,8 @@ pub const GUIDE: Color = Color {
 };
 
 /// The track of the bar along the bottom of the photograph while a long render runs: dark enough
-/// to read over a bright image, translucent so the photograph still shows through it.
+/// to read over a bright image, translucent so the photograph still shows through it. Fixed
+/// because it is drawn over the photograph.
 pub const RENDER_BAR_TRACK: Color = Color {
     r: 0.0,
     g: 0.0,
@@ -145,6 +115,69 @@ pub const RENDER_BAR_TRACK: Color = Color {
 };
 /// That bar's thickness, a little heavier than a rail so it reads over a photograph.
 pub const RENDER_BAR_HEIGHT: f32 = 3.0;
+
+/// What the compare and mask canvases draw over the photograph: the compare divider and the ring
+/// of its grip, the divider's dark outline, the grip's fill, its arrows and the Before and After
+/// labels, and a mask's anchor grip. Fixed because they sit on the photograph's own pixels rather
+/// than on the theme's surfaces; their values are the visual language's thumb, thumb ring, Bar,
+/// primary text and accent.
+pub const PHOTO_HANDLE: Color = Color::from_rgb8(0xec, 0xec, 0xee);
+pub const PHOTO_HANDLE_OUTLINE: Color = Color::from_rgb8(0x11, 0x11, 0x13);
+pub const PHOTO_GRIP: Color = Color::from_rgb8(0x23, 0x23, 0x26);
+pub const PHOTO_LABEL: Color = Color::from_rgb8(0xe8, 0xe8, 0xea);
+pub const PHOTO_ANCHOR: Color = Color::from_rgb8(0xe2, 0xb4, 0x6a);
+
+/// The status bar's dot while any other client is connected. Fixed: green says "connected".
+pub const AGENT_CONNECTED: Color = Color::from_rgb8(0x57, 0xb5, 0x6b);
+
+/// The dark outline round every colour swatch: black at 50%, which reads on any colour. Fixed
+/// with the swatches, whose colours are the photograph's.
+pub const SWATCH_OUTLINE: Color = Color {
+    r: 0.0,
+    g: 0.0,
+    b: 0.0,
+    a: 0.5,
+};
+
+/// A coverage thumbnail's near-black ground. Fixed: it is the mask's own zero, which the coverage
+/// is drawn over in white.
+pub const THUMBNAIL_BACKGROUND: Color = Color::from_rgb8(0x0e, 0x0e, 0x10);
+
+/// The mask-on-black glyph's outline (`#666`) and the photograph's stand-in colour in the
+/// photo-through-selection glyph (`#7a8a4a`), both the board's. Fixed: each glyph is a small
+/// picture of the overlay it chooses, which draws the same in every theme.
+pub const MASK_GLYPH_OUTLINE: Color = Color::from_rgb8(0x66, 0x66, 0x66);
+pub const MASK_GLYPH_PHOTO: Color = Color::from_rgb8(0x7a, 0x8a, 0x4a);
+
+/// The soft black shadow under the floating chrome, which lifts it off a photograph as the boards
+/// draw it. Fixed because it falls over the photograph.
+pub const CHROME_SHADOW: Shadow = Shadow {
+    color: Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.35,
+    },
+    offset: iced::Vector { x: 0.0, y: 4.0 },
+    blur_radius: 16.0,
+};
+/// The black shadow under a dropdown menu; fixed as [`CHROME_SHADOW`] is.
+pub const MENU_SHADOW: Shadow = Shadow {
+    color: Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.5,
+    },
+    offset: iced::Vector { x: 0.0, y: 10.0 },
+    blur_radius: 30.0,
+};
+
+// -- Rules --------------------------------------------------------------------------------------
+
+/// A value's inset from the right edge of its box, so a typed value does not jump when the field
+/// opens for editing.
+pub const VALUE_INSET: f32 = 3.0;
 
 // -- Typeface -------------------------------------------------------------------------------
 
@@ -323,12 +356,6 @@ pub const CHIP_TRAILING_SPACING: f32 = 4.0;
 pub const CHIP_SPACING: f32 = 4.0;
 /// The margin under a row of chips that another row follows, on top of [`ROW_SPACING`].
 pub const CHIP_ROW_BOTTOM: f32 = 4.0;
-/// An unselected chip's label, a step under the label colour, as the crop reference draws the
-/// ratios not chosen.
-pub const CHIP_LABEL: Color = Color::from_rgb8(176, 176, 182);
-/// A selected chip's fill: the accent laid over the panel at about 16%, opaque so Iced's linear
-/// blending does not lighten it, as the crop reference draws the chosen ratio.
-pub const SELECTED_FILL: Color = Color::from_rgb8(62, 55, 46);
 /// A number field's row: the label, the value box and any unit.
 pub const FIELD_ROW_HEIGHT: f32 = 24.0;
 /// A field row packed two to a row under a control it belongs to, such as a range's four fields
@@ -380,10 +407,6 @@ pub const TAB_ROW_HEIGHT: f32 = 24.0;
 pub const TAB_ROW_MARGIN: f32 = 4.0;
 /// The inset between a tab row's track and its selected pill.
 pub const TAB_INSET: f32 = 2.0;
-/// A tab row's track.
-pub const TAB_TRACK: Color = Color::from_rgb8(0x28, 0x28, 0x2c);
-/// A tab row's selected pill.
-pub const TAB_SELECTED: Color = Color::from_rgb8(0x3b, 0x3b, 0x41);
 /// The tools panel's scrollbar. It overlays the section padding's right edge, so it is thin
 /// enough to clear a band's reset and a slider's value.
 pub const PANEL_SCROLLBAR_WIDTH: f32 = 4.0;
@@ -401,15 +424,12 @@ pub const LIST_LEADING_WIDTH: f32 = 14.0;
 pub const MARKER_SIZE: f32 = 6.0;
 /// A hollow or previewed marker's ring.
 pub const MARKER_RING_WIDTH: f32 = 1.0;
-/// The current entry's row, tinted a step above the panel, opaque for the same reason as
-/// [`RULE`].
-pub const LIST_ROW_CURRENT: Color = Color::from_rgb8(47, 47, 50);
 
 // -- Performance section ------------------------------------------------------------------------
 //
 // The state panel's Performance block, from the layout table of the performance panel design.
-// Its greys are the slider rail's ([`RAIL`], [`RAIL_FILL`], [`THUMB`]) and the group rule
-// ([`RULE`]), never the accent: the photograph is the only colour on screen.
+// Its greys are the slider rail's (the palette's `rail`, `rail_fill` and `thumb`) and the group
+// rule (`rule`), never the accent: the photograph is the only colour on screen.
 
 /// A disclosure heading's row: the section label, its caption and the chevron, all one button.
 pub const DISCLOSURE_HEADING_HEIGHT: f32 = 22.0;
@@ -430,10 +450,6 @@ pub const SPARKLINE_LINE_WIDTH: f32 = 1.25;
 /// The dot on a sparkline's newest point. The line's points are inset by this radius on every
 /// side, so the dot is never clipped at a window edge, at zero or at the top of the scale.
 pub const SPARKLINE_DOT_RADIUS: f32 = 1.75;
-/// The area under a sparkline's line: [`RAIL_FILL`] at 16% over [`PANEL`], precomputed opaque
-/// because Iced blends in linear light and renders a small alpha much brighter (asserted in the
-/// tests below).
-pub const SPARKLINE_AREA: Color = Color::from_rgb8(0x35, 0x35, 0x39);
 /// A job row's first line: the marker, the label and the elapsed time. The detail line under it is
 /// a caption line, [`CAPTION_LINE_HEIGHT`] tall.
 pub const JOB_LABEL_HEIGHT: f32 = 16.0;
@@ -447,8 +463,8 @@ pub const JOB_PROGRESS_GAP: f32 = 2.0;
 // The floating chrome over the canvas — the mode strip, the draft bar and the notices — from the
 // Canvas section of the Develop workspace design as its boards draw them. The photograph's inset at
 // Fit is the desktop's layout (`luxforge-app/src/layout.rs`), whose bottom inset holds the strip.
-// The tinted colours are sampled from the boards, precomputed opaque over [`BAR`] for the same
-// reason as [`RULE`].
+// The tinted colours are the palette's, sampled from the boards and precomputed opaque over the
+// Bar surface for the same reason as the palette's `rule`.
 
 /// How far the floating chrome sits from the canvas edge: the mode strip above the bottom, the draft
 /// bar and the notices below the top.
@@ -457,19 +473,6 @@ pub const CHROME_INSET: f32 = 12.0;
 pub const CHROME_STACK_SPACING: f32 = 8.0;
 /// The draft bar's and a notice's corner radius.
 pub const CHROME_RADIUS: f32 = 9.0;
-/// The outline of the floating chrome: 8% white over [`BAR`].
-pub const CHROME_BORDER: Color = Color::from_rgb8(0x34, 0x34, 0x37);
-/// The soft shadow under the floating chrome, which lifts it off a photograph as the boards draw it.
-pub const CHROME_SHADOW: Shadow = Shadow {
-    color: Color {
-        r: 0.0,
-        g: 0.0,
-        b: 0.0,
-        a: 0.35,
-    },
-    offset: iced::Vector { x: 0.0, y: 4.0 },
-    blur_radius: 16.0,
-};
 /// The mode strip's padding inside its border, the gap between its tools and its radius.
 pub const STRIP_PADDING: f32 = 3.0;
 pub const STRIP_SPACING: f32 = 2.0;
@@ -478,14 +481,8 @@ pub const STRIP_RADIUS: f32 = 10.0;
 pub const STRIP_TOOL_WIDTH: f32 = 34.0;
 pub const STRIP_TOOL_HEIGHT: f32 = 30.0;
 pub const STRIP_TOOL_RADIUS: f32 = 7.0;
-/// A tool's icon at rest; a selected tool's is [`ACCENT`].
-pub const STRIP_ICON: Color = Color::from_rgb8(0xb9, 0xb9, 0xbf);
-/// A selected tool or an overlay that is on: the accent at 16% over [`BAR`].
-pub const STRIP_SELECTED: Color = Color::from_rgb8(0x41, 0x3a, 0x30);
 /// The rule between the modes and the view toggles, 1 × [`STRIP_RULE_HEIGHT`] with
-/// [`STRIP_RULE_MARGIN`] either side, and the title bar's rule before the panel toggles: 10% white
-/// over [`BAR`].
-pub const STRIP_RULE: Color = Color::from_rgb8(0x39, 0x39, 0x3c);
+/// [`STRIP_RULE_MARGIN`] either side, and the title bar's rule before the panel toggles.
 pub const STRIP_RULE_HEIGHT: f32 = 16.0;
 pub const STRIP_RULE_MARGIN: f32 = 4.0;
 /// The strip's whole height: a tool, the padding and the border on both sides.
@@ -513,18 +510,6 @@ pub const NOTICE_SPACING: f32 = 12.0;
 /// A notice's title and body sizes.
 pub const SIZE_NOTICE_TITLE: f32 = 12.5;
 pub const SIZE_NOTICE_BODY: f32 = 11.5;
-/// A step brighter than [`TEXT_PRIMARY`]: a notice's title and the title bar's file name, as the
-/// boards set them.
-pub const TEXT_BRIGHT: Color = Color::from_rgb8(0xf0, 0xf0, 0xf2);
-/// A neutral notice's outline: 10% white over [`BAR`], the same as [`STRIP_RULE`].
-pub const NOTICE_BORDER: Color = STRIP_RULE;
-/// A notice that needs a decision: the accent at 35% over [`BAR`].
-pub const NOTICE_WARNING_BORDER: Color = Color::from_rgb8(0x65, 0x55, 0x3d);
-/// A notice that reports a failure: [`CLIPPING_HIGHLIGHT`] over [`BAR`], as the components board
-/// samples it.
-pub const NOTICE_ERROR_BORDER: Color = Color::from_rgb8(0x71, 0x36, 0x34);
-/// The primary button's ink on the accent fill.
-pub const PRIMARY_INK: Color = Color::from_rgb8(0x1a, 0x14, 0x08);
 /// A crop overlay's corner handle, a square with this side and radius centred on the corner.
 pub const CROP_CORNER: f32 = 9.0;
 pub const CROP_CORNER_RADIUS: f32 = 1.0;
@@ -543,14 +528,10 @@ pub const HISTOGRAM_PADDING: Padding = Padding {
 };
 /// The plot's corner radius.
 pub const HISTOGRAM_RADIUS: f32 = 6.0;
-/// The plot's 1 px outline: 5% white over [`CANVAS`].
-pub const HISTOGRAM_BORDER: Color = Color::from_rgb8(0x24, 0x24, 0x26);
 /// A clipping triangle's size inside the plot, and its inset from the plot's side and bottom.
 pub const CLIP_TRIANGLE_WIDTH: f32 = 10.0;
 pub const CLIP_TRIANGLE_HEIGHT: f32 = 8.0;
 pub const CLIP_TRIANGLE_INSET: f32 = 6.0;
-/// A clipping triangle whose endpoint has no pixels.
-pub const CLIP_TRIANGLE_REST: Color = TEXT_FAINT;
 /// The inspector's whole, unconditional height.
 pub const HISTOGRAM_INSPECTOR_HEIGHT: f32 =
     HISTOGRAM_PADDING.top + HISTOGRAM_HEIGHT + HISTOGRAM_PADDING.bottom;
@@ -559,21 +540,10 @@ pub const HISTOGRAM_INSPECTOR_HEIGHT: f32 =
 //
 // The title bar, the state panel and the status bar around the canvas and the tools panel, from
 // the default board of the Develop workspace design. Every translucent fill the board draws is
-// stored opaque, composited over the surface it sits on, for the reason [`RULE`] gives.
+// stored opaque, composited over the surface it sits on, for the reason the palette's `rule` gives.
 
-/// The rules between the shell's regions: [`BORDER`], 6% white, as the default board composites it
-/// over the Bar surface, which is the module band's border.
-pub const DIVIDER: Color = BAND_BORDER;
-/// The dimensions, format and colour space after the file name.
-pub const TEXT_IDENTITY: Color = Color::from_rgb8(0x8a, 0x8a, 0x90);
-/// The current history row's label.
-pub const TEXT_CURRENT_ROW: Color = Color::from_rgb8(0xf2, 0xf2, 0xf4);
 /// The dimensions line's size, between a caption and control text.
 pub const SIZE_IDENTITY: f32 = 11.5;
-/// A title-bar icon button's fill under the pointer: 6% white over the Bar surface.
-pub const ICON_HOVER: Color = Color::from_rgb8(0x30, 0x30, 0x33);
-/// A selected icon button's fill: [`ACCENT`] at 14% over the Bar surface.
-pub const ICON_SELECTED_FILL: Color = Color::from_rgb8(0x3e, 0x37, 0x2f);
 /// The toolbar rule's height and the margin on either side of it.
 pub const TOOLBAR_RULE_HEIGHT: f32 = 16.0;
 pub const TOOLBAR_RULE_MARGIN: f32 = 6.0;
@@ -584,9 +554,6 @@ pub const TITLE_ACTION_SPACING: f32 = 4.0;
 /// The title bar's padding at its trailing edge, and at its leading edge where the window keeps its
 /// native frame.
 pub const TITLE_BAR_INSET: f32 = 12.0;
-/// A segmented control's track and its selected segment: the tab row's greys.
-pub const SEGMENT_TRACK: Color = TAB_TRACK;
-pub const SEGMENT_SELECTED: Color = TAB_SELECTED;
 /// A segment's height, its label's horizontal padding, and the track's inset and gap around and
 /// between segments.
 pub const SEGMENT_HEIGHT: f32 = 24.0;
@@ -635,7 +602,6 @@ pub const STATUS_SPACING: f32 = 8.0;
 pub const STATUS_FACT_SPACING: f32 = 12.0;
 /// The dot beside the connected-agents count, and its colour while any other client is connected.
 pub const STATUS_DOT_SIZE: f32 = 6.0;
-pub const AGENT_CONNECTED: Color = Color::from_rgb8(0x57, 0xb5, 0x6b);
 
 // -- Masks panel ----------------------------------------------------------------------------------
 
@@ -643,7 +609,7 @@ pub const AGENT_CONNECTED: Color = Color::from_rgb8(0x57, 0xb5, 0x6b);
 // (`docs/design/develop-workspace/html/mask-panels.html`): the mask and component rows, the mode
 // and overlay controls, the kind menu, the two-column fields and the colour range's swatches. Each
 // translucent fill the board draws is stored opaque, composited over the surface it sits on, for
-// the reason [`RULE`] gives; the tests below recompute each composite.
+// the reason the palette's `rule` gives; the tests below recompute each composite.
 
 /// A mask row and a component row (`.mrow`, `.crow`): the list row's height.
 pub const MASK_ROW_HEIGHT: f32 = LIST_ROW_HEIGHT;
@@ -665,13 +631,6 @@ pub const COMPONENT_ROW_PADDING: Padding = Padding {
 };
 /// Between a component row's grip, kind icon, name, mode control and buttons.
 pub const COMPONENT_ROW_SPACING: f32 = 6.0;
-/// The open mask's row: [`ACCENT`] at 12% over [`PANEL`]. A selected component row is
-/// [`LIST_ROW_CURRENT`], white at 7%, as the history's current row is.
-pub const MASK_ROW_SELECTED: Color = Color::from_rgb8(55, 50, 44);
-/// A mask or component row under the pointer, or the component row whose coverage the overlay is
-/// showing: white at 4% over [`PANEL`], a step under a selected row. The board draws no hover, so
-/// this is the smallest step that still reads.
-pub const ROW_HOVER: Color = Color::from_rgb8(41, 41, 44);
 /// A mask's amount readout, right-aligned in this box so the digits keep their place.
 pub const MASK_AMOUNT_WIDTH: f32 = 26.0;
 /// A coverage thumbnail (`.th`): 28 × 19 pt, rounded 3 pt, a 1 pt border of white at 8% over its
@@ -679,8 +638,6 @@ pub const MASK_AMOUNT_WIDTH: f32 = 26.0;
 pub const THUMBNAIL_WIDTH: f32 = 28.0;
 pub const THUMBNAIL_HEIGHT: f32 = 19.0;
 pub const THUMBNAIL_RADIUS: f32 = 3.0;
-pub const THUMBNAIL_BACKGROUND: Color = Color::from_rgb8(0x0e, 0x0e, 0x10);
-pub const THUMBNAIL_BORDER: Color = Color::from_rgb8(33, 33, 35);
 /// A row's small icon button (`.ib.sm`): the header button's square, holding a
 /// [`HEADER_ICON_SIZE`] icon (the eye, the menu) or a [`SMALL_ICON_SIZE`] one (the invert).
 pub const SMALL_ICON_SIZE: f32 = 12.0;
@@ -696,12 +653,11 @@ pub const MODE_RADIUS: f32 = 5.0;
 pub const MODE_SEGMENT_RADIUS: f32 = 4.0;
 pub const MODE_GLYPH_SIZE: f32 = 10.0;
 /// A fixed mode control (a mask's first component) is drawn at the board's 55% opacity. Its track
-/// and segment are dark enough that Iced's linear blending matches the board, so they are
-/// [`SEGMENT_TRACK`] and [`SEGMENT_SELECTED`] at this alpha over whatever row they sit on; the ink is
-/// [`TEXT_BRIGHT`] at 55% over that segment, precomputed opaque because a light alpha would render
-/// far brighter.
+/// and segment are dark enough that Iced's linear blending matches the board, so they are the
+/// palette's `tab_track` and `tab_selected` at this alpha over whatever row they sit on; the ink
+/// is its `mode_fixed_ink`, the bright text at 55% over that segment, precomputed opaque because a
+/// light alpha would render far brighter.
 pub const MODE_FIXED_OPACITY: f32 = 0.55;
-pub const MODE_FIXED_INK: Color = Color::from_rgb8(153, 153, 156);
 /// The overlay row (`.ov`): 26 pt, its label in a 52 pt box, its parts 6 pt apart, inset 4 pt.
 pub const OVERLAY_ROW_HEIGHT: f32 = 26.0;
 pub const OVERLAY_LABEL_WIDTH: f32 = 52.0;
@@ -718,44 +674,18 @@ pub const OVERLAY_SWATCH_SIZE: f32 = 12.0;
 pub const OVERLAY_SWATCH_RING: f32 = 2.0;
 /// A swatch that cannot be chosen (the overlay is not a tint) is drawn at this opacity.
 pub const SWATCH_DISABLED_OPACITY: f32 = 0.35;
-/// The dark outline round every swatch: black at 50%, which reads on any colour.
-pub const SWATCH_OUTLINE: Color = Color {
-    r: 0.0,
-    g: 0.0,
-    b: 0.0,
-    a: 0.5,
-};
-/// The mask-on-black glyph's outline (`#666`) and the photograph's stand-in colour in the
-/// photo-through-selection glyph (`#7a8a4a`), both the board's.
-pub const MASK_GLYPH_OUTLINE: Color = Color::from_rgb8(0x66, 0x66, 0x66);
-pub const MASK_GLYPH_PHOTO: Color = Color::from_rgb8(0x7a, 0x8a, 0x4a);
 /// A dropdown menu (`.menu`): 200 pt wide on its own surface, inset 5 pt, rounded 8 pt, outlined in
 /// white at 10% and lifted by a soft shadow.
 pub const MENU_WIDTH: f32 = 200.0;
 pub const MENU_PADDING: f32 = 5.0;
 pub const MENU_RADIUS: f32 = 8.0;
-pub const MENU_SURFACE: Color = Color::from_rgb8(0x2a, 0x2a, 0x2e);
-pub const MENU_BORDER: Color = Color::from_rgb8(63, 63, 67);
-pub const MENU_SHADOW: Shadow = Shadow {
-    color: Color {
-        r: 0.0,
-        g: 0.0,
-        b: 0.0,
-        a: 0.5,
-    },
-    offset: iced::Vector { x: 0.0, y: 10.0 },
-    blur_radius: 30.0,
-};
 /// A menu item: 26 pt, inset 8 pt, its icon, label and hint 8 pt apart, rounded 5 pt; white at 6%
 /// under the pointer (the board draws no hover).
 pub const MENU_ITEM_HEIGHT: f32 = 26.0;
 pub const MENU_ITEM_PADDING: f32 = 8.0;
 pub const MENU_ITEM_SPACING: f32 = 8.0;
 pub const MENU_ITEM_RADIUS: f32 = 5.0;
-pub const MENU_ITEM_HOVER: Color = Color::from_rgb8(55, 55, 59);
-/// A menu's separator: white at 8% over [`MENU_SURFACE`], 4 pt above and below, 6 pt in from the
-/// sides.
-pub const MENU_SEPARATOR: Color = Color::from_rgb8(59, 59, 63);
+/// A menu's separator: 4 pt above and below, 6 pt in from the sides.
 pub const MENU_SEPARATOR_MARGIN: Padding = Padding {
     top: 4.0,
     right: 6.0,
@@ -789,7 +719,7 @@ pub const SIZE_GRID_FIELD: f32 = 11.5;
 pub const COMPACT_TOGGLE_ROW_HEIGHT: f32 = 22.0;
 pub const TOGGLE_HINT_SPACING: f32 = 8.0;
 /// A colour range's swatch slot: 22 × 18 pt, rounded 4 pt, 6 pt apart; an empty slot is a dashed
-/// [`TEXT_FAINT`] outline.
+/// faint-text outline.
 pub const SWATCH_SLOT_WIDTH: f32 = 22.0;
 pub const SWATCH_SLOT_HEIGHT: f32 = 18.0;
 pub const SWATCH_SLOT_RADIUS: f32 = 4.0;
@@ -843,94 +773,99 @@ pub const ADD_ROW_MARGIN: f32 = 2.0;
 /// Between Invert mask and the first component row.
 pub const COMPONENTS_GAP: f32 = 4.0;
 
-/// Builds the dark, custom Luxforge theme from the tokens above. There is no light theme yet;
-/// see the [visual language](../../../docs/design/develop-workspace.md#visual-language) decision.
-pub fn theme() -> Theme {
-    Theme::custom(
-        "Luxforge".to_string(),
-        iced::theme::Palette {
-            background: PANEL,
-            text: TEXT_PRIMARY,
-            primary: ACCENT,
-            success: ACCENT,
-            warning: ACCENT,
-            danger: CLIPPING_HIGHLIGHT,
-        },
-    )
-}
-
 fn surface(background: Color) -> container::Style {
     container::Style::default().background(background)
 }
 
-fn bordered_surface(background: Color) -> container::Style {
+fn bordered_surface(theme: &Theme, background: Color) -> container::Style {
     surface(background).border(Border {
-        color: BORDER,
+        color: theme.palette().border,
         width: BORDER_WIDTH,
         radius: RADIUS.into(),
     })
 }
 
+/// Text in `ink`, read from the theme the text is drawn in: the themed counterpart of Iced's
+/// `text(..).color(..)`.
+pub fn ink(ink: impl Into<Ink>) -> impl Fn(&Theme) -> iced::widget::text::Style {
+    let ink = ink.into();
+    move |theme| iced::widget::text::Style {
+        color: Some(ink.resolve(theme.palette())),
+    }
+}
+
+/// A flat container in `fill`, read from the theme it is drawn in.
+pub fn fill(fill: impl Into<Ink>) -> impl Fn(&Theme) -> container::Style {
+    let fill = fill.into();
+    move |theme| surface(fill.resolve(theme.palette()))
+}
+
 /// The canvas surface in the chosen canvas background — [`CANVAS`], [`CANVAS_BLACK`] or
-/// [`CANVAS_GREY`]: flat, no border (the photograph's own edge reads as the boundary).
+/// [`CANVAS_GREY`], each fixed: flat, no border (the photograph's own edge reads as the boundary).
 pub fn canvas_surface(background: Color) -> impl Fn(&Theme) -> container::Style {
     move |_theme| surface(background)
 }
 
 /// A side panel or the status bar: flat, no border.
-pub fn panel_surface(_theme: &Theme) -> container::Style {
-    surface(PANEL)
+pub fn panel_surface(theme: &Theme) -> container::Style {
+    surface(theme.palette().background)
 }
 
 /// The title bar: the Bar surface, flat, its rule drawn under it by the shell.
-pub fn title_bar_surface(_theme: &Theme) -> container::Style {
-    surface(BAR)
+pub fn title_bar_surface(theme: &Theme) -> container::Style {
+    surface(theme.palette().surface)
 }
 
-/// A rule between the shell's regions: [`DIVIDER`], opaque.
-pub fn divider_surface(_theme: &Theme) -> container::Style {
-    surface(DIVIDER)
+/// A rule between the shell's regions: the band border, opaque.
+pub fn divider_surface(theme: &Theme) -> container::Style {
+    surface(theme.palette().band_border)
 }
 
 /// A floating bar or notice: bordered, rounded.
-pub fn bar_surface(_theme: &Theme) -> container::Style {
-    bordered_surface(BAR)
+pub fn bar_surface(theme: &Theme) -> container::Style {
+    bordered_surface(theme, theme.palette().surface)
 }
 
 /// A control surface (chip, menu, card body): bordered, rounded.
-pub fn control_surface(_theme: &Theme) -> container::Style {
-    bordered_surface(CONTROL)
+pub fn control_surface(theme: &Theme) -> container::Style {
+    bordered_surface(theme, theme.palette().control)
+}
+
+/// A modal sheet's backdrop: the scrim over everything behind the sheet.
+pub fn scrim_surface(theme: &Theme) -> container::Style {
+    surface(theme.palette().scrim)
 }
 
 /// A piece of floating canvas chrome — the mode strip, the draft bar or a notice — on the Bar
 /// surface with `border`, `radius` and the soft [`CHROME_SHADOW`].
-pub fn chrome_surface(border: Color, radius: f32) -> container::Style {
-    surface(BAR)
+pub fn chrome_surface(theme: &Theme, border: Token, radius: f32) -> container::Style {
+    surface(theme.palette().surface)
         .border(Border {
-            color: border,
+            color: theme.palette().get(border),
             width: BORDER_WIDTH,
             radius: radius.into(),
         })
         .shadow(CHROME_SHADOW)
 }
 
-/// One tool in the mode strip: transparent at rest, [`CONTROL`] under the pointer and
-/// [`STRIP_SELECTED`] when it is the active mode or an overlay that is on.
+/// One tool in the mode strip: transparent at rest, the control surface under the pointer and the
+/// strip's selected fill when it is the active mode or an overlay that is on.
 pub fn strip_tool(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |_theme, status| {
+    move |theme, status| {
+        let palette = theme.palette();
         let background = match (selected, status) {
-            (true, _) => Some(Background::Color(STRIP_SELECTED)),
+            (true, _) => Some(Background::Color(palette.strip_selected)),
             (false, button::Status::Hovered | button::Status::Pressed) => {
-                Some(Background::Color(CONTROL))
+                Some(Background::Color(palette.control))
             }
             (false, button::Status::Active | button::Status::Disabled) => None,
         };
         button::Style {
             background,
             text_color: match (selected, status) {
-                (_, button::Status::Disabled) => TEXT_TERTIARY,
-                (true, _) => ACCENT,
-                (false, _) => STRIP_ICON,
+                (_, button::Status::Disabled) => palette.text_tertiary,
+                (true, _) => palette.accent,
+                (false, _) => palette.strip_icon,
             },
             border: Border {
                 radius: STRIP_TOOL_RADIUS.into(),
@@ -943,25 +878,27 @@ pub fn strip_tool(selected: bool) -> impl Fn(&Theme, button::Status) -> button::
     }
 }
 
-/// The histogram plot: the Canvas surface with its faint outline and rounded corners.
-pub fn histogram_surface(_theme: &Theme) -> container::Style {
-    surface(CANVAS).border(Border {
-        color: HISTOGRAM_BORDER,
+/// The histogram plot: the surround with its faint outline and rounded corners.
+pub fn histogram_surface(theme: &Theme) -> container::Style {
+    surface(theme.palette().surround).border(Border {
+        color: theme.palette().histogram_border,
         width: BORDER_WIDTH,
         radius: HISTOGRAM_RADIUS.into(),
     })
 }
 
 /// A plain, background-free button: list rows, chips and inline menu items.
-pub fn button_plain(_theme: &Theme, status: button::Status) -> button::Style {
+pub fn button_plain(theme: &Theme, status: button::Status) -> button::Style {
     let background = match status {
-        button::Status::Hovered | button::Status::Pressed => Some(Background::Color(CONTROL)),
+        button::Status::Hovered | button::Status::Pressed => {
+            Some(Background::Color(theme.palette().control))
+        }
         button::Status::Active | button::Status::Disabled => None,
     };
 
     button::Style {
         background,
-        text_color: text_color_for(status),
+        text_color: text_color_for(theme, status),
         border: Border {
             radius: RADIUS.into(),
             width: 0.0,
@@ -973,17 +910,18 @@ pub fn button_plain(_theme: &Theme, status: button::Status) -> button::Style {
 }
 
 /// The one accent-filled button per surface: Apply, a selected mode or a primary action.
-pub fn button_accent(_theme: &Theme, status: button::Status) -> button::Style {
+pub fn button_accent(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.palette();
     let background = match status {
-        button::Status::Disabled => CONTROL,
-        _ => ACCENT,
+        button::Status::Disabled => palette.control,
+        _ => palette.accent,
     };
 
     button::Style {
         background: Some(Background::Color(background)),
         text_color: match status {
-            button::Status::Disabled => TEXT_TERTIARY,
-            _ => PRIMARY_INK,
+            button::Status::Disabled => palette.text_tertiary,
+            _ => palette.accent_ink,
         },
         border: Border {
             radius: RADIUS.into(),
@@ -996,15 +934,17 @@ pub fn button_accent(_theme: &Theme, status: button::Status) -> button::Style {
 }
 
 /// A square icon-glyph button: mode strip entries, header actions, context toggles. No surface at
-/// rest, [`ICON_HOVER`] under the pointer.
-pub fn button_icon(_theme: &Theme, status: button::Status) -> button::Style {
+/// rest, the icon hover fill under the pointer.
+pub fn button_icon(theme: &Theme, status: button::Status) -> button::Style {
     let background = match status {
-        button::Status::Hovered | button::Status::Pressed => Some(Background::Color(ICON_HOVER)),
+        button::Status::Hovered | button::Status::Pressed => {
+            Some(Background::Color(theme.palette().icon_hover))
+        }
         button::Status::Active | button::Status::Disabled => None,
     };
     button::Style {
         background,
-        text_color: text_color_for(status),
+        text_color: text_color_for(theme, status),
         border: Border {
             radius: RADIUS.into(),
             width: 0.0,
@@ -1015,15 +955,16 @@ pub fn button_icon(_theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-/// A selected icon button: [`ICON_SELECTED_FILL`] behind accent ink, with no outline, as the
+/// A selected icon button: the selected icon fill behind accent ink, with no outline, as the
 /// default board draws the open panels' toggles.
-pub fn button_selected(_theme: &Theme, status: button::Status) -> button::Style {
+pub fn button_selected(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.palette();
     button::Style {
-        background: Some(Background::Color(ICON_SELECTED_FILL)),
+        background: Some(Background::Color(palette.icon_selected_fill)),
         text_color: if matches!(status, button::Status::Disabled) {
-            TEXT_TERTIARY
+            palette.text_tertiary
         } else {
-            ACCENT
+            palette.accent
         },
         border: Border {
             radius: RADIUS.into(),
@@ -1037,51 +978,56 @@ pub fn button_selected(_theme: &Theme, status: button::Status) -> button::Style 
 
 /// An open colour swatch. The swatch fills its button, so a fill behind it would not show: the
 /// open state is the accent outline around it.
-pub fn swatch_open(_theme: &Theme, status: button::Status) -> button::Style {
+pub fn swatch_open(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.palette();
     button::Style {
-        background: Some(Background::Color(Color { a: 0.18, ..ACCENT })),
+        background: Some(Background::Color(Color {
+            a: 0.18,
+            ..palette.accent
+        })),
         text_color: if matches!(status, button::Status::Disabled) {
-            TEXT_TERTIARY
+            palette.text_tertiary
         } else {
-            ACCENT
+            palette.accent
         },
         border: Border {
             radius: RADIUS.into(),
             width: BORDER_WIDTH,
-            color: ACCENT,
+            color: palette.accent,
         },
         shadow: Shadow::default(),
         snap: false,
     }
 }
 
-/// A segmented control's track: [`SEGMENT_TRACK`], its segments inset by [`SEGMENT_INSET`].
-pub fn segment_track(_theme: &Theme) -> container::Style {
-    surface(SEGMENT_TRACK).border(Border {
+/// A segmented control's track: the tab track, its segments inset by [`SEGMENT_INSET`].
+pub fn segment_track(theme: &Theme) -> container::Style {
+    surface(theme.palette().tab_track).border(Border {
         color: Color::TRANSPARENT,
         width: 0.0,
         radius: SEGMENT_RADIUS.into(),
     })
 }
 
-/// One segment. The selected one is raised on [`SEGMENT_SELECTED`] in [`TEXT_BRIGHT`] and never
+/// One segment. The selected one is raised on the selected tab fill in bright text and never
 /// takes the accent, because it states a view rather than an edit; the others are bare, in
 /// secondary text.
 pub fn segment(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |_theme, status| {
+    move |theme, status| {
+        let palette = theme.palette();
         let background = match (selected, status) {
-            (true, _) => Some(Background::Color(SEGMENT_SELECTED)),
+            (true, _) => Some(Background::Color(palette.tab_selected)),
             (false, button::Status::Hovered | button::Status::Pressed) => {
-                Some(Background::Color(CONTROL))
+                Some(Background::Color(palette.control))
             }
             (false, _) => None,
         };
         button::Style {
             background,
             text_color: match (selected, status) {
-                (_, button::Status::Disabled) => TEXT_TERTIARY,
-                (true, _) => TEXT_BRIGHT,
-                (false, _) => TEXT_SECONDARY,
+                (_, button::Status::Disabled) => palette.text_tertiary,
+                (true, _) => palette.text_bright,
+                (false, _) => palette.text_secondary,
             },
             border: Border {
                 radius: (SEGMENT_RADIUS - SEGMENT_INSET).into(),
@@ -1094,42 +1040,46 @@ pub fn segment(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Sty
     }
 }
 
-fn text_color_for(status: button::Status) -> Color {
+fn text_color_for(theme: &Theme, status: button::Status) -> Color {
     match status {
-        button::Status::Disabled => TEXT_TERTIARY,
-        _ => TEXT_PRIMARY,
+        button::Status::Disabled => theme.palette().text_tertiary,
+        _ => theme.palette().text,
     }
 }
 
 /// The value field's text input: transparent until focused or invalid.
 pub fn text_input_style(invalid: bool) -> impl Fn(&Theme, text_input::Status) -> text_input::Style {
-    move |_theme, status| {
+    move |theme, status| {
+        let palette = theme.palette();
         let border_color = if invalid {
-            CLIPPING_HIGHLIGHT
+            palette.error
         } else {
             match status {
-                text_input::Status::Focused { .. } => ACCENT,
-                _ => BORDER,
+                text_input::Status::Focused { .. } => palette.accent,
+                _ => palette.border,
             }
         };
 
         text_input::Style {
-            background: Background::Color(CONTROL),
+            background: Background::Color(palette.control),
             border: Border {
                 color: border_color,
                 width: BORDER_WIDTH,
                 radius: RADIUS.into(),
             },
-            icon: TEXT_TERTIARY,
-            placeholder: TEXT_TERTIARY,
-            value: TEXT_PRIMARY,
-            selection: Color { a: 0.35, ..ACCENT },
+            icon: palette.text_tertiary,
+            placeholder: palette.text_tertiary,
+            value: palette.text,
+            selection: Color {
+                a: 0.35,
+                ..palette.accent
+            },
         }
     }
 }
 
 /// A field box's text input: the Control surface with no outline at rest, as the module
-/// references draw a value box, the accent outline while focused and the clipping red while
+/// references draw a value box, the accent outline while focused and the error ink while
 /// invalid.
 pub fn field_input_style(
     invalid: bool,
@@ -1156,10 +1106,10 @@ pub fn panel_scrollbar() -> iced::widget::scrollable::Direction {
 }
 
 /// A button with no surface in any state, for a disclosure that is read as text.
-pub fn button_bare(_theme: &Theme, status: button::Status) -> button::Style {
+pub fn button_bare(theme: &Theme, status: button::Status) -> button::Style {
     button::Style {
         background: None,
-        text_color: text_color_for(status),
+        text_color: text_color_for(theme, status),
         border: Border::default(),
         shadow: Shadow::default(),
         snap: false,
@@ -1169,13 +1119,13 @@ pub fn button_bare(_theme: &Theme, status: button::Status) -> button::Style {
 /// A disclosure heading: no surface in any state, its label tertiary at rest and secondary under
 /// the pointer or while pressed. The label takes this text colour, so the style is the one place
 /// that decides how the heading answers a hover.
-pub fn button_disclosure(_theme: &Theme, status: button::Status) -> button::Style {
+pub fn button_disclosure(theme: &Theme, status: button::Status) -> button::Style {
     button::Style {
         background: None,
-        text_color: disclosure_color(matches!(
-            status,
-            button::Status::Hovered | button::Status::Pressed
-        )),
+        text_color: disclosure_color(
+            theme,
+            matches!(status, button::Status::Hovered | button::Status::Pressed),
+        ),
         border: Border::default(),
         shadow: Shadow::default(),
         snap: false,
@@ -1183,20 +1133,20 @@ pub fn button_disclosure(_theme: &Theme, status: button::Status) -> button::Styl
 }
 
 /// A disclosure heading's ink, label and chevron alike: secondary while hovered, else tertiary.
-pub fn disclosure_color(hovered: bool) -> Color {
+pub fn disclosure_color(theme: &Theme, hovered: bool) -> Color {
     if hovered {
-        TEXT_SECONDARY
+        theme.palette().text_secondary
     } else {
-        TEXT_TERTIARY
+        theme.palette().text_tertiary
     }
 }
 
 /// A module band's surface: the Bar colour, flat, in every state. The band is a disclosure, so
 /// it keeps one colour rather than flashing a hover fill across the panel.
-pub fn button_band(_theme: &Theme, status: button::Status) -> button::Style {
+pub fn button_band(theme: &Theme, status: button::Status) -> button::Style {
     button::Style {
-        background: Some(Background::Color(BAR)),
-        text_color: text_color_for(status),
+        background: Some(Background::Color(theme.palette().surface)),
+        text_color: text_color_for(theme, status),
         border: Border::default(),
         shadow: Shadow::default(),
         snap: false,
@@ -1204,17 +1154,18 @@ pub fn button_band(_theme: &Theme, status: button::Status) -> button::Style {
 }
 
 /// A labelled button in a section (a picker or an action): the Control surface, borderless.
-pub fn button_control(_theme: &Theme, status: button::Status) -> button::Style {
+pub fn button_control(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.palette();
     let background = match status {
         button::Status::Hovered | button::Status::Pressed => Color {
             a: 0.18,
-            ..TEXT_PRIMARY
+            ..palette.text
         },
-        button::Status::Active | button::Status::Disabled => CONTROL,
+        button::Status::Active | button::Status::Disabled => palette.control,
     };
     button::Style {
         background: Some(Background::Color(background)),
-        text_color: text_color_for(status),
+        text_color: text_color_for(theme, status),
         border: Border {
             radius: RADIUS.into(),
             width: 0.0,
@@ -1226,10 +1177,10 @@ pub fn button_control(_theme: &Theme, status: button::Status) -> button::Style {
 }
 
 /// The current entry's list row: tinted, in every state.
-pub fn list_row_current(_theme: &Theme, status: button::Status) -> button::Style {
+pub fn list_row_current(theme: &Theme, status: button::Status) -> button::Style {
     button::Style {
-        background: Some(Background::Color(LIST_ROW_CURRENT)),
-        text_color: TEXT_CURRENT_ROW,
+        background: Some(Background::Color(theme.palette().list_row_current)),
+        text_color: theme.palette().text_current_row,
         border: Border {
             radius: LIST_ROW_RADIUS.into(),
             width: 0.0,
@@ -1238,28 +1189,30 @@ pub fn list_row_current(_theme: &Theme, status: button::Status) -> button::Style
         shadow: Shadow::default(),
         snap: false,
     }
-    .with_disabled(status)
+    .with_disabled(theme, status)
 }
 
-/// A mask or component row: `selected` fills it in every state, else [`ROW_HOVER`] shows under the
-/// pointer or while `hovered` says the row is the one being shown, else it has no surface.
+/// A mask or component row: the `selected` token fills it in every state, else the row hover
+/// shows under the pointer or while `hovered` says the row is the one being shown, else it has no
+/// surface.
 pub fn mask_row(
-    selected: Option<Color>,
+    selected: Option<Token>,
     hovered: bool,
 ) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |_theme, status| {
+    move |theme, status| {
+        let palette = theme.palette();
         let pointer = matches!(status, button::Status::Hovered | button::Status::Pressed);
         let background = match selected {
-            Some(fill) => Some(fill),
-            None if hovered || pointer => Some(ROW_HOVER),
+            Some(fill) => Some(palette.get(fill)),
+            None if hovered || pointer => Some(palette.row_hover),
             None => None,
         };
         button::Style {
             background: background.map(Background::Color),
             text_color: if selected.is_some() {
-                TEXT_CURRENT_ROW
+                palette.text_current_row
             } else {
-                TEXT_LABEL
+                palette.text_label
             },
             border: Border {
                 radius: LIST_ROW_RADIUS.into(),
@@ -1269,18 +1222,18 @@ pub fn mask_row(
             shadow: Shadow::default(),
             snap: false,
         }
-        .with_disabled(status)
+        .with_disabled(theme, status)
     }
 }
 
-/// The mode control's track: [`SEGMENT_TRACK`] rounded [`MODE_RADIUS`], at
-/// [`MODE_FIXED_OPACITY`] when the mode is fixed.
+/// The mode control's track: the tab track rounded [`MODE_RADIUS`], at [`MODE_FIXED_OPACITY`]
+/// when the mode is fixed.
 pub fn mode_track(fixed: bool) -> impl Fn(&Theme) -> container::Style {
-    move |_theme| {
+    move |theme| {
         let alpha = if fixed { MODE_FIXED_OPACITY } else { 1.0 };
         surface(Color {
             a: alpha,
-            ..SEGMENT_TRACK
+            ..theme.palette().tab_track
         })
         .border(Border {
             color: Color::TRANSPARENT,
@@ -1290,24 +1243,25 @@ pub fn mode_track(fixed: bool) -> impl Fn(&Theme) -> container::Style {
     }
 }
 
-/// One mode segment: raised on [`SEGMENT_SELECTED`] when chosen (at [`MODE_FIXED_OPACITY`] when
-/// fixed), [`CONTROL`] under the pointer, else bare. Its glyph carries the mode's colour.
+/// One mode segment: raised on the selected tab fill when chosen (at [`MODE_FIXED_OPACITY`] when
+/// fixed), the control surface under the pointer, else bare. Its glyph carries the mode's colour.
 pub fn mode_segment(
     selected: bool,
     fixed: bool,
 ) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |_theme, status| {
+    move |theme, status| {
+        let palette = theme.palette();
         let background = match (selected, status) {
             (true, _) => Some(Color {
                 a: if fixed { MODE_FIXED_OPACITY } else { 1.0 },
-                ..SEGMENT_SELECTED
+                ..palette.tab_selected
             }),
-            (false, button::Status::Hovered | button::Status::Pressed) => Some(CONTROL),
+            (false, button::Status::Hovered | button::Status::Pressed) => Some(palette.control),
             (false, _) => None,
         };
         button::Style {
             background: background.map(Background::Color),
-            text_color: TEXT_PRIMARY,
+            text_color: palette.text,
             border: Border {
                 radius: MODE_SEGMENT_RADIUS.into(),
                 width: 0.0,
@@ -1319,29 +1273,29 @@ pub fn mode_segment(
     }
 }
 
-/// A dropdown menu's surface: [`MENU_SURFACE`], outlined in [`MENU_BORDER`], rounded
+/// A dropdown menu's surface: the menu surface, outlined in the menu border, rounded
 /// [`MENU_RADIUS`], over [`MENU_SHADOW`].
-pub fn menu_surface(_theme: &Theme) -> container::Style {
-    surface(MENU_SURFACE)
+pub fn menu_surface(theme: &Theme) -> container::Style {
+    surface(theme.palette().menu_surface)
         .border(Border {
-            color: MENU_BORDER,
+            color: theme.palette().menu_border,
             width: BORDER_WIDTH,
             radius: MENU_RADIUS.into(),
         })
         .shadow(MENU_SHADOW)
 }
 
-/// A menu item: bare at rest, [`MENU_ITEM_HOVER`] under the pointer.
-pub fn menu_item(_theme: &Theme, status: button::Status) -> button::Style {
+/// A menu item: bare at rest, the menu item hover under the pointer.
+pub fn menu_item(theme: &Theme, status: button::Status) -> button::Style {
     let background = match status {
         button::Status::Hovered | button::Status::Pressed => {
-            Some(Background::Color(MENU_ITEM_HOVER))
+            Some(Background::Color(theme.palette().menu_item_hover))
         }
         button::Status::Active | button::Status::Disabled => None,
     };
     button::Style {
         background,
-        text_color: text_color_for(status),
+        text_color: text_color_for(theme, status),
         border: Border {
             radius: MENU_ITEM_RADIUS.into(),
             width: 0.0,
@@ -1353,15 +1307,15 @@ pub fn menu_item(_theme: &Theme, status: button::Status) -> button::Style {
 }
 
 /// A menu's separator line.
-pub fn menu_separator(_theme: &Theme) -> container::Style {
-    surface(MENU_SEPARATOR)
+pub fn menu_separator(theme: &Theme) -> container::Style {
+    surface(theme.palette().menu_separator)
 }
 
 /// A selected chip: the accent-tinted fill, borderless.
-pub fn chip_selected(_theme: &Theme, status: button::Status) -> button::Style {
+pub fn chip_selected(theme: &Theme, status: button::Status) -> button::Style {
     button::Style {
-        background: Some(Background::Color(SELECTED_FILL)),
-        text_color: ACCENT,
+        background: Some(Background::Color(theme.palette().selected_fill)),
+        text_color: theme.palette().accent,
         border: Border {
             radius: RADIUS.into(),
             width: 0.0,
@@ -1370,7 +1324,7 @@ pub fn chip_selected(_theme: &Theme, status: button::Status) -> button::Style {
         shadow: Shadow::default(),
         snap: false,
     }
-    .with_disabled(status)
+    .with_disabled(theme, status)
 }
 
 /// A number field's value box: the Control surface, borderless, a press opens it for typing.
@@ -1378,9 +1332,9 @@ pub fn button_field(theme: &Theme, status: button::Status) -> button::Style {
     button_control(theme, status)
 }
 
-/// A readout card: the Canvas surface, rounded, borderless.
-pub fn readout_surface(_theme: &Theme) -> container::Style {
-    surface(CANVAS).border(Border {
+/// A readout card: the surround, rounded, borderless.
+pub fn readout_surface(theme: &Theme) -> container::Style {
+    surface(theme.palette().surround).border(Border {
         color: Color::TRANSPARENT,
         width: 0.0,
         radius: RADIUS.into(),
@@ -1388,14 +1342,14 @@ pub fn readout_surface(_theme: &Theme) -> container::Style {
 }
 
 trait DisabledStyle {
-    fn with_disabled(self, status: button::Status) -> Self;
+    fn with_disabled(self, theme: &Theme, status: button::Status) -> Self;
 }
 
 impl DisabledStyle for button::Style {
-    fn with_disabled(self, status: button::Status) -> Self {
+    fn with_disabled(self, theme: &Theme, status: button::Status) -> Self {
         match status {
             button::Status::Disabled => button::Style {
-                text_color: TEXT_TERTIARY,
+                text_color: theme.palette().text_tertiary,
                 ..self
             },
             _ => self,
@@ -1403,15 +1357,10 @@ impl DisabledStyle for button::Style {
     }
 }
 
-/// A control row the command palette has just revealed: an amber step well above
-/// [`MASK_ROW_SELECTED`], since the mark lasts a moment and must be seen at a glance, opaque so it
-/// reads the same on every renderer.
-pub const REVEALED_ROW: Color = Color::from_rgb8(91, 73, 50);
-
-/// A row the command palette has just revealed: [`REVEALED_ROW`], rounded, for the moment the
-/// mark lasts.
-pub fn revealed_surface(_theme: &Theme) -> container::Style {
-    surface(REVEALED_ROW).border(Border {
+/// A row the command palette has just revealed: the revealed row's amber, rounded, for the moment
+/// the mark lasts.
+pub fn revealed_surface(theme: &Theme) -> container::Style {
+    surface(theme.palette().revealed_row).border(Border {
         color: Color::TRANSPARENT,
         width: 0.0,
         radius: RADIUS.into(),
@@ -1419,21 +1368,22 @@ pub fn revealed_surface(_theme: &Theme) -> container::Style {
 }
 
 /// A group header's hairline rule.
-pub fn rule_surface(_theme: &Theme) -> container::Style {
-    surface(RULE)
+pub fn rule_surface(theme: &Theme) -> container::Style {
+    surface(theme.palette().rule)
 }
 
 /// The 1 px border above a module band.
-pub fn band_border_surface(_theme: &Theme) -> container::Style {
-    surface(BAND_BORDER)
+pub fn band_border_surface(theme: &Theme) -> container::Style {
+    surface(theme.palette().band_border)
 }
 
 /// The slider's handle. The rail, its fill and its zero tick are drawn under it by the slider row
 /// itself (see [`crate::geometry::rail_geometry`]), so Iced's own rail is transparent. The handle
-/// turns [`ACCENT`] only while dragging, and then drops its dark ring, so the halo the rail line
+/// turns the accent only while dragging, and then drops its dark ring, so the halo the rail line
 /// draws under it (see [`THUMB_HALO_RADIUS`]) meets the accent directly, as the references draw it.
 pub fn slider_style(dragging: bool) -> impl Fn(&Theme, slider::Status) -> slider::Style {
-    move |_theme, status| {
+    move |theme, status| {
+        let palette = theme.palette();
         let active = dragging || matches!(status, slider::Status::Dragged);
 
         slider::Style {
@@ -1449,11 +1399,15 @@ pub fn slider_style(dragging: bool) -> impl Fn(&Theme, slider::Status) -> slider
                 shape: slider::HandleShape::Circle {
                     radius: THUMB_RADIUS,
                 },
-                background: Background::Color(if active { ACCENT } else { THUMB }),
+                background: Background::Color(if active {
+                    palette.accent
+                } else {
+                    palette.thumb
+                }),
                 border_color: if active {
                     Color::TRANSPARENT
                 } else {
-                    THUMB_OUTLINE
+                    palette.thumb_outline
                 },
                 border_width: THUMB_OUTLINE_WIDTH,
             },
@@ -1465,21 +1419,32 @@ pub fn slider_style(dragging: bool) -> impl Fn(&Theme, slider::Status) -> slider
 mod tests {
     use super::*;
 
+    /// Luxforge Dark's palette, whose values the visual language's tests pin.
+    const DARK: Palette = Palette::luxforge_dark();
+
     #[test]
     fn surface_tokens_match_the_visual_language_table() {
         assert_eq!(CANVAS, Color::from_rgb8(0x19, 0x19, 0x1b));
         assert_eq!(CANVAS_BLACK, Color::from_rgb8(0x00, 0x00, 0x00));
         assert_eq!(CANVAS_GREY, Color::from_rgb8(0x77, 0x77, 0x77));
-        assert_eq!(PANEL, Color::from_rgb8(0x20, 0x20, 0x23));
-        assert_eq!(BAR, Color::from_rgb8(0x23, 0x23, 0x26));
-        assert_eq!(CONTROL, Color::from_rgb8(0x2c, 0x2c, 0x31));
+        assert_eq!(
+            DARK.surround, CANVAS,
+            "Luxforge Dark's surround is the dark canvas"
+        );
+        assert_eq!(
+            DARK.rail_backdrop, DARK.background,
+            "a rail lies over the panel"
+        );
+        assert_eq!(DARK.background, Color::from_rgb8(0x20, 0x20, 0x23));
+        assert_eq!(DARK.surface, Color::from_rgb8(0x23, 0x23, 0x26));
+        assert_eq!(DARK.control, Color::from_rgb8(0x2c, 0x2c, 0x31));
     }
 
     /// The canvas surface fills with whichever background it is given, and the grey one is the
     /// 18% grey it claims: L* 50.
     #[test]
     fn canvas_surface_fills_each_canvas_background() {
-        let theme = theme();
+        let theme = Theme::luxforge_dark();
         for background in [CANVAS, CANVAS_BLACK, CANVAS_GREY] {
             let style = canvas_surface(background)(&theme);
             assert_eq!(style.background, Some(Background::Color(background)));
@@ -1493,29 +1458,32 @@ mod tests {
 
     #[test]
     fn border_token_is_six_percent_white() {
-        assert_eq!(BORDER.r, 1.0);
-        assert_eq!(BORDER.g, 1.0);
-        assert_eq!(BORDER.b, 1.0);
-        assert!((BORDER.a - 0.06).abs() < f32::EPSILON);
+        assert_eq!(DARK.border.r, 1.0);
+        assert_eq!(DARK.border.g, 1.0);
+        assert_eq!(DARK.border.b, 1.0);
+        assert!((DARK.border.a - 0.06).abs() < f32::EPSILON);
     }
 
     #[test]
     fn text_tokens_match_the_visual_language_table() {
-        assert_eq!(TEXT_PRIMARY, Color::from_rgb8(0xe8, 0xe8, 0xea));
-        assert_eq!(TEXT_SECONDARY, Color::from_rgb8(0xa8, 0xa8, 0xae));
-        assert_eq!(TEXT_TERTIARY, Color::from_rgb8(0x77, 0x77, 0x7f));
+        assert_eq!(DARK.text, Color::from_rgb8(0xe8, 0xe8, 0xea));
+        assert_eq!(DARK.text_secondary, Color::from_rgb8(0xa8, 0xa8, 0xae));
+        assert_eq!(DARK.text_tertiary, Color::from_rgb8(0x77, 0x77, 0x7f));
     }
 
     #[test]
     fn accent_and_clipping_tokens_match_the_visual_language_table() {
-        assert_eq!(ACCENT, Color::from_rgb8(0xe2, 0xb4, 0x6a));
+        assert_eq!(DARK.accent, Color::from_rgb8(0xe2, 0xb4, 0x6a));
         assert_eq!(CLIPPING_HIGHLIGHT, Color::from_rgb8(0xe5, 0x53, 0x4b));
         assert_eq!(CLIPPING_SHADOW, Color::from_rgb8(0x4c, 0x8b, 0xe0));
     }
 
     #[test]
     fn the_guide_token_is_white_at_thirty_percent() {
-        assert_eq!((GUIDE.r, GUIDE.g, GUIDE.b), (BORDER.r, BORDER.g, BORDER.b));
+        assert_eq!(
+            (GUIDE.r, GUIDE.g, GUIDE.b),
+            (DARK.border.r, DARK.border.g, DARK.border.b)
+        );
         assert!((GUIDE.a - 0.30).abs() < f32::EPSILON);
     }
 
@@ -1623,8 +1591,8 @@ mod tests {
 
     #[test]
     fn dragging_handle_turns_accent() {
-        let style = slider_style(true)(&theme(), slider::Status::Active);
-        assert_eq!(style.handle.background, Background::Color(ACCENT));
+        let style = slider_style(true)(&Theme::luxforge_dark(), slider::Status::Active);
+        assert_eq!(style.handle.background, Background::Color(DARK.accent));
         assert_eq!(
             style.handle.border_color,
             Color::TRANSPARENT,
@@ -1634,8 +1602,8 @@ mod tests {
 
     #[test]
     fn resting_handle_is_not_accent_and_iced_draws_no_rail() {
-        let style = slider_style(false)(&theme(), slider::Status::Active);
-        assert_eq!(style.handle.background, Background::Color(THUMB));
+        let style = slider_style(false)(&Theme::luxforge_dark(), slider::Status::Active);
+        assert_eq!(style.handle.background, Background::Color(DARK.thumb));
         let clear = Background::Color(Color::TRANSPARENT);
         assert_eq!(style.rail.backgrounds, (clear, clear));
     }
@@ -1677,19 +1645,19 @@ mod tests {
         // default.png: history rows on a 28 pt pitch, a 6 pt marker, the current row tinted.
         assert_eq!(LIST_ROW_HEIGHT + LIST_ROW_SPACING, 28.0);
         assert_eq!(MARKER_SIZE, 6.0);
-        assert_eq!(LIST_ROW_CURRENT, Color::from_rgb8(47, 47, 50));
+        assert_eq!(DARK.list_row_current, Color::from_rgb8(47, 47, 50));
     }
 
     #[test]
     fn rail_tokens_match_the_module_panel_references() {
-        assert_eq!(RAIL, Color::from_rgb8(0x3a, 0x3a, 0x40));
-        assert_eq!(RAIL_FILL, Color::from_rgb8(0xa3, 0xa3, 0xaa));
-        assert_eq!(THUMB, Color::from_rgb8(0xec, 0xec, 0xee));
-        assert_eq!(BAND_BORDER, Color::from_rgb8(0x2f, 0x2f, 0x32));
-        assert_eq!(RULE, Color::from_rgb8(0x31, 0x31, 0x34));
-        assert_eq!(ZERO_TICK, Color::from_rgb8(0x5a, 0x5a, 0x62));
-        assert_eq!(THUMB_OUTLINE, Color::from_rgb8(0x11, 0x11, 0x13));
-        assert_eq!(TEXT_LABEL, Color::from_rgb8(0xc9, 0xc9, 0xce));
+        assert_eq!(DARK.rail, Color::from_rgb8(0x3a, 0x3a, 0x40));
+        assert_eq!(DARK.rail_fill, Color::from_rgb8(0xa3, 0xa3, 0xaa));
+        assert_eq!(DARK.thumb, Color::from_rgb8(0xec, 0xec, 0xee));
+        assert_eq!(DARK.band_border, Color::from_rgb8(0x2f, 0x2f, 0x32));
+        assert_eq!(DARK.rule, Color::from_rgb8(0x31, 0x31, 0x34));
+        assert_eq!(DARK.zero_tick, Color::from_rgb8(0x5a, 0x5a, 0x62));
+        assert_eq!(DARK.thumb_outline, Color::from_rgb8(0x11, 0x11, 0x13));
+        assert_eq!(DARK.text_label, Color::from_rgb8(0xc9, 0xc9, 0xce));
     }
 
     /// The Performance section's layout table, pinned: the heading, the metric row and its boxes,
@@ -1718,15 +1686,15 @@ mod tests {
     #[test]
     fn the_sparkline_area_is_the_rail_fill_at_sixteen_percent_over_the_panel() {
         let [r, g, b] = crate::geometry::over(
-            [RAIL_FILL.r, RAIL_FILL.g, RAIL_FILL.b],
-            [PANEL.r, PANEL.g, PANEL.b],
+            [DARK.rail_fill.r, DARK.rail_fill.g, DARK.rail_fill.b],
+            [DARK.background.r, DARK.background.g, DARK.background.b],
             0.16,
         )
         .map(|channel| (channel * 255.0).round() as u8);
-        assert_eq!(SPARKLINE_AREA, Color::from_rgb8(r, g, b));
-        assert_eq!(SPARKLINE_AREA, Color::from_rgb8(0x35, 0x35, 0x39));
+        assert_eq!(DARK.sparkline_area, Color::from_rgb8(r, g, b));
+        assert_eq!(DARK.sparkline_area, Color::from_rgb8(0x35, 0x35, 0x39));
         assert_eq!(
-            SPARKLINE_AREA.a, 1.0,
+            DARK.sparkline_area.a, 1.0,
             "opaque, not an alpha Iced would brighten"
         );
     }
@@ -1736,33 +1704,32 @@ mod tests {
     #[test]
     fn shell_tokens_match_the_default_board() {
         let over_bar = |colour: Color, alpha: f32| {
-            let [r, g, b] =
-                crate::geometry::over([colour.r, colour.g, colour.b], [BAR.r, BAR.g, BAR.b], alpha)
-                    .map(|channel| (channel * 255.0).round() as u8);
+            let [r, g, b] = crate::geometry::over(
+                [colour.r, colour.g, colour.b],
+                [DARK.surface.r, DARK.surface.g, DARK.surface.b],
+                alpha,
+            )
+            .map(|channel| (channel * 255.0).round() as u8);
             Color::from_rgb8(r, g, b)
         };
-        // The rules are sampled from the board, where the 6% border lands a code under white over
-        // the Bar; they are the module band's border.
-        assert_eq!(DIVIDER, BAND_BORDER);
-        assert_eq!(ICON_HOVER, over_bar(Color::WHITE, 0.06));
-        assert_eq!(STRIP_RULE, over_bar(Color::WHITE, 0.10));
+        assert_eq!(DARK.icon_hover, over_bar(Color::WHITE, 0.06));
+        assert_eq!(DARK.strip_rule, over_bar(Color::WHITE, 0.10));
         // Sampled from the board's selected panel toggles, whose blue lands a code under the exact
         // composite.
-        assert_eq!(ICON_SELECTED_FILL, Color::from_rgb8(62, 55, 47));
-        let composite = over_bar(ACCENT, 0.14);
+        assert_eq!(DARK.icon_selected_fill, Color::from_rgb8(62, 55, 47));
+        let composite = over_bar(DARK.accent, 0.14);
         for (sampled, exact) in [
-            (ICON_SELECTED_FILL.r, composite.r),
-            (ICON_SELECTED_FILL.g, composite.g),
-            (ICON_SELECTED_FILL.b, composite.b),
+            (DARK.icon_selected_fill.r, composite.r),
+            (DARK.icon_selected_fill.g, composite.g),
+            (DARK.icon_selected_fill.b, composite.b),
         ] {
             assert!((sampled - exact).abs() <= 1.0 / 255.0 + f32::EPSILON);
         }
-        assert_eq!(TEXT_IDENTITY, Color::from_rgb8(0x8a, 0x8a, 0x90));
-        assert_eq!(TEXT_CURRENT_ROW, Color::from_rgb8(0xf2, 0xf2, 0xf4));
+        assert_eq!(DARK.text_identity, Color::from_rgb8(0x8a, 0x8a, 0x90));
+        assert_eq!(DARK.text_current_row, Color::from_rgb8(0xf2, 0xf2, 0xf4));
         assert_eq!(AGENT_CONNECTED, Color::from_rgb8(0x57, 0xb5, 0x6b));
-        assert_eq!((SEGMENT_TRACK, SEGMENT_SELECTED), (TAB_TRACK, TAB_SELECTED));
-        assert_eq!(SEGMENT_TRACK, Color::from_rgb8(0x28, 0x28, 0x2c));
-        assert_eq!(SEGMENT_SELECTED, Color::from_rgb8(0x3b, 0x3b, 0x41));
+        assert_eq!(DARK.tab_track, Color::from_rgb8(0x28, 0x28, 0x2c));
+        assert_eq!(DARK.tab_selected, Color::from_rgb8(0x3b, 0x3b, 0x41));
         assert_eq!((ICON_BUTTON_SIZE, ICON_SIZE), (26.0, 16.0));
         assert_eq!(
             (
@@ -1798,39 +1765,39 @@ mod tests {
     /// control's selection is the neutral raised fill, never the accent.
     #[test]
     fn selection_styles_match_the_default_board() {
-        let selected = button_selected(&theme(), button::Status::Active);
+        let selected = button_selected(&Theme::luxforge_dark(), button::Status::Active);
         assert_eq!(
             selected.background,
-            Some(Background::Color(ICON_SELECTED_FILL))
+            Some(Background::Color(DARK.icon_selected_fill))
         );
-        assert_eq!(selected.text_color, ACCENT);
+        assert_eq!(selected.text_color, DARK.accent);
         assert_eq!(selected.border.width, 0.0);
-        let segment = segment(true)(&theme(), button::Status::Active);
+        let segment = segment(true)(&Theme::luxforge_dark(), button::Status::Active);
         assert_eq!(
             segment.background,
-            Some(Background::Color(SEGMENT_SELECTED))
+            Some(Background::Color(DARK.tab_selected))
         );
-        assert_eq!(segment.text_color, TEXT_BRIGHT);
-        let resting = super::segment(false)(&theme(), button::Status::Active);
+        assert_eq!(segment.text_color, DARK.text_bright);
+        let resting = super::segment(false)(&Theme::luxforge_dark(), button::Status::Active);
         assert_eq!(resting.background, None);
-        assert_eq!(resting.text_color, TEXT_SECONDARY);
+        assert_eq!(resting.text_color, DARK.text_secondary);
         assert_eq!(
-            button_icon(&theme(), button::Status::Hovered).background,
-            Some(Background::Color(ICON_HOVER))
+            button_icon(&Theme::luxforge_dark(), button::Status::Hovered).background,
+            Some(Background::Color(DARK.icon_hover))
         );
         assert_eq!(
-            button_icon(&theme(), button::Status::Active).background,
+            button_icon(&Theme::luxforge_dark(), button::Status::Active).background,
             None
         );
     }
 
     #[test]
     fn faint_text_sits_between_the_panel_and_tertiary_text() {
-        assert_eq!(TEXT_FAINT, Color::from_rgb8(0x55, 0x55, 0x5c));
+        assert_eq!(DARK.text_faint, Color::from_rgb8(0x55, 0x55, 0x5c));
         for (panel, faint, tertiary) in [
-            (PANEL.r, TEXT_FAINT.r, TEXT_TERTIARY.r),
-            (PANEL.g, TEXT_FAINT.g, TEXT_TERTIARY.g),
-            (PANEL.b, TEXT_FAINT.b, TEXT_TERTIARY.b),
+            (DARK.background.r, DARK.text_faint.r, DARK.text_tertiary.r),
+            (DARK.background.g, DARK.text_faint.g, DARK.text_tertiary.g),
+            (DARK.background.b, DARK.text_faint.b, DARK.text_tertiary.b),
         ] {
             assert!(panel < faint && faint < tertiary);
         }
@@ -1838,16 +1805,17 @@ mod tests {
 
     #[test]
     fn a_disclosure_heading_lifts_to_secondary_under_the_pointer() {
-        let colour = |status| button_disclosure(&theme(), status).text_color;
-        assert_eq!(colour(button::Status::Active), TEXT_TERTIARY);
-        assert_eq!(colour(button::Status::Hovered), TEXT_SECONDARY);
-        assert_eq!(colour(button::Status::Pressed), TEXT_SECONDARY);
+        let colour = |status| button_disclosure(&Theme::luxforge_dark(), status).text_color;
+        assert_eq!(colour(button::Status::Active), DARK.text_tertiary);
+        assert_eq!(colour(button::Status::Hovered), DARK.text_secondary);
+        assert_eq!(colour(button::Status::Pressed), DARK.text_secondary);
         assert_eq!(
-            button_disclosure(&theme(), button::Status::Hovered).background,
+            button_disclosure(&Theme::luxforge_dark(), button::Status::Hovered).background,
             None
         );
-        assert_eq!(disclosure_color(false), TEXT_TERTIARY);
-        assert_eq!(disclosure_color(true), TEXT_SECONDARY);
+        let theme = Theme::luxforge_dark();
+        assert_eq!(disclosure_color(&theme, false), DARK.text_tertiary);
+        assert_eq!(disclosure_color(&theme, true), DARK.text_secondary);
     }
 
     /// The white-balance rails, drawn at the colour-rail opacity over the panel, land on the
@@ -1857,7 +1825,7 @@ mod tests {
         let drawn = |colour: Color| {
             let [r, g, b] = crate::geometry::over(
                 [colour.r, colour.g, colour.b],
-                [PANEL.r, PANEL.g, PANEL.b],
+                [DARK.background.r, DARK.background.g, DARK.background.b],
                 DECORATED_RAIL_OPACITY,
             );
             [r, g, b].map(|channel| (channel * 255.0).round() as u8)
@@ -1937,22 +1905,34 @@ mod tests {
     fn canvas_chrome_tints_are_the_boards_composites() {
         let white = Color::WHITE;
         let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 1);
-        assert!(near(code(CHROME_BORDER), composite(white, BAR, 0.08)));
-        assert!(near(code(STRIP_RULE), composite(white, BAR, 0.10)));
-        assert!(near(code(STRIP_SELECTED), composite(ACCENT, BAR, 0.16)));
         assert!(near(
-            code(NOTICE_WARNING_BORDER),
-            composite(ACCENT, BAR, 0.35)
+            code(DARK.chrome_border),
+            composite(white, DARK.surface, 0.08)
         ));
         assert!(near(
-            code(NOTICE_ERROR_BORDER),
-            composite(CLIPPING_HIGHLIGHT, BAR, 0.40)
+            code(DARK.strip_rule),
+            composite(white, DARK.surface, 0.10)
         ));
-        assert!(near(code(HISTOGRAM_BORDER), composite(white, CANVAS, 0.05)));
-        assert_eq!(code(STRIP_ICON), [0xb9, 0xb9, 0xbf]);
-        assert_eq!(code(TEXT_BRIGHT), [0xf0, 0xf0, 0xf2]);
-        assert_eq!(code(PRIMARY_INK), [0x1a, 0x14, 0x08]);
-        assert_eq!(code(CLIP_TRIANGLE_REST), [0x55, 0x55, 0x5c]);
+        assert!(near(
+            code(DARK.strip_selected),
+            composite(DARK.accent, DARK.surface, 0.16)
+        ));
+        assert!(near(
+            code(DARK.notice_warning_border),
+            composite(DARK.accent, DARK.surface, 0.35)
+        ));
+        assert!(near(
+            code(DARK.notice_error_border),
+            composite(CLIPPING_HIGHLIGHT, DARK.surface, 0.40)
+        ));
+        assert!(near(
+            code(DARK.histogram_border),
+            composite(white, DARK.surround, 0.05)
+        ));
+        assert_eq!(code(DARK.strip_icon), [0xb9, 0xb9, 0xbf]);
+        assert_eq!(code(DARK.text_bright), [0xf0, 0xf0, 0xf2]);
+        assert_eq!(code(DARK.accent_ink), [0x1a, 0x14, 0x08]);
+        assert_eq!(code(DARK.text_faint), [0x55, 0x55, 0x5c]);
     }
 
     /// The histogram inspector is the plot and its padding and nothing else, so its height is one
@@ -1981,32 +1961,38 @@ mod tests {
         let white = Color::WHITE;
         let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 1);
         assert!(near(
-            code(MASK_ROW_SELECTED),
-            composite(ACCENT, PANEL, 0.12)
+            code(DARK.mask_row_selected),
+            composite(DARK.accent, DARK.background, 0.12)
         ));
-        assert!(near(code(LIST_ROW_CURRENT), composite(white, PANEL, 0.07)));
-        assert!(near(code(ROW_HOVER), composite(white, PANEL, 0.04)));
         assert!(near(
-            code(THUMBNAIL_BORDER),
+            code(DARK.list_row_current),
+            composite(white, DARK.background, 0.07)
+        ));
+        assert!(near(
+            code(DARK.row_hover),
+            composite(white, DARK.background, 0.04)
+        ));
+        assert!(near(
+            code(DARK.thumbnail_border),
             composite(white, THUMBNAIL_BACKGROUND, 0.08)
         ));
         assert!(near(
-            code(MENU_BORDER),
-            composite(white, MENU_SURFACE, 0.10)
+            code(DARK.menu_border),
+            composite(white, DARK.menu_surface, 0.10)
         ));
         assert!(near(
-            code(MENU_SEPARATOR),
-            composite(white, MENU_SURFACE, 0.08)
+            code(DARK.menu_separator),
+            composite(white, DARK.menu_surface, 0.08)
         ));
         assert!(near(
-            code(MENU_ITEM_HOVER),
-            composite(white, MENU_SURFACE, 0.06)
+            code(DARK.menu_item_hover),
+            composite(white, DARK.menu_surface, 0.06)
         ));
-        let fixed_segment = composite(SEGMENT_SELECTED, PANEL, MODE_FIXED_OPACITY);
+        let fixed_segment = composite(DARK.tab_selected, DARK.background, MODE_FIXED_OPACITY);
         let fixed_segment = Color::from_rgb8(fixed_segment[0], fixed_segment[1], fixed_segment[2]);
         assert!(near(
-            code(MODE_FIXED_INK),
-            composite(TEXT_BRIGHT, fixed_segment, MODE_FIXED_OPACITY)
+            code(DARK.mode_fixed_ink),
+            composite(DARK.text_bright, fixed_segment, MODE_FIXED_OPACITY)
         ));
     }
 
@@ -2036,5 +2022,183 @@ mod tests {
         assert_eq!(COMPACT_TOGGLE_ROW_HEIGHT, 22.0);
         assert_eq!((SWATCH_SLOT_WIDTH, SWATCH_SLOT_HEIGHT), (22.0, 18.0));
         assert_eq!(STROKE_ROW_HEIGHT, 20.0);
+    }
+
+    /// A light theme whose every token is its own colour, none of them Luxforge Dark's, so a
+    /// style that drew the wrong token, or a constant, cannot pass for the right one.
+    fn distinct() -> Theme {
+        let mut palette = DARK;
+        for (index, token) in Token::ALL.into_iter().enumerate() {
+            let index = index as u8;
+            *palette.token_mut(token.name()).unwrap() =
+                Color::from_rgb8(10 + index, 200 - index, 3 * index);
+        }
+        Theme::new(palette, Mode::Light)
+    }
+
+    /// Every region the gallery's widgets draw takes its colour from its own token of the theme
+    /// it is drawn in: each style function, under a theme of distinct colours, answers that
+    /// theme's token for its surface, outline and ink.
+    #[test]
+    fn each_region_draws_in_its_own_token() {
+        let theme = distinct();
+        let p = *theme.palette();
+        for token in Token::ALL {
+            assert!(
+                Token::ALL
+                    .into_iter()
+                    .filter(|other| p.get(*other) == p.get(token))
+                    .count()
+                    == 1,
+                "{} is distinct",
+                token.name()
+            );
+            assert_ne!(
+                p.get(token),
+                DARK.get(token),
+                "{} is not Dark's",
+                token.name()
+            );
+        }
+        let fill = |style: container::Style| style.background;
+        let colour = |c: Color| Some(Background::Color(c));
+        let active = button::Status::Active;
+        let hovered = button::Status::Hovered;
+        let disabled = button::Status::Disabled;
+
+        // Surfaces.
+        assert_eq!(fill(panel_surface(&theme)), colour(p.background));
+        assert_eq!(fill(title_bar_surface(&theme)), colour(p.surface));
+        assert_eq!(fill(divider_surface(&theme)), colour(p.band_border));
+        assert_eq!(fill(bar_surface(&theme)), colour(p.surface));
+        assert_eq!(bar_surface(&theme).border.color, p.border);
+        assert_eq!(fill(control_surface(&theme)), colour(p.control));
+        assert_eq!(control_surface(&theme).border.color, p.border);
+        assert_eq!(fill(scrim_surface(&theme)), colour(p.scrim));
+        assert_eq!(fill(histogram_surface(&theme)), colour(p.surround));
+        assert_eq!(histogram_surface(&theme).border.color, p.histogram_border);
+        assert_eq!(fill(readout_surface(&theme)), colour(p.surround));
+        assert_eq!(fill(revealed_surface(&theme)), colour(p.revealed_row));
+        assert_eq!(fill(rule_surface(&theme)), colour(p.rule));
+        assert_eq!(fill(band_border_surface(&theme)), colour(p.band_border));
+        assert_eq!(fill(segment_track(&theme)), colour(p.tab_track));
+        assert_eq!(fill(menu_surface(&theme)), colour(p.menu_surface));
+        assert_eq!(menu_surface(&theme).border.color, p.menu_border);
+        assert_eq!(fill(menu_separator(&theme)), colour(p.menu_separator));
+        assert_eq!(fill(mode_track(false)(&theme)), colour(p.tab_track));
+        for border in [
+            Token::ChromeBorder,
+            Token::StripRule,
+            Token::NoticeWarningBorder,
+            Token::NoticeErrorBorder,
+        ] {
+            let chrome = chrome_surface(&theme, border, CHROME_RADIUS);
+            assert_eq!(fill(chrome), colour(p.surface));
+            assert_eq!(chrome.border.color, p.get(border));
+        }
+        for token in Token::ALL {
+            assert_eq!(fill(super::fill(token)(&theme)), colour(p.get(token)));
+            assert_eq!(ink(token)(&theme).color, Some(p.get(token)));
+        }
+        // The fixed canvas backgrounds stay fixed under any theme.
+        assert_eq!(fill(canvas_surface(CANVAS)(&theme)), colour(CANVAS));
+
+        // Buttons.
+        assert_eq!(button_plain(&theme, hovered).background, colour(p.control));
+        assert_eq!(button_plain(&theme, active).text_color, p.text);
+        assert_eq!(button_plain(&theme, disabled).text_color, p.text_tertiary);
+        assert_eq!(button_accent(&theme, active).background, colour(p.accent));
+        assert_eq!(button_accent(&theme, active).text_color, p.accent_ink);
+        assert_eq!(
+            button_accent(&theme, disabled).background,
+            colour(p.control)
+        );
+        assert_eq!(
+            button_icon(&theme, hovered).background,
+            colour(p.icon_hover)
+        );
+        assert_eq!(
+            button_selected(&theme, active).background,
+            colour(p.icon_selected_fill)
+        );
+        assert_eq!(button_selected(&theme, active).text_color, p.accent);
+        assert_eq!(swatch_open(&theme, active).border.color, p.accent);
+        assert_eq!(button_band(&theme, active).background, colour(p.surface));
+        assert_eq!(button_control(&theme, active).background, colour(p.control));
+        assert_eq!(button_field(&theme, active).background, colour(p.control));
+        assert_eq!(
+            button_disclosure(&theme, active).text_color,
+            p.text_tertiary
+        );
+        assert_eq!(
+            button_disclosure(&theme, hovered).text_color,
+            p.text_secondary
+        );
+        assert_eq!(
+            list_row_current(&theme, active).background,
+            colour(p.list_row_current)
+        );
+        assert_eq!(
+            list_row_current(&theme, active).text_color,
+            p.text_current_row
+        );
+        assert_eq!(
+            chip_selected(&theme, active).background,
+            colour(p.selected_fill)
+        );
+        assert_eq!(chip_selected(&theme, disabled).text_color, p.text_tertiary);
+        assert_eq!(
+            menu_item(&theme, hovered).background,
+            colour(p.menu_item_hover)
+        );
+        assert_eq!(
+            strip_tool(true)(&theme, active).background,
+            colour(p.strip_selected)
+        );
+        assert_eq!(strip_tool(false)(&theme, active).text_color, p.strip_icon);
+        assert_eq!(
+            segment(true)(&theme, active).background,
+            colour(p.tab_selected)
+        );
+        assert_eq!(segment(true)(&theme, active).text_color, p.text_bright);
+        assert_eq!(segment(false)(&theme, active).text_color, p.text_secondary);
+        assert_eq!(mode_segment(true, false)(&theme, active).text_color, p.text);
+        assert_eq!(
+            mode_segment(true, false)(&theme, active).background,
+            colour(p.tab_selected)
+        );
+        assert_eq!(
+            mask_row(Some(Token::MaskRowSelected), false)(&theme, active).background,
+            colour(p.mask_row_selected)
+        );
+        assert_eq!(
+            mask_row(None, true)(&theme, active).background,
+            colour(p.row_hover)
+        );
+        assert_eq!(
+            mask_row(None, false)(&theme, active).text_color,
+            p.text_label
+        );
+
+        // Fields and the slider's handle.
+        let focused = text_input::Status::Focused { is_hovered: false };
+        let field = text_input_style(false)(&theme, text_input::Status::Active);
+        assert_eq!(field.background, Background::Color(p.control));
+        assert_eq!(field.border.color, p.border);
+        assert_eq!(field.value, p.text);
+        assert_eq!(field.placeholder, p.text_tertiary);
+        assert_eq!(
+            text_input_style(false)(&theme, focused).border.color,
+            p.accent
+        );
+        assert_eq!(
+            text_input_style(true)(&theme, focused).border.color,
+            p.error
+        );
+        let handle = slider_style(false)(&theme, slider::Status::Active).handle;
+        assert_eq!(handle.background, Background::Color(p.thumb));
+        assert_eq!(handle.border_color, p.thumb_outline);
+        let held = slider_style(true)(&theme, slider::Status::Active).handle;
+        assert_eq!(held.background, Background::Color(p.accent));
     }
 }
