@@ -10,19 +10,22 @@
 //! with the environment it reads, and judges what it wrote: `report.json`, every figure and verdict,
 //! and `summary.md`, the tables a person reads. It launches no editor.
 //!
-//! At Fit, 33% and 50% the report holds two candidates for the picture, each judged by the same
-//! limits: the frame a drag draws there, which processes a source reduced to the view's size, and
-//! process-first, the whole output stage drawn on the GPU at full resolution in tiles and reduced as
-//! the reference is (the owner chooses the picture at rest between them). The gate judges the
-//! first, the frame the GPU draws on this branch; the second, and the first's jump to it, are
-//! reported beside it.
+//! The picture is two kinds, judged by the design's recorded default of 2026-10-05: **in motion**,
+//! the frame a drag draws, against the frame it settles to, its distance from the reference
+//! reported beside it and not gated; and **at rest** against the reference. The GPU draws no picture
+//! at rest yet, so that kind is reported as not rendered, with its candidate's figures beside it:
+//! process-first at Fit, 33% and 50%, the whole output stage drawn on the GPU at full resolution in
+//! tiles and reduced as the reference is, and the region plan over the visible window at 100%.
+//! `--hold-motion-to-reference` judges the picture in motion against the reference instead, the
+//! other reading the owner may choose.
 //!
 //! A kind the GPU does not render yet is reported as such, never as a pass and never as a failure.
-//! The gate fails (an ordinary failure) when any cell passes a limit, when the harness did not run
-//! to its end, or when a source's SHA-256 changed during the run; it is incomplete (exit 3) when
-//! any selected cell could not be run — a source missing on this host, a stack the GPU cannot draw
-//! there yet, an error — when there is no GPU adapter, or when the run measured a selection
-//! narrower than the whole corpus. Only a run of everything, every cell within its limit, passes.
+//! The gate fails (an ordinary failure) when any cell it judges passes a limit, when the harness did
+//! not run to its end, or when a source's SHA-256 changed during the run; it is incomplete (exit 3)
+//! when any selected cell it judges could not be run — a source missing on this host, a stack the
+//! GPU cannot draw there yet, an error — when there is no GPU adapter, or when the run measured a
+//! selection narrower than the whole corpus. Only a run of everything, every judged cell within its
+//! limit, passes.
 use crate::{
     preview_error::corpus::{self, Corpus, VIEWS},
     *,
@@ -53,6 +56,9 @@ pub struct Options {
     pub sources: Option<Vec<String>>,
     /// Write every measured cell's frames, not only those past a limit.
     pub all_frames: bool,
+    /// Judge the picture in motion against the reference rather than against the frame it settles
+    /// to, the recorded default.
+    pub hold_motion_to_reference: bool,
 }
 
 /// A comma-separated value of `key`, `None` when it is absent or `all`.
@@ -71,9 +77,9 @@ fn selection(a: &mut Args, key: &str) -> Result<Option<Vec<String>>> {
 
 impl Options {
     /// `--output NEW_DIR [--manifest FILE] [--fixtures DIR] [--zoom fit|33|50|100|all]
-    /// [--kind picture|histogram|sample|export|all] [--families F,...] [--recipes ID,...]
-    /// [--sources ID,...] [--frames missed|all]`; `--zoom` and `--kind` take a comma-separated
-    /// list too.
+    /// [--kind picture-at-rest|picture-in-motion|histogram|sample|export|all] [--families F,...]
+    /// [--recipes ID,...] [--sources ID,...] [--frames missed|all] [--hold-motion-to-reference]`;
+    /// `--zoom` and `--kind` take a comma-separated list too.
     pub fn parse(root: &Path, a: &mut Args) -> Result<Self> {
         let output = absolute(root, &a.path("--output")?);
         let manifest = a
@@ -109,7 +115,8 @@ impl Options {
                     .map(|name| {
                         Kind::parse(name).ok_or_else(|| {
                             format!(
-                                "--kind is picture, histogram, sample, export or all, not {name}"
+                                "--kind is picture-at-rest, picture-in-motion, histogram, sample, \
+                                 export or all, not {name}"
                             )
                         })
                     })
@@ -124,6 +131,7 @@ impl Options {
             Some("all") => true,
             Some(other) => return Err(format!("--frames is missed or all, not {other}").into()),
         };
+        let hold_motion_to_reference = a.flag("--hold-motion-to-reference");
         Ok(Self {
             output,
             manifest,
@@ -134,6 +142,7 @@ impl Options {
             recipes,
             sources,
             all_frames,
+            hold_motion_to_reference,
         })
     }
 
@@ -212,6 +221,9 @@ pub fn run(root: &Path, options: &Options) -> Result {
     }
     if options.all_frames {
         command.env("LUXFORGE_GPU_QUALIFICATION_FRAMES", "all");
+    }
+    if options.hold_motion_to_reference {
+        command.env("LUXFORGE_GPU_QUALIFICATION_MOTION", "reference");
     }
     let file = fs::OpenOptions::new().append(true).open(&log)?;
     let status = command.stdout(file.try_clone()?).stderr(file).status()?;
@@ -488,43 +500,94 @@ impl Extremes {
     }
 }
 
+/// Where the reading the gate judges by is recorded.
+const DEFAULT: &str = "docs/design/gpu-first.md, Proposals with recorded defaults, the default recorded on 2026-10-05";
+
+/// One comparison over a view's cells of a class: how many are within the limits and past them,
+/// and the figures.
+#[derive(Default)]
+struct Judged {
+    within: usize,
+    past: usize,
+    figures: Extremes,
+}
+
+impl Judged {
+    /// `s`, `cell`'s figures, held to `class`'s limits: the statistics it passes.
+    fn add(&mut self, s: &Statistics, cell: &str, class: Class) -> Vec<&'static str> {
+        self.figures.add(s, cell);
+        let past = exceeded(s, class);
+        if past.is_empty() {
+            self.within += 1;
+        } else {
+            self.past += 1;
+        }
+        past
+    }
+
+    fn value(&self) -> Value {
+        json!({
+            "within": self.within,
+            "past_a_limit": self.past,
+            "figures": self.figures.value(),
+        })
+    }
+}
+
 /// What one view and class of the picture holds over the corpus.
 #[derive(Default)]
 struct Tally {
+    /// Cells selected, and of those the ones whose frame could not be drawn here or failed to.
     cells: usize,
-    passed: usize,
-    missed: usize,
     gaps: usize,
     errors: usize,
-    against: Extremes,
+    /// The motion frame against the frame it settles to, and against the reference.
+    settled: Judged,
+    reference: Judged,
     cpu: Extremes,
-    drag: Extremes,
     settled_cpu: Extremes,
     settled_gpu: Extremes,
-    /// Candidate 2, process-first, at a view the reference is reduced for: judged by the same
-    /// limits, not by the gate.
-    second_cells: usize,
-    second_passed: usize,
-    second_missed: usize,
-    second_gaps: usize,
-    second: Extremes,
+    /// The picture at rest: the GPU's frame against the reference where a stage draws one, and how
+    /// many cells it does not draw.
+    at_rest: Judged,
+    at_rest_unrendered: usize,
+    /// The at-rest candidate: its renderers, figures and gaps, and the motion frame's jump to it.
+    candidate: Judged,
+    candidate_gaps: usize,
+    candidate_renderers: Vec<String>,
     jump: Extremes,
 }
 
 /// Judge the harness's `cells.json` (`None` when it wrote none) against every recorded limit,
-/// `expected` stacks being what the selection holds. Answers the report without its build and
-/// corpus identity, which the caller adds.
+/// `expected` stacks being what the selection holds, by the reading `options` asks for. Answers
+/// the report without its build and corpus identity, which the caller adds.
 pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value {
     let views: Vec<String> = options
         .views
         .clone()
         .unwrap_or_else(|| VIEWS.iter().map(|id| (*id).to_owned()).collect());
     let kinds: Vec<Kind> = options.kinds.clone().unwrap_or_else(|| Kind::ALL.to_vec());
+    let to_reference = options.hold_motion_to_reference;
+    let (motion, at_rest) = (
+        kinds.contains(&Kind::PictureInMotion),
+        kinds.contains(&Kind::PictureAtRest),
+    );
+    let (judged_against, information_against) = if to_reference {
+        ("the reference", "the frame it settles to")
+    } else {
+        ("the frame it settles to", "the reference")
+    };
     let mut report = json!({
         "format": 1,
         "gate": "gpu-qualification",
         "status": "passed",
         "error": null,
+        "reading": {
+            "picture_in_motion": judged_against,
+            "picture_at_rest": "the reference",
+            "hold_motion_to_reference": to_reference,
+            "default": DEFAULT,
+        },
         "selection": {
             "whole_corpus": options.narrowed().is_empty(),
             "narrowed": options.narrowed(),
@@ -546,10 +609,11 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
         "adapter": null,
         "results": [],
         "missed": [],
+        "information": {"against": information_against, "motion_past": []},
+        "at_rest_candidate": {"missed": [], "gaps": [], "frames": []},
         "gaps": [],
         "errors": [],
         "not_rendered": [],
-        "process_first": {"missed": [], "gaps": [], "frames": []},
     });
     let Some(cells) = cells else {
         failed(
@@ -586,16 +650,22 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
         .map(|_| classes.iter().map(|_| Tally::default()).collect())
         .collect();
     let (mut missed, mut gaps, mut errors) = (Vec::new(), Vec::new(), Vec::new());
-    let (mut second_missed, mut second_gaps, mut second_frames) =
+    let mut motion_past = Vec::new();
+    let (mut candidate_missed, mut candidate_gaps, mut candidate_frames) =
         (Vec::new(), Vec::new(), Vec::new());
-    // Per kind other than the picture: how many stacks it was measured on, passed, missed, and was
-    // not rendered on.
+    // Per kind other than the pictures: how many stacks it was measured on, passed, missed, and
+    // was not rendered on.
     let mut other: Vec<(Kind, [usize; 4])> = kinds
         .iter()
-        .filter(|kind| **kind != Kind::Picture)
+        .filter(|kind| !kind.picture())
         .map(|kind| (*kind, [0; 4]))
         .collect();
     let mut not_rendered: Vec<(Kind, String)> = Vec::new();
+    let note = |not_rendered: &mut Vec<(Kind, String)>, kind: Kind, reason: &Value| {
+        if !not_rendered.iter().any(|(known, _)| *known == kind) {
+            not_rendered.push((kind, reason.as_str().unwrap_or_default().to_owned()));
+        }
+    };
     for pair in &pairs {
         let cell = pair["cell"].as_str().unwrap_or("?");
         let class = pair["class"]
@@ -628,7 +698,7 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
             .get("process_first")
             .filter(|frame| frame["status"] == "drawn")
         {
-            second_frames.push(json!({
+            candidate_frames.push(json!({
                 "cell": cell,
                 "source": pair["source"],
                 "family": pair["family"],
@@ -636,7 +706,7 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
                 "clock": frame["clock"],
             }));
         }
-        if kinds.contains(&Kind::Picture) {
+        if motion || at_rest {
             for (view_index, view) in views.iter().enumerate() {
                 let tally = &mut tallies[view_index][class_index];
                 tally.cells += 1;
@@ -660,72 +730,131 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
                         continue;
                     }
                 }
-                let against = statistics(&measured["statistics"]);
-                tally.against.add(&against, cell);
+                let in_motion = &measured["in_motion"];
+                let candidate = &measured["at_rest"]["candidate"];
+                let past_settled =
+                    tally
+                        .settled
+                        .add(&statistics(&in_motion["against_settled"]), cell, class);
+                let past_reference =
+                    tally
+                        .reference
+                        .add(&statistics(&in_motion["against_reference"]), cell, class);
                 tally
                     .cpu
                     .add(&statistics(&measured["cpu_against_reference"]), cell);
-                tally
-                    .drag
-                    .add(&statistics(&measured["drag"]["statistics"]), cell);
                 if let Some(settled) = measured.get("settled_from_exact") {
                     tally
                         .settled_cpu
                         .add(&statistics(&settled["cpu_proxy"]), cell);
                     tally.settled_gpu.add(&statistics(&settled["gpu"]), cell);
                 }
-                let second = &measured["process_first"];
-                match second["status"].as_str() {
-                    None => {}
-                    Some("measured") => {
-                        tally.second_cells += 1;
-                        let figures = statistics(&second["statistics"]);
-                        tally.second.add(&figures, cell);
-                        tally
-                            .jump
-                            .add(&statistics(&second["jump_from_motion"]), cell);
-                        let past = exceeded(&figures, class);
-                        if past.is_empty() {
-                            tally.second_passed += 1;
-                        } else {
-                            tally.second_missed += 1;
-                            second_missed.push(json!({
-                                "cell": cell,
-                                "view": view,
-                                "class": class.name(),
-                                "exceeded": past,
-                                "statistics": second["statistics"],
-                                "limits": limits_value(class),
-                            }));
-                        }
-                    }
-                    Some(_) => {
-                        tally.second_cells += 1;
-                        tally.second_gaps += 1;
-                        second_gaps.push(json!({
+                if motion {
+                    let ((judged_past, judged), (information_past, information)) = if to_reference {
+                        (
+                            (past_reference, "against_reference"),
+                            (past_settled, "against_settled"),
+                        )
+                    } else {
+                        (
+                            (past_settled, "against_settled"),
+                            (past_reference, "against_reference"),
+                        )
+                    };
+                    let entry = |past: Vec<&'static str>, field: &str| {
+                        json!({
+                            "kind": Kind::PictureInMotion.name(),
                             "cell": cell,
                             "view": view,
-                            "reason": second["reason"].as_str().unwrap_or("unrecorded"),
-                        }));
+                            "class": class.name(),
+                            "exceeded": past,
+                            "statistics": in_motion[field],
+                            "limits": limits_value(class),
+                            "at_rest_candidate": candidate["against_reference"],
+                            "cpu_against_reference": measured["cpu_against_reference"],
+                            "frames": measured["frames"],
+                        })
+                    };
+                    if !judged_past.is_empty() {
+                        let mut entry = entry(judged_past, judged);
+                        entry["against"] = json!(judged_against);
+                        missed.push(entry);
+                    }
+                    if !information_past.is_empty() {
+                        let mut entry = entry(information_past, information);
+                        entry["against"] = json!(information_against);
+                        motion_past.push(entry);
                     }
                 }
-                let past = exceeded(&against, class);
-                if past.is_empty() {
-                    tally.passed += 1;
-                } else {
-                    tally.missed += 1;
-                    missed.push(json!({
-                        "kind": "picture",
-                        "cell": cell,
-                        "view": view,
-                        "class": class.name(),
-                        "exceeded": past,
-                        "statistics": measured["statistics"],
-                        "limits": limits_value(class),
-                        "cpu_against_reference": measured["cpu_against_reference"],
-                        "process_first": measured["process_first"]["statistics"],
-                        "frames": measured["frames"],
-                    }));
+                if at_rest {
+                    let rest = &measured["at_rest"];
+                    match rest["status"].as_str() {
+                        Some("measured") => {
+                            let figures = statistics(&rest["against_reference"]);
+                            let past = tally.at_rest.add(&figures, cell, class);
+                            if !past.is_empty() {
+                                missed.push(json!({
+                                    "kind": Kind::PictureAtRest.name(),
+                                    "cell": cell,
+                                    "view": view,
+                                    "class": class.name(),
+                                    "against": "the reference",
+                                    "exceeded": past,
+                                    "statistics": rest["against_reference"],
+                                    "limits": limits_value(class),
+                                    "at_rest_candidate": candidate["against_reference"],
+                                    "cpu_against_reference": measured["cpu_against_reference"],
+                                    "frames": measured["frames"],
+                                }));
+                            }
+                        }
+                        Some("not-rendered") => {
+                            tally.at_rest_unrendered += 1;
+                            note(&mut not_rendered, Kind::PictureAtRest, &rest["reason"]);
+                        }
+                        _ => errors.push(json!({
+                            "cell": cell,
+                            "view": view,
+                            "reason": "no picture-at-rest figures recorded",
+                        })),
+                    }
+                    if let Some(renderer) = candidate["renderer"].as_str()
+                        && !tally.candidate_renderers.iter().any(|r| r == renderer)
+                    {
+                        tally.candidate_renderers.push(renderer.to_owned());
+                    }
+                    match candidate["status"].as_str() {
+                        Some("measured") => {
+                            tally
+                                .jump
+                                .add(&statistics(&candidate["jump_from_motion"]), cell);
+                            let past = tally.candidate.add(
+                                &statistics(&candidate["against_reference"]),
+                                cell,
+                                class,
+                            );
+                            if !past.is_empty() {
+                                candidate_missed.push(json!({
+                                    "cell": cell,
+                                    "view": view,
+                                    "class": class.name(),
+                                    "renderer": candidate["renderer"],
+                                    "exceeded": past,
+                                    "statistics": candidate["against_reference"],
+                                    "limits": limits_value(class),
+                                }));
+                            }
+                        }
+                        Some(_) => {
+                            tally.candidate_gaps += 1;
+                            candidate_gaps.push(json!({
+                                "cell": cell,
+                                "view": view,
+                                "reason": candidate["reason"].as_str().unwrap_or("unrecorded"),
+                            }));
+                        }
+                        None => {}
+                    }
                 }
             }
         }
@@ -746,12 +875,7 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
                 }
                 Some("not-rendered") => {
                     counts[3] += 1;
-                    if !not_rendered.iter().any(|(k, _)| k == kind) {
-                        not_rendered.push((
-                            *kind,
-                            measured["reason"].as_str().unwrap_or_default().to_owned(),
-                        ));
-                    }
+                    note(&mut not_rendered, *kind, &measured["reason"]);
                 }
                 _ => errors.push(json!({
                     "cell": cell,
@@ -763,14 +887,19 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
     }
 
     let mut results = Vec::new();
-    if kinds.contains(&Kind::Picture) {
-        for (view_index, view) in views.iter().enumerate() {
-            for (class_index, class) in classes.iter().enumerate() {
-                let tally = &tallies[view_index][class_index];
-                if tally.cells == 0 {
-                    continue;
-                }
-                let verdict = if tally.missed > 0 {
+    for (view_index, view) in views.iter().enumerate() {
+        for (class_index, class) in classes.iter().enumerate() {
+            let tally = &tallies[view_index][class_index];
+            if tally.cells == 0 {
+                continue;
+            }
+            if motion {
+                let (judged, information) = if to_reference {
+                    (&tally.reference, &tally.settled)
+                } else {
+                    (&tally.settled, &tally.reference)
+                };
+                let verdict = if judged.past > 0 {
                     "failed"
                 } else if tally.gaps + tally.errors > 0 {
                     "incomplete"
@@ -778,33 +907,66 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
                     "passed"
                 };
                 results.push(json!({
-                    "kind": "picture",
+                    "kind": Kind::PictureInMotion.name(),
                     "view": view,
                     "class": class.name(),
+                    "against": judged_against,
                     "cells": tally.cells,
-                    "measured": tally.passed + tally.missed,
-                    "within": tally.passed,
-                    "past_a_limit": tally.missed,
+                    "measured": judged.within + judged.past,
+                    "within": judged.within,
+                    "past_a_limit": judged.past,
                     "gaps": tally.gaps,
                     "errors": tally.errors,
                     "limits": limits_value(*class),
-                    "against_reference": tally.against.value(),
+                    "figures": judged.figures.value(),
                     "verdict": verdict,
                     "information": {
+                        "against": information_against,
+                        "comparison": information.value(),
                         "cpu_against_reference": tally.cpu.value(),
-                        "gpu_against_cpu": tally.drag.value(),
                         "settle_jump_cpu_proxy": tally.settled_cpu.value(),
                         "settle_jump_gpu": tally.settled_gpu.value(),
                     },
-                    "process_first": if tally.second_cells == 0 {
+                }));
+            }
+            if at_rest {
+                let measured = tally.at_rest.within + tally.at_rest.past;
+                let verdict = if tally.at_rest.past > 0 {
+                    "failed"
+                } else if measured == 0 && tally.at_rest_unrendered > 0 {
+                    "not rendered by the GPU yet"
+                } else if tally.gaps + tally.errors > 0 {
+                    "incomplete"
+                } else {
+                    "passed"
+                };
+                let candidate_cells =
+                    tally.candidate.within + tally.candidate.past + tally.candidate_gaps;
+                results.push(json!({
+                    "kind": Kind::PictureAtRest.name(),
+                    "view": view,
+                    "class": class.name(),
+                    "against": "the reference",
+                    "cells": tally.cells,
+                    "measured": measured,
+                    "within": tally.at_rest.within,
+                    "past_a_limit": tally.at_rest.past,
+                    "not_rendered": tally.at_rest_unrendered,
+                    "gaps": tally.gaps,
+                    "errors": tally.errors,
+                    "limits": limits_value(*class),
+                    "figures": tally.at_rest.figures.value(),
+                    "verdict": verdict,
+                    "candidate": if candidate_cells == 0 {
                         Value::Null
                     } else {
                         json!({
-                            "cells": tally.second_cells,
-                            "within": tally.second_passed,
-                            "past_a_limit": tally.second_missed,
-                            "gaps": tally.second_gaps,
-                            "against_reference": tally.second.value(),
+                            "renderer": tally.candidate_renderers.join(", "),
+                            "cells": candidate_cells,
+                            "within": tally.candidate.within,
+                            "past_a_limit": tally.candidate.past,
+                            "gaps": tally.candidate_gaps,
+                            "against_reference": tally.candidate.figures.value(),
                             "jump_from_motion": tally.jump.value(),
                         })
                     },
@@ -838,31 +1000,27 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
     );
     let first_miss = missed.first().map(|miss| {
         format!(
-            "{} cell(s) pass a limit, the first {} at {} ({})",
+            "{} cell(s) pass a limit, the first {} {} at {} ({})",
             missed.len(),
+            miss["kind"].as_str().unwrap_or("?"),
             miss["cell"].as_str().unwrap_or("?"),
             miss["view"].as_str().unwrap_or("the whole stage"),
-            miss["exceeded"]
-                .as_array()
-                .map(|names| names
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .collect::<Vec<_>>()
-                    .join(", "))
-                .unwrap_or_else(|| miss["kind"].as_str().unwrap_or("?").to_owned())
+            names(&miss["exceeded"]).unwrap_or_else(|| "its limit".to_owned())
         )
     });
     report["missed"] = json!(missed);
+    report["information"]["motion_past"] = json!(motion_past);
+    report["at_rest_candidate"] = json!({
+        "note": "The candidate for the picture at rest, judged by the same limits and not by the \
+                 gate: process-first at Fit, 33% and 50%, the whole output stage drawn on the GPU at \
+                 full resolution as 100% region plans over tiles, stitched and reduced to the view's \
+                 size as the reference is; at 100% the region plan over the visible window",
+        "missed": candidate_missed,
+        "gaps": candidate_gaps,
+        "frames": candidate_frames,
+    });
     report["gaps"] = json!(gaps);
     report["errors"] = json!(errors);
-    report["process_first"] = json!({
-        "note": "Candidate 2 for the picture at rest, judged by the same limits and not by the gate: \
-                 the whole output stage drawn on the GPU at full resolution as 100% region plans \
-                 over tiles, stitched and reduced to the view's size as the reference is",
-        "missed": second_missed,
-        "gaps": second_gaps,
-        "frames": second_frames,
-    });
     if let Some(first) = first_miss {
         failed(&mut report, first);
     }
@@ -886,6 +1044,17 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
         }
     }
     report
+}
+
+/// A list of statistic names, joined.
+fn names(value: &Value) -> Option<String> {
+    value.as_array().map(|names| {
+        names
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(", ")
+    })
 }
 
 fn limits_value(class: Class) -> Value {
@@ -916,6 +1085,18 @@ fn four(extremes: &Value, field: &str) -> String {
         .join(" / ")
 }
 
+/// A recorded statistics object's four figures, as `a / b / c / d`, or a dash.
+fn row(value: &Value) -> String {
+    if value.is_null() {
+        return "—".to_owned();
+    }
+    STATISTICS
+        .iter()
+        .map(|name| number(&value[name]))
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
 /// The report as the Markdown a person reads.
 pub fn markdown(report: &Value) -> String {
     let status = report["status"].as_str().unwrap_or("?");
@@ -928,6 +1109,24 @@ pub fn markdown(report: &Value) -> String {
             .map(|why| format!(": {why}."))
             .unwrap_or_else(|| ".".to_owned())
     ));
+    let reading = &report["reading"];
+    let judged_against = reading["picture_in_motion"]
+        .as_str()
+        .unwrap_or("the frame it settles to");
+    if reading["hold_motion_to_reference"] == true {
+        text.push_str(&format!(
+            "Reading: `--hold-motion-to-reference`. The picture in motion, the frame a drag draws, \
+             is held to the reference at every view, which the recorded default ({DEFAULT}) does \
+             not ask; the picture at rest is held to the reference.\n\n"
+        ));
+    } else {
+        text.push_str(&format!(
+            "Reading: the recorded default ({DEFAULT}). The picture in motion, the frame a drag \
+             draws, is held to the frame it settles to, its distance from the reference reported \
+             beside it and not gated; the picture at rest is held to the reference. \
+             `--hold-motion-to-reference` holds the picture in motion to the reference instead.\n\n"
+        ));
+    }
     text.push_str(
         "The release gate (docs/design/gpu-first.md): every stack of the corpus on the reference \
          renderer and on the GPU, each output kind the GPU renders held to its recorded limit. A kind \
@@ -943,7 +1142,9 @@ pub fn markdown(report: &Value) -> String {
         } else {
             ""
         },
-        report["build"]["harness_binary_sha256"].as_str().unwrap_or("unknown"),
+        report["build"]["harness_binary_sha256"]
+            .as_str()
+            .unwrap_or("unknown"),
         report["corpus"]["sha256"].as_str().unwrap_or("unknown"),
         if report["selection"]["whole_corpus"] == true {
             "The whole corpus".to_owned()
@@ -983,89 +1184,99 @@ pub fn markdown(report: &Value) -> String {
     }
 
     let results = report["results"].as_array().cloned().unwrap_or_default();
-    let pictures: Vec<&Value> = results.iter().filter(|r| r["kind"] == "picture").collect();
-    if !pictures.is_empty() {
-        text.push_str(
-            "\n## The picture against the reference\n\nEach cell's mean ΔE00 / worst 16 × 16 block / p99 ΔE00 / signed mean ΔL\\*: the largest magnitude over the measured cells, their mean, and the limit (ΔL\\* within ±).\n\n| View | Class | Cells | Within | Past a limit | Gaps | Errors | Max | Mean | Limit | Verdict |\n| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- |\n",
-        );
-        for result in &pictures {
-            let limits = &result["limits"];
-            text.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} / {} / {} / {} | {} |\n",
-                result["view"].as_str().unwrap_or("?"),
-                result["class"].as_str().unwrap_or("?"),
-                result["cells"],
-                result["within"],
-                result["past_a_limit"],
-                result["gaps"],
-                result["errors"],
-                four(&result["against_reference"], "max"),
-                four(&result["against_reference"], "mean"),
-                number(&limits["mean"]),
-                number(&limits["worst_block"]),
-                number(&limits["p99"]),
-                number(&limits["mean_delta_l_abs"]),
-                result["verdict"].as_str().unwrap_or("?"),
-            ));
-        }
-        text.push_str(
-            "\n### Information, not judged\n\nThe largest magnitude of each statistic: the CPU frame of the same view against the reference (what the CPU path shows there), the GPU frame against that CPU frame (the drag-time comparison the program qualification makes), and at Fit the jump a stack that settles from the exact render makes, its CPU proxy and its GPU frame against the frame it settles to.\n\n| View | Class | CPU against the reference | GPU against the CPU frame | Settle jump: CPU proxy | Settle jump: GPU |\n| --- | --- | --- | --- | --- | --- |\n",
-        );
-        for result in &pictures {
-            let information = &result["information"];
-            text.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {} |\n",
-                result["view"].as_str().unwrap_or("?"),
-                result["class"].as_str().unwrap_or("?"),
-                four(&information["cpu_against_reference"], "max"),
-                four(&information["gpu_against_cpu"], "max"),
-                four(&information["settle_jump_cpu_proxy"], "max"),
-                four(&information["settle_jump_gpu"], "max"),
-            ));
+    let of_kind = |kind: Kind| -> Vec<&Value> {
+        results
+            .iter()
+            .filter(|result| result["kind"] == kind.name())
+            .collect()
+    };
+    let motion = of_kind(Kind::PictureInMotion);
+    let rest = of_kind(Kind::PictureAtRest);
+    let table_head = "| View | Class | Cells | Within | Past a limit | Gaps | Errors | Max | Mean | Limit | Verdict |\n| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- |\n";
+    let table_row = |result: &Value| {
+        let limits = &result["limits"];
+        format!(
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} / {} / {} / {} | {} |\n",
+            result["view"].as_str().unwrap_or("?"),
+            result["class"].as_str().unwrap_or("?"),
+            result["cells"],
+            result["within"],
+            result["past_a_limit"],
+            result["gaps"],
+            result["errors"],
+            four(&result["figures"], "max"),
+            four(&result["figures"], "mean"),
+            number(&limits["mean"]),
+            number(&limits["worst_block"]),
+            number(&limits["p99"]),
+            number(&limits["mean_delta_l_abs"]),
+            result["verdict"].as_str().unwrap_or("?"),
+        )
+    };
+    const FIGURES: &str = "Each cell's mean ΔE00 / worst 16 × 16 block / p99 ΔE00 / signed mean ΔL\\*: the largest magnitude over the measured cells, their mean, and the limit (ΔL\\* within ±).";
+    if !motion.is_empty() {
+        text.push_str(&format!(
+            "\n## The picture in motion, against {judged_against}\n\nThe frame a drag draws at each view, against {judged_against}. {FIGURES}\n\n{table_head}"
+        ));
+        for result in &motion {
+            text.push_str(&table_row(result));
         }
     }
-    let seconds: Vec<&Value> = pictures
-        .iter()
-        .copied()
-        .filter(|result| !result["process_first"].is_null())
-        .collect();
-    if !seconds.is_empty() {
-        text.push_str(
-            "\n## Candidate 2 for the picture at rest: process-first\n\nThe whole output stage drawn on the GPU at full resolution as 100% region plans over tiles, each over its own boundary and reading the exact stage's estimates, stitched and reduced to the view's size as the reference is; judged by the same limits, not by the gate. The jump is the motion frame's (the first candidate's) to it.\n\n| View | Class | Cells | Within | Past a limit | Gaps | Max | Mean | Jump from the motion frame: max |\n| --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- |\n",
-        );
-        for result in seconds {
-            let second = &result["process_first"];
+    if !rest.is_empty() {
+        text.push_str("\n## The picture at rest, against the reference\n\n");
+        let measured = rest.iter().any(|result| result["measured"] != 0);
+        if measured {
+            text.push_str(&format!("{FIGURES}\n\n{table_head}"));
+            for result in &rest {
+                text.push_str(&table_row(result));
+            }
+        } else {
+            let reason = not_rendered
+                .iter()
+                .find(|entry| entry["kind"] == Kind::PictureAtRest.name())
+                .and_then(|entry| entry["reason"].as_str())
+                .unwrap_or("the GPU does not draw it yet");
             text.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
-                result["view"].as_str().unwrap_or("?"),
-                result["class"].as_str().unwrap_or("?"),
-                second["cells"],
-                second["within"],
-                second["past_a_limit"],
-                second["gaps"],
-                four(&second["against_reference"], "max"),
-                four(&second["against_reference"], "mean"),
-                four(&second["jump_from_motion"], "max"),
+                "Not rendered by the GPU yet, neither a pass nor a failure: {reason}.\n"
             ));
         }
-        let missed = report["process_first"]["missed"]
+        let candidates: Vec<&&Value> = rest
+            .iter()
+            .filter(|result| !result["candidate"].is_null())
+            .collect();
+        if !candidates.is_empty() {
+            text.push_str("\nIts candidate, judged by the same limits and not by the gate: process-first at Fit, 33% and 50%, the whole output stage drawn on the GPU at full resolution as 100% region plans over tiles, each over its own boundary and reading the exact stage's estimates, stitched and reduced to the view's size as the reference is; at 100% the region plan over the visible window, the motion frame's own. The jump is the motion frame's to it.\n\n| View | Class | Candidate | Cells | Within | Past a limit | Gaps | Max | Mean | Jump from the motion frame: max |\n| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- |\n");
+            for result in candidates {
+                let candidate = &result["candidate"];
+                text.push_str(&format!(
+                    "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                    result["view"].as_str().unwrap_or("?"),
+                    result["class"].as_str().unwrap_or("?"),
+                    candidate["renderer"].as_str().unwrap_or("?"),
+                    candidate["cells"],
+                    candidate["within"],
+                    candidate["past_a_limit"],
+                    candidate["gaps"],
+                    four(&candidate["against_reference"], "max"),
+                    four(&candidate["against_reference"], "mean"),
+                    four(&candidate["jump_from_motion"], "max"),
+                ));
+            }
+        }
+        let missed = report["at_rest_candidate"]["missed"]
             .as_array()
             .cloned()
             .unwrap_or_default();
         for miss in &missed {
             text.push_str(&format!(
-                "- Past a limit: {} at {} ({}): {}\n",
+                "- The candidate past a limit: {} at {} ({}): {}\n",
                 miss["cell"].as_str().unwrap_or("?"),
                 miss["view"].as_str().unwrap_or("?"),
                 miss["class"].as_str().unwrap_or("?"),
-                STATISTICS
-                    .iter()
-                    .map(|name| format!("{name} {}", number(&miss["statistics"][name])))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                row(&miss["statistics"])
             ));
         }
-        let frames = report["process_first"]["frames"]
+        let frames = report["at_rest_candidate"]["frames"]
             .as_array()
             .cloned()
             .unwrap_or_default();
@@ -1094,7 +1305,69 @@ pub fn markdown(report: &Value) -> String {
             }
         }
     }
-    let others: Vec<&Value> = results.iter().filter(|r| r["kind"] != "picture").collect();
+    if !motion.is_empty() {
+        let information_against = report["information"]["against"]
+            .as_str()
+            .unwrap_or("the reference");
+        text.push_str(&format!(
+            "\n## Information, not judged\n\n### The picture in motion against {information_against}\n\n| View | Class | Within the limits | Past them | Max | Mean |\n| --- | --- | ---: | ---: | --- | --- |\n"
+        ));
+        for result in &motion {
+            let comparison = &result["information"]["comparison"];
+            text.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} |\n",
+                result["view"].as_str().unwrap_or("?"),
+                result["class"].as_str().unwrap_or("?"),
+                comparison["within"],
+                comparison["past_a_limit"],
+                four(&comparison["figures"], "max"),
+                four(&comparison["figures"], "mean"),
+            ));
+        }
+        let past = report["information"]["motion_past"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if !past.is_empty() {
+            text.push_str(&format!(
+                "\n#### The motion frame past a limit against {information_against} ({})\n\nEach cell's figures: the motion frame against {information_against}, then the at-rest candidate and the CPU frame of the same view against the reference.\n\n| Cell | View | Class | Past | Motion frame | At-rest candidate | CPU frame |\n| --- | --- | --- | --- | --- | --- | --- |\n",
+                past.len()
+            ));
+            for entry in &past {
+                text.push_str(&format!(
+                    "| {} | {} | {} | {} | {} | {} | {} |\n",
+                    entry["cell"].as_str().unwrap_or("?"),
+                    entry["view"].as_str().unwrap_or("?"),
+                    entry["class"].as_str().unwrap_or("?"),
+                    names(&entry["exceeded"]).unwrap_or_default(),
+                    row(&entry["statistics"]),
+                    row(&entry["at_rest_candidate"]),
+                    row(&entry["cpu_against_reference"]),
+                ));
+            }
+        }
+        text.push_str("\n### The CPU frame and the settle jump\n\nThe largest magnitude of each statistic: the CPU frame of the view against the reference (what the CPU path shows there), and at Fit the jump a stack that settles from the exact render makes, its CPU proxy and its GPU frame against the frame it settles to.\n\n| View | Class | CPU frame against the reference | Settle jump: CPU proxy | Settle jump: GPU |\n| --- | --- | --- | --- | --- |\n");
+        for result in &motion {
+            let information = &result["information"];
+            text.push_str(&format!(
+                "| {} | {} | {} | {} | {} |\n",
+                result["view"].as_str().unwrap_or("?"),
+                result["class"].as_str().unwrap_or("?"),
+                four(&information["cpu_against_reference"], "max"),
+                four(&information["settle_jump_cpu_proxy"], "max"),
+                four(&information["settle_jump_gpu"], "max"),
+            ));
+        }
+    }
+    let others: Vec<&Value> = results
+        .iter()
+        .filter(|result| {
+            result["kind"]
+                .as_str()
+                .and_then(Kind::parse)
+                .is_some_and(|kind| !kind.picture())
+        })
+        .collect();
     if !others.is_empty() {
         text.push_str("\n## The other output kinds\n\n| Kind | Measured | Within | Past a limit | Not rendered by the GPU | Verdict |\n| --- | ---: | ---: | ---: | ---: | --- |\n");
         for result in others {
@@ -1112,35 +1385,20 @@ pub fn markdown(report: &Value) -> String {
     let missed = report["missed"].as_array().cloned().unwrap_or_default();
     if !missed.is_empty() {
         text.push_str(&format!(
-            "\n## Past a limit ({})\n\nEach cell's figures against the reference: the frame a drag draws, which the gate judges, the process-first candidate beside it where the view has one, and the CPU frame of the same view.\n\n| Cell | View | Class | Past | Mean / block / p99 / ΔL\\* | Process-first | CPU frame |\n| --- | --- | --- | --- | --- | --- | --- |\n",
+            "\n## Past a limit ({})\n\nEach cell the gate judges past its limit: its figures against what it is judged by, then the at-rest candidate and the CPU frame of the same view against the reference.\n\n| Cell | View | Kind | Against | Class | Past | Figures | At-rest candidate | CPU frame |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
             missed.len()
         ));
         for miss in &missed {
-            let row = |value: &Value| {
-                if value.is_null() {
-                    return "—".to_owned();
-                }
-                STATISTICS
-                    .iter()
-                    .map(|name| number(&value[name]))
-                    .collect::<Vec<_>>()
-                    .join(" / ")
-            };
             text.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
                 miss["cell"].as_str().unwrap_or("?"),
                 miss["view"].as_str().unwrap_or("whole stage"),
+                miss["kind"].as_str().unwrap_or("?"),
+                miss["against"].as_str().unwrap_or("its reference"),
                 miss["class"].as_str().unwrap_or("?"),
-                miss["exceeded"]
-                    .as_array()
-                    .map(|names| names
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .collect::<Vec<_>>()
-                        .join(", "))
-                    .unwrap_or_else(|| miss["kind"].as_str().unwrap_or("?").to_owned()),
+                names(&miss["exceeded"]).unwrap_or_else(|| "its limit".to_owned()),
                 row(&miss["statistics"]),
-                row(&miss["process_first"]),
+                row(&miss["at_rest_candidate"]),
                 row(&miss["cpu_against_reference"]),
             ));
         }
@@ -1149,8 +1407,8 @@ pub fn markdown(report: &Value) -> String {
         ("Cells that could not run here", &report["gaps"]),
         ("Cells that failed to run", &report["errors"]),
         (
-            "Process-first frames that could not be drawn here",
-            &report["process_first"]["gaps"],
+            "At-rest candidates that could not be drawn here",
+            &report["at_rest_candidate"]["gaps"],
         ),
     ] {
         let entries = entries.as_array().cloned().unwrap_or_default();
@@ -1201,6 +1459,7 @@ mod tests {
             recipes: None,
             sources: None,
             all_frames: false,
+            hold_motion_to_reference: false,
         }
     }
 
@@ -1209,10 +1468,20 @@ mod tests {
                "mean_delta_l": mean_delta_l, "max": p99})
     }
 
-    fn view(statistics: Value) -> Value {
-        json!({"status": "measured", "statistics": statistics,
-               "cpu_against_reference": stats(0.0, 0.0, 0.0, 0.0),
-               "drag": {"statistics": stats(0.01, 0.1, 0.2, 0.0)}, "frames": []})
+    /// A view's record: the motion frame against the frame it settles to and against the
+    /// reference, the at-rest kind not rendered with its candidate.
+    fn view(settled: Value, reference: Value) -> Value {
+        json!({
+            "status": "measured",
+            "in_motion": {"settles_to": "the CPU's proxy frame", "against_settled": settled,
+                          "program_against_settled": settled, "against_reference": reference},
+            "at_rest": {"status": "not-rendered", "reason": "stage 2's",
+                        "candidate": {"renderer": "process-first", "status": "measured",
+                                      "against_reference": stats(0.01, 0.05, 0.1, 0.0),
+                                      "jump_from_motion": reference}},
+            "cpu_against_reference": reference,
+            "frames": [],
+        })
     }
 
     fn not_rendered() -> Value {
@@ -1223,11 +1492,11 @@ mod tests {
         })
     }
 
-    /// One stack measured at every view with `statistics`.
-    fn pair(cell: &str, class: &str, statistics: Value) -> Value {
+    /// One stack measured at every view with the same figures.
+    fn pair(cell: &str, class: &str, settled: Value, reference: Value) -> Value {
         let views: serde_json::Map<String, Value> = VIEWS
             .iter()
-            .map(|id| ((*id).to_owned(), view(statistics.clone())))
+            .map(|id| ((*id).to_owned(), view(settled.clone(), reference.clone())))
             .collect();
         json!({"cell": cell, "class": class, "status": "measured", "views": views,
                "kinds": not_rendered()})
@@ -1238,75 +1507,91 @@ mod tests {
                "pairs": pairs})
     }
 
+    fn rows(report: &Value, kind: Kind) -> Vec<&Value> {
+        report["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["kind"] == kind.name())
+            .collect()
+    }
+
+    fn within() -> Value {
+        stats(0.1, 0.5, 1.0, -0.1)
+    }
+
     #[test]
-    fn the_gate_passes_only_when_every_cell_the_gpu_renders_is_within_its_limit() {
+    fn the_gate_passes_when_every_motion_frame_is_within_its_limit_of_the_frame_it_settles_to() {
         let report = judge(
             Some(&cells(vec![
-                pair("a--b", "pointwise", stats(0.1, 0.5, 1.0, -0.1)),
-                pair("c--d", "spatial", stats(0.9, 2.4, 4.0, 0.4)),
+                pair("a--b", "pointwise", within(), within()),
+                pair("c--d", "spatial", stats(0.9, 2.4, 4.0, 0.4), within()),
             ])),
             2,
             &options(),
         );
         assert_eq!(report["status"], "passed", "{report:#}");
-        // Every view and class is a row of the picture, with its maximum and mean.
-        let rows: Vec<&Value> = report["results"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|r| r["kind"] == "picture")
-            .collect();
-        assert_eq!(rows.len(), VIEWS.len() * 2);
-        assert_eq!(rows[0]["against_reference"]["max"]["worst_block"], 0.5);
-        assert_eq!(rows[0]["against_reference"]["mean"]["mean_delta_l"], -0.1);
-        // The kinds the GPU does not render are reported as such, neither passed nor failed.
-        for kind in ["histogram", "sample", "export"] {
-            let row = report["results"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|r| r["kind"] == kind)
-                .unwrap();
-            assert_eq!(row["verdict"], "not rendered by the GPU yet");
+        assert_eq!(
+            report["reading"]["picture_in_motion"],
+            "the frame it settles to"
+        );
+        // Every view and class is a row of each picture kind.
+        let motion = rows(&report, Kind::PictureInMotion);
+        assert_eq!(motion.len(), VIEWS.len() * 2);
+        assert_eq!(motion[0]["figures"]["max"]["worst_block"], 0.5);
+        assert_eq!(motion[0]["figures"]["mean"]["mean_delta_l"], -0.1);
+        // The picture at rest and the other kinds are not rendered by the GPU, neither passed nor
+        // failed, the at-rest candidate's figures beside the picture.
+        let rest = rows(&report, Kind::PictureAtRest);
+        assert_eq!(rest.len(), VIEWS.len() * 2);
+        assert!(
+            rest.iter()
+                .all(|r| r["verdict"] == "not rendered by the GPU yet")
+        );
+        assert_eq!(rest[0]["candidate"]["within"], 1);
+        assert_eq!(rest[0]["candidate"]["renderer"], "process-first");
+        for kind in [Kind::Histogram, Kind::Sample, Kind::Export] {
+            assert_eq!(
+                rows(&report, kind)[0]["verdict"],
+                "not rendered by the GPU yet"
+            );
         }
-        assert_eq!(report["not_rendered"].as_array().unwrap().len(), 3);
+        assert_eq!(report["not_rendered"].as_array().unwrap().len(), 4);
         let summary = markdown(&report);
         assert!(summary.contains("**PASSED**") && summary.contains("No: stage 2's"));
+        assert!(summary.contains("Reading: the recorded default"));
+        assert!(summary.contains("## The picture in motion, against the frame it settles to"));
     }
 
     #[test]
-    fn a_cell_past_any_limit_fails_the_gate_and_is_listed_with_what_it_passed() {
-        // The spatial worst block just past 2.5, with the process-first candidate beside it at Fit.
-        let mut past = pair("c--d", "spatial", stats(0.9, 2.6, 4.0, 0.0));
-        past["views"]["fit"]["process_first"] = json!({"status": "measured",
-            "statistics": stats(0.01, 0.05, 0.1, 0.0),
-            "jump_from_motion": stats(0.9, 2.6, 4.0, 0.0)});
+    fn a_motion_frame_past_its_limit_of_the_frame_it_settles_to_fails_the_gate() {
         let report = judge(
-            Some(&cells(vec![
-                pair("a--b", "pointwise", stats(0.1, 0.5, 1.0, 0.0)),
-                past,
-            ])),
-            2,
+            Some(&cells(vec![pair(
+                "c--d",
+                "spatial",
+                stats(0.9, 2.6, 4.0, 0.0),
+                within(),
+            )])),
+            1,
             &options(),
         );
         assert_eq!(report["status"], "failed");
         let missed = report["missed"].as_array().unwrap();
         assert_eq!(missed.len(), VIEWS.len(), "one miss per view");
         assert_eq!(missed[0]["exceeded"], json!(["worst_block"]));
-        assert_eq!(missed[0]["process_first"]["worst_block"], 0.05);
-        assert!(missed[1]["process_first"].is_null(), "none at 33% here");
-        assert!(markdown(&report).contains("| c--d | fit | spatial | worst_block | 0.900 / 2.60 / 4.00 / 0.000 | 0.010 / 0.050 / 0.100 / 0.000 |"));
-        assert!(
-            report["error"].as_str().unwrap().contains("c--d"),
-            "{}",
-            report["error"]
-        );
+        assert_eq!(missed[0]["against"], "the frame it settles to");
+        assert_eq!(missed[0]["at_rest_candidate"]["worst_block"], 0.05);
+        assert!(report["error"].as_str().unwrap().contains("c--d"));
+        assert!(markdown(&report).contains(
+            "| c--d | fit | picture-in-motion | the frame it settles to | spatial | worst_block | 0.900 / 2.60 / 4.00 / 0.000 | 0.010 / 0.050 / 0.100 / 0.000 |"
+        ));
         // A NaN, which the harness writes as null, is past every limit.
         let report = judge(
             Some(&cells(vec![pair(
                 "a--b",
                 "pointwise",
                 json!({"mean": null, "worst_block": 0.0, "p99": 0.0, "mean_delta_l": 0.0}),
+                within(),
             )])),
             1,
             &options(),
@@ -1316,8 +1601,86 @@ mod tests {
     }
 
     #[test]
+    fn a_motion_frame_far_from_the_reference_is_reported_and_gated_only_when_asked() {
+        let far = stats(1.3, 4.1, 3.8, 0.3);
+        let measured = cells(vec![pair("e--f", "spatial", within(), far.clone())]);
+        // By the recorded default the distance from the reference is information.
+        let report = judge(Some(&measured), 1, &options());
+        assert_eq!(report["status"], "passed", "{report:#}");
+        let past = report["information"]["motion_past"].as_array().unwrap();
+        assert_eq!(past.len(), VIEWS.len());
+        assert_eq!(past[0]["exceeded"], json!(["mean", "worst_block"]));
+        let information = &rows(&report, Kind::PictureInMotion)[0]["information"];
+        assert_eq!(information["against"], "the reference");
+        assert_eq!(information["comparison"]["past_a_limit"], 1);
+        let summary = markdown(&report);
+        assert!(summary.contains("#### The motion frame past a limit against the reference (4)"));
+        // Held to the reference, the same cells fail the gate, and the frame they settle to is
+        // the information.
+        let held = Options {
+            hold_motion_to_reference: true,
+            ..options()
+        };
+        let report = judge(Some(&measured), 1, &held);
+        assert_eq!(report["status"], "failed");
+        assert_eq!(report["missed"].as_array().unwrap().len(), VIEWS.len());
+        assert_eq!(report["missed"][0]["against"], "the reference");
+        assert_eq!(report["reading"]["hold_motion_to_reference"], true);
+        assert_eq!(
+            rows(&report, Kind::PictureInMotion)[0]["information"]["against"],
+            "the frame it settles to"
+        );
+        assert!(markdown(&report).contains("Reading: `--hold-motion-to-reference`"));
+    }
+
+    #[test]
+    fn an_at_rest_frame_the_gpu_draws_is_judged_against_the_reference() {
+        let mut drawn = pair("g--h", "pointwise", within(), within());
+        drawn["views"]["fit"]["at_rest"]["status"] = json!("measured");
+        drawn["views"]["fit"]["at_rest"]["against_reference"] = stats(0.6, 0.5, 1.0, 0.0);
+        let report = judge(Some(&cells(vec![drawn.clone()])), 1, &options());
+        assert_eq!(report["status"], "failed");
+        assert_eq!(report["missed"][0]["kind"], "picture-at-rest");
+        assert_eq!(report["missed"][0]["exceeded"], json!(["mean"]));
+        assert_eq!(rows(&report, Kind::PictureAtRest)[0]["verdict"], "failed");
+        drawn["views"]["fit"]["at_rest"]["against_reference"] = within();
+        let report = judge(Some(&cells(vec![drawn])), 1, &options());
+        assert_eq!(report["status"], "passed");
+        assert_eq!(rows(&report, Kind::PictureAtRest)[0]["verdict"], "passed");
+    }
+
+    #[test]
+    fn the_at_rest_candidate_is_reported_beside_the_kind_but_never_gated() {
+        let mut both = pair("c--d", "spatial", within(), within());
+        both["views"]["33%"]["at_rest"]["candidate"]["against_reference"] =
+            stats(1.2, 0.05, 0.1, 0.0);
+        both["views"]["50%"]["at_rest"]["candidate"] = json!({"renderer": "process-first",
+            "status": "gap", "reason": "the tile at (0, 0): budget-exceeded"});
+        both["process_first"] = json!({"status": "drawn", "tiles": 6, "clock": {"total_s": 0.5}});
+        let report = judge(Some(&cells(vec![both])), 1, &options());
+        assert_eq!(report["status"], "passed", "{report:#}");
+        let candidate = |view: &str| {
+            rows(&report, Kind::PictureAtRest)
+                .into_iter()
+                .find(|r| r["view"] == view)
+                .unwrap()["candidate"]
+                .clone()
+        };
+        assert_eq!(candidate("fit")["within"], 1);
+        assert_eq!(candidate("33%")["past_a_limit"], 1);
+        assert_eq!(candidate("50%")["gaps"], 1);
+        let candidates = &report["at_rest_candidate"];
+        assert_eq!(candidates["missed"][0]["exceeded"], json!(["mean"]));
+        assert_eq!(candidates["gaps"].as_array().unwrap().len(), 1);
+        assert_eq!(candidates["frames"][0]["tiles"], 6);
+        let summary = markdown(&report);
+        assert!(summary.contains("Its candidate, judged by the same limits and not by the gate"));
+        assert!(summary.contains("not a timing measurement"));
+    }
+
+    #[test]
     fn a_cell_that_could_not_run_makes_the_gate_incomplete_never_a_pass() {
-        let mut gap = pair("a--b", "pointwise", stats(0.1, 0.5, 1.0, 0.0));
+        let mut gap = pair("a--b", "pointwise", within(), within());
         gap["views"]["100%"] = json!({"status": "gap", "reason": "budget-exceeded: too big"});
         let missing = json!({"cell": "c--raw", "class": "spatial", "status": "missing-source",
                              "error": "no file on this host"});
@@ -1334,11 +1697,7 @@ mod tests {
             ..options()
         };
         let report = judge(
-            Some(&cells(vec![pair(
-                "a--b",
-                "pointwise",
-                stats(0.1, 0.5, 1.0, 0.0),
-            )])),
+            Some(&cells(vec![pair("a--b", "pointwise", within(), within())])),
             1,
             &selected,
         );
@@ -1349,59 +1708,17 @@ mod tests {
     #[test]
     fn a_harness_that_did_not_finish_or_wrote_nothing_fails_the_gate() {
         assert_eq!(judge(None, 1, &options())["status"], "failed");
-        let mut unfinished = cells(vec![pair("a--b", "pointwise", stats(0.1, 0.5, 1.0, 0.0))]);
+        let mut unfinished = cells(vec![pair("a--b", "pointwise", within(), within())]);
         unfinished["complete"] = json!(false);
         assert_eq!(judge(Some(&unfinished), 1, &options())["status"], "failed");
         // Fewer stacks than the selection holds.
-        let short = cells(vec![pair("a--b", "pointwise", stats(0.1, 0.5, 1.0, 0.0))]);
+        let short = cells(vec![pair("a--b", "pointwise", within(), within())]);
         assert_eq!(judge(Some(&short), 2, &options())["status"], "failed");
     }
 
     #[test]
-    fn the_process_first_candidate_is_reported_beside_the_motion_frame_but_not_gated() {
-        let mut both = pair("c--d", "spatial", stats(0.9, 2.4, 4.0, 0.0));
-        both["process_first"] = json!({"status": "drawn", "tiles": 6,
-                                      "clock": {"total_s": 0.5}});
-        both["views"]["fit"]["process_first"] = json!({"status": "measured",
-            "statistics": stats(0.01, 0.05, 0.1, 0.0),
-            "jump_from_motion": stats(0.9, 2.4, 4.0, 0.0)});
-        both["views"]["33%"]["process_first"] = json!({"status": "measured",
-            "statistics": stats(1.2, 0.05, 0.1, 0.0),
-            "jump_from_motion": stats(0.9, 2.4, 4.0, 0.0)});
-        both["views"]["50%"]["process_first"] = json!({"status": "gap",
-            "reason": "the tile at (0, 0): budget-exceeded"});
-        let report = judge(Some(&cells(vec![both])), 1, &options());
-        // The first candidate is within its limits, so the gate passes whatever the second does.
-        assert_eq!(report["status"], "passed", "{report:#}");
-        let row = |view: &str| {
-            report["results"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|r| r["kind"] == "picture" && r["view"] == view)
-                .unwrap()["process_first"]
-                .clone()
-        };
-        assert_eq!(row("fit")["within"], 1);
-        assert_eq!(row("33%")["past_a_limit"], 1);
-        assert_eq!(row("50%")["gaps"], 1);
-        assert!(row("100%").is_null(), "no second candidate at 100%");
-        assert_eq!(
-            report["process_first"]["missed"][0]["exceeded"],
-            json!(["mean"])
-        );
-        assert_eq!(report["process_first"]["frames"][0]["tiles"], 6);
-        let summary = markdown(&report);
-        assert!(
-            summary.contains("Candidate 2 for the picture at rest"),
-            "{summary}"
-        );
-        assert!(summary.contains("not a timing measurement"));
-    }
-
-    #[test]
     fn a_kind_the_gpu_renders_is_judged_by_what_the_harness_measured() {
-        let mut measured = pair("a--b", "pointwise", stats(0.1, 0.5, 1.0, 0.0));
+        let mut measured = pair("a--b", "pointwise", within(), within());
         measured["kinds"]["histogram"] = json!({"status": "measured", "passed": false});
         let report = judge(Some(&cells(vec![measured])), 1, &options());
         assert_eq!(report["status"], "failed");
@@ -1409,7 +1726,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_reads_its_selection_and_refuses_what_it_does_not_know() {
+    fn the_command_reads_its_selection_and_reading_and_refuses_what_it_does_not_know() {
         let root = root().unwrap();
         let parse = |args: &[&str]| {
             let mut a = Args(args.iter().map(OsString::from).collect());
@@ -1421,9 +1738,10 @@ mod tests {
             "--zoom",
             "33,100",
             "--kind",
-            "picture",
+            "picture-in-motion",
             "--families",
             "detail",
+            "--hold-motion-to-reference",
         ])
         .unwrap();
         assert_eq!(left, 0);
@@ -1431,12 +1749,14 @@ mod tests {
             options.views,
             Some(vec!["33%".to_owned(), "100%".to_owned()])
         );
-        assert_eq!(options.kinds, Some(vec![Kind::Picture]));
+        assert_eq!(options.kinds, Some(vec![Kind::PictureInMotion]));
+        assert!(options.hold_motion_to_reference);
         assert_eq!(options.fixtures, root.join("fixtures/generated"));
         let (all, _) = parse(&["--output", "/tmp/x", "--zoom", "all", "--kind", "all"]).unwrap();
         assert!(all.views.is_none() && all.kinds.is_none() && all.narrowed().is_empty());
+        assert!(!all.hold_motion_to_reference, "the recorded default");
         assert!(parse(&["--output", "/tmp/x", "--zoom", "25"]).is_err());
-        assert!(parse(&["--output", "/tmp/x", "--kind", "frame"]).is_err());
+        assert!(parse(&["--output", "/tmp/x", "--kind", "picture"]).is_err());
         assert!(parse(&["--output", "/tmp/x", "--frames", "some"]).is_err());
         let corpus = Corpus::load(&root).unwrap();
         let unknown = Options {

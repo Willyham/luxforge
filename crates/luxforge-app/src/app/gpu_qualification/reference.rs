@@ -3,37 +3,39 @@
 //! qualification corpus on every source this host has, it renders the reference renderer's exact
 //! whole frame — the frame export renders — and, at each view the corpus lists, the GPU frame of
 //! the stack's plan from its first pixel layer (the frame a drag draws) over the boundary the
-//! desktop holds at that view:
+//! desktop holds at that view: **Fit**, at the bounds of an evidence run's window ([`fit_bounds`]);
+//! **33%** and **50%**, whose proxy is planned at the displayed size as Fit's is, with other bounds
+//! ([`percent_bounds`]); and **100%**, the visible region of the largest window the owner's display
+//! holds ([`super::largest_view`]). The reference at a view is the reference frame reduced to the
+//! view's size by an independent area-weighted average of its linear light
+//! ([`tolerance::reduce_srgb8`]), or at 100% its visible region, unreduced.
 //!
-//! - **Fit**, at the bounds of an evidence run's window ([`fit_bounds`]), and **33%** and **50%**,
-//!   whose proxy is planned at the displayed size as Fit's is, with other bounds
-//!   ([`percent_bounds`]): the GPU frame against the reference frame reduced to its size by an
-//!   independent area-weighted box average of its linear light ([`tolerance::reduce_srgb8`]).
-//! - **100%**, the visible region of the largest window the owner's display holds
-//!   ([`super::largest_view`]): the GPU frame against that region of the reference frame,
-//!   unreduced.
+//! It records the picture as the design's two kinds, by its recorded default of 2026-10-05:
 //!
-//! Beside each, as information, the CPU frame of the same view against the reference, which is what
-//! the CPU path shows there, and the GPU frame against that CPU frame, the drag-time comparison the
-//! program qualification makes, with the jump a Detail stack's settlement makes at Fit.
+//! - **The picture in motion**, the frame a drag draws, against the frame it settles to: today the
+//!   CPU frame it stands in for (the proxy at Fit and below 100%, the exact visible region at 100%).
+//!   Its distance from the reference is recorded beside it, which the gate judges instead on
+//!   request, and so are the jump a Detail stack's settlement makes at Fit and the CPU frame of the
+//!   view against the reference.
+//! - **The picture at rest**, against the reference. The GPU draws no picture at rest yet, so the
+//!   kind is recorded as not rendered by it ([`at_rest_kind`] takes the GPU's frame once a stage
+//!   renders one), with its candidate's figures beside it: at Fit, 33% and 50% **process-first**
+//!   ([`process_first`]), the whole output stage drawn on the GPU at full resolution as 100% region
+//!   plans over a grid of tiles, each over its own boundary and reading the exact stage's
+//!   estimates, stitched and reduced to the view's size as the reference is; at 100% the region plan
+//!   over the visible window, which is the frame a drag draws there.
 //!
-//! The frame a drag draws at Fit, 33% and 50% processes a source reduced to the view's size; the
-//! reference processes the whole frame and reduces it. So at those views the harness also measures
-//! a second candidate for the picture at rest, **process-first** ([`process_first`]): the whole
-//! output stage drawn on the GPU at full resolution as 100% region plans over a grid of tiles, each
-//! over its own boundary and reading the exact stage's estimates, its codes stitched into one frame
-//! and reduced to the view's size by the same reduction as the reference. It is judged by the same
-//! limits and reported beside the first, with the motion frame's jump to it, for the owner's choice
-//! of the picture at rest; the gate judges the frame the GPU draws on this branch. The other
-//! output kinds — the histogram and clipping counts, samples and export — are computed on the
-//! reference and recorded as not rendered by the GPU: their comparisons ([`histogram_kind`],
+//! The other output kinds — the histogram and clipping counts, samples and export — are computed on
+//! the reference and recorded as not rendered by the GPU: their comparisons ([`histogram_kind`],
 //! [`sample_kind`], [`export_kind`]) take the GPU's output once the stage that renders it supplies
 //! it.
 //!
 //! It writes `cells.json` to `LUXFORGE_GPU_CORPUS_OUTPUT`, rewritten after every stack, and judges
 //! nothing: `cargo xtask gpu-qualification` holds every cell to its limit and writes the report. A
-//! cell's frames are written as PNGs under `frames/` only when its GPU frame passes a limit, or for
-//! every cell with `LUXFORGE_GPU_QUALIFICATION_FRAMES=all`.
+//! cell's frames are written as PNGs under `frames/` only when a frame the gate judges passes a
+//! limit (with `LUXFORGE_GPU_QUALIFICATION_MOTION=reference`, the motion frame against the
+//! reference), or the at-rest candidate does, or for every cell with
+//! `LUXFORGE_GPU_QUALIFICATION_FRAMES=all`.
 use super::{
     Cell, CellOptions, CorpusSource, Opened, RegionDraw, corpus_sources, draw_region, fit_bounds,
     headless, proxy_cell, region_cell_in, write_png,
@@ -53,6 +55,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Why the picture at rest is not compared on this branch.
+const AT_REST_NOT_RENDERED: &str = "the GPU does not draw the picture at rest yet: drawing it \
+    process-first, the stack at full resolution reduced to the view's size, is stage 2's, and until \
+    it lands the picture at rest is the CPU's";
 /// Why the histogram and clipping counts are not compared on this branch.
 const HISTOGRAM_NOT_RENDERED: &str = "the GPU does not render the histogram and clipping counts \
     yet: a GPU reduction over the full stage is stage 2's, and until it lands the counts come from \
@@ -122,6 +128,9 @@ struct Settings {
     sources: Option<Vec<String>>,
     /// Write every measured cell's frames, not only those past a limit.
     all_frames: bool,
+    /// The gate judges the picture in motion against the reference rather than against the frame
+    /// it settles to, which decides which misses have their frames written.
+    motion_to_reference: bool,
 }
 
 /// A comma-separated list in the environment variable `name`, when it is set.
@@ -142,9 +151,10 @@ fn list(name: &str) -> Option<Vec<String>> {
 /// default), for the RAWs `LUXFORGE_RAW_MANIFEST`, and, to measure less, the comma-separated
 /// `LUXFORGE_GPU_QUALIFICATION_VIEWS` (view ids), `LUXFORGE_GPU_QUALIFICATION_KINDS` (output kinds),
 /// `LUXFORGE_GPU_CORPUS_FAMILIES`, `LUXFORGE_GPU_CORPUS_RECIPES` and `LUXFORGE_GPU_CORPUS_SOURCES`;
-/// with
-/// `LUXFORGE_GPU_QUALIFICATION_FRAMES=all` it writes every cell's frames. Without an adapter it
-/// records that it was skipped and measures nothing.
+/// with `LUXFORGE_GPU_QUALIFICATION_FRAMES=all` it writes every cell's frames, and with
+/// `LUXFORGE_GPU_QUALIFICATION_MOTION=reference` it writes the frames of a motion frame past a limit
+/// against the reference, which the gate then judges. Without an adapter it records that it was
+/// skipped and measures nothing.
 pub(crate) fn against_reference(test: &str) {
     let output = PathBuf::from(
         std::env::var("LUXFORGE_GPU_CORPUS_OUTPUT").expect("LUXFORGE_GPU_CORPUS_OUTPUT"),
@@ -203,6 +213,8 @@ pub(crate) fn against_reference(test: &str) {
         recipes: list("LUXFORGE_GPU_CORPUS_RECIPES"),
         sources: list("LUXFORGE_GPU_CORPUS_SOURCES"),
         all_frames: std::env::var("LUXFORGE_GPU_QUALIFICATION_FRAMES").as_deref() == Ok("all"),
+        motion_to_reference: std::env::var("LUXFORGE_GPU_QUALIFICATION_MOTION").as_deref()
+            == Ok("reference"),
     };
     let bounds = fit_bounds();
     let mut document = json!({
@@ -223,6 +235,7 @@ pub(crate) fn against_reference(test: &str) {
         "families": settings.families,
         "recipes": settings.recipes,
         "selected_sources": settings.sources,
+        "motion_judged_against": if settings.motion_to_reference { "reference" } else { "settled" },
         "sources": [],
         "pairs": [],
         "complete": false,
@@ -403,12 +416,13 @@ fn measure(
         .map_err(|error| error.to_string())?;
     let stage = (reference.width, reference.height);
     record["reference"] = json!({"stage": [stage.0, stage.1]});
-    if settings.kinds.contains(&Kind::Picture) {
+    if settings.kinds.iter().any(|kind| kind.picture()) {
+        let at_rest = settings.kinds.contains(&Kind::PictureAtRest);
         let reduced = settings
             .views
             .iter()
             .any(|(_, view)| !matches!(view, View::Percent(zoom) if *zoom >= 100.0));
-        let second = if reduced {
+        let second = if at_rest && reduced {
             Some(process_first(
                 qualifier,
                 &evaluation,
@@ -442,7 +456,7 @@ fn measure(
                 settings,
                 &opened,
                 &reference,
-                second.as_ref(),
+                at_rest.then_some(second.as_ref()),
                 *view,
                 class,
                 cell,
@@ -454,7 +468,7 @@ fn measure(
     }
     for kind in &settings.kinds {
         let measured = match kind {
-            Kind::Picture => continue,
+            Kind::PictureAtRest | Kind::PictureInMotion => continue,
             Kind::Histogram => histogram_kind(&reference, None)?,
             Kind::Sample => sample_kind(&reference, None, class)?,
             Kind::Export => export_kind(&reference, None, class)?,
@@ -477,19 +491,22 @@ fn summary(measured: &Value) -> String {
                     s["mean_delta_l"].as_f64().unwrap_or(f64::NAN)
                 )
             };
-            let second = match measured["process_first"]["status"].as_str() {
+            let candidate = &measured["at_rest"]["candidate"];
+            let second = match candidate["status"].as_str() {
                 Some("measured") => format!(
-                    " | process-first against the reference {}",
-                    figures(&measured["process_first"]["statistics"])
+                    " | at rest ({}) against the reference {}",
+                    candidate["renderer"].as_str().unwrap_or("?"),
+                    figures(&candidate["against_reference"])
                 ),
-                Some(_) => " | process-first: a gap".to_owned(),
+                Some(_) => " | at rest: a gap".to_owned(),
                 None => String::new(),
             };
             format!(
-                "GPU against the reference {} | CPU against it {} | GPU against the CPU {}{second}",
-                figures(&measured["statistics"]),
-                figures(&measured["cpu_against_reference"]),
-                figures(&measured["drag"]["statistics"])
+                "motion against the frame it settles to {} | motion against the reference {} | \
+                 CPU against the reference {}{second}",
+                figures(&measured["in_motion"]["against_settled"]),
+                figures(&measured["in_motion"]["against_reference"]),
+                figures(&measured["cpu_against_reference"])
             )
         }
         Some(status) => format!("{status}: {}", measured["reason"].as_str().unwrap_or("")),
@@ -591,15 +608,17 @@ fn process_first(
     Ok(Ok(frame))
 }
 
-/// The picture at `view`: the GPU frame the desktop's plan draws there against the reference frame
-/// at the view's size, with the CPU frame of the same view beside it.
+/// The picture at `view`: in motion, the GPU frame the desktop's plan draws there against the frame
+/// it settles to and against the reference frame at the view's size; at rest, when `at_rest` asks
+/// for it, the kind's comparison and its candidate's figures, `at_rest` holding the process-first
+/// frame where the reference is reduced; and the CPU frame of the view against the reference.
 #[allow(clippy::too_many_arguments)]
 fn picture(
     qualifier: &Qualifier,
     settings: &Settings,
     opened: &Opened,
     reference: &Raster,
-    second: Option<&Result<ProcessFirst, String>>,
+    at_rest: Option<Option<&Result<ProcessFirst, String>>>,
     view: View,
     class: Class,
     cell: &str,
@@ -657,8 +676,15 @@ fn picture(
     };
     let against = compare(&gpu, &expected, size)?;
     let cpu_against = compare(&cpu, &expected, size)?;
+    // The frame the gate judges the motion frame by, the frame it settles to or on request the
+    // reference, past a limit: its frames are written, with the reference and the CPU frame.
+    let judged = if settings.motion_to_reference {
+        &against
+    } else {
+        &drag
+    };
     let mut frames = Vec::new();
-    if settings.all_frames || !preview_error::verdict(&against, class).passed() {
+    if settings.all_frames || !preview_error::verdict(judged, class).passed() {
         let name = format!("{cell}--{}", view.token());
         for (suffix, bytes) in [("gpu", &gpu), ("reference", &expected), ("cpu", &cpu)] {
             let file = format!("{name}-{suffix}");
@@ -676,17 +702,17 @@ fn picture(
             None if size == stage => "the reference frame",
             None => "the reference frame reduced to the view's size",
         },
-        "statistics": statistics(&against),
-        "cpu_against_reference": statistics(&cpu_against),
-        "drag": {
-            "against": match region {
+        "in_motion": {
+            "settles_to": match region {
                 Some(_) => "the CPU's exact visible region",
                 None if proxy => "the CPU's proxy frame",
                 None => "the CPU's exact frame",
             },
-            "statistics": statistics(&drag),
-            "program": statistics(&program),
+            "against_settled": statistics(&drag),
+            "program_against_settled": statistics(&program),
+            "against_reference": statistics(&against),
         },
+        "cpu_against_reference": statistics(&cpu_against),
         "charged_bytes": charged,
         "shape": shape,
         "notes": notes,
@@ -698,17 +724,24 @@ fn picture(
             "gpu": statistics(&settled.gpu),
         });
     }
-    // Candidate 2 at a view the reference is reduced for: the process-first frame reduced as the
-    // reference is, against it, and the jump the motion frame makes to it.
-    if region.is_none()
-        && let Some(second) = second
-    {
-        value["process_first"] = match second {
-            Ok(frame) => {
+    // The picture at rest: the kind, which the GPU does not draw yet, and its candidate. At a view
+    // the reference is reduced for, the process-first frame reduced as the reference is, against
+    // it, and the jump the motion frame makes to it; at 100% the region plan over the visible
+    // window, which is the motion frame's own.
+    if let Some(second) = at_rest {
+        let mut kind = at_rest_kind(&expected, None, size, class)?;
+        kind["candidate"] = match (region, second) {
+            (Some(_), _) => json!({
+                "renderer": "the region plan over the visible window",
+                "status": "measured",
+                "against_reference": statistics(&against),
+                "jump_from_motion": statistics(&compare(&gpu, &gpu, size)?),
+            }),
+            (None, Some(Ok(frame))) => {
                 let reduced = reduce(&frame.codes, 3, stage, size)?;
-                let against = compare(&reduced, &expected, size)?;
+                let candidate = compare(&reduced, &expected, size)?;
                 let jump = compare(&gpu, &reduced, size)?;
-                if settings.all_frames || !preview_error::verdict(&against, class).passed() {
+                if settings.all_frames || !preview_error::verdict(&candidate, class).passed() {
                     let file = format!("{cell}--{}-process-first", view.token());
                     write_png(&output.join("frames"), &file, (width, height), &reduced)?;
                     value["frames"]
@@ -717,15 +750,45 @@ fn picture(
                         .push(json!(format!("frames/{file}.png")));
                 }
                 json!({
+                    "renderer": "process-first",
                     "status": "measured",
-                    "statistics": statistics(&against),
+                    "against_reference": statistics(&candidate),
                     "jump_from_motion": statistics(&jump),
                 })
             }
-            Err(reason) => json!({"status": "gap", "reason": reason}),
+            (None, Some(Err(reason))) => {
+                json!({"renderer": "process-first", "status": "gap", "reason": reason})
+            }
+            (None, None) => json!({
+                "renderer": "process-first",
+                "status": "gap",
+                "reason": "no process-first frame was drawn for this stack",
+            }),
         };
+        value["at_rest"] = kind;
     }
     Ok(value)
+}
+
+/// The picture at rest at one view: the reference frame at the view's size, `expected`, and the
+/// GPU's frame at rest, `gpu`, against it by `class`'s limits when a stage supplies one, both
+/// `size` frames of three bytes a pixel. Without it the kind is not rendered by the GPU, which is
+/// neither a pass nor a failure.
+fn at_rest_kind(
+    expected: &[u8],
+    gpu: Option<&[u8]>,
+    size: (u32, u32),
+    class: Class,
+) -> Result<Value, String> {
+    let Some(gpu) = gpu else {
+        return Ok(json!({"status": "not-rendered", "reason": AT_REST_NOT_RENDERED}));
+    };
+    let against = compare(gpu, expected, size)?;
+    Ok(json!({
+        "status": "measured",
+        "against_reference": statistics(&against),
+        "passed": preview_error::verdict(&against, class).passed(),
+    }))
 }
 
 /// The four statistics and the largest difference, as a cell records them.
@@ -1116,6 +1179,24 @@ fn the_export_comparison_holds_an_export_to_the_reference_and_to_itself() {
         (judged["passed"].clone(), judged["repeatable"].clone()),
         (json!(false), json!(false))
     );
+}
+
+#[test]
+fn the_at_rest_comparison_is_not_rendered_until_a_frame_is_supplied_then_judged() {
+    let reference = raster(40, 30, |x, y| [x as u8 * 5, y as u8 * 7, 30]);
+    let expected = rgb(&reference);
+    let unrendered = at_rest_kind(&expected, None, (40, 30), Class::Pointwise).unwrap();
+    assert_eq!(unrendered["status"], "not-rendered");
+    assert_eq!(unrendered["reason"], AT_REST_NOT_RENDERED);
+    let judged = at_rest_kind(&expected, Some(&expected), (40, 30), Class::Pointwise).unwrap();
+    assert_eq!(
+        (judged["status"].clone(), judged["passed"].clone()),
+        (json!("measured"), json!(true))
+    );
+    let far = rgb(&raster(40, 30, |x, y| [x as u8 * 5, y as u8 * 7, 90]));
+    let judged = at_rest_kind(&expected, Some(&far), (40, 30), Class::Spatial).unwrap();
+    assert_eq!(judged["passed"], false, "{judged}");
+    assert!(at_rest_kind(&expected, Some(&far[3..]), (40, 30), Class::Spatial).is_err());
 }
 
 #[test]

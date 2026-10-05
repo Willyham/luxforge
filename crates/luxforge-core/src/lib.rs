@@ -268,6 +268,48 @@ pub mod qualification {
         render.render_proxy(proxied, stage, &crate::Cancel::never(), context)
     }
 
+    /// The input of layer `layer` of `render`'s stack at the proxy stage a Fit job's worker plans
+    /// at `bounds`, over `proxied`, the proxy source that plan builds, held as `format`: the
+    /// boundary the worker's proxy phase renders for a GPU preview of a drag from that layer, cut
+    /// as that phase cuts it and read from the proxy stage's own uncut compilation for where the
+    /// layer begins, as the worker reads it. What a boundary after a geometry layer is, such as a
+    /// vignette's after a lens warp, which the proxy source itself is not.
+    pub fn proxy_boundary(
+        render: &crate::Render,
+        registry: &crate::ModuleRegistry,
+        recipe: &crate::Recipe,
+        bounds: crate::ProxyBounds,
+        proxied: crate::RenderSource<'_>,
+        layer: usize,
+        format: crate::BoundaryFormat,
+    ) -> Result<crate::BoundaryFrame, crate::Error> {
+        let plan = render
+            .proxy_plan(bounds)
+            .ok_or_else(|| crate::Error::validation("no proxy fits these bounds"))?;
+        let stage = render.proxy_window(registry, recipe, plan);
+        let plan = stage.plan();
+        let uncut = stage.compiled()?.clone();
+        let position = crate::render::gpu::position(&uncut, layer)
+            .ok_or_else(|| crate::Error::validation(format!("layer {layer} is past the stack")))?;
+        let whole = crate::modules::Stage {
+            width: plan.width,
+            height: plan.height,
+        };
+        let window = plan
+            .window
+            .map_or(crate::modules::Region::whole(whole), |window| {
+                crate::modules::Region {
+                    x0: window.x,
+                    y0: window.y,
+                    width: window.width,
+                    height: window.height,
+                }
+            });
+        let context = crate::RenderContext::new();
+        let proxy = render.render_proxy(proxied, stage, &crate::Cancel::never(), &context)?;
+        proxy.boundary_reading(&uncut, whole, window, position, format, None)
+    }
+
     /// The global estimates the spatial operation of layer `layer` reads in a frame of `render`,
     /// from its context's estimate store alone: each unit's values, `None` for a unit that
     /// prepares none. `None` when the store does not hold them, as before any frame of `render`.
