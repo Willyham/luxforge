@@ -15,7 +15,7 @@ use crate::{
             history::HistoryMessage, mask::BrushEdit, mask::MaskMessage, mask::PaintTarget,
             mask::RowEdit, palette::PaletteMessage, performance::PerformanceMessage,
             pointer::PointerMessage, preset::PresetMessage, settings::SettingsMessage,
-            view::ViewMessage,
+            theme::ThemeMessage, view::ViewMessage,
         },
         performance,
         tasks::{
@@ -475,6 +475,11 @@ pub(crate) enum Settle {
     Flags,
     /// The preference writer's last outstanding `preferences.set` answered.
     Preferences,
+    /// The theme a step chose is drawn, or Luxforge Dark in its place, with no `theme.read` and no
+    /// preference write outstanding.
+    Theme,
+    /// A theme library call and the listing after it answered, or the call was refused.
+    Themes,
     /// A capability step's round trips have answered and, unless it said otherwise, the jobs it
     /// started have finished.
     Capability,
@@ -506,6 +511,8 @@ impl Settle {
             Self::PerformanceCancel => "performance_cancel",
             Self::Flags => "flags",
             Self::Preferences => "preferences",
+            Self::Theme => "theme",
+            Self::Themes => "themes",
             Self::Capability => "capability",
             Self::Export => "export",
             Self::Agent => "agent",
@@ -1160,7 +1167,9 @@ impl Editor {
                 self.await_step(Settle::PerformanceCancel);
                 self.update(Message::Performance(PerformanceMessage::Cancel(job_id)))
             }
-            Step::Settings { open } => self.settings_step(open),
+            Step::Settings { open, tab } => self.settings_step(open, tab),
+            Step::Theme { id } => self.theme_step(id),
+            Step::ThemeImport { path } => self.theme_import_step(path),
             Step::Flag { id, value } => self.flag_step(id, value),
             Step::Preference(fields) => self.preference_step(fields),
             Step::Wait { ms } => self.wait_step(ms),
@@ -3816,6 +3825,7 @@ impl Editor {
             | PaletteAction::HundredPercent => self.await_step(Settle::Session),
             PaletteAction::TogglePerformance => self.arm_performance_settle(),
             PaletteAction::Settings(_) => self.arm_settings_settle(),
+            PaletteAction::Theme(id) => self.arm_theme_settle(id),
             // A reveal is local view state, unless it has to show the tools panel first.
             PaletteAction::Reveal(_) if !self.session.workspace.tools_panel => {
                 self.await_step(Settle::Session)
@@ -3863,21 +3873,76 @@ impl Editor {
         }
     }
 
-    /// Open the Settings sheet at Experiments, as its title bar button does, and wait for the
-    /// flags; or close it, captured on the next frame. A sheet already as asked sends nothing.
-    fn settings_step(&mut self, open: bool) -> Task<Message> {
-        if self.settings.open.is_some() == open {
+    /// Open the Settings sheet at `tab`, Experiments when it names none, as its title bar button
+    /// and tab rail do, and wait for the flags; or close it, captured on the next frame. A sheet
+    /// already as asked sends nothing; an open one moved to another tab is captured on the next
+    /// frame, as the rail's own click reads nothing it has not read.
+    fn settings_step(&mut self, open: bool, tab: Option<String>) -> Task<Message> {
+        use crate::state::settings::SettingsTab;
+        let tab = match tab.as_deref().map(SettingsTab::parse) {
+            None => SettingsTab::Experiments,
+            Some(Some(tab)) => tab,
+            Some(None) => return self.fail_step("the Settings sheet has no such tab"),
+        };
+        if !open {
+            self.capture_next_frame();
+            if self.settings.open.is_none() {
+                return Task::none();
+            }
+            return self.update(Message::Settings(SettingsMessage::Close));
+        }
+        if self.settings.open == Some(tab) {
             self.capture_next_frame();
             return Task::none();
         }
-        if !open {
-            self.capture_next_frame();
-            return self.update(Message::Settings(SettingsMessage::Close));
-        }
         self.arm_settings_settle();
-        self.update(Message::Settings(SettingsMessage::Open(
-            crate::state::settings::SettingsTab::Experiments,
-        )))
+        self.update(Message::Settings(SettingsMessage::Open(tab)))
+    }
+
+    /// Choose one theme through its Appearance row's own message, and wait until the theme it
+    /// names is drawn — or Luxforge Dark with the reason in the status bar — and the preference
+    /// writer has stored it. The theme must be one the library lists; a theme already chosen and
+    /// drawn sends nothing and is captured on the next frame.
+    fn theme_step(&mut self, id: String) -> Task<Message> {
+        if self
+            .themes
+            .list
+            .as_ref()
+            .and_then(|list| list.find(&id))
+            .is_none()
+        {
+            return self.fail_step(format!("the theme library lists no theme {id}"));
+        }
+        self.note_step(json!({"theme_id": id}));
+        let task = self.update(Message::Theme(ThemeMessage::Choose(id)));
+        self.arm_theme_settle_now();
+        task
+    }
+
+    /// What choosing a theme from a palette entry settles on: the theme drawn and stored, or the
+    /// next frame for the theme already on screen.
+    fn arm_theme_settle(&mut self, id: &str) {
+        if self.preferences.applied_theme() == Some(id) && self.theme_settled() {
+            self.capture_next_frame();
+        } else {
+            self.await_step(Settle::Theme);
+        }
+    }
+
+    /// After a choice was sent: settled already when it chose the theme on screen, and otherwise
+    /// waiting for its read and its write.
+    fn arm_theme_settle_now(&mut self) {
+        if self.theme_settled() {
+            self.capture_next_frame();
+        } else {
+            self.await_step(Settle::Theme);
+        }
+    }
+
+    /// Import one theme document through the same task the dialog's answer starts.
+    fn theme_import_step(&mut self, path: String) -> Task<Message> {
+        self.await_step(Settle::Themes);
+        self.theme_import(PathBuf::from(path))
     }
 
     /// Change one flag through its row, as a person does: the switch or a segment, Reset for
@@ -4418,7 +4483,22 @@ impl Editor {
                 }
             }
             Outcome::FlagsRead | Outcome::FlagsWritten => self.settle_step(Settle::Flags, by),
-            Outcome::PreferencesWritten => self.settle_step(Settle::Preferences, by),
+            // A theme chosen is drawn by a read and stored by a write, which answer in either
+            // order: the step settles on whichever lands last.
+            Outcome::PreferencesWritten | Outcome::ThemeDrawn => {
+                if matches!(outcome, Outcome::PreferencesWritten) {
+                    self.settle_step(Settle::Preferences, by);
+                }
+                if self.theme_settled() {
+                    self.settle_step(Settle::Theme, by);
+                }
+            }
+            Outcome::ThemesAnswered { failure } => {
+                if let Some(reason) = failure {
+                    self.refuse_step(reason);
+                }
+                self.settle_step(Settle::Themes, by);
+            }
             Outcome::ExportPlanned(plan) => {
                 if let Some(evidence) = &mut self.evidence {
                     evidence.recorded.export_plan = Some(plan.clone());
@@ -5948,7 +6028,7 @@ mod tests {
         let polled = crate::app::tasks::sync_now(
             &owner,
             client,
-            (asset.clone(), held),
+            Some((asset.clone(), held)),
             editor.sync.sequence,
             &editor.sync.own_requests.iter().cloned().collect::<Vec<_>>(),
             None,

@@ -30,6 +30,10 @@ pub const MAX_WARM_MS: u64 = 60_000;
 /// The one named key a `key` step presses; every other is a single letter or digit.
 pub const KEY_ESCAPE: &str = "Escape";
 
+/// The Settings sheet's tabs, as a `settings` step and a frame's state name them, in the rail's
+/// order.
+pub const SETTINGS_TABS: [&str; 3] = ["general", "appearance", "experiments"];
+
 /// The longest gap a scripted double-click may leave between its release and its second press.
 /// Iced classifies two presses as a double-click only within 300 ms of each other, and the first
 /// press's own hold comes out of that too.
@@ -165,10 +169,25 @@ pub enum Step {
     PerformanceCancel {
         row: usize,
     },
-    /// Open the Settings sheet at its Experiments tab, or close it, as its title bar button and
-    /// Escape do. Opening waits for the flags to be read.
+    /// Open the Settings sheet at a tab, its Experiments tab when none is named, or close it, as its
+    /// title bar button, its tab rail and Escape do. Opening waits for the flags to be read.
     Settings {
         open: bool,
+        /// One of [`SETTINGS_TABS`]; only an opening step names one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tab: Option<String>,
+    },
+    /// Choose a theme by its id, as its Appearance row does, and wait until it is drawn — or
+    /// Luxforge Dark in its place, with the reason in the status bar — and the preference writer
+    /// has stored the choice. The theme must be in the library the desktop lists.
+    Theme {
+        id: String,
+    },
+    /// Import one Luxforge theme document through the Appearance tab's own import task, bypassing
+    /// only the native dialog, and wait for `theme.import` and the listing after it. The path is as
+    /// the script wrote it, relative to the editor's working directory.
+    ThemeImport {
+        path: String,
     },
     /// Change one flag as its row's control does, and wait for `flags.set` to answer: a value the
     /// flag takes, or `null` for Reset. The sheet must be open.
@@ -316,10 +335,17 @@ impl Step {
             Self::ViewIdle(step) => step.validate(),
             Self::Idle(step) => step.validate(),
             Self::Workspace(step) => step.validate(),
-            Self::Preview(_)
-            | Self::Palette(_)
-            | Self::Performance { .. }
-            | Self::Settings { .. } => Ok(()),
+            Self::Preview(_) | Self::Palette(_) | Self::Performance { .. } => Ok(()),
+            Self::Settings { open, tab } => match tab {
+                Some(_) if !open => Err("only an opening settings step names a tab".into()),
+                Some(tab) if !SETTINGS_TABS.contains(&tab.as_str()) => Err(format!(
+                    "settings tab must be one of {}, not {tab:?}",
+                    SETTINGS_TABS.join(", ")
+                )),
+                _ => Ok(()),
+            },
+            Self::Theme { id } => text(id, "theme id"),
+            Self::ThemeImport { path } => text(path, "theme_import path"),
             Self::Flag { id, .. } => text(id, "flag id"),
             Self::Preference(fields) => {
                 if fields.is_empty() {

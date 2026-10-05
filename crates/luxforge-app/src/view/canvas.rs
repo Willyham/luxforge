@@ -71,18 +71,24 @@ pub(crate) fn fit_rect_in(canvas: [u32; 4], scale: f32) -> [u32; 4] {
     ]
 }
 
-/// The colour each canvas background names: a design token in the theme. The photo surface draws
-/// only the photograph, so the canvas region's fill is what shows around it, at Fit, at a
-/// percentage and on either side of the compare divider.
-pub(crate) fn background_colour(fill: CanvasFill) -> iced::Color {
+/// The colour each canvas background names in `palette`, the active theme's: Dark, Black and Grey
+/// are the same fixed greys in every theme, and Theme is the theme's own surround. The photo
+/// surface draws only the photograph, so the canvas region's fill is what shows around it, at
+/// Fit, at a percentage and on either side of the compare divider.
+pub(crate) fn background_colour(fill: CanvasFill, palette: &luxforge_ui::Palette) -> iced::Color {
     match fill {
         CanvasFill::Dark => theme::CANVAS,
         CanvasFill::Black => theme::CANVAS_BLACK,
         CanvasFill::Grey => theme::CANVAS_GREY,
-        // Luxforge Dark's surround, which is Dark's grey: the desktop draws only Luxforge Dark
-        // until it holds the active theme, whose surround this becomes.
-        CanvasFill::Theme => theme::CANVAS,
+        CanvasFill::Theme => palette.surround,
     }
+}
+
+/// The canvas region's surface for `fill`, read from the theme Iced draws with.
+pub(crate) fn background_surface(
+    fill: CanvasFill,
+) -> impl Fn(&luxforge_ui::Theme) -> iced::widget::container::Style {
+    move |active| theme::canvas_surface(background_colour(fill, active.palette()))(active)
 }
 
 /// The whole canvas region: the photograph, and the floating chrome stacked over it.

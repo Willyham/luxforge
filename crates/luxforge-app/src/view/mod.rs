@@ -97,9 +97,7 @@ pub(crate) fn workspace<'a>(model: &'a Workspace, surfaces: Surfaces<'a>) -> Ele
     let canvas_area = container(canvas::surface(&model.canvas, surfaces))
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(theme::canvas_surface(canvas::background_colour(
-            model.canvas.background,
-        )));
+        .style(canvas::background_surface(model.canvas.background));
 
     let mut middle = row![].height(Length::Fill);
     if model.title.state_panel_open {

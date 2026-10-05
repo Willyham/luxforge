@@ -45,7 +45,7 @@ fn poll(editor: &mut Editor) -> super::tasks::SyncResult {
     let polled = sync_now(
         &editor.owner,
         editor.client,
-        (AssetId::new(), 0),
+        Some((AssetId::new(), 0)),
         editor.sync.sequence,
         &own,
         None,
@@ -394,7 +394,10 @@ fn the_canvas_background_row_fills_the_canvas_in_each_choice_and_follows_another
     let drawn = |editor: &Editor| {
         (
             editor.view_state.canvas_background,
-            crate::view::canvas::background_colour(editor.workspace.canvas.background),
+            crate::view::canvas::background_colour(
+                editor.workspace.canvas.background,
+                editor.theme.palette(),
+            ),
         )
     };
     assert_eq!(drawn(&editor), (CanvasBackground::Theme, theme::CANVAS));

@@ -1,0 +1,10 @@
+{
+  "format": "luxforge.theme",
+  "version": 1,
+  "name": "Paper",
+  "roles": {
+    "background": "#f2f1ee",
+    "text": "#1f1e1c",
+    "accent": "#8a4f0e"
+  }
+}
