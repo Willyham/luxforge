@@ -73,7 +73,7 @@ Medians and percentiles are nearest-rank, as everywhere in the workspace. An enc
 | Chroma gain | 1.2 |
 | Path-to-white knee | 0.8 |
 
-**Owner review.** The study writes three contact sheets of 24 corpus frames, each Neutral, Standard and the camera's preview side by side (`LUXFORGE_LOOK_SHEET`). The numbers above are frozen when the owner has reviewed them. Where Standard and the cameras still differ on the sheets, the cameras are more saturated in greens and blue skies and some lift deep shadows further (Active D-Lighting and similar), which is what Match camera is for.
+**Owner review.** The study writes three contact sheets of 24 corpus frames, each Neutral, Standard and the camera's preview side by side (`LUXFORGE_LOOK_SHEET`). The owner reviewed them on 2026-10-05 and approved these numbers, which are frozen. Where Standard and the cameras still differ on the sheets, the cameras are more saturated in greens and blue skies and some lift deep shadows further (Active D-Lighting and similar), which is what Match camera is for.
 
 ## Phase 2: Match camera
 

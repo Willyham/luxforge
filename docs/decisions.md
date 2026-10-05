@@ -401,7 +401,7 @@ Decided by the owner on 2026-10-05, after noticing that photos which look vivid 
 - **Matching the camera's preview is a setting**, Match camera, fitted per photo to its embedded preview.
 - **Standard is built first**, on an architecture that carries Match camera.
 
-The owner accepted the design's recorded defaults the same day ([design](design/raw-looks.md#decided)): Standard written into a new photograph's Original; the look after Basic and before the Tone curve; resolved knots stored in every payload; Reset Look returning to Standard, the dot lit only away from it; Amount 0–200; not presettable; no baseline exposure read; colour kept under a monochrome preview; sRGB and Adobe RGB previews fitted. The Standard look's numbers are frozen after the owner reviews its contact sheet.
+The owner accepted the design's recorded defaults the same day ([design](design/raw-looks.md#decided)): Standard written into a new photograph's Original; the look after Basic and before the Tone curve; resolved knots stored in every payload; Reset Look returning to Standard, the dot lit only away from it; Amount 0–200; not presettable; no baseline exposure read; colour kept under a monochrome preview; sRGB and Adobe RGB previews fitted. The owner approved the Standard look the corpus study proposed (+1.15 EV, contrast 1.6, 1.5 EV of headroom, chroma 1.2) on its contact sheets the same day.
 
 ## Open product questions
 

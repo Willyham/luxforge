@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Freeze the look numerics and choose the Standard look: the f64 reference for the tone, chroma, path-to-white and amount units, the study over the corpus, the oracle fixture and the owner's contact-sheet review.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Create crates/luxforge-reference/src/look.rs beside curve.rs, calling crate::tone::luminance, crate::srgb's extended transfer and the curve reference's interpolant construction rather than restating them; the look tail policy (linear continuation of the first segment below 0, hold at the last knot above x_max) is new and the Tone curve's unit-slope tails are untouched.",
@@ -16,7 +16,7 @@
         "Standard is chosen by measurement: histogram-match each corpus file's as-shot development to its largest embedded JPEG (the same matching the camera fit will use, here as an instrument in the study only) and set the Standard's lift and midtone slope near the corpus median; recorded defaults before measuring are +0.5 EV lift, log-logistic midtone slope about 1.5, H = +1 EV, chroma 1.10-1.20. Use the CC0 corpus and the owner's private RAW manifest; no RAW enters the repository.",
         "Write a contact sheet of about 24 corpus frames (Neutral, Standard, camera preview side by side) to a temp directory for the owner. The numbers freeze only after the owner has reviewed it; record the chosen values and the figures in the design.",
         "Study tests over named and seeded random inputs: monotone tone on an extended ramp including negative and above-white luminance; greys stay grey; Oklab hue kept through tone and chroma; no channel clips at or below sensor white at amount 100; path to white never increases chroma and leaves colours below the knee unchanged; finite on extreme inputs; amount 0 is the identity and amount 100 the look; a regenerable oracle fixture of cases with their expected outputs.",
-        "Done 2026-10-05, awaiting the owner's review of the contact sheets: the reference (src/look.rs), the corpus export (crates/luxforge-raw/tests/look_corpus.rs), the study and fixture (fixtures/look/look-cases.json); the candidate Standard (lift +1.15 EV, contrast 1.6, headroom 1.5 EV, chroma 1.2, knee 0.8) and its figures are in the design. The chroma unit is Basic's Saturation exactly; the path to white is a closed form mixing toward the colour's own luminance grey."
+        "Done 2026-10-05; the owner approved the contact sheets the same day: the reference (src/look.rs), the corpus export (crates/luxforge-raw/tests/look_corpus.rs), the study and fixture (fixtures/look/look-cases.json); the frozen Standard (lift +1.15 EV, contrast 1.6, headroom 1.5 EV, chroma 1.2, knee 0.8) and its figures are in the design. The chroma unit is Basic's Saturation exactly; the path to white is a closed form mixing toward the colour's own luminance grey."
       ],
       "context_links": [
         {
@@ -71,7 +71,7 @@
     {
       "id": "TASK-002",
       "description": "Make the shared colour primitives the look needs: a tail policy and a module-parameterized identity for the curve unit and its GPU program, a reusable Oklab chroma unit, and the path-to-white unit with its WGSL program.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-001"
       ],
