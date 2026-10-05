@@ -145,6 +145,86 @@ struct HeldSource {
     refused: Option<&'static str>,
 }
 
+/// The picture at rest the surfaces draw in tiles (`docs/design/gpu-preview.md`, "The picture at
+/// rest"): the core's tiles for the displayed stack, from its job or its exact phase, and the
+/// surfaces' plain data once converted.
+struct HeldRest {
+    tiles: Box<luxforge_core::RestTiles>,
+    /// Handed to the surfaces, which start over whenever it changes.
+    version: u64,
+    /// As the surfaces are handed it; `None` until a lens warp's stage grid is held.
+    gpu: Option<surface::GpuRest>,
+    /// Why the tiles cannot be drawn on the GPU: their source is not the one the surface holds, or
+    /// a tile's plan is one the surface cannot run.
+    refused: Option<&'static str>,
+}
+
+/// `tiles` as the surfaces draw them under `version`: each tile's plan over its window cut from the
+/// source the surface holds, with no clipping marks, through its part of a lens warp's grid of the
+/// whole output stage ([`GridKey::stage`]). `Ok(None)` while that grid is computed; the reason when
+/// the source is another or a tile's plan is one the surface cannot run. `O(tiles × steps)`, no
+/// pixel.
+fn rest_of(
+    source: Option<&HeldSource>,
+    versions: &mut u64,
+    grids: &mut Grids,
+    tiles: &luxforge_core::RestTiles,
+    version: u64,
+) -> Result<Option<surface::GpuRest>, &'static str> {
+    let source = source
+        .filter(|source| source.identity == tiles.source)
+        .ok_or("source-missing")?;
+    if let Some(reason) = source.refused {
+        return Err(reason);
+    }
+    let stage = match tiles.warp() {
+        None => None,
+        Some(warp) => match grids.of(GridKey::stage(warp)) {
+            Err(()) => return Ok(None),
+            Ok(None) => return Err("warp-grid"),
+            Ok(Some(grid)) => Some(grid),
+        },
+    };
+    let mut plans = Vec::with_capacity(tiles.tiles.len());
+    for tile in &tiles.tiles {
+        let window = tile.window;
+        *versions += 1;
+        let boundary = GpuBoundary::derived(
+            &source.gpu,
+            Derivation::Cut {
+                origin: (window.x0, window.y0),
+            },
+            window.width,
+            window.height,
+            *versions,
+        )
+        .ok_or("boundary-size")?;
+        let grid = match &stage {
+            None => None,
+            Some(stage) => Some(gpu_plan::WarpGrid::new(
+                &stage.part(tile.rect).ok_or("warp-grid")?,
+            )),
+        };
+        plans.push(
+            gpu_plan::surface_plan_over(
+                &tiles.plan,
+                boundary,
+                (window.x0, window.y0),
+                grid.as_ref(),
+                Some(tile.rect),
+            )
+            .map_err(|unrunnable| unrunnable.code())?,
+        );
+    }
+    Ok(Some(surface::GpuRest {
+        version,
+        tiles: plans.into(),
+        view: tiles.view,
+        across: axis(tiles.across.clone()),
+        down: axis(tiles.down.clone()),
+    }))
+}
+
 /// A RAW development's planes as the GPU source uploads them, borrowed through a clone of the image,
 /// which shares its planes and keeps the source worker's memory gate counting them while it lives.
 struct DevelopedPlanes(LinearImage);
@@ -329,6 +409,22 @@ impl GridKey {
             magnification: magnification.to_bits(),
             region: request.grid_region()?,
         })
+    }
+
+    /// The whole output stage's grid of `warp` at one display pixel an output pixel, which every
+    /// tile of a picture at rest takes its part of.
+    fn stage(warp: &luxforge_core::GpuGeometry) -> Self {
+        let output = warp.output();
+        Self {
+            warp: warp.clone(),
+            magnification: 1.0f64.to_bits(),
+            region: Region {
+                x0: 0,
+                y0: 0,
+                width: output.width,
+                height: output.height,
+            },
+        }
     }
 }
 
@@ -609,6 +705,10 @@ pub(crate) struct GpuPreviews {
     resident: Option<Resident>,
     /// The prepared source of the photograph on screen, which every boundary is derived from.
     source: Option<HeldSource>,
+    /// The displayed stack's picture at rest, drawn in tiles at Fit and below 100%.
+    rest: Option<HeldRest>,
+    /// The last picture at rest's version handed out.
+    rests: u64,
     /// The last source version handed out: each source is uploaded once.
     sources: u64,
     /// A lens warp's coordinate grids, by boundary key.
@@ -854,8 +954,15 @@ impl GpuPreviews {
                 // holds them.
                 "pixels_held": source.gpu.holds_pixels()})
         });
+        // The picture at rest in tiles: what the surfaces are handed, or why not yet.
+        let rest = self.rest.as_ref().map(|held| {
+            json!({"version": held.version, "tiles": held.tiles.tiles.len(),
+                "view": [held.tiles.view.0, held.tiles.view.1],
+                "output": [held.tiles.output.width, held.tiles.output.height],
+                "handed": held.gpu.is_some(), "refused": held.refused})
+        });
         let Some(drag) = &self.drag else {
-            return json!({"drag": null, "resident": resident, "source": source,
+            return json!({"drag": null, "resident": resident, "source": source, "rest": rest,
                 "warm": self.warm.as_ref().map(GpuWarm::version)});
         };
         json!({
@@ -891,6 +998,7 @@ impl GpuPreviews {
             },
             "resident": resident,
             "source": source,
+            "rest": rest,
             "warm": self.warm.as_ref().map(GpuWarm::version),
         })
     }
@@ -1288,6 +1396,8 @@ impl Editor {
                 });
             }
         }
+        // A picture at rest waiting for this source is drawn from it now.
+        self.gpu_convert_rest();
     }
 
     /// The prepared source the surfaces are handed, which every GPU boundary is derived from: none
@@ -1378,6 +1488,8 @@ impl Editor {
         };
         self.event("gpu_grid", || detail);
         self.gpu.grids.finish(&answer.key, answer.grid);
+        // A picture at rest through a lens warp waits for its stage's grid.
+        self.gpu_convert_rest();
     }
 
     /// A committed stack's job, about to be queued: the plan of the stack itself it carries
@@ -1482,6 +1594,83 @@ impl Editor {
             plan: standby,
             asset,
         });
+    }
+
+    /// The displayed stack's picture at rest in tiles, from its job or from its exact phase, which
+    /// planned them again once it stored the global estimates they read: held for the surfaces to
+    /// draw ([`surface::GpuRest`]), under a new version unless they are the tiles held. `None` lets
+    /// the one held go: a view that draws the stack at its own size or larger, or tiles still
+    /// waiting for their estimates. Nothing with the preference off.
+    pub(crate) fn gpu_rest_from(&mut self, tiles: Option<Box<luxforge_core::RestTiles>>) {
+        if self.gpu_preview_allowed().is_err() {
+            self.gpu.rest = None;
+            return;
+        }
+        let Some(tiles) = tiles else {
+            if let Some(held) = self.gpu.rest.take() {
+                let version = held.version;
+                self.event(
+                    "gpu_rest_released",
+                    || json!({"version": version, "why": "no-tiles"}),
+                );
+            }
+            return;
+        };
+        if self
+            .gpu
+            .rest
+            .as_ref()
+            .is_some_and(|held| held.tiles == tiles)
+        {
+            return;
+        }
+        self.gpu.rests += 1;
+        self.gpu.rest = Some(HeldRest {
+            tiles,
+            version: self.gpu.rests,
+            gpu: None,
+            refused: None,
+        });
+        self.gpu_convert_rest();
+    }
+
+    /// Convert the picture at rest held for the surfaces, once its source and any lens warp's
+    /// stage grid are held: run when it is held, and after any message that may bring either.
+    pub(crate) fn gpu_convert_rest(&mut self) {
+        let gpu = &mut self.gpu;
+        let Some(held) = gpu
+            .rest
+            .as_mut()
+            .filter(|held| held.gpu.is_none() && held.refused.is_none())
+        else {
+            return;
+        };
+        let detail = match rest_of(
+            gpu.source.as_ref(),
+            &mut gpu.versions,
+            &mut gpu.grids,
+            &held.tiles,
+            held.version,
+        ) {
+            Ok(None) => return,
+            Ok(Some(converted)) => {
+                let anchor = held.tiles.plan.anchor();
+                let detail = json!({"version": held.version, "tiles": converted.tiles.len(),
+                    "view": [converted.view.0, converted.view.1],
+                    "output": [held.tiles.output.width, held.tiles.output.height],
+                    "side": held.tiles.tiles.first().map(|tile| tile.rect.width.max(tile.rect.height)),
+                    "anchor": anchor.multiple, "lead": anchor.lead});
+                held.gpu = Some(converted);
+                detail
+            }
+            // The source the tiles read is not held yet: tried again when it is.
+            Err("source-missing") => return,
+            Err(reason) => {
+                held.refused = Some(reason);
+                json!({"version": held.version, "refused": reason})
+            }
+        };
+        self.event("gpu_rest", || detail);
     }
 
     /// A committed stack's job carries the plans its gestures are likely to draw: hand their
@@ -1682,13 +1871,20 @@ pub(super) fn after_message(editor: &mut Editor, _: &super::Before) -> iced::Tas
         );
     }
     // The source of another photograph, or of none, is let go with it: the surfaces are handed
-    // none, and the pipeline lets its textures go.
+    // none, and the pipeline lets its textures go; so is the picture at rest drawn from it.
     if let Some(source) = editor.gpu.source.take_if(|source| source.asset != asset) {
         let version = source.gpu.version();
         editor.event(
             "gpu_source_released",
             || json!({"version": version, "why": "asset-changed"}),
         );
+        if let Some(rest) = editor.gpu.rest.take() {
+            let version = rest.version;
+            editor.event(
+                "gpu_rest_released",
+                || json!({"version": version, "why": "asset-changed"}),
+            );
+        }
     }
     release_ended_drag(editor, asset);
     editor.gpu_compute_grids()

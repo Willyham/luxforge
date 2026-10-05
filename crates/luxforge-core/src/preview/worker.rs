@@ -356,6 +356,15 @@ pub(super) fn run(
     };
     let render_ms = compile_ms.unwrap_or(0.0) + milliseconds_since(started);
     drop(exact);
+    // The picture at rest's tiles the owner could not plan before this phase stored the global
+    // estimates they read: planned again now, `O(tiles × segments)`, no pixel read.
+    let rest = match (&result, job.rest_bounds) {
+        (Ok(_), Some(bounds)) => crate::render::gpu::plan_rest_tiles(&job.evaluation, bounds, None)
+            .ok()
+            .flatten()
+            .and_then(Result::ok),
+        _ => None,
+    };
     // A superseded or abandoned exact phase answers `Cancelled`, so its activity ends cancelled.
     if let Some(activity) = activity {
         activity.finish(Outcome::of(&result));
@@ -373,6 +382,7 @@ pub(super) fn run(
             result,
             report,
             proxy_declined: declined,
+            rest,
         })),
         approximate_white_balance,
         render_ms,
@@ -557,6 +567,7 @@ fn run_viewport(
                         result: Err(error),
                         report: None,
                         proxy_declined: None,
+                        rest: None,
                     })),
                     approximate_white_balance: evaluation.source().approximate_white_balance(),
                     render_ms: milliseconds_since(started),
@@ -626,6 +637,7 @@ fn run_viewport(
             result,
             report,
             proxy_declined: None,
+            rest: None,
         })),
         approximate_white_balance,
         render_ms: milliseconds_since(exact_started),
@@ -735,6 +747,7 @@ fn run_reduce(
             result,
             report: None,
             proxy_declined: None,
+            rest: None,
         })),
         render_ms: milliseconds_since(started),
         queue_wait_ms,

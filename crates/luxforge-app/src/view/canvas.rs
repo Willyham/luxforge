@@ -563,6 +563,7 @@ fn plain<'a>(
     let gpu = surfaces.gpu;
     let (gpu_hold, gpu_tag, gpu_warm) = (surfaces.gpu_hold, surfaces.gpu_tag, surfaces.gpu_warm);
     let (gpu_change, gpu_source) = (surfaces.gpu_change, surfaces.gpu_source);
+    let gpu_rest = surfaces.gpu_rest;
     let dissolve = surfaces.dissolve;
     match model.zoom {
         ZoomView::Fit => {
@@ -589,6 +590,7 @@ fn plain<'a>(
                 .gpu_change(gpu_change)
                 .gpu_warm(gpu_warm)
                 .gpu_source(gpu_source)
+                .gpu_rest(gpu_rest)
                 .dissolve(dissolve)
                 .into();
                 // The open gesture's handles sit above the photograph and its overlays, mapped
@@ -680,6 +682,7 @@ fn plain<'a>(
                         .gpu_change(gpu_change)
                         .gpu_warm(gpu_warm)
                         .gpu_source(gpu_source)
+                        .gpu_rest(gpu_rest)
                         .dissolve(dissolve)
                         .into(),
                         None => empty("Rendering photograph…"),
@@ -1364,6 +1367,7 @@ mod tests {
             dissolve: None,
             gpu_warm: None,
             gpu_source: None,
+            gpu_rest: None,
         };
         let model = CanvasModel {
             photo: PhotoView::Plain,

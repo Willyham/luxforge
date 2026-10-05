@@ -38,8 +38,8 @@ use luxforge_core::{
 };
 use luxforge_ui::photo_surface::gpu_preview::qualification::{boundary_as, held};
 
-const WIDTH: u32 = 360;
-const HEIGHT: u32 = 240;
+pub(super) const WIDTH: u32 = 360;
+pub(super) const HEIGHT: u32 = 240;
 
 /// A value with detail at every scale, so a tap that reads another texel, or the same one with
 /// another weight, changes the frame.
@@ -52,7 +52,7 @@ fn value(x: u32, y: u32, channel: u32) -> f64 {
 
 /// The photograph on either path: a JPEG's codes, or a RAW's linear planes, some values past
 /// white and below black.
-fn source(format: BoundaryFormat) -> PreviewSource {
+pub(super) fn source(format: BoundaryFormat) -> PreviewSource {
     match format {
         BoundaryFormat::Half => {
             let mut rgba = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
@@ -92,7 +92,7 @@ fn source(format: BoundaryFormat) -> PreviewSource {
 
 /// The boundary of a stack whose first layer is its boundary: the source's own values, each a
 /// JPEG code's linear value or a RAW's `f32`, row by row.
-fn whole(source: &PreviewSource) -> Vec<[f32; 3]> {
+pub(super) fn whole(source: &PreviewSource) -> Vec<[f32; 3]> {
     match source {
         PreviewSource::Jpeg(image) => {
             let table = luxforge_core::colour::srgb::decode_table();
@@ -110,7 +110,7 @@ fn whole(source: &PreviewSource) -> Vec<[f32; 3]> {
 }
 
 /// `pixels`, a whole stage's, cut to `window`.
-fn cut(pixels: &[[f32; 3]], window: Region) -> Vec<[f32; 3]> {
+pub(super) fn cut(pixels: &[[f32; 3]], window: Region) -> Vec<[f32; 3]> {
     (window.y0..window.y0 + window.height)
         .flat_map(|y| {
             let at = (y * WIDTH + window.x0) as usize;

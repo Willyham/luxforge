@@ -64,6 +64,8 @@ mod gpu_preview_tests;
 #[cfg(test)]
 pub(crate) mod gpu_qualification;
 #[cfg(test)]
+mod gpu_rest_tests;
+#[cfg(test)]
 mod gpu_source_tests;
 #[cfg(test)]
 mod gpu_window_tests;

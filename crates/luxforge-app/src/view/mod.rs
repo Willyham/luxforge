@@ -86,6 +86,9 @@ pub(crate) struct Surfaces<'a> {
     /// for every surface that hands it ([`crate::app::gpu_preview`]). None is given while this
     /// client's `gpu_preview` preference is off.
     pub(crate) gpu_source: Option<&'a luxforge_ui::photo_surface::GpuSource>,
+    /// The displayed stack's picture at rest the GPU draws in tiles, which a whole-frame
+    /// photograph draws in place of its frame once the last tile is in.
+    pub(crate) gpu_rest: Option<&'a luxforge_ui::photo_surface::GpuRest>,
     /// A settle's dissolve from the GPU frame on screen to the CPU frame that replaces it
     /// ([`crate::app::gpu_settle`]).
     pub(crate) dissolve: Option<luxforge_ui::photo_surface::Dissolve>,

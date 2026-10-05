@@ -483,6 +483,7 @@ impl Presentation {
                     report,
                     proxy_declined,
                     display,
+                    ..
                 } = *outcome;
                 self.proxy_declined = proxy_declined;
                 let frame = result.map(|raster| ExactFrame {
@@ -742,6 +743,7 @@ impl Presentation {
             dissolve: None,
             gpu_warm: None,
             gpu_source: None,
+            gpu_rest: None,
         }
     }
 
@@ -1496,6 +1498,15 @@ impl Editor {
     /// for, and whether it handed a frame to the display — the photograph, or the crop draft's
     /// input stage.
     pub(super) fn preview_ready(&mut self, mut result: PreviewResult) -> (Task<Message>, bool) {
+        // The picture at rest's tiles a committed stack's exact phase planned again, once it stored
+        // the global estimates they read: held for the surfaces when this is the newest job's.
+        if let PhaseOutcome::Exact(exact) = &mut result.outcome
+            && let Some(rest) = exact.rest.take()
+            && result.identity.draft.is_none()
+            && result.generation == self.presentation.preview_generation
+        {
+            self.gpu_rest_from(Some(rest));
+        }
         // An exact display reduction belongs to one view and one current content generation.
         // Its full raster can still be retained when a resize invalidates only the reduction.
         if let PhaseOutcome::Exact(exact) = &mut result.outcome
@@ -2182,6 +2193,13 @@ impl Editor {
         // before any plan over it.
         self.gpu_hold_source(job.evaluation.source());
         let committed = job.layer_count.is_none() && job.evaluation.draft_revision().is_none();
+        // The displayed stack's picture at rest in tiles: held for the surfaces to draw, or let go
+        // where its view draws the stack at its own size or larger, or where its tiles wait for
+        // the global estimates the job's exact phase stores, which then plans them again.
+        if committed && let Some(rest) = job.gpu_rest.as_mut() {
+            let tiles = rest.tiles.take().and_then(Result::ok);
+            self.gpu_rest_from(tiles);
+        }
         self.gpu_resident_from(job.gpu_rest.take(), job.viewport.is_some(), committed);
         // Reusing pixels cannot complete work the viewport still owes. A moving region is
         // intentionally half detail and carries no whole-image report; Settle must refine it

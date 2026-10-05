@@ -134,6 +134,9 @@ pub struct RestFigures {
     /// The next tile waits for its sequence to compile, or its source to upload: no frame is asked
     /// for it until then.
     pub waiting: bool,
+    /// The last frame drew a gesture's plan, or a dissolve from one, and no tile: no frame is asked
+    /// for the tiles until a frame draws neither, which the gesture's end brings.
+    pub paused: bool,
     /// Why a tile, or the rest's own textures, could not be drawn: the picture at rest is then the
     /// caller's to draw otherwise.
     pub fallback: Option<GpuFallback>,
@@ -349,6 +352,8 @@ pub(in super::super) struct RestSlot {
     done: bool,
     /// The last frame found the next tile waiting for its sequence or its source.
     waiting: bool,
+    /// The last frame drew a gesture's plan or a dissolve, and so no tile.
+    paused: bool,
 }
 
 impl RestSlot {
@@ -364,6 +369,7 @@ impl RestSlot {
             drawn: self.next as u32,
             done: self.done,
             waiting: self.waiting,
+            paused: self.paused,
             fallback: self.fallback,
         }
     }
@@ -493,13 +499,13 @@ impl PhotoPipeline {
                 }
             }
         }
-        if !idle {
-            return;
-        }
         let Some(slot) = surface.rest.as_deref_mut() else {
             return;
         };
-        if !slot.pending() {
+        // A frame that draws a gesture's plan, or a dissolve from one, draws no tile and asks for
+        // none: the gesture's frames are its own, and the first frame after it draws the next tile.
+        slot.paused = !idle && slot.pending();
+        if !idle || !slot.pending() {
             return;
         }
         let Some(Ok(passes)) = self.gpu.rest_passes(device) else {
@@ -737,6 +743,7 @@ impl PhotoPipeline {
             bytes,
             done: false,
             waiting: false,
+            paused: false,
         })
     }
 }

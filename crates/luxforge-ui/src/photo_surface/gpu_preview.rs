@@ -147,6 +147,13 @@ const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// textures have when the renderer gamma corrects, so the codes draw as the CPU frame's do.
 const SAMPLED_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
+/// What the output's texture is read back by: nothing on the desktop, which never reads a pixel
+/// back; a headless surface's copy of a tile's codes ([`headless::HeadlessSurface::tile`]).
+#[cfg(any(test, feature = "qualification"))]
+const OUTPUT_READ: wgpu::TextureUsages = wgpu::TextureUsages::COPY_SRC;
+#[cfg(not(any(test, feature = "qualification")))]
+const OUTPUT_READ: wgpu::TextureUsages = wgpu::TextureUsages::empty();
+
 /// The WGSL every assembled GPU-preview shader starts with; see the [module documentation](self).
 /// A program's own WGSL, appended to this, must validate on its own.
 pub const PRELUDE: &str = "\
@@ -2360,11 +2367,7 @@ impl PhotoPipeline {
         if self.gpu.support.is_none() || self.gpu.lost.load(Ordering::Acquire) {
             return;
         }
-        if let Some(held) = self
-            .gpu
-            .source
-            .take_if(|held| held.version() != source.version())
-        {
+        if let Some(held) = self.gpu.source.take_if(|held| !held.holds(source)) {
             let bytes = held.bytes();
             self.retire_preview(Held::Source(Box::new(held)), bytes);
         }
@@ -3037,7 +3040,9 @@ impl PhotoPipeline {
             "luxforge.gpu_preview.output",
             capacity,
             OUTPUT_FORMAT,
-            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | OUTPUT_READ,
             &[SAMPLED_FORMAT],
         );
         let target = output.create_view(&wgpu::TextureViewDescriptor::default());
@@ -3637,6 +3642,8 @@ mod rest;
 pub(super) use rest::RestSlot;
 pub use rest::{GpuRest, REST_TILES_PER_FRAME, REST_VIEW_PIXELS, RestFigures};
 
+#[cfg(any(test, feature = "qualification"))]
+pub mod headless;
 #[cfg(any(test, feature = "qualification"))]
 pub mod qualification;
 

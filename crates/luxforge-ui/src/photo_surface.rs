@@ -1027,6 +1027,15 @@ impl PhotoSurface {
         self
     }
 
+    /// The picture at rest this surface draws: a whole-frame photograph's; a percentage view's
+    /// region and a crop stage draw none, and ask for no frame for one.
+    fn rest_drawn(&self) -> Option<&GpuRest> {
+        match (&self.base, &self.viewport) {
+            (Base::Photo(_), None) => self.rest.as_ref(),
+            _ => None,
+        }
+    }
+
     /// Whether the GPU stage is still uploading the boundary of the plan this surface is handed: its
     /// last frame said so, and the plan still names that boundary with its texels. The widget then
     /// asks for the next frame, whose `prepare` writes the next chunks; an upload's start wakes the
@@ -1054,13 +1063,17 @@ impl PhotoSurface {
                     .is_none_or(|(version, _)| version != source.version())
         });
         // A picture at rest whose tiles remain, the next one ready to draw: one a frame until the
-        // last. A tile that waits for its sequence to compile asks for nothing; the compile's end
-        // wakes the desktop.
-        let rest = self.rest.as_ref().is_some_and(|rest| {
+        // last. A tile that waits for its sequence to compile asks for nothing, the compile's end
+        // waking the desktop; nor does a frame a gesture's plan drew, the gesture's end bringing
+        // the frame that draws the next tile.
+        let rest = self.rest_drawn().is_some_and(|rest| {
             diagnostics.gpu_stage == GpuStageState::Available
                 && diagnostics.gpu_rest.is_none_or(|figures| {
                     figures.version != rest.version
-                        || (!figures.done && !figures.waiting && figures.fallback.is_none())
+                        || (!figures.done
+                            && !figures.waiting
+                            && !figures.paused
+                            && figures.fallback.is_none())
                 })
         });
         boundary || source || rest
@@ -1151,12 +1164,7 @@ impl PhotoSurface {
             gpu_options: self.gpu_options.clone(),
             dissolve: self.dissolving(self.clock.unwrap_or_else(Instant::now)),
             source: self.source.clone(),
-            // A whole-frame photograph's picture at rest; a percentage view's region and a crop
-            // stage draw none.
-            rest: match (&self.base, &self.viewport) {
-                (Base::Photo(_), None) => self.rest.clone(),
-                _ => None,
-            },
+            rest: self.rest_drawn().cloned(),
             offset: visible.offset,
             size: visible.size,
             clip_size: visible.clip.size(),
@@ -3490,8 +3498,9 @@ impl shader::Pipeline for PhotoPipeline {
 
 impl PhotoPipeline {
     /// A pipeline that counts its texture work into `figures`, its GPU stage available wherever
-    /// the device can run it, whatever the process's launch refused.
-    #[cfg(test)]
+    /// the device can run it, whatever the process's launch refused: a test's, or a headless
+    /// surface's ([`gpu_preview::headless`]).
+    #[cfg(any(test, feature = "qualification"))]
     fn with_figures(
         device: &wgpu::Device,
         queue: &wgpu::Queue,

@@ -138,6 +138,10 @@ pub struct PreviewJob {
     /// ([`crate::GpuRest`]). Every committed stack has one, the empty stack included. Preview
     /// state, never an API result.
     pub gpu_rest: Option<Box<crate::GpuRest>>,
+    /// The Fit bounds whose picture at rest's tiles the worker plans again once the exact phase
+    /// has stored the global estimates the owner's plan could not read
+    /// ([`crate::ExactOutcome::rest`]): set by the owner when its tiles named `region-estimate`.
+    pub rest_bounds: Option<crate::ProxyBounds>,
 }
 
 impl PreviewJob {
@@ -158,6 +162,7 @@ impl PreviewJob {
             gpu: None,
             gpu_warm: None,
             gpu_rest: None,
+            rest_bounds: None,
         })
     }
 }
