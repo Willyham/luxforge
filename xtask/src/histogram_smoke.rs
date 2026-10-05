@@ -1107,23 +1107,19 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let gpu_release = launch.at("gpu-release")?;
     let gpu_released = reduction(root, &displayed_recipe(gpu_release)?)?;
     let gpu_released_detail = expect_counts(gpu_release, &gpu_released, "the release on the GPU")?;
-    // A release whose committed stack adds a layer's units compiles its picture at rest first
-    // ([GPU-first](docs/design/gpu-first.md), proposals): while it does, the stack the GPU
-    // presented is refused, named `compiling`, and the reference counts it.
-    let refused_compiling = launch.events.iter().any(|event| {
-        event["event"] == "gpu_presented_refused" && event["detail"]["why"] == "compiling"
-    });
+    // A release whose committed stack adds a layer's units compiles its picture at rest first,
+    // a few milliseconds warm, which the frame on screen waits out: the counts are the GPU's.
     ensure(
-        gpu_counted(gpu_release) || refused_compiling,
+        gpu_counted(gpu_release),
         format!(
-            "The release's counts are the {}'s, not the GPU's, and nothing was refused while compiling",
+            "The release's counts are the {}'s, not the GPU's",
             gpu_release["state"]["histogram"]["source"]
         ),
     )?;
     checks.note(
         gpu_release,
-        "the release on the GPU: the stack presented with no CPU render, its tiles' counts within the tolerance of an independent reduction of the composed stack, or, refused while its picture at rest compiled, the reference's exactly",
-        json!({"counts": gpu_released_detail, "refused_compiling": refused_compiling}),
+        "the release on the GPU: the stack presented with no CPU render, its tiles' counts within the tolerance of an independent reduction of the composed stack",
+        gpu_released_detail,
     );
     // The owner's store holds that report under the released stack's identity: an agent's
     // request is answered at once, its bins within the recorded tolerance of the independent
