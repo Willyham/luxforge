@@ -13,15 +13,11 @@
 //! tile need hold only each tile's window.
 //!
 //! Built only with the crate's `qualification` feature, as [`super::qualification`] is: everything
-//! here blocks the calling thread on the GPU, which no surface of the desktop does.
+//! here blocks the calling thread on the GPU, which no surface of the desktop does, and waits for
+//! the compile thread through the test base's one hang-bounded wait, which the feature brings in.
 use super::super::{PhotoPipeline, SurfaceSlots};
 use super::{GpuFallback, GpuPlan, GpuRest, GpuSource, answered};
 use std::sync::{Arc, mpsc};
-use std::time::{Duration, Instant};
-
-/// How long a draw waits for its sequences to compile, or its source to upload, before it gives
-/// up and names the fallback that kept it waiting.
-const PATIENCE: Duration = Duration::from_secs(300);
 
 /// A device of this host's default adapter at `limits`, its queue and the adapter's description,
 /// or `None` after printing that `run` was skipped: a run without one drew nothing and is not GPU
@@ -92,11 +88,13 @@ impl HeadlessSurface {
 
     /// `rest` drawn from `source` frame after frame, as a surface handed both draws it while the
     /// editor is idle, until its last tile is in the rest output: the output read back. The
-    /// fallback that stops it otherwise — or that kept it waiting past [`PATIENCE`].
+    /// fallback that stops it otherwise, or `compiling` once a sequence's compile has kept it
+    /// waiting past the test base's hang bound.
     pub fn rest(&mut self, source: &GpuSource, rest: &GpuRest) -> Result<RestDrawn, GpuFallback> {
-        let started = Instant::now();
         let mut frames = 0;
-        loop {
+        // One frame a look, through the one hang-bounded wait: what can keep it waiting is a
+        // sequence's compile on the compile thread, since the source's rows are written here.
+        let drawn = luxforge_testbase::try_wait_for("the picture at rest's last tile", || {
             frames += 1;
             self.pipeline
                 .fit_source(&self.device, &self.queue, Some(source));
@@ -109,21 +107,17 @@ impl HeadlessSurface {
             );
             self.pipeline.trim_source();
             let Some(figures) = self.surface.rest_figures() else {
-                return Err(GpuFallback::PipelineFailed);
+                return Some(Err(GpuFallback::PipelineFailed));
             };
             if let Some(fallback) = figures.fallback {
-                return Err(fallback);
+                return Some(Err(fallback));
             }
-            if figures.done {
-                break;
+            if !figures.done {
+                return None;
             }
-            if figures.waiting {
-                if started.elapsed() > PATIENCE {
-                    return Err(GpuFallback::Compiling);
-                }
-                std::thread::sleep(Duration::from_millis(2));
-            }
-        }
+            Some(Ok(()))
+        });
+        drawn.map_err(|_| GpuFallback::Compiling)??;
         let output = self
             .surface
             .rest_output()
@@ -144,24 +138,25 @@ impl HeadlessSurface {
     ) -> Result<Vec<[u8; 4]>, GpuFallback> {
         let region = plan.region.ok_or(GpuFallback::PipelineFailed)?;
         let [x0, y0, x1, y1] = region.rect;
-        let started = Instant::now();
         let mut slots = self.pipeline.new_surface();
-        let drawn = loop {
+        let mut waited = GpuFallback::Compiling;
+        // One frame a look, through the one hang-bounded wait, while its sequence compiles or its
+        // source's rows are written.
+        let drawn = luxforge_testbase::try_wait_for("a tile's evaluation", || {
             self.hand(source);
             match self
                 .pipeline
                 .evaluate(&mut slots, &self.device, &self.queue, plan, None)
             {
-                Ok(_) => break Ok(()),
+                Ok(_) => Some(Ok(())),
                 Err(waiting @ (GpuFallback::Compiling | GpuFallback::SourceUploading { .. })) => {
-                    if started.elapsed() > PATIENCE {
-                        break Err(waiting);
-                    }
-                    std::thread::sleep(Duration::from_millis(2));
+                    waited = waiting;
+                    None
                 }
-                Err(fallback) => break Err(fallback),
+                Err(fallback) => Some(Err(fallback)),
             }
-        };
+        })
+        .unwrap_or(Err(waited));
         let codes = drawn.and_then(|()| {
             let slot = slots.gpu.as_ref().ok_or(GpuFallback::PipelineFailed)?;
             self.read(&slot.output().tiles[0].texture, (x1 - x0, y1 - y0))
