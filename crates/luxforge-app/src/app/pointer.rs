@@ -1,7 +1,7 @@
 //! The pointer over the photograph: its position, and canvas picks located through the core and
-//! answered by the mode on screen. Nothing is read under the pointer as it moves: a `render.sample`
-//! through a spatial stack can cost the point worker minutes, so the one read the canvas makes is a
-//! pick, which a person asks for.
+//! answered by the mode on screen. Nothing is read under the pointer as it moves: every pixel read
+//! is a call to the tile service, a GPU tile render or, without one, the reference renderer's whole
+//! spatial frames, so the one read the canvas makes is a pick, which a person asks for.
 use super::{
     Editor,
     gesture::Starting,

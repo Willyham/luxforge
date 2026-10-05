@@ -63,10 +63,14 @@ struct State {
     stopping: bool,
     /// The client of the call being answered, and that call's cancellation.
     active: Option<(ClientId, Cancel)>,
-    /// Passed before each call is answered, so a test can hold the worker there.
+    /// Called on the worker before each call is answered, so a test can hold it there.
     #[cfg(test)]
-    gate: Option<Arc<luxforge_testbase::Gate>>,
+    hold: Option<Hold>,
 }
+
+/// What a test has the worker call before it answers each call.
+#[cfg(test)]
+pub(crate) type Hold = Arc<dyn Fn() + Send + Sync>;
 
 impl Shared {
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -201,7 +205,7 @@ impl Drop for ReferenceTiles {
 #[cfg(test)]
 impl ReferenceTiles {
     /// How many calls wait behind the one being answered.
-    pub(super) fn waiting(&self) -> usize {
+    pub(crate) fn waiting(&self) -> usize {
         self.shared.lock().queue.len()
     }
 
@@ -210,9 +214,18 @@ impl ReferenceTiles {
         self.thread().is_some()
     }
 
-    /// Have the worker pass `gate` before it answers each call, or stop passing one.
-    pub(super) fn hold(&self, gate: Option<Arc<luxforge_testbase::Gate>>) {
-        self.shared.lock().gate = gate;
+    /// The cancellation of the call being answered, if one is.
+    pub(crate) fn active_cancel(&self) -> Option<Cancel> {
+        self.shared
+            .lock()
+            .active
+            .as_ref()
+            .map(|(_, cancel)| cancel.clone())
+    }
+
+    /// Have the worker call `hold` before it answers each call, or stop calling one.
+    pub(crate) fn hold(&self, hold: Option<Hold>) {
+        self.shared.lock().hold = hold;
     }
 }
 
@@ -239,9 +252,9 @@ fn work(shared: &Shared) {
         };
         #[cfg(test)]
         {
-            let gate = shared.lock().gate.clone();
-            if let Some(gate) = gate {
-                gate.pass();
+            let hold = shared.lock().hold.clone();
+            if let Some(hold) = hold {
+                hold();
             }
         }
         call.run(&reads);

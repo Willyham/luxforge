@@ -1,5 +1,5 @@
 //! The reference tile service: its reads against the reference renderer's own frames and samples,
-//! and its worker's queue, as the point worker's queue was proved.
+//! and its worker's queue.
 
 use super::{
     ReadAnswer, ReadStage, ReadValues, ReferenceReads, ReferenceTiles, TileCall, TileReads,
@@ -571,7 +571,8 @@ fn held(capacity: usize) -> (ReferenceTiles, Arc<Gate>) {
     let service = ReferenceTiles::with_capacity(capacity);
     let gate = Arc::new(Gate::new());
     gate.shut();
-    service.hold(Some(gate.clone()));
+    let held = gate.clone();
+    service.hold(Some(Arc::new(move || held.pass())));
     (service, gate)
 }
 

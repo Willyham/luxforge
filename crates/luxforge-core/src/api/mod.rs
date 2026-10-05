@@ -8,8 +8,8 @@ mod owner;
 mod transport;
 
 pub use methods::schemas;
-pub(crate) use owner::SourceFlightKey;
 pub use owner::{ClientId, EventWake, OwnerHandle, PreviewRequest};
+pub(crate) use owner::{OWNER_THREAD, SourceFlightKey};
 
 pub use transport::{LocalServer, serve_json_lines_with};
 
