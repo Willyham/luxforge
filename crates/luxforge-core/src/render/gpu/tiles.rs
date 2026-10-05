@@ -22,9 +22,11 @@
 //!   photo surface's budget, so the tiling is written again here from the same parts: the plan
 //!   from the source, its anchor, the region planner's window of each tile.
 //! - **Lights.** A spatial operation's global estimate, Dehaze's atmospheric light, is read from
-//!   the light its plan's light link computes from the whole stage ([`super::GpuLight`]), which
-//!   the tile worker's runner computes nothing of yet: a plan that reads one answers `unplannable`
-//!   naming the light, and the reference renders the read or the export.
+//!   the light its plan's light link computes from the whole stage at full resolution
+//!   ([`super::GpuLight`]), whatever window a tile reads: the plan carries its lights, as the
+//!   picture at rest's does, and the tile worker's runner computes each once from the source
+//!   before the tiles that read it. A light behind a spatial layer is its stand-in, that layer left
+//!   out, as the photo surface draws it.
 //! - **The answer.** The output stage's codes are read back as the GPU's output quantizer gives
 //!   them, the picture's own bytes. Every other read is read back as the linear values before that
 //!   quantizer, and its codes are quantized from them by the core's own quantizer
@@ -235,8 +237,8 @@ fn unplannable(reason: impl Into<String>) -> TileFallback {
 
 impl<'a> Planned<'a> {
     /// `stage` of `evaluation`: the stack's own compilation and plan for the output stage, or the
-    /// layers before the read layer compiled once and planned, as the GPU plan compiles them. A
-    /// plan reading a light is the reference's, which the runner computes no light for yet.
+    /// layers before the read layer compiled once and planned, as the GPU plan compiles them, with
+    /// the lights it reads.
     fn of(evaluation: &'a Evaluation, stage: ReadStage) -> Result<Self, TileFallback> {
         let source = evaluation.source();
         if source.approximate_white_balance() {
@@ -269,15 +271,6 @@ impl<'a> Planned<'a> {
             Ok(GpuAnswer::Fallback(reason)) => return Err(TileFallback::Plan(reason)),
             Err(error) => return Err(refused(error)),
         };
-        // A light is computed from the whole stage, which the runner holds a window of alone: it
-        // draws no plan that reads one yet.
-        if let Some(light) = plan.lights.first() {
-            return Err(unplannable(format!(
-                "layer {}'s global estimate is computed from the whole stage, which the tile \
-                 worker does not compute yet",
-                light.layer
-            )));
-        }
         Ok(Self {
             size: compiled.stage(),
             compiled,
@@ -594,12 +587,11 @@ mod tests {
         }
     }
 
-    /// A light is computed from the whole stage, which the runner holds a window of: a read of the
-    /// output stage, a read of the stage after Dehaze and a stream answer `unplannable`, naming the
-    /// Presence layer, and the reference renders them. A read of the stage before Presence reads no
-    /// light and is planned.
+    /// A read of the output stage, a read of the stage after Dehaze and a stream carry the light
+    /// the Presence layer reads, planned from the source over the whole stage at full resolution
+    /// as the picture at rest's is; a read of the stage before Presence reads no light.
     #[test]
-    fn a_read_or_a_stream_that_reads_a_light_is_the_references() {
+    fn a_read_or_a_stream_that_reads_a_light_carries_it() {
         for (domain, source) in sources(97, 61) {
             let dehaze = Layer::new(
                 PRESENCE_EFFECT,
@@ -621,19 +613,21 @@ mod tests {
                 height: 3,
             };
             let evaluation = stored(&source, &recipe);
-            let named = |fallback: TileFallback| match fallback {
-                TileFallback::Plan(GpuFallback::Unplannable(reason)) => {
-                    reason.starts_with("layer 1's global estimate")
-                }
-                _ => false,
+            let whole = Stage {
+                width: 97,
+                height: 61,
+            };
+            let lit = |plan: &GpuPlan| {
+                plan.lights.len() == 1
+                    && plan.lights[0].layer == 1
+                    && plan.lights[0].stage == whole
+                    && plan.lights[0].over_source()
             };
             for stage in [ReadStage::Output, after] {
-                assert!(
-                    named(plan_read(&evaluation, stage, rect).unwrap_err()),
-                    "{domain}: {stage:?}"
-                );
+                let read = plan_read(&evaluation, stage, rect).unwrap();
+                assert!(lit(&read.plan), "{domain}: {stage:?}");
             }
-            assert!(named(plan_stream(&evaluation, 32).unwrap_err()), "{domain}");
+            assert!(lit(&plan_stream(&evaluation, 32).unwrap().plan), "{domain}");
             let read = plan_read(&evaluation, before, rect).unwrap();
             assert!(!read.plan.reads_lights(), "{domain}");
         }

@@ -52,7 +52,7 @@
 //!   tiles are never mixed in one export, and the export lane renders it again with the reference.
 //! - **Evidence.** [`GpuTiles::figures`]: the status, the adapter, the reads each renderer
 //!   answered, the streams and bands, the tiles drawn, the bytes the runner holds and has held,
-//!   and its compiles.
+//!   its compiles and the lights it computed.
 use super::gpu_plan::{self, WarpGrid, surface_plan_over};
 use luxforge_core::{
     Cancel, ClientId, CoordinateGrid, Error, GpuFallback, GpuGeometry, GpuPlan, LinearImage,
@@ -178,9 +178,11 @@ pub(crate) struct TileWorkerFigures {
     /// Streams the worker began drawing, and bands it sent.
     pub(crate) streams: u64,
     pub(crate) bands: u64,
-    /// Tiles the runner drew, reads' and streams' alike, and program sequences it compiled.
+    /// Tiles the runner drew, reads' and streams' alike, program sequences it compiled and lights
+    /// it computed, each once for the tiles that read it.
     pub(crate) tiles: u64,
     pub(crate) compiles: u64,
+    pub(crate) lights: u64,
     /// The bytes the runner holds now, as charged, and the most it has held at once.
     pub(crate) in_use: u64,
     pub(crate) peak: u64,
@@ -210,6 +212,7 @@ impl Figures {
             bands: self.bands,
             tiles: self.runner.runs,
             compiles: self.runner.compiles,
+            lights: self.runner.lights,
             in_use: self.runner.in_use,
             peak: self.runner.peak,
         }
@@ -1242,6 +1245,7 @@ impl TileWorkerFigures {
             "bands": self.bands,
             "tiles": self.tiles,
             "compiles": self.compiles,
+            "lights": self.lights,
             "in_use_bytes": self.in_use,
             "peak_bytes": self.peak,
         })

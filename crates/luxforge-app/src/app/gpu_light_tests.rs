@@ -22,6 +22,9 @@
 //!   tick's own change, every scratch plane starting from NaN.
 //! - **Bounds.** The light link and the light plane are charged to the GPU-preview budget and
 //!   leave it when released.
+//! - **The tile runner.** A tile runner, which holds a window of the source for each tile it draws,
+//!   computes a light over a stage of several of the link's tiles from a window of the source for
+//!   each: the slot's light over the whole source, bit for bit, on its own device, and once.
 //!
 //! A GPU test with no adapter prints that it was skipped and asserts nothing: the skip is the
 //! report, and `cargo test` counting it as passed does not make it GPU evidence.
@@ -1008,5 +1011,58 @@ fn gpu_light_the_slot_runs_its_plans_light_links_before_its_chain() {
         bench.release();
         assert_eq!(bench.surface_lights(), (0, 0), "{path:?}: let go");
         assert_eq!(bench.charged(), (0, 0), "{path:?}: everything released");
+    }
+}
+
+/// A tile runner computes a light the way the slot does, a window of the source cut for each of the
+/// link's tiles in turn rather than the whole source held: over a stage of 2300 × 2200, two of the
+/// link's 2048-pixel tiles across and two down, on both paths, its light is the slot's over the
+/// whole source, bit for bit, though each is on a device of its own. A second run of the same light
+/// over the same source is the one the runner kept, computed once.
+#[test]
+fn gpu_light_a_tile_runner_computes_the_slots_light_a_window_at_a_time() {
+    let test = "gpu_light_a_tile_runner_computes_the_slots_light_a_window_at_a_time";
+    let Some((mut bench, adapter)) = on_device(test, None) else {
+        return;
+    };
+    let Some((backend, name)) = super::gpu_tiles_tests::host_adapter(test) else {
+        return;
+    };
+    let mut runner =
+        luxforge_ui::photo_surface::gpu_preview::tiles::TileRunner::open(&backend, &name)
+            .unwrap_or_else(|refusal| panic!("{test}: the runner: {refusal:?}"));
+    eprintln!("{test}: adapter {adapter}");
+    let registry = ModuleRegistry::builtin();
+    let photo = Photo::synthetic(2300, 2200, 0x5a);
+    let recipe = stack(&[
+        (BASIC_EFFECT, json!({"exposure": 0.4, "contrast": 15.0})),
+        (PRESENCE_EFFECT, json!({"dehaze": 35})),
+    ]);
+    for (version, path) in [(1, Path::Byte), (2, Path::Linear)] {
+        let gpu = photo.gpu(path, version);
+        let (_, light) = light_of(
+            &registry,
+            &recipe,
+            request(&photo, path),
+            GpuLightRestoration::LeftOut,
+        );
+        let slot = bench.light(&gpu, &light).expect("the slot's light");
+        let computed = runner.figures().lights;
+        let windowed = runner.light(&gpu, &light).expect("the runner's light");
+        let again = runner
+            .light(&gpu, &light)
+            .expect("the runner's light again");
+        eprintln!("{path:?}: light {:?}", &slot.light[..3]);
+        assert_eq!(
+            windowed.map(f32::to_bits),
+            slot.light.map(f32::to_bits),
+            "{path:?}: a window at a time, the whole source's light"
+        );
+        assert_eq!(again.map(f32::to_bits), windowed.map(f32::to_bits));
+        assert_eq!(
+            runner.figures().lights,
+            computed + 1,
+            "{path:?}: computed once, then kept"
+        );
     }
 }

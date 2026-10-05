@@ -9,9 +9,9 @@
 //!   from NaN. Against the reference service the same stages, read at the cells of a 9 × 9 grid,
 //!   are within their class's display limit. A neutral pick's 25 points draw one tile, a seed is
 //!   the code of the sample input, and the worker keeps nothing of a call's stack once answered.
-//! - **The reference, by name.** A read of a stack whose Dehaze light the runner does not compute
-//!   yet, a launch that refused the GPU, an adapter the host does not offer and a lost device are
-//!   answered by the reference, naming why, and a stream of them is refused or ended naming it.
+//! - **The reference, by name.** A read of a stack the GPU cannot plan, a launch that refused the
+//!   GPU, an adapter the host does not offer and a lost device are answered by the reference,
+//!   naming why, and a stream of them is refused or ended naming it.
 //! - **Order and bounds.** A read waits behind at most the one export tile being drawn, and not at
 //!   all behind a stream whose encoder has its bands to take; a full queue refuses at once; a
 //!   disconnect drops a client's waiting reads and cancels its read being answered.
@@ -674,10 +674,11 @@ fn a_seed_is_the_code_of_the_sample_input() {
 }
 
 /// What the GPU cannot draw is answered by the reference, naming why, with the reference's own
-/// pixels: a stack whose Dehaze light is computed from the whole stage, which the runner, holding
-/// a window of it, does not compute yet, each read of its call after the first included, and its
-/// stream refused at once; a launch that refused the GPU, which opens nothing; an adapter the host
-/// does not offer by that name, which the status then names; and a desktop that named no adapter.
+/// pixels: a stack holding a pixel-stage layer, which no GPU program replaces, each read of its
+/// call after the first included, and its stream refused at once, while the same stack without it,
+/// Dehaze's light and all, the GPU draws; a launch that refused the GPU, which opens nothing; an
+/// adapter the host does not offer by that name, which the status then names; and a desktop that
+/// named no adapter.
 #[test]
 fn a_plan_the_gpu_cannot_run_is_answered_by_the_reference_naming_why() {
     let test = "a_plan_the_gpu_cannot_run_is_answered_by_the_reference_naming_why";
@@ -692,12 +693,19 @@ fn a_plan_the_gpu_cannot_run_is_answered_by_the_reference_naming_why() {
         .find(|(family, _)| *family == "Presence")
         .expect("the Presence family");
     let reference = ReferenceTiles::new();
-    // Dehaze's light, from the whole stage. The read of the source before Presence, which needs no
-    // light, is the reference's too: what remains of a call after a read the GPU cannot draw is
-    // the reference's.
-    let mut dehaze = recipe.clone();
-    dehaze.layers[0].payload["dehaze"] = json!(20.0);
-    let unlit = stack(&source, &dehaze, false);
+    // A pixel replaced before Presence, which no GPU program replaces. The read of the stage
+    // before that layer, which the GPU could draw, is the reference's too: what remains of a call
+    // after a read the GPU cannot draw is the reference's.
+    let mut pixel = recipe.clone();
+    pixel.layers.insert(0, Layer::pixel(12, 9, [200, 40, 90]));
+    let unlit = Evaluation::new(
+        Arc::new(ModuleRegistry::developer()),
+        RenderContext::new(),
+        source.clone(),
+        entry(&AssetId::new(), 1, None),
+        pixel,
+        None,
+    );
     let reads = [
         point(ReadStage::Output, 40, 30, ReadValues::Codes),
         point(
@@ -711,11 +719,7 @@ fn a_plan_the_gpu_cannot_run_is_answered_by_the_reference_naming_why() {
         ),
     ];
     let service = GpuTiles::new(Some((backend.clone(), name.clone())), false);
-    let why = TileFallback::Plan(GpuFallback::Unplannable(
-        "layer 0's global estimate is computed from the whole stage, which the tile worker does \
-         not compute yet"
-            .into(),
-    ));
+    let why = TileFallback::Plan(GpuFallback::PixelStage { layer: 0 });
     assert_eq!(
         service.stream(&unlit, &Cancel::new()).err(),
         Some(why.clone()),
@@ -728,14 +732,20 @@ fn a_plan_the_gpu_cannot_run_is_answered_by_the_reference_naming_why() {
         assert_eq!(answer.pixels, expected.pixels, "the reference's own pixels");
     }
     assert_eq!(service.status(), TileStatus::Gpu, "the runner itself draws");
-    // Without Dehaze the GPU draws the stack.
-    let held = stack(&source, &recipe, true);
+    // Without it the GPU draws the stack, Presence's Dehaze light computed by the runner.
+    let held = stack(&source, &recipe, false);
+    assert!(
+        recipe.layers[0].payload["dehaze"]
+            .as_f64()
+            .is_some_and(|dehaze| dehaze != 0.0),
+        "the Presence family reads a light"
+    );
     let (answers, _) = call(&service, client, &held, &reads);
     assert!(
         answers
             .iter()
             .all(|answer| answer.answered == Answered::gpu()),
-        "the GPU draws a stack that reads no light"
+        "the GPU draws a stack that reads a light"
     );
     let (expected, _) = call(&reference, client, &held, &reads);
 
@@ -1358,10 +1368,9 @@ fn decoded_against(
 /// A GPU export through the export lane, its tiles streamed by the worker on this host's adapter,
 /// is within its class's display limit of the reference export, both files decoded independently
 /// and compared over every pixel: a colour stack by the pointwise limits and Presence by the
-/// spatial limits, on a generated photograph and on the corpus's Presence fixture. A Dehaze light
-/// no render has stored yet is answered by the reference, naming `region-estimate`, and is the
-/// reference's own file; once a render of the stack has stored it, as a settled frame does, the
-/// GPU exports the stack.
+/// spatial limits, on a generated photograph and on the corpus's Presence fixture. Presence's
+/// Dehaze light is computed by the worker's runner from the whole stage before any render of the
+/// stack, so the GPU exports it at once.
 #[test]
 fn a_gpu_export_is_within_the_display_limit_of_the_reference_export() {
     let test = "a_gpu_export_is_within_the_display_limit_of_the_reference_export";
@@ -1399,16 +1408,9 @@ fn a_gpu_export_is_within_the_display_limit_of_the_reference_export() {
             "edit.set-presence",
             json!({"texture": 30, "clarity": 25, "dehaze": 20}),
         );
-        let (unheld, unheld_file) = exports.export("presence-unheld.jpg", false);
-        assert_eq!(
-            unheld["renderer"],
-            json!({"record": "reference", "reason": "region-estimate"}),
-            "{name}: a light no render has stored"
-        );
-        let (_, reference) = exports.export("presence-reference.jpg", true);
-        assert!(unheld_file == reference, "{name}: the reference's own file");
         let (drawn, file) = exports.export("presence-gpu.jpg", false);
         assert_eq!(drawn["renderer"], gpu, "{name}: {drawn}");
+        let (_, reference) = exports.export("presence-reference.jpg", true);
         let statistics = decoded_against(&file, &reference);
         eprintln!("{test}: {name}, Presence, against the reference export: {statistics:?}");
         let verdict = luxforge_reference::preview_error::verdict(&statistics, Class::Spatial);
@@ -1419,7 +1421,7 @@ fn a_gpu_export_is_within_the_display_limit_of_the_reference_export() {
 
 /// Two GPU exports of one stack through the export lane are the same bytes: twice through one
 /// worker, and once through a second worker's own device on the same adapter, under another
-/// owner, over the same photograph.
+/// owner, over the same photograph, Dehaze's light computed by each worker's runner.
 #[test]
 fn two_gpu_exports_are_byte_identical() {
     let test = "two_gpu_exports_are_byte_identical";
@@ -1427,9 +1429,10 @@ fn two_gpu_exports_are_byte_identical() {
         return;
     };
     let photograph = generated(1200, 800);
+    let (first_worker, second_worker) = (exporter(&adapter), exporter(&adapter));
     let (one, two) = (
-        Exports::new("identical-one", exporter(&adapter), &photograph),
-        Exports::new("identical-two", exporter(&adapter), &photograph),
+        Exports::new("identical-one", Arc::clone(&first_worker), &photograph),
+        Exports::new("identical-two", Arc::clone(&second_worker), &photograph),
     );
     for exports in [&one, &two] {
         exports.edit("edit.set-basic", json!({"exposure": 0.4, "contrast": 20}));
@@ -1437,8 +1440,6 @@ fn two_gpu_exports_are_byte_identical() {
             "edit.set-presence",
             json!({"texture": 30, "clarity": 25, "dehaze": 20}),
         );
-        // The light a settled frame would store.
-        exports.export("stored.jpg", true);
     }
     let gpu = json!({"record": "gpu", "reason": null});
     let (first, file) = one.export("first.jpg", false);
@@ -1449,6 +1450,13 @@ fn two_gpu_exports_are_byte_identical() {
     }
     assert!(file == repeat, "twice through one device");
     assert!(file == elsewhere, "through a second device");
+    // Each export's stream computes Presence's light once, before its tiles.
+    assert_eq!(
+        first_worker.figures().lights,
+        2,
+        "one light for each of two streams"
+    );
+    assert_eq!(second_worker.figures().lights, 1);
     eprintln!("{test}: {} bytes, the same three times", file.len());
 }
 

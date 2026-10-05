@@ -1290,12 +1290,12 @@ fn the_export_comparison_holds_an_export_to_the_reference_and_to_itself() {
     let reference = raster(40, 30, |x, y| [x as u8 * 5, y as u8 * 7, 30]);
     let gap = export_kind(
         &reference,
-        Exported::Gap("the reference renders it: region-estimate".into()),
+        Exported::Gap("the reference renders it: pixel-stage".into()),
         Class::Pointwise,
     )
     .unwrap();
     assert_eq!(gap["status"], "gap", "never a pass");
-    assert_eq!(gap["reason"], "the reference renders it: region-estimate");
+    assert_eq!(gap["reason"], "the reference renders it: pixel-stage");
     assert_eq!(gap["reference"]["stage"], json!([40, 30]));
     let drawn = |codes: Vec<u8>, repeatable| Exported::Drawn {
         codes,
