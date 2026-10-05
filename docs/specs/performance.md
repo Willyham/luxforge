@@ -3320,10 +3320,11 @@ DNGs take 8 to 13 ms either way, so their 2.2× saves under 7 ms. The owner Z6 u
 `cold_saved_white_balance_preparation_timing` in `luxforge-core` reproduces the method of
 [native development and saved-white-balance preparation](#native-development-and-saved-white-balance-preparation):
 a catalog whose RAW has a saved custom red gain of 1.1 × as-shot, a new owner and empty source cache
-per observation with the filesystem warm, and the clock from immediately before `catalog.import`
-until a strict exact-source `PreviewJob` for the current entry is available, through the one source
-job's wait and adoption. The harness that produced the earlier figures is not in the repository, so
-this one was written to that description. Before is the same source built with the Z6's
+per observation with the filesystem warm, and the clock from immediately before the photograph's
+`source.prepare` (the figures below were taken through `catalog.import` of its file, which queued
+the same preparation) until a strict exact-source `PreviewJob` for the current entry is available,
+through the one source job's wait and adoption. The harness that produced the earlier figures is
+not in the repository, so this one was written to that description. Before is the same source built with the Z6's
 `NikonZ6Lossless14` and the Air 2S's `DjiAir2sDng16` on LibRaw (their two `unpacker` lines removed);
 after is the source as routed. The two builds differ only in those catalog lines, so each builds
 its own catalog. 15 observations per leg in before, after, after, before order give 30 per variant.
@@ -3369,6 +3370,32 @@ generated JPEGs only and does not exercise RAW unpacking; it passed on the measu
 timing components started at one-minute load 12.0 to 12.6, after the tier's own `check`, so their
 rows are marked unreliable and are not compared with earlier figures. Native Windows and Linux
 builds are not measured.
+
+## Catalog: browse, pick, develop
+
+Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, release builds, 2026-10-01, `cargo run --release --locked --package xtask -- catalog-measure --scale full --raw-corpus <the private CC0 corpus>` at commit 33090901 (30 samples a figure, 5 a first-browse journey), on a host shared with other sessions: one-minute load 13 to 18 throughout, above the harness's threshold of 8, so every figure is marked unreliable by the harness and none is a baseline. The data is generated in scratch: a 1,000-frame RAW trip copied from 102 CC0 files of the corpus under new names with rewritten capture times (the originals read only, checked unchanged), a 10,000-file folder and a 200,000-file tree of APFS clones of generated JPEGs, a 200,000-link tree of hard links, and a generated 100,000-photograph catalog. The OS file cache is warm; no card reader was measured. The photographs-view rows come from the harness's `--only browse-generated` step after the allocation fix (4a8183b5), four runs at load 10 to 23.
+
+| Target (provisional, [catalog design](../design/catalog.md#performance)) | Measured | Verdict |
+| --- | --- | --- |
+| First browse of a 1,000-frame folder, internal SSD: first grid screen within 1 s; every file, event and moment within 5 s | first screen 181 / 246 ms p50 / p95; every file, event and moment 182 / 249 ms | Met |
+| Grid previews for every file of that first browse: reported | 11.7 / 15.1 s (embedded previews of 1,000 RAWs read on two workers; the Canon R5 Mark II and R8 developed) | Reported |
+| Browsing from a card reader: reported | Not measured (no card) | Outstanding |
+| Returning to a known 1,000-file folder: reconciled and drawn within 1 s | reconciled 4.4 / 4.8 ms, drawn 12.1 / 12.6 ms | Met |
+| First index of 200,000 files: reported, the editor responsive | 55.0 s; owner round trips during it 0.025 / 0.41 ms. 200,000 hard links to 500 files: 54.4 s, 0.026 / 0.046 ms | Reported; responsive |
+| `browse.view` p95 under 50 ms: 10,000 files | 18.4 / 27.5 ms (first evaluation 66 ms) | Met |
+| `browse.view` p95 under 50 ms: 100,000 photographs | 106 / 107 ms at best, 119–167 / 169–188 ms in the other runs, first evaluation about 0.9–1.0 s | **Missed.** Stepping the photographs' rows in SQLite alone takes about 52 ms; the two ways past it are a [proposal](../design/catalog.md#performance) |
+| `browse.rows` of 200 under 2 ms | files 2.5 / 3.9 ms, photographs 2.7 / 4.1 ms (0.9 / 1.2 and 1.1 / 1.4 ms in the first run at load 6 to 17) | Missed under this load; met in the earlier run |
+| The owner grows by the view's id list | 47–49 MiB settled after the first 100,000-photograph view (the 1.6 MB id list, the preview lane's 20,000 queued tasks, the layout and SQLite's caches); growth over 30 more evaluations 11–15 MiB | Met for held memory |
+| Bracket detection from previews under 1 ms a run | 0.033 / 0.058 ms (1,650 runs) | Met |
+| Developing 20 RAW picks: reported | 2.69 s; the first photograph committed after 91 ms | Reported |
+| Grid scroll over 10,000 files: presented frames p95 within 16 ms at 120 Hz | frame time 8.5 / 9.0 ms (119 frames) | Met |
+| Loupe stepping with the look-ahead warm: the next frame presented in the frame after the key | 1 / 1 frames (key to present 0.26 / 0.37 ms); a held arrow at 30 ms presents at 32 / 41 ms intervals; over the RAW trip 1 / 1 frames, held 26 / 58 ms | Met |
+| 100% focus check from a full-size embedded preview within 50 ms | 25.6–34.5 ms p50 per camera, 26.6–52.4 ms p95; a second region 25–36 ms | Met at p50; one camera's p95 at 52 ms |
+| 100% focus check from an on-demand development: reported per camera | first region 84–1,340 ms p50 by camera (the slowest a large Bayer RAW), a second region of the same frame 25–29 ms | Reported |
+| Switching photographs in Develop with a cached large preview: presented in the frame after the key | 1 / 1 frames (31 photographs) | Met |
+| Decoded grid and loupe previews within 192 and 256 MiB | grid 32 / 54 MiB, loupe 81 / 87 MiB (high-water mark) | Met |
+| Idle CPU with the watchers armed | core 0.30%, editor 0.99% (editor without a catalog view 1.03%) of one core over 30 s | Met |
+| A Basic drag during indexing and during a preview backlog | input to presented frame 8.7 / 9.7 ms and 8.7 / 9.4 ms, against 9.0 / 9.6 ms alone (24 MP, warm) | No effect |
 
 ## Preview error baseline
 

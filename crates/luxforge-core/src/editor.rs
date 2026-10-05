@@ -15,7 +15,6 @@ use crate::{
     artifacts::{ArtifactId, LiveArtifacts, PREPARED_ARTIFACT_BYTES, PreparedArtifacts},
     source::PreparedSource,
 };
-use catalog::{CATALOG_FORMAT, default_artifact_root};
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -30,6 +29,7 @@ mod artifact_store;
 #[cfg(test)]
 mod artifact_tests;
 mod catalog;
+mod catalog_rows;
 mod collapse;
 mod describe;
 mod entries;
@@ -42,9 +42,21 @@ mod source;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
-pub(crate) use test_support::{mutation, mutation_json, recast_as_raw};
+pub(crate) use test_support::{distinct_jpeg, mutation, mutation_json, recast_as_raw};
 
-pub(crate) use catalog::{DEFAULT_ASSET_PAGE, MAX_ASSET_PAGE, decode, encode, now_ms, write};
+pub(crate) use catalog::{
+    CATALOG_FORMAT, decode, default_artifact_root, encode, insert_entry, now_ms, write,
+};
+#[cfg(test)]
+pub(crate) use catalog_rows::capture_of;
+pub(crate) use catalog_rows::{
+    NewAsset, insert_asset, insert_capture, insert_catalog_folder, insert_collection,
+    insert_indexed_folder, insert_member, insert_pick, upsert_volume,
+};
+// The indexed folders and known volumes.
+pub(crate) use catalog_rows::folder_rows;
+// The library journal's item rows.
+pub(crate) use catalog_rows::library_rows;
 pub use evaluate::Evaluation;
 pub(crate) use evaluate::PointPlan;
 pub(crate) use history::{MAX_HISTORY_PAGE, MAX_VERSION_NAME};
@@ -53,7 +65,8 @@ pub(crate) use masks::mask_target_parameter;
 pub(crate) use plan::prefix;
 pub use source::RawInterpretation;
 pub(crate) use source::{
-    Prepared, Preparing, SourceWork, source_signature, source_signature_for_handle,
+    FilePreparation, NewPhotograph, Prepared, Preparing, ReadContent, ReadOriginal, SourceWork,
+    insert_photograph, original_signature, source_signature, source_signature_for_handle,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -210,28 +223,6 @@ pub struct AssetRecord {
     pub source: SourceKind,
 }
 
-/// One asset as `catalog.list` lists it: what a client needs to pick a photo, read from the asset's
-/// own columns. It carries the source kind's tag but not the interpretation, which is never decoded
-/// for a listing; `source.inspect` and `asset.state` read one asset's whole record.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AssetSummary {
-    pub id: AssetId,
-    pub locator: PathBuf,
-    pub kind: SourceTag,
-    pub width: u32,
-    pub height: u32,
-}
-
-/// One page of the catalog's assets in import order. `next` is the cursor that continues it, the
-/// last asset listed, or `None` when nothing follows.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AssetPage {
-    pub assets: Vec<AssetSummary>,
-    pub next: Option<AssetId>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EditorState {
@@ -264,10 +255,10 @@ pub struct MutationResult {
     pub collapsed_entry_id: Option<EntryId>,
 }
 
-/// What one module's first-open action came to when an import created a new asset
+/// What one module's first-open action came to when a photograph was first opened
 /// ([`crate::ToolModule::first_open`]): the entry it committed by the `system` actor, or why it
-/// committed nothing. `job.read` of the import lists one per module that proposed an action or
-/// could not plan one.
+/// committed nothing. `job.read` of that preparation lists one per module that proposed an action
+/// or could not plan one.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FirstOpen {
@@ -586,6 +577,8 @@ pub(crate) struct SourceSignature {
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedFile {
+    /// The photograph whose original was prepared.
+    pub(crate) asset_id: AssetId,
     pub(crate) canonical: PathBuf,
     pub(crate) signature: SourceSignature,
     pub(crate) source: PreparedSource,
@@ -623,6 +616,9 @@ pub struct EditorService {
     /// that moves a head updates it where it commits.
     entries: RefCell<entries::EntryCache>,
     source_cache: RefCell<Option<CachedSource>>,
+    /// What the last one-file Develop read of its file, kept for the preparation that follows it
+    /// (the open): the next preparation takes it ([`source::ReadOriginal`]).
+    read_original: RefCell<Option<source::ReadOriginal>>,
     pub(crate) pixel_reads: RefCell<pixels::PixelReads>,
     registry: Arc<ModuleRegistry>,
     /// The budgets and the estimate store every evaluation this service plans shares: its own
@@ -639,6 +635,11 @@ pub struct EditorService {
     checked_manifest: RefCell<Option<SourceSignature>>,
     /// Artifacts published while this service is open, which no collection removes.
     live_artifacts: LiveArtifacts,
+    /// Where this catalog's index lives: `<catalog stem>.index` beside the catalog file.
+    index_dir: PathBuf,
+    /// The index database, opened on first use ([`Self::index`]) rather than with the catalog, so
+    /// a catalog that never browses a file gets no index directory.
+    index: RefCell<Option<crate::index::IndexDb>>,
     /// Whether an edit that sets the same control as the entry before it collapses that entry
     /// ([`Self::set_auto_collapse`]). Off until the host sets it from the person's preference.
     auto_collapse: bool,
@@ -681,7 +682,7 @@ impl EditorService {
         // which only a test build turns off.
         catalog::configure(&connection, crate::atomic_file::FLUSHES)?;
         if version == 0 {
-            Self::create_schema(&mut connection)?;
+            Self::create_schema(&mut connection, &uuid::Uuid::new_v4().simple().to_string())?;
         }
         let catalog_id: Option<String> = connection
             .query_row(
@@ -693,13 +694,15 @@ impl EditorService {
         let catalog_id = catalog_id.ok_or_else(|| {
             Error::incompatible("catalog has no identity; choose a new catalog path")
         })?;
-        // The root follows the catalog file, so moving both together keeps it valid.
+        // The roots follow the catalog file, so moving them together keeps them valid.
         let artifact_root = default_artifact_root(path);
+        let index_dir = crate::index::index_dir(path);
         Ok(Self {
             connection,
             // Opening starts empty: nothing read before a reopen is trusted after it.
             entries: RefCell::new(entries::EntryCache::default()),
             source_cache: RefCell::new(None),
+            read_original: RefCell::new(None),
             pixel_reads: RefCell::new(pixels::PixelReads::default()),
             registry,
             render: RenderContext::new(),
@@ -708,6 +711,8 @@ impl EditorService {
             prepared_artifacts: RefCell::new(PreparedArtifacts::new(PREPARED_ARTIFACT_BYTES)),
             checked_manifest: RefCell::new(None),
             live_artifacts: LiveArtifacts::default(),
+            index_dir,
+            index: RefCell::new(None),
             auto_collapse: false,
             auto_lens_profile: true,
         })
@@ -725,7 +730,7 @@ impl EditorService {
         self.auto_collapse
     }
 
-    /// Commit a new RAW photo's detected lens profile when an import first opens it, or stop: the
+    /// Commit a new RAW photo's detected lens profile when its first preparation first opens it, or stop: the
     /// person's "Correct lens distortion on new RAW photos" preference, which the catalog owner
     /// sets when it starts and whenever the preference changes. Off, the lens module is not asked
     /// for a first-open action, so the Lens section offers the detected profile instead. A photo
@@ -747,5 +752,45 @@ impl EditorService {
     /// The render context every evaluation this service plans reads.
     pub fn render_context(&self) -> &RenderContext {
         &self.render
+    }
+
+    /// This catalog's identity.
+    pub fn catalog_id(&self) -> &str {
+        &self.catalog_id
+    }
+
+    /// Where this catalog's index lives, whether or not it has been opened.
+    pub fn index_dir(&self) -> &Path {
+        &self.index_dir
+    }
+
+    /// The catalog's index database, opened on first use: created when there is none, and
+    /// discarded and recreated when it cannot be used, never touching the catalog
+    /// ([`crate::IndexDb::open`]).
+    pub fn index(&self) -> Result<std::cell::RefMut<'_, crate::index::IndexDb>, Error> {
+        let mut slot = self.index.borrow_mut();
+        if slot.is_none() {
+            let (index, _) = crate::index::IndexDb::open(&self.index_dir, &self.catalog_id)?;
+            *slot = Some(index);
+        }
+        Ok(std::cell::RefMut::map(slot, |slot| {
+            slot.as_mut().expect("the index was opened above")
+        }))
+    }
+
+    /// The catalog's index database when it is open, never opening it: the catalog owner's index
+    /// lane reads the index only once a thread of the index lane has opened it
+    /// ([`Self::adopt_index`]).
+    pub(crate) fn index_open(&self) -> Option<std::cell::RefMut<'_, crate::index::IndexDb>> {
+        std::cell::RefMut::filter_map(self.index.borrow_mut(), Option::as_mut).ok()
+    }
+
+    /// Take an index opened elsewhere, off the owner, as this service's own, unless one is open
+    /// already.
+    pub(crate) fn adopt_index(&self, index: crate::index::IndexDb) {
+        let mut slot = self.index.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(index);
+        }
     }
 }

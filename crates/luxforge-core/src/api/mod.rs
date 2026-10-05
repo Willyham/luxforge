@@ -13,7 +13,9 @@ pub use owner::{ClientId, EventWake, OwnerHandle, PreviewRequest};
 
 pub use transport::{LocalServer, serve_json_lines_with};
 
-use crate::{AssetId, Draft, DraftId, Error, PreviewSession};
+use crate::{
+    AssetId, Draft, DraftId, Error, JobId, PreviewSession, catalog_types::LibraryChangeSeq,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -83,7 +85,15 @@ impl ApiResponse {
 /// One change in the owner's event log: the request it was made under and, when the change has
 /// one, the asset it changed and the revision it left that asset at. A version names its asset but
 /// no revision, since naming an entry moves none; a change to the preset library, a module or the
-/// artifact store names no asset.
+/// artifact store names no asset. A library change (a pick or clear, a catalog folder or collection
+/// change, a Locate, or the undo or redo of one) names the journal sequence it recorded, one event
+/// however many items it covered, and names an asset only when it moved exactly that one
+/// photograph's original, with no revision. A batch the index lane committed names the index
+/// revision it left, under the request that started the listing (`index.refresh`,
+/// `index.add-folder`, or the undo or redo of an indexed folder): one event however many files it
+/// wrote. An event a job records — a batch it committed, and the one it records as it ends —
+/// also names the job (`job_id`), so a client tells the job's end and its progress apart by the
+/// job and reads `job.read` only for its own.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiEvent {
@@ -94,6 +104,12 @@ pub struct ApiEvent {
     pub asset_id: Option<AssetId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub library_sequence: Option<LibraryChangeSeq>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<JobId>,
 }
 
 /// What a change is announced as: the method and request identity a client watching
@@ -105,6 +121,10 @@ pub(crate) struct Origin {
     pub request_id: String,
     pub asset_id: Option<AssetId>,
     pub revision: Option<u64>,
+    pub library_sequence: Option<LibraryChangeSeq>,
+    pub index_revision: Option<u64>,
+    /// The job that recorded the change, when a job did.
+    pub job_id: Option<JobId>,
 }
 
 impl Origin {
@@ -114,7 +134,28 @@ impl Origin {
             request_id: request_id.to_owned(),
             asset_id: None,
             revision: None,
+            library_sequence: None,
+            index_revision: None,
+            job_id: None,
         }
+    }
+
+    /// The same request, naming the job that recorded the change.
+    pub(crate) fn job(mut self, job_id: JobId) -> Self {
+        self.job_id = Some(job_id);
+        self
+    }
+
+    /// The same request, naming the library change it recorded.
+    pub(crate) fn library(mut self, sequence: LibraryChangeSeq) -> Self {
+        self.library_sequence = Some(sequence);
+        self
+    }
+
+    /// The same request, naming the index revision a batch of its listing left.
+    pub(crate) fn index(mut self, revision: u64) -> Self {
+        self.index_revision = Some(revision);
+        self
     }
 
     /// The same request, naming the asset it changed and, when that moved it, the revision it left.
@@ -314,6 +355,12 @@ pub struct ClientSession {
     /// and no method changes it.
     #[serde(default)]
     pub authority: ClientAuthority,
+    /// This client's one browse view as its session carries it: the query, revision, size,
+    /// staleness and selection. The view's item list stays with the owner, outside the session, so
+    /// a session answer never carries it (`docs/design/catalog.md`, "Views on the owner"). Boxed, so
+    /// every message that carries a session stays small.
+    #[serde(default)]
+    pub browse: Box<crate::catalog_types::BrowseSession>,
 }
 
 impl ClientSession {

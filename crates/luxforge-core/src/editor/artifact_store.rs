@@ -284,6 +284,29 @@ impl EditorService {
             .collect())
     }
 
+    /// Every artifact `recipe` references, split for a worker that reads its own artifacts off the
+    /// catalog owner and never hands them back: the verified bytes kept ready, which it binds as
+    /// they are, and how it reads and verifies the rest. What a rendered catalog preview plans on
+    /// the owner (`crate::previews::rendered`). Fails like [`Self::bind_artifacts`] when one cannot
+    /// be prepared at all. Stat and lookup only; nothing is read.
+    pub(crate) fn artifact_bindings(
+        &self,
+        recipe: &Recipe,
+    ) -> Result<(Vec<Arc<PreparedArtifact>>, Vec<ArtifactRead>), Error> {
+        let ids = referenced(recipe);
+        let (mut ready, mut reads) = (Vec::new(), Vec::new());
+        if ids.is_empty() {
+            return Ok((ready, reads));
+        }
+        for binding in self.bind(&ids)? {
+            match binding {
+                Binding::Ready(artifact) => ready.push(artifact),
+                Binding::Unprepared(read) => reads.push(read),
+            }
+        }
+        Ok((ready, reads))
+    }
+
     /// Keep bytes a worker verified ready under the signature they were read with, and return what
     /// was kept.
     pub(super) fn adopt_artifacts(
@@ -492,12 +515,5 @@ impl EditorService {
             live: self.live_artifacts.clone(),
             rows: removed.len(),
         })
-    }
-
-    /// This catalog's own identity, which its artifact root's manifest must name. Production code
-    /// has no caller; kept for a test that checks the manifest.
-    #[cfg(test)]
-    pub(crate) fn catalog_id(&self) -> &str {
-        &self.catalog_id
     }
 }

@@ -12,11 +12,14 @@
 //! know what is running now, not the transitions it missed, and preview jobs start and finish at the
 //! display's rate during a drag, which would evict the catalog mutations the event log exists for.
 //! [`ActivitySnapshot::sequence`] changes whenever the contents change, so a poller can skip an
-//! unchanged snapshot.
+//! unchanged snapshot. A reader that should not poll at all watches the board instead
+//! ([`ActivityBoard::watch`]): the next change to an entry it follows wakes it once, and it is not
+//! woken again until it has read the board, so however fast the work reports, a watcher is woken at
+//! most once per read and never while nothing it follows changes.
 //!
 //! Everything here is bounded and cheap: at most `MAX_ACTIVE` active and `MAX_RECENT` recent
-//! entries, both stored in lists sized once when the board is made, one uncontended mutex per call,
-//! and no timer, thread or queue.
+//! entries and `MAX_WATCHERS` watchers, all stored in lists sized once when the board is made, one
+//! uncontended mutex per call, and no timer, thread or queue.
 use crate::{AssetId, Error, ErrorKind};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -42,6 +45,18 @@ pub(crate) const MAX_RECENT: usize = 16;
 /// whose jobs finish in a few milliseconds each, never evicts a RAW redevelopment a reader still
 /// wants to see.
 pub(crate) const RECENT_THRESHOLD: Duration = Duration::from_millis(250);
+
+/// How many readers watch one board. The desktop watches its owner's board once; a watch past this
+/// is refused, so a board never grows a list of watchers.
+pub(crate) const MAX_WATCHERS: usize = 8;
+
+/// What a watcher is woken with. It runs on whichever thread changed the board, while the board is
+/// locked, so it must only post a signal: it never reads the board, takes a lock the board's
+/// publishers hold or waits.
+pub type ActivityWake = Arc<dyn Fn() + Send + Sync>;
+
+/// Which entries a watcher follows: a change to any other entry does not wake it.
+pub type ActivityFilter = fn(&ActivityEntry) -> bool;
 
 /// How one piece of work ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,6 +194,24 @@ struct Finished {
     ended: Instant,
 }
 
+/// One reader waiting to hear of the next change to the entries it follows.
+struct Watcher {
+    id: u64,
+    follows: ActivityFilter,
+    wake: ActivityWake,
+    /// Woken by the next followed change; disarmed when woken, armed again by a read.
+    armed: bool,
+}
+
+impl std::fmt::Debug for Watcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Watcher")
+            .field("id", &self.id)
+            .field("armed", &self.armed)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug)]
 struct Board {
     next_id: u64,
@@ -186,6 +219,8 @@ struct Board {
     untracked: u64,
     active: Vec<Running>,
     recent: VecDeque<Finished>,
+    next_watcher: u64,
+    watchers: Vec<Watcher>,
 }
 
 impl Board {
@@ -200,6 +235,56 @@ impl Board {
             .iter_mut()
             .find(|running| running.entry.id == id)
             .map(|running| &mut running.entry)
+    }
+
+    /// Wake the watchers that follow the active entry `id`, which just changed.
+    fn notify_of(&mut self, id: u64) {
+        let Self {
+            active, watchers, ..
+        } = self;
+        if let Some(running) = active.iter().find(|running| running.entry.id == id) {
+            notify(watchers, &running.entry);
+        }
+    }
+
+    /// The board as a snapshot, every time in it measured against `now`.
+    fn snapshot(&self, now: Instant) -> ActivitySnapshot {
+        ActivitySnapshot {
+            sequence: self.sequence,
+            active: self
+                .active
+                .iter()
+                .map(|running| ActiveActivity {
+                    entry: running.entry.clone(),
+                    elapsed_ms: whole_ms(now.saturating_duration_since(running.started)),
+                })
+                .collect(),
+            recent: self
+                .recent
+                .iter()
+                .map(|finished| RecentActivity {
+                    entry: finished.entry.clone(),
+                    outcome: finished.outcome,
+                    duration_ms: whole_ms(
+                        finished.ended.saturating_duration_since(finished.started),
+                    ),
+                    ended_ms_ago: whole_ms(now.saturating_duration_since(finished.ended)),
+                })
+                .collect(),
+            untracked: self.untracked,
+        }
+    }
+}
+
+/// Wake every armed watcher that follows `entry`, which just changed, and disarm it: it is not
+/// woken again until it reads the board. Nothing is allocated; each wake only posts a signal.
+fn notify(watchers: &mut [Watcher], entry: &ActivityEntry) {
+    for watcher in watchers
+        .iter_mut()
+        .filter(|watcher| watcher.armed && (watcher.follows)(entry))
+    {
+        watcher.armed = false;
+        (watcher.wake)();
     }
 }
 
@@ -228,6 +313,8 @@ impl ActivityBoard {
                 // Sized once to their bounds, so recording work never allocates under the lock.
                 active: Vec::with_capacity(MAX_ACTIVE),
                 recent: VecDeque::with_capacity(MAX_RECENT + 1),
+                next_watcher: 1,
+                watchers: Vec::with_capacity(MAX_WATCHERS),
             }),
             recent_threshold: threshold,
         })
@@ -262,6 +349,9 @@ impl ActivityBoard {
             None
         };
         board.changed();
+        if let Some(id) = id {
+            board.notify_of(id);
+        }
         drop(board);
         Activity {
             board: Arc::clone(self),
@@ -272,32 +362,40 @@ impl ActivityBoard {
     /// The board now. It takes the lock once and copies at most [`MAX_ACTIVE`] and [`MAX_RECENT`]
     /// small entries; every time in it is measured against one clock reading taken under that lock.
     pub(crate) fn snapshot(&self) -> ActivitySnapshot {
-        let board = self.lock();
-        let now = Instant::now();
-        ActivitySnapshot {
-            sequence: board.sequence,
-            active: board
-                .active
-                .iter()
-                .map(|running| ActiveActivity {
-                    entry: running.entry.clone(),
-                    elapsed_ms: whole_ms(now.saturating_duration_since(running.started)),
-                })
-                .collect(),
-            recent: board
-                .recent
-                .iter()
-                .map(|finished| RecentActivity {
-                    entry: finished.entry.clone(),
-                    outcome: finished.outcome,
-                    duration_ms: whole_ms(
-                        finished.ended.saturating_duration_since(finished.started),
-                    ),
-                    ended_ms_ago: whole_ms(now.saturating_duration_since(finished.ended)),
-                })
-                .collect(),
-            untracked: board.untracked,
+        self.lock().snapshot(Instant::now())
+    }
+
+    /// Watch the entries `follows` picks: once the watch has read the board
+    /// ([`ActivityWatch::read`]), the next begin, phase, progress or end of such an entry calls
+    /// `wake`, once, and the watch is not woken again until it reads the board again. A reader that
+    /// reads when it is woken, or when it chooses to, is therefore never woken faster than it reads,
+    /// and nothing wakes it while nothing it follows changes. The watch starts unarmed, so its first
+    /// read is what makes it hear the next change; dropping it stops the wakes. At most
+    /// [`MAX_WATCHERS`] watch one board; another is `resource-limit`.
+    pub fn watch(
+        self: &Arc<Self>,
+        follows: ActivityFilter,
+        wake: ActivityWake,
+    ) -> Result<ActivityWatch, Error> {
+        let mut board = self.lock();
+        if board.watchers.len() >= MAX_WATCHERS {
+            return Err(Error::resource_limit(format!(
+                "{MAX_WATCHERS} readers already watch the activity board"
+            )));
         }
+        let id = board.next_watcher;
+        board.next_watcher = board.next_watcher.wrapping_add(1);
+        board.watchers.push(Watcher {
+            id,
+            follows,
+            wake,
+            armed: false,
+        });
+        drop(board);
+        Ok(ActivityWatch {
+            board: Arc::clone(self),
+            id,
+        })
     }
 
     /// The board's state. Nothing panics while holding this lock, so a poisoned lock can only come
@@ -315,6 +413,7 @@ impl ActivityBoard {
         if entry.phase.as_deref() != Some(phase) {
             entry.phase = Some(Cow::Borrowed(phase));
             board.changed();
+            board.notify_of(id);
         }
     }
 
@@ -326,6 +425,7 @@ impl ActivityBoard {
         if entry.progress.as_ref() != Some(&progress) {
             entry.progress = Some(progress);
             board.changed();
+            board.notify_of(id);
         }
     }
 
@@ -352,6 +452,7 @@ impl ActivityBoard {
         // `remove` rather than `swap_remove`: the active list stays oldest first.
         let Running { entry, started } = board.active.remove(index);
         board.changed();
+        notify(&mut board.watchers, &entry);
         // Whatever leaves the board is dropped after the lock is released, so its strings are
         // never freed while another thread waits for the board.
         let discarded = if ended.saturating_duration_since(started) >= self.recent_threshold {
@@ -442,6 +543,53 @@ impl Drop for Activity {
             Outcome::Cancelled
         };
         self.end(outcome);
+    }
+}
+
+/// One reader's watch on an [`ActivityBoard`] ([`ActivityBoard::watch`]). Dropping it stops the
+/// wakes.
+pub struct ActivityWatch {
+    board: Arc<ActivityBoard>,
+    id: u64,
+}
+
+impl std::fmt::Debug for ActivityWatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActivityWatch")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ActivityWatch {
+    /// The board now — what `activity.list` answers — with the watch armed: the next change to an
+    /// entry it follows wakes it. Both happen under the board's one lock, so no change can fall
+    /// between the snapshot and the arming unseen and unannounced.
+    pub fn read(&self) -> ActivitySnapshot {
+        let mut board = self.board.lock();
+        let snapshot = board.snapshot(Instant::now());
+        if let Some(watcher) = board
+            .watchers
+            .iter_mut()
+            .find(|watcher| watcher.id == self.id)
+        {
+            watcher.armed = true;
+        }
+        snapshot
+    }
+}
+
+impl Drop for ActivityWatch {
+    fn drop(&mut self) {
+        let mut board = self.board.lock();
+        let at = board
+            .watchers
+            .iter()
+            .position(|watcher| watcher.id == self.id);
+        // Removed after the lock is released, so a wake is never freed while a publisher waits.
+        let removed = at.map(|at| board.watchers.remove(at));
+        drop(board);
+        drop(removed);
     }
 }
 
@@ -762,6 +910,101 @@ mod tests {
         assert_eq!(recent[1]["outcome"], json!("cancelled"));
         assert!(recent[1]["duration_ms"].is_u64() && recent[1]["ended_ms_ago"].is_u64());
         assert_eq!(listed["untracked"], json!(0));
+    }
+
+    /// A watch counting its wakes, following `followed` kinds only.
+    fn counted(
+        board: &Arc<ActivityBoard>,
+        follows: ActivityFilter,
+    ) -> (ActivityWatch, Arc<std::sync::atomic::AtomicUsize>) {
+        let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = wakes.clone();
+        let watch = board
+            .watch(
+                follows,
+                Arc::new(move || {
+                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }),
+            )
+            .unwrap();
+        (watch, wakes)
+    }
+
+    fn wakes(count: &std::sync::atomic::AtomicUsize) -> usize {
+        count.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn catalog(entry: &ActivityEntry) -> bool {
+        entry.kind.starts_with("index.")
+    }
+
+    /// A watch is woken once by the next change to an entry it follows — a begin, a phase, progress
+    /// or an end — and not again until it reads the board, however much changes meanwhile; a
+    /// change to an entry it does not follow never wakes it, and a watch that has not read yet
+    /// hears nothing.
+    #[test]
+    fn a_watch_is_woken_once_per_read_by_the_entries_it_follows() {
+        let board = ActivityBoard::with_recent_threshold(Duration::ZERO);
+        let (watch, woken) = counted(&board, catalog);
+        let unread = board.begin(spec("index.refresh"));
+        assert_eq!(wakes(&woken), 0, "unarmed until its first read");
+
+        let snapshot = watch.read();
+        assert_eq!(snapshot.active.len(), 1, "a read is the board's snapshot");
+        let other = board.begin(spec("preview.render"));
+        other.progress(Some(0.5), "half");
+        other.finish(Outcome::Completed);
+        assert_eq!(wakes(&woken), 0, "work it does not follow wakes nothing");
+
+        unread.progress(Some(0.25), "1 of 4");
+        assert_eq!(wakes(&woken), 1, "progress of followed work wakes it");
+        unread.progress(Some(0.5), "2 of 4");
+        unread.phase("reading headers");
+        let second = board.begin(spec("index.refresh"));
+        assert_eq!(wakes(&woken), 1, "not again until it reads");
+
+        let _ = watch.read();
+        second.phase("listing");
+        assert_eq!(wakes(&woken), 2, "a phase wakes it");
+        let _ = watch.read();
+        drop(second);
+        assert_eq!(wakes(&woken), 3, "an end wakes it");
+        let _ = watch.read();
+        let third = board.begin(spec("index.refresh"));
+        assert_eq!(wakes(&woken), 4, "a begin wakes it");
+        let _ = watch.read();
+        unread.progress(Some(0.5), "2 of 4");
+        assert_eq!(
+            wakes(&woken),
+            4,
+            "progress that changes nothing wakes nothing"
+        );
+        drop((unread, third));
+    }
+
+    /// A read arms the watch under the board's lock with the snapshot it returns, so a change after
+    /// the snapshot always wakes it; dropping the watch stops the wakes; and the board refuses a
+    /// watch past its bound.
+    #[test]
+    fn a_watch_hears_every_change_after_its_read_until_it_is_dropped() {
+        let board = ActivityBoard::with_recent_threshold(Duration::ZERO);
+        let (watch, woken) = counted(&board, catalog);
+        let before = watch.read().sequence;
+        let work = board.begin(spec("index.refresh"));
+        assert_ne!(board.snapshot().sequence, before);
+        assert_eq!(wakes(&woken), 1, "the change after the read woke it");
+        drop(watch);
+        let _ = board.snapshot();
+        work.finish(Outcome::Cancelled);
+        assert_eq!(wakes(&woken), 1, "a dropped watch is not woken");
+
+        let watches: Vec<ActivityWatch> = (0..MAX_WATCHERS)
+            .map(|_| board.watch(catalog, Arc::new(|| {})).unwrap())
+            .collect();
+        let refused = board.watch(catalog, Arc::new(|| {})).unwrap_err();
+        assert_eq!(refused.kind, ErrorKind::ResourceLimit);
+        drop(watches);
+        assert!(board.watch(catalog, Arc::new(|| {})).is_ok());
     }
 
     #[test]

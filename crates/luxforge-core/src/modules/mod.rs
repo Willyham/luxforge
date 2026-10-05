@@ -102,9 +102,7 @@ pub(crate) use presence::PresenceModule;
 pub(crate) use presence::gpu_functions as presence_gpu_functions;
 #[cfg(feature = "qualification")]
 pub use presence::qualification as presence_qualification;
-#[cfg(test)]
-pub(crate) use presets::APPLY_PRESET;
-pub(crate) use presets::{MAX_PRESET_NAME, PresetsModule};
+pub(crate) use presets::{APPLY_PRESET, MAX_PRESET_NAME, PresetsModule};
 pub(crate) use processing::MAX_COLOR_UNITS;
 pub use processing::{
     ColorOperation, CompileStage, PointwiseColor, Processing, SamplingScale, Stage,
@@ -564,18 +562,19 @@ pub trait ToolModule: Send + Sync {
     fn capabilities(&self) -> Option<&dyn CapabilityModule> {
         None
     }
-    /// One of this module's own actions to commit when a photo is first imported, or `None`, the
-    /// default. The host asks right after a new asset's Original is written, against that stack,
-    /// and commits the action as an ordinary history entry by the `system` actor, so Undo removes
-    /// it and the Original stays as imported. It is never asked again for that asset: not when the
-    /// file is imported again, not on reopen. Planning reads metadata through the context, never
-    /// pixels; an error is reported with the import and commits nothing.
+    /// One of this module's own actions to commit when a photo is first opened, or `None`, the
+    /// default. The host asks when a preparation of the photo's original completes while its head
+    /// has never moved (revision 0), against its Original's stack, and commits the action as an
+    /// ordinary history entry by the `system` actor, so Undo removes it and the Original stays as
+    /// developed. Once the head has moved it is never asked again for that photo: not when the file
+    /// is developed again, not on reopen. Planning reads metadata through the context, never
+    /// pixels; an error is reported with the preparation and commits nothing.
     fn first_open(&self, context: &StageContext<'_>) -> Result<Option<ActionInput>, Error> {
         let _ = context;
         Ok(None)
     }
     /// Block until whatever [`ToolModule::first_open`] reads is loaded. The host calls it on the
-    /// source worker before a new import completes, never on the catalog owner or a UI thread, so
-    /// `first_open` itself never waits. The default has nothing to wait for.
+    /// source worker before such a preparation completes, never on the catalog owner or a UI
+    /// thread, so `first_open` itself never waits. The default has nothing to wait for.
     fn await_first_open(&self) {}
 }

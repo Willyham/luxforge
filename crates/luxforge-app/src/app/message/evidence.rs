@@ -37,6 +37,13 @@ pub(crate) enum EvidenceMessage {
     /// The host method an `agent` step sent through the run's second client answered, with the
     /// event sequence it was answered at.
     AgentHostAnswered(Result<(Value, u64), String>),
+    /// The `pick.set` a Select `agent_pick` step sent through the run's second client answered.
+    SelectAgentAnswered(Result<Value, String>),
+    /// One press of a loupe `arrows` step: the first once the look-ahead is warm, the rest one per
+    /// tick of the step's own timer, which exists only while presses remain.
+    LoupeArrow,
+    /// A display frame of a running `grid_scroll` step: scroll the grid on by the step's speed.
+    GridScrollFrame(std::time::Instant),
     /// The graphics backend, recorded with every captured frame.
     Info(iced::system::Information),
     /// The GPU identity hook's boundary, held from the frame on screen off the UI thread, or

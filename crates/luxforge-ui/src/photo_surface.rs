@@ -165,6 +165,7 @@ impl SurfaceFigures {
         let drawn = draws.get(&surface).copied().unwrap_or_default();
         overall.drawn_content = drawn.drawn_content;
         overall.drawn_full_version = drawn.drawn_full_version;
+        overall.drawn_full_version_frame = drawn.drawn_full_version_frame;
         overall.drawn_region_version = drawn.drawn_region_version;
         overall.drawn_region_generation = drawn.drawn_region_generation;
         overall.drawn_region_quality = drawn.drawn_region_quality;
@@ -349,6 +350,9 @@ pub struct SurfaceDiagnostics {
     pub drawn_fallback_content: Option<u64>,
     pub drawn_content: Option<u64>,
     pub drawn_full_version: Option<u64>,
+    /// `drawn_frames` as it stood after the draw that first drew `drawn_full_version`: which frame
+    /// a photograph handed to the surface first reached the screen in, however late it is read.
+    pub drawn_full_version_frame: u64,
     pub drawn_region_version: Option<u64>,
     pub drawn_region_generation: Option<u64>,
     pub drawn_region_quality: Option<RegionQuality>,
@@ -1981,6 +1985,16 @@ impl shader::Primitive for PhotoPrimitive {
         // stale previous photo reports its actual content separately from the requested content.
         let expects_photo =
             self.viewport.is_some() || self.layers.iter().any(|(layer, _)| *layer == Layer::Photo);
+        // This surface's own last draw, which says whether its photograph is newly drawn: another
+        // surface's draws in between do not.
+        let previous = pipeline
+            .figures
+            .draws
+            .lock()
+            .expect("surface draw identities lock")
+            .get(&self.surface)
+            .copied()
+            .unwrap_or_default();
         let mut diagnostic = pipeline.figures.diagnostics();
         let blank_photo = expects_photo && !drew_photo;
         // Under a dissolve the photograph is the CPU frame, laid over the GPU frame it replaces.
@@ -2045,6 +2059,8 @@ impl shader::Primitive for PhotoPrimitive {
         diagnostic.drawn_clipping_marks = drawn_clipping_marks;
         diagnostic.drawn_dissolve = drawn_dissolve;
         diagnostic.drawn_content = drawn_content;
+        let newly_drawn =
+            drawn_full_version.is_some() && previous.drawn_full_version != drawn_full_version;
         diagnostic.drawn_full_version = drawn_full_version;
         diagnostic.drawn_region_version = drawn_region_version;
         diagnostic.drawn_region_generation = drawn_region_generation;
@@ -2062,6 +2078,11 @@ impl shader::Primitive for PhotoPrimitive {
         } else if expects_photo {
             diagnostic.blank_photo_draws += 1;
         }
+        diagnostic.drawn_full_version_frame = if newly_drawn {
+            diagnostic.drawn_frames
+        } else {
+            previous.drawn_full_version_frame
+        };
         let drawn = *diagnostic;
         drop(diagnostic);
         pipeline

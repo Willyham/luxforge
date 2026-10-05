@@ -1,7 +1,7 @@
-//! A new import's first-open actions ([`crate::ToolModule::first_open`]): one ordinary `system`
-//! entry after the Original, through the blocking service and the catalog owner alike; never again
-//! for that asset; a refusal reported on the import job; and the readiness wait made on the source
-//! worker, never on the owner.
+//! A new photograph's first-open actions ([`crate::ToolModule::first_open`]): one ordinary `system`
+//! entry after the Original when its first preparation completes, through the blocking service and
+//! the catalog owner alike; never again once its head has moved; a refusal reported on the
+//! preparation job; and the readiness wait made on the source worker, never on the owner.
 use super::*;
 use crate::{
     ActionDescriptor, ActionInput, ActionPlan, CompileStage, EditorService, Layer, LayerReport,
@@ -176,7 +176,7 @@ fn first_open_commits_one_system_entry_after_the_original_and_never_again() {
     let after_undo = service.state(&asset).unwrap();
     assert_eq!(after_undo.revision, undone.revision);
     assert!(perspective(&after_undo.current_entry.snapshot.recipe).is_none());
-    // The same file imported again, and the catalog reopened, never ask again.
+    // The same file opened again, and the catalog reopened, never ask again.
     let again = service.import(&source).unwrap();
     assert_eq!(again.asset.id, asset);
     assert_eq!(again.revision, after_undo.revision);
@@ -202,7 +202,9 @@ fn first_open_commits_one_system_entry_after_the_original_and_never_again() {
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
-fn import_job(owner: &OwnerHandle, client: ClientId, path: &std::path::Path) -> Value {
+/// Open the file at `path` as a client does — `pick.develop` of its path, `source.prepare` of the
+/// photograph and `job.adopt` — answering the settled preparation's record and the adopted state.
+fn open_job(owner: &OwnerHandle, client: ClientId, path: &std::path::Path) -> Value {
     let call = |method: &str, params: Value| {
         let response = owner
             .call(
@@ -218,33 +220,45 @@ fn import_job(owner: &OwnerHandle, client: ClientId, path: &std::path::Path) -> 
         assert!(response.error.is_none(), "{method}: {:?}", response.error);
         response.result.expect("a result")
     };
-    let queued = call(
-        "catalog.import",
-        json!({"path": path, "mutation": {
-            "request_id": format!("import-{}", NEXT.fetch_add(1, Ordering::Relaxed)),
-            "actor": "test",
-        }}),
+    let settled = |job: &Value| {
+        luxforge_testbase::wait_for("the job to settle", || {
+            let status = call("job.read", json!({"job_id": job}));
+            (!matches!(status["status"].as_str(), Some("queued" | "running"))).then_some(status)
+        })
+    };
+    let developed = call(
+        "pick.develop",
+        json!({
+            "targets": {"kind": "paths", "paths": [path]},
+            "into": [],
+            "confirm_removable": true,
+            "mutation": {
+                "request_id": format!("develop-{}", NEXT.fetch_add(1, Ordering::Relaxed)),
+                "actor": "test",
+            },
+        }),
     );
+    let developed = settled(&developed["job_id"]);
+    assert_eq!(developed["status"], "ready", "{developed}");
+    let asset = developed["result"]["developed"][0]["asset_id"].clone();
+    let queued = call("source.prepare", json!({"asset_id": asset}));
     let job = queued["job_id"].clone();
-    let record = luxforge_testbase::wait_for("the import job to settle", || {
-        let status = call("job.read", json!({"job_id": job}));
-        (!matches!(status["status"].as_str(), Some("queued" | "running"))).then_some(status)
-    });
+    let record = settled(&job);
     assert_eq!(record["status"], "ready", "{record}");
     let adopted = call("job.adopt", json!({"job_id": job}));
     json!({"record": record, "adopted": adopted["asset"]})
 }
 
 #[test]
-fn an_owner_import_reports_its_first_open_entry_and_waits_off_the_owner() {
+fn an_owner_open_reports_its_first_open_entry_and_waits_off_the_owner() {
     let dir = temp_dir("first-open-owner").canonicalize().unwrap();
     let source = dir.join("photo.jpg");
     fs::copy(fixture(), &source).unwrap();
     let (probe, registry) = registry(Proposal::Perspective);
     let (owner, join) = OwnerHandle::start_with(&dir.join("catalog.sqlite"), registry).unwrap();
     let client = owner.register();
-    let imported = import_job(&owner, client, &source);
-    let record = &imported["record"];
+    let opened = open_job(&owner, client, &source);
+    let record = &opened["record"];
     let result = &record["result"];
     assert_eq!(result["revision"], 1);
     assert_eq!(result["current_entry"]["actor"], "system");
@@ -258,15 +272,36 @@ fn an_owner_import_reports_its_first_open_entry_and_waits_off_the_owner() {
         }])
     );
     // job.adopt hands back the same state, with the first-open entry current.
-    assert_eq!(imported["adopted"], *result);
+    assert_eq!(opened["adopted"], *result);
+    // The entry is announced, naming the photograph, the revision it left and the preparation.
+    let response = owner
+        .call(
+            client,
+            ApiRequest {
+                id: "since".into(),
+                method: "events.since".into(),
+                params: json!({"after": 0}),
+                token: None,
+            },
+        )
+        .unwrap();
+    let events = response.result.unwrap()["events"].clone();
+    assert!(
+        events.as_array().unwrap().iter().any(|event| {
+            event["asset_id"] == result["asset"]["id"]
+                && event["revision"] == 1
+                && event["job_id"].is_string()
+        }),
+        "{events}"
+    );
     // The owner asked; the source worker, a different thread, awaited readiness first.
     let asked = probe.asked.lock().unwrap().clone();
     let awaited = probe.awaited.lock().unwrap().clone();
     assert_eq!((asked.len(), awaited.len()), (1, 1));
     assert_ne!(asked[0], awaited[0]);
     assert_ne!(asked[0], std::thread::current().id());
-    // Importing the same file again creates nothing and reports nothing.
-    let again = import_job(&owner, client, &source);
+    // Opening the same file again creates nothing and reports nothing.
+    let again = open_job(&owner, client, &source);
     assert!(again["record"].get("first_open").is_none());
     assert_eq!(again["record"]["result"]["revision"], 1);
     assert_eq!(probe.asked.lock().unwrap().len(), 1);
@@ -276,15 +311,15 @@ fn an_owner_import_reports_its_first_open_entry_and_waits_off_the_owner() {
 }
 
 #[test]
-fn a_first_open_refusal_is_reported_and_the_import_still_completes() {
+fn a_first_open_refusal_is_reported_and_the_open_still_completes() {
     let dir = temp_dir("first-open-refused").canonicalize().unwrap();
     let source = dir.join("photo.jpg");
     fs::copy(fixture(), &source).unwrap();
     let (_, registry) = registry(Proposal::Refuse);
     let (owner, join) = OwnerHandle::start_with(&dir.join("catalog.sqlite"), registry).unwrap();
     let client = owner.register();
-    let imported = import_job(&owner, client, &source);
-    let record = &imported["record"];
+    let opened = open_job(&owner, client, &source);
+    let record = &opened["record"];
     assert_eq!(record["result"]["revision"], 0);
     assert_eq!(record["result"]["current_entry"]["action_id"], "original");
     assert_eq!(
@@ -328,9 +363,9 @@ fn first_open_skips_the_lens_module_while_the_switch_is_off_and_asks_it_when_on(
 }
 
 /// The owner sets the lens switch from the stored preference when it starts and again on each
-/// `preferences.set`, and the switch applies to the next import.
+/// `preferences.set`, and the switch applies to the next photograph's first preparation.
 #[test]
-fn an_owner_import_follows_the_lens_preference_at_start_and_after_a_change() {
+fn an_owner_open_follows_the_lens_preference_at_start_and_after_a_change() {
     let dir = temp_dir("first-open-lens-preference")
         .canonicalize()
         .unwrap();
@@ -354,7 +389,7 @@ fn an_owner_import_follows_the_lens_preference_at_start_and_after_a_change() {
     let client = owner.register();
     let first = dir.join("first.jpg");
     fs::copy(fixture(), &first).unwrap();
-    let off = import_job(&owner, client, &first);
+    let off = open_job(&owner, client, &first);
     assert!(off["record"].get("first_open").is_none(), "{off}");
     assert_eq!(off["record"]["result"]["revision"], 0);
     assert!(probe.asked.lock().unwrap().is_empty());
@@ -371,9 +406,14 @@ fn an_owner_import_follows_the_lens_preference_at_start_and_after_a_change() {
         )
         .unwrap();
     assert_eq!(response.result.unwrap()["auto_lens_profile"], true);
+    // Another photograph: identical bytes would be the same photograph, already prepared.
     let second = dir.join("second.jpg");
-    fs::copy(fixture(), &second).unwrap();
-    let on = import_job(&owner, client, &second);
+    fs::copy(
+        luxforge_testbase::paths::fixture("s0/orientation-6.jpg"),
+        &second,
+    )
+    .unwrap();
+    let on = open_job(&owner, client, &second);
     assert_eq!(
         on["record"]["first_open"],
         json!([{

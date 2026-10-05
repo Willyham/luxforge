@@ -109,6 +109,7 @@ impl Editor {
             self.view_state.window,
             self.session.workspace.state_panel,
             self.session.workspace.tools_panel,
+            self.filmstrip_shown(),
         );
         let canvas = Rectangle::new(Point::new(left, top), Size::new(right - left, bottom - top));
         let Some(target) = pinched_view(
@@ -321,6 +322,7 @@ mod tests {
             editor.view_state.window,
             editor.session.workspace.state_panel,
             editor.session.workspace.tools_panel,
+            editor.filmstrip_shown(),
         );
         let (x, y) = (right - 10.0, bottom - 10.0);
         assert!(

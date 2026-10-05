@@ -16,6 +16,13 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use serde_json::{Map, Value};
 
 mod build;
+mod catalog;
+mod develop;
+mod missing;
+
+pub use catalog::{CatalogStep, FacetColumn};
+pub use develop::{DevelopStep, SetStep};
+pub use missing::{MissingFilterStep, MissingStep};
 
 /// The most steps one evidence run accepts, so a script cannot outlive the evidence deadline
 /// unnoticed.
@@ -240,6 +247,21 @@ pub enum Step {
     /// The title bar's Export menu opened, or one export written into the run's evidence
     /// directory through the same chain the menu starts, bypassing only the save dialog.
     Export(ExportStep),
+    /// One gesture on the Select workspace, or an agent's pick beside it.
+    Select(SelectStep),
+    /// One gesture on Select's Missing originals.
+    Missing(MissingStep),
+    /// One gesture on the Select workspace's loupe that its timing needs: a warm press or a held
+    /// arrow, or the pointer over the picture.
+    Loupe(LoupeStep),
+    /// The Select grid scrolled continuously, one offset per display frame, for its timing.
+    GridScroll(GridScrollStep),
+    /// One gesture on the catalog in Select: its folders and collections, filter bar, Metadata
+    /// browser and Info panel.
+    Catalog(CatalogStep),
+    /// One gesture on developing picks — Develop N's confirmation, `D` — or on Develop's
+    /// development set.
+    Develop(DevelopStep),
 }
 
 impl Step {
@@ -414,6 +436,12 @@ impl Step {
             Self::Capability(step) => step.validate(),
             Self::Mask(step) => step.validate(),
             Self::Export(step) => step.validate(),
+            Self::Select(step) => step.validate(),
+            Self::Missing(step) => step.validate(),
+            Self::Loupe(step) => step.validate(),
+            Self::GridScroll(step) => step.validate(),
+            Self::Catalog(step) => step.validate(),
+            Self::Develop(step) => step.validate(),
         }
     }
 }
@@ -1960,6 +1988,225 @@ impl MaskRow {
             RowStep::DeleteStroke(stroke) => stroke.validate(),
             _ => Ok(()),
         }
+    }
+}
+
+/// The most view positions one `agent_pick` names.
+pub const MAX_AGENT_PICKS: usize = 64;
+
+/// One gesture on the Select workspace, each sent through the message the control or the key table
+/// sends, and captured once nothing Select asked the owner for is still in flight.
+///
+/// `{"switch": "select"}` presses the title bar's workspace switch. `{"source": "Konstanz · 12–13
+/// Sep"}` presses the source row showing that name, or that name and its dates. `{"arrow":
+/// {"direction": "right", "extend": true}}` presses an arrow key through the key table, Shift held
+/// when `extend`. `{"choose": {"menu": "group", "item": "Day"}}` opens a chip's or the sort's menu
+/// and chooses the item labelled so, or presses a pick segment (`pick`). `{"click": {"position":
+/// 5, "shift": true}}` presses the grid cell showing that view position. `{"agent_pick":
+/// {"positions": [5]}}` has a second client registered on the same owner pick the files at those
+/// view positions with `pick.set` (`"picked": false` clears them); the step waits until the
+/// desktop has evaluated its view again, which it learns of only through its own event sync.
+/// `{"folder": "/path"}` browses that folder on disk as Browse a folder… does, bypassing only the
+/// native dialog: the index lane reads it and the step waits until it is viewed. `{"library":
+/// "undo"}` presses `Cmd+Z` (`"redo"`: `Shift+Cmd+Z`) through the key table: library undo or redo
+/// of the desktop's own changes. `{"pick_all": {"position": 12}}` presses the Pick all action of
+/// the bracket holding that view position. `P` itself is a `key` step. Each waits until the view
+/// the change made stale has been evaluated again. `{"add_folder": "/path"}` adds that folder to the
+/// indexed folders as Add a folder… does, bypassing only the native dialog, and waits until its
+/// listing has ended and the indexed folders have been read again.
+///
+/// Long-running work: `{"first_look": "/path"}` browses that folder the same way and waits, while
+/// its first look is still being read, until the view shows its progress sheet. `"continue_in_background"`
+/// presses the sheet's Continue in background and waits until the sheet is gone with its job still
+/// in the status bar and in the Performance section as a row that can be cancelled.
+/// `"cancel_work"` presses Cancel on the Performance section's first such row and waits until the
+/// job has ended on the activity board, the view that waited on it has heard, and the section has
+/// read the board again.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum SelectStep {
+    Switch(SelectWorkspace),
+    Source(String),
+    Folder(String),
+    Arrow {
+        direction: ArrowKey,
+        #[serde(default, skip_serializing_if = "is_false")]
+        extend: bool,
+    },
+    Choose {
+        menu: SelectMenu,
+        item: String,
+    },
+    Click {
+        position: u32,
+        #[serde(default, skip_serializing_if = "is_false")]
+        shift: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        command: bool,
+    },
+    AgentPick {
+        positions: Vec<u32>,
+        #[serde(default = "yes", skip_serializing_if = "is_true")]
+        picked: bool,
+    },
+    Library(LibraryKey),
+    PickAll {
+        position: u32,
+    },
+    FirstLook(String),
+    ContinueInBackground,
+    CancelWork,
+    AddFolder(String),
+}
+
+/// Library undo or redo, as `Cmd+Z` and `Shift+Cmd+Z` press them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LibraryKey {
+    Undo,
+    Redo,
+}
+
+/// A workspace the switch shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectWorkspace {
+    Select,
+    Develop,
+}
+
+/// An arrow key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArrowKey {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// What a `choose` step chooses from: the pick segments, or the Camera, Kind or Group chip's menu,
+/// or the floating strip's sort.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectMenu {
+    Pick,
+    Camera,
+    Kind,
+    Group,
+    Sort,
+}
+
+impl SelectStep {
+    fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Source(name) => text(name, "select source"),
+            Self::Folder(path) => text(path, "select folder"),
+            Self::FirstLook(path) => text(path, "select first_look"),
+            Self::AddFolder(path) => text(path, "select add_folder"),
+            Self::Choose { item, .. } => text(item, "select choose item"),
+            Self::AgentPick { positions, .. } => {
+                if positions.is_empty() || positions.len() > MAX_AGENT_PICKS {
+                    return Err(format!(
+                        "select agent_pick names 1 to {MAX_AGENT_PICKS} positions"
+                    ));
+                }
+                Ok(())
+            }
+            Self::Switch(_)
+            | Self::Arrow { .. }
+            | Self::Click { .. }
+            | Self::Library(_)
+            | Self::PickAll { .. }
+            | Self::ContinueInBackground
+            | Self::CancelWork => Ok(()),
+        }
+    }
+}
+
+/// The most presses one loupe `arrows` step sends.
+pub const MAX_LOUPE_ARROWS: u32 = 240;
+
+/// One gesture on the Select workspace's loupe that its timing needs, beside the `select` and `key`
+/// steps that open it and step it.
+///
+/// `{"arrows": {"direction": "right", "count": 30, "interval_ms": 30}}` waits until the loupe's
+/// look-ahead is warm — every frame it wants, the one on screen and the ones ahead, decoded at the
+/// size it is drawn at, or with nothing more to wait for — then presses the arrow `count` times
+/// through the key table, `interval_ms` apart, the first a press and the rest the key's repeats as
+/// a held key sends them, and is captured once Select has nothing in flight after the last. One
+/// press takes no interval. `{"pointer": [0.25, 0.3]}` moves the pointer over the loupe's picture
+/// to those fractions of it, as the pointer does, and is captured once Select has nothing in
+/// flight: with the focus check on, once the region under the pointer has landed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum LoupeStep {
+    Arrows(LoupeArrows),
+    Pointer([f32; 2]),
+}
+
+/// A loupe `arrows` step: which arrow, how many presses and how far apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoupeArrows {
+    pub direction: ArrowKey,
+    pub count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_ms: Option<u64>,
+}
+
+impl LoupeStep {
+    fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Arrows(arrows) => {
+                if !(1..=MAX_LOUPE_ARROWS).contains(&arrows.count) {
+                    return Err(format!(
+                        "loupe arrows count takes an integer from 1 to {MAX_LOUPE_ARROWS}"
+                    ));
+                }
+                match (arrows.count, arrows.interval_ms) {
+                    (1, None) => Ok(()),
+                    (1, Some(_)) => Err("one loupe arrow press takes no interval_ms".into()),
+                    (_, Some(interval)) if (1..=1000).contains(&interval) => Ok(()),
+                    _ => Err(
+                        "loupe arrows of more than one press need interval_ms from 1 to 1000"
+                            .into(),
+                    ),
+                }
+            }
+            Self::Pointer([x, y]) => {
+                unit(f64::from(*x), "loupe pointer x")?;
+                unit(f64::from(*y), "loupe pointer y")
+            }
+        }
+    }
+}
+
+/// The most display frames one `grid_scroll` step scrolls for.
+pub const MAX_GRID_SCROLL_FRAMES: u32 = 1000;
+
+/// `{"px_per_frame": 60, "frames": 240}` scrolls the Select grid down by `px_per_frame` logical
+/// pixels on each of the next `frames` display frames (1 to 1000), sending the offset the grid's
+/// scrollable publishes, as a steady trackpad scroll does, and is captured once Select has nothing
+/// in flight after the last, or after the frame that reached the end of the grid.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GridScrollStep {
+    pub px_per_frame: f32,
+    pub frames: u32,
+}
+
+impl GridScrollStep {
+    fn validate(&self) -> Result<(), String> {
+        if !(self.px_per_frame.is_finite() && (1.0..=2000.0).contains(&self.px_per_frame)) {
+            return Err("grid_scroll px_per_frame takes a number from 1 to 2000".into());
+        }
+        if !(1..=MAX_GRID_SCROLL_FRAMES).contains(&self.frames) {
+            return Err(format!(
+                "grid_scroll frames takes an integer from 1 to {MAX_GRID_SCROLL_FRAMES}"
+            ));
+        }
+        Ok(())
     }
 }
 

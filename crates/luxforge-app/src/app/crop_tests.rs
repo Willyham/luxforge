@@ -1852,14 +1852,7 @@ fn a_raw_develops_again_while_a_crop_draft_is_open() {
     // Another photograph: its original's preparation retains no development of this one.
     let jpeg = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/s0/orientation-1.jpg");
-    let (queued, _) = tasks::call(
-        &owner,
-        client,
-        "catalog.import",
-        json!({"path": jpeg, "mutation": tasks::request()}),
-    )
-    .expect("an import");
-    let job = queued["job_id"].as_str().expect("a source job").to_owned();
+    let (_, job) = crate::app::testing::develop_and_prepare(&owner, client, &jpeg);
     let import_owner = owner.clone();
     bounded("another photograph", move || {
         tasks::wait_source_job(&import_owner, client, &job)

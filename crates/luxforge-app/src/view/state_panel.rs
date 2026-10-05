@@ -9,7 +9,8 @@
 use crate::state::MenuTarget;
 use crate::{
     app::message::{
-        Message, history::HistoryMessage, performance::PerformanceMessage, view::ViewMessage,
+        Message, history::HistoryMessage, long_work::LongWorkMessage,
+        performance::PerformanceMessage, view::ViewMessage,
     },
     state::{
         panel::{Marker as PanelMarker, StatePanelModel},
@@ -22,8 +23,9 @@ use iced::{
 };
 use luxforge_ui::{
     ButtonSize, ButtonTone, ChipModel, Icon, IconButtonModel, JobRowModel, ListRowModel, Marker,
-    MetricRowModel, SparklineModel, compact_chip, disclosure_heading, header_icon_button,
-    inline_menu, job_row, list_row, metric_row, panel_heading, text_button, theme,
+    MetricRowModel, SparklineModel, WorkProgress, WorkRowModel, compact_chip, disclosure_heading,
+    header_icon_button, inline_menu, job_row, list_row, metric_row, panel_heading, text_button,
+    theme, work_row,
 };
 use luxforge_ui::{Element, Token};
 
@@ -77,8 +79,10 @@ fn pinned_padding() -> Padding {
 /// The Performance section in the panel's own padding, its heading at the same left edge as
 /// Versions and History. Collapsed it is the heading alone. Expanded: the three metric rows under
 /// the heading, then, one grid unit further down, the job rows and the caption counting any long
-/// jobs past the fourth.
-fn performance(model: &PerformanceModel, enabled: bool) -> Element<'_, Message> {
+/// jobs past the fourth. Running catalog work is a work row — its place, its estimate once steady,
+/// Cancel, and its bar and count under them — and everything else a plain job row. The Select
+/// workspace pins the same section under its sources panel.
+pub(crate) fn performance(model: &PerformanceModel, enabled: bool) -> Element<'_, Message> {
     let heading = disclosure_heading(
         "Performance",
         model.caption.clone(),
@@ -105,32 +109,49 @@ fn performance(model: &PerformanceModel, enabled: bool) -> Element<'_, Message> 
         })
     }))
     .spacing(theme::ROW_SPACING);
-    let mut jobs = Column::with_children(model.jobs.iter().map(|job| {
-        let body = job_row(&JobRowModel {
-            label: job.label.clone(),
-            trailing: job.trailing.clone(),
-            detail: job.detail.clone(),
-            progress: job.progress,
-            running: job.running,
-        });
-        match &job.job_id {
-            Some(id) if job.running => row![
-                container(body).width(Length::Fill),
-                text_button(
-                    if job.cancelling {
-                        "Cancelling…"
-                    } else {
-                        "Cancel"
-                    },
-                    ButtonTone::Quiet,
-                    ButtonSize::Compact,
-                    (enabled && !job.cancelling)
-                        .then(|| Message::Performance(PerformanceMessage::Cancel(id.clone()))),
-                ),
-            ]
-            .spacing(theme::SPACING)
-            .into(),
-            _ => body,
+    let mut jobs = Column::with_children(model.jobs.iter().map(|job| match &job.work {
+        Some(work) => work_row(
+            &WorkRowModel {
+                label: job.label.clone(),
+                estimate: work.estimate.clone(),
+                progress: WorkProgress {
+                    count: work.count.clone(),
+                    fraction: job.progress,
+                },
+            },
+            enabled.then(|| {
+                Message::LongWork(LongWorkMessage::Cancel {
+                    job_id: work.job_id.clone(),
+                })
+            }),
+        ),
+        None => {
+            let body = job_row(&JobRowModel {
+                label: job.label.clone(),
+                trailing: job.trailing.clone(),
+                detail: job.detail.clone(),
+                progress: job.progress,
+                running: job.running,
+            });
+            match &job.job_id {
+                Some(id) if job.running => row![
+                    container(body).width(Length::Fill),
+                    text_button(
+                        if job.cancelling {
+                            "Cancelling…"
+                        } else {
+                            "Cancel"
+                        },
+                        ButtonTone::Quiet,
+                        ButtonSize::Compact,
+                        (enabled && !job.cancelling)
+                            .then(|| Message::Performance(PerformanceMessage::Cancel(id.clone()))),
+                    ),
+                ]
+                .spacing(theme::SPACING)
+                .into(),
+                _ => body,
+            }
         }
     }))
     .spacing(theme::SPACING)
@@ -369,6 +390,7 @@ mod tests {
             detail: Some("DSC_0412.NEF".into()),
             progress: Some(0.5),
             running: true,
+            work: None,
             job_id: Some(Default::default()),
             cancelling: false,
         };
@@ -393,10 +415,27 @@ mod tests {
                     tooltip: "GPU time is not reported on Linux yet".into(),
                 },
             ],
-            jobs: vec![job.clone(); 4],
+            jobs: vec![
+                job.clone(),
+                job.clone(),
+                job.clone(),
+                // Catalog work: a work row with its estimate and Cancel.
+                JobRow {
+                    label: "Indexing ~/Pictures".into(),
+                    detail: None,
+                    progress: None,
+                    work: Some(crate::state::long_work::WorkInfo {
+                        job_id: "job-1".into(),
+                        count: Some("48,210 of about 200,000 files".into()),
+                        estimate: Some("about 1 min 40 s".into()),
+                    }),
+                    ..job.clone()
+                },
+            ],
             reserve_detail: false,
             more: Some("+2 more".into()),
             version: 7,
+            board: 3,
         };
         let _: Element<'_, Message> = state_panel(&panel, &expanded);
         let quiet = PerformanceModel {

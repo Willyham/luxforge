@@ -79,6 +79,12 @@ impl Cancel {
             Ok(())
         }
     }
+
+    /// The flag itself, for work outside the render that takes a plain flag and checks it between
+    /// its own steps: the RAW crate's decode, development and embedded-preview reads.
+    pub(crate) fn flag(&self) -> &AtomicBool {
+        &self.cancelled
+    }
 }
 
 /// How far one render has got through the spatial tiles it planned: the extent a whole-frame

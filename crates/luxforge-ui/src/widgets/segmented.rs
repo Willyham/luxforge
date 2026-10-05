@@ -5,7 +5,12 @@
 //! [`segmented`] builds the whole control from its options. [`segment`] and [`segment_track`] are
 //! its two parts, for a control whose last segment is sometimes something other than a label (the
 //! title bar's typed zoom field). [`chevron_segment`] is a segment that has more behind it (the
-//! title bar's percentage, which drops the zoom stops).
+//! title bar's percentage, which drops the zoom stops). [`keyed_segment`] is a segment with the key
+//! that selects it after its label, as the workspace switch draws Select `G` and Develop `D`.
+//!
+//! The Select workspace's filter bar draws a smaller control of the same kind (`.fseg`):
+//! [`filter_segment`] on a [`filter_segment_track`], [`theme::FILTER_SEGMENT_HEIGHT`] tall in
+//! [`theme::SIZE_FILTER`] text, each segment with an optional count in the accent after its label.
 
 use crate::theme;
 use crate::widgets::icon_button::{Icon, icon};
@@ -50,7 +55,11 @@ pub fn segment<'a, M: Clone + 'a>(
     selected: bool,
     on_press: Option<M>,
 ) -> Element<'a, M> {
-    segment_with(segment_label(label).into(), selected, on_press)
+    segment_with(
+        segment_label(label, theme::SIZE_CONTROL).into(),
+        selected,
+        on_press,
+    )
 }
 
 /// A [`segment`] with a small chevron after its label, in the label's own ink, for a segment that
@@ -66,7 +75,7 @@ pub fn chevron_segment<'a, M: Clone + 'a>(
         (true, false) => Token::TextSecondary,
     };
     let content = row![
-        segment_label(label),
+        segment_label(label, theme::SIZE_CONTROL),
         icon(Icon::ChevronDown, theme::SEGMENT_CHEVRON_SIZE, ink),
     ]
     .spacing(theme::SEGMENT_CHEVRON_SPACING)
@@ -74,11 +83,68 @@ pub fn chevron_segment<'a, M: Clone + 'a>(
     segment_with(content.into(), selected, on_press)
 }
 
-fn segment_label<'a>(label: String) -> iced::widget::Text<'a, crate::Theme> {
-    text(label)
-        .size(theme::SIZE_CONTROL)
-        .line_height(LineHeight::Absolute(theme::SLIDER_LABEL_HEIGHT.into()))
-        .wrapping(Wrapping::None)
+/// A [`segment`] with the key that selects it after its label, in 10.5 pt tertiary ink
+/// [`theme::SWITCH_HINT_SPACING`] after it, selected or not (`Select G`).
+pub fn keyed_segment<'a, M: Clone + 'a>(
+    label: String,
+    key: String,
+    selected: bool,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let content = row![
+        segment_label(label, theme::SIZE_CONTROL),
+        text(key)
+            .size(theme::SIZE_SECTION_LABEL)
+            .line_height(LineHeight::Absolute(theme::SLIDER_LABEL_HEIGHT.into()))
+            .wrapping(Wrapping::None)
+            .style(theme::ink(Token::TextTertiary)),
+    ]
+    .spacing(theme::SWITCH_HINT_SPACING)
+    .align_y(Alignment::Center);
+    segment_with(content.into(), selected, on_press)
+}
+
+/// One filter segment (`.fseg button`): its label in [`theme::SIZE_FILTER`] text and, when given,
+/// a count in the accent [`theme::FILTER_COUNT_SPACING`] after it (`Picked 18`),
+/// [`theme::FILTER_SEGMENT_HEIGHT`] tall, selected or not. `None` disables it.
+pub fn filter_segment<'a, M: Clone + 'a>(
+    label: String,
+    count: Option<String>,
+    selected: bool,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let mut content = Row::new()
+        .push(segment_label(label, theme::SIZE_FILTER))
+        .spacing(theme::FILTER_COUNT_SPACING)
+        .align_y(Alignment::Center);
+    if let Some(count) = count {
+        content = content.push(
+            text(count)
+                .size(theme::SIZE_FILTER)
+                .line_height(LineHeight::Absolute(theme::SLIDER_LABEL_HEIGHT.into()))
+                .wrapping(Wrapping::None)
+                .style(theme::ink(Token::Accent)),
+        );
+    }
+    button(container(content).center_y(Length::Fill))
+        .padding([0.0, theme::FILTER_SEGMENT_PADDING])
+        .height(Length::Fixed(theme::FILTER_SEGMENT_HEIGHT))
+        .style(theme::filter_segment(selected))
+        .on_press_maybe(on_press)
+        .into()
+}
+
+/// The track filter segments sit on, [`theme::SEGMENT_INSET`] around and between them, rounded
+/// [`theme::FILTER_TRACK_RADIUS`].
+pub fn filter_segment_track<'a, M: 'a>(segments: Vec<Element<'a, M>>) -> Element<'a, M> {
+    container(
+        Row::with_children(segments)
+            .spacing(theme::SEGMENT_INSET)
+            .align_y(Alignment::Center),
+    )
+    .padding(theme::SEGMENT_INSET)
+    .style(theme::filter_track)
+    .into()
 }
 
 fn segment_with<'a, M: Clone + 'a>(
@@ -92,6 +158,15 @@ fn segment_with<'a, M: Clone + 'a>(
         .style(theme::segment(selected))
         .on_press_maybe(on_press)
         .into()
+}
+
+/// A segment's label: one line at `size` that takes the button's ink, so the selected segment's
+/// label is bright and the others secondary.
+fn segment_label<'a>(label: String, size: f32) -> iced::widget::Text<'a, crate::Theme> {
+    text(label)
+        .size(size)
+        .line_height(LineHeight::Absolute(theme::SLIDER_LABEL_HEIGHT.into()))
+        .wrapping(Wrapping::None)
 }
 
 /// The track the segments sit on, [`theme::SEGMENT_INSET`] around and between them.
@@ -129,5 +204,25 @@ mod tests {
             chevron_segment("18%".into(), true, Some(())),
             chevron_segment("18%".into(), false, None),
         ]);
+        // The workspace switch's keyed segments.
+        let _: Element<'_, ()> = segment_track(vec![
+            keyed_segment("Select".into(), "G".into(), true, Some(())),
+            keyed_segment("Develop".into(), "D".into(), false, Some(())),
+        ]);
+        // The filter bar's segments, one with a count and one disabled.
+        let _: Element<'_, ()> = filter_segment_track(vec![
+            filter_segment("All".into(), None, true, Some(())),
+            filter_segment("Picked".into(), Some("18".into()), false, Some(())),
+            filter_segment("Moments without a pick".into(), None, false, None),
+        ]);
+    }
+
+    /// The filter track is the regular track's 2 pt inset around 22 pt segments: 26 pt, 2 pt
+    /// shorter than the title bar's control.
+    #[test]
+    fn a_filter_track_is_two_points_shorter_than_the_title_bar_control() {
+        let regular = theme::SEGMENT_HEIGHT + 2.0 * theme::SEGMENT_INSET;
+        let filter = theme::FILTER_SEGMENT_HEIGHT + 2.0 * theme::SEGMENT_INSET;
+        assert_eq!((regular, filter), (28.0, 26.0));
     }
 }

@@ -3,6 +3,13 @@
 //! controls use, so a script proves the real paths rather than a parallel implementation.
 use crate::app::Before;
 use crate::app::outcome::{Outcome, Presented, Requested};
+mod develop;
+mod grid;
+mod long_work;
+mod loupe;
+mod select;
+mod select_catalog;
+mod select_missing;
 use crate::state::MenuTarget;
 use crate::state::palette::PaletteAction;
 use crate::{
@@ -122,6 +129,14 @@ pub(crate) struct Evidence {
     pub(crate) agent_wait: Option<AgentWait>,
     /// What a running `agent` step that sent a host method still waits for.
     pub(crate) agent_host: Option<AgentHostWait>,
+    /// What a running long-running-work step still waits for.
+    pub(crate) long_work_wait: Option<long_work::LongWorkWait>,
+    /// A running loupe `arrows` step's presses still to send. Its timer exists only
+    /// while presses remain after the first.
+    pub(crate) loupe_arrows: Option<loupe::HeldArrows>,
+    /// A running `grid_scroll` step's frames still to scroll. The window's frame
+    /// clock it rides is subscribed to only while it runs.
+    pub(crate) grid_scroll: Option<grid::GridScrolling>,
     pub(crate) sync: CaptureSync,
     /// What only a captured frame's state reports, from the outcomes the seams report.
     pub(crate) recorded: Recorded,
@@ -148,8 +163,6 @@ pub(crate) struct Recorded {
     /// oldest first, each with the wall-clock moment it was read, so a runner can re-derive the
     /// shown figures and the newest rate without trusting the model that derived them.
     pub(crate) performance: VecDeque<(u64, Value)>,
-    /// The Performance section's last `activity.list` answer as the owner sent it.
-    pub(crate) activity: Option<Value>,
 }
 
 /// A running `gpu_warmed` step: when it began, and the earliest and the latest it may end.
@@ -213,6 +226,9 @@ impl Evidence {
             agent: None,
             agent_wait: None,
             agent_host: None,
+            long_work_wait: None,
+            loupe_arrows: None,
+            grid_scroll: None,
             sync: CaptureSync::default(),
             recorded: Recorded::default(),
             gpu_identity: None,
@@ -501,6 +517,19 @@ pub(crate) enum Settle {
     /// An agent step's host method has answered, and the desktop has followed it through the event
     /// sync: see [`AgentHostWait`].
     AgentHost,
+    /// Nothing the Select workspace asked the owner for is in flight, and, after an agent's pick,
+    /// the view has been evaluated again.
+    Select,
+    /// Missing originals' search has started, for Stop search to be pressed; then as `Select`.
+    MissingStop,
+    /// Long-running work shows what a long-work step waits for: a view's progress sheet, the sheet
+    /// sent to the background, or a cancelled job ended.
+    LongWork,
+    /// Nothing developing picks or the development set asked for is in flight, and the photograph
+    /// open in Develop has its exact frame on screen.
+    Develop,
+    /// The large previews Develop decodes ahead of a move are decoded.
+    DevelopAhead,
 }
 
 impl Settle {
@@ -530,6 +559,11 @@ impl Settle {
             Self::Export => "export",
             Self::Agent => "agent",
             Self::AgentHost => "agent_host",
+            Self::Select => "select",
+            Self::MissingStop => "missing_stop",
+            Self::LongWork => "long_work",
+            Self::Develop => "develop",
+            Self::DevelopAhead => "develop_ahead",
         }
     }
 
@@ -657,9 +691,12 @@ impl Editor {
     /// deferred by a retiring photograph. Crop-stage and gallery captures have their own surface
     /// and do not inherit a stale diagnostic from the ordinary photograph.
     pub(super) fn capture_photo_ready(&self) -> bool {
-        if self.document.state.is_none()
+        // A cached preview drawn while a photograph of the development set prepares is the
+        // photograph on screen, though no document is open.
+        if (self.document.state.is_none() && self.develop.state.preview.is_none())
             || self.crop().is_some()
             || self.gallery_page().is_some()
+            || self.select_shown()
             || self.presentation.render_error.is_some()
         {
             return true;
@@ -762,6 +799,7 @@ impl Editor {
             || self.presentation.compare_after.is_some()
             || self.crop().is_some()
             || self.gallery_page().is_some()
+            || self.select_shown()
             || self.presentation.render_error.is_some()
         {
             return true;
@@ -968,6 +1006,7 @@ impl Editor {
                     scale,
                     state_panel,
                     tools_panel,
+                    self.filmstrip_shown(),
                 );
                 // Where Fit lays the photograph out: the canvas less the Fit padding.
                 let fit = view::canvas::fit_rect_in(canvas, scale);
@@ -1037,6 +1076,9 @@ impl Editor {
             }
             EvidenceMessage::AgentAnswered(result) => self.agent_answered(result),
             EvidenceMessage::AgentHostAnswered(result) => self.agent_host_answered(result),
+            EvidenceMessage::SelectAgentAnswered(result) => self.select_agent_answered(result),
+            EvidenceMessage::LoupeArrow => return self.loupe_arrow(),
+            EvidenceMessage::GridScrollFrame(at) => return self.grid_scroll_frame(at),
         }
         Task::none()
     }
@@ -1091,6 +1133,7 @@ impl Editor {
                     self.view_state.window,
                     self.session.workspace.state_panel,
                     self.session.workspace.tools_panel,
+                    self.filmstrip_shown(),
                 );
                 let revision = self.session.revision;
                 self.await_step(Settle::Session);
@@ -1195,6 +1238,12 @@ impl Editor {
             Step::Capability(step) => self.capability_step(step),
             Step::Mask(step) => self.mask_step(step),
             Step::Export(step) => self.export_step(step),
+            Step::Select(step) => self.select_step(step),
+            Step::Missing(step) => self.missing_step(step),
+            Step::Loupe(step) => self.loupe_step(step),
+            Step::GridScroll(step) => self.grid_scroll_step(step),
+            Step::Catalog(step) => self.catalog_step(step),
+            Step::Develop(step) => self.develop_step(step),
         }
     }
 
@@ -3800,6 +3849,7 @@ impl Editor {
             self.view_state.window,
             title.state_panel_open,
             title.tools_panel_open,
+            self.filmstrip_shown(),
         );
         let canvas = iced::Rectangle::new(
             iced::Point::new(left, top),
@@ -3868,6 +3918,23 @@ impl Editor {
             {
                 self.await_step(Settle::Session);
                 self.dispatch(Message::Key(event, status))
+            }
+            // A Select key waits for what it asked the owner for; a refused switch has nothing to
+            // wait for and is captured with its reason.
+            Some(Message::Select(_)) => {
+                let task = self.dispatch(Message::Key(event, status));
+                if self.select_shown() {
+                    self.await_step(Settle::Select);
+                } else {
+                    self.capture_next_frame();
+                }
+                task
+            }
+            // `D` and the development set's keys wait for what developing picks asked for.
+            Some(Message::Develop(_)) => {
+                let task = self.dispatch(Message::Key(event, status));
+                self.await_develop();
+                task
             }
             Some(Message::History(HistoryMessage::CompareToggle | HistoryMessage::CompareExit)) => {
                 self.await_step(Settle::Preview);
@@ -3954,7 +4021,7 @@ impl Editor {
     fn arm_performance_settle(&mut self) {
         let starts = performance::sampling(
             !self.performance.expanded,
-            self.session.workspace.state_panel && self.gallery_page().is_none(),
+            self.left_panel_shown() && self.gallery_page().is_none(),
         );
         if starts {
             self.await_step(Settle::Performance);
@@ -4583,24 +4650,18 @@ impl Editor {
             // the frame before it, which could only show dashes.
             Outcome::PerformanceRead(read) => {
                 if let (Some(read), Some(evidence)) = (read, &mut self.evidence) {
-                    let PerformanceRead {
-                        resources,
-                        activity,
-                        wall_ms,
-                    } = *read;
+                    let PerformanceRead { resources, wall_ms } = *read;
                     let recorded = &mut evidence.recorded;
                     if recorded.performance.len() == 2 {
                         recorded.performance.pop_front();
                     }
                     recorded.performance.push_back((wall_ms, resources));
-                    recorded.activity = Some(activity);
                 }
                 self.settle_step(Settle::Performance, by);
             }
             Outcome::PerformanceRestarted => {
                 if let Some(evidence) = &mut self.evidence {
                     evidence.recorded.performance.clear();
-                    evidence.recorded.activity = None;
                 }
             }
             Outcome::PerformanceCancelled { failed } => {
@@ -4670,6 +4731,8 @@ impl Editor {
                 }
                 self.settle_step(Settle::Export, by);
             }
+            Outcome::SelectSettled => self.select_settled(by),
+            Outcome::LongWorkShown => self.long_work_shown(by),
         }
     }
 
@@ -5046,30 +5109,38 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
                     .map(|_| Message::Evidence(EvidenceMessage::DoubleClickSecond)),
             );
         }
+        // A loupe `arrows` step's presses after its first, gated the same way.
+        subscriptions.extend(loupe::subscription(evidence));
+        // A `grid_scroll` step's frame clock, gated the same way.
+        subscriptions.extend(grid::subscription(evidence));
     }
     Subscription::batch(subscriptions)
 }
 
 /// After every message: a step waiting for quiet settles once this client has nothing in flight,
-/// and a capability step once its module's round trips and jobs have.
+/// a capability step once its module's round trips and jobs have, a loupe `arrows` step presses its
+/// first arrow once the look-ahead is warm, and the GPU identity hook follows the photograph at
+/// Fit.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     editor.settle_when_quiet();
     editor.settle_capability();
     editor.settle_agent_host();
+    let arrows = editor.loupe_arrows_when_warm();
     // The GPU identity hook follows the photograph at Fit, the one view it draws.
     let fit = matches!(editor.session.preview.view.zoom, luxforge_core::Zoom::Fit);
     let photo = editor
         .presentation
         .presenter
         .photo_for(editor.presentation.presented_content);
-    match editor
+    let identity = match editor
         .evidence
         .as_mut()
         .and_then(|evidence| evidence.gpu_identity.as_mut())
     {
         Some(hook) if fit => hook.follow(photo),
         _ => Task::none(),
-    }
+    };
+    Task::batch([arrows, identity])
 }
 
 #[cfg(test)]
@@ -5670,6 +5741,9 @@ mod tests {
             agent: None,
             agent_wait: None,
             agent_host: None,
+            long_work_wait: None,
+            loupe_arrows: None,
+            grid_scroll: None,
             sync: CaptureSync::default(),
             recorded: Recorded::default(),
             gpu_identity: None,
@@ -5908,7 +5982,6 @@ mod tests {
             epoch,
             result: Ok(Box::new(crate::app::tasks::PerformanceRead {
                 resources,
-                activity: json!({"sequence":0,"active":[],"recent":[],"untracked":0}),
                 wall_ms: 0,
             })),
         }));
@@ -5933,8 +6006,13 @@ mod tests {
     fn a_performance_cancel_step_waits_for_the_buttons_own_command_answer() {
         let (mut editor, catalog, _, _) = scripted(r#"[{"performance_cancel":{"row":0}}]"#);
         let job_id = luxforge_core::JobId::new();
-        editor.performance.history.push(
-            luxforge_core::resources::read(&luxforge_core::RenderContext::new()),
+        editor
+            .performance
+            .history
+            .push(luxforge_core::resources::read(
+                &luxforge_core::RenderContext::new(),
+            ));
+        editor.long_work.state.observe(
             serde_json::from_value(json!({"sequence":1,"active":[{"id":1,"kind":"module.task","label":"Running task","job_id":job_id,"elapsed_ms":1600}],"recent":[],"untracked":0})).unwrap(),
         );
         editor.rederive();

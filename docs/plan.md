@@ -31,13 +31,14 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 ## Library
 
-**Source recovery.** Keep edits reachable when originals move.
-- Manual Locate through the UI and API, with verification
-
-**Small library.** Work across many photos, not one ([decisions](decisions.md)).
-- Multi-image import and virtualized browsing
-- Filtering, tagging and collections
-- Multi-selection and stacking
+**Browse, pick, develop** ([design](design/catalog.md)). The Select workspace, events and moments, picks, developing picks into the catalog, catalog folders and collections, Locate and resolving missing originals, removal and batch preset and export are implemented on the design's recorded defaults ([feature status](features.md)). What remains ([outstanding](design/catalog.md#outstanding)):
+- Owner decisions on the design's proposals, P13's choice of how to meet the photographs view's time among them
+- Recording the `catalog-measure` figures, the first browse from a card reader included, and meeting the `browse.view` target over 100,000 photographs
+- A labelled corpus of real trips, bursts and brackets from several makes, to check events and moments against
+- Native Linux and Windows runs of the folder and volume watchers
+- In the desktop: Add a folder…, the card-connected notice, Send back, dragging photographs onto a catalog folder, moving collections between groups, changing a smart collection's query, and Locate original… in export's refusal
+- Background availability checks, and a browse filter for a missing value
+- Later: merging brackets to HDR and stitching panoramas as a merge source kind (not selected)
 - Catalog portability and backup, carrying each catalog's derived-artifact directory with it (decision pending)
 
 ## RAW

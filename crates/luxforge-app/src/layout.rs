@@ -20,6 +20,10 @@ pub(crate) const STATUS_BAR_HEIGHT: f32 = 25.0;
 /// and beside each open side panel.
 pub(crate) const DIVIDER_WIDTH: f32 = 1.0;
 
+/// Develop's filmstrip under the canvas, its rule over it included: the development-set board's
+/// 92 pt. It is on screen while Develop has a development set and the strip is not collapsed.
+pub(crate) const FILMSTRIP_HEIGHT: f32 = 92.0;
+
 /// The photograph's inset from the canvas at Fit, at the top and on both sides.
 pub(crate) const FIT_INSET_EDGE: f32 = 20.0;
 /// The photograph's inset from the canvas bottom at Fit: the mode strip, its inset and a gap, so at
@@ -30,13 +34,14 @@ pub(crate) const FIT_INSET_BOTTOM: f32 = 56.0;
 pub(crate) const FIT_INSET: (f32, f32) = (2.0 * FIT_INSET_EDGE, FIT_INSET_EDGE + FIT_INSET_BOTTOM);
 
 /// The photo surface's logical size for one window and panel configuration: the window minus the
-/// title bar, the status bar, whichever panels are open and the rules beside them. It is
-/// arithmetic over the layout constants, not a measurement, so the overlay's cell grid and the
-/// proxy bounds can be decided before a frame is laid out.
+/// title bar, the status bar, whichever panels are open and the rules beside them, and the
+/// filmstrip when it is shown. It is arithmetic over the layout constants, not a measurement, so
+/// the overlay's cell grid and the proxy bounds can be decided before a frame is laid out.
 pub(crate) fn photo_surface(
     window: (f32, f32),
     state_panel: bool,
     tools_panel: bool,
+    filmstrip: bool,
 ) -> (f32, f32) {
     let mut width = window.0;
     if state_panel {
@@ -46,7 +51,10 @@ pub(crate) fn photo_surface(
         width -= TOOLS_PANEL_WIDTH + DIVIDER_WIDTH;
     }
     // Two horizontal rules, one under the title bar and one over the status bar.
-    let height = window.1 - TITLE_BAR_HEIGHT - STATUS_BAR_HEIGHT - 2.0 * DIVIDER_WIDTH;
+    let mut height = window.1 - TITLE_BAR_HEIGHT - STATUS_BAR_HEIGHT - 2.0 * DIVIDER_WIDTH;
+    if filmstrip {
+        height -= FILMSTRIP_HEIGHT;
+    }
     (width.max(0.0), height.max(0.0))
 }
 
@@ -73,12 +81,14 @@ pub(crate) fn surface_columns(
 
 /// The canvas region of a window whose logical size is `logical`, as `[left, top, right, bottom]`
 /// logical pixels: the area between the panels' rules and between the rules under the title bar
-/// and over the status bar. The photo surface lays the photograph out inside it, at Fit less the
-/// Fit padding and at a percentage as the scrollable it pans in.
+/// and over the status bar, above the filmstrip when it is shown. The photo surface lays the
+/// photograph out inside it, at Fit less the Fit padding and at a percentage as the scrollable it
+/// pans in.
 pub(crate) fn canvas_logical(
     logical: (f32, f32),
     state_panel: bool,
     tools_panel: bool,
+    filmstrip: bool,
 ) -> [f32; 4] {
     let left = if state_panel {
         STATE_PANEL_WIDTH + DIVIDER_WIDTH
@@ -91,8 +101,11 @@ pub(crate) fn canvas_logical(
         logical.0
     };
     let top = TITLE_BAR_HEIGHT + DIVIDER_WIDTH;
-    let bottom = logical.1 - STATUS_BAR_HEIGHT - DIVIDER_WIDTH;
-    [left, top, right, bottom]
+    let mut bottom = logical.1 - STATUS_BAR_HEIGHT - DIVIDER_WIDTH;
+    if filmstrip {
+        bottom -= FILMSTRIP_HEIGHT;
+    }
+    [left, top, right, bottom.max(top)]
 }
 
 /// [`canvas_logical`] inside a captured frame, in physical pixels. At a percentage zoom this is
@@ -103,8 +116,9 @@ pub(crate) fn canvas_rect(
     scale: f32,
     state_panel: bool,
     tools_panel: bool,
+    filmstrip: bool,
 ) -> [u32; 4] {
-    canvas_logical(logical, state_panel, tools_panel)
+    canvas_logical(logical, state_panel, tools_panel, filmstrip)
         .map(|edge| (edge * scale).round().max(0.0) as u32)
 }
 
@@ -116,7 +130,7 @@ mod tests {
     fn the_surface_shrinks_by_exactly_the_open_panels() {
         let window = (1440.0, 900.0);
         let divider = DIVIDER_WIDTH;
-        let both = photo_surface(window, true, true);
+        let both = photo_surface(window, true, true, false);
         assert_eq!(
             both,
             (
@@ -124,9 +138,28 @@ mod tests {
                 900.0 - TITLE_BAR_HEIGHT - STATUS_BAR_HEIGHT - 2.0 * divider
             )
         );
-        let none = photo_surface(window, false, false);
+        let none = photo_surface(window, false, false, false);
         assert_eq!(none.0, 1440.0);
         assert_eq!(none.1, both.1, "the panels never change the height");
-        assert!(photo_surface((10.0, 10.0), true, true).0 >= 0.0);
+        assert!(photo_surface((10.0, 10.0), true, true, true).0 >= 0.0);
+        assert!(photo_surface((10.0, 10.0), true, true, true).1 >= 0.0);
+    }
+
+    /// development-set.png: the filmstrip takes its 92 pt off the canvas's height, and nothing off
+    /// its width, the photo surface and the canvas region alike.
+    #[test]
+    fn the_filmstrip_takes_its_height_off_the_canvas() {
+        let window = (1440.0, 900.0);
+        let (width, height) = photo_surface(window, true, true, false);
+        assert_eq!(
+            photo_surface(window, true, true, true),
+            (width, height - FILMSTRIP_HEIGHT)
+        );
+        let [left, top, right, bottom] = canvas_logical(window, true, true, false);
+        assert_eq!(
+            canvas_logical(window, true, true, true),
+            [left, top, right, bottom - FILMSTRIP_HEIGHT]
+        );
+        assert_eq!(FILMSTRIP_HEIGHT, luxforge_ui::theme::FILMSTRIP_HEIGHT);
     }
 }

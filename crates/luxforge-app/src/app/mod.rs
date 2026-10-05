@@ -34,6 +34,7 @@ pub(crate) mod controls;
 #[cfg(test)]
 mod controls_tests;
 pub(crate) mod crop;
+pub(crate) mod develop;
 pub(crate) mod draft;
 pub(crate) mod evidence;
 #[cfg(test)]
@@ -90,6 +91,10 @@ mod launch_tests;
 mod lifecycle;
 #[cfg(test)]
 mod lifecycle_tests;
+pub(crate) mod long_work;
+pub(crate) mod loupe;
+pub(crate) mod loupe_frames;
+pub(crate) mod loupe_region;
 pub(crate) mod mask_coverage;
 pub(crate) mod mask_panel;
 pub(crate) mod masks;
@@ -125,6 +130,18 @@ mod query_choice;
 mod remembered;
 #[cfg(test)]
 mod remembered_tests;
+pub(crate) mod select;
+pub(crate) mod select_catalog;
+#[cfg(test)]
+mod select_folders_tests;
+pub(crate) mod select_missing;
+#[cfg(test)]
+mod select_missing_tests;
+#[cfg(test)]
+mod select_owner_tests;
+pub(crate) mod select_previews;
+#[cfg(test)]
+mod select_tests;
 mod settings;
 #[cfg(test)]
 mod settings_tests;
@@ -389,6 +406,14 @@ pub(crate) struct Editor {
     pub(crate) performance: performance::Sampler,
     /// The one export this window runs, from the press to its last read.
     pub(crate) export: export::Exporting,
+    /// The Select workspace: which workspace is shown, what Select last read, its grid and what is
+    /// in flight.
+    pub(crate) select: select::Select,
+    /// Long-running work: the watch on the owner's activity board and what it last read.
+    pub(crate) long_work: long_work::LongWork,
+    /// Developing picks and the development set: Develop N's confirmation, the set and its
+    /// filmstrip, and the large previews a move draws first.
+    pub(crate) develop: develop::Develop,
     /// The open gesture's GPU preview — its plan, its held boundary and its path — and the warm
     /// list of the committed stack.
     pub(crate) gpu: gpu_preview::GpuPreviews,
@@ -433,9 +458,9 @@ impl Before {
     }
 }
 
-/// The window, the display scale, the two side panels and the local pan: what, with the zoom,
-/// decides the view's geometry.
-pub(crate) type ViewGeometry = ((f32, f32), f32, bool, bool, (f32, f32));
+/// The window, the display scale, the two side panels, the filmstrip and the local pan: what, with
+/// the zoom, decides the view's geometry.
+pub(crate) type ViewGeometry = ((f32, f32), f32, bool, bool, bool, (f32, f32));
 
 /// One seam's work after every message, given the state before it.
 type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
@@ -447,7 +472,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 16] = [
+const AFTER_MESSAGE: [AfterMessage; 22] = [
     view_state::after_message,
     performance::after_message,
     slider::after_message,
@@ -462,21 +487,28 @@ const AFTER_MESSAGE: [AfterMessage; 16] = [
     overlay::after_message,
     thumbnails::after_message,
     mask_coverage::after_message,
+    select::after_message,
+    select_missing::after_message,
+    select_catalog::after_message,
+    loupe::after_message,
+    develop::after_message,
+    long_work::after_message,
     drawn_frames::after_message,
     themes::after_message,
 ];
 
 /// The seams whose work reads the screen just derived: what a capability section or a curve shows
 /// is the derived model's answer, so they run after [`Editor::rederive`], in this order.
-const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 3] = [
+const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 4] = [
     capabilities::after_derive,
     controls::after_derive,
     palette::after_derive,
+    loupe::after_derive,
 ];
 
 /// Every seam's subscription, each listed once. A seam with nothing to listen to returns
 /// [`Subscription::none`], so no timer or stream exists that no seam gates.
-const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 10] = [
+const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 14] = [
     keymap::subscription,
     view_state::subscription,
     mask_panel::subscription,
@@ -486,6 +518,10 @@ const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 10] = [
     evidence::subscription,
     capabilities::subscription,
     export::subscription,
+    select::subscription,
+    loupe::subscription,
+    develop::subscription,
+    long_work::subscription,
     palette::subscription,
 ];
 
@@ -579,6 +615,9 @@ impl Editor {
             full_updates: 0,
             performance: performance::Sampler::new(expanded),
             export: Default::default(),
+            select: Default::default(),
+            long_work: long_work::LongWork::watching(&owner),
+            develop: Default::default(),
             gpu: Default::default(),
             gpu_settle: Default::default(),
             drawn_frames: Default::default(),
@@ -734,9 +773,12 @@ impl Editor {
                 let task = self.dispatch(message);
                 let transition = self.performance_transition();
                 let rederive_started = Instant::now();
-                self.workspace
-                    .performance
-                    .refresh_sample(self.performance.expanded, &self.performance.history);
+                self.workspace.performance.refresh_sample(
+                    self.performance.expanded,
+                    &self.performance.history,
+                    &self.long_work.state,
+                    self.select.state.home.as_deref(),
+                );
                 let mut timing = self.log.loop_timing.get();
                 timing.last_rederive_ms = rederive_started.elapsed().as_secs_f64() * 1000.0;
                 self.log.loop_timing.set(timing);
@@ -900,6 +942,9 @@ impl Editor {
             preset_form: &self.presets.form,
             performance_expanded: self.performance.expanded,
             performance: &self.performance.history,
+            select: &self.select.state,
+            long_work: &self.long_work.state,
+            develop: &self.develop.state,
         }
     }
 
@@ -943,6 +988,9 @@ impl Editor {
             Message::Theme(message) => self.theme_update(message),
             Message::Export(message) => self.export_update(message),
             Message::Evidence(message) => self.evidence_update(message),
+            Message::Select(message) => self.select_update(message),
+            Message::LongWork(message) => self.long_work_update(message),
+            Message::Develop(message) => self.develop_update(message),
             Message::Close => self.close(),
         }
     }
@@ -1016,7 +1064,7 @@ impl Editor {
     /// title bar shows open, the zoom and the scroll offset. `None` while a gallery page or no
     /// photograph is drawn.
     pub(crate) fn drawn_photo(&self) -> Option<iced::Rectangle> {
-        if self.gallery_page().is_some() {
+        if self.gallery_page().is_some() || self.select_shown() {
             return None;
         }
         let title = &self.workspace.title;
@@ -1024,6 +1072,7 @@ impl Editor {
             self.view_state.window,
             title.state_panel_open,
             title.tools_panel_open,
+            self.filmstrip_shown(),
         );
         let view = &self.session.preview.view;
         view::canvas::drawn_photo(
@@ -1041,7 +1090,23 @@ impl Editor {
         let started = Instant::now();
         let element = match self.gallery_page() {
             Some(page) => view::gallery(page),
-            None => view::workspace(&self.workspace, self.surfaces()),
+            None if self.select_shown() => view::select::screen(
+                &self.workspace,
+                view::select::Grid {
+                    layout: &self.select.layout,
+                    scroll: self.select.scroll,
+                    viewport: self.select.viewport,
+                    rows: &self.select.state.rows,
+                    content: &self.select.state.content,
+                    images: self.select.previews.grid(&self.select.state.rows),
+                    loupe: self.loupe_images(),
+                },
+            ),
+            None => view::workspace(
+                &self.workspace,
+                self.surfaces(),
+                self.develop.strip_images(),
+            ),
         };
         let mut timing = self.log.loop_timing.get();
         timing.views += 1;
@@ -1098,6 +1163,14 @@ impl Editor {
                 && self
                     .mask_shape()
                     .is_none_or(|shape| shape.brush().is_some()),
+            select: self.select_shown(),
+            select_menu_open: self.select.state.menu.is_some()
+                || self.select.state.catalog.open()
+                || self.select.state.indexed_menu.is_some()
+                || self.select.state.forget.is_some(),
+            loupe_open: self.loupe_open(),
+            develop_confirm: self.develop.state.confirm.is_some(),
+            development_set: self.develop.state.set.is_some(),
         }
     }
 
@@ -1110,14 +1183,15 @@ impl Editor {
             || luxforge_ui::surface_retirement_pending()
     }
 
-    /// The window, the display scale, the side panels and the local pan, which with the zoom
-    /// decide the view's geometry: a change to any of them is view motion.
+    /// The window, the display scale, the side panels, the filmstrip and the local pan, which with
+    /// the zoom decide the view's geometry: a change to any of them is view motion.
     pub(crate) fn view_geometry(&self) -> ViewGeometry {
         (
             self.view_state.window,
             self.view_state.scale_factor,
             self.session.workspace.state_panel,
             self.session.workspace.tools_panel,
+            self.filmstrip_shown(),
             self.view_state.local_pan,
         )
     }

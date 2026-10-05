@@ -98,9 +98,14 @@ impl RequestTable {
         Ok(Some(answer))
     }
 
-    /// Keep a first answer, marked as not deduplicated, which is how the client receives it too.
+    /// Keep a first answer, marked as not deduplicated, which is how the client receives it too —
+    /// unless its handler already answered it as a retry: a request a durable store recorded before
+    /// this process started (the library journal answers a library change's retry after a
+    /// restart), which is a retry however new it is to this table.
     pub(super) fn record(&mut self, key: RequestKey, answer: &mut Value) {
-        mark(answer, false);
+        if answer.get("deduplicated") != Some(&Value::Bool(true)) {
+            mark(answer, false);
+        }
         let bytes = serde_json::to_vec(&*answer).map_or(usize::MAX, |encoded| encoded.len())
             + key.scope.len()
             + key.request_id.len();
@@ -179,6 +184,24 @@ mod tests {
             RequestKey::of("preset.create", &json!({"name": "Soft"})).is_none(),
             "a request without an envelope has no key; its handler refuses it"
         );
+    }
+
+    /// A handler that answered a request as a retry, from a store that outlives the process, keeps
+    /// that answer's `deduplicated: true`; every other first answer is marked not deduplicated.
+    #[test]
+    fn a_first_answer_its_handler_found_to_be_a_retry_stays_deduplicated() {
+        let mut table = RequestTable::default();
+        let mut durable = json!({"change": 3, "deduplicated": true});
+        table.record(key("pick.set", "before-restart", "a"), &mut durable);
+        assert_eq!(durable["deduplicated"], json!(true));
+        let retry = table
+            .answered(&key("pick.set", "before-restart", "a"))
+            .unwrap()
+            .expect("the retry is answered");
+        assert_eq!(retry["deduplicated"], json!(true));
+        let mut fresh = json!({"change": 4, "deduplicated": false});
+        table.record(key("pick.set", "new", "a"), &mut fresh);
+        assert_eq!(fresh["deduplicated"], json!(false));
     }
 
     #[test]

@@ -5,17 +5,21 @@
 //! and `verify`'s rendered tier all read the table, so a new scenario is one row.
 use crate::{
     basic_smoke as basic, capabilities_smoke as capabilities, controls_smoke as controls,
-    crop_smoke as crop, curve_smoke as curve, detail_smoke as detail, export_smoke as export,
+    crop_smoke as crop, curve_smoke as curve, detail_smoke as detail,
+    develop_picks_smoke as develop_picks, export_smoke as export, filmstrip_smoke as filmstrip,
     gallery_smoke as gallery, gpu_preview_smoke as gpu_preview,
     gpu_preview_zoom_smoke as gpu_preview_zoom, histogram_smoke as histogram,
-    information_smoke as information, lens_smoke as lens, mask_brush_smoke as mask_brush,
-    mask_combine_smoke as mask_combine, mask_interactions_smoke as mask_interactions,
-    mask_panel_smoke as mask_panel, mask_range_smoke as mask_range, mask_smoke as mask,
-    minify_smoke as minify, mixer_smoke as mixer, performance_smoke as performance,
-    presence_smoke as presence, presets_smoke as presets, raw_panel_smoke as raw_panel,
+    information_smoke as information, lens_smoke as lens, loupe_smoke as loupe,
+    mask_brush_smoke as mask_brush, mask_combine_smoke as mask_combine,
+    mask_interactions_smoke as mask_interactions, mask_panel_smoke as mask_panel,
+    mask_range_smoke as mask_range, mask_smoke as mask, minify_smoke as minify,
+    mixer_smoke as mixer, performance_smoke as performance, presence_smoke as presence,
+    presets_smoke as presets, raw_panel_smoke as raw_panel,
+    resolve_missing_smoke as resolve_missing,
     scenario::{Checked, Checks, Fixture, Launch, Plan, Run, Step, launch::Guard},
-    settings_smoke as settings, theme_smoke as theme, viewport_smoke as viewport,
-    vignette_smoke as vignette, workspace_smoke as workspace, zoom_smoke as zoom, *,
+    select_smoke as select, settings_smoke as settings, theme_smoke as theme,
+    viewport_smoke as viewport, vignette_smoke as vignette, workspace_smoke as workspace,
+    zoom_smoke as zoom, *,
 };
 use std::{
     borrow::Borrow,
@@ -866,7 +870,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "gallery",
-        about: "All 104 widget gallery states across fourteen pages",
+        about: "All 129 widget gallery states across nineteen pages",
         launches: &[LaunchSpec {
             plan: gallery::plan,
             developer: true,
@@ -902,6 +906,56 @@ pub static SCENARIOS: &[Scenario] = &[
         window: Some(PANELLED),
         note: Some(capabilities::NOTE),
         own: Some(capabilities::run),
+    },
+    Scenario {
+        name: select::SCENARIO,
+        about: "The Select workspace over a generated catalog: G, an event's grouped grid, arrow selection, the Group chip, an agent's pick read again, a first look's progress sheet, Continue in background and Cancel, a folder of real images, and back to Develop",
+        launches: &[],
+        verify: select::verify,
+        source: Source::Fixtures(&[]),
+        window: Some(PANELLED),
+        note: Some(select::NOTE),
+        own: Some(select::run),
+    },
+    Scenario {
+        name: resolve_missing::SCENARIO,
+        about: "Missing originals over reorganized originals on a disk image: the groups and their reasons, a search's per-row results, Choose…, Stop search changing nothing, Relink of exactly the verified pairs, and Locate…",
+        launches: &[],
+        verify: resolve_missing::verify,
+        source: Source::Fixtures(&[]),
+        window: Some(PANELLED),
+        note: Some(resolve_missing::NOTE),
+        own: Some(resolve_missing::run),
+    },
+    Scenario {
+        name: develop_picks::SCENARIO,
+        about: "Picks on a camera card developed through Develop N's confirmation: an existing folder chosen, a name typed, Escape changing nothing, two picks' copies in an indexed folder used, Develop opened on what it developed and the next photograph's cached preview drawn in the frame after the key",
+        launches: &[],
+        verify: develop_picks::verify,
+        source: Source::Fixtures(&[]),
+        window: Some(PANELLED),
+        note: Some(develop_picks::NOTE),
+        own: Some(develop_picks::run),
+    },
+    Scenario {
+        name: filmstrip::SCENARIO,
+        about: "Develop's filmstrip over a catalog view of JPEG photographs and, with --source, a RAW one: each move draws the photograph's own cached preview in the frame after the key, then its render",
+        launches: &[],
+        verify: filmstrip::verify,
+        source: Source::Default(&[]),
+        window: Some(PANELLED),
+        note: Some(filmstrip::NOTE),
+        own: Some(filmstrip::run),
+    },
+    Scenario {
+        name: loupe::SCENARIO,
+        about: "The Select loupe over a folder of generated images: a burst stepped, jumped and left for the moments either side, a bracket, the 100% focus check, compare, P on the bracket and P on the burst moving on to the next moment, each picture its own frame's",
+        launches: &[],
+        verify: loupe::verify,
+        source: Source::Fixtures(&[]),
+        window: Some(PANELLED),
+        note: Some(loupe::NOTE),
+        own: Some(loupe::run),
     },
     Scenario {
         name: "unavailable",
@@ -1851,9 +1905,17 @@ mod tests {
             );
         }
         assert!(find("raw-panel").is_ok_and(|raw| !raw.rendered()));
+        // The filmstrip takes a RAW source, and runs without one, its RAW steps pending.
+        assert!(find("filmstrip").is_ok_and(|filmstrip| filmstrip.rendered()));
         assert_eq!(
             sourced(),
-            ["raw-detail", "performance", "raw-panel", "raw-editor"]
+            [
+                "raw-detail",
+                "performance",
+                "filmstrip",
+                "raw-panel",
+                "raw-editor"
+            ]
         );
         assert_eq!(listed(), ["raw-detail", "raw-editor"]);
         assert!(find("nothing").is_err());

@@ -16,7 +16,7 @@
 //! all of it. On the way it proves the masked Tone curve's placement: listed before the mixer on
 //! the mask it shares with it, copied by `mask.duplicate`, re-sorted by `mask.reorder`, and sampled
 //! equal to the rendered byte. The panel's own evidence is the `mask-*` smoke scenarios.
-use crate::basic_acceptance::{import, mutation};
+use crate::basic_acceptance::{mutation, open};
 use crate::*;
 use luxforge_core::{
     AssetId, CURVE_EFFECT, MIXER_EFFECT, OwnerHandle, PreviewRequest, RenderOptions, SnapshotId,
@@ -220,7 +220,7 @@ fn identities(listed: &Value) -> Result<Vec<Value>> {
 /// The catalog the reopen is asked about, written by `owner` as an independent client.
 fn write_catalog(owner: &OwnerHandle, fixture: &Path, source: &SourceImage) -> Result<Written> {
     let editor = owner.register();
-    let imported = import(owner, editor, fixture)?;
+    let imported = open(owner, editor, fixture)?;
     let asset = imported["asset"]["id"].clone();
     prepare(owner, editor, &asset)?;
     let mut revision = as_u64(

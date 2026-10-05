@@ -16,6 +16,12 @@
 //! The counter sees every thread, so this binary holds one test and keeps the owner otherwise idle:
 //! the source is prepared before any tick is counted, no tick reads a pixel, and each figure is the
 //! least of several identical ticks.
+// `luxforge-testkit`'s client helpers, compiled into this binary from their one source, as the
+// core's other test binaries take them: the core cannot name that crate, which depends on it.
+extern crate self as luxforge_testkit;
+#[path = "../../../luxforge-testkit/src/client.rs"]
+pub mod client;
+
 use luxforge_core::{ApiRequest, ClientId, ModuleRegistry, OwnerHandle};
 use luxforge_process::allocations::{self, Counting};
 use luxforge_testbase::paths;
@@ -53,16 +59,6 @@ fn call(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) -> V
         Some(error) => panic!("{method} failed: {} {}", error.code, error.message),
         None => response.result.expect("an answer"),
     }
-}
-
-fn wait(owner: &OwnerHandle, client: ClientId, job: &Value) {
-    if job.is_null() {
-        return;
-    }
-    luxforge_testbase::wait_until("a source job settling", || {
-        let status = call(owner, client, "job.read", json!({"job_id": job}));
-        !matches!(status["status"].as_str(), Some("queued" | "running"))
-    });
 }
 
 /// A wave across the frame in `length` distinct positions, as a long drag posts it.
@@ -119,22 +115,10 @@ fn a_brush_tick_copies_its_path_once_whatever_its_length() {
     let (owner, join) =
         OwnerHandle::start_with(&catalog, Arc::new(ModuleRegistry::builtin())).unwrap();
     let client = owner.register();
-    let queued = call(
-        &owner,
-        client,
-        "catalog.import",
-        json!({"path": paths::jpeg(), "mutation": {"request_id": "import", "actor": "test"}}),
-    );
-    wait(&owner, client, &queued["job_id"]);
-    let status = call(
-        &owner,
-        client,
-        "job.read",
-        json!({"job_id": queued["job_id"]}),
-    );
-    let asset = status["result"]["asset"]["id"].clone();
-    let prepared = call(&owner, client, "source.prepare", json!({"asset_id": asset}));
-    wait(&owner, client, &prepared["job_id"]);
+    // Opened as a client opens a file: developed, then prepared, so no tick reads a pixel.
+    let asset = luxforge_testkit::client::open(&owner, client, &paths::jpeg(), "test")
+        .expect("the fixture opens")["asset"]["id"]
+        .clone();
     let created = call(
         &owner,
         client,

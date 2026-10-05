@@ -136,14 +136,9 @@ impl Workload {
     fn new(source: &Path, catalog: &Path) -> Result<Self> {
         let owner = Owner::start(catalog, ModuleRegistry::builtin(), ACTOR)?;
         let client = owner.client();
-        let imported = owner.call(
-            client,
-            "catalog.import",
-            json!({"path":source,"mutation":envelope(None)}),
-        )?;
-        require_status(&terminal(&owner, client, &imported["job_id"])?, "ready")?;
-        let adopted = owner.call(client, "job.adopt", json!({"job_id":imported["job_id"]}))?;
-        let asset: AssetId = serde_json::from_value(adopted["asset"]["asset"]["id"].clone())?;
+        // Developed and prepared as a client opens a file (`pick.develop`, then `source.prepare`).
+        let opened = owner.open(client, source)?;
+        let asset: AssetId = serde_json::from_value(opened["asset"]["id"].clone())?;
         let prepared = owner.call(client, "source.prepare", json!({"asset_id":asset}))?;
         if !prepared["job_id"].is_null() {
             require_status(&terminal(&owner, client, &prepared["job_id"])?, "ready")?;

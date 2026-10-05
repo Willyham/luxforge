@@ -425,9 +425,13 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatusBarModel {
         message: inputs.status.to_owned(),
         clients: clients_text(inputs.clients),
         agents_connected: inputs.clients.is_some_and(|count| count > 0),
-        // A GPU frame on screen names itself first: the CPU frame behind it, and any render still
-        // running, are not what is shown.
-        render: if let Some(us) = inputs.gpu_frame_us {
+        // A cached preview drawn while its photograph's original prepares says so first, even
+        // while that photograph's render is on its way; otherwise a GPU frame on screen names
+        // itself first: the CPU frame behind it, and any render still running, are not what is
+        // shown.
+        render: if let Some(preview) = &inputs.develop.preview {
+            preview.render_text()
+        } else if let Some(us) = inputs.gpu_frame_us {
             gpu_text(us as f64 / 1000.0)
         } else if let Some(bar) = inputs.render_bar {
             format!("Rendering… {:.0}%", (bar.fraction * 100.0).floor())

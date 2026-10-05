@@ -6,8 +6,8 @@
 //! guessed; otherwise it stops. The codes are those of this build: `mozjpeg-sys` 2.2.3's
 //! libjpeg-turbo at `JPEG_LIB_VERSION` 62, without arithmetic coding (so `JWRN_ARITH_BAD_CODE` does
 //! not exist here: an arithmetic-coded file is a fatal error instead) or `jdicc.c`, reading through
-//! `mozjpeg` 0.10.13's own source manager. Each reason names the source that emits the code. A
-//! code not listed refuses.
+//! `mozjpeg` 0.10.13's own source manager, or libjpeg's memory source (`jdatasrc.c`) for a region
+//! decode. Each reason names the source that emits the code. A code not listed refuses.
 
 use mozjpeg_sys::{
     JWRN_ADOBE_XFORM, JWRN_BOGUS_ICC, JWRN_BOGUS_PROGRESSION, JWRN_EXTRANEOUS_DATA,
@@ -39,8 +39,9 @@ use Verdict::{Accept, AcceptInHeader, Refuse};
 /// the reason for its verdict.
 #[rustfmt::skip]
 pub(crate) const WARNINGS: [Warning; 11] = [
-    // `mozjpeg`'s source manager (readsrc.rs, as jdatasrc.c): the data ends before libjpeg has
-    // found EOI; it fakes one, and fills whatever image data was still to come.
+    // `mozjpeg`'s source manager (readsrc.rs) and libjpeg's memory source (jdatasrc.c): the data
+    // ends before libjpeg has found EOI; it fakes one, and fills whatever image data was still to
+    // come.
     Warning { code: JWRN_JPEG_EOF, name: "JWRN_JPEG_EOF", verdict: Refuse },
     // jdhuff.c: a scan's data ends at a marker before its last block; libjpeg fills the rest with
     // zero bits.
@@ -60,8 +61,8 @@ pub(crate) const WARNINGS: [Warning; 11] = [
     // jdapimin.c: the Adobe marker names an unknown colour transform and libjpeg guesses YCbCr, so
     // the colours would be a guess.
     Warning { code: JWRN_ADOBE_XFORM, name: "JWRN_ADOBE_XFORM", verdict: Refuse },
-    // jdapistd.c: rows asked for past the image, which libjpeg answers with none; the decoder never
-    // asks, so this would be its own bug.
+    // jdapistd.c: rows asked for past the image, which libjpeg answers with none; the decoders
+    // never ask, so this would be their own bug.
     Warning { code: JWRN_TOO_MUCH_DATA, name: "JWRN_TOO_MUCH_DATA", verdict: Refuse },
     // jdmarker.c: bytes that are not a marker, skipped. Before the first scan they sit between
     // marker segments and cannot be image data; after a scan they are also what a decode that lost

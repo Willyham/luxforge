@@ -275,13 +275,14 @@ impl ModuleRegistry {
     }
 
     /// Every registered module in registration order, with the availability it was registered
-    /// with: the order a new import's first-open actions are asked in.
+    /// with: the order a photograph's first-open actions are asked in.
     pub(crate) fn providers(&self) -> impl Iterator<Item = Provider<'_>> {
         self.entries.iter().map(|entry| entry.provider())
     }
 
     /// Block until every available module can answer [`crate::ToolModule::first_open`]. The
-    /// source worker calls it before a new import completes, so the catalog owner never waits.
+    /// source worker calls it before a photograph's first preparation completes, so the catalog
+    /// owner never waits.
     pub(crate) fn await_first_open(&self) {
         for provider in self.providers() {
             if provider.descriptor().is_available() {

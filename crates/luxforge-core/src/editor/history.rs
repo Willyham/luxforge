@@ -587,6 +587,32 @@ impl EditorService {
         })
     }
 
+    /// The whole answer this asset gave `request_id`, whatever input it was made with, marked
+    /// deduplicated, or `None` when it has none: how a batch answers a photograph its earlier
+    /// attempt already did under the request identity it derives for that photograph, although
+    /// the revision that attempt expected has moved on since (`crate::library::batch`).
+    pub(crate) fn recorded_request(
+        &self,
+        asset_id: &AssetId,
+        request_id: &str,
+    ) -> Result<Option<ActionResult>, Error> {
+        let found = self
+            .connection
+            .query_row(
+                "SELECT result_json FROM requests WHERE asset_id=?1 AND request_id=?2",
+                params![asset_id.as_str(), request_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        found
+            .map(|result_json| {
+                let mut result: ActionResult = decode("invalid saved request result", result_json)?;
+                result.mutation.deduplicated = true;
+                Ok(result)
+            })
+            .transpose()
+    }
+
     /// The whole answer this asset already gave `request_id`, marked deduplicated, or `None` for a
     /// new request. The same identity with a different input is a `conflict`.
     fn request_result(

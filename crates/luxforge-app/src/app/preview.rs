@@ -631,6 +631,36 @@ impl Presentation {
         content
     }
 
+    /// Draw a photograph's decoded cached preview in place of whatever is on screen: the
+    /// photograph Develop is switching to, before its original is prepared. Everything that
+    /// described the frame on screen is withdrawn with it — its retained frames, its histogram, its
+    /// overlays and the entry it was rendered for — so nothing claims the preview is another
+    /// photograph's render. The preview gets a content of its own, which no render shares, and the
+    /// render that follows replaces it like any frame. The pixels are the decoded preview's own
+    /// bytes, shared rather than copied. Answers the photo surface's version it was handed over as,
+    /// or `None` when the buffer does not hold its own size.
+    pub(crate) fn show_cached<P: AsRef<[u8]> + Send + Sync + 'static>(
+        &mut self,
+        pixels: Arc<P>,
+        size: (u32, u32),
+    ) -> Option<u64> {
+        self.withdraw();
+        self.presenter.clear_clipping();
+        self.presenter.clear_coverage();
+        self.content_serial = self.content_serial.saturating_add(1);
+        self.content_key = None;
+        let content = self.content_serial;
+        if !self.presenter.show_preview(pixels, size, content) {
+            return None;
+        }
+        self.dimensions = Some(size);
+        self.presented_content = content;
+        self.presented_bounds = None;
+        self.refit_pending = false;
+        self.render_error = None;
+        Some(self.presenter.photo_version())
+    }
+
     /// Make a visible region the region slot's pixels and record that it is on screen. `false`
     /// when the surface refused it, and then nothing is recorded.
     pub(crate) fn show_region(
@@ -1074,6 +1104,7 @@ impl Editor {
                 self.view_state.window,
                 self.session.workspace.state_panel,
                 self.session.workspace.tools_panel,
+                self.filmstrip_shown(),
             ),
             self.view_state.local_pan,
         )
@@ -1192,6 +1223,12 @@ impl Editor {
         Task::none()
     }
 
+    /// The quiet policy is waiting to settle, so its 25 ms timer exists: from a view motion or a
+    /// drafted frame until the settle is asked for, and never while nothing is presented.
+    pub(crate) fn quiet_timer_armed(&self) -> bool {
+        self.view_plan.quiet_since.is_some() && !self.view_plan.quiet_settle_requested
+    }
+
     pub(super) fn note_view_motion(&mut self) {
         self.view_plan.dirty = true;
         self.view_plan.quiet_since = Some(Instant::now());
@@ -1255,6 +1292,12 @@ impl Editor {
             return Task::none();
         }
         let Some(stage) = self.presentation.dimensions else {
+            // Nothing has been presented, so no view is unsettled and the quiet timer has nothing
+            // to settle: it stays disarmed, or a window with no photograph would tick every 25 ms
+            // for as long as it is open. The view stays dirty for the first frame to reconcile.
+            if self.core_gesture().is_none() {
+                self.view_plan.quiet_since = None;
+            }
             return Task::none();
         };
         let Some(wanted) = self.desired_view_for(stage) else {
@@ -1372,6 +1415,7 @@ impl Editor {
                     self.view_state.window,
                     workspace.state_panel,
                     workspace.tools_panel,
+                    self.filmstrip_shown(),
                 );
                 let inset = layout::FIT_INSET;
                 bounds_of((
@@ -1408,6 +1452,7 @@ impl Editor {
                 self.view_state.window,
                 workspace.state_panel,
                 workspace.tools_panel,
+                self.filmstrip_shown(),
             ),
             self.view_state.scale_factor,
             layout::FIT_INSET,
@@ -2618,7 +2663,7 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
     if editor.preview_wake_needed() {
         subscriptions.push(waker::subscription());
     }
-    if editor.view_plan.quiet_since.is_some() && !editor.view_plan.quiet_settle_requested {
+    if editor.quiet_timer_armed() {
         subscriptions.push(
             iced::time::every(Duration::from_millis(25))
                 .map(|_| Message::Preview(PreviewMessage::QuietTick)),
