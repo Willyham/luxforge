@@ -5,7 +5,7 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 ## Engineering
 
 **GPU previews** ([design](design/gpu-preview.md), [qualification](specs/performance.md#gpu-previews-qualified-on-the-m4)). Implemented and qualified on the M4; outstanding:
-- Owner review of the proposed error limits, the 150 ms dissolve, the "GPU preview" label and the `gpu_preview` preference
+- Owner review of the proposed error limits, the 150 ms dissolve and the "GPU preview" label
 - Windows and Linux functional checks of the fallback and of correctness within the limits, not run
 - A drag while queued exports hold the shared pool misses 16 ms p95 (18.7 ms at 60 MP) and 32 ms at 24 MP; the reduced-pool proposal in [instant previews](design/instant-preview.md#proposals-and-later-work) is unmeasured
 - Behind Detail or another spatial layer, Dehaze's light is computed with that layer left out at every view, at rest too: no slot sweeps the exact prefix at full resolution yet, which the [recorded default](design/gpu-first.md#proposals-with-recorded-defaults) asks for at rest. In motion a colour drag between Detail and Presence leaves Detail out by that default, and five sharpen-stress cells under Dehaze −100 miss the limits so ([performance](specs/performance.md#the-per-frame-lights-reduction-factor)): a question for the owner

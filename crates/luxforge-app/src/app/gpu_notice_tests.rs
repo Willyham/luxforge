@@ -2,13 +2,13 @@
 //! the reference renderer drawing every frame (`docs/design/gpu-preview.md`, "Labels and overlays
 //! during motion"), end to end against a real owner: what `workspace.status` and the snapshot say of
 //! each class of reason, held against the reason the evidence records in the same frame; reasons
-//! that pass, and the preference turned off, say nothing; `compiling` waits for half a second and
+//! that pass say nothing; `compiling` waits for half a second and
 //! is decided by a tick, never by the clock; the notice clears at the next GPU tick and when the
 //! gesture's settle ends; and the reference renderer's notice is the session's, said at rest.
 use super::{
     gpu_preview::SurfaceReport,
     gpu_preview_tests::{catalog, deliver_until, surface_ready, zoomed, zoomed_out},
-    message::{draft::DraftMessage, preview::PreviewMessage, view::ViewMessage},
+    message::{draft::DraftMessage, preview::PreviewMessage},
     testing::{finish, let_go, real_photo, run_commit, slide},
     *,
 };
@@ -218,38 +218,6 @@ fn gpu_preview_the_notice_says_nothing_of_a_zoom_below_100() {
         assert_eq!(editor.workspace.status.fallback, None, "{value}%");
         finish(editor, catalog);
     }
-}
-
-/// With the preference off the desktop hands no plan and the evidence names `preference-off`: the
-/// person chose the CPU path, so nothing is said, mid-gesture or between gestures.
-#[test]
-fn gpu_preview_the_notice_says_nothing_with_the_preference_off() {
-    let catalog = catalog("notice-off");
-    let (mut editor, _, _) = real_photo(&catalog);
-    editor.gpu.surface = Some(SurfaceReport::default());
-    let mut session = editor.session.clone();
-    session.revision += 1;
-    session.workspace.gpu_preview = false;
-    let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
-    assert_says(&editor, "preference-off", None);
-    for value in [0.1, 0.2] {
-        let _ = slide(&mut editor, ACTION, FIELD, value);
-        assert_says(&editor, "preference-off", None);
-    }
-    // Where the drag would say its own reason, a slot over the budget, the preference still says
-    // nothing.
-    editor.gpu.budget = Some(1);
-    let _ = slide(&mut editor, ACTION, FIELD, 0.3);
-    assert_says(&editor, "preference-off", None);
-    // Turned back on, the next tick says the budget.
-    let mut session = editor.session.clone();
-    session.revision += 1;
-    session.workspace.gpu_preview = true;
-    let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
-    let _ = slide(&mut editor, ACTION, FIELD, 0.4);
-    assert_says(&editor, "budget-exceeded", Some(MEMORY));
-    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
-    finish(editor, catalog);
 }
 
 /// A Perspective drag on a photograph whose stack holds no content layer is planned from the

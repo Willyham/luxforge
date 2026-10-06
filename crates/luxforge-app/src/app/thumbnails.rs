@@ -35,7 +35,7 @@ use crate::app::Before;
 use crate::state::masks::{MaskThumbnails, Thumbnail};
 use iced::Task;
 use luxforge_core::{
-    ErrorKind, MASKS_PER_RECIPE, MaskCoverage, MaskId, PreviewIntent, PreviewJob,
+    ErrorKind, MASKS_PER_RECIPE, MaskCoverage, MaskId, PreviewJob,
     analysis::AnalysisIdentity,
     latest::{Latest, Running},
 };
@@ -238,10 +238,10 @@ pub(crate) struct Thumbnailer {
 impl Editor {
     /// Take note of `job`'s stack when it is a settled full-stack frame, and hand it to the
     /// worker at once while the Masks panel shows the thumbnails. A crop's truncated input and the
-    /// interactive frames of a drag are not noted: the first is not the photograph the masks apply
-    /// to, and the second changes every 16 ms tick. Without the panel only the identity is noted.
+    /// frames of a drag are not noted: the first is not the photograph the masks apply to, and
+    /// the second changes every 16 ms tick. Without the panel only the identity is noted.
     pub(super) fn note_thumbnail_source(&mut self, job: &PreviewJob) {
-        if job.layer_count.is_some() || job.intent == PreviewIntent::Interactive {
+        if job.layer_count.is_some() || job.evaluation.draft_revision().is_some() {
             return;
         }
         // A stack without masks has no thumbnail to describe.

@@ -14,20 +14,17 @@ use std::time::Duration;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RenderTime {
     pub(crate) ms: f64,
-    /// The displayed frame was evaluated approximately at proxy scale; an exact-derived
-    /// display reduction is false even though its texture uses the proxy slot.
-    pub(crate) proxy: bool,
     /// The frame approximates a drafted RAW white balance on planes developed at another one
     /// ([`luxforge_core::PreviewResult::approximate_white_balance`]).
     pub(crate) approximate: bool,
 }
 
 impl RenderTime {
-    /// "Exact render · 85 ms" for the exact full-resolution render, and "Approximate render · 12
-    /// ms" for anything else on screen: the display-size proxy, or a drafted RAW white balance
-    /// approximated on the developed planes.
+    /// "Exact render · 85 ms" for the reference renderer's exact frame, or its reduction to the
+    /// view, and "Approximate render · 12 ms" for a drafted RAW white balance approximated on the
+    /// developed planes.
     pub(crate) fn text(self) -> String {
-        let kind = if self.proxy || self.approximate {
+        let kind = if self.approximate {
             "Approximate"
         } else {
             "Exact"
@@ -93,9 +90,8 @@ struct Class {
 /// renderer's, said from the session's renderer; the rest are a gesture's, said from its latest
 /// tick. A code in none of them says nothing: the reasons that pass within a tick or two or a job
 /// (`boundary-pending`, `source-uploading`, `source-missing` and `surface-pending`, which is also
-/// the session's renderer before the photo surface has checked its GPU stage), the preference
-/// turned off (`preference-off`), and the two the table does not name (`unchanged` and
-/// `unplannable`). The last is the picture at rest's while its programs compile, said at rest
+/// the session's renderer before the photo surface has checked its GPU stage), and the two the
+/// table does not name (`unchanged` and `unplannable`). The last is the picture at rest's while its programs compile, said at rest
 /// alone.
 const CLASSES: [Class; 7] = [
     Class {
@@ -563,19 +559,15 @@ mod tests {
 
     #[test]
     fn the_render_time_names_the_kind_of_frame_it_describes() {
-        let time = |ms: f64, proxy: bool, approximate: bool| RenderTime {
-            ms,
-            proxy,
-            approximate,
-        };
+        let time = |ms: f64, _: bool, approximate: bool| RenderTime { ms, approximate };
         assert_eq!(
-            time(12.4, true, false).text(),
+            time(12.4, true, true).text(),
             "Approximate render \u{b7} 12 ms"
         );
         assert_eq!(time(85.5, false, false).text(), "Exact render \u{b7} 86 ms");
         // A tiny frame is not "0 ms".
         assert_eq!(
-            time(0.2, true, false).text(),
+            time(0.2, true, true).text(),
             "Approximate render \u{b7} <1 ms"
         );
         assert_eq!(time(0.5, false, false).text(), "Exact render \u{b7} 1 ms");
@@ -755,16 +747,15 @@ mod tests {
         }
     }
 
-    /// A reason that passes within a tick or two or a job, the preference turned off and a code the
-    /// table does not name say nothing.
+    /// A reason that passes within a tick or two or a job, and a code the table does not name, say
+    /// nothing.
     #[test]
-    fn passing_reasons_the_preference_off_and_unnamed_codes_say_nothing() {
+    fn passing_reasons_and_unnamed_codes_say_nothing() {
         for code in [
             "boundary-pending",
             "source-uploading",
             "source-missing",
             "surface-pending",
-            "preference-off",
             "unchanged",
             "unplannable",
             "a-code-of-another-day",

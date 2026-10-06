@@ -30,9 +30,7 @@
 //! frame's own draft revision and boundary, as the editor records; the drag's GPU frame against
 //! the settled frame that replaced it is held to the pointwise limits over the whole photograph,
 //! and an `idle` step after the release's and the stroke's dissolves checks that nothing draws or
-//! updates once they have ended. With the GPU preview turned off from the palette a drag takes the
-//! CPU path, naming the preference, and its release starts no dissolve. With both clipping
-//! overlays shown a drag is still drawn on the GPU, marking its own clipped pixels. Turning them
+//! updates once they have ended. With both clipping overlays shown a drag is still drawn on the GPU, marking its own clipped pixels. Turning them
 //! off, and the Detail drag after a third drag's release, each cancel a release's dissolve that
 //! still runs when they take effect; one that had already ended, as a release capture longer than
 //! 150 ms on a loaded host leaves it, is recorded with both times and passes.
@@ -42,8 +40,7 @@ use crate::{
 };
 use luxforge_core::{BASIC_EFFECT, DETAIL_EFFECT};
 use luxforge_evidence::{
-    self as script, DragHandle, MaskStep, PaintStep, PaletteStep, Reference, SliderStep,
-    WorkspaceStep,
+    self as script, DragHandle, MaskStep, PaintStep, Reference, SliderStep, WorkspaceStep,
 };
 
 pub const SCENARIO: &str = "gpu-preview";
@@ -115,10 +112,9 @@ fn stroke_path() -> Vec<[f64; 2]> {
 }
 const STROKE_INTERVAL_MS: u64 = 60;
 
-/// The exposure the preference-off drag moves through, the second GPU drag's and the third's. Each
-/// release differs from the exposure before it, the third's from the Presence section's Basic
-/// drag's too, so that each commits.
-const OFF: [f64; 2] = [0.6, 0.65];
+/// The exposure the second GPU drag moves through, and the third's. Each release differs from the
+/// exposure before it, the third's from the Presence section's Basic drag's too, so that each
+/// commits.
 const AGAIN: [f64; 2] = [0.4, 0.45];
 const THIRD: [f64; 2] = [0.2, 0.25];
 /// An idle check: long enough a settle for a 150 ms dissolve to end and the slot to retire, then a
@@ -185,23 +181,6 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             Step::new("settled", script::Step::Idle(IDLE))
                 .commits(0)
                 .no_draft(),
-            // The preference off from the palette: a drag takes the CPU path, naming it, and asks for
-            // no boundary; its release starts no dissolve. Then on again.
-            Step::new("preference-off", PaletteStep::Run("gpu preview".into()))
-                .commits(0)
-                .workspace("gpu_preview", json!(false)),
-            Step::new("drag-off", SliderStep::new(BASIC, EXPOSURE, OFF))
-                .commits(0)
-                .draft(BASIC, json!({ EXPOSURE: OFF[1] })),
-            Step::new(
-                "drag-off-release",
-                SliderStep::new(BASIC, EXPOSURE, [OFF[1]]).release(),
-            )
-            .commits(1)
-            .no_draft(),
-            Step::new("preference-on", PaletteStep::Run("gpu preview".into()))
-                .commits(0)
-                .workspace("gpu_preview", json!(true)),
             // Both clipping overlays shown (J): a drag is still drawn on the GPU, marking its own
             // clipped pixels.
             Step::new("clipping-on", script::Step::Key { key: "j".into() })
@@ -1151,7 +1130,7 @@ pub(crate) fn at_rest_after(events: &[Value], frame: &Frame, what: &str) -> Resu
 
 /// The settle hand-off at rest: each release's committed stack drawn by the GPU itself, over the
 /// boundary the drag held, with no dissolve into a CPU frame and within the pointwise limits of
-/// the drag's last frame; idle once settled; the preference turned off and on; the clipping marks
+/// the drag's last frame; idle once settled; the clipping marks
 /// of a GPU drag, which the view plan at rest carries and lets go with the overlay; and the next
 /// gesture taking the surface back from the picture at rest.
 fn settle_checks(launch: &Checked, checks: &mut Checks) -> Result {
@@ -1169,44 +1148,6 @@ fn settle_checks(launch: &Checked, checks: &mut Checks) -> Result {
         settled,
         "the release: the committed stack drawn at rest by the GPU with no dissolve, then idle",
         json!({"rest": rest, "idle": idle, "jump": jumped}),
-    );
-
-    // The preference off: every tick on the CPU, naming it, no boundary derived, and no dissolve
-    // at release; on again.
-    let off = launch.at("drag-off")?;
-    let events = step_events(launch, "drag-off")?;
-    let ticks = named(events, "gpu_preview_tick");
-    let gpu = &off.state()["surface"]["gpu"];
-    ensure(
-        !ticks.is_empty()
-            && ticks.iter().all(|tick| {
-                tick["detail"]["path"] == json!("cpu")
-                    && tick["detail"]["reason"] == json!("preference-off")
-            })
-            && named(events, "gpu_boundary").is_empty()
-            && gpu["drawing_path"] == json!("cpu")
-            && gpu["plan_fallback"] == json!({"reason": "preference-off"}),
-        format!(
-            "With the preference off the drag was not the CPU's: ticks {:?}, path {}, plan \
-             fallback {}",
-            ticks.iter().map(|tick| &tick["detail"]).collect::<Vec<_>>(),
-            gpu["drawing_path"],
-            gpu["plan_fallback"]
-        ),
-    )?;
-    ensure(
-        named(
-            step_events(launch, "drag-off-release")?,
-            "gpu_dissolve_started",
-        )
-        .is_empty(),
-        "A release with no GPU frame on screen started a dissolve",
-    )?;
-    checks.note(
-        off,
-        "the preference off: the drag on the CPU",
-        json!({"ticks": ticks.len(), "plan_fallback": gpu["plan_fallback"],
-            "preference_on": launch.at("preference-on")?.state()["workspace"]["gpu_preview"]}),
     );
 
     // Clipping shown: the drag still drawn on the GPU, marking its own clipped pixels.

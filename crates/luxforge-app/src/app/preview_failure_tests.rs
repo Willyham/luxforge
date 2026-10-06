@@ -20,7 +20,7 @@ use super::{
         Message, crop::CropMessage, draft::DraftMessage, pointer::PointerMessage,
         preview::PreviewMessage, sync::SyncMessage,
     },
-    preview::ProxyFrame,
+    preview::ReducedFrame,
     tasks::SyncResult,
     testing::{
         CROP_SOURCE, attach_log, core_draft, crop_layer, described_at, entry, events, finish,
@@ -375,7 +375,7 @@ fn a_commit_whose_render_fails_withdraws_the_earlier_picture_instead_of_presenti
     );
     assert!(
         editor.presentation.exact.is_none()
-            && editor.presentation.proxy_frame.is_none()
+            && editor.presentation.reduced_frame.is_none()
             && editor.presentation.analysis.is_none()
     );
     assert!(
@@ -460,18 +460,18 @@ fn a_commit_whose_render_fails_withdraws_the_earlier_picture_instead_of_presenti
     finish(editor, catalog);
 }
 
-/// The full-resolution phase of the state on screen failed after its display proxy was shown: the
-/// proxy is that state's own picture, so it stays, and the failure is still named.
+/// A later frame of the state on screen failed: the frame shown is that state's own picture, so it
+/// stays, and the failure is still named.
 #[test]
-fn a_failed_exact_phase_keeps_the_proxy_of_the_same_state() {
+fn a_failed_frame_keeps_the_picture_of_the_same_state() {
     let (mut editor, catalog, _, current) = opened_and_shown();
     let presented = editor.presentation.presented_generation;
     let error = Error::resource_limit("linear output exceeds 512 MiB");
-    editor.preview_failed(presented, false, &current.id, None, &error);
+    editor.preview_failed(presented, &current.id, None, &error);
     editor.rederive();
     assert!(
         editor.presentation.presenter.photo().is_some(),
-        "the target's own proxy was withdrawn"
+        "the target's own picture was withdrawn"
     );
     assert_eq!(
         editor.presentation.presented_entry.as_ref(),
@@ -488,7 +488,7 @@ fn a_failed_exact_phase_keeps_the_proxy_of_the_same_state() {
     );
 
     // A drafted revision of the same entry is another picture: its failure withdraws the frame.
-    editor.preview_failed(presented + 1, false, &current.id, Some(3), &error);
+    editor.preview_failed(presented + 1, &current.id, Some(3), &error);
     assert!(
         editor.presentation.presenter.photo().is_none(),
         "a frame of another revision stayed"
@@ -514,13 +514,10 @@ fn a_zoom_hands_over_the_retained_picture_under_its_own_entry() {
         })
     };
     let generation = editor.presentation.presented_generation;
-    editor.presentation.presented_proxy = true;
-    editor.presentation.proxy_frame = Some(ProxyFrame {
+    editor.presentation.presented_reduced = true;
+    editor.presentation.reduced_frame = Some(ReducedFrame {
         generation,
         raster: raster(1),
-        dimensions: (1200, 900),
-        built: false,
-        approximation: luxforge_core::ProxyApproximation::default(),
         approximate_white_balance: false,
         render_ms: 5.0,
     });
@@ -533,7 +530,7 @@ fn a_zoom_hands_over_the_retained_picture_under_its_own_entry() {
     editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
     let _ = editor.zoom_changed(&Zoom::Fit);
     assert!(
-        !editor.presentation.presented_proxy,
+        !editor.presentation.presented_reduced,
         "the retained exact raster is on screen"
     );
     assert_eq!(
@@ -638,14 +635,14 @@ fn a_scripted_step_waiting_for_a_preview_ends_on_its_failure() {
         evidence.awaiting = Some(Settle::Preview);
         evidence.capture_pending = false;
     }
-    editor.preview_failed(8, false, &entry, None, &error);
+    editor.preview_failed(8, &entry, None, &error);
     let evidence = crate::app::testing::evidence(&editor);
     assert_eq!(
         evidence.awaiting,
         Some(Settle::Preview),
         "an older job's failure ended the step"
     );
-    editor.preview_failed(9, false, &entry, None, &error);
+    editor.preview_failed(9, &entry, None, &error);
     let evidence = crate::app::testing::evidence(&editor);
     assert!(evidence.awaiting.is_none() && evidence.capture_pending);
     finish(editor, catalog);

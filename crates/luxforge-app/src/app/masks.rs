@@ -2031,15 +2031,13 @@ impl Editor {
             || json!({"generation":generation,"mask":mask.as_str(),"component":component.map(ComponentId::as_str),"cells":[width,height],"mode":mode.as_str(),"setting":workspace.mask_overlay.as_str(),"colour":workspace.mask_overlay_colour.as_str()}),
         );
         let shown = match self
-            .presentation
-            .region_raster
-            .as_ref()
+            .gpu_view_region()
             .filter(|region| region.generation == generation)
         {
             Some(region) => {
                 self.presentation
                     .presenter
-                    .show_region_coverage(rgba, (width, height), region)
+                    .show_region_coverage(rgba, (width, height), &region)
             }
             None => self
                 .presentation

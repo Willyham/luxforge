@@ -80,7 +80,7 @@ fn compare_slider_shares_after_and_restores_before_a_late_answer() {
         source_fingerprint: "comparison-test".into(),
         snapshot_id: luxforge_core::SnapshotId::new(),
     };
-    editor.presentation.presenter.show_proxy(&raster, 7);
+    editor.presentation.presenter.show_reduced(&raster, 7);
     editor.presentation.presented_content = 7;
     editor.presentation.presented_entry = editor.document.display_entry.clone();
     let previous = editor.shown_selection();

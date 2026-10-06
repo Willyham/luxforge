@@ -112,6 +112,9 @@ pub(crate) mod masks;
 #[cfg(test)]
 mod masks_tests;
 pub(crate) mod message;
+pub(crate) mod motion;
+#[cfg(test)]
+mod motion_tests;
 pub(crate) mod outcome;
 pub(crate) mod overlay;
 #[cfg(test)]
@@ -328,7 +331,7 @@ pub(crate) struct Editor {
     pub(crate) document: state::document::Document,
     /// What the photo surface shows and the bookkeeping that decides it.
     pub(crate) presentation: preview::Presentation,
-    /// The one desired view admitted through the shared gate, and the quiet policy that settles it.
+    /// The one desired view admitted through the shared gate.
     pub(crate) view_plan: preview::ViewPlan,
     /// The pending backslash tap or temporary hold; its deadline exists only while pending.
     pub(crate) compare_key: keymap::CompareKey,
@@ -417,6 +420,8 @@ pub(crate) struct Editor {
     pub(crate) gpu: gpu_preview::GpuPreviews,
     /// The settle's hand-off from the GPU frame on screen to the CPU frame that replaces it.
     pub(crate) gpu_settle: gpu_settle::GpuSettle,
+    /// The open draft's ticks the GPU does not draw: held, or waiting for their reference frame.
+    pub(crate) motion: motion::Motion,
     /// The surface's drawn frames as evidence logs them ([`drawn_frames`]).
     drawn_frames: drawn_frames::DrawnFrames,
     /// Which renderer draws the picture, as the desktop last told the owner ([`renderer`]).
@@ -472,7 +477,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 18] = [
+const AFTER_MESSAGE: [AfterMessage; 19] = [
     view_state::after_message,
     performance::after_message,
     slider::after_message,
@@ -482,6 +487,7 @@ const AFTER_MESSAGE: [AfterMessage; 18] = [
     gpu_preview::after_message,
     gpu_settle::after_message,
     gpu_counts::after_message,
+    motion::after_message,
     renderer::after_message,
     mask_panel::after_message,
     crop::after_message,
@@ -610,6 +616,7 @@ impl Editor {
             export: Default::default(),
             gpu: Default::default(),
             gpu_settle: Default::default(),
+            motion: Default::default(),
             drawn_frames: Default::default(),
             renderer: renderer::RendererReport::new(config.no_gpu_render),
             workspace: Default::default(),
@@ -816,7 +823,6 @@ impl Editor {
             && !self.workers_busy()
             && !self.view_plan.dirty
             && !self.view_plan.in_flight
-            && self.view_plan.quiet_since.is_none()
             && self.sync.poll.idle()
     }
 
@@ -1033,7 +1039,6 @@ impl Editor {
         if self.presentation.compare_after.is_some() {
             surfaces.clipping = None;
             surfaces.coverage = None;
-            surfaces.region_clipping = None;
             surfaces.region_coverage = None;
         }
         surfaces.gpu = self.gpu_plan(surfaces.photo);

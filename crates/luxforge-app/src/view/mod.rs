@@ -55,8 +55,7 @@ pub(crate) struct Surfaces<'a> {
     pub(crate) comparison: Option<(&'a luxforge_ui::Frame, f32)>,
     pub(crate) photo_content: Option<u64>,
     pub(crate) current_content: u64,
-    pub(crate) region: Option<&'a luxforge_ui::RegionFrame>,
-    pub(crate) region_clipping: Option<&'a luxforge_ui::RegionOverlay>,
+    /// A mask's coverage of the region the GPU draws at 100% and above, laid over that region.
     pub(crate) region_coverage: Option<&'a luxforge_ui::RegionOverlay>,
     /// The crop layer's input stage, drawn in place of the photograph while its draft is open.
     pub(crate) stage: Option<&'a luxforge_ui::Frame>,
@@ -73,7 +72,7 @@ pub(crate) struct Surfaces<'a> {
     /// A GPU plan the photograph is drawn from in place of its frame, which stays the surface's
     /// fallback: a whole frame's at Fit and below 100%, a region's at 100% or more. An open
     /// gesture's ([`crate::app::gpu_preview`]), or an evidence run's GPU identity hook's. None is
-    /// given while this client's `gpu_preview` preference is off (`Editor::gpu_plan`).
+    /// given while the GPU stage is refused (`Editor::gpu_plan`).
     pub(crate) gpu: Option<&'a luxforge_ui::photo_surface::GpuPlan>,
     /// Keep the plan's slot but draw the frame: the CPU frame of the plan's revision is presented.
     pub(crate) gpu_hold: bool,
@@ -84,8 +83,8 @@ pub(crate) struct Surfaces<'a> {
     /// The program sequences the committed stack's gestures are likely to need, compiled ahead.
     pub(crate) gpu_warm: Option<&'a luxforge_ui::photo_surface::GpuWarm>,
     /// The prepared source every GPU boundary is derived from, which the pipeline holds on the GPU
-    /// for every surface that hands it ([`crate::app::gpu_preview`]). None is given while this
-    /// client's `gpu_preview` preference is off.
+    /// for every surface that hands it ([`crate::app::gpu_preview`]). None is given while the GPU
+    /// stage is refused.
     pub(crate) gpu_source: Option<&'a luxforge_ui::photo_surface::GpuSource>,
     /// The displayed stack's picture at rest the GPU draws in tiles, which a whole-frame
     /// photograph draws in place of its frame once the last tile is in.
@@ -106,15 +105,12 @@ pub(crate) struct Surfaces<'a> {
 }
 
 impl Surfaces<'_> {
-    /// Whether a percentage view draws the photograph as a whole frame, as Fit does: no region and
-    /// no exact frame is held for the view's own surface to draw, so the photograph's frame alone
-    /// fills the view's box. Below 100% that frame is the displayed-size proxy, which a whole
-    /// frame's GPU plan stands in for. A GPU region plan — the picture at rest the GPU presents at
-    /// 100% and above with no CPU frame of it — is drawn through the view's own surface instead.
+    /// Whether a percentage view of 100% or more draws the photograph as a whole frame, as Fit and
+    /// every view below 100% do: no exact frame is held for the view's own surface to draw, so the
+    /// photograph's frame alone fills the view's box. A GPU region plan — the GPU's picture of the
+    /// view at 100% and above — is drawn through the view's own surface instead.
     pub(crate) fn whole_frame(&self) -> bool {
-        self.region.is_none()
-            && self.photo_content.is_none()
-            && self.gpu.is_none_or(|plan| plan.region.is_none())
+        self.photo_content.is_none() && self.gpu.is_none_or(|plan| plan.region.is_none())
     }
 }
 
