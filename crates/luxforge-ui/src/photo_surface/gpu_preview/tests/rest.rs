@@ -214,6 +214,7 @@ fn a_picture_at_rest_is_drawn_in_tiles_and_reduced_to_the_view() {
             prepare_us: figures.prepare_us,
             fallback: None,
             counts_only: false,
+            sweeps: 0,
             evaluation: figures.evaluation,
             retirement_waits: 0,
             gpu_tiles: figures.gpu_tiles,
@@ -286,6 +287,7 @@ fn rest_of(tiles: &[GpuPlan]) -> GpuRest {
             across: axis(&coverage(WIDTH, SIDE)),
             down: axis(&coverage(HEIGHT, SIDE)),
         }),
+        stages: None,
     }
 }
 

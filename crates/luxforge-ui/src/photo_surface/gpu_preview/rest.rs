@@ -41,6 +41,15 @@
 //!   a view row and column; the tile slot what a 100% region's slot over the tile's window takes;
 //!   the counts the surface's reduction's 3,096 bytes and its kernel's table. Each is charged to
 //!   the GPU-preview budget before it is created, and leaves through the retirement worker.
+//! - **Staged sweeps.** A picture at rest handed with its stages ([`RestStages`]) is drawn in
+//!   them where its stage textures fit the budget, its chained tiles otherwise: each sweep's tiles
+//!   in order, the first sweep's boundaries cut from the source, a later sweep's copied out of the
+//!   stage texture the sweep before it wrote ([`super::staged::StageHolder`]), the slot fitted for
+//!   the tile first ([`PhotoPipeline::fit`]). A sweep before the last writes its last link's output
+//!   through an identity tail into the slot's intermediate, and its tile's rectangle of that is
+//!   copied into its stage texture; the last sweep's tiles are reduced and counted as chained
+//!   tiles are, and draw the same codes, since every texel a sweep writes is the whole stage's.
+//!   The stage textures are charged before they are created and retire with the picture at rest.
 //! - **Figures.** What its tiles did, for attributing a slow picture at rest
 //!   ([`RestFigures`]): their evaluations summed — refits, rebinds, links run, lights encoded or
 //!   restored, window texels — the frames a tile waited for a retirement, and each tile's GPU span
@@ -50,8 +59,9 @@ use super::histogram::{
     Counts, HistogramError, HistogramReadback, HistogramRect, HistogramReduction,
 };
 use super::{
-    AxisCoverage, Charged, GpuFallback, GpuPlan, Held, OUTPUT_FORMAT, SAMPLED_FORMAT, answered,
-    buffer_capacity, storage_buffer, tail::encoding, validate,
+    AxisCoverage, BoundaryFormat, Charged, GpuFallback, GpuPlan, GpuStep, Held, OUTPUT_FORMAT,
+    SAMPLED_FORMAT, answered, buffer_capacity, staged::StageHolder, storage_buffer, tail::encoding,
+    validate,
 };
 use std::sync::{Arc, Mutex};
 
@@ -84,6 +94,66 @@ pub struct GpuRest {
     /// The reduction of the tiles to the view's size, which is the picture drawn; `None` draws
     /// the tiles for their counts alone, and nothing on screen.
     pub reduction: Option<RestReduction>,
+    /// The same picture in staged sweeps, drawn in place of the tiles above where its stage
+    /// textures fit the budget; `None` draws the tiles, chained.
+    pub stages: Option<RestStages>,
+}
+
+/// A picture at rest in staged sweeps: plain data, as the tiles are.
+#[derive(Clone, Debug)]
+pub struct RestStages {
+    /// The content stage every stage texture holds, and how its texels are held: the boundary's
+    /// format, as a chain's intermediates are.
+    pub stage: (u32, u32),
+    pub format: BoundaryFormat,
+    /// How many stage textures the sweeps use in turn.
+    pub textures: u32,
+    /// The sweeps in the order they are drawn, at least two.
+    pub sweeps: Arc<[RestSweep]>,
+}
+
+/// One sweep of a staged picture at rest.
+#[derive(Clone, Debug)]
+pub struct RestSweep {
+    /// Its tiles' plans, in the order they are drawn, each a region plan: of the content stage,
+    /// through an identity tail whose intermediate holds its last link's output, for a sweep before
+    /// the last; of the output stage, as a chained tile's, for the last.
+    pub tiles: Arc<[GpuPlan]>,
+    /// The stage texture its boundaries are copied out of, each a window of the content stage
+    /// ([`super::GpuBoundary::staged`]); `None` for the first, whose boundaries are cut from the
+    /// source.
+    pub reads: Option<u32>,
+    /// The stage texture its tiles' rectangles are copied into; `None` for the last.
+    pub writes: Option<u32>,
+}
+
+impl RestStages {
+    /// Whether it can be drawn: textures within the holder's count, every sweep but the first
+    /// reading a texture and every one but the last writing one, its tiles region plans, a later
+    /// sweep's boundaries staged windows of the stage and an earlier sweep's plans ending in an
+    /// identity tail over the stage.
+    fn valid(&self) -> bool {
+        let count = self.sweeps.len();
+        let texture = |index: Option<u32>| index.is_none_or(|index| index < self.textures);
+        count >= 2
+            && (1..=super::staged::STAGE_TEXTURES).contains(&self.textures)
+            && self.sweeps.iter().enumerate().all(|(index, sweep)| {
+                let last = index == count - 1;
+                sweep.reads.is_none() == (index == 0)
+                    && sweep.writes.is_none() == last
+                    && texture(sweep.reads)
+                    && texture(sweep.writes)
+                    && !sweep.tiles.is_empty()
+                    && sweep.tiles.iter().all(|plan| {
+                        plan.region.is_some()
+                            && plan.boundary.format() == self.format
+                            && (index == 0 || plan.boundary.is_staged())
+                            && (last || plan.steps.iter().any(
+                                |step| matches!(step, GpuStep::Geometry(tail) if tail.identity()),
+                            ))
+                    })
+            })
+    }
 }
 
 /// A picture at rest's reduction of the output stage to the view's size.
@@ -256,6 +326,8 @@ pub struct RestFigures {
     pub fallback: Option<GpuFallback>,
     /// The tiles are drawn for their counts alone ([`GpuRest::reduction`] `None`).
     pub counts_only: bool,
+    /// The staged sweeps its tiles are drawn in ([`GpuRest::stages`]); zero for chained tiles.
+    pub sweeps: u32,
     /// What its tiles' evaluations did, summed over the tiles drawn: refits, rebinds, links run,
     /// lights encoded or restored, and the windows' texels.
     pub evaluation: EvaluationFigures,
@@ -549,7 +621,17 @@ struct Reduce {
 /// the reduction to the view with its accumulator and rest output, and the counts.
 pub(in super::super) struct RestSlot {
     version: u64,
+    /// Every tile it draws, in order: the chained tiles, or each sweep's in turn.
     tiles: Arc<[GpuPlan]>,
+    /// For a staged picture, each tile's place among the sweeps, indexed as the tiles; empty for
+    /// chained tiles, every one the output's.
+    places: Vec<Place>,
+    /// The stage textures a staged picture's sweeps write and read, charged; empty when chained.
+    stages: Vec<StageHolder>,
+    /// The first tile whose codes are the output's: the last sweep's first, or the first.
+    first_output: usize,
+    /// The staged sweeps its tiles are drawn in; zero for chained tiles.
+    sweeps: u32,
     /// The next tile to draw.
     next: usize,
     /// Why a tile could not be drawn; the rest draws nothing more.
@@ -574,6 +656,14 @@ pub(in super::super) struct RestSlot {
     retirement_waits: u32,
     /// Each tile's GPU span, as the queue reports it.
     clock: Arc<TileClock>,
+}
+
+/// A staged tile's place: the stage texture its boundary is copied out of, and the one its
+/// rectangle is copied into, a tile that writes none being the output's.
+#[derive(Clone, Copy, Debug)]
+struct Place {
+    reads: Option<u32>,
+    writes: Option<u32>,
 }
 
 impl RestSlot {
@@ -602,6 +692,7 @@ impl RestSlot {
             dissolving: false,
             fallback: self.fallback,
             counts_only: self.reduce.is_none(),
+            sweeps: self.sweeps,
         }
     }
 
@@ -842,10 +933,22 @@ impl PhotoPipeline {
             }
             slot.waiting = false;
             let started = std::time::Instant::now();
-            let evaluated = self.evaluate_lit(&mut slot.tile, device, queue, &plan, None);
-            // What the evaluation did, whatever it answered: a refit or a light encoded before a
-            // wait is work done.
+            let place = slot.places.get(slot.next).copied();
+            // A later sweep's boundary: the slot fitted for it, then its window copied out of the
+            // stage texture the sweep before it wrote.
+            // What the fit and the evaluation did, whatever they answered: a refit or a light
+            // encoded before a wait is work done. Each starts its figures afresh.
+            slot.tile.evaluation = EvaluationFigures::default();
+            let copied = match place.and_then(|place| place.reads) {
+                Some(reads) => self.copy_out(slot, device, queue, &plan, reads),
+                None => Ok(()),
+            };
             slot.evaluation.add(&slot.tile.evaluation);
+            let evaluated = copied.and_then(|()| {
+                let evaluated = self.evaluate_lit(&mut slot.tile, device, queue, &plan, None);
+                slot.evaluation.add(&slot.tile.evaluation);
+                evaluated
+            });
             match evaluated {
                 Ok(_) => {}
                 Err(GpuFallback::Compiling | GpuFallback::SourceUploading { .. }) => {
@@ -872,6 +975,43 @@ impl PhotoPipeline {
                     return;
                 }
             }
+            // A sweep before the last: its tile's rectangle of its last link's output, which its
+            // identity tail's intermediate holds over the window, copied into its stage texture.
+            if let Some(writes) = place.and_then(|place| place.writes) {
+                let copied = slot
+                    .tile
+                    .gpu
+                    .as_ref()
+                    .zip(slot.stages.get(writes as usize))
+                    .zip(plan.region)
+                    .and_then(|((tile, stage), region)| {
+                        let intermediate = &tile.intermediate.as_ref()?.texture;
+                        let origin = plan.texels.origin.map(|at| at.max(0.0) as u32);
+                        let [x0, y0, _, _] = region.rect;
+                        let mut encoder =
+                            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                label: Some("luxforge.gpu_rest.stage_in_encoder"),
+                            });
+                        stage.copy_in(
+                            &mut encoder,
+                            intermediate,
+                            (x0 - origin[0], y0 - origin[1]),
+                            region.rect,
+                        );
+                        Some(encoder.finish())
+                    });
+                match copied {
+                    Some(commands) => queue.submit([commands]),
+                    None => {
+                        slot.fallback = Some(GpuFallback::PipelineFailed);
+                        self.release_gpu(&mut slot.tile);
+                        return;
+                    }
+                };
+                slot.clock.follow(queue, started);
+                slot.next += 1;
+                continue;
+            }
             let Some(texture) = slot
                 .tile
                 .gpu
@@ -882,6 +1022,7 @@ impl PhotoPipeline {
                 return;
             };
             let rect = plan.region.map_or([0; 4], |region| region.rect);
+            let first = slot.next == slot.first_output;
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("luxforge.gpu_rest.tile_encoder"),
             });
@@ -891,7 +1032,7 @@ impl PhotoPipeline {
                     0,
                     &le_bytes(&reduce.params(rect)),
                 );
-                if slot.next == 0 {
+                if first {
                     encoder.clear_buffer(&reduce.parts.sums.buffer, 0, None);
                 }
                 reduce.tile_drawn(device, &mut encoder, passes, &texture, &plan);
@@ -901,7 +1042,7 @@ impl PhotoPipeline {
             if let (RestCounts::Counting, Some(histogram)) =
                 (&slot.counts, histogram.as_deref_mut())
             {
-                if slot.next == 0 {
+                if first {
                     histogram.clear(&mut encoder);
                 }
                 let [x0, y0, x1, y1] = rect;
@@ -940,7 +1081,55 @@ impl PhotoPipeline {
         }
         slot.done = true;
         self.release_gpu(&mut slot.tile);
+        // Nothing reads the stage textures again.
+        self.release_stages(slot);
         super::super::wake_surface();
+    }
+
+    /// Fit `slot`'s tile slot for `plan`, a later sweep's tile, and copy its boundary, the window
+    /// of the content stage its texel map starts at, out of stage texture `reads`; the slot then
+    /// holds the boundary's version, and evaluates its links from it.
+    fn copy_out(
+        &mut self,
+        slot: &mut RestSlot,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        plan: &GpuPlan,
+        reads: u32,
+    ) -> Result<(), GpuFallback> {
+        self.fit(&mut slot.tile, device, queue, plan)?;
+        let tile = slot.tile.gpu.as_mut().ok_or(GpuFallback::PipelineFailed)?;
+        let stage = slot
+            .stages
+            .get(reads as usize)
+            .ok_or(GpuFallback::PipelineFailed)?;
+        let origin = plan.texels.origin.map(|at| at.max(0.0) as u32);
+        let (width, height) = plan.boundary.size();
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("luxforge.gpu_rest.stage_out_encoder"),
+        });
+        stage.copy_out(
+            &mut encoder,
+            &tile.boundary,
+            [origin[0], origin[1], width, height],
+        );
+        queue.submit([encoder.finish()]);
+        tile.boundary_version = Some(plan.boundary.version());
+        tile.uploading = None;
+        Ok(())
+    }
+
+    /// Retire `slot`'s stage textures, through the retirement worker.
+    fn release_stages(&self, slot: &mut RestSlot) {
+        let stages = std::mem::take(&mut slot.stages);
+        let bytes = stages.iter().map(StageHolder::bytes).sum();
+        let textures: Vec<wgpu::Texture> = stages
+            .into_iter()
+            .flat_map(StageHolder::into_textures)
+            .collect();
+        if !textures.is_empty() {
+            self.retire_preview(Held::Stage(textures), bytes);
+        }
     }
 
     /// Retire `surface`'s picture at rest, if it holds one: its tile slot and its own parts.
@@ -949,6 +1138,7 @@ impl PhotoPipeline {
             return;
         };
         self.release_gpu(&mut slot.tile);
+        self.release_stages(&mut slot);
         let RestSlot { reduce, bytes, .. } = *slot;
         if let Some(reduce) = reduce {
             self.retire_preview(Held::Rest(Box::new(reduce.parts)), bytes);
@@ -971,9 +1161,62 @@ impl PhotoPipeline {
                 (Some(reduce), bytes)
             }
         };
+        // Staged where every stage texture fits the budget, each charged before it is created;
+        // chained otherwise, with what was created let go.
+        let mut stages = Vec::new();
+        let staged = rest.stages.as_ref().filter(|stages| stages.valid());
+        if let Some(planned) = staged {
+            for _ in 0..planned.textures {
+                match StageHolder::create(
+                    device,
+                    planned.stage,
+                    planned.format.texture(),
+                    |bytes| self.figures.preview.charge(bytes),
+                ) {
+                    Ok(holder) => stages.push(holder),
+                    Err(_) => break,
+                }
+            }
+        }
+        let (tiles, places, first_output, sweeps) = match staged {
+            Some(planned) if stages.len() == planned.textures as usize => {
+                let mut tiles = Vec::new();
+                let mut places = Vec::new();
+                for sweep in planned.sweeps.iter() {
+                    tiles.extend(sweep.tiles.iter().cloned());
+                    places.extend(sweep.tiles.iter().map(|_| Place {
+                        reads: sweep.reads,
+                        writes: sweep.writes,
+                    }));
+                }
+                let first_output =
+                    tiles.len() - planned.sweeps.last().map_or(0, |sweep| sweep.tiles.len());
+                (
+                    Arc::from(tiles),
+                    places,
+                    first_output,
+                    planned.sweeps.len() as u32,
+                )
+            }
+            _ => {
+                let bytes = stages.iter().map(StageHolder::bytes).sum();
+                let textures: Vec<wgpu::Texture> = stages
+                    .drain(..)
+                    .flat_map(StageHolder::into_textures)
+                    .collect();
+                if !textures.is_empty() {
+                    self.retire_preview(Held::Stage(textures), bytes);
+                }
+                (Arc::clone(&rest.tiles), Vec::new(), 0, 0)
+            }
+        };
         Ok(RestSlot {
             version: rest.version,
-            tiles: Arc::clone(&rest.tiles),
+            tiles,
+            places,
+            stages,
+            first_output,
+            sweeps,
             next: 0,
             fallback: None,
             tile: Box::new(self.new_surface()),
