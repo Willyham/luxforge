@@ -16,9 +16,10 @@
 //!   an encoded byte boundary is the width the whole recipe chooses.
 //! - **The pass** is the segment's own rows ([`super::segment_pass`]) over a stand-in segment that
 //!   holds the operations before the layer, so its colour arithmetic and its masks are the CPU's.
-//! - **A window.** A windowed proxy holds only the part of each stage its output reads, so the
-//!   boundary holds the part of the received stage that window covers, with its origin there; the
-//!   plan addresses the whole stage, and the surface offsets the texels by that origin.
+//! - **A window.** A GPU plan over a region or a cropped stage holds only the part of each stage
+//!   its output reads, so the boundary holds the part of the received stage that window covers,
+//!   with its origin there; the plan addresses the whole stage, and the surface offsets the texels
+//!   by that origin.
 //!
 //! A JPEG's boundary is `rgba16float`: its values come from 8-bit codes and colour runs over them,
 //! and a half float holds every finite value up to 65,504; a CPU value past it is held at the
@@ -63,7 +64,7 @@ impl BoundaryFormat {
 }
 
 /// The most bytes one boundary may hold: 32 MP of half-float texels, 16 MP of `f32` ones (owner,
-/// 2026-10-02). A Fit proxy is at most 8 MP, and a windowed proxy's or a percentage zoom's window
+/// 2026-10-02). A Fit stage is at most 8 MP, and a cropped stage's or a percentage zoom's window
 /// is what the display shows plus the margins its boundaries need: a RAW region's `f32` boundary
 /// with Clarity's margin is up to 212 MB in the largest window the M4's display holds. The photo
 /// surface derives it on the GPU from the source it holds, into its slot's boundary texture.
@@ -173,9 +174,8 @@ impl Render<'_> {
     /// The input of the layer that begins at `position` — a segment and an operation index of
     /// `uncut` — as a boundary ([`BoundaryFrame`]).
     ///
-    /// `self` renders `uncut` itself, or a windowed proxy's cut of it
-    /// ([`super::window::WindowPlan::apply`]) over a source that holds `source_window` of
-    /// `uncut`'s whole `source` stage. The boundary's frame is the segment's input exactly as a
+    /// `self` renders `uncut` itself over a source that holds `source_window` of `uncut`'s whole
+    /// `source` stage. The boundary's frame is the segment's input exactly as a
     /// frame of this render builds it, and its pass is the segment's own over the operations
     /// before the layer, so every byte the CPU would hand the layer is the value held. `format` is
     /// the path's: half floats on the byte path, `f32` on the linear path.
@@ -332,7 +332,7 @@ impl Render<'_> {
 /// kept to the rectangle of the received stage that `kept`, inside the window, covers. The window
 /// is placed at its origin ahead of the exact steps, and the crop to the rectangle held follows
 /// them as an exact step of its own, so a masked operation maps its frame coordinate back to its
-/// mask's own pixel exactly as a windowed proxy's cut segment does ([`super::window`]); the
+/// mask's own pixel exactly; the
 /// rectangle's origin is the coordinate the pointwise units are handed.
 #[cfg(any(test, feature = "qualification"))]
 fn stand_in(

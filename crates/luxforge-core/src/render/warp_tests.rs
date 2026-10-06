@@ -618,10 +618,7 @@ fn warp_render_cancels_between_tap_blocks() {
         width: 64,
         height: 16,
     });
-    let (x0, y0) = entry.output_at(local.x0, local.y0);
-    let first = entry
-        .reads(Region { x0, y0, ..local }, c.segments[0].stage())
-        .unwrap();
+    let first = entry.reads(local, c.segments[0].stage()).unwrap();
     let cancel = Cancel::new();
     let calls = Arc::new(AtomicUsize::new(0));
     c.segments[0].has_color = true;

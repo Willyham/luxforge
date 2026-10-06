@@ -56,8 +56,9 @@ pub struct SourceImage {
 
 impl SourceImage {
     /// A bounded, upright rectangle of the decoded byte source. The original allocation remains
-    /// shared and untouched; only the requested rows are copied into a frame-limited buffer.
-    #[cfg(any(test, feature = "qualification"))]
+    /// shared and untouched; only the requested rows are copied into a frame-limited buffer. Tests
+    /// cut small photographs from the fixtures with it.
+    #[cfg(test)]
     pub(crate) fn window(
         &self,
         region: crate::Region,

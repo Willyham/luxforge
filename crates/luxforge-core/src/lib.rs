@@ -144,7 +144,7 @@ pub mod qualification {
     ) -> Option<(crate::ProxyPlan, Option<[u32; 4]>)> {
         registry.proxy_eligible(recipe).ok()?;
         let plan = render.proxy_plan(bounds)?;
-        let plan = render.proxy_window(registry, recipe, plan).plan();
+        let plan = render.proxy_stage(registry, recipe, plan).plan();
         let window = plan
             .window
             .map(|window| [window.x, window.y, window.width, window.height]);
