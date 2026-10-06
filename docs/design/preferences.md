@@ -5,7 +5,7 @@ Status: implemented, at the owner's request of 2026-10-04 and on the [decisions]
 The person's preferences live outside every catalog, in the host's `preferences.json` beside the [feature flags](settings-and-flags.md). This design adds two kinds of preference to the one Auto collapse history row the Settings sheet's **General** tab has today:
 
 - **Remembered state.** Choices the person already makes in the workspace, kept across launches with no row of their own: panel visibility, the thirds and clipping overlays, the brush, the window's frame and the last export folder.
-- **General rows.** Choices with no other home: whether new RAW photos get their lens profile, the mask overlay colour, the canvas background, the interface size and where the catalog lives.
+- **General rows.** Choices with no other home: whether new RAW photos get their lens profile, which look they start from, the mask overlay colour, the canvas background, the interface size and where the catalog lives.
 
 ## Rules
 
@@ -22,6 +22,7 @@ The person's preferences live outside every catalog, in the host's `preferences.
 | `performance_expanded` | boolean | `true` | Performance disclosure (today) | at once |
 | `auto_collapse_history` | boolean | `true` | General: **Auto collapse history** (today) | next edit |
 | `auto_lens_profile` | boolean | `true` | General: **Correct lens distortion on new RAW photos** | next first preparation |
+| `raw_look` | `standard` or `neutral` | `standard` | General: **Starting look for new RAW photos** | photographs created from then on |
 | `mask_overlay_colour` | `green` or `white` | `green` | General: **Mask overlay colour**, and the Masks panel's colour control | at once |
 | `canvas_background` | `theme`, `dark`, `black` or `grey` | `theme` | General: **Canvas background** | at once |
 | `theme` | a theme id, or `null` | `null`: Luxforge Dark | Settings › Appearance ([UI themes](ui-themes.md)) | at once |
@@ -49,6 +50,7 @@ A path is not required to exist, since a drive can be unplugged. Its use checks 
 
 - `auto_collapse_history`
 - `auto_lens_profile`
+- `raw_look`
 - `mask_overlay_colour`
 - `canvas_background`
 - `interface_size`
@@ -61,6 +63,7 @@ An open Settings sheet reads them again. The desktop applies the theme, the canv
 ## Behaviour
 
 - **Correct lens distortion on new RAW photos.** On by default: the [first-open lens action](lens-and-perspective.md) is committed as it is today. Off, a photograph's first preparation does not ask the lens module for a first-open action. The Lens section offers the detected profile with Apply, as it does for any photo without one. The change applies to first preparations from then on; it never adds or removes an entry on a photograph whose head has moved. A photograph still at its Original (revision 0) is asked at its next preparation, so turning the switch on later can still correct it there. This is a core preference, so every client follows it.
+- **Starting look for new RAW photos.** Standard by default: a new RAW photograph's Original holds Luxforge's look beside its development ([RAW looks](raw-looks.md#starting-a-new-photo)). Neutral, it holds the bare development. The host asks every module for its contribution to a new photograph's Original (`ToolModule::original`) and hands each the look, so the change applies to photographs created from then on, by a Develop or in a seeded catalog; it never rewrites a photograph already in the catalog or a saved recipe. JPEG photographs get no look. This is a core preference, so every client follows it.
 - **Mask overlay colour.** The colour the Tint overlay is drawn in. The General row and the Masks panel's control both set this desktop's session colour (`workspace.set {mask_overlay_colour}`) and store the preference.
 - **Canvas background.** The colour around the photograph:
   - `theme`, the active theme's surround, held neutral ([UI themes](ui-themes.md#rules)); for Luxforge Dark the same `#19191b` as `dark`;
@@ -108,6 +111,7 @@ A held `[` key that resizes the brush therefore writes at most one call in fligh
 
 - **Core unit tests.** Each field round-trips. `null` resets. Every bad value is refused by name. A malformed file is refused without being rewritten. Only the General fields announce.
 - **First open.** First open skips the lens action when `auto_lens_profile` is off and still commits it when on.
+- **New photographs.** The owner hands `raw_look` to the Original hook at start and after `preferences.set`, for each photograph a `pick.develop` creates from then on. A test module's layer lands in each new RAW Original where its stage places it, a JPEG's Original is untouched, a refused or failing contribution refuses its pick by the module's name, and a seeded RAW follows the same rule. No built-in module contributes yet, so the look itself is proven with the look module.
 - **Export.** `export.plan` suggests the remembered folder only while it exists.
 - **Launch.** Resolution reads the catalog and window, `--catalog` and `--window-size` override them, and a missing catalog folder falls back to the default with the reason.
 - **Desktop unit tests.**
@@ -131,7 +135,7 @@ A held `[` key that resizes the brush therefore writes at most one call in fligh
 - **Original reads and decodes.** None added.
 - **Full-frame allocations.** None. `preferences.json` stays bounded at 16 KiB, and the two paths are its largest values.
 - **Point queries.** None added.
-- **Owner thread.** `preferences.read` reads one small file. Each `preferences.set` is one locked read-modify-write of it. A first preparation with the lens switch off does less work.
+- **Owner thread.** `preferences.read` reads one small file. Each `preferences.set` is one locked read-modify-write of it. A first preparation with the lens switch off does less work. A new photograph's Original asks each module once, from metadata, with no file or pixel read.
 - **Desktop messages.**
   - Each remembered change adds at most one `preferences.set`, coalesced by the writer. The window's frame is written once, at close.
   - A changed canvas background or interface size draws one new frame. The interface size reflows the layout once.
