@@ -1185,20 +1185,37 @@ fn fit_placement(frame: &Frame, output: [u32; 2]) -> Result<Value> {
     }))
 }
 
+/// The committed crop drawn at full scale at 100%: the GPU's view plan at rest over a region of the
+/// crop's `output` stage, or the reference renderer's exact frame of it, never its reduction. The
+/// GPU draws no CPU raster, so the raster the surface holds is read only for the reference's frame.
+fn exact_at_100(frame: &Value, output: [u32; 2], what: &str) -> Result<()> {
+    let state = &frame["state"];
+    let gpu = &state["surface"]["gpu"];
+    let region: Option<[u32; 4]> = serde_json::from_value(gpu["plan_region"].clone()).ok();
+    let on_gpu = gpu["picture"] == "view"
+        && region.is_some_and(|[x0, y0, x1, y1]| {
+            x0 < x1 && y0 < y1 && x1 <= output[0] && y1 <= output[1]
+        });
+    let reference = gpu["picture"] == "reference"
+        && state["surface"]["raster"] == json!(output)
+        && state["reference"]["reduced"] == json!(false);
+    ensure(
+        on_gpu || reference,
+        format!(
+            "{what} is not the exact {output:?} crop: picture {}, plan region {}, raster {}, \
+             reference {}",
+            gpu["picture"], gpu["plan_region"], state["surface"]["raster"], state["reference"]
+        ),
+    )
+}
+
 /// A point sample of the committed crop at 100%: the codes `render.sample` answered for one stage
 /// pixel are the codes the canvas shows at that pixel, one stage pixel per physical pixel from the
 /// corner of the rectangle the editor records drawing the photograph in. The sample is the GPU's
 /// tile render of the current stack, which the answer names, so this ties the picture on screen to
 /// the committed recipe.
 fn sample_on_screen(frame: &Frame, point: (u32, u32), output: [u32; 2]) -> Result<Value> {
-    let state = &frame["state"];
-    ensure(
-        state["surface"]["raster"] == json!(output) && state["proxy"]["presented"] == json!(false),
-        format!(
-            "The 100% view is not the exact {output:?} crop: raster {}",
-            state["surface"]["raster"]
-        ),
-    )?;
+    exact_at_100(frame, output, "The 100% view")?;
     let answer = &frame["step"]["result"];
     let codes: [u8; 4] = serde_json::from_value(answer["rgba"].clone())
         .map_err(|_| format!("render.sample at {point:?} carries no codes: {answer}"))?;
@@ -1281,13 +1298,13 @@ fn raw_crop(launch: &Checked) -> Result<Value> {
     // renderer's display proxy where the GPU does not present it yet.
     let picture = &applied["state"]["surface"]["gpu"]["picture"];
     ensure(
-        applied["state"]["proxy"]["presented"] == json!(true)
+        applied["state"]["reference"]["reduced"] == json!(true)
             || picture == "rest"
             || picture == "view",
         format!(
-            "The applied crop at Fit is neither the GPU's picture at rest nor the display proxy: \
-             {picture}, proxy {}",
-            applied["state"]["proxy"]
+            "The applied crop at Fit is neither the GPU's picture at rest nor the reference's \
+             reduction: {picture}, reference {}",
+            applied["state"]["reference"]
         ),
     )?;
     let placement = fit_placement(applied, output)?;
@@ -1304,13 +1321,7 @@ fn raw_crop(launch: &Checked) -> Result<Value> {
     let fitted = launch.at(names::CROP_FITTED)?;
     expect_no_failure(launch, names::CROP_FITTED, "The API's crop-fit")?;
     let refitted = shows_crop(fitted, source, FIT_ANGLE, "The API's crop at 100%")?;
-    ensure(
-        fitted["state"]["surface"]["raster"] == json!(refitted),
-        format!(
-            "The API's crop at 100% is not drawn exactly: raster {}",
-            fitted["state"]["surface"]["raster"]
-        ),
-    )?;
+    exact_at_100(fitted, refitted, "The API's crop at 100%")?;
     let frame = launch.at(names::FITTED_SAMPLE)?;
     shows_crop(frame, source, FIT_ANGLE, "A sample of the API's crop")?;
     samples.push(sample_on_screen(frame, SAMPLES[1].1, refitted)?);
