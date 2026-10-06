@@ -43,6 +43,7 @@ fn cut_plan(source: &GpuSource, origin: (u32, u32), size: (u32, u32), version: u
         region: Some(GpuRegion {
             rect: [origin.0, origin.1, origin.0 + size.0, origin.1 + size.1],
             stage: source.stage(),
+            full_stage: source.stage(),
         }),
         lights: Vec::new(),
     }

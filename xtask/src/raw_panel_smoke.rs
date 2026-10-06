@@ -1,11 +1,11 @@
 //! The `raw-panel` smoke scenario: the Basic section as the tools panel draws it for a real RAW
 //! source, in place of a RAW section, which is never listed. Its White balance group is the RAW
-//! development's on the global target: a Temperature drag in kelvin left open, whose drafted frame
-//! approximates the white balance on the developed planes and is labelled so, then released,
-//! which redevelops the mosaic and lands the exact frame, at Fit and again at 100%. At 100%, a
-//! held-draft pause checks the exact visible-region refinement and captures full-detail
-//! approximate pixels for white-balance accuracy against the release. Both drags keep the tint in
-//! force (the first, from As shot, the camera's as-shot tint); and a double-click reset on
+//! development's on the global target: a Temperature drag in kelvin left open, which the GPU draws
+//! over the planes the entry developed with the change as a leading step, then released, which
+//! redevelops the mosaic and lands the exact picture at rest, at Fit and again at 100%. The moving
+//! GPU frame is held to the release's picture at rest within the pointwise limits, at Fit the whole
+//! frame and at 100% the visible region (the owner's decision of 2026-10-05). Both drags keep the
+//! tint in force (the first, from As shot, the camera's as-shot tint); and a double-click reset on
 //! Temperature, Tint and Exposure after the committed jump the first press makes: Temperature and
 //! Tint back to As shot, labelled `Reset White balance`, whose fields then show the camera's
 //! as-shot equivalent, and Exposure back to 0 EV. Basic's band carries no edited dot on the
@@ -54,12 +54,17 @@ mod names {
     pub const FITTED_AT_FIT: &str = "fitted-at-fit";
 }
 
-/// One scripted temperature drag and release at the same value. Fit uses a display proxy; at 100%
-/// the moving frame is a half-detail region and `quiet` captures a full-detail approximate draft.
+/// One scripted temperature drag: its first tick at `first_kelvin`, held until the GPU has
+/// compiled what it asked for, a tick at `kelvin` the GPU draws (the moving frame its capture
+/// shows), the release at the same value, which redevelops the mosaic, and the picture at rest
+/// after it.
 struct Drag {
+    first: &'static str,
+    held: &'static str,
     drag: &'static str,
-    quiet: Option<&'static str>,
     release: &'static str,
+    settled: &'static str,
+    first_kelvin: f64,
     kelvin: f64,
     fit: bool,
 }
@@ -68,20 +73,34 @@ struct Drag {
 /// at 100%, far from that committed 3500 K. Both inside 2000..12000 K on the 10 K step.
 const DRAGS: [Drag; 2] = [
     Drag {
+        first: "drag-at-fit-first",
+        held: "drag-at-fit-held",
         drag: "drag-at-fit",
-        quiet: None,
         release: "release-at-fit",
+        settled: "settled-at-fit",
+        first_kelvin: 3600.0,
         kelvin: 3500.0,
         fit: true,
     },
     Drag {
+        first: "drag-at-100-first",
+        held: "drag-at-100-held",
         drag: "drag-at-100",
-        quiet: Some("quiet-at-100"),
         release: "release-at-100",
+        settled: "settled-at-100",
+        first_kelvin: 2600.0,
         kelvin: 2500.0,
         fit: false,
     },
 ];
+/// The quiet a wait step leaves the editor, and the most a step waits for the GPU's compiles, as
+/// the GPU preview scenarios wait.
+const QUIET_MS: u64 = 1500;
+const WARM_MS: u64 = 60_000;
+/// The view's step at 100% and the wait after it, which lets the zoom's own frames land before
+/// the drag begins.
+const ZOOM_100: &str = "zoom-100";
+const ZOOM_100_SETTLED: &str = "zoom-100-settled";
 /// Between a double-click's release and its second press: a person's ordinary double-click, well
 /// inside the 300 ms iced gives the two presses.
 const GAP_MS: u64 = 120;
@@ -216,23 +235,47 @@ fn crop_steps() -> Vec<Step> {
 /// checks the rest.
 pub fn plan(_: &[PathBuf]) -> Plan {
     let mut steps = vec![Step::opened(names::OPENED)];
+    let warmed = |name: &'static str| {
+        Step::new(
+            name,
+            script::Step::GpuWarmed {
+                quiet_ms: QUIET_MS,
+                ms: WARM_MS,
+            },
+        )
+        .commits(0)
+    };
     for drag in &DRAGS {
         if !drag.fit {
-            // 100%, where a frame shows a stage pixel per display pixel and has no proxy.
-            steps.push(Step::new("zoom-100", ViewStep::Percent(100.0)).percent(100.0));
+            // 100%, where a frame shows a stage pixel per display pixel, and the quiet that lets
+            // the zoom's own frames land before the drag.
+            steps.push(Step::new(ZOOM_100, ViewStep::Percent(100.0)).percent(100.0));
+            steps.push(
+                Step::new(ZOOM_100_SETTLED, script::Step::wait(QUIET_MS))
+                    .commits(0)
+                    .percent(100.0),
+            );
         }
-        // A Temperature drag left open. Its frame is the drafted value approximated on the planes
-        // developed at the committed white balance.
-        steps.push(Step::new(
-            drag.drag,
-            SliderStep::new(SET_RAW, TEMPERATURE, [drag.kelvin]),
-        ));
-        if let Some(quiet) = drag.quiet {
-            // The shared 120 ms quiet policy must refine the held WB draft without a release.
-            // One second accommodates the three photo-sized RAWs' exact whole-frame follow-up.
-            steps.push(Step::new(quiet, script::Step::wait(1000)));
-        }
-        // Its release at the same value, which commits it and redevelops the mosaic.
+        // A Temperature drag left open: its first tick, held until the GPU has compiled what it
+        // asked for (a percentage view's plans are not warmed), then the tick the GPU draws, the
+        // drafted value approximated on the planes developed at the committed white balance.
+        steps.push(
+            Step::new(
+                drag.first,
+                SliderStep::new(SET_RAW, TEMPERATURE, [drag.first_kelvin]),
+            )
+            .commits(0),
+        );
+        steps.push(warmed(drag.held));
+        steps.push(
+            Step::new(
+                drag.drag,
+                SliderStep::new(SET_RAW, TEMPERATURE, [drag.kelvin]),
+            )
+            .commits(0),
+        );
+        // Its release at the same value, which commits it and redevelops the mosaic, and the
+        // picture at rest the GPU draws of the redevelopment.
         steps.push(
             Step::new(
                 drag.release,
@@ -241,6 +284,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             .commits(1)
             .no_draft(),
         );
+        steps.push(warmed(drag.settled).no_draft());
         if !drag.fit {
             // Back to Fit for the double-clicks.
             steps.push(Step::new("zoom-fit", ViewStep::Fit).fit());
@@ -300,48 +344,32 @@ fn development_gains(frame: &Value) -> Result<[f32; 3]> {
         .map_err(|error| format!("The RAW layer's gains are unreadable: {error}").into())
 }
 
-/// The most the released exact frame may differ from the tested draft view state, as a share of
-/// the drag's own change from the frame before it (owner decision, 2026-09-27).
-const MAX_WB_ACCURACY_SHARE: f64 = 0.1;
-
-/// Fit tests the moving proxy. At 100%, the moving half-detail capture remains evidence of the
-/// interaction, while white-balance accuracy tests the held full-detail capture before release.
-/// The latter says nothing by itself about motion timing or visible softness.
-fn check_white_balance_accuracy(
-    fit: bool,
-    moving_mean: f64,
-    moving_ratio: f64,
-    held: Option<(f64, f64)>,
-    change_mean: f64,
-) -> Result<&'static str> {
-    if fit {
-        ensure(
-            moving_ratio <= MAX_WB_ACCURACY_SHARE,
-            format!(
-                "Fit moving white-balance accuracy failed: the released frame is {moving_mean:.3} codes from the moving draft on average, {:.2}% of the drag's own {change_mean:.3}; the limit is 10%",
-                moving_ratio * 100.0,
-            ),
-        )?;
-        ensure(
-            moving_mean <= 1.0,
-            format!(
-                "Fit moving white-balance accuracy failed: the released frame is {moving_mean:.3} codes from the moving draft on average; the limit is 1 code"
-            ),
-        )?;
-        Ok("moving")
-    } else {
-        let (held_mean, held_ratio) =
-            held.ok_or("The 100% draft has no held full-detail capture")?;
-        ensure(
-            held_ratio <= MAX_WB_ACCURACY_SHARE,
-            format!(
-                "100% held full-detail white-balance accuracy failed: the released frame is {held_mean:.3} codes from the held draft on average, {:.2}% of the drag's own {change_mean:.3}; the limit is 10%. Moving half-detail difference: {moving_mean:.3} codes, {:.2}% of the same change",
-                held_ratio * 100.0,
-                moving_ratio * 100.0,
-            ),
-        )?;
-        Ok("held_full_detail")
-    }
+/// The moving GPU white-balance frame against the release's picture at rest, over the photograph
+/// on screen — the whole frame at Fit, the visible region at 100% — as the pointwise statistics
+/// report it, and whether they are within the pointwise limits (owner, 2026-10-05: the moving GPU
+/// frame is held to the release within the pointwise limits, with no quiet-policy refinement and
+/// no relative-residual gate).
+fn white_balance_accuracy(moving: &Frame, settled: &Frame) -> Result<(Value, bool)> {
+    let rect = moving.visible_photo()?;
+    ensure(
+        settled.visible_photo()? == rect,
+        format!(
+            "{} and {} show different rectangles",
+            moving["file"], settled["file"]
+        ),
+    )?;
+    let report = crate::preview_error::report(
+        moving.image()?,
+        settled.image()?,
+        rect,
+        Some(luxforge_reference::preview_error::Class::Pointwise),
+    )?;
+    let passed = report["verdict"]["passed"] == json!(true);
+    Ok((
+        json!({"moving": moving["file"], "settled": settled["file"],
+            "statistics": report["statistics"], "verdict": report["verdict"]}),
+        passed,
+    ))
 }
 
 /// The exception the owner recorded on 2026-09-30 for the white-balance accuracy gates: a Bayer
@@ -400,32 +428,26 @@ impl Highlights {
     }
 }
 
-/// The white-balance accuracy verdict for one drag: the gate of [`check_white_balance_accuracy`],
-/// except that a limit a highlight-clipped Bayer scene misses is recorded, not failed. A missing
-/// held capture is never excused.
+/// The white-balance accuracy verdict for one drag: [`white_balance_accuracy`] within the pointwise
+/// limits, except that a limit a highlight-clipped Bayer scene misses is recorded, not failed.
 fn white_balance_accuracy_verdict(
-    fit: bool,
-    moving_mean: f64,
-    moving_ratio: f64,
-    held: Option<(f64, f64)>,
-    change_mean: f64,
+    figures: Value,
+    passed: bool,
     highlights: &Highlights,
 ) -> Result<Value> {
-    ensure(
-        fit || held.is_some(),
-        "The 100% draft has no held full-detail capture",
-    )?;
-    let view_state = if fit { "moving" } else { "held_full_detail" };
-    match check_white_balance_accuracy(fit, moving_mean, moving_ratio, held, change_mean) {
-        Ok(checked) => Ok(json!({"checked": checked, "held": true, "exception": null})),
-        Err(failure) if highlights.qualifies() => Ok(json!({
-            "checked": view_state,
+    match (passed, highlights.qualifies()) {
+        (true, _) => Ok(json!({"figures": figures, "held": true, "exception": null})),
+        (false, true) => Ok(json!({
+            "figures": figures,
             "held": false,
             "exception": HIGHLIGHT_CLIP_EXCEPTION,
             "clipped_share": highlights.share,
-            "failed_limit": failure.to_string(),
         })),
-        Err(failure) => Err(failure),
+        (false, false) => Err(format!(
+            "The moving GPU white-balance frame misses the pointwise limits of the release's \
+             picture at rest: {figures}"
+        )
+        .into()),
     }
 }
 
@@ -488,28 +510,6 @@ fn step_log<'a>(launch: &'a Checked, step: &str) -> Result<Vec<&'a Value>> {
         .as_u64()
         .ok_or_else(|| format!("Step {step:?} records no script step number"))?;
     Ok(step_events(&launch.events, number as usize))
-}
-
-/// The frames presented among `events`.
-fn presented<'a>(events: &[&'a Value]) -> Vec<&'a Value> {
-    events
-        .iter()
-        .copied()
-        .filter(|event| event["event"] == "preview_displayed")
-        .collect()
-}
-
-/// One step's events split at its last `script_step_settled`: what happened up to the outcome its
-/// frame was captured for, and what the editor went on to do before the next step began. The next
-/// step's `script_step` is logged only once this step's capture is written, which can take longer
-/// than the shared 120 ms quiet interval, so a held gesture's quiet refinement can land in the
-/// tail. A step that never settled has no tail.
-fn split_at_settle<'a>(events: &[&'a Value]) -> (Vec<&'a Value>, Vec<&'a Value>) {
-    let settled = events
-        .iter()
-        .rposition(|event| event["event"] == "script_step_settled")
-        .map_or(events.len(), |index| index + 1);
-    (events[..settled].to_vec(), events[settled..].to_vec())
 }
 
 /// The frame captured just before the named step's.
@@ -1277,9 +1277,18 @@ fn raw_crop(launch: &Checked) -> Result<Value> {
         "Apply did not apply the draft once and end it",
     )?;
     let output = shows_crop(applied, source, CROP_ANGLE, "The applied crop at Fit")?;
+    // The display-size picture: the GPU's picture at rest of the committed crop, or the reference
+    // renderer's display proxy where the GPU does not present it yet.
+    let picture = &applied["state"]["surface"]["gpu"]["picture"];
     ensure(
-        applied["state"]["proxy"]["presented"] == json!(true),
-        "The applied crop at Fit is not the display proxy",
+        applied["state"]["proxy"]["presented"] == json!(true)
+            || picture == "rest"
+            || picture == "view",
+        format!(
+            "The applied crop at Fit is neither the GPU's picture at rest nor the display proxy: \
+             {picture}, proxy {}",
+            applied["state"]["proxy"]
+        ),
     )?;
     let placement = fit_placement(applied, output)?;
 
@@ -1319,170 +1328,114 @@ fn raw_crop(launch: &Checked) -> Result<Value> {
     }))
 }
 
-/// One temperature drag and its release.
+/// Whether `outer`, an `[x0, y0, x1, y1]` region, holds `inner`.
+fn holds(outer: &Value, inner: &Value) -> bool {
+    let rect = |value: &Value| serde_json::from_value::<[u64; 4]>(value.clone()).ok();
+    rect(outer).zip(rect(inner)).is_some_and(|(outer, inner)| {
+        outer[0] <= inner[0] && outer[1] <= inner[1] && outer[2] >= inner[2] && outer[3] >= inner[3]
+    })
+}
+
+/// The reasons a drag's first tick may take the CPU path for, each passing within a tick, an upload
+/// or a compile: never a reason the GPU cannot draw the drag, `boundary-stage` among them.
+const PASSING: [&str; 5] = [
+    "surface-pending",
+    "boundary-pending",
+    "source-uploading",
+    "source-missing",
+    "compiling",
+];
+
+/// One temperature drag and its release, all drawn on the GPU.
 ///
-/// Left open, the drafted frame is labelled approximate — in state, status and every event — and
-/// changes the photograph plainly. Fit displays the whole proxy; 100% motion displays a half-
-/// detail region. A held 100% pause must refine an exact visible region with the same approximate
-/// white balance, and its captured full-detail frame supplies the WB accuracy comparison. No
-/// approximate report is adopted: the last exact plot remains marked updating.
+/// Its first tick is planned for the GPU over the source the surface holds — any CPU tick names a
+/// reason that passes — and once the GPU has compiled what it asked for, the next tick is drawn on
+/// the GPU with no preview job: at Fit over the source reduced to the view, at 100% over the
+/// visible region cut from it. Left open, the drafted frame changes the photograph plainly, its
+/// histogram stays the last exact one marked updating, and no report is adopted for it.
 ///
-/// Released, the commit redevelops the mosaic and adopts the exact report. At Fit its proxy is the
-/// first new photo; at 100% its exact region precedes the whole frame, all under one committed
-/// generation. White-balance accuracy compares the moving Fit capture or the held full-detail
-/// 100% capture with the release, within a tenth of the drag's own image change; Fit is also within
-/// a code. Moving 100% differences remain reported for independent visual assessment. The plan
-/// checks one history entry.
+/// Released, the commit redevelops the mosaic, and the GPU draws the exact picture at rest with
+/// its own report. The moving GPU frame is held to that picture at rest within the pointwise
+/// limits, the whole frame at Fit and the visible region at 100%, a highlight-clipped Bayer scene
+/// recorded rather than failed. The plan checks one history entry.
 fn white_balance_drag(launch: &Checked, drag: &Drag, highlights: &Highlights) -> Result<Value> {
+    use crate::gpu_preview_smoke::{at_rest_after, gpu_drawn, span_events, ticks};
     let kelvin = drag.kelvin;
-    let (before, drafted, released) = (
-        frame_before(launch, drag.drag)?,
+    let view = if drag.fit { "Fit" } else { "100%" };
+    let (before, drafted, released, settled) = (
+        frame_before(launch, drag.first)?,
         launch.at(drag.drag)?,
         launch.at(drag.release)?,
+        launch.at(drag.settled)?,
     );
-    let state = &drafted["state"];
-    let generation = state["surface"]["generation"].clone();
+    // The first tick is planned for the GPU; whatever it waits for passes.
+    let first_events = crate::gpu_preview_smoke::step_events(launch, drag.first)?;
+    let reasons: Vec<&Value> = first_events
+        .iter()
+        .filter(|event| event["event"] == "gpu_preview_tick" && event["detail"]["path"] == "cpu")
+        .map(|event| &event["detail"]["reason"])
+        .collect();
     ensure(
-        state["proxy"]["presented"] == json!(drag.fit),
-        format!(
-            "The drafted frame at {} is {}the proxy",
-            if drag.fit { "Fit" } else { "100%" },
-            if drag.fit { "not " } else { "" }
-        ),
+        reasons.iter().all(|reason| {
+            reason
+                .as_str()
+                .is_some_and(|reason| PASSING.contains(&reason))
+        }),
+        format!("The {view} drag's first tick was refused the GPU: {reasons:?}"),
     )?;
+    // The drafted frame: the GPU's, of the drafted value.
+    let state = &drafted["state"];
+    let drawn = gpu_drawn(drafted)?;
+    let (gpu_ticks, cpu_ticks, jobs) =
+        ticks(crate::gpu_preview_smoke::step_events(launch, drag.drag)?);
     ensure(
-        state["approximate_white_balance"] == json!(true),
+        gpu_ticks >= 1 && cpu_ticks == 0 && jobs == 0,
         format!(
-            "The open temperature drag's frame is not labelled approximate: {}",
-            state["approximate_white_balance"]
+            "The {view} drag's tick was {gpu_ticks} on the GPU and {cpu_ticks} on the CPU, with \
+             {jobs} preview jobs"
         ),
     )?;
     ensure(
         state["draft"]["action"] == SET_RAW
-            && state["draft"]["fields"][TEMPERATURE] == json!(kelvin)
-            && !state["displayed_draft_revision"].is_null(),
+            && state["draft"]["fields"][TEMPERATURE] == json!(kelvin),
         format!(
             "The open drag's frame is not its drafted value: {}",
             state["draft"]
         ),
     )?;
-    // The status bar calls both the whole Fit proxy and the half-detail viewport provisional.
-    // `proxy.presented` distinguishes the whole proxy from a 100% region.
-    let render = state["status_bar"]["render"].as_str().unwrap_or_default();
-    ensure(
-        render.starts_with("Approximate render \u{b7} ")
-            && (render.ends_with(" ms") || render.ends_with(" s"))
-            && state["status_bar"]["render_approximate"] == true
-            && state["status_bar"]["render_proxy"] == true,
-        format!(
-            "The status bar does not say the drafted frame is approximate: {render:?}, proxy {}",
-            state["status_bar"]["render_proxy"]
-        ),
-    )?;
-    let histogram = &state["histogram"];
-    ensure(
-        histogram["status"] == "updating"
-            && histogram["identity"]["generation"] != generation
-            && histogram["identity"]["draft_revision"].is_null(),
-        format!("The histogram was adopted from the approximate frame: {histogram}"),
-    )?;
-    let drag_events = step_log(launch, drag.drag)?;
-    // The moving frames are those up to the drag's settle, which its capture shows. At 100% the
-    // held draft's quiet refinement, a later generation, may begin before the next step is logged:
-    // the quiet check below reads that tail.
-    let (moving_events, held_tail) = split_at_settle(&drag_events);
-    let displayed = presented(&moving_events);
-    let all_displayed = presented(&drag_events);
-    ensure(
-        !displayed.is_empty()
-            && all_displayed
-                .iter()
-                .all(|event| event["detail"]["approximate_white_balance"] == true),
-        format!(
-            "The drafted generation's frames are not all labelled approximate: {all_displayed:?}"
-        ),
-    )?;
-    ensure(
-        displayed
-            .iter()
-            .all(|event| event["detail"]["generation"] == generation)
-            && all_displayed.iter().all(|event| {
-                let detail = &event["detail"];
-                detail["draft_revision"] == state["displayed_draft_revision"]
-                    && detail["entry_id"] == state["stack"]["displayed"]["entry"]
-                    && detail["snapshot_id"] == state["stack"]["displayed"]["snapshot"]
-            }),
-        "A drafted frame has the wrong generation, revision, entry or snapshot",
-    )?;
+    let summary = &state["surface"]["gpu"]["gpu_preview"]["drag"];
+    let boundary = &summary["boundary"];
+    let visible = state["surface"]["gpu"]["visible_region"].clone();
     if drag.fit {
         ensure(
-            displayed.iter().all(|event| {
-                event["detail"]["path"] == "surface" && event["detail"]["proxy"] == true
-            }),
-            "The moving Fit draft was not the whole display proxy",
+            boundary["derived"] == "reduce" && boundary["region"].is_null(),
+            format!("The Fit drag is not drawn over the source reduced to the view: {boundary}"),
         )?;
     } else {
-        let gpu = &state["surface"]["gpu"];
-        let full = state["preview_dimensions"]
-            .as_array()
-            .ok_or("The 100% draft has no full-stage dimensions")?;
-        let region_matches = |event: &&Value| {
-            let detail = &event["detail"];
-            let half = detail["region_stage"].as_array();
-            let rect = detail["region"].as_array();
-            detail["path"] == "region"
-                && detail["quality"] == "interactive"
-                && detail["proxy_approximate"] == true
-                && detail["viewport_declined"].is_null()
-                && detail["dimensions"] == state["preview_dimensions"]
-                && half.is_some_and(|stage| {
-                    stage.len() == 2
-                        && (0..2).all(|axis| {
-                            full[axis]
-                                .as_u64()
-                                .zip(stage[axis].as_u64())
-                                .is_some_and(|(full, half)| half == full.div_ceil(2))
-                        })
-                })
-                && rect.is_some_and(|rect| {
-                    rect.len() == 4
-                        && rect[0]
-                            .as_u64()
-                            .zip(rect[2].as_u64())
-                            .is_some_and(|(a, b)| a < b)
-                        && rect[1]
-                            .as_u64()
-                            .zip(rect[3].as_u64())
-                            .is_some_and(|(a, b)| a < b)
-                        && rect[2].as_u64() <= full[0].as_u64()
-                        && rect[3].as_u64() <= full[1].as_u64()
-                })
-        };
         ensure(
-            displayed.iter().all(region_matches)
-                && state["surface"]["version"] == before["state"]["surface"]["version"]
-                && state["surface"]["detail_updating"] == true
-                && gpu["drawn_full_version"].is_null()
-                && gpu["drawn_region_generation"] == generation
-                && gpu["drawn_region_quality"] == "interactive"
-                && gpu["drawn_region_version"].is_u64()
-                && gpu["drawn_content"].is_u64()
-                && gpu["drawn_regions"].as_array().is_some_and(|regions| {
-                    regions.iter().any(|region| {
-                        region["content"] == gpu["drawn_content"]
-                            && region["generation"] == generation
-                            && region["quality"] == "interactive"
-                            && region["version"] == gpu["drawn_region_version"]
-                    })
-                }),
-            "The moving 100% WB draft was not a matching drawn half-detail viewport region",
+            boundary["derived"] == "cut"
+                && boundary["region"].is_array()
+                && holds(&state["surface"]["gpu"]["plan_region"], &visible),
+            format!(
+                "The 100% drag is not drawn over the visible region cut from the source: \
+                 {boundary}, the plan's region {}, the view {visible}",
+                state["surface"]["gpu"]["plan_region"]
+            ),
         )?;
     }
+    // During the drag the histogram is the displayed frame's, labelled updating: no report of the
+    // approximate frame is adopted.
+    let histogram = &state["histogram"];
+    ensure(
+        histogram["status"] == "updating",
+        format!("The drafted frame's histogram is not marked updating: {histogram}"),
+    )?;
+    let drag_events = span_events(launch, drag.first, drag.drag)?;
     ensure(
         !drag_events.iter().any(|event| {
-            event["event"] == "analysis_adopted" && event["detail"]["generation"] == generation
+            event["event"] == "analysis_adopted" && !event["detail"]["draft_revision"].is_null()
         }),
-        "A report was adopted for the approximate generation",
+        "A report was adopted for a drafted frame",
     )?;
     let unpreviewed = drag_events
         .iter()
@@ -1501,226 +1454,68 @@ fn white_balance_drag(launch: &Checked, drag: &Drag, highlights: &Highlights) ->
         ),
     )?;
 
-    let quality_draft = if let Some(name) = drag.quiet {
-        let quiet = launch.at(name)?;
-        let paused = &quiet["state"];
-        let quiet_generation = &paused["surface"]["generation"];
-        // The held draft's quiet interval runs from the drag's last input, so its refinement may
-        // begin in the drag step's tail, after the moving frame was captured.
-        let quiet_events: Vec<&Value> = held_tail
-            .iter()
-            .copied()
-            .chain(step_log(launch, name)?)
-            .collect();
-        let presented = presented(&quiet_events);
-        ensure(
-            quiet_events
-                .iter()
-                .any(|event| event["event"] == "preview_quiet_refine")
-                && presented.iter().any(|event| {
-                    event["detail"]["path"] == "region" && event["detail"]["quality"] == "exact"
-                })
-                && presented.iter().all(|event| {
-                    let detail = &event["detail"];
-                    detail["generation"] == *quiet_generation
-                        && detail["draft_revision"] == state["displayed_draft_revision"]
-                        && detail["entry_id"] == state["stack"]["displayed"]["entry"]
-                        && detail["snapshot_id"] == state["stack"]["displayed"]["snapshot"]
-                        && detail["dimensions"] == state["preview_dimensions"]
-                        && detail["approximate_white_balance"] == true
-                        && (detail["path"] == "surface"
-                            || detail["path"] == "region"
-                                && detail["quality"] == "exact"
-                                && detail["region_stage"] == state["preview_dimensions"]
-                                && detail["proxy_approximate"] == false)
-                })
-                && !quiet_events
-                    .iter()
-                    .any(|event| event["event"] == "analysis_adopted"),
-            "The held 100% WB draft did not refine an exact matching region without adopting an approximate report",
-        )?;
-        let gpu = &paused["surface"]["gpu"];
-        let drew_exact_region = gpu["drawn_region_generation"] == *quiet_generation
-            && gpu["drawn_region_quality"] == "exact"
-            && gpu["drawn_region_version"].is_u64();
-        let drew_full_detail = gpu["drawn_full_version"] == paused["surface"]["version"]
-            && gpu["drawn_full_version"].is_u64()
-            && paused["surface"]["raster"] == paused["preview_dimensions"];
-        ensure(
-            paused["draft"]["draft_id"] == state["draft"]["draft_id"]
-                && paused["draft"]["fields"][TEMPERATURE] == json!(kelvin)
-                && paused["displayed_draft_revision"] == state["displayed_draft_revision"]
-                && paused["stack"]["revision"] == state["stack"]["revision"]
-                && paused["stack"]["displayed"]["entry"] == state["stack"]["displayed"]["entry"]
-                && paused["approximate_white_balance"] == true
-                && paused["proxy"]["presented"] == false
-                && paused["histogram"]["status"] == "updating"
-                && paused["histogram"]["stale"] == true
-                && paused["histogram"]["identity"]["draft_revision"].is_null()
-                && paused["histogram"]["identity"]["generation"] != *quiet_generation
-                && paused["status_bar"]["render_approximate"] == true
-                && gpu["drawn_content"].is_u64()
-                && (drew_exact_region || drew_full_detail),
-            "The held WB capture is not full-detail approximate pixels of the same draft with its old exact histogram",
-        )?;
-        quiet
-    } else {
-        drafted
-    };
-
+    // The release: the exact committed development, drawn on the GPU at rest with its own report.
     let state = &released["state"];
-    let generation = state["surface"]["generation"].clone();
     ensure(
         state["approximate_white_balance"] == json!(false)
             && raw_payload(released)?["temperature_kelvin"] == json!(kelvin)
             && raw_payload(released)?["wb_mode"] == "custom",
         format!(
-            "The release did not land the exact committed frame: approximate {}, RAW {}",
+            "The release did not land the exact committed development: approximate {}, RAW {}",
             state["approximate_white_balance"],
             raw_payload(released)?
         ),
     )?;
-    let histogram = &state["histogram"];
+    let release_events = span_events(launch, drag.release, drag.settled)?;
     ensure(
-        histogram["status"] == "ready"
-            && histogram["identity"]["generation"] == generation
-            && histogram["identity"]["draft_revision"].is_null(),
-        format!("The committed frame's own report is not plotted: {histogram}"),
+        release_events
+            .iter()
+            .any(|event| event["event"] == "slider_draft_commit"),
+        "The release did not commit",
     )?;
-    let release_events = step_log(launch, drag.release)?;
-    let commit = release_events
-        .iter()
-        .position(|event| event["event"] == "slider_draft_commit")
-        .ok_or("The release did not commit")?;
-    let after: Vec<&&Value> = release_events[commit..]
-        .iter()
-        .filter(|event| event["event"] == "preview_displayed")
-        .collect();
-    let first = after
-        .first()
-        .ok_or("Nothing was presented after the commit")?;
-    ensure(
-        after.iter().all(|event| {
-            let detail = &event["detail"];
-            detail["generation"] == generation
-                && detail["draft_revision"].is_null()
-                && detail["entry_id"] == state["stack"]["displayed"]["entry"]
-                && detail["snapshot_id"] == state["stack"]["displayed"]["snapshot"]
-                && detail["dimensions"] == state["preview_dimensions"]
-                && detail["approximate_white_balance"] == false
-        }),
-        format!("A stale, drafted or approximate frame was presented after the commit: {after:?}"),
-    )?;
-    if drag.fit {
-        ensure(
-            after.len() == 1
-                && first["detail"]["path"] == "surface"
-                && first["detail"]["proxy"] == true,
-            "Fit release did not present its one committed display proxy",
-        )?;
-    } else {
-        let whole = after.last().ok_or("No committed whole frame")?;
-        ensure(
-            after.len() == 2
-                && first["detail"]["path"] == "region"
-                && first["detail"]["quality"] == "exact"
-                && first["detail"]["region_stage"] == state["preview_dimensions"]
-                && first["detail"]["proxy_approximate"] == false
-                && whole["detail"]["path"] == "surface"
-                && whole["detail"]["proxy"] == false
-                && state["proxy"]["presented"] == false
-                && state["surface"]["detail_updating"] == false,
-            "100% release did not present an exact region followed by the same committed whole frame",
-        )?;
-    }
     ensure(
         !release_events
             .iter()
             .any(|event| event["event"] == "render_failed"),
-        "A render failed between the release and the committed frame",
+        "A render failed between the release and the picture at rest",
     )?;
-    // Exactly one new *full-slot* version reaches the surface. At 100% an exact region uses its
-    // separate region slot before that whole frame; counting only the full version preserves the
-    // original stale-whole-frame fence without rejecting the required region refinement.
-    let versions = (
-        quality_draft["state"]["surface"]["version"].as_u64(),
-        state["surface"]["version"].as_u64(),
-    );
+    let at_rest = at_rest_after(release_events, settled, drag.release)?;
+    let state = &settled["state"];
+    let histogram = &state["histogram"];
     ensure(
-        matches!(versions, (Some(drafted), Some(released)) if released == drafted + 1),
-        format!(
-            "The surface was handed more than the committed frame after the drag: {versions:?}"
-        ),
+        histogram["status"] == "ready" && histogram["identity"]["draft_revision"].is_null(),
+        format!("The committed picture's own report is not plotted: {histogram}"),
     )?;
     ensure(
-        state["surface"]["gpu"]["drawn_full_version"] == state["surface"]["version"]
-            && (drag.fit
-                || state["surface"]["gpu"]["drawn_content"].is_u64()
-                    && state["surface"]["gpu"]["drawn_region_version"].is_null()),
-        "The exact committed whole frame was not the photographed surface's encoded draw",
+        raw_payload(settled)?["temperature_kelvin"] == json!(kelvin),
+        "The picture at rest is not the released development's",
     )?;
-    let analyses: Vec<&&Value> = release_events
-        .iter()
-        .filter(|event| event["event"] == "analysis_adopted")
-        .collect();
-    ensure(
-        !analyses.is_empty()
-            && analyses.iter().all(|event| {
-                event["detail"]["generation"] == generation
-                    && event["detail"]["entry_id"] == state["stack"]["displayed"]["entry"]
-                    && event["detail"]["draft_revision"].is_null()
-            }),
-        "A stale report was adopted, or the committed frame's own report was not adopted",
-    )?;
-    let (moving_mean, moving_over) = surface_difference(drafted, released)?;
-    let held_difference = drag
-        .quiet
-        .map(|_| surface_difference(quality_draft, released))
-        .transpose()?;
-    let (change_mean, _) = surface_difference(before, released)?;
+    // The moving GPU frame against the release's picture at rest, within the pointwise limits.
+    let (figures, passed) = white_balance_accuracy(drafted, settled)?;
+    let accuracy = white_balance_accuracy_verdict(figures, passed, highlights)?;
+    let (change_mean, _) = surface_difference(before, settled)?;
     ensure(
         change_mean > 0.0,
         "The temperature drag caused no photographed change",
     )?;
-    let moving_ratio = moving_mean / change_mean;
-    let held_accuracy = held_difference.map(|(mean, _)| (mean, mean / change_mean));
-    let held_ratio = held_accuracy.map(|(_, ratio)| ratio);
-    let accuracy = white_balance_accuracy_verdict(
-        drag.fit,
-        moving_mean,
-        moving_ratio,
-        held_accuracy,
-        change_mean,
-        highlights,
-    )?;
-    let accuracy_ratio = if drag.fit {
-        moving_ratio
-    } else {
-        held_ratio.expect("the 100% accuracy check requires a held capture")
-    };
     let tint = keeps_the_tint_in_force(before, drafted, released, drag)?;
     Ok(json!({
         "step": drag.drag,
         "kelvin": kelvin,
         "tint": tint,
         "view": if drag.fit { "fit" } else { "100%" },
+        "first_tick_reasons": reasons,
         "drafted_frame": drafted["file"],
-        "drafted_render": drafted["state"]["status_bar"]["render"],
+        "drafted_drawn": drawn,
+        "drafted_boundary": boundary,
         "drafted_histogram": drafted["state"]["histogram"]["status"],
         "drafted_against_before": {"mean_codes": drag_mean, "share_over_2": drag_over},
-        "quiet_full_detail_frame": drag.quiet.map(|_| quality_draft["file"].clone()),
-        "moving_against_released": {"mean_codes": moving_mean, "share_over_2": moving_over},
         "released_frame": released["file"],
-        "released_render": state["status_bar"]["render"],
-        "released_histogram": histogram["status"],
-        "released_against_held_full_detail_draft": held_difference.map(|(mean, over)| json!({"mean_codes": mean, "share_over_2": over})),
-        "released_against_before": {"mean_codes": change_mean},
-        "moving_share_of_change": moving_ratio,
-        "held_full_detail_share_of_change": held_ratio,
-        "accuracy_checked_view_state": accuracy["checked"],
+        "settled_frame": settled["file"],
+        "settled_at_rest": at_rest,
+        "settled_histogram": histogram["status"],
+        "settled_against_before": {"mean_codes": change_mean},
         "accuracy": accuracy,
-        "accuracy_share_of_change": accuracy_ratio,
-        "surface_versions": [versions.0, versions.1],
     }))
 }
 
@@ -1783,9 +1578,10 @@ mod tests {
                 let path = Path::new(run).join(format!("app/state-{index}.json"));
                 serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
             };
-            // The opened frame and the two releases: frames 1, 3 and 7 of the plan.
-            let gains: Vec<[f32; 3]> = [1, 3, 7]
-                .map(|index| development_gains(&state(index)).unwrap())
+            // The opened frame and the two releases.
+            let plan = plan(&[]);
+            let gains: Vec<[f32; 3]> = [names::OPENED, DRAGS[0].release, DRAGS[1].release]
+                .map(|step| development_gains(&state(plan.index(step).unwrap() + 1)).unwrap())
                 .into();
             let highlights = Highlights::of(Path::new(source), &gains).unwrap();
             println!("{run} {}", highlights.record());
@@ -1803,53 +1599,6 @@ mod tests {
             .and_then(|rest| rest.strip_suffix(';'))
             .expect("the crop canvas declares DIM_OPACITY");
         assert_eq!(value.parse::<f64>().unwrap(), DRAFT_DIM_OPACITY);
-    }
-
-    /// The recorded Z6 and Canon 90D failures on a loaded host: the 100% drag settled on its
-    /// half-detail draft, its capture took longer than the 120 ms quiet interval, and the quiet
-    /// refinement began (and on the Z6 presented its exact region) before the wait step was logged.
-    /// The drag's moving frames end at its settle; the quiet check reads the tail with the wait.
-    #[test]
-    fn a_quiet_refinement_before_the_next_step_belongs_to_the_held_draft() {
-        let event = |name: &str, detail: Value| json!({"event": name, "detail": detail});
-        let events = [
-            event("script_step", json!({"step": 4})),
-            event("slider_draft_preview", json!({"generation": 6})),
-            event(
-                "preview_displayed",
-                json!({"generation": 6, "path": "region", "quality": "interactive"}),
-            ),
-            event(
-                "script_step_settled",
-                json!({"step": 4, "waited_for": "slider_draft", "by": "presented_draft"}),
-            ),
-            event("preview_quiet_refine", json!({})),
-            event(
-                "preview_displayed",
-                json!({"generation": 7, "path": "region", "quality": "exact"}),
-            ),
-            event("script_step", json!({"step": 5})),
-            event(
-                "preview_displayed",
-                json!({"generation": 7, "path": "surface", "proxy": false}),
-            ),
-        ];
-        let drag = step_events(&events, 4);
-        let (moving, tail) = split_at_settle(&drag);
-        assert_eq!(
-            presented(&moving)
-                .iter()
-                .map(|event| &event["detail"]["generation"])
-                .collect::<Vec<_>>(),
-            [&json!(6)],
-            "only the frame the drag's capture shows is a moving frame"
-        );
-        assert_eq!(tail[0]["event"], "preview_quiet_refine");
-        assert_eq!(presented(&tail)[0]["detail"]["quality"], "exact");
-        assert_eq!(step_events(&events, 5).len(), 2);
-        // A step that never settled keeps every event as its own.
-        let (all, none) = split_at_settle(&drag[..3]);
-        assert_eq!((all.len(), none.len()), (3, 0));
     }
 
     /// A scene qualifies as highlight-clipped Bayer from its clip share alone: at or above the
@@ -1875,9 +1624,9 @@ mod tests {
         assert!(scene(None).record()["exception"].is_null());
     }
 
-    /// A qualifying scene's missed limits are recorded with the exception, its share and the limit
-    /// it failed; a non-qualifying scene fails exactly as the gate does; figures within the limits
-    /// carry no exception either way; a missing held capture is never excused.
+    /// A qualifying scene's frame past the pointwise limits is recorded with the exception and its
+    /// share; a non-qualifying scene's fails; a frame within the limits carries no exception either
+    /// way.
     #[test]
     fn a_highlight_clipped_scene_records_its_missed_accuracy_limits_and_others_fail() {
         let clipped = Highlights {
@@ -1888,74 +1637,21 @@ mod tests {
             gains: [2.0, 1.0, 1.8],
             share: Some(0.0),
         };
-        // The OM-1's Fit drag and the S5II's held 100% drag, as measured on 2026-09-30.
-        let om1 = |highlights| {
-            white_balance_accuracy_verdict(true, 1.133, 0.0618, None, 18.335, highlights)
-        };
-        let s5ii = |highlights| {
-            white_balance_accuracy_verdict(
-                false,
-                12.0,
-                0.5134,
-                Some((11.142, 0.4758)),
-                23.42,
-                highlights,
-            )
-        };
-        for verdict in [om1(&clipped).unwrap(), s5ii(&clipped).unwrap()] {
-            assert_eq!(verdict["exception"], HIGHLIGHT_CLIP_EXCEPTION);
-            assert_eq!(verdict["held"], false);
-            assert_eq!(verdict["clipped_share"], 0.0407);
-            assert!(
-                verdict["failed_limit"]
-                    .as_str()
-                    .unwrap()
-                    .contains("the limit is")
-            );
+        let figures = || json!({"statistics": {"worst_block": 2.68}});
+        let recorded = white_balance_accuracy_verdict(figures(), false, &clipped).unwrap();
+        assert_eq!(recorded["exception"], HIGHLIGHT_CLIP_EXCEPTION);
+        assert_eq!(recorded["held"], false);
+        assert_eq!(recorded["clipped_share"], 0.0407);
+        let failure = white_balance_accuracy_verdict(figures(), false, &unclipped).unwrap_err();
+        assert!(
+            failure.to_string().contains("pointwise limits"),
+            "{failure}"
+        );
+        for highlights in [&clipped, &unclipped] {
+            let within = white_balance_accuracy_verdict(figures(), true, highlights).unwrap();
+            assert_eq!(within["held"], true);
+            assert!(within["exception"].is_null());
         }
-        assert_eq!(om1(&clipped).unwrap()["checked"], "moving");
-        assert_eq!(s5ii(&clipped).unwrap()["checked"], "held_full_detail");
-        assert!(
-            om1(&unclipped)
-                .unwrap_err()
-                .to_string()
-                .contains("the limit is 1 code")
-        );
-        assert!(
-            s5ii(&unclipped)
-                .unwrap_err()
-                .to_string()
-                .contains("held full-detail")
-        );
-        let within = white_balance_accuracy_verdict(true, 0.5, 0.05, None, 10.0, &clipped).unwrap();
-        assert_eq!(within["held"], true);
-        assert!(within["exception"].is_null());
-        assert!(white_balance_accuracy_verdict(false, 0.5, 0.05, None, 10.0, &clipped).is_err());
-    }
-
-    #[test]
-    fn hundred_percent_accuracy_uses_held_full_detail_after_refinement() {
-        // The Air 2S review's 17.33% moving difference is still evidence, while its 5.06%
-        // held difference passes the accepted white-balance comparison.
-        assert_eq!(
-            check_white_balance_accuracy(false, 4.2, 0.1733, Some((1.227, 0.0506)), 24.242)
-                .unwrap(),
-            "held_full_detail"
-        );
-        let failure = check_white_balance_accuracy(false, 0.5, 0.02, Some((2.5, 0.1001)), 24.242)
-            .unwrap_err();
-        assert!(failure.to_string().contains("held full-detail"));
-        assert!(check_white_balance_accuracy(false, 0.5, 0.02, None, 24.242).is_err());
-    }
-
-    #[test]
-    fn fit_accuracy_requires_moving_share_and_one_code_mean() {
-        assert_eq!(
-            check_white_balance_accuracy(true, 1.0, 0.1, None, 10.0).unwrap(),
-            "moving"
-        );
-        assert!(check_white_balance_accuracy(true, 0.9, 0.1001, None, 8.99).is_err());
-        assert!(check_white_balance_accuracy(true, 1.001, 0.08, None, 12.5).is_err());
     }
 
     /// What the plan scripts at the named step.
@@ -1968,8 +1664,9 @@ mod tests {
             .unwrap_or_else(|| panic!("{step:?} scripts nothing"))
     }
 
-    /// Each drag stops on a declared temperature and releases that value; the 100% drag first
-    /// pauses while still held so the verifier can check full-detail white-balance accuracy.
+    /// Each drag ticks at its first temperature, waits for the GPU's compiles while held, ticks at a
+    /// declared temperature, releases that value and waits for the picture at rest; the 100% drag
+    /// begins after the zoom and its quiet, and Fit follows it.
     #[test]
     fn each_drag_is_a_declared_temperature_on_its_step_where_the_checks_look() {
         let registry = luxforge_core::ModuleRegistry::builtin();
@@ -1981,33 +1678,39 @@ mod tests {
         };
         let step = parameter.step.unwrap_or(1.0);
         let plan = plan(&[]);
+        let warmed = json!({"gpu_warmed": {"quiet_ms": QUIET_MS, "ms": WARM_MS}});
         for drag in &DRAGS {
-            assert!((min..=max).contains(&drag.kelvin));
-            assert_eq!((drag.kelvin / step).round() * step, drag.kelvin);
-            let at = plan.index(drag.drag).expect("a planned drag");
-            assert_eq!(
-                plan.index(drag.release),
-                Some(at + 1 + usize::from(drag.quiet.is_some())),
-                "{}",
-                drag.release
-            );
-            if let Some(quiet) = drag.quiet {
-                assert_eq!(plan.index(quiet), Some(at + 1));
-                assert_eq!(scripted(&plan, quiet), json!({"wait":{"ms":1000}}));
+            for kelvin in [drag.first_kelvin, drag.kelvin] {
+                assert!((min..=max).contains(&kelvin));
+                assert_eq!((kelvin / step).round() * step, kelvin);
             }
+            assert_ne!(drag.first_kelvin, drag.kelvin, "two ticks");
+            let at = plan.index(drag.first).expect("a planned drag");
+            for (offset, name) in [drag.held, drag.drag, drag.release, drag.settled]
+                .into_iter()
+                .enumerate()
+            {
+                assert_eq!(plan.index(name), Some(at + 1 + offset), "{name}");
+            }
+            assert_eq!(scripted(&plan, drag.held), warmed);
+            assert_eq!(scripted(&plan, drag.settled), warmed);
+            let first = &scripted(&plan, drag.first)["slider"];
             let open = &scripted(&plan, drag.drag)["slider"];
             let release = &scripted(&plan, drag.release)["slider"];
+            assert_eq!(first["values"], json!([drag.first_kelvin]));
+            assert_eq!(first["release"], json!(false));
             assert_eq!(open["values"], json!([drag.kelvin]));
             assert_eq!(open["release"], json!(false));
             assert_eq!(release["values"], json!([drag.kelvin]));
             assert_eq!(release["release"], json!(true));
             if !drag.fit {
+                assert_eq!(plan.index(ZOOM_100_SETTLED), Some(at - 1));
                 assert_eq!(
-                    plan.steps()[at - 1].script(),
+                    plan.steps()[at - 2].script(),
                     Some(script::Step::View(ViewStep::Percent(100.0)).to_value())
                 );
                 assert_eq!(
-                    plan.steps()[at + 3].script(),
+                    plan.steps()[at + 5].script(),
                     Some(script::Step::View(ViewStep::Fit).to_value())
                 );
             }
