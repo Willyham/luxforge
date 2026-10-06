@@ -71,14 +71,15 @@
     {
       "id": "TASK-002",
       "description": "Make the shared pieces the look unit needs: the Tone curve's interpolant reusable by another module with the look's tails, and the core's Oklab conversions reachable from it, leaving the Tone curve's unit, program and outputs unchanged.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
       "extra_context": [
         "modules/curve/unit.rs keeps Interpolant pub(super); widen it to pub(crate) and give it a tail policy: the Tone curve's (unit-slope tails outside [0, 1], flat holds) or the look's (the first segment continued linearly below 0, the last value held at and above x_max, knots spanning [0, x_max] with x_max above 1). The Tone curve's ToneCurve unit, its describe string, its GPU program and words are untouched, and its fixture and GPU qualification pass unchanged.",
         "crate::colour's to_oklab and from_oklab are pub(crate) already; the look unit uses them directly. Basic's ColourAdjust unit is not reused: the look's chroma step is a uniform gain inside the fused look unit.",
-        "This task and the look module are built together, by one change: the path-to-white and amount steps live in the fused look unit, whose GPU qualification runs through a look layer."
+        "This task and the look module are built together, by one change: the path-to-white and amount steps live in the fused look unit, whose GPU qualification runs through a look layer.",
+        "Done 2026-10-06: Interpolant is pub(crate) with a Tails policy (ToneCurve or Look); the Tone curve's unit, program and fixture are unchanged."
       ],
       "context_links": [
         {
@@ -133,7 +134,7 @@
     {
       "id": "TASK-003",
       "description": "Build the luxforge.look module: descriptor, payload, set-look, reset-look, sample-look, compilation to units, history labels, recipe description and conformance.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-002"
       ],
@@ -144,7 +145,8 @@
         "Neutrality per the recorded default: the band dot is lit only when the look is not the current Standard at amount 100.",
         "query.sample-look answers 257 samples over [0, x_max] and the chroma gain without reading pixels; recipe.describe reports look, amount, chroma, knot count and fit. Labels: Look Standard, Look Neutral, Look amount N, Reset Look.",
         "Presets: not presettable. Update the Lightroom CameraProfile reason text in presets/mapping.rs and docs/design/presets.md to \"Luxforge's looks are its own\".",
-        "Regenerate the builtin descriptor snapshot and add the module to the conformance KNOWN list."
+        "Regenerate the builtin descriptor snapshot and add the module to the conformance KNOWN list.",
+        "Done 2026-10-06: luxforge.look implements ToolModule directly (field patches cannot store the resolved knots); one fused unit and program lf_look_look; CPU within 2e-6 of the fixture at every step; GPU qualification passed on the M4; ToolModule::neutral_payload added for GPU drafts; the patch-action repository rule names look/mod.rs."
       ],
       "context_links": [
         {
@@ -198,7 +200,7 @@
     {
       "id": "TASK-004",
       "description": "Start new RAW photos from the preferred look: the ToolModule::original hook, the raw_look preference (standard or neutral) in the core, API and General tab, and the look in a new RAW photograph's Original.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
@@ -206,7 +208,8 @@
         "Add ToolModule::original(&self, context) -> Option<layer>, asked in registry order by EditorService::new_photograph (editor/source.rs) for a new photograph's Original from its kind, metadata and the preferences; the look module returns its payload for standard and nothing for neutral. JPEG photographs get no look. seed.rs mirrors new_photograph.",
         "Preference raw_look: an enum like CanvasBackground in preferences.rs (ALL, as_str, parse, default standard), announced as a General row, pushed into EditorService as auto_lens_profile is (api/owner.rs at owner start and in preferences_set). Desktop: a GeneralPreference variant after the lens row, a choice control, title Starting look for new RAW photos.",
         "Existing photos and their recipes are never rewritten. Tests that assert a bare neutral RAW Original set raw_look to neutral or update their expectations from the reference; fixtures are regenerated, never hand-edited.",
-        "pick.develop must stay metadata-only: no pixel or file read is added by the hook."
+        "pick.develop must stay metadata-only: no pixel or file read is added by the hook.",
+        "Done 2026-10-06: ToolModule::original with OriginalContext/OriginalLayer/OriginalPreferences, editor::original_recipe shared by new_photograph and seed.rs, the raw_look preference (standard, neutral) in core, API and the General tab; the look module answers the hook. Catalog tiers and batch export carry the look because they render the Original's stack."
       ],
       "context_links": [
         {
@@ -262,7 +265,7 @@
     {
       "id": "TASK-005",
       "description": "Show the Look section in Develop, capture native rendered evidence with a look smoke scenario, and document phase 1.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-004"
       ],
