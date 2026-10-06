@@ -4987,8 +4987,9 @@ mod tests {
             steps
         };
         // The Crop, Presets and Basic sections sit above the Tone curve, and on a RAW photo the
-        // Look's too. The RAW module, between them in the registry, declares no controls and so
-        // draws no section for either kind of photo; the Look applies to RAW photos only.
+        // Look's too, directly above Basic's. The RAW module, between them in the registry,
+        // declares no controls and so draws no section for either kind of photo; the Look applies
+        // to RAW photos only.
         assert_eq!(
             curve_view_steps(&field, SourceTag::Jpeg, false),
             collapsed(&["luxforge.crop", "luxforge.presets", "luxforge.basic"])
@@ -4998,8 +4999,8 @@ mod tests {
             collapsed(&[
                 "luxforge.crop",
                 "luxforge.presets",
-                "luxforge.basic",
-                "luxforge.look"
+                "luxforge.look",
+                "luxforge.basic"
             ])
         );
         // The mask workspace lists only modules with a maskable effect.

@@ -93,7 +93,8 @@ fn stage_4() -> CompileStage {
 }
 
 /// The module is `luxforge.look`, one single colour-stage effect at order 3 on RAW sources only,
-/// not maskable, registered between Basic and the Tone curve; neither action is presettable and
+/// not maskable, registered between RAW and Basic so its section sits above Basic's while its
+/// layer follows Basic's; neither action is presettable and
 /// the module's reset is `reset-look`.
 #[test]
 fn the_descriptor_declares_a_single_raw_colour_effect_at_order_three() {
@@ -125,8 +126,10 @@ fn the_descriptor_declares_a_single_raw_colour_effect_at_order_three() {
         .map(|module| module.id.clone())
         .collect();
     let at = |id: &str| ids.iter().position(|one| one == id).unwrap();
-    assert_eq!(at("luxforge.look"), at("luxforge.basic") + 1);
-    assert_eq!(at("luxforge.curve"), at("luxforge.look") + 1);
+    // The registry lists the Look directly above Basic, the order a tools panel draws their
+    // sections in; the layer's own place, after Basic's, is its declared order.
+    assert_eq!(at("luxforge.basic"), at("luxforge.look") + 1);
+    assert_eq!(at("luxforge.curve"), at("luxforge.basic") + 1);
 }
 
 /// The first `set-look` on a RAW photo without a look layer commits the layer: Standard at 100,

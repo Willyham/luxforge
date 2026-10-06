@@ -40,10 +40,12 @@ use std::{
     sync::Arc,
 };
 
-/// The linked providers a run serves, in the order a registry lists them: crop first, then presets
-/// (which owns no layer), the pixel proof,
-/// RAW, Basic, the RAW look, Tone curve, Detail, Presence, the colour mixer, lens correction,
-/// perspective, the vignette and the controls proof. The two
+/// The linked providers a run serves, in the order a registry lists them, which is the order a
+/// client's tools panel draws their sections in: crop first, then presets (which owns no layer),
+/// the pixel proof, RAW, the RAW look, Basic, Tone curve, Detail, Presence, the colour mixer, lens
+/// correction, perspective, the vignette and the controls proof. The list is a presentation order,
+/// not the pipeline's: a layer's place in a stack is its effect's declared stage and order, so the
+/// look's section sits above Basic's while its layer follows Basic's. The two
 /// proofs are test modules — their descriptors declare `developer` — so only a `developer` run gets
 /// them. [`ModuleRegistry::assemble`] registers these; a test that builds a variant registry of its
 /// own starts from them too. External loading is a later, separately measured step.
@@ -53,8 +55,8 @@ pub(crate) fn linked_modules(developer: bool) -> Vec<Arc<dyn ToolModule>> {
         Arc::new(PresetsModule::new()),
         Arc::new(PixelModule::new()),
         Arc::new(RawModule::new()),
-        Arc::new(BasicModule::new()),
         Arc::new(LookModule::new()),
+        Arc::new(BasicModule::new()),
         Arc::new(CurveModule::new()),
         Arc::new(DetailModule::new()),
         Arc::new(PresenceModule::new()),
