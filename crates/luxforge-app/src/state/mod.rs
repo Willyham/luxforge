@@ -2834,6 +2834,26 @@ mod tests {
             workspace.status.fallback, None,
             "the surface has not checked its stage"
         );
+        // A GPU on the platform's software adapter names itself in the render slot, at rest and
+        // during a gesture, with no notice of the reference's.
+        let mut software = scene.session.clone();
+        software.renderer = luxforge_core::Renderer::gpu_software();
+        let mut inputs = scene.inputs();
+        inputs.session = &software;
+        inputs.gpu_frame_us = Some(120_400);
+        workspace.derive(&inputs);
+        assert_eq!(
+            workspace.status.render,
+            "Software GPU preview \u{b7} 120 ms"
+        );
+        assert_eq!(workspace.status.fallback, None);
+        inputs.gpu_at_rest = true;
+        workspace.derive(&inputs);
+        assert_eq!(workspace.status.render, "Software GPU render \u{b7} 120 ms");
+        let mut inputs = scene.inputs();
+        inputs.gpu_frame_us = Some(2_400);
+        workspace.derive(&inputs);
+        assert_eq!(workspace.status.render, "GPU preview \u{b7} 2 ms");
 
         // Nobody else connected is a count of none, with the dot unlit.
         let mut inputs = scene.inputs();
