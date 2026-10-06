@@ -21,7 +21,7 @@ A persistent list of the work that can start now: each plan below has a validate
 | Plan | Ready tasks | Notes | Minimum model |
 | --- | --- | --- | --- |
 | [GPU memory accounting](../tasks/rendering/gpu-memory.json) | TASK-001 measure and bound GPU resources outside the photo-texture ceiling | A measurement: run after feature work, on a quiet host | High tier |
-| [RAW looks](../tasks/raw/raw-looks.json) ([design](design/raw-looks.md)) | TASK-002 the shared colour primitives (curve tail policy, Oklab chroma unit, path to white) | Phase 1 first; its GPU programs join the GPU-first renderer's program list and qualification, now on `main` | High tier |
+| [RAW looks](../tasks/raw/raw-looks.json) ([design](design/raw-looks.md)) | TASK-006 freeze the camera fit (phase 2) | Phase 1 is built; its TASK-005 waits on the native `look` scenario and the rendered tier | High tier |
 | [Corrections](../tasks/editing/corrections.json) ([design](design/corrections.md)) | TASK-001 freeze the remaining contract; TASK-002 Clone and Heal numerics | Renderer integration targets the merged GPU-first interfaces; the repair-versus-Detail placement is still open | High tier |
 | [AI editing](../tasks/editing/ai-editing.json) ([design](design/ai-editing.md)) | TASK-002 the prototype on `main` as the harness; TASK-006 the inference port and ONNX Runtime crate; TASK-008 the model-selection mask kind | The GPU-first integration they were sequenced after has merged; the Corrections foundation runs beside the first stage | High tier |
 | [Dependency advisories](../tasks/project/dependency-advisories.json) | TASK-001 ttf-parser exception, due 2026-10-29; TASK-002 paste exception, due 2026-12-18 | The audit fails once an exception expires | High tier |
@@ -88,8 +88,8 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 - Bayer highlight latitude: the owner decided to retain it, as X-Trans does, if the rendering change on the supplied Z6 and Air 2S files shows no new highlight artefacts; not built, so RCD still clips each gained Bayer site at sensor white
 - Measure the cost and accuracy of a clip-aware white-balance draft on Bayer developments, whose drag frames on highlight-clipped scenes are reported and not gated ([decisions](decisions.md#gpu-first-rendering)). The candidate is in [instant previews](design/instant-preview.md#popular-cameras)
 
-**RAW looks** ([design](design/raw-looks.md), [plan](../tasks/raw/raw-looks.json)). Planned, decided 2026-10-05. New RAW photos start from a Luxforge look instead of the bare neutral development.
-- Phase 1: the Standard look, chosen on the corpus and reviewed by the owner, in every new RAW photograph's Original; a Look section with Standard, Neutral and Amount; a Settings row for the starting look
+**RAW looks** ([design](design/raw-looks.md), [plan](../tasks/raw/raw-looks.json)). Decided 2026-10-05. New RAW photos start from a Luxforge look instead of the bare neutral development.
+- Phase 1 (built; native evidence outstanding): the Standard look, chosen on the corpus and approved by the owner, in every new RAW photograph's Original; a Look section with Standard, Neutral and Amount; a Settings row for the starting look
 - Phase 2: Match camera, a tone curve and chroma gain fitted per photo to its embedded camera preview off the owner, as a first-open entry or on request
 
 **Camera coverage follow-ups** ([popular camera support](design/popular-camera-support.md)).

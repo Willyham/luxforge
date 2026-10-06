@@ -459,7 +459,7 @@ mod tests {
     fn preferences(theme: &str) -> PreferenceWriter {
         PreferenceWriter::new(parse(json!({
             "performance_expanded": true, "auto_collapse_history": true,
-            "auto_lens_profile": true, "mask_overlay_colour": "green",
+            "auto_lens_profile": true, "raw_look": "standard", "mask_overlay_colour": "green",
             "canvas_background": "theme", "interface_size": 100, "catalog": null,
             "workspace": {"state_panel": true, "tools_panel": true, "thirds": false,
                           "clip_shadows": false, "clip_highlights": false},

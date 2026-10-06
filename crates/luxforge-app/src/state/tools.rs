@@ -486,6 +486,8 @@ pub(crate) struct EnumControl {
     pub(crate) id: String,
     pub(crate) label: String,
     pub(crate) options: Vec<String>,
+    /// What each option shows: the control's declared labels, or the options themselves.
+    pub(crate) labels: Vec<String>,
     pub(crate) selected: Option<usize>,
     pub(crate) style: ChoiceControlStyle,
 }
@@ -1402,6 +1404,9 @@ fn resolved_model(
             );
             if let ControlModel::Enum(field) = &mut model {
                 field.style = choice_style(choice.style, field.options.len());
+                if choice.labels.len() == field.options.len() {
+                    field.labels = choice.labels.clone();
+                }
             }
             model
         }
@@ -1694,6 +1699,7 @@ fn value_model(
             id: field_id(action, parameter, None),
             label: labelled(label, declared),
             options: options.clone(),
+            labels: options.clone(),
             selected: options.iter().position(|option| option == text.trim()),
             style: choice_style(ChoiceStyle::Automatic, options.len()),
         }),

@@ -1474,7 +1474,7 @@ fn enum_view<'a>(
         ChoiceControlStyle::Segmented => {
             field = field.push(segmented(
                 &SegmentedModel {
-                    options: choice.options.clone(),
+                    options: choice.labels.clone(),
                     selected: choice.selected.unwrap_or(0),
                     enabled,
                 },
@@ -1491,7 +1491,7 @@ fn enum_view<'a>(
             let chips = choice.options.iter().enumerate().map(|(index, option)| {
                 chip(
                     &ChipModel {
-                        label: option.clone(),
+                        label: choice.labels[index].clone(),
                         trailing: None,
                         selected: choice.selected == Some(index),
                         enabled,
@@ -1513,7 +1513,7 @@ fn enum_view<'a>(
             field = field.push(menu_choice(
                 &MenuChoiceModel {
                     label: choice.label.clone(),
-                    options: options.clone(),
+                    options: choice.labels.clone(),
                     selected: choice.selected.unwrap_or(0),
                     enabled,
                 },
