@@ -2,6 +2,7 @@
 //! loopback transport. Every client, including the desktop, drives the same methods.
 mod methods;
 pub(crate) mod params;
+mod response;
 #[cfg(test)]
 pub(crate) use methods::host_envelope;
 mod owner;
@@ -9,7 +10,7 @@ mod transport;
 
 pub use methods::schemas;
 pub(crate) use owner::SourceFlightKey;
-pub use owner::{ClientId, EventWake, OwnerHandle, PreviewRequest};
+pub use owner::{ClientId, EventWake, JobMonitorStats, OwnerHandle, PreviewRequest};
 
 pub use transport::{LocalServer, serve_json_lines_with};
 

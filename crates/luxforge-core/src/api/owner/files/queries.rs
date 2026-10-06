@@ -233,7 +233,7 @@ struct Parked {
     client: ClientId,
     id: String,
     key: Option<RequestKey>,
-    response: std::sync::mpsc::SyncSender<ApiResponse>,
+    response: crate::api::response::ResponseSender,
 }
 
 struct Queued {

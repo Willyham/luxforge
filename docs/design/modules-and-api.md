@@ -192,6 +192,25 @@ A source or analysis job is read and cancelled by the clients that requested it,
 
 The table keeps the last 64 finished source jobs, the last 32 of each other family and at most eight analysis reports, forgetting the oldest of a family first; a live job is never forgotten. `activity.list` lists running work with the `job_id` `job.read` answers, and the two agree about its status. A task on the source worker or a lane that panics fails `internal`, and the worker runs the next. `job.adopt {job_id}` makes the ready preparation of this client's latest import its current asset.
 
+### Waiting for a job change
+
+`job.wait {job_id, after?, timeout_ms?}` returns `{change, job}`, where `job` is the authoritative `job.read` record and `change` is that retained job's unsigned change token. Omit `after` for an immediate first observation. Passing the last answer's token holds an unchanged queued or running job until its lifecycle, progress or partial result changes. A different token, a terminal job or `timeout_ms: 0` answers immediately. An explicit timeout is 0–30,000 ms; at its deadline the current record is returned, with the same token if nothing changed. Omitting the timeout waits without a timer. Tokens apply to this job in this owner process and are not persisted cursors.
+
+Registration and re-arming use the job's token, including changes that happened before a waiter registered. A token is read before its record: a concurrent worker report may cause one extra observation, but cannot lose a change. Workers publish progress and partial updates directly to their job control; lifecycle and terminal tokens advance after the owner has stored the corresponding record and final result. Notifications coalesce to one pending wake per watched job. Waiting emits no catalog mutation event, so progress cannot displace history events.
+
+Ownership matches `job.read`: source, analysis and other shared jobs are observed only by their requesters; capability, export and globally readable catalog jobs may be observed by any client. Unknown, evicted or inaccessible jobs return `validation`. There are at most 32 held waits globally and 16 per client, with at most 32 watched jobs and the existing 64-message owner channel; exhaustion returns `resource-limit`, with no polling fallback. Finished-record retention remains unchanged. Dropping an asynchronous wait releases its monitoring interest without cancelling the job. Disconnecting a client releases all its waits and applies that job kind's existing cancellation rule; a loopback TCP peer closing its input is detected even while its unchanged wait is held.
+
+The desktop awaits the same command with `OwnerHandle::call_async`, which uses one bounded reply slot and an executor waker per request, without blocking an executor thread or making a waiter thread. Export, capability and followed catalog jobs use independent subscriptions per job. A visibility transition reconciles each followed job once; while hidden, only presentation progress is coalesced, and partial/business results and terminal outcomes still reach their adoption paths. Restoring reads the current record once. Visible readers send first, changed and final records and end after a terminal record or error.
+
+The loopback transport keeps its existing maximum of eight connection threads. Each runs one current-thread socket event loop, multiplexing the owner reply with socket reads; it starts no runtime worker or per-wait thread. Pipelined input is bounded to one MiB while an answer is held. A socket EOF drops the outstanding asynchronous response and disconnects the client. Stdin/stdout uses its existing sequential JSON-lines path.
+
+```json
+{"id":"first","method":"job.wait","params":{"job_id":"job-…"}}
+{"id":"next","method":"job.wait","params":{"job_id":"job-…","after":123}}
+```
+
+Use the `change` from the first response in the second request; another request is needed only after an answer, until `job.status` is terminal. The exact request schema and response contract are discoverable through `schema.list`.
+
 ## Drafts
 
 The core holds one draft per client session, in `ClientSession.draft`, reported by `session.state`. A draft is the settings of one gesture: it is bound to one asset and one action, never outlives the session, emits no event and appears in no history. Its methods are `draft.begin {asset_id, action}`, `draft.set {draft_id, fields}`, `draft.read {draft_id}`, `draft.cancel {draft_id}`, `draft.commit {draft_id, mutation}` and `draft.reapply {draft_id}`; only `draft.commit` touches the catalog.

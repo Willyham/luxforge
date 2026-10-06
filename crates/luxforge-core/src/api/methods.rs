@@ -30,7 +30,7 @@ use crate::{
         resources, settings,
     },
     editor::{MAX_HISTORY_PAGE, MAX_VERSION_NAME, PointPlan},
-    jobs::{JOB_CANCEL, JOB_READ},
+    jobs::{JOB_CANCEL, JOB_READ, JOB_WAIT},
     path,
     presets::MAX_PRESET_GROUP,
 };
@@ -361,6 +361,12 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::JobParams,
         owner::job_adopt,
         "selects the ready result of this client's latest source.prepare as its current photograph, answering {asset, session}: the state it prepared and the session; a job that is not the client's latest preparation (one it asked for since supersedes it) is conflict, one still preparing is preparation-required naming it, a failed one is its error; opening a file is pick.develop of it (targets its path, into [], confirm_removable, as the person chose it), then source.prepare of the photograph the Develop answers, then job.adopt"
+    ),
+    owner!(
+        JOB_WAIT,
+        owner::JobWaitParams,
+        owner::job_wait,
+        "{change, job}: job.read record with a job-specific change token. Without after, after a changed token, or for a terminal job, answers immediately; otherwise holds until observable progress, partial result, lifecycle, removal or access changes. timeout_ms is optional (0..30000); omitted has no deadline or polling. Same ownership as job.read. At most 32 held waits globally and 16 per client; exhaustion returns resource-limit. Disconnect or asynchronous reader cancellation releases the held wait. Tokens belong to this retained job and owner process; progress does not enter the catalog mutation log"
     ),
     owner!(
         JOB_CANCEL,

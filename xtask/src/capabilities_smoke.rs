@@ -59,7 +59,7 @@ pub fn plan(base: &str, key: &str, wrong: &str) -> Plan {
         )
     };
     let task = || CapabilityAction::Task(TASK.into());
-    Plan::new(vec![
+    let steps = vec![
         Step::opened("opened"),
         // Layout: the sections that start expanded are collapsed, the proof section is expanded
         // and the panel is scrolled to its end, so the whole capability block is on screen.
@@ -128,7 +128,88 @@ pub fn plan(base: &str, key: &str, wrong: &str) -> Plan {
         // A wrong key makes the endpoint refuse, and the failure is shown.
         secret("wrong-key", wrong),
         gesture("refused-task", task()),
-    ])
+    ];
+    let mut monitored = Vec::new();
+    for entry in steps {
+        let name = entry.name().to_owned();
+        if cfg!(target_os = "macos") && name == "refused-task" {
+            monitored.push(native_step("failure-hidden", "hide_window"));
+        }
+        monitored.push(entry);
+        if cfg!(target_os = "macos") {
+            match name.as_str() {
+                "opened" => monitored.push(native_step("native-visible", "show_window")),
+                "installing" => {
+                    monitored.push(native_step("download-hidden-1", "hide_window"));
+                    monitored.push(held_observation(1));
+                }
+                "installed" => {
+                    monitored.push(native_step("download-restored-1", "show_window"));
+                    for repeat in 2..=3 {
+                        monitored.push(api(
+                            &format!("download-remove-{repeat}"),
+                            "module.resource.remove",
+                            json!({"module_id":MODULE,"resource_id":"proof-palette"}),
+                        ));
+                        monitored.push(gesture(
+                            &format!("download-removed-{repeat}"),
+                            CapabilityAction::Settle,
+                        ));
+                        monitored.push(api(
+                            &format!("download-start-{repeat}"),
+                            "module.resource.install",
+                            json!({"module_id":MODULE,"resource_id":"proof-palette"}),
+                        ));
+                        monitored.push(native_step(
+                            &format!("download-hidden-{repeat}"),
+                            "hide_window",
+                        ));
+                        monitored.push(held_observation(repeat));
+                        monitored.push(gesture(
+                            &format!("download-finished-{repeat}"),
+                            CapabilityAction::Settle,
+                        ));
+                        monitored.push(native_step(
+                            &format!("download-restored-{repeat}"),
+                            "show_window",
+                        ));
+                    }
+                }
+                "running" => {
+                    monitored.push(native_step("success-hidden", "hide_window"));
+                    monitored.push(layout("held-first", script::Step::wait(1000)));
+                    monitored.push(layout("held-quiet", script::Step::wait(1000)));
+                }
+                "succeeded" => monitored.push(native_step("success-restored", "show_window")),
+                "cancel-listed" => monitored.push(native_step("cancel-hidden", "hide_window")),
+                "cancelled" => monitored.push(native_step("cancel-restored", "show_window")),
+                "refused-task" => monitored.push(native_step("failure-restored", "show_window")),
+                _ => {}
+            }
+        }
+    }
+    Plan::new(monitored)
+}
+
+fn held_observation(repeat: usize) -> Step {
+    Step::new(
+        format!("cpu_download_{repeat}"),
+        script::Step::Observe(script::IdleStep {
+            settle_ms: 1000,
+            ms: 20_000,
+        }),
+    )
+    .commits(0)
+}
+
+fn native_step(name: &str, action: &str) -> Step {
+    Step::new(
+        name,
+        script::Step::WindowVisibility {
+            action: action.into(),
+        },
+    )
+    .commits(0)
 }
 
 /// A fresh sentinel: nothing in the repository or the run can contain it by accident.
@@ -181,7 +262,11 @@ pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> 
     let wrong = sentinel("wrong");
     let endpoint = ProofEndpoint::start(&key, proof_protocol())?;
     endpoint.set_delay(DELAY);
-    endpoint.set_palette_delay(DELAY);
+    endpoint.set_palette_delay(if cfg!(target_os = "macos") {
+        Duration::from_secs(27)
+    } else {
+        DELAY
+    });
     // A replay checks the recorded run's steps, whose endpoint steps name the endpoint the
     // recorded run's own process started.
     let base = if run.replaying() {
@@ -201,7 +286,13 @@ pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> 
         .developer()
         .proof_endpoint(&base)
         .open_all(&sources)
-        .secret_script(plan.script(), plan.kept());
+        .secret_script(plan.script(), plan.kept())
+        .deadline(Duration::from_secs(160));
+    if cfg!(target_os = "macos") {
+        launch = launch
+            .watch(Box::new(crate::visibility_smoke::watch))
+            .keep(crate::visibility_smoke::READINGS);
+    }
     if let Some(window) = scenario.window {
         launch = launch.window(window);
     }
@@ -420,6 +511,105 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         tint_layers(succeeded).is_empty(),
         "A tint was committed before Apply",
     )?;
+    if cfg!(target_os = "macos") {
+        let first = at("held-first")?;
+        let quiet = at("held-quiet")?;
+        ensure(
+            first["state"]["job_monitoring"]["held"]
+                .as_u64()
+                .is_some_and(|held| held > 0),
+            "No capability reader waited on the held job",
+        )?;
+        ensure(
+            first["state"]["job_monitoring"] == quiet["state"]["job_monitoring"],
+            "An unchanged held capability job created a periodic monitoring read",
+        )?;
+        ensure(
+            capability(first)["tasks"][TASK]["status"] == "running"
+                && capability(quiet)["tasks"][TASK]["status"] == "running",
+            "The held monitoring window did not contain a running job",
+        )?;
+        for frame in [
+            first,
+            quiet,
+            succeeded,
+            at("cancelled")?,
+            at("refused-task")?,
+        ] {
+            ensure(
+                frame["state"]["visibility"]["window_hidden"] == true
+                    && frame["state"]["visibility"]["sampling_allowed"] == false
+                    && frame["state"]["visibility"]["evidence_invisible_window_override"] == false,
+                "A hidden capability outcome was not adopted under the native gate",
+            )?;
+            ensure(
+                frame["state"]["long_work"]["timers"] == json!({"throttle":false,"refresh":false}),
+                "A hidden capability outcome retained display timers",
+            )?;
+        }
+        ensure(
+            first["state"]["performance"]["reads_requested"]
+                == quiet["state"]["performance"]["reads_requested"]
+                && first["state"]["performance"]["reads_requested"]
+                    == succeeded["state"]["performance"]["reads_requested"],
+            "Resource sampling continued during hidden capability work",
+        )?;
+        checks.note(quiet, "unchanged held job sleeps; native-hidden success/failure/cancellation adopted", json!({"first":first["state"]["job_monitoring"],"quiet":quiet["state"]["job_monitoring"],"succeeded":succeeded["state"]["job_monitoring"]}));
+    }
+    if cfg!(target_os = "macos") {
+        let external = read_json(
+            &launch
+                .evidence
+                .parent()
+                .ok_or("Evidence has no parent")?
+                .join(crate::visibility_smoke::READINGS),
+        )?;
+        let samples = external["samples"]
+            .as_array()
+            .ok_or("No held-job process readings")?;
+        let observations: Vec<&Value> = launch
+            .events
+            .iter()
+            .filter(|event| event["event"] == "presentation_observation_ended")
+            .collect();
+        ensure(
+            observations.len() == 3,
+            "Expected three held-download CPU windows",
+        )?;
+        for (index, observation) in observations.iter().enumerate() {
+            let detail = &observation["detail"];
+            let before = &detail["before"];
+            let after = &detail["after"];
+            ensure(
+                detail["window_ms"] == 20_000
+                    && before["job_monitoring"]["held"]
+                        .as_u64()
+                        .is_some_and(|held| held > 0)
+                    && before["job_monitoring"] == after["job_monitoring"],
+                "An unchanged held download produced reader calls or replies",
+            )?;
+            ensure(
+                before["performance"]["reads_requested"] == after["performance"]["reads_requested"]
+                    && before["long_work"]["wakes"] == after["long_work"]["wakes"],
+                "Hidden held work retained presentation sampling or board wakes",
+            )?;
+            for state in [before, after] {
+                ensure(
+                    state["visibility"]["sampling_allowed"] == false
+                        && state["visibility"]["window_hidden"] == true
+                        && state["long_work"]["timers"]
+                            == json!({"throttle":false,"refresh":false}),
+                    "Held download measurement was not native hidden",
+                )?;
+            }
+            let report = crate::visibility_smoke::external_window(
+                before["wall_ms"].as_u64().ok_or("Missing CPU start")?,
+                detail["wall_ms"].as_u64().ok_or("Missing CPU end")?,
+                samples,
+            )?;
+            checks.note(at(&format!("cpu_download_{}",index+1))?, "unchanged hidden download has no periodic monitoring", json!({"external":report,"internal":detail,"scope":"20 second held transfer on the orientation fixture; evidence timers suspended, external ps every500ms"}));
+        }
+    }
     // Apply: exactly one tint layer, referencing the task's artifact.
     let applied = at("applied")?;
     let layers = tint_layers(applied);
@@ -511,8 +701,9 @@ fn endpoint_checks(endpoint: &ProofEndpoint) -> Result<Value> {
         .filter(|request| request.path == "/generate")
         .collect();
     ensure(
-        palette.len() == 1 && palette[0].status == 200,
-        "The palette was not downloaded exactly once",
+        palette.len() == if cfg!(target_os = "macos") { 3 } else { 1 }
+            && palette.iter().all(|request| request.status == 200),
+        "The palette downloads did not match the held-install qualification",
     )?;
     ensure(
         generate.len() == 3

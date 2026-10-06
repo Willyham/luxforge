@@ -75,6 +75,8 @@ pub(crate) struct Evidence {
     pub(crate) opens: u64,
     /// Steps still to run, in order.
     pub(crate) script: VecDeque<Step>,
+    /// Measurement scripts reserve time for repeated quiet windows, still bounded by the runner.
+    pub(crate) observing: bool,
     /// The one-based index of the running step; zero while the opens are still going.
     pub(crate) step: u64,
     /// What the running step waits for before its frame is captured.
@@ -203,6 +205,7 @@ impl Evidence {
             dir,
             opens: queue.len() as u64,
             queue,
+            observing: script.iter().any(|step| matches!(step, Step::Observe(_))),
             script,
             step: 0,
             awaiting: None,
@@ -239,6 +242,8 @@ impl Evidence {
 /// A native idle check in progress ([`luxforge_evidence::IdleStep`]): the settle, then the
 /// window, and what the window started from.
 pub(crate) struct IdleObservation {
+    pub(crate) require_idle: bool,
+    pub(crate) baseline: Value,
     pub(crate) settle_until: Instant,
     pub(crate) settle_ms: u64,
     pub(crate) ms: u64,
@@ -497,6 +502,7 @@ pub(crate) enum Settle {
     /// shows its figures rather than the dashes before them.
     Performance,
     PerformanceCancel,
+    Visibility,
     /// The Settings sheet's `flags.list` answered, or its last outstanding `flags.set` did.
     Flags,
     /// The preference writer's last outstanding `preferences.set` answered.
@@ -551,6 +557,7 @@ impl Settle {
             Self::Quiet => "quiet",
             Self::Performance => "performance",
             Self::PerformanceCancel => "performance_cancel",
+            Self::Visibility => "visibility",
             Self::Flags => "flags",
             Self::Preferences => "preferences",
             Self::Theme => "theme",
@@ -848,12 +855,23 @@ impl Editor {
                     self.activity.backend.clone().unwrap_or(Value::Null)
                 });
             }
+            EvidenceMessage::VisibilityOperated(result) => {
+                if let Err(reason) = result {
+                    return self.fail_step(reason);
+                }
+                if let Some(operation) = &mut self.visibility.evidence_operation {
+                    operation.answered = true;
+                }
+                self.visibility_evidence_settle();
+            }
             EvidenceMessage::Tick => {
                 if self.evidence.as_ref().is_some_and(Evidence::suspended) {
                     return Task::none();
                 }
                 let expired = self.evidence.as_ref().is_some_and(|evidence| {
-                    let deadline = if evidence.step > 0 || !evidence.script.is_empty() {
+                    let deadline = if evidence.observing {
+                        Duration::from_secs(420)
+                    } else if evidence.step > 0 || !evidence.script.is_empty() {
                         SCRIPT_EVIDENCE_DEADLINE
                     } else {
                         EVIDENCE_DEADLINE
@@ -1150,7 +1168,8 @@ impl Editor {
                 task
             }
             Step::ViewIdle(step) => self.view_idle_step(step),
-            Step::Idle(step) => self.idle_check_step(step),
+            Step::Idle(step) => self.idle_check_step(step, true),
+            Step::Observe(step) => self.idle_check_step(step, false),
             Step::Workspace(workspace) => self.workspace_step(workspace),
             Step::Preview(preview) => self.preview_step(preview),
             Step::Compare(compare) => {
@@ -1210,6 +1229,7 @@ impl Editor {
             Step::PresetDelete(pick) => self.preset_delete_step(pick),
             Step::PresetImport { path } => self.preset_import_step(path),
             Step::Performance { expanded } => self.performance_step(expanded),
+            Step::WindowVisibility { action } => self.window_visibility_step(action),
             Step::PerformanceCancel { row } => {
                 let job = self
                     .workspace
@@ -3504,11 +3524,13 @@ impl Editor {
 
     /// Leave the editor alone, with evidence's own tick and capture streams suspended, for the
     /// step's settle and then its window ([`luxforge_evidence::IdleStep`]).
-    fn idle_check_step(&mut self, step: IdleStep) -> Task<Message> {
+    fn idle_check_step(&mut self, step: IdleStep, require_idle: bool) -> Task<Message> {
         if let Some(evidence) = &mut self.evidence {
             evidence.capture_pending = false;
             evidence.awaiting = None;
             evidence.idle = Some(IdleObservation {
+                require_idle,
+                baseline: Value::Null,
                 settle_until: Instant::now() + Duration::from_millis(step.settle_ms),
                 settle_ms: step.settle_ms,
                 ms: step.ms,
@@ -3516,6 +3538,14 @@ impl Editor {
             });
         }
         Task::none()
+    }
+
+    fn observation_counters(&self) -> Value {
+        json!({"wall_ms":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().map(|d|d.as_millis()),
+            "visibility":self.visibility.summary(),"performance":self.performance_summary(),
+            "long_work":self.long_work_summary(),"job_monitoring":self.owner.job_monitor_stats(),
+            "full_updates":self.full_updates,"updates":self.evidence.as_ref().map(|e|e.sync.updates),
+            "views":self.log.loop_timing.get().views})
     }
 
     /// The idle check's phase ends: the settle opens the window, counting from the surface's drawn
@@ -3533,6 +3563,8 @@ impl Editor {
         let views = self.log.loop_timing.get().views;
         let Some(window) = observation.window else {
             if now >= observation.settle_until {
+                let measuring = !observation.require_idle;
+                let baseline = self.observation_counters();
                 let window = IdleWindow {
                     started: now,
                     until: now + Duration::from_millis(observation.ms),
@@ -3542,6 +3574,10 @@ impl Editor {
                 };
                 if let Some(idle) = self.evidence.as_mut().and_then(|e| e.idle.as_mut()) {
                     idle.window = Some(window);
+                    idle.baseline = baseline.clone();
+                }
+                if measuring {
+                    self.event("presentation_observation_started", || baseline);
                 }
             }
             return Task::none();
@@ -3557,14 +3593,20 @@ impl Editor {
         let drawn_delta = gpu.drawn_frames.saturating_sub(window.drawn);
         let views_delta = views.saturating_sub(window.views);
         // The window's start was an update of its own, whose view and frame it may count.
-        let passed = drawn_delta <= 1
-            && views_delta <= 1
-            && gpu.drawn_dissolve.is_none()
-            && self.gpu_settle.dissolve().is_none();
+        let require_idle = observation.require_idle;
+        let baseline = observation.baseline.clone();
+        let settle_ms = observation.settle_ms;
+        let window_ms = observation.ms;
+        let passed = !require_idle
+            || (drawn_delta <= 1
+                && views_delta <= 1
+                && gpu.drawn_dissolve.is_none()
+                && self.gpu_settle.dissolve().is_none());
         let detail = json!({
             "passed": passed,
-            "settle_ms": observation.settle_ms,
-            "window_ms": observation.ms,
+            "wall_ms":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().map(|d|d.as_millis()),
+            "settle_ms": settle_ms,
+            "window_ms": window_ms,
             "drawn_frames_delta": drawn_delta,
             "views_delta": views_delta,
             "dissolve_drawn": gpu.drawn_dissolve.is_some(),
@@ -3575,9 +3617,15 @@ impl Editor {
             "process_cpu_percent_one_core": cpu_ns
                 .filter(|_| elapsed_ns > 0.0)
                 .map(|ns| 100.0 * ns as f64 / elapsed_ns),
+            "before":baseline,"after":self.observation_counters(),
         });
-        self.event("idle_check", || detail.clone());
-        self.note_step(json!({"idle_check": detail}));
+        let event = if require_idle {
+            "idle_check"
+        } else {
+            "presentation_observation_ended"
+        };
+        self.event(event, || detail.clone());
+        self.note_step(json!({(event): detail}));
         if let Some(evidence) = &mut self.evidence {
             evidence.idle = None;
         }
@@ -4022,7 +4070,7 @@ impl Editor {
         let starts = performance::sampling(
             !self.performance.expanded,
             self.left_panel_shown() && self.gallery_page().is_none(),
-        );
+        ) && self.visibility.sampling_allowed();
         if starts {
             self.await_step(Settle::Performance);
         } else {
@@ -4040,6 +4088,68 @@ impl Editor {
         }
         self.arm_performance_settle();
         self.update(Message::Performance(PerformanceMessage::Toggle))
+    }
+
+    /// Exercise native window facts while the harness retains a transparent, background-only
+    /// process. Turning off the launch override makes this journey use the production gate.
+    fn window_visibility_step(&mut self, action: String) -> Task<Message> {
+        #[cfg(target_os = "macos")]
+        {
+            use luxforge_input::EvidenceVisibility as A;
+            let action = match action.as_str() {
+                "minimize" => A::Minimize,
+                "restore" => A::Restore,
+                "hide_window" => A::HideWindow,
+                "show_window" => A::ShowWindow,
+                "hide_app" => A::HideApp,
+                "show_app" => A::ShowApp,
+                _ => return self.fail_step("Unknown native visibility action"),
+            };
+            if self.evidence.is_none() || !self.visibility.facts.supported {
+                return self
+                    .fail_step("Native visibility evidence requires a supported evidence launch");
+            }
+            self.visibility.evidence_invisible_window = false;
+            self.visibility.evidence_operation = Some(super::visibility::EvidenceOperation {
+                action,
+                before_sequence: self.visibility.native_sequence,
+                answered: false,
+            });
+            self.await_step(Settle::Visibility);
+            iced::window::oldest()
+                .and_then(move |id| {
+                    iced::window::run(id, move |window| {
+                        luxforge_input::set_evidence_visibility(window, action).map(|_| ())
+                    })
+                })
+                .map(|result| Message::Evidence(EvidenceMessage::VisibilityOperated(result)))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = action;
+            self.fail_step("Native visibility evidence is unsupported on this platform")
+        }
+    }
+
+    pub(super) fn visibility_evidence_settle(&mut self) {
+        let waiting = self
+            .evidence
+            .as_ref()
+            .is_some_and(|evidence| evidence.awaiting == Some(Settle::Visibility));
+        let observed = self
+            .visibility
+            .evidence_operation
+            .as_ref()
+            .is_some_and(|operation| {
+                operation.answered
+                    && operation.observed(self.visibility.facts, self.visibility.native_sequence)
+            });
+        if waiting
+            && observed
+            && (!self.performance_sampling() || self.performance.history.len() > 0)
+        {
+            self.settle_step(Settle::Visibility, "native_visibility_callback");
+        }
     }
 
     /// What opening the Settings sheet settles on: the flags it reads, unless it is already open,
@@ -4658,6 +4768,7 @@ impl Editor {
                     recorded.performance.push_back((wall_ms, resources));
                 }
                 self.settle_step(Settle::Performance, by);
+                self.visibility_evidence_settle();
             }
             Outcome::PerformanceRestarted => {
                 if let Some(evidence) = &mut self.evidence {
@@ -5715,6 +5826,7 @@ mod tests {
             dir: std::env::temp_dir().join("luxforge-paced-slider-test"),
             queue: VecDeque::new(),
             opens: 1,
+            observing: false,
             script: parse_script(
                 r#"[{"slider":{"action":"set-basic","parameter":"exposure","values":[0.1,0.2,0.3],"interval_ms":8,"release":true}}]"#,
             )

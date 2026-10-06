@@ -11,7 +11,6 @@
 use crate::app::{
     Editor,
     message::{Message, select::SelectMessage, select_catalog::CatalogMessage},
-    select::job_now,
     select_catalog::{empty_now, lists_now, presets_now, selection_rows_now, total_now},
     select_owner_tests::{answer_reads, evaluate, finish, read_rows},
     tasks::call,
@@ -273,21 +272,34 @@ fn settle(editor: &mut Editor) {
                 CatalogMessage::Presets(presets),
             )));
         }
-        // The batch's record, read once its job has ended, as the activity board's change at its
-        // end has the desktop read it.
-        if editor.select.catalog.batch_reading {
-            let job = editor
-                .select
-                .state
-                .catalog
-                .batch
-                .as_ref()
-                .unwrap()
-                .job
-                .clone();
-            let record = luxforge_testbase::wait_for("the batch to end", || {
-                let record = job_now(&editor.owner, editor.client, &job).unwrap();
-                (!matches!(record["status"].as_str(), Some("queued" | "running"))).then_some(record)
+        // Follow the authoritative result, even if its activity ends before owner publication.
+        if let Some(job) = editor
+            .select
+            .state
+            .catalog
+            .running()
+            .map(|batch| batch.job.clone())
+        {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap();
+            let record = runtime.block_on(async {
+                tokio::time::timeout(luxforge_testbase::HANG, async {
+                    let mut after = None;
+                    loop {
+                        let (change, record) =
+                            crate::app::job_reads::wait(&editor.owner, editor.client, &job, after)
+                                .await
+                                .unwrap();
+                        after = Some(change);
+                        if !matches!(record["status"].as_str(), Some("queued" | "running")) {
+                            break record;
+                        }
+                    }
+                })
+                .await
+                .expect("the batch to end")
             });
             let _ = editor.update(Message::Select(SelectMessage::Catalog(
                 CatalogMessage::BatchRead {

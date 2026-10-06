@@ -1318,3 +1318,39 @@ fn a_grid_scroll_round_trips_and_bounds_its_speed_and_frames() {
         "missing field `frames`",
     );
 }
+
+#[test]
+fn window_visibility_requires_a_known_native_action() {
+    for action in [
+        "minimize",
+        "restore",
+        "hide_window",
+        "show_window",
+        "hide_app",
+        "show_app",
+    ] {
+        let step = super::Step::WindowVisibility {
+            action: action.into(),
+        };
+        assert!(step.validate().is_ok());
+        assert_eq!(
+            serde_json::from_value::<super::Step>(step.to_value()).unwrap(),
+            step
+        );
+    }
+    assert!(
+        super::Step::WindowVisibility {
+            action: "occluded".into()
+        }
+        .validate()
+        .is_err()
+    );
+}
+
+#[test]
+fn presentation_observation_has_a_bounded_measurement_window() {
+    let steps = parse(r#"[{"observe":{"settle_ms":1000,"ms":30000}}]"#).unwrap();
+    assert_eq!(parse(&write(&steps).to_string()).unwrap(), steps);
+    assert!(parse(r#"[{"observe":{"settle_ms":1000,"ms":60001}}]"#).is_err());
+    assert!(parse(r#"[{"observe":{"settle_ms":0,"ms":30000}}]"#).is_err());
+}

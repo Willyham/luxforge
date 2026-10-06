@@ -1,48 +1,31 @@
-//! Following a queued or running job without a message for every look at it.
-//!
-//! The core pushes no client anything about a job, so a client that wants to know when one moved
-//! or ended reads it. The desktop reads a live job every 100 ms, and it must not pay for a read
-//! that found nothing new: iced rebuilds the view and asks for a redraw after every message it
-//! processes, whatever `update` did with it, so a tick message and a read message that change
-//! nothing still cost two view rebuilds. The reads therefore happen inside the subscription's
-//! stream, off the update loop, and only a read that has something for the desktop to apply
-//! becomes a message.
-//!
-//! The stream runs on iced's executor like any subscription. Each turn it waits for the next
-//! tick of its interval (the first is at once), reads the job through the owner (`job.read`, the
-//! same call the desktop's read tasks made), asks a [`Watch`] whether the read is news, and yields
-//! a message only when it is; otherwise it waits for the next tick without yielding, so the update
-//! loop is not woken. The read blocks an executor thread for the owner's brief answer, exactly as
-//! an [`owner_task`](crate::app::tasks::owner_task) does, and never the update loop. The runtime
-//! pulls the stream, so a desktop that is behind holds one read and no queue. Dropping the
-//! subscription drops the stream, which is how the desktop ends it when the job is no longer
-//! live; a stream that has yielded a job's end yields nothing more, so no read follows the end
-//! before the desktop drops it.
+//! Bounded, event-driven readers: first, changed and terminal job records only.
 use iced::futures::{
     StreamExt,
     stream::{self, BoxStream},
 };
+use luxforge_core::ApiRequest;
+use luxforge_core::jobs::JOB_WAIT;
 use luxforge_core::{ClientId, OwnerHandle};
-use std::{
-    hash::{Hash, Hasher},
-    time::Duration,
-};
-use tokio::time::{Interval, MissedTickBehavior};
+use serde_json::{Value, json};
+use std::future::Future;
+use std::hash::{Hash, Hasher};
 
-/// What identifies a reader in iced's subscription table, and what it reads through. The identity
-/// is hashed alone: the owner handle and the client are carried to the stream's builder and are
+/// What identifies a reader in iced's subscription table, and what it reads through. The job identity and presentation visibility
+/// are hashed: the owner handle and the client are carried to the stream's builder and are
 /// never part of the subscription's identity, so the same job is the same subscription, with the
-/// same stream and the same memory of what it has sent, however often the desktop rebuilds its
-/// subscriptions.
+/// same stream and the same memory of what it has sent across unrelated rebuilds. A visibility
+/// transition reconciles the current record once.
 pub(crate) struct Reader<K> {
     pub(crate) identity: K,
     pub(crate) owner: OwnerHandle,
     pub(crate) client: ClientId,
+    pub(crate) presentation_visible: bool,
 }
 
 impl<K: Hash> Hash for Reader<K> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.identity.hash(state);
+        self.presentation_visible.hash(state);
     }
 }
 
@@ -77,6 +60,7 @@ impl<R> Default for Watch<R> {
 
 impl<R: Clone + PartialEq> Watch<R> {
     /// The reader sent this job's end or a failed read, and reads it no more.
+    #[cfg(test)]
     pub(crate) fn finished(&self) -> bool {
         self.finished
     }
@@ -84,10 +68,20 @@ impl<R: Clone + PartialEq> Watch<R> {
     /// Decide on one read. `ended` says whether a record is the job's last. A failed read is the
     /// last, as is any ended record, and each is sent once; a live record is sent when it is the
     /// first or differs from the last one sent (progress included).
+    #[cfg(test)]
     pub(crate) fn observe(
         &mut self,
         read: &Result<R, String>,
         ended: impl FnOnce(&R) -> bool,
+    ) -> Verdict {
+        self.observe_filtered(read, ended, PartialEq::eq)
+    }
+
+    pub(crate) fn observe_filtered(
+        &mut self,
+        read: &Result<R, String>,
+        ended: impl FnOnce(&R) -> bool,
+        same: impl FnOnce(&R, &R) -> bool,
     ) -> Verdict {
         if self.finished {
             return Verdict::Skip;
@@ -101,7 +95,9 @@ impl<R: Clone + PartialEq> Watch<R> {
                 self.finished = true;
                 Verdict::Last
             }
-            Ok(record) if self.last.as_ref() == Some(record) => Verdict::Skip,
+            Ok(record) if self.last.as_ref().is_some_and(|last| same(last, record)) => {
+                Verdict::Skip
+            }
             Ok(record) => {
                 self.last = Some(record.clone());
                 Verdict::Yield
@@ -112,9 +108,9 @@ impl<R: Clone + PartialEq> Watch<R> {
 
 /// What one pass of a reader came to.
 pub(crate) enum Pass<M> {
-    /// Nothing new: the reader waits for the next tick and reads again, yielding nothing.
+    /// Nothing new: await the next relevant change without yielding.
     Quiet,
-    /// Tell the desktop this, and read again at the next tick.
+    /// Tell the desktop this, then await the next relevant change.
     Send(M),
     /// Tell the desktop this, and stop: every job the reader follows has ended.
     Last(M),
@@ -131,49 +127,67 @@ impl<M> Pass<M> {
     }
 }
 
-/// A reader's stream between two messages.
-struct Reads<P> {
-    /// Created on the first poll, inside the runtime that owns the timer.
-    ticks: Option<Interval>,
-    pass: P,
-    finished: bool,
+/// One notification-driven observation through the same command method JSON clients use.
+pub(crate) async fn wait(
+    owner: &OwnerHandle,
+    client: ClientId,
+    job: &str,
+    after: Option<u64>,
+) -> Result<(u64, Value), String> {
+    let response = owner
+        .call_async(
+            client,
+            ApiRequest {
+                id: "desktop-job-wait".into(),
+                method: JOB_WAIT.into(),
+                params: json!({"job_id":job,"after":after}),
+                token: None,
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    if let Some(error) = response.error {
+        return Err(error.message);
+    }
+    let mut value = response
+        .result
+        .ok_or_else(|| "job.wait omitted its answer".to_owned())?;
+    let change = value["change"]
+        .as_u64()
+        .ok_or_else(|| "job.wait omitted its change token".to_owned())?;
+    let record = value
+        .get_mut("job")
+        .ok_or_else(|| "job.wait omitted its record".to_owned())?
+        .take();
+    Ok((change, record))
 }
 
-/// The stream of a reader that makes one `pass` at once and then one every `interval`, and yields
-/// only the messages its passes make. It ends after a pass that was the last, and an interval that
-/// a slow read overran skips the ticks it missed rather than bursting.
-pub(crate) fn reads<M: Send + 'static>(
-    interval: Duration,
-    pass: impl FnMut() -> Pass<M> + Send + 'static,
+/// Await each pass's relevant change; there is no clock, polling, or thread per reader.
+pub(crate) fn reads<M: Send + 'static, F: Future<Output = Pass<M>> + Send + 'static>(
+    pass: impl FnMut() -> F + Send + 'static,
 ) -> BoxStream<'static, M> {
-    stream::unfold(
-        Reads {
-            ticks: None,
-            pass,
-            finished: false,
-        },
-        move |mut reads| async move {
-            if reads.finished {
-                return None;
+    stream::unfold((pass, false), |(mut pass, finished)| async move {
+        if finished {
+            return None;
+        }
+        loop {
+            match pass().await {
+                Pass::Quiet => {}
+                Pass::Send(message) => return Some((message, (pass, false))),
+                Pass::Last(message) => return Some((message, (pass, true))),
             }
-            let ticks = reads.ticks.get_or_insert_with(|| {
-                let mut ticks = tokio::time::interval(interval);
-                ticks.set_missed_tick_behavior(MissedTickBehavior::Skip);
-                ticks
-            });
-            loop {
-                let _ = ticks.tick().await;
-                match (reads.pass)() {
-                    Pass::Quiet => {}
-                    Pass::Send(message) => return Some((message, reads)),
-                    Pass::Last(message) => {
-                        reads.finished = true;
-                        return Some((message, reads));
-                    }
-                }
-            }
-        },
-    )
+        }
+    })
     .fuse()
     .boxed()
+}
+
+/// Hidden readers retain lifecycle and partial/result changes, coalescing only presentation progress.
+pub(crate) fn same_without_progress(one: &Value, two: &Value) -> bool {
+    let (Some(one), Some(two)) = (one.as_object(), two.as_object()) else {
+        return one == two;
+    };
+    one.iter()
+        .filter(|(key, _)| key.as_str() != "progress")
+        .eq(two.iter().filter(|(key, _)| key.as_str() != "progress"))
 }

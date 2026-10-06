@@ -19,7 +19,8 @@
 //! - **The refresh.** While a catalog job runs, the board is read every [`REFRESH_INTERVAL`] even
 //!   when nothing changes, because the rules that follow elapsed time — a job shown once it has run
 //!   half a second, an estimate withdrawn when a job stalls — can only see time pass. It stops with
-//!   the last job.
+//!   the last job or when presentation is hidden. Hidden watches keep lifecycle wakes and suppress
+//!   progress-only wakes; restore reconciles the current board once.
 //!
 //! **One board for the status bar and the section.** The Performance section's job rows are drawn
 //! from the board read here, and its own sampler reads the board through this watch at each of its
@@ -29,8 +30,9 @@
 //! in the section's reads, not in [`LongWork::reads`].
 //!
 //! **The view waiting on a job.** Select's first look at a folder waits for its `index.refresh`
-//! job. That job's end reaches the desktop as a board change like any other, so Select reads its
-//! record then ([`Editor::reading_followed`]) and no timer asks after it.
+//! job. Independent authoritative `job.wait` readers keep first-look, folder-add and Locate results
+//! live while hidden, including partial search answers and final owner publication after an
+//! activity has ended. The board also retains the existing visible follow-up routes.
 use crate::app::{
     Before, Editor,
     message::{Message, long_work::LongWorkMessage, view::ViewMessage},
@@ -43,6 +45,10 @@ use crate::state::{
     long_work::{FINISHED_SENTENCE_MS, LongWorkState, Waiting, finished_sentence, followed},
     palette::Panel,
     select::ReadSource,
+};
+use iced::futures::{
+    StreamExt,
+    stream::{self, BoxStream},
 };
 use iced::{Subscription, Task};
 use luxforge_core::{
@@ -77,10 +83,10 @@ pub(crate) struct LongWork {
     read_at: Option<Instant>,
     /// A wake came inside the throttle's interval: the next tick reads.
     due: bool,
+    /// Shared native gate; lifecycle wakes stay live while display timers/progress are paused.
+    presentation_visible: bool,
     /// The recent entries the last read listed, so a read tells which jobs just ended.
     ended: Vec<u64>,
-    /// The followed jobs the last read listed running, so a read tells whether any began or ended.
-    running: Vec<u64>,
     /// The index lane's listings (`index.refresh` jobs) the last read listed running, so a read
     /// tells whether one began or ended.
     listings: Vec<u64>,
@@ -107,10 +113,119 @@ fn signal() -> &'static Signal<Message> {
     SIGNAL.get_or_init(|| Signal::new(|| Message::LongWork(LongWorkMessage::Woken)))
 }
 
+/// Presentation can stop following board progress while these authoritative interests keep
+/// final results (and Locate's business-relevant partial answers) alive.
+#[derive(Clone, Debug, Hash)]
+enum Tracked {
+    Reading(String),
+    Adding(String),
+    Search(String),
+    Locate(String),
+    Batch(String),
+}
+
+fn job_reader(reader: &super::job_reads::Reader<Tracked>) -> BoxStream<'static, Message> {
+    let reader = (
+        reader.owner.clone(),
+        reader.client,
+        reader.identity.clone(),
+        reader.presentation_visible,
+        super::job_reads::Watch::<Value>::default(),
+        None,
+        false,
+    );
+    stream::unfold(
+        reader,
+        |(owner, client, tracked, visible, mut watch, mut after, done)| async move {
+            if done {
+                return None;
+            }
+            loop {
+                let job = match &tracked {
+                    Tracked::Reading(job)
+                    | Tracked::Adding(job)
+                    | Tracked::Search(job)
+                    | Tracked::Locate(job)
+                    | Tracked::Batch(job) => job,
+                };
+                let result = super::job_reads::wait(&owner, client, job, after)
+                    .await
+                    .map(|(change, record)| {
+                        after = Some(change);
+                        record
+                    });
+                let finished = result.as_ref().map_or(true, |record| {
+                    !matches!(record["status"].as_str(), Some("queued" | "running"))
+                });
+                if matches!(&tracked, Tracked::Search(_))
+                    && watch.observe_filtered(
+                        &result,
+                        |_| finished,
+                        |one, two| {
+                            if visible {
+                                one == two
+                            } else {
+                                super::job_reads::same_without_progress(one, two)
+                            }
+                        },
+                    ) == super::job_reads::Verdict::Skip
+                {
+                    continue;
+                }
+                let message = match &tracked {
+                    Tracked::Reading(job) if finished => {
+                        Message::Select(super::message::select::SelectMessage::ReadWatched {
+                            job: job.clone(),
+                            result,
+                        })
+                    }
+                    Tracked::Adding(job) if finished => {
+                        Message::Select(super::message::select::SelectMessage::AddListed {
+                            job: job.clone(),
+                            result,
+                        })
+                    }
+                    Tracked::Search(job) => {
+                        Message::Select(super::message::select::SelectMessage::Missing(
+                            super::message::select_missing::MissingMessage::Polled {
+                                search: Some((job.clone(), result)),
+                                locate: None,
+                            },
+                        ))
+                    }
+                    Tracked::Locate(job) if finished => {
+                        Message::Select(super::message::select::SelectMessage::Missing(
+                            super::message::select_missing::MissingMessage::Polled {
+                                search: None,
+                                locate: Some((job.clone(), result)),
+                            },
+                        ))
+                    }
+                    Tracked::Batch(job) if finished => {
+                        Message::Select(super::message::select::SelectMessage::Catalog(
+                            super::message::select_catalog::CatalogMessage::BatchRead {
+                                job: job.clone(),
+                                result,
+                            },
+                        ))
+                    }
+                    _ => continue,
+                };
+                return Some((
+                    message,
+                    (owner, client, tracked, visible, watch, after, finished),
+                ));
+            }
+        },
+    )
+    .fuse()
+    .boxed()
+}
+
 impl LongWork {
     /// Watch `owner`'s board for catalog work and read it once, which arms the watch. A board that
     /// refuses the watch leaves long work showing nothing, which is reported and never guessed.
-    pub(crate) fn watching(owner: &OwnerHandle) -> Self {
+    pub(crate) fn watching(owner: &OwnerHandle, presentation_visible: bool) -> Self {
         let watch = owner
             .activity()
             .watch(followed, Arc::new(|| signal().post()))
@@ -118,10 +233,11 @@ impl LongWork {
             .ok();
         let mut work = Self {
             watch,
+            presentation_visible,
             ..Self::default()
         };
         if let Some(watch) = &work.watch {
-            let board = watch.read();
+            let board = watch.read_with_progress(presentation_visible);
             work.ended = board.recent.iter().map(|job| job.entry.id).collect();
             work.state.observe(board);
             work.read_at = Some(Instant::now());
@@ -132,8 +248,8 @@ impl LongWork {
     /// The timers that exist now: none while nothing runs and no read is due.
     pub(crate) fn timers(&self) -> Timers {
         Timers {
-            throttle: self.due,
-            refresh: self.state.running().next().is_some(),
+            throttle: self.presentation_visible && self.due,
+            refresh: self.presentation_visible && self.state.running().next().is_some(),
         }
     }
 }
@@ -157,13 +273,19 @@ pub(crate) fn cancel_now(
 struct Read {
     /// Followed jobs that ended since the last read.
     ended: Vec<RecentActivity>,
-    /// A followed job began or ended since the last read.
-    changed: bool,
     /// A listing of the index lane's began or ended since the last read.
     listings: bool,
 }
 
 impl Editor {
+    /// Reconcile once across a native visibility transition. Hidden watches continue to hear
+    /// lifecycle changes, with no display throttle or elapsed-time refresh timer.
+    pub(crate) fn long_work_visibility_changed(&mut self) -> Task<Message> {
+        self.long_work.presentation_visible = self.visibility.sampling_allowed();
+        self.long_work.due = false;
+        self.read_board()
+    }
+
     /// One long-running-work message.
     pub(crate) fn long_work_update(&mut self, message: LongWorkMessage) -> Task<Message> {
         match message {
@@ -177,6 +299,9 @@ impl Editor {
             }
             LongWorkMessage::Woken => {
                 self.long_work.wakes += 1;
+                if !self.visibility.sampling_allowed() {
+                    return self.read_board();
+                }
                 let throttled = self
                     .long_work
                     .read_at
@@ -184,10 +309,13 @@ impl Editor {
                 if throttled {
                     self.long_work.due = true;
                 } else {
-                    return self.read_board(false);
+                    return self.read_board();
                 }
             }
             LongWorkMessage::Tick => {
+                if !self.visibility.sampling_allowed() {
+                    return Task::none();
+                }
                 // A refresh right after a read has nothing to add, and would lift the reads past
                 // the throttle's rate; a due read is always taken.
                 let recent = self
@@ -195,7 +323,7 @@ impl Editor {
                     .read_at
                     .is_some_and(|at| at.elapsed() < MIN_INTERVAL);
                 if self.long_work.due || !recent {
-                    return self.read_board(false);
+                    return self.read_board();
                 }
             }
             LongWorkMessage::Cancelled { job_id, result } => {
@@ -219,13 +347,12 @@ impl Editor {
         Task::none()
     }
 
-    /// Read the board as long work: a wake, a tick, or the waiting view just named. `first` says the
-    /// waiting job was just named, so its record is read whatever the board says.
-    fn read_board(&mut self, first: bool) -> Task<Message> {
+    /// Read the board as long work: a wake, a tick, or the waiting view just named.
+    fn read_board(&mut self) -> Task<Message> {
         if self.long_work.watch.is_some() {
             self.long_work.reads += 1;
         }
-        self.take_in_board(first)
+        self.take_in_board()
     }
 
     /// The Performance section's read of the board at its sampler's tick: the board its job rows
@@ -233,12 +360,12 @@ impl Editor {
     /// work's watch, and what it finds is taken in exactly as long work's own reads are. With no
     /// watch there is no board to read, and the section lists no work, as long work shows none.
     pub(crate) fn section_reads_board(&mut self) -> Task<Message> {
-        self.take_in_board(false)
+        self.take_in_board()
     }
 
     /// Read the board and take in what changed: the model's state and each job's rate, the sentence
     /// of each job that just ended, and the view waiting on a job.
-    fn take_in_board(&mut self, first: bool) -> Task<Message> {
+    fn take_in_board(&mut self) -> Task<Message> {
         let Some(read) = self.take_board() else {
             return Task::none();
         };
@@ -266,8 +393,7 @@ impl Editor {
                 )
             })
             .collect();
-        tasks.push(self.reading_followed(first || read.changed));
-        tasks.push(self.missing_followed());
+        tasks.push(self.reading_followed());
         if read.listings {
             tasks.push(self.select_listings_changed());
         }
@@ -277,7 +403,10 @@ impl Editor {
     /// One read of the board, re-arming the watch.
     fn take_board(&mut self) -> Option<Read> {
         let work = &mut self.long_work;
-        let board = work.watch.as_ref()?.read();
+        let board = work
+            .watch
+            .as_ref()?
+            .read_with_progress(self.visibility.sampling_allowed());
         work.read_at = Some(Instant::now());
         work.due = false;
         let ended: Vec<RecentActivity> = board
@@ -287,14 +416,6 @@ impl Editor {
             .cloned()
             .collect();
         work.ended = board.recent.iter().map(|job| job.entry.id).collect();
-        let running: Vec<u64> = board
-            .active
-            .iter()
-            .filter(|job| followed(&job.entry))
-            .map(|job| job.entry.id)
-            .collect();
-        let changed = running != work.running;
-        work.running = running;
         let listings: Vec<u64> = board
             .active
             .iter()
@@ -306,7 +427,6 @@ impl Editor {
         work.state.observe(board);
         Some(Read {
             ended,
-            changed,
             listings: listed,
         })
     }
@@ -401,7 +521,7 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
         });
         editor.long_work.state.waiting = waiting;
         if named {
-            editor.read_board(true)
+            editor.read_board()
         } else {
             Task::none()
         }
@@ -418,11 +538,11 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
 /// only by the board — and the two timers, each only while it has something to do ([`Timers`]).
 pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
     let work = &editor.long_work;
-    if work.watch.is_none() {
-        return Subscription::none();
-    }
     let timers = work.timers();
-    let mut subscriptions = vec![Subscription::run(|| signal().stream())];
+    let mut subscriptions = Vec::new();
+    if work.watch.is_some() {
+        subscriptions.push(Subscription::run(|| signal().stream()));
+    }
     if timers.throttle {
         subscriptions.push(
             iced::time::every(MIN_INTERVAL).map(|_| Message::LongWork(LongWorkMessage::Tick)),
@@ -432,6 +552,45 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
         subscriptions.push(
             iced::time::every(REFRESH_INTERVAL).map(|_| Message::LongWork(LongWorkMessage::Tick)),
         );
+    }
+    let reading = editor
+        .select
+        .reading
+        .as_ref()
+        .and_then(|reading| reading.job.clone())
+        .map(Tracked::Reading);
+    let adding = editor
+        .select
+        .adding
+        .as_ref()
+        .and_then(|adding| adding.job.clone())
+        .map(Tracked::Adding);
+    let (search, locate) = editor.select.state.missing.running_jobs();
+    let batch = editor
+        .select
+        .state
+        .catalog
+        .running()
+        .map(|batch| Tracked::Batch(batch.job.clone()));
+    for identity in [
+        reading,
+        adding,
+        search.map(Tracked::Search),
+        locate.map(Tracked::Locate),
+        batch,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        subscriptions.push(Subscription::run_with(
+            super::job_reads::Reader {
+                identity,
+                owner: editor.owner.clone(),
+                client: editor.client,
+                presentation_visible: editor.visibility.sampling_allowed(),
+            },
+            job_reader,
+        ));
     }
     Subscription::batch(subscriptions)
 }

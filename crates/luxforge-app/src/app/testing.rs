@@ -381,6 +381,7 @@ pub(crate) fn scripted_evidence(steps: &str) -> Evidence {
         )),
         queue: VecDeque::new(),
         opens: 1,
+        observing: false,
         script: parse_script(steps).expect("a valid script"),
         step: 0,
         awaiting: None,

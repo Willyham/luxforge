@@ -59,7 +59,7 @@ pub(super) enum Reply {
     Caller {
         id: String,
         sequence: u64,
-        response: SyncSender<ApiResponse>,
+        response: super::super::response::ResponseSender,
     },
     Pixels {
         ticket: u64,
@@ -316,7 +316,7 @@ mod tests {
                 reply: Reply::Caller {
                     id: id.into(),
                     sequence: client * 10,
-                    response,
+                    response: super::super::super::response::ResponseSender::Blocking(response),
                 },
             },
             answer,
@@ -418,7 +418,7 @@ mod tests {
             reply: Reply::Caller {
                 id: "panics".into(),
                 sequence: 0,
-                response,
+                response: super::super::super::response::ResponseSender::Blocking(response),
             },
         });
         assert_eq!(
@@ -454,7 +454,7 @@ mod tests {
             reply: Reply::Caller {
                 id: "gone".into(),
                 sequence: 0,
-                response,
+                response: super::super::super::response::ResponseSender::Blocking(response),
             },
         });
         reaches.recv_timeout(Duration::from_secs(5)).unwrap();

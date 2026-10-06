@@ -18,8 +18,8 @@ use crate::{
     resolve_missing_smoke as resolve_missing,
     scenario::{Checked, Checks, Fixture, Launch, Plan, Run, Step, launch::Guard},
     select_smoke as select, settings_smoke as settings, theme_smoke as theme,
-    viewport_smoke as viewport, vignette_smoke as vignette, workspace_smoke as workspace,
-    zoom_smoke as zoom, *,
+    viewport_smoke as viewport, vignette_smoke as vignette, visibility_smoke as visibility,
+    workspace_smoke as workspace, zoom_smoke as zoom, *,
 };
 use std::{
     borrow::Borrow,
@@ -117,6 +117,7 @@ impl Scenario {
     /// Whether `verify --tier rendered` runs it: everything a checkout can open.
     pub fn rendered(&self) -> bool {
         !matches!(self.source, Source::Supplied { .. })
+            && (self.name != visibility::SCENARIO || cfg!(target_os = "macos"))
     }
 
     /// Whether `--source` may replace what it opens.
@@ -160,6 +161,23 @@ fn sourced() -> Vec<&'static str> {
 
 /// Every scenario, in the order `verify --tier rendered` runs them.
 pub static SCENARIOS: &[Scenario] = &[
+    Scenario {
+        name: visibility::SCENARIO,
+        about: "Native minimize/hide/restore pauses presentation sampling and preserves fresh history",
+        launches: &[LaunchSpec {
+            plan: visibility::plan,
+            watch: Some((visibility::READINGS, visibility::watch)),
+            deadline: Some(Duration::from_secs(420)),
+            ..APP
+        }],
+        verify: visibility::verify,
+        source: Source::Default(&[visibility::FIXTURE]),
+        window: Some(PANELLED),
+        note: Some(
+            "Actual AppKit visibility transitions on a transparent background-only window; no foreground activation. Captures are renderer readbacks. Native visibility qualification is macOS-only.",
+        ),
+        own: None,
+    },
     Scenario {
         name: "detail",
         about: "Detail controls and correlated rendered presentation",
@@ -1910,6 +1928,7 @@ mod tests {
         assert_eq!(
             sourced(),
             [
+                "visibility-monitoring",
                 "raw-detail",
                 "performance",
                 "filmstrip",

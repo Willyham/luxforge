@@ -18,8 +18,8 @@ use crate::{
             sync::SyncMessage,
         },
         select::{
-            counts_now, disks_now, evaluate_now, events_now, facets_now, folders_now, job_now,
-            label_now, refresh_now, rows_now, session_now,
+            counts_now, disks_now, evaluate_now, events_now, facets_now, folders_now, label_now,
+            refresh_now, rows_now, session_now,
         },
         tasks::{call, owner_calls},
     },
@@ -461,12 +461,32 @@ fn a_select_folder_browsed_on_disk_is_read_then_viewed_on_a_real_owner() {
     );
     let _ = editor.update(Message::Select(SelectMessage::Reading(job.clone())));
     let job = job.unwrap();
-    let record = luxforge_testbase::wait_for("the folder's index.refresh to end", || {
-        let record = job_now(&editor.owner, editor.client, &job).unwrap();
-        (!matches!(record["status"].as_str(), Some("queued" | "running"))).then_some(record)
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let record = runtime.block_on(async {
+        tokio::time::timeout(luxforge_testbase::HANG, async {
+            let mut after = None;
+            loop {
+                let (change, record) =
+                    super::job_reads::wait(&editor.owner, editor.client, &job, after)
+                        .await
+                        .unwrap();
+                after = Some(change);
+                if !matches!(record["status"].as_str(), Some("queued" | "running")) {
+                    break record;
+                }
+            }
+        })
+        .await
+        .expect("the folder's index.refresh to end")
     });
     assert_eq!(record["status"], "ready", "{record}");
-    let _ = editor.update(Message::Select(SelectMessage::ReadAnswered(Ok(record))));
+    let _ = editor.update(Message::Select(SelectMessage::ReadWatched {
+        job,
+        result: Ok(record),
+    }));
     assert!(editor.select.reading.is_none());
     assert!(
         editor.select.state.loading,
@@ -595,9 +615,24 @@ fn a_select_view_gone_stale_while_a_folder_is_read_is_read_again_quietly() {
     read(&mut editor, "job-cancelled");
     let _ = editor.update(Message::Select(SelectMessage::Checked(stale(&editor))));
     assert!(!editor.select.state.loading);
-    let _ = editor.update(Message::Select(SelectMessage::ReadAnswered(Ok(
-        json!({"status": "cancelled"}),
-    ))));
+    let _ = editor.update(Message::Select(SelectMessage::ReadWatched {
+        job: "an-earlier-reading".into(),
+        result: Ok(json!({"status": "ready"})),
+    }));
+    assert_eq!(
+        editor
+            .select
+            .reading
+            .as_ref()
+            .and_then(|reading| reading.job.as_deref()),
+        Some("job-cancelled"),
+        "an old completion cannot replace the current reading"
+    );
+    assert!(!editor.select.state.loading);
+    let _ = editor.update(Message::Select(SelectMessage::ReadWatched {
+        job: "job-cancelled".into(),
+        result: Ok(json!({"status": "cancelled"})),
+    }));
     assert!(editor.select.reading.is_none());
     assert!(editor.select.state.loading, "the stale view is read again");
     evaluate(&mut editor);

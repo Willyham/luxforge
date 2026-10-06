@@ -5,15 +5,10 @@ use crate::app::{
     job_reads::{Pass, Verdict, Watch, reads},
     testing::Followed,
 };
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::Duration,
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
 };
-
-const FAST: Duration = Duration::from_micros(200);
 
 /// A record that is final when it reaches 100.
 fn ended(record: &u32) -> bool {
@@ -95,13 +90,16 @@ fn a_pass_builds_its_message_only_when_there_is_one() {
 fn a_reader_yields_only_the_passes_that_send_and_ends_after_its_last() {
     let passes = Arc::new(AtomicUsize::new(0));
     let counted = passes.clone();
-    let mut stream = Followed::new(reads(FAST, move || {
-        match counted.fetch_add(1, Ordering::Relaxed) {
-            0 => Pass::Send("first"),
-            1..=99 => Pass::Quiet,
-            100 => Pass::Send("changed"),
-            101 => Pass::Last("last"),
-            more => panic!("a pass after the last message: {more}"),
+    let mut stream = Followed::new(reads(move || {
+        let counted = counted.clone();
+        async move {
+            match counted.fetch_add(1, Ordering::Relaxed) {
+                0 => Pass::Send("first"),
+                1..=99 => Pass::Quiet,
+                100 => Pass::Send("changed"),
+                101 => Pass::Last("last"),
+                more => panic!("a pass after the last message: {more}"),
+            }
         }
     }));
     assert_eq!(stream.next(), Some("first"));
@@ -118,14 +116,14 @@ fn a_reader_yields_only_the_passes_that_send_and_ends_after_its_last() {
     assert_eq!(passes.load(Ordering::Relaxed), 102);
 }
 
-/// A reader reads at once, not after its first interval: with an interval nothing in the test
-/// outlasts, its first message still arrives, and no second pass is made until a tick is due.
+/// The first observation is immediate; another pass requires another pull.
 #[test]
-fn a_reader_reads_at_once_and_then_waits_for_its_interval() {
+fn a_reader_observes_at_once_without_a_timer() {
     let passes = Arc::new(AtomicUsize::new(0));
     let counted = passes.clone();
-    let mut stream = Followed::new(reads(Duration::from_secs(3600), move || {
-        Pass::Send(counted.fetch_add(1, Ordering::Relaxed))
+    let mut stream = Followed::new(reads(move || {
+        let counted = counted.clone();
+        async move { Pass::Send(counted.fetch_add(1, Ordering::Relaxed)) }
     }));
     assert_eq!(stream.next(), Some(0));
     assert_eq!(passes.load(Ordering::Relaxed), 1);
@@ -137,8 +135,9 @@ fn a_reader_reads_at_once_and_then_waits_for_its_interval() {
 fn a_reader_reads_only_while_it_is_polled() {
     let passes = Arc::new(AtomicUsize::new(0));
     let counted = passes.clone();
-    let mut stream = Followed::new(reads(FAST, move || {
-        Pass::Send(counted.fetch_add(1, Ordering::Relaxed))
+    let mut stream = Followed::new(reads(move || {
+        let counted = counted.clone();
+        async move { Pass::Send(counted.fetch_add(1, Ordering::Relaxed)) }
     }));
     assert_eq!(stream.next(), Some(0));
     assert_eq!(stream.next(), Some(1));
@@ -149,4 +148,49 @@ fn a_reader_reads_only_while_it_is_polled() {
     );
     drop(stream);
     assert_eq!(passes.load(Ordering::Relaxed), 2, "nothing reads after");
+}
+
+#[test]
+fn hidden_job_records_coalesce_progress_and_preserve_business_changes() {
+    use serde_json::json;
+    let terminal = |value: &serde_json::Value| value["status"] == "ready";
+    let mut watch = Watch::default();
+    let first = json!({"status":"running","progress":{"fraction":0.1}});
+    assert_eq!(
+        watch.observe_filtered(
+            &Ok(first),
+            terminal,
+            super::job_reads::same_without_progress
+        ),
+        Verdict::Yield
+    );
+    let progress = json!({"status":"running","progress":{"fraction":0.2}});
+    assert_eq!(
+        watch.observe_filtered(
+            &Ok(progress),
+            terminal,
+            super::job_reads::same_without_progress
+        ),
+        Verdict::Skip
+    );
+    let partial =
+        json!({"status":"running","progress":{"fraction":0.3},"result":{"paths":["one"]}});
+    assert_eq!(
+        watch.observe_filtered(
+            &Ok(partial),
+            terminal,
+            super::job_reads::same_without_progress
+        ),
+        Verdict::Yield
+    );
+    let ready =
+        json!({"status":"ready","progress":{"fraction":1.0},"result":{"paths":["one","two"]}});
+    assert_eq!(
+        watch.observe_filtered(
+            &Ok(ready),
+            terminal,
+            super::job_reads::same_without_progress
+        ),
+        Verdict::Last
+    );
 }

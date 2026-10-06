@@ -140,6 +140,9 @@ pub enum Step {
     /// Leave the editor alone with evidence's own timers and redraws suspended, then check that
     /// nothing drew: see [`IdleStep`].
     Idle(IdleStep),
+    /// Measure a quiet presentation window with evidence timers suspended, allowing the
+    /// application's own sampling and job events. Windows are bounded to one minute.
+    Observe(IdleStep),
     Workspace(WorkspaceStep),
     Preview(PreviewStep),
     /// Move the comparison divider, or release a backslash hold through the keymap.
@@ -172,6 +175,11 @@ pub enum Step {
     /// Open or close the state panel's Performance section, as its heading does.
     Performance {
         expanded: bool,
+    },
+    /// Perform an actual native visibility transition on a transparent background-only test
+    /// window. The desktop waits for the native callback, not a synthetic visibility message.
+    WindowVisibility {
+        action: String,
     },
     /// Press Cancel on one displayed running job row (zero-based, at most four rows).
     PerformanceCancel {
@@ -362,8 +370,31 @@ impl Step {
             Self::Pinch(step) => step.validate(),
             Self::ViewIdle(step) => step.validate(),
             Self::Idle(step) => step.validate(),
+            Self::Observe(step) => {
+                if (1..=MAX_WAIT_MS).contains(&step.settle_ms) && (1..=60_000).contains(&step.ms) {
+                    Ok(())
+                } else {
+                    Err("observe requires settle_ms from 1 to 10000 and ms from 1 to 60000".into())
+                }
+            }
             Self::Workspace(step) => step.validate(),
             Self::Preview(_) | Self::Palette(_) | Self::Performance { .. } => Ok(()),
+            Self::WindowVisibility { action } => {
+                if [
+                    "minimize",
+                    "restore",
+                    "hide_window",
+                    "show_window",
+                    "hide_app",
+                    "show_app",
+                ]
+                .contains(&action.as_str())
+                {
+                    Ok(())
+                } else {
+                    Err("window_visibility action must be minimize, restore, hide_window, show_window, hide_app or show_app".into())
+                }
+            }
             Self::Settings { open, tab } => match tab {
                 Some(_) if !open => Err("only an opening settings step names a tab".into()),
                 Some(tab) if !SETTINGS_TABS.contains(&tab.as_str()) => Err(format!(
