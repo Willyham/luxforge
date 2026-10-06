@@ -11,6 +11,7 @@ mod descriptor;
 mod detail;
 mod field_patch;
 pub(crate) mod lens;
+mod look;
 mod mixer;
 mod perspective;
 mod pixel;
@@ -34,6 +35,7 @@ pub static GPU_PROGRAMS: &[&crate::GpuProgram] = &[
     &basic::EXPOSURE_PROGRAM,
     &basic::TONE_PROGRAM,
     &basic::COLOUR_ADJUST_PROGRAM,
+    &look::LOOK_PROGRAM,
     &curve::TONE_CURVE_PROGRAM,
     &mixer::MIXER_PROGRAM,
     &vignette::VIGNETTE_PROGRAM,
@@ -90,6 +92,8 @@ pub use detail::qualification as detail_qualification;
 pub use field_patch::{FieldPatch, FieldPatchModule, Spec, Values};
 pub use lens::LENS_EFFECT;
 pub(crate) use lens::{LENS_MODULE, LensModule};
+pub use look::LOOK_EFFECT;
+pub(crate) use look::LookModule;
 pub use mixer::MIXER_EFFECT;
 pub(crate) use mixer::MixerModule;
 pub use perspective::PERSPECTIVE_EFFECT;
@@ -554,6 +558,16 @@ pub trait ToolModule: Send + Sync {
             "module {} declares no queries, so it cannot answer {query_id}",
             self.descriptor().id
         )))
+    }
+    /// The payload of the neutral layer a GPU preview plans in place of a layer of `effect_id`
+    /// the stack does not hold yet: a drafted layer before its first commit, and the first drag
+    /// the warm list plans for a module the stack does not hold. In the GPU shape
+    /// (`CompileStage::gpu_shape`) it compiles to every unit the effect can hold, each the
+    /// identity. The default, `{}`, is every field patch's neutral payload; a module whose stored
+    /// form spells its neutral state otherwise, as the look's `{"look": "neutral"}`, names it.
+    fn neutral_payload(&self, effect_id: &str) -> Value {
+        let _ = effect_id;
+        Value::Object(Map::new())
     }
     /// Turn a persisted payload into a host processing primitive at its input stage.
     fn compile(

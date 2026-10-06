@@ -55,7 +55,7 @@ use super::{
 };
 use crate::{
     Draft, EFFECT_FORMAT, EffectStage, Error, Evaluation, Layer, LayerId, MaskId, ModuleRegistry,
-    ProxyBounds, ProxyIdentity, ProxyPlan, Recipe,
+    ProxyBounds, ProxyIdentity, ProxyPlan, Recipe, SourceTag,
     mask_field::MaskSampling,
     modules::{MAX_MASKED_SPATIAL_LAYERS, Region, Stage},
     render::{Compiled, spatial::prefix_hash, window::WindowPlan},
@@ -483,8 +483,19 @@ impl FitStage {
 }
 
 /// `recipe` with a neutral layer of `effect` for `mask` inserted at `index`: what a drafted layer
-/// the stack does not hold yet is planned as, the neutral layer its first commit would insert.
-fn with_neutral(recipe: &Recipe, index: usize, effect: &str, mask: Option<MaskId>) -> Recipe {
+/// the stack does not hold yet is planned as, the neutral layer its first commit would insert,
+/// spelled as its module spells it ([`crate::ToolModule::neutral_payload`]).
+fn with_neutral(
+    registry: &ModuleRegistry,
+    recipe: &Recipe,
+    index: usize,
+    effect: &str,
+    mask: Option<MaskId>,
+) -> Recipe {
+    let payload = registry.effect(effect).map_or_else(
+        || json!({}),
+        |(provider, _)| provider.neutral_payload(effect),
+    );
     let mut planned = recipe.clone();
     planned.layers.insert(
         index,
@@ -492,7 +503,7 @@ fn with_neutral(recipe: &Recipe, index: usize, effect: &str, mask: Option<MaskId
             id: LayerId::new(),
             effect_id: effect.to_owned(),
             effect_format: EFFECT_FORMAT,
-            payload: json!({}),
+            payload,
             mask,
             artifacts: Vec::new(),
         },
@@ -732,7 +743,13 @@ pub(crate) fn plan_preview_reducing(
     let request = fit.request();
     let (planned, request) = match &drafted_layer {
         Some(drafted) if !drafted.held => (
-            with_neutral(recipe, drafted.index, &drafted.effect, drafted.mask.clone()),
+            with_neutral(
+                registry,
+                recipe,
+                drafted.index,
+                &drafted.effect,
+                drafted.mask.clone(),
+            ),
             request.drafted(drafted.index),
         ),
         Some(drafted) => (recipe.clone(), request.drafted(drafted.index)),
@@ -1371,7 +1388,8 @@ pub struct GpuWarmList {
 /// ([`GpuWarmList`]). The open stack's first: when a layer is masked, the stack's own plan, which a
 /// stroke or a shape moved draws; a drag of each colour or finish layer the stack holds; then a
 /// drag of each restoration or spatial layer it holds. Then the rest of the program set: the first
-/// drag of each field-patch module the stack does not hold yet, colour and finish modules first,
+/// drag of each patch module that applies to the photo's kind and that the stack does not hold
+/// yet, over the neutral layer its module names, colour and finish modules first,
 /// then restoration and spatial ones, Detail and Presence, whose sequences take the longest to
 /// compile on a cold shader cache. Each drag is planned with its layer in its GPU shape and with
 /// the lights a draft of it draws with ([`plan_preview`], [`drag_lights`]): a colour drag computes
@@ -1398,6 +1416,11 @@ pub(crate) fn plan_warm_list(evaluation: &Evaluation, view: GpuView) -> Result<G
     };
     const COLOUR: &[EffectStage] = &[EffectStage::Color, EffectStage::Finish];
     const SPATIAL: &[EffectStage] = &[EffectStage::Restoration, EffectStage::Spatial];
+    // A module that does not apply to the photo's kind (the look on a JPEG) is never dragged.
+    let kind = match evaluation.source() {
+        crate::PreviewSource::Raw { .. } => SourceTag::Raw,
+        crate::PreviewSource::Jpeg(_) => SourceTag::Jpeg,
+    };
     // The first drag of each field-patch module of `stages` the stack does not hold unmasked: the
     // stack it is planned over, with the neutral layer its first commit would insert, and where.
     let firsts = |stages: &[EffectStage]| -> Vec<(Recipe, usize)> {
@@ -1408,6 +1431,7 @@ pub(crate) fn plan_warm_list(evaluation: &Evaluation, view: GpuView) -> Result<G
                 continue;
             };
             if descriptor.developer
+                || !descriptor.applies_to(kind)
                 || !stage_is(&effect.id, stages)
                 || !descriptor.actions.iter().any(|action| action.patch)
                 || recipe
@@ -1423,7 +1447,10 @@ pub(crate) fn plan_warm_list(evaluation: &Evaluation, view: GpuView) -> Result<G
                 None,
                 &recipe.masks,
             );
-            firsts.push((with_neutral(recipe, index, &effect.id, None), index));
+            firsts.push((
+                with_neutral(registry, recipe, index, &effect.id, None),
+                index,
+            ));
         }
         firsts
     };
