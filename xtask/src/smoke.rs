@@ -1333,9 +1333,7 @@ fn plain_checks(scenario: &str, launch: &Checked) -> Result {
                 let state = frame.state();
                 let bar = &state["status_bar"];
                 if gpu_at_rest(state) {
-                    bar["render"]
-                        .as_str()
-                        .is_some_and(|text| text.starts_with("GPU render"))
+                    bar["render"].as_str().is_some_and(names_gpu_render)
                 } else {
                     bar["render"].as_str().is_some_and(|text| {
                         (text.starts_with("Exact render") && state["reference"]["reduced"] == true)
@@ -1441,7 +1439,7 @@ fn gpu_identity(run: &mut Run, launches: &[Checked]) -> Result {
             ms.is_finite()
                 && (0.0..RENDER_MS_BOUND).contains(&ms)
                 && gpu["gpu_preview_frame_us"].as_f64().map(|us| us / 1000.0) == Some(ms)
-                && bar["render"] == json!(gpu_text(ms, gpu_at_rest(frame.state())))
+                && bar["render"] == json!(frame_gpu_text(ms, frame.state()))
                 && gpu["plan_fallback"].is_null(),
             format!(
                 "{}: the status bar says {} for a GPU frame of {} µs (status figure {})",
@@ -1523,6 +1521,24 @@ pub fn gpu_text(ms: f64, at_rest: bool) -> String {
     format!("{kind} \u{b7} {}", render_figure(ms))
 }
 
+/// The status bar's wording of a GPU frame in a captured frame's `state`: [`gpu_text`] for its
+/// picture, after "Software " while the session's renderer is the GPU on a software adapter
+/// (`--software-adapter`), as the editor's status bar says it.
+pub fn frame_gpu_text(ms: f64, state: &Value) -> String {
+    let text = gpu_text(ms, gpu_at_rest(state));
+    if state["renderer"]["software"] == json!(true) {
+        format!("Software {text}")
+    } else {
+        text
+    }
+}
+
+/// Whether a render slot's `text` names the GPU's picture at rest, on any adapter.
+pub fn names_gpu_render(text: &str) -> bool {
+    text.trim_start_matches("Software ")
+        .starts_with("GPU render")
+}
+
 /// Whether a captured frame's photograph is the GPU's picture of the committed stack at rest,
 /// as its `state.surface.gpu.picture` names it: its picture at rest in tiles or its view plan.
 pub fn gpu_at_rest(state: &Value) -> bool {
@@ -1595,7 +1611,7 @@ pub fn expect_render_times<F: Borrow<Value>>(events: &[Value], frames: &[F]) -> 
         // render's: a drag drawn on the GPU from its first tick.
         if let Some(gpu_ms) = bar["gpu_ms"].as_f64() {
             ensure(
-                text == gpu_text(gpu_ms, gpu_at_rest(&frame["state"])),
+                text == frame_gpu_text(gpu_ms, &frame["state"]),
                 format!(
                     "{}: the status bar says {text:?} for a GPU frame of {gpu_ms} ms",
                     frame["file"]
@@ -1662,6 +1678,19 @@ mod tests {
         assert_eq!(gpu_text(2.4, false), "GPU preview \u{b7} 2 ms");
         assert_eq!(gpu_text(0.2, false), "GPU preview \u{b7} <1 ms");
         assert_eq!(gpu_text(12.4, true), "GPU render \u{b7} 12 ms");
+        let software = json!({"renderer": {"record": "gpu", "reason": null, "software": true},
+            "surface": {"gpu": {"picture": "rest"}}});
+        assert_eq!(
+            frame_gpu_text(12.4, &software),
+            "Software GPU render \u{b7} 12 ms"
+        );
+        assert_eq!(
+            frame_gpu_text(2.4, &json!({"renderer": {"record": "gpu", "reason": null}})),
+            "GPU preview \u{b7} 2 ms"
+        );
+        assert!(names_gpu_render("Software GPU render \u{b7} 12 ms"));
+        assert!(names_gpu_render("GPU render \u{b7} 12 ms"));
+        assert!(!names_gpu_render("Software GPU preview \u{b7} 12 ms"));
         let good = expect_render_times(
             &[displayed(json!(12.4))],
             &[frame("Exact render \u{b7} 12 ms", 12.4, false)],

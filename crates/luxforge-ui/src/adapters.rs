@@ -9,6 +9,12 @@
 //! drew ([`matching`]). Nothing here draws, compiles or allocates on an adapter but [`open`], which
 //! requests a device on the adapter of a backend and name, as Iced's renderer requests its own.
 //!
+//! Before the window opens, a launch also asks what the renderer's backends offer ([`probe`]) and
+//! chooses its renderer ([`choose`]): wgpu's request ranks a software adapter (lavapipe, WARP)
+//! last but never leaves it out, so a host with no hardware adapter draws on the software one,
+//! and until the software adapter is adopted ([`SOFTWARE_ADAPTER_ADOPTED`]) such a launch refuses
+//! the GPU stage, as `--no-gpu-render` does, unless it asks for the software adapter.
+//!
 //! Enumerating creates a wgpu instance, which loads the platform's drivers, and opening a device
 //! creates one too: never call either on the UI thread or in a future the UI loop polls, only on a
 //! blocking thread or before the window exists.
@@ -100,6 +106,113 @@ pub fn renderer_limits() -> [wgpu::Limits; 2] {
         max_non_sampler_bindings: 2048,
         ..limits
     })
+}
+
+/// Whether the software adapter is adopted: the owner's decision of 2026-10-05
+/// (`docs/decisions.md`, "GPU-first rendering") that a session with no usable hardware adapter
+/// draws through the GPU path on the platform's software adapter (Mesa's lavapipe on Linux, WARP
+/// on Windows) once it is measured fast enough that dragging is not badly laggy, and until then is
+/// a proposal. Off: on 2026-10-06 lavapipe missed the drag thresholds in a container on the
+/// owner's M4 (`docs/specs/performance.md`, "Software adapters"), so a session whose only adapter
+/// is a software one draws the reference renderer's frames unless its launch passes
+/// `--software-adapter` ([`choose`]).
+pub const SOFTWARE_ADAPTER_ADOPTED: bool = false;
+
+/// Whether wgpu describes an adapter of `device_type` (its `Debug` spelling) as a software one: a
+/// rasterizer on the CPU, such as lavapipe, llvmpipe or WARP.
+pub fn is_software(device_type: &str) -> bool {
+    device_type == "Cpu"
+}
+
+/// What the renderer's backends offer this host, as a launch finds it before its window opens.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Offered {
+    /// Not looked for: on macOS, which has no software Metal, so every adapter is a hardware one,
+    /// or for a launch that refused the GPU stage.
+    NotProbed,
+    /// At least one hardware adapter, which wgpu's request ranks before any software one, so the
+    /// window draws on a hardware adapter.
+    Hardware,
+    /// Only software adapters: the window's request lands on the first, which is named.
+    SoftwareOnly(Adapter),
+    /// No adapter at all.
+    Nothing,
+}
+
+/// What `adapters`, the adapters of the renderer's backends, offer: a hardware adapter before a
+/// software one, as wgpu's request ranks them (it ranks a software adapter last but never leaves
+/// it out, so a host with nothing else draws on it).
+pub fn offered(adapters: &[Adapter]) -> Offered {
+    if adapters
+        .iter()
+        .any(|adapter| !is_software(&adapter.device_type))
+    {
+        return Offered::Hardware;
+    }
+    adapters
+        .first()
+        .cloned()
+        .map_or(Offered::Nothing, Offered::SoftwareOnly)
+}
+
+/// What this host offers the renderer's backends, found before the window opens: an enumeration
+/// of every adapter of [`renderer_backends`] off macOS, and [`Offered::NotProbed`] on it, which
+/// has no software adapter to find. Blocking: see the module documentation.
+pub fn probe() -> Offered {
+    if cfg!(target_os = "macos") {
+        return Offered::NotProbed;
+    }
+    offered(&enumerate(renderer_backends()))
+}
+
+/// Which renderer a launch draws with, chosen before its window opens ([`choose`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LaunchRenderer {
+    /// The photo surface's GPU stage on the adapter the window draws with, a software one when
+    /// `software`.
+    Gpu { software: bool },
+    /// The reference renderer's frames: the GPU stage is refused before the window opens, for the
+    /// reason given.
+    Reference(Refusal),
+}
+
+/// Why a launch refuses the GPU stage before its window opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// `--no-gpu-render`.
+    Requested,
+    /// The host offers only a software adapter, which is not adopted
+    /// ([`SOFTWARE_ADAPTER_ADOPTED`]) and the launch did not ask for (`--software-adapter`).
+    SoftwareNotAdopted,
+    /// The host offers no adapter at all.
+    NoAdapter,
+}
+
+impl LaunchRenderer {
+    /// Whether the launch refuses the GPU stage.
+    pub fn refused(self) -> bool {
+        matches!(self, Self::Reference(_))
+    }
+
+    /// Whether the GPU stage draws on a software adapter.
+    pub fn software(self) -> bool {
+        matches!(self, Self::Gpu { software: true })
+    }
+}
+
+/// The renderer a launch draws with, in this order: `--no-gpu-render` (`refused`) refuses the
+/// GPU stage whatever the host offers; a hardware adapter, or a host not probed, draws on the GPU;
+/// a host with only a software adapter draws on it through the GPU path when the software adapter
+/// is `adopted` or the launch asked for it (`--software-adapter`), and otherwise refuses the GPU
+/// stage, so every frame is the reference renderer's; a host with no adapter refuses it too.
+pub fn choose(refused: bool, asked: bool, adopted: bool, offered: &Offered) -> LaunchRenderer {
+    match offered {
+        _ if refused => LaunchRenderer::Reference(Refusal::Requested),
+        Offered::NotProbed | Offered::Hardware => LaunchRenderer::Gpu { software: false },
+        Offered::SoftwareOnly(_) if adopted || asked => LaunchRenderer::Gpu { software: true },
+        Offered::SoftwareOnly(_) => LaunchRenderer::Reference(Refusal::SoftwareNotAdopted),
+        Offered::Nothing => LaunchRenderer::Reference(Refusal::NoAdapter),
+    }
 }
 
 /// A device of its own on an adapter, opened by [`open`].
@@ -239,6 +352,105 @@ mod tests {
             matching(&adapters, "Metal", "Apple M4 Pro").map(|a| a.device_type.as_str()),
             Some("IntegratedGpu")
         );
+    }
+
+    /// A hardware adapter is offered before any software one, as wgpu's request ranks them, and a
+    /// host with only software adapters offers the first, which the window's request lands on.
+    #[test]
+    fn a_hardware_adapter_is_offered_before_a_software_one() {
+        let lavapipe = adapter("llvmpipe (LLVM 19.1.7, 128 bits)", "Vulkan", "Cpu");
+        let warp = adapter("Microsoft Basic Render Driver", "Dx12", "Cpu");
+        let gpu = adapter("AMD Radeon RX 7600", "Vulkan", "DiscreteGpu");
+        assert_eq!(
+            offered(&[lavapipe.clone(), gpu.clone()]),
+            Offered::Hardware,
+            "a hardware adapter after a software one is still the one drawn with"
+        );
+        assert_eq!(offered(std::slice::from_ref(&gpu)), Offered::Hardware);
+        assert_eq!(
+            offered(&[lavapipe.clone(), warp]),
+            Offered::SoftwareOnly(lavapipe)
+        );
+        assert_eq!(offered(&[]), Offered::Nothing);
+        // A virtual or unknown adapter is not a software one.
+        assert_eq!(
+            offered(&[adapter("virgl", "Vulkan", "VirtualGpu")]),
+            Offered::Hardware
+        );
+        assert!(is_software("Cpu"));
+        assert!(!is_software("IntegratedGpu") && !is_software("Other"));
+    }
+
+    /// The selection order: `--no-gpu-render` refuses the GPU stage whatever the host offers; a
+    /// hardware adapter, or a host not probed, draws on the GPU; a software adapter alone draws
+    /// through the GPU path only when adopted or asked for, and otherwise refuses it; no adapter
+    /// refuses it.
+    #[test]
+    fn a_software_adapter_draws_only_when_adopted_or_asked_for() {
+        use LaunchRenderer::{Gpu, Reference};
+        let software = Offered::SoftwareOnly(adapter("llvmpipe", "Vulkan", "Cpu"));
+        let every = [
+            Offered::NotProbed,
+            Offered::Hardware,
+            software.clone(),
+            Offered::Nothing,
+        ];
+        for offered in &every {
+            for (asked, adopted) in [(false, false), (true, false), (false, true), (true, true)] {
+                assert_eq!(
+                    choose(true, asked, adopted, offered),
+                    Reference(Refusal::Requested),
+                    "--no-gpu-render refuses the stage on {offered:?}"
+                );
+                if !matches!(offered, Offered::SoftwareOnly(_)) {
+                    let expected = match offered {
+                        Offered::Nothing => Reference(Refusal::NoAdapter),
+                        _ => Gpu { software: false },
+                    };
+                    assert_eq!(choose(false, asked, adopted, offered), expected);
+                }
+            }
+        }
+        assert_eq!(
+            choose(false, false, false, &software),
+            Reference(Refusal::SoftwareNotAdopted)
+        );
+        assert_eq!(
+            choose(false, true, false, &software),
+            Gpu { software: true }
+        );
+        assert_eq!(
+            choose(false, false, true, &software),
+            Gpu { software: true }
+        );
+        assert!(Gpu { software: true }.software() && !Gpu { software: true }.refused());
+        assert!(Reference(Refusal::SoftwareNotAdopted).refused());
+        assert!(!Reference(Refusal::NoAdapter).software());
+    }
+
+    /// The decision constant stays off until the measurement passes: a software-only session draws
+    /// the reference renderer's frames unless its launch asks for the software adapter.
+    #[test]
+    fn the_software_adapter_is_not_adopted() {
+        const { assert!(!SOFTWARE_ADAPTER_ADOPTED) };
+        let software = Offered::SoftwareOnly(adapter("llvmpipe", "Vulkan", "Cpu"));
+        assert_eq!(
+            choose(false, false, SOFTWARE_ADAPTER_ADOPTED, &software),
+            LaunchRenderer::Reference(Refusal::SoftwareNotAdopted)
+        );
+    }
+
+    /// macOS has no software Metal: the launch never enumerates there, and elsewhere it finds what
+    /// an enumeration of the renderer's backends finds.
+    #[test]
+    fn a_probe_looks_for_a_software_adapter_only_off_macos() {
+        let found = probe();
+        eprintln!("probed: {found:?}");
+        if cfg!(target_os = "macos") {
+            assert_eq!(found, Offered::NotProbed);
+        } else {
+            assert_eq!(found, offered(&enumerate(renderer_backends())));
+        }
     }
 
     /// A device of its own is requested with Iced's limits, in Iced's order: wgpu's defaults, then

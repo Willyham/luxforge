@@ -153,6 +153,72 @@ fn fallback_a_forced_no_gpu_launch_is_the_reference_in_the_session_and_every_tic
     finish(editor, catalog);
 }
 
+/// A launch on a host whose only adapter is a software one, not adopted, refuses the GPU stage as
+/// `--no-gpu-render` does: every client's session names the reference for `no-adapter` from the
+/// start, the gate refuses every plan, and the status bar says the reference renderer draws. A
+/// launch that asked for the software adapter (`--software-adapter`) draws on it: once the stage
+/// answers, every session names the GPU with `software`, which no agent can claim.
+#[test]
+fn fallback_a_software_only_host_draws_the_reference_until_its_adapter_is_asked_for() {
+    use luxforge_ui::adapters::{LaunchRenderer, Refusal};
+    let refused = catalog("fallback-software-refused");
+    let config = crate::Config {
+        launch_renderer: Some(LaunchRenderer::Reference(Refusal::SoftwareNotAdopted)),
+        ..crate::Config::default()
+    };
+    let (mut editor, _, agent) = real_photo_launched(&refused, &fixture(), config);
+    let reference = json!({"record": "reference", "reason": "no-adapter"});
+    assert_eq!(editor.gpu_preview_allowed(), Err("no-adapter"));
+    assert_eq!(session_renderer(&editor, agent), reference);
+    editor.renderer.stage = Some(GpuStageState::NoAdapter { refused: true });
+    deliver_until(&mut editor, "the first frame", |editor| {
+        editor.presentation.dimensions.is_some() && !editor.presentation.queue.is_busy()
+    });
+    assert_eq!(session_renderer(&editor, agent), reference);
+    assert_eq!(
+        editor.workspace.status.fallback,
+        renderer_notice(Renderer::reference(
+            luxforge_core::RendererReason::NoAdapter
+        )),
+        "the reference renderer's notice"
+    );
+    finish(editor, refused);
+
+    let asked = catalog("fallback-software-asked");
+    let config = crate::Config {
+        software_adapter: true,
+        launch_renderer: Some(LaunchRenderer::Gpu { software: true }),
+        ..crate::Config::default()
+    };
+    let (mut editor, _, agent) = real_photo_launched(&asked, &fixture(), config);
+    assert_eq!(
+        session_renderer(&editor, agent),
+        json!({"record": "reference", "reason": "surface-pending"})
+    );
+    assert_eq!(editor.gpu_preview_allowed(), Ok(()));
+    editor.renderer.stage = Some(GpuStageState::Available);
+    report(&mut editor);
+    let software = json!({"record": "gpu", "reason": null, "software": true});
+    assert_eq!(session_renderer(&editor, agent), software);
+    assert_eq!(session_renderer(&editor, editor.client), software);
+    assert_eq!(editor.session.renderer, Renderer::gpu_software());
+    let claim = call(
+        &editor.owner,
+        agent,
+        "workspace.set",
+        json!({"renderer": {"record": "gpu", "reason": null}}),
+    );
+    assert!(claim.is_err(), "{claim:?}");
+    // A lost device is the reference's, whatever adapter it was.
+    editor.renderer.stage = Some(GpuStageState::DeviceLost);
+    report(&mut editor);
+    assert_eq!(
+        session_renderer(&editor, agent),
+        json!({"record": "reference", "reason": "device-lost"})
+    );
+    finish(editor, asked);
+}
+
 /// An ordinary launch: the owner reports `surface-pending` until the surface has checked its stage,
 /// which is no reason to refuse a plan; the surface's answer is reported to every client as it
 /// comes — the GPU — and as it changes — the device lost, when the gate refuses with that reason and

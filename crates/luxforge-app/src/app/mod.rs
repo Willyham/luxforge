@@ -52,6 +52,8 @@ pub(crate) mod gpu_counts;
 mod gpu_dehaze_tests;
 #[cfg(test)]
 mod gpu_detail_tests;
+#[cfg(test)]
+mod gpu_drag_bench;
 pub(crate) mod gpu_identity;
 #[cfg(test)]
 mod gpu_light_tests;
@@ -618,7 +620,7 @@ impl Editor {
             gpu_settle: Default::default(),
             motion: Default::default(),
             drawn_frames: Default::default(),
-            renderer: renderer::RendererReport::new(config.no_gpu_render),
+            renderer: renderer::RendererReport::new(config.launch_renderer()),
             workspace: Default::default(),
             theme: luxforge_ui::Theme::luxforge_dark(),
         };
@@ -670,6 +672,8 @@ impl Editor {
             "startup",
             || json!({"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"version":env!("CARGO_PKG_VERSION"),"debug_assertions":cfg!(debug_assertions),"mode":if editor.evidence.is_some() {"evidence"} else {"editor"}}),
         );
+        let launch = editor.renderer.launch();
+        editor.event("launch_renderer", || renderer::launch_record(launch));
         if let Some(stored) = &editor.preferences.catalog.missing {
             editor.event(
                 "catalog_folder_missing",

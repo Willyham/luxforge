@@ -34,7 +34,8 @@ impl RenderTime {
 }
 
 /// "GPU render · 2 ms" while the photograph on screen is the GPU's render of the committed stack at
-/// rest, and "GPU preview · 2 ms" while it is a gesture's GPU frame, beside the CPU frames'
+/// rest, and "GPU preview · 2 ms" while it is a gesture's GPU frame (each after "Software" while
+/// the GPU is the platform's software adapter, [`derive`]), beside the CPU frames'
 /// "Approximate render" and "Exact render", with the interface thread's time to prepare that frame,
 /// or the picture at rest's tiles (the desktop's `gpu_settle` says why it is that time).
 pub(crate) fn gpu_text(ms: f64, at_rest: bool) -> String {
@@ -485,7 +486,13 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatusBarModel {
         // A GPU frame on screen names itself first: the CPU frame behind it, and any render still
         // running, are not what is shown.
         render: if let Some(us) = inputs.gpu_frame_us {
-            gpu_text(us as f64 / 1000.0, inputs.gpu_at_rest)
+            let text = gpu_text(us as f64 / 1000.0, inputs.gpu_at_rest);
+            // The session names a GPU on the platform's software adapter, a rasterizer on the CPU.
+            if inputs.session.renderer.software() {
+                format!("Software {text}")
+            } else {
+                text
+            }
         } else if let Some(bar) = inputs.render_bar {
             format!("Rendering… {:.0}%", (bar.fraction * 100.0).floor())
         } else if inputs.rendering {
@@ -701,6 +708,7 @@ mod tests {
         }
         for renderer in [
             Renderer::gpu(),
+            Renderer::gpu_software(),
             Renderer::headless(),
             Renderer::reference(RendererReason::SurfacePending),
         ] {
