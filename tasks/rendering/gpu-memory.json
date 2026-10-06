@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "plan_id": "rendering",
+  "plan_id": "gpu-memory",
   "title": "Rendering, preview and analysis",
   "objective": "Measure and bound the GPU resources outside the provisional photo-texture ceiling before any total-memory guarantee.",
   "context_summary": "Rendering has one entry point (luxforge_core::render) with an injected RenderContext, one latest-job worker, one tile function and one point pipeline generic over the byte and linear pixel domains, so a sample equals the rendered byte by construction; one table test proves it over every stack shape and both domains. Limits have one home, frames are opaque, render.rs is split by concept, the compiled entry answers every stage-boundary question through its own methods, and the byte-identical speedups are recorded in docs/specs/performance.md. The 1088 MiB temporary photo-texture overlap ceiling is provisionally accepted for those slots only (2026-09-27); crop GPU textures, overlays and backend staging remain outside it and are not measured or bounded, so no total-memory guarantee is made. Decisions: docs/decisions.md.",

@@ -20,7 +20,7 @@ S0 through M4 are accepted, and the [Develop workspace](docs/design/develop-work
 
 ## How we work
 
-- **Read first.** For any milestone or tracked task, read the relevant spec and its plan in [tasks](tasks/README.md). Product context lives in [decisions](docs/decisions.md).
+- **Read first.** For any milestone or tracked task, read the relevant spec and its plan in [tasks](tasks/README.md). Work that can start now is listed in the roadmap's [ready to implement](docs/plan.md#ready-to-implement) section, with the minimum model each task needs; re-review a plan against current `main` before implementing it, as that section describes. Product context lives in [decisions](docs/decisions.md).
 - **Plan proportionately.** Substantial features, milestones and other coordinated multi-step work start with a Markdown design (behavior, scope, constraints, acceptance, open decisions) and a validated JSON task plan. Research, reviews, diagnostics, documentation maintenance and small contained changes do not need a task plan unless asked or already tracked.
 - **Stay in scope.** Do what was asked. A planning request does not authorize implementing the plan. Do not prebuild future features or placeholder controls.
 - **Consult the owner on consequential product tradeoffs.** Record recommendations as proposals until decided. Never turn an unanswered question into an accepted decision.
@@ -52,5 +52,6 @@ S0 through M4 are accepted, and the [Develop workspace](docs/design/develop-work
 | History graph, named versions | [docs/design/versions-and-lineage.md](docs/design/versions-and-lineage.md) |
 | Browse, pick, develop: the Select workspace, events, moments, picks, the catalog, filmstrip, Locate | [docs/design/catalog.md](docs/design/catalog.md) |
 | Specs: history, crop and export, recovery, performance | [docs/specs](docs/specs) |
-| Task plans and conventions | [tasks/README.md](tasks/README.md) |
+| Ready-to-implement plans and tasks, minimum model, re-review before starting | [docs/plan.md#ready-to-implement](docs/plan.md#ready-to-implement) |
+| Task plans by area, and conventions | [tasks/README.md](tasks/README.md) |
 | Reference research: stack options, Lightroom, darktable, object removal and AI masks | [docs/research](docs/research), [object removal](docs/research/object-removal/README.md) |
