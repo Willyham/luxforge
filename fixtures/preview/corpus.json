@@ -349,6 +349,49 @@
       ]
     },
     {
+      "id": "presence-staged-masked-stack",
+      "family": "presence",
+      "class": "spatial",
+      "description": "Detail, a global Presence of Texture 25 and Clarity 20, and two radial masks each holding a masked exposure and a masked Presence of Clarity 50 and Texture 40: the masked stack's shape, which the picture at rest draws in three staged sweeps through both stage textures, Detail with the global Presence and then each masked Presence layer alone. On the 24 MP JPEG alone: over the larger sources its region at 100% passes the GPU-preview budget, which the editor draws from the reduced stage, a gap here.",
+      "sources": ["jpeg-24mp"],
+      "steps": [
+        {"api": {"method": "edit.set-detail", "params": {"luminance": 40, "colour": 40, "sharpening": 50, "radius": 1.0}}},
+        {"api": {"method": "edit.set-presence", "params": {"texture": 25, "clarity": 20}}},
+        {"api": {"method": "mask.create-radial", "params": {"x": 0.35, "y": 0.5, "radius_x": 0.2, "radius_y": 0.25, "angle": 10.0, "feather": 45.0}}},
+        {"api": {"method": "edit.set-basic", "params": {"mask": {"name": "Mask 1"}, "exposure": 0.6}}},
+        {"api": {"method": "edit.set-presence", "params": {"mask": {"name": "Mask 1"}, "clarity": 50, "texture": 40}}},
+        {"api": {"method": "mask.create-radial", "params": {"x": 0.65, "y": 0.5, "radius_x": 0.2, "radius_y": 0.25, "angle": 10.0, "feather": 45.0}}},
+        {"api": {"method": "edit.set-basic", "params": {"mask": {"name": "Mask 2"}, "exposure": 0.6}}},
+        {"api": {"method": "edit.set-presence", "params": {"mask": {"name": "Mask 2"}, "clarity": 50, "texture": 40}}}
+      ]
+    },
+    {
+      "id": "presence-staged-masked",
+      "family": "presence",
+      "class": "spatial",
+      "description": "Presence texture +50, clarity +50, dehaze +30, then a radial's masked Presence of Clarity 50 and Texture 40: two staged sweeps, the masked layer's cutting its windows from the stage the global layer's wrote, Dehaze's light read in the first. Not on the X100VI, whose boundary at 100% passes the 256 MiB a boundary holds.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "raw-z6", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.set-presence", "params": {"texture": 50, "clarity": 50, "dehaze": 30}}},
+        {"api": {"method": "mask.create-radial", "params": {"x": 0.5, "y": 0.5, "radius_x": 0.2, "radius_y": 0.25, "angle": 10.0, "feather": 45.0}}},
+        {"api": {"method": "edit.set-presence", "params": {"mask": {"name": "Mask 1"}, "clarity": 50, "texture": 40}}}
+      ]
+    },
+    {
+      "id": "presence-staged-twice-masked",
+      "family": "presence",
+      "class": "spatial",
+      "description": "Presence texture +50, clarity +50, then two radials' masked Presence of Clarity 50: three staged sweeps through both stage textures. Not on the X100VI, whose boundary at 100% passes the 256 MiB a boundary holds.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "raw-z6", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.set-presence", "params": {"texture": 50, "clarity": 50}}},
+        {"api": {"method": "mask.create-radial", "params": {"x": 0.35, "y": 0.5, "radius_x": 0.2, "radius_y": 0.25, "angle": 10.0, "feather": 45.0}}},
+        {"api": {"method": "edit.set-presence", "params": {"mask": {"name": "Mask 1"}, "clarity": 50}}},
+        {"api": {"method": "mask.create-radial", "params": {"x": 0.65, "y": 0.5, "radius_x": 0.2, "radius_y": 0.25, "angle": 10.0, "feather": 45.0}}},
+        {"api": {"method": "edit.set-presence", "params": {"mask": {"name": "Mask 2"}, "clarity": 50}}}
+      ]
+    },
+    {
       "id": "detail-moderate",
       "family": "detail",
       "class": "spatial",
