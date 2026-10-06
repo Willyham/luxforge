@@ -1364,7 +1364,8 @@ fn sheet(state: &SelectState, selection: &SelectionModel) -> Option<CatalogSheet
             let written: Vec<(String, String)> = report
                 .written
                 .iter()
-                .map(|path| {
+                .map(|written| {
+                    let path = &written.path;
                     let name = path.file_name().map_or_else(
                         || path.display().to_string(),
                         |name| name.to_string_lossy().into_owned(),

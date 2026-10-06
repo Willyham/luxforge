@@ -179,6 +179,19 @@ pub mod qualification {
         }
     }
 
+    /// A developed photograph's catalog tiers of its current entry, grid then large, as the preview
+    /// lane's render worker draws them before it encodes them: planned as the catalog owner plans a
+    /// render, the original prepared off the editor's cache, drawn through `tiles` and reduced from
+    /// its bands, or by the reference naming why; with the renderer that drew them. For the
+    /// desktop's tests that hold the GPU tile worker's tiers to the reference's.
+    pub fn photo_tiers(
+        service: &crate::EditorService,
+        asset_id: &crate::AssetId,
+        tiles: &dyn crate::tiles::TileService,
+    ) -> Result<(Vec<crate::Raster>, crate::catalog_types::RenderedBy), crate::Error> {
+        crate::previews::rendered::qualification_tiers(service, asset_id, tiles)
+    }
+
     /// A Lens correction layer holding a frozen Poly3 profile of `k1`, resolved for a `stage`, as
     /// a detected profile's Apply commits one: a lens warp for the GPU tests, with no lens index.
     pub fn lens_layer(k1: f64, stage: (u32, u32)) -> crate::Layer {

@@ -745,7 +745,7 @@ mod contract_table {
                 NotReady,
                 Cancelled,
             ],
-            "a cached preview's path, size, origin and whether it is approximate (only a photograph's tier rendered through an approximate proxy), or the job that makes it, shared by every request for the tier and read by the clients that asked, a cancel releasing only the caller's interest and another client's refused conflict while one waits, and the best preview cached meanwhile: a file's grid or loupe tier (job preview-extract; a RAW with no usable preview is developed for a visible or look-ahead request and not-ready for a background one), or a developed photograph's grid or large tier rendered from its current or named entry (job preview-render, one per tier; its camera preview is the fallback until its first render, and an edit's missing module is incompatible)",
+            "a cached preview's path, size, origin, whether it is approximate (never) and, for a photograph's rendered tier, the renderer that drew it, or the job that makes it, shared by every request for the tier and read by the clients that asked, a cancel releasing only the caller's interest and another client's refused conflict while one waits, and the best preview cached meanwhile: a file's grid or loupe tier (job preview-extract; a RAW with no usable preview is developed for a visible or look-ahead request and not-ready for a background one), or a developed photograph's grid or large tier rendered from its current or named entry (job preview-render, one per tier; its camera preview is the fallback until its first render, and an edit's missing module is incompatible)",
         )
         .starts(&jobs::PREVIEW_EXTRACT),
         method::<PreviewRegion>(

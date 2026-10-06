@@ -12,6 +12,8 @@ use crate::{
     },
     editor::{default_artifact_root, mutation},
     modules::{APPLY_PROOF_TINT, PROOF_MODULE},
+    previews::rendered::band_tiles::{BandTiles, Draw},
+    tiles::{ReferenceTiles, TileFallback, TileUnavailable},
 };
 use luxforge_testbase::{Gate, paths, wait_for, wait_until};
 use serde_json::json;
@@ -81,9 +83,13 @@ fn edited(label: &str, path: &Path) -> (EditorService, AssetId) {
 
 /// Every tier `request` renders, as its raster, from one production preparation.
 fn rasters(request: &RenderRequest) -> Vec<(RenderedKey, Raster)> {
-    render_with(request, &Cancel::new(), prepare, |key, raster| {
-        Ok((key, raster))
-    })
+    render_with(
+        request,
+        &ReferenceTiles::new(),
+        &Cancel::new(),
+        prepare,
+        |key, raster, _| Ok((key, raster)),
+    )
     .unwrap()
 }
 
@@ -258,12 +264,13 @@ fn a_grid_tier_is_the_exact_render_area_averaged_and_both_tiers_share_one_prepar
     let preparations = AtomicUsize::new(0);
     let tiers = render_with(
         &request,
+        &ReferenceTiles::new(),
         &Cancel::new(),
         |request, cancel| {
             preparations.fetch_add(1, Ordering::SeqCst);
             prepare(request, cancel)
         },
-        |key, raster| Ok((key, raster)),
+        |key, raster, _| Ok((key, raster)),
     )
     .unwrap();
     assert_eq!(preparations.load(Ordering::SeqCst), 1, "one preparation");
@@ -289,7 +296,7 @@ fn a_grid_tier_is_the_exact_render_area_averaged_and_both_tiers_share_one_prepar
         "the large tier is the exact render"
     );
 
-    let encoded = render(&request, &Cancel::new()).unwrap();
+    let encoded = render(&request, &ReferenceTiles::new(), &Cancel::new()).unwrap();
     for (tier, (key, raster)) in encoded.iter().zip(&tiers) {
         assert_eq!(&tier.key, key);
         let header = luxforge_jpeg::header(&tier.jpeg).unwrap();
@@ -319,7 +326,7 @@ fn a_grid_tier_is_the_exact_render_area_averaged_and_both_tiers_share_one_prepar
     // The cache is disposable: deleting the index directory loses nothing a render needs.
     drop(service.index().unwrap());
     fs::remove_dir_all(service.index_dir()).unwrap();
-    let again = render(&request, &Cancel::new()).unwrap();
+    let again = render(&request, &ReferenceTiles::new(), &Cancel::new()).unwrap();
     for (first, second) in encoded.iter().zip(&again) {
         assert!(
             first.jpeg == second.jpeg,
@@ -372,7 +379,7 @@ fn a_spatial_stack_is_rendered_exactly_and_never_approximated() {
     assert!(grid.rgba == fit_reference(&service, &asset, PHOTO_GRID_SIDE).rgba);
 
     let both = plan_render(&service, &asset, None, &BOTH).unwrap();
-    for tier in render(&both, &Cancel::new()).unwrap() {
+    for tier in render(&both, &ReferenceTiles::new(), &Cancel::new()).unwrap() {
         assert!(
             !tier
                 .info(PathBuf::from("/c.index/previews/t.jpg"))
@@ -456,7 +463,7 @@ fn a_missing_or_changed_original_is_source_unavailable() {
     let request = plan_render(&service, &asset, None, &[PreviewTier::Grid]).unwrap();
     assert_eq!(rasters(&request).len(), 1);
     let unavailable = |what: &str| {
-        let refused = render(&request, &Cancel::new()).unwrap_err();
+        let refused = render(&request, &ReferenceTiles::new(), &Cancel::new()).unwrap_err();
         assert_eq!(
             refused.kind,
             ErrorKind::SourceUnavailable,
@@ -590,7 +597,7 @@ fn a_missing_provider_or_artifact_is_refused_naming_its_edit() {
     );
 
     fs::remove_file(object_path(&default_artifact_root(&catalog), &artifact)).unwrap();
-    let after_plan = render(&request, &Cancel::new()).unwrap_err();
+    let after_plan = render(&request, &ReferenceTiles::new(), &Cancel::new()).unwrap_err();
     let before_plan = plan_render(&service, &asset, None, &[PreviewTier::Grid])
         .err()
         .unwrap();
@@ -622,6 +629,7 @@ fn a_cancelled_render_stops_and_answers_cancelled() {
         }
         render_with(
             &request,
+            &ReferenceTiles::new(),
             &cancel,
             |request, token| {
                 preparations.fetch_add(1, Ordering::SeqCst);
@@ -634,7 +642,7 @@ fn a_cancelled_render_stops_and_answers_cancelled() {
                 }
                 prepared
             },
-            |_, _| {
+            |_, _, _| {
                 finished.fetch_add(1, Ordering::SeqCst);
                 if at == "between" {
                     cancel.cancel();
@@ -690,13 +698,14 @@ fn a_rendered_backlog_never_delays_an_open_develop_preview() {
             thread::spawn(move || {
                 let tiers = render_with(
                     &request,
+                    &ReferenceTiles::new(),
                     &Cancel::new(),
                     |request, cancel| {
                         let prepared = prepare(request, cancel);
                         hold.pass();
                         prepared
                     },
-                    |key, raster| Ok((key, raster)),
+                    |key, raster, _| Ok((key, raster)),
                 );
                 finished.fetch_add(1, Ordering::SeqCst);
                 tiers
@@ -775,7 +784,8 @@ fn stale_rows_are_other_entries_and_other_generations() {
         index
             .connection()
             .execute(
-                "INSERT INTO photo_previews VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                "INSERT INTO photo_previews VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,
+                         CASE ?9 WHEN 'rendered' THEN 'gpu' END, NULL)",
                 params![
                     asset,
                     entry,
@@ -895,7 +905,7 @@ fn a_supplied_raw_renders_both_tiers_of_an_edited_photograph() {
             key.tier
         );
     }
-    for tier in render(&request, &Cancel::new()).unwrap() {
+    for tier in render(&request, &ReferenceTiles::new(), &Cancel::new()).unwrap() {
         println!(
             "nikon_z6.NEF: {} tier {}×{}, {} bytes",
             tier.key.tier.as_str(),
@@ -905,4 +915,162 @@ fn a_supplied_raw_renders_both_tiers_of_an_edited_photograph() {
         );
     }
     assert_eq!(sha256(&path), before, "nikon_z6.NEF changed");
+}
+
+/// Every tier `request` renders through `tiles`, as its raster, with the renderer that drew them.
+fn drawn(
+    request: &RenderRequest,
+    tiles: &dyn TileService,
+) -> (Vec<(RenderedKey, Raster)>, RenderedBy) {
+    let mut by = None;
+    let tiers = render_with(
+        request,
+        tiles,
+        &Cancel::new(),
+        prepare,
+        |key, raster, renderer| {
+            by = Some(renderer.clone());
+            Ok((key, raster))
+        },
+    )
+    .unwrap();
+    (tiers, by.expect("a tier"))
+}
+
+/// The renderer `{record: reference, reason}`, as a tier records it.
+fn reference_for(reason: Option<&str>) -> RenderedBy {
+    RenderedBy {
+        record: crate::RendererRecord::Reference,
+        reason: reason.map(str::to_owned),
+    }
+}
+
+/// A tier the tile service draws is its bands area-averaged as they arrive: streamed in bands of
+/// one row, of seven, of 64 and of the whole stage, the reference's own frame is the reference's
+/// tiers byte for byte, at a grid and a large tier that are both reduced and at a large tier the
+/// stage already fits; and the tiers name the GPU, as their preview does. A stream whose codes
+/// differ from the reference's draws tiers that differ, so the tiers are the stream's pixels.
+#[test]
+fn a_tier_the_tile_service_draws_is_its_bands_reduced_and_names_the_gpu() {
+    for (label, width, height) in [
+        ("rendered-bands", 2600, 1700),
+        ("rendered-bands-fit", 1200, 800),
+    ] {
+        let path = generated_jpeg(label, width, height);
+        let (service, asset) = edited(label, &path);
+        let request = plan_render(&service, &asset, None, &BOTH).unwrap();
+        let (reference, by) = drawn(&request, &ReferenceTiles::new());
+        assert_eq!(
+            by,
+            reference_for(None),
+            "a host with no GPU provider names no reason"
+        );
+        for rows in [1, 7, 64, height] {
+            let tiles = BandTiles::new(Draw::Bands(rows));
+            let (tiers, by) = drawn(&request, tiles.as_ref());
+            assert_eq!(by, RenderedBy::gpu());
+            assert_eq!(tiles.streams(), 1, "one stream for both tiers");
+            for ((key, tier), (_, expected)) in tiers.iter().zip(&reference) {
+                assert_eq!((tier.width, tier.height), (expected.width, expected.height));
+                assert!(
+                    tier.rgba == expected.rgba,
+                    "{label}: the {} tier in bands of {rows}",
+                    key.tier.as_str()
+                );
+            }
+        }
+        let marked = BandTiles::new(Draw::Marked(64));
+        let (tiers, _) = drawn(&request, marked.as_ref());
+        for ((key, tier), (_, expected)) in tiers.iter().zip(&reference) {
+            assert!(tier.rgba != expected.rgba, "{label}: {:?}", key.tier);
+        }
+        let streamed = BandTiles::new(Draw::Bands(64));
+        for tier in render(&request, streamed.as_ref(), &Cancel::new()).unwrap() {
+            assert_eq!(tier.renderer, RenderedBy::gpu());
+            let info = tier.info(PathBuf::from("/c.index/previews/t.jpg"));
+            assert_eq!(info.renderer, Some(RenderedBy::gpu()));
+            assert!(!info.approximate);
+            let json = serde_json::to_value(&info).unwrap();
+            assert_eq!(json["renderer"], json!({"record": "gpu", "reason": null}));
+        }
+        let sides: Vec<_> = reference
+            .iter()
+            .map(|(_, raster)| (raster.width, raster.height))
+            .collect();
+        println!("{label}: tiers {sides:?}");
+    }
+}
+
+/// A service that cannot draw the stack, at once or part-way, has the reference draw every tier
+/// from nothing, naming why: refused, no adapter and a surface still pending before the stream,
+/// the budget, and a device lost after three bands of a stream whose codes differ from the
+/// reference's, of which nothing is kept. Every tier is then the reference's, byte for byte.
+#[test]
+fn a_service_that_cannot_draw_has_the_reference_draw_every_tier_naming_why() {
+    let path = generated_jpeg("rendered-fallback", 2600, 1700);
+    let (service, asset) = edited("rendered-fallback", &path);
+    let request = plan_render(&service, &asset, None, &BOTH).unwrap();
+    let (reference, _) = drawn(&request, &ReferenceTiles::new());
+    let unavailable = |reason| Draw::Refuse(TileFallback::Unavailable(reason));
+    for (draw, reason) in [
+        (unavailable(TileUnavailable::Refused), "refused"),
+        (unavailable(TileUnavailable::NoAdapter), "no-adapter"),
+        (unavailable(TileUnavailable::Pending), "surface-pending"),
+        (
+            Draw::Refuse(TileFallback::Budget {
+                requested: 2,
+                budget: 1,
+            }),
+            "tiles-budget",
+        ),
+        (
+            Draw::StopAfter {
+                rows: 64,
+                bands: 3,
+                fallback: TileFallback::Unavailable(TileUnavailable::DeviceLost),
+            },
+            "device-lost",
+        ),
+    ] {
+        let tiles = BandTiles::new(draw);
+        let (tiers, by) = drawn(&request, tiles.as_ref());
+        assert_eq!(by, reference_for(Some(reason)));
+        for ((key, tier), (_, expected)) in tiers.iter().zip(&reference) {
+            assert!(tier.rgba == expected.rgba, "{reason}: {:?}", key.tier);
+        }
+    }
+}
+
+/// A render cancelled while its stream is drawn stops and answers `cancelled`: no tier is
+/// finished, and the stream ends between its bands.
+#[test]
+fn a_render_cancelled_inside_its_stream_answers_cancelled() {
+    let path = generated_jpeg("rendered-stream-cancel", 1200, 800);
+    let (service, asset) = edited("rendered-stream-cancel", &path);
+    let request = Arc::new(plan_render(&service, &asset, None, &BOTH).unwrap());
+    let tiles = BandTiles::new(Draw::Bands(8));
+    tiles.gate.shut();
+    let cancel = Cancel::new();
+    let finished = Arc::new(AtomicUsize::new(0));
+    let render = {
+        let (request, tiles, cancel, finished) = (
+            Arc::clone(&request),
+            Arc::clone(&tiles),
+            cancel.clone(),
+            Arc::clone(&finished),
+        );
+        thread::spawn(move || {
+            render_with(&request, tiles.as_ref(), &cancel, prepare, |_, _, _| {
+                finished.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+        })
+    };
+    tiles.gate.wait_reached(1, "the stream");
+    cancel.cancel();
+    tiles.gate.open();
+    let error = render.join().unwrap().unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Cancelled, "{error}");
+    assert_eq!(finished.load(Ordering::SeqCst), 0, "no tier finished");
+    assert_eq!(tiles.sent(), 0, "the stream ended before its first band");
 }
