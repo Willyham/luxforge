@@ -23,11 +23,13 @@
 //!   call or asking for a stream never waits for the worker (rule 12); only the worker waits on its
 //!   device.
 //! - **Order.** Calls are answered in the order queued, each before any export tile still to be
-//!   drawn, so a call waits behind at most the one tile being drawn. An export's tiles are drawn
-//!   one at a time, and only while no call waits. A stream whose band channel already holds
-//!   [`EXPORT_BANDS_IN_FLIGHT`] bands draws nothing until its encoder takes one, which wakes the
-//!   worker ([`BandStream::waking`]), as dropping the stream does; the worker never blocks on a
-//!   full channel.
+//!   submitted. An export keeps at most one tile in flight between its steps, and a step submits
+//!   its next tile before it reads the one before back, so a call waits behind at most two tiles:
+//!   the one its step is reading back and the one the GPU then draws. An export's steps are taken
+//!   only while no call waits. A stream whose band channel already holds, with the bands it is
+//!   assembling, [`EXPORT_BANDS_IN_FLIGHT`] bands submits nothing until its encoder takes one,
+//!   which wakes the worker ([`BandStream::waking`]), as dropping the stream does; the worker never
+//!   blocks on a full channel.
 //! - **A call.** A call reads through one session over its evaluation, which the worker holds only
 //!   while it answers that call (`desktop-keeps-no-stack`). A read plans the tile of its rectangle
 //!   grown by [`READ_RADIUS`] pixels on every side ([`plan_read`]), cuts that tile's window from the
@@ -48,13 +50,18 @@
 //!   every tile the runner's own charge holds within [`GPU_TILE_BUDGET`] less
 //!   [`STREAM_READ_RESERVE`], fixed for the stream from the plan, those constants and the device's
 //!   figures alone; row by row, each tile a fresh evaluation, each row of tiles assembled into one
-//!   band of `width × side × 4` bytes and sent in order. It stops between tiles once the stream's
-//!   cancellation is set or its encoder drops it, and lets go of everything it held for it. A tile
+//!   band of `width × side × 4` bytes and sent in order. Every tile of a band is cut from the
+//!   band's window, its tiles' windows joined, which the runner uploads once for the band; tiles of
+//!   one window shape draw into one slot; and two tiles are in flight, the GPU drawing one while the
+//!   worker encodes the next or reads the one before back ([`TileRunner::submit`]). It stops
+//!   between tiles once the stream's cancellation is set or its encoder drops it, and lets go of
+//!   everything it held for it, its tiles in flight unread. A tile
 //!   the GPU cannot draw ends the stream naming why ([`BandSender::fall_back`]): GPU and reference
 //!   tiles are never mixed in one export, and the export lane renders it again with the reference.
 //! - **Evidence.** [`GpuTiles::figures`]: the status, the adapter, the reads each renderer
-//!   answered, the streams and bands, the tiles drawn, the bytes the runner holds and has held,
-//!   its compiles and the lights it computed.
+//!   answered, the streams and bands, the tiles drawn and in flight, the windows uploaded and the
+//!   slots created, the bytes the runner holds and has held, its compiles, the lights it computed
+//!   and where its tiles' time went.
 use super::gpu_plan::{self, WarpGrid, surface_plan_over};
 use luxforge_core::{
     Cancel, ClientId, CoordinateGrid, Error, GpuFallback, GpuGeometry, GpuPlan, LinearImage,
