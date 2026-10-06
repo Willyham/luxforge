@@ -1,8 +1,8 @@
 //! Rendered previews of developed photographs (`docs/design/catalog.md`, "The index and previews
 //! cache"): a photograph's **grid** (512 px) and **large** (2048 px) tiers, rendered from one of its
-//! entries — the current one unless another is named — by the reference renderer and area-averaged
-//! to each tier, as a session without a GPU draws its picture at rest at Fit, so a tier is never
-//! an approximation of its entry.
+//! entries — the current one unless another is named — at full resolution by the owner's tile
+//! service, the GPU on the desktop, and area-averaged to each tier as they arrive, so a tier is
+//! never an approximation of its entry.
 //!
 //! These are the domain functions the preview lane runs `preview.read {item: photo}` and its
 //! render worker with (`renders.rs`, `photos.rs`, and the owner's `api/owner/previews/renders.rs`),
@@ -28,16 +28,26 @@
 //! not keep ready are read and verified the same way. Nothing prepared is handed back to the
 //! service: the render owns its source, and it is gone when the render returns.
 //!
-//! # The exact path
+//! # Drawn by the tile service, reduced as it arrives
 //!
-//! The entry is rendered once, exactly, at its output stage by the reference renderer, and each
-//! tier is that frame area-averaged to the tier's square bounds (`PHOTO_GRID_SIDE`,
-//! `PHOTO_LARGE_SIDE`) by the view's area average (`crate::proxy::reduce_raster`), or the frame
-//! itself when it already fits. Both tiers come from one preparation and one exact frame. The CPU
-//! proxy, a session without a GPU's drag path (`crate::cpu_proxy`), is not used: a tier is the
-//! reference's picture at rest reduced, never labelled `approximate`. The GPU, the renderer of
-//! record for the editor's picture (`docs/design/gpu-first.md`), does not render tiers: the
-//! preview lane runs in the core, which names no GPU crate, off the owner's tile service.
+//! The prepared source and the entry's stack are bound into one [`Evaluation`], compiled once, and
+//! handed to the owner's [`TileService`] as an export is (`api/owner/export.rs`): on the desktop
+//! the GPU tile worker draws the output stage in full-resolution tiles and streams it as bands, in
+//! order, and each band is area-averaged into every tier as it arrives ([`RowReduction`], the same
+//! linear-light average the reference's frame is reduced with, byte for byte), so a render holds
+//! at most [`EXPORT_BANDS_IN_FLIGHT`](crate::tiles::EXPORT_BANDS_IN_FLIGHT) bands and its tiers,
+//! never the whole frame. A tier whose stage already fits it keeps the stage's rows unreduced.
+//!
+//! The reference renderer draws the tiers instead, rendering the entry once exactly and
+//! area-averaging that frame to each tier ([`crate::proxy::reduce_raster`]): on a host without a
+//! GPU provider (`luxforge-json`, whose service is [`crate::tiles::ReferenceTiles`]), naming no
+//! reason; and, naming why, when the service says it cannot draw the stack before the stream
+//! (`surface-pending`, `refused`, `no-adapter`, `device-lost`, `tiles-budget` or the plan's own code)
+//! or stops drawing it part-way, in which case the stream's rows are dropped and the reference
+//! draws every tier from nothing: one render's tiers are never two renderers' pixels. Every tier
+//! records which renderer drew it ([`RenderedTier::renderer`], the row's `drawn_by` and
+//! `drawn_reason`), and the GPU's is held to the reference's within the display limit of the
+//! stack's class (`app::gpu_tiles_tier_tests`).
 //!
 //! A tier is upright sRGB display bytes, encoded as a baseline JPEG at [`RENDERED_JPEG_QUALITY`]
 //! with 4:2:0 chroma and no metadata or profile.
@@ -56,43 +66,54 @@
 //! # Never delaying Develop
 //!
 //! Nothing here uses or waits on the editor's source worker, its one-slot source cache, the
-//! desktop's preview worker (`preview/queue.rs`), its proxy cache or the tile service: a render
-//! reads the file itself on the lane's thread and renders with a [`RenderContext`] of its own
-//! ([`rendered_context`]), so a backlog of rendered previews never holds a budget, a queue slot or a
-//! lock an open Develop preview needs. It competes with Develop only for CPU on the shared Rayon
-//! pool. `a_rendered_backlog_never_delays_an_open_develop_preview` holds a backlog of prepared
-//! renders, each holding its decoded original, and shows a Develop preview job completing through
-//! the existing preview queue meanwhile.
+//! desktop's preview worker (`preview/queue.rs`) or its proxy cache: a render reads the file itself
+//! on the lane's thread and evaluates with a [`RenderContext`] of its own ([`rendered_context`]),
+//! so a backlog of rendered previews never holds a budget, a queue slot or a lock an open Develop
+//! preview needs. It shares the tile service with Develop's pixel reads and with exports as an
+//! export does: the service answers a read before any tile of a stream still to be drawn, so a
+//! read waits behind at most one tile of a render, and draws streams one at a time in the order
+//! asked, so a render and an export wait for each other's tiles. The reference path competes with
+//! Develop only for CPU on the shared Rayon pool. `a_rendered_backlog_never_delays_an_open_develop_preview`
+//! holds a backlog of prepared renders, each holding its decoded original, and shows a Develop
+//! preview job completing through the existing preview queue meanwhile.
 //!
 //! # Memory and cancellation
 //!
 //! One render holds one preparation. At its peak, by the sizes of its buffers (not measured), a
 //! JPEG holds its file's bytes (within `MAX_JPEG_BYTES`, 128 MiB) while they decode into the RGBA8
 //! frame (within the 512 MiB evaluated-frame limit, `luxforge_raw::MAX_FRAME_BYTES`): about 230 MiB
-//! of frame for a 60 MP JPEG, plus its exact frame and one tier of at most 16 MiB at 2048 px. A
-//! RAW holds its file's bytes (within `luxforge_raw::MAX_SOURCE_BYTES`) and the mosaic while it
-//! decodes, then the mosaic and the float planes (within `luxforge_raw::MAX_RGB_BYTES`) while it
-//! develops, then the planes alone — the mosaic is dropped before rendering — about 110 MiB of
-//! bytes and mosaic and 460 MiB of planes for a 40 MP RAW, then one exact frame (within the
-//! evaluated-frame limit) while both tiers are made from it, the planes released once it is
-//! rendered. The render is synchronous, so a lane worker holds at most one
-//! preparation at a time; the lane keeps the design's one RAW at a time off the editor's cache by
-//! running every render on its one render worker (`renders.rs`).
+//! of decoded source for a 60 MP JPEG. A RAW holds its file's bytes (within
+//! `luxforge_raw::MAX_SOURCE_BYTES`) and the mosaic while it decodes, then the mosaic and the float
+//! planes (within `luxforge_raw::MAX_RGB_BYTES`) while it develops, then the planes alone — the
+//! mosaic is dropped before rendering — about 110 MiB of bytes and mosaic and 460 MiB of planes for
+//! a 40 MP RAW. Beside the source, a render drawn by the tile service holds the bands waiting for
+//! it (at most two, each a row of the stream's tiles, `width × side × 4` bytes: 47 MiB for a
+//! 6,000 px wide photograph in tiles of 2048 px), the rows of a band being averaged (about 4 MiB)
+//! and its tiers (at most 16 MiB at 2048 px), and the GPU's own
+//! tiles within the tile worker's budget; one the reference draws holds one exact frame (within the
+//! evaluated-frame limit) while both tiers are made from it. The render is synchronous, so a lane
+//! worker holds at most one preparation at a time; the lane keeps the design's one RAW at a time
+//! off the editor's cache by running every render on its one render worker (`renders.rs`).
 //!
 //! Every pass checks the caller's [`Cancel`]: the reads and the RAW decode and development through
-//! its flag, every rendering pass per row or chunk, the area average per row, and the JPEG
-//! encode per strip. A cancelled render returns `cancelled` and nothing else.
+//! its flag, the tile service between its tiles (the stream's cancellation is the render's),
+//! every band and every reduced row, every rendering pass of the reference per row or chunk, the
+//! area average per row, and the JPEG encode per strip. A cancelled render returns `cancelled` and
+//! nothing else.
 
 use crate::{
-    AssetId, Cancel, EditorService, EntryId, Error, ErrorKind, HistoryEntry, LinearSettings,
-    ModuleRegistry, PreparedArtifact, PreviewSource, ProxyBounds, ProxyPlan, Raster, Recipe,
-    RenderContext, RenderOptions,
+    AssetId, Cancel, EditorService, EntryId, Error, ErrorKind, Evaluation, HistoryEntry,
+    LinearSettings, ModuleRegistry, PreparedArtifact, PreviewSource, ProxyBounds, ProxyPlan,
+    Raster, Recipe, RenderContext, Renderer, RendererReason,
     artifacts::{ArtifactId, ArtifactRead},
     catalog_types::{
         PHOTO_GRID_SIDE, PHOTO_LARGE_SIDE, PreviewInfo, PreviewItem, PreviewOrigin, PreviewTier,
+        RenderedBy,
     },
     editor::{AssetRecord, FilePreparation, Prepared, SourceWork, original_signature},
+    proxy::RowReduction,
     source::{PreparedSource, RawPrepared},
+    tiles::{BandStream, TileService, TileStatus},
 };
 use luxforge_jpeg::Settings;
 use rusqlite::{Connection, params};
@@ -105,10 +126,12 @@ use std::{
 /// The renderer generation every rendered tier is made and keyed under, recorded in the index's
 /// `photo_previews.renderer` column. **Bump it whenever a change makes a rendered tier's bytes
 /// differ** — a module's or the renderer's arithmetic, the area average, the tier sides, the JPEG
-/// settings — so every tier of the old generation is discarded and rendered again rather than shown
-/// for the new one. Generation 2: tiers are the reference's exact frame area-averaged, never a CPU
-/// proxy's render.
-pub(crate) const RENDERER_GENERATION: u32 = 2;
+/// settings, the renderer that draws them — so every tier of the old generation is discarded and
+/// rendered again rather than shown for the new one. Generation 3: tiers are drawn by the owner's
+/// tile service, the GPU on the desktop, and reduced from its bands, with the reference's exact
+/// frame area-averaged where the service cannot draw them; which renderer drew a tier is its row's
+/// (`drawn_by`), not its key's, since both are the entry within the display limit.
+pub(crate) const RENDERER_GENERATION: u32 = 3;
 
 /// The quality a rendered tier's JPEG is written at, with 4:2:0 chroma: an edited Nikon Z 6
 /// photograph's grid tier takes 33 KB and its large tier 272 KB.
@@ -211,7 +234,7 @@ pub(crate) fn is_current(
     RenderedKey::new(asset_id, entry_id, tier).is_ok_and(|key| key.preview_key() == preview_key)
 }
 
-/// One rendered tier: its key, its size and its JPEG.
+/// One rendered tier: its key, its size, its JPEG and the renderer that drew it.
 #[derive(Clone, Debug)]
 pub(crate) struct RenderedTier {
     pub key: RenderedKey,
@@ -219,6 +242,9 @@ pub(crate) struct RenderedTier {
     pub height: u32,
     /// Baseline JPEG, upright sRGB, [`RENDERED_JPEG_QUALITY`], 4:2:0, no metadata.
     pub jpeg: Vec<u8>,
+    /// The GPU through the owner's tile service, or the reference naming why: the same for every
+    /// tier of one render.
+    pub renderer: RenderedBy,
 }
 
 impl RenderedTier {
@@ -232,10 +258,11 @@ impl RenderedTier {
             width: self.width,
             height: self.height,
             origin: PreviewOrigin::Rendered,
-            // The exact frame area-averaged: never an approximation of its entry.
+            // The full-resolution picture area-averaged: never an approximation of its entry.
             approximate: false,
             bytes: self.jpeg.len() as u64,
             key: self.key.preview_key(),
+            renderer: Some(self.renderer.clone()),
         }
     }
 }
@@ -350,17 +377,48 @@ pub(crate) fn plan_render(
 }
 
 /// Render `request` on the calling thread, a preview-lane worker's: prepare its original off the
-/// editor's cache, render its entry exactly once, then area-average and encode each tier. See the module
-/// documentation for what it reads, holds and refuses.
-pub(crate) fn render(request: &RenderRequest, cancel: &Cancel) -> Result<Vec<RenderedTier>, Error> {
-    render_with(request, cancel, prepare, |key, raster| {
+/// editor's cache, have `tiles` draw its entry at full resolution and area-average the bands into
+/// each tier as they arrive, or render it once exactly with the reference where `tiles` cannot,
+/// then encode each tier. See the module documentation for what it reads, holds and refuses.
+pub(crate) fn render(
+    request: &RenderRequest,
+    tiles: &dyn TileService,
+    cancel: &Cancel,
+) -> Result<Vec<RenderedTier>, Error> {
+    render_with(request, tiles, cancel, prepare, |key, raster, renderer| {
         Ok(RenderedTier {
             width: raster.width,
             height: raster.height,
             jpeg: encode(&raster, cancel)?,
             key,
+            renderer: renderer.clone(),
         })
     })
+}
+
+/// Qualification only: both tiers of `asset_id`'s current entry, grid then large, as the render
+/// worker draws them before it encodes them — planned as the owner plans a render, the original
+/// prepared off the editor's cache, drawn through `tiles` — with the renderer that drew them
+/// (`luxforge_core::qualification::photo_tiers`).
+#[cfg(feature = "qualification")]
+pub(crate) fn qualification_tiers(
+    service: &EditorService,
+    asset_id: &AssetId,
+    tiles: &dyn TileService,
+) -> Result<(Vec<Raster>, RenderedBy), Error> {
+    let request = plan_render(
+        service,
+        asset_id,
+        None,
+        &[PreviewTier::Grid, PreviewTier::Large],
+    )?;
+    let mut drawn = None;
+    let rasters = render_with(&request, tiles, &Cancel::new(), prepare, |_, raster, by| {
+        drawn = Some(by.clone());
+        Ok(raster)
+    })?;
+    let drawn = drawn.ok_or_else(|| Error::internal("a render made no tier"))?;
+    Ok((rasters, drawn))
 }
 
 /// Every row of `asset_id` in the index's `photo_previews` that no longer describes a current tier
@@ -459,40 +517,195 @@ struct PreparedRender {
 }
 
 /// [`render`] with its preparation and what each tier becomes as parameters, so a test can hold a
-/// render inside its preparation and read its rasters. `prepare` runs once for every tier.
+/// render inside its preparation and read its rasters. `prepare` runs once for every tier, and
+/// `finish` is handed each tier's raster with the renderer that drew them all.
 fn render_with<T>(
     request: &RenderRequest,
+    tiles: &dyn TileService,
     cancel: &Cancel,
     prepare: impl FnOnce(&RenderRequest, &Cancel) -> Result<PreparedRender, Error>,
-    mut finish: impl FnMut(RenderedKey, Raster) -> Result<T, Error>,
+    mut finish: impl FnMut(RenderedKey, Raster, &RenderedBy) -> Result<T, Error>,
 ) -> Result<Vec<T>, Error> {
     cancel.check()?;
     let PreparedRender { source, verified } = prepare(request, cancel)?;
     cancel.check()?;
-    let recipe = bound(&request.entry.snapshot.recipe, &request.ready, verified);
-    // The entry's one exact frame, rendered by the reference renderer at the output stage: a layer
-    // this build cannot evaluate is refused here, naming its layers. The source goes once it is
-    // rendered; both tiers are area-averaged from the frame.
-    let frame = crate::render(
-        &request.registry,
-        source.input(),
-        &recipe,
-        RenderOptions::exact(cancel),
-        &request.context,
-    )?
-    .frame(request.entry.snapshot.id.clone())?;
-    drop(source);
-    let mut rendered = Vec::with_capacity(request.tiers.len());
-    for key in request.keys() {
-        cancel.check()?;
-        let side = tier_side(key.tier)?;
-        let bounds = ProxyBounds {
-            width: side,
-            height: side,
+    let recipe = bound(&request.entry.snapshot.recipe, &request.ready, verified).into_owned();
+    // The stack compiled once against the prepared source: a layer this build cannot evaluate is
+    // refused here, naming its layers, before anything is drawn.
+    let evaluation = Evaluation::new(
+        Arc::clone(&request.registry),
+        request.context.clone(),
+        source,
+        HistoryEntry::clone(&request.entry),
+        recipe,
+        None,
+    );
+    let keys = request.keys();
+    let (rasters, renderer) = draw(evaluation, &keys, tiles, cancel)?;
+    let renderer = RenderedBy::from(renderer);
+    keys.into_iter()
+        .zip(rasters)
+        .map(|(key, raster)| {
+            cancel.check()?;
+            finish(key, raster, &renderer)
+        })
+        .collect()
+}
+
+/// Every tier of `keys` drawn from `evaluation`, in order, with the renderer that drew them:
+/// `tiles` streams the output stage, reduced into each tier as it arrives; the reference renders
+/// the frame once exactly where the host has no GPU provider, or naming why where the service
+/// cannot draw it, at once or part-way. The source goes with the evaluation once it is drawn.
+fn draw(
+    evaluation: Evaluation,
+    keys: &[RenderedKey],
+    tiles: &dyn TileService,
+    cancel: &Cancel,
+) -> Result<(Vec<Raster>, Renderer), Error> {
+    let stage = evaluation.compiled()?.stage();
+    let size = (stage.width, stage.height);
+    let reason = if tiles.status() == TileStatus::Reference(None) {
+        None
+    } else {
+        match tiles.stream(&evaluation, cancel) {
+            Ok(stream) => match reduced(stream, size, keys, &evaluation, cancel)? {
+                Streamed::Drawn(rasters, renderer) => return Ok((rasters, renderer)),
+                // Drawn again from nothing by the reference.
+                Streamed::Stopped(reason) => Some(reason),
+            },
+            Err(fallback) => Some(RendererReason::from(&fallback)),
+        }
+    };
+    let renderer = reason.map_or(Renderer::headless(), Renderer::reference);
+    // The entry's one exact frame from the evaluation's compilation; the source goes once it is
+    // rendered, and every tier is area-averaged from the frame.
+    let frame = evaluation
+        .exact(cancel)?
+        .frame(evaluation.entry().snapshot.id.clone())?;
+    drop(evaluation);
+    let rasters = keys
+        .iter()
+        .map(|key| {
+            cancel.check()?;
+            fitted(&frame, bounds(key.tier)?, cancel)
+        })
+        .collect::<Result<_, Error>>()?;
+    Ok((rasters, renderer))
+}
+
+/// What a render's stream left: every tier, reduced from its bands, with the renderer that drew
+/// them; or why the reference is to draw them instead, nothing of the stream kept.
+enum Streamed {
+    Drawn(Vec<Raster>, Renderer),
+    Stopped(RendererReason),
+}
+
+/// Reduce `stream`'s bands of the `size` output stage into every tier of `keys` as they arrive,
+/// checking `cancel` before each band and in every reduced row. A cancellation and an error of the
+/// stream's own end the render with it; a stream its provider stopped drawing for a reason the
+/// reference draws instead is dropped with every row reduced so far, and that reason answered.
+fn reduced(
+    mut stream: BandStream,
+    size: (u32, u32),
+    keys: &[RenderedKey],
+    evaluation: &Evaluation,
+    cancel: &Cancel,
+) -> Result<Streamed, Error> {
+    let mut tiers = keys
+        .iter()
+        .map(|key| Tier::new(size, key.tier))
+        .collect::<Result<Vec<_>, Error>>()?;
+    while let Some(band) = stream.next() {
+        let band = match band {
+            Ok(band) => band,
+            Err(error) => {
+                cancel.check()?;
+                let reason = stream.fallback().map(RendererReason::from);
+                return reason.map(Streamed::Stopped).ok_or(error);
+            }
         };
-        rendered.push(finish(key, fitted(&frame, bounds, cancel)?)?);
+        cancel.check()?;
+        for tier in &mut tiers {
+            tier.push(&band.rgba, cancel)?;
+        }
     }
-    Ok(rendered)
+    let renderer = Renderer::from(stream.answered());
+    drop(stream);
+    let rasters = tiers
+        .into_iter()
+        .map(|tier| {
+            let (width, height, rgba) = tier.finish()?;
+            Ok(Raster {
+                width,
+                height,
+                rgba: Arc::new(rgba),
+                source_fingerprint: evaluation.source().fingerprint().to_owned(),
+                snapshot_id: evaluation.entry().snapshot.id.clone(),
+            })
+        })
+        .collect::<Result<_, Error>>()?;
+    Ok(Streamed::Drawn(rasters, renderer))
+}
+
+/// One tier as a stream's bands arrive: reduced to its bounds, or, for a stage that already fits
+/// them, the stage's own rows, at most the tier's 16 MiB.
+enum Tier {
+    Reduced(Box<RowReduction>),
+    Whole {
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    },
+}
+
+impl Tier {
+    fn new(size: (u32, u32), tier: PreviewTier) -> Result<Self, Error> {
+        Ok(match ProxyPlan::fit(size, size, bounds(tier)?) {
+            Some(plan) => Self::Reduced(Box::new(RowReduction::new(size, plan)?)),
+            None => Self::Whole {
+                width: size.0,
+                height: size.1,
+                rgba: Vec::with_capacity(Raster::expected_len(size.0, size.1)?),
+            },
+        })
+    }
+
+    /// The stage's next rows.
+    fn push(&mut self, rows: &[u8], cancel: &Cancel) -> Result<(), Error> {
+        match self {
+            Self::Reduced(reduction) => reduction.push(rows, cancel),
+            Self::Whole { rgba, .. } => {
+                rgba.extend_from_slice(rows);
+                Ok(())
+            }
+        }
+    }
+
+    /// The tier's size and bytes once every row has arrived.
+    fn finish(self) -> Result<(u32, u32, Vec<u8>), Error> {
+        match self {
+            Self::Reduced(reduction) => reduction.finish(),
+            Self::Whole {
+                width,
+                height,
+                rgba,
+            } => {
+                if rgba.len() != Raster::expected_len(width, height)? {
+                    return Err(Error::internal("a tier's stream ended before its last row"));
+                }
+                Ok((width, height, rgba))
+            }
+        }
+    }
+}
+
+/// A tier's square bounds.
+fn bounds(tier: PreviewTier) -> Result<ProxyBounds, Error> {
+    let side = tier_side(tier)?;
+    Ok(ProxyBounds {
+        width: side,
+        height: side,
+    })
 }
 
 /// An exact frame fitted to `bounds` by the view's area average of display bytes
@@ -682,3 +895,6 @@ fn cancelled_or(cancel: &Cancel, error: Error) -> Error {
 
 #[cfg(test)]
 mod preview_rendered;
+
+#[cfg(test)]
+pub(crate) mod band_tiles;

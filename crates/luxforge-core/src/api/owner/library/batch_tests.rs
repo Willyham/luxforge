@@ -36,6 +36,12 @@ fn assets(assets: &[AssetId]) -> Value {
     json!({"kind": "assets", "asset_ids": assets})
 }
 
+/// The renderer a file of an owner with no GPU provider names: the reference, its only renderer,
+/// with no reason, as `export.jpeg`'s result names it.
+fn headless() -> Value {
+    json!({"record": "reference", "reason": null})
+}
+
 /// One owner over a catalog in its own scratch directory.
 struct Harness {
     dir: PathBuf,
@@ -627,9 +633,16 @@ fn a_batch_export_writes_the_files_single_exports_write_under_the_export_rule() 
         out.join("DSC_0001-edited-2.jpg"),
         out.join("Lake-edited-2.jpg"),
     ];
+    // Each file names its renderer as `export.jpeg`'s result does: this owner has no GPU provider,
+    // so the reference, its only renderer, with no reason.
+    let files: Vec<Value> = photographs
+        .iter()
+        .zip(&written)
+        .map(|(asset, path)| json!({"asset_id": asset, "path": path, "renderer": headless()}))
+        .collect();
     assert_eq!(
         settled["result"],
-        json!({"done": photographs, "written": written, "skipped": []})
+        json!({"done": photographs, "written": files, "skipped": []})
     );
     assert_eq!(fs::read(out.join("Lake-edited.jpg")).unwrap(), b"taken");
     assert_eq!(
@@ -736,7 +749,10 @@ fn a_batch_export_reports_every_photograph_it_leaves_out() {
     assert_eq!(settled["status"], "ready", "{settled}");
     let report = &settled["result"];
     assert_eq!(report["done"], json!([exported]));
-    assert_eq!(report["written"], json!([out.join("Keep-edited.jpg")]));
+    assert_eq!(
+        report["written"],
+        json!([{"asset_id": exported, "path": out.join("Keep-edited.jpg"), "renderer": headless()}])
+    );
     let skipped = report["skipped"].as_array().unwrap();
     assert_eq!(skipped.len(), 4, "{report}");
     assert_eq!(
@@ -808,7 +824,11 @@ fn a_cancelled_batch_export_keeps_the_files_it_wrote_and_removes_its_temporary_f
     assert_eq!(running["progress"]["message"], "1 of 3", "{running}");
     assert_eq!(
         running["result"],
-        json!({"done": [photographs[0]], "written": [out.join("One-edited.jpg")], "skipped": []})
+        json!({
+            "done": [photographs[0]],
+            "written": [{"asset_id": photographs[0], "path": out.join("One-edited.jpg"), "renderer": headless()}],
+            "skipped": [],
+        })
     );
     let activity = harness.activity(&job);
     assert_eq!(activity["kind"], "batch.export");

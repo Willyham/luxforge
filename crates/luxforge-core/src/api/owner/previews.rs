@@ -1019,7 +1019,7 @@ pub(super) fn handle(owner: &mut Owner, message: PreviewsMessage) {
             worker,
             key,
             outcome,
-        }) => finished(owner, worker, key, outcome),
+        }) => finished(owner, worker, key, *outcome),
         PreviewsMessage::Region(done) => regions::finished(owner, done),
         PreviewsMessage::Render(done) => renders::finished(owner, done),
         #[cfg(test)]

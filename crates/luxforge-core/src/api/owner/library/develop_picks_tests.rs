@@ -1295,8 +1295,8 @@ fn develop_picks_send_back_returns_an_unedited_photograph_to_its_picks() {
     index
         .execute(
             "INSERT INTO photo_previews (asset_id, entry_id, tier, renderer, path, width, height,
-                 bytes, origin, last_used_ms, approximate)
-             VALUES (?1, 'entry-0', 'grid', 1, ?2, 512, 341, 4, 'rendered', 0, 0)",
+                 bytes, origin, last_used_ms, approximate, drawn_by)
+             VALUES (?1, 'entry-0', 'grid', 1, ?2, 512, 341, 4, 'rendered', 0, 0, 'gpu')",
             [
                 assets[0].as_str().unwrap().to_owned(),
                 harness

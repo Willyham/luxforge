@@ -84,7 +84,7 @@ Every earlier format is refused by name and left as it is:
 - A format 9 catalog stores only the mutation result of a request.
 - A format 7 catalog keeps the row fields only inside the entry JSON.
 
-The catalog's index, `<catalog stem>.index/index.sqlite`, is a separate database with a format of its own (`INDEX_FORMAT`, 5). It is opened on first use. It is a cache, so where the catalog refuses, the index is discarded and recreated, never touching the catalog: a mismatched format, a file SQLite cannot read and another catalog's index are all discarded.
+The catalog's index, `<catalog stem>.index/index.sqlite`, is a separate database with a format of its own (`INDEX_FORMAT`, 6). It is opened on first use. It is a cache, so where the catalog refuses, the index is discarded and recreated, never touching the catalog: a mismatched format, a file SQLite cannot read and another catalog's index are all discarded.
 
 An empty, unmarked database is initialized with the current schema. Existing catalogs must use the current format marker. Unsupported or nonempty unmarked catalogs are refused without rewriting their data, with an error directing the user to a new catalog path. Only current shapes are supported during pre-release development.
 

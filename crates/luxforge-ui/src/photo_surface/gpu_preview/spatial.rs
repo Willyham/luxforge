@@ -1923,13 +1923,9 @@ pub(super) struct LightPlane {
 }
 
 /// What a light plane is created with: what a plane is, a light link's storage write among it, the
-/// copy a tile runner writes a light it computed into ([`Pool::write_light`]), and in a build with
-/// a readback the copy a test reads it by.
-#[cfg(not(any(test, feature = "qualification")))]
-const LIGHT_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
-    .union(wgpu::TextureUsages::STORAGE_BINDING)
-    .union(wgpu::TextureUsages::COPY_DST);
-#[cfg(any(test, feature = "qualification"))]
+/// copy a tile runner writes a light it computed into ([`Pool::write_light`]), and the copies the
+/// pipeline's kept lights take a light out by and put it back in by ([`super::light::LightCache`]),
+/// which a test's readback reads it by too.
 const LIGHT_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
     .union(wgpu::TextureUsages::STORAGE_BINDING)
     .union(wgpu::TextureUsages::COPY_SRC)
@@ -2173,8 +2169,7 @@ impl Pool {
         });
     }
 
-    /// Light plane `k`'s texture, for a readback.
-    #[cfg(any(test, feature = "qualification"))]
+    /// Light plane `k`'s texture, for a copy into it or out of it, or a readback.
     pub(super) fn light_texture(&self, k: u32) -> Option<&wgpu::Texture> {
         self.lights
             .get(k as usize)

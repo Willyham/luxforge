@@ -114,11 +114,12 @@ pub mod gpu_preview;
 pub use gpu_preview::{
     AxisCoverage, BoundaryFormat, ClipMarks, CountsOutcome, Coverage, CoverageComponent,
     CoverageMode, DISSOLVE_DURATION, Derivation, Dissolve, DrawingPath, DrawnDissolve,
-    GPU_PREVIEW_BUDGET, GpuBoundary, GpuChange, GpuFallback, GpuPlan, GpuProgram, GpuRegion,
-    GpuRest, GpuSource, GpuStageState, GpuStep, GpuTail, GpuWarm, MaskedColour, OutputEncoding,
-    PIPELINE_CACHE, PRELUDE, PositionMap, REST_TILES_PER_FRAME, REST_VIEW_PIXELS, Reduction,
-    RestFigures, RestReduction, SourceFigures, SourceKind, TexelMap, TickCounts, WarmUpFigures,
-    install_output_encoding, output_encoding, refuse_gpu_stage, validate_step,
+    EvaluationFigures, GPU_PREVIEW_BUDGET, GpuBoundary, GpuChange, GpuFallback, GpuPlan,
+    GpuProgram, GpuRegion, GpuRest, GpuSource, GpuStageState, GpuStep, GpuTail, GpuWarm,
+    MaskedColour, OutputEncoding, PIPELINE_CACHE, PRELUDE, PositionMap, REST_TILES_PER_FRAME,
+    REST_VIEW_PIXELS, Reduction, RestFigures, RestReduction, SourceFigures, SourceKind, TexelMap,
+    TickCounts, WarmUpFigures, install_output_encoding, output_encoding, refuse_gpu_stage,
+    validate_step,
 };
 
 /// Which photo surface a primitive draws. The pipeline keeps one set of textures per id, so two
@@ -219,6 +220,7 @@ impl SurfaceFigures {
         overall.gpu_ready_boundary = drawn.gpu_ready_boundary;
         overall.gpu_evaluated_serial = drawn.gpu_evaluated_serial;
         overall.gpu_preview_frame_us = drawn.gpu_preview_frame_us;
+        overall.gpu_evaluation = drawn.gpu_evaluation;
         overall.drawn_dissolve = drawn.drawn_dissolve;
         overall.drawn_rest = drawn.drawn_rest;
         overall.drawn_rest_dissolve = drawn.drawn_rest_dissolve;
@@ -348,6 +350,10 @@ pub struct FirstDrawn {
     /// When the draw that first drew it was encoded: before the frame is submitted and presented,
     /// so not display scanout.
     pub at: Instant,
+    /// A plan's output: what the evaluation in the frame that first drew it did — refits, rebinds,
+    /// links run, lights — which a tick's latency is attributed by. `None` for a CPU frame and a
+    /// picture at rest.
+    pub evaluation: Option<gpu_preview::EvaluationFigures>,
 }
 
 /// A snapshot of actual texture work and draw encoding, distinct from desktop frame adoption.
@@ -411,6 +417,9 @@ pub struct SurfaceDiagnostics {
     /// writing its words and blocks, uploading a new boundary, encoding and submitting its pass.
     /// The device Iced creates has no timestamp queries, so the GPU's own time is not in it.
     pub gpu_preview_frame_us: Option<u64>,
+    /// What the evaluation in the frame of the GPU output the last draw drew did: refits, rebinds,
+    /// links run, lights encoded or restored, the window's texels ([`FirstDrawn::evaluation`]).
+    pub gpu_evaluation: Option<gpu_preview::EvaluationFigures>,
     /// The time, in microseconds, from the start of the preparation of the newest GPU-frame pass
     /// the queue has reported complete, of the slot the last draw drew, to when the interface
     /// learned the GPU had finished it: at the first submit or poll after it finished
@@ -1979,6 +1988,9 @@ impl shader::Primitive for PhotoPrimitive {
         );
         let gpu_fallback = surface.gpu_outcome.and_then(Result::err);
         let drawn_gpu_tag = drawn_gpu_boundary.and(surface.gpu_tag);
+        // A plan's output drawn as the photograph: what its frame's evaluation did.
+        let gpu_evaluation = (drawn_path == Some(DrawingPath::Gpu) && drawn_rest.is_none())
+            .then_some(surface.evaluation);
         let first_drawn = drawn_path.map(|path| {
             let (picture, boundary, tag) = match path {
                 // A picture at rest is told by its version, a plan's output by its boundary.
@@ -2003,6 +2015,7 @@ impl shader::Primitive for PhotoPrimitive {
                     boundary,
                     tag,
                     at: Instant::now(),
+                    evaluation: gpu_evaluation,
                 })
         });
         // Each surface compares against its own last draw, so two surfaces in different states
@@ -2032,6 +2045,7 @@ impl shader::Primitive for PhotoPrimitive {
             .as_ref()
             .and_then(gpu_preview::GpuSlot::evaluated_serial);
         diagnostic.gpu_preview_frame_us = gpu_frame_us;
+        diagnostic.gpu_evaluation = gpu_evaluation;
         diagnostic.drawn_clipping_marks = drawn_clipping_marks;
         diagnostic.drawn_dissolve = drawn_dissolve;
         diagnostic.drawn_rest = drawn_rest;
@@ -2241,6 +2255,9 @@ struct SurfaceSlots {
     tick_counted: Option<(u64, u64)>,
     /// That tick's counts.
     tick_counts: Option<gpu_preview::TickCounted>,
+    /// What this frame's evaluation of the GPU slot did ([`gpu_preview::EvaluationFigures`]):
+    /// cleared as each evaluation starts.
+    evaluation: gpu_preview::EvaluationFigures,
 }
 
 impl SurfaceSlots {
@@ -2417,6 +2434,9 @@ pub struct PhotoPipeline {
     figures: Arc<SurfaceFigures>,
     /// The GPU stage: whether the device can run it, its lost flag and its compiled sequences.
     gpu: gpu_preview::GpuStage,
+    /// The lights its light links computed last, kept across slot refits
+    /// ([`gpu_preview::light::LightCache`]).
+    kept_lights: gpu_preview::light::LightCache,
 }
 
 impl PhotoPipeline {
@@ -2457,6 +2477,7 @@ impl PhotoPipeline {
             tick_histogram: None,
             tick_counted: None,
             tick_counts: None,
+            evaluation: Default::default(),
         }
     }
 
@@ -3299,6 +3320,7 @@ impl PhotoPipeline {
             retirement_sender,
             figures,
             gpu,
+            kept_lights: Default::default(),
         }
     }
 }

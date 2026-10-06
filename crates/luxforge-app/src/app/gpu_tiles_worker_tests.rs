@@ -566,6 +566,22 @@ fn a_picks_25_points_render_one_window() {
             25,
             "{path}: every point the GPU's"
         );
+        // The tile's times, its own and added to the runner's total, as evidence records them.
+        assert!(
+            after.last.encode_us + after.last.wait_us > 0,
+            "{path}: {:?}",
+            after.last
+        );
+        assert_eq!(
+            after.total.wait_us - before.total.wait_us,
+            after.last.wait_us,
+            "{path}: the tile's wait summed"
+        );
+        let record = after.record();
+        assert!(
+            record["last_tile"]["wait_ms"].is_f64() && record["tiles_total"]["read_ms"].is_f64(),
+            "{path}: {record}"
+        );
         let (whole, _) = call(
             &service,
             client,

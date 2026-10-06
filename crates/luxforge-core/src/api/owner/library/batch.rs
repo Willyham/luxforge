@@ -21,6 +21,7 @@ use crate::{
     AssetId, Error, ErrorKind, JobId, JobStatus, Mutation, MutationOutcome,
     api::{ClientId, Origin, announce_once, methods::value, owner::export},
     catalog_types::{
+        BatchWritten,
         api::{BatchApplyPreset, BatchExport},
         jobs::{BATCH_EXPORT, BATCH_PRESET},
     },
@@ -220,7 +221,7 @@ pub(in crate::api) fn batch_export(
                     }
                 };
                 let written = batch::destination(&folder, &original).and_then(|destination| {
-                    export::write(
+                    let written = export::write(
                         *plan,
                         &destination,
                         options,
@@ -229,10 +230,14 @@ pub(in crate::api) fn batch_export(
                         &phase,
                         &mut |fraction| progress.within(fraction),
                     )?;
-                    Ok(destination.path().to_path_buf())
+                    Ok(BatchWritten {
+                        asset_id: asset.clone(),
+                        path: destination.path().to_path_buf(),
+                        renderer: written.renderer.into(),
+                    })
                 });
                 match written {
-                    Ok(path) => {
+                    Ok(written) => {
                         // Recorded as a single export's is, under the request that asked for it.
                         let origin = origin.clone();
                         let announced = job.commit(Box::new(move |owner: &mut Owner| {
@@ -242,7 +247,7 @@ pub(in crate::api) fn batch_export(
                         if let Err(stopped) = announced {
                             return Box::new(move |_: &mut Owner| Err(stopped));
                         }
-                        progress.done(asset, Some(path), Vec::new());
+                        progress.done(asset, Some(written), Vec::new());
                     }
                     Err(stopped) if stopped.kind == ErrorKind::Cancelled => {
                         return Box::new(move |_: &mut Owner| Err(stopped));

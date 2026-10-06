@@ -148,6 +148,51 @@ fn a_picture_at_rest_is_drawn_in_tiles_and_reduced_to_the_view() {
     // Drawn again, the same bytes, and no tile drawn again.
     let again = paint(&device, &queue, &mut pipeline, &primitive);
     assert_eq!(again, drawn);
+    // What its tiles did: every tile's links ran over its own window, the slot refitted wherever
+    // a tile's window or rectangle is another shape than the one before, nothing waited for a
+    // retirement, and once the GPU is done every tile's span is reported.
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        })
+        .expect("the device finishes");
+    paint(&device, &queue, &mut pipeline, &primitive);
+    let figures = diagnostics(&pipeline, ID)
+        .gpu_rest
+        .expect("the rest's figures");
+    let shape = |plan: &GpuPlan| {
+        (
+            plan.boundary.size(),
+            plan.region.map(|region| region.size()),
+        )
+    };
+    let refits = tiles
+        .windows(2)
+        .filter(|pair| shape(&pair[0]) != shape(&pair[1]))
+        .count() as u32;
+    let windows: u64 = tiles
+        .iter()
+        .map(|plan| {
+            let (width, height) = plan.boundary.size();
+            u64::from(width) * u64::from(height)
+        })
+        .sum();
+    eprintln!("{test}: {figures:?}");
+    let evaluation = figures.evaluation;
+    assert_eq!(evaluation.refits, refits, "a refit at each change of shape");
+    assert_eq!(
+        evaluation.window_texels, windows,
+        "every tile's window once"
+    );
+    assert!(evaluation.links_run >= 6, "every tile's link ran");
+    assert_eq!(
+        (evaluation.lights_encoded, evaluation.lights_restored),
+        (0, 0)
+    );
+    assert_eq!(figures.retirement_waits, 0);
+    assert_eq!(figures.gpu_tiles, 6, "every tile's span reported");
+    assert!(figures.gpu_max_us > 0 && figures.gpu_max_us <= figures.gpu_us);
     // Another version starts over from its first tile, the CPU frame drawn meanwhile.
     let primitive = PhotoPrimitive {
         rest: Some(GpuRest { version: 2, ..rest }),
@@ -169,8 +214,17 @@ fn a_picture_at_rest_is_drawn_in_tiles_and_reduced_to_the_view() {
             prepare_us: figures.prepare_us,
             fallback: None,
             counts_only: false,
+            evaluation: figures.evaluation,
+            retirement_waits: 0,
+            gpu_tiles: figures.gpu_tiles,
+            gpu_us: figures.gpu_us,
+            gpu_max_us: figures.gpu_max_us,
         }
     );
+    assert_eq!(figures.evaluation.window_texels, {
+        let (width, height) = tiles[0].boundary.size();
+        u64::from(width) * u64::from(height)
+    });
     assert!(figures.prepare_us > 0, "its first tile's prepare timed");
     // None lets it go.
     paint(&device, &queue, &mut pipeline, &handing_none());
