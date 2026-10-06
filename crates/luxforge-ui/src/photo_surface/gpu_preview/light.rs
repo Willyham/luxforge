@@ -1531,16 +1531,16 @@ pub(super) fn read_light(
     select_and_read((device, queue), (compiled, support), &link, &cut_into)
 }
 
-/// What [`read_staged_light`] holds at once on `device` for `light` over a stage texture in
-/// `format`: the link's textures and buffers, the tile it copies each of the stage's tiles into,
-/// the light texture and its readback copy. Creates nothing; refused as [`read_staged_light`]
-/// would be.
+/// What [`read_staged_light`] holds at once on `device` for `light`, a light behind a spatial
+/// step, over a stage texture in `format`: the link's textures and buffers, the tile it copies each
+/// of the stage's tiles into, the light texture and its readback copy. Creates nothing; refused for
+/// a light over the source or whose tiles the device cannot hold.
 pub(super) fn read_staged_light_charge(
     device: &wgpu::Device,
     format: BoundaryFormat,
     light: &GpuLight,
 ) -> Result<u64, GpuFallback> {
-    if !matches!(light.input, LightInput::Stage { .. }) {
+    if light.input == LightInput::Source {
         return Err(GpuFallback::PipelineFailed);
     }
     let limit = device.limits().max_texture_dimension_2d;

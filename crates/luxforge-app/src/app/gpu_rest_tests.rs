@@ -654,8 +654,25 @@ fn gpu_rest_the_measured_stacks_are_tiled_within_the_rests_share() {
         "the 60 MP drag stack"
     );
     // On a 60 MP RAW the surface holds 723 MB of source: the share is what the budget leaves
-    // beside it, the view plan and the accumulator, and the tile's slot fits that.
+    // beside it, the view plan and the accumulator. Dehaze's light behind Detail needs Detail's
+    // output over the whole stage, a stage texture of 963 MB in `f32`, which with a sweep's slot
+    // passes the share: the reference draws that picture at rest, named. Without Dehaze the stack
+    // is one sweep, chained, and its tile's slot fits the share.
     let (width, height) = (9_504, 6_336);
+    let rest = luxforge_core::qualification::rest_plan(
+        &committed(raw_of(width, height), recipe.clone()),
+        GpuView::Fit(super::gpu_qualification::fit_bounds()),
+    )
+    .expect("a rest plan");
+    match rest.tiles {
+        Some(Err(luxforge_core::GpuFallback::LightStage { layer, why })) => {
+            eprintln!("the 60 MP RAW drag stack: the reference's at rest, light-stage: {why}");
+            assert_eq!(layer, 2, "Presence's light");
+        }
+        other => panic!("the 60 MP RAW drag stack: {other:?}"),
+    }
+    let mut recipe = recipe;
+    recipe.layers[2].payload = json!({"texture": 100.0, "clarity": 100.0});
     let evaluation = committed(raw_of(width, height), recipe);
     let tiles = planned_tiles(&evaluation);
     let share = tiles.share.expect("a share");
@@ -674,8 +691,8 @@ fn gpu_rest_the_measured_stacks_are_tiled_within_the_rests_share() {
         true,
     ) + luxforge_core::rest_light_bytes(&tiles.plan, tiles.format);
     eprintln!(
-        "the 60 MP RAW drag stack: {} tiles of {} px; source {:.1} MB, share {:.1} MB, the centre \
-         tile's slot {:.1} MB",
+        "the 60 MP RAW drag stack without Dehaze: {} tiles of {} px; source {:.1} MB, share {:.1} \
+         MB, the centre tile's slot {:.1} MB",
         tiles.tiles.len(),
         tiles.tiles[0].rect.width,
         source as f64 / 1e6,
@@ -1156,10 +1173,13 @@ fn print_sweeps(what: &str, sweeps: &GpuSweeps) {
     }
 }
 
-/// Staged sweeps for the measured stacks, planned, not yet drawn: the 60 MP drag stack and Detail
-/// alone are one sweep each, drawn chained; the Air 2S's masked stack is four sweeps — Detail with
-/// the global Presence, then each masked Presence layer alone — in two stage textures, and the
-/// three-segment stack two sweeps in one, its lens tail in the last. Every sweep's slot, light
+/// Staged sweeps for the measured stacks, planned, not yet drawn: Detail alone is one sweep, drawn
+/// chained; the 60 MP drag stack is two in one stage texture, Detail then the Presence whose
+/// Dehaze reads Detail's output, its light reduced from that texture; the Air 2S's masked stack is
+/// four sweeps — Detail with the global Presence, which reads no light, then each masked Presence
+/// layer alone — in two stage textures; and the three-segment stack three sweeps in two, Detail,
+/// then the Presence whose Dehaze reads Detail's output, then the masked Presence, its lens tail
+/// in the last. Every sweep's slot, light
 /// links and the stage textures fit the rest's share, and each sweep's window carries about the
 /// work a tile may at most; a sweep's reach is its own links' halos and leads alone.
 #[test]
@@ -1168,7 +1188,7 @@ fn gpu_rest_the_measured_stacks_are_planned_in_staged_sweeps() {
         let evaluation = committed(source, recipe);
         let tiles = planned_tiles(&evaluation);
         match (name, &tiles.staging) {
-            ("the 60 MP drag stack" | "Detail alone at 24 MP", staging) => assert_eq!(
+            ("Detail alone at 24 MP", staging) => assert_eq!(
                 staging,
                 &GpuStaging::Chained(luxforge_core::Chained::OneSweep),
                 "{name}"
@@ -1189,14 +1209,23 @@ fn gpu_rest_the_measured_stacks_are_planned_in_staged_sweeps() {
                     .iter()
                     .map(|sweep| sweep.spatial.clone())
                     .collect();
+                let lit: Vec<_> = sweeps
+                    .sweeps
+                    .iter()
+                    .map(|sweep| sweep.lights.len())
+                    .collect();
                 match name {
+                    "the 60 MP drag stack" => {
+                        assert_eq!(ranges, [0..1, 1..2], "{name}");
+                        assert_eq!((sweeps.textures, lit), (1, vec![0, 1]), "{name}");
+                    }
                     "the Air 2S masked stack" => {
                         assert_eq!(ranges, [0..2, 2..3, 3..4, 4..5], "{name}");
                         assert_eq!(sweeps.textures, 2, "{name}");
                     }
                     "the Air 2S three-segment stack" => {
-                        assert_eq!(ranges, [0..2, 2..3], "{name}");
-                        assert_eq!(sweeps.textures, 1, "{name}");
+                        assert_eq!(ranges, [0..1, 1..2, 2..3], "{name}");
+                        assert_eq!((sweeps.textures, lit), (2, vec![0, 1, 0]), "{name}");
                         assert!(tiles.warp().is_some(), "{name}: the lens tail in the last");
                     }
                     _ => panic!("{name}: an unexpected stack"),

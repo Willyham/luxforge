@@ -173,13 +173,19 @@ fn staged_lights<'a>(
 /// where the reach of those already in it passes [`SWEEP_SPLIT_REACH`], and before every operation
 /// reading a staged light. One range, `0..0`, for a plan with none. `O(passes)`.
 pub(crate) fn sweep_ranges(plan: &GpuPlan) -> Vec<Range<usize>> {
+    ranges_of(plan, true)
+}
+
+/// `plan`'s spatial operations grouped into sweeps, split before every operation reading a staged
+/// light and, `by_reach`, where the reach already in a sweep passes [`SWEEP_SPLIT_REACH`].
+fn ranges_of(plan: &GpuPlan, by_reach: bool) -> Vec<Range<usize>> {
     let mut ranges = Vec::new();
     let (mut start, mut carried) = (0, 0);
     for (index, spatial) in plan.spatial.iter().enumerate() {
         let staged = staged_lights(plan, std::slice::from_ref(spatial))
             .next()
             .is_some();
-        if index > start && (carried > SWEEP_SPLIT_REACH || staged) {
+        if index > start && ((by_reach && carried > SWEEP_SPLIT_REACH) || staged) {
             ranges.push(start..index);
             (start, carried) = (index, 0);
         }
@@ -217,6 +223,23 @@ pub(crate) struct SweepRequest<'a> {
 /// last sweep back, each earlier sweep covering what the one after it reads: `O(sweeps × sides ×
 /// segments + tiles × segments)`, no pixel read.
 pub(crate) fn plan_sweeps(request: &SweepRequest) -> GpuStaging {
+    let staging = plan_ranges(request, sweep_ranges(request.plan));
+    // A stack reading a staged light that does not fit is tried again split only where a light
+    // needs it: fewer sweeps hold fewer stage textures, each sweep's windows carrying more.
+    if let GpuStaging::Chained(Chained::OverBudget { .. }) = &staging {
+        let forced = ranges_of(request.plan, false);
+        if forced.len() >= 2
+            && forced != sweep_ranges(request.plan)
+            && let staged @ GpuStaging::Staged(_) = plan_ranges(request, forced)
+        {
+            return staged;
+        }
+    }
+    staging
+}
+
+/// [`plan_sweeps`] over the sweeps `ranges`.
+fn plan_ranges(request: &SweepRequest, ranges: Vec<Range<usize>>) -> GpuStaging {
     let SweepRequest {
         compiled,
         source,
@@ -226,7 +249,6 @@ pub(crate) fn plan_sweeps(request: &SweepRequest) -> GpuStaging {
         budget,
         order,
     } = *request;
-    let ranges = sweep_ranges(plan);
     if ranges.len() < 2 {
         return GpuStaging::Chained(Chained::OneSweep);
     }
