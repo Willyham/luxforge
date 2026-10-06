@@ -3455,6 +3455,29 @@ The `raw-panel` smoke scenario's frames: a Temperature drag left open at 3500 K 
 
 Against the proposed pointwise limits, the Z6 and X100VI drafts are within them at Fit and when held at 100% (the Z6's moving frame misses only the worst block, 2.31 against 1.0), and the Air 2S misses the worst block at Fit (2.68) and the worst block and p99 when held at 100%.
 
+### A RAW white-balance drag on the GPU against its release
+
+Since 2026-10-06 the GPU draws a Temperature drag over the planes the entry developed, the change `W` a leading step ([GPU previews](../design/gpu-preview.md#raw-white-balance)), and the owner's `raw-panel` gates hold that moving frame to the release's picture at rest within the pointwise limits, at Fit and over the visible region at 100%. Measured by `gpu_white_balance_on_the_raw_corpus` (`crates/luxforge-app/src/app/gpu_white_balance_tests.rs`, ignored; the private RAW manifest), on the M4 Pro's Metal adapter, built from the lane's `c22847be` plus the test: each RAW opened As shot, a `set-raw` draft at 3500 K and at 2500 K planned at Fit (the harness's Fit bounds) and over the largest view's centred region at 100%, drawn by the editor's surface over its boundary derived from the As shot source; then the same temperature committed, redeveloped, and its picture at rest drawn from the redeveloped source (its tiles reduced to the view at Fit, its region plan at 100%) and its view plan, the frame a drag over the redeveloped source draws. Figures are mean ΔE00 / worst 16 × 16 block / p99 ΔE00 / signed mean ΔL\*; one draw each, deterministic.
+
+| Source, view, temperature | Moving frame against the picture at rest (the gate) | Moving frame against the redeveloped view plan (`W` alone) | View plan against the picture at rest (no change at all) |
+| --- | --- | --- | --- |
+| Z6, Fit, 3500 K | 0.385 / 2.11 / 2.11 / +0.025 | 0.038 / 0.34 / 0.74 / −0.000 | 0.384 / 2.10 / 2.11 / +0.025 |
+| Z6, Fit, 2500 K | 0.288 / 1.89 / 1.85 / +0.022 | 0.060 / 0.42 / 0.74 / −0.001 | 0.282 / 1.88 / 1.83 / +0.023 |
+| Z6, 100%, 3500 K | 0.151 / 2.33 / 1.26 / +0.000 | the same | 0 |
+| Z6, 100%, 2500 K | 0.243 / 2.25 / 1.57 / −0.000 | the same | 0 |
+| X100VI, Fit, 3500 K | 0.098 / 0.38 / 0.77 / −0.001 | 0.059 / 0.24 / 0.66 / +0.000 | 0.072 / 0.21 / 0.71 / −0.001 |
+| X100VI, Fit, 2500 K | 0.127 / 0.50 / 0.80 / −0.004 | 0.111 / 0.50 / 0.77 / −0.000 | 0.049 / 0.25 / 0.59 / −0.004 |
+| X100VI, 100%, 3500 K | 0.205 / 1.16 / 1.21 / +0.002 | the same | 0 |
+| X100VI, 100%, 2500 K | 0.632 / 2.33 / 2.49 / +0.003 | the same | 0 |
+| Air 2S, Fit, 3500 K | 1.086 / 5.62 / 5.54 / +0.069 | 0.317 / 2.71 / 1.91 / −0.029 | 1.027 / 4.70 / 5.07 / +0.098 |
+| Air 2S, Fit, 2500 K | 0.913 / 6.34 / 5.82 / −0.025 | 0.374 / 4.99 / 3.13 / −0.107 | 0.817 / 4.66 / 4.87 / +0.082 |
+| Air 2S, 100%, 3500 K | 0.675 / 4.89 / 3.45 / −0.024 | the same | 0 |
+| Air 2S, 100%, 2500 K | 0.794 / 8.75 / 5.25 / −0.122 | the same | 0 |
+
+- **Within the pointwise limits:** the X100VI at Fit at both temperatures. Every other cell misses at least the worst block; none is excused, since none of the three scenes is a highlight-clipped Bayer one by the owner's measure, the Z6's clipped share 1.5 × 10⁻⁶.
+- **At Fit the miss is the drag's frame, not `W`.** The moving frame against the redeveloped view plan, `W` alone, is within the limits on the Z6 and X100VI (worst block at most 0.50) and the Air 2S misses as its CPU draft did (2.71 and 4.99 against the CPU's 2.68 at 3500 K). The view plan against the picture at rest, the same stack with nothing changed, already misses on the Z6 (worst block 2.10 and 1.88) and the Air 2S (4.70 and 4.66), whose lens profiles warp the stage: a drag's frame at Fit processes the source reduced to the view and the picture at rest reduces the processed stage, the difference the release gate reports on 441 of 750 cells and the owner's open question of what a drag's frame at Fit is held to.
+- **At 100% the miss is `W`.** The region is the picture at rest's own plan, so the figures are `W`'s alone: over the largest view's centred region the Z6 and X100VI miss the worst block (2.25 to 2.33) and the X100VI at 2500 K the p99 too (2.49), where the CPU's held full-detail draft over the 1440 × 900 window's region missed nothing ([above](#raw-white-balance-draft-against-its-release)); the first-order `diag(g'/g)` does not follow the demosaic at high-contrast edges and saturated colours.
+
 `raw-panel` itself failed on all three RAWs at its `crop-started` step ("the luxforge.basic section records false, expected expanded"), after every frame used here had passed its plan checks and before the scenario's own residual checks ran. Nothing here uses those checks, and the owner's relative-residual gates (held 100% residuals of 0.8%, 1.4% and 5.1%, [decisions](../decisions.md#raw-white-balance-drafts)) were not remeasured.
 
 ### Reproducing it

@@ -6,16 +6,17 @@
 //!   the CPU's boundary at the source (`Render::boundary`): a JPEG's codes decoded through the
 //!   CPU's own table and held as the nearest half float, and a RAW's planes, viewed from a crop
 //!   window under each of the eight orientations, held as the `f32` they are.
-//! - **Reduce.** The source's area average at a proxy plan, a crop's window of it included, is the
-//!   CPU's proxy within a code on a JPEG, quantized and decoded again as the CPU's is, and within
-//!   the `f32` sum's rounding of the CPU's `f64` one on a RAW.
+//! - **Reduce.** The source's area average at the GPU's reduced-stage plan, a crop's window of it
+//!   included, is the CPU's box downscale of the source (a test reference: the exact `f64` mean
+//!   over each output pixel's source interval) within a code on a JPEG, quantized and decoded
+//!   again, and within the `f32` sum's rounding of the `f64` one on a RAW.
 //!
 //! A GPU test with no adapter prints that it was skipped and asserts nothing.
 use super::gpu_qualification::headless;
 use luxforge_core::{
     BoundaryFormat, Cancel, CropStage, Layer, LinearImage, LinearSettings, ModuleRegistry,
-    PreviewSource, ProxyBounds, ProxyCoverage, ProxyPlan, Recipe, RenderContext, RenderOptions,
-    RenderSource, SourceImage, qualification, render,
+    ProxyBounds, ProxyCoverage, ProxyPlan, Recipe, RenderContext, RenderOptions, RenderSource,
+    SourceImage, gpu_fit_plan, qualification, render,
 };
 use luxforge_ui::photo_surface::{
     AxisCoverage, Derivation, GpuBoundary, GpuSource, Reduction,
@@ -204,31 +205,61 @@ fn reduction(plan: ProxyPlan, source: (u32, u32)) -> (Derivation, (u32, u32)) {
     )
 }
 
-/// The proxy plan a job's worker builds for `recipe` over `source` at `bounds`, with the window of
-/// the proxy stage it holds.
-fn plan_of(source: RenderSource<'_>, recipe: &Recipe, bounds: ProxyBounds) -> ProxyPlan {
-    let registry = ModuleRegistry::builtin();
-    let context = RenderContext::new();
-    let rendered = render(
-        &registry,
-        source,
-        recipe,
-        RenderOptions::exact(&Cancel::never()),
-        &context,
-    )
-    .expect("the stack compiles");
-    qualification::fit_proxy(&rendered, &registry, recipe, bounds)
-        .expect("a proxy at the bounds")
-        .0
+/// The reduced-stage plan a GPU frame of `recipe` over a `source`-sized source is drawn at within
+/// `bounds`, with the window of the reduced stage it holds.
+fn plan_of(source: (u32, u32), recipe: &Recipe, bounds: ProxyBounds) -> ProxyPlan {
+    gpu_fit_plan(&ModuleRegistry::builtin(), recipe, source, bounds)
+        .expect("the stack compiles")
+        .expect("a reduced stage at the bounds")
 }
 
-/// A reduction of the source the surface holds is the CPU's proxy: on a JPEG each texel within a
-/// code of the proxy's own, its average quantized and decoded again as the CPU's is, over the whole
-/// proxy stage and over the window of it a straightened crop reads; on a RAW, under an orientation,
-/// within the rounding of an `f32` sum against the CPU's `f64` one.
+/// The CPU's box downscale of `pixel`, a `source`-sized stage's linear values, at `plan`, over the
+/// window of the reduced stage it holds, row by row: each output the exact `f64` mean over its
+/// source interval, every source sample weighted by the share of the interval it covers. The test
+/// reference the GPU's reduction is held to.
+fn box_downscale(
+    plan: ProxyPlan,
+    source: (u32, u32),
+    pixel: impl Fn(u32, u32) -> [f64; 3],
+) -> Vec<[f64; 3]> {
+    let [across, down] = plan.coverage(source).expect("the plan fits the source");
+    let [x0, y0, width, height] = plan.held();
+    let taps = |coverage: &ProxyCoverage, at: u32| -> Vec<(u32, f64)> {
+        let at = at as usize;
+        let range = coverage.offsets[at] as usize..coverage.offsets[at + 1] as usize;
+        coverage.weights[range]
+            .iter()
+            .enumerate()
+            .map(|(k, weight)| (coverage.first[at] + k as u32, *weight))
+            .collect()
+    };
+    let mut out = Vec::with_capacity((width * height) as usize);
+    for y in y0..y0 + height {
+        let rows = taps(&down, y);
+        for x in x0..x0 + width {
+            let columns = taps(&across, x);
+            let mut sum = [0f64; 3];
+            for (sy, wy) in &rows {
+                for (sx, wx) in &columns {
+                    let value = pixel(*sx, *sy);
+                    for channel in 0..3 {
+                        sum[channel] += wy * wx * value[channel];
+                    }
+                }
+            }
+            out.push(sum);
+        }
+    }
+    out
+}
+
+/// A reduction of the source the surface holds at the GPU's reduced-stage plan is the CPU's box
+/// downscale: on a JPEG each texel within a code of the downscale's, its average quantized and
+/// decoded again, over the whole reduced stage and over the window of it a straightened crop reads;
+/// on a RAW, under an orientation, within the rounding of an `f32` sum against the `f64` one.
 #[test]
-fn a_reduced_boundary_is_the_cpu_proxy_within_a_code() {
-    let test = "a_reduced_boundary_is_the_cpu_proxy_within_a_code";
+fn a_reduced_boundary_is_the_cpu_box_downscale_within_a_code() {
+    let test = "a_reduced_boundary_is_the_cpu_box_downscale_within_a_code";
     let Some(qualifier) = headless(test) else {
         return;
     };
@@ -253,26 +284,27 @@ fn a_reduced_boundary_is_the_cpu_proxy_within_a_code() {
             ..Recipe::default()
         },
     ] {
-        let plan = plan_of(RenderSource::Byte(&image), &recipe, bounds);
+        let plan = plan_of((image.width, image.height), &recipe, bounds);
         let (derivation, size) = reduction(plan, (image.width, image.height));
         let windowed = plan.held() != [0, 0, plan.width, plan.height];
         assert_eq!(windowed, !recipe.layers.is_empty(), "a crop's window");
-        let PreviewSource::Jpeg(proxy) = PreviewSource::Jpeg(image.clone())
-            .proxy(plan)
-            .expect("the CPU's proxy")
-        else {
-            panic!("a JPEG proxy");
-        };
-        assert_eq!((proxy.width, proxy.height), size);
+        let reference: Vec<[u8; 3]> = box_downscale(plan, (image.width, image.height), |x, y| {
+            let at = ((y * image.width + x) * 4) as usize;
+            std::array::from_fn(|channel| f64::from(table[usize::from(image.rgba[at + channel])]))
+        })
+        .into_iter()
+        .map(|mean| {
+            mean.map(|value| {
+                (luxforge_core::colour::srgb::encode(value.clamp(0.0, 1.0)) * 255.0).round() as u8
+            })
+        })
+        .collect();
+        assert_eq!(reference.len(), (size.0 * size.1) as usize);
         let boundary = GpuBoundary::derived(&source, derivation, size.0, size.1, 1)
             .expect("a derived boundary");
         let gpu = qualifier.derive(&source, &boundary).expect("the GPU's");
         let (mut exact, mut texels) = (0, 0);
-        for (index, (texel, pixel)) in gpu
-            .chunks_exact(8)
-            .zip(proxy.rgba.chunks_exact(4))
-            .enumerate()
-        {
+        for (index, (texel, pixel)) in gpu.chunks_exact(8).zip(&reference).enumerate() {
             for channel in 0..3 {
                 let value =
                     qualification_ui::half_value([texel[2 * channel], texel[2 * channel + 1]]);
@@ -281,7 +313,7 @@ fn a_reduced_boundary_is_the_cpu_proxy_within_a_code() {
                 });
                 assert!(
                     code.abs_diff(pixel[channel]) <= 1,
-                    "texel {index}, channel {channel}: {code} against the CPU proxy's {}",
+                    "texel {index}, channel {channel}: {code} against the box downscale's {}",
                     pixel[channel]
                 );
                 exact += usize::from(code == pixel[channel]);
@@ -293,7 +325,7 @@ fn a_reduced_boundary_is_the_cpu_proxy_within_a_code() {
                 "opaque"
             );
         }
-        eprintln!("{test}: windowed {windowed}, {exact} of {texels} channels the proxy's code");
+        eprintln!("{test}: windowed {windowed}, {exact} of {texels} channels the downscale's code");
     }
     // A RAW, viewed from a crop window under orientation 6.
     let base = (241u32, 173u32);
@@ -303,41 +335,28 @@ fn a_reduced_boundary_is_the_cpu_proxy_within_a_code() {
         LinearImage::new(base.0, base.1, values.as_ref().clone()).expect("finite planes");
     let viewed = qualification::viewed(&developed, view, 6).expect("a view");
     let source = GpuSource::planes(1, Arc::clone(&values), base, view, 6).expect("a source");
-    let settings = LinearSettings::default();
-    let plan = plan_of(
-        RenderSource::Linear {
-            image: &viewed,
-            settings,
-        },
-        &Recipe::default(),
-        bounds,
-    );
+    let plan = plan_of(source.stage(), &Recipe::default(), bounds);
     let (derivation, size) = reduction(plan, source.stage());
-    let PreviewSource::Raw { image: proxy, .. } = (PreviewSource::Raw {
-        image: viewed.clone(),
-        settings,
-    })
-    .proxy(plan)
-    .expect("the CPU's proxy") else {
-        panic!("a RAW proxy");
-    };
+    let reference = box_downscale(plan, source.stage(), |x, y| {
+        viewed.pixel(x, y).expect("inside the view").map(f64::from)
+    });
     let boundary =
         GpuBoundary::derived(&source, derivation, size.0, size.1, 1).expect("a derived boundary");
     let gpu = qualifier.derive(&source, &boundary).expect("the GPU's");
     let mut largest = 0f32;
     for (index, texel) in gpu.chunks_exact(16).enumerate() {
         let (x, y) = (index as u32 % size.0, index as u32 / size.0);
-        let cpu = proxy.pixel(x, y).expect("inside the proxy");
+        let cpu = reference[index].map(|value| value as f32);
         for channel in 0..3 {
             let value = f32::from_le_bytes(texel[4 * channel..4 * channel + 4].try_into().unwrap());
             let difference = (value - cpu[channel]).abs();
             largest = largest.max(difference);
             assert!(
                 difference <= 4.0e-6 * cpu[channel].abs().max(1.0),
-                "texel ({x}, {y}), channel {channel}: {value} against the CPU proxy's {}",
+                "texel ({x}, {y}), channel {channel}: {value} against the box downscale's {}",
                 cpu[channel]
             );
         }
     }
-    eprintln!("{test}: a RAW's largest difference from the CPU proxy {largest:e}");
+    eprintln!("{test}: a RAW's largest difference from the box downscale {largest:e}");
 }

@@ -256,44 +256,6 @@ pub enum ProxyIdentity {
     },
 }
 
-impl ProxyPlan {
-    /// `Some(plan)` when a proxy strictly smaller than a `source`-sized source fits `bounds` for a
-    /// recipe whose full-resolution output stage is `stage`, and `None` when the scale would be one
-    /// or more, which is where the exact path runs unchanged.
-    ///
-    /// The scale is `min(bounds.width / stage.width, bounds.height / stage.height, 1)`, so a rotated
-    /// crop's output — not the source rectangle it was cut from — is what gets fitted into the
-    /// bounds. Pure arithmetic: the stage comes from the compilation the caller already holds
-    /// ([`crate::Render::proxy_plan`]).
-    pub(crate) fn fit(source: (u32, u32), stage: (u32, u32), bounds: ProxyBounds) -> Option<Self> {
-        let bounds = bounds.clamped();
-        let (source_width, source_height) = source;
-        let (stage_width, stage_height) = stage;
-        if stage_width == 0 || stage_height == 0 || source_width == 0 || source_height == 0 {
-            return None;
-        }
-        let scale = (f64::from(bounds.width) / f64::from(stage_width))
-            .min(f64::from(bounds.height) / f64::from(stage_height))
-            .min(1.0);
-        // A non-finite scale declines too: there is no proxy to describe, and the exact path is
-        // always a correct answer.
-        if !scale.is_finite() || scale >= 1.0 {
-            return None;
-        }
-        let width = ((f64::from(source_width) * scale).round() as u32).clamp(1, source_width);
-        let height = ((f64::from(source_height) * scale).round() as u32).clamp(1, source_height);
-        if width == source_width && height == source_height {
-            return None;
-        }
-        Some(Self {
-            width,
-            height,
-            bounds,
-            window: None,
-        })
-    }
-}
-
 /// One cached proxy source's identity: the pixels it came from and the plan it was built to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ProxyKey {

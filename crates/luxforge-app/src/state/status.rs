@@ -97,7 +97,7 @@ struct Class {
 /// turned off (`preference-off`), and the two the table does not name (`unchanged` and
 /// `unplannable`). The last is the picture at rest's while its programs compile, said at rest
 /// alone.
-const CLASSES: [Class; 6] = [
+const CLASSES: [Class; 7] = [
     Class {
         codes: &["no-adapter", "device-lost"],
         phrase: "Reference renderer",
@@ -111,6 +111,14 @@ const CLASSES: [Class; 6] = [
         tooltip: "This many layers at this zoom need more than the GPU preview holds, so the \
                   preview is drawn on the CPU, which is slower. Fewer masked Presence or Detail \
                   layers, or Fit, draw on the GPU.",
+        say: Say::Lasting,
+    },
+    Class {
+        codes: &["budget-reduced"],
+        phrase: "Softer while dragging",
+        tooltip: "This many layers at this zoom need more than the GPU preview holds, so the drag \
+                  is drawn on the GPU at the detail Fit shows, scaled to the view, and is sharp \
+                  again when you let go.",
         say: Say::Lasting,
     },
     Class {
@@ -626,13 +634,20 @@ mod tests {
     /// of its codes the drag recorded.
     #[test]
     fn each_class_of_reason_says_its_phrase_and_tooltip() {
-        let classes: [(&[&str], &str, &str); 2] = [
+        let classes: [(&[&str], &str, &str); 3] = [
             (
                 &["budget-exceeded", "texture-limit", "buffer-limit"],
                 "GPU memory full",
                 "This many layers at this zoom need more than the GPU preview holds, so the \
                  preview is drawn on the CPU, which is slower. Fewer masked Presence or Detail \
                  layers, or Fit, draw on the GPU.",
+            ),
+            (
+                &["budget-reduced"],
+                "Softer while dragging",
+                "This many layers at this zoom need more than the GPU preview holds, so the drag \
+                 is drawn on the GPU at the detail Fit shows, scaled to the view, and is sharp \
+                 again when you let go.",
             ),
             (
                 &["pipeline-failed"],
