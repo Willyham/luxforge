@@ -1,7 +1,15 @@
 //! A drag tick the GPU does not draw (`docs/design/gpu-preview.md`, "A tick the GPU does not
 //! draw"): its frame is held for a reason that passes within a tick or an upload, and otherwise
 //! the reference renderer draws one whole frame of the drafted stack per tick, the latest winning.
+//! A session the GPU does not draw at all drags on the display-size proxy instead.
 //!
+//! - **Proxied.** In a session whose GPU stage cannot draw at all — no adapter, which a launch with
+//!   `--no-gpu-render` or a host with only a software adapter answers too, or a lost device — every
+//!   tick asks the reference for the drafted stack's display-size proxy
+//!   (`PreviewIntent::Interactive`): at the view's own bounds below 100%, and at Fit's at 100% and
+//!   above, which the view magnifies. The queue's latest-wins slot bounds it: a newer tick replaces
+//!   the pending job and never stops the proxy in progress. The release's reference frame is sharp
+//!   at rest (owner, 2026-10-06).
 //! - **Held.** `compiling` until the status bar's half-second threshold, `unchanged`, `unplannable`
 //!   while no view is known (the tick's job was planned with no GPU preview), and the boundary,
 //!   source and surface waits (`boundary-pending`, `boundary-uploading`, `source-uploading`,
@@ -22,7 +30,7 @@
 //! Each waiting tick holds its job — the evaluation it was planned with, no pixels — and is let go
 //! with its draft: a release, a cancel, another draft, or a tick the GPU draws.
 use super::{Editor, gpu_preview::Tick};
-use luxforge_core::{Draft, DraftId, PreviewJob};
+use luxforge_core::{Draft, DraftId, PreviewIntent, PreviewJob};
 use serde_json::json;
 use std::time::{Duration, Instant};
 
@@ -93,6 +101,16 @@ impl Editor {
         // The tick was planned at the view as it is now: held or rendered, the view needs no plan
         // of its own.
         self.view_plan.dirty = false;
+        let timed = self.log.diagnostics.is_some() && self.mask_gesture().is_some();
+        // A session the GPU does not draw at all drags on the proxy, latest winning.
+        if self.gpu_stage_refusal().is_some() {
+            self.motion.held = None;
+            self.motion.next = None;
+            self.motion.in_flight = None;
+            let mut job = job;
+            job.intent = PreviewIntent::Interactive;
+            return Some(self.request_preview_inner(job, timed));
+        }
         let now = Instant::now();
         let reason = self.gpu_cpu_reason().map(|reason| {
             (
@@ -104,7 +122,6 @@ impl Editor {
             Some((code, held_for)) => (Some(code), held_for),
             None => (None, None),
         };
-        let timed = self.log.diagnostics.is_some() && self.mask_gesture().is_some();
         let waiting = |since| Waiting {
             draft: set.draft_id.clone(),
             revision: set.draft_revision,
