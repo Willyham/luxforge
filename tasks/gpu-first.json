@@ -800,6 +800,146 @@
           "The gate passes; the baseline costs are gone or named with their new figures."
         ]
       }
+    },
+    {
+      "id": "TASK-012",
+      "status": "pending",
+      "dependencies": [
+        "TASK-011"
+      ],
+      "description": "Make the GPU's picture at rest, its histogram and clipping counts, and the GPU export faster than the reference renderer on every measured row on the M4. Make the rest's tile charge match what its slot allocates, and give the rest a larger share. Keep Dehaze's light across tile-slot refits. Order the rest's tiles by window shape. Pipeline the export tile worker. Draw stacks with several spatial layers in staged sweeps, so a tile's window carries only its own layers' halos. Explain or fix paint at 100%. Attribute the launch and open regressions since 2026-10-02. Let editor-latency pair held ticks. Render a developed photograph's catalog tiers (grid and large) on the GPU through the tile service.",
+      "extra_context": [
+        "Design: the integrator's working design (artifacts/gpu-first/plans/task-012-plan.md, not committed), whose accepted parts move into docs/design/gpu-first.md and gpu-preview.md as they land. Every gain in it is an estimate from a cost model of about 2 to 4 ms of GPU per megapixel of tile window per spatial link, derived from TASK-011's measured totals.",
+        "Measured misses (docs/specs/performance.md, 'GPU-first against the 2026-10-04 baseline'):\n- Picture at rest and counts: 60 MP 5.6 s against the reference's 1.7 s (240 tiles of 512 px); Air 2S masked Presence 15 to 17 s against 1.3 s (330 tiles of 256 px).\n- Heavy export: 60 MP 10.2 to 10.5 s against 2.1 to 2.2 s; 24 MP 0.94 against 0.76 s.\n- Paint at 100%: p95 23.7 ms.\n- Launch: 1,869 ms against 1,378 ms. Uncached 24 MP open: 1,099 ms against 783 ms.\n- editor-latency fails any run with a held tick.",
+        "Causes found in the code:\n- The core's tile_bytes (render/gpu/preview.rs:928) charges spatial + 2 boundary-sized textures and every scratch plane, where the slot charges spatial + 1 and its pool once (chain_charge, ui gpu_preview.rs:3597). This forces 512 px tiles at 60 MP.\n- Windows sum every spatial layer's halo and the anchor's lead (plan.rs:595-619; Presence 448 px of halo at 10,000 px plus a 300 px lead). That is about 12 texels a link per output pixel at 60 MP and 60 to 100 on the masked stack.\n- Shape holds the exact window size, so edge tiles refit the slot (gpu_preview.rs:2626). Each refit recomputes Dehaze's light, whose key is in the pool (light.rs:620), and may wait a frame for retirement (rest.rs:745-757).\n- TileRunner::run (ui tiles.rs:409) uploads each tile's source window, creates every texture anew and blocks on poll(Wait) per tile.",
+        "Step 1 (lane B, wave 1). Files: ui rest.rs, light.rs, tiles.rs, photo_surface.rs; app gpu_preview.rs, gpu_tiles.rs; xtask/src/editor_latency.rs.\n- Attribution figures: rest refits, lights encoded, retirement waits, window texels and a per-tile GPU span; the runner's upload, encode, wait and read times; per-tick rebinds and links run.\n- Lights kept by key in a pipeline LRU of 8 one-texel textures, copied into a new pool.\n- editor-latency pairs a path 'held' tick with its slider_draft_set and reports held inputs. A held input never drawn is superseded, not a failure.",
+        "Step 2 (lane A, wave 1). Files: core render/gpu/preview.rs and preview_tests.rs; app gpu_rest_tests.rs.\n- tile_bytes matches the slot's allocation.\n- The rest's share is 2 GiB less the source, the view plan and the accumulator, at most 1 GiB, by the plan's own figures (replacing REST_TILE_BYTES = 512 MiB).\n- Rest tiles are ordered by window shape, row by row within a shape.\n- A side whose window takes more than about 24 MP·links steps down.",
+        "Step 3 (lane B, wave 2). Files: ui tiles.rs, new gpu_preview/staged.rs; app gpu_tiles.rs.\n- The tile worker holds the band's source rows, reuses its slot per window shape and keeps two tiles in flight. A call waits behind at most two tiles.\n- The stage holder that steps 5 and 6 share: up to 2 x 2 textures of the content stage, a tile's rect copied in, a window copied out, charged before creation.",
+        "Step 4 (lane A, wave 2). Files: core render/gpu/preview.rs, render/gpu/tiles.rs, plan.rs; app gpu_plan.rs. Plan staged sweeps for RestTiles and StreamPlan, not yet drawn:\n- Group the chain's links into sweeps, splitting before a spatial link only where the halos and leads before it pass about 64 px.\n- Each sweep's tiles are windowed and anchored for its own links (anchor_of over its spatial slice).\n- At most two stage textures, charged within the rest's share or the export budget. A stack that does not fit is planned chained, as today.",
+        "Step 5 (lane A, wave 3). Files: ui rest.rs, gpu_preview.rs. The surface draws the rest in sweeps:\n- Each sweep copies its tiles' rects of the last link's intermediate into a stage texture, and the next sweep cuts its boundaries from it.\n- The last sweep reduces and counts as today.\n- The chained fallback is kept, and the stage textures retire with the rest.",
+        "Step 6 (lane B, wave 3). Files: ui tiles.rs; app gpu_tiles.rs. The runner draws streams in sweeps within GPU_TILE_BUDGET.",
+        "Step 7 (integrator, wave 4):\n- verify --tier quick and rendered (the release gate).\n- On a quiet M4, back to back with --reference-renderer: the 60 MP drag-stack commit, the Air 2S masked release, the Air 2S three-segment commit, and the 24 MP and Air 2S drag stacks; GPU against reference exports at 24 and 60 MP, trivial and heavy.\n- Paint at 100% over the masked stack, with step 1's attribution.\n- Launch split into spawn, first RSS, startup and first frame_captured; open split by decoded.reduced and the worker's render time. Builds 2837c344 and the tip, interleaved and reversed, with syspolicyd's pid checked.\n- The visibility smoke over a commit while minimized.\n- Update gpu-preview.md, gpu-first.md, architecture.md limits, performance-rules.md, performance.md, features.md and development.md.",
+        "Step 8 (conditional, wave 5). If step 1 attributes paint's tail to word or block buffer regrowth forcing a re-evaluation (ui gpu_preview.rs:2293, 2662-2698): grow with headroom at a stroke's start, and rebind without forgetting unchanged content. Otherwise record the miss with its cause. Q2's open picture, if the owner decides it.",
+        "Launch and open hypotheses, to be measured in step 7:\n- Launch: mostly outside the editor. measure copies a 41.9 MB executable (about 35 MB on 10-02) into a fresh temporary bundle per launch (xtask/src/launch.rs:378-411), and macOS checks it on first run. The syspolicyd bundle-reuse fix (62721f90) is not on this branch. Up to about 0.1 s from main's preferences, themes, flags and the per-launch log.\n- Open: 5c95da9c removed the proxy phase, so an open's first whole frame (decoded, app/preview.rs:1466) is the reference's exact frame reduced to the view rather than the proxy.",
+        "Owner questions (recommendation; default):\n- Q1. Raise GPU_TILE_BUDGET from the proposed, undecided 1 GiB to 2 GiB so the heavy 60 MP export can hold two stage textures? Recommended 2 GiB, est. 1.2 to 1.6 s against the reference's 2.2 s. Default: keep 1 GiB, record the 60 MP heavy export as a miss (est. ~3 s) and propose computing Clarity's and Dehaze's quarter-scale planes once a stage as the follow-up.\n- Q2. May an open's first picture be the GPU's view plan when its programs are warm? Recommended yes. Default: no change; the 0.3 s is named as the exact first frame's cost.\n- Q3. If a minimized window draws no frames, should a commit's GPU counts still complete? Recommended: verify first; if frames stop, analysis.request answers from the reference while hidden. Default: record what is observed and change nothing.",
+        "Compatibility with main's visibility gating and job.wait (7b822aa7):\n- The rest stays on the frame clock, and no timer or poll is added.\n- The pipelined tile worker blocks only its own thread.\n- After the merge, export timings are read through job.wait, not the 100 ms job reader.",
+        "Owner, 2026-10-06 (docs/decisions.md, GPU-first rendering): the export worker's budget GPU_TILE_BUDGET is 2 GiB, apart from the preview budget; an open's first picture is the GPU's view plan when its programs are warm, the reference frame only on a cold cache or without a GPU; whether a hidden window stops frames is verified, and if it does analysis.request answers from the reference while hidden; a developed photograph's catalog tiers move from the exact CPU render the merge with main left them on (2026-10-06, previews/rendered.rs) to the GPU through the tile service, exact within the display limit."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "TASK-012 design",
+          "target": "/tmp/gpu-first/task-012-plan.md",
+          "relevance": "Findings with file and line references, estimates, the staged-sweep design, steps and owner questions."
+        },
+        {
+          "kind": "file",
+          "label": "Measured misses",
+          "target": "docs/specs/performance.md",
+          "locator": "GPU-first against the 2026-10-04 baseline",
+          "relevance": "The rows this task must beat and the method to measure them again."
+        },
+        {
+          "kind": "symbol",
+          "label": "Rest tile planner",
+          "target": "crates/luxforge-core/src/render/gpu/preview.rs",
+          "locator": "plan_tiles, tile_bytes, REST_TILE_BYTES",
+          "relevance": "The overcharge and the tile side choice."
+        },
+        {
+          "kind": "symbol",
+          "label": "Anchor and lead",
+          "target": "crates/luxforge-core/src/render/gpu/plan.rs",
+          "locator": "anchor_of, GpuAnchor, anchored",
+          "relevance": "Why windows carry a summed lead, and the per-sweep anchor."
+        },
+        {
+          "kind": "symbol",
+          "label": "Picture at rest on the surface",
+          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview/rest.rs",
+          "locator": "draw_rest, REST_TILES_PER_FRAME",
+          "relevance": "Tile scheduling, retirement waits and the reduction."
+        },
+        {
+          "kind": "symbol",
+          "label": "Slot fitting and charge",
+          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview.rs",
+          "locator": "Shape, run, chain_charge, buffer_capacity",
+          "relevance": "Refits, the slot's real charge and the rebind on buffer growth."
+        },
+        {
+          "kind": "symbol",
+          "label": "Light link",
+          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview/light.rs",
+          "locator": "evaluate_lit, encode_light",
+          "relevance": "The light keyed in the pool and recomputed on every refit."
+        },
+        {
+          "kind": "symbol",
+          "label": "Tile runner",
+          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview/tiles.rs",
+          "locator": "TileRunner::run, submit, wait, GPU_TILE_BUDGET",
+          "relevance": "The export's serialized per-tile upload, evaluation and readback."
+        },
+        {
+          "kind": "symbol",
+          "label": "GPU tile worker",
+          "target": "crates/luxforge-app/src/app/gpu_tiles.rs",
+          "locator": "advance, begin, STREAM_READ_RESERVE",
+          "relevance": "Stream side choice, bands and calls between tiles."
+        },
+        {
+          "kind": "symbol",
+          "label": "editor-latency pairing",
+          "target": "xtask/src/editor_latency.rs",
+          "locator": "inputs",
+          "relevance": "Held ticks to pair instead of failing."
+        },
+        {
+          "kind": "file",
+          "label": "Visibility and job monitoring (main)",
+          "target": "docs/design/visibility-and-monitoring.md",
+          "relevance": "Main's contract the rest and export changes must fit after the merge."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Rules 6, 8, 12, 13 and 14 and the review checklist every crates/ change answers."
+        }
+      ],
+      "acceptance_criteria": [
+        "On the M4, same release build, back to back with --reference-renderer: the GPU's picture at rest and its counts land sooner at p50 and p95 than the reference's frame and histogram for the 60 MP drag-stack commit, the Air 2S masked-stack release and the Air 2S three-segment commit; the 24 MP and Air 2S drag stacks are no worse than on 2026-10-06.",
+        "The GPU export's median is below the reference export's at 24 and 60 MP, trivial and heavy; the 60 MP heavy row is subject to Q1 and is recorded as an explained miss under the default.",
+        "Painting over the masked stack at 100% has p95 at or under 16 ms, or the tail is attributed from per-tick figures in docs/specs/performance.md.",
+        "Launch to an empty shell and the uncached 24 MP open return to 1,378 / 1,476 ms and 783 / 827 ms, or each regression's cause is named from split measurements of both builds.",
+        "Staged sweeps draw the same codes and counts as chained tiles, byte for byte, on the headless surface and the tile runner; the release gate passes on the whole corpus; GPU-preview and tile-worker peaks are recorded within their budgets; sources are unchanged.",
+        "editor-latency measures runs with held ticks, reporting their count and reasons, and still fails a set with no answer."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Agents run only their crates' filtered tests: the cross-crate charge parity, sweep planning, staged-against-chained byte equality on the headless surface and the runner, pipelined bands against sequential ones, light reuse across refits and held-tick pairing on synthetic logs.",
+          "The integrator runs the quick and rendered tiers once, then the timing runs on a quiet M4 with the load recorded, the reference renderer back to back and the launch and open splits on both builds."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core render::gpu::preview",
+          "cargo test -p luxforge-app gpu_rest",
+          "cargo test -p luxforge-app gpu_tiles",
+          "cargo test -p luxforge-ui gpu_preview",
+          "cargo test -p xtask editor_latency",
+          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/60mp.jpg --output NEW_DIR --mode commit --samples 30 --basic --detail --presence [--reference-renderer]",
+          "cargo run --release --locked --package xtask -- editor-latency --source AIR2S.DNG --output NEW_DIR --mode paint --samples 240 --masks 3 --mask-presence --presence --detail [--zoom 100] [--reference-renderer]",
+          "cargo xtask develop --background --hidden-window --evidence-dir NEW_DIR --evidence-script EXPORTS.json --open SOURCE",
+          "cargo run --release --locked --package xtask -- measure --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Every filtered test passes; staged and chained output are byte-identical; the release gate passes.",
+          "The rows in the acceptance criteria meet their targets or are recorded as explained misses with their scope, load and build identity."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -842,6 +982,12 @@
       "wave": 6,
       "task_ids": [
         "TASK-011"
+      ]
+    },
+    {
+      "wave": 7,
+      "task_ids": [
+        "TASK-012"
       ]
     }
   ]
