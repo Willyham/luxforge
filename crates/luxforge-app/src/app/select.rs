@@ -94,6 +94,8 @@ pub(crate) struct Select {
     pub(crate) anchor: Option<u32>,
     /// The newest evaluation's number; an answer for any other is dropped.
     pub(crate) serial: u64,
+    /// When the newest evaluation was asked for, for its answer's event.
+    pub(crate) asked_at: Option<std::time::Instant>,
     /// `event.list`: one in flight, the newest search text waiting.
     pub(crate) events: Coalesce<String>,
     /// The events have been asked for since Select was first shown.
@@ -198,6 +200,7 @@ impl Default for Select {
             facets_answered: 0,
             evidence_after: None,
             evidence_indexed: false,
+            asked_at: None,
             reread: Reread::Asked,
             reading: None,
             stale_while_reading: false,
@@ -1049,6 +1052,7 @@ impl Editor {
             state.facets = None;
         }
         self.select.serial += 1;
+        self.select.asked_at = Some(std::time::Instant::now());
         self.select.reread = Reread::Asked;
         // Whatever made the view stale, it is being read now.
         self.select.stale_while_reading = false;
@@ -1081,6 +1085,19 @@ impl Editor {
         match result {
             Ok(answer) => {
                 let (summary, session) = *answer;
+                let asked_ms = self
+                    .select
+                    .asked_at
+                    .map(|asked| asked.elapsed().as_secs_f64() * 1000.0);
+                self.event("select_viewed", || {
+                    json!({
+                        "serial": serial,
+                        "answered_ms": asked_ms,
+                        "count": summary.count,
+                        "moments": summary.groups.moments.len(),
+                        "index_revision": summary.index_revision,
+                    })
+                });
                 // Whether the active item was on screen, which decides whether the scroll follows
                 // it or stays where the person left it.
                 let active_shown = self.active_on_screen();
