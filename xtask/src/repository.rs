@@ -2065,18 +2065,13 @@ fn rules(root: &Path) -> Result<Applied> {
 
 pub fn check(root: &Path) -> Result {
     let s = read_json(&root.join("tools/task-plan.schema.json"))?;
-    let mut plan_paths: Vec<_> = fs::read_dir(root.join("tasks"))?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<std::io::Result<Vec<_>>>()?
+    let plan_paths: Vec<_> = files(&root.join("tasks"))?
         .into_iter()
         .filter(|path| {
-            path.is_file()
-                && path
-                    .extension()
-                    .is_some_and(|extension| extension == "json")
+            path.extension()
+                .is_some_and(|extension| extension == "json")
         })
         .collect();
-    plan_paths.sort();
     let plans = plan_paths
         .iter()
         .map(|path| read_json(path))

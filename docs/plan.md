@@ -2,6 +2,44 @@
 
 Outstanding work by area. What is delivered is in [feature status](features.md); pillars in [AGENTS.md](../AGENTS.md); accepted decisions in [decisions](decisions.md). Relative priority needs owner input ([open questions](decisions.md#open-product-questions)).
 
+## Ready to implement
+
+A persistent list of the work that can start now: each plan below has a validated design and task file on `main`, and each task named has status `ready`. Keep it current: add a plan when one of its tasks becomes ready, and remove a task when it starts or completes. The task files are organised by area in [tasks](../tasks/README.md).
+
+**Minimum model: the high tier.** Every task in this section is implemented by Opus 5.5 High, Fable 5.1 High, 6-Astra High or 6.1-Sol High, or a stronger model. This applies to each agent that writes any part of a task, subagents included. A row may raise the minimum; none lowers it.
+
+**Before starting a task**, re-review its plan, because `main` has moved since the plan was validated:
+
+1. Read the design, then the task's description, context, links, acceptance and test strategy against current `main`. Confirm the files, symbols, commands, flags and figures it names still exist and still mean what it says.
+2. Confirm every dependency is `completed` and no other agent has started the task: look for a branch or worktree carrying it (`git branch -a`, `git worktree list`) and continue that work rather than restarting it.
+3. Check [decisions](decisions.md) and [feature status](features.md) for anything decided or delivered since that changes the task's scope.
+4. If the plan no longer matches `main`, correct the plan and design first and run `cargo xtask check-repository`; take a consequential product change to the owner rather than deciding it. Then set the task to `in_progress` and remove it from this list.
+5. Work and verify as [AGENTS.md](../AGENTS.md#how-we-work) says: narrow tests while building, the verification tier the task asks for at the end.
+
+### Ready now
+
+| Plan | Ready tasks | Notes | Minimum model |
+| --- | --- | --- | --- |
+| [GPU memory accounting](../tasks/rendering/gpu-memory.json) | TASK-001 measure and bound GPU resources outside the photo-texture ceiling | A measurement: run after feature work, on a quiet host, beside the RAW whole-editor measurement | High tier |
+| [RAW qualification](../tasks/raw/raw.json) ([design](design/initial-raw.md)) | TASK-006 full-editor RAW responsiveness, memory and JPEG measurement | A measurement on the owner's M4; TASK-001, 002, 004 and 005 are in progress | High tier |
+| [RAW looks](../tasks/raw/raw-looks.json) ([design](design/raw-looks.md)) | TASK-002 the shared colour primitives (curve tail policy, Oklab chroma unit, path to white) | Phase 1 first; its GPU programs join the GPU-first renderer's program list and qualification, now on `main` | High tier |
+| [Corrections](../tasks/editing/corrections.json) ([design](design/corrections.md)) | TASK-001 freeze the remaining contract; TASK-002 Clone and Heal numerics | Renderer integration targets the merged GPU-first interfaces; the repair-versus-Detail placement is still open | High tier |
+| [AI editing](../tasks/editing/ai-editing.json) ([design](design/ai-editing.md)) | TASK-002 the prototype on `main` as the harness; TASK-006 the inference port and ONNX Runtime crate; TASK-008 the model-selection mask kind | The GPU-first integration they were sequenced after has merged; the Corrections foundation runs beside the first stage | High tier |
+| [Dependency advisories](../tasks/project/dependency-advisories.json) | TASK-001 ttf-parser exception, due 2026-10-29; TASK-002 paste exception, due 2026-12-18 | The audit fails once an exception expires | High tier |
+
+### Validated, awaiting authorization
+
+Ready tasks in plans the owner has decided but not yet authorized for implementation (the [product decisions](../tasks/project/product-decisions.json) plan carries the question). Do not start them without the owner's go-ahead.
+
+| Plan | Ready tasks | Notes | Minimum model |
+| --- | --- | --- | --- |
+| [Lightroom import](../tasks/lightroom/lightroom-import.json) ([design](design/lightroom-import.md)) | TASK-001 confirm the catalog format against a copy of the owner's catalog | Needs no code; needs the owner's catalog copy | High tier |
+| [Lightroom alignment](../tasks/lightroom/lightroom-alignment.json) ([design](design/lightroom-alignment.md)) | TASK-001 the rig's generator and synthetic targets | Its rounds need the owner to import and export in Lightroom | High tier |
+
+### In progress
+
+Continue these rather than starting them again: [GPU-first rendering](../tasks/rendering/gpu-first.json) TASK-008, portability without a native GPU, which TASK-010 and 011 wait on; [Detail](../tasks/editing/detail.json) TASK-013, 016 and 017; the [Tone curve](../tasks/editing/tone-curve.json) measurement, TASK-009; and the [RAW qualification](../tasks/raw/raw.json) tasks above. The [Lens and perspective](../tasks/editing/lens-and-perspective.json) measurement and first-open checks wait on other work, the [Efficiency](../tasks/rendering/efficiency.json) `dist` profile is blocked by the owner's deferral, and the [product decisions](../tasks/project/product-decisions.json) are the owner's to make.
+
 ## Engineering
 
 **GPU previews** ([design](design/gpu-preview.md), [qualification](specs/performance.md#gpu-previews-qualified-on-the-m4)). Implemented and qualified on the M4; outstanding:
@@ -17,16 +55,16 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - The first stroke after a zoom to 100% or a pan over a frame already in hand waits 61 to 84 ms for its region's boundary; a boundary rendered alone when such a view settles is proposed
 - Later work in the [design](design/gpu-preview.md#later): a pan at 100% without a draft drawn on the GPU at once, region padding, Detail's sharpening change in one channel
 
-**GPU-first rendering** ([design](design/gpu-first.md), [plan](../tasks/gpu-first.json)). Decided 2026-10-04 after a hover readout's point sample through Detail, Presence and masks froze the editor for about four minutes on a 16 MP RAW, and after an audit showed the remaining cost of an ordinary edit is the CPU renderer and the machinery around it. Done: the readout is removed, owner tasks run off the update loop (iced 0.14 had run them on it), every launch writes a bounded log, and the release gate, `cargo xtask gpu-qualification`, measures the corpus on the reference and on the GPU at Fit, 33%, 50% and 100%. Every zoom draws its drags on the GPU, and the GPU draws the picture at rest, every boundary derived from the photograph's source it holds: the gate passes by the recorded default, the picture at rest within its limits against the reference on every cell, while a drag's frame at Fit and below 100% is past them against the picture at rest and the reference alike on 462 of 783 cells, reported and not gated, the owner question it leaves open ([performance](specs/performance.md#gpu-qualification-against-the-reference)). Also done: the histogram and clipping counts on the GPU, Dehaze's light per frame on the GPU, samples and export through GPU tiles, shader warm-up, the drags the CPU proxy and region drew drawn on the GPU, the reference renderer as the fallback for a machine without a GPU (a session without one dragging on the CPU proxy), and the CPU production paths retired, the CPU renderer reduced to the whole-frame reference. Correctness is a declared tolerance against that reference. Measured on the M4 on a quiet host against the 2026-10-04 baseline (2026-10-06, [performance](specs/performance.md#gpu-first-against-the-2026-10-04-baseline)): every drag measured draws each tick on the GPU within a display frame at Fit, 33% and 100%, under Dehaze at 60 MP and on a RAW white balance; a commit, a history return and Compare's exit put the stack on screen at once; a sample through three spatial segments answers in 92 ms at p95. Outstanding:
+**GPU-first rendering** ([design](design/gpu-first.md), [plan](../tasks/rendering/gpu-first.json)). Decided 2026-10-04 after a hover readout's point sample through Detail, Presence and masks froze the editor for about four minutes on a 16 MP RAW, and after an audit showed the remaining cost of an ordinary edit is the CPU renderer and the machinery around it. Done: the readout is removed, owner tasks run off the update loop (iced 0.14 had run them on it), every launch writes a bounded log, and the release gate, `cargo xtask gpu-qualification`, measures the corpus on the reference and on the GPU at Fit, 33%, 50% and 100%. Every zoom draws its drags on the GPU, and the GPU draws the picture at rest, every boundary derived from the photograph's source it holds: the gate passes by the recorded default, the picture at rest within its limits against the reference on every cell, while a drag's frame at Fit and below 100% is past them against the picture at rest and the reference alike on 462 of 783 cells, reported and not gated, the owner question it leaves open ([performance](specs/performance.md#gpu-qualification-against-the-reference)). Also done: the histogram and clipping counts on the GPU, Dehaze's light per frame on the GPU, samples and export through GPU tiles, shader warm-up, the drags the CPU proxy and region drew drawn on the GPU, the reference renderer as the fallback for a machine without a GPU (a session without one dragging on the CPU proxy), and the CPU production paths retired, the CPU renderer reduced to the whole-frame reference. Correctness is a declared tolerance against that reference. Measured on the M4 on a quiet host against the 2026-10-04 baseline (2026-10-06, [performance](specs/performance.md#gpu-first-against-the-2026-10-04-baseline)): every drag measured draws each tick on the GPU within a display frame at Fit, 33% and 100%, under Dehaze at 60 MP and on a RAW white balance; a commit, a history return and Compare's exit put the stack on screen at once; a sample through three spatial segments answers in 92 ms at p95. Outstanding:
 - The picture at rest and its counts after a commit at 60 MP, 5.6 to 5.7 s against the reference renderer's 1.7 s, and over a masked Presence layer on the Air 2S, 15 to 17 s against 1.3 s: drawn one tile a frame in 240 tiles of 512 px and 330 of 256 px, each tile's window reaching a 300 to 720 px lead and its halos beyond what it draws
 - A heavy GPU export, 10.2 to 10.5 s at 60 MP against the reference export's 2.1 to 2.2 s, in 240 tiles of 512 px, and 0.94 to 0.97 s at 24 MP against 0.76 to 0.81 s
 - A stroke over three masked Presence layers at 100% on the Air 2S, beside Detail and a global Presence, misses 16 ms at p95 (23.7 ms)
 - `editor-latency` refuses a run with a held tick (a drag that creates a masked layer under Presence, a gesture after a RAW white-balance release), so a masked slider drag is not measured by the tool
 - The native Windows and Linux checks
 
-**CPU and memory efficiency** ([design](design/efficiency.md), [plan](../tasks/efficiency.json)). Done and measured, except the `dist` build profile, which the owner deferred until the timing runs other plans have outstanding are recorded.
+**CPU and memory efficiency** ([design](design/efficiency.md), [plan](../tasks/rendering/efficiency.json)). Done and measured, except the `dist` build profile, which the owner deferred until the timing runs other plans have outstanding are recorded.
 
-**GPU memory accounting** ([plan](../tasks/rendering.json)). Measure and bound the GPU resources outside the provisional 1088 MiB photo-texture ceiling (crop textures, overlays and backend staging) before any total-memory guarantee.
+**GPU memory accounting** ([plan](../tasks/rendering/gpu-memory.json)). Measure and bound the GPU resources outside the provisional 1088 MiB photo-texture ceiling (crop textures, overlays and backend staging) before any total-memory guarantee.
 
 ## Output
 
@@ -47,7 +85,7 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 ## RAW
 
-**RAW qualification.** Make the [continuous RAW editing](design/initial-raw.md) that exists trustworthy ([plan](../tasks/raw.json)).
+**RAW qualification.** Make the [continuous RAW editing](design/initial-raw.md) that exists trustworthy ([plan](../tasks/raw/raw.json)).
 - High-precision development and neutral defaults on every qualified camera
 - Foundation checkpoint across cameras, geometry and history
 - Failure hardening: source, native worker, cache, recipe
@@ -56,7 +94,7 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - End-to-end RAW editing journey
 - Measure the cost and accuracy of a clip-aware white-balance draft on Bayer developments, whose drag frames on highlight-clipped scenes are reported and not gated ([decisions](decisions.md#gpu-first-rendering)). The candidate is in [instant previews](design/instant-preview.md#popular-cameras)
 
-**RAW looks** ([design](design/raw-looks.md), [plan](../tasks/raw-looks.json)). Planned, decided 2026-10-05. New RAW photos start from a Luxforge look instead of the bare neutral development.
+**RAW looks** ([design](design/raw-looks.md), [plan](../tasks/raw/raw-looks.json)). Planned, decided 2026-10-05. New RAW photos start from a Luxforge look instead of the bare neutral development.
 - Phase 1: the Standard look, chosen on the corpus and reviewed by the owner, in every new RAW photograph's Original; a Look section with Standard, Neutral and Amount; a Settings row for the starting look
 - Phase 2: Match camera, a tone curve and chroma gain fitted per photo to its embedded camera preview off the owner, as a first-open entry or on request
 
@@ -66,27 +104,27 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 ## Editing tools
 
-**Tone curve follow-ups** ([design](design/tone-curve.md), [plan](../tasks/tone-curve.json)). The Tone curve is delivered ([feature status](features.md)).
+**Tone curve follow-ups** ([design](design/tone-curve.md), [plan](../tasks/editing/tone-curve.json)). The Tone curve is delivered ([feature status](features.md)).
 - Photo-sized measurement at 24 MP and 60 MP: the point drag to the presented frame, its settled histogram and the unit's frame cost
 - Owner review of the recorded defaults: what the composite acts on, channels, order, endpoints, the point limit, the Lightroom transfer and the editor gestures; below black the curve uses a floor-subtracted ratio (decided 2026-09-30)
 - Follow-up: whether Basic's Blacks adopts the same floor-subtracted ratio, since lifting Blacks turns near-black noise into coloured speckle
 
-**Detail** (implemented; qualification in progress, [design](design/detail.md), [plan](../tasks/detail.json)). Manual noise reduction and capture sharpening before tone, on RAW and JPEG.
+**Detail** (implemented; qualification in progress, [design](design/detail.md), [plan](../tasks/editing/detail.json)). Manual noise reduction and capture sharpening before tone, on RAW and JPEG.
 - Bounded numerical kernels and shared restoration/scale contracts
 - Off-owner pixel queries and mutations behind a spatial prefix, the 16-bit JPEG hand-off (which also changes Presence) and an input-grid overlay cache
 - Generated controls/API, masks, native presets and history
 - Approximate motion, the picture at rest on the GPU and 100% inspection
 - Photographic quality and native M4 cost qualification; output sharpening remains export follow-up scope
 
-**Lens and perspective correction** (implemented; qualification in progress, [design](design/lens-and-perspective.md), [plan](../tasks/lens-and-perspective.json)). Offline Lensfun profile distortion and manual two-axis perspective, with a fixed covered canvas, shared nonlinear mapping for crop and masks, and explicit prevention of duplicate embedded DNG correction. Functional implementation is verified; performance and photographic qualification remain outstanding. Coverage and read bounds are closed forms; the pinned index ships as a separate resource; Perspective is not presettable and strong minification is refused. Qualification needs authentic photographs for the qualified camera, lens and focal combinations.
+**Lens and perspective correction** (implemented; qualification in progress, [design](design/lens-and-perspective.md), [plan](../tasks/editing/lens-and-perspective.json)). Offline Lensfun profile distortion and manual two-axis perspective, with a fixed covered canvas, shared nonlinear mapping for crop and masks, and explicit prevention of duplicate embedded DNG correction. Functional implementation is verified; performance and photographic qualification remain outstanding. Coverage and read bounds are closed forms; the pinned index ships as a separate resource; Perspective is not presettable and strong minification is refused. Qualification needs authentic photographs for the qualified camera, lens and focal combinations.
 
-**Corrections** (proposal, [design](design/corrections.md), [plan](../tasks/corrections.json)). Remove blemishes by hand; offline Clone/Heal has its own delivery and qualification.
+**Corrections** (proposal, [design](design/corrections.md), [plan](../tasks/editing/corrections.json)). Remove blemishes by hand; offline Clone/Heal has its own delivery and qualification.
 - Decided: repair after source development and before colour, deletion of `PointReplace`, stale patches kept rendering with export acknowledgement. Open: repair versus Detail restoration placement, correction preset eligibility, Heal numerics, brush/source-edge behaviour and bounded candidate/export shapes
 - Reuse the delivered typed stroke store and drafts, module/capability contracts, Develop/prepare/adopt, Locate/library cleanup and nonlinear geometry; add the production brush interaction and ordered repair module
 - Integrate rendering against the merged GPU-first interfaces and comparison harness; qualify offline UI/API, catalog previews, single/batch export and native performance after feature work
 - Separately extend the same repair layer with frozen patches, bounded candidate jobs and source plus intra-layer prefix invalidation for AI editing; no model/provider prerequisite for the offline milestone
 
-**AI editing** (decided 2026-10-05, [design](design/ai-editing.md), [plan](../tasks/ai-editing.json)). Local, user-downloaded models behind one inference port and one analysis cache; nothing bundled, nothing sent without consent. The plan runs once the GPU-first integration branch has merged, with the Corrections foundation beside its first stage.
+**AI editing** (decided 2026-10-05, [design](design/ai-editing.md), [plan](../tasks/editing/ai-editing.json)). Local, user-downloaded models behind one inference port and one analysis cache; nothing bundled, nothing sent without consent. The plan runs once the GPU-first integration branch has merged, with the Corrections foundation beside its first stage.
 - Decided: scope, quality-first model policy with no licence or provenance gate beyond a one-line use restriction, the runtime by quality then performance then maintainability, plain-language model choices, the effect region, stale patches kept rendering, budgets raised for quality, the 24 GB generative minimum, consent remembered per provider, the repair stage, sky replacement. Open: the first hosted provider, a fine-tune, a Swift shim, CPU-only machines
 - Groundwork: the prototype on `main` as the harness; the fill-quality study (the 512 px fill's softness on large objects), the Select model qualification and the generative qualification (Moebius, FLUX.2 klein 4B) on the M4
 - Foundation: the inference port and ONNX Runtime crate, `local-runtime` with activation and unload, the model manager with resumable multi-file downloads and a Models tab, the analysis task and cache, the hover worker and picker, the model-selection mask kind
@@ -101,11 +139,11 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - RAW white balance import through a calibrated conversion from Lightroom's Kelvin and tint
 - Copy and Paste Settings over the same composite action
 
-**Lightroom import** (decided 2026-10-06, planned, not authorized; [design](design/lightroom-import.md), [plan](../tasks/lightroom-import.json)). Bring a Lightroom Classic catalog or a folder of XMP sidecars across, read-only.
+**Lightroom import** (decided 2026-10-06, planned, not authorized; [design](design/lightroom-import.md), [plan](../tasks/lightroom/lightroom-import.json)). Bring a Lightroom Classic catalog or a folder of XMP sidecars across, read-only.
 - Phase 1: the photographs worked on, catalog folders by event, collections, ratings and labels as collections, virtual copies and snapshots as versions, global settings, crop, orientation, lens and the look, the report and re-mapping, Lightroom's previews as first tiles
 - Phase 2: masks and local adjustments; phase 3: spot removal, AI masks, Detail and perspective as their tools land
 
-**Lightroom alignment** (decided 2026-10-06, planned, not authorized; [design](design/lightroom-alignment.md), [plan](../tasks/lightroom-alignment.json)). Every supported slider follows Lightroom Classic's response, with targeted algorithm changes where a dimension still differs widely, in order of editing area: Basic, then Presence, the mixer and the vignette, then Detail, then masks and geometry, then RAW white balance.
+**Lightroom alignment** (decided 2026-10-06, planned, not authorized; [design](design/lightroom-alignment.md), [plan](../tasks/lightroom/lightroom-alignment.json)). Every supported slider follows Lightroom Classic's response, with targeted algorithm changes where a dimension still differs widely, in order of editing area: Basic, then Presence, the mixer and the vignette, then Detail, then masks and geometry, then RAW white balance.
 - Open: authorization
 - The rig (generated XMP, one Lightroom import and export per round by the owner), round 1 of single settings and round 2 of pairs, calibrated mapping rows as the importers' bridge, a response change per setting, targeted behaviour changes, validation on the owner's edited photographs
 
@@ -165,7 +203,7 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - Developer guide checked on Windows and Linux
 
 **Dependencies.**
-- Remove or re-review the ttf-parser (by 2026-10-29) and paste (by 2026-12-18) advisory exceptions ([plan](../tasks/dependency-advisories.json))
+- Remove or re-review the ttf-parser (by 2026-10-29) and paste (by 2026-12-18) advisory exceptions ([plan](../tasks/project/dependency-advisories.json))
 - Automated license, asset and advisory checks; the manual review stays deferred
 
 ## Not in scope
