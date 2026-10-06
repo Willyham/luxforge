@@ -908,7 +908,7 @@ fn preview_cache_the_loupe_budget_evicts_the_least_recently_used_and_keeps_grids
         .connection()
         .execute(
             "INSERT INTO photo_previews VALUES ('asset-1', 'entry-1', 'large', 1, ?1, 10, 10, 100,
-                 'rendered', 500, 0)",
+                 'rendered', 500, 0, 'gpu', NULL)",
             [large.to_string_lossy()],
         )
         .unwrap();
@@ -994,6 +994,8 @@ fn preview_cache_forgetting_photographs_deletes_every_row_and_file() {
                 renderer,
                 origin,
                 approximate,
+                drawn: (origin == PreviewOrigin::Rendered)
+                    .then(crate::catalog_types::RenderedBy::gpu),
                 name: &name,
                 jpeg: b"jpeg",
                 width: 512,

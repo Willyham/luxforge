@@ -56,6 +56,7 @@ fn paused(budget: usize) -> LoupeFrames {
 /// A preview of frame `id` at `tier`, `width` × `height`.
 fn info(id: i64, tier: PreviewTier, origin: PreviewOrigin, width: u32, height: u32) -> PreviewInfo {
     PreviewInfo {
+        renderer: None,
         item: file(id),
         tier,
         path: PathBuf::from(format!(
@@ -547,6 +548,7 @@ fn photo_info(id: u32, tier: PreviewTier, origin: PreviewOrigin) -> PreviewInfo 
         _ => (512, 341),
     };
     PreviewInfo {
+        renderer: None,
         item: photo(id),
         tier,
         path: PathBuf::from(format!(

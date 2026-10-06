@@ -34,9 +34,11 @@ use super::{
     },
 };
 use crate::{
-    AssetId, EntryId, Error,
+    AssetId, EntryId, Error, RendererRecord,
     atomic_file::file_error,
-    catalog_types::{PreviewInfo, PreviewItem, PreviewOrigin, PreviewState, PreviewTier},
+    catalog_types::{
+        PreviewInfo, PreviewItem, PreviewOrigin, PreviewState, PreviewTier, RenderedBy,
+    },
     jobs::JobControl,
 };
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -62,9 +64,13 @@ pub(crate) struct PhotoRow {
     pub width: u32,
     pub height: u32,
     pub bytes: u64,
-    /// Whether the tier approximates its entry: never, since a rendered tier is the reference's
-    /// exact frame area-averaged, and never a camera preview; the index keeps the column.
+    /// Whether the tier approximates its entry: never, since a rendered tier is the GPU's or the
+    /// reference's full-resolution picture area-averaged, and never a camera preview; the index
+    /// keeps the column.
     pub approximate: bool,
+    /// Which renderer drew a rendered tier, and why the reference did; `None` for a camera
+    /// preview (`drawn_by`, `drawn_reason`).
+    pub drawn: Option<RenderedBy>,
 }
 
 impl PhotoRow {
@@ -109,6 +115,7 @@ impl PhotoRow {
             approximate: self.approximate,
             bytes: self.bytes,
             key,
+            renderer: self.drawn.clone(),
         }
     }
 }
@@ -136,11 +143,47 @@ pub(crate) fn camera_file_name(
 }
 
 /// A row's columns as SQLite holds them, in [`rows`]' order.
-type Columns = (String, String, i64, String, String, u32, u32, i64, bool);
+type Columns = (
+    String,
+    String,
+    i64,
+    String,
+    String,
+    u32,
+    u32,
+    i64,
+    bool,
+    Option<String>,
+    Option<String>,
+);
 
 fn parse(columns: Columns) -> Result<PhotoRow, Error> {
-    let (entry_id, tier, renderer, origin, path, width, height, bytes, approximate) = columns;
+    let (
+        entry_id,
+        tier,
+        renderer,
+        origin,
+        path,
+        width,
+        height,
+        bytes,
+        approximate,
+        drawn_by,
+        drawn_reason,
+    ) = columns;
     let unreadable = || Error::catalog("the index holds an unreadable photo preview row");
+    let drawn = match drawn_by.as_deref() {
+        None => None,
+        Some("gpu") => Some(RenderedBy {
+            record: RendererRecord::Gpu,
+            reason: None,
+        }),
+        Some("reference") => Some(RenderedBy {
+            record: RendererRecord::Reference,
+            reason: drawn_reason,
+        }),
+        Some(_) => return Err(unreadable()),
+    };
     Ok(PhotoRow {
         entry_id: EntryId::parse(entry_id).map_err(|_| unreadable())?,
         tier: PreviewTier::ALL
@@ -154,13 +197,15 @@ fn parse(columns: Columns) -> Result<PhotoRow, Error> {
         height,
         bytes: u64::try_from(bytes).map_err(|_| unreadable())?,
         approximate,
+        drawn,
     })
 }
 
 /// Every row of `asset_id`, both tiers and every entry, in one query over the table's key.
 pub(crate) fn rows(index: &Connection, asset_id: &AssetId) -> Result<Vec<PhotoRow>, Error> {
     let mut statement = index.prepare_cached(
-        "SELECT entry_id, tier, renderer, origin, path, width, height, bytes, approximate
+        "SELECT entry_id, tier, renderer, origin, path, width, height, bytes, approximate,
+             drawn_by, drawn_reason
          FROM photo_previews WHERE asset_id = ?1",
     )?;
     let rows = statement.query_map([asset_id.as_str()], |row| {
@@ -174,6 +219,8 @@ pub(crate) fn rows(index: &Connection, asset_id: &AssetId) -> Result<Vec<PhotoRo
             row.get(6)?,
             row.get(7)?,
             row.get(8)?,
+            row.get(9)?,
+            row.get(10)?,
         ))
     })?;
     rows.map(|row| parse(row?)).collect()
@@ -234,9 +281,11 @@ pub(crate) struct NewTier<'a> {
     /// [`RENDERER_GENERATION`] for a render, [`CAMERA_RENDERER`] for a camera preview.
     pub renderer: i64,
     pub origin: PreviewOrigin,
-    /// Whether the tier approximates its entry: `false` for a rendered tier, the reference's exact
-    /// frame area-averaged, and for a camera preview.
+    /// Whether the tier approximates its entry: `false` for a rendered tier, the GPU's or the
+    /// reference's full-resolution picture area-averaged, and for a camera preview.
     pub approximate: bool,
+    /// Which renderer drew a rendered tier; `None` for a camera preview.
+    pub drawn: Option<RenderedBy>,
     /// Relative to `<catalog>.index/previews/`.
     pub name: &'a Path,
     pub jpeg: &'a [u8],
@@ -276,6 +325,7 @@ pub(crate) fn write(store: &mut Store, tier: &NewTier<'_>) -> Result<Option<Phot
         height: tier.height,
         bytes: tier.jpeg.len() as u64,
         approximate: tier.approximate,
+        drawn: tier.drawn.clone(),
     };
     match record(
         store.connection_mut(),
@@ -354,12 +404,13 @@ fn record(
         .optional()?;
     tx.prepare_cached(
         "INSERT INTO photo_previews (asset_id, entry_id, tier, renderer, path, width, height,
-             bytes, origin, last_used_ms, approximate)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             bytes, origin, last_used_ms, approximate, drawn_by, drawn_reason)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
          ON CONFLICT(asset_id, entry_id, tier) DO UPDATE SET renderer = excluded.renderer,
              path = excluded.path, width = excluded.width, height = excluded.height,
              bytes = excluded.bytes, origin = excluded.origin,
-             last_used_ms = excluded.last_used_ms, approximate = excluded.approximate",
+             last_used_ms = excluded.last_used_ms, approximate = excluded.approximate,
+             drawn_by = excluded.drawn_by, drawn_reason = excluded.drawn_reason",
     )?
     .execute(params![
         asset_id.as_str(),
@@ -373,6 +424,11 @@ fn record(
         row.origin.as_str(),
         now_ms,
         row.approximate,
+        row.drawn.as_ref().map(|drawn| match drawn.record {
+            RendererRecord::Gpu => "gpu",
+            RendererRecord::Reference => "reference",
+        }),
+        row.drawn.as_ref().and_then(|drawn| drawn.reason.as_deref()),
     ])?;
     tx.commit()?;
     Ok(replaced.map(PathBuf::from))

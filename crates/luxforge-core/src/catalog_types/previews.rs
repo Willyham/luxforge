@@ -3,8 +3,8 @@
 //!
 //! For a file, previews are keyed by its signature: the grid tier from its EXIF thumbnail or
 //! embedded preview, and the loupe tier from its largest embedded preview. For a developed
-//! photograph, by asset, entry and tier, rendered exactly from that entry by the reference renderer
-//! and area-averaged to the tier. Files live under `<catalog>.index/previews/`; the index database's `previews` and `photo_previews` tables
+//! photograph, by asset, entry and tier, rendered from that entry at full resolution by the owner's
+//! tile service (the GPU on the desktop) or the reference renderer, and area-averaged to the tier. Files live under `<catalog>.index/previews/`; the index database's `previews` and `photo_previews` tables
 //! record them. The lane never touches the editor's one-slot source cache.
 use super::{Dimensions, FileId};
 use crate::{AssetId, EntryId, JobId};
@@ -71,8 +71,9 @@ pub enum PreviewOrigin {
     /// A neutral Luxforge development of the frame, made where the camera's preview is too small
     /// or absent.
     Developed,
-    /// A developed photograph's entry, rendered exactly by the reference renderer and
-    /// area-averaged to the tier.
+    /// A developed photograph's entry, rendered at full resolution by the owner's tile service or
+    /// the reference renderer and area-averaged to the tier; its preview names which
+    /// ([`PreviewInfo::renderer`]).
     Rendered,
 }
 
@@ -107,6 +108,38 @@ impl PreviewOrigin {
     }
 }
 
+/// Which renderer drew a file Luxforge rendered — a developed photograph's rendered tier, a batch
+/// export's file — in the shape an `export.jpeg` result names its renderer: `{record: "gpu",
+/// reason: null}`, or `{record: "reference", reason}` with the reason the GPU did not draw it (the
+/// session's, an export's such as `refused` or `tiles-budget`, or the GPU plan's own code), and no
+/// reason on an owner with no GPU provider, whose only renderer is the reference. Read back as
+/// written: unlike a session's [`Renderer`](crate::Renderer), any reason is kept as its code.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RenderedBy {
+    pub record: crate::RendererRecord,
+    pub reason: Option<String>,
+}
+
+impl RenderedBy {
+    /// Drawn by the GPU.
+    pub fn gpu() -> Self {
+        Self {
+            record: crate::RendererRecord::Gpu,
+            reason: None,
+        }
+    }
+}
+
+impl From<crate::Renderer> for RenderedBy {
+    fn from(renderer: crate::Renderer) -> Self {
+        Self {
+            record: renderer.record(),
+            reason: renderer.reason().map(|reason| reason.as_str().to_owned()),
+        }
+    }
+}
+
 /// A cached preview: where its JPEG is, its size, what it is, whether it is an approximation, and
 /// how many bytes it holds. `key` names exactly what it was made from (the file's signature, or the
 /// asset, entry and renderer generation), so a client never shows it for anything else.
@@ -120,15 +153,17 @@ pub struct PreviewInfo {
     pub width: u32,
     pub height: u32,
     pub origin: PreviewOrigin,
-    /// Whether the pixels approximate the entry they are labelled with, as the Fit preview's proxy
-    /// frame at the same bounds does: true only for a developed photograph's rendered tier made
-    /// through a proxy whose render is approximate — a spatial layer's neighbourhoods scaled with
-    /// the tier, a mask thinner than two proxy pixels supersampled. A file's tiers, a camera
-    /// preview and an exact render (a stage that already fits the tier, or a stack the proxy
-    /// cannot take) are not. Always present.
+    /// Whether the pixels approximate the entry they are labelled with: never, since a rendered
+    /// tier is its entry's full-resolution picture area-averaged, and a file's tiers and a camera
+    /// preview are what they are labelled. Always present, so every preview says so.
     pub approximate: bool,
     pub bytes: u64,
     pub key: String,
+    /// Which renderer drew a developed photograph's rendered tier: the GPU through the owner's
+    /// tile service, or the reference naming why. Absent for a file's tiers and a camera preview,
+    /// which no renderer drew.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renderer: Option<RenderedBy>,
 }
 
 /// What `preview.read` answers: the cached preview, or the job making it and, meanwhile, the best
@@ -208,6 +243,7 @@ mod tests {
     #[test]
     fn an_answer_says_what_its_pixels_are() {
         let info = PreviewInfo {
+            renderer: None,
             item: PreviewItem::File { file_id: FileId(4) },
             tier: PreviewTier::Grid,
             path: "/c.index/previews/ab/cd.jpg".into(),

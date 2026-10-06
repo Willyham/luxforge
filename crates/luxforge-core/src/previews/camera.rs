@@ -146,6 +146,7 @@ pub(crate) fn make(
             renderer: CAMERA_RENDERER,
             origin: PreviewOrigin::Embedded,
             approximate: false,
+            drawn: None,
             name: &name,
             jpeg: &made.jpeg,
             width: made.width,

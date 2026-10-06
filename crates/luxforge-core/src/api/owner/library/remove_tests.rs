@@ -918,8 +918,8 @@ fn remove_empty_deletes_exactly_the_removed_photographs_with_their_strokes_and_a
     index
         .execute(
             "INSERT INTO photo_previews (asset_id, entry_id, tier, renderer, path, width, height,
-                 bytes, origin, last_used_ms, approximate)
-             VALUES (?1, 'entry-0', 'grid', 1, ?2, 512, 341, 4, 'rendered', 0, 0)",
+                 bytes, origin, last_used_ms, approximate, drawn_by)
+             VALUES (?1, 'entry-0', 'grid', 1, ?2, 512, 341, 4, 'rendered', 0, 0, 'gpu')",
             [
                 k0.as_str().unwrap().to_owned(),
                 harness

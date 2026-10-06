@@ -360,3 +360,56 @@ fn every_rest_plan_starts_at_the_source() {
         "one key per source and view, whatever the stack holds"
     );
 }
+
+/// A picture at rest's tiles are planned within the rest's share, which a small photograph leaves
+/// at its cap, so they take the longest side; tiles of a side a caller names have no share. Drawn
+/// by slot shape: each shape's tiles together and row by row, the shapes in the order a row-by-row
+/// walk meets them, every pixel of the output stage once.
+#[test]
+fn a_picture_at_rests_tiles_are_planned_within_its_share_by_shape() {
+    let bounds = ProxyBounds {
+        width: 160,
+        height: 120,
+    };
+    let presence = Layer::new(
+        crate::PRESENCE_EFFECT,
+        json!({"texture": 30.0, "clarity": 25.0}),
+    );
+    let stack = evaluation(vec![presence.clone()], vec![presence], None);
+    let rest = plan_rest(&stack, GpuView::Fit(bounds)).unwrap();
+    let Some(Ok(tiles)) = rest.tiles else {
+        panic!("tiles: {:?}", rest.tiles);
+    };
+    assert_eq!(tiles.share, Some(super::REST_SHARE_MAX));
+    assert_eq!(tiles.tiles.len(), 1, "one tile of 2048 px");
+    let tiles = super::plan_rest_tiles(&stack, bounds, super::RestSizing::Side(64))
+        .unwrap()
+        .expect("tiles at bounds smaller than the stage")
+        .unwrap();
+    assert_eq!(tiles.share, None);
+    let shape = |tile: &super::RestTile| {
+        (
+            tile.window.width,
+            tile.window.height,
+            tile.rect.width,
+            tile.rect.height,
+        )
+    };
+    let mut rows = tiles.tiles.clone();
+    rows.sort_by_key(|tile| (tile.rect.y0, tile.rect.x0));
+    let mut met: Vec<_> = Vec::new();
+    for tile in &rows {
+        if !met.contains(&shape(tile)) {
+            met.push(shape(tile));
+        }
+    }
+    assert!(met.len() > 2, "edge tiles' windows are clamped: {met:?}");
+    let expected: Vec<_> = met
+        .iter()
+        .flat_map(|held| rows.iter().filter(move |tile| shape(tile) == *held))
+        .copied()
+        .collect();
+    assert_eq!(tiles.tiles, expected, "by shape, row by row within one");
+    let area: u64 = tiles.tiles.iter().map(|tile| tile.rect.pixels()).sum();
+    assert_eq!(area, u64::from(WIDTH * HEIGHT), "every pixel once");
+}

@@ -81,6 +81,7 @@ impl CachedPreview {
     /// development, never an approximation of an edit.
     pub(crate) fn info(&self) -> PreviewInfo {
         PreviewInfo {
+            renderer: None,
             item: PreviewItem::File { file_id: self.file },
             tier: self.tier,
             path: self.path.clone(),

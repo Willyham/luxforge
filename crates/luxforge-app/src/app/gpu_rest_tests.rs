@@ -14,11 +14,15 @@ use super::{
     gpu_window_tests::{HEIGHT, WIDTH, cut, source, whole},
 };
 use luxforge_core::{
-    BASIC_EFFECT, BoundaryFormat, Cancel, DETAIL_EFFECT, GpuAnswer, GpuPlanRequest, Layer,
-    ModuleRegistry, PERSPECTIVE_EFFECT, PRESENCE_EFFECT, Recipe, Region, RenderContext,
-    RenderOptions, Stage, anchored, gpu_plan, render,
+    AssetId, BASIC_EFFECT, BoundaryFormat, Cancel, Component, ComponentMode, DETAIL_EFFECT,
+    EntryId, Evaluation, GpuAnswer, GpuPlanRequest, GpuView, HistoryEntry, Layer, LinearImage,
+    LinearSettings, Mask, ModuleRegistry, PERSPECTIVE_EFFECT, PRESENCE_EFFECT, PreviewSource,
+    Recipe, Region, RenderContext, RenderOptions, Snapshot, SnapshotId, SourceImage, Stage,
+    anchored, gpu_plan, render,
 };
 use luxforge_ui::photo_surface::gpu_preview::qualification::boundary_as;
+use serde_json::json;
+use std::sync::Arc;
 
 /// The tiles' side: twelve of them over the 360 × 240 stage, the last column and row narrower.
 const SIDE: u32 = 96;
@@ -206,6 +210,548 @@ fn gpu_rest_a_stage_in_tiles_is_the_stage_in_one_region_bit_for_bit() {
                 }
             }
             assert!(tiles > 6, "{name}: {tiles} tiles");
+        }
+    }
+}
+
+/// A committed evaluation of `recipe` over `source`, as a displayed stack's job is.
+fn committed(source: PreviewSource, recipe: Recipe) -> Evaluation {
+    let asset = AssetId::new();
+    let entry = HistoryEntry {
+        id: EntryId::new(),
+        asset_id: asset.clone(),
+        sequence: 1,
+        action_id: "set-presence".into(),
+        label: "Presence".into(),
+        parameters: json!({}),
+        actor: "test".into(),
+        timestamp_ms: 0,
+        request_id: None,
+        base_revision: 0,
+        result_revision: 1,
+        snapshot: Snapshot {
+            id: SnapshotId::new(),
+            asset_id: asset,
+            recipe: recipe.clone(),
+        },
+        undo_parent: None,
+        restore_target: None,
+    };
+    Evaluation::new(
+        Arc::new(ModuleRegistry::builtin()),
+        RenderContext::new(),
+        source,
+        entry,
+        recipe,
+        None,
+    )
+}
+
+/// A JPEG of `width` × `height` whose codes are never read: planning reads no pixel.
+fn jpeg_of(width: u32, height: u32) -> PreviewSource {
+    PreviewSource::Jpeg(SourceImage {
+        width,
+        height,
+        rgba: Arc::new(vec![0; (width * height * 4) as usize]),
+        fingerprint: format!("sha256:gpu-rest-{width}x{height}"),
+        orientation: 1,
+        capture: Default::default(),
+    })
+}
+
+/// A RAW development of `width` × `height`, every value one grey.
+fn raw_of(width: u32, height: u32) -> PreviewSource {
+    let planes = vec![0.18f32; 3 * (width * height) as usize];
+    PreviewSource::Raw {
+        image: LinearImage::new(width, height, planes).expect("finite planes"),
+        settings: LinearSettings::default(),
+    }
+}
+
+/// The generated 60 MP JPEG's size, and the DJI Air 2S's.
+const SIXTY: (u32, u32) = (10_000, 6_000);
+const AIR_2S: (u32, u32) = (5_472, 3_648);
+
+/// A radial mask a little off centre, numbered `index`.
+fn radial_mask(index: usize) -> Mask {
+    let mut mask = Mask::new(format!("Mask {}", index + 1));
+    let t = index as f64 / 3.0;
+    mask.components.push(Component::new(
+        "Radial 1",
+        ComponentMode::Add,
+        "radial",
+        json!({"x": 0.25 + 0.5 * t, "y": 0.5, "radius_x": 0.2, "radius_y": 0.25,
+               "angle": 10.0, "feather": 45.0}),
+    ));
+    mask
+}
+
+fn detail() -> Layer {
+    Layer::new(
+        DETAIL_EFFECT,
+        json!({"sharpening": 60.0, "luminance": 40.0, "colour": 40.0}),
+    )
+}
+
+/// The stacks the rest is measured on (`docs/specs/performance.md`, "GPU-first against the
+/// 2026-10-04 baseline"), each over a source of its photograph's size: the 60 MP drag stack, the
+/// Air 2S's masked stack and three-segment stack, and Detail alone on a 24 MP JPEG.
+fn measured_stacks() -> Vec<(&'static str, PreviewSource, Recipe)> {
+    let presence = |fields: serde_json::Value| Layer::new(PRESENCE_EFFECT, fields);
+    let full_presence = || presence(json!({"texture": 100.0, "clarity": 100.0, "dehaze": 100.0}));
+    let masked_presence = || presence(json!({"clarity": 50.0, "texture": 40.0}));
+    // Detail, the full Basic layer and Presence's three fields at +100, in the order
+    // `editor-latency --detail --basic --presence` commits them.
+    let drag = Recipe {
+        layers: vec![
+            detail(),
+            Layer::new(
+                BASIC_EFFECT,
+                json!({"exposure": 0.5, "contrast": 25.0, "highlights": -30.0, "shadows": 30.0,
+                       "whites": -15.0, "blacks": 15.0, "temperature": 20.0, "tint": -10.0,
+                       "vibrance": 30.0, "saturation": 15.0}),
+            ),
+            full_presence(),
+        ],
+        ..Recipe::default()
+    };
+    // Detail, a global Presence of Texture 25 and Clarity 20, and three masks each holding a
+    // masked exposure and a masked Presence of Clarity 50 and Texture 40.
+    let mut masked = Recipe {
+        layers: vec![
+            detail(),
+            presence(json!({"texture": 25.0, "clarity": 20.0})),
+        ],
+        ..Recipe::default()
+    };
+    for index in 0..3 {
+        let mask = radial_mask(index);
+        masked.layers.push(Layer {
+            mask: Some(mask.id.clone()),
+            ..Layer::new(BASIC_EFFECT, json!({"exposure": 0.6}))
+        });
+        masked.layers.push(Layer {
+            mask: Some(mask.id.clone()),
+            ..masked_presence()
+        });
+        masked.masks.push(mask);
+    }
+    // Detail, Presence's three fields at +100, a radial's masked Presence and the lens profile.
+    let mask = radial_mask(0);
+    let three = Recipe {
+        layers: vec![
+            detail(),
+            full_presence(),
+            Layer {
+                mask: Some(mask.id.clone()),
+                ..masked_presence()
+            },
+            luxforge_core::qualification::lens_layer(-0.06, AIR_2S),
+        ],
+        masks: vec![mask],
+        ..Recipe::default()
+    };
+    let detail_alone = Recipe {
+        layers: vec![detail()],
+        ..Recipe::default()
+    };
+    vec![
+        ("the 60 MP drag stack", jpeg_of(SIXTY.0, SIXTY.1), drag),
+        (
+            "the Air 2S masked stack",
+            raw_of(AIR_2S.0, AIR_2S.1),
+            masked,
+        ),
+        (
+            "the Air 2S three-segment stack",
+            raw_of(AIR_2S.0, AIR_2S.1),
+            three,
+        ),
+        ("Detail alone at 24 MP", jpeg_of(6_000, 4_000), detail_alone),
+    ]
+}
+
+/// The tiles the editor plans for `evaluation`'s picture at rest at Fit in the evidence window.
+fn planned_tiles(evaluation: &Evaluation) -> Box<luxforge_core::RestTiles> {
+    let rest = luxforge_core::qualification::rest_plan(
+        evaluation,
+        GpuView::Fit(super::gpu_qualification::fit_bounds()),
+    )
+    .expect("a rest plan");
+    match rest.tiles {
+        Some(Ok(tiles)) => tiles,
+        other => panic!("no tiles: {other:?}"),
+    }
+}
+
+/// The measured stacks, and a colour layer before a spatial one, whose colour steps take a link of
+/// their own ahead of the first spatial link: every shape of chain the charge counts.
+fn charged_stacks() -> Vec<(&'static str, PreviewSource, Recipe)> {
+    let mut stacks = measured_stacks();
+    stacks.push((
+        "Basic before Presence at 24 MP",
+        jpeg_of(6_000, 4_000),
+        Recipe {
+            layers: vec![
+                Layer::new(BASIC_EFFECT, json!({"exposure": 0.4, "contrast": 20.0})),
+                Layer::new(
+                    PRESENCE_EFFECT,
+                    json!({"texture": 30.0, "clarity": 40.0, "dehaze": 25.0}),
+                ),
+            ],
+            ..Recipe::default()
+        },
+    ));
+    stacks
+}
+
+/// What the photo surface's slot for `tile` charges by the desktop's figures with no device
+/// (`region_charge`'s parts): the boundary over its window, a tail's intermediate, the output in
+/// its size bucket with its uniform, and the chain's charge.
+fn surface_charge(tiles: &luxforge_core::RestTiles, tile: &luxforge_core::RestTile) -> u64 {
+    let (plan, window, rect) = (&tiles.plan, tile.window, tile.rect);
+    luxforge_ui::photo_surface::gpu_preview::texture_charge(
+        (window.width, window.height),
+        super::gpu_plan::boundary_format(tiles.format),
+        (rect.width, rect.height),
+        super::gpu_plan::has_tail(plan).then_some((plan.geometry.clamps, plan.linear)),
+        true,
+        super::compare_after::DEVICE_TEXTURE_LIMIT,
+    ) + super::gpu_preview::chain_charge(plan, window, tiles.format)
+}
+
+/// The core charges a picture at rest's tile what the photo surface's slot allocates for it
+/// (`docs/design/gpu-preview.md`, "The picture at rest"): the boundary, an intermediate for each
+/// link before the last, a tail's, the output in its bucket, each link's kept planes and
+/// parameters and the scratch pool once — the widget crate's `texture_charge` and `chain_charge`,
+/// byte for byte — on every measured stack, over the tiles the editor plans and over tiles of every
+/// side; and its light links' textures, the surface's light charge but for the links' buffers.
+#[test]
+fn gpu_rest_a_tiles_charge_is_what_its_slot_allocates() {
+    assert_eq!(
+        luxforge_core::GPU_PREVIEW_BYTES,
+        luxforge_ui::photo_surface::GPU_PREVIEW_BUDGET,
+        "the core plans within the surface's budget"
+    );
+    for (name, source, recipe) in charged_stacks() {
+        let evaluation = committed(source, recipe);
+        let mut planned = vec![planned_tiles(&evaluation)];
+        for side in luxforge_core::REST_TILE_SIDES {
+            planned.push(
+                luxforge_core::qualification::rest_tiles(
+                    &evaluation,
+                    super::gpu_qualification::fit_bounds(),
+                    side,
+                )
+                .expect("tiles"),
+            );
+        }
+        for tiles in &planned {
+            let count = tiles.tiles.len();
+            for tile in [0, count / 3, count / 2, count - 1].map(|index| &tiles.tiles[index]) {
+                let core = luxforge_core::rest_slot_bytes(
+                    &tiles.plan,
+                    tile.window,
+                    tiles.format,
+                    (tile.rect.width, tile.rect.height),
+                    true,
+                );
+                assert_eq!(
+                    core,
+                    surface_charge(tiles, tile),
+                    "{name}: the tile at {:?} over {:?}",
+                    tile.rect,
+                    tile.window
+                );
+            }
+            let lights = luxforge_core::rest_light_bytes(&tiles.plan, tiles.format);
+            let surface = super::gpu_preview::light_charge(&tiles.plan, tiles.format);
+            assert_eq!(
+                lights == 0,
+                tiles.plan.lights.is_empty(),
+                "{name}: light links"
+            );
+            assert!(
+                (lights..lights + (1 << 20)).contains(&surface),
+                "{name}: the light links' textures {lights} B, the surface's charge {surface} B"
+            );
+        }
+    }
+}
+
+/// On a device, the slot the photo surface holds for a tile of the measured stacks charges the
+/// core's figure, its light links' textures and the buffers the device sizes: every link's words
+/// and blocks, and each light link's own, under a megabyte.
+#[test]
+fn gpu_rest_a_tiles_charge_is_the_slots_own_on_a_device() {
+    let Some(qualifier) = headless("gpu_rest_a_tiles_charge_is_the_slots_own_on_a_device") else {
+        return;
+    };
+    for (name, source, recipe) in charged_stacks() {
+        let evaluation = committed(source, recipe);
+        let tiles = planned_tiles(&evaluation);
+        if tiles.warp().is_some() {
+            // A lens warp's tail reads its part of the stage's grid, which only the desktop's grid
+            // worker computes; its charge is held above without a device.
+            continue;
+        }
+        let tile = tiles.tiles[tiles.tiles.len() / 2];
+        let window = tile.window;
+        let format = super::gpu_plan::boundary_format(tiles.format);
+        let texels = vec![0u8; window.pixels() as usize * format.texel_bytes()];
+        let boundary = luxforge_ui::photo_surface::GpuBoundary::new(
+            Arc::new(texels),
+            window.width,
+            window.height,
+            1,
+            format,
+        )
+        .expect("a boundary");
+        let plan = surface_plan_over(
+            &tiles.plan,
+            boundary,
+            (window.x0, window.y0),
+            None,
+            Some(tile.rect),
+        )
+        .expect("a runnable plan");
+        let charged = qualifier.charged_bytes(&plan).expect("a charge");
+        let buffers: u64 = qualifier.buffer_bytes(&plan).expect("buffers").iter().sum();
+        let core = luxforge_core::rest_slot_bytes(
+            &tiles.plan,
+            window,
+            tiles.format,
+            (tile.rect.width, tile.rect.height),
+            true,
+        ) + luxforge_core::rest_light_bytes(&tiles.plan, tiles.format);
+        let rest = charged - buffers - core;
+        assert!(
+            rest < 1 << 20 && (rest == 0) == tiles.plan.lights.is_empty(),
+            "{name}: the slot charges {charged} B, {buffers} B of it buffers, the core {core} B"
+        );
+    }
+}
+
+/// Whether `tile`'s rectangle holds the centre of `output`.
+fn holds_centre(tile: &luxforge_core::RestTile, output: Stage) -> bool {
+    let (x, y) = (output.width / 2, output.height / 2);
+    (tile.rect.x0..tile.rect.x1()).contains(&x) && (tile.rect.y0..tile.rect.y1()).contains(&y)
+}
+
+/// The editor's tiles for the measured stacks, by the plan's own figures: within the rest's share
+/// beside the view plan, the source and the accumulator, at most 1 GiB, and each tile's window
+/// carrying at most about 24 MP·links, or the smallest side. The 60 MP drag stack's picture at rest
+/// is 60 tiles of 1024 px. Prints each stack's side, count, slot shapes, share and a middle tile's
+/// charge and work, and those of the tile holding the stage's centre at every side.
+#[test]
+fn gpu_rest_the_measured_stacks_are_tiled_within_the_rests_share() {
+    for (name, source, recipe) in measured_stacks() {
+        let evaluation = committed(source, recipe);
+        let tiles = planned_tiles(&evaluation);
+        let side = tiles
+            .tiles
+            .iter()
+            .map(|tile| tile.rect.width.max(tile.rect.height))
+            .max()
+            .expect("a tile");
+        let share = tiles.share.expect("a share");
+        assert!(share <= luxforge_core::REST_SHARE_MAX, "{name}");
+        let output = tiles.output;
+        let middle = tiles
+            .tiles
+            .iter()
+            .find(|tile| holds_centre(tile, output))
+            .expect("a tile in the middle");
+        let slot = luxforge_core::rest_slot_bytes(
+            &tiles.plan,
+            middle.window,
+            tiles.format,
+            (middle.rect.width, middle.rect.height),
+            true,
+        ) + luxforge_core::rest_light_bytes(&tiles.plan, tiles.format);
+        let links = tiles.plan.spatial.len().max(1) as u64;
+        let work = middle.window.pixels() * links;
+        let shapes = tiles
+            .tiles
+            .windows(2)
+            .filter(|pair| {
+                (
+                    pair[0].window.width,
+                    pair[0].window.height,
+                    pair[0].rect.width,
+                    pair[0].rect.height,
+                ) != (
+                    pair[1].window.width,
+                    pair[1].window.height,
+                    pair[1].rect.width,
+                    pair[1].rect.height,
+                )
+            })
+            .count()
+            + 1;
+        eprintln!(
+            "{name}: {} tiles of {side} px over {}x{} in {shapes} slot shapes; share {:.1} MB; \
+             the centre tile's window {}x{}, its slot {:.1} MB, {:.1} MP·links over {links} \
+             spatial links",
+            tiles.tiles.len(),
+            output.width,
+            output.height,
+            share as f64 / 1e6,
+            middle.window.width,
+            middle.window.height,
+            slot as f64 / 1e6,
+            work as f64 / 1e6,
+        );
+        for each in luxforge_core::REST_TILE_SIDES {
+            let sided = luxforge_core::qualification::rest_tiles(
+                &evaluation,
+                super::gpu_qualification::fit_bounds(),
+                each,
+            )
+            .expect("tiles");
+            let tile = sided
+                .tiles
+                .iter()
+                .find(|tile| holds_centre(tile, output))
+                .expect("a tile in the middle");
+            let new = luxforge_core::rest_slot_bytes(
+                &sided.plan,
+                tile.window,
+                sided.format,
+                (tile.rect.width, tile.rect.height),
+                true,
+            ) + luxforge_core::rest_light_bytes(&sided.plan, sided.format);
+            eprintln!(
+                "  at {each} px: {} tiles, the centre tile's window {}x{}, its slot {:.1} MB, {:.1} \
+                 MP·links",
+                sided.tiles.len(),
+                tile.window.width,
+                tile.window.height,
+                new as f64 / 1e6,
+                (tile.window.pixels() * links) as f64 / 1e6
+            );
+        }
+        let smallest = luxforge_core::REST_TILE_SIDES[luxforge_core::REST_TILE_SIDES.len() - 1];
+        assert!(
+            side == smallest || (slot <= share && work <= luxforge_core::REST_TILE_WORK),
+            "{name}: a side of {side} px"
+        );
+        let area: u64 = tiles.tiles.iter().map(|tile| tile.rect.pixels()).sum();
+        assert_eq!(
+            area,
+            u64::from(output.width) * u64::from(output.height),
+            "{name}: every pixel once"
+        );
+    }
+    // The 60 MP drag stack's 2048 px tile in the middle of the stage, a 3363 px window, takes
+    // about 1.13 GB, past the share's 1 GiB: it is drawn in 1024 px tiles, 60 of them.
+    let (_, source, recipe) = measured_stacks().swap_remove(0);
+    let tiles = planned_tiles(&committed(source, recipe));
+    assert_eq!(
+        (tiles.tiles.len(), tiles.tiles[0].rect.width),
+        (60, 1024),
+        "the 60 MP drag stack"
+    );
+}
+
+/// The picture at rest the photo surface draws, reduced to the view, and its histogram and clipping
+/// counts are the same, byte for byte and count for count, whatever side its tiles take and
+/// whether they are drawn by slot shape or row by row: every tile's codes are the whole stage's
+/// (the anchor contract). The reduction adds a view pixel's share of each tile it reaches in the
+/// order the tiles are drawn, so a seam through a view pixel regroups its `f32` sum; here every such
+/// regrouping quantizes to the same codes. On both paths, over every family whose texels depend on
+/// more than their own pixel.
+#[test]
+fn gpu_rest_the_picture_at_rest_is_the_same_at_every_side_and_order() {
+    let test = "gpu_rest_the_picture_at_rest_is_the_same_at_every_side_and_order";
+    let Some((backend, name)) = super::gpu_tiles_tests::host_adapter(test) else {
+        return;
+    };
+    assert!(
+        super::gpu_plan::install_output_encoding(),
+        "the surface holds the core's output encoding"
+    );
+    let window = luxforge_ui::adapters::open(&backend, &name)
+        .unwrap_or_else(|unopened| panic!("{test}: the surface's device: {unopened:?}"));
+    let mut surface = luxforge_ui::photo_surface::gpu_preview::headless::HeadlessSurface::new(
+        &window.device,
+        &window.queue,
+    );
+    let bounds = luxforge_core::ProxyBounds {
+        width: 160,
+        height: 120,
+    };
+    // Each family's layers, made fresh for each evaluation.
+    type Layers = fn() -> Vec<Layer>;
+    let families: [(&str, Layers); 3] = [
+        ("Presence", || {
+            vec![Layer::new(
+                PRESENCE_EFFECT,
+                json!({"texture": 35.0, "clarity": 30.0, "dehaze": 20.0}),
+            )]
+        }),
+        ("Detail", || vec![detail()]),
+        ("Presence after Detail", || {
+            vec![
+                detail(),
+                Layer::new(
+                    PRESENCE_EFFECT,
+                    json!({"texture": 20.0, "clarity": 25.0, "dehaze": 15.0}),
+                ),
+            ]
+        }),
+    ];
+    let mut version = 0;
+    for (index, format) in [BoundaryFormat::Half, BoundaryFormat::Float]
+        .into_iter()
+        .enumerate()
+    {
+        let photograph = source(format);
+        let gpu = super::gpu_tiles_tests::gpu_source(index as u64 + 1, &photograph);
+        for (family, layers) in families {
+            let what = format!("{format:?} {family}");
+            let evaluation = committed(
+                photograph.clone(),
+                Recipe {
+                    layers: layers(),
+                    ..Recipe::default()
+                },
+            );
+            let mut drawn = Vec::new();
+            for side in [48, 96, 2048] {
+                let tiles =
+                    luxforge_core::qualification::rest_tiles(&evaluation, bounds, side).unwrap();
+                let mut rows = tiles.clone();
+                rows.tiles.sort_by_key(|tile| (tile.rect.y0, tile.rect.x0));
+                for (order, tiles) in [("by shape", tiles), ("row by row", rows)] {
+                    version += 1;
+                    let handed = super::gpu_preview::rest_now(&gpu, &tiles, version).unwrap();
+                    let rest = surface
+                        .rest(&gpu, &handed)
+                        .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"));
+                    assert_eq!(
+                        rest.codes.len(),
+                        (tiles.reduction.as_ref().unwrap().view.0
+                            * tiles.reduction.as_ref().unwrap().view.1)
+                            as usize,
+                        "{what}"
+                    );
+                    drawn.push((side, order, tiles.tiles.len(), rest.codes, rest.counts));
+                }
+            }
+            let (_, _, _, codes, counts) = &drawn[0];
+            for (side, order, count, other, counted) in &drawn {
+                assert!(
+                    other == codes,
+                    "{what}: {count} tiles of {side} px {order} draw another picture at rest"
+                );
+                assert_eq!(counted, counts, "{what}: {side} px {order}");
+            }
+            eprintln!(
+                "{test}: {what}: {} pictures at rest, 1 to {} tiles, byte for byte",
+                drawn.len(),
+                drawn.iter().map(|(_, _, count, ..)| *count).max().unwrap()
+            );
         }
     }
 }
