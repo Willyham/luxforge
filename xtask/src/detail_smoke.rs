@@ -444,9 +444,7 @@ fn rest_fit(frame: &Frame) -> Result {
     ensure(
         gpu["drawing_path"] == "gpu"
             && (gpu["picture"] == "rest" || gpu["picture"] == "view")
-            && render
-                .as_str()
-                .is_some_and(|text| text.starts_with("GPU render"))
+            && render.as_str().is_some_and(crate::smoke::names_gpu_render)
             && state["approximate_white_balance"] == false
             && state["surface"]["detail_updating"] == false
             && state["histogram"]["stale"] == false
