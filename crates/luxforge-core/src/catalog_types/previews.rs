@@ -107,6 +107,38 @@ impl PreviewOrigin {
     }
 }
 
+/// Which renderer drew a file Luxforge rendered — a developed photograph's rendered tier, a batch
+/// export's file — in the shape an `export.jpeg` result names its renderer: `{record: "gpu",
+/// reason: null}`, or `{record: "reference", reason}` with the reason the GPU did not draw it (the
+/// session's, an export's such as `refused` or `tiles-budget`, or the GPU plan's own code), and no
+/// reason on an owner with no GPU provider, whose only renderer is the reference. Read back as
+/// written: unlike a session's [`Renderer`](crate::Renderer), any reason is kept as its code.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RenderedBy {
+    pub record: crate::RendererRecord,
+    pub reason: Option<String>,
+}
+
+impl RenderedBy {
+    /// Drawn by the GPU.
+    pub fn gpu() -> Self {
+        Self {
+            record: crate::RendererRecord::Gpu,
+            reason: None,
+        }
+    }
+}
+
+impl From<crate::Renderer> for RenderedBy {
+    fn from(renderer: crate::Renderer) -> Self {
+        Self {
+            record: renderer.record(),
+            reason: renderer.reason().map(|reason| reason.as_str().to_owned()),
+        }
+    }
+}
+
 /// A cached preview: where its JPEG is, its size, what it is, whether it is an approximation, and
 /// how many bytes it holds. `key` names exactly what it was made from (the file's signature, or the
 /// asset, entry and renderer generation), so a client never shows it for anything else.
