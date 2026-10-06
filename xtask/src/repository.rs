@@ -346,7 +346,8 @@ const SOURCE_RULES: &[SourceRule] = &[
     // owner tasks that plan and answer with it (app/tasks.rs), the preview request that hands it to
     // the worker (app/preview.rs), and the two answers that read one on its way there, a
     // `draft.set`'s (app/gesture.rs) and the thumbnails' (app/thumbnails.rs), and the drag ticks
-    // the GPU does not draw, which wait there for the frame in flight (app/motion.rs). A crop
+    // the GPU does not draw, which wait there for the frame in flight (app/motion.rs), or pass
+    // straight to the request as the CPU proxy's tick (app/cpu_proxy.rs). A crop
     // draft keeps frames only; the editor, the view model and the other gestures name no job at
     // all. A token
     // rule reads names, not types: it cannot see a job kept inside one of those files, nor one
@@ -369,6 +370,8 @@ const SOURCE_RULES: &[SourceRule] = &[
             // A drag tick the GPU does not draw: at most one held tick's job and one waiting for
             // the reference frame in flight, each the newest of its draft, let go with the draft.
             "crates/luxforge-app/src/app/motion.rs",
+            // The CPU proxy's tick, which passes its job straight to the preview request.
+            "crates/luxforge-app/src/app/cpu_proxy.rs",
         ],
         mode: Match::Whole,
         tests: false,
@@ -424,6 +427,52 @@ const SOURCE_RULES: &[SourceRule] = &[
         once: false,
         reason: "only the RAW module (crates/luxforge-core/src/modules/raw*) and tests may name \
                  its identity; decide applicability from the declared sources",
+    },
+    // The CPU proxy, a session without a GPU's drag path, is kept in its own modules so it is easy
+    // to see and to remove (owner, 2026-10-06): the core's `cpu_proxy` and the desktop's
+    // `app/cpu_proxy`. Only they and their named dispatch sites — the preview worker, its queue and
+    // its result type, the crate root's re-exports, and the desktop's motion and preview — may name
+    // the proxy's items, so the proxy cannot leak back into the main flow.
+    SourceRule {
+        name: "cpu-proxy",
+        tokens: &[
+            "cpu_proxy::",
+            "CpuProxy",
+            "ProxyPhase",
+            "ProxyCache",
+            "ProxyKey",
+            "ProxyStage",
+            "ProxyOutcome",
+            "ProxyApproximation",
+            "ProxyFrame",
+            "PhaseOutcome::Proxy",
+            "PreviewIntent::Interactive",
+            "render_proxy",
+            "proxy_stage",
+            "proxy_eligible",
+            "proxy_cancellable",
+            "whole_within",
+            "cpu_proxy_tick",
+            "cpu_proxy_bounds",
+        ],
+        scope: &["crates", "xtask/src"],
+        types: &["rs"],
+        allowed: &[
+            "crates/luxforge-core/src/cpu_proxy",
+            "crates/luxforge-core/src/lib.rs",
+            "crates/luxforge-core/src/preview/worker.rs",
+            "crates/luxforge-core/src/preview/queue.rs",
+            "crates/luxforge-core/src/preview/result.rs",
+            "crates/luxforge-app/src/app/cpu_proxy",
+            "crates/luxforge-app/src/app/motion.rs",
+            "crates/luxforge-app/src/app/preview.rs",
+        ],
+        mode: Match::Whole,
+        tests: false,
+        once: false,
+        reason: "the CPU proxy, a session without a GPU's drag path, lives in the core's cpu_proxy \
+                 and the desktop's app/cpu_proxy; reach it through their named dispatch sites \
+                 (the preview worker, queue and result; the desktop's motion and preview)",
     },
     // One answer to "is this a presettable action": `ModuleRegistry::patch_action` words the
     // refusal, and every caller resolves through it, so a second copy of the check fails here.
@@ -2723,6 +2772,105 @@ mod tests {
             }
         }
         assert_eq!(read(tmp.path(), &["one-read-rectangle"]).unwrap(), (4, 0));
+    }
+
+    #[test]
+    fn only_the_cpu_proxy_modules_and_their_dispatch_sites_name_the_proxy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let core = tmp.path().join("crates/luxforge-core/src");
+        let app = tmp.path().join("crates/luxforge-app/src/app");
+        for dir in [
+            core.join("cpu_proxy"),
+            core.join("preview"),
+            core.join("render"),
+            app.clone(),
+        ] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        // The modules, their dispatch sites, tests and comments may name the proxy.
+        for (file, text) in [
+            (
+                core.join("cpu_proxy.rs"),
+                "pub(crate) struct CpuProxy;
+",
+            ),
+            (
+                core.join("cpu_proxy/stage.rs"),
+                "fn render_proxy() {}
+",
+            ),
+            (
+                core.join("preview/worker.rs"),
+                "use crate::cpu_proxy::{CpuProxy, ProxyPhase};
+",
+            ),
+            (
+                core.join("lib.rs"),
+                "pub use cpu_proxy::{ProxyApproximation, ProxyOutcome};
+",
+            ),
+            (
+                app.join("cpu_proxy.rs"),
+                "pub(crate) struct ProxyFrame;
+",
+            ),
+            (
+                app.join("motion.rs"),
+                "return Some(self.cpu_proxy_tick(job, timed));
+",
+            ),
+            (
+                app.join("preview.rs"),
+                "} else if cpu_proxy::asks(&job) {
+",
+            ),
+            (
+                app.join("cpu_proxy_tests.rs"),
+                "assert!(editor.presentation.presented_proxy.is_some());
+",
+            ),
+            (
+                core.join("render/entry.rs"),
+                "/// Not the `CpuProxy`.
+fn frame() {}
+",
+            ),
+        ] {
+            fs::write(file, text).unwrap();
+        }
+        let (read_files, _) = read(tmp.path(), &["cpu-proxy"]).unwrap();
+        // Anywhere else in product code, the proxy's items are refused.
+        for (file, text) in [
+            (
+                core.join("render/entry.rs"),
+                "pub(crate) fn render_proxy(&self) {}
+",
+            ),
+            (
+                app.join("snapshot.rs"),
+                "let reason = proxy.and_then(luxforge_core::ProxyApproximation::reason);
+",
+            ),
+            (
+                app.join("history.rs"),
+                "job.intent = PreviewIntent::Interactive;
+",
+            ),
+        ] {
+            let clean = fs::read_to_string(&file).ok();
+            fs::write(&file, format!("{}{text}", clean.as_deref().unwrap_or(""))).unwrap();
+            let error = refusal(tmp.path(), &["cpu-proxy"], text);
+            let name = file.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(
+                error.contains(&format!("{name}:")) && error.contains("cpu_proxy"),
+                "{error}"
+            );
+            match clean {
+                Some(clean) => fs::write(&file, clean).unwrap(),
+                None => fs::remove_file(&file).unwrap(),
+            }
+        }
+        assert_eq!(read(tmp.path(), &["cpu-proxy"]).unwrap().0, read_files);
     }
 
     #[test]
