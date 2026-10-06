@@ -158,6 +158,11 @@ fn matches(signature: &Signature, steps: &[GpuStep]) -> bool {
         .eq(steps.iter().flat_map(GpuStep::signature))
 }
 
+/// Whether a sequence is compiled and ready in a pipeline's cache, read under the cache's lock and
+/// asking for nothing: what answers the desktop's question whether an open's programs are warm
+/// ([`super::Figures::programs_ready`]).
+pub(super) type ReadyProbe = Box<dyn Fn(&[GpuStep], wgpu::TextureFormat) -> bool + Send + Sync>;
+
 /// One sequence to compile: a link's steps and the format its last pass writes, the output's codes
 /// or a chain's intermediate.
 pub(super) type Sequence = (Vec<GpuStep>, wgpu::TextureFormat);
@@ -463,6 +468,17 @@ impl Worker {
     /// it is dropped.
     fn spawn(device: &wgpu::Device, support: &Arc<Support>, figures: &Arc<CompileFigures>) -> Self {
         let shared: Arc<Mutex<Shared>> = Arc::default();
+        let held = Arc::downgrade(&shared);
+        let probe: ReadyProbe = Box::new(move |steps, format| {
+            held.upgrade().is_some_and(|shared| {
+                lock_shared(&shared).entries.iter().any(|entry| {
+                    entry.format == format
+                        && matches!(entry.state, State::Ready(_))
+                        && matches(&entry.signature, steps)
+                })
+            })
+        });
+        *figures.ready.lock().unwrap_or_else(PoisonError::into_inner) = Some(probe);
         let (wake, wakes) = channel::<()>();
         let thread = Arc::clone(&shared);
         let device = device.clone();

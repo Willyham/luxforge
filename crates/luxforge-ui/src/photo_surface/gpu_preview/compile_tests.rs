@@ -373,3 +373,36 @@ fn the_compile_queue_drains_with_no_frame_drawn() {
         figures.preview.compile_us().1
     );
 }
+
+/// A plan's programs are ready only once every one of them has compiled: not before the stage has
+/// a compile thread, not for a sequence it has never seen, and after its compile; asking queues
+/// nothing.
+#[test]
+fn a_plans_programs_are_ready_once_they_have_compiled() {
+    let test = "a_plans_programs_are_ready_once_they_have_compiled";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let (boundary, _) = boundary_with_codes(3);
+    let plan = plan_of(&boundary, named("ready_probe"));
+    assert!(
+        !pipeline.figures.preview.programs_ready(&plan),
+        "no compile thread yet"
+    );
+    let drawn = primitive(ID, Some(plan.clone()));
+    assert_cpu_frame(&paint_prepared(&device, &queue, &mut pipeline, &drawn));
+    compiled(&mut pipeline, &plan.steps);
+    assert!(pipeline.figures.preview.programs_ready(&plan), "compiled");
+    let compiles = pipeline.figures.preview.compiles();
+    let unseen = plan_of(&boundary, named("ready_probe_unseen"));
+    assert!(
+        !pipeline.figures.preview.programs_ready(&unseen),
+        "never seen"
+    );
+    assert_eq!(
+        pipeline.figures.preview.compiles(),
+        compiles,
+        "asking queued nothing"
+    );
+}

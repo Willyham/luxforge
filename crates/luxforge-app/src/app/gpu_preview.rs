@@ -938,6 +938,10 @@ pub(crate) struct GpuPreviews {
     /// CPU's frame is then the photograph, and a gesture's frame settles into it.
     #[cfg(test)]
     pub(crate) rest_off: bool,
+    /// What a test reports of whether the held picture at rest's programs are compiled, which no
+    /// test compiles.
+    #[cfg(test)]
+    pub(crate) programs_warm: Option<bool>,
 }
 
 /// What a tick, or a displayed entry's job, asks the owner to plan its GPU picture for, with its
@@ -1220,6 +1224,26 @@ impl GpuPreviews {
     /// Whether the committed stack's view plan is held to be drawn at rest.
     pub(crate) fn at_rest_drawable(&self) -> bool {
         self.at_rest.is_some()
+    }
+
+    /// Whether the programs of the held picture at rest — its view plan, and its tiles where they
+    /// are held — are compiled and ready in the surface's cache, so its frames draw with no compile
+    /// to wait for: what makes an open's first picture the GPU's (`docs/design/gpu-preview.md`,
+    /// "Warming at launch and open"). Asks for no compile.
+    pub(crate) fn rest_programs_ready(&self) -> bool {
+        #[cfg(test)]
+        if let Some(warm) = self.programs_warm {
+            return warm;
+        }
+        let Some(at_rest) = self.at_rest.as_ref() else {
+            return false;
+        };
+        let tile = self
+            .rest
+            .as_ref()
+            .and_then(|held| held.gpu.as_ref().or(held.counts.as_ref()))
+            .and_then(|rest| rest.tiles.first());
+        surface::gpu_programs_ready(std::iter::once(&at_rest.handed.plan).chain(tile))
     }
 
     /// The versions the held picture at rest is handed under — the picture's and its counts'

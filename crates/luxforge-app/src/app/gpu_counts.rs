@@ -10,10 +10,16 @@
 //!   the content, its stage and its entry under the floor's generation, the photograph's frame on
 //!   the presenter — an earlier frame of the same photograph — stays the surface's base, and the
 //!   GPU's picture, the view plan and then its tiles, is drawn over it.
+//! - **An open, when warm.** An open whose picture at rest's programs are already compiled in the
+//!   surface's cache is presented the same way (`docs/decisions.md`, "The GPU's throughput"):
+//!   another photograph's frame is taken off, and the GPU's view plan, drawn once the source is on
+//!   the GPU, then its tiles, are drawn over the opening photograph's cached preview or, with none,
+//!   an empty frame placed at its stage.
 //! - **Where it cannot, the reference.** The job is queued as before — the reference renderer's
 //!   exact frame, its report and its view reduction — wherever the GPU cannot present the stack
 //!   ([`Editor::gpu_presents`]): before the surface has checked its stage or with the stage refused
-//!   or lost, an open (no frame of the photograph on screen yet), a view plan
+//!   or lost, an open whose picture at rest's programs are not compiled yet (a cold cache), a view
+//!   plan
 //!   or tiles the GPU cannot draw (`spatial-unit`, `budget-exceeded`, a refused conversion), a
 //!   comparison, a crop draft's input stage in flight, or a content the surface refused after it
 //!   was presented.
@@ -101,9 +107,26 @@ impl Editor {
                 .gpu
                 .rest_versions(&job.evaluation.source().identity())
                 .is_some()
-            && self.presentation.presenter.photo().is_some()
-            && self.presentation.presented_asset.as_ref() == Some(&job.evaluation.entry().asset_id)
+            && (self.gpu_draws_over(job) || self.gpu_opens_warm(job))
             && self.gpu.refused_content != Some(content)
+    }
+
+    /// Whether a picture of `job`'s photograph is on screen for the GPU's to be drawn over: a
+    /// frame of it the reference rendered, or the GPU's own picture of an earlier stack of it.
+    fn gpu_draws_over(&self, job: &PreviewJob) -> bool {
+        self.presentation.presented_asset.as_ref() == Some(&job.evaluation.entry().asset_id)
+            && (self.presentation.presenter.photo().is_some()
+                || self.presentation.gpu_presented.is_some())
+    }
+
+    /// Whether this is an open — no picture of `job`'s photograph is on screen, at most its cached
+    /// preview or another photograph's frame — whose picture at rest's programs are already
+    /// compiled (the warm-up's cache), so its first picture is the GPU's view plan, drawn as soon as
+    /// the source is on the GPU, and then its tiles. On a cold cache the reference renders it,
+    /// labelled.
+    fn gpu_opens_warm(&self, job: &PreviewJob) -> bool {
+        self.presentation.presented_asset.as_ref() != Some(&job.evaluation.entry().asset_id)
+            && self.gpu.rest_programs_ready()
     }
 
     /// Present `job`, the committed whole stack of `content`, on the GPU alone
@@ -114,6 +137,26 @@ impl Editor {
         self.view_plan.request_generation = None;
         let stage = (job.identity.width, job.identity.height);
         let entry = job.evaluation.entry().id.clone();
+        // An open: nothing of the photograph is on screen but at most its cached preview, which
+        // stays under the GPU's picture until that is drawn; another photograph's frame is taken
+        // off, never left standing for this one. With no picture, an empty frame stands under it,
+        // so the canvas places the photograph at its stage and the surface draws the GPU's picture
+        // in its place.
+        let asset = &job.evaluation.entry().asset_id;
+        let opened = self.presentation.presented_asset.as_ref() != Some(asset);
+        if opened {
+            if self.presentation.presented_asset.is_some() {
+                self.presentation.withdraw();
+            }
+            if !self.presentation.has_picture() {
+                self.presentation.presenter.show_preview(
+                    std::sync::Arc::new([0u8; 4]),
+                    (1, 1),
+                    content,
+                );
+            }
+            self.presentation.presented_asset = Some(asset.clone());
+        }
         self.presentation
             .show_gpu(generation, content, stage, &entry, job.proxy);
         // The counts of this content may be in hand already — a view planned again over the same
@@ -171,6 +214,8 @@ impl Editor {
                 // a RAW white balance its planes do not hold, as every presented frame reports.
                 "approximate_white_balance": false,
                 "picture": "gpu",
+                // An open whose first picture is the GPU's: its programs were warm.
+                "opened": opened,
             })
         });
         self.outcome(Outcome::Presented(outcome::Presented::Photo));
