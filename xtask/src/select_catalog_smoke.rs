@@ -802,13 +802,20 @@ pub fn verify(
         json!({"targets": {"kind": "selection"}, "destination": export}),
     )?;
     let exported = batch_ended(frame, "catalog-exported", "batch-export")?;
+    // Each file written names its renderer, as a single export's result does.
     let mut written: Vec<String> = exported["written"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|path| path.as_str())
-        .map(|path| {
-            let path = Path::new(path);
+        .map(|file| {
+            ensure(
+                matches!(
+                    file["renderer"]["record"].as_str(),
+                    Some("gpu" | "reference")
+                ),
+                format!("an exported file names no renderer: {file}"),
+            )?;
+            let path = Path::new(file["path"].as_str().unwrap_or_default());
             ensure(
                 path.parent() == export.as_str().map(Path::new),
                 format!("an exported file is outside the folder: {}", path.display()),

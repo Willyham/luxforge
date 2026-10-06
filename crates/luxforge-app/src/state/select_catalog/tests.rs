@@ -1212,10 +1212,13 @@ fn catalog_browse_the_develop_band_applies_presets_exports_and_reports() {
         )],
         &[],
     );
-    exported.written = vec![
-        "/x/L1000000-edited.jpg".into(),
-        "/x/L1000001-edited.jpg".into(),
-    ];
+    exported.written = [0, 1]
+        .map(|n| luxforge_core::catalog_types::BatchWritten {
+            asset_id: asset(n),
+            path: format!("/x/L100000{n}-edited.jpg").into(),
+            renderer: luxforge_core::catalog_types::RenderedBy::gpu(),
+        })
+        .into();
     state.catalog.batch = Some(batch(
         BatchKind::Export {
             folder: "/x".into(),
