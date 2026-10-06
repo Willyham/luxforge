@@ -1932,7 +1932,6 @@ impl Editor {
         }
         job.reduce = Some(exact.raster.clone());
         job.proxy = Some(bounds);
-        job.viewport = None;
         job.intent = PreviewIntent::Reduce;
         job.analyse = false;
         let content = self.presentation.presented_content;
