@@ -305,7 +305,18 @@ pub(super) fn execute_with(
         "the boundary is its stage's texels"
     );
     let mut texels = boundary.to_vec();
+    // A texel the tail never reads, outside a straight crop, is left as it is once no spatial step
+    // reads it either: a positional unit addresses the frame the crop keeps, which its CPU unit
+    // refuses a coordinate outside of, and the frame does not depend on it.
+    let reads = plan.geometry.reads;
+    let read = |index: usize, last: bool| {
+        let (x, y) = (index as u32 % stage.width, index as u32 / stage.width);
+        !last || (x >= reads.x0 && y >= reads.y0 && x < reads.x1() && y < reads.y1())
+    };
     for (index, texel) in texels.iter_mut().enumerate() {
+        if !read(index, plan.spatial.is_empty()) {
+            continue;
+        }
         let (x, y) = (
             (index as u32 % stage.width) as i64,
             (index as u32 / stage.width) as i64,
@@ -315,10 +326,14 @@ pub(super) fn execute_with(
             .iter()
             .fold(*texel, |value, step| operation(units, step, value, x, y));
     }
-    for step in &plan.spatial {
+    for (at, step) in plan.spatial.iter().enumerate() {
         spatial(spatials, step, stage, &mut texels)?;
         // The colour operations its segment holds run on its output before the next one.
+        let last = at + 1 == plan.spatial.len();
         for (index, texel) in texels.iter_mut().enumerate() {
+            if !read(index, last) {
+                continue;
+            }
             let (x, y) = (
                 (index as u32 % stage.width) as i64,
                 (index as u32 / stage.width) as i64,

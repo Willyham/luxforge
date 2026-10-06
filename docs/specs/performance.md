@@ -4499,6 +4499,22 @@ Reported, not gated; the frame a drag draws at each view against the picture at 
 - **Latency.** Not measured here: a GPU sample's time, warm and through three spatial segments on the Air 2S against the baseline above, is TASK-011's.
 - A selection of one kind, so the run reports itself incomplete; its sample rows are the whole corpus.
 
+### Colour after Detail, before a resample
+
+The corpus's three Detail recipes with colour between Detail and the geometry — `detail-curve-lens-perspective` on the three RAWs with their own lens profiles, `detail-curve-lens-perspective-jpeg` on the zone plate with a lens identity, and `detail-curve-straightened` on all seven sources — which the GPU draws since the colour runs on Detail's output before the tail ([GPU previews](../design/gpu-preview.md#where-the-code-lives)). `gpu-qualification --recipes` on 2026-10-06, the same host, built from `f9ad9f30` with the change uncommitted, every kind: the 11 stacks at four views, 44 cells of the picture at rest, every one within the spatial limits.
+
+| View | Cells | Within the limits | Largest: mean / worst block / p99 / \|ΔL\*\| |
+| --- | ---: | ---: | --- |
+| Fit | 11 | 11 | 0.035 / 0.116 / 0.693 / 0.006 |
+| 33% | 11 | 11 | 0.044 / 0.108 / 0.692 / 0.006 |
+| 50% | 11 | 11 | 0.087 / 0.213 / 0.695 / 0.006 |
+| 100% | 11 | 11 | 0.049 / 0.203 / 0.696 / 0.006 |
+
+- **The other kinds.** The 11 exports, histograms and sample grids are within their limits: the largest export 0.119 / 0.353 / 0.774 / 0.006, the largest histogram distance 0.0188 codes, every sample equal to the byte on screen.
+- **In motion, not gated.** A drag's frame at 100% is the picture at rest's; at Fit, 33% and 50%, over the source reduced to the view, 21 of 33 cells are past the limits against the picture at rest, as the corpus's other stacks are ([the picture in motion](#the-picture-in-motion)).
+- **The lens and crop families**, run in the same build: all 116 cells of the picture at rest within the pointwise limits, the largest 0.080 / 0.234 / 0.862 / 0.001 at 50%.
+- A selection, so each run reports itself incomplete.
+
 ### Reproducing it
 
 ```sh
