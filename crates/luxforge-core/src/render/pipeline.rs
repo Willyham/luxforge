@@ -300,8 +300,8 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     /// `through` materialized, each as the whole stack's render builds it, so a pixel of any
     /// segment before `through` and of `through`'s own input stage is read in `O(layers)` from
     /// them: the stack's output stage with `through` its segment count, the stage a later spatial
-    /// operation reduces its estimates from, or the input a restoration boundary's tiles read
-    /// ([`Self::restoration_region`]). With `wide`, the boundary widths are the ones the whole
+    /// operation reduces its estimates from, or a restoration prefix's output an input grid reads
+    /// (`super::input_grid`). With `wide`, the boundary widths are the ones the whole
     /// recipe chooses for this prefix ([`Self::with_input_width`]), set before any frame exists.
     pub(crate) fn framed(
         domain: D,
@@ -430,61 +430,6 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             Some(entry) => entry.globals(self, index),
             None => Ok(Vec::new()),
         }
-    }
-
-    /// The final spatial prefix on one output rectangle, through the render's own tile function.
-    /// Input grids use a whole tile for dense cells and a one-pixel window for sparse cells.
-    pub(crate) fn restoration_region(&self, region: Region) -> Result<Vec<D::Pixel>, Error> {
-        let index = self.compiled.segments.len() - 1;
-        let segment = &self.compiled.segments[index];
-        let Some(super::Entry::Spatial(entry)) = &segment.entry else {
-            return Err(Error::internal(
-                "an input grid prefix must end at a restoration boundary",
-            ));
-        };
-        if segment.writes_pixels() {
-            return Err(Error::internal("an input grid prefix has a pointwise tail"));
-        }
-        self.cancel.check()?;
-        let stage = segment.stage();
-        let plan = SpatialPlan::new(&entry.operation, stage, self.tiling)?;
-        let globals = self.spatial_globals(index, entry)?;
-        let _reservation = self.context.spatial().reserve(plan.working_set(), 1);
-        let parallelism = if super::parallel::pooled(
-            super::parallel::RenderPass::Spatial,
-            stage.width as u64 * stage.height as u64,
-        ) {
-            crate::modules::Parallelism::Pool
-        } else {
-            crate::modules::Parallelism::Serial
-        };
-        // One region, in a slot of its own whose buffers fit what this region's chain asks: a
-        // one-pixel window allocates its own small rectangles, not a whole tile's.
-        let mut slot = super::spatial::TileScratch::default();
-        let (written, values) = run_tile(
-            &plan,
-            &entry.operation,
-            &globals,
-            region,
-            parallelism,
-            &mut slot,
-            &self.cancel,
-            |input, planes| self.fill_rows(index - 1, input, planes, parallelism),
-        )?;
-        let count = written.pixels() as usize;
-        let mut output = Vec::with_capacity(region.pixels() as usize);
-        for y in region.y0..region.y1() {
-            self.cancel.check()?;
-            for x in region.x0..region.x1() {
-                let from =
-                    (y - written.y0) as usize * written.width as usize + (x - written.x0) as usize;
-                output.push(D::spatial_output(
-                    [values[from], values[count + from], values[2 * count + from]],
-                    self.widths[index].input,
-                )?);
-            }
-        }
-        Ok(output)
     }
 
     /// One output pixel, `None` when the coordinate lies outside the output stage.
@@ -769,9 +714,10 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     }
 
     /// The global estimates of spatial segment `index`, whose entry is `entry`
-    /// ([`SpatialEntry::globals`]): from the store, or from one reduction of its stage read by rows
-    /// as a render reads it ([`Self::fill_rows`]), through the frames of the spatial segments
+    /// ([`SpatialEntry::globals`]): the ones it was handed, or one reduction of its stage read by
+    /// rows as a render reads it ([`Self::fill_rows`]), through the frames of the spatial segments
     /// before it, which must be materialized ([`Self::framed`]).
+    #[cfg(any(test, feature = "qualification"))]
     pub(super) fn spatial_globals(
         &self,
         index: usize,
