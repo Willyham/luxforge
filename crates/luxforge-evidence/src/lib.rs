@@ -1350,7 +1350,9 @@ pub enum PaletteStep {
 /// One Export gesture: `{"menu": true}` presses the title bar's Export button, which opens its
 /// menu; `{"file": {"name": "a.jpg", "keep_metadata": true}}` exports the displayed entry to that
 /// file in the run's evidence directory, the name standing in for the save dialog's answer, and
-/// `"reference": true` exports it as the palette's Export reference render… does.
+/// `"reference": true` exports it as the palette's Export reference render… does. The step captures
+/// once the export has ended, or, with `"background": true`, once it has started, leaving it to run
+/// under the steps after it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExportStep {
@@ -1369,6 +1371,10 @@ pub struct ExportFile {
     /// Ask for the reference renderer's export, `export.jpeg`'s `reference: true`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub reference: bool,
+    /// Capture once the export has started rather than once it has ended: it runs on under the
+    /// steps after this one.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub background: bool,
 }
 
 impl ExportStep {
