@@ -15,10 +15,10 @@ use super::{
 };
 use luxforge_core::{
     AssetId, BASIC_EFFECT, BoundaryFormat, Cancel, Component, ComponentMode, DETAIL_EFFECT,
-    EntryId, Evaluation, GpuAnswer, GpuPlanRequest, GpuView, HistoryEntry, Layer, LinearImage,
-    LinearSettings, Mask, ModuleRegistry, PERSPECTIVE_EFFECT, PRESENCE_EFFECT, PreviewSource,
-    Recipe, Region, RenderContext, RenderOptions, Snapshot, SnapshotId, SourceImage, Stage,
-    anchored, gpu_plan, render,
+    EntryId, Evaluation, GpuAnswer, GpuPlanRequest, GpuStaging, GpuSweeps, GpuView, HistoryEntry,
+    Layer, LinearImage, LinearSettings, Mask, ModuleRegistry, PERSPECTIVE_EFFECT, PRESENCE_EFFECT,
+    PreviewSource, Recipe, Region, RenderContext, RenderOptions, Snapshot, SnapshotId, SourceImage,
+    Stage, anchored, gpu_plan, render,
 };
 use luxforge_ui::photo_surface::gpu_preview::qualification::boundary_as;
 use serde_json::json;
@@ -66,7 +66,7 @@ fn gpu_rest_a_stage_in_tiles_is_the_stage_in_one_region_bit_for_bit() {
             "lens",
             vec![
                 basic.clone(),
-                luxforge_core::qualification::lens_layer(-0.06, (WIDTH, HEIGHT)),
+                luxforge_core::qualification::lens_layer(-0.004, (WIDTH, HEIGHT)),
             ],
         ),
         (
@@ -539,10 +539,11 @@ fn holds_centre(tile: &luxforge_core::RestTile, output: Stage) -> bool {
 }
 
 /// The editor's tiles for the measured stacks, by the plan's own figures: within the rest's share
-/// beside the view plan, the source and the accumulator, at most 1 GiB, and each tile's window
+/// beside the view plan, the source and the accumulator, at most 1.25 GiB, and each tile's window
 /// carrying at most about 24 MP·links, or the smallest side. The 60 MP drag stack's picture at rest
-/// is 60 tiles of 1024 px. Prints each stack's side, count, slot shapes, share and a middle tile's
-/// charge and work, and those of the tile holding the stage's centre at every side.
+/// is 15 tiles of 2048 px, and a 60 MP RAW's tile fits beside its source. Prints each stack's
+/// side, count, slot shapes, share and a middle tile's charge and work, and those of the tile
+/// holding the stage's centre at every side.
 #[test]
 fn gpu_rest_the_measured_stacks_are_tiled_within_the_rests_share() {
     for (name, source, recipe) in measured_stacks() {
@@ -644,23 +645,58 @@ fn gpu_rest_the_measured_stacks_are_tiled_within_the_rests_share() {
         );
     }
     // The 60 MP drag stack's 2048 px tile in the middle of the stage, a 3363 px window, takes
-    // about 1.13 GB, past the share's 1 GiB: it is drawn in 1024 px tiles, 60 of them.
+    // 1.10 GB, within the share's 1.25 GiB: 15 tiles.
     let (_, source, recipe) = measured_stacks().swap_remove(0);
-    let tiles = planned_tiles(&committed(source, recipe));
+    let tiles = planned_tiles(&committed(source, recipe.clone()));
     assert_eq!(
         (tiles.tiles.len(), tiles.tiles[0].rect.width),
-        (60, 1024),
+        (15, 2048),
         "the 60 MP drag stack"
+    );
+    // On a 60 MP RAW the surface holds 723 MB of source: the share is what the budget leaves
+    // beside it, the view plan and the accumulator, and the tile's slot fits that.
+    let (width, height) = (9_504, 6_336);
+    let evaluation = committed(raw_of(width, height), recipe);
+    let tiles = planned_tiles(&evaluation);
+    let share = tiles.share.expect("a share");
+    let source = u64::from(width) * u64::from(height) * 12;
+    let output = tiles.output;
+    let centre = tiles
+        .tiles
+        .iter()
+        .find(|tile| holds_centre(tile, output))
+        .expect("a centre tile");
+    let slot = luxforge_core::rest_slot_bytes(
+        &tiles.plan,
+        centre.window,
+        tiles.format,
+        (centre.rect.width, centre.rect.height),
+        true,
+    ) + luxforge_core::rest_light_bytes(&tiles.plan, tiles.format);
+    eprintln!(
+        "the 60 MP RAW drag stack: {} tiles of {} px; source {:.1} MB, share {:.1} MB, the centre \
+         tile's slot {:.1} MB",
+        tiles.tiles.len(),
+        tiles.tiles[0].rect.width,
+        source as f64 / 1e6,
+        share as f64 / 1e6,
+        slot as f64 / 1e6
+    );
+    assert!(
+        slot <= share && source + share <= luxforge_core::GPU_PREVIEW_BYTES,
+        "the 60 MP RAW's tile fits beside its source"
     );
 }
 
 /// The picture at rest the photo surface draws, reduced to the view, and its histogram and clipping
 /// counts are the same, byte for byte and count for count, whatever side its tiles take and
-/// whether they are drawn by slot shape or row by row: every tile's codes are the whole stage's
-/// (the anchor contract). The reduction adds a view pixel's share of each tile it reaches in the
-/// order the tiles are drawn, so a seam through a view pixel regroups its `f32` sum; here every such
-/// regrouping quantizes to the same codes. On both paths, over every family whose texels depend on
-/// more than their own pixel.
+/// whether they are drawn by slot shape or row by row, and so is the stage at full resolution:
+/// every tile's codes are the whole stage's (the anchor contract, and a lens warp's tail
+/// interpolating the stage's grid from its lattice alone, whatever node a tile's part of it starts
+/// at). The reduction adds a view pixel's share of each tile it reaches in the order the tiles are
+/// drawn, so a seam through a view pixel regroups its `f32` sum; here every such regrouping
+/// quantizes to the same codes. On both paths, over every family whose texels depend on more than
+/// their own pixel, a lens warp on a grid whose spacing is not a power of two among them.
 #[test]
 fn gpu_rest_the_picture_at_rest_is_the_same_at_every_side_and_order() {
     let test = "gpu_rest_the_picture_at_rest_is_the_same_at_every_side_and_order";
@@ -683,7 +719,7 @@ fn gpu_rest_the_picture_at_rest_is_the_same_at_every_side_and_order() {
     };
     // Each family's layers, made fresh for each evaluation.
     type Layers = fn() -> Vec<Layer>;
-    let families: [(&str, Layers); 3] = [
+    let families: [(&str, Layers); 5] = [
         ("Presence", || {
             vec![Layer::new(
                 PRESENCE_EFFECT,
@@ -698,6 +734,21 @@ fn gpu_rest_the_picture_at_rest_is_the_same_at_every_side_and_order() {
                     PRESENCE_EFFECT,
                     json!({"texture": 20.0, "clarity": 25.0, "dehaze": 15.0}),
                 ),
+            ]
+        }),
+        // A lens warp, whose tail interpolates the stage's coordinate grid, each tile through its
+        // part of it: a grid of a spacing whose reciprocal is inexact, so a tile's part starting at
+        // another node rounds a division by the spacing otherwise.
+        ("lens", || {
+            vec![luxforge_core::qualification::lens_layer(
+                -0.004,
+                (WIDTH, HEIGHT),
+            )]
+        }),
+        ("Detail before a lens", || {
+            vec![
+                detail(),
+                luxforge_core::qualification::lens_layer(-0.004, (WIDTH, HEIGHT)),
             ]
         }),
     ];
@@ -718,6 +769,13 @@ fn gpu_rest_the_picture_at_rest_is_the_same_at_every_side_and_order() {
                 },
             );
             let mut drawn = Vec::new();
+            if let Some(grid) = evaluation_grid(&evaluation) {
+                assert!(
+                    !grid.spacing.is_power_of_two(),
+                    "{what}: a grid of {} px divides exactly",
+                    grid.spacing
+                );
+            }
             for side in [48, 96, 2048] {
                 let tiles =
                     luxforge_core::qualification::rest_tiles(&evaluation, bounds, side).unwrap();
@@ -736,7 +794,16 @@ fn gpu_rest_the_picture_at_rest_is_the_same_at_every_side_and_order() {
                             as usize,
                         "{what}"
                     );
-                    drawn.push((side, order, tiles.tiles.len(), rest.codes, rest.counts));
+                    // The stage at full resolution, tile by tile, besides its reduction.
+                    version += 1;
+                    let stage = stage_codes(&mut surface, &gpu, &tiles, version);
+                    drawn.push((
+                        side,
+                        order,
+                        tiles.tiles.len(),
+                        (rest.codes, stage),
+                        rest.counts,
+                    ));
                 }
             }
             let (_, _, _, codes, counts) = &drawn[0];
@@ -753,5 +820,422 @@ fn gpu_rest_the_picture_at_rest_is_the_same_at_every_side_and_order() {
                 drawn.iter().map(|(_, _, count, ..)| *count).max().unwrap()
             );
         }
+    }
+}
+
+/// The coordinate grid of the whole output stage a lens warp in `evaluation`'s stack is drawn
+/// through, `None` for a stack without one.
+fn evaluation_grid(evaluation: &Evaluation) -> Option<luxforge_core::CoordinateGrid> {
+    let tiles = planned_tiles(evaluation);
+    tiles
+        .warp()
+        .map(|warp| warp.stage_grid(1.0).expect("a stage grid").expect("a grid"))
+}
+
+/// The output stage of `tiles` drawn tile by tile by `surface`, each tile as a picture at rest
+/// draws it, laid at its place: RGBA codes row by row.
+fn stage_codes(
+    surface: &mut luxforge_ui::photo_surface::gpu_preview::headless::HeadlessSurface,
+    gpu: &luxforge_ui::photo_surface::GpuSource,
+    tiles: &luxforge_core::RestTiles,
+    version: u64,
+) -> Vec<[u8; 4]> {
+    let handed = super::gpu_preview::rest_now(gpu, tiles, version).unwrap();
+    let width = tiles.output.width as usize;
+    let mut frame = vec![[0u8; 4]; width * tiles.output.height as usize];
+    for plan in handed.tiles.iter() {
+        let [x0, y0, x1, _] = plan.region.expect("a region").rect;
+        let codes = surface
+            .tile(gpu, plan)
+            .unwrap_or_else(|fallback| panic!("the tile at ({x0}, {y0}): {fallback:?}"));
+        let across = (x1 - x0) as usize;
+        for (row, line) in codes.chunks_exact(across).enumerate() {
+            let at = (y0 as usize + row) * width + x0 as usize;
+            frame[at..at + across].copy_from_slice(line);
+        }
+    }
+    frame
+}
+
+/// The corpus's RAWs at full resolution in tiles of 512 and 1024 px: the same codes, pixel for
+/// pixel, through each recipe `LUXFORGE_REST_RECIPES` names (comma-separated corpus recipe ids,
+/// the stack as opened by default) on each RAW `LUXFORGE_GPU_CORPUS_SOURCES` names (every RAW by
+/// default). Prints where the differences fall.
+/// `LUXFORGE_RAW_MANIFEST=MANIFEST cargo test --release -p luxforge-app
+/// gpu_rest_raw_tiles_are_the_same_at_every_side -- --ignored --nocapture`.
+#[test]
+#[ignore = "the corpus RAWs: set LUXFORGE_RAW_MANIFEST to the private RAW manifest"]
+fn gpu_rest_raw_tiles_are_the_same_at_every_side() {
+    use super::gpu_qualification::{Opened, corpus_sources};
+    let test = "gpu_rest_raw_tiles_are_the_same_at_every_side";
+    let Some((backend, name)) = super::gpu_tiles_tests::host_adapter(test) else {
+        return;
+    };
+    assert!(super::gpu_plan::install_output_encoding());
+    let window = luxforge_ui::adapters::open(&backend, &name).unwrap();
+    let mut surface = luxforge_ui::photo_surface::gpu_preview::headless::HeadlessSurface::new(
+        &window.device,
+        &window.queue,
+    );
+    let read = |path: std::path::PathBuf| -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    };
+    let manifest = read(
+        std::env::var("LUXFORGE_RAW_MANIFEST")
+            .expect("a manifest")
+            .into(),
+    );
+    let corpus = read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/preview/corpus.json"),
+    );
+    let wanted = |key: &str| -> Option<Vec<String>> {
+        std::env::var(key)
+            .ok()
+            .map(|list| list.split(',').map(str::to_owned).collect())
+    };
+    let sources = wanted("LUXFORGE_GPU_CORPUS_SOURCES");
+    let recipes = wanted("LUXFORGE_REST_RECIPES").unwrap_or_else(|| vec![String::new()]);
+    let dir = luxforge_testbase::paths::temp_dir("gpu-rest-raw");
+    let mut version = 0;
+    let mut failures = Vec::new();
+    let found = corpus_sources(
+        &corpus,
+        std::path::Path::new("/nonexistent"),
+        Some(&manifest),
+    );
+    for (index, source) in found
+        .iter()
+        .filter(|source| source.raw)
+        .filter(|source| sources.as_ref().is_none_or(|ids| ids.contains(&source.id)))
+        .enumerate()
+    {
+        for recipe in &recipes {
+            let steps: Vec<serde_json::Value> = corpus["recipes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["id"] == recipe.as_str())
+                .map_or_else(Vec::new, |entry| entry["steps"].as_array().unwrap().clone());
+            let what = format!("{} {recipe}", source.id);
+            let catalog = dir.join(format!("{}-{recipe}.sqlite", source.id));
+            let opened = Opened::new(source, &steps, &catalog).expect("the RAW opened");
+            let job = super::tasks::ready_preview_job(
+                &opened.owner,
+                luxforge_core::PreviewRequest::new(opened.client, opened.asset.clone()),
+            )
+            .expect("a job");
+            let mut evaluation = job.evaluation;
+            // Layers whose effect holds `LUXFORGE_REST_DROP` left out, to bisect a stack.
+            if let Ok(dropped) = std::env::var("LUXFORGE_REST_DROP") {
+                let mut recipe = evaluation.recipe().clone();
+                recipe
+                    .layers
+                    .retain(|layer| !layer.effect_id.contains(dropped.as_str()));
+                evaluation = committed(evaluation.source().clone(), recipe);
+            }
+            let gpu = super::gpu_preview::gpu_source_of(index as u64 + 1, evaluation.source())
+                .expect("a GPU source");
+            let bounds = super::gpu_qualification::fit_bounds();
+            let mut frames = Vec::new();
+            let sides: Vec<u32> = std::env::var("LUXFORGE_REST_SIDES").map_or_else(
+                |_| vec![512, 1024],
+                |list| list.split(',').map(|side| side.parse().unwrap()).collect(),
+            );
+            for side in sides {
+                let tiles =
+                    luxforge_core::qualification::rest_tiles(&evaluation, bounds, side).unwrap();
+                version += 1;
+                let codes = stage_codes(&mut surface, &gpu, &tiles, version);
+                frames.push((tiles.output, codes));
+            }
+            let (output, first) = &frames[0];
+            let (_, second) = &frames[1];
+            let differing: Vec<(u32, u32)> = first
+                .iter()
+                .zip(second)
+                .enumerate()
+                .filter(|(_, (a, b))| a != b)
+                .map(|(at, _)| (at as u32 % output.width, at as u32 / output.width))
+                .collect();
+            let layers: Vec<&str> = evaluation
+                .recipe()
+                .layers
+                .iter()
+                .map(|layer| layer.effect_id.as_str())
+                .collect();
+            eprintln!(
+                "{test}: {what} {layers:?}, stage {}x{}: {} of {} pixels differ between 512 and \
+                 1024 px tiles; first {:?}",
+                output.width,
+                output.height,
+                differing.len(),
+                first.len(),
+                differing.iter().take(12).collect::<Vec<_>>()
+            );
+            if !differing.is_empty() {
+                let columns: std::collections::BTreeSet<u32> =
+                    differing.iter().map(|(x, _)| *x).collect();
+                let rows: std::collections::BTreeSet<u32> =
+                    differing.iter().map(|(_, y)| *y).collect();
+                eprintln!(
+                    "  columns {:?}..{:?} ({} distinct), rows {:?}..{:?} ({} distinct)",
+                    columns.first(),
+                    columns.last(),
+                    columns.len(),
+                    rows.first(),
+                    rows.last(),
+                    rows.len()
+                );
+                let largest = first
+                    .iter()
+                    .zip(second)
+                    .flat_map(|(a, b)| (0..3).map(move |c| a[c].abs_diff(b[c])))
+                    .max();
+                // How far each differing pixel is from the nearest seam of the 512 px tiles.
+                let mut near = [0usize; 5];
+                for (x, y) in &differing {
+                    let seam = |at: u32| (at % 512).min(512 - at % 512);
+                    let distance = seam(*x).min(seam(*y));
+                    near[match distance {
+                        0..=8 => 0,
+                        9..=64 => 1,
+                        65..=128 => 2,
+                        129..=200 => 3,
+                        _ => 4,
+                    }] += 1;
+                }
+                eprintln!(
+                    "  largest code difference {largest:?}; by distance to a 512 px seam \
+                     (<=8, <=64, <=128, <=200, more): {near:?}"
+                );
+                failures.push(what);
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "differ at 512 and 1024 px: {failures:?}"
+    );
+}
+
+/// What every staged plan holds, whatever its stack: sweeps in order over the plan's spatial
+/// operations, the first reading the source and every later one the stage texture the one before
+/// it wrote; every sweep's tiles covering its rectangle once, each window anchored to the sweep's
+/// own links; each sweep before the last covering every window the next reads, of the content
+/// stage; the last covering the output stage; and the stage textures sized to the content stage.
+fn assert_staged(what: &str, plan: &luxforge_core::GpuPlan, output: Stage, sweeps: &GpuSweeps) {
+    let count = sweeps.sweeps.len();
+    assert!(count >= 2, "{what}: {count} sweeps");
+    let stage = plan.boundary.stage;
+    assert_eq!(sweeps.stage, stage, "{what}");
+    assert_eq!(
+        sweeps.texture_bytes,
+        u64::from(stage.width) * u64::from(stage.height) * sweeps.format.texel_bytes() as u64,
+        "{what}"
+    );
+    assert_eq!(
+        sweeps.textures,
+        (count as u32 - 1).min(luxforge_core::SWEEP_STAGE_TEXTURES),
+        "{what}"
+    );
+    let mut next = 0;
+    for (index, sweep) in sweeps.sweeps.iter().enumerate() {
+        let what = format!("{what}: sweep {index}");
+        assert_eq!(sweep.spatial.start, next, "{what}: in order");
+        assert!(!sweep.spatial.is_empty(), "{what}");
+        next = sweep.spatial.end;
+        assert_eq!(
+            (sweep.first, sweep.last),
+            (index == 0, index == count - 1),
+            "{what}"
+        );
+        assert_eq!(sweep.reads.is_none(), sweep.first, "{what}");
+        assert_eq!(sweep.writes.is_none(), sweep.last, "{what}");
+        if index > 0 {
+            assert_eq!(
+                sweep.reads,
+                sweeps.sweeps[index - 1].writes,
+                "{what}: reads what the sweep before wrote"
+            );
+        }
+        let area: u64 = sweep.tiles.iter().map(|tile| tile.rect.pixels()).sum();
+        assert_eq!(area, sweep.covers.pixels(), "{what}: every pixel once");
+        for tile in &sweep.tiles {
+            let (rect, window) = (tile.rect, tile.window);
+            assert!(
+                rect.x0 >= sweep.covers.x0
+                    && rect.y0 >= sweep.covers.y0
+                    && rect.x1() <= sweep.covers.x1()
+                    && rect.y1() <= sweep.covers.y1(),
+                "{what}: {rect:?} within {:?}",
+                sweep.covers
+            );
+            assert_eq!(
+                (
+                    window.x0 % sweep.anchor.multiple.0,
+                    window.y0 % sweep.anchor.multiple.1
+                ),
+                (0, 0),
+                "{what}: {window:?} anchored to {:?}",
+                sweep.anchor
+            );
+            if !sweep.last {
+                assert!(
+                    window.x0 <= rect.x0
+                        && window.y0 <= rect.y0
+                        && window.x1() >= rect.x1()
+                        && window.y1() >= rect.y1(),
+                    "{what}: {window:?} holds {rect:?}"
+                );
+            }
+        }
+        if sweep.last {
+            assert_eq!(
+                sweep.covers,
+                Region {
+                    x0: 0,
+                    y0: 0,
+                    width: output.width,
+                    height: output.height
+                },
+                "{what}: the output stage"
+            );
+        } else {
+            let after = &sweeps.sweeps[index + 1];
+            for tile in &after.tiles {
+                let window = tile.window;
+                assert!(
+                    window.x0 >= sweep.covers.x0
+                        && window.y0 >= sweep.covers.y0
+                        && window.x1() <= sweep.covers.x1()
+                        && window.y1() <= sweep.covers.y1(),
+                    "{what}: the next sweep's window {window:?} within {:?}",
+                    sweep.covers
+                );
+            }
+            assert!(
+                sweep.covers.x1() <= stage.width && sweep.covers.y1() <= stage.height,
+                "{what}: of the content stage"
+            );
+        }
+    }
+    assert_eq!(next, plan.spatial.len(), "{what}: every spatial operation");
+}
+
+/// Each sweep's figures, as the report quotes them.
+fn print_sweeps(what: &str, sweeps: &GpuSweeps) {
+    eprintln!(
+        "{what}: {} sweeps, {} stage textures of {:.1} MB",
+        sweeps.sweeps.len(),
+        sweeps.textures,
+        sweeps.texture_bytes as f64 / 1e6
+    );
+    for sweep in &sweeps.sweeps {
+        let window = sweep.tiles.iter().map(|tile| tile.window.pixels()).max();
+        eprintln!(
+            "  spatial {:?}: reach {} px, anchor {:?}, {} tiles of {} px over {:?}, its slot {:.1} \
+             MB, the largest window {:.2} MP; reads {:?}, writes {:?}",
+            sweep.spatial,
+            sweep.reach,
+            sweep.anchor,
+            sweep.tiles.len(),
+            sweep.side,
+            sweep.covers,
+            sweep.slot_bytes as f64 / 1e6,
+            window.unwrap_or(0) as f64 / 1e6,
+            sweep.reads,
+            sweep.writes
+        );
+    }
+}
+
+/// Staged sweeps for the measured stacks, planned, not yet drawn: the 60 MP drag stack and Detail
+/// alone are one sweep each, drawn chained; the Air 2S's masked stack is four sweeps — Detail with
+/// the global Presence, then each masked Presence layer alone — in two stage textures, and the
+/// three-segment stack two sweeps in one, its lens tail in the last. Every sweep's slot, light
+/// links and the stage textures fit the rest's share, and each sweep's window carries about the
+/// work a tile may at most; a sweep's reach is its own links' halos and leads alone.
+#[test]
+fn gpu_rest_the_measured_stacks_are_planned_in_staged_sweeps() {
+    for (name, source, recipe) in measured_stacks() {
+        let evaluation = committed(source, recipe);
+        let tiles = planned_tiles(&evaluation);
+        match (name, &tiles.staging) {
+            ("the 60 MP drag stack" | "Detail alone at 24 MP", staging) => assert_eq!(
+                staging,
+                &GpuStaging::Chained(luxforge_core::Chained::OneSweep),
+                "{name}"
+            ),
+            (_, GpuStaging::Staged(sweeps)) => {
+                print_sweeps(name, sweeps);
+                assert_staged(name, &tiles.plan, tiles.output, sweeps);
+                let share = tiles.share.expect("a share");
+                for sweep in &sweeps.sweeps {
+                    assert!(
+                        sweep.slot_bytes + sweeps.stage_bytes() <= share,
+                        "{name}: {:?} within the share",
+                        sweep.spatial
+                    );
+                }
+                let ranges: Vec<_> = sweeps
+                    .sweeps
+                    .iter()
+                    .map(|sweep| sweep.spatial.clone())
+                    .collect();
+                match name {
+                    "the Air 2S masked stack" => {
+                        assert_eq!(ranges, [0..2, 2..3, 3..4, 4..5], "{name}");
+                        assert_eq!(sweeps.textures, 2, "{name}");
+                    }
+                    "the Air 2S three-segment stack" => {
+                        assert_eq!(ranges, [0..2, 2..3], "{name}");
+                        assert_eq!(sweeps.textures, 1, "{name}");
+                        assert!(tiles.warp().is_some(), "{name}: the lens tail in the last");
+                    }
+                    _ => panic!("{name}: an unexpected stack"),
+                }
+                // Every sweep's reach is its own: none carries another sweep's.
+                let whole: u32 = sweeps.sweeps.iter().map(|sweep| sweep.reach).sum();
+                assert!(
+                    sweeps.sweeps.iter().all(|sweep| sweep.reach < whole),
+                    "{name}"
+                );
+            }
+            (_, staging) => panic!("{name}: {staging:?}"),
+        }
+    }
+}
+
+/// An export stream in staged sweeps within the tile worker's budget: the masked stack's sweeps'
+/// tiles are row by row, so the last sweep's bands are its rows; and within a budget the stage
+/// textures and a tile pass, the same stack is drawn chained, the figures naming what it needs.
+#[test]
+fn gpu_rest_a_stream_is_planned_in_staged_sweeps_within_its_budget() {
+    let (name, source, recipe) = measured_stacks().swap_remove(1);
+    let evaluation = committed(source, recipe);
+    let budget = (2 << 30) - (256 << 20);
+    let staging = luxforge_core::plan_stream_sweeps(&evaluation, budget).expect("a stream");
+    let GpuStaging::Staged(sweeps) = &staging else {
+        panic!("{name}: {staging:?}");
+    };
+    print_sweeps(&format!("{name}, a stream"), sweeps);
+    let plan = luxforge_core::plan_stream(&evaluation, 512).expect("a stream");
+    assert_staged(name, &plan.plan, plan.output, sweeps);
+    for sweep in &sweeps.sweeps {
+        assert!(sweep.slot_bytes + sweeps.stage_bytes() <= budget, "{name}");
+        assert!(
+            sweep.tiles.windows(2).all(|pair| {
+                (pair[0].rect.y0, pair[0].rect.x0) < (pair[1].rect.y0, pair[1].rect.x0)
+            }),
+            "{name}: row by row"
+        );
+    }
+    let small = 400 << 20;
+    match luxforge_core::plan_stream_sweeps(&evaluation, small).expect("a stream") {
+        GpuStaging::Chained(luxforge_core::Chained::OverBudget { needed, budget }) => {
+            assert_eq!(budget, small);
+            assert!(needed > small, "{name}: {needed} B needed");
+        }
+        other => panic!("{name}: {other:?}"),
     }
 }
