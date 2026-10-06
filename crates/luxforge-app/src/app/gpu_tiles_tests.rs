@@ -92,7 +92,7 @@ pub(super) fn gpu_source(version: u64, source: &PreviewSource) -> GpuSource {
 }
 
 /// A radial component: an ellipse a little off centre, tilted, with a broad feather.
-fn radial() -> luxforge_core::Component {
+pub(super) fn radial() -> luxforge_core::Component {
     luxforge_core::Component::new(
         "Radial 1",
         luxforge_core::ComponentMode::Add,
@@ -114,7 +114,7 @@ fn gradient() -> luxforge_core::Component {
 
 /// A recipe of `layers`, each of the `masked` ones masked by a mask of its own holding its
 /// component.
-fn recipe(layers: Vec<Layer>, masked: Vec<(usize, luxforge_core::Component)>) -> Recipe {
+pub(super) fn recipe(layers: Vec<Layer>, masked: Vec<(usize, luxforge_core::Component)>) -> Recipe {
     let mut recipe = Recipe {
         layers,
         ..Recipe::default()

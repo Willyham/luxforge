@@ -70,11 +70,11 @@
 //!   answered, the streams and bands, the tiles drawn and in flight, the windows uploaded and the
 //!   slots created, the bytes the runner holds and has held, its compiles, the lights it computed
 //!   and where its tiles' time went.
-use super::gpu_plan::{self, WarpGrid, surface_plan_over};
+use super::gpu_plan::{self, WarpGrid, surface_plan_over, sweep_plan_over};
 use luxforge_core::{
-    Cancel, ClientId, CoordinateGrid, Error, GpuFallback, GpuGeometry, GpuPlan, LinearImage,
-    PreviewSource, Region, RestTile, STREAM_TILE_SIDES, StreamPlan, TilePlan, plan_read,
-    plan_stream,
+    Cancel, ClientId, CoordinateGrid, Error, GpuFallback, GpuGeometry, GpuPlan, GpuStaging,
+    GpuSweep, GpuSweeps, LinearImage, PreviewSource, Region, RestTile, STREAM_TILE_SIDES,
+    StreamPlan, TilePlan, plan_read, plan_stream, plan_stream_sweeps, plan_stream_sweeps_at,
     tiles::{
         Answered, Band, BandSender, BandStream, EXPORT_BANDS_IN_FLIGHT, ReadAnswer, ReadPixels,
         ReadStage, ReadValues, ReferenceReads, TILE_QUEUE_CAPACITY, TileCall, TileFallback,
@@ -86,8 +86,8 @@ use luxforge_ui::{
     photo_surface::{
         Derivation, GpuBoundary, GpuSource,
         gpu_preview::tiles::{
-            GPU_TILE_BUDGET, TILES_IN_FLIGHT, Ticket, TileEnd, TileFailure, TileFigures,
-            TilePixels, TileRunner, TileTimes, TileUnavailable as RunnerUnavailable,
+            GPU_TILE_BUDGET, TILES_IN_FLIGHT, Ticket, TileEnd, TileFailure, TileFigures, TileInput,
+            TileOutput, TilePixels, TileRunner, TileTimes, TileUnavailable as RunnerUnavailable,
         },
     },
 };
@@ -230,6 +230,10 @@ pub(crate) struct TileWorkerFigures {
     /// Streams the worker began drawing, and bands it sent.
     pub(crate) streams: u64,
     pub(crate) bands: u64,
+    /// Of the streams, those drawn in staged sweeps, and the stage textures' bytes the runner holds
+    /// now.
+    pub(crate) staged: u64,
+    pub(crate) stage_bytes: u64,
     /// Tiles the runner drew, reads' and streams' alike, program sequences it compiled and lights
     /// it computed, each once for the tiles that read it.
     pub(crate) tiles: u64,
@@ -258,6 +262,7 @@ struct Figures {
     references: u64,
     streams: u64,
     bands: u64,
+    staged: u64,
     runner: TileFigures,
 }
 
@@ -272,6 +277,8 @@ impl Figures {
             references: self.references,
             streams: self.streams,
             bands: self.bands,
+            staged: self.staged,
+            stage_bytes: self.runner.stage_bytes,
             tiles: self.runner.runs,
             compiles: self.runner.compiles,
             lights: self.runner.lights,
@@ -446,6 +453,23 @@ impl GpuTiles {
         }
         STREAM_TILE_SIDES.to_vec()
     }
+
+    /// The sides a stream's staged sweeps are tried at in place of [`STREAM_TILE_SIDES`]: a test's
+    /// own; `None` for those.
+    fn sweep_sides(&self) -> Option<Vec<u32>> {
+        #[cfg(test)]
+        if let Some(sides) = self
+            .shared
+            .lock()
+            .hooks
+            .sides
+            .clone()
+            .filter(|sides| !sides.is_empty())
+        {
+            return Some(sides);
+        }
+        None
+    }
 }
 
 impl TileService for GpuTiles {
@@ -506,7 +530,7 @@ impl TileService for GpuTiles {
         if let TileStatus::Reference(Some(reason)) = self.status() {
             return Err(reason);
         }
-        let sides = self.sides();
+        let (sides, sweep_sides) = (self.sides(), self.sweep_sides());
         let plan = plan_stream(evaluation, sides[0])?;
         let taken = Arc::new(AtomicUsize::new(0));
         let wake = {
@@ -548,6 +572,7 @@ impl TileService for GpuTiles {
             sender,
             taken,
             sides,
+            sweep_sides,
             first: Some(plan),
             drawing: None,
             next: 0,
@@ -608,6 +633,9 @@ struct Stream {
     /// The sides it may be drawn at, longest first, and the plan [`GpuTiles::stream`] made at the
     /// first.
     sides: Vec<u32>,
+    /// The sides its staged sweeps are tried at, in place of [`STREAM_TILE_SIDES`]; `None` for
+    /// those.
+    sweep_sides: Option<Vec<u32>>,
     first: Option<StreamPlan>,
     /// What the worker draws it with, once it has begun.
     drawing: Option<Drawing>,
@@ -652,9 +680,50 @@ struct Drawing {
     band_of: Vec<usize>,
     /// The tiles submitted and not yet read back, oldest first, with their index.
     pending: VecDeque<(Ticket, usize)>,
+    /// A stream drawn in staged sweeps: its sweeps, `plan.tiles` the last's.
+    staged: Option<Staged>,
     /// The runner it began on ([`Worker::runners`]): its tiles in flight and its window are that
     /// runner's, so it ends if the worker opens another.
     runner: u64,
+}
+
+/// A stream's staged sweeps (`docs/design/gpu-first.md`, "Staged sweeps"): every sweep before the
+/// last drawn into the runner's stage textures, tile by tile, two in flight, before the last
+/// sweep's tiles are streamed as bands, each cut from the stage texture the sweep before it wrote.
+struct Staged {
+    sweeps: Box<GpuSweeps>,
+    /// The sweep before the last being drawn, and its next tile.
+    sweep: usize,
+    next: usize,
+    /// That sweep's tiles in flight, oldest first.
+    pending: VecDeque<Ticket>,
+    /// When it reads the source, each band's window and each tile's band, as a chained stream's.
+    windows: Vec<Region>,
+    band_of: Vec<usize>,
+}
+
+impl Staged {
+    fn new(sweeps: Box<GpuSweeps>) -> Self {
+        let (windows, band_of) = bands(&sweeps.sweeps[0].tiles);
+        Self {
+            sweeps,
+            sweep: 0,
+            next: 0,
+            pending: VecDeque::new(),
+            windows,
+            band_of,
+        }
+    }
+
+    /// Whether a sweep before the last remains to be drawn.
+    fn drawing_stages(&self) -> bool {
+        self.sweep + 1 < self.sweeps.sweeps.len()
+    }
+
+    /// The last sweep, whose tiles are the stream's.
+    fn last(&self) -> &GpuSweep {
+        self.sweeps.sweeps.last().expect("at least two sweeps")
+    }
 }
 
 /// A band whose tiles are being read back into its rows.
@@ -678,8 +747,14 @@ impl Drawing {
             windows,
             band_of,
             pending: VecDeque::new(),
+            staged: None,
             runner,
         }
+    }
+
+    /// Whether a sweep before the last remains to be drawn into the stage textures.
+    fn drawing_stages(&self) -> bool {
+        self.staged.as_ref().is_some_and(Staged::drawing_stages)
     }
 }
 
@@ -722,6 +797,9 @@ impl Stream {
         let Some(drawing) = &self.drawing else {
             return false;
         };
+        if drawing.drawing_stages() {
+            return false;
+        }
         let Some(&band) = drawing.band_of.get(self.next) else {
             return false;
         };
@@ -743,7 +821,7 @@ impl Stream {
             || self
                 .drawing
                 .as_ref()
-                .is_some_and(|drawing| !drawing.pending.is_empty())
+                .is_some_and(|drawing| !drawing.pending.is_empty() || drawing.drawing_stages())
             || self.can_submit()
     }
 }
@@ -922,18 +1000,28 @@ impl Worker {
         plan: &SurfacePlan,
         source: &GpuSource,
         window: Region,
-        end: TileEnd,
+        (input, output): (TileInput, TileOutput),
     ) -> Result<Ticket, TileFallback> {
         let mut runner = self.runner()?;
-        let submitted = runner.submit(
+        let submitted = runner.submit_to(
             plan,
             source,
             [window.x0, window.y0, window.width, window.height],
-            end,
+            input,
+            output,
         );
         self.figures.borrow_mut().runner = runner.figures();
         drop(runner);
         submitted.map_err(|failure| self.failed(failure))
+    }
+
+    /// `ticket`'s staged sweep tile done on the device, or why it could not be.
+    fn finish_stage(&self, ticket: Ticket) -> Result<(), TileFallback> {
+        let mut runner = self.runner()?;
+        let finished = runner.finish_stage(ticket);
+        self.figures.borrow_mut().runner = runner.figures();
+        drop(runner);
+        finished.map_err(|failure| self.failed(failure))
     }
 
     /// `ticket`'s tile read back, or why it could not be.
@@ -963,12 +1051,13 @@ impl Worker {
         }
     }
 
-    /// Let go of everything the runner holds for a stream: its tiles in flight, unread, the window
-    /// and the slot.
+    /// Let go of everything the runner holds for a stream: its tiles in flight, unread, the window,
+    /// the slot and a staged stream's stage textures.
     fn release_stream(&self) {
         if let Some(runner) = self.runner.borrow_mut().as_mut() {
             runner.abandon();
             runner.release();
+            runner.release_stages();
             self.figures.borrow_mut().runner = runner.figures();
         }
     }
@@ -1016,6 +1105,93 @@ impl Worker {
             Some(tile.rect),
         )
         .map_err(|unrunnable| TileFallback::Stage(unrunnable.code()))
+    }
+
+    /// [`Worker::convert`] for a tile of `sweep`, a staged sweep of `plan`: its own links over its
+    /// window of the content stage, cut from `source` or copied out of a stage texture; a sweep
+    /// before the last draws no region and no tail, and only the last takes its part of `grid`.
+    fn convert_sweep(
+        &self,
+        plan: &GpuPlan,
+        sweep: &GpuSweep,
+        source: &GpuSource,
+        grid: Option<&CoordinateGrid>,
+        tile: RestTile,
+    ) -> Result<SurfacePlan, TileFallback> {
+        let window = tile.window;
+        let boundary = GpuBoundary::derived(
+            source,
+            Derivation::Cut {
+                origin: (window.x0, window.y0),
+            },
+            window.width,
+            window.height,
+            self.version(),
+        )
+        .ok_or(TileFallback::Stage("boundary-size"))?;
+        let part = match grid.filter(|_| sweep.last) {
+            None => None,
+            Some(grid) => Some(WarpGrid::new(
+                &grid
+                    .part(tile.rect)
+                    .ok_or(TileFallback::Stage("warp-grid"))?,
+            )),
+        };
+        sweep_plan_over(
+            plan,
+            sweep,
+            boundary,
+            (window.x0, window.y0),
+            part.as_ref(),
+            tile.rect,
+        )
+        .map_err(|unrunnable| TileFallback::Stage(unrunnable.code()))
+    }
+
+    /// One step of a staged stream's sweeps before the last: its next tile submitted, drawing its
+    /// rectangle into the stage texture the sweep writes, and its oldest tile in flight waited for
+    /// once two are or none more can be; at a sweep's last tile done, the next sweep. Why the GPU
+    /// cannot go on drawing it.
+    fn stage_step(&self, drawing: &mut Drawing) -> Result<(), TileFallback> {
+        let staged = drawing.staged.as_mut().expect("a staged stream");
+        let sweep = &staged.sweeps.sweeps[staged.sweep];
+        let tiles = sweep.tiles.len();
+        let submitted = staged.next < tiles && staged.pending.len() < TILES_IN_FLIGHT;
+        if submitted {
+            let tile = sweep.tiles[staged.next];
+            let writes = sweep
+                .writes
+                .ok_or_else(|| unplannable("a sweep writes nothing"))?;
+            let (input, window) = match sweep.reads {
+                None => (
+                    TileInput::Source,
+                    staged.windows[staged.band_of[staged.next]],
+                ),
+                Some(k) => (TileInput::Stage(k), tile.window),
+            };
+            let rect = tile.rect;
+            let output = TileOutput::Stage {
+                writes,
+                rect: [rect.x0, rect.y0, rect.x1(), rect.y1()],
+            };
+            let plan =
+                self.convert_sweep(&drawing.plan.plan, sweep, &drawing.source, None, tile)?;
+            let ticket = self.submit(&plan, &drawing.source, window, (input, output))?;
+            staged.pending.push_back(ticket);
+            staged.next += 1;
+        }
+        let finish = staged.pending.len() >= TILES_IN_FLIGHT
+            || ((!submitted || staged.next == tiles) && !staged.pending.is_empty());
+        if finish {
+            let ticket = staged.pending.pop_front().expect("a tile in flight");
+            self.finish_stage(ticket)?;
+        }
+        if staged.next == tiles && staged.pending.is_empty() {
+            staged.sweep += 1;
+            staged.next = 0;
+            (staged.windows, staged.band_of) = bands(&staged.sweeps.sweeps[staged.sweep].tiles);
+        }
+        Ok(())
     }
 
     /// Copy what the worker has done and holds into the shared state, for the figures.
@@ -1076,6 +1252,14 @@ impl Worker {
                 Err(fallback) => self.end(stream, End::Fallback(fallback)),
             };
         }
+        // A staged stream draws its sweeps before the last into the stage textures first.
+        if stream.drawing.as_ref().is_some_and(Drawing::drawing_stages) {
+            let drawing = stream.drawing.as_mut().expect("drawing");
+            return match self.stage_step(drawing) {
+                Ok(()) => true,
+                Err(fallback) => self.end(stream, End::Fallback(fallback)),
+            };
+        }
         // The next tile submitted, its band opened with its first; the GPU draws it while the
         // tile before it is read back.
         let submitted = stream.can_submit();
@@ -1094,21 +1278,44 @@ impl Worker {
                     left: drawing.band_of.iter().filter(|of| **of == band).count(),
                 });
             }
-            let ticket = self
-                .convert(
-                    &drawing.plan.plan,
-                    &drawing.source,
-                    drawing.grid.as_ref(),
-                    tile,
-                )
-                .and_then(|plan| {
-                    self.submit(
-                        &plan,
+            let output = TileOutput::Read(TileEnd::Codes);
+            let ticket = match &drawing.staged {
+                // The last sweep's tile, cut from the stage texture the sweep before it wrote.
+                Some(staged) => {
+                    let last = staged.last();
+                    let input = last
+                        .reads
+                        .map(TileInput::Stage)
+                        .ok_or_else(|| unplannable("the last sweep reads no stage"));
+                    input.and_then(|input| {
+                        self.convert_sweep(
+                            &drawing.plan.plan,
+                            last,
+                            &drawing.source,
+                            drawing.grid.as_ref(),
+                            tile,
+                        )
+                        .and_then(|plan| {
+                            self.submit(&plan, &drawing.source, tile.window, (input, output))
+                        })
+                    })
+                }
+                None => self
+                    .convert(
+                        &drawing.plan.plan,
                         &drawing.source,
-                        drawing.windows[band],
-                        TileEnd::Codes,
+                        drawing.grid.as_ref(),
+                        tile,
                     )
-                });
+                    .and_then(|plan| {
+                        self.submit(
+                            &plan,
+                            &drawing.source,
+                            drawing.windows[band],
+                            (TileInput::Source, output),
+                        )
+                    }),
+            };
             match ticket {
                 Ok(ticket) => drawing.pending.push_back((ticket, index)),
                 Err(fallback) => return self.end(stream, End::Fallback(fallback)),
@@ -1189,6 +1396,35 @@ impl Worker {
             None => None,
         };
         let budget = GPU_TILE_BUDGET - STREAM_READ_RESERVE;
+        // A stack whose layers together reach far is drawn in staged sweeps, the runner holding
+        // their stage textures, charged before they are created, for as long as the stream is
+        // drawn; any other is drawn chained.
+        let staging = match &stream.sweep_sides {
+            _ if self.chains_streams() => None,
+            Some(sides) => Some(plan_stream_sweeps_at(&stream.stack, budget, sides)?),
+            None => Some(plan_stream_sweeps(&stream.stack, budget)?),
+        };
+        if let Some(GpuStaging::Staged(sweeps)) = staging {
+            let last = sweeps.sweeps.last().expect("at least two sweeps");
+            let mut plan = plan_stream(&stream.stack, last.side)?;
+            plan.tiles = last.tiles.clone();
+            plan.side = last.side;
+            {
+                let mut runner = self.runner()?;
+                let held = runner.hold_stages(
+                    (sweeps.stage.width, sweeps.stage.height),
+                    gpu_plan::boundary_format(sweeps.format),
+                    sweeps.textures,
+                );
+                self.figures.borrow_mut().runner = runner.figures();
+                drop(runner);
+                held.map_err(|failure| self.failed(failure))?;
+            }
+            self.figures.borrow_mut().staged += 1;
+            let mut drawing = Drawing::new(plan, source, grid, self.runners.get());
+            drawing.staged = Some(Staged::new(sweeps));
+            return Ok(drawing);
+        }
         let mut requested = 0;
         for &side in &stream.sides {
             let plan = if side == first.side {
@@ -1203,6 +1439,14 @@ impl Worker {
             requested = charge;
         }
         Err(TileFallback::Budget { requested, budget })
+    }
+
+    /// Whether a test asked for every stream drawn chained.
+    fn chains_streams(&self) -> bool {
+        #[cfg(test)]
+        return self.shared.lock().hooks.chained;
+        #[cfg(not(test))]
+        false
     }
 
     /// The most the runner would hold for any one tile of `plan`, by its own charge, over its
@@ -1554,6 +1798,8 @@ impl TileWorkerFigures {
             "references": self.references,
             "streams": self.streams,
             "bands": self.bands,
+            "staged_streams": self.staged,
+            "stage_bytes": self.stage_bytes,
             "tiles": self.tiles,
             "compiles": self.compiles,
             "lights": self.lights,
@@ -1583,6 +1829,8 @@ struct Hooks {
     lose: bool,
     /// The sides streams are drawn at, in place of [`STREAM_TILE_SIDES`].
     sides: Option<Vec<u32>>,
+    /// Every later stream is drawn chained, whatever its stack.
+    chained: bool,
 }
 
 #[cfg(test)]
@@ -1648,5 +1896,10 @@ impl GpuTiles {
     /// Draw streams at `sides` in place of [`STREAM_TILE_SIDES`].
     pub(crate) fn draw_streams_at(&self, sides: Vec<u32>) {
         self.shared.lock().hooks.sides = Some(sides);
+    }
+
+    /// Draw every later stream chained, never in staged sweeps, or stop.
+    pub(crate) fn chain_streams(&self, chained: bool) {
+        self.shared.lock().hooks.chained = chained;
     }
 }

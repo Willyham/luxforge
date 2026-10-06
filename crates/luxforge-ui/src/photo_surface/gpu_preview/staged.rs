@@ -1,7 +1,8 @@
 //! The stage holder (`docs/design/gpu-preview.md`, "The picture at rest"; TASK-012's staged
 //! sweeps): one link's output over a whole content stage, held across the tiles of a sweep so the
 //! next sweep cuts its boundaries from it instead of drawing every earlier link again over each
-//! tile's window. A staged picture at rest draws through it ([`super::rest`]).
+//! tile's window. A staged picture at rest draws through it ([`super::rest`]), and the tile runner
+//! draws a staged export stream through it ([`super::tiles`]).
 //!
 //! - **Textures.** The stage in at most [`STAGE_TEXTURES`] × [`STAGE_TEXTURES`] textures of the
 //!   device's largest side, at most 8,192 pixels, row by row, as the source is held: a stage past
