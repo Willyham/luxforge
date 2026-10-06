@@ -214,8 +214,8 @@ fn fallback_a_device_that_cannot_run_the_stage_is_the_reference_for_no_adapter()
 }
 
 /// A device lost in the middle of a gesture: the gate refuses the next tick with `device-lost`, and
-/// the boundary the drag held for its GPU ticks is let go, as turning the preference off lets it
-/// go, because nothing will draw from it again. The release names the gate's reason, and the
+/// the boundary the drag held for its GPU ticks is let go, because nothing will draw from it
+/// again. The release names the gate's reason, and the
 /// drag's later ticks ask for no boundary and hand the surface no plan.
 #[test]
 fn fallback_a_device_lost_mid_gesture_lets_the_held_boundary_go() {

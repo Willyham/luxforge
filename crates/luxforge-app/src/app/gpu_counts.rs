@@ -85,7 +85,7 @@ impl Editor {
     pub(crate) fn gpu_presents(&self, job: &PreviewJob, content: u64) -> bool {
         job.layer_count.is_none()
             && job.evaluation.draft_revision().is_none()
-            && matches!(job.intent, PreviewIntent::Immediate | PreviewIntent::Settle)
+            && job.intent == PreviewIntent::Immediate
             && self.gpu_stage() == GpuStageState::Available
             && self.gpu_preview_allowed().is_ok()
             && self.core_gesture().is_none()
@@ -166,7 +166,6 @@ impl Editor {
                 "dimensions": [stage.0, stage.1],
                 "path": "gpu",
                 "reduced": false,
-                "proxy": false,
                 "render_ms": null,
                 // A committed stack's own development: only an open draft's preview approximates
                 // a RAW white balance its planes do not hold, as every presented frame reports.
@@ -338,9 +337,6 @@ impl Editor {
         });
         self.presentation.analysis_content = Some(content);
         self.presentation.motion = None;
-        if content == self.presentation.content_serial {
-            self.view_plan.quiet_since = None;
-        }
     }
 
     /// The surface could not draw or count the content the GPU presented: the reference renders

@@ -81,8 +81,6 @@ pub(crate) enum PaletteAction {
     TogglePerformance,
     ToggleThirds,
     ToggleInformation,
-    /// Turn the GPU preview off or on: this client's `gpu_preview` preference.
-    ToggleGpuPreview,
     Fit,
     HundredPercent,
     Undo,
@@ -271,11 +269,6 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
             "resources.read \u{b7} activity.list".to_owned(),
             PaletteAction::TogglePerformance,
         ),
-        (
-            gpu_preview_label(workspace.gpu_preview).to_owned(),
-            "workspace.set".to_owned(),
-            PaletteAction::ToggleGpuPreview,
-        ),
         // One entry per tab, named for both, so "settings" and the tab's name each find it.
         (
             "Settings \u{b7} General".to_owned(),
@@ -296,15 +289,6 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
     // One entry per theme the library lists, which chooses it as its row does.
     entries.extend(crate::state::themes::palette_entries(inputs.themes));
     entries
-}
-
-/// What the GPU preview entry calls itself: the action it would take, as every toggle does.
-fn gpu_preview_label(on: bool) -> &'static str {
-    if on {
-        "Turn off GPU preview"
-    } else {
-        "Turn on GPU preview"
-    }
 }
 
 /// What a toggle entry calls itself: it always names the action it would take, not the state it is
@@ -457,8 +441,6 @@ mod tests {
     fn a_toggle_names_the_action_it_would_take_not_its_current_state() {
         assert_eq!(toggle_label(true, "thirds"), "Hide thirds");
         assert_eq!(toggle_label(false, "thirds"), "Show thirds");
-        assert_eq!(gpu_preview_label(true), "Turn off GPU preview");
-        assert_eq!(gpu_preview_label(false), "Turn on GPU preview");
     }
 
     #[test]

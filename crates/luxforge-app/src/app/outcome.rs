@@ -17,8 +17,7 @@ pub(crate) enum Outcome<'a> {
         action: &'a str,
         failure: Option<&'a str>,
     },
-    /// A frame of the photograph reached the surface, or the exact phase of the proxy on screen
-    /// landed: see [`Presented`].
+    /// A frame of the photograph reached the surface: see [`Presented`].
     Presented(Presented),
     /// A preview failed; `newest` when it was the newest one asked for, so its failure is on the
     /// canvas in place of the frame that was asked for.
@@ -107,12 +106,6 @@ pub(crate) enum Outcome<'a> {
 pub(crate) enum Presented {
     /// A whole frame with no draft open: an open, a committed render or a history selection.
     Photo,
-    /// The exact phase of the proxy on screen, taken up without drawing it: the same picture, now
-    /// with the numbers of the exact render.
-    Exact,
-    /// A visible region with no draft open. It proves the pixels in view, not the whole-frame
-    /// histogram and stack a history selection or a commit is recorded with.
-    Region,
     /// A frame of the open draft. `slider` for a slider gesture; `newest` when nothing newer of the
     /// draft is still coming: no `draft.set` or commit waiting and no newer preview asked for.
     Draft { slider: bool, newest: bool },
@@ -133,8 +126,6 @@ impl Outcome<'_> {
         match self {
             Self::QueryChoiceAnswered { .. } => "query_choice_answered",
             Self::Presented(Presented::Photo) => "presented_photo",
-            Self::Presented(Presented::Exact) => "presented_exact",
-            Self::Presented(Presented::Region) => "presented_region",
             Self::Presented(Presented::Draft { .. }) => "presented_draft",
             Self::PreviewFailed { .. } => "preview_failed",
             Self::NoNewFrame => "no_new_frame",

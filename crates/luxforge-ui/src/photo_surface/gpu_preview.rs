@@ -2645,7 +2645,6 @@ impl PhotoPipeline {
             rect: region.rect,
             stage: region.stage,
             full_stage: region.full_stage,
-            quality: crate::RegionQuality::Interactive,
             content_id: 0,
             generation: 0,
         });

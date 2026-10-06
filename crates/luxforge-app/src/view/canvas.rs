@@ -119,7 +119,7 @@ fn photo_area<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Element<'a,
     let content = match (&model.photo, surfaces.draft, surfaces.stage) {
         (PhotoView::Draft, Some(draft), Some(stage)) => crop_surface(model, draft, stage),
         (PhotoView::Plain, _, _) => match model.dimensions {
-            Some(dimensions) if surfaces.photo.is_some() || surfaces.region.is_some() => {
+            Some(dimensions) if surfaces.photo.is_some() => {
                 plain(model, surfaces.photo, &surfaces, dimensions)
             }
             _ => empty("Open a photograph"),
@@ -127,7 +127,7 @@ fn photo_area<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Element<'a,
         (PhotoView::Empty(message), _, _) => empty(message),
         // A draft without its own pixels is not drawn as a draft.
         (PhotoView::Draft, _, _) => match model.dimensions {
-            Some(dimensions) if surfaces.photo.is_some() || surfaces.region.is_some() => {
+            Some(dimensions) if surfaces.photo.is_some() => {
                 plain(model, surfaces.photo, &surfaces, dimensions)
             }
             _ => empty("Open a photograph"),
@@ -681,16 +681,15 @@ fn plain<'a>(
                 let (box_width, box_height) =
                     (Length::Fixed(size.width), Length::Fixed(size.height));
                 // `Fill` rather than a fit: the box is the exact stage's displayed size and the
-                // texture may be the display proxy, which is smaller. Filling stretches it to
-                // exactly that box, and the overlays with it, whichever texture is on screen. The
-                // box may be far larger than the window; the surface hands the renderer only its
-                // visible part.
-                let photo: Element<'a, Message> = if surfaces.whole_frame() {
-                    // A whole-output proxy is still a valid percentage frame, including at 50%
-                    // and when a region request named a fallback. It is not an exact full
-                    // texture slot. Below 100% a gesture's whole-frame plan, drawn from the
-                    // same proxy, stands in for it through the same placement, and settles
-                    // into the next CPU frame through the dissolve, as at Fit.
+                // texture may be the reference's reduction to the view, which is smaller. Filling
+                // stretches it to exactly that box, and the overlays with it, whichever texture is
+                // on screen. The box may be far larger than the window; the surface hands the
+                // renderer only its visible part.
+                let photo: Element<'a, Message> = if value < 100.0 || surfaces.whole_frame() {
+                    // Below 100% the photograph is a whole frame, as at Fit: the reduction to the
+                    // view, or an exact frame drawn smaller than it is. A gesture's whole-frame
+                    // plan stands in for it through the same placement, and settles into the next
+                    // CPU frame through the dissolve, as at Fit.
                     match raster {
                         Some(raster) => luxforge_ui::photo_surface(
                             DEVELOP_SURFACE,
@@ -712,19 +711,17 @@ fn plain<'a>(
                         None => empty("Rendering photograph…"),
                     }
                 } else {
-                    let whole = surfaces.region.is_none();
                     luxforge_ui::viewport_surface(
                         DEVELOP_SURFACE,
                         raster.zip(surfaces.photo_content),
-                        surfaces.region,
                         surfaces.current_content,
                         (width, height),
                         luxforge_ui::Placement::Fill,
                         box_width,
                         box_height,
                     )
-                    .overlays(clipping.filter(|_| whole), coverage.filter(|_| whole))
-                    .region_overlays(surfaces.region_clipping, surfaces.region_coverage)
+                    .overlays(clipping, coverage)
+                    .region_overlays(None, surfaces.region_coverage)
                     // At 100% and above a gesture's plan draws the visible region at full
                     // scale, placed at its rectangle of the stage, and settles into the
                     // view's own frame through the dissolve.
@@ -801,7 +798,6 @@ fn comparison<'a>(
             luxforge_ui::viewport_surface(
                 DEVELOP_SURFACE,
                 before.zip(surfaces.photo_content),
-                surfaces.region,
                 surfaces.current_content,
                 dimensions,
                 placement,
@@ -1025,7 +1021,7 @@ pub(crate) fn drawn_photo(
             ))
         }
         ZoomView::Percent(value) => {
-            (surfaces.photo.is_some() || surfaces.region.is_some()).then_some(())?;
+            surfaces.photo.is_some().then_some(())?;
             let size = percent_size(dimensions, value, model.scale_factor);
             if !(size.width > 0.0 && size.height > 0.0) {
                 return None;
@@ -1394,8 +1390,6 @@ mod tests {
             photo: Some(&frame),
             photo_content: None,
             current_content: 0,
-            region: None,
-            region_clipping: None,
             region_coverage: None,
             stage: None,
             clipping: None,

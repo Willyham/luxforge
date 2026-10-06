@@ -547,8 +547,8 @@ impl Settle {
     /// draft's for the photograph.
     fn presented(presented: Presented) -> Option<Self> {
         match presented {
-            Presented::Photo | Presented::Exact => Some(Self::Preview),
-            Presented::Region | Presented::Draft { newest: false, .. } => None,
+            Presented::Photo => Some(Self::Preview),
+            Presented::Draft { newest: false, .. } => None,
             Presented::Draft { slider: true, .. } => Some(Self::SliderDraft),
             Presented::Draft { slider: false, .. } => Some(Self::Preview),
         }
@@ -563,12 +563,6 @@ enum ExpectedPhotoDraw {
     Full {
         version: u64,
         content: Option<u64>,
-    },
-    Region {
-        version: u64,
-        content: u64,
-        generation: u64,
-        quality: luxforge_ui::RegionQuality,
     },
     /// The GPU stage's output over the boundary of this version: the GPU identity hook's draw, over
     /// the boundary held from the frame of this version, or the committed stack's view plan at rest.
@@ -600,61 +594,7 @@ fn photo_drawn(
             gpu.drawn_full_version == Some(version)
                 && content.is_none_or(|content| gpu.drawn_content == Some(content))
         }
-        ExpectedPhotoDraw::Region {
-            version,
-            content,
-            generation,
-            quality,
-        } => gpu.drawn_regions.iter().flatten().any(|drawn| {
-            drawn.version == version
-                && drawn.content_id == content
-                && drawn.generation == generation
-                && drawn.quality == quality
-        }),
     }
-}
-
-#[cfg(test)]
-#[test]
-fn capture_accepts_a_drawn_region_beneath_older_exact_detail() {
-    let mut gpu = luxforge_ui::photo_surface::SurfaceDiagnostics {
-        drawn_regions: [
-            Some(luxforge_ui::photo_surface::DrawnRegion {
-                version: 4,
-                content_id: 2,
-                generation: 7,
-                quality: luxforge_ui::RegionQuality::Exact,
-            }),
-            Some(luxforge_ui::photo_surface::DrawnRegion {
-                version: 5,
-                content_id: 2,
-                generation: 8,
-                quality: luxforge_ui::RegionQuality::Interactive,
-            }),
-        ],
-        ..Default::default()
-    };
-    let expected = ExpectedPhotoDraw::Region {
-        version: 5,
-        content: 2,
-        generation: 8,
-        quality: luxforge_ui::RegionQuality::Interactive,
-    };
-    assert!(photo_drawn(expected, gpu));
-    gpu.drawn_regions[1].as_mut().unwrap().quality = luxforge_ui::RegionQuality::Exact;
-    assert!(
-        !photo_drawn(expected, gpu),
-        "quality identifies the drawn region"
-    );
-    gpu.drawn_regions[1].as_mut().unwrap().quality = luxforge_ui::RegionQuality::Interactive;
-    gpu.drawn_regions[1].as_mut().unwrap().version = 6;
-    assert!(
-        !photo_drawn(expected, gpu),
-        "version identifies the drawn region"
-    );
-    gpu.drawn_regions[1].as_mut().unwrap().version = 5;
-    gpu.drawn_regions[1] = None;
-    assert!(!photo_drawn(expected, gpu));
 }
 
 impl Editor {
@@ -678,6 +618,11 @@ impl Editor {
         // Compare waits for the reference's frame of a content the GPU presented, and begins when
         // it lands: the capture is of Compare.
         if self.gpu.compare_waits {
+            return false;
+        }
+        // A drag's newest tick holds the frame on screen, or waits for its reference frame: the
+        // frame to capture is the one that answers it.
+        if self.drag_frame_waiting() {
             return false;
         }
         // The status bar names the frame the surface drew last, which only that draw can say: a
@@ -722,7 +667,7 @@ impl Editor {
             let drawn = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
             let whole = match self.session.preview.view.zoom {
                 luxforge_core::Zoom::Fit => true,
-                luxforge_core::Zoom::Percent { .. } => surfaces.whole_frame(),
+                luxforge_core::Zoom::Percent { value } => value < 100.0 || surfaces.whole_frame(),
             };
             if let Some(rest) = surfaces.gpu_rest.filter(|_| whole)
                 && !drawn.gpu_rest.is_some_and(|figures| {
@@ -775,50 +720,30 @@ impl Editor {
             .photo_for(self.presentation.presented_content);
         let full_current =
             self.presentation.presenter.full_content() == Some(self.presentation.presented_content);
-        let expected = if matches!(
-            self.session.preview.view.zoom,
-            luxforge_core::Zoom::Percent { .. }
-        ) && !full_current
-        {
-            self.presentation.presenter.region().and_then(|region| {
-                (region.content_id == self.presentation.presented_content).then_some(
-                    ExpectedPhotoDraw::Region {
-                        version: region.frame.version(),
-                        content: region.content_id,
-                        generation: region.generation,
-                        quality: region.quality,
-                    },
-                )
-            })
-        } else {
-            None
-        }
-        .or_else(|| {
-            full.map(|photo| {
-                let percent = matches!(
-                    self.session.preview.view.zoom,
-                    luxforge_core::Zoom::Percent { .. }
-                );
-                // The GPU identity hook draws the photograph at Fit through the GPU stage, so the
-                // frame to capture is that draw, over the boundary held from this frame; with the
-                // GPU preview turned off it hands the surface nothing, and the frame is the CPU's.
-                let forced = self
-                    .evidence
-                    .as_ref()
-                    .is_some_and(|evidence| evidence.gpu_identity.is_some())
-                    && self.gpu_preview_allowed().is_ok();
-                if forced && !percent && self.presentation.compare_after.is_none() {
-                    ExpectedPhotoDraw::Gpu {
-                        boundary: photo.version(),
-                    }
-                } else {
-                    ExpectedPhotoDraw::Full {
-                        version: photo.version(),
-                        content: (percent && full_current)
-                            .then_some(self.presentation.presented_content),
-                    }
+        let expected = full.map(|photo| {
+            let percent = matches!(
+                self.session.preview.view.zoom,
+                luxforge_core::Zoom::Percent { .. }
+            );
+            // The GPU identity hook draws the photograph at Fit through the GPU stage, so the
+            // frame to capture is that draw, over the boundary held from this frame; with the
+            // GPU preview turned off it hands the surface nothing, and the frame is the CPU's.
+            let forced = self
+                .evidence
+                .as_ref()
+                .is_some_and(|evidence| evidence.gpu_identity.is_some())
+                && self.gpu_preview_allowed().is_ok();
+            if forced && !percent && self.presentation.compare_after.is_none() {
+                ExpectedPhotoDraw::Gpu {
+                    boundary: photo.version(),
                 }
-            })
+            } else {
+                ExpectedPhotoDraw::Full {
+                    version: photo.version(),
+                    content: (percent && full_current)
+                        .then_some(self.presentation.presented_content),
+                }
+            }
         });
         label_current
             && expected.is_some_and(|expected| {
@@ -933,7 +858,7 @@ impl Editor {
                     return Task::none();
                 }
                 let rows_shown = self.recipe_rows_shown();
-                let proxy_ready = self.capture_proxy_ready();
+                let refit_ready = self.capture_refit_ready();
                 let photo_ready = self.capture_photo_ready();
                 let clipping_ready = self.capture_clipping_ready();
                 let mask_ready = !self.mask_frame_pending()
@@ -959,7 +884,7 @@ impl Editor {
                     || !self.presets.library.ready()
                     || !self.curve_sampling.slot.idle()
                     || !rows_shown
-                    || (!proxy_ready && !evidence.allow_unready_capture)
+                    || (!refit_ready && !evidence.allow_unready_capture)
                     || (!photo_ready && !evidence.allow_unready_capture)
                     || (!clipping_ready && !evidence.allow_unready_capture)
                     || (!mask_ready && !evidence.allow_unready_capture)
@@ -970,7 +895,14 @@ impl Editor {
                 // grid belongs to one generation, and a newer frame presented after it leaves the
                 // canvas drawing the photograph alone. This subscription runs per window frame, so
                 // waiting costs nothing and the grid of that newer frame arrives a message later.
-                if overlay_wanted && self.presentation.coverage().is_none() {
+                if overlay_wanted
+                    && self.presentation.coverage().is_none()
+                    && self
+                        .presentation
+                        .presenter
+                        .region_coverage(self.presentation.presented_generation)
+                        .is_none()
+                {
                     return Task::none();
                 }
                 let Some(evidence) = &mut self.evidence else {
@@ -999,7 +931,7 @@ impl Editor {
                     .map(|value| Message::Evidence(EvidenceMessage::Captured(value)));
             }
             EvidenceMessage::Captured(shot) => {
-                // The window readback is asynchronous. A newer proxy can reach the surface while
+                // The window readback is asynchronous. A newer frame can reach the surface while
                 // it is in flight; its request-time snapshot then describes the old proxy even
                 // though the capture response arrives after the new one was displayed. Retry on
                 // the next drawn frame without publishing or saving that stale screenshot.
@@ -1007,7 +939,7 @@ impl Editor {
                     .evidence
                     .as_ref()
                     .is_some_and(|evidence| evidence.allow_unready_capture)
-                    && !self.capture_proxy_ready()
+                    && !self.capture_refit_ready()
                     || self.evidence.as_ref().is_some_and(|evidence| {
                         evidence
                             .sync
@@ -2670,7 +2602,7 @@ impl Editor {
     }
 
     /// Settle a step waiting for quiet once this client has nothing in flight: no gesture, no
-    /// request, no waiting reset, and the newest requested frame on screen with its exact phase.
+    /// request, no waiting reset, and the newest requested frame on screen.
     pub(crate) fn settle_when_quiet(&mut self) {
         let waiting = self
             .evidence
@@ -2681,7 +2613,6 @@ impl Editor {
             && !self.busy
             && self.controls.pending_reset.is_none()
             && !self.presentation.queue.is_busy()
-            && self.presentation.held_by_proxy.is_none()
             && self.presentation.presented_generation == self.presentation.preview_generation
         {
             self.settle_step(Settle::Quiet, "quiet");
@@ -3159,10 +3090,11 @@ impl Editor {
                         .is_some_and(|slider| slider.unpreviewed)
                 {
                     self.settle_step(Settle::SliderDraft, "draft_refused");
-                } else if drained && self.gpu_draws_newest_tick() {
+                } else if drained && self.gpu_draws_newest_tick() && !self.drag_frame_waiting() {
                     // The newest value was drawn on the GPU as its set answered, before this step
                     // waited: no CPU frame of its own is coming, and the capture waits for the
-                    // surface's draw of it.
+                    // surface's draw of it. A held tick settles the step when the surface draws
+                    // it, or its reference frame lands ([`super::motion`]).
                     self.settle_step(Settle::SliderDraft, "gpu_tick");
                 }
             }
@@ -4059,7 +3991,6 @@ impl Editor {
             | PaletteAction::TogglePanel(_)
             | PaletteAction::ToggleThirds
             | PaletteAction::ToggleInformation
-            | PaletteAction::ToggleGpuPreview
             | PaletteAction::Fit
             | PaletteAction::HundredPercent => self.await_step(Settle::Session),
             PaletteAction::TogglePerformance => self.arm_performance_settle(),
@@ -5524,7 +5455,7 @@ mod tests {
     }
 
     #[test]
-    fn a_capture_waits_for_the_adopted_photo_texture_and_checks_region_identity() {
+    fn a_capture_waits_for_the_adopted_photo_texture() {
         let mut gpu = luxforge_ui::photo_surface::SurfaceDiagnostics {
             drawn_full_version: Some(1),
             photo_writes: 1,
@@ -5544,50 +5475,6 @@ mod tests {
         assert!(
             photo_drawn(expected, gpu),
             "a retirement wake can upload that same raster without another adoption"
-        );
-
-        let region = ExpectedPhotoDraw::Region {
-            version: 4,
-            content: 9,
-            generation: 7,
-            quality: luxforge_ui::RegionQuality::Interactive,
-        };
-        gpu.drawn_regions = [
-            Some(luxforge_ui::photo_surface::DrawnRegion {
-                version: 3,
-                content_id: 8,
-                generation: 6,
-                quality: luxforge_ui::RegionQuality::Exact,
-            }),
-            Some(luxforge_ui::photo_surface::DrawnRegion {
-                version: 4,
-                content_id: 8,
-                generation: 7,
-                quality: luxforge_ui::RegionQuality::Interactive,
-            }),
-        ];
-        assert!(
-            !photo_drawn(region, gpu),
-            "the region belongs to another content"
-        );
-        gpu.drawn_regions[1].as_mut().unwrap().content_id = 9;
-        assert!(photo_drawn(region, gpu));
-        gpu.drawn_regions[1].as_mut().unwrap().generation = 8;
-        assert!(
-            !photo_drawn(region, gpu),
-            "a newer region is not this capture"
-        );
-        gpu.drawn_regions[1].as_mut().unwrap().generation = 7;
-        gpu.drawn_regions[1].as_mut().unwrap().quality = luxforge_ui::RegionQuality::Exact;
-        assert!(
-            !photo_drawn(region, gpu),
-            "an exact region is not the interactive capture"
-        );
-        gpu.drawn_regions[1].as_mut().unwrap().quality = luxforge_ui::RegionQuality::Interactive;
-        gpu.drawn_regions[1].as_mut().unwrap().version = 5;
-        assert!(
-            !photo_drawn(region, gpu),
-            "a different frame version is not the capture"
         );
     }
 
@@ -5872,16 +5759,14 @@ mod tests {
     }
 
     /// A frame reaching the surface ends a step waiting for the photograph when no draft is open,
-    /// and a drafted step only on the draft's newest frame; a region alone ends nothing. A step
+    /// and a drafted step only on the draft's newest frame. A step
     /// waiting for something else is not ended by a frame, and the one that is ended logs the
     /// outcome that ended it.
     #[test]
     fn a_presented_frame_settles_only_the_wait_it_answers() {
-        use Presented::{Draft, Exact, Photo, Region};
+        use Presented::{Draft, Photo};
         for (presented, settles) in [
             (Photo, Some(Settle::Preview)),
-            (Exact, Some(Settle::Preview)),
-            (Region, None),
             (
                 Draft {
                     slider: true,

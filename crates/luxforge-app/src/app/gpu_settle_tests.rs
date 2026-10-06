@@ -343,8 +343,9 @@ fn gpu_settle_a_cpu_frame_of_the_draft_dissolves_and_the_next_tick_cancels_it() 
     finish(editor, catalog);
 }
 
-/// A cancelled draft puts the entry it was drawn over back on screen: older content, which
-/// replaces the GPU frame with no dissolve, the CPU's frame where the GPU does not draw it at rest.
+/// A cancelled draft puts the entry it was drawn over back on screen with no dissolve: the CPU's
+/// frame of it, where the GPU does not draw it at rest, which stood behind the GPU frame all along,
+/// its pixels reused.
 #[test]
 fn gpu_settle_a_cancel_swaps_with_no_dissolve() {
     let catalog = catalog("cancel");
@@ -360,9 +361,16 @@ fn gpu_settle_a_cancel_swaps_with_no_dissolve() {
     assert!(editor.gpu_settle.dissolve().is_none());
     let records = logged(&mut editor, &log);
     assert!(events(&records, "gpu_dissolve_started").is_empty());
-    let swapped = events(&records, "gpu_settle_swapped");
-    assert_eq!(swapped.len(), 1, "{records:?}");
-    assert_eq!(swapped[0]["why"], "older content");
+    assert_eq!(
+        events(&records, "preview_pixels_reused").len(),
+        1,
+        "{records:?}"
+    );
+    let surfaces = editor.surfaces();
+    assert!(
+        (surfaces.gpu.is_none() || surfaces.gpu_hold) && surfaces.photo.is_some(),
+        "the CPU frame of the entry is the photograph"
+    );
     finish(editor, catalog);
 }
 
@@ -414,17 +422,13 @@ fn zoomed(editor: &mut Editor) {
 }
 
 /// The version of the CPU frame the percentage view draws the current content from: its whole
-/// frame of that content, or else its region of it.
+/// frame of that content.
 fn view_frame(editor: &Editor) -> Option<u64> {
     let surfaces = editor.surfaces();
-    if surfaces.photo_content == Some(surfaces.current_content) {
-        surfaces.photo.map(luxforge_ui::Frame::version)
-    } else {
-        surfaces
-            .region
-            .filter(|region| region.content_id == surfaces.current_content)
-            .map(|region| region.frame.version())
-    }
+    surfaces
+        .photo
+        .filter(|_| surfaces.photo_content == Some(surfaces.current_content))
+        .map(luxforge_ui::Frame::version)
 }
 
 /// At a percentage zoom the release's committed frame of the visible region replaces the GPU
@@ -512,8 +516,8 @@ fn gpu_settle_below_100_percent_a_commit_dissolves_into_the_proxy_and_a_pan_canc
             "{value}%: to the proxy the view draws"
         );
         assert!(
-            editor.presentation.presented_proxy,
-            "{value}%: the committed frame is the view's proxy"
+            editor.presentation.presented_reduced,
+            "{value}%: the committed frame is the view's reduction"
         );
         assert_eq!(editor.surfaces().dissolve, Some(dissolve));
         // A pan while it runs cancels it.
