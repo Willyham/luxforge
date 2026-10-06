@@ -36,10 +36,9 @@
 use super::{
     ColorRun, Compiled, MaskedInput, RenderContext, ResampleEntry, ScratchBudget, Segment,
     color_chunk_rows, color_runs, mapped_replacements,
-    reduced::ReducedKey,
     spatial::{
-        PlaneUse, SpatialPlan, TilePlanes, Tiling, build_reduction_cancellable, fill_planes,
-        resolve_globals, run_tile, run_tile_planned, run_tiles,
+        SpatialPlan, Tiling, build_reduction_cancellable, fill_planes, resolve_globals, run_tile,
+        run_tiles,
     },
 };
 
@@ -66,9 +65,7 @@ pub(super) fn colour_input<'r, D: PixelDomain>(
 }
 use crate::{
     Cancel, Error,
-    modules::{
-        Cells, Global, Parallelism, ReducedGrid, Reduction, Region, SpatialOperation, Stage,
-    },
+    modules::{Global, Parallelism, Reduction, Region, SpatialOperation, Stage},
 };
 use rayon::prelude::*;
 #[cfg(test)]
@@ -85,15 +82,6 @@ pub(crate) trait PixelDomain: Sync {
     /// One evaluated tile, as the parallel half of [`spatial_entry`] hands it to the serial write:
     /// rows already in the frame's own layout, so the write copies whole rows.
     type TileOutput: Send;
-
-    /// The fingerprint a global estimate is keyed by.
-    fn fingerprint(&self) -> &str;
-
-    /// What identifies a spatial operation's input beyond the source fingerprint and the layers
-    /// before it. The byte path's input is the recipe prefix over the decoded source, so it is
-    /// the prefix hash. The linear path's also depends on the development, the view and the
-    /// settings, none of which the recipe names.
-    fn estimate_prefix<'p>(&self, prefix_hash: &'p str) -> Cow<'p, str>;
 
     /// Refuse an output stage this domain cannot produce, before a point is answered in it.
     /// Nothing is refused unless a domain says so; the linear path has its own output limit.
@@ -225,16 +213,6 @@ pub(crate) trait PixelDomain: Sync {
     {
         None
     }
-}
-
-/// Identify the pixels of a recipe prefix in this domain. This only builds metadata: it neither
-/// reads pixels nor prepares an estimate. Global estimates and retained restoration frames use
-/// the same source development, view and approximation identity through this one key builder.
-pub(super) fn input_prefix_key<'p, D: PixelDomain>(
-    domain: &D,
-    prefix_hash: &'p str,
-) -> Cow<'p, str> {
-    domain.estimate_prefix(prefix_hash)
 }
 
 /// How an [`Evaluation`] answers the pixels of its spatial segments.
@@ -870,15 +848,12 @@ fn clamp_index(value: f64, limit: u32) -> u32 {
     }
 }
 
-/// A spatial boundary ([`super::Entry::Spatial`]): the operation, the recipe prefix its estimates
-/// are keyed by and the estimates it was handed, if any.
+/// A spatial boundary ([`super::Entry::Spatial`]): the operation and the estimates it was handed,
+/// if any.
 #[derive(Clone)]
 pub(crate) struct SpatialEntry {
     pub(super) operation: SpatialOperation,
     pub(crate) stage: crate::EffectStage,
-    /// The SHA-256 of the canonical JSON of the layers before this one, which together with the
-    /// source and the stage identifies what a global estimate was prepared from.
-    prefix_hash: String,
     /// The global estimates this operation is handed instead of reducing its own stage: set only
     /// by the qualification harness, which hands a frame the estimates it measures. `None`
     /// everywhere else.
@@ -886,34 +861,12 @@ pub(crate) struct SpatialEntry {
 }
 
 impl SpatialEntry {
-    pub(super) fn new(operation: SpatialOperation, prefix_hash: String) -> Self {
+    pub(super) fn new(operation: SpatialOperation) -> Self {
         Self {
             operation,
             stage: crate::EffectStage::Spatial,
-            prefix_hash,
             globals: None,
         }
-    }
-
-    /// The key of the store's reduced planes of this operation's first unit over `stage` in
-    /// `domain`, mirroring an estimate's ([`resolve_globals`]), with the grid the unit declares;
-    /// `None` when the first unit declares none. Only the first unit
-    /// is asked: a later unit's input is the earlier units' output over its tile's own rectangles,
-    /// which no shared plane reproduces. `O(1)`, and reads no pixel.
-    pub(super) fn reduced_key<D: PixelDomain>(
-        &self,
-        domain: &D,
-        stage: Stage,
-    ) -> Option<(ReducedKey, ReducedGrid)> {
-        let grid = self.operation.units().first()?.reduced_grid()?;
-        let key = ReducedKey {
-            fingerprint: domain.fingerprint().to_owned(),
-            prefix_hash: input_prefix_key(domain, &self.prefix_hash).into_owned(),
-            width: stage.width,
-            height: stage.height,
-            reduction: grid.key.clone(),
-        };
-        Some((key, grid))
     }
 
     /// The rectangle of its `received` stage that producing `window` of it reads: `window` grown by
@@ -944,15 +897,10 @@ impl SpatialEntry {
 
 /// One spatial entry's output over its whole `stage`, written tile by tile into the domain's frame:
 /// the one place either driver materializes a spatial operation. `fill` reads one rectangle of the
-/// stage it reads into three planes, for every tile and, on a store miss, for the reduction its
-/// global estimates ([`SpatialEntry::globals`]) are prepared from.
+/// stage it reads into three planes, for every tile and for the reduction its global estimates
+/// ([`SpatialEntry::globals`]) are prepared from.
 ///
-/// When the operation's first unit declares reduced planes ([`SpatialEntry::reduced_key`]), a tile
-/// whose reach in the grid the store's entry covers reads them and reads its input over the unit's
-/// output rectangle alone; any other tile computes them as it always has and hands back the cells
-/// it owns, which the write lock copies into the render's pending planes. They are published when
-/// every tile is written, and not at all when the render fails or is cancelled.
-/// Every tile runs through [`run_tile`], in a rolling window whose width the spatial budget sets,
+/// `_domain` names the domain whose frame it writes. Every tile runs through [`run_tile`], in a rolling window whose width the spatial budget sets,
 /// checking `cancel` between tiles ([`run_tiles`]). No full-frame float buffer exists beside the
 /// output, only one tile's working set per tile in flight, charged to the spatial budget before
 /// the tiles it runs allocate, and held in the slot of the worker that runs it, which reuses its
@@ -960,7 +908,7 @@ impl SpatialEntry {
 /// phase ([`PixelDomain::tile_output`]) and written as it finishes.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spatial_entry<D: PixelDomain>(
-    domain: &D,
+    _domain: &D,
     entry: &SpatialEntry,
     stage: Stage,
     tiling: Tiling,
@@ -976,24 +924,6 @@ pub(super) fn spatial_entry<D: PixelDomain>(
             fill(region, planes, Parallelism::Serial)
         })
     })?;
-    let store = context.reduced();
-    let global = globals.first().and_then(Option::as_ref);
-    let (held, mut pending) = match entry.reduced_key(domain, stage) {
-        Some((key, grid)) => {
-            let held = store.lookup(&key, global);
-            store.note_render(held.is_some());
-            (held, store.pending(key, global, &grid, plan.tile()))
-        }
-        None => (None, None),
-    };
-    let planes = if held.is_some() || pending.is_some() {
-        TilePlanes::Store {
-            held: held.as_deref(),
-            hand: pending.is_some(),
-        }
-    } else {
-        TilePlanes::None
-    };
     let mut frame = D::spatial_frame(stage, wide)?;
     #[cfg(test)]
     context.note_spatial_frame();
@@ -1002,7 +932,7 @@ pub(super) fn spatial_entry<D: PixelDomain>(
         context.spatial(),
         cancel,
         |tile, parallelism, scratch| {
-            let (region, values, used) = run_tile_planned(
+            let (region, values) = run_tile(
                 &plan,
                 operation,
                 &globals,
@@ -1010,36 +940,15 @@ pub(super) fn spatial_entry<D: PixelDomain>(
                 parallelism,
                 scratch,
                 cancel,
-                planes,
                 |region, planes| fill(region, planes, parallelism),
             )?;
-            let cells = match used {
-                PlaneUse::Served => {
-                    store.note_tile(true, 0);
-                    None
-                }
-                PlaneUse::Computed(cells) => {
-                    store.note_tile(false, cells.as_ref().map_or(0, Cells::count));
-                    cells
-                }
-                PlaneUse::None => None,
-            };
-            Ok((
-                D::tile_output(region, values, tile, parallelism, wide),
-                cells,
-            ))
+            Ok(D::tile_output(region, values, tile, parallelism, wide))
         },
-        |tile, (output, cells)| {
+        |tile, output| {
             D::write_tile(&mut frame, stage, tile, output);
-            if let (Some(pending), Some(cells)) = (pending.as_mut(), cells) {
-                pending.write(tile, &cells);
-            }
             Ok(())
         },
     )?;
-    if let Some(pending) = pending {
-        store.publish(pending, held.as_ref());
-    }
     Ok(frame)
 }
 

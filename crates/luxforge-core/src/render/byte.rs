@@ -14,7 +14,7 @@ use crate::{
     modules::{ExactGeometry, Parallelism, Region, Stage},
 };
 use rayon::prelude::*;
-use std::{borrow::Cow, sync::Arc};
+use std::sync::Arc;
 
 pub(super) fn check_source(source: &SourceImage) -> Result<(), Error> {
     if source.rgba.len() != Raster::expected_len(source.width, source.height)? {
@@ -127,12 +127,6 @@ fn encoded_in(quantizers: (&Quantizer, &Quantizer16), rgb: [f32; 3], wide: bool)
     }
 }
 
-/// The estimate prefix of a byte source of `width` × `height` stored at `orientation`: what its
-/// estimates are keyed by.
-fn estimate_prefix(prefix_hash: &str, width: u32, height: u32, orientation: u8) -> String {
-    format!("{prefix_hash}+byte:{width}x{height}:orientation:{orientation}")
-}
-
 fn decoded(rgb: [u16; 3]) -> [f32; 3] {
     decoded_in(decode16_table(), rgb)
 }
@@ -148,17 +142,6 @@ impl PixelDomain for Byte<'_> {
     type SpatialFrame = ByteFrame;
     type TileOutput = ByteFrame;
 
-    fn fingerprint(&self) -> &str {
-        &self.0.fingerprint
-    }
-    fn estimate_prefix<'p>(&self, prefix_hash: &'p str) -> Cow<'p, str> {
-        Cow::Owned(estimate_prefix(
-            prefix_hash,
-            self.0.width,
-            self.0.height,
-            self.0.orientation,
-        ))
-    }
     fn source_pixel(&self, x: u32, y: u32) -> Result<Self::Pixel, Error> {
         let p = source_pixel(self.0, x, y);
         Ok([p[0], p[1], p[2]].map(|v| u16::from(v) * 257))
@@ -868,7 +851,7 @@ mod tests {
     use serde_json::json;
     fn segment(spatial: bool, colour: bool, pixels: bool) -> Segment {
         let mut segment = Segment::new(
-            spatial.then(|| Entry::spatial(crate::SpatialOperation::neutral(), String::new())),
+            spatial.then(|| Entry::spatial(crate::SpatialOperation::neutral())),
             10,
             10,
         );

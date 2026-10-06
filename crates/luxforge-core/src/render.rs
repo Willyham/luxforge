@@ -30,7 +30,6 @@ pub(crate) mod map;
 pub(crate) mod parallel;
 mod pipeline;
 mod raster;
-pub(crate) mod reduced;
 pub(crate) mod spatial;
 #[cfg(test)]
 pub(crate) mod testing;

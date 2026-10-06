@@ -127,9 +127,8 @@ pub(crate) use registry::tests::{
 pub use registry::{ActionRef, QueryRef};
 pub use registry::{ModuleRegistry, Provider, RegistryOptions, insertion_index_among};
 pub(crate) use spatial::{
-    Cells, ESTIMATE_REDUCTION, Global, GridPlanes, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO,
-    Parallelism, Planes, PlanesMut, REDUCED_STORE_BYTES, Reduced, ReducedGrid, Reduction,
-    SPATIAL_BUDGET_BYTES, SpatialUnit,
+    ESTIMATE_REDUCTION, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes,
+    PlanesMut, Reduction, SPATIAL_BUDGET_BYTES, SpatialUnit,
 };
 pub use spatial::{MAX_MASKED_SPATIAL_LAYERS, Region, SpatialOperation};
 pub use vignette::VIGNETTE_EFFECT;

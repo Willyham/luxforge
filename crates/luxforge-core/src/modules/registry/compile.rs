@@ -12,7 +12,7 @@ use crate::{
     },
     render::{
         Compiled, Entry, Segment,
-        spatial::{SpatialPlan, Tiling, prefix_hash},
+        spatial::{SpatialPlan, Tiling},
     },
 };
 use std::collections::HashSet;
@@ -511,11 +511,9 @@ impl ModuleRegistry {
                     // Nothing is rewritten or reduced to fit, and what a tile costs in memory,
                     // which a mask adds two tile planes to, never refuses it.
                     SpatialPlan::new(&operation, stage, Tiling::Halo)?;
-                    let prefix_hash = prefix_hash(&layers[..index], masks, sampling)?;
                     segments.push(Segment::new(
                         Some(Entry::spatial_tagged(
                             operation,
-                            prefix_hash,
                             self.effect_stage(&layer.effect_id)
                                 .unwrap_or(EffectStage::Spatial),
                         )),

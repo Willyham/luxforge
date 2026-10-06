@@ -104,7 +104,6 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | `refusal-text` | The unavailable-effect and full-source-queue messages (`"unavailable effect`, `queue is full`) outside their constructors' homes (`error.rs`, and `api/owner.rs` for the two queues): a client, the desktop included, reads the refusal's code and data (`data.effect_id`, `data.retry`), never its message | Production code under `crates/` |
 | `component-kind` | A mask component kind's token (`BRUSH`, `LINEAR`, `RADIAL`, `KIND`, `LUMINANCE_KIND`, `COLOUR_KIND`, `"luminance-range"`, `"colour-range"`) outside the host's kind table (`mask/mod.rs`), each kind's own file and the desktop's drawn-kind table and editors | Production code under `crates/` |
 | `one-read-rectangle` | A resample's tap index, `- 0.5).floor()`, anywhere but once, in `Resample::reads` in `render/geometry.rs` | Core production code |
-| `one-spatial-entry` | Keying the estimate store by a domain's prefix, `.estimate_prefix(`, anywhere but once, in `SpatialEntry::globals` in `render/pipeline.rs` | Core production code |
 | `patch-action` | A patch action's declaration (`patch: true`) outside the field-patch module and the RAW module, whose `set-raw` keeps its own merge | Production code under `crates/` |
 | `job-records` | A ring of finished job records, `VecDeque<JobId>`, outside the one job table (`jobs.rs`) | Core production code |
 | `job-table` | `Jobs::new` anywhere but once, in the catalog owner's launch (`api/owner.rs`) | Core production code |

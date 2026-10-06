@@ -25,11 +25,8 @@ use super::filters::{
     reduced_frame, reduced_rect, upsample,
 };
 use crate::{
-    Cancel, Error,
-    modules::{
-        Global, Parallelism, Planes, PlanesMut, Reduced, ReducedGrid, Reduction, Region,
-        SpatialUnit, Stage,
-    },
+    Error,
+    modules::{Global, Parallelism, Planes, PlanesMut, Reduction, Region, SpatialUnit, Stage},
     render::gpu::GpuSpatialUnit,
 };
 use std::borrow::Cow;
@@ -155,8 +152,7 @@ impl Dehaze {
     }
 
     /// [`SpatialUnit::apply`], with the guide and the dark channel's input computed from the
-    /// block means and, for [`Reduced::Hand`], the tile's cells of them handed back, or read from
-    /// [`Reduced::Held`] planes instead.
+    /// block means.
     fn run(
         &self,
         input: &Planes<'_>,
@@ -164,7 +160,6 @@ impl Dehaze {
         global: Option<&Global>,
         scratch: &mut [f32],
         parallelism: Parallelism,
-        reduced: Option<Reduced<'_>>,
     ) -> Result<(), Error> {
         // A missing estimate is never silently treated as neutral: the effect would be omitted from
         // the render without saying so.
@@ -197,43 +192,6 @@ impl Dehaze {
         );
 
         let mut scratch = Scratch::new(scratch);
-        if let Some(Reduced::Held(planes)) = reduced {
-            // The guide and the dark channel's input are held, so nothing of the input outside
-            // the output is read: the block means are never summed.
-            let transmission_buffer = scratch.take(out.pixels())?;
-            let dark_buffer = scratch.take(raw_rect.pixels())?;
-            let raw_buffer = scratch.take(raw_rect.pixels())?;
-            let refined_buffer = scratch.take(refined_rect.pixels())?;
-            let guide = filters::held_plane(&planes, 0, reduced_geometry, raw_rect)?;
-            let normalized = filters::held_plane(&planes, 1, reduced_geometry, dark_source_rect)?;
-            let mut dark = PlaneMut::over(dark_buffer, reduced_geometry, raw_rect)?;
-            self.dark_channel(
-                &normalized,
-                &mut dark,
-                &mut scratch,
-                reduced_frame_rect,
-                parallelism,
-            )?;
-            let dark = dark.as_plane();
-            let mut raw = PlaneMut::over(raw_buffer, reduced_geometry, raw_rect)?;
-            raw.for_rows(parallelism, |j, row| {
-                for i in raw_rect.x0..raw_rect.x1 {
-                    row[(i - raw_rect.x0) as usize] = 1.0 - self.omega * dark.get(i, j);
-                }
-            });
-            return self.finish(
-                input,
-                output,
-                atmosphere,
-                &guide,
-                &raw.as_plane(),
-                PlaneMut::over(refined_buffer, reduced_geometry, refined_rect)?,
-                PlaneMut::over(transmission_buffer, geometry, out)?,
-                &mut scratch,
-                parallelism,
-            );
-        }
-
         let transmission_buffer = scratch.take(out.pixels())?;
         let red_buffer = scratch.take(dark_source_rect.pixels())?;
         let green_buffer = scratch.take(dark_source_rect.pixels())?;
@@ -320,10 +278,6 @@ impl Dehaze {
                 rows[1][column] = filters::encoded_luminance(pixel);
             }
         });
-        if let Some(Reduced::Hand(cells)) = reduced {
-            filters::hand_back(cells, 0, &guide.as_plane());
-            filters::hand_back(cells, 1, &normalized.as_plane());
-        }
         self.finish(
             input,
             output,
@@ -513,44 +467,7 @@ impl SpatialUnit for Dehaze {
         scratch: &mut [f32],
         parallelism: Parallelism,
     ) -> Result<(), Error> {
-        self.run(input, output, global, scratch, parallelism, None)
-    }
-
-    /// The two planes the transmission estimate reads its reduced grid through: the guided
-    /// filter's guide, the encoded luminance of the `f32` block means, and the dark channel's
-    /// input, the smallest over the channels of each `f64` block mean divided by the atmospheric
-    /// light, clamped and narrowed. The three means themselves would not do, because the dark
-    /// channel's input is computed from the `f64` mean. Both are read before any coefficient; the
-    /// second depends on the light, which the host checks beside the key.
-    fn reduced_grid(&self) -> Option<ReducedGrid> {
-        Some(ReducedGrid {
-            key: Cow::Borrowed("presence dehaze guide and dark-channel input 4x block means"),
-            factor: REDUCTION as u32,
-            planes: 2,
-        })
-    }
-
-    fn reduced_reach(&self, output: Region, stage: Stage) -> Region {
-        let rects = self.rects(stage, output);
-        if rects.out.is_empty() {
-            return Region::EMPTY;
-        }
-        filters::grid_region(rects.dark_source)
-    }
-
-    fn apply_reduced(
-        &self,
-        input: &Planes<'_>,
-        output: &mut PlanesMut<'_>,
-        global: Option<&Global>,
-        scratch: &mut [f32],
-        parallelism: Parallelism,
-        cancel: &Cancel,
-        reduced: Reduced<'_>,
-    ) -> Result<(), Error> {
-        cancel.check()?;
-        self.run(input, output, global, scratch, parallelism, Some(reduced))?;
-        cancel.check()
+        self.run(input, output, global, scratch, parallelism)
     }
 
     /// Dehaze reading its atmospheric light from the plane its light link writes.

@@ -498,10 +498,7 @@ const SOURCE_RULES: &[SourceRule] = &[
                  editors may name a component kind; ask the kind table instead",
     },
     // One pixel-domain pipeline: the tap index of a resample coordinate, `(value - 0.5).floor()`,
-    // is what every read rectangle computes, and keying the estimate store by the domain's prefix
-    // is what every spatial-entry orchestration does, so each is written once in its home. The
-    // trait's `fn estimate_prefix` declaration and the windowed proxy's own halo and tile rule
-    // (`WindowPlan::of_rect`) are not copies.
+    // is what every read rectangle computes, so it is written once in its home.
     SourceRule {
         name: "one-read-rectangle",
         tokens: &["- 0.5).floor()"],
@@ -513,18 +510,6 @@ const SOURCE_RULES: &[SourceRule] = &[
         once: true,
         reason: "a resample's read rectangle is written once, as Resample::reads in \
                  render/geometry.rs; read it through that",
-    },
-    SourceRule {
-        name: "one-spatial-entry",
-        tokens: &[".estimate_prefix("],
-        scope: &["crates/luxforge-core/src"],
-        types: &["rs"],
-        allowed: &["crates/luxforge-core/src/render/pipeline.rs"],
-        mode: Match::Whole,
-        tests: false,
-        once: true,
-        reason: "a spatial entry's estimates are written once, as SpatialEntry::globals in \
-                 render/pipeline.rs; resolve them through that",
     },
     // One field-patch semantics: the field-patch module builds every patch action from its spec,
     // and the RAW module's `set-raw` keeps its own white-balance merge. A module that wants a patch
@@ -2686,49 +2671,36 @@ mod tests {
     }
 
     #[test]
-    fn the_pipeline_keeps_one_read_rectangle_and_one_spatial_entry() {
+    fn the_pipeline_keeps_one_read_rectangle() {
         let tmp = tempfile::tempdir().unwrap();
         let core = tmp.path().join("crates/luxforge-core/src");
         for dir in [core.join("render"), core.join("modules/presence")] {
             fs::create_dir_all(dir).unwrap();
         }
         let floor = "                let index = (value - 0.5).floor();\n";
-        let keyed = "            &domain.estimate_prefix(self.prefix_hash),\n";
-        // Each home writes its token once; the trait's declarations, the windowed proxy's own halo
-        // and tile rule (`WindowPlan::of_rect`), test items and test-only modules are not copies.
+        // The home writes its token once; test items and test-only modules are not copies.
         for (file, text) in [
             (core.join("render/geometry.rs"), floor.to_owned()),
             (
                 core.join("render/pipeline.rs"),
-                format!(
-                    "    fn estimate_prefix<'p>(&self, prefix_hash: &'p str) -> Cow<'p, str>;\n{keyed}\
-                     #[cfg(test)]\nmod tests {{\n{floor}{keyed}}}\n"
-                ),
+                format!("#[cfg(test)]\nmod tests {{\n{floor}}}\n"),
             ),
             (
                 core.join("render/window.rs"),
-                "                    let grown = read.grown(operation.summed_halo(input), input);\n\
-                 let tile = Tiling::Halo.tile(operation, input);\n\
-                 let x0 = grown.x0 / tile * tile;\n\
-                 needed = resample.reads((0, 0), read, stage);\n"
-                    .to_owned(),
+                "                    needed = resample.reads((0, 0), read, stage);\n".to_owned(),
             ),
             (
                 core.join("modules/presence/mod.rs"),
                 "#[cfg(test)]\nmod oracle;\n".to_owned(),
             ),
-            (core.join("modules/presence/oracle.rs"), keyed.to_owned()),
+            (core.join("modules/presence/oracle.rs"), floor.to_owned()),
             (core.join("render/linear_tests.rs"), floor.to_owned()),
         ] {
             fs::write(file, text).unwrap();
         }
-        assert_eq!(
-            read(tmp.path(), &["one-read-rectangle", "one-spatial-entry"]).unwrap(),
-            (4, 0)
-        );
-        // The copies this rule replaced, brought back: the proxy window's and the linear tap
-        // block's read rectangles, the byte band's second one beside `Resample::reads`, and the
-        // byte driver's inline estimate resolution.
+        assert_eq!(read(tmp.path(), &["one-read-rectangle"]).unwrap(), (4, 0));
+        // The copies this rule replaced, brought back: the linear tap block's read rectangle and
+        // the byte band's second one beside `Resample::reads`.
         for (file, text) in [
             (core.join("render/window.rs"), floor),
             (core.join("render/linear.rs"), floor),
@@ -2736,18 +2708,10 @@ mod tests {
                 core.join("render/byte.rs"),
                 "    let start = (top - 0.5).floor() - 2.0;\n",
             ),
-            (
-                core.join("render/byte.rs"),
-                "                                &domain.estimate_prefix(prefix_hash),\n",
-            ),
         ] {
             let clean = fs::read_to_string(&file).ok();
             fs::write(&file, format!("{}{text}", clean.as_deref().unwrap_or(""))).unwrap();
-            let error = refusal(
-                tmp.path(),
-                &["one-read-rectangle", "one-spatial-entry"],
-                text,
-            );
+            let error = refusal(tmp.path(), &["one-read-rectangle"], text);
             let name = file.file_name().unwrap().to_string_lossy().into_owned();
             assert!(
                 error.contains(&format!("{name}:")) && error.contains("written once"),
@@ -2758,10 +2722,7 @@ mod tests {
                 None => fs::remove_file(&file).unwrap(),
             }
         }
-        assert_eq!(
-            read(tmp.path(), &["one-read-rectangle", "one-spatial-entry"]).unwrap(),
-            (4, 0)
-        );
+        assert_eq!(read(tmp.path(), &["one-read-rectangle"]).unwrap(), (4, 0));
     }
 
     #[test]
