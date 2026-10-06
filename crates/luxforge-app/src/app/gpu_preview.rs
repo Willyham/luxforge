@@ -492,6 +492,27 @@ fn light_evidence(plan: &CorePlan) -> Value {
         .collect()
 }
 
+/// What one evaluation of a surface's slot did, as evidence records it: a tick's frame
+/// (`surface_frame_drawn`, the state's `gpu_evaluation`) or a picture at rest's tiles summed.
+pub(crate) fn evaluation_record(figures: &surface::EvaluationFigures) -> Value {
+    json!({"refits": figures.refits, "rebinds": figures.rebinds,
+        "links_run": figures.links_run, "spatial_passes": figures.spatial_passes,
+        "lights_encoded": figures.lights_encoded, "lights_restored": figures.lights_restored,
+        "window_texels": figures.window_texels, "link_texels": figures.link_texels})
+}
+
+/// What a picture at rest's tiles did, as evidence records it beside its timing: their
+/// evaluations summed, the frames a tile waited for a retirement, and each tile's GPU span from
+/// its preparation to when the interface learned the GPU had finished it, an upper bound reported
+/// as the queue completes each tile.
+pub(crate) fn rest_attribution(figures: &surface::RestFigures) -> Value {
+    json!({"evaluation": evaluation_record(&figures.evaluation),
+        "retirement_waits": figures.retirement_waits,
+        "gpu_tiles_reported": figures.gpu_tiles,
+        "gpu_span_ms": figures.gpu_us as f64 / 1000.0,
+        "gpu_span_max_ms": figures.gpu_max_us as f64 / 1000.0})
+}
+
 /// The evidence of a boundary derived from the source, for a drag or, `resident`, a committed
 /// stack's job.
 fn derived_evidence(held: &Held, resident: bool) -> Value {
@@ -2405,6 +2426,7 @@ impl Editor {
             json!({"version": version,
                 "tiles": figures.map(|figures| figures.tiles),
                 "prepare_ms": figures.map(|figures| figures.prepare_us as f64 / 1000.0),
+                "attribution": figures.as_ref().map(rest_attribution),
                 "dissolve": drawn.drawn_rest_dissolve.map(|dissolve| dissolve.from)})
         });
     }

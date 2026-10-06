@@ -95,6 +95,8 @@ fn log_drawn(editor: &mut Editor, first: Option<FirstDrawn>) {
             "picture": first.picture,
             "generation": handed.map(|(_, generation, _)| generation),
             "picture_draft_revision": handed.and_then(|(_, _, revision)| revision),
+            // A plan's output: what its frame's evaluation did, a tick's latency attributed by.
+            "evaluation": first.evaluation.as_ref().map(super::gpu_preview::evaluation_record),
         })
     });
 }
@@ -136,6 +138,7 @@ mod tests {
             boundary: None,
             tag: None,
             at,
+            evaluation: None,
         };
         log_drawn(&mut editor, Some(cpu));
         log_drawn(&mut editor, Some(cpu));
@@ -145,6 +148,11 @@ mod tests {
             boundary: Some(3),
             tag: Some(7),
             at: at + Duration::from_millis(10),
+            evaluation: Some(luxforge_ui::photo_surface::EvaluationFigures {
+                rebinds: 1,
+                links_run: 2,
+                ..Default::default()
+            }),
         };
         log_drawn(&mut editor, Some(gpu));
         log_drawn(&mut editor, None);
@@ -163,6 +171,14 @@ mod tests {
         assert_eq!(
             (&drawn[1]["boundary"], &drawn[1]["draft_revision"]),
             (&json!(3), &json!(7))
+        );
+        assert!(drawn[0]["evaluation"].is_null());
+        assert_eq!(
+            (
+                &drawn[1]["evaluation"]["rebinds"],
+                &drawn[1]["evaluation"]["links_run"]
+            ),
+            (&json!(1), &json!(2))
         );
         finish(editor, catalog);
     }

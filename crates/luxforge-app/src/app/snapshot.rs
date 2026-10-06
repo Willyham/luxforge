@@ -324,6 +324,9 @@ impl Editor {
                 "rest_compiling":self.gpu_rest_compiling(),
                 "gpu_preview_frame_us":gpu.gpu_preview_frame_us,
                 "gpu_preview_done_us":gpu.gpu_preview_done_us,
+                // What the evaluation of the GPU frame drawn did: refits, rebinds, links run,
+                // lights encoded or restored, the window's texels.
+                "gpu_evaluation":gpu.gpu_evaluation.as_ref().map(super::gpu_preview::evaluation_record),
                 // The clipping marks the GPU frame drawn carried, which stand for the overlay over it:
                 // approximate, per pixel of the stage the plan draws.
                 "clipping_marks":gpu.drawn_clipping_marks.map(|[shadows, highlights]| json!({"shadows":shadows,"highlights":highlights,"approximate":true})),
@@ -340,6 +343,7 @@ impl Editor {
                 "rest":gpu.gpu_rest.map(|rest| json!({"version":rest.version,"tiles":rest.tiles,
                     "drawn":rest.drawn,"done":rest.done,"waiting":rest.waiting,
                     "dissolving":rest.dissolving,"prepare_ms":rest.prepare_us as f64 / 1000.0,
+                    "attribution":super::gpu_preview::rest_attribution(&rest),
                     "fallback":rest.fallback.map(gpu_fallback)})),
                 "drawn_rest":gpu.drawn_rest,
                 // Compare's After side while Compare is shown: `rest` or `view` for the GPU picture
