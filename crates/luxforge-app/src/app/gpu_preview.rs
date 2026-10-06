@@ -268,9 +268,70 @@ fn rest_over(
             .map_err(|unrunnable| unrunnable.code())?,
         );
     }
+    // The same picture in staged sweeps, where the core planned it so: the first sweep's
+    // boundaries cut from the source, a later sweep's copied out of the stage the one before it
+    // wrote, the last's drawn through its part of the lens warp's grid as a chained tile is.
+    let stages = match &tiles.staging {
+        luxforge_core::GpuStaging::Chained(_) => None,
+        luxforge_core::GpuStaging::Staged(planned) => {
+            let format = gpu_plan::boundary_format(planned.format);
+            let mut sweeps = Vec::with_capacity(planned.sweeps.len());
+            for sweep in &planned.sweeps {
+                let mut plans = Vec::with_capacity(sweep.tiles.len());
+                for tile in &sweep.tiles {
+                    let window = tile.window;
+                    *versions += 1;
+                    let boundary = match sweep.reads {
+                        None => GpuBoundary::derived(
+                            gpu,
+                            Derivation::Cut {
+                                origin: (window.x0, window.y0),
+                            },
+                            window.width,
+                            window.height,
+                            *versions,
+                        ),
+                        Some(_) => {
+                            GpuBoundary::staged(window.width, window.height, *versions, format)
+                        }
+                    }
+                    .ok_or("boundary-size")?;
+                    let grid = match (stage, sweep.last) {
+                        (Some(stage), true) => Some(gpu_plan::WarpGrid::new(
+                            &stage.part(tile.rect).ok_or("warp-grid")?,
+                        )),
+                        _ => None,
+                    };
+                    plans.push(
+                        gpu_plan::sweep_plan_over(
+                            &tiles.plan,
+                            sweep,
+                            boundary,
+                            (window.x0, window.y0),
+                            grid.as_ref(),
+                            tile.rect,
+                        )
+                        .map_err(|unrunnable| unrunnable.code())?,
+                    );
+                }
+                sweeps.push(surface::RestSweep {
+                    tiles: plans.into(),
+                    reads: sweep.reads,
+                    writes: sweep.writes,
+                });
+            }
+            Some(surface::RestStages {
+                stage: (planned.stage.width, planned.stage.height),
+                format,
+                textures: planned.textures,
+                sweeps: sweeps.into(),
+            })
+        }
+    };
     Ok(surface::GpuRest {
         version,
         tiles: plans.into(),
+        stages,
         reduction: tiles
             .reduction
             .as_ref()
@@ -367,7 +428,7 @@ pub(crate) fn gpu_source_of(version: u64, source: &PreviewSource) -> Option<GpuS
 
 /// The surface's coverage of one axis of a proxy's area average, from the core's, each weight
 /// narrowed to `f32` once.
-fn axis(coverage: ProxyCoverage) -> AxisCoverage {
+pub(crate) fn axis(coverage: ProxyCoverage) -> AxisCoverage {
     AxisCoverage {
         first: coverage.first,
         offsets: coverage.offsets,
@@ -2268,6 +2329,7 @@ impl Editor {
                         reduction.view.1]),
                     "output": [held.tiles.output.width, held.tiles.output.height],
                     "side": held.tiles.tiles.first().map(|tile| tile.rect.width.max(tile.rect.height)),
+                    "sweeps": converted.stages.as_ref().map_or(0, |stages| stages.sweeps.len()),
                     "anchor": anchor.multiple, "lead": anchor.lead});
                 // The same tiles for their counts alone, under a version of their own, so a
                 // surface handed one after the other starts over rather than drawing the picture.
@@ -2275,6 +2337,7 @@ impl Editor {
                     Some(_) => surface::GpuRest {
                         version: held.counts_version,
                         tiles: Arc::clone(&converted.tiles),
+                        stages: converted.stages.clone(),
                         reduction: None,
                     },
                     None => converted.clone(),
