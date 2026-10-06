@@ -3502,9 +3502,9 @@ Since 2026-10-06 the GPU draws a Temperature drag over the planes the entry deve
 
 ### Reproducing it
 
-The Presence and region journeys are source-independent evidence scripts, [`fixtures/preview/baseline/presence-fit.json`](../../fixtures/preview/baseline/presence-fit.json) and [`region-100.json`](../../fixtures/preview/baseline/region-100.json). Frame 1 is the open and each step is the frame after it. The Presence pairs (candidate, reference) were the Detail control (2, 3), Texture (4, 5), Clarity (8, 9), Dehaze (12, 13) and all three (17, 18); the region pair was (3, 4). The white-balance pairs came from the `raw-panel` smoke scenario's evidence: Fit (2, 3), 100% moving (5, 7) and held (6, 7).
+The Presence journey is a source-independent evidence script, [`fixtures/preview/baseline/presence-fit.json`](../../fixtures/preview/baseline/presence-fit.json). Frame 1 is the open and each step is the frame after it. The Presence pairs (candidate, reference) were the Detail control (2, 3), Texture (4, 5), Clarity (8, 9), Dehaze (12, 13) and all three (17, 18). The region pair was frames 3 and 4 of a journey that zoomed to 100% and held an exposure drag for 2 s before releasing it; its script went with the half-scale region it compared. The white-balance pairs came from the `raw-panel` smoke scenario's evidence: Fit (2, 3), 100% moving (5, 7) and held (6, 7).
 
-Run today, the journeys draw the GPU's frames, not the CPU proxy, the half-scale region or the refined draft, so they no longer reproduce these pairs:
+Run today, the Presence journey draws the GPU's frames, not the CPU proxy, so it no longer reproduces these pairs:
 
 ```sh
 cargo xtask build --release

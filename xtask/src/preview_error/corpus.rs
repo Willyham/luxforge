@@ -856,13 +856,13 @@ mod tests {
         assert!(check(&unknown).is_err(), "an unknown field is refused");
     }
 
-    /// The baseline journeys the performance document's error figures were taken with are scripts
-    /// the editor's driver reads, whose calls the committed descriptors declare.
+    /// The baseline journey the performance document's Presence error figures were taken with is a
+    /// script the editor's driver reads, whose calls the committed descriptors declare.
     #[test]
     fn preview_error_baseline_scripts_are_evidence_scripts_over_declared_methods() {
         let (root, _) = committed();
         let descriptors = read_json(&root.join(DESCRIPTORS)).unwrap();
-        for (file, steps) in [("presence-fit.json", 18), ("region-100.json", 4)] {
+        for (file, steps) in [("presence-fit.json", 18)] {
             let text =
                 fs::read_to_string(root.join("fixtures/preview/baseline").join(file)).unwrap();
             let parsed = luxforge_evidence::parse(&text).unwrap();
