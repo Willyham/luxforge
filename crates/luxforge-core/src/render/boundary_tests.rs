@@ -386,21 +386,6 @@ fn a_region_boundary_holds_the_gpus_halo_and_the_whole_stages_input() {
                     kept, grown,
                     "{what}: the region grown by the halos after the boundary"
                 );
-                if layer == 2 {
-                    // Detail's cut, as the CPU makes it on its tile grid: what the boundary keeps
-                    // lies at least Detail's halo inside every edge of it within the stage.
-                    let cut = detail.reads(kept, whole);
-                    let inside = |cut: u32, kept: u32, edge: u32| {
-                        cut == edge || cut.abs_diff(kept) >= detail_halo
-                    };
-                    assert!(
-                        inside(cut.x0, kept.x0, 0)
-                            && inside(cut.y0, kept.y0, 0)
-                            && inside(cut.x1(), kept.x1(), width)
-                            && inside(cut.y1(), kept.y1(), height),
-                        "{what}: {kept:?} reaches the clamped band of Detail's cut {cut:?}"
-                    );
-                }
                 let reference = boundary(&registry, source, &recipe, layer, &context);
                 for y in 0..frame.height {
                     for x in 0..frame.width {

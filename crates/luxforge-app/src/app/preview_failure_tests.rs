@@ -20,7 +20,7 @@ use super::{
         Message, crop::CropMessage, draft::DraftMessage, pointer::PointerMessage,
         preview::PreviewMessage, sync::SyncMessage,
     },
-    preview::ProxyFrame,
+    preview::ReducedFrame,
     tasks::SyncResult,
     testing::{
         CROP_SOURCE, attach_log, core_draft, crop_layer, described_at, entry, events, finish,
@@ -134,7 +134,6 @@ impl Hold {
                     id: "test.held".into(),
                     title: "Held".into(),
                     effects: vec![EffectDescriptor {
-                        fit_settle: Default::default(),
                         id: HELD_EFFECT.into(),
                         format: EFFECT_FORMAT,
                         stage: EffectStage::Color,
@@ -376,7 +375,7 @@ fn a_commit_whose_render_fails_withdraws_the_earlier_picture_instead_of_presenti
     );
     assert!(
         editor.presentation.exact.is_none()
-            && editor.presentation.proxy_frame.is_none()
+            && editor.presentation.reduced_frame.is_none()
             && editor.presentation.analysis.is_none()
     );
     assert!(
@@ -461,18 +460,18 @@ fn a_commit_whose_render_fails_withdraws_the_earlier_picture_instead_of_presenti
     finish(editor, catalog);
 }
 
-/// The full-resolution phase of the state on screen failed after its display proxy was shown: the
-/// proxy is that state's own picture, so it stays, and the failure is still named.
+/// A later frame of the state on screen failed: the frame shown is that state's own picture, so it
+/// stays, and the failure is still named.
 #[test]
-fn a_failed_exact_phase_keeps_the_proxy_of_the_same_state() {
+fn a_failed_frame_keeps_the_picture_of_the_same_state() {
     let (mut editor, catalog, _, current) = opened_and_shown();
     let presented = editor.presentation.presented_generation;
     let error = Error::resource_limit("linear output exceeds 512 MiB");
-    editor.preview_failed(presented, false, &current.id, None, &error);
+    editor.preview_failed(presented, &current.id, None, &error);
     editor.rederive();
     assert!(
         editor.presentation.presenter.photo().is_some(),
-        "the target's own proxy was withdrawn"
+        "the target's own picture was withdrawn"
     );
     assert_eq!(
         editor.presentation.presented_entry.as_ref(),
@@ -489,7 +488,7 @@ fn a_failed_exact_phase_keeps_the_proxy_of_the_same_state() {
     );
 
     // A drafted revision of the same entry is another picture: its failure withdraws the frame.
-    editor.preview_failed(presented + 1, false, &current.id, Some(3), &error);
+    editor.preview_failed(presented + 1, &current.id, Some(3), &error);
     assert!(
         editor.presentation.presenter.photo().is_none(),
         "a frame of another revision stayed"
@@ -515,13 +514,11 @@ fn a_zoom_hands_over_the_retained_picture_under_its_own_entry() {
         })
     };
     let generation = editor.presentation.presented_generation;
-    editor.presentation.presented_proxy = true;
-    editor.presentation.proxy_frame = Some(ProxyFrame {
+    editor.presentation.presented_reduced = true;
+    editor.presentation.reduced_frame = Some(ReducedFrame {
         generation,
         raster: raster(1),
-        dimensions: (1200, 900),
-        built: false,
-        approximation: luxforge_core::ProxyApproximation::default(),
+        proxy: None,
         approximate_white_balance: false,
         render_ms: 5.0,
     });
@@ -534,7 +531,7 @@ fn a_zoom_hands_over_the_retained_picture_under_its_own_entry() {
     editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
     let _ = editor.zoom_changed(&Zoom::Fit);
     assert!(
-        !editor.presentation.presented_proxy,
+        !editor.presentation.presented_reduced,
         "the retained exact raster is on screen"
     );
     assert_eq!(
@@ -639,14 +636,14 @@ fn a_scripted_step_waiting_for_a_preview_ends_on_its_failure() {
         evidence.awaiting = Some(Settle::Preview);
         evidence.capture_pending = false;
     }
-    editor.preview_failed(8, false, &entry, None, &error);
+    editor.preview_failed(8, &entry, None, &error);
     let evidence = crate::app::testing::evidence(&editor);
     assert_eq!(
         evidence.awaiting,
         Some(Settle::Preview),
         "an older job's failure ended the step"
     );
-    editor.preview_failed(9, false, &entry, None, &error);
+    editor.preview_failed(9, &entry, None, &error);
     let evidence = crate::app::testing::evidence(&editor);
     assert!(evidence.awaiting.is_none() && evidence.capture_pending);
     finish(editor, catalog);
@@ -803,12 +800,16 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
     finish(editor, catalog);
 }
 
-/// At Fit a starting draft's input stage is asked for as the photograph's drafted frames are, and
-/// like them it outlives a newer request that finds it rendering: it lands under the frame, and
-/// the draft the other client's commit conflicted is kept for Reapply or Discard rather than ended.
-/// The new entry's frame then becomes the photograph behind the stage.
+/// At Fit a starting draft's input stage the reference renders — the GPU not drawing it — is one
+/// exact job, reduced to the bounds, which a newer request supersedes as it supersedes any: the
+/// starting draft whose stage will not arrive ends explicitly, and the new entry's frame becomes the
+/// photograph. (A stage the GPU draws is no job and is superseded by nothing.)
+///
+/// The new entry's frame is held until the draft has ended, so the draft's discard happens while
+/// that frame is still rendering, and must leave it running: nothing of the abandoned start is in
+/// the queue to hold back.
 #[test]
-fn a_starting_draft_at_fit_keeps_its_input_stage_when_a_newer_request_supersedes_it() {
+fn a_starting_draft_at_fit_whose_reference_stage_a_newer_request_supersedes_ends() {
     let (mut editor, catalog, asset, _) = opened(vec![basic()], 4);
     poll_until(&mut editor, "the opened frame", |editor| {
         editor.presentation.presented_generation > 0 && !editor.presentation.queue.is_busy()
@@ -830,25 +831,25 @@ fn a_starting_draft_at_fit_keeps_its_input_stage_when_a_newer_request_supersedes
     let newer = editor.presentation.preview_generation;
     assert!(newer > draft);
     stage.open();
-    poll_until(&mut editor, "the draft's input stage", |editor| {
-        editor.crop_stage() == Some(StageView::Shown)
+    poll_until(&mut editor, "the starting draft's end", |editor| {
+        editor.crop().is_none()
     });
-    assert!(editor.presentation.presenter.stage().is_some());
-    assert!(core_draft(&editor).expect("the draft is kept").conflicted);
-    assert_eq!(
-        editor.draft_generation(),
-        None,
-        "nothing more is on its way"
+    assert!(
+        editor.gesture.is_none(),
+        "the abandoned start was discarded"
     );
-
+    assert_eq!(
+        editor.presentation.preview_generation, newer,
+        "the discard left the new entry's frame running"
+    );
     frame.open();
     poll_until(&mut editor, "the new entry's frame", |editor| {
         editor.presentation.presented_generation == newer && !editor.presentation.queue.is_busy()
     });
     assert_eq!(editor.presentation.presented_entry.as_ref(), Some(&next.id));
     assert!(
-        editor.crop().is_some() && editor.presentation.presenter.stage().is_some(),
-        "the stage stays under the frame"
+        editor.crop().is_none() && editor.presentation.presenter.stage().is_none(),
+        "the starting draft whose stage was superseded has ended"
     );
     finish(editor, catalog);
 }

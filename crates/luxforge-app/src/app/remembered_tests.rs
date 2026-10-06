@@ -180,10 +180,9 @@ fn remembered_workspace_is_stored_on_a_toggle_and_not_on_a_mode_or_zoom_change()
                "clip_shadows": false, "clip_highlights": true})
     );
 
-    // Not remembered: the canvas mode, the mask overlay mode, the GPU preview and zoom.
+    // Not remembered: the canvas mode, the mask overlay mode and zoom.
     workspace_set(&mut editor, json!({"mode": luxforge_core::MASK_MODE}));
     workspace_set(&mut editor, json!({"mask_overlay": "tint"}));
-    workspace_set(&mut editor, json!({"gpu_preview": false}));
     let zoomed = call(
         &editor.owner,
         editor.client,
@@ -298,6 +297,7 @@ fn export_to(editor: &mut Editor, asset: &AssetId, destination: PathBuf) {
         destination,
         keep_metadata: false,
         pixels_per_inch: None,
+        reference: false,
         plan,
     };
     let queued = super::export::send_now(&editor.owner, editor.client, &choice);
@@ -342,7 +342,7 @@ fn remembered_export_folder_is_stored_after_a_dialog_export_and_not_after_an_evi
     // An evidence step's destination: nothing is stored.
     let evidence = root.join("evidence");
     std::fs::create_dir_all(&evidence).unwrap();
-    let _ = editor.export_start(false, Some(evidence.join("step.jpg")));
+    let _ = editor.export_start(false, false, Some(evidence.join("step.jpg")));
     export_to(&mut editor, &asset, evidence.join("step.jpg"));
     assert!(evidence.join("step.jpg").exists(), "{}", editor.status.text);
     assert!(editor.preferences.idle(), "nothing stored");
@@ -353,6 +353,7 @@ fn remembered_export_folder_is_stored_after_a_dialog_export_and_not_after_an_evi
     std::fs::create_dir_all(&chosen).unwrap();
     let _ = editor.update(Message::Export(ExportMessage::Start {
         keep_metadata: false,
+        reference: false,
     }));
     assert!(editor.view_state.picker_open, "the dialog is open");
     export_to(&mut editor, &asset, chosen.join("mine.jpg"));
@@ -374,6 +375,7 @@ fn remembered_export_folder_is_stored_after_a_dialog_export_and_not_after_an_evi
     // The same folder again stores nothing new.
     let _ = editor.update(Message::Export(ExportMessage::Start {
         keep_metadata: false,
+        reference: false,
     }));
     export_to(&mut editor, &asset, chosen.join("again.jpg"));
     assert!(editor.preferences.idle());
@@ -387,6 +389,7 @@ fn remembered_export_folder_is_not_stored_for_a_cancelled_or_failed_export() {
     let asset = asset.unwrap();
     let _ = editor.update(Message::Export(ExportMessage::Start {
         keep_metadata: false,
+        reference: false,
     }));
     let _ = editor.update(Message::Export(ExportMessage::Chosen(Ok(None))));
     assert!(editor.preferences.idle());
@@ -397,6 +400,7 @@ fn remembered_export_folder_is_not_stored_for_a_cancelled_or_failed_export() {
     std::fs::write(folder.join("taken.jpg"), b"kept").unwrap();
     let _ = editor.update(Message::Export(ExportMessage::Start {
         keep_metadata: false,
+        reference: false,
     }));
     let entry = editor.displayed_entry().unwrap();
     let choice = ExportChoice {
@@ -405,6 +409,7 @@ fn remembered_export_folder_is_not_stored_for_a_cancelled_or_failed_export() {
         destination: folder.join("taken.jpg"),
         keep_metadata: false,
         pixels_per_inch: None,
+        reference: false,
         plan: plan_now(&editor.owner, editor.client, &asset, &entry).unwrap(),
     };
     let queued = super::export::send_now(&editor.owner, editor.client, &choice);

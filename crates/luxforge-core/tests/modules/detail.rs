@@ -578,14 +578,14 @@ fn detail_lightroom_keys_report_not_mapped_to_detail() {
 }
 
 /// Run with LUXFORGE_RAW_FIXTURE naming one authentic qualified NEF, RAF or DNG. This checks
-/// development identity and the real moving-prefix cache without rendering a full photo again.
+/// development identity and the moving proxies without rendering a full photo again.
 #[test]
 #[ignore = "requires an authentic RAW fixture; run explicitly with LUXFORGE_RAW_FIXTURE"]
 fn detail_raw_white_balance_invalidates_and_sliders_do_not_redevelop() {
     use luxforge_core::{
-        Draft, EditorService, ErrorKind, LinearImage, Mutation, PrefixUse, PreviewIntent,
-        PreviewJob, PreviewPhase, PreviewQueue, PreviewResult, PreviewSource, ProxyBounds,
-        RawPayload, SourceKind,
+        Draft, EditorService, ErrorKind, LinearImage, Mutation, PreviewIntent, PreviewJob,
+        PreviewPhase, PreviewQueue, PreviewResult, PreviewSource, ProxyBounds, RawPayload,
+        SourceKind,
     };
     use sha2::{Digest, Sha256};
 
@@ -675,14 +675,12 @@ fn detail_raw_white_balance_invalidates_and_sliders_do_not_redevelop() {
             .preview_job(&asset, None, None, None, bounds)
             .unwrap(),
     );
-    assert_eq!(before.restoration_prefix, Some(PrefixUse::Built));
     let reused = moving(
         &mut queue,
         service
             .preview_job(&asset, None, None, None, bounds)
             .unwrap(),
     );
-    assert_eq!(reused.restoration_prefix, Some(PrefixUse::Reused));
     assert_eq!(before.raster().unwrap().rgba, reused.raster().unwrap().rgba);
 
     let mut detail_draft = Draft::new("set-detail", asset.clone(), state.revision);
@@ -693,7 +691,6 @@ fn detail_raw_white_balance_invalidates_and_sliders_do_not_redevelop() {
     assert!(image(&drafted_detail) == &original_development);
     let detail_result = moving(&mut queue, drafted_detail);
     assert!(!detail_result.approximate_white_balance);
-    assert_eq!(detail_result.restoration_prefix, Some(PrefixUse::Built));
 
     let [kelvin, _] = as_shot.white_balance_controls();
     let temperature = if kelvin < 7000.0 { 9500.0 } else { 3000.0 };
@@ -718,7 +715,6 @@ fn detail_raw_white_balance_invalidates_and_sliders_do_not_redevelop() {
     assert!(settings.white_balance.is_some());
     let wb_result = moving(&mut queue, drafted_wb);
     assert!(wb_result.approximate_white_balance);
-    assert_eq!(wb_result.restoration_prefix, Some(PrefixUse::Built));
 
     service
         .apply_action(
@@ -766,7 +762,6 @@ fn detail_raw_white_balance_invalidates_and_sliders_do_not_redevelop() {
     );
     let exact_wb = moving(&mut queue, prepared);
     assert!(!exact_wb.approximate_white_balance);
-    assert_eq!(exact_wb.restoration_prefix, Some(PrefixUse::Built));
     assert_ne!(
         before.raster().unwrap().rgba,
         exact_wb.raster().unwrap().rgba

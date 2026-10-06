@@ -22,7 +22,10 @@ use std::sync::{
 };
 
 fn start(editor: &mut Editor, keep_metadata: bool) {
-    let _ = editor.update(Message::Export(ExportMessage::Start { keep_metadata }));
+    let _ = editor.update(Message::Export(ExportMessage::Start {
+        keep_metadata,
+        reference: false,
+    }));
 }
 
 /// The plan answered and the dialog chose `/tmp/<name>`: the status names the file, and
@@ -39,6 +42,7 @@ fn chosen(editor: &mut Editor, name: &str) {
         destination: std::path::PathBuf::from("/tmp").join(name),
         keep_metadata: false,
         pixels_per_inch: None,
+        reference: false,
         plan: json!({"suggested": null}),
     };
     let _ = editor.update(Message::Export(ExportMessage::Chosen(Ok(Some(Box::new(
@@ -465,8 +469,11 @@ fn a_destination_that_exists_is_refused_in_the_status_bar() {
     finish(editor, catalog);
 }
 
+/// The palette lists the title bar's two exports and the reference renderer's, which only it
+/// offers, each for `export.jpeg`; running the reference entry starts the same chain as the menu's
+/// items, marked as asking for the reference renderer.
 #[test]
-fn the_palette_lists_both_exports_for_export_jpeg() {
+fn the_palette_lists_every_export_for_export_jpeg() {
     let (mut editor, catalog) = opened_with_modules(descriptors(), 1);
     let _ = editor.update(Message::Palette(
         crate::app::message::palette::PaletteMessage::Open,
@@ -488,26 +495,115 @@ fn the_palette_lists_both_exports_for_export_jpeg() {
             )
         })
         .collect();
+    let export = |keep_metadata, reference| PaletteAction::Export {
+        keep_metadata,
+        reference,
+    };
     assert_eq!(
         exports,
         vec![
-            (
-                "Export JPEG\u{2026}",
-                "export.jpeg",
-                PaletteAction::Export {
-                    keep_metadata: false
-                }
-            ),
+            ("Export JPEG\u{2026}", "export.jpeg", export(false, false)),
             (
                 "Export JPEG, keep metadata\u{2026}",
                 "export.jpeg",
-                PaletteAction::Export {
-                    keep_metadata: true
-                }
+                export(true, false)
+            ),
+            (
+                "Export reference render\u{2026}",
+                "export.jpeg",
+                export(false, true)
             ),
         ]
     );
+    assert_eq!(
+        crate::state::title::EXPORT_ITEMS.len(),
+        2,
+        "the title bar's menu offers no reference export"
+    );
+    let _ = editor.update(Message::Palette(
+        crate::app::message::palette::PaletteMessage::Query("reference render".into()),
+    ));
+    assert_eq!(
+        editor.workspace.palette.entries[0].action,
+        export(false, true)
+    );
+    let _ = editor.update(Message::Palette(
+        crate::app::message::palette::PaletteMessage::Run,
+    ));
+    let run = editor.export.run.as_ref().expect("the export started");
+    assert!(run.reference && !run.keep_metadata, "{run:?}");
+    assert!(editor.view_state.picker_open, "the save dialog chooses");
+    assert_eq!(
+        editor.snapshot()["export"]["running"]["reference"],
+        json!(true)
+    );
     finish(editor, catalog);
+}
+
+/// The palette's reference export sends what an API client sends for it, `reference: true`,
+/// through the same chain as the title bar's, whose exports send no `reference`: the owner echoes
+/// each as it took it, and the reference renderer writes the file, naming the reference as
+/// requested where it was asked for.
+#[test]
+fn the_reference_export_sends_reference_true_and_the_others_none() {
+    use super::export::{export_params, plan_now, read_now, send_now};
+    let dir = luxforge_testbase::paths::temp_dir("reference-export");
+    let catalog = dir.join("catalog.sqlite");
+    let (mut editor, asset, _) = super::testing::real_photo(&catalog);
+    let entry = editor.displayed_entry().unwrap();
+    let export = |editor: &mut Editor, name: &str, reference: bool| {
+        let destination = dir.join(name);
+        let _ = editor.export_start(false, reference, Some(destination.clone()));
+        assert_eq!(
+            editor.export.run.as_ref().map(|run| run.reference),
+            Some(reference)
+        );
+        let plan = plan_now(&editor.owner, editor.client, &asset, &entry).unwrap();
+        let choice = ExportChoice {
+            asset_id: asset.clone(),
+            entry_id: entry.clone(),
+            destination,
+            keep_metadata: false,
+            pixels_per_inch: None,
+            reference,
+            plan,
+        };
+        let sent = export_params(&choice);
+        assert_eq!(
+            sent.get("reference"),
+            reference.then_some(&json!(true)),
+            "{sent}"
+        );
+        let queued = send_now(&editor.owner, editor.client, &choice).unwrap();
+        editor.export.run = None;
+        let job = queued["job_id"].as_str().unwrap().to_owned();
+        let read = luxforge_testbase::wait_for("the export to end", || {
+            let read = read_now(&editor.owner, editor.client, &job).unwrap();
+            (!matches!(read["status"].as_str(), Some("queued" | "running"))).then_some(read)
+        });
+        assert_eq!(read["status"], "ready", "{read}");
+        (queued, read)
+    };
+    let (queued, read) = export(&mut editor, "asked.jpg", true);
+    assert_eq!(queued["reference"], json!(true));
+    assert_eq!(
+        read["result"]["renderer"],
+        json!({"record": "reference", "reason": "requested"})
+    );
+    // An owner with no GPU provider, as a test's is, renders the other with the reference too,
+    // for no reason of its own: the file is the same.
+    let (queued, read) = export(&mut editor, "default.jpg", false);
+    assert_eq!(queued["reference"], json!(false), "its default");
+    assert_eq!(
+        read["result"]["renderer"],
+        json!({"record": "reference", "reason": null})
+    );
+    assert!(
+        std::fs::read(dir.join("asked.jpg")).unwrap()
+            == std::fs::read(dir.join("default.jpg")).unwrap()
+    );
+    finish(editor, catalog);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// One whole export against a real owner, with the owner's answers handed in as the runtime would:
@@ -531,7 +627,7 @@ fn an_export_through_the_owner_writes_a_new_file_and_never_replaces_it() {
     let entry = editor.displayed_entry().unwrap();
 
     let export_once = |editor: &mut Editor| {
-        let _ = editor.export_start(true, Some(destination.clone()));
+        let _ = editor.export_start(true, false, Some(destination.clone()));
         assert!(editor.export.active(), "{}", editor.status.text);
         let plan = plan_now(&editor.owner, editor.client, &asset, &entry).unwrap();
         assert_eq!(plan["entry_id"], json!(entry));
@@ -541,6 +637,7 @@ fn an_export_through_the_owner_writes_a_new_file_and_never_replaces_it() {
             destination: destination.clone(),
             keep_metadata: true,
             pixels_per_inch: Some(144),
+            reference: false,
             plan,
         };
         let queued = send_now(&editor.owner, editor.client, &choice);
@@ -688,7 +785,7 @@ fn a_slider_edit_is_compared_and_exported_while_before_is_selected() {
     );
 
     let destination = dir.join("edited.jpg");
-    let _ = editor.export_start(false, Some(destination.clone()));
+    let _ = editor.export_start(false, false, Some(destination.clone()));
     assert!(editor.export.active());
     let target = editor.export_entry().unwrap();
     let plan = plan_now(&editor.owner, editor.client, &asset, &target).unwrap();
@@ -703,6 +800,7 @@ fn a_slider_edit_is_compared_and_exported_while_before_is_selected() {
         destination: destination.clone(),
         keep_metadata: false,
         pixels_per_inch: None,
+        reference: false,
         plan,
     };
     let queued = send_now(&editor.owner, editor.client, &choice).unwrap();

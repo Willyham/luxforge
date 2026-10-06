@@ -15,6 +15,9 @@
 //! - [`spatial_step`]: the spatial operation the content enters, its planes, passes and applies;
 //! - [`geometry_steps`]: the geometry tail, through its affine matrix or a warp's coordinate grid,
 //!   and after it the output operations, at the output pixel;
+//! - [`surface_lights`]: the light links whose lights the spatial operations read, each writing the
+//!   slot's light plane `k`, its place among the plan's lights, which the reading operation's light
+//!   plane is converted to;
 //!
 //! A lens warp's coordinate grid is converted to the words its tail reads once, when the boundary
 //! it was computed with is held ([`WarpGrid`]), and every tick's tail shares them.
@@ -69,8 +72,9 @@ pub(crate) fn boundary_format(
 /// have yet, or a boundary that does not fit the plan; the gesture takes the CPU path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Unrunnable {
-    /// A lens warp's tail with no coordinate grid held for it: the grid is computed with the
-    /// boundary, and a warp that needs more nodes than a grid holds has none.
+    /// A lens warp's tail with no coordinate grid held for it: the grid is computed once for the
+    /// boundary's key, off the interface thread, and a warp that needs more nodes than a grid holds
+    /// has none.
     Grid,
     /// The boundary held does not lie inside the stage the plan's boundary layer receives.
     Boundary { held: (u32, u32), stage: (u32, u32) },
@@ -79,6 +83,10 @@ pub(crate) enum Unrunnable {
     /// The region a percentage zoom draws does not lie inside the plan's output stage, or, with no
     /// tail, inside the boundary held for it.
     Region,
+    /// A spatial operation reads a light the plan holds no light link of that the surface can run:
+    /// the core plans one for every operation that reads one, so this is a plan out of step with
+    /// its lights.
+    Light { layer: usize },
 }
 
 impl Unrunnable {
@@ -89,6 +97,7 @@ impl Unrunnable {
             Self::Boundary { .. } => "boundary-size",
             Self::Position { .. } => "position-range",
             Self::Region => "region-outside",
+            Self::Light { .. } => "light-link",
         }
     }
 }
@@ -162,6 +171,7 @@ pub(crate) fn surface_plan_over(
             Some(GpuRegion {
                 rect: corners,
                 stage: (stage.width, stage.height),
+                full_stage: (stage.width, stage.height),
             })
         }
     };
@@ -170,7 +180,28 @@ pub(crate) fn surface_plan_over(
         texels,
         steps,
         region,
+        lights: surface_lights(plan)?,
     })
+}
+
+/// `plan`, a whole frame of a reduced stage, as a region of its own stage holding all of it, placed
+/// over `full`, the photograph's full output stage at a percentage zoom of 100% or more: the softer
+/// drag frame, which the surface magnifies to fill the photograph as it places a region.
+pub(crate) fn placed_over(mut plan: GpuPlan, full: (u32, u32)) -> GpuPlan {
+    let output = plan
+        .steps
+        .iter()
+        .find_map(|step| match step {
+            GpuStep::Geometry(tail) => Some(tail.output()),
+            _ => None,
+        })
+        .unwrap_or_else(|| plan.boundary.size());
+    plan.region = Some(GpuRegion {
+        rect: [0, 0, output.0, output.1],
+        stage: output,
+        full_stage: full,
+    });
+    plan
 }
 
 /// A lens warp's coordinate grid as the tail reads it: where its nodes sit, and every node's
@@ -234,7 +265,7 @@ fn steps_drawing(
         operation_steps(operation, &mut steps)?;
     }
     for spatial in &plan.spatial {
-        steps.push(spatial_step(spatial)?);
+        steps.push(spatial_step(spatial, light_of(plan, spatial))?);
         for operation in &spatial.after {
             operation_steps(operation, &mut steps)?;
         }
@@ -296,10 +327,87 @@ pub(crate) fn operation_steps(
     Ok(())
 }
 
+/// The slot's light `k` `spatial` reads, its place among `plan`'s lights; `None` for an operation
+/// that reads none.
+fn light_of(plan: &luxforge_core::GpuPlan, spatial: &GpuSpatial) -> Option<u32> {
+    spatial
+        .light
+        .and(plan.light_of(spatial.layer))
+        .map(|k| u32::try_from(k).expect("a light index"))
+}
+
+/// The light links of `plan` as the surface runs them before its steps ([`gpu_preview::light`]),
+/// light `k` the `k`-th: each one's colour operations' steps, as a plan's are converted, then its
+/// own step, the plane its selection writes the slot's light `k`. A light behind a spatial
+/// operation, whose exact input only a sweep of the whole stage through it computes, which no slot
+/// runs yet, is computed by its stand-in over the source with those operations left out
+/// ([`luxforge_core::GpuLight::stand_in`]).
+pub(crate) fn surface_lights(
+    plan: &luxforge_core::GpuPlan,
+) -> Result<Vec<gpu_preview::light::GpuLight>, Unrunnable> {
+    plan.lights
+        .iter()
+        .enumerate()
+        .map(|(k, light)| {
+            let link = match light.over_source() {
+                true => light,
+                false => light
+                    .stand_in
+                    .as_deref()
+                    .ok_or(Unrunnable::Light { layer: light.layer })?,
+            };
+            surface_light(link, u32::try_from(k).expect("a light index"))
+        })
+        .collect()
+}
+
+/// One light link over the source as the surface's, writing the slot's light `k`.
+pub(crate) fn surface_light(
+    light: &luxforge_core::GpuLight,
+    k: u32,
+) -> Result<gpu_preview::light::GpuLight, Unrunnable> {
+    if !light.over_source() {
+        return Err(Unrunnable::Light { layer: light.layer });
+    }
+    let mut steps = Vec::with_capacity(light.content.len() + 1);
+    for operation in &light.content {
+        operation_steps(operation, &mut steps)?;
+    }
+    let mut step = spatial_step(&light.light, None)?;
+    let GpuStep::Spatial(spatial) = &mut step else {
+        unreachable!("a light's step is spatial");
+    };
+    let written = spatial
+        .passes
+        .last()
+        .map(|pass| pass.output as usize)
+        .filter(|&plane| plane < spatial.planes.len())
+        .ok_or(Unrunnable::Light { layer: light.layer })?;
+    spatial.planes[written].size = PlaneSize::Light(k);
+    steps.push(step);
+    Ok(gpu_preview::light::GpuLight {
+        stage: (light.stage.width, light.stage.height),
+        steps,
+    })
+}
+
 /// The spatial operation as the surface's spatial step: the core's static program text, borrowed,
-/// with the operation's words, its planes, passes and applies as they are, and a masked
-/// operation's coverage, which the step blends its output by against its input.
-pub(crate) fn spatial_step(spatial: &GpuSpatial) -> Result<GpuStep, Unrunnable> {
+/// with the operation's words, its planes, passes and applies as they are, the light plane it
+/// reads the slot's light `light` ([`GpuSpatial::light`]), and a masked operation's coverage, which
+/// the step blends its output by against its input.
+pub(crate) fn spatial_step(
+    spatial: &GpuSpatial,
+    light: Option<u32>,
+) -> Result<GpuStep, Unrunnable> {
+    let light = match (spatial.light, light) {
+        (Some(plane), Some(k)) => Some((plane, k)),
+        (None, _) => None,
+        (Some(_), None) => {
+            return Err(Unrunnable::Light {
+                layer: spatial.layer,
+            });
+        }
+    };
     let mask = match &spatial.mask {
         None => None,
         Some(mask) => Some(coverage(mask).ok_or(Unrunnable::Position {
@@ -317,7 +425,8 @@ pub(crate) fn spatial_step(spatial: &GpuSpatial) -> Result<GpuStep, Unrunnable> 
         planes: spatial
             .planes
             .iter()
-            .map(|plane| gpu_preview::GpuPlane {
+            .enumerate()
+            .map(|(index, plane)| gpu_preview::GpuPlane {
                 format: match plane.format {
                     GpuPlaneFormat::Colour => PlaneFormat::Colour,
                     GpuPlaneFormat::Scalar => PlaneFormat::Scalar,
@@ -326,9 +435,12 @@ pub(crate) fn spatial_step(spatial: &GpuSpatial) -> Result<GpuStep, Unrunnable> 
                     GpuPlaneFormat::HalfScalar => PlaneFormat::HalfScalar,
                     GpuPlaneFormat::HalfPair => PlaneFormat::HalfPair,
                 },
-                size: match plane.size {
-                    GpuPlaneSize::Reduced(s) => PlaneSize::Reduced(s),
-                    GpuPlaneSize::Fixed { width, height } => PlaneSize::Fixed { width, height },
+                size: match (plane.size, light) {
+                    (_, Some((read, k))) if read == index => PlaneSize::Light(k),
+                    (GpuPlaneSize::Reduced(s), _) => PlaneSize::Reduced(s),
+                    (GpuPlaneSize::Fixed { width, height }, _) => {
+                        PlaneSize::Fixed { width, height }
+                    }
                 },
             })
             .collect(),

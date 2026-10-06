@@ -1,7 +1,13 @@
-//! Preview presentation: requesting preview jobs at the bounds the view calls for, taking up what
-//! the preview worker finishes, and presenting the displayed frame — the display-size proxy, the
-//! exact frame behind it, the histogram analysis and the crop draft's input stage — in the order
-//! their generations allow.
+//! Preview presentation: requesting the reference renderer's frames at the bounds the view calls
+//! for, taking up what the preview worker finishes, and presenting the displayed frame — the exact
+//! frame, its reduction to the view, the histogram analysis and the crop draft's input stage — in
+//! the order their generations allow.
+//!
+//! Every job of the photograph is the reference's: its whole frame and report, reduced to the
+//! view where the view draws the stage smaller than it is, or a retained exact frame reduced again
+//! with no render; and, in a session the GPU does not draw at all, a drag tick's display-size proxy
+//! ([`super::motion`]). The GPU draws everything else: a committed stack at rest
+//! ([`super::gpu_counts`]) and a gesture's ticks ([`super::gpu_preview`], [`super::motion`]).
 //!
 //! [`Presentation`] owns all of it: the one [`Presenter`] every frame goes to, the preview queue,
 //! and the bookkeeping that decides which frame is on screen — generations, content serials, the
@@ -17,48 +23,38 @@ use super::{
     presenter::Presenter,
     tasks::{self, recipe_task},
 };
-use crate::app::{Before, waker};
-use crate::{layout, state, state::histogram::Analysis, view};
+use crate::app::{Before, cpu_proxy, waker};
+use crate::{
+    layout, state,
+    state::histogram::{Analysis, AnalysisSource},
+    view,
+};
 use iced::{Subscription, Task};
 use luxforge_core::{
-    DraftId, EntryId, ExactOutcome, PhaseOutcome, PreviewIntent, PreviewJob, PreviewPhase,
-    PreviewQueue, PreviewResult, ProxyBounds, Raster, Region, RegionOutcome, Zoom,
+    DraftId, EntryId, ExactOutcome, PhaseOutcome, PreviewIntent, PreviewJob, PreviewQueue,
+    PreviewResult, ProxyBounds, Raster, Region, Zoom,
 };
 use serde_json::json;
-use std::{
-    collections::BTreeMap,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
-/// One policy for a paused input, whether its first frame was Fit or a visible region. The
-/// evidence run measures this interval against render/round-trip timing before acceptance.
-const QUIET_INTERVAL: Duration = Duration::from_millis(120);
-
-/// The display-proxy frame of one generation, retained beside the exact raster.
+/// A whole frame of one generation smaller than its stage: the exact frame reduced to its view's
+/// bounds, the reference frame of a whole stack where the view draws it smaller than it is, or a
+/// drag tick's display-size proxy in a session the GPU does not draw at all ([`super::motion`]),
+/// which the view magnifies at 100% and above.
 ///
-/// It is what a zoom back to Fit hands the surface again instead of rendering, and what the
-/// clipping overlay is derived from while the exact phase of that generation is still outstanding.
-/// Retaining it copies no pixels: it shares the render's own `Arc<Vec<u8>>` with the surface.
-///
-/// Its generation is also the desktop's only record that the job of that generation *had* a proxy
-/// phase. The exact result cannot say so: `proxy_declined` is `None` both for a job that asked for
-/// no proxy and for one that got one.
+/// It is what a zoom back to Fit hands the surface again instead of rendering. Retaining it copies
+/// no pixels: it shares the reduction's own `Arc<Vec<u8>>` with the surface.
 #[derive(Clone)]
-pub(crate) struct ProxyFrame {
+pub(crate) struct ReducedFrame {
     pub(crate) generation: u64,
     pub(crate) raster: Arc<luxforge_core::Raster>,
-    /// The proxy source dimensions the frame was rendered against.
-    pub(crate) dimensions: (u32, u32),
-    /// The proxy source was built for this frame rather than taken from the queue's cache.
-    pub(crate) built: bool,
-    /// Whether the frame approximates the exact render at display size, and why: a spatial layer
-    /// whose neighbourhoods scale with the stage, a thin mask, or both.
-    pub(crate) approximation: luxforge_core::ProxyApproximation,
-    /// The frame approximates a drafted RAW white balance on planes developed at another one, as
-    /// the exact phase of the same job does.
+    /// The frame is a drag tick's CPU proxy, the drafted stack rendered against the source reduced
+    /// to the display, and how it approximates the exact render at that size; `None` for the exact
+    /// frame's reduction.
+    pub(crate) proxy: Option<cpu_proxy::ProxyFrame>,
+    /// The reduction is of a frame that approximates a drafted RAW white balance.
     pub(crate) approximate_white_balance: bool,
-    /// The proxy phase's own worker time, so a zoom that hands this frame back to the surface
+    /// The exact phase's own worker time, so a zoom that hands this frame back to the surface
     /// reports how long this picture took rather than whatever was presented last.
     pub(crate) render_ms: f64,
 }
@@ -87,52 +83,54 @@ pub(crate) struct ExactFrame {
     pub(crate) content: Option<u64>,
 }
 
-/// A frame the desktop holds for the generation on screen. Both phases reach the surface through
-/// the one presenting function, [`Editor::present`], whether a render just produced them or a zoom
-/// hands them back.
+/// A frame the desktop holds for the generation on screen. Both reach the surface through the one
+/// presenting function, [`Editor::present`], whether a render just produced them or a zoom hands
+/// them back.
 #[derive(Clone)]
 pub(crate) enum Retained {
-    Proxy(ProxyFrame),
-    Settled(ProxyFrame),
+    /// The exact frame reduced to the view's bounds: the reference frame of a whole stack where
+    /// the view draws it smaller than it is.
+    Reduced(ReducedFrame),
     Exact(ExactFrame),
 }
 
 impl Retained {
     pub(crate) fn generation(&self) -> u64 {
         match self {
-            Self::Proxy(frame) | Self::Settled(frame) => frame.generation,
+            Self::Reduced(frame) => frame.generation,
             Self::Exact(frame) => frame.generation,
         }
     }
 
     pub(crate) fn raster(&self) -> &Arc<Raster> {
         match self {
-            Self::Proxy(frame) | Self::Settled(frame) => &frame.raster,
+            Self::Reduced(frame) => &frame.raster,
             Self::Exact(frame) => &frame.raster,
         }
     }
 
     pub(crate) fn approximate_white_balance(&self) -> bool {
         match self {
-            Self::Proxy(frame) | Self::Settled(frame) => frame.approximate_white_balance,
+            Self::Reduced(frame) => frame.approximate_white_balance,
             Self::Exact(frame) => frame.approximate_white_balance,
         }
     }
 
     pub(crate) fn render_ms(&self) -> f64 {
         match self {
-            Self::Proxy(frame) | Self::Settled(frame) => frame.render_ms,
+            Self::Reduced(frame) => frame.render_ms,
             Self::Exact(frame) => frame.render_ms,
         }
     }
 
-    fn settled(&self) -> bool {
-        matches!(self, Self::Settled(_))
+    fn reduced(&self) -> bool {
+        matches!(self, Self::Reduced(_))
     }
 
-    fn proxy(&self) -> Option<&ProxyFrame> {
+    /// The frame is a drag tick's display-size proxy.
+    pub(crate) fn proxy(&self) -> Option<cpu_proxy::ProxyFrame> {
         match self {
-            Self::Proxy(frame) | Self::Settled(frame) => Some(frame),
+            Self::Reduced(frame) => frame.proxy,
             Self::Exact(_) => None,
         }
     }
@@ -154,30 +152,22 @@ pub(crate) enum Arrival {
     Zoom,
 }
 
-/// What every phase of one preview result says about the frame it belongs to.
+/// What one preview result says about the frame it belongs to.
 pub(crate) struct Delivery {
     pub(crate) generation: u64,
     /// The exact stage the job was planned for, from its identity.
     pub(crate) stage: (u32, u32),
-    /// The draft the job was planned from, from its identity.
-    pub(crate) draft: Option<DraftId>,
     pub(crate) entry_id: EntryId,
     pub(crate) draft_revision: Option<u64>,
-    pub(crate) intent: PreviewIntent,
-    pub(crate) viewport_declined: Option<String>,
-    pub(crate) approximate_white_balance: bool,
-    pub(crate) render_ms: f64,
 }
 
-/// One preview result for the photograph, taken up by its phase ([`Presentation::take`]).
+/// One preview result for the photograph, taken up ([`Presentation::take`]).
 pub(crate) enum Presented {
-    /// Older than the frame on screen: it presents nothing.
+    /// Older than the frame on screen, or not a frame of the photograph: it presents nothing.
     Stale,
-    /// The visible pixels of a percentage view.
-    Region(Box<(Delivery, RegionOutcome)>),
-    /// The display-size frame, already retained for a zoom back to Fit.
-    Proxy(Box<(Delivery, ProxyFrame)>),
-    Settled(Box<(Delivery, ProxyFrame)>),
+    /// The exact phase's frame reduced to the view's bounds, its exact frame already received; or
+    /// a drag tick's proxy, its job's one phase.
+    Reduced(Box<(Delivery, ReducedFrame)>),
     /// The exact phase — its frame, already received as the retained exact raster or with its
     /// report, or its failure.
     Exact(Box<(Delivery, Result<ExactFrame, luxforge_core::Error>)>),
@@ -200,10 +190,6 @@ pub(crate) struct Requested {
     pub(crate) generation: u64,
     /// The job it replaced in the pending slot, which never starts and is never delivered.
     pub(crate) replaced: Option<u64>,
-    /// The visible rectangle it asked for.
-    pub(crate) viewport: Option<Region>,
-    /// The exact stage it was planned for.
-    pub(crate) stage: (u32, u32),
     /// When the job was queued, for a timed request.
     pub(crate) at: Option<Instant>,
 }
@@ -224,6 +210,8 @@ pub(crate) struct Presentation {
     pub(crate) queue: PreviewQueue,
     /// The generation of the newest preview requested for the photograph.
     pub(crate) preview_generation: u64,
+    /// The generation of the newest job queued, of the photograph or the crop draft's input stage.
+    pub(crate) requested: u64,
     /// The generation whose pixels are on screen.
     ///
     /// The delivery rule is the queue's own, monotone rather than newest-only: a delivered result
@@ -241,31 +229,39 @@ pub(crate) struct Presentation {
     /// settled once the draft driver has drained ([`Editor::settle_reused_pixels`]).
     pub(crate) reused: Option<luxforge_core::analysis::AnalysisIdentity>,
     pub(crate) pending_content: BTreeMap<u64, u64>,
-    pending_intent: BTreeMap<u64, PreviewIntent>,
     pub(crate) presented_content: u64,
     pub(crate) analysis_content: Option<u64>,
-    pub(crate) viewport_disabled_content: Option<u64>,
-    /// The exact stage of the frame on screen, whatever size its texture is: a proxy is drawn into
-    /// this box, and every pick, percent-zoom box and overlay cell maps to exact stage pixels.
+    /// The exact stage of the frame on screen, whatever size its texture is: a reduction is drawn
+    /// into this box, and every pick, percent-zoom box and overlay cell maps to exact stage pixels.
     pub(crate) dimensions: Option<(u32, u32)>,
-    /// The proxy frame of the newest job that had a proxy phase.
-    pub(crate) proxy_frame: Option<ProxyFrame>,
-    pub(crate) settled_frame: Option<ProxyFrame>,
+    /// The exact frame of the newest whole stack, reduced to its view's bounds.
+    pub(crate) reduced_frame: Option<ReducedFrame>,
+    /// The newest whole stack's job, whose retained exact frame a Fit resize reduces again with no
+    /// render where the reference renderer draws the picture at rest.
     reduction_job: Option<PreviewJob>,
-    pub(crate) presented_settled: bool,
-    pub(crate) restoration_prefix: Option<luxforge_core::PrefixUse>,
+    /// Whether the frame on screen is the reduced one.
+    pub(crate) presented_reduced: bool,
+    /// Whether the frame on screen is a drag tick's display-size proxy, and how it approximates.
+    pub(crate) presented_proxy: Option<cpu_proxy::ProxyFrame>,
     /// The exact frame of the newest job whose exact phase landed.
     pub(crate) exact: Option<ExactFrame>,
-    /// The visible pixels the region slot owns.
-    pub(crate) region_raster: Option<PresentedRegion>,
-    /// The displayed frame's histogram report, adopted with the pixels under the same generation.
+    /// The displayed frame's histogram report, adopted with the pixels under the same generation:
+    /// the reference frame's, or the GPU's counts of the stack it presents
+    /// ([`super::gpu_counts`]).
     pub(crate) analysis: Option<Analysis>,
+    /// The counts of the frame on screen in motion, a gesture's GPU tick: shown in place of the
+    /// report, marked updating, and never handed to the owner.
+    pub(crate) motion: Option<Analysis>,
+    /// The content the GPU presents on its own, with no CPU frame of it rendered
+    /// ([`Editor::present_on_gpu`]): the photograph's frame on the presenter is an earlier one,
+    /// which the GPU's picture is drawn over.
+    pub(crate) gpu_presented: Option<u64>,
+    /// The photograph whose frame the presenter holds.
+    pub(crate) presented_asset: Option<luxforge_core::AssetId>,
     /// The report and frame of an exact phase whose pixels have not reached the surface yet. The
     /// histogram and the photograph are adopted together, so the plot never describes a frame that
     /// is not on screen.
     pub(crate) incoming: Option<(Analysis, ExactFrame)>,
-    /// The texture on screen is the display proxy rather than the exact render.
-    pub(crate) presented_proxy: bool,
     /// The frame on screen approximates a drafted RAW white balance on planes developed at another
     /// one. The histogram is never adopted from such a frame.
     pub(crate) presented_approximate_white_balance: bool,
@@ -276,12 +272,8 @@ pub(crate) struct Presentation {
     pub(crate) pending_bounds: BTreeMap<u64, Option<ProxyBounds>>,
     /// The bounds the frame on screen was rendered for.
     pub(crate) presented_bounds: Option<ProxyBounds>,
-    /// A refit of the proxy to new bounds has been asked for and has not been presented yet.
+    /// A refit of the picture to new bounds has been asked for and has not been presented yet.
     pub(crate) refit_pending: bool,
-    /// Why the newest job that offered bounds has no proxy phase, as the core reported it.
-    pub(crate) proxy_declined: Option<String>,
-    /// What the presented proxy is holding until its exact phase lands.
-    pub(crate) held_by_proxy: Option<HeldByProxy>,
     /// Why the last preview failed, cleared by the next presented frame. The canvas turns this
     /// into the notice that names the cause; nothing here decides what it means.
     pub(crate) render_error: Option<luxforge_core::Error>,
@@ -296,9 +288,10 @@ pub(crate) struct Presentation {
     pub(crate) displayed_draft_id: Option<DraftId>,
 }
 
-/// The one desired view the owner admits through the shared gate, and the quiet policy that
-/// settles it: a view change marks it dirty, one plan is in flight at a time, and a view-only
-/// request's generation is remembered so only it may be replaced by the next.
+/// The one desired view the owner admits through the shared gate: a view change marks it dirty,
+/// one plan is in flight at a time, and a view-only request's generation is remembered so only it
+/// may be replaced by the next. A view at 100% and above is planned at once, the GPU's region of
+/// it cut from the source it holds, or the reference's whole frame where the GPU cannot draw it.
 #[derive(Default)]
 pub(crate) struct ViewPlan {
     /// The view on screen is not the one the zoom, pan and window ask for.
@@ -309,10 +302,6 @@ pub(crate) struct ViewPlan {
     pub(crate) in_flight: bool,
     /// Moves on every view motion; a plan carries the epoch it was asked under.
     pub(crate) epoch: u64,
-    /// When the last view motion or drafted frame happened, while the 120 ms quiet policy runs.
-    pub(crate) quiet_since: Option<Instant>,
-    /// The quiet settle has been asked for, so its timer stops.
-    pub(crate) quiet_settle_requested: bool,
     /// The core draft a release settled, whose drafted frames are no longer taken up.
     pub(crate) released_draft: Option<DraftId>,
 }
@@ -324,10 +313,8 @@ impl Presentation {
         })
     }
     /// Key a job's content before it is queued: the same evaluated image keeps its serial across
-    /// pans and zooms, and anything else gets the next one. A region the surface cannot allocate
-    /// for this content is not asked for again; the job falls back to the whole frame and says
-    /// why.
-    pub(crate) fn admit(&mut self, job: &mut PreviewJob) -> u64 {
+    /// pans and zooms, and anything else gets the next one.
+    pub(crate) fn admit(&mut self, job: &PreviewJob) -> u64 {
         let key = job
             .evaluation
             .pixel_content_key()
@@ -336,27 +323,15 @@ impl Presentation {
         if key.is_none() || self.content_key != key {
             self.content_serial = self.content_serial.saturating_add(1);
             self.content_key = key;
-            self.restoration_prefix = None;
         }
-        let content = self.content_serial;
-        if self.viewport_disabled_content == Some(content) && job.viewport.is_some() {
-            job.viewport = None;
-            job.intent = PreviewIntent::Settle;
-            job.viewport_declined =
-                Some("region texture exceeds the surface allocation limit".into());
-        }
-        content
+        self.content_serial
     }
 
     /// Queue one admitted job of `content` and record what its frame will need when it lands: the
     /// bounds it was given, and its content and intent. The job still waiting in the pending slot
     /// is replaced and forgotten.
     pub(crate) fn request(&mut self, job: PreviewJob, content: u64, timed: bool) -> Requested {
-        self.remember_reduction_job(&job);
         let bounds = job.proxy;
-        let intent = job.intent;
-        let viewport = job.viewport;
-        let stage = (job.identity.width, job.identity.height);
         let (queued, at) = if timed {
             let (queued, at) = self.queue.request_timed(job);
             (queued, Some(at))
@@ -367,17 +342,15 @@ impl Presentation {
             generation,
             replaced,
         } = queued;
+        self.requested = generation;
         self.pending_bounds.insert(generation, bounds);
         self.pending_content.insert(generation, content);
-        self.pending_intent.insert(generation, intent);
         if let Some(replaced) = replaced {
             self.forget(replaced);
         }
         Requested {
             generation,
             replaced,
-            viewport,
-            stage,
             at,
         }
     }
@@ -388,19 +361,19 @@ impl Presentation {
         let generation = self.queue.cancel();
         self.reused = None;
         self.reduction_job = None;
-        self.restoration_prefix = None;
         self.pending_bounds.clear();
         self.pending_content.clear();
-        self.pending_intent.clear();
         generation
     }
 
-    /// Retain only the whole-image plan whose exact pixels may service a later Fit resize.
-    /// Crop input stages do not replace that plan; a new whole stack does, including a stack
-    /// without restoration. A reused recipe still needs the new entry and draft identity.
-    pub(crate) fn remember_reduction_job(&mut self, job: &PreviewJob) {
+    /// Retain the whole-image plan whose exact pixels a later Fit resize reduces again where the
+    /// reference renderer draws the picture at rest (`reference`). Crop input stages do not
+    /// replace that plan; every new whole stack does, and where the GPU draws the picture at rest
+    /// none is kept, since a resize plans that picture again. A reused recipe still needs the new
+    /// entry and draft identity.
+    pub(crate) fn remember_reduction_job(&mut self, job: &PreviewJob, reference: bool) {
         if job.layer_count.is_none() && job.intent != PreviewIntent::Reduce {
-            self.reduction_job = job.evaluation.settles_from_exact().then(|| job.clone());
+            self.reduction_job = reference.then(|| job.clone());
         }
     }
 
@@ -408,28 +381,19 @@ impl Presentation {
     pub(crate) fn forget(&mut self, generation: u64) {
         self.pending_bounds.remove(&generation);
         self.pending_content.remove(&generation);
-        self.pending_intent.remove(&generation);
     }
 
-    /// The intent a job of `generation` was requested with, while it is still known.
-    pub(crate) fn intent(&self, generation: u64) -> Option<PreviewIntent> {
-        self.pending_intent.get(&generation).copied()
-    }
-
-    /// Take one result for the photograph apart by its phase.
+    /// Take up one result for the photograph.
     ///
     /// The delivery rule, the same monotone one the queue itself applies: present whatever is not
     /// older than what is on screen. Rejecting everything but the newest generation presents no
-    /// frames at all under a sustained drag, because a render almost always finishes after a newer
-    /// job has been asked for. A job's exact phase carries its proxy's own generation, so equality
-    /// is delivered too.
+    /// frames at all under a sustained drag the reference draws, because a render almost always
+    /// finishes after a newer tick has been asked for.
     ///
-    /// A proxy frame is retained here, so a zoom back to Fit hands it over again instead of
-    /// rendering and the clipping overlay can follow the drag before the exact phase lands. An
-    /// exact frame is received here: with its report it waits in `incoming` to be adopted with the
-    /// pixels, and without one it replaces the retained exact raster now, so no overlay is derived
-    /// from an older image. Only an exact result can say why a job that offered bounds has no
-    /// proxy phase.
+    /// The exact frame is received here: with its report it waits in `incoming` to be adopted with
+    /// the pixels, and without one it replaces the retained exact raster now, so no overlay is
+    /// derived from an older image. Its reduction to the view, when it has one, is retained for a
+    /// zoom back to Fit and is the frame presented.
     pub(crate) fn take(&mut self, result: PreviewResult) -> Presented {
         if result.generation < self.presented_generation {
             return Presented::Stale;
@@ -440,95 +404,71 @@ impl Presentation {
             identity,
             draft_revision,
             intent,
-            viewport_declined,
             outcome,
             approximate_white_balance,
             render_ms,
-            queue_wait_ms: _,
-            restoration_prefix,
+            ..
         } = result;
-        if restoration_prefix.is_some() {
-            self.restoration_prefix = restoration_prefix;
-        }
         let delivery = Delivery {
             generation,
             stage: (identity.width, identity.height),
-            draft: identity.draft.as_ref().map(|stamp| stamp.draft_id.clone()),
             entry_id,
             draft_revision,
-            intent,
-            viewport_declined,
+        };
+        // A drag tick's CPU proxy, in a session the GPU does not draw at all, is its job's one
+        // phase. The photograph's other jobs are their exact phase alone.
+        let outcome =
+            match cpu_proxy::frame(outcome, generation, approximate_white_balance, render_ms) {
+                Ok(reduced) => {
+                    self.reduced_frame = Some(reduced.clone());
+                    return Presented::Reduced(Box::new((delivery, reduced)));
+                }
+                Err(outcome) => outcome,
+            };
+        let ExactOutcome {
+            result,
+            report,
+            display,
+            ..
+        } = *outcome;
+        let frame = result.map(|raster| ExactFrame {
+            generation,
+            raster: Arc::new(raster),
             approximate_white_balance,
             render_ms,
-        };
-        match outcome {
-            // A GPU preview boundary is taken up before any result reaches here
-            // ([`super::Editor::poll_preview`]); it is never a frame to present.
-            PhaseOutcome::Boundary(_) => Presented::Stale,
-            PhaseOutcome::Region(region) => Presented::Region(Box::new((delivery, region))),
-            PhaseOutcome::Proxy(outcome) => {
-                let frame = ProxyFrame {
+            content: self.pending_content.get(&generation).copied(),
+        });
+        if let Ok(frame) = &frame {
+            let analysis = report.map(|report| Analysis {
+                generation,
+                identity,
+                report,
+                source: AnalysisSource::Reference,
+            });
+            if intent == PreviewIntent::Reduce {
+                if let Some(exact) = &mut self.exact {
+                    exact.generation = generation;
+                }
+                if let Some(analysis) = &mut self.analysis {
+                    analysis.generation = generation;
+                }
+            } else {
+                self.receive(frame.clone(), analysis);
+            }
+        }
+        match display {
+            Some(raster) => {
+                let reduced = ReducedFrame {
                     generation,
-                    raster: Arc::new(outcome.raster),
-                    dimensions: outcome.dimensions,
-                    built: outcome.built,
-                    approximation: outcome.approximation,
+                    raster: Arc::new(raster),
+                    proxy: None,
                     approximate_white_balance,
                     render_ms,
                 };
-                self.proxy_frame = Some(frame.clone());
-                self.settled_frame = None;
-                Presented::Proxy(Box::new((delivery, frame)))
+                self.reduced_frame = Some(reduced.clone());
+                Presented::Reduced(Box::new((delivery, reduced)))
             }
-            PhaseOutcome::Exact(outcome) => {
-                let ExactOutcome {
-                    result,
-                    report,
-                    proxy_declined,
-                    display,
-                } = *outcome;
-                self.proxy_declined = proxy_declined;
-                let frame = result.map(|raster| ExactFrame {
-                    generation,
-                    raster: Arc::new(raster),
-                    approximate_white_balance,
-                    render_ms,
-                    content: self.pending_content.get(&generation).copied(),
-                });
-                if let Ok(frame) = &frame {
-                    let analysis = report.map(|report| Analysis {
-                        generation,
-                        identity,
-                        report,
-                    });
-                    if intent == PreviewIntent::Reduce {
-                        if let Some(exact) = &mut self.exact {
-                            exact.generation = generation;
-                        }
-                        if let Some(analysis) = &mut self.analysis {
-                            analysis.generation = generation;
-                        }
-                    } else {
-                        self.receive(frame.clone(), analysis);
-                    }
-                }
-                if let Some(raster) = display {
-                    let settled = ProxyFrame {
-                        generation,
-                        dimensions: (raster.width, raster.height),
-                        raster: Arc::new(raster),
-                        built: false,
-                        approximation: Default::default(),
-                        approximate_white_balance,
-                        render_ms,
-                    };
-                    self.proxy_frame = None;
-                    self.settled_frame = Some(settled.clone());
-                    Presented::Settled(Box::new((delivery, settled)))
-                } else {
-                    Presented::Exact(Box::new((delivery, frame)))
-                }
-            }
+            None => Presented::Exact(Box::new((delivery, frame))),
         }
     }
 
@@ -562,26 +502,13 @@ impl Presentation {
             return false;
         }
         frame.content = self.pending_content.get(&generation).copied();
-        // A reduced frame is exact: an approximate one is never reduced.
+        // A frame with a report is exact: an approximate one is never reduced into one.
         frame.approximate_white_balance = false;
         self.exact = Some(frame);
         self.analysis = Some(analysis);
+        self.motion = None;
         self.analysis_content = self.pending_content.get(&generation).copied();
         true
-    }
-
-    /// The exact phase of a job whose proxy is already on screen moves the generation on screen
-    /// to its own, carrying the proxy frame on screen with it: both are the same picture.
-    pub(crate) fn restamp(&mut self, generation: u64) {
-        if generation == self.presented_generation {
-            return;
-        }
-        if let Some(proxy) = &mut self.proxy_frame
-            && proxy.generation == self.presented_generation
-        {
-            proxy.generation = generation;
-        }
-        self.presented_generation = generation;
     }
 
     /// Make a frame the photograph on the presenter and record that it is on screen, rendered for
@@ -595,7 +522,6 @@ impl Presentation {
         draft_revision: Option<u64>,
     ) -> u64 {
         let generation = frame.generation();
-        let proxy = frame.proxy().is_some();
         let content = self
             .pending_content
             .get(&generation)
@@ -603,20 +529,17 @@ impl Presentation {
             .unwrap_or(self.presented_content);
         // A new version, so the primitive writes the frame exactly once however often the same
         // raster is drawn. Nothing but a new frame moves it.
-        self.presenter.clear_region();
-        self.region_raster = None;
-        if frame.settled() {
-            self.presenter.show_settled(frame.raster(), content);
-        } else if proxy {
-            self.presenter.show_proxy(frame.raster(), content);
+        self.gpu_presented = None;
+        if frame.reduced() {
+            self.presenter.show_reduced(frame.raster(), content);
         } else {
             self.presenter.show_full(frame.raster(), content);
         }
         self.dimensions = Some(stage);
         self.presented_generation = generation;
         self.presented_content = content;
-        self.presented_proxy = proxy;
-        self.presented_settled = frame.settled();
+        self.presented_reduced = frame.reduced();
+        self.presented_proxy = frame.proxy();
         self.presented_approximate_white_balance = frame.approximate_white_balance();
         if let Some(bounds) = self.pending_bounds.get(&generation).copied() {
             self.presented_bounds = bounds;
@@ -661,66 +584,17 @@ impl Presentation {
         Some(self.presenter.photo_version())
     }
 
-    /// Make a visible region the region slot's pixels and record that it is on screen. `false`
-    /// when the surface refused it, and then nothing is recorded.
-    pub(crate) fn show_region(
-        &mut self,
-        delivery: &Delivery,
-        frame: &luxforge_core::RegionFrame,
-        quality: luxforge_ui::RegionQuality,
-        content: u64,
-    ) -> bool {
-        let generation = delivery.generation;
-        if !self
-            .presenter
-            .show_region(frame, quality, content, generation)
-        {
-            return false;
-        }
-        self.region_raster = Some(PresentedRegion {
-            generation,
-            content,
-            raster: Arc::new(frame.raster.clone()),
-            rect: frame.full_rect,
-            full_stage: frame.full_stage,
-            raster_rect: frame.rect,
-            raster_stage: frame.stage,
-            quality,
-            approximate: quality == luxforge_ui::RegionQuality::Interactive
-                || delivery.approximate_white_balance,
-        });
-        self.dimensions = Some((frame.full_stage.width, frame.full_stage.height));
-        self.presented_generation = generation;
-        self.presented_content = content;
-        self.presented_entry = Some(delivery.entry_id.clone());
-        self.displayed_draft_revision = delivery.draft_revision;
-        self.displayed_draft_id = delivery.draft.clone();
-        // `presented_proxy` means a whole-output display proxy for Fit/50% hand-over. A
-        // half-detail viewport is a different slot and must not enter that zoom rule.
-        self.presented_proxy = false;
-        self.presented_settled = false;
-        self.presented_approximate_white_balance = delivery.approximate_white_balance;
-        self.refit_pending = false;
-        self.render_error = None;
-        true
-    }
-
-    /// What a zoom that wants the display proxy — or, with `wants_proxy` false, the exact render —
-    /// finds for the frame on screen.
-    pub(crate) fn zoom(&self, wants_proxy: bool) -> Zoomed {
-        if self.presented_generation == 0 || wants_proxy == self.presented_proxy {
+    /// What a zoom that wants the exact frame reduced to the view — or, with `wants_reduced`
+    /// false, the exact frame itself — finds for the frame on screen.
+    pub(crate) fn zoom(&self, wants_reduced: bool) -> Zoomed {
+        if self.presented_generation == 0 || wants_reduced == self.presented_reduced {
             return Zoomed::Kept;
         }
         if self.presenter.photo().is_none() && self.render_error.is_some() {
             return Zoomed::Withdrawn;
         }
-        let held = if wants_proxy {
-            self.settled_frame
-                .as_ref()
-                .filter(|f| f.generation == self.presented_generation)
-                .cloned()
-                .map(Retained::Settled)
-                .or_else(|| self.proxy().cloned().map(Retained::Proxy))
+        let held = if wants_reduced {
+            self.reduced().cloned().map(Retained::Reduced)
         } else {
             self.exact().cloned().map(Retained::Exact)
         };
@@ -732,18 +606,17 @@ impl Presentation {
     /// screen claims to show a state it does not. Returns the entry it showed.
     pub(crate) fn withdraw(&mut self) -> Option<EntryId> {
         self.presenter.withdraw_photo();
-        self.region_raster = None;
-        self.proxy_frame = None;
-        self.settled_frame = None;
+        self.reduced_frame = None;
         self.reduction_job = None;
-        self.restoration_prefix = None;
         self.exact = None;
         self.incoming = None;
         self.analysis = None;
+        self.motion = None;
         self.analysis_content = None;
-        self.held_by_proxy = None;
-        self.presented_proxy = false;
-        self.presented_settled = false;
+        self.gpu_presented = None;
+        self.presented_asset = None;
+        self.presented_reduced = false;
+        self.presented_proxy = None;
         self.presented_approximate_white_balance = false;
         self.displayed_draft_revision = None;
         self.displayed_draft_id = None;
@@ -757,11 +630,14 @@ impl Presentation {
         view::Surfaces {
             comparison: None,
             photo: self.presenter.photo_for(self.presented_content),
-            photo_content: self.presenter.full_content(),
+            // A frame smaller than its stage — a reduction, or a drag's proxy magnified at 100% and
+            // above — is drawn whole, whatever exact frame the surface held before it.
+            photo_content: self
+                .presenter
+                .full_content()
+                .filter(|_| !self.presented_reduced),
             current_content: self.presented_content,
-            region: self.presenter.region(),
-            region_clipping: self.presenter.region_clipping(),
-            region_coverage: self.presenter.region_coverage(),
+            region_coverage: self.presenter.region_coverage(self.presented_generation),
             stage: self.presenter.stage(),
             clipping: self.clipping(clipping),
             coverage: self.coverage(),
@@ -774,6 +650,13 @@ impl Presentation {
             gpu_change: None,
             dissolve: None,
             gpu_warm: None,
+            gpu_source: None,
+            gpu_rest: None,
+            stage_rest: None,
+            gpu_counts: None,
+            compare_gpu: None,
+            compare_change: None,
+            compare_rest: None,
         }
     }
 
@@ -785,51 +668,21 @@ impl Presentation {
         if request.generation != self.presented_generation {
             return None;
         }
-        if let Some(region) = self.region_raster.as_ref().filter(|region| {
-            request.region == Some(region.rect) && region.generation == request.generation
-        }) {
-            return self
-                .presenter
-                .region_clipping()
-                .filter(|overlay| {
-                    overlay.content_id == region.content
-                        && overlay.generation == region.generation
-                        && overlay.quality == region.quality
-                })
-                .map(|overlay| &overlay.frame);
-        }
         self.presenter.clipping(request.generation)
     }
 
-    /// The mask coverage to draw over the photograph: the one on the presenter, when it belongs to
-    /// the frame that is on screen.
+    /// The whole-frame mask coverage to draw over the photograph: the one on the presenter, when
+    /// it belongs to the frame that is on screen. A region's is the surface's to place
+    /// ([`super::presenter::Presenter::region_coverage`]).
     pub(crate) fn coverage(&self) -> Option<&luxforge_ui::Frame> {
-        if let Some(region) = self.region_raster.as_ref()
-            && region.generation == self.presented_generation
-        {
-            return self
-                .presenter
-                .region_coverage()
-                .filter(|overlay| {
-                    overlay.content_id == region.content
-                        && overlay.generation == region.generation
-                        && overlay.quality == region.quality
-                })
-                .map(|overlay| &overlay.frame);
-        }
         self.presenter.coverage(self.presented_generation)
     }
 
-    /// The proxy frame retained for the generation on screen, when there is one.
-    pub(crate) fn proxy(&self) -> Option<&ProxyFrame> {
-        self.settled_frame
+    /// The reduced frame retained for the generation on screen, when there is one.
+    pub(crate) fn reduced(&self) -> Option<&ReducedFrame> {
+        self.reduced_frame
             .as_ref()
             .filter(|frame| frame.generation == self.presented_generation)
-            .or_else(|| {
-                self.proxy_frame
-                    .as_ref()
-                    .filter(|frame| frame.generation == self.presented_generation)
-            })
     }
 
     /// The exact frame retained for the generation on screen, when its exact phase has landed.
@@ -844,9 +697,9 @@ impl Presentation {
         self.exact.as_ref().and_then(|frame| frame.content)
     }
 
-    /// A photograph or a region is on the surface.
+    /// A photograph is on the surface.
     pub(crate) fn has_picture(&self) -> bool {
-        self.presenter.photo().is_some() || self.presenter.region().is_some()
+        self.presenter.photo().is_some()
     }
 
     /// A newer frame has been requested than the one the histogram describes, so the plotted counts
@@ -856,43 +709,64 @@ impl Presentation {
     /// whether a worker happens to be busy: a crop draft's own truncated job shares the queue and is
     /// never analysed, so queue business alone would mark a perfectly current histogram stale.
     pub(crate) fn analysis_updating(&self) -> bool {
+        if self.motion.is_some() {
+            return true;
+        }
         match &self.analysis {
             Some(_) => self.analysis_content != Some(self.content_serial),
             None => false,
         }
     }
+
+    /// The report the inspector plots: the counts of the frame on screen in motion while a
+    /// gesture's GPU ticks give them, otherwise the displayed frame's report.
+    pub(crate) fn shown_analysis(&self) -> Option<&Analysis> {
+        self.motion.as_ref().or(self.analysis.as_ref())
+    }
+
+    /// Record the GPU's picture of `content`, rendered for `entry` at its exact stage `stage`, as
+    /// on screen under `generation`, with no CPU frame of it ([`Editor::present_on_gpu`]): the
+    /// presenter's frame, an earlier one of the same photograph, stays the surface's base, retagged
+    /// with the content, and the GPU's picture is drawn over it. Nothing CPU-rendered of another
+    /// content — an exact frame or its reduction — is kept as this content's.
+    pub(crate) fn show_gpu(
+        &mut self,
+        generation: u64,
+        content: u64,
+        stage: (u32, u32),
+        entry: &EntryId,
+        bounds: Option<ProxyBounds>,
+    ) {
+        self.presenter.retag(content);
+        self.reduced_frame = None;
+        self.exact = None;
+        self.incoming = None;
+        self.dimensions = Some(stage);
+        self.presented_generation = generation;
+        self.preview_generation = generation;
+        self.presented_content = content;
+        self.presented_reduced = false;
+        self.presented_proxy = None;
+        self.presented_approximate_white_balance = false;
+        self.presented_bounds = bounds;
+        self.refit_pending = false;
+        self.presented_entry = Some(entry.clone());
+        self.displayed_draft_revision = None;
+        self.displayed_draft_id = None;
+        self.render_error = None;
+        self.gpu_presented = Some(content);
+    }
 }
 
-/// What a presented proxy frame holds back until its generation's exact phase lands.
-///
-/// A proxy is the photograph, but every number a captured frame reports — the histogram, the
-/// clipping counters, the overlay it is checked against — comes from the exact render. So what the
-/// proxy reports as presented and an open request's outcome both wait for that phase rather than
-/// releasing on the proxy alone, which is what keeps every existing assertion about a drafted or
-/// selected frame meaning what it meant before.
-pub(crate) struct HeldByProxy {
-    pub(crate) generation: u64,
-    /// What the proxy reported as presented, as it stood when the proxy reached the surface.
-    pub(crate) presented: outcome::Presented,
-    /// An open request was still pending when the proxy was presented, so it completes when the
-    /// exact phase lands rather than on the proxy alone.
-    pub(crate) ready: bool,
-}
-
-/// The visible pixels the region slot owns, retained for a viewport-bounded clipping derivation.
-/// Its raster shares the worker's allocation and is never used as a whole-image analysis input.
-pub(crate) struct PresentedRegion {
-    pub(crate) generation: u64,
-    pub(crate) content: u64,
-    pub(crate) raster: Arc<luxforge_core::Raster>,
+/// The region of the output stage the GPU draws at 100% and above, which a mask's region coverage
+/// is computed for and laid over: its rectangle, the stage it is a region of, and the content and
+/// generation on screen it belongs to ([`Editor::gpu_view_region`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ViewRegion {
     pub(crate) rect: Region,
-    pub(crate) full_stage: luxforge_core::StageSize,
-    /// The raster's footprint in its own stage. Half-detail scaled rectangles can extend beyond
-    /// `rect` after floor/ceil rounding, and raster-derived clipping follows this footprint.
-    pub(crate) raster_rect: Region,
-    pub(crate) raster_stage: luxforge_core::StageSize,
-    pub(crate) quality: luxforge_ui::RegionQuality,
-    pub(crate) approximate: bool,
+    pub(crate) stage: (u32, u32),
+    pub(crate) content: u64,
+    pub(crate) generation: u64,
 }
 
 /// One rectangle of physical pixels as bounds the core will accept, or `None` when the surface has
@@ -964,10 +838,6 @@ pub(super) fn contains_region(outer: Region, inner: Region) -> bool {
         && outer.y1() >= inner.y1()
 }
 
-pub(super) fn intersects_region(a: Region, b: Region) -> bool {
-    a.x0 < b.x1() && b.x0 < a.x1() && a.y0 < b.y1() && b.y0 < a.y1()
-}
-
 pub(super) fn surface_photo_needs_update(
     gpu: &luxforge_ui::SurfaceDiagnostics,
     has_picture: bool,
@@ -1004,19 +874,25 @@ impl Editor {
         let Some(wanted) = self.desired_view_for(stage) else {
             return false;
         };
-        if self.presentation.presenter.full_content() == Some(self.presentation.presented_content)
-            && self.presentation.exact_content() == Some(self.presentation.presented_content)
+        // A gesture's GPU frame of a region holding the view is at full detail, once the surface
+        // has evaluated it.
+        if self.gpu_draws_view(wanted) {
+            return false;
+        }
+        // The GPU's picture at rest of the content on screen holds the view at full detail, once
+        // the surface has evaluated it.
+        if self.gpu_holds_view(wanted)
+            && self.gpu_rest_plan().is_some_and(|(plan, _)| {
+                luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE)
+                    .gpu_ready_boundary
+                    == Some(plan.boundary.version())
+            })
         {
             return false;
         }
-        self.presentation
-            .region_raster
-            .as_ref()
-            .is_none_or(|region| {
-                region.content != self.presentation.presented_content
-                    || region.quality != luxforge_ui::RegionQuality::Exact
-                    || !contains_region(region.rect, wanted)
-            })
+        // The reference's whole frame of the content on screen holds every view.
+        !(self.presentation.presenter.full_content() == Some(self.presentation.presented_content)
+            && self.presentation.exact_content() == Some(self.presentation.presented_content))
     }
     /// Settle a draft or commit whose photograph pixels were reused instead of rendered, once the
     /// shared draft driver has drained: the entry, draft and analysis identity advance together.
@@ -1042,13 +918,7 @@ impl Editor {
         if let Some(frame) = self.presentation.exact.as_mut() {
             Arc::make_mut(&mut frame.raster).snapshot_id = identity.snapshot_id.clone();
         }
-        for frame in [
-            &mut self.presentation.proxy_frame,
-            &mut self.presentation.settled_frame,
-        ]
-        .into_iter()
-        .flatten()
-        {
+        if let Some(frame) = self.presentation.reduced_frame.as_mut() {
             Arc::make_mut(&mut frame.raster).snapshot_id = identity.snapshot_id.clone();
         }
         let generation = self.presentation.presented_generation;
@@ -1086,13 +956,11 @@ impl Editor {
     }
 
     pub(super) fn cancel_preview_queue(&mut self) -> u64 {
-        self.gpu_queue_cancelled();
         self.invalidate_mask_coverage();
         let generation = self.presentation.cancel();
         self.view_plan.request_generation = None;
         self.view_plan.epoch = self.view_plan.epoch.saturating_add(1);
         self.view_plan.dirty = true;
-        self.view_plan.quiet_since = None;
         generation
     }
     pub(super) fn desired_view_for(&self, stage: (u32, u32)) -> Option<Region> {
@@ -1115,11 +983,7 @@ impl Editor {
             PreviewMessage::MaskCoverageSource { epoch, result } => {
                 self.mask_coverage_source_planned(epoch, result);
             }
-            PreviewMessage::ViewLoaded {
-                epoch,
-                intent,
-                result,
-            } => {
+            PreviewMessage::ViewLoaded { epoch, result } => {
                 self.view_plan.in_flight = false;
                 if epoch != self.view_plan.epoch {
                     self.view_plan.dirty = true;
@@ -1127,7 +991,7 @@ impl Editor {
                 }
                 match result {
                     Ok(job) => {
-                        let mut job = *job;
+                        let job = *job;
                         if self.document.state.as_ref().map(|state| &state.asset.id)
                             != Some(&job.evaluation.entry().asset_id)
                             || self.displayed_entry().as_ref() != Some(&job.evaluation.entry().id)
@@ -1150,24 +1014,30 @@ impl Editor {
                             self.view_plan.dirty = true;
                             return Task::none();
                         }
-                        job.intent = intent;
+                        self.view_plan.dirty = false;
+                        // A paused draft's view is its next tick, over the region the pan moved
+                        // to: drawn on the GPU, or held or rendered as any tick the GPU does not
+                        // draw.
+                        if job.evaluation.draft_revision().is_some() {
+                            self.event("preview_view_requested", || json!({"draft": true}));
+                            self.drag_view_planned(job);
+                            return Task::none();
+                        }
                         let generation = self.request_preview(job);
                         self.presentation.preview_generation = generation;
                         self.view_plan.request_generation = Some(generation);
-                        self.view_plan.dirty = false;
-                        self.event("preview_view_requested", || json!({
-                            "generation":generation,
-                            "intent":if intent == PreviewIntent::Settle {"settle"} else {"interactive"},
-                        }));
+                        self.event(
+                            "preview_view_requested",
+                            || json!({"generation":generation,"draft":false}),
+                        );
                     }
                     Err(error) => {
                         self.status.text = error;
                         self.view_plan.dirty = false;
-                        self.view_plan.quiet_since = None;
                     }
                 }
             }
-            PreviewMessage::QuietTick => return self.quiet_refine(),
+            PreviewMessage::GridReady(answer) => self.gpu_grid_ready(*answer),
             PreviewMessage::ThumbnailSource(planned) => self.thumbnail_source_planned(planned),
             PreviewMessage::Loaded(result) => {
                 if matches!(&result, Ok(payload) if self.preview_superseded(payload)) {
@@ -1186,8 +1056,10 @@ impl Editor {
                         let entry = payload.job.evaluation.entry().id.clone();
                         self.outcome(Outcome::EntryRequested(payload.job.evaluation.entry()));
                         self.show_entry(entry.clone());
-                        self.presentation.preview_generation = self.request_preview(payload.job);
+                        // Said before the request, which a picture the GPU presents at once
+                        // answers with what is on screen.
                         self.status.text = "Rendering selected history state…".into();
+                        self.presentation.preview_generation = self.request_preview(payload.job);
                         // The recipe rows follow the displayed entry: one payload read, no render.
                         if let Some(state) = &self.document.state {
                             return recipe_task(
@@ -1223,32 +1095,15 @@ impl Editor {
         Task::none()
     }
 
-    /// The quiet policy is waiting to settle, so its 25 ms timer exists: from a view motion or a
-    /// drafted frame until the settle is asked for, and never while nothing is presented.
-    pub(crate) fn quiet_timer_armed(&self) -> bool {
-        self.view_plan.quiet_since.is_some() && !self.view_plan.quiet_settle_requested
-    }
-
     pub(super) fn note_view_motion(&mut self) {
         self.view_plan.dirty = true;
-        self.view_plan.quiet_since = Some(Instant::now());
-        self.view_plan.quiet_settle_requested = false;
         self.view_plan.epoch = self.view_plan.epoch.saturating_add(1);
-        if let (Some(stage), Some(region)) = (
-            self.presentation.dimensions,
-            self.presentation.region_raster.as_ref(),
-        ) && self.presentation.presenter.full_content()
-            != Some(self.presentation.presented_content)
-            && self
-                .desired_view_for(stage)
-                .is_some_and(|wanted| !contains_region(region.rect, wanted))
-            && let Some(render) = &mut self.activity.render
-        {
-            render.proxy = true;
-        }
     }
 
-    fn view_plan(&mut self, intent: PreviewIntent) -> Task<Message> {
+    /// Plan the view at 100% and above: the displayed stack's job with its GPU picture over the
+    /// visible region, or a paused draft's next tick over it. Nothing while a gesture's draft is
+    /// still draining: its next tick plans the view itself.
+    fn view_plan(&mut self) -> Task<Message> {
         let Some(state) = &self.document.state else {
             return Task::none();
         };
@@ -1258,10 +1113,9 @@ impl Editor {
             None => None,
         };
         self.view_plan.in_flight = true;
-        // The view's GPU plans once it settles, not on every frame of a pan.
-        let gpu = match (intent, self.gpu_preview_allowed()) {
-            (PreviewIntent::Settle, Ok(())) => self.gpu_ask(),
-            _ => super::gpu_preview::GpuAsk::Off,
+        let gpu = match self.gpu_preview_allowed() {
+            Ok(()) => self.gpu_ask(),
+            Err(_) => super::gpu_preview::GpuAsk::Off,
         };
         tasks::view_preview_task(
             self.owner.clone(),
@@ -1270,7 +1124,6 @@ impl Editor {
             self.displayed_entry(),
             draft,
             self.view_plan.epoch,
-            intent,
             gpu,
         )
     }
@@ -1292,109 +1145,124 @@ impl Editor {
             return Task::none();
         }
         let Some(stage) = self.presentation.dimensions else {
-            // Nothing has been presented, so no view is unsettled and the quiet timer has nothing
-            // to settle: it stays disarmed, or a window with no photograph would tick every 25 ms
-            // for as long as it is open. The view stays dirty for the first frame to reconcile.
-            if self.core_gesture().is_none() {
-                self.view_plan.quiet_since = None;
-            }
+            // Nothing has been presented, so no view is unsettled: the view stays dirty for the
+            // first frame to reconcile.
             return Task::none();
         };
         let Some(wanted) = self.desired_view_for(stage) else {
             self.view_plan.dirty = false;
-            if self.core_gesture().is_none() {
-                self.view_plan.quiet_since = None;
-            }
             return Task::none();
         };
-        // A gesture's GPU frame of a region holding the view is its motion frame: no region job
-        // until the shared quiet policy settles it.
-        if self.gpu_draws_view(wanted) {
+        // A gesture's GPU frame of a region holding the view, or the GPU's picture at rest of the
+        // content asked for, holds the view: nothing to plan.
+        if self.gpu_draws_view(wanted) || self.gpu_holds_view(wanted) {
             self.view_plan.dirty = false;
             return Task::none();
         }
-        if self.presentation.presenter.full_content() == Some(self.presentation.content_serial)
-            && self.presentation.exact.as_ref().is_some_and(|frame| {
-                (frame.raster.width, frame.raster.height) == stage
-                    && frame.content == Some(self.presentation.content_serial)
-            })
-        {
-            self.view_plan.dirty = false;
-            if self.presentation.analysis_content == Some(self.presentation.content_serial) {
-                self.view_plan.quiet_since = None;
-            }
-            return Task::none();
-        }
-        if self
-            .presentation
-            .region_raster
+        // The reference's whole frame of the state asked for, on screen or on its way, holds every
+        // view. A gesture's ticks the GPU draws queue no job, so its state is the draft's newest
+        // revision, not the content last queued.
+        let whole = match self
+            .session
+            .draft
             .as_ref()
-            .is_some_and(|region| {
-                region.content == self.presentation.content_serial
-                    && region.quality == luxforge_ui::RegionQuality::Exact
-                    && contains_region(region.rect, wanted)
-            })
+            .filter(|_| self.core_gesture().is_some())
         {
+            // In a session the GPU does not draw at all every tick queues a whole frame, its proxy,
+            // which holds every view.
+            Some(_) if self.gpu_stage_refusal().is_some() => true,
+            Some(draft) => {
+                (self.presentation.displayed_draft_id.as_ref() == Some(&draft.draft_id)
+                    && self.presentation.displayed_draft_revision == Some(draft.draft_revision)
+                    && self.presentation.presenter.full_content()
+                        == Some(self.presentation.presented_content))
+                    || self.motion_in_flight()
+            }
+            None => {
+                let content = self.presentation.content_serial;
+                (self.presentation.presenter.full_content() == Some(content)
+                    && self.presentation.exact.as_ref().is_some_and(|frame| {
+                        (frame.raster.width, frame.raster.height) == stage
+                            && frame.content == Some(content)
+                    }))
+                    || self
+                        .presentation
+                        .pending_content
+                        .values()
+                        .any(|pending| *pending == content)
+            }
+        };
+        if whole {
             self.view_plan.dirty = false;
             return Task::none();
         }
-        // A cancelled gesture or a returned history selection has no motion to debounce.
-        // Its committed whole-frame settlement may already have been replaced by this view
-        // retry, so the replacement must itself produce the exact report and retained raster.
-        self.view_plan(
-            if self.core_gesture().is_none() && self.view_plan.quiet_since.is_none() {
-                PreviewIntent::Settle
-            } else {
-                PreviewIntent::Interactive
-            },
-        )
+        // Planned at once: where the GPU presents the content its region is cut from the source
+        // it holds, and where it cannot the reference renders the whole frame.
+        self.view_plan()
     }
 
-    fn quiet_refine(&mut self) -> Task<Message> {
-        let Some(since) = self.view_plan.quiet_since else {
-            return Task::none();
+    /// The region the GPU draws the photograph from at 100% and above: the committed stack's view
+    /// plan at rest, or the open gesture's plan where the surface draws it in place of the frame.
+    /// `None` below 100%, and wherever the frame on screen is the reference's, whose whole frame
+    /// holds every view. The overlays' region grids are keyed on it.
+    pub(crate) fn gpu_view_region(&self) -> Option<ViewRegion> {
+        if !matches!(self.session.preview.view.zoom, Zoom::Percent { value } if value >= 100.0) {
+            return None;
+        }
+        let plan = match self.gpu_rest_plan() {
+            Some((plan, _)) => plan,
+            None => self
+                .gesture_gpu_plan()
+                .filter(|_| !self.gpu_held())
+                .map(|(plan, _)| plan)?,
         };
-        if since.elapsed() < QUIET_INTERVAL
-            || self.view_plan.quiet_settle_requested
-            || self.view_plan.in_flight
-            || self.view_plan.dirty
-            || self.presentation.queue.is_busy()
-            || self.crop_gesture().is_some()
-            || self
-                .core_gesture()
-                .is_some_and(|gesture| !gesture.draft.drained())
-        {
-            return Task::none();
-        }
-        // A draft whose newest revision only the GPU has drawn has no CPU frame yet, whatever the
-        // frame on screen is.
-        let drawn_on_gpu_only = self.session.draft.as_ref().is_some_and(|draft| {
-            self.presentation.displayed_draft_revision != Some(draft.draft_revision)
-        });
-        if !drawn_on_gpu_only
-            && self.presentation.analysis_content == Some(self.presentation.content_serial)
-            && self.presentation.exact_content() == Some(self.presentation.content_serial)
-        {
-            self.view_plan.quiet_since = None;
-            return Task::none();
-        }
-        self.view_plan.quiet_settle_requested = true;
-        self.event("preview_quiet_refine", || {
-            json!({
-                "elapsed_ms":since.elapsed().as_secs_f64()*1000.0,
-                "interval_ms":QUIET_INTERVAL.as_millis(),
+        // The softer drag frame is a reduced whole frame placed over the full stage: its coverage is
+        // the whole stage's grid, as below 100%.
+        let region = plan
+            .region
+            .filter(|region| region.stage == region.full_stage)?;
+        let [x0, y0, x1, y1] = region.rect;
+        Some(ViewRegion {
+            rect: Region {
+                x0,
+                y0,
+                width: x1.saturating_sub(x0),
+                height: y1.saturating_sub(y0),
+            },
+            stage: region.stage,
+            content: self.presentation.presented_content,
+            generation: self.presentation.presented_generation,
+        })
+    }
+
+    /// Whether the GPU presents the content asked for and its view plan at rest, a region's at
+    /// 100% and above, holds `wanted`.
+    fn gpu_holds_view(&self, wanted: Region) -> bool {
+        self.presentation.gpu_presented == Some(self.presentation.content_serial)
+            && self.gpu_rest_plan().is_some_and(|(plan, _)| {
+                plan.region.is_some_and(|region| {
+                    let [x0, y0, x1, y1] = region.rect;
+                    contains_region(
+                        Region {
+                            x0,
+                            y0,
+                            width: x1 - x0,
+                            height: y1 - y0,
+                        },
+                        wanted,
+                    )
+                })
             })
-        });
-        self.view_plan(PreviewIntent::Settle)
     }
 
     /// The physical pixels the photo area can show a frame in, when the view means a display-size
-    /// render is what should be presented — or `None` when only the exact render will do.
+    /// frame is what should be presented — or `None` when only the exact render will do.
     ///
     /// At Fit that is the photo surface less the canvas padding, scaled by the display factor:
-    /// exactly the rectangle [`state::histogram::displayed_size`] fits an image into, so the proxy
-    /// is rendered at the size the display was going to minify the exact frame down to anyway. It
-    /// does not depend on the photograph, so the first job of an open already has it.
+    /// exactly the rectangle [`state::histogram::displayed_size`] fits an image into, so the exact
+    /// frame is reduced to the size the display was going to minify it down to anyway, and the
+    /// GPU's picture planned at it. It does not depend on the photograph, so the first job of an
+    /// open already has it.
     ///
     /// At a percentage the bounds are the exact stage's own displayed size, and only while that is
     /// smaller than the stage in both axes. At 100% and above one physical pixel shows one stage
@@ -1409,30 +1277,35 @@ impl Editor {
     /// percentage that draws it smaller than it is, and the exact render otherwise.
     pub(crate) fn proxy_bounds_for(&self, stage: Option<(u32, u32)>) -> Option<ProxyBounds> {
         match self.session.preview.view.zoom {
-            Zoom::Fit => {
-                let workspace = &self.session.workspace;
-                let surface = layout::photo_surface(
-                    self.view_state.window,
-                    workspace.state_panel,
-                    workspace.tools_panel,
-                    self.filmstrip_shown(),
-                );
-                let inset = layout::FIT_INSET;
-                bounds_of((
-                    (surface.0 - inset.0).max(0.0) * self.view_state.scale_factor,
-                    (surface.1 - inset.1).max(0.0) * self.view_state.scale_factor,
-                ))
-            }
+            Zoom::Fit => self.fit_bounds(),
             Zoom::Percent { .. } => {
                 let stage = stage?;
                 let displayed = self.displayed_size(stage)?;
-                // Strictly smaller in both axes, so a proxy is never asked for a frame that would
-                // have to be magnified back up to show the detail the zoom asked for.
+                // Strictly smaller in both axes, so a reduction is never asked for a frame that
+                // would have to be magnified back up to show the detail the zoom asked for.
                 (displayed.0 < stage.0 as f32 && displayed.1 < stage.1 as f32)
                     .then(|| bounds_of(displayed))
                     .flatten()
             }
         }
+    }
+
+    /// The bounds Fit draws the photograph in, physical pixels: the photo surface this window and
+    /// these panels leave, less the Fit inset. A drag's proxy is rendered at them at 100% and
+    /// above too, in a session the GPU does not draw at all, and magnified to the view.
+    pub(crate) fn fit_bounds(&self) -> Option<ProxyBounds> {
+        let workspace = &self.session.workspace;
+        let surface = layout::photo_surface(
+            self.view_state.window,
+            workspace.state_panel,
+            workspace.tools_panel,
+            self.filmstrip_shown(),
+        );
+        let inset = layout::FIT_INSET;
+        bounds_of((
+            (surface.0 - inset.0).max(0.0) * self.view_state.scale_factor,
+            (surface.1 - inset.1).max(0.0) * self.view_state.scale_factor,
+        ))
     }
 
     /// The physical size a frame whose exact stage is `stage` is drawn at in the current view,
@@ -1468,11 +1341,6 @@ impl Editor {
     pub(super) fn poll_preview(&mut self) -> Option<PreviewResult> {
         loop {
             let result = self.presentation.queue.poll()?;
-            // A draft's GPU preview boundary is no frame: it is held for the gesture, or let go.
-            if result.boundary().is_some() {
-                self.gpu_boundary_ready(result);
-                continue;
-            }
             if !result.cancelled() {
                 return Some(result);
             }
@@ -1493,21 +1361,16 @@ impl Editor {
     }
 
     /// Take up the finished preview results in order: every one that presents nothing — a stale
-    /// or cancelled outcome, an exact phase adopted behind its proxy, a failure — and at most one
-    /// that hands a frame to the display, after which the rest wait for the next `Poll`, so every
-    /// presented frame is drawn by the redraw its own update requests. The photograph and the crop
-    /// draft's input stage alike become the surface's source in the update that takes them up.
+    /// or cancelled outcome, a failure — and at most one that hands a frame to the display, after
+    /// which the rest wait for the next `Poll`, so every presented frame is drawn by the redraw its
+    /// own update requests. The photograph and the crop draft's input stage alike become the
+    /// surface's source in the update that takes them up. Every job delivers one result, its last.
     pub(super) fn deliver_previews(&mut self) -> Task<Message> {
         let mut tasks = Vec::new();
         while let Some(result) = self.poll_preview() {
             let generation = result.generation;
-            let terminal = result.phase() == PreviewPhase::Exact
-                || (result.intent == PreviewIntent::Interactive
-                    && result.phase() != PreviewPhase::Exact);
             let (task, presented) = self.preview_ready(result);
-            if terminal {
-                self.presentation.forget(generation);
-            }
+            self.presentation.forget(generation);
             tasks.push(task);
             if presented {
                 break;
@@ -1535,23 +1398,32 @@ impl Editor {
     /// for, and whether it handed a frame to the display — the photograph, or the crop draft's
     /// input stage.
     pub(super) fn preview_ready(&mut self, mut result: PreviewResult) -> (Task<Message>, bool) {
-        // An exact display reduction belongs to one view and one current content generation.
+        // An exact display reduction belongs to one view and one current content generation; the
+        // crop draft's input stage's, to the stage's own bounds alone, its generation the draft's.
         // Its full raster can still be retained when a resize invalidates only the reduction.
-        if let PhaseOutcome::Exact(exact) = &mut result.outcome
-            && exact.display.is_some()
-            && (result.generation != self.presentation.preview_generation
+        let stage = Some(result.generation) == self.draft_generation();
+        let pending_bounds = self
+            .presentation
+            .pending_bounds
+            .get(&result.generation)
+            .copied()
+            .flatten();
+        let stale = if stage {
+            pending_bounds != self.crop_stage_bounds()
+        } else {
+            result.generation != self.presentation.preview_generation
                 || self.presentation.pending_content.get(&result.generation)
                     != Some(&self.presentation.content_serial)
-                || self
-                    .presentation
-                    .pending_bounds
-                    .get(&result.generation)
-                    .copied()
-                    .flatten()
-                    != self.proxy_bounds())
+                || pending_bounds != self.proxy_bounds()
+        };
+        if let PhaseOutcome::Exact(exact) = &mut result.outcome
+            && exact.display.is_some()
+            && stale
         {
             exact.display = None;
-            self.presentation.refit_pending = false;
+            if !stage {
+                self.presentation.refit_pending = false;
+            }
         }
         // The crop draft's truncated preview shares the queue; its generation says which texture
         // the pixels belong to. It is never analysed, because its identity describes the whole
@@ -1567,11 +1439,11 @@ impl Editor {
             return (Task::none(), false);
         }
         if let Some(queue_wait_ms) = result.queue_wait_ms {
-            let phase = match result.phase() {
-                PreviewPhase::Proxy => "proxy",
-                PreviewPhase::Region => "region",
-                PreviewPhase::Exact => "exact",
-                PreviewPhase::Boundary => "boundary",
+            // Only a drag tick in a session the GPU does not draw at all asks for a proxy phase.
+            let phase = if result.proxy().is_some() {
+                "proxy"
+            } else {
+                "exact"
             };
             self.event("preview_result_received", || {
                 json!({
@@ -1587,34 +1459,14 @@ impl Editor {
         }
         match self.presentation.take(result) {
             Presented::Stale => (Task::none(), false),
-            Presented::Region(region) => {
-                let (delivery, region) = *region;
-                self.region_ready(delivery, region)
-            }
-            Presented::Settled(settled) => {
-                let (delivery, frame) = *settled;
-                self.frame_ready(delivery, Ok(Retained::Settled(frame)))
-            }
-            Presented::Proxy(proxy) => {
-                let (delivery, frame) = *proxy;
-                self.view_fallback(delivery.generation, &delivery.viewport_declined, "proxy");
-                self.frame_ready(delivery, Ok(Retained::Proxy(frame)))
+            Presented::Reduced(reduced) => {
+                let (delivery, frame) = *reduced;
+                self.frame_ready(delivery, Ok(Retained::Reduced(frame)))
             }
             Presented::Exact(exact) => {
                 let (delivery, frame) = *exact;
-                self.view_fallback(delivery.generation, &delivery.viewport_declined, "exact");
                 self.frame_ready(delivery, frame.map(Retained::Exact))
             }
-        }
-    }
-
-    /// A viewport the worker could not render as a region says which whole-frame path it took.
-    fn view_fallback(&self, generation: u64, declined: &Option<String>, phase: &str) {
-        if let Some(reason) = declined {
-            self.event(
-                "preview_view_fallback",
-                || json!({"generation":generation,"reason":reason,"phase":phase}),
-            );
         }
     }
 
@@ -1627,10 +1479,8 @@ impl Editor {
         let frame = match frame {
             Ok(frame) => frame,
             Err(error) => {
-                // Only an exact phase fails: a proxy phase that cannot render is declined instead.
                 self.preview_failed(
                     delivery.generation,
-                    false,
                     &delivery.entry_id,
                     delivery.draft_revision,
                     &error,
@@ -1638,47 +1488,11 @@ impl Editor {
                 return (Task::none(), false);
             }
         };
-        let generation = delivery.generation;
-        let proxy = frame.proxy().is_some();
-        // The exact phase of a job whose proxy is already on screen, while the view still wants a
-        // display-size frame: its report and its raster are taken up and nothing is drawn. The
-        // proxy is the Fit view, so writing the same picture again at four times the pixels would
-        // cost exactly the work this design exists to remove.
-        if !proxy
-            && self.presentation.presented_proxy
-            && self.proxy_bounds().is_some()
-            // A layout refit can make a formerly useful proxy unnecessary (the source now fits the
-            // physical Fit bounds). Its exact-only result must replace the old, undersized proxy
-            // and clear `refit_pending`; adopting only the report here would leave evidence and the
-            // visible view waiting forever. An older exact phase may still be retained while the
-            // newer refit is in flight.
-            && (self.presentation.presented_bounds == self.proxy_bounds()
-                || generation < self.presentation.preview_generation
-                || self.proxy_refit_deferred())
-            && self.presentation.pending_content.get(&generation)
-                == Some(&self.presentation.presented_content)
-            && self.presentation.dimensions == Some(delivery.stage)
-        {
-            self.presentation.restamp(generation);
-            self.adopt_exact(
-                generation,
-                delivery.stage,
-                delivery.render_ms,
-                delivery.approximate_white_balance,
-            );
-            self.outcome(Outcome::Presented(outcome::Presented::Exact));
-            if self.activity.pending {
-                self.activity.pending = false;
-                self.activity.displayed = self.activity.requested;
-                self.activity.phase = "ready";
-                self.outcome(Outcome::RequestEnded { failed: false });
-            }
-            return (Task::none(), false);
-        }
+        let reduced = frame.reduced();
         // The dimensions every pick, every percent-zoom box and every overlay cell maps through
         // are the **exact stage's**, whatever size the texture is; the identity already carries
         // them.
-        let stage = if proxy {
+        let stage = if reduced {
             delivery.stage
         } else {
             (frame.raster().width, frame.raster().height)
@@ -1687,7 +1501,7 @@ impl Editor {
             self.activity.preview_dimensions = Some(stage);
             self.event(
                 "decoded",
-                || json!({"open_to_raster_ms":self.activity.request_started.elapsed().as_secs_f64()*1000.,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":[stage.0,stage.1],"proxy":proxy}),
+                || json!({"open_to_raster_ms":self.activity.request_started.elapsed().as_secs_f64()*1000.,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":[stage.0,stage.1],"reduced":reduced}),
             );
         }
         // The photograph reaches the screen from here: the raster becomes the surface's source now
@@ -1705,41 +1519,43 @@ impl Editor {
         );
         // A zoom that changed while this frame was rendering is picked up by `present_retained`.
         self.present_retained();
+        // Compare waited for a frame of the content the GPU presented, its After side.
+        if self.gpu.compare_waits
+            && self.presentation.gpu_presented != Some(self.presentation.presented_content)
+        {
+            self.gpu.compare_waits = false;
+            if self.presentation.compare_after.is_none() {
+                return (self.compare_toggle(), true);
+            }
+        }
         (Task::none(), true)
     }
 
     /// The crop layer's input stage, shown in place of the photograph from the render's own buffer
     /// with the open frame drawn over it in this same update: nothing is uploaded through the
-    /// runtime, so nothing waits for it. Like the photograph's, its proxy is the Fit view and its
-    /// exact phase the percentage zoom's; neither is ever reduced, sampled or committed, retained
-    /// as the photograph's or held to the photograph's delivery rule. A stage job asks for no
-    /// viewport, so it has no region phase.
+    /// runtime, so nothing waits for it. Where the reference draws it, its frame reduced to the
+    /// bounds is the Fit view's and its exact frame the percentage zoom's; neither is ever reduced, sampled or committed, retained as the
+    /// photograph's or held to the photograph's delivery rule.
     fn stage_ready(&mut self, result: PreviewResult) -> (Task<Message>, bool) {
-        let generation = result.generation;
-        let interactive = result.intent == PreviewIntent::Interactive;
-        let phase = if result.proxy().is_some() {
-            "proxy"
-        } else {
-            "exact"
-        };
+        // The reference's one frame of the stage: reduced to the bounds the job offered, or its
+        // exact stage where the job offered none or the stage already fits them.
+        let bounded = self.crop_stage_bounds().is_some();
         let (frame, proxy, bounded) = match result.outcome {
-            PhaseOutcome::Region(_) | PhaseOutcome::Boundary(_) => return (Task::none(), false),
-            PhaseOutcome::Proxy(outcome) => (Ok(outcome.raster), true, true),
-            // A stage frame is bounded when its job offered bounds, whichever phase answered them.
             PhaseOutcome::Exact(outcome) => {
                 let ExactOutcome {
-                    result,
-                    proxy_declined,
-                    ..
+                    result, display, ..
                 } = *outcome;
-                (result, false, proxy_declined.is_some())
+                match display {
+                    Some(reduced) => (Ok(reduced), true, true),
+                    None => (result, false, bounded),
+                }
             }
+            // A stage job asks for no viewport and no proxy phase.
+            _ => return (Task::none(), false),
         };
-        self.view_fallback(generation, &result.viewport_declined, phase);
         match frame {
             Ok(raster) => {
-                let (presented, planned) =
-                    self.crop_stage_ready(&raster, proxy, bounded, !proxy || interactive);
+                let (presented, planned) = self.crop_stage_ready(&raster, proxy, bounded, true);
                 (planned, presented)
             }
             Err(error) => {
@@ -1749,191 +1565,11 @@ impl Editor {
         }
     }
 
-    /// Publish visible pixels without treating them as a whole-image report or retained full
-    /// raster. The worker's region carries its own stage coordinates; the surface maps those
-    /// coordinates through the full output stage, including odd dimensions at half detail.
-    pub(super) fn region_ready(
-        &mut self,
-        delivery: Delivery,
-        region: RegionOutcome,
-    ) -> (Task<Message>, bool) {
-        let generation = delivery.generation;
-        let intent = delivery.intent;
-        let content = self
-            .presentation
-            .pending_content
-            .get(&generation)
-            .copied()
-            .unwrap_or(self.presentation.presented_content);
-        let draft_revision = delivery.draft_revision;
-        let render_ms = delivery.render_ms;
-        let approximate_white_balance = delivery.approximate_white_balance;
-        let RegionOutcome { frame } = region;
-        let stage = (frame.full_stage.width, frame.full_stage.height);
-        let covered = self
-            .desired_view_for(stage)
-            .is_some_and(|wanted| contains_region(frame.full_rect, wanted));
-        if stage != delivery.stage {
-            self.view_plan.dirty = true;
-            return (Task::none(), false);
-        }
-        if delivery.draft.as_ref() == self.presentation.displayed_draft_id.as_ref()
-            && draft_revision.is_some()
-            && self.presentation.displayed_draft_revision.is_some()
-            && draft_revision < self.presentation.displayed_draft_revision
-        {
-            return (Task::none(), false);
-        }
-        if self
-            .desired_view_for(stage)
-            .is_some_and(|wanted| !intersects_region(frame.full_rect, wanted))
-        {
-            self.view_plan.dirty = true;
-            return (Task::none(), false);
-        }
-        if !luxforge_ui::region_texture_admissible((frame.raster.width, frame.raster.height), 8192)
-        {
-            self.event("preview_region_declined", || json!({
-                "generation":generation,"reason":"region texture exceeds the surface allocation limit"
-            }));
-            self.presentation.viewport_disabled_content = Some(content);
-            self.view_plan.dirty = true;
-            return (Task::none(), false);
-        }
-        let quality = if frame.stage == frame.full_stage && !frame.approximation.is_approximate() {
-            luxforge_ui::RegionQuality::Exact
-        } else {
-            luxforge_ui::RegionQuality::Interactive
-        };
-        if !self
-            .presentation
-            .show_region(&delivery, &frame, quality, content)
-        {
-            self.status.text = "Could not show the visible photograph region".into();
-            return (Task::none(), false);
-        }
-        let entry_id = delivery.entry_id;
-        self.show_entry(entry_id.clone());
-        self.activity.render = Some(state::status::RenderTime {
-            ms: render_ms,
-            proxy: quality == luxforge_ui::RegionQuality::Interactive || !covered,
-            approximate: approximate_white_balance,
-        });
-        self.event("preview_displayed", || json!({
-            "generation":generation,"entry_id":entry_id,
-            "draft_revision":draft_revision,"snapshot_id":frame.raster.snapshot_id.to_string(),
-            "source_fingerprint":frame.raster.source_fingerprint,
-            "dimensions":[stage.0,stage.1],"path":"region",
-            "region":[frame.full_rect.x0,frame.full_rect.y0,frame.full_rect.x1(),frame.full_rect.y1()],
-            "region_stage":[frame.stage.width,frame.stage.height],
-            "quality":if quality == luxforge_ui::RegionQuality::Exact {"exact"} else {"interactive"},
-            "proxy_approximate":frame.approximation.is_approximate(),
-            "proxy_approximate_reason":frame.approximation.reason(),
-            "approximate_white_balance":approximate_white_balance,
-            "viewport_declined":delivery.viewport_declined,"render_ms":render_ms,
-        }));
-        if let Some(wanted) = self.desired_view_for(stage) {
-            self.view_plan.dirty = !contains_region(frame.full_rect, wanted);
-        }
-        if self.view_plan.request_generation == Some(generation) {
-            self.view_plan.request_generation = None;
-        }
-        if intent == PreviewIntent::Interactive && self.activity.pending {
-            self.activity.pending = false;
-            self.activity.displayed = self.activity.requested;
-            self.activity.phase = "ready";
-            self.outcome(Outcome::RequestEnded { failed: false });
-        }
-        if intent == PreviewIntent::Interactive {
-            // A draft's region is its newest once the draft has drained and nothing newer was
-            // asked for. With no draft open the region is only the pixels in view: history
-            // selection, Return to current and committed edits are shown whole once the
-            // whole-frame result updates the displayed stack and exact report.
-            let presented = match self.core_gesture() {
-                Some(gesture) => outcome::Presented::Draft {
-                    slider: gesture.slider().is_some(),
-                    newest: gesture.draft.drained()
-                        && generation >= self.presentation.preview_generation,
-                },
-                None => outcome::Presented::Region,
-            };
-            self.outcome(Outcome::Presented(presented));
-            if self.core_gesture().is_none()
-                && (self.presentation.analysis_content != Some(content)
-                    || self.presentation.exact_content() != Some(content))
-            {
-                // An interactive view can supersede a committed render, including after a
-                // cancelled draft. Leave a timer to replace it with a settled job when the view
-                // stops moving; otherwise the histogram can remain stale indefinitely.
-                self.view_plan.quiet_since.get_or_insert_with(Instant::now);
-                self.view_plan.quiet_settle_requested = false;
-            }
-        }
-        self.refresh_overlay();
-        (Task::none(), true)
-    }
-
-    /// The exact phase of a job whose proxy is already on screen, received by
-    /// [`Presentation::take`].
-    ///
-    /// Nothing is drawn: the frame the view wants is the proxy, and writing this raster's
-    /// four-times larger texture is exactly the work this design exists to remove. Its report and
-    /// its pixels are taken up as a presented frame would take them up, so the histogram, the
-    /// clipping counters and the overlay describe the exact render of the picture on screen, and a
-    /// later `analysis.request` for this identity is a cache hit instead of a second render. The
-    /// status bar keeps the proxy's render time meanwhile: the proxy is the picture on screen.
-    pub(super) fn adopt_exact(
-        &mut self,
-        generation: u64,
-        stage: (u32, u32),
-        render_ms: f64,
-        approximate_white_balance: bool,
-    ) {
-        // The pixels of this generation are already on screen — the proxy of the same recipe — so
-        // the report is adopted now rather than waiting for a frame that will not arrive.
-        self.adopt_analysis(generation);
-        self.event(
-            "preview_exact_adopted",
-            || json!({"generation":generation,"dimensions":[stage.0,stage.1],"render_ms":render_ms,"approximate_white_balance":approximate_white_balance}),
-        );
-        self.release_held(generation);
-    }
-
-    /// Release what the presented proxy of this generation was holding back: what it reports as
-    /// presented and the open request it completes. Both describe the exact render, which has
-    /// landed.
-    pub(super) fn release_held(&mut self, generation: u64) {
-        if self
-            .presentation
-            .held_by_proxy
-            .as_ref()
-            .map(|held| held.generation)
-            != Some(generation)
-        {
-            return;
-        }
-        let Some(held) = self.presentation.held_by_proxy.take() else {
-            return;
-        };
-        self.outcome(Outcome::Presented(held.presented));
-        if held.ready && self.activity.pending {
-            self.activity.pending = false;
-            self.activity.displayed = self.activity.requested;
-            self.activity.phase = "ready";
-            self.event(
-                "render_ready",
-                || json!({"displayed_generation":self.activity.displayed}),
-            );
-            self.outcome(Outcome::RequestEnded { failed: false });
-        }
-    }
-
     /// A preview of the displayed target failed: say so on the canvas, and never leave another
     /// entry's picture on screen as though it were this one.
     ///
-    /// The frame on screen stays only when it is the target that failed — the display proxy of the
-    /// same entry and draft revision, whose full-resolution phase is what failed — because then it
-    /// still shows that state. Any other frame belongs to an earlier entry or draft revision: after
+    /// The frame on screen stays only when it is the target that failed — a frame of the same
+    /// entry and draft revision — because then it still shows that state. Any other frame belongs to an earlier entry or draft revision: after
     /// a commit whose render failed it is the picture from before the edit, while history and the
     /// recipe already name the edit, so it is withdrawn with everything derived from it and the
     /// canvas shows the failure in its place. The edit itself is untouched; the next frame that
@@ -1941,7 +1577,6 @@ impl Editor {
     pub(super) fn preview_failed(
         &mut self,
         generation: u64,
-        proxy: bool,
         entry: &luxforge_core::EntryId,
         draft_revision: Option<u64>,
         error: &luxforge_core::Error,
@@ -1953,7 +1588,7 @@ impl Editor {
         self.presentation.render_error = Some(error.clone());
         self.event(
             "preview_failed",
-            || json!({"generation":generation,"entry_id":entry,"draft_revision":draft_revision,"proxy":proxy,"error_code":error.kind.code(),"detail":error.detail}),
+            || json!({"generation":generation,"entry_id":entry,"draft_revision":draft_revision,"error_code":error.kind.code(),"detail":error.detail}),
         );
         let shows_target = self.presentation.presented_entry.as_ref() == Some(entry)
             && self.presentation.displayed_draft_revision == draft_revision
@@ -1963,10 +1598,7 @@ impl Editor {
                     .draft
                     .as_ref()
                     .map(|draft| draft.draft_id.clone());
-        if !shows_target
-            && (self.presentation.presenter.photo().is_some()
-                || self.presentation.presenter.region().is_some())
-        {
+        if !shows_target && self.presentation.presenter.photo().is_some() {
             self.withdraw_photo(generation, entry, error);
         }
         if !self.presentation.has_picture() && self.mask_coverage_target().is_some() {
@@ -1976,11 +1608,6 @@ impl Editor {
         self.outcome(Outcome::PreviewFailed {
             newest: generation >= self.presentation.preview_generation,
         });
-        // A failed exact phase releases whatever its proxy was holding, so a scripted step ends on
-        // the failure rather than waiting for a frame that will never arrive.
-        if !proxy {
-            self.release_held(generation);
-        }
         if self.activity.pending {
             self.activity.pending = false;
             self.activity.phase = "error";
@@ -2080,23 +1707,23 @@ impl Editor {
         self.outcome(Outcome::CropStage);
     }
 
-    /// The zoom changed. This is the **one** place a view change can ask for a render, and it only
-    /// does so when the pixels it needs do not exist yet.
+    /// The zoom changed. This is the **one** place a view change can ask for a reference frame,
+    /// and it only does so when the pixels it needs do not exist yet.
     ///
-    /// Which texture the view wants is decided by [`Self::proxy_bounds`]: a display-size proxy when
-    /// the frame is drawn smaller than the exact stage, the exact render at 100% and above. While
-    /// that answer is unchanged there is nothing to do at all — a zoom from Fit to 50% keeps the
-    /// proxy it already has — so the rule "a view change re-renders nothing" survives every step
-    /// but the one crossing between the two.
+    /// Which texture the view wants is decided by [`Self::proxy_bounds`]: the exact frame reduced
+    /// to the view when the frame is drawn smaller than the exact stage, the exact frame itself at
+    /// 100% and above. While that answer is unchanged there is nothing to do at all — a zoom from
+    /// Fit to 50% keeps the reduction it already has — so the rule "a view change re-renders
+    /// nothing" survives every step but the one crossing between the two.
     ///
-    /// Crossing to the exact render makes the retained exact raster of the frame on screen the
-    /// surface's source. When its exact phase is still outstanding there is nothing to hand over
-    /// and nothing to ask for: that phase is already running and is presented when it arrives,
-    /// because the zoom now needs it, so the view waits with the ordinary loading state.
+    /// Crossing to the exact frame makes the retained exact raster of the frame on screen the
+    /// surface's source. When its job is still outstanding there is nothing to hand over and
+    /// nothing to ask for: it is presented when it arrives, so the view waits with the ordinary
+    /// loading state.
     ///
-    /// Crossing back hands the retained proxy of the frame on screen over again. Only when there is
-    /// none — the frame on screen was rendered exactly, at 100% — does this request one preview
-    /// job.
+    /// Crossing back hands the retained reduction of the frame on screen over again, and with none
+    /// reduces the retained exact frame again with no render, or, where the GPU draws the picture
+    /// at rest, plans that picture for the view.
     pub(super) fn zoom_changed(&mut self, previous: &Zoom) -> Task<Message> {
         let zoom = self.session.preview.view.zoom.clone();
         if zoom == *previous || self.document.state.is_none() {
@@ -2108,23 +1735,24 @@ impl Editor {
         if self.crop_stage_owns_view() {
             return self.present_crop_stage();
         }
-        let wants_proxy = self.proxy_bounds().is_some();
-        match self.presentation.zoom(wants_proxy) {
+        let wants_reduced = self.proxy_bounds().is_some();
+        match self.presentation.zoom(wants_reduced) {
             // Nothing presented yet, or the texture on screen is already the one this zoom wants:
-            // a step from Fit to 50% keeps the proxy it has, and the rule that a view change
-            // re-renders nothing survives every zoom but the one crossing between proxy and exact.
+            // a step from Fit to 50% keeps the reduction it has, and the rule that a view change
+            // re-renders nothing survives every zoom but the one crossing between the two.
             // Or a failure withdrew the picture: nothing retained may be handed over in its place,
             // and a view change asks for no render. The next frame of the target puts a picture
             // back.
             Zoomed::Kept | Zoomed::Withdrawn => Task::none(),
-            Zoomed::Missing if wants_proxy => {
+            Zoomed::Missing if wants_reduced => {
                 // Nothing to hand over: the frame on screen is a full-resolution render with no
-                // display-size frame beside it. Restoration reduces the retained exact allocation;
-                // other stacks ask for the proxy this zoom wants.
+                // display-size frame beside it. The retained exact allocation is reduced again
+                // where the reference renderer draws the picture; where the GPU does, a job plans
+                // its picture at the bounds this zoom wants.
                 self.event("preview_proxy_requested", || json!({ "zoom": zoom }));
                 self.outcome(Outcome::FrameRequested(outcome::Requested::Photo));
                 if let Some(bounds) = self.proxy_bounds()
-                    && self.reduce_retained(bounds)
+                    && self.reduce_for_reference(bounds)
                 {
                     Task::none()
                 } else {
@@ -2132,8 +1760,8 @@ impl Editor {
                 }
             }
             Zoomed::Missing => {
-                // The exact phase of the frame on screen has not landed. It is already running, and
-                // the `Poll` handler presents it when it arrives because the zoom now needs it.
+                // The exact frame on screen has not landed. Its job is already running, and the
+                // `Poll` handler presents it when it arrives because the zoom now needs it.
                 self.status.text = "Rendering at full resolution…".into();
                 Task::none()
             }
@@ -2168,121 +1796,122 @@ impl Editor {
         self.request_preview_inner(job, false).0
     }
 
-    /// Queue a mask frame with phase timing for an evidence run. Ordinary preview requests use
-    /// the untimed method and do not read the clock.
-    pub(crate) fn request_mask_preview_timed(
-        &mut self,
-        job: luxforge_core::PreviewJob,
-    ) -> (u64, Option<Instant>) {
-        debug_assert!(self.log.diagnostics.is_some());
-        self.request_preview_inner(job, true)
-    }
-
+    /// One job of the photograph, or of the crop draft's input stage, with the bounds of this
+    /// moment: the reference's whole frame and report, reduced to the view where the view draws the
+    /// stage smaller than it is; or nothing queued at all where the frame on screen serves it or
+    /// the GPU presents it ([`Editor::gpu_presents`]).
     pub(super) fn request_preview_inner(
         &mut self,
         mut job: luxforge_core::PreviewJob,
         timed: bool,
     ) -> (u64, Option<Instant>) {
-        if job.layer_count.is_none() {
-            job.viewport = match self.session.preview.view.zoom {
-                Zoom::Percent { value } if value >= 100.0 => {
-                    self.desired_view_for((job.identity.width, job.identity.height))
-                }
-                _ => None,
-            };
-            if job.intent == PreviewIntent::Immediate {
-                job.intent = if job.evaluation.draft_revision().is_some() {
-                    PreviewIntent::Interactive
-                } else if job.viewport.is_some() {
-                    PreviewIntent::Settle
-                } else {
-                    PreviewIntent::Immediate
-                };
-            }
-        }
-        job.proxy = if job.viewport.is_some() {
-            None
-        } else if job.layer_count.is_some() {
-            // A crop draft's input stage takes the photograph's own rule over its own stage: a
-            // display-size proxy of the layer prefix wherever the view draws the stage smaller than
-            // it is, and alone, because nothing is ever reduced from the stage. Its exact phase
-            // is asked for only by a view that needs it ([`Self::present_crop_stage`]).
-            let bounds = self.crop_stage_bounds();
-            if bounds.is_some() && job.intent == PreviewIntent::Immediate {
-                job.intent = PreviewIntent::Interactive;
-            }
-            bounds
+        // The bounds the owner planned the job's GPU picture at rest at, which the display scale's
+        // arrival or a resize since can have left behind the bounds its frame is drawn at now.
+        let planned_at = job.proxy;
+        job.proxy = if job.layer_count.is_some() {
+            // A crop draft's input stage takes the photograph's rule over its own stage: the
+            // reference's frame of the layer prefix reduced to the bounds wherever the view draws
+            // the stage smaller than it is, where the GPU does not draw it, and the exact stage
+            // only for a view that needs it ([`Self::present_crop_stage`]). No report is reduced
+            // from the stage.
+            self.crop_stage_bounds()
+        } else if cpu_proxy::asks(&job) {
+            // A drag tick's CPU proxy in a session the GPU does not draw at all.
+            self.cpu_proxy_bounds()
         } else {
             self.proxy_bounds()
         };
-        let content = self.presentation.admit(&mut job);
+        let content = self.presentation.admit(&job);
         self.request_mask_coverage(&job, content);
         self.gpu_warm_from(job.gpu_warm.as_deref());
-        let committed = job.layer_count.is_none()
-            && job.evaluation.draft_revision().is_none()
-            && job.boundary.is_none();
-        if let Some(request) =
-            self.gpu_resident_from(job.gpu_resident.take(), job.viewport.is_some(), committed)
-        {
-            job.boundary = Some(request);
+        // Every boundary is derived from the job's own source on the GPU: the surface is handed it
+        // before any plan over it.
+        self.gpu_hold_source(job.evaluation.source());
+        let committed = job.layer_count.is_none() && job.evaluation.draft_revision().is_none();
+        // At 100% and above the GPU's picture at rest is a region's, planned for the visible
+        // region once the photograph's stage is known.
+        let region_view = self
+            .desired_view_for((job.identity.width, job.identity.height))
+            .is_some();
+        // The displayed stack's picture at rest in tiles: held for the surfaces to draw, or let go
+        // where its view draws the stack at its own size or larger or the GPU cannot draw them.
+        if committed && let Some(rest) = job.gpu_rest.as_mut() {
+            let tiles = rest.tiles.take().and_then(Result::ok);
+            self.gpu_rest_from(tiles);
+            self.gpu.rest_planned_at = planned_at.filter(|_| !region_view);
         }
-        let resident_requested =
-            job.boundary.is_some() && job.evaluation.draft_revision().is_none();
-        // Reusing pixels cannot complete work the viewport still owes. A moving region is
-        // intentionally half detail and carries no whole-image report; Settle must refine it
-        // and retain exact pixels. A non-interactive request for analysis also needs its exact
-        // report, even when a mask-only recipe change leaves photograph content unchanged.
-        let settled_pixels = job.intent != PreviewIntent::Settle
-            || (!self.presentation.presented_approximate_white_balance
-                && self.presentation.exact.as_ref().is_some_and(|frame| {
-                    frame.content == Some(content) && !frame.approximate_white_balance
-                })
-                && self
-                    .presentation
-                    .region_raster
-                    .as_ref()
-                    .is_none_or(|region| {
-                        region.quality == luxforge_ui::RegionQuality::Exact && !region.approximate
-                    }));
-        let complete_analysis = job.intent == PreviewIntent::Interactive
-            || !job.analyse
+        self.gpu_resident_from(job.gpu_rest.take(), region_view, committed);
+        // A job that asks for a report needs one of this content.
+        let complete_analysis = !job.analyse
             || (self.presentation.analysis_content == Some(content)
                 && self.presentation.analysis.is_some());
+        // An exact frame of this stack on screen at Fit, where the job's bounds draw the stage
+        // smaller than it is — an open whose reduction the display scale's arrival made stale, or
+        // a return from a percentage view: its retained raster is reduced to the bounds on the
+        // preview worker, with no render, for the reference frame behind the GPU's picture at
+        // rest planned for them above.
+        let reduces_exact = self
+            .presentation
+            .exact
+            .as_ref()
+            .filter(|frame| {
+                job.layer_count.is_none()
+                    && content == self.presentation.presented_content
+                    && !self.presentation.presented_reduced
+                    && job.proxy.is_some_and(|bounds| {
+                        job.identity.width > bounds.width || job.identity.height > bounds.height
+                    })
+                    && frame.content == Some(content)
+                    && !frame.approximate_white_balance
+                    && frame.raster.snapshot_id == job.identity.snapshot_id
+                    && frame.raster.source_fingerprint == job.identity.source_fingerprint
+                    && (frame.raster.width, frame.raster.height)
+                        == (job.identity.width, job.identity.height)
+            })
+            .map(|frame| Arc::clone(&frame.raster));
+        if let Some(raster) = reduces_exact.clone() {
+            job.reduce = Some(raster);
+            job.intent = PreviewIntent::Reduce;
+            job.analyse = false;
+        }
         // Photograph bytes can be reused for an unbound candidate or a mask-only commit. Bound
-        // mask edits have a different pixel key and still use the ordinary rendering path. A job
-        // carrying a GPU preview's boundary request goes to the worker, which renders the
-        // boundary after its frame; reused pixels would answer the frame and drop the request.
-        let reusable = job.layer_count.is_none()
-            && job.boundary.is_none()
+        // mask edits have a different pixel key and still use the ordinary rendering path.
+        let reusable = reduces_exact.is_none()
+            && job.layer_count.is_none()
             && content == self.presentation.presented_content
             && self.presentation.has_picture()
             && self.presentation.render_error.is_none()
+            && !self.presentation.presented_approximate_white_balance
+            // A drag's proxy serves only another tick of the same pixels: a release asks for the
+            // reference's sharp frame.
+            && (self.presentation.presented_proxy.is_none() || cpu_proxy::asks(&job))
             && !self.presentation.queue.is_busy()
             && !self.presentation.queue.ready()
-            && self.presentation.held_by_proxy.is_none()
-            && settled_pixels
             && complete_analysis
-            && match job.viewport {
-                Some(wanted) => {
-                    self.presentation.presenter.full_content() == Some(content)
-                        || self
-                            .presentation
-                            .region_raster
-                            .as_ref()
-                            .is_some_and(|region| {
-                                region.content == content && contains_region(region.rect, wanted)
-                            })
-                }
-                None => {
-                    self.presentation.region_raster.is_none()
-                        && (!self.presentation.presented_proxy
-                            || self.presentation.presented_bounds == job.proxy)
+            // The GPU presented this content with no CPU frame and the reference is asked for one.
+            && !(self.presentation.gpu_presented == Some(content)
+                && self.gpu.refused_content == Some(content))
+            && match job.proxy {
+                // At 100% and above the exact frame of this content serves every view.
+                None => self.presentation.presenter.full_content() == Some(content),
+                Some(_) => {
+                    !self.presentation.presented_reduced
+                        || self.presentation.presented_bounds == job.proxy
                 }
             };
         self.note_thumbnail_source(&job);
+        let reference = !self.gpu_at_rest();
         if reusable {
-            self.presentation.remember_reduction_job(&job);
+            // The frame on screen serves this job's bounds — an exact frame whose stage they fit,
+            // or a reduction made for them — and the GPU's picture at rest was planned for them
+            // above, so a refit it answers has landed.
+            if !region_view {
+                self.presentation.presented_bounds = job.proxy;
+                self.presentation.refit_pending = false;
+            }
+            self.presentation.remember_reduction_job(&job, reference);
             self.presentation.reused = Some(job.identity.clone());
+            self.retarget_gpu_counts(&job.identity, content);
             self.presentation.preview_generation = self.presentation.presented_generation;
             self.view_plan.dirty = false;
             return (
@@ -2291,26 +1920,30 @@ impl Editor {
             );
         }
         self.presentation.reused = None;
+        // A committed whole stack the GPU draws at rest is presented by the GPU alone: no job is
+        // queued, so no exact frame is rendered or reduced, and the counts of its tiles are its
+        // report (`docs/design/gpu-first.md`, stage 2). The reference renders the rest.
+        if self.gpu_presents(&job, content) {
+            let generation = self.present_on_gpu(&job, content);
+            self.view_plan.dirty = false;
+            return (generation, timed.then(Instant::now));
+        }
         // The job still waiting in the pending slot is replaced by this one and never starts, so
         // nothing about it will ever be delivered: when it was the crop draft's input stage, the
         // draft it was for ends here, as a cancelled one does in `poll_preview`. The request names
         // it in the same step, because the worker takes a pending job by itself the moment the
         // active one ends: a job it took up meanwhile is running, and ends through `poll_preview`.
-        let layer_count = job.layer_count;
+        let (layer_count, interactive) = (job.layer_count, cpu_proxy::asks(&job));
+        self.presentation.remember_reduction_job(&job, reference);
         let Requested {
             generation,
             replaced,
-            viewport,
-            stage,
             at,
         } = self.presentation.request(job, content, timed);
         self.event(
             "preview_job_requested",
-            || json!({"generation":generation,"layer_count":layer_count}),
+            || json!({"generation":generation,"layer_count":layer_count,"interactive":interactive}),
         );
-        if resident_requested {
-            self.gpu_resident_requested(generation);
-        }
         if replaced.is_some() && replaced == self.view_plan.request_generation {
             self.view_plan.request_generation = None;
             self.view_plan.dirty = true;
@@ -2318,24 +1951,24 @@ impl Editor {
         if replaced.is_some() && replaced == self.draft_generation() {
             self.draft_preview_superseded(replaced);
         }
-        if viewport.is_some_and(|rect| {
-            self.desired_view_for(stage)
-                .is_some_and(|wanted| contains_region(rect, wanted))
-        }) {
+        // The whole frame holds every view at 100% and above.
+        if layer_count.is_none() {
             self.view_plan.dirty = false;
         }
         (generation, at)
     }
 
-    /// Re-render the proxy on screen once when the bounds it was made for no longer match the
-    /// window: a resize, a panel toggle or the display scale arriving. The queue coalesces a
-    /// storm of these into one active and one pending job, and nothing is asked for while a
-    /// gesture or a crop draft owns the preview, or while a refit is already on its way.
-    pub(super) fn refit_proxy(&mut self) -> Task<Message> {
+    /// Reduce the reference frame on screen again once when the bounds it was made for no longer
+    /// match the window: a resize, a panel toggle or the display scale arriving. Where the GPU
+    /// draws the picture at rest, its plans were made for the bounds of the job that planned them,
+    /// so they are refitted whatever frame stands behind them, an exact one included. The queue
+    /// coalesces a storm of these into one active and one pending job, and nothing is asked for
+    /// while a gesture or a crop draft owns the preview, or while a refit is already on its way.
+    pub(super) fn refit_view(&mut self) -> Task<Message> {
         if self.document.state.is_none()
-            || self.proxy_refit_deferred()
+            || self.refit_deferred()
             || self.presentation.presented_generation == 0
-            || !self.presentation.presented_proxy
+            || !(self.presentation.presented_reduced || self.gpu_at_rest())
             || self.presentation.refit_pending
         {
             return Task::none();
@@ -2343,7 +1976,14 @@ impl Editor {
         let Some(bounds) = self.proxy_bounds() else {
             return Task::none();
         };
-        if self.presentation.presented_bounds == Some(bounds) {
+        // The GPU's picture at rest is planned for the bounds its job was planned at, which the
+        // frame's own bounds, replaced when the job was requested, do not show.
+        let gpu_stale = self.gpu_at_rest()
+            && self
+                .gpu
+                .rest_planned_at
+                .is_some_and(|planned| planned != bounds);
+        if self.presentation.presented_bounds == Some(bounds) && !gpu_stale {
             return Task::none();
         }
         self.presentation.refit_pending = true;
@@ -2352,11 +1992,18 @@ impl Editor {
             || json!({"reason":"bounds","bounds":{"width":bounds.width,"height":bounds.height}}),
         );
         self.outcome(Outcome::FrameRequested(outcome::Requested::Photo));
-        if self.reduce_retained(bounds) {
+        if self.reduce_for_reference(bounds) {
             Task::none()
         } else {
             self.request_current_preview()
         }
+    }
+
+    /// Reduce the retained exact frame to `bounds` where the reference renderer draws the picture
+    /// at rest. Where the GPU draws it its plans are made for the view a job is planned at, so
+    /// this is `false` and the caller asks for a job that plans them for this one.
+    fn reduce_for_reference(&mut self, bounds: ProxyBounds) -> bool {
+        !self.gpu_at_rest() && self.reduce_retained(bounds)
     }
 
     /// Schedule only reduction when this exact frame still describes the displayed content.
@@ -2378,7 +2025,6 @@ impl Editor {
         }
         job.reduce = Some(exact.raster.clone());
         job.proxy = Some(bounds);
-        job.viewport = None;
         job.intent = PreviewIntent::Reduce;
         job.analyse = false;
         let content = self.presentation.presented_content;
@@ -2392,21 +2038,23 @@ impl Editor {
     }
 
     /// Drafts own the preview until they finish, so a layout change deliberately leaves their
-    /// displayed proxy at its previous bounds instead of starting a competing refit. A refit takes
+    /// displayed frame at its previous bounds instead of starting a competing refit. A refit takes
     /// the one-draft rule alone ([`Starting::Refit`]): it still runs while a request is in flight
     /// or a history entry is previewed.
-    pub(super) fn proxy_refit_deferred(&self) -> bool {
+    pub(super) fn refit_deferred(&self) -> bool {
         self.gesture_refusal(Starting::Refit).is_some()
     }
 
-    /// Evidence of a displayed proxy waits for the current layout when a refit is permitted.
-    /// The exact phase of an open can arm a capture while its display-scale refit is rendering.
-    /// Drafts deliberately defer such refits, and can supersede a queued one; their settled frame
-    /// can be captured as shown even if that abandoned request left `refit_pending` set.
-    pub(super) fn capture_proxy_ready(&self) -> bool {
-        if !self.presentation.presented_proxy
+    /// Evidence of a displayed reduction, or of the GPU's picture at rest, waits for the current
+    /// layout when a refit is permitted. The frame of an open can arm a capture while its
+    /// display-scale refit is on its way. Drafts deliberately defer such refits, and can supersede
+    /// a queued one; their settled frame can be captured as shown even if that abandoned request
+    /// left `refit_pending` set. With no photograph open there is nothing to refit.
+    pub(super) fn capture_refit_ready(&self) -> bool {
+        if self.document.state.is_none()
+            || !(self.presentation.presented_reduced || self.gpu_at_rest())
             || self.presentation.render_error.is_some()
-            || self.proxy_refit_deferred()
+            || self.refit_deferred()
         {
             return true;
         }
@@ -2416,7 +2064,7 @@ impl Editor {
         match self.proxy_bounds() {
             Some(bounds) => self.presentation.presented_bounds == Some(bounds),
             // At 100% the exact frame is the target; the step's normal preview settlement
-            // already waits for it, without requiring a proxy that cannot be requested.
+            // already waits for it, without requiring a reduction that cannot be requested.
             None => true,
         }
     }
@@ -2427,13 +2075,17 @@ impl Editor {
         };
         let asset = state.asset.id.clone();
         let entry = self.displayed_entry();
-        tasks::current_preview_task(
-            self.owner.clone(),
-            self.client,
-            asset,
-            entry,
-            self.proxy_bounds(),
-        )
+        tasks::current_preview_task(self.owner.clone(), self.client, asset, entry, self.drawn())
+    }
+
+    /// Where a displayed entry's frame is drawn now ([`tasks::Drawn`]): the display bounds, and
+    /// the view its GPU picture at rest is planned at — the whole frame at those bounds at Fit and
+    /// below 100%, the visible region at 100% and above.
+    pub(crate) fn drawn(&self) -> tasks::Drawn {
+        tasks::Drawn {
+            proxy: self.proxy_bounds(),
+            gpu: self.gpu_ask(),
+        }
     }
 
     /// Make a frame the photograph on the presenter and record that it is on screen: the one
@@ -2446,7 +2098,7 @@ impl Editor {
     /// no allocation round trip between a rendered frame and the screen, and no message to wait for.
     ///
     /// Retaining the raster copies nothing: the surface borrows the render's own `Arc<Vec<u8>>`,
-    /// which the desktop already holds as the proxy frame or the exact raster of this generation.
+    /// which the desktop already holds as the reduced frame or the exact raster of this generation.
     pub(super) fn present(&mut self, frame: Retained, arrival: Arrival) {
         let (stage, entry, draft_revision, zoom) = match arrival {
             Arrival::Rendered {
@@ -2471,9 +2123,15 @@ impl Editor {
             }
         };
         let generation = frame.generation();
-        let proxy = frame.proxy();
         self.presentation
             .show(&frame, stage, &entry, draft_revision);
+        if !zoom {
+            self.presentation.presented_asset = self
+                .document
+                .state
+                .as_ref()
+                .map(|state| state.asset.id.clone());
+        }
         self.outcome(Outcome::EntryShown(&entry));
         // A zoom hands over a retained frame of the entry already on screen; the entry the desktop
         // is waiting for stays the one picks, readouts and the next request are addressed to.
@@ -2491,13 +2149,12 @@ impl Editor {
         // zoom hand-over or a refit presents long after.
         self.activity.render = Some(state::status::RenderTime {
             ms: frame.render_ms(),
-            proxy: proxy.is_some() && !frame.settled(),
-            approximate: frame.approximate_white_balance(),
+            approximate: frame.approximate_white_balance() || frame.proxy().is_some(),
         });
         let raster = frame.raster();
-        self.event(
-            "preview_displayed",
-            || json!({
+        let picture = self.displayed_picture();
+        self.event("preview_displayed", || {
+            json!({
                 "entry_id":entry,
                 "snapshot_id":raster.snapshot_id.to_string(),
                 // The status bar no longer shows the source hash, so the log is where a frame is
@@ -2507,57 +2164,46 @@ impl Editor {
                 "draft_revision":draft_revision,
                 "dimensions":[stage.0,stage.1],
                 "path":"surface",
-                "settled_from_exact":frame.settled(),
-                "proxy":proxy.is_some(),
-                "proxy_dimensions":proxy.map(|frame| json!([frame.dimensions.0,frame.dimensions.1])),
-                "proxy_built":proxy.is_some_and(|frame| frame.built),
-                "proxy_approximate":proxy.is_some_and(|frame| frame.approximation.is_approximate()),
-                "proxy_approximate_reason":proxy.and_then(|frame| frame.approximation.reason()),
+                "reduced":frame.reduced(),
+                // A drag tick's display-size proxy, in a session the GPU does not draw at all, and
+                // why it approximates the exact render at that size.
+                "proxy":frame.proxy().is_some(),
+                "proxy_approximate_reason":frame.proxy().and_then(|proxy| proxy.reason()),
                 "approximate_white_balance":frame.approximate_white_balance(),
                 "reason":zoom.then_some("zoom"),
                 "render_ms":frame.render_ms(),
-            }),
-        );
+                // Whose picture of this content is on screen: the GPU's at rest, this frame
+                // behind it, or this reference frame itself.
+                "picture":picture,
+            })
+        });
         // These pixels are presented whether or not this frame also belongs to the one open
-        // request tracked below. While a slider gesture is open the drafted previews replace one
-        // another, so only the one whose settings are the newest is the draft's newest. A mask
-        // shape gesture drains the same way: while another `draft.set` or the commit is still
-        // queued, or a newer frame was asked for, the frame on screen is not the geometry that
-        // settles. A brush back in hand after its stroke committed holds no draft and asks for no
-        // frame of its own, so the committed frame is the photograph.
+        // request tracked below. While a slider gesture is open the drafted frames replace one
+        // another, so only the one whose settings are the newest is the draft's newest: not while
+        // another `draft.set` or the commit is still queued, a newer frame was asked for, or a
+        // newer tick waits for its own ([`super::motion`]). A brush back in hand after its stroke
+        // committed holds no draft and asks for no frame of its own, so the committed frame is the
+        // photograph.
+        let waiting = self.drag_frame_waiting();
         let presented = match self.core_gesture() {
             Some(gesture) => outcome::Presented::Draft {
                 slider: gesture.slider().is_some(),
                 newest: !gesture.draft.frame_pending()
+                    && !waiting
                     && generation >= self.presentation.preview_generation,
             },
             None => outcome::Presented::Photo,
         };
-        if proxy.is_some()
-            && !frame.settled()
-            && self.presentation.intent(generation) != Some(PreviewIntent::Interactive)
-        {
-            // The photograph is on screen, but every number a captured frame reports — the
-            // histogram, the clipping counters, the overlay it is checked against — comes from the
-            // exact render. So the step and the open request wait for this generation's exact phase.
-            self.presentation.held_by_proxy = Some(HeldByProxy {
-                generation,
-                presented,
-                ready: self.activity.pending,
-            });
-        } else {
-            self.presentation.held_by_proxy = None;
-            self.outcome(Outcome::Presented(presented));
-            if self.activity.pending {
-                self.activity.pending = false;
-                self.activity.displayed = self.activity.requested;
-                self.activity.phase = "ready";
-                self.event(
-                    "render_ready",
-                    || json!({"displayed_generation":self.activity.displayed}),
-                );
-                self.outcome(Outcome::RequestEnded { failed: false });
-            }
+        self.outcome(Outcome::Presented(presented));
+        if self.activity.pending {
+            self.activity.pending = false;
+            self.activity.displayed = self.activity.requested;
+            self.activity.phase = "ready";
+            self.event(
+                "render_ready",
+                || json!({"displayed_generation":self.activity.displayed}),
+            );
+            self.outcome(Outcome::RequestEnded { failed: false });
         }
         self.status.text = self.displayed_status(&entry);
     }
@@ -2578,9 +2224,6 @@ impl Editor {
         );
         self.owner
             .submit_analysis(analysis.identity.clone(), analysis.report.clone());
-        if self.presentation.analysis_content == Some(self.presentation.content_serial) {
-            self.view_plan.quiet_since = None;
-        }
     }
 
     /// Point the canvas at another entry.
@@ -2619,14 +2262,14 @@ impl Editor {
             }
             (None, None) => String::new(),
         };
-        let sentence = if self.presentation.presented_settled {
-            format!("{sentence} · Settled from exact · display reduced")
-        } else if self
+        // A drag's proxy over a restoration layer, whose full-resolution filters run on averaged
+        // proxy pixels, says it is approximate.
+        let sentence = if self
             .presentation
-            .proxy()
-            .is_some_and(|f| f.approximation.restoration)
+            .presented_proxy
+            .is_some_and(|proxy| proxy.restoration())
         {
-            format!("{sentence} · Moving preview · Detail approximate")
+            format!("{sentence} \u{b7} Moving preview \u{b7} Detail approximate")
         } else {
             sentence
         };
@@ -2644,29 +2287,38 @@ impl Editor {
 }
 
 /// After every message: a changed zoom is answered in one place ([`Editor::zoom_changed`]), the
-/// proxy on screen is refitted to new bounds, and the desired view is admitted once nothing owns
+/// picture on screen is refitted to new bounds, and the desired view is admitted once nothing owns
 /// the pending slot.
 pub(super) fn after_message(editor: &mut Editor, before: &Before) -> Task<Message> {
     let zoomed = editor.zoom_changed(&before.zoom);
-    let refit = editor.refit_proxy();
+    let refit = editor.refit_view();
     let view = editor.reconcile_view();
     editor.settle_reused_pixels();
     Task::batch([zoomed, refit, view])
 }
 
-/// The workers' wake and the quiet settle's timer. A blocked channel stream costs no idle work: it
-/// stays installed while a photograph is open, because the surface may defer an upload in
-/// `prepare`, after this update's subscription set was computed, and its retirement wake must have
-/// a listener then. The 25 ms timer runs only while the quiet policy waits to settle.
+/// The workers' wake and the deadlines the desktop waits out. A blocked channel stream costs no
+/// idle work: it stays installed while a photograph is open, because the surface may defer an
+/// upload in `prepare`, after this update's subscription set was computed, and its retirement wake
+/// must have a listener then. A held tick is looked at every 50 ms while it holds, at most half a
+/// second ([`super::motion`]).
 pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
     let mut subscriptions = Vec::new();
     if editor.preview_wake_needed() {
         subscriptions.push(waker::subscription());
     }
-    if editor.quiet_timer_armed() {
+    // A stack the GPU presented waiting on its compile is looked at again at the `compiling`
+    // threshold, once, unless the compile thread's wake comes first and ends the wait.
+    if editor.gpu_compile_deadline() {
         subscriptions.push(
-            iced::time::every(Duration::from_millis(25))
-                .map(|_| Message::Preview(PreviewMessage::QuietTick)),
+            iced::time::every(crate::state::status::COMPILING_AFTER)
+                .map(|_| Message::Preview(PreviewMessage::Poll)),
+        );
+    }
+    if editor.motion_hold_pending() {
+        subscriptions.push(
+            iced::time::every(super::motion::HOLD_LOOK)
+                .map(|_| Message::Preview(PreviewMessage::Poll)),
         );
     }
     Subscription::batch(subscriptions)
@@ -2708,7 +2360,7 @@ mod reduction_tests {
     }
 
     #[test]
-    fn restoration_reduction_plan_releases_source_on_plain_stack_and_cancel() {
+    fn the_reduction_plan_is_the_newest_whole_stacks_and_cancel_releases_it() {
         let (mut editor, catalog, _, _) = opened(
             vec![Layer::new(
                 luxforge_core::DETAIL_EFFECT,
@@ -2719,20 +2371,24 @@ mod reduction_tests {
         let mut active = job(&editor);
         let (stack, held) = testing::fresh_stack(&active.evaluation);
         active.evaluation = stack;
-        editor.presentation.remember_reduction_job(&active);
+        editor.presentation.remember_reduction_job(&active, true);
         drop(active);
         assert!(held.upgrade().is_some());
         let mut plain = job(&editor);
         testing::rebuild(&mut plain, |parts| parts.recipe.layers.clear());
-        editor.presentation.remember_reduction_job(&plain);
+        editor.presentation.remember_reduction_job(&plain, true);
         assert!(
             held.upgrade().is_none(),
-            "a non-restoration stack releases the preceding source"
+            "a new whole stack releases the preceding source"
+        );
+        assert!(
+            editor.presentation.reduction_job.is_some(),
+            "a stack without restoration is retained as well"
         );
         let mut active = job(&editor);
         let (stack, held) = testing::fresh_stack(&active.evaluation);
         active.evaluation = stack;
-        editor.presentation.remember_reduction_job(&active);
+        editor.presentation.remember_reduction_job(&active, true);
         drop(active);
         assert!(held.upgrade().is_some());
         editor.presentation.cancel();
@@ -2740,11 +2396,21 @@ mod reduction_tests {
             held.upgrade().is_none(),
             "cancellation releases its retained reduction plan"
         );
+        // Where the GPU draws the picture at rest none is kept: a resize plans that picture again.
+        let mut active = job(&editor);
+        let (stack, held) = testing::fresh_stack(&active.evaluation);
+        active.evaluation = stack;
+        editor.presentation.remember_reduction_job(&active, false);
+        drop(active);
+        assert!(
+            held.upgrade().is_none() && editor.presentation.reduction_job.is_none(),
+            "no plan is retained behind the GPU's picture at rest"
+        );
         finish(editor, catalog);
     }
 
     #[test]
-    fn restoration_reused_pixels_resize_with_new_snapshot_without_copying_pixels() {
+    fn reused_pixels_resize_with_new_snapshot_without_copying_pixels() {
         let (mut editor, catalog, _, _) = opened(
             vec![Layer::new(
                 luxforge_core::DETAIL_EFFECT,
@@ -2755,8 +2421,10 @@ mod reduction_tests {
         // `opened` queues its fixture's preview. This test installs a completed presentation
         // directly, so retire that fixture job before exercising the idle reuse path.
         editor.presentation.queue = luxforge_core::PreviewQueue::default();
-        let mut original = job(&editor);
-        let content = editor.presentation.admit(&mut original);
+        // The reference renderer draws the picture at rest, so a resize reduces its exact frame.
+        editor.renderer.stage = Some(luxforge_ui::photo_surface::GpuStageState::DeviceLost);
+        let original = job(&editor);
+        let content = editor.presentation.admit(&original);
         editor.presentation.pending_content.insert(8, content);
         let pixels = Arc::new(vec![20, 40, 60, 255, 40, 60, 80, 255]);
         let raster = Arc::new(Raster {
@@ -2777,7 +2445,7 @@ mod reduction_tests {
             },
         );
         editor.presentation.exact = Some(frame);
-        editor.presentation.remember_reduction_job(&original);
+        editor.presentation.remember_reduction_job(&original, true);
         let mut changed = original.clone();
         testing::rebuild(&mut changed, |parts| {
             parts.entry.id = luxforge_core::EntryId::new();
@@ -2788,7 +2456,6 @@ mod reduction_tests {
         assert!(editor.presentation.has_picture());
         assert!(!editor.presentation.queue.is_busy());
         assert!(!editor.presentation.queue.ready());
-        assert!(editor.presentation.held_by_proxy.is_none());
         assert!(editor.presentation.render_error.is_none());
         assert_eq!(
             editor.request_preview(changed.clone()),
@@ -2818,10 +2485,162 @@ mod reduction_tests {
         finish(editor, catalog);
     }
 
+    /// Where the GPU draws the picture at rest its plans were made for the bounds of the job that
+    /// planned them, so an exact frame behind it at Fit is refitted when the bounds change, as a
+    /// proxy is — the display scale arriving after an open whose frame was planned without it —
+    /// and the job that answers reuses the exact pixels on screen and ends the refit. Where the
+    /// reference renderer draws the picture, the exact frame serves any bounds and asks for none.
+    #[test]
+    fn an_exact_frame_behind_the_gpus_picture_at_rest_is_refitted() {
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+        editor.presentation.queue = luxforge_core::PreviewQueue::default();
+        editor.session.preview.view.zoom = Zoom::Fit;
+        let original = job(&editor);
+        let content = editor.presentation.admit(&original);
+        editor.presentation.pending_content.insert(8, content);
+        let raster = Arc::new(Raster {
+            width: 2,
+            height: 1,
+            rgba: Arc::new(vec![20, 40, 60, 255, 40, 60, 80, 255]),
+            source_fingerprint: original.identity.source_fingerprint.clone(),
+            snapshot_id: original.identity.snapshot_id.clone(),
+        });
+        let mut frame = testing::exact(8, raster, 1.0);
+        frame.content = Some(content);
+        editor.present(
+            Retained::Exact(frame.clone()),
+            Arrival::Rendered {
+                stage: (2, 1),
+                entry: original.identity.entry_id.clone(),
+                draft_revision: None,
+            },
+        );
+        editor.presentation.exact = Some(frame);
+        editor.presentation.presented_bounds = None;
+        assert!(!editor.presentation.presented_reduced && editor.gpu_at_rest());
+        let bounds = editor.proxy_bounds().expect("Fit's bounds");
+
+        let _ = editor.refit_view();
+        assert!(
+            editor.presentation.refit_pending,
+            "the GPU's picture at rest is planned again for the window's bounds"
+        );
+        assert_eq!(
+            editor.request_preview(original.clone()),
+            8,
+            "the exact pixels on screen answer the refit"
+        );
+        assert!(!editor.presentation.refit_pending);
+        assert_eq!(editor.presentation.presented_bounds, Some(bounds));
+
+        // A frame at the window's bounds whose picture at rest its job planned at others — an
+        // open planned before the display scale arrived — is refitted too, once.
+        editor.gpu.rest_planned_at = Some(ProxyBounds {
+            width: bounds.width / 2,
+            height: bounds.height / 2,
+        });
+        let _ = editor.refit_view();
+        assert!(
+            editor.presentation.refit_pending,
+            "the picture at rest is planned again for the window's bounds"
+        );
+        editor.presentation.refit_pending = false;
+        editor.gpu.rest_planned_at = Some(bounds);
+        let _ = editor.refit_view();
+        assert!(
+            !editor.presentation.refit_pending,
+            "planned for these bounds"
+        );
+
+        editor.presentation.presented_bounds = None;
+        editor.renderer.stage = Some(luxforge_ui::photo_surface::GpuStageState::DeviceLost);
+        let _ = editor.refit_view();
+        assert!(
+            !editor.presentation.refit_pending,
+            "the reference renderer's exact frame serves any bounds"
+        );
+        finish(editor, catalog);
+    }
+
+    /// Where the GPU draws the picture at rest, a job of the stack whose exact frame is on screen
+    /// at Fit, at bounds that draw the stage smaller than it is, renders nothing: its retained
+    /// raster is reduced to them on the preview worker, sharing the allocation, and the reduction
+    /// becomes the reference frame behind the GPU's picture, made for those bounds.
+    #[test]
+    fn a_job_over_an_exact_frame_at_fit_reduces_its_retained_raster() {
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+        editor.presentation.queue = luxforge_core::PreviewQueue::default();
+        let completed_generation = editor.presentation.queue.cancel();
+        editor.view_state.window = (800.0, 600.0);
+        editor.view_state.scale_factor = 1.0;
+        editor.session.preview.view.zoom = Zoom::Fit;
+        let mut original = job(&editor);
+        testing::rebuild(&mut original, |parts| {
+            parts.source = PreviewSource::Jpeg(SourceImage {
+                width: 640,
+                height: 480,
+                rgba: vec![40; 640 * 480 * 4].into(),
+                fingerprint: "exact-at-fit-test".into(),
+                orientation: 1,
+                capture: Default::default(),
+            });
+        });
+        let content = editor.presentation.admit(&original);
+        editor
+            .presentation
+            .pending_content
+            .insert(completed_generation, content);
+        let pixels = Arc::new(vec![40; 640 * 480 * 4]);
+        let raster = Arc::new(Raster {
+            width: 640,
+            height: 480,
+            rgba: pixels.clone(),
+            source_fingerprint: original.identity.source_fingerprint.clone(),
+            snapshot_id: original.identity.snapshot_id.clone(),
+        });
+        let mut frame = testing::exact(completed_generation, raster, 1.0);
+        frame.content = Some(content);
+        editor.present(
+            Retained::Exact(frame.clone()),
+            Arrival::Rendered {
+                stage: (640, 480),
+                entry: original.identity.entry_id.clone(),
+                draft_revision: None,
+            },
+        );
+        editor.presentation.exact = Some(frame);
+        assert!(!editor.presentation.presented_reduced && editor.gpu_at_rest());
+        let bounds = editor
+            .proxy_bounds()
+            .filter(|bounds| bounds.width < 640 || bounds.height < 480)
+            .expect("Fit draws this stage smaller than it is");
+
+        let generation = editor.request_preview(original.clone());
+        editor.presentation.preview_generation = generation;
+        assert_ne!(generation, completed_generation, "a job was queued");
+        let result =
+            luxforge_testbase::wait_for("the reduction", || editor.presentation.queue.poll());
+        assert_eq!(result.generation, generation);
+        assert_eq!(
+            result.intent,
+            PreviewIntent::Reduce,
+            "the exact pixels on screen are reduced rather than rendered again"
+        );
+        assert!(Arc::ptr_eq(
+            &result.exact().unwrap().result.as_ref().unwrap().rgba,
+            &pixels
+        ));
+        let (_, shown) = editor.preview_ready(result);
+        assert!(shown && editor.presentation.presented_reduced);
+        assert_eq!(editor.presentation.presented_bounds, Some(bounds));
+        assert!(!editor.presentation.refit_pending);
+        finish(editor, catalog);
+    }
+
     /// Returning from a percentage view after a reused commit must schedule reduction before the
     /// ordinary same-content shortcut can accept its exact pixels as the requested Fit display.
     #[test]
-    fn restoration_reused_commit_zoom_to_fit_reduces_retained_exact_pixels() {
+    fn a_reused_commit_zoom_to_fit_reduces_retained_exact_pixels() {
         let (mut editor, catalog, _, _) = opened(
             vec![Layer::new(
                 luxforge_core::DETAIL_EFFECT,
@@ -2831,6 +2650,9 @@ mod reduction_tests {
         );
         editor.presentation.queue = luxforge_core::PreviewQueue::default();
         let completed_generation = editor.presentation.queue.cancel();
+        // The reference renderer draws the picture at rest: with the GPU stage lost, a resize or
+        // a zoom to Fit reduces the retained exact frame rather than planning a GPU picture.
+        editor.renderer.stage = Some(luxforge_ui::photo_surface::GpuStageState::DeviceLost);
         editor.view_state.window = (800.0, 600.0);
         editor.view_state.scale_factor = 1.0;
         editor.session.preview.view.zoom = Zoom::Percent { value: 200.0 };
@@ -2845,7 +2667,7 @@ mod reduction_tests {
                 capture: Default::default(),
             });
         });
-        let content = editor.presentation.admit(&mut original);
+        let content = editor.presentation.admit(&original);
         editor
             .presentation
             .pending_content
@@ -2880,8 +2702,9 @@ mod reduction_tests {
                 &luxforge_core::Cancel::never(),
             )
             .unwrap(),
+            source: AnalysisSource::Reference,
         });
-        editor.presentation.remember_reduction_job(&original);
+        editor.presentation.remember_reduction_job(&original, true);
 
         let mut committed = original.clone();
         testing::rebuild(&mut committed, |parts| {
@@ -2908,10 +2731,7 @@ mod reduction_tests {
                 .snapshot_id,
             committed.identity.snapshot_id
         );
-        assert!(
-            editor.presentation.proxy_frame.is_none()
-                && editor.presentation.settled_frame.is_none()
-        );
+        assert!(editor.presentation.reduced_frame.is_none());
         let report = editor
             .presentation
             .analysis
@@ -2931,22 +2751,22 @@ mod reduction_tests {
             "Fit reduction needs no owner planning round trip"
         );
         let generation = editor.presentation.preview_generation;
-        assert_eq!(
-            editor.presentation.intent(generation),
-            Some(PreviewIntent::Reduce),
-            "returning to Fit must bypass the same-content request shortcut"
-        );
         let result = luxforge_testbase::wait_for("the zoom's exact-derived Fit", || {
             editor.presentation.queue.poll()
         });
         assert_eq!(result.generation, generation);
+        assert_eq!(
+            result.intent,
+            PreviewIntent::Reduce,
+            "returning to Fit must bypass the same-content request shortcut"
+        );
         assert_eq!(result.identity, committed.identity);
         assert!(Arc::ptr_eq(
             &result.exact().unwrap().result.as_ref().unwrap().rgba,
             &pixels
         ));
         let (_, shown) = editor.preview_ready(result);
-        assert!(shown && editor.presentation.presented_settled);
+        assert!(shown && editor.presentation.presented_reduced);
         assert_eq!(editor.presentation.presented_bounds, Some(bounds));
         assert_eq!(editor.presentation.presenter.full_content(), None);
         assert!(Arc::ptr_eq(

@@ -15,7 +15,7 @@
 //! A test with no adapter prints that it was skipped and asserts nothing: the skip is the report,
 //! and `cargo test` counting it as passed does not make it GPU evidence.
 use super::gpu_plan::{coverage, surface_plan};
-use super::gpu_qualification::{corpus_at_fit, figures, grid, held_to_whole, worst};
+use super::gpu_qualification::{figures, grid, held_to_whole, worst};
 use luxforge_core::{
     BASIC_EFFECT, Cancel, Component, ComponentMode, GPU_PROGRAMS, GpuAnswer, GpuPlanRequest,
     GpuProgramKind, Layer, MASK_GPU_PROGRAMS, Mask, ModuleRegistry, Recipe, RenderContext,
@@ -425,6 +425,7 @@ fn measure(
             mask: converted,
         })],
         region: None,
+        lights: Vec::new(),
     };
     let drawn = qualifier.evaluate(&readback).expect("a qualification pass");
     let gpu: Vec<f64> = drawn
@@ -1088,28 +1089,6 @@ fn gpu_mask_a_painted_stroke_over_200_ticks_stays_within_the_limits() {
         BRUSH_GPU_BLOCK_WORDS_MAX,
         written,
         total
-    );
-}
-
-// ---- The corpus -------------------------------------------------------------------------------
-
-/// The corpus's masked colour recipes at Fit, through the shared harness: every mask kind and the
-/// component algebra carrying a masked Basic layer, each held to the pointwise limits.
-#[test]
-#[ignore = "the GPU preview corpus at Fit: set LUXFORGE_GPU_CORPUS_OUTPUT to a new directory, \
-            LUXFORGE_GENERATED_FIXTURES to the generated JPEGs and, for the RAWs, \
-            LUXFORGE_RAW_MANIFEST"]
-fn gpu_mask_corpus_at_fit() {
-    corpus_at_fit(
-        "gpu_mask_corpus_at_fit",
-        &[
-            "mask-linear",
-            "mask-radial",
-            "mask-brush",
-            "mask-luminance-range",
-            "mask-colour-range",
-            "mask-composed",
-        ],
     );
 }
 

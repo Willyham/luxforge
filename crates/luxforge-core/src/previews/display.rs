@@ -9,9 +9,7 @@
 //! a cached tier is not an original, so it takes neither the source work's read nor its limits —
 //! and decoded within the JPEG original's limits (`source::JPEG_LIMITS`); the one frame a decode
 //! allocates is at the scale that covers the fitted size, and the downscale reads it once.
-use crate::{
-    Cancel, Error, PreviewSource, ProxyBounds, ProxyPlan, Raster, SourceImage, source::JPEG_LIMITS,
-};
+use crate::{Cancel, Error, ProxyBounds, ProxyPlan, Raster, SourceImage, source::JPEG_LIMITS};
 use luxforge_jpeg::{Decoder, STRIP_ROWS, Scale};
 use std::{fs::File, io::Read, path::Path, sync::Arc};
 
@@ -58,17 +56,15 @@ pub fn decode_preview(path: &Path, side: u32, cancel: &Cancel) -> Result<Decoded
             rgba,
         });
     };
-    let decoded = PreviewSource::Jpeg(SourceImage {
+    let decoded = SourceImage {
         width,
         height,
         rgba: Arc::new(rgba),
         fingerprint: String::new(),
         orientation: 1,
         capture: Arc::default(),
-    });
-    let PreviewSource::Jpeg(fitted) = decoded.proxy_cancellable(plan, cancel)? else {
-        return Err(Error::internal("a byte source downscaled to linear planes"));
     };
+    let fitted = crate::proxy::downscale_bytes(&decoded, plan, cancel)?;
     drop(decoded);
     Ok(DecodedPreview {
         width: fitted.width,

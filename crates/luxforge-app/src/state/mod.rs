@@ -380,9 +380,15 @@ pub(crate) struct Inputs<'a> {
     /// While the photograph on screen is the GPU stage's output, the interface thread's time to
     /// prepare that frame, in microseconds; `None` while it is a CPU frame.
     pub(crate) gpu_frame_us: Option<u64>,
+    /// That GPU frame is the committed stack at rest, the GPU's render of it, rather than a
+    /// gesture's preview.
+    pub(crate) gpu_at_rest: bool,
     /// While the GPU preview is on and the open gesture's latest tick took the CPU path, why: what
     /// the status bar's notice is derived from ([`status::CpuReason::notice`]).
     pub(crate) cpu_reason: Option<status::CpuReason<'a>>,
+    /// The photograph at rest is the reference renderer's frame because the GPU's picture at rest
+    /// is compiling its programs ([`status::rest_compiling_notice`]).
+    pub(crate) rest_compiling: bool,
     /// A long render's progress, while it earns the bar over the photograph
     /// ([`canvas::render_bar`]).
     pub(crate) render_bar: Option<canvas::RenderBar>,
@@ -814,11 +820,12 @@ mod tests {
                 render_bar: None,
                 render: Some(status::RenderTime {
                     ms: 41.0,
-                    proxy: false,
                     approximate: false,
                 }),
                 gpu_frame_us: None,
+                gpu_at_rest: false,
                 cpu_reason: None,
+                rest_compiling: false,
                 render_error: self.render_error.as_ref(),
                 analysis: self.analysis.as_ref(),
                 analysis_updating: self.analysis_updating,
@@ -2842,28 +2849,19 @@ mod tests {
         assert_eq!(workspace.status.render, "Rendering… 42%");
         assert_eq!(workspace.canvas.render_bar, Some(0.427));
 
-        // A display-size proxy on screen says it is approximate beside its own time.
-        let mut inputs = scene.inputs();
-        inputs.render = Some(status::RenderTime {
-            ms: 7.6,
-            proxy: true,
-            approximate: false,
-        });
-        workspace.derive(&inputs);
-        assert_eq!(workspace.status.render, "Approximate render \u{b7} 8 ms");
-
-        // A drafted RAW white balance approximated on the developed planes says that too.
+        // A drafted RAW white balance approximated on the developed planes says it is
+        // approximate beside its own time.
         let mut inputs = scene.inputs();
         inputs.render = Some(status::RenderTime {
             ms: 9.4,
-            proxy: true,
             approximate: true,
         });
         workspace.derive(&inputs);
         assert_eq!(workspace.status.render, "Approximate render \u{b7} 9 ms");
 
         // The GPU stage's output on screen names itself and its own time, whatever CPU frame
-        // stands behind it and whatever render is still running.
+        // stands behind it and whatever render is still running, and no bar is drawn over it:
+        // the exact phase still running is not the picture.
         inputs.gpu_frame_us = Some(1600);
         inputs.rendering = true;
         inputs.render_bar = Some(canvas::RenderBar {
@@ -2872,17 +2870,13 @@ mod tests {
         });
         workspace.derive(&inputs);
         assert_eq!(workspace.status.render, "GPU preview \u{b7} 2 ms");
-        assert_eq!(
-            workspace.canvas.render_bar,
-            Some(0.427),
-            "the bar over the photograph is the CPU render's own"
-        );
+        assert_eq!(workspace.canvas.render_bar, None, "no bar over a GPU frame");
 
         // A gesture drawn on the CPU for a reason that lasts says why beside the render slot, and
         // the next GPU frame on screen clears it.
         let mut inputs = scene.inputs();
         inputs.cpu_reason = Some(status::CpuReason {
-            code: "not-fit",
+            code: "budget-exceeded",
             layer: None,
             compiling_for: None,
         });
@@ -2893,7 +2887,7 @@ mod tests {
                 .fallback
                 .as_ref()
                 .map(|n| n.phrase.as_str()),
-            Some("GPU preview at Fit and 100%+")
+            Some("GPU memory full")
         );
         assert_eq!(
             workspace.status.render, "Exact render \u{b7} 41 ms",
@@ -2918,6 +2912,70 @@ mod tests {
             workspace.status.fallback, None,
             "and neither does no reason"
         );
+
+        // The reference renderer's notice is the session's: said at rest, before any reason a
+        // gesture's tick gives, and never beside a GPU frame; a renderer the photo surface has not
+        // checked yet says nothing.
+        let phrase = |workspace: &Workspace| {
+            workspace
+                .status
+                .fallback
+                .as_ref()
+                .map(|notice| notice.phrase.clone())
+        };
+        let mut lost = scene.session.clone();
+        lost.renderer =
+            luxforge_core::Renderer::reference(luxforge_core::RendererReason::DeviceLost);
+        let mut inputs = scene.inputs();
+        inputs.session = &lost;
+        workspace.derive(&inputs);
+        assert_eq!(phrase(&workspace).as_deref(), Some("Reference renderer"));
+        for code in ["device-lost", "budget-exceeded"] {
+            inputs.cpu_reason = Some(status::CpuReason {
+                code,
+                layer: None,
+                compiling_for: None,
+            });
+            workspace.derive(&inputs);
+            assert_eq!(
+                phrase(&workspace).as_deref(),
+                Some("Reference renderer"),
+                "{code}: during a gesture too"
+            );
+        }
+        inputs.gpu_frame_us = Some(1600);
+        workspace.derive(&inputs);
+        assert_eq!(workspace.status.fallback, None, "never beside a GPU frame");
+        let mut pending = scene.session.clone();
+        pending.renderer =
+            luxforge_core::Renderer::reference(luxforge_core::RendererReason::SurfacePending);
+        let mut inputs = scene.inputs();
+        inputs.session = &pending;
+        workspace.derive(&inputs);
+        assert_eq!(
+            workspace.status.fallback, None,
+            "the surface has not checked its stage"
+        );
+        // A GPU on the platform's software adapter names itself in the render slot, at rest and
+        // during a gesture, with no notice of the reference's.
+        let mut software = scene.session.clone();
+        software.renderer = luxforge_core::Renderer::gpu_software();
+        let mut inputs = scene.inputs();
+        inputs.session = &software;
+        inputs.gpu_frame_us = Some(120_400);
+        workspace.derive(&inputs);
+        assert_eq!(
+            workspace.status.render,
+            "Software GPU preview \u{b7} 120 ms"
+        );
+        assert_eq!(workspace.status.fallback, None);
+        inputs.gpu_at_rest = true;
+        workspace.derive(&inputs);
+        assert_eq!(workspace.status.render, "Software GPU render \u{b7} 120 ms");
+        let mut inputs = scene.inputs();
+        inputs.gpu_frame_us = Some(2_400);
+        workspace.derive(&inputs);
+        assert_eq!(workspace.status.render, "GPU preview \u{b7} 2 ms");
 
         // Nobody else connected is a count of none, with the dot unlit.
         let mut inputs = scene.inputs();

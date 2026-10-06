@@ -55,13 +55,6 @@ pub(super) const MAX_GLOBAL_BYTES: usize = 4096;
 /// The largest number of `f64` values that fits [`MAX_GLOBAL_BYTES`].
 pub(super) const MAX_GLOBAL_VALUES: usize = MAX_GLOBAL_BYTES / std::mem::size_of::<f64>();
 
-/// How many prepared global estimates the host keeps, evicted oldest first.
-pub(crate) const ESTIMATE_STORE_ENTRIES: usize = 8;
-
-/// The bytes the render context's store of reduced planes holds at most, across every entry
-/// (`render::reduced`). The largest entry, Dehaze's two planes over a 60 MP stage, is about 30 MB.
-pub(crate) const REDUCED_STORE_BYTES: u64 = 64 * 1024 * 1024;
-
 /// A rectangle of one stage, in that stage's pixel coordinates. Half-open: it holds the columns
 /// `x0..x0 + width` and the rows `y0..y0 + height`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,30 +183,6 @@ pub(crate) struct Reduction {
 }
 
 impl Reduction {
-    /// Qualification only: this reduction with `apply` run over each reduced row, given the row's
-    /// index and its pixels.
-    #[cfg(feature = "qualification")]
-    pub(crate) fn with_rows(&self, mut apply: impl FnMut(u32, &mut [[f32; 3]])) -> Self {
-        let (width, len) = (self.width as usize, (self.width * self.height) as usize);
-        let mut values = self.values.clone();
-        let mut row = vec![[0.0f32; 3]; width];
-        for y in 0..self.height as usize {
-            for (x, pixel) in row.iter_mut().enumerate() {
-                *pixel = std::array::from_fn(|c| values[c * len + y * width + x]);
-            }
-            apply(y as u32, &mut row);
-            for (x, pixel) in row.iter().enumerate() {
-                for (c, value) in pixel.iter().enumerate() {
-                    values[c * len + y * width + x] = *value;
-                }
-            }
-        }
-        Self {
-            values,
-            ..self.clone()
-        }
-    }
-
     /// The reduced dimensions of a stage at this factor.
     pub(crate) fn dimensions(stage: Stage, factor: u32) -> (u32, u32) {
         let factor = factor.max(1);
@@ -297,159 +266,6 @@ impl Global {
     pub(crate) fn values(&self) -> &[f64] {
         &self.values
     }
-}
-
-/// What a unit declares about the planes it computes from a reduced grid of its input before any
-/// coefficient is applied: the grid's per-side factor, how many planes, and their identity.
-///
-/// Cell `(i, j)` of the grid is the block whose first pixel is `(factor · i, factor · j)`, anchored
-/// at the stage origin, so the grid is `ceil(width / factor) × ceil(height / factor)` cells.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ReducedGrid {
-    /// Names everything the planes depend on besides the operation's input, its stage and the
-    /// unit's global estimate, which the host keys and checks itself. No coefficient only
-    /// [`SpatialUnit::apply`] reads belongs here.
-    pub(crate) key: Cow<'static, str>,
-    pub(crate) factor: u32,
-    pub(crate) planes: usize,
-}
-
-impl ReducedGrid {
-    /// The grid's dimensions in cells over `stage`.
-    pub(crate) fn cells(&self, stage: Stage) -> Stage {
-        let factor = self.factor.max(1);
-        Stage {
-            width: stage.width.div_ceil(factor),
-            height: stage.height.div_ceil(factor),
-        }
-    }
-
-    /// The cells whose first pixel lies in `tile`: each cell of the grid has exactly one such tile
-    /// whatever the tiles' side, so a render's tiles cover every cell once between them. Empty when
-    /// the tile holds no cell's first pixel, which a tile narrower than the factor can.
-    pub(crate) fn owned(&self, tile: Region) -> Region {
-        let factor = self.factor.max(1);
-        let x0 = tile.x0.div_ceil(factor);
-        let y0 = tile.y0.div_ceil(factor);
-        let x1 = tile.x1().div_ceil(factor);
-        let y1 = tile.y1().div_ceil(factor);
-        Region {
-            x0,
-            y0,
-            width: x1.saturating_sub(x0),
-            height: y1.saturating_sub(y0),
-        }
-    }
-}
-
-/// A rectangle of a reduced grid's cells held as planes: one complete plane of
-/// `rect.width × rect.height` values in row-major order per plane, one after the other.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct GridPlanes<'a> {
-    grid: Stage,
-    rect: Region,
-    planes: usize,
-    values: &'a [f32],
-}
-
-impl<'a> GridPlanes<'a> {
-    pub(crate) fn new(grid: Stage, rect: Region, planes: usize, values: &'a [f32]) -> Self {
-        debug_assert_eq!(values.len() as u64, rect.pixels() * planes as u64);
-        debug_assert!(rect.x1() <= grid.width && rect.y1() <= grid.height);
-        Self {
-            grid,
-            rect,
-            planes,
-            values,
-        }
-    }
-
-    /// The whole grid's dimensions in cells.
-    pub(crate) fn grid(&self) -> Stage {
-        self.grid
-    }
-
-    /// The cells these planes hold.
-    pub(crate) fn rect(&self) -> Region {
-        self.rect
-    }
-
-    /// Plane `index`, row-major over [`Self::rect`].
-    pub(crate) fn plane(&self, index: usize) -> &'a [f32] {
-        assert!(
-            index < self.planes,
-            "a reduced grid has {} planes",
-            self.planes
-        );
-        let len = self.rect.pixels() as usize;
-        &self.values[index * len..(index + 1) * len]
-    }
-}
-
-/// The cells one tile hands back of the planes it computed anyway: those whose first pixel lies in
-/// the tile ([`ReducedGrid::owned`]). The unit writes every value of every plane.
-#[derive(Debug)]
-pub(crate) struct Cells {
-    rect: Region,
-    planes: usize,
-    values: Vec<f32>,
-}
-
-impl Cells {
-    /// The cells `tile` owns of `grid`'s planes, to be written by the unit that runs on it. Test
-    /// builds fill them with NaN first, so a cell the unit leaves unwritten fails the render that
-    /// reads it back.
-    pub(crate) fn for_tile(grid: &ReducedGrid, tile: Region) -> Self {
-        let rect = grid.owned(tile);
-        let len = (rect.pixels() as usize) * grid.planes;
-        #[cfg(test)]
-        let values = vec![f32::NAN; len];
-        #[cfg(not(test))]
-        let values = vec![0.0; len];
-        Self {
-            rect,
-            planes: grid.planes,
-            values,
-        }
-    }
-
-    /// The cells held, in grid coordinates.
-    pub(crate) fn rect(&self) -> Region {
-        self.rect
-    }
-
-    /// How many cells are held.
-    pub(crate) fn count(&self) -> u64 {
-        self.rect.pixels()
-    }
-
-    /// The cells as planes to read.
-    pub(crate) fn planes(&self, grid: Stage) -> GridPlanes<'_> {
-        GridPlanes::new(grid, self.rect, self.planes, &self.values)
-    }
-
-    /// Plane `index` to write, row-major over [`Self::rect`].
-    pub(crate) fn plane_mut(&mut self, index: usize) -> &mut [f32] {
-        assert!(
-            index < self.planes,
-            "a reduced grid has {} planes",
-            self.planes
-        );
-        let len = self.rect.pixels() as usize;
-        &mut self.values[index * len..(index + 1) * len]
-    }
-}
-
-/// How a unit that runs first in its operation and declares a [`ReducedGrid`] treats it on one
-/// tile ([`SpatialUnit::apply_reduced`]).
-#[derive(Debug)]
-pub(crate) enum Reduced<'a> {
-    /// Compute the planes as always and copy the cells the tile owns into these.
-    Hand(&'a mut Cells),
-    /// Read the planes from these, which hold every cell [`SpatialUnit::reduced_reach`] names for
-    /// the output rectangle, instead of computing them. The input then holds only the output
-    /// rectangle.
-    Held(GridPlanes<'a>),
 }
 
 /// One rectangle of planar `f32` linear-sRGB RGB a unit reads, with its position in the stage.
@@ -714,13 +530,12 @@ pub(crate) trait SpatialUnit: Send + Sync {
     /// its [`Self::apply`] no global.
     ///
     /// **The key names everything [`Self::prepare`] reads besides the reduction**, and nothing else:
-    /// the unit and every coefficient its preparation depends on. The host caches a prepared
-    /// estimate keyed by the source, the layers before this operation, the stage and this key, so
-    /// two units that declare the same key over the same stage share one estimate, whatever their
-    /// position in the operation and whatever else they describe. A coefficient that only
-    /// [`Self::apply`] reads — an amount, for most units — belongs in [`Self::describe`] and not
-    /// here, which is what lets a new amount prepare from the stored estimate instead of reducing
-    /// the whole stage again.
+    /// the unit and every coefficient its preparation depends on. Within one frame the host reduces
+    /// the operation's input stage once and prepares each key once, so two units of the operation
+    /// that declare the same key share one estimate, whatever their position and whatever else they
+    /// describe; nothing is kept between frames. A coefficient that only [`Self::apply`] reads — an
+    /// amount, for most units — belongs in [`Self::describe`] and not here, so units that differ
+    /// only in it still share their estimate.
     fn estimate_key(&self) -> Option<Cow<'static, str>> {
         None
     }
@@ -746,66 +561,25 @@ pub(crate) trait SpatialUnit: Send + Sync {
 
     /// The unit on the GPU, for a preview drawn there (`docs/design/gpu-preview.md`, "Spatial
     /// programs"): its program, the planes and passes that compute what its apply reads, and the
-    /// apply. `global` is the estimate the store holds for this unit over the stage the plan is
-    /// drawn at, when the plan found one; a unit that declares an estimate key and is handed none
-    /// computes it on the GPU from the stage it holds and says so. The default is none, which takes
-    /// the CPU path. Answered on the catalog owner while planning: it reads no pixel and holds
-    /// nothing that scales with the image.
-    fn gpu(&self, _global: Option<&Global>) -> Option<crate::render::gpu::GpuSpatialUnit> {
+    /// apply. A unit that prepares a global estimate reads it from the light plane its light link
+    /// writes ([`Self::gpu_light`]): its description holds a light plane
+    /// ([`crate::render::gpu::GpuPlaneSize::LIGHT`]) that no pass of it writes. The default is
+    /// none, which takes the CPU path. Answered on the catalog owner while planning: it reads no
+    /// pixel and holds nothing that scales with the image.
+    fn gpu(&self) -> Option<crate::render::gpu::GpuSpatialUnit> {
         None
     }
 
-    /// Whether a GPU preview may draw this unit with the estimate prepared from its input before
-    /// a restoration layer changed it, held for a drag (`docs/design/gpu-preview.md`, "At 100%
-    /// and above"): the unit's own judgement of how far its output follows such an estimate, which
-    /// the qualification corpus measures. The default is no, so a unit with an estimate keeps the
-    /// CPU path for such a drag unless it says otherwise. Answered while planning.
-    fn holds_restored_estimate(&self) -> bool {
-        false
-    }
-
-    /// The planes this unit computes from a reduced grid of its input before it applies any
-    /// coefficient, when it has any, or `None`, the default. The host keeps them across renders
-    /// for a unit that runs first in its operation, whose input is the operation's input, so a
-    /// cell is the same value in every tile that computes it; it never asks a later unit.
-    fn reduced_grid(&self) -> Option<ReducedGrid> {
+    /// The step of this unit's light link over its whole input `stage`, for a unit that prepares a
+    /// global estimate the GPU computes per frame from that stage at full resolution
+    /// (`docs/design/gpu-preview.md`, "The global estimate"): the reduction of the input into
+    /// [`ESTIMATE_REDUCTION`]-pixel block means beside each block's channel minimum, each written
+    /// at its place in the whole stage's block plane by whichever tile of the stage holds it, and
+    /// the selection of the light from them, as [`Self::prepare`] selects it from the host's
+    /// reduction. The default is none: the unit prepares no estimate, or none the GPU computes.
+    /// Answered while planning: it reads no pixel and holds nothing that scales with the image.
+    fn gpu_light(&self, _stage: Stage) -> Option<crate::render::gpu::GpuLightPasses> {
         None
-    }
-
-    /// The cells of [`Self::reduced_grid`] the unit reads to fill `output`, a rectangle of
-    /// `stage`: the rectangle [`Self::apply_reduced`] reads from held planes. The default, for a
-    /// unit without a grid, is none.
-    fn reduced_reach(&self, _output: Region, _stage: Stage) -> Region {
-        Region::EMPTY
-    }
-
-    /// [`Self::apply_cancellable`] for a unit that declares a [`Self::reduced_grid`] and runs first
-    /// in its operation, with what the host decided for its planes on this tile:
-    ///
-    /// - [`Reduced::Hand`]: compute everything as `apply` does, from an input that holds the
-    ///   unit's whole reach, and copy the cells the tile owns into the cells handed in, exactly
-    ///   the values computed.
-    /// - [`Reduced::Held`]: read the planes over [`Self::reduced_reach`] from the held planes
-    ///   instead of computing them, from an input that holds only `output`'s rectangle. Every
-    ///   other value is computed as `apply` computes it, so the output is the same bits.
-    ///
-    /// Either takes no more scratch than [`Self::scratch_bytes`] declares for the input rectangle
-    /// the unit reads without held planes, which is what the host hands it. The default refuses:
-    /// the host hands planes only to a unit that declares a grid.
-    #[allow(clippy::too_many_arguments)]
-    fn apply_reduced(
-        &self,
-        _input: &Planes<'_>,
-        _output: &mut PlanesMut<'_>,
-        _global: Option<&Global>,
-        _scratch: &mut [f32],
-        _parallelism: Parallelism,
-        _cancel: &Cancel,
-        _reduced: Reduced<'_>,
-    ) -> Result<(), Error> {
-        Err(Error::internal(
-            "a spatial unit without a reduced grid was handed reduced planes",
-        ))
     }
 
     /// Run one tile under the render's cancellation token. Units with several passes override

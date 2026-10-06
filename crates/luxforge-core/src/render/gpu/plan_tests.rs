@@ -152,14 +152,15 @@ fn tolerance(plan: &GpuPlan, staged: bool) -> u8 {
     }
 }
 
-/// The plan's frame, from the CPU's boundary, against the CPU frame of the whole recipe.
-fn assert_draws_the_cpu_frame(
+/// The plan's frame, from the CPU's boundary, against the CPU frame of the whole recipe: the
+/// largest difference in output codes, and the tolerance the plan's shape allows.
+pub(super) fn cpu_frame_difference(
     registry: &ModuleRegistry,
     source: &SourceImage,
     recipe: &Recipe,
     plan: &GpuPlan,
     what: &str,
-) {
+) -> (u8, u8) {
     let cpu = render(registry, source, SnapshotId::new(), recipe).unwrap();
     let output = plan.geometry.output();
     assert_eq!(
@@ -179,9 +180,20 @@ fn assert_draws_the_cpu_frame(
         &compiled.spatial_operations(),
     )
     .unwrap();
-    let difference = largest_difference(&cpu.rgba, &gpu);
+    (largest_difference(&cpu.rgba, &gpu), tolerance(plan, staged))
+}
+
+/// The plan's frame, from the CPU's boundary, against the CPU frame of the whole recipe.
+pub(super) fn assert_draws_the_cpu_frame(
+    registry: &ModuleRegistry,
+    source: &SourceImage,
+    recipe: &Recipe,
+    plan: &GpuPlan,
+    what: &str,
+) {
+    let (difference, tolerance) = cpu_frame_difference(registry, source, recipe, plan, what);
     assert!(
-        difference <= tolerance(plan, staged),
+        difference <= tolerance,
         "{what}: the plan draws up to {difference} codes from the CPU frame"
     );
 }
@@ -475,7 +487,7 @@ fn stack_shapes_the_plan_cannot_hold_are_named() {
     ));
     let step = plan.spatial.first().expect("the spatial operation");
     assert_eq!((step.layer, step.applies.len()), (1, 1));
-    assert!(step.clamps && !step.estimated && !plan.approximate());
+    assert!(step.clamps && step.light.is_none() && !plan.reads_lights());
     assert_eq!((plan.content.len(), plan.output.len()), (1, 1));
     assert!(!plan.geometry.clamps);
     // On the linear path nothing is clamped.
@@ -802,7 +814,7 @@ fn masked_operations_carry_their_blend_and_draw_the_cpu_frame() {
 /// blue whose wraps put a hard edge between codes 255 and 0, where a blend in linear light turns a
 /// hundredth of a pixel into dozens of dark-tone codes: right for proving exact taps, wrong for a
 /// grid that is allowed a tenth of a pixel.
-fn smooth(width: u32, height: u32) -> SourceImage {
+pub(super) fn smooth(width: u32, height: u32) -> SourceImage {
     let mut rgba = Vec::with_capacity((width * height * 4) as usize);
     for y in 0..height {
         for x in 0..width {
@@ -1124,15 +1136,14 @@ fn clipping_marks_agree_with_the_output_quantizer() {
     }
 }
 
-/// Dehaze's atmospheric light is the store's when it holds the one a CPU frame of the boundary's
-/// content at the plan's stage prepared, which every Dehaze amount shares; otherwise the GPU takes
-/// it from the stage it holds and the plan says the frame is approximate. The passes are the same
-/// either way, so a store that fills mid-gesture changes words alone.
+/// Dehaze's atmospheric light is its light link's, planned from the source over the whole stage
+/// whatever layer the plan starts from: every Dehaze amount reads the one light, through the same
+/// passes, which take none of it themselves, so a drag of the amount changes words alone; a new
+/// upstream is another light link's content; and on the linear path the link clamps nothing.
 #[test]
-fn a_dehaze_light_is_the_stores_when_it_holds_the_boundarys_content() {
-    use super::{GpuEstimates, GpuPassShape, gpu_plan_with};
+fn a_dehaze_light_is_its_links_from_the_whole_stage() {
+    use super::GpuPassShape;
     let registry = colour_registry();
-    let source = gradient(41, 29);
     // One stack, its layers' identities kept as its values change, as a drag keeps them.
     let base = colour_recipe(vec![
         exposure_layer(&[0.3]),
@@ -1143,27 +1154,26 @@ fn a_dehaze_light_is_the_stores_when_it_holds_the_boundarys_content() {
         recipe.layers[layer].payload = payload;
         recipe
     };
-    let context = RenderContext::new();
-    let estimates = GpuEstimates {
-        context: &context,
-        source: RenderSource::Byte(&source).into(),
-    };
     let request = GpuPlanRequest::exact(1, stage(41, 29)).qualifying();
-    let plan_of = |recipe: &Recipe| {
-        planned(gpu_plan_with(&registry, recipe, request, Some(estimates)).unwrap())
-    };
-
-    // Before any CPU frame the store holds nothing: the light is taken on the GPU, by one
-    // workgroup over the 16x reduction of the stage it holds.
+    let plan_of = |recipe: &Recipe| planned(answer(&registry, recipe, request));
     let plan = plan_of(&base);
-    assert!(plan.approximate());
+    assert!(plan.reads_lights());
     let step = plan.spatial.first().unwrap();
-    let atmosphere = step
-        .passes
-        .iter()
-        .find(|pass| pass.kernel == "lf_presence_atmosphere")
-        .expect("the estimate's pass");
-    assert_eq!(atmosphere.shape, GpuPassShape::Workgroup);
+    let k = plan.light_of(step.layer).expect("its light");
+    assert!(step.light.is_some());
+    assert!(
+        step.passes
+            .iter()
+            .all(|pass| pass.kernel != "lf_presence_atmosphere")
+    );
+    // The light link reduces the whole stage from the source, through the exposure before the
+    // boundary the plan starts from, and selects the light in one workgroup.
+    let light = &plan.lights[k];
+    assert_eq!((light.layer, light.stage), (1, stage(41, 29)));
+    assert!(light.over_source() && light.stand_in.is_none());
+    assert_eq!(light.content.len(), 1, "the exposure before Dehaze");
+    let shapes: Vec<_> = light.light.passes.iter().map(|pass| pass.shape).collect();
+    assert_eq!(shapes.last(), Some(&GpuPassShape::Workgroup));
     // What decides the operation's pipelines: every pass but its words, and every apply.
     let pipelines = |step: &super::GpuSpatial| {
         let passes: Vec<_> = step
@@ -1173,60 +1183,27 @@ fn a_dehaze_light_is_the_stores_when_it_holds_the_boundarys_content() {
             .collect();
         (step.planes.clone(), passes, step.applies.clone())
     };
-    let estimated = pipelines(step);
-
-    // The CPU frame stores it; the plan then writes the stored light as its words, through the
-    // same passes, which reduce nothing.
-    Render::compiled(
-        RenderSource::Byte(&source),
-        registry
-            .compile(source.width, source.height, &base)
-            .unwrap(),
-        RenderOptions::exact(&crate::Cancel::never()),
-        &context,
-    )
-    .unwrap()
-    .frame(SnapshotId::new())
-    .unwrap();
-    let stored: Vec<f32> = {
-        let keys = context.estimates().keys();
-        assert_eq!(keys.len(), 1);
-        let global = context.estimates().cached(&keys[0]).unwrap().unwrap();
-        global.values().iter().map(|value| *value as f32).collect()
-    };
+    let reading = pipelines(step);
     for dehaze in [40.0, -65.0] {
         let plan = plan_of(&with(1, json!({"dehaze": dehaze})));
-        assert!(!plan.approximate(), "dehaze {dehaze}");
-        let step = plan.spatial.first().unwrap();
         assert_eq!(
-            pipelines(step),
-            estimated,
-            "the same passes whether the light is stored or not"
+            plan.lights,
+            std::slice::from_ref(light),
+            "dehaze {dehaze}: one light"
         );
-        let [reduce, atmosphere] = [0, 1].map(|pass| step.passes[pass].words);
-        assert_eq!(step.words[reduce], 3, "the reduction reduces nothing");
-        assert_eq!(step.words[atmosphere + 3], 1, "the light is given");
-        let light = &step.words[atmosphere + 4..atmosphere + 7];
         assert_eq!(
-            light
-                .iter()
-                .map(|word| f32::from_bits(*word))
-                .collect::<Vec<_>>(),
-            stored,
-            "every amount reads the one stored light"
+            pipelines(plan.spatial.first().unwrap()),
+            reading,
+            "dehaze {dehaze}: the same passes"
         );
     }
-    // A new upstream is new content: the store holds nothing for it.
-    let mut moved = base.clone();
-    moved.layers[0].payload = exposure_layer(&[-0.4]).payload;
-    assert!(plan_of(&moved).approximate());
-    // Without a store, the light is always taken on the GPU.
-    assert!(
-        planned(answer(&registry, &base, request)).approximate(),
-        "no store, no stored light"
-    );
-    // A request on one path with a source of the other is refused.
-    assert!(gpu_plan_with(&registry, &base, request.linear(), Some(estimates)).is_err());
+    // A new upstream is another light's content.
+    let moved = plan_of(&with(0, exposure_layer(&[-0.4]).payload));
+    assert_ne!(moved.lights[0].content, light.content);
+    assert_eq!(moved.lights[0].light, light.light);
+    // On the linear path the light's input is not clamped.
+    let linear = planned(answer(&registry, &base, request.linear()));
+    assert!(light.light.clamps && !linear.lights[0].light.clamps);
 }
 
 /// A Presence plan's planes, passes and words are the same at the smallest and the largest stage
@@ -1279,7 +1256,8 @@ fn a_presence_plan_holds_nothing_that_scales_with_the_image() {
 }
 
 /// Every plane an apply of a Presence or a Detail operation reads has one writer among all the
-/// operation's passes, a plane its unit took from an earlier unit's scratch included: an
+/// operation's passes, a plane its unit took from an earlier unit's scratch included, but
+/// Dehaze's light plane, which none writes and its light link does: an
 /// incremental tick runs that writer only where its output changes, and the plane keeps its values
 /// everywhere else (`docs/design/gpu-preview.md`, "Incremental ticks").
 #[test]
@@ -1310,6 +1288,12 @@ fn every_plane_an_apply_reads_has_one_writer() {
                         .iter()
                         .filter(|pass| pass.output == *plane)
                         .count();
+                    // The light plane is the light link's, which the plan holds.
+                    if step.light == Some(*plane) {
+                        assert_eq!(writers, 0, "the light is its link's");
+                        assert!(plan.light_of(step.layer).is_some());
+                        continue;
+                    }
                     assert_eq!(
                         writers, 1,
                         "{}'s unit {unit} applies plane {plane}, which {writers} passes write",
@@ -1322,10 +1306,9 @@ fn every_plane_an_apply_reads_has_one_writer() {
 }
 
 /// All three Presence units hold the planes `docs/design/gpu-preview.md` states ("Bounds"). Over a
-/// stage of whole 16-pixel blocks they take 28.5625 bytes a pixel and the light's one texel:
-/// Texture's 24 at full resolution, Dehaze's and Clarity's 4.5 on their 4x grids and Dehaze's
-/// estimate on its 16x one. The applies keep 4.75 of them and the light, Texture's one-channel
-/// band 4.
+/// stage of whole 16-pixel blocks they take 28.5 bytes a pixel and the light's one texel, which
+/// the light link writes: Texture's 24 at full resolution, Dehaze's and Clarity's 4.5 on their 4x
+/// grids. The applies keep 4.75 of them and the light, Texture's one-channel band 4.
 #[test]
 fn presence_holds_the_planes_its_design_states() {
     let registry = colour_registry();
@@ -1359,73 +1342,12 @@ fn presence_holds_the_planes_its_design_states() {
     let (pixels, light) = (u64::from(width) * u64::from(height), 16);
     assert_eq!(
         step.plane_bytes((0, 0), (width, height)),
-        pixels * 457 / 16 + light
+        pixels * 456 / 16 + light
     );
     assert_eq!(kept, pixels * 76 / 16 + light);
     let texture = &step.applies[1];
     assert_eq!(texture.function, "lf_presence_texture");
     assert_eq!(bytes(&step.planes[texture.planes[0]]), pixels * 4);
-}
-
-/// A proxy named for the estimate store before it is built is named as the built proxy's own pixel
-/// domain names it: a JPEG's window, and a RAW's derived development under a cropped and turned
-/// view and a window, equal whenever it is built and apart from its source's.
-#[test]
-fn a_proxy_is_named_as_its_built_pixels_are() {
-    use super::EstimateSource;
-    use crate::{PreviewSource, ProxyBounds, ProxyPlan, ProxyWindow};
-    let jpeg = PreviewSource::Jpeg(gradient(240, 160));
-    let raw = PreviewSource::Raw {
-        image: crate::render::tests::varied(240, 160)
-            .with_view([10, 6, 200, 140], 6)
-            .unwrap(),
-        settings: crate::LinearSettings::default(),
-    };
-    for source in [jpeg, raw] {
-        let (width, height) = source.dimensions();
-        let bounds = ProxyBounds {
-            width: width / 2,
-            height: height / 2,
-        };
-        let plans = [
-            ProxyPlan {
-                width: width / 2,
-                height: height / 2,
-                bounds,
-                window: None,
-            },
-            ProxyPlan {
-                width: width / 2,
-                height: height / 2,
-                bounds,
-                window: Some(ProxyWindow {
-                    x: 7,
-                    y: 5,
-                    width: width / 4,
-                    height: height / 4,
-                }),
-            },
-        ];
-        for plan in plans {
-            let named = EstimateSource::Proxy {
-                source: &source,
-                plan,
-            }
-            .identity("prefix")
-            .unwrap();
-            for _ in 0..2 {
-                let built = source.proxy(plan).unwrap();
-                let own = EstimateSource::Render((&built).into())
-                    .identity("prefix")
-                    .unwrap();
-                assert_eq!(named, own, "{plan:?}");
-            }
-            let whole = EstimateSource::Render((&source).into())
-                .identity("prefix")
-                .unwrap();
-            assert_ne!(named.1, whole.1, "a proxy is not its source");
-        }
-    }
 }
 
 /// Spatial and restoration layers after the boundary chain in recipe order, with the colour layers
@@ -1532,4 +1454,151 @@ fn chained_spatial_operations_draw_the_cpu_frame() {
         GpuPlanRequest::exact(0, stage(41, 29)).qualifying(),
     ));
     assert_eq!(plan.spatial.len(), 5);
+}
+
+/// The colour the host places after Detail and before the geometry — in Detail's own segment, which
+/// the CPU writes before the tail's resample — runs on Detail's output at the boundary's stage, as
+/// colour between two spatial operations does, before a lens and perspective warp or a
+/// straightened crop, and through a turn in that segment, which its units address the turned
+/// frame through and the tail carries. Each draws the CPU frame.
+#[test]
+fn colour_after_detail_runs_on_its_output_before_the_tail() {
+    let registry = ModuleRegistry::builtin();
+    let source = smooth(180, 120);
+    let detail = Layer::new(
+        crate::DETAIL_EFFECT,
+        json!({"sharpening": 40.0, "luminance": 20.0}),
+    );
+    let curve = Layer::new(
+        crate::CURVE_EFFECT,
+        json!({"luminance": [[0.0, 0.0], [0.25, 0.2], [0.75, 0.8], [1.0, 1.0]]}),
+    );
+    let perspective = Layer::new(
+        crate::PERSPECTIVE_EFFECT,
+        json!({"horizontal": 40, "vertical": -30}),
+    );
+    for (what, geometry) in [
+        (
+            "a lens and perspective warp",
+            vec![
+                crate::render::testing::frozen_lens(180, 120, 24.0),
+                perspective.clone(),
+            ],
+        ),
+        ("a straightened crop", vec![crop(180, 120, 3.0)]),
+        (
+            "a turn, perspective and a straightened crop",
+            vec![
+                turn(Transform::RotateRight),
+                perspective,
+                crop(120, 180, -4.0),
+            ],
+        ),
+    ] {
+        let recipe = colour_recipe(
+            [detail.clone(), curve.clone()]
+                .into_iter()
+                .chain(geometry)
+                .collect(),
+        );
+        let plan = planned(answer(
+            &registry,
+            &recipe,
+            GpuPlanRequest::exact(0, stage(180, 120)).from_source(),
+        ));
+        assert_eq!(plan.spatial.len(), 1, "{what}");
+        let after: Vec<usize> = plan.spatial[0].after.iter().map(|op| op.layer).collect();
+        assert_eq!(after, [1], "{what}: the curve runs on Detail's output");
+        assert!(plan.content.is_empty() && plan.output.is_empty(), "{what}");
+        assert!(
+            plan.geometry.clamps,
+            "{what}: the CPU quantizes before the resample"
+        );
+        assert_eq!(
+            plan.geometry.reads,
+            Region::whole(stage(180, 120)),
+            "{what}: the tail reads Detail's whole frame"
+        );
+        assert_draws_the_cpu_frame(&registry, &source, &recipe, &plan, what);
+    }
+}
+
+/// A plan's anchor rounds a window's origin to the least common multiple of every running pass's
+/// span over its plane's blocks, after moving it by the sum of every run's length but its first
+/// texel: nothing for a plan with no spatial operation and for Detail, whose passes run over every
+/// texel at full resolution; Texture's four runs of 16 a direction at full resolution make 16 and
+/// 60, Clarity's and Dehaze's two over their 4x reductions 64 and 120 each, and the three together
+/// 64 and 300. A window anchored keeps its far edges, and its origin stays within the stage.
+#[test]
+fn a_plans_anchor_starts_every_run_and_block_where_the_whole_stage_does() {
+    let registry = colour_registry();
+    let plan_of = |layers: Vec<Layer>| {
+        planned(answer(
+            &registry,
+            &colour_recipe(layers),
+            GpuPlanRequest::exact(0, stage(400, 300))
+                .from_source()
+                .qualifying(),
+        ))
+    };
+    let anchor = |multiple: u32, lead: u32| super::GpuAnchor {
+        multiple: (multiple, multiple),
+        lead: (lead, lead),
+    };
+    assert_eq!(plan_of(Vec::new()).anchor(), super::GpuAnchor::NONE);
+    assert_eq!(
+        plan_of(vec![Layer::new(
+            crate::DETAIL_EFFECT,
+            json!({"sharpening": 60.0, "luminance": 40.0, "colour": 40.0}),
+        )])
+        .anchor(),
+        super::GpuAnchor::NONE
+    );
+    for (presence, expected) in [
+        (json!({"texture": 30.0}), anchor(16, 60)),
+        (json!({"clarity": -20.0}), anchor(64, 120)),
+        (json!({"dehaze": 15.0}), anchor(64, 120)),
+        (
+            json!({"texture": 30.0, "clarity": -20.0, "dehaze": 15.0}),
+            anchor(64, 300),
+        ),
+    ] {
+        let plan = plan_of(vec![Layer::new(crate::PRESENCE_EFFECT, presence.clone())]);
+        assert_eq!(plan.anchor(), expected, "{presence}");
+        // Every running pass starts on a multiple of its span over the whole plane.
+        for spatial in &plan.spatial {
+            for pass in &spatial.passes {
+                if let super::spatial::GpuPassShape::Texels { span } = pass.shape
+                    && let super::spatial::GpuPlaneSize::Reduced(s) =
+                        spatial.planes[pass.output].size
+                {
+                    assert_eq!(expected.multiple.0 % (span[0] * s), 0, "{presence}");
+                    assert_eq!(expected.multiple.1 % (span[1] * s), 0, "{presence}");
+                }
+            }
+        }
+    }
+    assert_eq!(anchor(16, 60).join(anchor(64, 120)), anchor(64, 120));
+    let window = Region {
+        x0: 431,
+        y0: 351,
+        width: 298,
+        height: 238,
+    };
+    let held = super::anchored(window, anchor(64, 300));
+    assert_eq!(
+        held,
+        Region {
+            x0: 128,
+            y0: 0,
+            width: 601,
+            height: 589
+        }
+    );
+    assert_eq!((held.x1(), held.y1()), (window.x1(), window.y1()));
+    assert_eq!(
+        super::anchored(window, super::GpuAnchor::NONE),
+        window,
+        "a plan with no running sum reads the halos' window"
+    );
 }

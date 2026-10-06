@@ -67,9 +67,6 @@ impl Editor {
                     Some(PaletteAction::ToggleInformation) => {
                         self.dispatch(Message::View(ViewMessage::ToggleInformation))
                     }
-                    Some(PaletteAction::ToggleGpuPreview) => {
-                        self.dispatch(Message::View(ViewMessage::ToggleGpuPreview))
-                    }
                     Some(PaletteAction::Fit) => self.dispatch(Message::View(ViewMessage::Fit)),
                     Some(PaletteAction::HundredPercent) => {
                         self.dispatch(Message::View(ViewMessage::HundredPercent))
@@ -89,9 +86,13 @@ impl Editor {
                     Some(PaletteAction::Compare) => {
                         self.dispatch(Message::History(HistoryMessage::CompareToggle))
                     }
-                    Some(PaletteAction::Export { keep_metadata }) => {
-                        self.dispatch(Message::Export(ExportMessage::Start { keep_metadata }))
-                    }
+                    Some(PaletteAction::Export {
+                        keep_metadata,
+                        reference,
+                    }) => self.dispatch(Message::Export(ExportMessage::Start {
+                        keep_metadata,
+                        reference,
+                    })),
                     Some(PaletteAction::Settings(tab)) => {
                         self.dispatch(Message::Settings(SettingsMessage::Open(tab)))
                     }

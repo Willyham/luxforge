@@ -12,7 +12,12 @@ use mozjpeg_sys::{
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::{io::Cursor, path::Path};
+use std::{
+    cell::RefCell,
+    io::{Cursor, Write},
+    path::Path,
+    rc::Rc,
+};
 
 pub(crate) const LIMITS: Limits = Limits {
     max_side: 16384,
@@ -960,6 +965,7 @@ fn an_encode_stops_where_its_step_says() {
     let big = vec![0; MAX_SEGMENT_PAYLOAD + 1];
     let segments = [(1, big.as_slice())];
     let settings = Settings {
+        pixels_per_inch: None,
         segments: &segments,
         ..settings
     };
@@ -970,6 +976,253 @@ fn an_encode_stops_where_its_step_says() {
     .unwrap_err();
     assert!(matches!(error, Stepped::Jpeg(JpegError::Internal(_))));
     assert!(out.is_empty());
+}
+
+/// A `width` × `height` opaque RGBA frame of noise, which libjpeg cannot compress much: a few
+/// rows of it fill libjpeg's output buffer, so an encode writes to its writer long before the end.
+fn noise(width: u32, height: u32) -> Vec<u8> {
+    let mut state = 0x2545_f491_u32;
+    let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+    for _ in 0..width as usize * height as usize {
+        for _ in 0..3 {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            rgba.push(state as u8);
+        }
+        rgba.push(255);
+    }
+    rgba
+}
+
+/// Encode `rgba` through a session in bands whose sizes cycle through `sizes`, the last cut short
+/// where the image ends; answers the file and the rows the step was called with.
+fn streamed(
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    settings: &Settings<'_>,
+    sizes: &[usize],
+) -> (Vec<u8>, Vec<usize>) {
+    let stride = width as usize * 4;
+    let mut out = Vec::new();
+    let mut steps = Vec::new();
+    let mut encoder = Encoder::start(&mut out, width, height, settings).unwrap();
+    let mut sizes = sizes.iter().cycle();
+    let mut at = 0;
+    while at < height as usize {
+        let rows = (*sizes.next().unwrap()).min(height as usize - at);
+        let band = &rgba[at * stride..(at + rows) * stride];
+        encoder
+            .write_rows(rows, band, &mut |done| {
+                steps.push(done);
+                Ok::<_, JpegError>(())
+            })
+            .unwrap();
+        at += rows;
+    }
+    encoder.finish().unwrap();
+    (out, steps)
+}
+
+/// Bands of 1, 7, 16 and 296 rows, the last of each cut short where the image ends, and bands of
+/// mixed sizes encode exactly the bytes the whole frame does, header segments and ICC chunks
+/// included, and the step runs at the same rows: libjpeg is handed the same strips whatever the
+/// bands. 613 rows are a multiple of none of the sizes, and 61 columns of no MCU's width.
+#[test]
+fn streamed_bands_encode_the_bytes_the_whole_frame_does() {
+    let (width, height) = (61, 613);
+    let rgba = noise(width, height);
+    let profile: Vec<u8> = (0..3000).map(|i| (i % 251) as u8).collect();
+    let segments = [(1, b"Exif\0\0MM\0*".as_slice())];
+    let settings = Settings {
+        pixels_per_inch: None,
+        quality: 90,
+        chroma: (1, 1),
+        segments: &segments,
+        icc: Some(&profile),
+    };
+    let mut whole = Vec::new();
+    let mut whole_steps = Vec::new();
+    encode(&mut whole, width, height, &rgba, &settings, &mut |rows| {
+        whole_steps.push(rows);
+        Ok::<_, JpegError>(())
+    })
+    .unwrap();
+    let strips: Vec<usize> = (0..height as usize).step_by(STRIP_ROWS).collect();
+    assert_eq!(whole_steps, [strips.as_slice(), &[613]].concat());
+    let (decoded_width, decoded_height, _) = decode(&whole).unwrap();
+    assert_eq!((decoded_width, decoded_height), (width, height));
+    for sizes in [&[1][..], &[7], &[16], &[296], &[1, 16, 7, 296, 3, 32]] {
+        let (bytes, steps) = streamed(width, height, &rgba, &settings, sizes);
+        assert!(bytes == whole, "bands of {sizes:?} encode other bytes");
+        assert_eq!(steps, whole_steps, "bands of {sizes:?}");
+    }
+}
+
+/// A writer whose bytes a test reads while an encode still holds it.
+struct Shared(Rc<RefCell<Vec<u8>>>);
+
+impl Write for Shared {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.borrow_mut().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A streamed encode checks its step before each strip, whatever the bands: an error from it
+/// abandons the encode between two strips and is returned as it is. The writer then holds what
+/// libjpeg had written of the strips before, the start of the whole file, and receives nothing
+/// more: further rows and the trailer are refused. Abandoning an encode with `abort` after the same
+/// strips leaves its writer the same.
+#[test]
+fn a_streamed_encode_cancels_between_strips_and_writes_nothing_more() {
+    let (width, height) = (512, 200);
+    let rgba = noise(width, height);
+    let stride = width as usize * 4;
+    let settings = Settings {
+        pixels_per_inch: None,
+        quality: 90,
+        chroma: (1, 1),
+        segments: &[],
+        icc: None,
+    };
+    let mut whole = Vec::new();
+    encode(&mut whole, width, height, &rgba, &settings, &mut |_| {
+        Ok::<_, JpegError>(())
+    })
+    .unwrap();
+
+    let written = Rc::new(RefCell::new(Vec::new()));
+    let mut encoder =
+        Encoder::start(Shared(Rc::clone(&written)), width, height, &settings).unwrap();
+    let mut seen = Vec::new();
+    let mut bands = rgba.chunks(7 * stride);
+    let error = loop {
+        let band = bands
+            .next()
+            .expect("the step stops the encode before the end");
+        let result = encoder.write_rows(band.len() / stride, band, &mut |rows| {
+            seen.push(rows);
+            if rows >= 96 {
+                Err(Stepped::Stop)
+            } else {
+                Ok(())
+            }
+        });
+        if let Err(error) = result {
+            break error;
+        }
+    };
+    assert!(matches!(error, Stepped::Stop), "{error:?}");
+    assert_eq!(seen, [0, 16, 32, 48, 64, 80, 96], "once before each strip");
+    let at_cancel = written.borrow().clone();
+    assert!(
+        !at_cancel.is_empty() && at_cancel.len() < whole.len(),
+        "{} of {} bytes were written before the cancel",
+        at_cancel.len(),
+        whole.len()
+    );
+    assert!(whole.starts_with(&at_cancel), "the start of the whole file");
+    let more = encoder
+        .write_rows(7, &rgba[..7 * stride], &mut |_| Ok::<_, Stepped>(()))
+        .unwrap_err();
+    assert!(
+        matches!(more, Stepped::Jpeg(JpegError::Internal(_))),
+        "{more:?}"
+    );
+    let trailer = encoder.finish().unwrap_err();
+    assert!(matches!(trailer, JpegError::Internal(_)), "{trailer:?}");
+    assert!(*written.borrow() == at_cancel, "nothing more was written");
+
+    let aborted = Rc::new(RefCell::new(Vec::new()));
+    let mut encoder =
+        Encoder::start(Shared(Rc::clone(&aborted)), width, height, &settings).unwrap();
+    for band in rgba[..96 * stride].chunks(7 * stride) {
+        encoder
+            .write_rows(band.len() / stride, band, &mut |_| Ok::<_, JpegError>(()))
+            .unwrap();
+    }
+    encoder.abort();
+    assert!(
+        *aborted.borrow() == at_cancel,
+        "abort leaves what the cancel left"
+    );
+}
+
+/// A band that is not the rows it declares, shorter or longer, rows past the image's last and a
+/// trailer before the last row are each refused by name before libjpeg sees them, never as a
+/// libjpeg error or an abort of the process. A refused band leaves the session as it was, so the
+/// file is still the whole frame's; a refused trailer abandons the file.
+#[test]
+fn a_short_band_is_an_error_not_an_abort() {
+    const NOT_ITS_ROWS: &str = "jpeg encode: a band's pixels are not the rows it declares";
+    const PAST_THE_END: &str = "jpeg encode: rows past the end of the image";
+    let (width, height) = (40, 40);
+    let rgba = noise(width, height);
+    let stride = width as usize * 4;
+    let settings = Settings {
+        pixels_per_inch: None,
+        quality: 90,
+        chroma: (1, 1),
+        segments: &[],
+        icc: None,
+    };
+    let mut whole = Vec::new();
+    encode(&mut whole, width, height, &rgba, &settings, &mut |_| {
+        Ok::<_, JpegError>(())
+    })
+    .unwrap();
+    let mut ok = |_: usize| Ok::<_, JpegError>(());
+    let refusal = |error: JpegError| match error {
+        JpegError::Internal(why) => why,
+        other => panic!("refused by libjpeg rather than by name: {other:?}"),
+    };
+
+    let mut out = Vec::new();
+    let mut encoder = Encoder::start(&mut out, width, height, &settings).unwrap();
+    for (rows, band) in [
+        (7, &rgba[..7 * stride - 1]),
+        (7, &rgba[..6 * stride]),
+        (6, &rgba[..7 * stride]),
+        (1, &rgba[..3]),
+    ] {
+        let error = encoder.write_rows(rows, band, &mut ok).unwrap_err();
+        assert_eq!(
+            refusal(error),
+            NOT_ITS_ROWS,
+            "{rows} rows of {} bytes",
+            band.len()
+        );
+    }
+    encoder
+        .write_rows(33, &rgba[..33 * stride], &mut ok)
+        .unwrap();
+    let beyond = vec![0; 8 * stride];
+    let error = encoder.write_rows(8, &beyond, &mut ok).unwrap_err();
+    assert_eq!(refusal(error), PAST_THE_END);
+    encoder
+        .write_rows(7, &rgba[33 * stride..], &mut ok)
+        .unwrap();
+    let error = encoder.write_rows(1, &rgba[..stride], &mut ok).unwrap_err();
+    assert_eq!(refusal(error), PAST_THE_END, "the image is complete");
+    encoder.finish().unwrap();
+    assert!(out == whole, "the refused bands changed nothing");
+
+    let mut early = Vec::new();
+    let mut encoder = Encoder::start(&mut early, width, height, &settings).unwrap();
+    encoder
+        .write_rows(39, &rgba[..39 * stride], &mut ok)
+        .unwrap();
+    assert_eq!(
+        refusal(encoder.finish().unwrap_err()),
+        "jpeg encode: finished before the last row"
+    );
+    assert!(early.len() < whole.len() && whole.starts_with(&early));
 }
 
 /// How far the crate's decode is from the `image` crate's (zune-jpeg 0.5.15), which decoded

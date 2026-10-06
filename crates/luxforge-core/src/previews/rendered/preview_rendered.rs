@@ -1,12 +1,11 @@
-//! Rendered previews: keys and stale rows, each tier against the Fit preview's own frame at the
-//! same bounds, both tiers from one preparation, the exact path of a stack the proxy cannot take,
-//! an original that is gone or changed, a missing provider and a missing artifact named by their
+//! Rendered previews: keys and stale rows, each tier against the reference's exact frame
+//! area-averaged to the same bounds, both tiers from one preparation, a spatial and a pixel-stage
+//! stack, an original that is gone or changed, a missing provider and a missing artifact named by their
 //! edits, cancellation, a backlog that never delays an open Develop preview and, with the supplied
 //! RAW files, both tiers of an edited Nikon Z 6 photograph.
 use super::*;
 use crate::{
-    BASIC_EFFECT, IndexDb, PhaseOutcome, PreviewIntent, PreviewQueue, ProxyOutcome,
-    RegistryOptions,
+    BASIC_EFFECT, IndexDb, PreviewSource, RegistryOptions, SourceImage,
     artifacts::{
         object_path,
         testing::{registry as proof_registry, tint_bytes, tint_meta},
@@ -81,29 +80,43 @@ fn edited(label: &str, path: &Path) -> (EditorService, AssetId) {
 }
 
 /// Every tier `request` renders, as its raster, from one production preparation.
-fn rasters(request: &RenderRequest) -> Vec<(RenderedKey, Raster, TierPath)> {
-    render_with(request, &Cancel::new(), prepare, |key, raster, path| {
-        Ok((key, raster, path))
+fn rasters(request: &RenderRequest) -> Vec<(RenderedKey, Raster)> {
+    render_with(request, &Cancel::new(), prepare, |key, raster| {
+        Ok((key, raster))
     })
     .unwrap()
 }
 
-/// The Fit preview's proxy frame of the asset's current entry at `side` × `side` display bounds:
-/// a preview job planned by the service and rendered by the existing preview queue.
-fn fit_proxy(service: &EditorService, asset: &AssetId, side: u32) -> ProxyOutcome {
+/// The editor's own exact render of the asset's current entry, area-averaged to `side` × `side`
+/// bounds by the byte downscale a source of display bytes takes, or the frame itself when it
+/// already fits: what a session without a GPU draws at Fit at those bounds.
+fn fit_reference(service: &EditorService, asset: &AssetId, side: u32) -> Raster {
+    let exact = service.render_current(asset).unwrap();
     let bounds = ProxyBounds {
         width: side,
         height: side,
     };
-    let mut job = service
-        .preview_job(asset, None, None, None, Some(bounds))
-        .unwrap();
-    job.intent = PreviewIntent::Interactive;
-    let mut queue = PreviewQueue::default();
-    queue.request(job);
-    match wait_for("the Fit preview's proxy frame", || queue.poll()).outcome {
-        PhaseOutcome::Proxy(proxy) => proxy,
-        other => panic!("expected the proxy phase, found {other:?}"),
+    let size = (exact.width, exact.height);
+    let Some(plan) = ProxyPlan::fit(size, size, bounds) else {
+        return exact;
+    };
+    let PreviewSource::Jpeg(scaled) = PreviewSource::Jpeg(SourceImage {
+        width: exact.width,
+        height: exact.height,
+        rgba: Arc::clone(&exact.rgba),
+        fingerprint: String::new(),
+        orientation: 1,
+        capture: Arc::default(),
+    })
+    .proxy(plan)
+    .unwrap() else {
+        panic!("bytes");
+    };
+    Raster {
+        width: scaled.width,
+        height: scaled.height,
+        rgba: scaled.rgba,
+        ..exact
     }
 }
 
@@ -233,12 +246,12 @@ fn keys_name_asset_entry_tier_and_generation_and_a_commit_makes_new_ones() {
     );
 }
 
-/// The grid tier of an edited 1200 × 800 JPEG is the Fit preview's proxy frame at 512 px bounds,
-/// byte for byte and labelled alike; its large tier, whose stage already fits 2048 px, is the
-/// exact render. Both come from one preparation, encode to JPEGs of their sizes, are the same
-/// bytes every time whether or not the index directory exists, and follow a commit.
+/// The grid tier of an edited 1200 × 800 JPEG is the exact render area-averaged to 512 px
+/// bounds, byte for byte; its large tier, whose stage already fits 2048 px, is the exact render.
+/// Both come from one preparation, encode to JPEGs of their sizes, are never labelled approximate,
+/// are the same bytes every time whether or not the index directory exists, and follow a commit.
 #[test]
-fn a_grid_tier_is_the_fit_previews_proxy_frame_and_both_tiers_share_one_preparation() {
+fn a_grid_tier_is_the_exact_render_area_averaged_and_both_tiers_share_one_preparation() {
     let path = generated_jpeg("rendered-proxy", 1200, 800);
     let (mut service, asset) = edited("rendered-proxy", &path);
     let request = plan_render(&service, &asset, None, &BOTH).unwrap();
@@ -250,11 +263,11 @@ fn a_grid_tier_is_the_fit_previews_proxy_frame_and_both_tiers_share_one_preparat
             preparations.fetch_add(1, Ordering::SeqCst);
             prepare(request, cancel)
         },
-        |key, raster, path| Ok((key, raster, path)),
+        |key, raster| Ok((key, raster)),
     )
     .unwrap();
     assert_eq!(preparations.load(Ordering::SeqCst), 1, "one preparation");
-    let [(grid_key, grid, grid_path), (large_key, large, large_path)] = &tiers[..] else {
+    let [(grid_key, grid), (large_key, large)] = &tiers[..] else {
         panic!("two tiers");
     };
     assert_eq!(
@@ -262,21 +275,11 @@ fn a_grid_tier_is_the_fit_previews_proxy_frame_and_both_tiers_share_one_preparat
         (PreviewTier::Grid, PreviewTier::Large)
     );
 
-    let fit = fit_proxy(&service, &asset, PHOTO_GRID_SIDE);
+    let fit = fit_reference(&service, &asset, PHOTO_GRID_SIDE);
     assert_eq!((grid.width, grid.height), (512, 341));
     assert!(
-        grid.rgba == fit.raster.rgba,
-        "the grid tier is the Fit preview's proxy frame at the same bounds"
-    );
-    assert_eq!(
-        grid_path,
-        &TierPath::Proxy {
-            approximation: fit.approximation
-        }
-    );
-    assert!(
-        !fit.approximation.is_approximate(),
-        "a Basic edit is exact at any size"
+        grid.rgba == fit.rgba,
+        "the grid tier is the exact render area-averaged to the same bounds"
     );
 
     let exact = service.render_current(&asset).unwrap();
@@ -285,13 +288,9 @@ fn a_grid_tier_is_the_fit_previews_proxy_frame_and_both_tiers_share_one_preparat
         large.rgba == exact.rgba,
         "the large tier is the exact render"
     );
-    assert!(
-        matches!(large_path, TierPath::Exact { declined } if declined.contains("already fits")),
-        "{large_path:?}"
-    );
 
     let encoded = render(&request, &Cancel::new()).unwrap();
-    for (tier, (key, raster, _)) in encoded.iter().zip(&tiers) {
+    for (tier, (key, raster)) in encoded.iter().zip(&tiers) {
         assert_eq!(&tier.key, key);
         let header = luxforge_jpeg::header(&tier.jpeg).unwrap();
         assert_eq!(
@@ -308,11 +307,7 @@ fn a_grid_tier_is_the_fit_previews_proxy_frame_and_both_tiers_share_one_preparat
                 key.tier
             )
         );
-        assert!(
-            !tier.approximate() && !info.approximate,
-            "a Basic edit's {} tier is exact",
-            key.tier.as_str()
-        );
+        assert!(!info.approximate, "the {} tier is exact", key.tier.as_str());
         println!(
             "{} tier {}×{}: {} bytes",
             key.tier.as_str(),
@@ -343,23 +338,22 @@ fn a_grid_tier_is_the_fit_previews_proxy_frame_and_both_tiers_share_one_preparat
         .unwrap();
     let next = plan_render(&service, &asset, None, &[PreviewTier::Grid]).unwrap();
     let next = rasters(&next);
-    let [(next_key, next_grid, _)] = &next[..] else {
+    let [(next_key, next_grid)] = &next[..] else {
         panic!("one tier");
     };
     assert_ne!(next_key, grid_key);
     assert!(next_grid.rgba != grid.rgba, "the new entry's pixels");
     assert!(
-        next_grid.rgba == fit_proxy(&service, &asset, PHOTO_GRID_SIDE).raster.rgba,
-        "the new entry's Fit proxy frame"
+        next_grid.rgba == fit_reference(&service, &asset, PHOTO_GRID_SIDE).rgba,
+        "the new entry's exact render area-averaged"
     );
 }
 
-/// A spatial stack (Clarity and Dehaze) renders its tiers through the proxy path with the Fit
-/// preview's approximation: the same bytes as its proxy frame, labelled spatial, and the tier says
-/// it is approximate; its large tier, whose stage already fits, is the exact render and says it is
-/// not.
+/// A spatial stack (Clarity and Dehaze) is rendered exactly at its own stage and area-averaged to
+/// each tier, so neither tier approximates its entry: the grid tier is the exact render reduced,
+/// and neither says it is approximate.
 #[test]
-fn a_spatial_stack_is_approximated_at_the_tiers_size_as_the_fit_preview_approximates_it() {
+fn a_spatial_stack_is_rendered_exactly_and_never_approximated() {
     let path = generated_jpeg("rendered-spatial", 1200, 800);
     let (mut service, asset) = edited("rendered-spatial", &path);
     service
@@ -372,31 +366,21 @@ fn a_spatial_stack_is_approximated_at_the_tiers_size_as_the_fit_preview_approxim
         .unwrap();
     let request = plan_render(&service, &asset, None, &[PreviewTier::Grid]).unwrap();
     let tiers = rasters(&request);
-    let [(_, grid, path)] = &tiers[..] else {
+    let [(_, grid)] = &tiers[..] else {
         panic!("one tier");
     };
-    let fit = fit_proxy(&service, &asset, PHOTO_GRID_SIDE);
-    assert!(fit.approximation.spatial);
-    assert!(grid.rgba == fit.raster.rgba);
-    assert_eq!(
-        path,
-        &TierPath::Proxy {
-            approximation: fit.approximation
-        }
-    );
+    assert!(grid.rgba == fit_reference(&service, &asset, PHOTO_GRID_SIDE).rgba);
 
     let both = plan_render(&service, &asset, None, &BOTH).unwrap();
-    let encoded = render(&both, &Cancel::new()).unwrap();
-    let [grid, large] = &encoded[..] else {
-        panic!("two tiers");
-    };
-    assert!(grid.approximate());
-    assert!(
-        grid.info(PathBuf::from("/c.index/previews/g.jpg"))
-            .approximate
-    );
-    assert!(matches!(&large.path, TierPath::Exact { .. }));
-    assert!(!large.approximate(), "an exact render is not approximate");
+    for tier in render(&both, &Cancel::new()).unwrap() {
+        assert!(
+            !tier
+                .info(PathBuf::from("/c.index/previews/t.jpg"))
+                .approximate,
+            "{:?}",
+            tier.key.tier
+        );
+    }
 }
 
 /// A tier is upright: a JPEG stored under EXIF orientation 6 renders as its upright 320 × 480
@@ -407,16 +391,16 @@ fn a_turned_original_renders_upright_tiers() {
     let exact = service.render_current(&asset).unwrap();
     assert_eq!((exact.width, exact.height), (320, 480));
     let request = plan_render(&service, &asset, None, &BOTH).unwrap();
-    for (key, raster, _) in rasters(&request) {
+    for (key, raster) in rasters(&request) {
         assert_eq!((raster.width, raster.height), (320, 480), "{:?}", key.tier);
         assert!(raster.rgba == exact.rgba, "{:?}", key.tier);
     }
 }
 
-/// A stack the proxy cannot take — a pixel-stage replacement — is rendered exactly once and
-/// area-averaged to each tier, and each tier says why.
+/// A pixel-stage stack — a pixel replacement — is rendered exactly once and area-averaged to each
+/// tier like any other.
 #[test]
-fn a_proxy_ineligible_stack_takes_the_exact_path_and_says_so() {
+fn a_pixel_stage_stack_is_rendered_exactly_and_area_averaged() {
     let path = generated_jpeg("rendered-ineligible", 1200, 800);
     let mut service = EditorService::open_with(
         &paths::temp_catalog("rendered-ineligible"),
@@ -430,11 +414,7 @@ fn a_proxy_ineligible_stack_takes_the_exact_path_and_says_so() {
     let exact = service.render_current(&asset).unwrap();
     let request = plan_render(&service, &asset, None, &BOTH).unwrap();
     let tiers = rasters(&request);
-    for (key, raster, path) in &tiers {
-        let TierPath::Exact { declined } = path else {
-            panic!("{:?} took the proxy path", key.tier);
-        };
-        assert!(declined.contains("not proxy-eligible"), "{declined}");
+    for (key, raster) in &tiers {
         let bounds = ProxyBounds {
             width: tier_side(key.tier).unwrap(),
             height: tier_side(key.tier).unwrap(),
@@ -592,7 +572,7 @@ fn a_missing_provider_or_artifact_is_refused_naming_its_edit() {
     let request = plan_render(&service, &asset, None, &[PreviewTier::Grid]).unwrap();
     assert_eq!((request.ready.len(), request.reads.len()), (0, 1));
     let tiers = rasters(&request);
-    let [(_, grid, _)] = &tiers[..] else {
+    let [(_, grid)] = &tiers[..] else {
         panic!("one tier");
     };
     assert!(grid.rgba == exact.rgba, "the tint's bytes were bound");
@@ -654,7 +634,7 @@ fn a_cancelled_render_stops_and_answers_cancelled() {
                 }
                 prepared
             },
-            |_, _, _| {
+            |_, _| {
                 finished.fetch_add(1, Ordering::SeqCst);
                 if at == "between" {
                     cancel.cancel();
@@ -688,8 +668,7 @@ fn a_cancelled_render_stops_and_answers_cancelled() {
 /// The acceptance's ordering check. A backlog of rendered previews of the photograph Develop has
 /// open — each prepared, holding its decoded original, and held before it renders its tiers —
 /// runs on lane threads while Develop asks for the photograph's preview through the existing
-/// preview queue: the Fit proxy frame and then the exact frame arrive while every render of the
-/// backlog is still held, so the preview never waited behind them, and the editor's cache still
+/// preview queue: its exact frame arrives while every render of the backlog is still held, so the preview never waited behind them, and the editor's cache still
 /// holds the photograph. Released, the backlog completes.
 #[test]
 fn a_rendered_backlog_never_delays_an_open_develop_preview() {
@@ -717,7 +696,7 @@ fn a_rendered_backlog_never_delays_an_open_develop_preview() {
                         hold.pass();
                         prepared
                     },
-                    |key, raster, _| Ok((key, raster)),
+                    |key, raster| Ok((key, raster)),
                 );
                 finished.fetch_add(1, Ordering::SeqCst);
                 tiers
@@ -737,10 +716,8 @@ fn a_rendered_backlog_never_delays_an_open_develop_preview() {
         .preview_job(&asset, None, None, None, Some(bounds))
         .unwrap();
     job.analyse = true;
-    let mut queue = PreviewQueue::default();
+    let mut queue = crate::PreviewQueue::default();
     queue.request(job);
-    let proxy = wait_for("Develop's proxy frame", || queue.poll());
-    assert!(proxy.proxy().is_some(), "the Fit proxy phase comes first");
     let exact = wait_for("Develop's exact frame", || queue.poll());
     let outcome = exact.exact().expect("the exact phase");
     assert!(outcome.result.is_ok() && outcome.report.is_some());
@@ -861,9 +838,9 @@ fn stale_rows_are_other_entries_and_other_generations() {
 }
 
 /// Both tiers of an edited Nikon Z 6 photograph (Basic and Clarity) in a reopened catalog: the
-/// original prepared by the render alone and adopted by nothing, each tier byte for byte the Fit
-/// preview's proxy frame at its bounds once Develop prepares the photograph, and the file
-/// unchanged. Set `LUXFORGE_RAW_OWNER_DIR` to the directory holding it and run in release:
+/// original prepared by the render alone and adopted by nothing, each tier byte for byte the
+/// editor's exact render area-averaged to its bounds once Develop prepares the photograph, and
+/// the file unchanged. Set `LUXFORGE_RAW_OWNER_DIR` to the directory holding it and run in release:
 ///
 /// ```text
 /// LUXFORGE_RAW_OWNER_DIR=/path/to/raw cargo test --release -p luxforge-core --lib \
@@ -909,22 +886,14 @@ fn a_supplied_raw_renders_both_tiers_of_an_edited_photograph() {
     );
     let needs = service.entry_needs(&asset, None).unwrap();
     service.prepare(&needs).unwrap();
-    for (key, raster, tier_path) in &tiers {
+    for (key, raster) in &tiers {
         let side = tier_side(key.tier).unwrap();
         assert_eq!(raster.width.max(raster.height), side, "{:?}", key.tier);
-        let fit = fit_proxy(&service, &asset, side);
         assert!(
-            raster.rgba == fit.raster.rgba,
-            "{:?}: the tier differs from the Fit preview's proxy frame",
+            raster.rgba == fit_reference(&service, &asset, side).rgba,
+            "{:?}: the tier differs from the exact render area-averaged",
             key.tier
         );
-        assert_eq!(
-            tier_path,
-            &TierPath::Proxy {
-                approximation: fit.approximation
-            }
-        );
-        assert!(fit.approximation.spatial, "Clarity is approximated");
     }
     for tier in render(&request, &Cancel::new()).unwrap() {
         println!(

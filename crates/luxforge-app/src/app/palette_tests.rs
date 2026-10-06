@@ -198,7 +198,6 @@ fn the_scripted_queries_still_run_their_commands() {
     let (mut editor, catalog) = opened_with_modules(descriptors(), 3);
     editor.developer = true;
     for query in [
-        "gpu preview",
         "Fit",
         "As shot",
         "settings general",

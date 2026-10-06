@@ -4,7 +4,7 @@
 use super::response::ResponseSender;
 use super::{
     ApiEvent, ApiRequest, ApiResponse, ClientAuthority, ClientSession, EventsResult, Origin,
-    announce_once,
+    Renderer, announce_once,
     methods::{self, Changed, Planned, Retries, Route},
     params::{NoParams, host_params},
 };
@@ -23,7 +23,6 @@ use crate::{
     preferences::CanvasBackground,
     source::PlaneGate,
 };
-use point::{POINT_QUEUE_CAPACITY, PointWorker};
 use requests::{RequestKey, RequestTable};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -37,7 +36,9 @@ use std::{
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel},
+        mpsc::{
+            Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError, channel, sync_channel,
+        },
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -57,15 +58,20 @@ pub(super) mod files;
 #[cfg(test)]
 mod first_open_tests;
 pub(super) mod library;
-mod point;
 #[cfg(test)]
 mod preferences_tests;
 pub(super) mod previews;
+#[cfg(test)]
+mod renderer_tests;
 mod requests;
 #[cfg(test)]
 mod theme_tests;
 pub(super) mod themes;
 pub(super) mod views;
+
+/// The catalog owner's thread's name, which reads no pixel (performance rule 5): a read reaching
+/// the host's own read on a thread of this name is refused.
+pub(crate) const OWNER_THREAD: &str = "luxforge-owner";
 
 const EVENT_CAPACITY: usize = 256;
 /// The longest an `events.wait` may be asked to wait, and what it waits when it names no time.
@@ -93,18 +99,41 @@ impl ClientId {
 /// asked for and none can read through `job.read`.
 const SYSTEM_CLIENT: ClientId = ClientId(0);
 
+/// A mutation parked on the owner while a pixel read is answered off the owner: the call, replayed
+/// once the read comes back, what the read was read from, and how many of the call's reads it is.
 struct ParkedRead {
     call: OwnerCall,
     key: crate::editor::pixels::PixelReadKey,
-    rounds: usize,
-    changed: bool,
+    reads: usize,
+}
+
+/// The answer to a parked read, by its ticket, which the tile service hands back to the owner.
+type PixelsRead = (u64, Result<crate::editor::pixels::PixelAnswer, Error>);
+
+/// Which pass of a call the owner serves: its first, or a replay once a parked read was answered —
+/// with the pixel in its memo, the call's `n`th read, or without it because what the pixel was
+/// read from changed meanwhile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Replay {
+    First,
+    Read(usize),
+    Stale,
 }
 
 struct OwnerCall {
     client: ClientId,
     request: ApiRequest,
     response: ResponseSender,
+    /// Whether the call may be parked for a pixel read. A caller that must not wait on one — the
+    /// desktop's synchronous gesture calls ([`OwnerHandle::call_unparked`]) — is answered
+    /// [`PIXEL_READ_REQUIRED`] at once instead, and sends the call again where it may wait.
+    parks: bool,
 }
+
+/// The `not-ready` answer's `data.reason` for a call that reads a pixel, sent where it may not
+/// wait for one ([`OwnerHandle::call_unparked`]): nothing was changed, and the same call, sent
+/// where it may wait, reads the pixel off the owner and is answered.
+pub const PIXEL_READ_REQUIRED: &str = "pixel-read-required";
 
 enum OwnerMessage {
     Call(OwnerCall),
@@ -134,6 +163,13 @@ enum OwnerMessage {
         client: ClientId,
         authority: ClientAuthority,
     },
+    /// The host reports which renderer draws its picture ([`OwnerHandle::report_renderer`]),
+    /// answered with the reporting client's session.
+    Renderer {
+        client: ClientId,
+        renderer: Renderer,
+        reply: SyncSender<ClientSession>,
+    },
     /// A lane of the job table finished a capability or export job. Like the analysis worker, the
     /// lane posts it into this channel, so nothing polls.
     JobFinished {
@@ -146,13 +182,15 @@ enum OwnerMessage {
     /// Hold every export job accepted from now on as it begins each phase, or stop holding them.
     #[cfg(test)]
     HoldExports(Option<export::Hold>),
-    /// Hold the point worker before each evaluation, or release that hold.
+    /// Have the owner's own reference tile service call this before it answers each call, or
+    /// stop calling it.
     #[cfg(test)]
-    HoldPoints(Option<point::Hold>),
-    /// How many planned samples wait behind the one the point worker is evaluating.
+    HoldTiles(Option<crate::tiles::Hold>),
+    /// How many calls wait behind the one the owner's own reference tile service is answering.
     #[cfg(test)]
-    PointsWaiting(SyncSender<usize>),
-    /// Parked reads, queued point calls and the active call's cancellation token.
+    TilesWaiting(SyncSender<usize>),
+    /// Parked reads, the calls waiting in the owner's own reference tile service and the
+    /// cancellation of the one it is answering.
     #[cfg(test)]
     PixelReadState(SyncSender<(usize, usize, Option<crate::Cancel>)>),
     /// Call this where the owner serves a message, or stop calling it.
@@ -177,10 +215,9 @@ enum OwnerMessage {
     /// that lane.
     Catalog(catalog::CatalogMessage),
     Disconnect(ClientId),
-    PixelsRead {
-        ticket: u64,
-        result: Result<crate::editor::pixels::PixelAnswer, Error>,
-    },
+    /// The tile service answered a parked read: the answer waits in the owner's own channel of
+    /// them, which the owner drains after every message ([`Owner::pixels_read`]).
+    PixelsRead,
     Stop,
 }
 
@@ -294,8 +331,15 @@ pub struct PreviewRequest {
     pub gpu: bool,
     /// At a percentage zoom of 100% or more, the region of the output stage a draft's GPU preview
     /// is drawn over at full scale, and the physical pixels an output pixel takes there
-    /// ([`crate::GpuView::Region`]); `None` at Fit, where the bounds decide.
+    /// ([`crate::GpuView::Region`]); `None` for a whole frame, where the bounds decide: at Fit, and
+    /// at a percentage zoom below 100%, whose bounds are the displayed size of the whole stage
+    /// ([`crate::GpuView::Fit`]).
     pub gpu_region: Option<(crate::modules::Region, f64)>,
+    /// Over a region, the figure its plan's own bytes pass before the draft is planned at the
+    /// reduced stage of the view's area too ([`crate::GpuPreview::reduced`]):
+    /// [`crate::REDUCED_AFTER_BYTES`] unless a caller names another, as a test of a small
+    /// photograph held to a small budget does.
+    pub gpu_reduce_after: u64,
 }
 
 impl PreviewRequest {
@@ -311,6 +355,7 @@ impl PreviewRequest {
             proxy: None,
             gpu: false,
             gpu_region: None,
+            gpu_reduce_after: crate::REDUCED_AFTER_BYTES,
         }
     }
     /// Show this entry instead of the current one.
@@ -350,6 +395,13 @@ impl PreviewRequest {
     pub fn gpu_region(mut self, rect: crate::modules::Region, magnification: f64) -> Self {
         self.gpu = true;
         self.gpu_region = Some((rect, magnification));
+        self
+    }
+
+    /// Plan the draft at the reduced stage of the view's area beside a region whose plan's own
+    /// figures pass `bytes` ([`Self::gpu_reduce_after`]).
+    pub fn reduce_regions_after(mut self, bytes: u64) -> Self {
+        self.gpu_reduce_after = bytes;
         self
     }
 }
@@ -986,19 +1038,24 @@ impl OwnerHandle {
         // channel.
         let catalog =
             catalog::CatalogLanes::new(catalog::Poster::new(sender.clone()), activity.clone());
-        let join = std::thread::spawn(move || {
-            owner_loop(
-                service,
-                host,
-                jobs,
-                sources,
-                catalog,
-                completions,
-                receiver,
-                worker,
-                owner_activity,
-            )
-        });
+        let join = std::thread::Builder::new()
+            .name(OWNER_THREAD.into())
+            .spawn(move || {
+                owner_loop(
+                    service,
+                    host,
+                    jobs,
+                    sources,
+                    catalog,
+                    completions,
+                    receiver,
+                    worker,
+                    owner_activity,
+                )
+            })
+            .map_err(|error| {
+                Error::internal(format!("the catalog owner could not be started: {error}"))
+            })?;
         Ok((
             Self {
                 sender,
@@ -1059,11 +1116,12 @@ impl OwnerHandle {
             .expect("the owner is running");
     }
 
-    /// Have the point worker call `hold` before each evaluation, or stop holding it.
+    /// Have the owner's own reference tile service call `hold` before it answers each call, or
+    /// stop calling it.
     #[cfg(test)]
-    pub(crate) fn hold_points(&self, hold: Option<point::Hold>) {
+    pub(crate) fn hold_tiles(&self, hold: Option<crate::tiles::Hold>) {
         self.sender
-            .send(OwnerMessage::HoldPoints(hold))
+            .send(OwnerMessage::HoldTiles(hold))
             .expect("the owner is running");
     }
 
@@ -1085,12 +1143,12 @@ impl OwnerHandle {
         answer.recv().expect("the owner answered")
     }
 
-    /// How many planned samples wait behind the one the point worker is evaluating.
+    /// How many calls wait behind the one the owner's own reference tile service is answering.
     #[cfg(test)]
-    pub(crate) fn points_waiting(&self) -> usize {
+    pub(crate) fn tiles_waiting(&self) -> usize {
         let (reply, answer) = sync_channel(1);
         self.sender
-            .send(OwnerMessage::PointsWaiting(reply))
+            .send(OwnerMessage::TilesWaiting(reply))
             .expect("the owner is running");
         answer.recv().expect("the owner answered")
     }
@@ -1143,12 +1201,36 @@ impl OwnerHandle {
     }
 
     pub fn call(&self, client: ClientId, request: ApiRequest) -> Result<ApiResponse, Error> {
+        self.call_parking(client, request, true)
+    }
+
+    /// [`Self::call`] for a caller that must not wait on a pixel read, such as the desktop's
+    /// synchronous gesture calls on its interface thread: a call whose plans read a pixel the
+    /// session's memo does not hold is answered at once with `not-ready` and
+    /// `data.reason` = [`PIXEL_READ_REQUIRED`], having changed nothing, rather than parked until
+    /// the tile service has read it. The caller sends the same call again through [`Self::call`]
+    /// where it may wait. A desktop-internal path, not a JSON method.
+    pub fn call_unparked(
+        &self,
+        client: ClientId,
+        request: ApiRequest,
+    ) -> Result<ApiResponse, Error> {
+        self.call_parking(client, request, false)
+    }
+
+    fn call_parking(
+        &self,
+        client: ClientId,
+        request: ApiRequest,
+        parks: bool,
+    ) -> Result<ApiResponse, Error> {
         let (sender, receiver) = sync_channel(1);
         self.sender
             .send(OwnerMessage::Call(OwnerCall {
                 client,
                 request,
                 response: ResponseSender::Blocking(sender),
+                parks,
             }))
             .map_err(|_| Error::protocol("catalog owner is unavailable"))?;
         receiver
@@ -1171,6 +1253,7 @@ impl OwnerHandle {
                 client,
                 request,
                 response,
+                parks: true,
             }))
             .map_err(|error| match error {
                 TrySendError::Full(_) => {
@@ -1208,6 +1291,29 @@ impl OwnerHandle {
         receiver
             .recv()
             .map_err(|_| Error::protocol("catalog owner stopped before preview"))?
+    }
+
+    /// Report which renderer draws the picture of the process hosting this owner, as its display
+    /// knows it: every client's session then carries it, and each session that held another one is
+    /// touched, so a client keeping its newest session sees the change. Answers `client`'s own
+    /// session. A desktop-internal path, not a JSON method: no client of the API can claim a
+    /// renderer, and a host that draws nothing never reports one. It emits no event.
+    pub fn report_renderer(
+        &self,
+        client: ClientId,
+        renderer: Renderer,
+    ) -> Result<ClientSession, Error> {
+        let (reply, answer) = sync_channel(1);
+        self.sender
+            .send(OwnerMessage::Renderer {
+                client,
+                renderer,
+                reply,
+            })
+            .map_err(|_| Error::protocol("catalog owner is unavailable"))?;
+        answer
+            .recv()
+            .map_err(|_| Error::protocol("catalog owner stopped before the renderer was reported"))
     }
 
     /// Hand the owner a report the caller's own preview worker produced for this identity. The next
@@ -1252,9 +1358,30 @@ fn owner_loop(
     let preferences = host.preferences.read().unwrap_or_default();
     service.set_auto_collapse(preferences.auto_collapse_history());
     service.set_auto_lens_profile(preferences.auto_lens_profile());
+    let renderer = host.launch_renderer();
+    // The host's GPU provider of the tile contract, or the reference renderer's service, which
+    // starts nothing until it is asked: every pixel read and every export goes through it.
+    #[cfg(test)]
+    let mut reference_tiles = None;
+    let tiles: Arc<dyn crate::tiles::TileService> = match host.tiles() {
+        Some(tiles) => tiles,
+        None => {
+            let reference = Arc::new(crate::tiles::ReferenceTiles::new());
+            #[cfg(test)]
+            {
+                reference_tiles = Some(reference.clone());
+            }
+            reference
+        }
+    };
+    let (pixel_answers, answered_pixels) = channel();
     let mut owner = Owner {
         service,
         host,
+        renderer,
+        tiles,
+        #[cfg(test)]
+        reference_tiles,
         jobs,
         #[cfg(test)]
         export_hold: None,
@@ -1266,8 +1393,9 @@ fn owner_loop(
         log: EventLog::default(),
         requests: RequestTable::default(),
         announced: Vec::new(),
-        points: PointWorker::new(POINT_QUEUE_CAPACITY),
         pixel_completions,
+        pixel_answers,
+        answered_pixels,
         parked_reads: HashMap::new(),
         next_pixel_ticket: 0,
         watchers: HashMap::new(),
@@ -1306,42 +1434,36 @@ fn owner_loop(
         // The client whose request this message is: the events it records do not wake that client.
         let caller = match &message {
             OwnerMessage::Call(call) => Some(call.client),
-            OwnerMessage::PixelsRead { ticket, .. } => owner
-                .parked_reads
-                .get(ticket)
-                .map(|parked| parked.call.client),
             _ => None,
         };
         // A panic while serving one message is contained: whoever the message owed an answer is
         // answered `internal`, and the owner serves the next message. Every durable write is one
         // transaction and the entry cache moves only after a commit, so nothing is left half done.
-        let owed = match &message {
-            OwnerMessage::PixelsRead { ticket, .. } => owner
-                .parked_reads
-                .get(ticket)
-                .map(|parked| {
-                    Owed::Call(parked.call.request.id.clone(), parked.call.response.clone())
-                })
-                .unwrap_or(Owed::Nobody),
-            _ => Owed::of(&message),
-        };
+        let owed = Owed::of(&message);
         let served = catch_unwind(AssertUnwindSafe(|| {
             match message {
                 OwnerMessage::Stop => return ControlFlow::Break(()),
                 OwnerMessage::Call(call) => owner.call(call),
-                OwnerMessage::PixelsRead { ticket, result } => owner.pixels_read(ticket, result),
+                // Its answer is taken below, with any other that has arrived.
+                OwnerMessage::PixelsRead => {}
                 #[cfg(test)]
-                OwnerMessage::HoldPoints(hold) => owner.points.hold(hold),
+                OwnerMessage::HoldTiles(hold) => {
+                    if let Some(tiles) = &owner.reference_tiles {
+                        tiles.hold(hold);
+                    }
+                }
                 #[cfg(test)]
-                OwnerMessage::PointsWaiting(reply) => {
-                    let _ = reply.send(owner.points.waiting());
+                OwnerMessage::TilesWaiting(reply) => {
+                    let tiles = owner.reference_tiles.as_ref();
+                    let _ = reply.send(tiles.map_or(0, |tiles| tiles.waiting()));
                 }
                 #[cfg(test)]
                 OwnerMessage::PixelReadState(reply) => {
+                    let tiles = owner.reference_tiles.as_ref();
                     let _ = reply.send((
                         owner.parked_reads.len(),
-                        owner.points.waiting(),
-                        owner.points.active_cancel(),
+                        tiles.map_or(0, |tiles| tiles.waiting()),
+                        tiles.and_then(|tiles| tiles.active_cancel()),
                     ));
                 }
                 #[cfg(test)]
@@ -1355,6 +1477,13 @@ fn owner_loop(
                 }
                 OwnerMessage::Register { client, authority } => {
                     owner.sessions.entry(client).or_default().authority = authority;
+                }
+                OwnerMessage::Renderer {
+                    client,
+                    renderer,
+                    reply,
+                } => {
+                    let _ = reply.send(owner.report_renderer(client, renderer));
                 }
                 OwnerMessage::JobFinished { job_id, result } => {
                     if owner.jobs.kind(&job_id) == Some(JobKind::Export) {
@@ -1418,19 +1547,22 @@ fn owner_loop(
         }
         owner.notify_watchers(caller);
         owner.wake_event_waits();
+        // Every parked read the tile service has answered, after every message: its wake may not
+        // have fitted in the channel, and a read refused as it was submitted is answered on this
+        // thread, which never waits on its own channel.
+        owner.pixels_read();
         owner.wake_job_waits();
     }
     // Every live job is asked to stop first, the source worker's included, so a running export
     // stops at its next row or block and removes its temporary file however long the lanes below
     // take to stop, and before a caller can see the owner gone. Completion workers and the lanes
     // post into the receiver, so it goes next: a completion or a lane finishing as it stops is
-    // never left waiting on a full channel while the owner waits for it. The active point read is
-    // cancelled, and queued and parked callers are dropped with the owner; the index, preview and
-    // library lanes, whose workers post into the receiver too, stop after it. Then the job lanes
-    // are joined.
+    // never left waiting on a full channel while the owner waits for it. Queued and parked callers
+    // are dropped with the owner; a call its own reference tile service is answering is cancelled
+    // as that service stops, when the owner lets go of it. The index, preview and library lanes,
+    // whose workers post into the receiver too, stop after it. Then the job lanes are joined.
     owner.jobs.cancel_live();
     drop(receiver);
-    owner.points.stop();
     let Owner {
         mut jobs,
         sources,
@@ -1541,6 +1673,16 @@ pub(super) struct Call<'a> {
 pub(super) struct Owner {
     pub(super) service: EditorService,
     pub(super) host: CapabilityHost,
+    /// Which renderer draws the host's picture, which every client's session carries
+    /// ([`OwnerHandle::report_renderer`]).
+    renderer: Renderer,
+    /// The tile service every pixel read is answered by and the export lane streams each export
+    /// through: the host's GPU provider, or the reference renderer's service for a host without
+    /// one ([`HostConfig::tiles`]).
+    pub(super) tiles: Arc<dyn crate::tiles::TileService>,
+    /// The reference tile service this owner started for itself, when the host gave none.
+    #[cfg(test)]
+    reference_tiles: Option<Arc<crate::tiles::ReferenceTiles>>,
     /// Every job this owner runs, of every kind, and the lanes that run capability work and export.
     pub(super) jobs: Jobs,
     /// What every export accepted from now on calls as it begins each phase.
@@ -1559,9 +1701,13 @@ pub(super) struct Owner {
     /// What the message being handled changed, each change once. The owner records them as events
     /// when the message is handled, before it answers.
     pub(super) announced: Vec<Origin>,
-    /// Evaluates the samples through a spatial layer this owner planned, off its thread.
-    points: PointWorker,
+    /// Wakes the owner when the tile service has answered a parked read.
     pixel_completions: SyncSender<OwnerMessage>,
+    /// Where the tile service hands back parked reads' answers, and where the owner takes them.
+    /// Unbounded, so handing one back never waits: there is at most one answer for each parked
+    /// read, and parked reads are bounded.
+    pixel_answers: Sender<PixelsRead>,
+    answered_pixels: Receiver<PixelsRead>,
     parked_reads: HashMap<u64, ParkedRead>,
     next_pixel_ticket: u64,
     /// The clients that asked to be woken by other clients' changes ([`OwnerHandle::watch_events`]).
@@ -1597,18 +1743,37 @@ impl Owner {
             .map_or(ClientAuthority::Edit, |session| session.authority)
     }
 
-    /// Answer one request: find its method, answer a retry from the request table when the method
-    /// declares the owner answers its retries, otherwise call its handler, then record the events
-    /// its changes announced. A sample through a spatial layer is only planned here: the point
-    /// worker evaluates it and answers on the call's own channel, with the sequence the owner had
-    /// now, while the owner moves on.
-    fn call(&mut self, call: OwnerCall) {
-        self.call_round(call, 0, false);
+    /// The host's report of the renderer that draws its picture: every session that held another
+    /// takes it and is touched; `client`'s session is answered.
+    fn report_renderer(&mut self, client: ClientId, renderer: Renderer) -> ClientSession {
+        self.renderer = renderer;
+        for session in self.sessions.values_mut() {
+            if session.renderer != renderer {
+                session.renderer = renderer;
+                session.touch();
+            }
+        }
+        let session = self.sessions.entry(client).or_default();
+        session.renderer = renderer;
+        session.clone()
     }
 
-    fn call_round(&mut self, mut call: OwnerCall, rounds: usize, changed: bool) {
+    /// Answer one request: find its method, answer a retry from the request table when the method
+    /// declares the owner answers its retries, otherwise call its handler, then record the events
+    /// its changes announced. A call that reads pixels is only planned here: the tile service
+    /// reads them off this thread and answers on the call's own channel, with the sequence the
+    /// owner had now, while the owner moves on; a mutation whose plan reads a pixel is parked
+    /// until the service has read it, and replayed once with it ([`Self::pixels_read`]).
+    fn call(&mut self, call: OwnerCall) {
+        self.call_round(call, Replay::First);
+    }
+
+    /// [`Self::call`], or its one replay once its parked read has been answered.
+    fn call_round(&mut self, mut call: OwnerCall, replay: Replay) {
         let client = call.client;
         let session = self.sessions.entry(client).or_default();
+        // The owner's one renderer, in whatever session this call reports.
+        session.renderer = self.renderer;
         // The rollback point of a call that parks a pixel read: the session as it was, but for its
         // draft, the one part of it that grows with a brush stroke's path. No method changes the
         // draft before the last step that can park — each installs its new draft once nothing it
@@ -1618,7 +1783,7 @@ impl Owner {
         let mut before = session.clone();
         session.draft = draft;
         let began = session.draft.as_ref().map(draft_mark);
-        if rounds == 0 && call.request.method == "draft.reapply" {
+        if replay == Replay::First && call.request.method == "draft.reapply" {
             before.pixel_memo.clear();
         }
         self.service
@@ -1639,58 +1804,36 @@ impl Owner {
             );
             *session = before;
             self.announced.clear();
-            if rounds >= crate::editor::pixels::MAX_PIXEL_READ_ROUNDS {
-                let error = if changed {
-                    Error::conflict("the stack changed while its pixels were read; retry")
-                } else {
-                    Error::resource_limit("the plan requested too many successive pixel reads")
-                };
-                point::Reply::Caller {
-                    id: call.request.id,
-                    sequence: self.log.sequence,
-                    response: call.response,
-                }
-                .answer(Err(error));
-                return;
-            }
-            if self.parked_reads.len() > POINT_QUEUE_CAPACITY {
-                point::Reply::Caller { id: call.request.id, sequence: self.log.sequence, response: call.response }
-                    .answer(Err(Error::resource_limit("point samples, queries or pixel reads are already waiting; retry after one is answered")));
-                return;
-            }
-            self.next_pixel_ticket = self.next_pixel_ticket.wrapping_add(1);
-            let ticket = self.next_pixel_ticket;
-            let key = read.key.clone();
-            self.parked_reads.insert(
-                ticket,
-                ParkedRead {
+            match replay {
+                // A caller that must not wait is told so at once: nothing changed, and it sends
+                // the call again where it may wait.
+                Replay::First if !call.parks => self.refuse(
                     call,
-                    key,
-                    rounds: rounds + 1,
-                    changed,
-                },
-            );
-            if let Err(failed) = self.points.try_submit(point::PointCall {
-                client,
-                cancel: crate::Cancel::new(),
-                evaluate: Box::new(move |cancel| {
-                    read.evaluate(cancel)
-                        .map(Box::new)
-                        .map(point::PointAnswer::Pixels)
-                }),
-                reply: point::Reply::Pixels {
-                    ticket,
-                    owner: self.pixel_completions.clone(),
-                },
-            }) {
-                let (_, error) = *failed;
-                let parked = self.parked_reads.remove(&ticket).unwrap();
-                point::Reply::Caller {
-                    id: parked.call.request.id,
-                    sequence: self.log.sequence,
-                    response: parked.call.response,
+                    Error::not_ready(
+                        "the call reads a pixel off the catalog owner; send it where it may wait",
+                    )
+                    .with_data(json!({ "reason": PIXEL_READ_REQUIRED })),
+                ),
+                Replay::First => self.park(call, read, 1),
+                // The read it parked for is in its memo, so its plans ask for another, such as a
+                // collapse planning against the entry's parent: parked again, a bounded number of
+                // times.
+                Replay::Read(reads) if reads < crate::editor::pixels::MAX_PIXEL_READS => {
+                    self.park(call, read, reads + 1)
                 }
-                .answer(Err(error));
+                Replay::Read(_) => self.refuse(
+                    call,
+                    Error::resource_limit(format!(
+                        "the plan read more than {} pixels",
+                        crate::editor::pixels::MAX_PIXEL_READS
+                    )),
+                ),
+                // What its read was read from changed while it was read, and the replay needs a
+                // pixel again.
+                Replay::Stale => self.refuse(
+                    call,
+                    Error::conflict("the stack changed while its pixels were read; retry"),
+                ),
             }
             return;
         }
@@ -1728,67 +1871,121 @@ impl Owner {
             files::defer(self, call, deferred);
             return;
         }
-        let reply = point::Reply::Caller {
-            id: call.request.id,
-            sequence: self.log.sequence,
-            response: call.response,
+        let (id, sequence, response) = (call.request.id, self.log.sequence, call.response);
+        let deliver = move |result: Result<Value, Error>| {
+            let answer = match result {
+                Ok(value) => ApiResponse::value(id, sequence, value),
+                Err(error) => ApiResponse::failure(id, sequence, error),
+            };
+            let _ = response.send(answer);
         };
         match result {
-            Ok(Planned::Sample(plan)) => self.points.submit(point::PointCall {
+            Ok(Planned::Sample(plan)) => self.tiles.submit(crate::tiles::TileCall::caller(
                 client,
-                cancel: crate::Cancel::new(),
-                evaluate: Box::new(move |cancel| {
-                    methods::sample_value(plan.evaluate_cancelled(cancel)?)
-                        .map(point::PointAnswer::Value)
-                }),
-                reply,
-            }),
-            Ok(Planned::Query(plan)) => self.points.submit(point::PointCall {
+                crate::Cancel::new(),
+                move |reads, cancel| methods::sample_value(plan.read(reads, cancel)?),
+                deliver,
+            )),
+            Ok(Planned::Query(plan)) => self.tiles.submit(crate::tiles::TileCall::caller(
                 client,
-                cancel: crate::Cancel::new(),
-                evaluate: Box::new(move |cancel| {
-                    plan.evaluate(cancel).map(point::PointAnswer::Value)
-                }),
-                reply,
-            }),
-            Ok(Planned::Value(value)) => reply.answer(Ok(point::PointAnswer::Value(value))),
-            Err(error) => reply.answer(Err(error)),
+                crate::Cancel::new(),
+                move |reads, cancel| plan.evaluate(reads, cancel),
+                deliver,
+            )),
+            Ok(Planned::Value(value)) => deliver(Ok(value)),
+            Err(error) => deliver(Err(error)),
         }
     }
 
-    fn pixels_read(
+    /// Answer `call` with `error` now, with the owner's sequence.
+    fn refuse(&self, call: OwnerCall, error: Error) {
+        let _ = call.response.send(ApiResponse::failure(
+            call.request.id,
+            self.log.sequence,
+            error,
+        ));
+    }
+
+    /// Park `call` until the tile service has read `read`, which it is handed now. At most one
+    /// call more than [`crate::tiles::TILE_QUEUE_CAPACITY`] is parked — the one being read and
+    /// those waiting behind it — past which a call is refused with `resource-limit`. The read's answer comes back through the owner's own channel of them,
+    /// which never blocks whoever hands it back, this thread included when the service refuses
+    /// the read as it is submitted.
+    fn park(&mut self, call: OwnerCall, read: crate::editor::pixels::DeferredRead, reads: usize) {
+        if self.parked_reads.len() > crate::tiles::TILE_QUEUE_CAPACITY {
+            self.refuse(
+                call,
+                Error::resource_limit(
+                    "calls that read pixels are already waiting; retry after one is answered",
+                ),
+            );
+            return;
+        }
+        self.next_pixel_ticket = self.next_pixel_ticket.wrapping_add(1);
+        let ticket = self.next_pixel_ticket;
+        let client = call.client;
+        let key = read.key.clone();
+        self.parked_reads
+            .insert(ticket, ParkedRead { call, key, reads });
+        let (answers, wake) = (self.pixel_answers.clone(), self.pixel_completions.clone());
+        self.tiles.submit(crate::tiles::TileCall::pixels(
+            client,
+            crate::Cancel::new(),
+            move |reads, cancel| read.evaluate(reads, cancel),
+            move |result| {
+                if answers.send((ticket, result)).is_ok() {
+                    // A full channel already holds messages, after each of which the owner takes
+                    // every answer waiting.
+                    let _ = wake.try_send(OwnerMessage::PixelsRead);
+                }
+            },
+        ));
+    }
+
+    /// Take every parked read the tile service has answered and replay its call once: with the
+    /// pixel in the session's memo when what it was read from is still current, and without it
+    /// when the stack, the draft or the source changed while it was read, so a replay that needs
+    /// the pixel again answers `conflict` and one that no longer does — a retry its request log
+    /// answers — answers as it would have. A read that failed answers its call with the failure. A
+    /// panic while replaying one is contained as a call's is.
+    fn pixels_read(&mut self) {
+        while let Ok((ticket, result)) = self.answered_pixels.try_recv() {
+            let Some(parked) = self.parked_reads.remove(&ticket) else {
+                continue;
+            };
+            let client = parked.call.client;
+            let owed = Owed::Call(parked.call.request.id.clone(), parked.call.response.clone());
+            let replayed = catch_unwind(AssertUnwindSafe(|| self.replay(parked, result)));
+            if replayed.is_err() {
+                self.contained(owed);
+            }
+            self.notify_watchers(Some(client));
+            self.wake_event_waits();
+        }
+    }
+
+    fn replay(
         &mut self,
-        ticket: u64,
+        parked: ParkedRead,
         result: Result<crate::editor::pixels::PixelAnswer, Error>,
     ) {
-        let Some(mut parked) = self.parked_reads.remove(&ticket) else {
-            return;
-        };
-        let client = parked.call.client;
         let answer = match result {
             Ok(answer) => answer,
-            Err(error) => {
-                point::Reply::Caller {
-                    id: parked.call.request.id,
-                    sequence: self.log.sequence,
-                    response: parked.call.response,
-                }
-                .answer(Err(error));
-                return;
-            }
+            Err(error) => return self.refuse(parked.call, error),
         };
-        let session = self.sessions.entry(client).or_default();
+        let session = self.sessions.entry(parked.call.client).or_default();
         let current = self
             .service
             .pixel_key_current(&parked.key, session.draft.as_ref())
             .unwrap_or(false);
-        if current {
+        let replay = if current {
             session.pixel_memo.insert(answer);
+            Replay::Read(parked.reads)
         } else {
             session.pixel_memo.clear();
-            parked.changed = true;
-        }
-        self.call_round(parked.call, parked.rounds, parked.changed);
+            Replay::Stale
+        };
+        self.call_round(parked.call, replay);
     }
 
     /// `request` is the call's own, which a service handler may take values out of rather than copy
@@ -2175,32 +2372,64 @@ impl Owner {
             };
             // A committed stack's job carries the plans its gestures are likely to draw at its
             // view, so the desktop warms their pipelines when the stack or the view changes rather
-            // than when a drag begins; and the stack's own plan and the boundary every gesture
-            // starts from, which the desktop holds before a gesture begins.
+            // than when a drag begins; and its picture at rest on the GPU, the stack's own plan
+            // from the source, which every stack has.
             if let (true, None, Some(view), None) = (request.gpu, draft, view, request.layer_count)
             {
-                job.gpu_warm = crate::render::gpu::plan_warm(&job.evaluation, view)
+                if let Ok(warm) = crate::render::gpu::plan_warm_list(&job.evaluation, view) {
+                    job.gpu_warm = Some(std::sync::Arc::new(warm));
+                }
+                job.gpu_rest = crate::render::gpu::plan_rest(&job.evaluation, view)
                     .ok()
-                    .map(Into::into);
-                job.gpu_resident = crate::render::gpu::plan_resident(&job.evaluation, view)
+                    .map(Box::new);
+            }
+            // A truncated job — a crop draft's input stage, the layers before the crop — carries
+            // the prefix's picture at rest on the GPU, its tiles reduced to the view where the
+            // view draws the stage smaller than it is; no gesture draws over it, so no warm list.
+            // A prefix the GPU cannot draw names why in the plan's tiles, and the job's own frame
+            // is the reference's.
+            if let (true, None, Some(view), Some(count)) =
+                (request.gpu, draft, view, request.layer_count)
+            {
+                // The prefix's own evaluation, as the worker truncates the stack: the first
+                // `count` layers, beside the whole mask table, over the job's source and context,
+                // compiled once here. `O(layers)`, no pixel.
+                let evaluation = &job.evaluation;
+                let whole = evaluation.recipe();
+                let prefix = crate::Evaluation::new(
+                    evaluation.registry().clone(),
+                    evaluation.context().clone(),
+                    evaluation.source().clone(),
+                    evaluation.entry().clone(),
+                    crate::Recipe {
+                        layers: whole.layers.iter().take(count).cloned().collect(),
+                        ..whole.clone()
+                    },
+                    None,
+                );
+                job.gpu_rest = crate::render::gpu::plan_rest(&prefix, view)
                     .ok()
-                    .flatten()
                     .map(Box::new);
             }
             if let (true, Some(draft), Some(view), None) =
                 (request.gpu, draft, view, request.layer_count)
             {
                 job.gpu = Some(Box::new(
-                    crate::render::gpu::plan_preview(&job.evaluation, draft, view).unwrap_or_else(
-                        |error| crate::GpuPreview {
-                            answer: crate::GpuAnswer::Fallback(crate::GpuFallback::Unplannable(
-                                error.detail,
-                            )),
-                            boundary: None,
-                            cpu_shape: None,
-                            layer: None,
-                        },
-                    ),
+                    crate::render::gpu::plan_preview_reducing(
+                        &job.evaluation,
+                        draft,
+                        view,
+                        request.gpu_reduce_after,
+                    )
+                    .unwrap_or_else(|error| crate::GpuPreview {
+                        answer: crate::GpuAnswer::Fallback(crate::GpuFallback::Unplannable(
+                            error.detail,
+                        )),
+                        boundary: None,
+                        cpu_shape: None,
+                        layer: None,
+                        reduced: None,
+                    }),
                 ));
             }
             job
@@ -2239,7 +2468,7 @@ impl Owner {
             self.stop(&job_id, kind);
         }
         self.latest_preparation.remove(&client);
-        self.points.disconnect(client);
+        self.tiles.disconnect(client);
         self.parked_reads
             .retain(|_, parked| parked.call.client != client);
         self.watchers.remove(&client);
@@ -6665,14 +6894,14 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
-    /// Hold the point worker before each evaluation: `reached` receives once per sample it takes,
-    /// and each send on `release` lets one go.
-    fn hold_points(owner: &OwnerHandle) -> (std::sync::mpsc::Receiver<()>, SyncSender<()>) {
+    /// Hold the owner's reference tile service before it answers each call: `reached` receives
+    /// once per call it takes, and each send on `release` lets one go.
+    fn hold_tiles(owner: &OwnerHandle) -> (std::sync::mpsc::Receiver<()>, SyncSender<()>) {
         let (reached, reaches) = std::sync::mpsc::channel();
         let (release, released) = sync_channel::<()>(64);
         let reached = std::sync::Mutex::new(reached);
         let released = std::sync::Mutex::new(released);
-        owner.hold_points(Some(Arc::new(move || {
+        owner.hold_tiles(Some(Arc::new(move || {
             let _ = reached.lock().unwrap().send(());
             let _ = released.lock().unwrap().recv();
         })));
@@ -6680,10 +6909,10 @@ mod tests {
     }
 
     /// Unblock held calls if an assertion panics before a scoped thread is joined.
-    struct ReleasePoints(SyncSender<()>);
-    impl Drop for ReleasePoints {
+    struct ReleaseTiles(SyncSender<()>);
+    impl Drop for ReleaseTiles {
         fn drop(&mut self) {
-            for _ in 0..=POINT_QUEUE_CAPACITY + 1 {
+            for _ in 0..=crate::tiles::TILE_QUEUE_CAPACITY + 1 {
                 let _ = self.0.try_send(());
             }
         }
@@ -6768,10 +6997,11 @@ mod tests {
         owner.fault(Some(Arc::new(move |_| {
             crate::render::spatial::observe_tiles(observed.clone())
         })));
-        let worker_tiles = Arc::new(AtomicU64::new(0));
-        let observed = worker_tiles.clone();
-        owner.hold_points(Some(Arc::new(move || {
-            crate::render::spatial::observe_tiles(observed.clone())
+        let calls = Arc::new(AtomicU64::new(0));
+        let answered = calls.clone();
+        owner.hold_tiles(Some(Arc::new(move || {
+            assert_eq!(std::thread::current().name(), Some("luxforge-tiles"));
+            answered.fetch_add(1, Ordering::Relaxed);
         })));
         let applied = ok(
             &owner,
@@ -6783,7 +7013,11 @@ mod tests {
         );
         assert_eq!(applied["outcome"], json!("applied"));
         assert_eq!(owner_tiles.load(Ordering::Relaxed), 0);
-        assert_eq!(worker_tiles.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            1,
+            "one parked read, answered by the tile service"
+        );
         let state = ok(
             &owner,
             client,
@@ -6803,14 +7037,20 @@ mod tests {
             json!({"asset_id":asset,"x":10,"y":10}),
         );
         assert_eq!(sampled["rgba"], json!([1, 2, 3, 255]));
+        assert_eq!(
+            sampled["renderer"],
+            json!({"record": "reference", "reason": null})
+        );
         assert_eq!(owner_tiles.load(Ordering::Relaxed), 0);
+        assert_eq!(calls.load(Ordering::Relaxed), 2, "the sample too");
+        owner.hold_tiles(None);
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
     }
 
     #[test]
-    fn restoration_point_queue_counts_parked_reads_and_disconnect_cancels_the_running_call() {
+    fn restoration_tile_queue_counts_parked_reads_and_disconnect_cancels_the_running_call() {
         let catalog = temp("detail-parked-queue.sqlite");
         let (owner, join) = OwnerHandle::start_with(&catalog, TailPixel::registry()).unwrap();
         let editor = owner.register();
@@ -6824,12 +7064,12 @@ mod tests {
             json!({"asset_id":asset,"sharpening":40.0,
             "mutation":crate::editor::mutation_json(0,"detail")}),
         );
-        let clients: Vec<_> = (0..=POINT_QUEUE_CAPACITY)
+        let clients: Vec<_> = (0..=crate::tiles::TILE_QUEUE_CAPACITY)
             .map(|_| owner.register())
             .collect();
-        let (reached, release) = hold_points(&owner);
+        let (reached, release) = hold_tiles(&owner);
         std::thread::scope(|scope| {
-            let _release_on_exit = ReleasePoints(release.clone());
+            let _release_on_exit = ReleaseTiles(release.clone());
             let call = |client: ClientId| {
                 scope.spawn({
                     let owner = &owner;
@@ -6851,13 +7091,17 @@ mod tests {
             let running = call(clients[0]);
             reached.recv_timeout(luxforge_testbase::HANG).unwrap();
             let queued: Vec<_> = clients[1..].iter().map(|client| call(*client)).collect();
-            luxforge_testbase::wait_until("parked reads to occupy the shared point queue", || {
-                owner.points_waiting() == POINT_QUEUE_CAPACITY
-            });
+            luxforge_testbase::wait_until(
+                "parked reads to occupy the tile service's queue",
+                || owner.tiles_waiting() == crate::tiles::TILE_QUEUE_CAPACITY,
+            );
             let (parked, waiting, active) = owner.pixel_read_state();
             assert_eq!(
                 (parked, waiting),
-                (POINT_QUEUE_CAPACITY + 1, POINT_QUEUE_CAPACITY)
+                (
+                    crate::tiles::TILE_QUEUE_CAPACITY + 1,
+                    crate::tiles::TILE_QUEUE_CAPACITY
+                )
             );
             let active = active.unwrap();
             assert!(!active.is_cancelled());
@@ -6873,11 +7117,11 @@ mod tests {
             assert!(
                 refused
                     .message
-                    .contains("point samples, queries or pixel reads")
+                    .contains("calls that read pixels are already waiting")
             );
             assert_eq!(
                 owner.pixel_read_state().0,
-                POINT_QUEUE_CAPACITY + 1,
+                crate::tiles::TILE_QUEUE_CAPACITY + 1,
                 "a refused admission retains no parked call"
             );
             for client in &clients {
@@ -6916,14 +7160,17 @@ mod tests {
                 1
             );
         });
-        owner.hold_points(None);
+        owner.hold_tiles(None);
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
     }
 
+    /// A sample through a spatial layer whose Dehaze estimate is cold is read by the tile service
+    /// on its own thread, and a client that goes while it is being read cancels it before any
+    /// frame is built: no estimate is published and nothing of the budgets is left held.
     #[test]
-    fn point_sample_estimate_miss_behind_restoration_is_cancellable() {
+    fn a_sample_behind_restoration_is_read_off_the_owner_and_cancelled_by_a_disconnect() {
         let catalog = temp("detail-estimate-cancel.sqlite");
         let (owner, join) = OwnerHandle::start(&catalog).unwrap();
         let client = owner.register();
@@ -6939,35 +7186,30 @@ mod tests {
         );
         presence(&owner, client, &asset, 1, "dehaze", json!({"dehaze":30.0}));
         let context = owner.render_context();
-        assert_eq!(context.estimates().len(), 0, "the dehaze estimate is cold");
-        let reached = Arc::new(AtomicU64::new(0));
-        let count = reached.clone();
-        owner.hold_points(Some(Arc::new(move || {
-            let count = count.clone();
-            crate::render::spatial::observe_tile_checkpoint(Arc::new(move |cancel| {
-                assert_eq!(std::thread::current().name(), Some("luxforge-point"));
-                count.fetch_add(1, Ordering::Relaxed);
-                cancel.cancel();
-            }));
-        })));
-        let answer = failure(
-            &owner,
-            client,
-            "sample",
-            "render.sample",
-            json!({"asset_id":asset,"x":10,"y":10}),
-        );
-        assert_eq!(answer.code, "cancelled");
-        assert_eq!(
-            reached.load(Ordering::Relaxed),
-            1,
-            "the cold estimate's serial reduction entered its upstream restoration tile"
-        );
-        assert_eq!(
-            context.estimates().len(),
-            0,
-            "a cancelled reduction publishes no estimate"
-        );
+        let (reached, release) = hold_tiles(&owner);
+        std::thread::scope(|scope| {
+            let _release_on_exit = ReleaseTiles(release.clone());
+            let sample = scope.spawn(|| {
+                send(
+                    &owner,
+                    client,
+                    "sample",
+                    "render.sample",
+                    json!({"asset_id":asset,"x":10,"y":10}),
+                )
+            });
+            reached.recv_timeout(luxforge_testbase::HANG).unwrap();
+            let (_, _, active) = owner.pixel_read_state();
+            let active = active.expect("the tile service is reading the sample");
+            owner.disconnect(client);
+            luxforge_testbase::wait_until("the disconnect to cancel the read", || {
+                active.is_cancelled()
+            });
+            release.send(()).unwrap();
+            let answer = sample.join().unwrap();
+            assert_eq!(answer.error.expect("a cancelled read").code, "cancelled");
+        });
+        owner.hold_tiles(None);
         assert_eq!(context.spatial().in_use(), 0);
         assert_eq!(context.scratch().in_use(), 0);
         owner.stop();
@@ -6999,9 +7241,9 @@ mod tests {
             json!({"asset_id":asset,"sharpening":40.0,
             "mutation":crate::editor::mutation_json(0,"detail")}),
         );
-        let (reached, release) = hold_points(&owner);
+        let (reached, release) = hold_tiles(&owner);
         std::thread::scope(|scope| {
-            let _release_on_exit = ReleasePoints(release.clone());
+            let _release_on_exit = ReleaseTiles(release.clone());
             let pick = scope.spawn(|| {
                 send(
                     &owner,
@@ -7046,7 +7288,7 @@ mod tests {
                 json!({"exposure":0.5})
             );
         });
-        owner.hold_points(None);
+        owner.hold_tiles(None);
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
@@ -7090,10 +7332,11 @@ mod tests {
         send(owner, client, id, "render.sample", params)
     }
 
-    /// Through a spatial layer the owner only plans a sample: while the point worker holds it,
-    /// another client reads state and commits, and the held sample then answers with the value, the
-    /// entry and the snapshot it was planned against and the event sequence of that moment. Every
-    /// sample, of an entry and of a draft, equals the full render at its pixel.
+    /// The owner only plans a sample: while the tile service holds it, another client reads state
+    /// and commits, and the held sample then answers with the value, the entry and the snapshot it
+    /// was planned against and the event sequence of that moment. Every sample through a spatial
+    /// layer, of an entry and of a draft, equals the full render at its pixel and names the
+    /// reference renderer that drew it.
     #[test]
     fn a_spatial_sample_is_answered_off_the_owner_against_the_entry_it_was_planned_against() {
         let catalog = temp("point-worker.sqlite");
@@ -7133,14 +7376,18 @@ mod tests {
             );
             assert_eq!(sampled["entry_id"], planned["current_entry_id"]);
             assert_eq!(sampled["source_detail_ready"], json!(true));
+            assert_eq!(
+                sampled["renderer"],
+                json!({"record": "reference", "reason": null})
+            );
         }
 
-        let (reached, release) = hold_points(&owner);
+        let (reached, release) = hold_tiles(&owner);
         std::thread::scope(|scope| {
             let held = scope.spawn(|| sample(sampler, "held", 10, 10));
             reached
                 .recv_timeout(luxforge_testbase::HANG)
-                .expect("the point worker took the sample");
+                .expect("the tile service took the sample");
             // The owner is free: another client reads state and commits while the sample is held.
             let before = send(
                 &owner,
@@ -7174,7 +7421,7 @@ mod tests {
             );
             assert_eq!(held["rgba"], json!(frame.pixel(10, 10).unwrap()));
         });
-        owner.hold_points(None);
+        owner.hold_tiles(None);
         let _ = release.send(());
 
         // A draft's sample is planned from the drafting client's session and evaluated the same way.
@@ -7230,11 +7477,12 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
-    /// The point worker's queue is bounded: with one sample held and the queue full, the next is
-    /// refused with `resource-limit` at once, a disconnect drops only that client's waiting sample,
-    /// and a sample without a spatial layer is answered by the owner itself meanwhile.
+    /// The tile service's queue is bounded: with one sample held and the queue full, the next is
+    /// refused with `resource-limit` at once — one without a spatial layer too, since every sample
+    /// is read off the owner — the owner answers everything else meanwhile, and a disconnect drops
+    /// only that client's waiting sample.
     #[test]
-    fn a_full_point_queue_refuses_and_a_disconnect_drops_the_waiting_sample() {
+    fn a_full_tile_queue_refuses_and_a_disconnect_drops_the_waiting_sample() {
         let catalog = temp("point-queue.sqlite");
         let (owner, join) = OwnerHandle::start(&catalog).unwrap();
         let editor = owner.register();
@@ -7257,8 +7505,8 @@ mod tests {
             json!({"clarity": 60.0}),
         );
 
-        let (reached, release) = hold_points(&owner);
-        let clients: Vec<ClientId> = (0..=POINT_QUEUE_CAPACITY)
+        let (reached, release) = hold_tiles(&owner);
+        let clients: Vec<ClientId> = (0..=crate::tiles::TILE_QUEUE_CAPACITY)
             .map(|_| owner.register())
             .collect();
         std::thread::scope(|scope| {
@@ -7282,8 +7530,8 @@ mod tests {
                 .recv_timeout(luxforge_testbase::HANG)
                 .expect("the first sample is being evaluated");
             let waiting: Vec<_> = clients[1..].iter().map(|client| sample(*client)).collect();
-            luxforge_testbase::wait_until("the point queue to fill", || {
-                owner.points_waiting() >= POINT_QUEUE_CAPACITY
+            luxforge_testbase::wait_until("the tile queue to fill", || {
+                owner.tiles_waiting() >= crate::tiles::TILE_QUEUE_CAPACITY
             });
             let refused = failure(
                 &owner,
@@ -7305,19 +7553,20 @@ mod tests {
             );
             assert_eq!(undone["revision"], json!(2));
             assert_eq!(
-                ok(
+                failure(
                     &owner,
                     editor,
                     "plain",
                     "render.sample",
                     json!({"asset_id": asset, "x": 1, "y": 1})
-                )["rgba"],
-                plain["rgba"],
-                "a sample without a spatial layer is answered by the owner while the worker is held"
+                )
+                .code,
+                "resource-limit",
+                "a sample without a spatial layer waits in the same queue"
             );
             owner.disconnect(clients[1]);
-            assert_eq!(owner.points_waiting(), POINT_QUEUE_CAPACITY - 1);
-            for _ in 0..=POINT_QUEUE_CAPACITY {
+            assert_eq!(owner.tiles_waiting(), crate::tiles::TILE_QUEUE_CAPACITY - 1);
+            for _ in 0..=crate::tiles::TILE_QUEUE_CAPACITY {
                 release.send(()).unwrap();
             }
             let answered = running.join().unwrap().expect("answered");
@@ -7337,12 +7586,24 @@ mod tests {
                 );
             }
         });
+        owner.hold_tiles(None);
+        assert_eq!(
+            ok(
+                &owner,
+                editor,
+                "plain",
+                "render.sample",
+                json!({"asset_id": asset, "x": 1, "y": 1})
+            )["rgba"],
+            plain["rgba"],
+            "the Original's sample once the queue has room"
+        );
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
     }
 
-    /// On a real RAW file through Presence: every sample the point worker answers equals the full
+    /// On a real RAW file through Presence: every sample the tile service answers equals the full
     /// linear render at its pixel, far corner included. Run in release with LUXFORGE_RAW_FIXTURE
     /// pointing to a private qualified NEF, RAF or DNG.
     #[test]
@@ -7429,9 +7690,9 @@ mod tests {
         owner.fault(Some(Arc::new(move |_| {
             crate::render::spatial::observe_tiles(observed.clone())
         })));
-        let (reached, release) = hold_points(&owner);
+        let (reached, release) = hold_tiles(&owner);
         std::thread::scope(|scope| {
-            let _release_on_exit = ReleasePoints(release.clone());
+            let _release_on_exit = ReleaseTiles(release.clone());
             let held = scope.spawn(|| {
                 send(
                     &owner,
@@ -7443,7 +7704,7 @@ mod tests {
             });
             reached
                 .recv_timeout(luxforge_testbase::HANG)
-                .expect("the query reaches the point worker");
+                .expect("the query reaches the tile service");
             let state = send(
                 &owner,
                 editor,
@@ -7495,16 +7756,19 @@ mod tests {
         assert_eq!(
             owner_tiles.load(std::sync::atomic::Ordering::Relaxed),
             0,
-            "the owner only plans; all tiles run on the point worker"
+            "the owner only plans; the tile service reads every pixel"
         );
-        owner.hold_points(None);
+        owner.hold_tiles(None);
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
     }
 
+    /// A mutation parks once for each pixel its plans read and is replayed after each: a plan that
+    /// reads more than the bound — here a module that catches the deferral and reads on — is
+    /// refused with `resource-limit` after that many reads, and nothing is committed.
     #[test]
-    fn restoration_pixel_read_rounds_are_bounded_even_when_a_module_catches_the_sampler_error() {
+    fn restoration_a_plans_reads_are_bounded_even_when_a_module_catches_the_sampler_error() {
         struct ManyReads(crate::ModuleDescriptor);
         impl crate::ToolModule for ManyReads {
             fn descriptor(&self) -> &crate::ModuleDescriptor {
@@ -7525,7 +7789,7 @@ mod tests {
                 _: &crate::ActionInput,
                 c: &crate::StageContext<'_>,
             ) -> Result<crate::ActionPlan, Error> {
-                for x in 0..=crate::editor::pixels::MAX_PIXEL_READ_ROUNDS as u32 {
+                for x in 0..=crate::editor::pixels::MAX_PIXEL_READS as u32 {
                     let _ = c.sample_before(c.layers.len(), x, 0);
                 }
                 Ok(crate::ActionPlan::NoOp)
@@ -7578,7 +7842,7 @@ mod tests {
         })));
         let calls = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let observed = calls.clone();
-        owner.hold_points(Some(Arc::new(move || {
+        owner.hold_tiles(Some(Arc::new(move || {
             observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         })));
         let answer = send(
@@ -7591,7 +7855,8 @@ mod tests {
         assert_eq!(answer.error.unwrap().code, "resource-limit");
         assert_eq!(
             calls.load(std::sync::atomic::Ordering::Relaxed),
-            crate::editor::pixels::MAX_PIXEL_READ_ROUNDS as u64
+            crate::editor::pixels::MAX_PIXEL_READS as u64,
+            "one parked read for each pixel up to the bound"
         );
         assert_eq!(tiles.load(std::sync::atomic::Ordering::Relaxed), 0);
         assert_eq!(
@@ -7651,7 +7916,12 @@ mod tests {
             crate::render::MaskInputMode::for_layer(evaluation.registry(), recipe, layer),
         )
         .unwrap();
-        let [r, g, b] = pixels.linear(x, y).unwrap().unwrap();
+        // A read's linear values are `f32`, the GPU's and the reference's alike.
+        let [r, g, b] = pixels
+            .linear(x, y)
+            .unwrap()
+            .unwrap()
+            .map(|channel| f64::from(channel as f32));
         crate::PixelInput {
             r,
             g,
@@ -7660,11 +7930,14 @@ mod tests {
             y,
             width: stage.width,
             height: stage.height,
+            renderer: crate::Renderer::headless(),
         }
     }
 
+    /// A neutral pick's 25 points behind a spatial layer are one call to the tile service, whose
+    /// one session reads them all from one evaluation of the stack before Basic.
     #[test]
-    fn restoration_neutral_patch_evaluates_each_tile_once_per_query() {
+    fn restoration_neutral_patch_is_one_call_per_query() {
         let catalog = temp("detail-neutral-tile-cache.sqlite");
         let (owner, join) = OwnerHandle::start(&catalog).unwrap();
         let client = owner.register();
@@ -7677,10 +7950,10 @@ mod tests {
             "edit.set-detail",
             json!({"asset_id":asset,"luminance":30.0,"mutation":crate::editor::mutation_json(0,"detail")}),
         );
-        let tiles = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let worker_tiles = tiles.clone();
-        owner.hold_points(Some(Arc::new(move || {
-            crate::render::spatial::observe_tiles(worker_tiles.clone())
+        let calls = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let observed = calls.clone();
+        owner.hold_tiles(Some(Arc::new(move || {
+            observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         })));
         let answer = send(
             &owner,
@@ -7691,10 +7964,11 @@ mod tests {
         );
         assert!(answer.error.as_ref().is_none_or(|e| e.code != "internal"));
         assert_eq!(
-            tiles.load(std::sync::atomic::Ordering::Relaxed),
+            calls.load(std::sync::atomic::Ordering::Relaxed),
             1,
-            "25 points share the single touched tile"
+            "25 points are one call"
         );
+        owner.hold_tiles(None);
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
@@ -7850,9 +8124,9 @@ mod tests {
             json!({"asset_id":asset}),
         );
         assert_eq!(mapping["mapping"]["kind"], "warp");
-        let (reached, release) = hold_points(&owner);
+        let (reached, release) = hold_tiles(&owner);
         std::thread::scope(|scope| {
-            let _release_on_exit = ReleasePoints(release.clone());
+            let _release_on_exit = ReleaseTiles(release.clone());
             let held = scope.spawn(|| {
                 send(
                     &owner,
@@ -7896,7 +8170,7 @@ mod tests {
             assert!(answer.error.is_none(), "{:?}", answer.error);
             assert_eq!(answer.result.unwrap()["revision"], 6);
         });
-        owner.hold_points(None);
+        owner.hold_tiles(None);
         let masks = ok(
             &owner,
             painter,
@@ -8142,9 +8416,9 @@ mod tests {
         fields["component"] = created["component"].clone();
         fields["mutation"] = crate::editor::mutation_json(3, "limited");
         let (_, before) = events_after(&owner, client, 0);
-        let (reached, release) = hold_points(&owner);
+        let (reached, release) = hold_tiles(&owner);
         std::thread::scope(|scope| {
-            let _release_on_exit = ReleasePoints(release.clone());
+            let _release_on_exit = ReleaseTiles(release.clone());
             let first =
                 scope.spawn(|| send(&owner, client, "limited", "mask.add-stroke", fields.clone()));
             reached.recv_timeout(luxforge_testbase::HANG).unwrap();
@@ -8159,7 +8433,7 @@ mod tests {
             });
             luxforge_testbase::wait_until(
                 "the concurrent retry to park behind the first read",
-                || owner.points_waiting() == 1,
+                || owner.tiles_waiting() == 1,
             );
             assert_eq!(owner.pixel_read_state().0, 2);
             assert_eq!(
@@ -8187,7 +8461,7 @@ mod tests {
                 )
             );
         });
-        owner.hold_points(None);
+        owner.hold_tiles(None);
         let retry = ok(&owner, client, "final-retry", "mask.add-stroke", fields);
         assert_eq!(retry["deduplicated"], json!(true));
         assert_eq!(events_after(&owner, client, before).1, before + 1);
@@ -8230,15 +8504,17 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
+    /// A neutral pick over a stack without a spatial layer is read off the owner too: one call to
+    /// the tile service.
     #[test]
-    fn restoration_pointwise_neutral_query_stays_on_the_owner() {
+    fn restoration_pointwise_neutral_query_is_read_off_the_owner() {
         let catalog = temp("pointwise-query-owner.sqlite");
         let (owner, join) = OwnerHandle::start(&catalog).unwrap();
         let client = owner.register();
         let state = import_asset(&owner, client, &fixture());
         let calls = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let observed = calls.clone();
-        owner.hold_points(Some(Arc::new(move || {
+        owner.hold_tiles(Some(Arc::new(move || {
             observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         })));
         let answer = send(
@@ -8249,14 +8525,18 @@ mod tests {
             json!({"asset_id":state["asset"]["id"],"x":240,"y":160}),
         );
         assert!(answer.error.as_ref().is_none_or(|e| e.code != "internal"));
-        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        owner.hold_tiles(None);
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
     }
 
+    /// A seed read while another client commits is read from a stack that is no longer current:
+    /// the read is discarded, the draft's one replay needs the pixel again, and `draft.set` answers
+    /// `conflict` after that one read, leaving the draft as it was.
     #[test]
-    fn restoration_parked_read_discards_changed_inputs_and_refuses_after_four_rounds() {
+    fn restoration_parked_read_of_a_changed_stack_is_discarded_and_refused_after_one_read() {
         let catalog = temp("detail-seed-race.sqlite");
         let (owner, join) = OwnerHandle::start(&catalog).unwrap();
         let painter = owner.register();
@@ -8291,7 +8571,7 @@ mod tests {
         );
         let mut limited = fields;
         limited["limit_to_colour"] = json!(true);
-        let (reached, release) = hold_points(&owner);
+        let (reached, release) = hold_tiles(&owner);
         std::thread::scope(|scope| {
             let pending = scope.spawn(|| {
                 send(
@@ -8302,21 +8582,24 @@ mod tests {
                     json!({"draft_id":draft["draft_id"],"fields":limited}),
                 )
             });
-            for round in 0..crate::editor::pixels::MAX_PIXEL_READ_ROUNDS {
-                reached
-                    .recv_timeout(luxforge_testbase::HANG)
-                    .expect("a stale seed is read again");
-                ok(
-                    &owner,
-                    other,
-                    "change",
-                    "edit.set-basic",
-                    json!({"asset_id":asset,"exposure":(round+1) as f64*0.1,"mutation":crate::editor::mutation_json(3+round as u64,&format!("change-{round}"))}),
-                );
-                release.send(()).unwrap();
-            }
+            reached
+                .recv_timeout(luxforge_testbase::HANG)
+                .expect("the seed is being read");
+            ok(
+                &owner,
+                other,
+                "change",
+                "edit.set-basic",
+                json!({"asset_id":asset,"exposure":0.1,"mutation":crate::editor::mutation_json(3,"change")}),
+            );
+            release.send(()).unwrap();
             let answer = pending.join().unwrap();
             assert_eq!(answer.error.unwrap().code, "conflict");
+            assert_eq!(
+                owner.pixel_read_state().0,
+                0,
+                "nothing is parked after the replay"
+            );
         });
         let held = ok(
             &owner,
@@ -8327,7 +8610,7 @@ mod tests {
         );
         assert_eq!(held["draft_revision"], json!(0));
         assert_eq!(held["fields"], json!({}));
-        owner.hold_points(None);
+        owner.hold_tiles(None);
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
@@ -8370,7 +8653,7 @@ mod tests {
         );
         let mut limited = fields;
         limited["limit_to_colour"] = json!(true);
-        let (reached, release) = hold_points(&owner);
+        let (reached, release) = hold_tiles(&owner);
         std::thread::scope(|scope| {
             let pending = scope.spawn(|| {
                 send(
@@ -8398,7 +8681,7 @@ mod tests {
         );
         assert_eq!(held["draft_revision"], json!(0));
         assert_eq!(held["fields"], json!({}));
-        owner.hold_points(None);
+        owner.hold_tiles(None);
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
@@ -8455,7 +8738,7 @@ mod tests {
         owner.fault(Some(Arc::new(move |_| {
             crate::render::spatial::observe_tiles(observed.clone())
         })));
-        let (reached, release) = hold_points(&owner);
+        let (reached, release) = hold_tiles(&owner);
         std::thread::scope(|scope| {
             let first = scope.spawn(|| {
                 send(
@@ -8483,7 +8766,7 @@ mod tests {
         });
         let reads = Arc::new(std::sync::atomic::AtomicU64::new(1));
         let observed = reads.clone();
-        owner.hold_points(Some(Arc::new(move || {
+        owner.hold_tiles(Some(Arc::new(move || {
             observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         })));
         for tick in 0..99 {
@@ -8535,9 +8818,284 @@ mod tests {
         assert_eq!(
             owner_tiles.load(std::sync::atomic::Ordering::Relaxed),
             0,
-            "the owner only plans; all tiles run on the point worker"
+            "the owner only plans; the tile service reads every pixel"
         );
-        owner.hold_points(None);
+        owner.hold_tiles(None);
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// Every pixel read leaves the owner's thread (performance rule 5), pointwise stacks included:
+    /// on a stack of colour layers alone and on one behind Detail, `render.sample`, the neutral
+    /// picker, `mask.sample-input`, a colour-limited stroke's seed and `edit.set-pixel` are each
+    /// read by the tile service on its own thread, while the owner, on its thread named for it,
+    /// evaluates no tile; a drafted stroke's later ticks and its commit reuse its seed.
+    #[test]
+    fn every_pixel_read_leaves_the_owner_thread() {
+        for detail in [false, true] {
+            let catalog = temp(&format!("every-read-off-owner-{detail}.sqlite"));
+            let registry = Arc::new(ModuleRegistry::developer());
+            let (owner, join) = OwnerHandle::start_with(&catalog, registry).unwrap();
+            let client = owner.register();
+            let state = import_asset(&owner, client, &fixture());
+            let asset = state["asset"]["id"].clone();
+            let mut revision = 0;
+            if detail {
+                ok(
+                    &owner,
+                    client,
+                    "detail",
+                    "edit.set-detail",
+                    json!({"asset_id":asset,"luminance":30.0,
+                    "mutation":crate::editor::mutation_json(revision,"detail")}),
+                );
+                revision += 1;
+            }
+            let stroke = json!({"points":[[0.5,0.5]],"size":0.1,"feather":40.0,"flow":80.0,
+                "erase":false,"limit_to_colour":false,"colour_refine":50.0});
+            let mut request = stroke.clone();
+            request["asset_id"] = asset.clone();
+            request["mutation"] = crate::editor::mutation_json(revision, "brush");
+            let created = ok(&owner, client, "brush", "mask.add-stroke", request);
+            revision += 1;
+            ok(
+                &owner,
+                client,
+                "bind",
+                "edit.set-basic",
+                json!({"asset_id":asset,"mask":created["mask"],"exposure":0.5,
+                "mutation":crate::editor::mutation_json(revision,"bind")}),
+            );
+            revision += 1;
+
+            let owner_threads = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let owner_tiles = Arc::new(AtomicU64::new(0));
+            let (seen, observed) = (owner_threads.clone(), owner_tiles.clone());
+            owner.fault(Some(Arc::new(move |_| {
+                seen.lock()
+                    .unwrap()
+                    .push(std::thread::current().name().map(str::to_owned));
+                crate::render::spatial::observe_tiles(observed.clone());
+            })));
+            let calls = Arc::new(AtomicU64::new(0));
+            let answered = calls.clone();
+            owner.hold_tiles(Some(Arc::new(move || {
+                assert_eq!(std::thread::current().name(), Some("luxforge-tiles"));
+                answered.fetch_add(1, Ordering::Relaxed);
+            })));
+            let read = |what: &str, expected: u64| {
+                assert_eq!(
+                    calls.load(Ordering::Relaxed),
+                    expected,
+                    "detail={detail}: {what} is read by the tile service"
+                );
+            };
+
+            let sampled = ok(
+                &owner,
+                client,
+                "sample",
+                "render.sample",
+                json!({"asset_id":asset,"x":240,"y":160}),
+            );
+            assert_eq!(
+                sampled["renderer"],
+                json!({"record": "reference", "reason": null})
+            );
+            read("render.sample", 1);
+            let picked = send(
+                &owner,
+                client,
+                "pick",
+                "query.neutral-sample",
+                json!({"asset_id":asset,"x":240,"y":160}),
+            );
+            assert!(
+                picked.error.as_ref().is_none_or(|e| e.code != "internal"),
+                "{:?}",
+                picked.error
+            );
+            read("the neutral picker", 2);
+            let input = ok(
+                &owner,
+                client,
+                "input",
+                "mask.sample-input",
+                json!({"asset_id":asset,"mask":created["mask"],"x":240,"y":160}),
+            );
+            assert_eq!(
+                input["renderer"],
+                json!({"record": "reference", "reason": null})
+            );
+            read("mask.sample-input", 3);
+            let draft = ok(
+                &owner,
+                client,
+                "begin",
+                "draft.begin",
+                json!({"asset_id":asset,"action":"mask.add-stroke",
+                "mask":created["mask"],"component":created["component"]}),
+            );
+            let mut limited = stroke;
+            limited["limit_to_colour"] = json!(true);
+            ok(
+                &owner,
+                client,
+                "tick",
+                "draft.set",
+                json!({"draft_id":draft["draft_id"],"fields":limited}),
+            );
+            read("a colour-limited stroke's seed", 4);
+            ok(
+                &owner,
+                client,
+                "tick-2",
+                "draft.set",
+                json!({"draft_id":draft["draft_id"],"fields":{"points":[[0.5,0.5],[0.52,0.5]]}}),
+            );
+            ok(
+                &owner,
+                client,
+                "commit",
+                "draft.commit",
+                json!({"draft_id":draft["draft_id"],
+                "mutation":crate::editor::mutation_json(revision,"commit")}),
+            );
+            revision += 1;
+            read(
+                "a stroke's later ticks and commit, which reuse its seed,",
+                4,
+            );
+            let pixel = ok(
+                &owner,
+                client,
+                "pixel",
+                "edit.set-pixel",
+                json!({"asset_id":asset,"x":10,"y":10,"rgb":[1,2,3],
+                "mutation":crate::editor::mutation_json(revision,"pixel")}),
+            );
+            assert_eq!(pixel["outcome"], json!("applied"));
+            read("edit.set-pixel", 5);
+
+            owner.fault(None);
+            owner.hold_tiles(None);
+            let threads = owner_threads.lock().unwrap().clone();
+            assert!(!threads.is_empty());
+            assert!(
+                threads
+                    .iter()
+                    .all(|name| name.as_deref() == Some(OWNER_THREAD)),
+                "the owner serves every call on its own thread: {threads:?}"
+            );
+            assert_eq!(
+                owner_tiles.load(Ordering::Relaxed),
+                0,
+                "the owner evaluates no tile"
+            );
+            owner.stop();
+            join.join().unwrap();
+            std::fs::remove_file(catalog).unwrap();
+        }
+    }
+
+    /// A caller that must not wait on a pixel read is answered at once: a colour-limited stroke's
+    /// first `draft.set`, sent unparked while the tile service is held, answers `not-ready` naming
+    /// the read, reads nothing and leaves the draft as it was; sent again where it may wait, it is
+    /// parked and answered; and the stroke's later ticks, whose seed the session's memo holds, are
+    /// answered unparked with no read.
+    #[test]
+    fn an_unparked_call_that_reads_a_pixel_is_answered_at_once_and_changes_nothing() {
+        let catalog = temp("unparked-read.sqlite");
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        let state = import_asset(&owner, client, &fixture());
+        let asset = state["asset"]["id"].clone();
+        let stroke = json!({"points":[[0.5,0.5]],"size":0.1,"feather":40.0,"flow":80.0,
+            "erase":false,"limit_to_colour":false,"colour_refine":50.0});
+        let mut request = stroke.clone();
+        request["asset_id"] = asset.clone();
+        request["mutation"] = crate::editor::mutation_json(0, "brush");
+        let created = ok(&owner, client, "brush", "mask.add-stroke", request);
+        ok(
+            &owner,
+            client,
+            "bind",
+            "edit.set-basic",
+            json!({"asset_id":asset,"mask":created["mask"],"exposure":0.5,
+            "mutation":crate::editor::mutation_json(1,"bind")}),
+        );
+        let draft = ok(
+            &owner,
+            client,
+            "begin",
+            "draft.begin",
+            json!({"asset_id":asset,"action":"mask.add-stroke",
+            "mask":created["mask"],"component":created["component"]}),
+        );
+        let mut limited = stroke;
+        limited["limit_to_colour"] = json!(true);
+        let set = |id: &str, fields: &Value| ApiRequest {
+            id: id.into(),
+            method: "draft.set".into(),
+            params: json!({"draft_id":draft["draft_id"],"fields":fields}),
+            token: None,
+        };
+        let calls = Arc::new(AtomicU64::new(0));
+        let counted = calls.clone();
+        let (reached, release) = hold_tiles(&owner);
+        let gate: crate::tiles::Hold = Arc::new(move || {
+            counted.fetch_add(1, Ordering::Relaxed);
+        });
+        // The service is held: an unparked call that waited on it would never return.
+        let refused = owner
+            .call_unparked(client, set("unparked", &limited))
+            .unwrap()
+            .error
+            .expect("the read is refused at once");
+        assert_eq!(refused.code, "not-ready", "{refused:?}");
+        assert_eq!(
+            refused.data,
+            Some(json!({"reason": crate::api::PIXEL_READ_REQUIRED}))
+        );
+        assert!(
+            reached.try_recv().is_err(),
+            "nothing was handed to the tile service"
+        );
+        let read = ok(
+            &owner,
+            client,
+            "read",
+            "draft.read",
+            json!({"draft_id":draft["draft_id"]}),
+        );
+        assert_eq!(read["draft_revision"], json!(0), "the draft is as it was");
+        // Sent where it may wait, the same call is parked and answered once the read is.
+        owner.hold_tiles(Some(gate));
+        drop((reached, release));
+        let answered = send(
+            &owner,
+            client,
+            "parked",
+            "draft.set",
+            set("parked", &limited).params,
+        );
+        assert!(answered.error.is_none(), "{:?}", answered.error);
+        assert_eq!(calls.load(Ordering::Relaxed), 1, "one read");
+        // A later tick finds the seed in the memo and is answered unparked, reading nothing.
+        let tick = owner
+            .call_unparked(
+                client,
+                set("tick", &json!({"points":[[0.5,0.5],[0.52,0.5]]})),
+            )
+            .unwrap();
+        assert!(tick.error.is_none(), "{:?}", tick.error);
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            1,
+            "the memo answers the tick"
+        );
+        owner.hold_tiles(None);
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();

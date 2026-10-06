@@ -305,7 +305,7 @@ impl Editor {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
         self.event("open_requested", || json!({"file":file}));
-        let proxy = self.proxy_bounds();
+        let proxy = self.drawn();
         import_task(
             self.owner.clone(),
             self.client,
@@ -338,6 +338,7 @@ impl Editor {
                 self.presentation.compare_after = None;
                 self.document.compare_return = None;
                 self.document.compare_hold = false;
+                self.gpu_compare_end();
             }
         }
     }
@@ -391,7 +392,7 @@ impl Editor {
         if self.sync.poll.start().is_none() {
             return Task::none();
         }
-        let proxy = self.proxy_bounds();
+        let proxy = self.drawn();
         sync_task(
             self.owner.clone(),
             self.client,
@@ -516,8 +517,10 @@ impl Editor {
         self.document.state = Some(refresh.state);
         self.show_entry(refresh.job.evaluation.entry().id.clone());
         self.outcome(Outcome::EntryRequested(refresh.job.evaluation.entry()));
-        self.presentation.preview_generation = self.request_preview(refresh.job);
+        // Said before the request, which a picture the GPU presents at once answers with what is on
+        // screen.
         self.status.text = "Rendering selected history state…".into();
+        self.presentation.preview_generation = self.request_preview(refresh.job);
         // Generated fields follow the displayed entry, so a slider shows the authoritative current
         // or historical value of the module's one layer. This reads the values already fetched with
         // the recipe: no extra request, no render.
@@ -605,7 +608,7 @@ impl Editor {
         let asset = state.asset.id.clone();
         self.busy = true;
         self.status.text = format!("Running {method}…");
-        let proxy = self.proxy_bounds();
+        let proxy = self.drawn();
         state_task(
             self.owner.clone(),
             self.client,

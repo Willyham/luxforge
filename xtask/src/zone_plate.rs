@@ -20,7 +20,7 @@
 //! [performance]: ../../docs/specs/performance.md
 use crate::scenario::pixels::luminance;
 use image::RgbImage;
-use luxforge_reference::srgb;
+use luxforge_reference::{srgb, tolerance};
 
 /// Linear light's sRGB code, unrounded, in `0.0..=255.0`, by the one shared test reference.
 fn encode(linear: f64) -> f64 {
@@ -42,50 +42,22 @@ fn linear_luminance(source: &RgbImage) -> Vec<f64> {
 }
 
 /// `source` reduced to `width` by `height` by an area-weighted box average of its linear light,
-/// as sRGB codes (unrounded) in row-major order. Each output pixel averages exactly the source
-/// area it covers, fractional edge texels weighted by the part they overlap.
+/// as sRGB codes (unrounded) in row-major order: the independent reduction the GPU-qualification
+/// harness reduces its reference frames with ([`tolerance::area_average`]), over the luminance.
+/// Each output pixel averages exactly the source area it covers, fractional edge texels weighted by
+/// the part they overlap.
 pub fn reference(source: &RgbImage, (width, height): (u32, u32)) -> Vec<f64> {
-    let (sw, sh) = (source.width() as usize, source.height() as usize);
-    let (w, h) = (width as usize, height as usize);
     let light = linear_luminance(source);
-    let mut sums = vec![0.0f64; w * h];
-    let mut prefix = vec![0.0f64; sw + 1];
-    // The source position a boundary between output pixels falls on, and the sum of a row's
-    // texels up to a fractional position.
-    let column_edge = |x: usize| x as f64 * sw as f64 / w as f64;
-    let row_edge = |y: usize| y as f64 * sh as f64 / h as f64;
-    let up_to = |prefix: &[f64], row: &[f64], at: f64| -> f64 {
-        let whole = (at.floor() as usize).min(sw);
-        let fraction = at - whole as f64;
-        prefix[whole]
-            + if whole < sw {
-                fraction * row[whole]
-            } else {
-                0.0
-            }
-    };
-    for sy in 0..sh {
-        let row = &light[sy * sw..(sy + 1) * sw];
-        for x in 0..sw {
-            prefix[x + 1] = prefix[x] + row[x];
-        }
-        let (top, bottom) = (sy as f64, (sy + 1) as f64);
-        let first = ((top * h as f64 / sh as f64).floor() as usize).min(h - 1);
-        let last = (((bottom * h as f64 / sh as f64).ceil() as usize).max(1) - 1).min(h - 1);
-        for oy in first..=last {
-            let overlap = bottom.min(row_edge(oy + 1)) - top.max(row_edge(oy));
-            if overlap <= 0.0 {
-                continue;
-            }
-            let output = &mut sums[oy * w..(oy + 1) * w];
-            for (ox, sum) in output.iter_mut().enumerate() {
-                let (x0, x1) = (column_edge(ox), column_edge(ox + 1));
-                *sum += overlap * (up_to(&prefix, row, x1) - up_to(&prefix, row, x0));
-            }
-        }
-    }
-    let area = (sw as f64 / w as f64) * (sh as f64 / h as f64);
-    sums.into_iter().map(|sum| encode(sum / area)).collect()
+    let columns = source.width() as usize;
+    tolerance::area_average(
+        (source.width(), source.height()),
+        (width, height),
+        1,
+        |y, row| row.copy_from_slice(&light[y as usize * columns..(y as usize + 1) * columns]),
+    )
+    .into_iter()
+    .map(encode)
+    .collect()
 }
 
 /// What the zone plate says of one capture.

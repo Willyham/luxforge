@@ -13,8 +13,8 @@ use crate::{
     mask_brush_smoke as mask_brush, mask_combine_smoke as mask_combine,
     mask_interactions_smoke as mask_interactions, mask_panel_smoke as mask_panel,
     mask_range_smoke as mask_range, mask_smoke as mask, minify_smoke as minify,
-    mixer_smoke as mixer, performance_smoke as performance, presence_smoke as presence,
-    presets_smoke as presets, raw_panel_smoke as raw_panel,
+    mixer_smoke as mixer, no_gpu_render_smoke as no_gpu_render, performance_smoke as performance,
+    presence_smoke as presence, presets_smoke as presets, raw_panel_smoke as raw_panel,
     resolve_missing_smoke as resolve_missing,
     scenario::{Checked, Checks, Fixture, Launch, Plan, Run, Step, launch::Guard},
     select_smoke as select, settings_smoke as settings, theme_smoke as theme,
@@ -69,6 +69,8 @@ pub struct LaunchSpec {
     pub disable: &'static [&'static str],
     /// Draw the photograph at Fit through the GPU preview stage's identity program.
     pub gpu_identity: bool,
+    /// Refuse the editor's GPU stage, as a machine whose adapter cannot run it does.
+    pub no_gpu_render: bool,
     pub developer: bool,
     /// A watcher to wait with, and the file what it records is kept in.
     pub watch: Option<(&'static str, Watch)>,
@@ -84,6 +86,7 @@ pub const APP: LaunchSpec = LaunchSpec {
     catalog: None,
     disable: &[],
     gpu_identity: false,
+    no_gpu_render: false,
     developer: false,
     watch: None,
     deadline: None,
@@ -342,7 +345,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: GPU_IDENTITY,
-        about: "One JPEG at Fit drawn by the GPU preview stage's identity program, with its path, budget and label, then the GPU preview turned off and on from the palette",
+        about: "One JPEG at Fit drawn by the GPU preview stage's identity program, with its path, budget and label",
         launches: &[LaunchSpec {
             plan: gpu_identity_plan,
             gpu_identity: true,
@@ -355,8 +358,7 @@ pub static SCENARIOS: &[Scenario] = &[
             "The launch passes `--evidence-gpu-identity`, the evidence run's test hook: the editor \
              holds each Fit frame it presents as an rgba16float boundary and draws the photograph \
              through the photo surface's GPU stage with the identity program, the frame itself \
-             staying the fallback. The palette's GPU preview entry then turns the preference off, \
-             when the desktop hands the stage no plan, and on again.",
+             staying the fallback.",
         ),
         own: None,
     },
@@ -373,17 +375,17 @@ pub static SCENARIOS: &[Scenario] = &[
         source: Source::Fixtures(&[gpu_preview::FIXTURE]),
         window: Some(PANELLED),
         note: Some(
-            "Each gesture opens with a CPU tick whose preview job carries the one boundary \
-             request; a scripted wait lets the boundary arrive and the sequence compile, and the \
-             gesture's later ticks are drawn on the GPU with no preview job. The checks read the \
-             tick and job events of each step and compare each GPU frame with the CPU frame of \
-             the same settings.",
+            "Each gesture draws from a boundary derived on the GPU from the source the photograph's \
+             own job handed the surface; a scripted wait lets the surface evaluate the plan and \
+             the sequence compile, and the gesture's later ticks are drawn on the GPU with no \
+             preview job. The checks read the tick and job events of each step and compare each \
+             GPU frame with the CPU frame of the same settings.",
         ),
         own: None,
     },
     Scenario {
         name: gpu_preview_zoom::SCENARIO,
-        about: "Basic drags at 100% and 200% drawn on the GPU over the visible region at full scale with no preview job per tick, correlated with the CPU frame of their settings, a drag at 800% panned past its region, Presence drags and Basic drags under Presence at 100%, and a drag at 50% drawn on the CPU with the status bar's notice saying why",
+        about: "Basic drags at 100% and 200% drawn on the GPU over the visible region at full scale with no preview job per tick, correlated with the CPU frame of their settings, a drag at 800% panned past its region, Presence drags and Basic drags under Presence at 100%, and drags at 50% and 33% drawn on the GPU over the whole stage at its displayed size",
         launches: &[
             LaunchSpec {
                 plan: gpu_preview_zoom::plan,
@@ -391,8 +393,8 @@ pub static SCENARIOS: &[Scenario] = &[
                 deadline: Some(Duration::from_secs(150)),
                 ..APP
             },
-            // The first launch's script holds the evidence's 64 steps, so the drag below 100% is
-            // its own short launch.
+            // The first launch's script holds the evidence's 64 steps, so the drags below 100%
+            // are their own short launch.
             LaunchSpec {
                 name: "below",
                 script: "script-below.json",
@@ -404,12 +406,34 @@ pub static SCENARIOS: &[Scenario] = &[
         source: Source::Fixtures(&[gpu_preview_zoom::FIXTURE]),
         window: Some(PANELLED),
         note: Some(
-            "Each drag opens with a CPU tick whose region job carries the one boundary request, for \
-             the region the view shows; a scripted wait lets the boundary arrive and the sequence \
-             compile, and the drag's later ticks are drawn on the GPU with no preview job of any \
-             kind. The checks read each step's tick and job events, the visible region and the \
-             plan's region recorded with each frame, and compare each GPU frame with the CPU frame \
-             its release commits.",
+            "Each drag draws from a boundary derived on the GPU from the source the surface holds, \
+             a window of it cut at full scale over the region the view shows at 100% and above and \
+             the source reduced to the displayed-size proxy below 100%; a scripted wait lets the \
+             surface evaluate the plan and the sequence compile, and the drag's later ticks are \
+             drawn on the GPU with no preview job of any kind. The checks read \
+             each step's tick and job events, the visible region and the plan's region recorded \
+             with each frame, or below 100% the proxy the boundary holds against the view's bounds \
+             and the CPU frame, and compare each GPU frame with the CPU frame its release commits.",
+        ),
+        own: None,
+    },
+    Scenario {
+        name: no_gpu_render::SCENARIO,
+        about: "The editor launched with --no-gpu-render: the session names the reference renderer for no-adapter, every frame of an open, a Basic drag and its release at Fit and at 100% is drawn on the CPU path with no plan handed to the surface, each drag on its display-size proxy and each release sharp, the status bar says the reference renderer draws, at rest too, and an export is the reference renderer's for refused",
+        launches: &[LaunchSpec {
+            plan: no_gpu_render::plan,
+            no_gpu_render: true,
+            ..APP
+        }],
+        verify: no_gpu_render::verify,
+        source: Source::Fixtures(&[no_gpu_render::FIXTURE]),
+        window: Some(PANELLED),
+        note: Some(
+            "The launch passes `--no-gpu-render`, which refuses the photo surface's GPU stage before \
+             the window opens, as a machine whose adapter cannot run it does: the stage's \
+             capability check answers unavailable, the desktop hands it no plan, and every frame \
+             is the reference renderer's. The window itself is still drawn by the adapter each \
+             frame identifies.",
         ),
         own: None,
     },
@@ -454,25 +478,12 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: viewport::REGION,
-        about: "Masked, cropped 100% viewport draft, overlays, settle, history and GPU draws",
+        about: "Masked, cropped 100% viewport draft on the GPU's region with its mask coverage, overlays, release, history and GPU draws",
         launches: &[LaunchSpec {
             plan: viewport::region_plan,
             ..APP
         }],
         verify: viewport::verify_region,
-        source: Source::Fixtures(&["fixtures/generated/24mp.jpg"]),
-        window: Some(PANELLED),
-        note: None,
-        own: None,
-    },
-    Scenario {
-        name: viewport::FALLBACK,
-        about: "Estimate-after-spatial viewport refusal and exact fallback over two masks",
-        launches: &[LaunchSpec {
-            plan: viewport::fallback_plan,
-            ..APP
-        }],
-        verify: viewport::verify_fallback,
         source: Source::Fixtures(&["fixtures/generated/24mp.jpg"]),
         window: Some(PANELLED),
         note: None,
@@ -703,7 +714,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "export",
-        about: "The Export menu, two exports written and read back, and a refused one",
+        about: "The Export menu, two GPU exports and a reference one written and read back, the GPU's within the display limit of the reference's, one GPU export repeated byte for byte, and a refused one",
         launches: &[LaunchSpec {
             plan: export::plan,
             ..APP
@@ -840,11 +851,11 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: performance::SCENARIO,
-        about: "The Performance section while a heavy edit renders, against the runner's own readings",
+        about: "The Performance section over a 60 MP heavy edit and its reference export, listed running and finished, its memory held to the runner's own readings on idle frames",
         launches: &[LaunchSpec {
             plan: performance::plan,
             watch: Some((performance::READINGS, performance::watch)),
-            // This functional scenario waits for a full 60 MP neighbourhood render and fixed
+            // This functional scenario waits for a 60 MP reference export of the heavy stack and fixed
             // sampling windows. Let the editor's 60-second script deadline report a failure
             // before the parent reaps it; latency budgets belong to the quiet-host timing tier.
             deadline: Some(Duration::from_secs(75)),
@@ -1212,13 +1223,20 @@ pub fn launch_planned(
         }
         (scenario.verify)(run, &checked)?;
         run.sources_unchanged()?;
-        run.record(
-            "backend",
-            checked
-                .last()
-                .and_then(|launch| launch.frames.last())
-                .map_or(Value::Null, |frame| frame.state()["backend"].clone()),
-        );
+        // The adapter that drew the run, identified as wgpu describes it: its device type tells a
+        // software rasterizer (`Cpu`, lavapipe on Linux CI) from a GPU, so the run says which it
+        // ran on. Each launch's own is in `launches`.
+        let backend = checked
+            .last()
+            .and_then(|launch| launch.frames.last())
+            .map_or(Value::Null, |frame| frame.state()["backend"].clone());
+        ensure(
+            backend["device_type"]
+                .as_str()
+                .is_some_and(|kind| !kind.is_empty()),
+            format!("The run recorded no identified adapter: {backend}"),
+        )?;
+        run.record("backend", backend);
         Ok(())
     })
 }
@@ -1244,6 +1262,9 @@ fn launch_of(
     }
     if spec.gpu_identity {
         launch = launch.gpu_identity();
+    }
+    if spec.no_gpu_render {
+        launch = launch.no_gpu_render();
     }
     if spec.developer {
         launch = launch.developer();
@@ -1357,12 +1378,22 @@ fn plain_checks(scenario: &str, launch: &Checked) -> Result {
             ensure(uploaded || reused, "Missing current photograph readiness")?;
             if reused {
                 let first = launch.frames[0].state();
+                let (gpu, first_gpu) = (&state["surface"]["gpu"], &first["surface"]["gpu"]);
+                // The unchanged picture is drawn: where the GPU draws it at rest, the view plan
+                // over the boundary the first open drew, ready and with no CPU frame under it;
+                // otherwise the CPU frame of the unchanged version.
+                let drawn = if gpu["drawing_path"] == json!("gpu") {
+                    !gpu["drawn_gpu_boundary"].is_null()
+                        && gpu["drawn_gpu_boundary"] == first_gpu["drawn_gpu_boundary"]
+                        && gpu["gpu_ready_boundary"] == gpu["drawn_gpu_boundary"]
+                        && gpu["drawn_full_version"].is_null()
+                } else {
+                    gpu["drawn_full_version"] == state["surface"]["version"]
+                };
                 ensure(
                     state["surface"]["version"] == first["surface"]["version"]
-                        && state["surface"]["gpu"]["upload_bytes"]
-                            == first["surface"]["gpu"]["upload_bytes"]
-                        && state["surface"]["gpu"]["drawn_full_version"]
-                            == state["surface"]["version"]
+                        && gpu["upload_bytes"] == first_gpu["upload_bytes"]
+                        && drawn
                         && state["surface"]["gpu"]["drawn_photo_blank"] == json!(false)
                         && state["surface"]["gpu"]["drawn_stale_photo"] == json!(false),
                     "Reopening reused pixels without the unchanged current photograph drawn",
@@ -1371,52 +1402,59 @@ fn plain_checks(scenario: &str, launch: &Checked) -> Result {
         }
     }
     if scenario.starts_with("large") {
-        // A photo-sized source at Fit is shown as its display proxy, so the status bar's figure is
-        // the proxy phase's own render time and says it is approximate. A capture can land while a
-        // refit or the exact phase is still running, when the bar says "Rendering…"; the figure
-        // behind it is still recorded, and it must be the proxy's.
+        // A photo-sized source at Fit is drawn at rest by the GPU, the stack at full resolution in
+        // tiles reduced to the view, and the status bar names the GPU's render. A capture can land
+        // before its tiles are in, while the photograph is still the reference's exact frame
+        // reduced to the view, whose own render time the bar then gives and calls exact, or says
+        // "Rendering…" while a refit or the reference frame runs; the figure behind it is still
+        // recorded.
         let record = expect_render_times(&launch.events, &launch.frames)?;
         ensure(
             launch.frames.iter().all(|frame| {
-                let bar = &frame.state()["status_bar"];
-                bar["render_proxy"] == json!(true)
-                    && bar["render"].as_str().is_some_and(|text| {
-                        text.starts_with("Approximate render") || text == "Rendering\u{2026}"
+                let state = frame.state();
+                let bar = &state["status_bar"];
+                if gpu_at_rest(state) {
+                    bar["render"].as_str().is_some_and(names_gpu_render)
+                } else {
+                    bar["render"].as_str().is_some_and(|text| {
+                        (text.starts_with("Exact render") && state["reference"]["reduced"] == true)
+                            || text == "Rendering\u{2026}"
                     })
+                }
             }),
-            "A photo-sized frame at Fit does not report the proxy's render time",
+            "A photo-sized frame at Fit reports neither the GPU's render nor the reference's reduction",
         )?;
-        Checks::new().write(&launch.evidence, scenario, json!({"render_times": record}))?;
+        let pictures: Vec<Value> = launch
+            .frames
+            .iter()
+            .map(|frame| {
+                let state = frame.state();
+                json!({"frame": frame["file"], "picture": state["surface"]["gpu"]["picture"],
+                    "render": state["status_bar"]["render"], "rest": state["surface"]["gpu"]["rest"]})
+            })
+            .collect();
+        Checks::new().write(
+            &launch.evidence,
+            scenario,
+            json!({"render_times": record, "pictures": pictures}),
+        )?;
     }
     Ok(())
 }
 
 /// The scenario that draws its photograph through the GPU preview stage.
 const GPU_IDENTITY: &str = "gpu-identity";
-/// Its steps that turn the GPU preview off and on again from the palette.
-const GPU_PREVIEW_OFF: &str = "gpu-preview-off";
-const GPU_PREVIEW_ON: &str = "gpu-preview-on";
 
 /// The GPU-preview budget the editor records, its recorded default.
 const GPU_PREVIEW_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
 
-/// The open's frame, then the palette's GPU preview entry run twice: off, then on again. Each
-/// toggle is captured on the session round trip it sends.
+/// The open's frame of each source.
 fn gpu_identity_plan(sources: &[PathBuf]) -> Plan {
-    let mut steps: Vec<Step> = (1..=sources.len())
-        .map(|number| Step::opened(format!("open-{number}")).label("Original"))
-        .collect();
-    for (name, on) in [(GPU_PREVIEW_OFF, false), (GPU_PREVIEW_ON, true)] {
-        steps.push(
-            Step::new(
-                name,
-                luxforge_evidence::PaletteStep::Run("gpu preview".into()),
-            )
-            .commits(0)
-            .workspace("gpu_preview", json!(on)),
-        );
-    }
-    Plan::new(steps)
+    Plan::new(
+        (1..=sources.len())
+            .map(|number| Step::opened(format!("open-{number}")).label("Original"))
+            .collect(),
+    )
 }
 
 /// `load`'s checks — the fixture at its orientation, size and colours, placed at Fit — over frames
@@ -1424,9 +1462,7 @@ fn gpu_identity_plan(sources: &[PathBuf]) -> Plan {
 /// fixture's own colours are the stage's output. Each such frame's state records the hook, the GPU
 /// drawing path with no fallback, the boundary of the frame on screen with the CPU frame itself not
 /// drawn, at least one encoded pass, GPU-preview figures within the recorded budget, and the status
-/// bar's "GPU preview · N ms" with the frame's own figure. The frame captured with the GPU preview
-/// turned off from the palette is the CPU frame: no plan handed, the preference named as why, the
-/// status bar naming the CPU frame; turned on again, the GPU stage draws it once more.
+/// bar's "GPU preview · N ms" with the frame's own figure.
 fn gpu_identity(run: &mut Run, launches: &[Checked]) -> Result {
     let launch = &launches[0];
     // Every frame is the one fixture, opened once, at its orientation, size and colours at Fit,
@@ -1450,57 +1486,7 @@ fn gpu_identity(run: &mut Run, launches: &[Checked]) -> Result {
         frame.fixture(Fixture::fit(6))?;
     }
     let mut checks = Checks::new();
-    let off = launch.at(GPU_PREVIEW_OFF)?;
-    let state = off.state();
-    let surface = &state["surface"];
-    let gpu = &surface["gpu"];
-    let bar = &state["status_bar"];
-    checks.note(
-        off,
-        "the CPU frame, with the GPU preview turned off",
-        json!({
-            "gpu_preview": state["workspace"]["gpu_preview"],
-            "drawing_path": gpu["drawing_path"],
-            "plan_fallback": gpu["plan_fallback"],
-            "gpu_fallback": gpu["gpu_fallback"],
-            "drawn_gpu_boundary": gpu["drawn_gpu_boundary"],
-            "drawn_full_version": gpu["drawn_full_version"],
-            "surface_version": surface["version"],
-            "render": bar["render"],
-            "gpu_ms": bar["gpu_ms"],
-        }),
-    );
-    ensure(
-        gpu["drawing_path"] == json!("cpu")
-            && gpu["plan_fallback"] == json!({"reason": "preference-off"})
-            && gpu["gpu_fallback"].is_null()
-            && gpu["drawn_gpu_boundary"].is_null()
-            && gpu["drawn_full_version"] == surface["version"],
-        format!(
-            "With the GPU preview off the photograph was not the CPU frame named by the \
-             preference: path {}, plan fallback {}, GPU boundary {}, CPU frame {} of {}",
-            gpu["drawing_path"],
-            gpu["plan_fallback"],
-            gpu["drawn_gpu_boundary"],
-            gpu["drawn_full_version"],
-            surface["version"]
-        ),
-    )?;
-    ensure(
-        bar["gpu_ms"].is_null()
-            && bar["render"]
-                .as_str()
-                .is_some_and(|text| !text.starts_with("GPU preview")),
-        format!(
-            "The status bar names a GPU frame with the GPU preview off: {}",
-            bar["render"]
-        ),
-    )?;
-    for frame in launch
-        .frames
-        .iter()
-        .filter(|frame| frame["file"] != off["file"])
-    {
+    for frame in &launch.frames {
         let surface = &frame.state()["surface"];
         let gpu = &surface["gpu"];
         let bar = &frame.state()["status_bar"];
@@ -1510,7 +1496,6 @@ fn gpu_identity(run: &mut Run, launches: &[Checked]) -> Result {
             "the photograph drawn by the GPU stage",
             json!({
                 "gpu_identity": gpu["gpu_identity"],
-                "gpu_preview": frame.state()["workspace"]["gpu_preview"],
                 "drawing_path": gpu["drawing_path"],
                 "gpu_fallback": gpu["gpu_fallback"],
                 "plan_fallback": gpu["plan_fallback"],
@@ -1535,7 +1520,7 @@ fn gpu_identity(run: &mut Run, launches: &[Checked]) -> Result {
             ms.is_finite()
                 && (0.0..RENDER_MS_BOUND).contains(&ms)
                 && gpu["gpu_preview_frame_us"].as_f64().map(|us| us / 1000.0) == Some(ms)
-                && bar["render"] == json!(gpu_text(ms))
+                && bar["render"] == json!(frame_gpu_text(ms, frame.state()))
                 && gpu["plan_fallback"].is_null(),
             format!(
                 "{}: the status bar says {} for a GPU frame of {} µs (status figure {})",
@@ -1603,20 +1588,45 @@ pub const RENDER_MS_BOUND: f64 = 5000.0;
 /// The status bar's wording of one frame's render time, exactly as the editor's
 /// `state::status::RenderTime` formats it, so a captured frame's text is checked against its own
 /// figure rather than against a copy of the text. `approximate` is a frame that approximates a
-/// drafted RAW white balance; it and the display proxy both read as an approximate render.
-pub fn render_text(ms: f64, proxy: bool, approximate: bool) -> String {
-    let kind = if proxy || approximate {
-        "Approximate"
-    } else {
-        "Exact"
-    };
+/// drafted RAW white balance, which reads as an approximate render.
+pub fn render_text(ms: f64, approximate: bool) -> String {
+    let kind = if approximate { "Approximate" } else { "Exact" };
     format!("{kind} render \u{b7} {}", render_figure(ms))
 }
 
 /// The status bar's wording of a GPU frame's figure, exactly as the editor's
-/// `state::status::gpu_text` formats it.
-pub fn gpu_text(ms: f64) -> String {
-    format!("GPU preview \u{b7} {}", render_figure(ms))
+/// `state::status::gpu_text` formats it: "GPU render" for the committed stack at rest, "GPU
+/// preview" for a gesture's frame.
+pub fn gpu_text(ms: f64, at_rest: bool) -> String {
+    let kind = if at_rest { "GPU render" } else { "GPU preview" };
+    format!("{kind} \u{b7} {}", render_figure(ms))
+}
+
+/// The status bar's wording of a GPU frame in a captured frame's `state`: [`gpu_text`] for its
+/// picture, after "Software " while the session's renderer is the GPU on a software adapter
+/// (`--software-adapter`), as the editor's status bar says it.
+pub fn frame_gpu_text(ms: f64, state: &Value) -> String {
+    let text = gpu_text(ms, gpu_at_rest(state));
+    if state["renderer"]["software"] == json!(true) {
+        format!("Software {text}")
+    } else {
+        text
+    }
+}
+
+/// Whether a render slot's `text` names the GPU's picture at rest, on any adapter.
+pub fn names_gpu_render(text: &str) -> bool {
+    text.trim_start_matches("Software ")
+        .starts_with("GPU render")
+}
+
+/// Whether a captured frame's photograph is the GPU's picture of the committed stack at rest,
+/// as its `state.surface.gpu.picture` names it: its picture at rest in tiles or its view plan.
+pub fn gpu_at_rest(state: &Value) -> bool {
+    matches!(
+        state["surface"]["gpu"]["picture"].as_str(),
+        Some("rest" | "view")
+    )
 }
 
 /// A figure as the status bar's render slot gives it.
@@ -1641,6 +1651,12 @@ pub fn expect_render_times<F: Borrow<Value>>(events: &[Value], frames: &[F]) -> 
     let mut displayed = Vec::new();
     for event in events.iter().filter(|e| e["event"] == "preview_displayed") {
         let detail = &event["detail"];
+        // A committed stack the GPU presents with no CPU render has no worker time of its own:
+        // its frames name the interface thread's time to draw it, checked below.
+        if detail["path"] == "gpu" && detail["render_ms"].is_null() {
+            displayed.push(json!({"generation":detail["generation"],"path":"gpu"}));
+            continue;
+        }
         let ms = detail["render_ms"]
             .as_f64()
             .ok_or_else(|| format!("A preview_displayed event carries no render_ms: {detail}"))?;
@@ -1651,7 +1667,7 @@ pub fn expect_render_times<F: Borrow<Value>>(events: &[Value], frames: &[F]) -> 
                 detail["generation"]
             ),
         )?;
-        displayed.push(json!({"generation":detail["generation"],"proxy":detail["proxy"],"reason":detail["reason"],"render_ms":ms}));
+        displayed.push(json!({"generation":detail["generation"],"reduced":detail["reduced"],"reason":detail["reason"],"render_ms":ms}));
     }
     ensure(
         !displayed.is_empty(),
@@ -1676,7 +1692,7 @@ pub fn expect_render_times<F: Borrow<Value>>(events: &[Value], frames: &[F]) -> 
         // render's: a drag drawn on the GPU from its first tick.
         if let Some(gpu_ms) = bar["gpu_ms"].as_f64() {
             ensure(
-                text == gpu_text(gpu_ms),
+                text == frame_gpu_text(gpu_ms, &frame["state"]),
                 format!(
                     "{}: the status bar says {text:?} for a GPU frame of {gpu_ms} ms",
                     frame["file"]
@@ -1702,14 +1718,6 @@ pub fn expect_render_times<F: Borrow<Value>>(events: &[Value], frames: &[F]) -> 
                 frame["file"]
             ),
         )?;
-        let proxy = bar["render_proxy"] == json!(true);
-        ensure(
-            proxy == (frame["state"]["proxy"]["presented"] == json!(true)),
-            format!(
-                "{}: the status bar's proxy label disagrees with the frame on screen",
-                frame["file"]
-            ),
-        )?;
         let approximate = bar["render_approximate"] == json!(true);
         ensure(
             approximate == (frame["state"]["approximate_white_balance"] == json!(true)),
@@ -1719,13 +1727,15 @@ pub fn expect_render_times<F: Borrow<Value>>(events: &[Value], frames: &[F]) -> 
             ),
         )?;
         ensure(
-            text == render_text(ms, proxy, approximate),
+            text == render_text(ms, approximate),
             format!(
                 "{}: the status bar says {text:?} for {ms} ms",
                 frame["file"]
             ),
         )?;
-        shown.push(json!({"frame":frame["file"],"render":text,"render_ms":ms,"proxy":proxy,"approximate":approximate}));
+        shown.push(
+            json!({"frame":frame["file"],"render":text,"render_ms":ms,"approximate":approximate}),
+        );
     }
     Ok(json!({"bound_ms":RENDER_MS_BOUND,"preview_displayed":displayed,"status_bar":shown}))
 }
@@ -1739,30 +1749,32 @@ mod tests {
     /// a missing one, and a status bar that states a figure no frame reported.
     #[test]
     fn render_times_must_be_each_frames_own_and_plausible() {
-        let displayed = |ms: Value| json!({"event":"preview_displayed","detail":{"generation":2,"proxy":true,"render_ms":ms}});
-        let frame = |render: &str, ms: f64, proxy: bool| json!({"file":"frame-1.png","state":{"proxy":{"presented":proxy},"status_bar":{"render":render,"render_ms":ms,"render_proxy":proxy}}});
+        let displayed = |ms: Value| json!({"event":"preview_displayed","detail":{"generation":2,"reduced":true,"render_ms":ms}});
+        let frame = |render: &str, ms: f64, approximate: bool| json!({"file":"frame-1.png","state":{"approximate_white_balance":approximate,"status_bar":{"render":render,"render_ms":ms,"render_approximate":approximate}}});
+        assert_eq!(render_text(12.4, false), "Exact render \u{b7} 12 ms");
+        assert_eq!(render_text(0.3, false), "Exact render \u{b7} <1 ms");
+        assert_eq!(render_text(1234.0, false), "Exact render \u{b7} 1.2 s");
+        assert_eq!(render_text(9.2, true), "Approximate render \u{b7} 9 ms");
+        assert_eq!(render_text(140.0, true), "Approximate render \u{b7} 140 ms");
+        assert_eq!(gpu_text(2.4, false), "GPU preview \u{b7} 2 ms");
+        assert_eq!(gpu_text(0.2, false), "GPU preview \u{b7} <1 ms");
+        assert_eq!(gpu_text(12.4, true), "GPU render \u{b7} 12 ms");
+        let software = json!({"renderer": {"record": "gpu", "reason": null, "software": true},
+            "surface": {"gpu": {"picture": "rest"}}});
         assert_eq!(
-            render_text(12.4, true, false),
-            "Approximate render \u{b7} 12 ms"
-        );
-        assert_eq!(render_text(0.3, false, false), "Exact render \u{b7} <1 ms");
-        assert_eq!(
-            render_text(1234.0, false, false),
-            "Exact render \u{b7} 1.2 s"
+            frame_gpu_text(12.4, &software),
+            "Software GPU render \u{b7} 12 ms"
         );
         assert_eq!(
-            render_text(9.2, true, true),
-            "Approximate render \u{b7} 9 ms"
+            frame_gpu_text(2.4, &json!({"renderer": {"record": "gpu", "reason": null}})),
+            "GPU preview \u{b7} 2 ms"
         );
-        assert_eq!(
-            render_text(140.0, false, true),
-            "Approximate render \u{b7} 140 ms"
-        );
-        assert_eq!(gpu_text(2.4), "GPU preview \u{b7} 2 ms");
-        assert_eq!(gpu_text(0.2), "GPU preview \u{b7} <1 ms");
+        assert!(names_gpu_render("Software GPU render \u{b7} 12 ms"));
+        assert!(names_gpu_render("GPU render \u{b7} 12 ms"));
+        assert!(!names_gpu_render("Software GPU preview \u{b7} 12 ms"));
         let good = expect_render_times(
             &[displayed(json!(12.4))],
-            &[frame("Approximate render \u{b7} 12 ms", 12.4, true)],
+            &[frame("Exact render \u{b7} 12 ms", 12.4, false)],
         );
         assert!(good.is_ok(), "{good:?}");
         // The old figure: half a million milliseconds since the open.
@@ -1777,11 +1789,11 @@ mod tests {
         assert!(
             expect_render_times(
                 &[displayed(json!(12.4))],
-                &[frame("Approximate render \u{b7} 90 ms", 90.0, true)]
+                &[frame("Exact render \u{b7} 90 ms", 90.0, false)]
             )
             .is_err()
         );
-        // The proxy label must match the frame on screen.
+        // The approximate label must match the frame on screen.
         assert!(
             expect_render_times(
                 &[displayed(json!(12.4))],
@@ -1789,7 +1801,7 @@ mod tests {
                     .as_object()
                     .map(|object| {
                         let mut object = object.clone();
-                        object["state"]["proxy"]["presented"] = json!(true);
+                        object["state"]["approximate_white_balance"] = json!(true);
                         Value::Object(object)
                     })
                     .unwrap()]

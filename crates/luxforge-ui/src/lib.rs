@@ -13,6 +13,7 @@
 //! it holds no authoritative editing state and wakes the desktop when resources retire or a photo
 //! draw enters or leaves a temporary stale state.
 
+pub mod adapters;
 pub mod geometry;
 pub mod photo_surface;
 pub mod theme;
@@ -25,9 +26,9 @@ pub use theme::{Derived, Ink, Mode, Palette, Theme, Token};
 pub type Element<'a, Message> = iced::Element<'a, Message, Theme, iced::Renderer>;
 
 pub use photo_surface::{
-    FirstDrawn, Frame, Placement, RegionFrame, RegionOverlay, RegionQuality, SurfaceDiagnostics,
-    SurfaceId, Turn, mips_admissible, photo_surface, region_texture_admissible, set_surface_waker,
-    stage_surface, surface_diagnostics, surface_retirement_pending, viewport_surface,
+    FirstDrawn, Frame, Placement, RegionOverlay, SurfaceDiagnostics, SurfaceId, Turn,
+    mips_admissible, photo_surface, set_surface_waker, stage_surface, surface_diagnostics,
+    surface_retirement_pending, viewport_surface,
 };
 pub use widgets::*;
 

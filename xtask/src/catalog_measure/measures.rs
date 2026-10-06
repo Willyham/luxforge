@@ -943,7 +943,7 @@ fn drag(cx: &Context, name: &str, scope: &str) -> Result<Vec<Row>> {
             mask_overlay: false,
             contend: None,
             warm_ms: None,
-            gpu_preview_off: false,
+            no_gpu_render: false,
             masks: 1,
             mask_presence: false,
             window: None,

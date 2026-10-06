@@ -1,7 +1,13 @@
 //! The registry a run serves and where the capability host keeps its state.
-use super::lifecycle::host_config;
+use super::{gpu_tiles::GpuTiles, lifecycle::host_config};
 use crate::Config;
 use luxforge_core::ModuleRegistry;
+use std::sync::Arc;
+
+/// `config`'s capability host, with a worker of its own as the launch makes it.
+fn host_of(config: &Config) -> luxforge_core::HostConfig {
+    host_config(config, Arc::new(GpuTiles::pending(config.no_gpu_render)))
+}
 
 /// The desktop's `--disable-module`, `--developer` and `--proof-endpoint` reach the one assembly
 /// the core owns; what that assembly serves for each is the core's own test
@@ -52,7 +58,7 @@ fn an_evidence_run_keeps_module_state_in_its_directory_and_memory() {
         ..Config::default()
     };
     config.paths = config.resolve_paths();
-    let host = host_config(&config);
+    let host = host_of(&config);
     assert_eq!(
         host.config_dir,
         Some(evidence.join("host").join("config").join("modules"))
@@ -74,7 +80,7 @@ fn an_evidence_run_keeps_module_state_in_its_directory_and_memory() {
         ..Config::default()
     };
     config.paths = config.resolve_paths();
-    let host = host_config(&config);
+    let host = host_of(&config);
     assert_eq!(host.config_dir, Some(root.join("config").join("modules")));
     assert_eq!(
         host.resource_dir,
@@ -84,4 +90,99 @@ fn an_evidence_run_keeps_module_state_in_its_directory_and_memory() {
         !evidence.exists() && !root.exists(),
         "choosing directories creates none"
     );
+}
+
+/// What a launch knows of its renderer reaches the owner before the window opens: `--no-gpu-render`
+/// is the reference renderer for `no-adapter` from the start, and an ordinary launch the reference
+/// until its photo surface has checked the GPU stage.
+#[test]
+fn fallback_a_forced_launch_tells_the_owner_the_reference_before_its_window_opens() {
+    use luxforge_core::{Renderer, RendererReason};
+    let evidence = std::env::temp_dir().join("luxforge-evidence-renderer");
+    let launch = |no_gpu_render| {
+        let mut config = Config {
+            evidence: Some(evidence.clone()),
+            no_gpu_render,
+            ..Config::default()
+        };
+        config.paths = config.resolve_paths();
+        host_of(&config).renderer
+    };
+    assert_eq!(launch(true), Renderer::reference(RendererReason::NoAdapter));
+    assert_eq!(
+        launch(false),
+        Renderer::reference(RendererReason::SurfacePending)
+    );
+    assert!(!evidence.exists(), "choosing creates nothing");
+}
+
+/// A host whose only adapter is a software one, not adopted, is the reference renderer for
+/// `no-adapter` from before the window opens, as a forced launch is, and its tile worker answers
+/// every export with the reference for `no-adapter` and takes no adapter; a launch that asked for
+/// the software adapter waits for its surface like any other, and its worker for the window's
+/// adapter.
+#[test]
+fn fallback_a_software_only_host_tells_the_owner_its_renderer_before_its_window_opens() {
+    use luxforge_core::tiles::{TileFallback, TileService, TileStatus, TileUnavailable};
+    use luxforge_core::{Renderer, RendererReason};
+    use luxforge_ui::adapters::{LaunchRenderer, Refusal};
+    let evidence = std::env::temp_dir().join("luxforge-evidence-software");
+    let launch = |chosen| {
+        let mut config = Config {
+            evidence: Some(evidence.clone()),
+            launch_renderer: Some(chosen),
+            ..Config::default()
+        };
+        config.paths = config.resolve_paths();
+        host_of(&config).renderer
+    };
+    assert_eq!(
+        launch(LaunchRenderer::Reference(Refusal::SoftwareNotAdopted)),
+        Renderer::reference(RendererReason::NoAdapter)
+    );
+    assert_eq!(
+        launch(LaunchRenderer::Gpu { software: true }),
+        Renderer::reference(RendererReason::SurfacePending)
+    );
+    let unavailable = |reason| TileStatus::Reference(Some(TileFallback::Unavailable(reason)));
+    let worker = GpuTiles::unavailable(TileUnavailable::NoAdapter);
+    assert_eq!(worker.status(), unavailable(TileUnavailable::NoAdapter));
+    assert!(!worker.adopt_adapter("Vulkan", "llvmpipe (LLVM 19.1.7, 128 bits)"));
+    assert_eq!(worker.status(), unavailable(TileUnavailable::NoAdapter));
+    assert!(!worker.started());
+    assert!(!evidence.exists(), "choosing creates nothing");
+}
+
+/// The launch hands the owner its GPU tile worker, which starts nothing until an export asks it
+/// and waits for the desktop to name the adapter its window draws with, answering the reference as
+/// `surface-pending` until then: named once, it is the GPU's. A `--no-gpu-render` launch's worker is
+/// refused and takes no adapter.
+#[test]
+fn a_launch_hands_the_owner_its_tile_worker_which_waits_for_the_windows_adapter() {
+    use luxforge_core::tiles::{TileFallback, TileService, TileStatus, TileUnavailable};
+    let unavailable = |reason| TileStatus::Reference(Some(TileFallback::Unavailable(reason)));
+    let evidence = std::env::temp_dir().join("luxforge-evidence-tiles");
+    let mut config = Config {
+        evidence: Some(evidence.clone()),
+        ..Config::default()
+    };
+    config.paths = config.resolve_paths();
+    let worker = Arc::new(GpuTiles::pending(false));
+    let host = host_config(&config, Arc::clone(&worker));
+    let tiles = host.tiles.as_ref().expect("the launch's worker");
+    assert_eq!(tiles.status(), unavailable(TileUnavailable::Pending));
+    assert!(!worker.started(), "nothing starts before an export asks it");
+    assert!(worker.adopt_adapter("Metal", "Apple M4 Pro"));
+    assert_eq!(tiles.status(), TileStatus::Gpu, "the owner's worker, named");
+    assert!(
+        !worker.adopt_adapter("Vulkan", "llvmpipe"),
+        "the adapter is named once"
+    );
+    assert!(!worker.started());
+
+    let refused = GpuTiles::pending(true);
+    assert_eq!(refused.status(), unavailable(TileUnavailable::Refused));
+    assert!(!refused.adopt_adapter("Metal", "Apple M4 Pro"));
+    assert_eq!(refused.status(), unavailable(TileUnavailable::Refused));
+    assert!(!evidence.exists(), "choosing creates nothing");
 }

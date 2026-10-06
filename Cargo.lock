@@ -2227,6 +2227,7 @@ dependencies = [
 name = "luxforge-ui"
 version = "0.0.0"
 dependencies = [
+ "bytemuck",
  "half",
  "iced",
  "iced_wgpu",

@@ -12,7 +12,8 @@
 // - the self-guided and guided filters' coefficients and smoothing, as finishes of the vertical
 //   pass;
 // - the 4x block reduction anchored at the stage origin, and the 16x one a global estimate is
-//   taken from (`lf_presence_reduce`), and the bilinear upsample (`lf_presence_upsample`);
+//   taken from, over the boundary or, for a light link, into the whole stage's grid from each tile
+//   of it (`lf_presence_reduce`), and the bilinear upsample (`lf_presence_upsample`);
 // - the compressive soft clip (`lf_presence_soft_clip`);
 // - the atmospheric light, from the brightest dark-channel blocks (`lf_presence_atmosphere`).
 //
@@ -48,8 +49,7 @@ const lf_presence_finish_band_encoded: u32 = 5u;
 // The reductions' forms.
 const lf_presence_reduce_encoded: u32 = 0u;
 const lf_presence_reduce_dehaze: u32 = 1u;
-const lf_presence_reduce_dark: u32 = 2u;
-const lf_presence_reduce_none: u32 = 3u;
+const lf_presence_reduce_blocks: u32 = 4u;
 
 // Dehaze's apply modes.
 const lf_presence_dehaze_add: u32 = 0u;
@@ -266,18 +266,30 @@ fn lf_presence_block(at: vec2<i32>, s: i32) -> vec4<i32> {
     return vec4<i32>(low, high);
 }
 
+// The boundary texels `[x0, y0) .. [x1, y1)` block `at` of the whole stage's grid averages: the
+// stage's pixels `at * s` up to the next block or the stage's far edge `stage`, wherever the
+// boundary's window of the stage lies. A light link's tile holds every block it is run over whole,
+// its origin a multiple of `s`.
+fn lf_presence_stage_block(at: vec2<i32>, s: i32, stage: vec2<i32>) -> vec4<i32> {
+    let origin = lf_origin();
+    let low = max(at * s - origin, vec2<i32>(0));
+    let high = min(min((at + vec2<i32>(1)) * s, stage) - origin, lf_size());
+    return vec4<i32>(low, high);
+}
+
 // The mean over one block of the unit's input, stored by form: the encoded luminance's mean
 // (Clarity); the colour's mean beside its dark channel normalized by the atmospheric light in plane
-// 0, `min_c clamp(mean_c / A_c, 0, 1)` (Dehaze); or the colour's mean beside its channel minimum,
-// which the atmospheric light is chosen by (the global estimate); or nothing, where the light the
-// estimate is for is stored. Words: 0 the form, 1 s.
+// 0, `min_c clamp(mean_c / A_c, 0, 1)` (Dehaze); or, for a light link, the colour's mean beside its
+// channel minimum, which the atmospheric light is chosen by, of block `at` of the whole stage's
+// grid. Words: 0 the form, 1 s, and for the stage's grid 2 and 3 the stage's width and height.
 fn lf_presence_reduce(at: vec2<i32>, words: u32, block: u32) {
     let form = lf_word(words);
-    if form == lf_presence_reduce_none {
-        return;
-    }
     let s = i32(lf_word(words + 1u));
-    let cut = lf_presence_block(at, s);
+    var cut = lf_presence_block(at, s);
+    if form == lf_presence_reduce_blocks {
+        let stage = vec2<i32>(i32(lf_word(words + 2u)), i32(lf_word(words + 3u)));
+        cut = lf_presence_stage_block(at, s, stage);
+    }
     var sum = vec3<f32>(0.0);
     var count = 0.0;
     for (var y = cut.y; y < cut.w; y++) {
@@ -342,22 +354,17 @@ fn lf_presence_at_or_above(lane: u32, chunk: u32, n: u32, width: u32, threshold:
     return count;
 }
 
-// The atmospheric light from plane 0, the 16x reduction of the unit's input with each block's
-// channel minimum beside its colour: the mean colour of the brightest `max(min_count, ceil(n /
-// divisor))` blocks by that minimum, ties taken in row-major order, each channel floored. Every
-// lane takes a contiguous run of blocks; the threshold is found by bisecting the keys, so the
-// selection is the CPU's exactly. Stores `(A, 1)` at texel (0, 0). Words: 0 the divisor (the
-// reciprocal of the selected fraction), 1 the minimum count, 2 the floor, 3 whether the light is
-// given (1) or not (0), 4..6 the light given.
-//
-// A given light, the one the CPU stored, is written in place of one found: plane 0 holds nothing
-// then, and the search runs over no blocks, because every lane must still reach each barrier.
+// The atmospheric light from plane 0, the whole stage's 16x block means with each block's channel
+// minimum beside its colour: the mean colour of the brightest `max(min_count, ceil(n / divisor))`
+// blocks by that minimum, ties taken in row-major order, each channel floored. Every lane takes a
+// contiguous run of blocks; the threshold is found by bisecting the keys, so the selection is the
+// CPU's exactly. Stores `(A, 1)` at texel (0, 0). Words: 0 the divisor (the reciprocal of the
+// selected fraction), 1 the minimum count, 2 the floor.
 fn lf_presence_atmosphere(at: vec2<i32>, words: u32, block: u32) {
     let lane = u32(at.x);
     let size = lf_plane_size(0u);
     let width = u32(size.x);
-    let given = lf_word(words + 3u) == 1u;
-    let n = select(width * u32(size.y), 0u, given);
+    let n = width * u32(size.y);
     let divisor = lf_word(words);
     let wanted = clamp(max(lf_word(words + 1u), (n + divisor - 1u) / divisor), 1u, n);
     let chunk = (n + 255u) / 256u;
@@ -418,12 +425,7 @@ fn lf_presence_atmosphere(at: vec2<i32>, words: u32, block: u32) {
     let red = lf_presence_total(lane, sum.x);
     let green = lf_presence_total(lane, sum.y);
     let blue = lf_presence_total(lane, sum.z);
-    let found = max(vec3<f32>(red, green, blue) / f32(wanted), vec3<f32>(lf_f32(words + 2u)));
-    let light = select(
-        found,
-        vec3<f32>(lf_f32(words + 4u), lf_f32(words + 5u), lf_f32(words + 6u)),
-        given,
-    );
+    let light = max(vec3<f32>(red, green, blue) / f32(wanted), vec3<f32>(lf_f32(words + 2u)));
     if lane == 0u {
         lf_store(vec2<i32>(0), vec4<f32>(light, 1.0));
     }

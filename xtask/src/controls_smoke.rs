@@ -408,12 +408,12 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     )?;
     let events = &launch.events;
     ensure(
-        events
+        // A draft's frame is a preview job's, or a tick the GPU draws with none.
+        events.iter().any(|event| {
+            event["event"] == "slider_draft_preview" || event["event"] == "gpu_preview_tick"
+        }) && events
             .iter()
-            .any(|event| event["event"] == "slider_draft_preview")
-            && events
-                .iter()
-                .any(|event| event["event"] == "slider_draft_commit")
+            .any(|event| event["event"] == "slider_draft_commit")
             && events
                 .iter()
                 .any(|event| event["event"] == "preview_displayed"),

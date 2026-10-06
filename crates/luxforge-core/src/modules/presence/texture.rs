@@ -205,7 +205,7 @@ impl SpatialUnit for Texture {
         Ok(())
     }
 
-    fn gpu(&self, _: Option<&Global>) -> Option<GpuSpatialUnit> {
+    fn gpu(&self) -> Option<GpuSpatialUnit> {
         Some(super::gpu::texture(self))
     }
 

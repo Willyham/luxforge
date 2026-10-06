@@ -11,8 +11,9 @@
 //! controls (`controls.rs`), declared actions (`actions.rs`), the pointer and canvas picks
 //! (`pointer.rs`), crop (`crop.rs`), masks (`masks.rs`), the core-draft lifecycle (`gesture.rs`),
 //! presets (`presets.rs`), capabilities (`capabilities.rs`), the Performance section
-//! (`performance.rs`), export (`export.rs`) and evidence mode (`evidence.rs`). Routing is one match
-//! on the calling thread: it adds no task and no runtime hop.
+//! (`performance.rs`), export (`export.rs`), the renderer the picture is drawn with
+//! (`renderer.rs`) and evidence mode (`evidence.rs`). Routing is one match on the calling thread:
+//! it adds no task and no runtime hop.
 //!
 //! Each seam holds its own state in one [`Editor`] field, most of them the seam's own struct; the
 //! parts the view model reads are declared in the view-model layer and borrowed whole by
@@ -33,6 +34,9 @@ pub(crate) mod compare_after;
 pub(crate) mod controls;
 #[cfg(test)]
 mod controls_tests;
+pub(crate) mod cpu_proxy;
+#[cfg(test)]
+mod cpu_proxy_tests;
 pub(crate) mod crop;
 pub(crate) mod develop;
 pub(crate) mod draft;
@@ -47,11 +51,16 @@ pub(crate) mod gesture;
 mod gesture_tests;
 #[cfg(test)]
 mod gpu_colour_tests;
+pub(crate) mod gpu_counts;
 #[cfg(test)]
 mod gpu_dehaze_tests;
 #[cfg(test)]
 mod gpu_detail_tests;
+#[cfg(test)]
+mod gpu_drag_bench;
 pub(crate) mod gpu_identity;
+#[cfg(test)]
+mod gpu_light_tests;
 #[cfg(test)]
 mod gpu_mask_tests;
 #[cfg(test)]
@@ -63,6 +72,18 @@ pub(crate) mod gpu_preview;
 mod gpu_preview_tests;
 #[cfg(test)]
 pub(crate) mod gpu_qualification;
+#[cfg(test)]
+mod gpu_rest_tests;
+#[cfg(test)]
+mod gpu_source_tests;
+pub(crate) mod gpu_tiles;
+#[cfg(test)]
+mod gpu_tiles_tests;
+#[cfg(test)]
+mod gpu_tiles_worker_tests;
+pub(crate) mod gpu_warm;
+#[cfg(test)]
+mod gpu_white_balance_tests;
 #[cfg(test)]
 mod gpu_window_tests;
 // The one conversion Fit drags will hand the photo surface its GPU plan through; the desktop does
@@ -101,6 +122,9 @@ pub(crate) mod masks;
 #[cfg(test)]
 mod masks_tests;
 pub(crate) mod message;
+pub(crate) mod motion;
+#[cfg(test)]
+mod motion_tests;
 pub(crate) mod outcome;
 pub(crate) mod overlay;
 #[cfg(test)]
@@ -130,6 +154,9 @@ mod query_choice;
 mod remembered;
 #[cfg(test)]
 mod remembered_tests;
+pub(crate) mod renderer;
+#[cfg(test)]
+mod renderer_tests;
 pub(crate) mod select;
 pub(crate) mod select_catalog;
 #[cfg(test)]
@@ -327,7 +354,7 @@ pub(crate) struct Editor {
     pub(crate) document: state::document::Document,
     /// What the photo surface shows and the bookkeeping that decides it.
     pub(crate) presentation: preview::Presentation,
-    /// The one desired view admitted through the shared gate, and the quiet policy that settles it.
+    /// The one desired view admitted through the shared gate.
     pub(crate) view_plan: preview::ViewPlan,
     /// The pending backslash tap or temporary hold; its deadline exists only while pending.
     pub(crate) compare_key: keymap::CompareKey,
@@ -359,6 +386,10 @@ pub(crate) struct Editor {
     /// A test's stand-in for the owner's draft requests, for a photograph the owner does not hold.
     #[cfg(test)]
     pub(crate) stand_in: Option<testing::StandIn>,
+    /// Every `draft.set` and `draft.reapply` that read a pixel, sent to the blocking pool, for a
+    /// test to run as the runtime would.
+    #[cfg(test)]
+    pub(crate) reads_waiting: tasks::ReadsWaiting,
     /// The crop section's own options: the custom ratio's extents and the held modifiers.
     pub(crate) crop_section: state::CropSection,
     /// The Masks panel: selection, hover, hidden overlays, mode, brush, typing, drag, thumbnails.
@@ -420,8 +451,12 @@ pub(crate) struct Editor {
     pub(crate) gpu: gpu_preview::GpuPreviews,
     /// The settle's hand-off from the GPU frame on screen to the CPU frame that replaces it.
     pub(crate) gpu_settle: gpu_settle::GpuSettle,
+    /// The open draft's ticks the GPU does not draw: held, or waiting for their reference frame.
+    pub(crate) motion: motion::Motion,
     /// The surface's drawn frames as evidence logs them ([`drawn_frames`]).
     drawn_frames: drawn_frames::DrawnFrames,
+    /// Which renderer draws the picture, as the desktop last told the owner ([`renderer`]).
+    pub(crate) renderer: renderer::RendererReport,
     /// The whole screen as plain data, derived again after every message.
     pub(crate) workspace: Workspace,
     /// The interface's theme, which Iced reads again after every update and hands to every style
@@ -473,7 +508,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 23] = [
+const AFTER_MESSAGE: [AfterMessage; 26] = [
     view_state::after_message,
     performance::after_message,
     visibility::after_message,
@@ -483,6 +518,9 @@ const AFTER_MESSAGE: [AfterMessage; 23] = [
     preview::after_message,
     gpu_preview::after_message,
     gpu_settle::after_message,
+    gpu_counts::after_message,
+    motion::after_message,
+    renderer::after_message,
     mask_panel::after_message,
     crop::after_message,
     sync::after_message,
@@ -601,6 +639,8 @@ impl Editor {
             gesture_serial: 0,
             #[cfg(test)]
             stand_in: None,
+            #[cfg(test)]
+            reads_waiting: tasks::ReadsWaiting::default(),
             crop_section: Default::default(),
             mask_panel: Default::default(),
             armed: None,
@@ -625,7 +665,9 @@ impl Editor {
             develop: Default::default(),
             gpu: Default::default(),
             gpu_settle: Default::default(),
+            motion: Default::default(),
             drawn_frames: Default::default(),
+            renderer: renderer::RendererReport::new(config.launch_renderer()),
             workspace: Default::default(),
             theme: luxforge_ui::Theme::luxforge_dark(),
         };
@@ -677,6 +719,8 @@ impl Editor {
             "startup",
             || json!({"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"version":env!("CARGO_PKG_VERSION"),"debug_assertions":cfg!(debug_assertions),"mode":if editor.evidence.is_some() {"evidence"} else {"editor"}}),
         );
+        let launch = editor.renderer.launch();
+        editor.event("launch_renderer", || renderer::launch_record(launch));
         if let Some(stored) = &editor.preferences.catalog.missing {
             editor.event(
                 "catalog_folder_missing",
@@ -839,7 +883,6 @@ impl Editor {
             && !self.workers_busy()
             && !self.view_plan.dirty
             && !self.view_plan.in_flight
-            && self.view_plan.quiet_since.is_none()
             && self.sync.poll.idle()
     }
 
@@ -940,14 +983,23 @@ impl Editor {
             dimensions: self.presentation.dimensions,
             photo: self.presentation.has_picture(),
             clients: self.live_server.as_ref().map(LocalServer::connected),
-            rendering: self.presentation.queue.is_busy() || self.surface_photo_updating(),
+            // The picture at rest's tiles still to land are rendering too.
+            rendering: self.presentation.queue.is_busy()
+                || self.surface_photo_updating()
+                || self.gpu_rest_landing(),
             render: self.activity.render,
             gpu_frame_us: self.gpu_frame_us(),
+            gpu_at_rest: self.gpu_at_rest(),
             cpu_reason: self.gpu_cpu_reason(),
+            // Said of the reference frame alone: a stack the GPU presented waits on its compile
+            // under the frame on screen, marked rendering, short of the threshold.
+            rest_compiling: self.gpu_rest_compiling() && !self.gpu_compile_deadline(),
             render_bar: self.activity.render_bar,
             render_error: self.presentation.render_error.as_ref(),
-            analysis: self.presentation.analysis.as_ref(),
-            analysis_updating: self.presentation.analysis_updating(),
+            analysis: self.presentation.shown_analysis(),
+            // While a draft is open the counts plotted are updating unless they are an exact
+            // report of its newest revision: the frame in motion's, or the last report, are not.
+            analysis_updating: self.presentation.analysis_updating() || self.draft_counts_behind(),
             capabilities: &self.capabilities,
             presets: &self.presets.library,
             preset_form: &self.presets.form,
@@ -1000,6 +1052,7 @@ impl Editor {
             Message::Theme(message) => self.theme_update(message),
             Message::Export(message) => self.export_update(message),
             Message::Evidence(message) => self.evidence_update(message),
+            Message::Renderer(message) => self.renderer_update(message),
             Message::Select(message) => self.select_update(message),
             Message::LongWork(message) => self.long_work_update(message),
             Message::Develop(message) => self.develop_update(message),
@@ -1053,20 +1106,43 @@ impl Editor {
         if self.presentation.compare_after.is_some() {
             surfaces.clipping = None;
             surfaces.coverage = None;
-            surfaces.region_clipping = None;
             surfaces.region_coverage = None;
         }
         surfaces.gpu = self.gpu_plan(surfaces.photo);
-        // The open gesture's plan is held behind the CPU frame of its revision once that frame is
-        // presented, and tagged with the revision it draws.
-        if surfaces.gpu.is_some()
+        let identity = self
+            .evidence
+            .as_ref()
+            .is_some_and(|evidence| evidence.gpu_identity.is_some());
+        if identity {
+            // The evidence hook's identity plan is drawn in place of the frame it was held from,
+            // untagged: no gesture's hold or revision is its.
+        } else if let Some((plan, change)) = self.gpu_rest_plan() {
+            // At rest the committed stack's own view plan is the photograph, drawn in place of its
+            // frame, until its picture at rest in tiles is in, where it has one.
+            surfaces.gpu = Some(plan);
+            surfaces.gpu_hold = false;
+            surfaces.gpu_tag = None;
+            surfaces.gpu_change = Some(change);
+        } else if surfaces.gpu.is_some()
             && let Some((_, revision)) = self.gesture_gpu_plan()
         {
+            // The open gesture's plan is held behind the CPU frame of its revision once that frame
+            // is presented, and tagged with the revision it draws.
             surfaces.gpu_hold = self.gpu_held();
             surfaces.gpu_tag = Some(revision);
             surfaces.gpu_change = self.gpu.surface_change();
         }
         surfaces.gpu_warm = self.gpu.warm();
+        surfaces.gpu_source = self.gpu_source_handed();
+        surfaces.gpu_rest = self.gpu_rest_handed();
+        surfaces.stage_rest = self
+            .gpu_stage_handed()
+            .filter(|_| self.crop_stage_gpu_shown());
+        surfaces.gpu_counts = self.gpu_counts_handed();
+        let (after, after_rest) = self.gpu_compare_after();
+        surfaces.compare_gpu = after.map(|(plan, _)| plan);
+        surfaces.compare_change = after.map(|(_, change)| change);
+        surfaces.compare_rest = after_rest;
         surfaces.dissolve = self.gpu_settle.dissolve();
         surfaces
     }

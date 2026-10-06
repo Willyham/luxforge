@@ -1,15 +1,17 @@
 //! One exact restoration-input grid per overlay worker. It contains values, never a retained
-//! source, recipe or development. The downstream pointwise suffix is evaluated per cell.
+//! source, recipe or development: the leading restoration prefix's whole frame, rendered once by
+//! the reference renderer and read at each cell, and nothing of the frame once the grid is built.
+//! The downstream pointwise suffix is evaluated per cell.
 use super::{
-    Byte, Compiled, Entry, Evaluation, PixelDomain, RenderContext, RenderSource, SpatialMode,
-    color_runs, linear::Linear, spatial::Tiling,
+    Byte, Compiled, Entry, Evaluation, PixelDomain, RenderContext, RenderSource, color_runs,
+    linear::Linear, spatial::Tiling,
 };
 use crate::{
     Cancel, EffectStage, Error, GeometryMap, ModuleRegistry, Recipe, Region,
     analysis::{MaskInputGrid, cell_pixel},
 };
 use sha2::{Digest, Sha256};
-use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
+use std::{borrow::Cow, sync::Arc};
 
 pub const INPUT_GRID_MAX_CELLS: u64 = 8_000_000;
 
@@ -300,6 +302,10 @@ fn coordinate(
     .then_some((px as u32, py as u32)))
 }
 
+/// The grid's values: the restoration prefix's whole frame, as the reference renderer materializes
+/// it — every spatial segment of the prefix once, the last the restoration boundary whose output
+/// the grid reads — read at each cell's content pixel. A cell outside the content stage keeps the
+/// zero value its outside bit stands for.
 fn build<D: PixelDomain, P: Copy>(
     domain: D,
     compiled: Compiled,
@@ -316,81 +322,34 @@ fn build<D: PixelDomain, P: Copy>(
         ..
     } = request;
     let count = cells.0 as usize * cells.1 as usize;
-    let tile = compiled
-        .segments
-        .iter()
-        .rev()
-        .find_map(|s| match &s.entry {
-            Some(Entry::Spatial(entry)) => Some(Tiling::Halo.tile(&entry.operation, s.stage())),
-            _ => None,
-        })
-        .unwrap_or(512);
-    let evaluation = Evaluation::new(
+    let segments = compiled.segments.len();
+    let last = segments - 1;
+    let segment = &compiled.segments[last];
+    if !matches!(&segment.entry, Some(Entry::Spatial(_))) {
+        return Err(Error::internal(
+            "an input grid prefix must end at a restoration boundary",
+        ));
+    }
+    if segment.writes_pixels() {
+        return Err(Error::internal("an input grid prefix has a pointwise tail"));
+    }
+    let evaluation = Evaluation::framed(
         domain,
         Cow::Owned(compiled),
         Tiling::Halo,
-        SpatialMode::Point,
+        Some(wide),
+        segments,
         cancel,
         context,
-    )?
-    .with_input_width(wide);
+    )?;
     let empty = D::spatial_output([0.0; 3], true)?;
     let mut output = vec![keep(empty); count];
-    // Group cells by the stage-aligned tile, so a dense grid computes each touched tile once.
-    let mut groups: BTreeMap<(u32, u32), Vec<u32>> = BTreeMap::new();
-    for cell in 0..count {
+    for (cell, value) in output.iter_mut().enumerate() {
         if cell % 1024 == 0 {
             cancel.check()?;
         }
         if let Some((x, y)) = coordinate(transform, region, cells, cell)? {
-            groups
-                .entry((y / tile, x / tile))
-                .or_default()
-                .push(cell as u32);
-        }
-    }
-    let stage = evaluation.stage();
-    let halo: u32 = evaluation
-        .compiled
-        .segments
-        .iter()
-        .filter_map(|segment| match &segment.entry {
-            Some(Entry::Spatial(entry)) => Some(entry.operation.summed_halo(segment.stage())),
-            _ => None,
-        })
-        .sum();
-    let window_area = (u64::from(halo) * 2 + 1).pow(2).max(1);
-    for (&(ty, tx), group) in &groups {
-        cancel.check()?;
-        let rect = Region {
-            x0: tx * tile,
-            y0: ty * tile,
-            width: tile.min(stage.width - tx * tile),
-            height: tile.min(stage.height - ty * tile),
-        };
-        if group.len() as u64 >= rect.pixels() / window_area {
-            let pixels = evaluation.restoration_region(rect)?;
-            for (index, &cell) in group.iter().enumerate() {
-                if index % 1024 == 0 {
-                    cancel.check()?;
-                }
-                let (x, y) = coordinate(transform, region, cells, cell as usize)?.unwrap();
-                output[cell as usize] =
-                    keep(pixels[((y - rect.y0) * rect.width + (x - rect.x0)) as usize]);
-            }
-        } else {
-            for &cell in group {
-                cancel.check()?;
-                let (x, y) = coordinate(transform, region, cells, cell as usize)?.unwrap();
-                output[cell as usize] = keep(
-                    evaluation.restoration_region(Region {
-                        x0: x,
-                        y0: y,
-                        width: 1,
-                        height: 1,
-                    })?[0],
-                );
-            }
+            *value = keep(evaluation.spatial_entry_pixel(last, x, y)?);
         }
     }
     Ok(output)

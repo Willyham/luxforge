@@ -71,17 +71,17 @@ const WORKGROUP_LANES: u32 = 256;
 const SHARED_VALUES: u32 = 1024;
 
 /// One side of a texel pass's workgroup.
-const GROUP_SIDE: u32 = 8;
+pub(super) const GROUP_SIDE: u32 = 8;
 
 /// The binding of a pass's output plane in its second group, after every plane it reads.
-const OUTPUT_BINDING: u32 = 64;
+pub(super) const OUTPUT_BINDING: u32 = 64;
 
 /// The binding of a pass's parameters in its second group.
-const PARAMS_BINDING: u32 = 65;
+pub(super) const PARAMS_BINDING: u32 = 65;
 
 /// One pass's slice of the parameter buffer, in bytes and in words: the largest storage-binding
 /// offset alignment a device may ask for.
-const PARAMS_STRIDE: u64 = 256;
+pub(super) const PARAMS_STRIDE: u64 = 256;
 const PARAMS_WORDS: usize = (PARAMS_STRIDE / 4) as usize;
 
 /// A pass's parameters: its step's header index, its words' offset in the step's words, its span,
@@ -96,7 +96,7 @@ const PARAM_LIMIT: usize = PARAMS_WORDS - 6;
 const PARAM_ORIGIN: usize = PARAMS_WORDS - 2;
 
 /// A limit's far edge that no plane reaches, which a `vec2<i32>` holds.
-const UNLIMITED: u32 = i32::MAX as u32;
+pub(super) const UNLIMITED: u32 = i32::MAX as u32;
 
 /// How many compiled pass modules the stage keeps across sequences, the least recently used
 /// evicted first: every pass of the [`super::PIPELINE_CACHE`] sequences the pipeline keeps holds its
@@ -173,6 +173,12 @@ pub enum PlaneSize {
     Reduced(u32),
     /// A fixed size whatever the boundary.
     Fixed { width: u32, height: u32 },
+    /// The slot's light plane `k` (`docs/design/gpu-preview.md`, "The global estimate"): one
+    /// [`PlaneFormat::Quad`] texel whose `xyz` is a global estimate, Dehaze's atmospheric light,
+    /// computed from the whole stage. The slot's pool holds it for every link, whatever their
+    /// boundary ([`Pool`]); the plan's `k`-th light link writes it ([`super::light`]), and a
+    /// spatial step that declares it reads it, none of its passes writing it.
+    Light(u32),
 }
 
 /// One plane a spatial step's passes write.
@@ -188,6 +194,7 @@ impl GpuPlane {
     pub fn extent(&self, origin: (u32, u32), size: (u32, u32)) -> (u32, u32) {
         match self.size {
             PlaneSize::Fixed { width, height } => (width, height),
+            PlaneSize::Light(_) => (1, 1),
             PlaneSize::Reduced(s) => {
                 let s = s.max(1);
                 let axis = |origin: u32, length: u32| (origin + length).div_ceil(s) - origin / s;
@@ -443,11 +450,20 @@ impl GpuSpatial {
             "",
             "",
         ))
-        .chain(
-            self.planes
-                .iter()
-                .map(|plane| (StepKind::Plane(*plane), "", "")),
-        )
+        .chain(self.planes.iter().map(|plane| {
+            // Which of the slot's light planes a step reads or writes is bound when it runs — a
+            // light link's by the view it is handed ([`super::light`]), a link's by its planes'
+            // key, whose locations name the light, so another light is another key and other
+            // groups — never compiled: the same sequence whichever light that is.
+            let plane = match plane.size {
+                PlaneSize::Light(_) => GpuPlane {
+                    size: PlaneSize::Light(0),
+                    ..*plane
+                },
+                _ => *plane,
+            };
+            (StepKind::Plane(plane), "", "")
+        }))
         .chain(self.passes.iter().map(|pass| {
             (
                 StepKind::Pass(PassKey {
@@ -482,7 +498,10 @@ impl GpuSpatial {
     }
 
     /// Whether a pass reads the whole input: a workgroup's pass, or one that writes a plane of a
-    /// fixed size. Such an operation's output may change anywhere its input does.
+    /// fixed size. Such an operation's output may change anywhere its input does. And whether it
+    /// reads a light ([`Self::lights`]), which the whole stage decides: a change to the light, which
+    /// a change anywhere in the stage may make, changes its output everywhere, so a tick redraws
+    /// it whole, wherever its input changed.
     pub(super) fn global(&self) -> bool {
         self.passes
             .iter()
@@ -491,6 +510,16 @@ impl GpuSpatial {
                 .planes
                 .iter()
                 .any(|plane| matches!(plane.size, PlaneSize::Fixed { .. }))
+            || self.lights().next().is_some()
+    }
+
+    /// The slot's light planes the step declares ([`PlaneSize::Light`]), in plane order: the
+    /// lights it reads, or for a light link's step the one it writes.
+    pub fn lights(&self) -> impl Iterator<Item = u32> + '_ {
+        self.planes.iter().filter_map(|plane| match plane.size {
+            PlaneSize::Light(k) => Some(k),
+            PlaneSize::Reduced(_) | PlaneSize::Fixed { .. } => None,
+        })
     }
 
     /// The reduction of the plane pass `pass` writes: one texel a block of `s × s` stage pixels.
@@ -743,13 +772,28 @@ pub(super) fn validate_spatial(spatial: &GpuSpatial) -> Result<(), String> {
     let rgb = vector(naga::VectorSize::Tri, naga::Scalar::F32);
     let words = spatial.program.words.len() as u32;
     let planes = spatial.planes.len() as u32;
-    for plane in &spatial.planes {
+    for (number, plane) in spatial.planes.iter().enumerate() {
         let valid = match plane.size {
             PlaneSize::Reduced(s) => s >= 1,
             PlaneSize::Fixed { width, height } => width >= 1 && height >= 1,
+            PlaneSize::Light(_) => true,
         };
         if !valid {
             return Err(format!("{entry:?} declares an empty plane"));
+        }
+        // A light plane is the slot's: one `rgba32float` texel, which only a light link's step,
+        // one that draws nothing, writes; a step that draws reads it.
+        if let PlaneSize::Light(k) = plane.size {
+            let written = spatial
+                .passes
+                .iter()
+                .any(|pass| pass.output as usize == number);
+            if plane.format != PlaneFormat::Quad || (written && !spatial.applies.is_empty()) {
+                return Err(format!(
+                    "{entry:?} declares light plane {k} other than as one rgba32float texel a \
+                     light link writes"
+                ));
+            }
         }
     }
     for pass in &spatial.passes {
@@ -1331,6 +1375,23 @@ pub(super) struct CompiledPass {
     shape: PassShape,
 }
 
+impl CompiledPass {
+    /// What a light link binds and dispatches its passes with ([`super::light`]), whose planes are
+    /// its own and the pool's light planes, never a link's.
+    pub(super) fn pipeline(&self) -> &wgpu::ComputePipeline {
+        &self.pipeline
+    }
+
+    pub(super) fn layout(&self) -> &wgpu::BindGroupLayout {
+        &self.layout
+    }
+
+    /// The step and plane each of its second group's slots binds, in slot order.
+    pub(super) fn slots(&self) -> &[(usize, u32)] {
+        self.slots.planes()
+    }
+}
+
 /// Every spatial step's compiled passes, in order, and the frame's second group's layout.
 #[derive(Clone, Default)]
 pub(super) struct CompiledSpatial {
@@ -1561,6 +1622,9 @@ pub(super) enum PlaneTexture {
     /// The pool's `k`-th texture of the class ([`PoolKey`]): a scratch plane, the link's `k`-th of
     /// its class in its own plane order.
     Pool(Class, usize),
+    /// The slot's light plane `k` ([`PlaneSize::Light`]), which the pool holds for every link and
+    /// the plan's `k`-th light link writes.
+    Light(u32),
 }
 
 /// How a link lays out its planes, and what decides whether the planes it holds serve another
@@ -1649,7 +1713,10 @@ impl PlanesKey {
                 .iter()
                 .enumerate()
                 .map(|(number, plane)| {
-                    if read(number) {
+                    if let PlaneSize::Light(k) = plane.size {
+                        // The slot's, whichever link reads it: never a texture of the link's.
+                        PlaneTexture::Light(k)
+                    } else if read(number) {
                         kept.push(*plane);
                         PlaneTexture::Kept(kept.len() - 1)
                     } else {
@@ -1736,22 +1803,34 @@ pub(super) struct PoolKey {
     textures: Vec<(Class, usize)>,
     size: (u32, u32),
     origin: (u32, u32),
+    /// How many light planes it holds ([`PlaneSize::Light`]): one past the largest any link
+    /// declares, whatever the boundary.
+    lights: u32,
 }
+
+/// The bytes one light plane takes: one `rgba32float` texel.
+pub(super) const LIGHT_BYTES: u64 = 16;
 
 impl PoolKey {
     /// The pool the spatial steps of `links` take their scratch planes from over a boundary of
     /// `size` texels whose texel `(0, 0)` is stage pixel `origin`: every link of a chain, the last
-    /// one included ([`super::chain::Chain`]).
+    /// one included ([`super::chain::Chain`]), and the light planes any of them declares.
     pub(super) fn of<'a>(
         links: impl IntoIterator<Item = &'a [GpuStep]>,
         size: (u32, u32),
         origin: (u32, u32),
     ) -> Self {
         let mut most = std::collections::BTreeMap::<Class, usize>::new();
-        for key in links
-            .into_iter()
-            .filter_map(|steps| PlanesKey::of(steps, size, origin))
-        {
+        let mut lights = 0;
+        for steps in links {
+            for step in steps {
+                if let GpuStep::Spatial(spatial) = step {
+                    lights = spatial.lights().map(|k| k + 1).fold(lights, u32::max);
+                }
+            }
+            let Some(key) = PlanesKey::of(steps, size, origin) else {
+                continue;
+            };
             for &(class, count) in key.scratch() {
                 let held = most.entry(class).or_default();
                 *held = (*held).max(count);
@@ -1761,6 +1840,17 @@ impl PoolKey {
             textures: most.into_iter().collect(),
             size,
             origin,
+            lights,
+        }
+    }
+
+    /// The pool of `self`'s scratch textures holding `lights` light planes: one fitted for a light
+    /// link, which declares the light it writes, beside the links of the plan whose readers do.
+    #[cfg(any(test, feature = "qualification"))]
+    pub(super) fn with_lights(self, lights: u32) -> Self {
+        Self {
+            lights: self.lights.max(lights),
+            ..self
         }
     }
 
@@ -1788,22 +1878,62 @@ impl PoolKey {
         class.plane().extent(self.origin, self.size)
     }
 
-    /// The bytes its textures take.
+    /// The bytes its textures take, its light planes' among them.
     pub(super) fn bytes(&self) -> u64 {
         self.textures()
             .iter()
             .map(|&(class, count)| count as u64 * self.texture_bytes(class))
-            .sum()
+            .sum::<u64>()
+            + u64::from(self.lights) * LIGHT_BYTES
     }
 }
 
 /// One texture of a [`Pool`], with its view.
 pub(super) struct PoolTexture {
-    /// Held with its view; only the poison writes it directly.
-    #[cfg_attr(not(any(test, feature = "qualification")), allow(dead_code))]
+    /// Held with its view; only the poison and a light written into a light plane write it
+    /// directly.
     texture: wgpu::Texture,
     view: wgpu::TextureView,
 }
+
+impl PoolTexture {
+    /// `texture` with its view, for a light link's own textures to retire as a pool's do
+    /// ([`super::light`]).
+    pub(super) fn new(texture: wgpu::Texture) -> Self {
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        Self { texture, view }
+    }
+
+    pub(super) fn view(&self) -> &wgpu::TextureView {
+        &self.view
+    }
+
+    /// The texture, for a copy into it or a readback.
+    pub(super) fn texture(&self) -> &wgpu::Texture {
+        &self.texture
+    }
+}
+
+/// One light plane of a [`Pool`] ([`PlaneSize::Light`]), with the content key of the light its
+/// light link last wrote into it: what a step reading it folds into its passes' keys, so a light
+/// that changes runs again everything that reads it ([`Schedule`]).
+pub(super) struct LightPlane {
+    texture: PoolTexture,
+    key: Option<u64>,
+}
+
+/// What a light plane is created with: what a plane is, a light link's storage write among it, the
+/// copy a tile runner writes a light it computed into ([`Pool::write_light`]), and in a build with
+/// a readback the copy a test reads it by.
+#[cfg(not(any(test, feature = "qualification")))]
+const LIGHT_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
+    .union(wgpu::TextureUsages::STORAGE_BINDING)
+    .union(wgpu::TextureUsages::COPY_DST);
+#[cfg(any(test, feature = "qualification"))]
+const LIGHT_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
+    .union(wgpu::TextureUsages::STORAGE_BINDING)
+    .union(wgpu::TextureUsages::COPY_SRC)
+    .union(wgpu::TextureUsages::COPY_DST);
 
 /// The scratch textures a slot's links take their scratch planes from in turn, laid out as a
 /// [`PoolKey`] says, with a record of what each holds. The slot holds one for its whole life, and
@@ -1822,6 +1952,11 @@ pub(super) struct PoolTexture {
 /// - **Holders.** A counter, never restarted, hands each schedule its holder when its link's
 ///   planes are created and again at every reset, so a reset makes every record it wrote foreign
 ///   and no two schedules ever hold one.
+/// - **Light planes.** Beside the scratch, the slot's light planes ([`PlaneSize::Light`]): one
+///   texel each, kept, whatever the boundary, so a new boundary size or origin keeps them, and
+///   never poisoned. The plan's `k`-th light link writes light `k` and records its key
+///   ([`Pool::set_light_key`]); every link reading it binds it and folds that key into its
+///   passes' ([`Schedule`]) and its own ([`fold_lights`]).
 #[derive(Default)]
 pub(super) struct Pool {
     /// The boundary's size and stage origin its textures cover.
@@ -1834,7 +1969,11 @@ pub(super) struct Pool {
     generation: u64,
     /// The last holder handed out.
     holders: u64,
+    /// What the scratch textures take.
     bytes: u64,
+    /// The light planes, light `k` the `k`-th, and what they take.
+    lights: Vec<LightPlane>,
+    light_bytes: u64,
     /// Tests only: write a sentinel into every texture, and forget every record, before each
     /// link's passes ([`Pool::poison`]).
     #[cfg(any(test, feature = "qualification"))]
@@ -1857,13 +1996,13 @@ const POOL_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
 
 impl Pool {
     /// Make the pool hold what `key` lays out, before any link's planes are fitted: when `key`
-    /// covers another boundary size or origin, every texture is handed to `retire` with its bytes;
-    /// so is each texture of a class past what `key` needs, the last of the class first; and for
-    /// each class `key` needs more of, the missing textures' bytes are passed to `charge` before
-    /// they are created. Removing or replacing a texture bumps the generation; adding one leaves
-    /// every texture where it was. A refused charge is answered at once, what was created before it
-    /// held and charged, and nothing is created twice: the next fit adds only what is still
-    /// missing.
+    /// covers another boundary size or origin, every scratch texture is handed to `retire` with its
+    /// bytes; so is each texture of a class past what `key` needs, the last of the class first; and
+    /// for each class `key` needs more of, the missing textures' bytes are passed to `charge` before
+    /// they are created. The light planes follow `key`'s count alike, whatever the boundary.
+    /// Removing or replacing a texture bumps the generation; adding one leaves every texture where
+    /// it was. A refused charge is answered at once, what was created before it held and charged,
+    /// and nothing is created twice: the next fit adds only what is still missing.
     pub(super) fn fit<E>(
         &mut self,
         device: &wgpu::Device,
@@ -1939,7 +2078,107 @@ impl Pool {
                 self.bytes += each;
             }
         }
+        // The light planes, whatever the boundary: those past the plan's need retire, the last
+        // first, and those it needs beyond what the pool holds are charged, then created, holding
+        // no light yet.
+        let need = key.lights as usize;
+        if self.lights.len() > need {
+            let removed: Vec<PoolTexture> = self
+                .lights
+                .drain(need..)
+                .map(|light| light.texture)
+                .collect();
+            let bytes = removed.len() as u64 * LIGHT_BYTES;
+            self.light_bytes -= bytes;
+            self.generation += 1;
+            retire(removed, bytes);
+        }
+        if self.lights.len() < need {
+            charge((need - self.lights.len()) as u64 * LIGHT_BYTES)?;
+            while self.lights.len() < need {
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("luxforge.gpu_preview.light"),
+                    size: wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: PlaneFormat::Quad.texture(),
+                    usage: LIGHT_USAGE,
+                    view_formats: &[],
+                });
+                self.lights.push(LightPlane {
+                    texture: PoolTexture::new(texture),
+                    key: None,
+                });
+                self.light_bytes += LIGHT_BYTES;
+            }
+        }
         Ok(())
+    }
+
+    /// Light plane `k`'s view, when the pool holds it: what a link reading it binds, and the light
+    /// link writing it stores to.
+    pub(super) fn light_view(&self, k: u32) -> Option<&wgpu::TextureView> {
+        self.lights
+            .get(k as usize)
+            .map(|light| light.texture.view())
+    }
+
+    /// The content key of the light light plane `k` holds: `None` before its light link has
+    /// written one, or for a plane the pool does not hold.
+    pub(super) fn light_key(&self, k: u32) -> Option<u64> {
+        self.lights.get(k as usize).and_then(|light| light.key)
+    }
+
+    /// Record that light plane `k` now holds the light of content key `key`, which its light link
+    /// wrote in a submission before any that reads it.
+    pub(super) fn set_light_key(&mut self, k: u32, key: u64) {
+        if let Some(light) = self.lights.get_mut(k as usize) {
+            light.key = Some(key);
+        }
+    }
+
+    /// Write `light`, `[r, g, b, 1]`, into light plane `k` on `queue`, ahead of any submission
+    /// that reads it, and record it as the plane's content: what a tile runner, which computes a
+    /// plan's lights once for every tile it draws, gives each tile's pool. Nothing for a plane the
+    /// pool does not hold.
+    pub(super) fn write_light(&mut self, queue: &wgpu::Queue, k: u32, light: [f32; 4]) {
+        let Some(plane) = self.lights.get_mut(k as usize) else {
+            return;
+        };
+        let bytes: Vec<u8> = light.iter().flat_map(|value| value.to_le_bytes()).collect();
+        queue.write_texture(
+            plane.texture.texture().as_image_copy(),
+            &bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(LIGHT_BYTES as u32),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        plane.key = Some({
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::hash::DefaultHasher::new();
+            (k, light.map(f32::to_bits)).hash(&mut hasher);
+            hasher.finish()
+        });
+    }
+
+    /// Light plane `k`'s texture, for a readback.
+    #[cfg(any(test, feature = "qualification"))]
+    pub(super) fn light_texture(&self, k: u32) -> Option<&wgpu::Texture> {
+        self.lights
+            .get(k as usize)
+            .map(|light| light.texture.texture())
     }
 
     /// What the pool holds, as a layout, which a qualification session holds a later plan's to.
@@ -1953,12 +2192,13 @@ impl Pool {
                 .collect(),
             size: self.size,
             origin: self.origin,
+            lights: self.lights.len() as u32,
         }
     }
 
-    /// The bytes its textures take.
+    /// The bytes its textures take, its light planes' among them.
     pub(super) fn bytes(&self) -> u64 {
-        self.bytes
+        self.bytes + self.light_bytes
     }
 
     /// Bumped whenever a texture is removed or replaced.
@@ -2210,11 +2450,15 @@ impl Planes {
     }
 
     /// The view of the texture plane `plane` of step `step` is held in: a kept texture of the
-    /// link's, or a texture of `pool`.
+    /// link's, a scratch texture of `pool`, or one of its light planes, which fitting the pool to
+    /// every link of the plan makes it hold.
     fn view<'a>(&'a self, step: usize, plane: u32, pool: &'a Pool) -> &'a wgpu::TextureView {
         match self.key.location(step, plane) {
             Some(PlaneTexture::Kept(index)) => &self.textures[index].1,
             Some(PlaneTexture::Pool(class, number)) => pool.view(class, number),
+            Some(PlaneTexture::Light(k)) => pool
+                .light_view(k)
+                .expect("the pool holds every light plane of the plan's links"),
             None => panic!("plane {plane} of step {step} is one of the link's"),
         }
     }
@@ -2355,7 +2599,7 @@ impl Groups {
             .map(|(pass, rect)| {
                 let covered = match pass.plane.size {
                     PlaneSize::Reduced(s) => rect.reduced(s, self.origin, pass.extent),
-                    PlaneSize::Fixed { .. } => Rect::whole(pass.extent),
+                    PlaneSize::Fixed { .. } | PlaneSize::Light(_) => Rect::whole(pass.extent),
                 };
                 match pass.shape {
                     // A pass's invocations start where they would over the whole plane, every
@@ -2451,6 +2695,10 @@ impl Groups {
 /// what they last held, and once the unit is not the identity, within a drag too, they are stale
 /// against what its passes would write, or unknown when another link wrote them since, and run
 /// with every input they need.
+///
+/// A light plane ([`PlaneSize::Light`]) holds the key its light link recorded in the pool, which
+/// no pass of the step changes: it is in the key of every pass that reads it and every pass after,
+/// so a light that changes runs them, and of the step's applies, so a later step's passes run too.
 pub(super) struct Schedule {
     /// The key of what each of the link's kept textures holds, by its index.
     kept: Vec<(usize, u64)>,
@@ -2465,6 +2713,9 @@ fn hash_of(parts: impl std::hash::Hash) -> u64 {
     parts.hash(&mut hasher);
     hasher.finish()
 }
+
+/// What a light plane its light link has not written yet holds, as a key: no light link's.
+const UNLIT: u64 = u64::MAX;
 
 impl Schedule {
     /// A schedule of new planes, which hold nothing yet, with a holder drawn from `pool`.
@@ -2496,7 +2747,8 @@ impl Schedule {
         self.holder
     }
 
-    /// The key of what `texture` holds, as far as this schedule knows.
+    /// The key of what `texture` holds, as far as this schedule knows: a light plane's is the one
+    /// its light link recorded.
     fn kept(&self, texture: PlaneTexture, pool: &Pool) -> Option<u64> {
         match texture {
             PlaneTexture::Kept(index) => self
@@ -2505,6 +2757,7 @@ impl Schedule {
                 .find(|(at, _)| *at == index)
                 .map(|(_, key)| *key),
             PlaneTexture::Pool(class, number) => pool.held((class, number), self.holder),
+            PlaneTexture::Light(k) => pool.light_key(k),
         }
     }
 
@@ -2515,6 +2768,8 @@ impl Schedule {
                 None => self.kept.push((index, key)),
             },
             PlaneTexture::Pool(class, number) => pool.record((class, number), self.holder, key),
+            // Only its light link writes a light plane, never a step a schedule runs.
+            PlaneTexture::Light(_) => {}
         }
     }
 
@@ -2593,8 +2848,17 @@ impl Schedule {
                 .unwrap_or(program.len() as u32);
             program.get(start as usize..end as usize).unwrap_or(&[])
         };
-        // Forward: the key each pass writes, and what each plane holds after the whole tick.
-        let mut held: Vec<u64> = vec![0; spatial.planes.len()];
+        // Forward: the key each pass writes, and what each plane holds after the whole tick. A
+        // light plane holds what its light link last wrote, which no pass of the step changes: a
+        // pass reading it, and everything after that pass, runs again when the light does.
+        let mut held: Vec<u64> = spatial
+            .planes
+            .iter()
+            .map(|plane| match plane.size {
+                PlaneSize::Light(k) => pool.light_key(k).unwrap_or(UNLIT),
+                PlaneSize::Reduced(_) | PlaneSize::Fixed { .. } => 0,
+            })
+            .collect();
         let holds = |held: &[u64], plane: &u32| held.get(*plane as usize).copied().unwrap_or(0);
         let mut keys = Vec::with_capacity(spatial.passes.len());
         for (number, pass) in spatial.passes.iter().enumerate() {

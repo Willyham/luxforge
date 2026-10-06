@@ -12,7 +12,7 @@ use super::{
 use crate::{
     Cancel, Error,
     mask_field::MaskField,
-    modules::{ExactGeometry, Global, Processing, Region, Resample, SpatialOperation, Stage},
+    modules::{ExactGeometry, Processing, Region, Resample, SpatialOperation, Stage},
 };
 use std::sync::Arc;
 
@@ -22,10 +22,10 @@ use std::sync::Arc;
 ///
 /// Everything the renderer asks of a boundary is one of the methods below, each a single dispatch
 /// over the kinds: the stage it produces and the rectangle of it a frame holds, the rectangle it
-/// reads, a windowed proxy's plan and cut of it, one point mapped back through it or evaluated
+/// reads, the GPU window walk's step through it, one point mapped back through it or evaluated
 /// through it, its forward map, its materialized frame in either driver, its estimates, how the
-/// linear rows load it, and whether a point query evaluates it in tiles. A new kind of boundary is one more variant
-/// with one more arm in each of these methods; no caller matches on the kind.
+/// linear rows load it, and whether it runs a spatial operation. A new kind of boundary is one more
+/// variant with one more arm in each of these methods; no caller matches on the kind.
 #[derive(Clone)]
 pub(crate) enum Entry {
     /// An interpolating boundary that also changes the stage.
@@ -34,62 +34,39 @@ pub(crate) enum Entry {
     Spatial(SpatialEntry),
 }
 
-/// A resample boundary: the resample, and where the frame it reads and the frame it writes lie in
-/// the stages it was compiled against, which only a windowed proxy's cut ([`super::window`])
-/// moves.
+/// A resample boundary: the resample, over the whole stages it was compiled against.
 #[derive(Clone)]
 pub(crate) struct ResampleEntry {
     pub(super) resample: Resample,
-    /// Where the frame this resample reads lies in the stage it was compiled against: `(0, 0)`,
-    /// except behind a windowed proxy's cut.
-    pub(super) origin: (u32, u32),
-    /// The rectangle of the resample's full output stage held by a cut frame. Its integer origin is
-    /// added before the resample's floating-point inverse map, preserving exact taps.
-    pub(super) window: Option<Region>,
 }
 
 impl ResampleEntry {
-    /// The rectangle of its full output stage its frame holds: [`Self::window`], or the whole
-    /// stage.
+    /// Its whole output stage, which its frame holds.
     pub(super) fn window(&self) -> Region {
-        self.window.unwrap_or(Region::whole(Stage {
+        Region::whole(Stage {
             width: self.resample.output_width,
             height: self.resample.output_height,
-        }))
-    }
-
-    /// Pixel `(x, y)` of its frame in the resample's full output stage.
-    #[inline]
-    pub(super) fn output_at(&self, x: u32, y: u32) -> (u32, u32) {
-        match self.window {
-            Some(window) => (window.x0 + x, window.y0 + y),
-            None => (x, y),
-        }
+        })
     }
 
     /// The continuous coordinate, in the frame it reads, that pixel `(x, y)` of its frame samples.
     #[inline]
     pub(super) fn input_at(&self, x: u32, y: u32) -> (f64, f64) {
-        let (full_x, full_y) = self.output_at(x, y);
-        self.resample.input_from(self.origin, full_x, full_y)
+        self.resample.input_from((0, 0), x, y)
     }
 
-    /// The rectangle of the frame it reads, a `received` stage, that `window` of its full output
-    /// stage reads ([`Resample::reads`]).
+    /// The rectangle of the frame it reads, a `received` stage, that `window` of its output stage
+    /// reads ([`Resample::reads`]).
     #[inline]
     pub(super) fn reads(&self, window: Region, received: Stage) -> Option<Region> {
-        self.resample.reads(self.origin, window, received)
+        self.resample.reads((0, 0), window, received)
     }
 }
 
 impl Entry {
     /// A resample boundary over the whole stage it was compiled against.
     pub(crate) fn resample(resample: Resample) -> Self {
-        Self::Resample(ResampleEntry {
-            resample,
-            origin: (0, 0),
-            window: None,
-        })
+        Self::Resample(ResampleEntry { resample })
     }
 
     /// Compose another output-to-input step into the one sampling boundary.
@@ -110,23 +87,15 @@ impl Entry {
         matches!(self, Self::Resample(entry) if entry.resample.map.has_warp())
     }
 
-    /// A spatial boundary. `prefix_hash` is the SHA-256 of the canonical JSON of the layers before
-    /// this one, which together with the source and the stage identifies what a global estimate
-    /// was prepared from.
+    /// A spatial boundary.
     #[cfg(test)]
-    pub(crate) fn spatial(operation: SpatialOperation, prefix_hash: String) -> Self {
-        Self::Spatial(SpatialEntry::new(operation, prefix_hash))
+    pub(crate) fn spatial(operation: SpatialOperation) -> Self {
+        Self::Spatial(SpatialEntry::new(operation))
     }
 
-    pub(crate) fn spatial_tagged(
-        operation: SpatialOperation,
-        prefix_hash: String,
-        stage: crate::EffectStage,
-        fit_settle: crate::FitSettle,
-    ) -> Self {
-        let mut entry = SpatialEntry::new(operation, prefix_hash);
+    pub(crate) fn spatial_tagged(operation: SpatialOperation, stage: crate::EffectStage) -> Self {
+        let mut entry = SpatialEntry::new(operation);
         entry.stage = stage;
-        entry.fit_settle = fit_settle;
         Self::Spatial(entry)
     }
 
@@ -142,7 +111,7 @@ impl Entry {
     }
 
     /// The rectangle of [`Self::stage`] its frame holds, given the frame it reads is a `received`
-    /// stage: the whole stage, except a resample behind a windowed proxy's cut.
+    /// stage: the whole stage.
     pub(crate) fn held(&self, received: Stage) -> Region {
         match self {
             Self::Resample(entry) => entry.window(),
@@ -152,82 +121,32 @@ impl Entry {
 
     /// The rectangle of the frame it reads, a `received` stage, that producing `window` of its
     /// output stage reads: a resample's taps with their margin ([`Resample::reads`]), or a spatial
-    /// operation's tiles grown by their halo ([`SpatialEntry::reads`]). `None` when it cannot say,
-    /// which a caller answers by reading everything.
+    /// operation's window grown by its halo ([`SpatialEntry::halo_reads`]). `None` when it cannot
+    /// say, which a caller answers by reading everything.
     pub(crate) fn reads(&self, window: Region, received: Stage) -> Option<Region> {
         match self {
             Self::Resample(entry) => entry.reads(window, received),
-            Self::Spatial(entry) => Some(entry.reads(window, received)),
+            Self::Spatial(entry) => Some(entry.halo_reads(window, received)),
         }
     }
 
-    /// One step of a windowed proxy's plan ([`super::window::WindowPlan::of_rect`]), against the
-    /// uncut compilation: the rectangle of the stage before it, a `received` stage, that `read`, a
-    /// rectangle of its output stage, needs. `tiled_before` says whether a point query reaches the
-    /// stage it reads through an earlier boundary's tiles.
-    pub(crate) fn plan_window(
-        &self,
-        read: Region,
-        received: Stage,
-        tiled_before: bool,
-    ) -> Result<Region, RegionFallback> {
-        match self {
-            Self::Resample(entry) => entry
-                .resample
-                .reads((0, 0), read, received)
-                .ok_or(RegionFallback::UnplannableGeometry),
-            Self::Spatial(entry) => {
-                // A window cannot hold a whole-stage reduction, and a stage behind another spatial
-                // operation cannot be handed one without that operation's whole output.
-                if entry.prepares_estimates() && tiled_before {
-                    return Err(RegionFallback::EstimateAfterSpatial);
-                }
-                Ok(entry.reads(read, received))
-            }
-        }
-    }
-
-    /// [`Self::plan_window`] for a boundary a GPU preview evaluates rather than the CPU
-    /// ([`super::window::WindowPlan::of_gpu_rect`]): a resample's taps as the CPU reads them, which
-    /// the geometry tail clamps to, and a spatial operation's halo with no tile grid
-    /// ([`SpatialEntry::halo_reads`]). A global estimate is never prepared from the window: the
-    /// GPU reads the whole stage's from the estimate store, or takes it from the stage it holds
-    /// and says so, so an estimate behind an earlier spatial layer cuts like any other.
+    /// One step of the GPU window walk ([`super::window::WindowPlan::of_gpu_rect`]): the rectangle
+    /// of the stage before it, a `received` stage, that `read`, a rectangle of its output stage,
+    /// needs on the GPU — a resample's taps as the CPU reads them, which the geometry tail clamps
+    /// to, and a spatial operation's halo with no tile grid ([`SpatialEntry::halo_reads`]). A
+    /// global estimate is never prepared from the window: the GPU computes the whole stage's from
+    /// the source by its light link, so an estimate behind an earlier spatial layer cuts like any
+    /// other.
     pub(crate) fn plan_gpu_window(
         &self,
         read: Region,
         received: Stage,
     ) -> Result<Region, RegionFallback> {
         match self {
-            Self::Resample(_) => self.plan_window(read, received, false),
+            Self::Resample(entry) => entry
+                .reads(read, received)
+                .ok_or(RegionFallback::UnplannableGeometry),
             Self::Spatial(entry) => Ok(entry.halo_reads(read, received)),
-        }
-    }
-
-    /// Cut this boundary for a windowed proxy ([`super::window::WindowPlan::apply`]): `read` is the
-    /// rectangle of its whole output stage `whole` that its segment reads, and `previous` the
-    /// rectangle of the whole stage it receives that the cut frame before it holds. Answers the
-    /// rectangle of `whole` its own cut frame holds. `globals` answers the estimates it is handed
-    /// when it prepares one; it is asked nothing otherwise.
-    pub(crate) fn cut(
-        &mut self,
-        read: Region,
-        previous: Region,
-        whole: Stage,
-        globals: impl FnOnce() -> Result<Vec<Option<Global>>, Error>,
-    ) -> Result<Region, Error> {
-        match self {
-            Self::Resample(entry) => {
-                // Keep only the part of its full output stage the segment's geometry reads, so a
-                // small viewport never materializes the whole crop.
-                entry.origin = (previous.x0, previous.y0);
-                entry.window = Some(read);
-                Ok(read)
-            }
-            Self::Spatial(entry) => {
-                entry.cut(previous, whole, globals)?;
-                Ok(previous)
-            }
         }
     }
 
@@ -249,38 +168,16 @@ impl Entry {
 
     /// Append this boundary's output-to-input steps in content-to-output traversal order. The
     /// whole map evaluates these steps backwards for a content read and inverts them for an
-    /// output position. Window translations retain the same global coordinates as rasterization;
-    /// a spatial boundary contributes nothing because it moves no coordinate.
+    /// output position. A spatial boundary contributes nothing because it moves no coordinate.
     pub(super) fn mapping_steps(&self, steps: &mut Vec<WarpStep>) {
         if let Self::Resample(entry) = self {
-            let (x, y) = entry.origin;
-            if (x, y) != (0, 0) {
-                steps.push(WarpStep::Affine([
-                    1.0,
-                    0.0,
-                    -f64::from(x),
-                    0.0,
-                    1.0,
-                    -f64::from(y),
-                ]));
-            }
             steps.extend(entry.resample.map.steps_forward());
-            if let Some(window) = entry.window {
-                steps.push(WarpStep::Affine([
-                    1.0,
-                    0.0,
-                    f64::from(window.x0),
-                    0.0,
-                    1.0,
-                    f64::from(window.y0),
-                ]));
-            }
         }
     }
 
     /// Pixel `(x, y)` of the input frame of segment `index` of `evaluation`, whose entry this is:
     /// a resample's bilinear blend of the segment before it, or a spatial operation's output, from
-    /// the evaluation's frame of it or else from the query's tiles.
+    /// the evaluation's frame of it.
     #[inline(always)]
     pub(super) fn pixel<D: PixelDomain>(
         &self,
@@ -291,7 +188,7 @@ impl Entry {
     ) -> Result<D::Pixel, Error> {
         match self {
             Self::Resample(entry) => evaluation.resample_pixel(index, entry, x, y),
-            Self::Spatial(entry) => evaluation.spatial_entry_pixel(index, entry, x, y),
+            Self::Spatial(_) => evaluation.spatial_entry_pixel(index, x, y),
         }
     }
 
@@ -312,11 +209,12 @@ impl Entry {
 
     /// The global estimates this boundary reads as the entry of segment `index` of `evaluation`,
     /// exactly as a frame would resolve them. Empty for a boundary that reads none.
+    #[cfg(any(test, feature = "qualification"))]
     pub(super) fn globals<D: PixelDomain>(
         &self,
         evaluation: &Evaluation<'_, D>,
         index: usize,
-    ) -> Result<Vec<Option<Global>>, Error> {
+    ) -> Result<Vec<Option<crate::modules::Global>>, Error> {
         match self {
             Self::Resample(_) => Ok(Vec::new()),
             Self::Spatial(entry) => evaluation.spatial_globals(index, entry),
@@ -348,7 +246,7 @@ impl Entry {
                     received.width,
                     received.height,
                     &entry.resample,
-                    entry.origin,
+                    (0, 0),
                     entry.window(),
                     cancel,
                 )?;
@@ -397,9 +295,9 @@ impl Entry {
         }
     }
 
-    /// The spatial operation a point query evaluates this boundary through, tile by tile, in its
-    /// [`super::spatial::PointTiles`]; `None` for a boundary a point query pulls without tiles.
-    pub(crate) fn point_tiles(&self) -> Option<&SpatialOperation> {
+    /// The spatial operation this boundary runs, whose whole frame a read through it is
+    /// answered from; `None` for a resample, which a point query pulls through.
+    pub(crate) fn spatial_operation(&self) -> Option<&SpatialOperation> {
         match self {
             Self::Resample(_) => None,
             Self::Spatial(entry) => Some(&entry.operation),
@@ -421,7 +319,8 @@ pub(crate) struct Segment {
     pub(crate) has_pixels: bool,
     pub(crate) has_color: bool,
     /// The segment output's first pixel in its original uncut output stage. Pointwise finish
-    /// units read these original coordinates even when a viewport keeps only a rectangle.
+    /// units read these original coordinates even when a GPU boundary's reference keeps only a
+    /// rectangle of the stage (`super::boundary`).
     pub(crate) output_origin: (u32, u32),
 }
 
@@ -450,8 +349,7 @@ impl Segment {
     /// Its resample entry took one more warp or resample into its map, which now writes an
     /// `output` stage: the segment's frame is that stage, and its geometry the identity over it.
     /// A segment only fuses while its geometry is the identity, so nothing else changes; keeping
-    /// the stage it had before would map its frame onto a stage it no longer reads, which a
-    /// windowed proxy's cut refuses.
+    /// the stage it had before would map its frame onto a stage it no longer reads.
     pub(crate) fn fused(&mut self, output: Stage) {
         self.width = output.width;
         self.height = output.height;
@@ -542,23 +440,12 @@ impl Compiled {
         })
     }
 
-    /// Why a frame of this compilation is an approximation of the exact render at its size: a
-    /// spatial operation, whose neighbourhoods scale with the stage, and a mask the proxy phase
-    /// supersampled. `O(layers + components)`, no pixel read.
-    pub(crate) fn approximation(&self) -> crate::ProxyApproximation {
-        crate::ProxyApproximation {
-            spatial: self.segments.iter().any(|s| matches!(&s.entry, Some(Entry::Spatial(e)) if e.stage == crate::EffectStage::Spatial)),
-            restoration: self.segments.iter().any(|s| matches!(&s.entry, Some(Entry::Spatial(e)) if e.stage == crate::EffectStage::Restoration)),
-            mask: self.supersampled_masks(),
-            reduced_detail: false,
-        }
-    }
-
-    pub(crate) fn settles_from_exact(&self) -> bool {
-        self.segments.iter().any(|s| {
-            matches!(&s.entry,
-            Some(Entry::Spatial(e)) if e.fit_settle == crate::FitSettle::Exact)
-        })
+    /// Whether a spatial operation placed at `stage` (a restoration or a spatial layer) enters any
+    /// segment. `O(segments)`, no pixel read.
+    pub(crate) fn runs_spatial(&self, stage: crate::EffectStage) -> bool {
+        self.segments
+            .iter()
+            .any(|s| matches!(&s.entry, Some(Entry::Spatial(e)) if e.stage == stage))
     }
 
     /// The width the full recipe demands at the sampled prefix's last spatial boundary.
@@ -576,7 +463,9 @@ impl Compiled {
             .unwrap_or(false)
     }
 
-    /// Segment whose input holds the last boundary of the leading restoration run.
+    /// Segment whose input holds the last boundary of the leading restoration run: where a test
+    /// reads the width the restoration run hands its colour run.
+    #[cfg(test)]
     pub(crate) fn restoration_boundary(&self) -> Option<usize> {
         let mut boundary = None;
         for (index, segment) in self.segments.iter().enumerate() {
@@ -594,26 +483,23 @@ impl Compiled {
         boundary
     }
 
-    /// Whether answering one pixel of this compilation evaluates a spatial segment.
-    ///
-    /// A spatial point query is the declared exception to [performance rule
-    /// 4](../../../../docs/engineering/performance-rules.md#rules): it evaluates the stage-aligned tiles
-    /// its pixels need, each once per query, so a caller that asks per display cell over the whole
-    /// stage evaluates every tile of it. The coverage overlay reads this to refuse rather than to
-    /// pay it. `O(segments)` and reads no pixels.
+    /// Whether answering one pixel of this compilation reads through a spatial segment, whose whole
+    /// frame the reference renderer materializes to answer it: a pixel of such a stack is never
+    /// `O(layers)`. The coverage overlay reads this to refuse rather than to pay it.
+    /// `O(segments)` and reads no pixels.
     pub(crate) fn evaluates_spatial(&self) -> bool {
         self.spatial_before(self.segments.len())
     }
 
-    /// Whether a segment entered through tiles ([`Entry::point_tiles`]) comes before segment
-    /// `index`, so that, in a point query, the stage `index` reads comes through
-    /// [`super::spatial::PointTiles`] rather than from the source alone.
+    /// Whether a segment entered through a spatial operation ([`Entry::spatial_operation`]) comes
+    /// before segment `index`, so that the stage `index` reads comes through that operation's
+    /// whole frame rather than from the source alone.
     pub(crate) fn spatial_before(&self, index: usize) -> bool {
         self.segments[..index].iter().any(|segment| {
             segment
                 .entry
                 .as_ref()
-                .is_some_and(|entry| entry.point_tiles().is_some())
+                .is_some_and(|entry| entry.spatial_operation().is_some())
         })
     }
 }

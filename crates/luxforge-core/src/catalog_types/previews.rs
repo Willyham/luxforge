@@ -3,8 +3,8 @@
 //!
 //! For a file, previews are keyed by its signature: the grid tier from its EXIF thumbnail or
 //! embedded preview, and the loupe tier from its largest embedded preview. For a developed
-//! photograph, by asset, entry and tier, rendered from that entry through the proxy path. Files live
-//! under `<catalog>.index/previews/`; the index database's `previews` and `photo_previews` tables
+//! photograph, by asset, entry and tier, rendered exactly from that entry by the reference renderer
+//! and area-averaged to the tier. Files live under `<catalog>.index/previews/`; the index database's `previews` and `photo_previews` tables
 //! record them. The lane never touches the editor's one-slot source cache.
 use super::{Dimensions, FileId};
 use crate::{AssetId, EntryId, JobId};
@@ -71,7 +71,8 @@ pub enum PreviewOrigin {
     /// A neutral Luxforge development of the frame, made where the camera's preview is too small
     /// or absent.
     Developed,
-    /// A developed photograph's entry, rendered through the proxy path.
+    /// A developed photograph's entry, rendered exactly by the reference renderer and
+    /// area-averaged to the tier.
     Rendered,
 }
 

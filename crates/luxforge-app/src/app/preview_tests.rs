@@ -1,8 +1,9 @@
-//! Preview presentation: the proxy and exact phases, their histogram reports, the bounds a job is
-//! rendered at, and zoom handing the retained frame back without a render.
+//! Preview presentation: the reference's exact frames and their reductions to the view, their
+//! histogram reports, the bounds a job is rendered at, and zoom handing the retained frame back
+//! without a render.
 use super::{
     evidence::Settle,
-    preview::{Arrival, ProxyFrame, Retained},
+    preview::{Arrival, ReducedFrame, Retained},
     testing::{analysed, attach_log, drafted, entry, finish, logged, opened},
     *,
 };
@@ -47,11 +48,10 @@ fn a_deferred_or_blank_surface_marks_the_photo_updating_until_the_current_draw()
 }
 
 /// Idle means asleep: with no photograph presented there is no view to settle, so the window facts
-/// a launch reports — its size, its display scale, whether it is fullscreen — arm no quiet timer,
-/// and the preview seam listens to nothing a worker or the surface does not need. Armed, the 25 ms
-/// timer ran the update loop and a redraw forty times a second in an empty window.
+/// a launch reports — its size, its display scale, whether it is fullscreen — arm no timer, and the
+/// preview seam listens to nothing a worker or the surface does not need.
 #[test]
-fn with_nothing_presented_a_view_change_arms_no_quiet_timer() {
+fn with_nothing_presented_a_view_change_arms_no_preview_timer() {
     let (mut editor, catalog) = super::testing::boot();
     assert!(editor.document.state.is_none() && editor.presentation.dimensions.is_none());
     for message in [
@@ -61,10 +61,6 @@ fn with_nothing_presented_a_view_change_arms_no_quiet_timer() {
         ViewMessage::Panned(40.0, 20.0),
     ] {
         let _ = editor.update(Message::View(message.clone()));
-        assert!(
-            !editor.quiet_timer_armed(),
-            "{message:?} armed the quiet timer with nothing presented"
-        );
         assert_eq!(
             iced::advanced::subscription::into_recipes(super::preview::subscription(&editor)).len(),
             usize::from(editor.preview_wake_needed()),
@@ -109,256 +105,6 @@ fn the_retirement_wake_remains_subscribed_after_presenting_new_dimensions() {
     assert!(
         editor.preview_wake_needed(),
         "the surface still may owe the newly presented draw"
-    );
-    finish(editor, catalog);
-}
-
-/// A new draft starts at revision zero even if the previous draft reached a much higher revision.
-#[test]
-fn review_probe_new_draft_region_is_not_fenced_by_an_older_drafts_revision() {
-    let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
-    editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
-    let asset = editor.document.state.as_ref().unwrap().asset.id.clone();
-    let draft_a = luxforge_core::Draft::new("basic.set", asset.clone(), 4);
-    editor.presentation.displayed_draft_id = Some(draft_a.draft_id);
-    editor.presentation.displayed_draft_revision = Some(10);
-    editor.presentation.presented_generation = 7;
-    let mut draft_b = luxforge_core::Draft::new("basic.set", asset, 4);
-    draft_b.draft_revision = 1;
-    editor.session.draft = Some(draft_b.clone());
-    let (analysis, raster) = drafted(&editor, 8, &draft_b.draft_id, 1, &[[40, 50, 60, 255]], 1, 1);
-    let rect = luxforge_core::Region {
-        x0: 0,
-        y0: 0,
-        width: 1,
-        height: 1,
-    };
-    let stage = luxforge_core::StageSize {
-        width: 1,
-        height: 1,
-    };
-    editor.presentation.preview_generation = 8;
-    ticket(&mut editor, 8, 2);
-    let (_, shown) = editor.preview_ready(luxforge_core::PreviewResult {
-        restoration_prefix: None,
-        generation: 8,
-        entry_id: analysis.identity.entry_id.clone(),
-        identity: analysis.identity,
-        draft_revision: Some(1),
-        intent: luxforge_core::PreviewIntent::Interactive,
-        viewport_declined: None,
-        outcome: luxforge_core::PhaseOutcome::Region(luxforge_core::RegionOutcome {
-            frame: luxforge_core::RegionFrame {
-                raster: raster.as_ref().clone(),
-                rect,
-                stage,
-                full_rect: rect,
-                full_stage: stage,
-                approximation: luxforge_core::ProxyApproximation::default(),
-            },
-        }),
-        approximate_white_balance: false,
-        render_ms: 1.0,
-        queue_wait_ms: None,
-    });
-    assert!(
-        shown,
-        "draft B's first region was dropped because draft A had reached revision 10"
-    );
-    assert_eq!(
-        editor.presentation.displayed_draft_id,
-        Some(draft_b.draft_id.clone())
-    );
-    let (analysis, raster) = drafted(&editor, 9, &draft_b.draft_id, 0, &[[40, 50, 60, 255]], 1, 1);
-    let (_, shown) = editor.preview_ready(luxforge_core::PreviewResult {
-        restoration_prefix: None,
-        generation: 9,
-        entry_id: analysis.identity.entry_id.clone(),
-        identity: analysis.identity,
-        draft_revision: Some(0),
-        intent: luxforge_core::PreviewIntent::Interactive,
-        viewport_declined: None,
-        outcome: luxforge_core::PhaseOutcome::Region(luxforge_core::RegionOutcome {
-            frame: luxforge_core::RegionFrame {
-                raster: raster.as_ref().clone(),
-                rect,
-                stage,
-                full_rect: rect,
-                full_stage: stage,
-                approximation: luxforge_core::ProxyApproximation::default(),
-            },
-        }),
-        approximate_white_balance: false,
-        render_ms: 1.0,
-        queue_wait_ms: None,
-    });
-    assert!(
-        !shown,
-        "an older region of the same draft must remain fenced"
-    );
-    finish(editor, catalog);
-}
-
-/// A new viewport can arrive before its whole Fit frame. Switching to Fit at that point must
-/// leave the canvas pending instead of drawing the previous recipe's retained whole photograph.
-#[test]
-fn fit_withholds_an_old_whole_photo_after_new_content_region_arrives() {
-    let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
-    let (analysis, raster) = analysed(&editor, 8, &[[40, 50, 60, 255]], 1, 1);
-    let old = luxforge_core::Raster {
-        width: 1,
-        height: 1,
-        rgba: vec![10, 20, 30, 255].into(),
-        source_fingerprint: "old-content".into(),
-        snapshot_id: luxforge_core::SnapshotId::new(),
-    };
-    assert!(editor.presentation.presenter.show_full(&old, 1));
-    editor.presentation.presented_content = 1;
-    editor.presentation.presented_generation = 7;
-    editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
-    assert!(
-        editor
-            .presentation
-            .presenter
-            .photo_for(editor.presentation.presented_content)
-            .is_some()
-    );
-
-    let rect = luxforge_core::Region {
-        x0: 0,
-        y0: 0,
-        width: 1,
-        height: 1,
-    };
-    let stage = luxforge_core::StageSize {
-        width: 1,
-        height: 1,
-    };
-    editor.presentation.preview_generation = 8;
-    ticket(&mut editor, 8, 2);
-    let (_, shown) = editor.preview_ready(luxforge_core::PreviewResult {
-        restoration_prefix: None,
-        generation: 8,
-        entry_id: analysis.identity.entry_id.clone(),
-        identity: analysis.identity,
-        draft_revision: None,
-        intent: luxforge_core::PreviewIntent::Interactive,
-        viewport_declined: None,
-        outcome: luxforge_core::PhaseOutcome::Region(luxforge_core::RegionOutcome {
-            frame: luxforge_core::RegionFrame {
-                raster: raster.as_ref().clone(),
-                rect,
-                stage,
-                full_rect: rect,
-                full_stage: stage,
-                approximation: luxforge_core::ProxyApproximation::default(),
-            },
-        }),
-        approximate_white_balance: false,
-        render_ms: 1.0,
-        queue_wait_ms: None,
-    });
-    assert!(shown);
-    assert_eq!(editor.presentation.presented_content, 2);
-    assert!(editor.presentation.presenter.photo_for(1).is_some());
-
-    editor.session.preview.view.zoom = Zoom::Fit;
-    let _ = editor.zoom_changed(&Zoom::Percent { value: 100.0 });
-    assert!(
-        editor.presentation.presenter.photo().is_some(),
-        "A remains retained"
-    );
-    assert!(
-        editor
-            .presentation
-            .presenter
-            .photo_for(editor.presentation.presented_content)
-            .is_none(),
-        "the Fit canvas cannot draw A under B's recipe"
-    );
-    assert!(
-        !editor.capture_photo_ready(),
-        "evidence waits for pixels of B to reach the GPU"
-    );
-
-    assert!(editor.presentation.presenter.show_proxy(raster.as_ref(), 2));
-    assert!(
-        editor
-            .presentation
-            .presenter
-            .photo_for(editor.presentation.presented_content)
-            .is_some()
-    );
-    assert_eq!(editor.presentation.presenter.full_content(), None);
-    finish(editor, catalog);
-}
-
-/// A history/current evidence step needs the whole committed state and report. Its interactive
-/// region may already be drawn, but the captured stack and histogram still name the old entry.
-#[test]
-fn an_interactive_region_does_not_settle_a_history_preview_step() {
-    let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"preview":"current"}]"#);
-    luxforge_testbase::wait_until("the fixture's preview drains", || {
-        while editor.presentation.queue.poll().is_some() {}
-        !editor.presentation.queue.is_busy()
-    });
-    editor.await_step(Settle::Preview);
-    let (analysis, raster) = analysed(&editor, 8, &[[40, 50, 60, 255]], 1, 1);
-    let rect = luxforge_core::Region {
-        x0: 0,
-        y0: 0,
-        width: 1,
-        height: 1,
-    };
-    let stage = luxforge_core::StageSize {
-        width: 1,
-        height: 1,
-    };
-    editor.presentation.preview_generation = 8;
-    ticket(&mut editor, 8, 2);
-    let (_, shown) = editor.preview_ready(luxforge_core::PreviewResult {
-        restoration_prefix: None,
-        generation: 8,
-        entry_id: analysis.identity.entry_id.clone(),
-        identity: analysis.identity,
-        draft_revision: None,
-        intent: luxforge_core::PreviewIntent::Interactive,
-        viewport_declined: None,
-        outcome: luxforge_core::PhaseOutcome::Region(luxforge_core::RegionOutcome {
-            frame: luxforge_core::RegionFrame {
-                raster: raster.as_ref().clone(),
-                rect,
-                stage,
-                full_rect: rect,
-                full_stage: stage,
-                approximation: luxforge_core::ProxyApproximation::default(),
-            },
-        }),
-        approximate_white_balance: false,
-        render_ms: 1.0,
-        queue_wait_ms: None,
-    });
-    assert!(shown, "the region remains eligible for the photo surface");
-    let evidence = crate::app::testing::evidence(&editor);
-    assert_eq!(evidence.awaiting, Some(Settle::Preview));
-    assert!(
-        !evidence.capture_pending,
-        "the region did not finish the history step"
-    );
-    assert!(
-        editor.view_plan.quiet_since.is_some(),
-        "a region without a whole committed report must schedule settlement"
-    );
-    editor.view_plan.quiet_since =
-        Some(std::time::Instant::now() - std::time::Duration::from_millis(150));
-    editor.view_plan.dirty = false;
-    let _ = editor.preview_update(PreviewMessage::QuietTick);
-    assert!(
-        editor.view_plan.quiet_settle_requested && editor.view_plan.in_flight,
-        "quiet refinement starts without another input or evidence step: quiet={} plan={} busy={}",
-        editor.view_plan.quiet_settle_requested,
-        editor.view_plan.in_flight,
-        editor.presentation.queue.is_busy()
     );
     finish(editor, catalog);
 }
@@ -739,7 +485,7 @@ fn a_percentage_is_bounded_only_while_the_stage_is_drawn_smaller_than_itself() {
     finish(editor, catalog);
 }
 
-/// A zoom across the proxy boundary hands the surface pixels that already exist and renders
+/// A zoom across the reduction boundary hands the surface pixels that already exist and renders
 /// nothing; a zoom that stays on one side of it hands over nothing at all, so the texture is
 /// written once and a pan writes nothing.
 #[test]
@@ -748,7 +494,7 @@ fn a_zoom_hands_the_retained_raster_to_the_surface_and_asks_for_no_preview() {
     editor.view_state.window = (1440.0, 900.0);
     editor.presentation.dimensions = Some((4000, 3000));
     editor.session.preview.view.zoom = Zoom::Fit;
-    // A proxy of generation 7 is on screen, with its exact phase adopted beside it.
+    // The reduction of generation 7 is on screen, with its exact frame retained beside it.
     let pixels = |code: u8| {
         Arc::new(luxforge_core::Raster {
             width: 2,
@@ -760,23 +506,20 @@ fn a_zoom_hands_the_retained_raster_to_the_surface_and_asks_for_no_preview() {
     };
     editor.presentation.presented_generation = 7;
     editor.presentation.presented_entry = Some(entry_id);
-    editor.presentation.presented_proxy = true;
+    editor.presentation.presented_reduced = true;
     editor.presentation.preview_generation = 7;
-    editor.presentation.proxy_frame = Some(ProxyFrame {
+    editor.presentation.reduced_frame = Some(ReducedFrame {
         generation: 7,
         raster: pixels(1),
-        dimensions: (1200, 900),
-        built: true,
-        approximation: luxforge_core::ProxyApproximation::default(),
+        proxy: None,
         approximate_white_balance: false,
         render_ms: 12.0,
     });
     editor.presentation.exact = Some(testing::exact(7, pixels(2), 85.0));
     // What the status bar reports is the time of the picture on screen, and each retained
-    // frame brings its own: the proxy's while the proxy is shown, the exact render's at 100%.
+    // frame brings its own.
     editor.activity.render = Some(state::status::RenderTime {
         ms: 12.0,
-        proxy: true,
         approximate: false,
     });
 
@@ -785,7 +528,7 @@ fn a_zoom_hands_the_retained_raster_to_the_surface_and_asks_for_no_preview() {
     editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
     let _ = editor.zoom_changed(&Zoom::Fit);
     assert!(
-        !editor.presentation.presented_proxy,
+        !editor.presentation.presented_reduced,
         "the exact raster is what is on screen"
     );
     let exact = editor.presentation.presenter.photo_version();
@@ -794,7 +537,6 @@ fn a_zoom_hands_the_retained_raster_to_the_surface_and_asks_for_no_preview() {
         editor.activity.render,
         Some(state::status::RenderTime {
             ms: 85.0,
-            proxy: false,
             approximate: false,
         }),
         "the exact raster on screen reports its own render time"
@@ -818,26 +560,25 @@ fn a_zoom_hands_the_retained_raster_to_the_surface_and_asks_for_no_preview() {
         "and asked for no preview"
     );
 
-    // Back to Fit: the retained proxy is handed over again rather than rendered again.
+    // Back to Fit: the retained reduction is handed over again rather than made again.
     editor.session.preview.view.zoom = Zoom::Fit;
     let _ = editor.zoom_changed(&Zoom::Percent { value: 200.0 });
     assert!(
-        editor.presentation.presented_proxy,
-        "the proxy is back on screen"
+        editor.presentation.presented_reduced,
+        "the reduction is back on screen"
     );
     assert_eq!(
         editor.presentation.presenter.photo_version(),
         exact + 1,
-        "the retained proxy was handed to the surface"
+        "the retained reduction was handed to the surface"
     );
     assert_eq!(
         editor.activity.render,
         Some(state::status::RenderTime {
             ms: 12.0,
-            proxy: true,
             approximate: false,
         }),
-        "the proxy on screen reports its own render time again"
+        "the reduction on screen reports its own render time again"
     );
     assert_eq!(
         editor.presentation.preview_generation, 7,
@@ -847,10 +588,10 @@ fn a_zoom_hands_the_retained_raster_to_the_surface_and_asks_for_no_preview() {
 }
 
 /// A frame that approximates a drafted RAW white balance is presented like any frame and says
-/// so — in the status bar, the `preview_displayed` event and the state summary, at Fit and at
-/// 100% — but it is never taken for a report: the last exact report stays plotted, marked
-/// updating, through both phases of the approximate job, and the next exact report replaces it.
-/// An overlay derived from its full-size phase is approximate too.
+/// so — in the status bar, the `preview_displayed` event and the state summary — but it is never
+/// taken for a report: the last exact report stays plotted, marked updating, and the next exact
+/// report replaces it. It is never reduced to the view, so it is the exact frame at Fit as at
+/// 100%. An overlay derived from it is approximate too.
 #[test]
 fn an_approximate_white_balance_frame_is_shown_and_labelled_but_never_replaces_the_report() {
     let (mut editor, catalog, _, entry_id) = opened(Vec::new(), 4);
@@ -866,35 +607,31 @@ fn an_approximate_white_balance_frame_is_shown_and_labelled_but_never_replaces_t
         [12, 34, 56, 255],
     ];
     let (analysis, raster) = analysed(&editor, 7, &pixels, 2, 2);
-    let identity = analysis.identity.clone();
     editor.presentation.preview_generation = 7;
     ticket(&mut editor, 7, 1);
     editor.presentation.incoming = testing::incoming(analysis, raster.clone());
     editor.adopt_analysis(7);
 
-    // The drafted job's proxy phase is presented.
+    // The drafted job's frame lands with no report, as an approximate job's always does.
     editor.presentation.preview_generation = 8;
     ticket(&mut editor, 8, 2);
-    let proxy = ProxyFrame {
-        generation: 8,
-        raster: raster.clone(),
-        dimensions: (2, 2),
-        built: false,
-        approximation: luxforge_core::ProxyApproximation::default(),
-        approximate_white_balance: true,
-        render_ms: 9.2,
-    };
-    editor.presentation.proxy_frame = Some(proxy.clone());
+    let mut exact = testing::exact(8, raster.clone(), 140.0);
+    exact.approximate_white_balance = true;
+    exact.content = editor.presentation.pending_content.get(&8).copied();
+    editor.presentation.receive(exact.clone(), None);
     editor.present(
-        Retained::Proxy(proxy),
+        Retained::Exact(exact),
         Arrival::Rendered {
-            stage: (4000, 3000),
+            stage: (2, 2),
             entry: entry_id.clone(),
             draft_revision: Some(1),
         },
     );
     editor.rederive();
-    assert_eq!(editor.workspace.status.render, "Approximate render · 9 ms");
+    assert_eq!(
+        editor.workspace.status.render,
+        "Approximate render · 140 ms"
+    );
     let histogram = |editor: &Editor| {
         let model = &editor.workspace.histogram;
         (
@@ -902,19 +639,6 @@ fn an_approximate_white_balance_frame_is_shown_and_labelled_but_never_replaces_t
             model.identity.as_ref().map(|identity| identity.generation),
         )
     };
-    assert_eq!(
-        histogram(&editor),
-        (HistogramStatus::Updating, Some(7)),
-        "the last exact report stays plotted and says it is updating"
-    );
-
-    // Its exact phase lands with no report, as an approximate job's always does.
-    let mut exact = testing::exact(8, raster.clone(), 140.0);
-    exact.approximate_white_balance = true;
-    exact.content = editor.presentation.pending_content.get(&8).copied();
-    editor.presentation.receive(exact, None);
-    editor.adopt_exact(8, (identity.width, identity.height), 140.0, true);
-    editor.rederive();
     assert_eq!(
         histogram(&editor),
         (HistogramStatus::Updating, Some(7)),
@@ -940,23 +664,13 @@ fn an_approximate_white_balance_frame_is_shown_and_labelled_but_never_replaces_t
     assert_eq!(snapshot["approximate_white_balance"], json!(true));
     assert_eq!(snapshot["status_bar"]["render_approximate"], json!(true));
     assert_eq!(snapshot["histogram"]["status"], json!("updating"));
-
-    // At 100% the retained full-size phase is shown, and says so.
-    editor.session.preview.view.zoom = Zoom::Percent { value: 100.0 };
-    let _ = editor.zoom_changed(&Zoom::Fit);
-    editor.rederive();
-    assert!(!editor.presentation.presented_proxy);
-    assert_eq!(
-        editor.workspace.status.render,
-        "Approximate render · 140 ms"
-    );
     let records = logged(&mut editor, &log);
     let displayed: Vec<_> = records
         .iter()
         .filter(|record| record["event"] == "preview_displayed")
         .map(|record| record["detail"]["approximate_white_balance"].clone())
         .collect();
-    assert_eq!(displayed, vec![json!(true), json!(true)]);
+    assert_eq!(displayed, vec![json!(true)]);
     assert!(
         !records
             .iter()
@@ -1011,13 +725,11 @@ fn the_render_figure_is_the_presented_frames_own_time_not_the_time_since_the_req
         source_fingerprint: "source-1".into(),
         snapshot_id: luxforge_core::SnapshotId::new(),
     });
-    let frame = |generation: u64, proxy: bool, render_ms: f64| match proxy {
-        true => Retained::Proxy(ProxyFrame {
+    let frame = |generation: u64, reduced: bool, render_ms: f64| match reduced {
+        true => Retained::Reduced(ReducedFrame {
             generation,
             raster: raster.clone(),
-            dimensions: (240, 160),
-            built: false,
-            approximation: luxforge_core::ProxyApproximation::default(),
+            proxy: None,
             approximate_white_balance: false,
             render_ms,
         }),
@@ -1033,11 +745,10 @@ fn the_render_figure_is_the_presented_frames_own_time_not_the_time_since_the_req
     editor.present(frame(5, true, 12.4), rendered());
     editor.rederive();
     assert_eq!(
-        editor.workspace.status.render, "Approximate render · 12 ms",
-        "the proxy's own time, not the 500 s since the request"
+        editor.workspace.status.render, "Exact render · 12 ms",
+        "the reduction's own time, not the 500 s since the request"
     );
-    // An exact frame presented later (a 100% view) reports its own time and says nothing of a
-    // proxy.
+    // An exact frame presented later (a 100% view) reports its own time.
     editor.present(frame(6, false, 85.2), rendered());
     editor.rederive();
     assert_eq!(editor.workspace.status.render, "Exact render · 85 ms");
@@ -1052,15 +763,15 @@ fn the_render_figure_is_the_presented_frames_own_time_not_the_time_since_the_req
     finish(editor, catalog);
 }
 
-/// With no proxy retained for the frame on screen — it was rendered exactly, at 100% — a zoom
-/// back to Fit is the one view change that asks for a render.
+/// With no reduction retained for the frame on screen — the GPU presented it, at 100% — a zoom
+/// back to Fit is the one view change that asks for a job.
 #[test]
-fn a_zoom_back_to_fit_with_no_retained_proxy_requests_one_preview() {
+fn a_zoom_back_to_fit_with_no_retained_reduction_requests_one_preview() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
     editor.view_state.window = (1440.0, 900.0);
     editor.presentation.dimensions = Some((4000, 3000));
     editor.presentation.presented_generation = 3;
-    editor.presentation.presented_proxy = false;
+    editor.presentation.presented_reduced = false;
     editor.session.preview.view.zoom = Zoom::Fit;
     let path = crate::app::testing::attach_log(&mut editor);
     // The returned task is the owner round trip that ends in one preview job. Nothing reaches
@@ -1116,7 +827,7 @@ fn a_percentage_view_uses_exact_pixel_bounds_after_pan_on_an_odd_stage() {
             (750.0, 100.0),
         )
         .is_none(),
-        "a whole 50% proxy needs no viewport request"
+        "a whole 50% frame has no visible region"
     );
     let region = super::preview::viewport_rect(
         (1001, 751),
@@ -1139,15 +850,6 @@ fn a_percentage_view_uses_exact_pixel_bounds_after_pan_on_an_odd_stage() {
             height: 150
         }
     ));
-    assert!(!super::preview::intersects_region(
-        region,
-        luxforge_core::Region {
-            x0: 800,
-            y0: 500,
-            width: 20,
-            height: 20
-        }
-    ));
 }
 
 #[test]
@@ -1159,7 +861,6 @@ fn a_late_view_plan_cannot_replace_a_newer_input_or_asset() {
     let old = preview_job_for(&editor);
     let _ = editor.preview_update(PreviewMessage::ViewLoaded {
         epoch: 1,
-        intent: luxforge_core::PreviewIntent::Interactive,
         result: Ok(Box::new(old)),
     });
     assert!(!editor.view_plan.in_flight);
@@ -1173,7 +874,6 @@ fn a_late_view_plan_cannot_replace_a_newer_input_or_asset() {
     let wrong_asset = preview_job_for(&editor);
     let _ = editor.preview_update(PreviewMessage::ViewLoaded {
         epoch: 2,
-        intent: luxforge_core::PreviewIntent::Interactive,
         result: Ok(Box::new(wrong_asset)),
     });
     assert!(editor.view_plan.dirty);
@@ -1218,24 +918,24 @@ fn a_preview_job_takes_the_bounds_of_the_moment_it_is_requested() {
     finish(editor, catalog);
 }
 
-/// A proxy on screen whose bounds no longer match the window is re-rendered once, and not
+/// A reduction on screen whose bounds no longer match the window is made again once, and not
 /// again while that refit is on its way.
 #[test]
-fn a_bounds_change_refits_the_presented_proxy_once() {
+fn a_bounds_change_refits_the_presented_reduction_once() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
     editor.view_state.window = (1440.0, 900.0);
     editor.presentation.dimensions = Some((4000, 3000));
     editor.session.preview.view.zoom = Zoom::Fit;
     editor.view_state.scale_factor = 1.0;
     editor.presentation.presented_generation = 7;
-    editor.presentation.presented_proxy = true;
+    editor.presentation.presented_reduced = true;
     editor.presentation.preview_generation = 7;
     editor.presentation.presented_bounds = editor.proxy_bounds();
     let path = crate::app::testing::attach_log(&mut editor);
     // Same bounds: nothing is asked for.
     let _ = editor.update(Message::View(ViewMessage::ScaleFactor(1.0)));
     assert!(!editor.presentation.refit_pending);
-    // The display scale arrives: the proxy on screen was made for half the pixels.
+    // The display scale arrives: the reduction on screen was made for half the pixels.
     let _ = editor.update(Message::View(ViewMessage::ScaleFactor(2.0)));
     assert!(editor.presentation.refit_pending, "one refit is on its way");
     let _ = editor.update(Message::View(ViewMessage::ScaleFactor(2.0)));
@@ -1252,7 +952,7 @@ fn a_bounds_change_refits_the_presented_proxy_once() {
 }
 
 /// A refit takes the one-draft rule alone: a previewed history entry and a request in flight hold
-/// back every edit, but the proxy on screen is still refitted to new bounds.
+/// back every edit, but the reduction on screen is still refitted to new bounds.
 #[test]
 fn a_refit_runs_while_a_history_entry_is_previewed_and_a_request_is_in_flight() {
     let (mut editor, catalog, asset, _) = opened(Vec::new(), 4);
@@ -1261,7 +961,7 @@ fn a_refit_runs_while_a_history_entry_is_previewed_and_a_request_is_in_flight() 
     editor.session.preview.view.zoom = Zoom::Fit;
     editor.view_state.scale_factor = 1.0;
     editor.presentation.presented_generation = 7;
-    editor.presentation.presented_proxy = true;
+    editor.presentation.presented_reduced = true;
     editor.presentation.preview_generation = 7;
     editor.presentation.presented_bounds = editor.proxy_bounds();
     crate::state::testing::show(
@@ -1279,16 +979,17 @@ fn a_refit_runs_while_a_history_entry_is_previewed_and_a_request_is_in_flight() 
     finish(editor, catalog);
 }
 
-/// A refit can discover that the source now fits the display bounds and therefore has no proxy
-/// phase. Its exact-only result must replace the old, smaller proxy and finish the pending refit.
+/// A refit can discover that the source now fits the display bounds and therefore needs no
+/// reduction. Its exact result must replace the old, smaller reduction and finish the pending
+/// refit.
 #[test]
-fn an_exact_only_refit_replaces_an_undersized_proxy() {
+fn an_exact_refit_replaces_an_undersized_reduction() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
     editor.view_state.window = (1440.0, 900.0);
     editor.presentation.dimensions = Some((1440, 960));
     editor.session.preview.view.zoom = Zoom::Fit;
     editor.view_state.scale_factor = 2.0;
-    editor.presentation.presented_proxy = true;
+    editor.presentation.presented_reduced = true;
     editor.presentation.presented_generation = 7;
     editor.presentation.preview_generation = 8;
     editor.presentation.presented_bounds = Some(luxforge_core::ProxyBounds {
@@ -1301,13 +1002,11 @@ fn an_exact_only_refit_replaces_an_undersized_proxy() {
     let (analysis, raster) = analysed(&editor, 8, &[[17, 42, 93, 255]], 1, 1);
     let before = editor.presentation.presenter.photo_version();
     let (task, shown) = editor.preview_ready(luxforge_core::PreviewResult {
-        restoration_prefix: None,
         generation: 8,
         entry_id: analysis.identity.entry_id.clone(),
         identity: analysis.identity,
         draft_revision: None,
-        intent: luxforge_core::PreviewIntent::Settle,
-        viewport_declined: None,
+        intent: luxforge_core::PreviewIntent::Immediate,
         outcome: luxforge_core::PhaseOutcome::Exact(Box::new(luxforge_core::ExactOutcome {
             display: None,
             result: Ok((*raster).clone()),
@@ -1319,8 +1018,11 @@ fn an_exact_only_refit_replaces_an_undersized_proxy() {
         queue_wait_ms: None,
     });
     drop(task);
-    assert!(shown, "the refit's exact pixels replace the smaller proxy");
-    assert!(!editor.presentation.presented_proxy);
+    assert!(
+        shown,
+        "the refit's exact pixels replace the smaller reduction"
+    );
+    assert!(!editor.presentation.presented_reduced);
     assert!(!editor.presentation.refit_pending);
     assert_eq!(editor.presentation.presenter.photo_version(), before + 1);
     finish(editor, catalog);
@@ -1328,7 +1030,7 @@ fn an_exact_only_refit_replaces_an_undersized_proxy() {
 
 /// A scripted step whose frame is due — its session round trip settled it earlier in the same
 /// update — waits instead for the refit the view just asked for, so its capture never shows a
-/// proxy made for the previous bounds.
+/// reduction made for the previous bounds.
 #[test]
 fn a_settled_step_waits_for_the_refit_its_view_asked_for() {
     let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"wait":{"ms":1}}]"#);
@@ -1337,7 +1039,7 @@ fn a_settled_step_waits_for_the_refit_its_view_asked_for() {
     editor.session.preview.view.zoom = Zoom::Fit;
     editor.view_state.scale_factor = 1.0;
     editor.presentation.presented_generation = 7;
-    editor.presentation.presented_proxy = true;
+    editor.presentation.presented_reduced = true;
     editor.presentation.preview_generation = 7;
     editor.presentation.presented_bounds = editor.proxy_bounds();
     if let Some(evidence) = &mut editor.evidence {
@@ -1350,13 +1052,16 @@ fn a_settled_step_waits_for_the_refit_its_view_asked_for() {
         "the new bounds asked for a frame"
     );
     let evidence = crate::app::testing::evidence(&editor);
-    assert!(!evidence.capture_pending, "the old proxy is not captured");
+    assert!(
+        !evidence.capture_pending,
+        "the old reduction is not captured"
+    );
     assert_eq!(evidence.awaiting, Some(Settle::Preview));
     finish(editor, catalog);
 }
 
 #[test]
-fn restoration_settled_fit_presents_reduction_and_keeps_exact_pixels_for_zoom() {
+fn a_reduced_fit_presents_the_reduction_and_keeps_exact_pixels_for_zoom() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
     editor.view_state.window = (1440.0, 900.0);
     editor.session.preview.view.zoom = Zoom::Fit;
@@ -1375,13 +1080,11 @@ fn restoration_settled_fit_presents_reduction_and_keeps_exact_pixels_for_zoom() 
         snapshot_id: exact.snapshot_id.clone(),
     };
     let (_, shown) = editor.preview_ready(luxforge_core::PreviewResult {
-        restoration_prefix: None,
         generation: 8,
         entry_id: analysis.identity.entry_id.clone(),
         identity: analysis.identity,
         draft_revision: None,
-        intent: luxforge_core::PreviewIntent::Settle,
-        viewport_declined: None,
+        intent: luxforge_core::PreviewIntent::Immediate,
         outcome: luxforge_core::PhaseOutcome::Exact(Box::new(luxforge_core::ExactOutcome {
             display: Some(display),
             result: Ok((*exact).clone()),
@@ -1393,16 +1096,16 @@ fn restoration_settled_fit_presents_reduction_and_keeps_exact_pixels_for_zoom() 
         queue_wait_ms: None,
     });
     assert!(shown);
-    assert!(editor.presentation.presented_settled);
+    assert!(editor.presentation.presented_reduced);
     assert!(
-        !editor.activity.render.unwrap().proxy,
+        !editor.activity.render.unwrap().approximate,
         "exact-derived display does not say approximate render"
     );
     assert_eq!(editor.presentation.presenter.full_content(), None);
     assert_eq!(
         editor
             .presentation
-            .settled_frame
+            .reduced_frame
             .as_ref()
             .unwrap()
             .raster
@@ -1422,7 +1125,7 @@ fn restoration_settled_fit_presents_reduction_and_keeps_exact_pixels_for_zoom() 
 }
 
 #[test]
-fn restoration_settled_fit_rejects_a_reduction_for_previous_bounds() {
+fn a_reduced_fit_rejects_a_reduction_for_previous_bounds() {
     let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
     editor.view_state.window = (1440.0, 900.0);
     editor.presentation.preview_generation = 8;
@@ -1443,13 +1146,11 @@ fn restoration_settled_fit_rejects_a_reduction_for_previous_bounds() {
         snapshot_id: exact.snapshot_id.clone(),
     };
     let _ = editor.preview_ready(luxforge_core::PreviewResult {
-        restoration_prefix: None,
         generation: 8,
         entry_id: analysis.identity.entry_id.clone(),
         identity: analysis.identity,
         draft_revision: None,
-        intent: luxforge_core::PreviewIntent::Settle,
-        viewport_declined: None,
+        intent: luxforge_core::PreviewIntent::Immediate,
         outcome: luxforge_core::PhaseOutcome::Exact(Box::new(luxforge_core::ExactOutcome {
             display: Some(display),
             result: Ok((*exact).clone()),
@@ -1460,8 +1161,8 @@ fn restoration_settled_fit_rejects_a_reduction_for_previous_bounds() {
         render_ms: 1.0,
         queue_wait_ms: None,
     });
-    assert!(!editor.presentation.presented_settled);
-    assert!(editor.presentation.settled_frame.is_none());
+    assert!(!editor.presentation.presented_reduced);
+    assert!(editor.presentation.reduced_frame.is_none());
     finish(editor, catalog);
 }
 

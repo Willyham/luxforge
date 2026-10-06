@@ -988,7 +988,6 @@ fn a_first_draft_stops_before_a_finish_layer() {
     let finishing = luxforge_core::ModuleDescriptor {
         id: "luxforge.vignette".into(),
         effects: vec![luxforge_core::EffectDescriptor {
-            fit_settle: Default::default(),
             id: luxforge_core::VIGNETTE_EFFECT.into(),
             format: 1,
             stage: luxforge_core::EffectStage::Finish,
@@ -1485,12 +1484,12 @@ fn an_idle_control_that_changes_nothing_opens_no_draft_or_leaves_the_crop_as_it_
     finish(editor, catalog);
 }
 
-/// At Fit a crop draft's input stage is the layer prefix's display-size proxy, rendered alone:
-/// its exact phase is never rendered there. A percentage zoom that draws the stage at its own
-/// size asks for the exact stage once, and a zoom back to Fit hands the held proxy over again
-/// without a render, exactly as the photograph's proxy and exact frames behave.
+/// At Fit a crop draft's input stage the GPU does not draw is the reference's frame of the layer
+/// prefix reduced to the display bounds, one frame with no proxy phase. A percentage zoom that
+/// draws the stage at its own size asks for the exact stage once, and a zoom back to Fit hands the
+/// held reduced frame over again without a render, as the photograph's frames behave.
 #[test]
-fn the_input_stage_is_a_proxy_at_fit_and_exact_only_at_a_percentage_zoom() {
+fn the_input_stage_is_reduced_at_fit_and_exact_only_at_a_percentage_zoom() {
     use luxforge_core::Zoom;
     let catalog = std::env::temp_dir().join(format!(
         "luxforge-crop-stage-proxy-{}-{}.sqlite",
@@ -1523,7 +1522,7 @@ fn the_input_stage_is_a_proxy_at_fit_and_exact_only_at_a_percentage_zoom() {
         editor.snapshot()["crop"]["input_stage_frame"].clone()
     };
 
-    let fit = shown(&mut editor, "proxy");
+    let fit = shown(&mut editor, "reduced");
     assert_eq!(editor.crop_stage(), Some(StageView::Shown));
     let bounds = editor.crop_stage_bounds().expect("Fit bounds the stage");
     let (width, height) = (
@@ -1560,7 +1559,7 @@ fn the_input_stage_is_a_proxy_at_fit_and_exact_only_at_a_percentage_zoom() {
     let plan = editor.zoom_changed(&Zoom::Percent { value: 100.0 });
     assert_eq!(plan.units(), 0, "nothing is planned");
     let back = editor.snapshot()["crop"]["input_stage_frame"].clone();
-    assert_eq!(back["phase"], json!("proxy"), "the held proxy, at once");
+    assert_eq!(back["phase"], json!("reduced"), "the held proxy, at once");
     assert_eq!(back["size"], fit["size"]);
     assert_eq!(editor.draft_generation(), None, "nothing is rendered");
     finish(editor, catalog);
@@ -1588,6 +1587,7 @@ fn stage_replanned(
         asset.clone(),
         Some(entry.clone()),
         count,
+        editor.crop_stage_ask(),
     )
     .expect("the stage planned again");
     let (evaluation, pixels) = crate::app::testing::fresh_stack(&job.evaluation);
@@ -1639,7 +1639,7 @@ fn an_open_crop_draft_keeps_no_stack_once_its_stage_is_delivered() {
             phase(editor) == json!(wanted) && !editor.presentation.queue.is_busy()
         });
     };
-    settled(&mut editor, "proxy");
+    settled(&mut editor, "reduced");
     assert_eq!(
         pixels.strong_count(),
         0,
@@ -1666,7 +1666,7 @@ fn an_open_crop_draft_keeps_no_stack_once_its_stage_is_delivered() {
     let _ = editor.update(answer);
     assert_eq!(editor.draft_generation(), None, "nothing is rendered");
     assert!(!editor.crop_gesture().expect("a draft").frames.replanning);
-    assert_eq!(phase(&editor), json!("proxy"));
+    assert_eq!(phase(&editor), json!("reduced"));
     assert_eq!(pixels.strong_count(), 0, "a dropped answer is not kept");
 
     // An answer to another entry's plan is not this draft's; one for this entry that is not
@@ -1793,7 +1793,7 @@ fn a_raw_develops_again_while_a_crop_draft_is_open() {
     let plan = |entry: Option<luxforge_core::EntryId>| {
         let (owner, asset) = (owner.clone(), asset.clone());
         bounded("the input stage's plan", move || {
-            tasks::crop_preview(&owner, client, asset, entry, count)
+            tasks::crop_preview(&owner, client, asset, entry, count, Default::default())
         })
         .map(Box::new)
     };
@@ -1859,5 +1859,185 @@ fn a_raw_develops_again_while_a_crop_draft_is_open() {
     })
     .expect("another photograph prepares");
     assert!(editor.crop().is_some(), "the draft is still open");
+    finish(editor, catalog);
+}
+
+/// A crop draft's input stage asked for with the GPU is planned with its prefix's picture at rest:
+/// the layers before the crop, from the source, their tiles reduced to the stage's display bounds,
+/// covering the prefix's whole output stage. A prefix the GPU cannot draw — a developer's pixel
+/// replacement — names why in the plan and its tiles, and the job's own frame is the reference's.
+#[test]
+fn a_crop_drafts_input_stage_is_planned_as_its_prefixs_picture_at_rest() {
+    use luxforge_core::{GpuAnswer, GpuFallback, PreviewRequest, ProxyBounds};
+    use luxforge_testkit::client::{call, mutation, request_id, revision};
+    let catalog = luxforge_testbase::paths::temp_path("crop-stage-rest.sqlite");
+    let (owner, join) = luxforge_core::OwnerHandle::start_with_host(
+        &catalog,
+        std::sync::Arc::new(luxforge_core::ModuleRegistry::developer()),
+        luxforge_core::HostConfig::unconfigured(),
+    )
+    .unwrap();
+    let client = owner.register();
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/s0/orientation-1.jpg");
+    let asset = crate::app::testing::import_and_adopt(&owner, client, &fixture);
+    let id = json!(asset.as_str());
+    let commit = |method: &str, mut params: Value| {
+        params["asset_id"] = id.clone();
+        params["mutation"] = mutation(
+            revision(&owner, client, &id).unwrap(),
+            &request_id("crop-stage"),
+            "agent",
+        );
+        call(&owner, client, method, params).expect("the edit");
+    };
+    commit("edit.set-basic", json!({"exposure": 0.4}));
+    commit(
+        "edit.crop",
+        json!({"angle": 7.0, "x": 0.2, "y": 0.2, "width": 0.5, "height": 0.5}),
+    );
+    // The prefix: every layer before the crop's.
+    let crop_at = || {
+        luxforge_testkit::client::recipe(&owner, client, &id)
+            .unwrap()
+            .layers
+            .iter()
+            .position(|layer| layer.effect_id == luxforge_core::CROP_EFFECT)
+            .expect("the crop layer")
+    };
+    let bounds = ProxyBounds {
+        width: 240,
+        height: 160,
+    };
+    let stage = |count| {
+        crate::app::tasks::ready_preview_job(
+            &owner,
+            PreviewRequest::new(client, asset.clone())
+                .layers(count)
+                .proxy(bounds)
+                .gpu(),
+        )
+        .expect("the input stage's job")
+    };
+    // The prefix holds Basic, over the whole 480 × 320 source.
+    let crop = crop_at();
+    let job = stage(crop);
+    let rest = job
+        .gpu_rest
+        .as_deref()
+        .expect("the prefix's picture at rest");
+    let plan = rest.view.answer.plan().expect("a plan from the source");
+    assert_eq!(plan.content.len(), 1, "Basic");
+    // The view plan, a drag's frame over it, is the prefix at the reduced stage of the bounds:
+    // the whole uncropped source fitted to them.
+    let output = plan.geometry.output();
+    assert_eq!(
+        (output.width, output.height),
+        (240, 160),
+        "no crop in the prefix: the source's stage fitted to the bounds"
+    );
+    let tiles = match rest.tiles.as_ref().expect("tiles") {
+        Ok(tiles) => tiles,
+        Err(reason) => panic!("tiles refused: {reason}"),
+    };
+    assert_eq!((tiles.output.width, tiles.output.height), (480, 320));
+    let covered: u64 = tiles
+        .tiles
+        .iter()
+        .map(|tile| u64::from(tile.rect.width) * u64::from(tile.rect.height))
+        .sum();
+    assert_eq!(covered, 480 * 320, "every pixel of the prefix once");
+    assert_eq!(
+        tiles.reduction.as_ref().map(|reduction| reduction.view),
+        Some((240, 160)),
+        "reduced to the stage's display bounds"
+    );
+    // Without the GPU asked for, nothing is planned.
+    let plain = crate::app::tasks::ready_preview_job(
+        &owner,
+        PreviewRequest::new(client, asset.clone())
+            .layers(crop)
+            .proxy(bounds),
+    )
+    .unwrap();
+    assert!(plain.gpu_rest.is_none());
+    // A pixel replacement in the prefix: the plan names it, and so do the tiles.
+    commit("edit.set-pixel", json!({"x": 3, "y": 2, "rgb": [9, 9, 9]}));
+    let job = stage(crop_at());
+    let rest = job.gpu_rest.as_deref().expect("the prefix's plan");
+    assert!(
+        matches!(
+            rest.view.answer,
+            GpuAnswer::Fallback(GpuFallback::PixelStage { .. })
+        ),
+        "{:?}",
+        rest.view.answer.fallback()
+    );
+    assert!(matches!(
+        rest.tiles,
+        Some(Err(GpuFallback::PixelStage { .. }))
+    ));
+    owner.stop();
+    let _ = join.join();
+    let _ = std::fs::remove_file(&catalog);
+}
+
+/// At Fit a crop draft's input stage asked for with the GPU is the GPU's picture of the layer
+/// prefix: the job carries the prefix's picture at rest, the GPU takes it, and nothing is queued
+/// for the reference; the surfaces are handed it under the frame, and the stage is on screen once
+/// the surface has drawn its last tile, which no surface does here.
+#[test]
+fn the_input_stage_at_fit_is_the_gpus_picture_of_the_prefix() {
+    let catalog = luxforge_testbase::paths::temp_path("crop-stage-gpu.sqlite");
+    let (mut editor, asset, _) = crate::app::testing::real_photo(&catalog);
+    editor.session.workspace.state_panel = false;
+    editor.session.workspace.tools_panel = false;
+    editor.view_state.window = (360.0, 300.0);
+    let _ = editor.update(Message::Crop(CropMessage::Start));
+    let count = editor.crop().expect("a frame").layer_index;
+    let ask = editor.crop_stage_ask();
+    assert!(
+        ask.bounds.is_some() && ask.gpu,
+        "Fit asks for the GPU's stage: {ask:?}"
+    );
+    let job = crate::app::tasks::crop_preview(
+        &editor.owner,
+        editor.client,
+        asset.clone(),
+        None,
+        count,
+        ask,
+    )
+    .expect("the input stage's job");
+    assert!(job.gpu_rest.is_some(), "the prefix's picture at rest");
+    let log = crate::app::testing::attach_log(&mut editor);
+    let _ = editor.update(Message::Crop(CropMessage::PreviewReady(
+        StagePlan::Open,
+        Ok(Box::new(job)),
+    )));
+    let records = crate::app::testing::logged(&mut editor, &log);
+    assert_eq!(
+        crate::app::testing::events(&records, "crop_stage_gpu").len(),
+        1,
+        "{records:?}"
+    );
+    assert_eq!(editor.draft_generation(), None, "no reference job");
+    assert_eq!(
+        editor.snapshot()["crop"]["input_stage_frame"]["phase"],
+        json!("gpu")
+    );
+    assert!(
+        editor.surfaces().stage_rest.is_some(),
+        "handed to the surfaces"
+    );
+    assert!(
+        matches!(editor.crop_stage(), Some(StageView::Rendering { .. })),
+        "on screen once the surface has drawn it"
+    );
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    assert!(
+        editor.surfaces().stage_rest.is_none(),
+        "let go with the draft"
+    );
     finish(editor, catalog);
 }

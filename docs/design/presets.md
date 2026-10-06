@@ -276,7 +276,7 @@ The owner asked for this work to proceed without blocking. These are proposals t
 | Item | Needs |
 | --- | --- |
 | Amount slider | A per-field scaling rule from each module; Lightroom scales only presets that declare `SupportsAmount` |
-| Hover preview | A draft of `apply-preset` rendered at proxy size, within the slider latency budget |
+| Hover preview | A draft of `apply-preset` drawn as a drag's frames are, within the slider latency budget |
 | Copy/Paste Settings | Capture into a transient set and apply it with `apply-preset`; no core change |
 | DNG presets and profiles | Reading an embedded XMP packet from binary content; a profile system |
 | Writing Lightroom XMP | An exporter for the mapped fields only, with the same value-transfer caveat |

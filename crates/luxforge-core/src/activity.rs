@@ -81,9 +81,10 @@ impl Outcome {
     }
 }
 
-/// What a publisher says about the work it is beginning.
+/// What a publisher says about the work it is beginning. A host publishes its own work through
+/// the owner's board too ([`ActivityBoard::begin`]): the desktop's GPU warm-up is one.
 #[derive(Clone, Debug)]
-pub(crate) struct ActivitySpec {
+pub struct ActivitySpec {
     /// A stable dotted identifier a client can switch on, such as `source.develop`.
     pub kind: &'static str,
     /// A short present-participle phrase for people, such as `Developing RAW`.
@@ -324,7 +325,7 @@ impl ActivityBoard {
     /// Record the beginning of one piece of work and return the guard that ends it. When
     /// [`MAX_ACTIVE`] entries are already running the guard is untracked: the work goes ahead, the
     /// board counts it in [`ActivitySnapshot::untracked`] and records nothing else about it.
-    pub(crate) fn begin(self: &Arc<Self>, spec: ActivitySpec) -> Activity {
+    pub fn begin(self: &Arc<Self>, spec: ActivitySpec) -> Activity {
         // The entry is built before the lock is taken; inside it the board only assigns an id and
         // moves the entry into space it already has.
         let mut entry = ActivityEntry {
@@ -486,7 +487,7 @@ impl ActivityBoard {
 /// dropping it unfinished records [`Outcome::Cancelled`], or [`Outcome::Failed`] when the thread is
 /// panicking, so an entry can never outlive the work it describes.
 #[must_use = "the activity ends as soon as its guard is dropped"]
-pub(crate) struct Activity {
+pub struct Activity {
     board: Arc<ActivityBoard>,
     /// `None` when the board was full and this work is untracked.
     id: Option<u64>,
@@ -556,7 +557,7 @@ impl Activity {
     }
 
     /// End the work with this outcome.
-    pub(crate) fn finish(mut self, outcome: Outcome) {
+    pub fn finish(mut self, outcome: Outcome) {
         self.end(outcome);
     }
 

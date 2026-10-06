@@ -17,7 +17,7 @@ use std::{
 };
 
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
-/// How many loopback connections are served at once; the point worker's queue is sized from it.
+/// How many loopback connections are served at once; the tile service's queue is sized from it.
 pub(super) const MAX_CLIENTS: usize = 8;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

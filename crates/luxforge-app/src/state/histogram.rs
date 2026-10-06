@@ -30,13 +30,40 @@ pub(crate) const SHADOW_RULE: &str =
     "Any channel at 0 \u{b7} blue; any at 255 \u{b7} red; both endpoints \u{b7} magenta";
 pub(crate) const HIGHLIGHT_RULE: &str = SHADOW_RULE;
 
-/// One analysed frame as the desktop holds it: the report its own preview worker reduced, the
-/// identity the owner will look that report up under, and the preview generation it arrived with.
+/// One analysed frame as the desktop holds it: the report reduced from it, the identity the owner
+/// will look that report up under, the preview generation it arrived with, and which reduction
+/// gave it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Analysis {
     pub(crate) generation: u64,
     pub(crate) identity: AnalysisIdentity,
     pub(crate) report: Report,
+    pub(crate) source: AnalysisSource,
+}
+
+/// Which reduction gave a report (`docs/design/gpu-first.md`, stage 2).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum AnalysisSource {
+    /// The reference renderer's whole frame, reduced by the core's reducer on the preview worker:
+    /// where the GPU does not draw the stack.
+    #[default]
+    Reference,
+    /// The GPU's reduction over the stack at full resolution in tiles, after a commit or a
+    /// release where the GPU draws the stack.
+    Gpu,
+    /// The GPU's reduction of the frame on screen in motion, a gesture's tick: shown as updating,
+    /// never handed to the owner.
+    Motion,
+}
+
+impl AnalysisSource {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Reference => "reference",
+            Self::Gpu => "gpu",
+            Self::Motion => "motion",
+        }
+    }
 }
 
 /// What the inspector can say about the displayed frame right now.

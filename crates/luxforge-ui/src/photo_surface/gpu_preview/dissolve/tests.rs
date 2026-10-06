@@ -239,8 +239,8 @@ fn a_held_plan_keeps_the_dissolve_and_its_redraws() {
 }
 
 /// A dissolve into a frame other than the one the surface draws is not drawn and keeps nothing
-/// awake. A percentage view dissolves into the frame it draws its current content from, its whole
-/// frame or else its region, and into no other.
+/// awake. A percentage view dissolves into the whole frame it draws its current content from, and
+/// into no other.
 #[test]
 fn a_dissolve_into_another_frame_asks_for_nothing_and_a_percentage_view_into_its_own() {
     let frame = solid(3, [255, 0, 0, 255]);
@@ -250,12 +250,10 @@ fn a_dissolve_into_another_frame_asks_for_nothing_and_a_percentage_view_into_its
         mid,
     );
     assert!(!asked && drawn.dissolve.is_none());
-    let region = region_frame(6, 1);
     let percent = |full: Option<(&Frame, u64)>, to: u64| {
         viewport_surface(
             ID,
             full,
-            Some(&region),
             1,
             STAGE,
             Placement::Fill,
@@ -267,13 +265,12 @@ fn a_dissolve_into_another_frame_asks_for_nothing_and_a_percentage_view_into_its
     for (what, full, to, runs) in [
         ("its whole frame", Some((&frame, 1)), 3, true),
         (
-            "its region, with no whole frame of the content",
+            "a whole frame of another content",
             Some((&frame, 0)),
-            6,
-            true,
+            3,
+            false,
         ),
-        ("its region", None, 6, true),
-        ("a region it does not draw", Some((&frame, 1)), 6, false),
+        ("another version", Some((&frame, 1)), 6, false),
         ("another frame", None, 4, false),
     ] {
         let (asked, drawn) = redraw(&mut percent(full, to), mid);
@@ -284,7 +281,8 @@ fn a_dissolve_into_another_frame_asks_for_nothing_and_a_percentage_view_into_its
 
 /// While its last frame said the plan's boundary is still uploading, the widget asks for the next
 /// frame, whose `prepare` writes the next chunks; once it is not — drawn, another fallback, or a
-/// resident boundary no upload is for — it asks for nothing, so an idle editor stays asleep.
+/// boundary derived from the source, which no boundary upload is for — it asks for nothing, so an
+/// idle editor stays asleep.
 #[test]
 fn the_widget_asks_for_frames_only_while_its_plans_boundary_uploads() {
     use super::super::super::{SurfaceDiagnostics, SurfaceId, process_figures};
@@ -305,7 +303,19 @@ fn the_widget_asks_for_frames_only_while_its_plans_boundary_uploads() {
     let frame = solid(3, [255, 0, 0, 255]);
     let boundary = black_boundary(5);
     let held = plan(&boundary, vec![identity()]);
-    let resident = plan(&boundary.resident(), vec![identity()]);
+    let source =
+        crate::photo_surface::GpuSource::codes(1, Arc::new(vec![0u8; 16]), 2, 2).expect("a source");
+    let derived = plan(
+        &GpuBoundary::derived(
+            &source,
+            crate::photo_surface::Derivation::Cut { origin: (0, 0) },
+            2,
+            2,
+            6,
+        )
+        .expect("a derived boundary"),
+        vec![identity()],
+    );
     let now = Instant::now();
     let surface = |plan: &GpuPlan| {
         photo_surface(id, &frame, Placement::Contain, Length::Fill, Length::Fill)
@@ -318,7 +328,7 @@ fn the_widget_asks_for_frames_only_while_its_plans_boundary_uploads() {
     for (what, fallback, plan, asks) in [
         ("drawn", None, &held, false),
         ("uploading", Some(uploading), &held, true),
-        ("a resident boundary", Some(uploading), &resident, false),
+        ("a derived boundary", Some(uploading), &derived, false),
         (
             "compiling",
             Some(crate::photo_surface::GpuFallback::Compiling),
@@ -377,9 +387,10 @@ fn primitive(plan: Option<GpuPlan>, dissolve: Option<(u64, f32)>) -> PhotoPrimit
             dissolve: Dissolve::start(from, CPU_VERSION),
             share,
         }),
+        source: None,
+        rest: None,
         offset: Vector::new(0.0, 0.0),
         size: Size::new(SIDE as f32, SIDE as f32),
-        clip_size: Size::new(SIDE as f32, SIDE as f32),
         bright: None,
         angle: 0.0,
         snap: true,
@@ -626,18 +637,12 @@ const STAGE: (u32, u32) = (2 * SIDE, 2 * SIDE);
 /// That middle, `[x0, y0, x1, y1]`.
 const MIDDLE: [u32; 4] = [SIDE / 2, SIDE / 2, SIDE / 2 + SIDE, SIDE / 2 + SIDE];
 
-/// The CPU's region of the middle, full red, at `version`, of content `content`.
-fn region_frame(version: u64, content: u64) -> crate::photo_surface::RegionFrame {
-    crate::photo_surface::RegionFrame {
-        frame: solid(version, CPU_RED),
-        rect: MIDDLE,
-        stage: STAGE,
-        full_stage: STAGE,
-        scale: 1.0,
-        quality: crate::RegionQuality::Exact,
-        content_id: content,
-        generation: 1,
-    }
+/// The CPU's whole frame of the stage, full red, at `version`.
+fn whole_red(version: u64) -> Frame {
+    let pixels: Vec<u8> = std::iter::repeat_n(CPU_RED, (STAGE.0 * STAGE.1) as usize)
+        .flatten()
+        .collect();
+    Frame::new(Arc::new(pixels), STAGE.0, STAGE.1, version).expect("a whole frame")
 }
 
 /// The GPU plan of the middle region: the blue boundary held for it, drawn at its rectangle.
@@ -647,18 +652,18 @@ fn region_plan() -> GpuPlan {
     region.region = Some(crate::photo_surface::GpuRegion {
         rect: MIDDLE,
         stage: STAGE,
+        full_stage: STAGE,
     });
     region
 }
 
 /// Surface `ID`'s percentage view of the stage at 100%, panned to the middle, which fills the
-/// target: the CPU's region of it, with `plan` or a dissolve at `share`.
+/// target: the CPU's whole frame of the stage, with `plan` or a dissolve at `share`.
 fn percent(plan: Option<GpuPlan>, dissolve: Option<(u64, f32)>, hold: bool) -> PhotoPrimitive {
     let mut primitive = primitive(plan, None);
     primitive.layers = Vec::new();
     primitive.viewport = Some(super::super::super::ViewportFrames {
-        full: None,
-        region: Some(region_frame(CPU_VERSION, 1)),
+        full: Some((whole_red(CPU_VERSION), 1)),
         current_content: 1,
         full_stage: STAGE,
     });
@@ -673,12 +678,12 @@ fn percent(plan: Option<GpuPlan>, dissolve: Option<(u64, f32)>, hold: bool) -> P
 }
 
 /// At a percentage zoom, after the GPU frame of the visible region, a dissolve draws the view's
-/// own region of the settled content over that GPU frame at its share, in linear light, records
+/// whole frame of the settled content over that GPU frame at its share, in linear light, records
 /// both identities and keeps the slot until it ends; behind a held plan as with none. Once it ends
-/// the region is drawn alone and the slot retires.
+/// the whole frame is drawn alone and the slot retires.
 #[test]
-fn a_percentage_view_dissolves_its_gpu_region_into_its_cpu_region() {
-    let test = "a_percentage_view_dissolves_its_gpu_region_into_its_cpu_region";
+fn a_percentage_view_dissolves_its_gpu_region_into_its_whole_frame() {
+    let test = "a_percentage_view_dissolves_its_gpu_region_into_its_whole_frame";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -723,11 +728,11 @@ fn a_percentage_view_dissolves_its_gpu_region_into_its_cpu_region() {
             "at {share}"
         );
         assert_eq!(seen.drawn_path, Some(DrawingPath::Cpu));
-        assert_eq!(seen.drawn_region_version, Some(CPU_VERSION));
+        assert_eq!(seen.drawn_full_version, Some(CPU_VERSION));
         assert_eq!(seen.gpu_preview_in_use_bytes, slot_bytes);
     }
     let ended = paint(&device, &queue, &mut pipeline, &percent(None, None, false));
-    assert_every_pixel(&ended, [255, 0, 0], "the CPU region after the dissolve");
+    assert_every_pixel(&ended, [255, 0, 0], "the CPU frame after the dissolve");
     let seen = diagnostics(&pipeline, ID);
     assert_eq!(seen.drawn_dissolve, None);
     assert_eq!(seen.drawn_gpu_boundary, None);
@@ -736,10 +741,10 @@ fn a_percentage_view_dissolves_its_gpu_region_into_its_cpu_region() {
 }
 
 /// A percentage view whose last GPU frame was a whole frame's — none of its own region — draws its
-/// region alone, as does one whose dissolve names a region it has not drawn yet.
+/// whole frame alone, as does one whose dissolve names a frame it has not drawn yet.
 #[test]
-fn a_percentage_view_dissolves_only_from_its_own_region_into_a_region_it_holds() {
-    let test = "a_percentage_view_dissolves_only_from_its_own_region_into_a_region_it_holds";
+fn a_percentage_view_dissolves_only_from_its_own_region_into_a_frame_it_holds() {
+    let test = "a_percentage_view_dissolves_only_from_its_own_region_into_a_frame_it_holds";
     let Some((device, queue)) = headless(test) else {
         return;
     };
@@ -759,7 +764,7 @@ fn a_percentage_view_dissolves_only_from_its_own_region_into_a_region_it_holds()
     );
     assert_every_pixel(&drawn, [255, 0, 0], "no region GPU frame to dissolve from");
     assert_eq!(diagnostics(&pipeline, ID).drawn_dissolve, None);
-    // The region's GPU frame, then a dissolve into a region version the view does not hold.
+    // The region's GPU frame, then a dissolve into a version the view does not hold.
     paint(
         &device,
         &queue,

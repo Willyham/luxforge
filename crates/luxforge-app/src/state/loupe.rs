@@ -398,7 +398,8 @@ pub(crate) struct Picture {
     /// Not the tier the loupe asked for, but the best preview cached meanwhile (a grid tier or a
     /// thumbnail, or a photograph's camera preview): drawn while the tier is read, and said so.
     pub(crate) stand_in: bool,
-    /// Rendered through the proxy path with an approximation the preview carries.
+    /// The preview says it approximates its photograph; a rendered tier, the reference's exact
+    /// frame area-averaged, never does.
     pub(crate) approximate: bool,
 }
 

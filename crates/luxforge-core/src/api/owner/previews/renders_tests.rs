@@ -382,12 +382,12 @@ fn generated_jpeg(label: &str, width: u32, height: u32) -> PathBuf {
 }
 
 /// Every preview says whether it approximates its entry, and a tier read back from the cache says
-/// what its render said. A Basic edit's tiers are exact; a Clarity edit's grid tier is rendered
-/// through the proxy, whose spatial neighbourhoods scale with the tier, and is approximate, while
-/// its large tier, whose stage already fits, is the exact render and is not. The camera preview
-/// shown until the first render is never approximate.
+/// what its row keeps. A rendered tier is the reference's exact frame area-averaged, so neither a
+/// Basic edit's tiers nor a Clarity edit's, whose spatial neighbourhoods a CPU proxy would have
+/// scaled with the tier, is approximate. The camera preview shown until the first render is never
+/// approximate either.
 #[test]
-fn a_rendered_tier_says_whether_it_is_approximate() {
+fn a_rendered_tier_is_never_approximate() {
     let sources = [
         generated_jpeg("rendered-owner-approximate-basic", 1200, 800),
         generated_jpeg("rendered-owner-approximate-clarity", 1000, 800),
@@ -447,13 +447,10 @@ fn a_rendered_tier_says_whether_it_is_approximate() {
     );
     assert!(!approximate(basic, LARGE));
     assert!(
-        approximate(clarity, GRID),
-        "Clarity is approximated at 512 px"
+        !approximate(clarity, GRID),
+        "Clarity is rendered exactly, then reduced to 512 px"
     );
-    assert!(
-        !approximate(clarity, LARGE),
-        "the stage fits: the exact render"
-    );
+    assert!(!approximate(clarity, LARGE));
 }
 
 /// A photograph's grid read queues a `preview-render` job naming the photograph, which answers the
@@ -1330,8 +1327,7 @@ fn the_render_queue_is_bounded() {
 
 /// The acceptance's ordering check through the owner. With the render worker held on one render
 /// and more renders waiting behind it — the open photograph's own large tier among them — the
-/// photograph Develop has open asks for its preview: the Fit proxy frame and then the exact frame
-/// arrive through the editor's preview queue while every render is still held or waiting, so the
+/// photograph Develop has open asks for its preview: its exact frame arrives through the editor's preview queue while every render is still held or waiting, so the
 /// preview never waited behind them. Released, the backlog completes.
 #[test]
 fn a_rendered_backlog_never_delays_an_open_develop_preview() {
@@ -1379,8 +1375,6 @@ fn a_rendered_backlog_never_delays_an_open_develop_preview() {
         .expect("the open photograph's preview job");
     let mut queue = PreviewQueue::default();
     queue.request(job);
-    let proxy = wait_for("Develop's proxy frame", || queue.poll());
-    assert!(proxy.proxy().is_some(), "the Fit proxy phase comes first");
     let exact = wait_for("Develop's exact frame", || queue.poll());
     let outcome = exact.exact().expect("the exact phase");
     assert!(outcome.result.is_ok() && outcome.report.is_some());

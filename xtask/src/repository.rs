@@ -320,7 +320,10 @@ const SOURCE_RULES: &[SourceRule] = &[
     // source's developed planes hold the source worker's memory gate, so one kept in the desktop's
     // state keeps the next development — a white-balance change, a history selection, another
     // photograph — from ever starting. A stack reaches the desktop only inside the preview job that
-    // carries it to a worker; each coverage worker's job type is the one line that names it.
+    // carries it to a worker; each coverage worker's job type is the one line that names it. The
+    // GPU tile worker answers the core's tile contract, whose reads and streams are handed the
+    // stack they read: its one line names the stack it holds only while it answers a call or
+    // draws a stream.
     SourceRule {
         name: "desktop-keeps-no-stack",
         tokens: &["Evaluation"],
@@ -329,21 +332,26 @@ const SOURCE_RULES: &[SourceRule] = &[
         allowed: &[
             "crates/luxforge-app/src/app/thumbnails.rs",
             "crates/luxforge-app/src/app/mask_coverage.rs",
+            "crates/luxforge-app/src/app/gpu_tiles.rs",
         ],
         mode: Match::Whole,
         tests: false,
         once: true,
         reason: "the desktop keeps no evaluation between messages: it holds its source, and a RAW \
                  development's planes hold the source worker's memory gate; only the thumbnail \
-                 and mask coverage workers' job types name one",
+                 and mask coverage workers' job types, and the GPU tile worker's stack, held for \
+                 the call or stream it answers, name one",
     },
     // Nor a planned preview job, which carries its stack. The desktop names `PreviewJob` only in
     // the files that pass one straight through: the message files that carry it (app/message.rs
     // and each seam's app/message/<variant>.rs, such as the crop's `PreviewReady`), the
     // owner tasks that plan and answer with it (app/tasks.rs), the preview request that hands it to
     // the worker (app/preview.rs), and the two answers that read one on its way there, a
-    // `draft.set`'s (app/gesture.rs) and the thumbnails' (app/thumbnails.rs). A crop draft keeps
-    // frames only; the editor, the view model and the other gestures name no job at all. A token
+    // `draft.set`'s (app/gesture.rs) and the thumbnails' (app/thumbnails.rs), and the drag ticks
+    // the GPU does not draw, which wait there for the frame in flight (app/motion.rs), or pass
+    // straight to the request as the CPU proxy's tick (app/cpu_proxy.rs). A crop
+    // draft keeps frames only; the editor, the view model and the other gestures name no job at
+    // all. A token
     // rule reads names, not types: it cannot see a job kept inside one of those files, nor one
     // kept inside a carrier type that holds one (`Refresh`, `PreviewPayload`).
     SourceRule {
@@ -358,6 +366,14 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-app/src/app/gesture.rs",
             "crates/luxforge-app/src/app/thumbnails.rs",
             "crates/luxforge-app/src/app/mask_coverage.rs",
+            // The preview request's GPU presentation: a committed job the GPU presents is read
+            // where it is requested and kept only as its identity.
+            "crates/luxforge-app/src/app/gpu_counts.rs",
+            // A drag tick the GPU does not draw: at most one held tick's job and one waiting for
+            // the reference frame in flight, each the newest of its draft, let go with the draft.
+            "crates/luxforge-app/src/app/motion.rs",
+            // The CPU proxy's tick, which passes its job straight to the preview request.
+            "crates/luxforge-app/src/app/cpu_proxy.rs",
         ],
         mode: Match::Whole,
         tests: false,
@@ -413,6 +429,52 @@ const SOURCE_RULES: &[SourceRule] = &[
         once: false,
         reason: "only the RAW module (crates/luxforge-core/src/modules/raw*) and tests may name \
                  its identity; decide applicability from the declared sources",
+    },
+    // The CPU proxy, a session without a GPU's drag path, is kept in its own modules so it is easy
+    // to see and to remove (owner, 2026-10-06): the core's `cpu_proxy` and the desktop's
+    // `app/cpu_proxy`. Only they and their named dispatch sites — the preview worker, its queue and
+    // its result type, the crate root's re-exports, and the desktop's motion and preview — may name
+    // the proxy's items, so the proxy cannot leak back into the main flow.
+    SourceRule {
+        name: "cpu-proxy",
+        tokens: &[
+            "cpu_proxy::",
+            "CpuProxy",
+            "ProxyPhase",
+            "ProxyCache",
+            "ProxyKey",
+            "ProxyStage",
+            "ProxyOutcome",
+            "ProxyApproximation",
+            "ProxyFrame",
+            "PhaseOutcome::Proxy",
+            "PreviewIntent::Interactive",
+            "render_proxy",
+            "proxy_stage",
+            "proxy_eligible",
+            "proxy_cancellable",
+            "whole_within",
+            "cpu_proxy_tick",
+            "cpu_proxy_bounds",
+        ],
+        scope: &["crates", "xtask/src"],
+        types: &["rs"],
+        allowed: &[
+            "crates/luxforge-core/src/cpu_proxy",
+            "crates/luxforge-core/src/lib.rs",
+            "crates/luxforge-core/src/preview/worker.rs",
+            "crates/luxforge-core/src/preview/queue.rs",
+            "crates/luxforge-core/src/preview/result.rs",
+            "crates/luxforge-app/src/app/cpu_proxy",
+            "crates/luxforge-app/src/app/motion.rs",
+            "crates/luxforge-app/src/app/preview.rs",
+        ],
+        mode: Match::Whole,
+        tests: false,
+        once: false,
+        reason: "the CPU proxy, a session without a GPU's drag path, lives in the core's cpu_proxy \
+                 and the desktop's app/cpu_proxy; reach it through their named dispatch sites \
+                 (the preview worker, queue and result; the desktop's motion and preview)",
     },
     // One answer to "is this a presettable action": `ModuleRegistry::patch_action` words the
     // refusal, and every caller resolves through it, so a second copy of the check fails here.
@@ -487,10 +549,7 @@ const SOURCE_RULES: &[SourceRule] = &[
                  editors may name a component kind; ask the kind table instead",
     },
     // One pixel-domain pipeline: the tap index of a resample coordinate, `(value - 0.5).floor()`,
-    // is what every read rectangle computes, and keying the estimate store by the domain's prefix
-    // is what every spatial-entry orchestration does, so each is written once in its home. The
-    // trait's `fn estimate_prefix` declaration and the windowed proxy's own halo and tile rule
-    // (`WindowPlan::of_rect`) are not copies.
+    // is what every read rectangle computes, so it is written once in its home.
     SourceRule {
         name: "one-read-rectangle",
         tokens: &["- 0.5).floor()"],
@@ -502,18 +561,6 @@ const SOURCE_RULES: &[SourceRule] = &[
         once: true,
         reason: "a resample's read rectangle is written once, as Resample::reads in \
                  render/geometry.rs; read it through that",
-    },
-    SourceRule {
-        name: "one-spatial-entry",
-        tokens: &[".estimate_prefix("],
-        scope: &["crates/luxforge-core/src"],
-        types: &["rs"],
-        allowed: &["crates/luxforge-core/src/render/pipeline.rs"],
-        mode: Match::Whole,
-        tests: false,
-        once: true,
-        reason: "a spatial entry's estimates are written once, as SpatialEntry::globals in \
-                 render/pipeline.rs; resolve them through that",
     },
     // One field-patch semantics: the field-patch module builds every patch action from its spec,
     // and the RAW module's `set-raw` keeps its own white-balance merge. A module that wants a patch
@@ -803,14 +850,16 @@ const SOURCE_RULES: &[SourceRule] = &[
         allowed: &[
             "crates/luxforge-testbase",
             // The core's production blocking points: the source worker's plane gate, the
-            // latest-job worker, the point-query worker and the 100% region's one RAW
+            // latest-job worker, the reference tile worker and the 100% focus check's one RAW
             // development at a time.
             "crates/luxforge-core/src/source.rs",
             "crates/luxforge-core/src/latest.rs",
-            "crates/luxforge-core/src/api/owner/point.rs",
+            "crates/luxforge-core/src/tiles/reference.rs",
             "crates/luxforge-core/src/previews/region.rs",
             // Production RGBA handoff backpressure, not a test gate; keeps the overlay byte bound.
             "crates/luxforge-app/src/app/mask_coverage.rs",
+            // The desktop's GPU tile worker, asleep while no call or export tile waits for it.
+            "crates/luxforge-app/src/app/gpu_tiles.rs",
         ],
         mode: Match::Whole,
         tests: true,
@@ -875,14 +924,14 @@ const SOURCE_RULES: &[SourceRule] = &[
         scope: &["crates", "xtask"],
         types: &["rs"],
         allowed: &[
-            // The core: the source worker and the owner loop, the point-query worker, the API
-            // transport's accept and connection threads, the job table's lanes and the
-            // latest-job worker.
+            // The core: the source worker and the owner loop, the API transport's accept and
+            // connection threads, the job table's lanes, the latest-job worker and the reference
+            // tile worker.
             "crates/luxforge-core/src/api/owner.rs",
-            "crates/luxforge-core/src/api/owner/point.rs",
             "crates/luxforge-core/src/api/transport.rs",
             "crates/luxforge-core/src/jobs.rs",
             "crates/luxforge-core/src/latest.rs",
+            "crates/luxforge-core/src/tiles/reference.rs",
             // The catalog's bounded workers: the index lane and its watchers, the preview lane,
             // and the develop lane (`docs/design/catalog.md`, "Architecture").
             "crates/luxforge-core/src/index",
@@ -892,8 +941,9 @@ const SOURCE_RULES: &[SourceRule] = &[
             // (blocking on its completion port); macOS delivers on a dispatch queue instead.
             "crates/luxforge-watch/src/linux.rs",
             "crates/luxforge-watch/src/windows.rs",
-            // The desktop's diagnostics log writer.
+            // The desktop's diagnostics log writer and its GPU tile worker.
             "crates/luxforge-app/src/diagnostics.rs",
+            "crates/luxforge-app/src/app/gpu_tiles.rs",
             // The widget crate's GPU retirement worker, and its GPU preview's pipeline compiler.
             "crates/luxforge-ui/src/photo_surface.rs",
             "crates/luxforge-ui/src/photo_surface/gpu_preview/compile.rs",
@@ -938,6 +988,9 @@ const SOURCE_RULES: &[SourceRule] = &[
             "\"--proof-endpoint\"",
             "\"--window-size\"",
             "\"--evidence-gpu-identity\"",
+            "\"--no-gpu-render\"",
+            "\"--software-adapter\"",
+            "\"--gpu-adapters\"",
             "spawn_editor",
             "editor_args",
         ],
@@ -1290,9 +1343,10 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         reason: "only a [dev-dependencies] table may turn on luxforge-core's test-holds, so no \
                  build of a binary holds its work at a test's gate or links luxforge-testbase",
     },
-    // Reading a GPU frame back is for qualification: only a `[dev-dependencies]` table turns the
-    // photo surface's `qualification` feature on, so no build of the desktop reads a GPU pixel
-    // back or waits on the GPU.
+    // Reading a plan's frame back outside the stage is for qualification: only a
+    // `[dev-dependencies]` table turns the photo surface's `qualification` feature on, so the
+    // desktop's one production readback is the tile runner's, on its GPU tile worker's own device,
+    // and the interface thread never waits on the GPU.
     DependencyRule {
         name: "gpu-qualification-only-in-tests",
         refuses: Depends::Feature {
@@ -1303,7 +1357,8 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         tables: &[Table::Normal, Table::Build, Table::Workspace],
         allowed: &[],
         reason: "only a [dev-dependencies] table may turn on luxforge-ui's qualification feature, \
-                 so no build of the desktop reads a GPU pixel back",
+                 so no build of the desktop reads a GPU pixel back but through the tile runner its \
+                 GPU tile worker owns",
     },
     // The CPU filters a GPU kernel is qualified against are for qualification: only a
     // `[dev-dependencies]` table turns the core's `qualification` feature on.
@@ -2509,12 +2564,16 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         let alias = "pub(crate) type ThumbnailJob = luxforge_core::Evaluation;\n";
-        // The thumbnail worker's job type, a test file, a test item, a comment and a longer name
-        // may.
+        // The thumbnail worker's job type, the GPU tile worker's stack, a test file, a test item,
+        // a comment and a longer name may.
         write_all(
             root,
             &[
                 ("crates/luxforge-app/src/app/thumbnails.rs", alias),
+                (
+                    "crates/luxforge-app/src/app/gpu_tiles.rs",
+                    "type Stack = luxforge_core::Evaluation;\n",
+                ),
                 (
                     "crates/luxforge-app/src/app/preview_tests.rs",
                     "let stack: Evaluation = evaluation();\n",
@@ -2526,7 +2585,7 @@ mod tests {
                 ),
             ],
         );
-        assert_eq!(read(root, &["desktop-keeps-no-stack"]).unwrap(), (2, 0));
+        assert_eq!(read(root, &["desktop-keeps-no-stack"]).unwrap(), (3, 0));
         // A second line in the worker's own file, or any other desktop file, is refused.
         refuses_each(
             root,
@@ -2713,49 +2772,36 @@ mod tests {
     }
 
     #[test]
-    fn the_pipeline_keeps_one_read_rectangle_and_one_spatial_entry() {
+    fn the_pipeline_keeps_one_read_rectangle() {
         let tmp = tempfile::tempdir().unwrap();
         let core = tmp.path().join("crates/luxforge-core/src");
         for dir in [core.join("render"), core.join("modules/presence")] {
             fs::create_dir_all(dir).unwrap();
         }
         let floor = "                let index = (value - 0.5).floor();\n";
-        let keyed = "            &domain.estimate_prefix(self.prefix_hash),\n";
-        // Each home writes its token once; the trait's declarations, the windowed proxy's own halo
-        // and tile rule (`WindowPlan::of_rect`), test items and test-only modules are not copies.
+        // The home writes its token once; test items and test-only modules are not copies.
         for (file, text) in [
             (core.join("render/geometry.rs"), floor.to_owned()),
             (
                 core.join("render/pipeline.rs"),
-                format!(
-                    "    fn estimate_prefix<'p>(&self, prefix_hash: &'p str) -> Cow<'p, str>;\n{keyed}\
-                     #[cfg(test)]\nmod tests {{\n{floor}{keyed}}}\n"
-                ),
+                format!("#[cfg(test)]\nmod tests {{\n{floor}}}\n"),
             ),
             (
                 core.join("render/window.rs"),
-                "                    let grown = read.grown(operation.summed_halo(input), input);\n\
-                 let tile = Tiling::Halo.tile(operation, input);\n\
-                 let x0 = grown.x0 / tile * tile;\n\
-                 needed = resample.reads((0, 0), read, stage);\n"
-                    .to_owned(),
+                "                    needed = resample.reads((0, 0), read, stage);\n".to_owned(),
             ),
             (
                 core.join("modules/presence/mod.rs"),
                 "#[cfg(test)]\nmod oracle;\n".to_owned(),
             ),
-            (core.join("modules/presence/oracle.rs"), keyed.to_owned()),
+            (core.join("modules/presence/oracle.rs"), floor.to_owned()),
             (core.join("render/linear_tests.rs"), floor.to_owned()),
         ] {
             fs::write(file, text).unwrap();
         }
-        assert_eq!(
-            read(tmp.path(), &["one-read-rectangle", "one-spatial-entry"]).unwrap(),
-            (4, 0)
-        );
-        // The copies this rule replaced, brought back: the proxy window's and the linear tap
-        // block's read rectangles, the byte band's second one beside `Resample::reads`, and the
-        // byte driver's inline estimate resolution.
+        assert_eq!(read(tmp.path(), &["one-read-rectangle"]).unwrap(), (4, 0));
+        // The copies this rule replaced, brought back: the linear tap block's read rectangle and
+        // the byte band's second one beside `Resample::reads`.
         for (file, text) in [
             (core.join("render/window.rs"), floor),
             (core.join("render/linear.rs"), floor),
@@ -2763,18 +2809,10 @@ mod tests {
                 core.join("render/byte.rs"),
                 "    let start = (top - 0.5).floor() - 2.0;\n",
             ),
-            (
-                core.join("render/byte.rs"),
-                "                                &domain.estimate_prefix(prefix_hash),\n",
-            ),
         ] {
             let clean = fs::read_to_string(&file).ok();
             fs::write(&file, format!("{}{text}", clean.as_deref().unwrap_or(""))).unwrap();
-            let error = refusal(
-                tmp.path(),
-                &["one-read-rectangle", "one-spatial-entry"],
-                text,
-            );
+            let error = refusal(tmp.path(), &["one-read-rectangle"], text);
             let name = file.file_name().unwrap().to_string_lossy().into_owned();
             assert!(
                 error.contains(&format!("{name}:")) && error.contains("written once"),
@@ -2785,10 +2823,106 @@ mod tests {
                 None => fs::remove_file(&file).unwrap(),
             }
         }
-        assert_eq!(
-            read(tmp.path(), &["one-read-rectangle", "one-spatial-entry"]).unwrap(),
-            (4, 0)
-        );
+        assert_eq!(read(tmp.path(), &["one-read-rectangle"]).unwrap(), (4, 0));
+    }
+
+    #[test]
+    fn only_the_cpu_proxy_modules_and_their_dispatch_sites_name_the_proxy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let core = tmp.path().join("crates/luxforge-core/src");
+        let app = tmp.path().join("crates/luxforge-app/src/app");
+        for dir in [
+            core.join("cpu_proxy"),
+            core.join("preview"),
+            core.join("render"),
+            app.clone(),
+        ] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        // The modules, their dispatch sites, tests and comments may name the proxy.
+        for (file, text) in [
+            (
+                core.join("cpu_proxy.rs"),
+                "pub(crate) struct CpuProxy;
+",
+            ),
+            (
+                core.join("cpu_proxy/stage.rs"),
+                "fn render_proxy() {}
+",
+            ),
+            (
+                core.join("preview/worker.rs"),
+                "use crate::cpu_proxy::{CpuProxy, ProxyPhase};
+",
+            ),
+            (
+                core.join("lib.rs"),
+                "pub use cpu_proxy::{ProxyApproximation, ProxyOutcome};
+",
+            ),
+            (
+                app.join("cpu_proxy.rs"),
+                "pub(crate) struct ProxyFrame;
+",
+            ),
+            (
+                app.join("motion.rs"),
+                "return Some(self.cpu_proxy_tick(job, timed));
+",
+            ),
+            (
+                app.join("preview.rs"),
+                "} else if cpu_proxy::asks(&job) {
+",
+            ),
+            (
+                app.join("cpu_proxy_tests.rs"),
+                "assert!(editor.presentation.presented_proxy.is_some());
+",
+            ),
+            (
+                core.join("render/entry.rs"),
+                "/// Not the `CpuProxy`.
+fn frame() {}
+",
+            ),
+        ] {
+            fs::write(file, text).unwrap();
+        }
+        let (read_files, _) = read(tmp.path(), &["cpu-proxy"]).unwrap();
+        // Anywhere else in product code, the proxy's items are refused.
+        for (file, text) in [
+            (
+                core.join("render/entry.rs"),
+                "pub(crate) fn render_proxy(&self) {}
+",
+            ),
+            (
+                app.join("snapshot.rs"),
+                "let reason = proxy.and_then(luxforge_core::ProxyApproximation::reason);
+",
+            ),
+            (
+                app.join("history.rs"),
+                "job.intent = PreviewIntent::Interactive;
+",
+            ),
+        ] {
+            let clean = fs::read_to_string(&file).ok();
+            fs::write(&file, format!("{}{text}", clean.as_deref().unwrap_or(""))).unwrap();
+            let error = refusal(tmp.path(), &["cpu-proxy"], text);
+            let name = file.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(
+                error.contains(&format!("{name}:")) && error.contains("cpu_proxy"),
+                "{error}"
+            );
+            match clean {
+                Some(clean) => fs::write(&file, clean).unwrap(),
+                None => fs::remove_file(&file).unwrap(),
+            }
+        }
+        assert_eq!(read(tmp.path(), &["cpu-proxy"]).unwrap().0, read_files);
     }
 
     #[test]
@@ -3125,6 +3259,14 @@ mod tests {
                     "crates/luxforge-core/src/latest.rs",
                     "let worker = thread::Builder::new().spawn(run);\n",
                 ),
+                (
+                    "crates/luxforge-core/src/tiles/reference.rs",
+                    "let started = std::thread::Builder::new().name(name).spawn(work);\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/gpu_tiles.rs",
+                    "let started = std::thread::Builder::new().name(name).spawn(work);\n",
+                ),
                 ("xtask/src/verify.rs", "std::thread::scope(|scope| {});\n"),
                 (
                     "crates/luxforge-core/src/render/linear.rs",
@@ -3149,6 +3291,16 @@ mod tests {
             &[
                 (
                     "crates/luxforge-core/src/render/spatial.rs",
+                    "let worker = std::thread::spawn(move || {});\n",
+                ),
+                // The tile contract beside the reference worker is not a home of its own, nor is the
+                // plan conversion beside the GPU tile worker.
+                (
+                    "crates/luxforge-core/src/tiles.rs",
+                    "let worker = std::thread::Builder::new();\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/gpu_plan.rs",
                     "let worker = std::thread::spawn(move || {});\n",
                 ),
                 ("xtask/src/main.rs", "let t = thread::Builder::new();\n"),
@@ -4257,7 +4409,8 @@ mod tests {
         let surface = "crates/luxforge-ui/src/photo_surface.rs";
         let worker = "fn worker() {\n    std::thread::sleep(STEP);\n}\n";
         // The shared crate's one wait and its gate, the production home's one sleep, the core's
-        // production blocking points, and tests that wait through the shared crate may.
+        // and the desktop's production blocking points, and tests that wait through the shared
+        // crate may.
         write_all(
             root,
             &[
@@ -4275,12 +4428,20 @@ mod tests {
                     "    changed: Condvar,\n",
                 ),
                 (
+                    "crates/luxforge-core/src/tiles/reference.rs",
+                    "    queued: Condvar,\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/gpu_tiles.rs",
+                    "    wake: Condvar,\n",
+                ),
+                (
                     "crates/luxforge-core/src/preview/tests.rs",
                     "    wait_until(\"the frame\", || queue.poll().is_some());\n",
                 ),
             ],
         );
-        assert_eq!(read(root, rules).unwrap(), (5, 0));
+        assert_eq!(read(root, rules).unwrap(), (7, 0));
         // A test's own sleep, spin or gate anywhere else, test code and comments included, and a
         // sleep in the proof module, which has no delay of its own to wait out.
         refuses_each(
@@ -4318,6 +4479,14 @@ mod tests {
                     "crates/luxforge-testkit/src/proof.rs",
                     "    wake: Condvar,\n",
                 ),
+                (
+                    "crates/luxforge-core/src/tiles/reference_tests.rs",
+                    "    let held: Condvar = Condvar::new();\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/gpu_tiles_worker_tests.rs",
+                    "    let held: Condvar = Condvar::new();\n",
+                ),
             ],
             "luxforge_testbase::Gate",
         );
@@ -4336,7 +4505,7 @@ mod tests {
             "{error}"
         );
         write_all(root, &[(surface, worker)]);
-        assert_eq!(read(root, rules).unwrap(), (5, 0));
+        assert_eq!(read(root, rules).unwrap(), (7, 0));
     }
 
     #[test]

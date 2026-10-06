@@ -113,10 +113,11 @@ impl Mutated {
     }
 }
 
-/// What a planned service method answers: a value, or a point sample through a spatial layer,
-/// planned on the catalog owner in `O(layers)` and evaluated by whoever holds it. The owner hands
-/// the sample to its point worker; every other caller evaluates it where it stands. A planned
-/// method carries no mutation envelope, so no request table waits for its answer.
+/// What a planned service method answers: a value, or a read of pixels — a point sample, or a
+/// query that reads pixels — planned on the catalog owner in `O(layers)` and read by whoever holds
+/// it. The owner hands every read to its tile service, which reads no pixel on its thread; a
+/// caller without one reads it with the reference renderer where it stands. A planned method
+/// carries no mutation envelope, so no request table waits for its answer.
 pub(super) enum Planned {
     Value(Value),
     Sample(Box<PointPlan>),
@@ -125,12 +126,14 @@ pub(super) enum Planned {
 
 #[cfg(test)]
 impl Planned {
-    /// The answer, evaluating a planned sample here.
+    /// The answer, reading a planned sample or query here with the reference renderer.
     pub(super) fn answer(self) -> Result<Value, Error> {
         match self {
             Self::Value(value) => Ok(value),
             Self::Sample(plan) => sample_value((*plan).evaluate()?),
-            Self::Query(plan) => plan.evaluate(&crate::Cancel::never()),
+            Self::Query(plan) => {
+                plan.evaluate(&crate::tiles::ReferenceReads, &crate::Cancel::never())
+            }
         }
     }
 }
@@ -757,19 +760,19 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "workspace.set",
         WorkspaceSet,
         workspace_set,
-        "per-client screen preference: panels, canvas mode, overlays and the GPU preview; needs no asset and changes no history or frame; returns the session"
+        "per-client screen preference: panels, canvas mode, the thirds guide and overlays; needs no asset and changes no history or frame; returns the session"
     ),
     service!(
         "session.state",
         NoParams,
         |service, session, _| session_value(service, session),
-        "this client's selection, view, workspace state and session revision"
+        "this client's selection, view, workspace state and session revision, and renderer {record, reason}: which renderer draws the desktop's picture on this machine, the same in every client's session and set by no method (schema.list's renderer block lists its values, and the reasons an export's result names in the same shape)"
     ),
     service!(
         "resources.read",
         NoParams,
         |service, _, _| value(crate::resources::read(service.render_context())),
-        "what the operating system accounts to this process: {monotonic_ns, cpu: {time_ns, logical_cpus}, memory: {kind, bytes, peak_bytes, resident_bytes}, gpu: {time_ns, allocated_bytes, unified_memory}, budgets: {colour_scratch, spatial} each {target_bytes, in_use_bytes, peak_bytes}, and reduced_planes: {limit_bytes, retained_bytes, entries, render_hits, render_misses, tile_hits, tile_misses, point_hits, point_misses, cells_handed_back, publishes, evictions, refusals}}; reduced_planes is the store of the reduced planes a spatial unit that runs first computes: its limit, its level and counts since the context was created; times are nanoseconds and sizes bytes; memory.kind is footprint (macOS, Activity Monitor's Memory, including GPU allocations on unified memory), resident (Linux) or private (Windows); time counters are cumulative, so a rate comes from two reads: CPU percent of one core is 100 × Δcpu.time_ns / Δmonotonic_ns, up to 100 × logical_cpus, and GPU percent is the same over gpu.time_ns; monotonic_ns means something only as a difference; a counter the platform cannot give is omitted and its object's unavailable maps its key to the reason; takes no parameters, needs no asset, emits no event and changes nothing"
+        "what the operating system accounts to this process: {monotonic_ns, cpu: {time_ns, logical_cpus}, memory: {kind, bytes, peak_bytes, resident_bytes}, gpu: {time_ns, allocated_bytes, unified_memory}, budgets: {colour_scratch, spatial} each {target_bytes, in_use_bytes, peak_bytes}}; times are nanoseconds and sizes bytes; memory.kind is footprint (macOS, Activity Monitor's Memory, including GPU allocations on unified memory), resident (Linux) or private (Windows); time counters are cumulative, so a rate comes from two reads: CPU percent of one core is 100 × Δcpu.time_ns / Δmonotonic_ns, up to 100 × logical_cpus, and GPU percent is the same over gpu.time_ns; monotonic_ns means something only as a difference; a counter the platform cannot give is omitted and its object's unavailable maps its key to the reason; takes no parameters, needs no asset, emits no event and changes nothing"
     ),
     service!(
         "draft.begin",
@@ -811,12 +814,12 @@ pub(super) const METHODS: &[MethodSpec] = &[
         draft_reapply,
         "rebases the draft on the asset's current revision, keeping and revalidating only the fields this client set"
     ),
-    // Planned on the owner; a sample through a spatial layer is evaluated on the point worker.
+    // Planned on the owner; every sample is read by the owner's tile service.
     planned!(
         "render.sample",
         RenderSample,
         render_sample,
-        "one pixel of the session's selected entry, or of an open draft's effective recipe, evaluated without rasterizing; names the entry and snapshot it was planned against, and its response sequence is the event sequence when it was planned; a sample through a spatial layer is evaluated off the catalog owner, and resource-limit means too many such samples are already waiting"
+        "one pixel of the session's selected entry, or of an open draft's effective recipe, read off the catalog owner by its tile service: on the desktop from a GPU tile render of the stack, the byte the picture shows there at 100%, and otherwise by the reference renderer, which through a spatial layer renders that layer's whole frame; names the entry and snapshot it was planned against and the renderer that drew it, {record: gpu or reference, reason}, the reason naming why the GPU did not; its response sequence is the event sequence when it was planned; resource-limit means too many pixel reads are already waiting"
     ),
     service!(
         "render.locate",
@@ -862,7 +865,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "export.jpeg",
         owner::export::ExportJpeg,
         owner::export::jpeg,
-        "writes one saved entry's exact render, the current entry unless entry_id names another, to a new baseline quality-90 sRGB JPEG at destination: an absolute path ending .jpg or .jpeg whose parent directory exists and at which nothing exists (conflict otherwise, and nothing is ever replaced); keep_metadata writes the original's supported EXIF fields, otherwise the file carries none; pixels_per_inch (1 to 65535) is the JFIF header's density, which sizes the file in viewers such as Preview and in print, otherwise the header names none, a unitless 1:1 aspect ratio; the entry is frozen when accepted, so later commits never change it; queues one job on the export lane (one running, four waiting, resource-limit beyond), read with job.read and cancelled with job.cancel, and returns {job_id, status, asset_id, entry_id, snapshot_id, destination, width, height, keep_metadata, pixels_per_inch, deduplicated}; an unprepared source is preparation-required with its job; a finished export records an event",
+        "writes one saved entry's exact render, the current entry unless entry_id names another, to a new baseline quality-90 sRGB JPEG at destination: an absolute path ending .jpg or .jpeg whose parent directory exists and at which nothing exists (conflict otherwise, and nothing is ever replaced); keep_metadata writes the original's supported EXIF fields, otherwise the file carries none; pixels_per_inch (1 to 65535) is the JFIF header's density, which sizes the file in viewers such as Preview and in print, otherwise the header names none, a unitless 1:1 aspect ratio; the GPU renders the output stage in full-resolution tiles that the encoder takes as they arrive, within the display limit of the reference renderer's export, identical run to run on one machine and driver and allowed a last-digit difference across machines, and reference: true asks for the reference renderer's export instead, the CPU render every GPU output is measured against; the reference also renders when the host has no GPU (luxforge-json), and when the GPU cannot render the stack, before or part-way through, which starts the export again from nothing so one file is never two renderers' pixels; a ready job's result names the renderer that wrote the file as renderer {record, reason}: {gpu, null}, or the reference with the reason it rendered (schema.list's renderer block), null on a host with no GPU; the entry is frozen when accepted, so later commits never change it; queues one job on the export lane (one running, four waiting, resource-limit beyond), read with job.read and cancelled with job.cancel, and returns {job_id, status, asset_id, entry_id, snapshot_id, destination, width, height, keep_metadata, pixels_per_inch, reference, deduplicated}; an unprepared source is preparation-required with its job; a finished export records an event",
         retries: Owner,
     ),
     service!(
@@ -1638,6 +1641,14 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
         "masks": {
             "points_per_mask": crate::POINTS_PER_MASK,
         },
+        // The session's `renderer`, which no method sets: what each value means, so a client reads
+        // which renderer drew the desktop's picture, and why the reference did, without the desktop.
+        "renderer": {
+            "records": [crate::RendererRecord::Gpu, crate::RendererRecord::Reference],
+            "reasons": crate::RendererReason::ALL.map(crate::RendererReason::as_str),
+            "export_reasons": crate::RendererReason::EXPORT.map(crate::RendererReason::as_str),
+            "notes": "session.state's renderer is {record, reason}, the same for every client of this owner. record gpu: the desktop's photo surface draws on its GPU, and reason is null; software is true when that GPU is the platform's software adapter (lavapipe on Linux, WARP on Windows), a rasterizer on the CPU, and is omitted otherwise. record reference: the CPU reference renderer draws the desktop's picture, slower, and reason says why: surface-pending before the desktop has drawn a photograph, which is when its photo surface checks its GPU stage; no-adapter when the GPU stage cannot run on this graphics device, when the host offers only a software adapter, which is not adopted and the desktop was not launched with --software-adapter, or when the desktop was launched with --no-gpu-render, which refuses it the same way; device-lost when the graphics device was lost, which nothing waits to recover. record reference with a null reason is an owner that draws nothing, such as luxforge-json, whose renderer is always the reference. The desktop reports it from its photo surface and the session reports it; no method sets it. A ready export's job.read result names the renderer that rendered its file in the same shape: record gpu with a null reason, or record reference with a null reason on an owner with no GPU, such as luxforge-json, and otherwise one of the reasons, one of export_reasons or the GPU plan's own code: requested when export.jpeg asked for reference: true; surface-pending before the desktop has named the adapter its window draws with to its GPU tile worker, which it does once its photo surface has checked its GPU stage; no-adapter when the tile worker found no adapter or device it can render on; refused when the desktop was launched with --no-gpu-render; device-lost when the tile worker's device was lost, before or during the export, which then starts again on the reference; adapter-mismatch when the tile worker's adapter is not the one the window draws with; tiles-budget when the export's tiles would hold more than the tile worker's GPU budget; or the code of the GPU plan or stage that cannot draw the stack, such as pixel-stage for a layer no GPU program replaces, or pipeline-failed.",
+        },
         // Every mutating method names its envelope in its own `mutation` field.
         "mutation": {
             "revision": Envelope::Revision.fields(),
@@ -1844,7 +1855,6 @@ host_params! {
         // and an unknown one is refused with the vocabulary spelled out.
         mask_overlay: Option<String> = enumeration(MaskOverlayMode::ALL.map(MaskOverlayMode::as_str)).notes("what the canvas draws of the selected mask"),
         mask_overlay_colour: Option<String> = enumeration(MaskOverlayColour::ALL.map(MaskOverlayColour::as_str)).notes("the tint the mask overlay is drawn in"),
-        gpu_preview: Option<bool> = boolean().notes("draw this client's gestures through the GPU preview stage where it can; on by default; off, every gesture previews on the CPU; the settled frame and every answer are the CPU's either way"),
     }
 }
 
@@ -2352,18 +2362,13 @@ fn workspace_set(
     if let Some(colour) = mask_overlay_colour {
         session.workspace.mask_overlay_colour = colour;
     }
-    // Which path draws this client's gesture previews: a preference, never an edit, and nothing
-    // a settled frame, sample, analysis or export reads.
-    if let Some(gpu_preview) = p.gpu_preview {
-        session.workspace.gpu_preview = gpu_preview;
-    }
     session.touch();
     session_value(service, session)
 }
 
-/// Plan one pixel against the stack the caller names, reading the session and the catalog now. A
-/// point that costs `O(layers)` is answered here; one through a spatial layer is returned planned,
-/// for the catalog owner to hand to its point worker.
+/// Plan one pixel against the stack the caller names, reading the session and the catalog now,
+/// in `O(layers)`: it is returned planned, for the catalog owner to hand to its tile service,
+/// which reads the pixel off the owner's thread.
 fn render_sample(
     service: &mut EditorService,
     session: &mut ClientSession,
@@ -2387,11 +2392,7 @@ fn render_sample(
             )?
         }
     };
-    if plan.evaluates_spatial() {
-        Ok(Planned::Sample(Box::new(plan)))
-    } else {
-        sample_value(plan.evaluate()?).map(Planned::Value)
-    }
+    Ok(Planned::Sample(Box::new(plan)))
 }
 
 pub(super) fn sample_value(sample: PixelSample) -> Result<Value, Error> {
@@ -2517,16 +2518,21 @@ fn set_draft(
         .held_draft(draft_id)
         .expect("the draft was just checked")
         .merged(fields);
-    // A partial gesture may still lack a required field. Once complete, a stack containing
-    // spatial operations seeds any planning reads before acceptance; pointwise drafts keep
-    // their existing field-only set path. This metadata check neither compiles nor reads pixels.
+    // A partial gesture may still lack a required field. Once complete, a draft whose plan reads a
+    // pixel — a colour-limited stroke's seed — is planned here, so the read is parked once, off
+    // the owner, before the draft is accepted, and every later preview of it finds the pixel in
+    // the session's memo: a preview never parks a read. So is a draft over a stack holding a
+    // spatial layer, whose plan refusals are then this tick's. Any other draft keeps the
+    // field-only set path; neither check compiles or reads a pixel.
     let planned = if complete {
         service
             .draft_has_spatial_inputs(&next.asset_id)
-            .and_then(|spatial| match spatial {
-                true => service.draft_recipe(&next.asset_id, &next).map(drop),
-                false => Ok(()),
-            })
+            .and_then(
+                |spatial| match spatial || service.draft_reads_pixels(&next) {
+                    true => service.draft_recipe(&next.asset_id, &next).map(drop),
+                    false => Ok(()),
+                },
+            )
     } else {
         Ok(())
     };
@@ -4006,7 +4012,6 @@ mod tests {
                 title: "Angle".into(),
                 hint: None,
                 effects: vec![EffectDescriptor {
-                    fit_settle: Default::default(),
                     id: "test.angle.effect".into(),
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Geometry,
@@ -4099,7 +4104,6 @@ mod tests {
                 title: "Mark".into(),
                 hint: None,
                 effects: vec![EffectDescriptor {
-                    fit_settle: Default::default(),
                     id: MARK_EFFECT.into(),
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Geometry,
@@ -4543,9 +4547,8 @@ mod tests {
                 "clip_highlights": false,
                 "mask_overlay": "off",
                 "mask_overlay_colour": "green",
-                "gpu_preview": true,
             }),
-            "a fresh session opens with both panels, the pointer, no overlay and the GPU preview on"
+            "a fresh session opens with both panels, the pointer and no overlay"
         );
         let set = ok(
             &mut service,
@@ -4565,7 +4568,6 @@ mod tests {
                 "clip_highlights": false,
                 "mask_overlay": "off",
                 "mask_overlay_colour": "green",
-                "gpu_preview": true,
             })
         );
         assert_eq!(set["revision"], json!(1), "a session change is a revision");
@@ -4625,12 +4627,11 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
-    /// The GPU preview is a per-client preference, on by default: `workspace.set` turns it off and
-    /// on, `session.state` reports it, another client's is its own, a wrong type is refused without
-    /// changing anything, and `schema.list` publishes it as an optional boolean, so an agent finds
-    /// and sets it with no GUI.
+    /// The GPU draws every frame it can and the reference renderer the rest, so there is no
+    /// preference to choose the path: `workspace.set` refuses `gpu_preview` as an unknown field,
+    /// changing nothing, and `schema.list` publishes no such parameter.
     #[test]
-    fn the_gpu_preview_preference_round_trips_and_is_discoverable() {
+    fn workspace_set_has_no_gpu_preview_preference() {
         let catalog = std::env::temp_dir().join(format!(
             "luxforge-methods-gpu-preview-{}.sqlite",
             std::process::id()
@@ -4638,88 +4639,38 @@ mod tests {
         let _ = std::fs::remove_file(&catalog);
         let mut service = EditorService::open(&catalog).unwrap();
         let mut session = ClientSession::default();
-        let mut other = ClientSession::default();
-        let state = |service: &mut EditorService, session: &mut ClientSession| {
-            ok(service, session, "session.state", json!({}))["workspace"]["gpu_preview"].clone()
-        };
-        assert_eq!(
-            state(&mut service, &mut session),
-            json!(true),
-            "on by default"
-        );
-
-        let off = ok(
-            &mut service,
-            &mut session,
-            "workspace.set",
-            json!({"gpu_preview": false}),
-        );
-        assert_eq!(off["workspace"]["gpu_preview"], json!(false));
-        assert_eq!(off["revision"], json!(1), "a session change is a revision");
-        let mut expected = serde_json::to_value(super::super::WorkspaceState::default()).unwrap();
-        expected["gpu_preview"] = json!(false);
-        assert_eq!(off["workspace"], expected, "nothing else moved");
-        assert_eq!(state(&mut service, &mut session), json!(false));
-        assert_eq!(
-            state(&mut service, &mut other),
-            json!(true),
-            "another client's preference is its own"
-        );
-
+        let before =
+            ok(&mut service, &mut session, "session.state", json!({}))["workspace"].clone();
+        assert!(before.get("gpu_preview").is_none(), "{before}");
         let refused = call(
             &mut service,
             &mut session,
             "workspace.set",
-            json!({"gpu_preview": "on"}),
+            json!({"gpu_preview": false}),
         )
         .error
-        .expect("a wrong type is refused");
+        .expect("the retired preference is refused");
         assert_eq!(refused.code, "validation");
         assert!(
-            refused
-                .message
-                .contains("parameter gpu_preview must be a boolean"),
+            refused.message.contains("unknown field"),
             "{}",
             refused.message
         );
         assert_eq!(
-            state(&mut service, &mut session),
-            json!(false),
+            ok(&mut service, &mut session, "session.state", json!({}))["workspace"],
+            before,
             "a refused request changes nothing"
         );
-        let on = ok(
-            &mut service,
-            &mut session,
-            "workspace.set",
-            json!({"gpu_preview": true}),
-        );
-        assert_eq!(
-            on["workspace"],
-            serde_json::to_value(super::super::WorkspaceState::default()).unwrap()
-        );
-
         let listed = ok(&mut service, &mut session, "schema.list", json!({}));
         let method = &listed["methods"]["workspace.set"];
-        assert_eq!(
-            method["mutates"],
-            json!(false),
-            "a preference mutates nothing"
-        );
+        assert!(method["optional"].get("gpu_preview").is_none());
         assert!(
-            method["optional"]["gpu_preview"]
-                .as_str()
-                .is_some_and(|notes| notes.contains("on by default")),
-            "{}",
-            method["optional"]
+            method["parameters"]
+                .as_array()
+                .expect("the typed parameters")
+                .iter()
+                .all(|parameter| parameter["name"] != "gpu_preview")
         );
-        let parameter = method["parameters"]
-            .as_array()
-            .expect("the typed parameters")
-            .iter()
-            .find(|parameter| parameter["name"] == "gpu_preview")
-            .expect("gpu_preview is typed");
-        assert_eq!(parameter["kind"], json!("boolean"));
-        assert_ne!(parameter["required"], json!(true));
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }

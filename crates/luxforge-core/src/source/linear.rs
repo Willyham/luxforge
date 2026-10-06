@@ -273,36 +273,6 @@ impl LinearImage {
         })
     }
 
-    /// A rectangle in this image's *oriented output* coordinates, composed into its existing
-    /// base-plane view. The new image shares the same planar allocation and development identity.
-    pub(crate) fn window(&self, region: crate::Region) -> Result<Self, Error> {
-        if region.is_empty() || region.x1() > self.width() || region.y1() > self.height() {
-            return Err(Error::validation(
-                "linear source window lies outside the image",
-            ));
-        }
-        let corners = [
-            (region.x0, region.y0),
-            (region.x1() - 1, region.y0),
-            (region.x0, region.y1() - 1),
-            (region.x1() - 1, region.y1() - 1),
-        ];
-        let mut x0 = u32::MAX;
-        let mut y0 = u32::MAX;
-        let mut x1 = 0;
-        let mut y1 = 0;
-        for (x, y) in corners {
-            let (px, py) = self.view.map(x, y).ok_or_else(|| {
-                Error::internal("a validated linear view could not map its window")
-            })?;
-            x0 = x0.min(px);
-            y0 = y0.min(py);
-            x1 = x1.max(px);
-            y1 = y1.max(py);
-        }
-        self.with_view([x0, y0, x1 - x0 + 1, y1 - y0 + 1], self.view.orientation)
-    }
-
     /// The viewed width: the content stage a recipe over this development is compiled against.
     pub fn width(&self) -> u32 {
         self.view.output_dimensions().0
@@ -369,6 +339,22 @@ impl LinearImage {
     #[cfg(test)]
     pub(crate) fn planes(&self) -> &[f32] {
         self.planes.as_slice()
+    }
+
+    /// What the GPU holds of this development (`docs/design/gpu-preview.md`, "The GPU source"):
+    /// the planes every view of it shares, red then green then blue, each `base.0 × base.1` values
+    /// row by row, borrowed, never copied; the base size; and this view's crop window
+    /// `[x, y, width, height]` of the base planes and its EXIF orientation, which map the content
+    /// stage a recipe is compiled against onto them. A caller that keeps the planes past this
+    /// borrow keeps a clone of the image, so the source worker's memory gate still counts them.
+    pub fn shared_planes(&self) -> (&[f32], (u32, u32), [u32; 4], u8) {
+        let (crop, orientation) = self.view();
+        (
+            self.planes.as_slice(),
+            (self.base_width, self.base_height),
+            crop,
+            orientation,
+        )
     }
 
     /// A new development whose every base pixel is `map` of this one's, under the same view: a

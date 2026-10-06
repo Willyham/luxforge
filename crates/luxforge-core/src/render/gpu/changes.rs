@@ -154,7 +154,7 @@ fn spatial_change(old: &GpuSpatial, new: &GpuSpatial) -> Option<Option<Span>> {
         || old.passes != new.passes
         || old.applies != new.applies
         || old.clamps != new.clamps
-        || old.estimated != new.estimated
+        || old.light != new.light
         || old.halos != new.halos
         || old.after.len() != new.after.len()
     {

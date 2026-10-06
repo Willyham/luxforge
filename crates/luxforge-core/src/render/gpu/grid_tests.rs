@@ -244,3 +244,74 @@ fn a_grid_follows_magnification_and_refuses_what_it_cannot_hold() {
     assert!(CoordinateGrid::new(&map, region, 0.0).is_err());
     assert!(CoordinateGrid::new(&map, region, f64::NAN).is_err());
 }
+
+/// Every window of a stage takes its part of the stage's one grid: a tile's part, and a region's,
+/// interpolate every pixel of theirs from the same nodes and the same fractions as the whole
+/// stage's grid, bit for bit, so tiles carry no seam. A grid of a region of its own keeps its nodes
+/// on the stage's lattice of its spacing too.
+#[test]
+fn every_window_takes_its_part_of_the_stages_grid() {
+    let (width, height) = (1200, 800);
+    let map = map(
+        width,
+        height,
+        vec![lens("Sigma 17-50 EX DC HSM at 17", width, height)],
+    );
+    let stage = CoordinateGrid::stage(&map, 1.0).unwrap();
+    assert_eq!(stage.origin, (0, 0));
+    for region in [
+        whole(width, height),
+        Region {
+            x0: 0,
+            y0: 0,
+            width: 512,
+            height: 512,
+        },
+        Region {
+            x0: 512,
+            y0: 512,
+            width: 512,
+            height: 288,
+        },
+        Region {
+            x0: 333,
+            y0: 77,
+            width: 401,
+            height: 299,
+        },
+    ] {
+        let part = stage.part(region).expect("a part");
+        assert_eq!(part.spacing, stage.spacing);
+        assert_eq!(
+            (part.origin.0 % part.spacing, part.origin.1 % part.spacing),
+            (0, 0)
+        );
+        for y in (region.y0..region.y1()).step_by(7) {
+            for x in (region.x0..region.x1()).step_by(5) {
+                let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                assert_eq!(
+                    part.sample(px, py).map(f32::to_bits),
+                    stage.sample(px, py).map(f32::to_bits),
+                    "{region:?} at ({x}, {y})"
+                );
+            }
+        }
+    }
+    let own = CoordinateGrid::new(
+        &map,
+        Region {
+            x0: 333,
+            y0: 77,
+            width: 401,
+            height: 299,
+        },
+        1.0,
+    )
+    .unwrap();
+    assert_eq!(
+        (own.origin.0 % own.spacing, own.origin.1 % own.spacing),
+        (0, 0),
+        "on the stage's lattice"
+    );
+    assert!(stage.part(whole(width + 64, height)).is_none());
+}

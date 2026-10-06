@@ -29,8 +29,7 @@ use super::{
     region::{self, DevelopedPreview},
 };
 use crate::{
-    Cancel, Error, ErrorKind, PreviewSource, ProxyBounds, ProxyPlan, Raster, SourceImage,
-    SourceTag,
+    Cancel, Error, ErrorKind, ProxyBounds, ProxyPlan, Raster, SourceImage, SourceTag,
     catalog_types::{EmbeddedFormat, FileRecord, FileSignature, HeaderState, PreviewOrigin},
     export::metadata::jpeg_orientation,
     jobs::JobControl,
@@ -523,7 +522,7 @@ fn embedded_pixels(image: EmbeddedImage, side: u32, control: &JobControl) -> Res
     }
 }
 
-/// Fit `pixels` within `side` with the proxy's box downscale, turn them upright by `orientation`
+/// Fit `pixels` within `side` with the view's area average, turn them upright by `orientation`
 /// and encode them, keeping their ICC profile.
 fn finish(
     pixels: Pixels,
@@ -549,20 +548,15 @@ fn finish(
             capture: Arc::default(),
         },
         Some(plan) => {
-            let source = PreviewSource::Jpeg(SourceImage {
+            let source = SourceImage {
                 width,
                 height,
                 rgba,
                 fingerprint: String::new(),
                 orientation: 1,
                 capture: Arc::default(),
-            });
-            match source.proxy_cancellable(plan, control.render_cancel())? {
-                PreviewSource::Jpeg(image) => image,
-                PreviewSource::Raw { .. } => {
-                    return Err(Error::internal("a byte source downscaled to linear planes"));
-                }
-            }
+            };
+            crate::proxy::downscale_bytes(&source, plan, control.render_cancel())?
         }
     };
     control.checkpoint()?;

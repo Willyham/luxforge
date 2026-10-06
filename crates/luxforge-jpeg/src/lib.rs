@@ -1,14 +1,15 @@
 //! Luxforge's one JPEG codec: libjpeg-turbo as bundled by `mozjpeg-sys`, reading originals and
 //! previews whole ([`Decoder`], at full size or one of libjpeg's DCT [`Scale`]s) or one rectangle
-//! at full size ([`RegionDecoder`]), and writing exports ([`encode`]), with the JPEG container
-//! around them: the bounded marker walk ([`header`], [`segments`]) and the ICC profile's APP2
-//! chunks both ways. The whole decode and the encode go through the `mozjpeg` crate's safe API;
-//! the region decode needs libjpeg's `cinfo` for its cropped columns and skipped rows, which that
-//! API does not expose, so it runs its own libjpeg session over `mozjpeg-sys` (`session.rs`), the
-//! crate's one module of `unsafe` calls into the C library. No other crate names `mozjpeg`, and
-//! this one depends on no workspace crate, which `cargo xtask check-repository` enforces, so the
-//! safety around the C library lives here once and the caller keeps only its policy: the limits it
-//! passes in, and what each [`JpegError`] means to it.
+//! at full size ([`RegionDecoder`]), and writing exports ([`Encoder`], and [`encode`] for a whole
+//! frame), with the JPEG container around them: the bounded marker walk ([`header`],
+//! [`segments`]) and the ICC profile's APP2 chunks both ways. The whole decode and the encode go
+//! through the `mozjpeg` crate's safe API; the region decode needs libjpeg's `cinfo` for its
+//! cropped columns and skipped rows, which that API does not expose, so it runs its own libjpeg
+//! session over `mozjpeg-sys` (`session.rs`), the crate's one module of `unsafe` calls into the C
+//! library. No other crate names `mozjpeg`, and this one depends on no workspace crate, which
+//! `cargo xtask check-repository` enforces, so the safety around the C library lives here once and
+//! the caller keeps only its policy: the limits it passes in, and what each [`JpegError`] means to
+//! it.
 //!
 //! Contract:
 //! - libjpeg reports an error by unwinding (`mozjpeg-sys` builds it with `-fexceptions` for that).
@@ -45,11 +46,13 @@
 //! - The ICC profile is reassembled from its APP2 `ICC_PROFILE` chunks and written as them,
 //!   numbered from 1 as the ICC specification (ICC.1, Annex B.4) requires; a chunk sequence that
 //!   does not follow it is an unsupported profile, not a missing one.
-//! - [`encode`] writes libjpeg's fastest baseline profile (one interleaved scan, standard Huffman
+//! - [`Encoder`] writes libjpeg's fastest baseline profile (one interleaved scan, standard Huffman
 //!   tables) at the caller's quality and chroma sampling, with the caller's APPn segments and then
 //!   the ICC profile after the JFIF header, streaming into the writer through libjpeg's buffer of
-//!   at most 64 KiB. It uses `mozjpeg`'s default error manager, whose fatal errors carry libjpeg's
-//!   message.
+//!   at most 64 KiB. It takes the image's rows in order in bands of any size and hands libjpeg the
+//!   same strips whatever the bands, so the bytes are those of [`encode`], the session given the
+//!   whole frame as one band. It uses `mozjpeg`'s default error manager, whose fatal errors carry
+//!   libjpeg's message.
 
 mod container;
 mod decode;
@@ -62,14 +65,15 @@ mod warnings;
 
 pub use container::{Header, Segment, Segments, header, segments};
 pub use decode::Decoder;
-pub use encode::{Settings, encode};
+pub use encode::{Encoder, Settings, encode};
 pub use region::{Region, RegionDecoder};
 pub use scale::Scale;
 
 use std::{fmt, io};
 
 /// Rows handed to libjpeg per encode call: its largest MCU height, so a call ends on whole MCU rows
-/// and the caller's step runs between calls without copying the frame.
+/// and the caller's step runs between calls without copying the frame. A streamed encode copies at
+/// most one strip, the rows a band leaves short of one.
 pub const STRIP_ROWS: usize = 16;
 
 /// The most one APPn segment carries after its length field.
@@ -107,8 +111,9 @@ pub enum JpegError {
     Encode(String),
     /// The encode's writer failed, with the writer's own error.
     Write(io::Error),
-    /// A call this crate refuses before libjpeg sees it (rows past the image, a segment too large
-    /// for one marker), or a panic in the bindings themselves.
+    /// A call this crate refuses before libjpeg sees it (rows past the image, a band that is not
+    /// the rows it declares, a segment too large for one marker), or a panic in the bindings
+    /// themselves.
     Internal(String),
 }
 

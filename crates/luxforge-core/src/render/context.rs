@@ -1,6 +1,5 @@
-//! The state a render reads besides its source and its recipe: the colour scratch budget, the
-//! spatial budget, the store of prepared global estimates and the store of reduced planes
-//! ([`super::reduced`]), with their high-water marks and counters.
+//! The state a render reads besides its source and its recipe: the colour scratch budget and the
+//! spatial budget, with their high-water marks and counters.
 //!
 //! None of it is process-global. One [`RenderContext`] is created by whoever owns the evaluations
 //! that should share it — the editor service, and through it the catalog owner, the preview jobs
@@ -8,21 +7,16 @@
 //! share a context share its budgets, which is what paces a render that overlaps another; two that
 //! do not share nothing, which is what lets a test measure one render alone.
 
-use super::reduced::ReducedStore;
-use crate::modules::{ESTIMATE_STORE_ENTRIES, Global, REDUCED_STORE_BYTES, SPATIAL_BUDGET_BYTES};
-use std::{
-    borrow::Cow,
-    collections::VecDeque,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
+use crate::modules::SPATIAL_BUDGET_BYTES;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
 };
 
 /// The default aggregate target for transient float scratch: 64 MiB across every active render.
 pub(crate) const DEFAULT_SCRATCH_BYTES: u64 = 64 * 1024 * 1024;
 
-/// The budgets and the stores every render in one context shares. Cloning it clones one
+/// The budgets every render in one context shares. Cloning it clones one
 /// `Arc`: the clone is the same context, not a copy of it.
 #[derive(Clone)]
 pub struct RenderContext(Arc<Shared>);
@@ -30,8 +24,6 @@ pub struct RenderContext(Arc<Shared>);
 struct Shared {
     scratch: ScratchBudget,
     spatial: SpatialBudget,
-    estimates: EstimateStore,
-    reduced: ReducedStore,
     /// How many stacks [`super::render`] compiled in this context, for the tests that prove a
     /// preview job compiles once per stage it renders at.
     #[cfg(test)]
@@ -43,51 +35,43 @@ struct Shared {
     /// How many spatial operations' whole-stage outputs were materialized in this context.
     #[cfg(test)]
     spatial_frames: AtomicU64,
+    /// How many stages renders in this context reduced for their global estimates.
+    #[cfg(test)]
+    reductions: AtomicU64,
 }
 
 impl RenderContext {
-    /// A context with empty budgets at their default targets and an empty estimate store.
+    /// A context with empty budgets at their default targets.
     pub fn new() -> Self {
-        Self::targeted(
-            DEFAULT_SCRATCH_BYTES,
-            SPATIAL_BUDGET_BYTES,
-            REDUCED_STORE_BYTES,
-        )
+        Self::targeted(DEFAULT_SCRATCH_BYTES, SPATIAL_BUDGET_BYTES)
     }
 
     /// A context whose scratch budget has this target: how a test watches a colour pass meet a
     /// target smaller than the default, in a context nothing else renders through.
     #[cfg(test)]
     pub(crate) fn with_scratch_target(bytes: u64) -> Self {
-        Self::targeted(bytes, SPATIAL_BUDGET_BYTES, REDUCED_STORE_BYTES)
+        Self::targeted(bytes, SPATIAL_BUDGET_BYTES)
     }
 
     /// A context whose spatial budget has this target, for a test that narrows the tile windows of
     /// the renders it makes through it.
     #[cfg(test)]
     pub(crate) fn with_spatial_target(bytes: u64) -> Self {
-        Self::targeted(DEFAULT_SCRATCH_BYTES, bytes, REDUCED_STORE_BYTES)
+        Self::targeted(DEFAULT_SCRATCH_BYTES, bytes)
     }
 
-    /// A context whose store of reduced planes holds at most `bytes`, for a test that watches it
-    /// evict or refuse at a small stage.
-    #[cfg(test)]
-    pub(crate) fn with_reduced_limit(bytes: u64) -> Self {
-        Self::targeted(DEFAULT_SCRATCH_BYTES, SPATIAL_BUDGET_BYTES, bytes)
-    }
-
-    fn targeted(scratch: u64, spatial: u64, reduced: u64) -> Self {
+    fn targeted(scratch: u64, spatial: u64) -> Self {
         Self(Arc::new(Shared {
             scratch: ScratchBudget::new(scratch),
             spatial: SpatialBudget::new(spatial),
-            estimates: EstimateStore::default(),
-            reduced: ReducedStore::new(reduced),
             #[cfg(test)]
             compiles: AtomicU64::new(0),
             #[cfg(test)]
             resample_peak_bytes: AtomicU64::new(0),
             #[cfg(test)]
             spatial_frames: AtomicU64::new(0),
+            #[cfg(test)]
+            reductions: AtomicU64::new(0),
         }))
     }
 
@@ -99,16 +83,6 @@ impl RenderContext {
     /// The spatial budget: the working sets of spatial tiles.
     pub(crate) fn spatial(&self) -> &SpatialBudget {
         &self.0.spatial
-    }
-
-    /// The prepared global estimates of spatial units.
-    pub(crate) fn estimates(&self) -> &EstimateStore {
-        &self.0.estimates
-    }
-
-    /// The reduced planes of spatial units that run first in their operations.
-    pub(crate) fn reduced(&self) -> &ReducedStore {
-        &self.0.reduced
     }
 
     #[cfg(test)]
@@ -143,6 +117,17 @@ impl RenderContext {
     #[cfg(test)]
     pub(crate) fn spatial_frames(&self) -> u64 {
         self.0.spatial_frames.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn note_reduction(&self) {
+        self.0.reductions.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// How many stages renders in this context have reduced for their global estimates.
+    #[cfg(test)]
+    pub(crate) fn reductions(&self) -> u64 {
+        self.0.reductions.load(Ordering::Relaxed)
     }
 }
 
@@ -301,8 +286,7 @@ impl SpatialBudget {
     }
 
     /// Start the high-water mark again from what is reserved right now, so a release measurement
-    /// can report the peak of its measured renders rather than of the warm-up that filled the
-    /// context's estimate store.
+    /// can report the peak of its measured renders rather than of their warm-up.
     #[cfg(test)]
     pub(crate) fn reset_peak(&self) {
         self.peak.store(self.in_use(), Ordering::Relaxed);
@@ -403,75 +387,5 @@ impl<'a> SpatialReservation<'a> {
 impl Drop for SpatialReservation<'_> {
     fn drop(&mut self) {
         self.budget.used.fetch_sub(self.bytes, Ordering::SeqCst);
-    }
-}
-
-/// What one cached global estimate belongs to: the source, the layers before the operation (which
-/// decide what its input stage holds), the stage the reduction was built from, and the unit's own
-/// [`SpatialUnit::estimate_key`](crate::modules::SpatialUnit::estimate_key), which names everything
-/// its preparation reads besides that reduction.
-///
-/// Neither the unit's position nor its description is part of it. A module compiles whichever units
-/// its payload needs — the Presence module omits a unit whose amount is zero, which moves the others
-/// up — so a position alone could hand one unit the estimate another prepared; the key is the unit's
-/// own and does not move with it. The description names coefficients only `apply` reads, such as an
-/// amount, and keying by it would reduce the whole stage again for every new amount although the
-/// estimate is the same; two units that declare one key over one stage prepare one estimate by the
-/// trait's own rule, so they share it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct EstimateKey {
-    pub(crate) fingerprint: String,
-    pub(crate) prefix_hash: String,
-    pub(crate) width: u32,
-    pub(crate) height: u32,
-    pub(crate) estimate: Cow<'static, str>,
-}
-
-/// The bounded store of prepared estimates: [`ESTIMATE_STORE_ENTRIES`] entries, oldest first, each
-/// at most [`crate::modules::MAX_GLOBAL_BYTES`]. Only a unit that declares an estimate key has an
-/// entry, and an entry may hold `None` when its preparation yielded none, so a second evaluation of
-/// the same stack in the same context costs no reduction at all.
-#[derive(Default)]
-pub(crate) struct EstimateStore {
-    entries: Mutex<VecDeque<(EstimateKey, Option<Global>)>>,
-}
-
-impl EstimateStore {
-    fn lock(&self) -> std::sync::MutexGuard<'_, VecDeque<(EstimateKey, Option<Global>)>> {
-        self.entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// `Some(estimate)` on a hit, where the estimate itself may be `None` for a preparation that
-    /// yielded none.
-    pub(crate) fn cached(&self, key: &EstimateKey) -> Option<Option<Global>> {
-        self.lock()
-            .iter()
-            .find(|(stored, _)| stored == key)
-            .map(|(_, value)| value.clone())
-    }
-
-    pub(crate) fn remember(&self, key: EstimateKey, value: Option<Global>) {
-        let mut store = self.lock();
-        if store.iter().any(|(stored, _)| *stored == key) {
-            return;
-        }
-        store.push_back((key, value));
-        while store.len() > ESTIMATE_STORE_ENTRIES {
-            store.pop_front();
-        }
-    }
-
-    /// How many estimates are held right now.
-    #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
-        self.lock().len()
-    }
-
-    /// The keys held right now, oldest first.
-    #[cfg(test)]
-    pub(crate) fn keys(&self) -> Vec<EstimateKey> {
-        self.lock().iter().map(|(key, _)| key.clone()).collect()
     }
 }

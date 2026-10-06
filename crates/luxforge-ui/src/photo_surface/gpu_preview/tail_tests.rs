@@ -97,6 +97,7 @@ fn plan(values: &[[f32; 3]], size: (u32, u32), origin: (u32, u32), steps: Vec<Gp
         },
         steps,
         region: None,
+        lights: Vec::new(),
     }
 }
 
@@ -531,7 +532,11 @@ fn a_region_draws_its_rectangle_of_the_stage() {
     let origin = (10, 8);
     let stage = (64, 48);
     let rect = [14, 11, 34, 27];
-    let region = GpuRegion { rect, stage };
+    let region = GpuRegion {
+        rect,
+        stage,
+        full_stage: stage,
+    };
     let (columns, rows) = region.size();
     // Red and green from the pixel's stage coordinate, blue the value it was handed.
     let position = GpuProgram::new(
@@ -587,6 +592,7 @@ fn a_region_draws_its_rectangle_of_the_stage() {
     outside.region = Some(GpuRegion {
         rect: [4, 11, 24, 27],
         stage,
+        full_stage: stage,
     });
     assert!(qualifier.evaluate(&outside).is_err());
 }
@@ -640,6 +646,7 @@ fn a_raw_linear_tail_preserves_f32_intermediate_values() {
         texels: TexelMap::IDENTITY,
         steps: vec![GpuStep::Geometry(tail)],
         region: None,
+        lights: Vec::new(),
     };
     let drawn = qualifier.evaluate(&plan).expect("a readback");
     let mut changed = 0;
@@ -720,6 +727,7 @@ fn lf_test_show(rgb: vec3<f32>, at: vec2<i32>, words: u32, block: u32, planes: u
         texels: TexelMap::IDENTITY,
         steps: vec![GpuStep::Spatial(Box::new(spatial))],
         region: None,
+        lights: Vec::new(),
     };
     let drawn = qualifier.evaluate(&plan).expect("a readback");
     let (mut nearest, mut truncated, mut neither) = (0, 0, 0);

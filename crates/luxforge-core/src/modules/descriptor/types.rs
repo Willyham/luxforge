@@ -65,15 +65,6 @@ impl EffectStage {
 
 /// A durable effect identity stored in every layer, with its internal payload format marker and the
 /// order it takes among layers of its own stage.
-/// Which pixels a settled Fit preview presents for a non-empty operation.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum FitSettle {
-    #[default]
-    Proxy,
-    Exact,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EffectDescriptor {
@@ -114,8 +105,6 @@ pub struct EffectDescriptor {
     /// Serialized only when it is true, like every other flag here.
     #[serde(default, skip_serializing_if = "is_default")]
     pub single: bool,
-    #[serde(default, skip_serializing_if = "is_default")]
-    pub fit_settle: FitSettle,
     /// The source kinds a layer of this effect may exist on, named by the `kind` tags `asset.state`
     /// reports for a photo's source (`jpeg`, `raw`). Empty, the default, is every kind, and is not
     /// serialized, so an effect that exists on every photo describes itself exactly as it did
@@ -139,7 +128,6 @@ impl EffectDescriptor {
             maskable: false,
             artifacts: false,
             single: false,
-            fit_settle: FitSettle::default(),
             sources: Vec::new(),
         }
     }

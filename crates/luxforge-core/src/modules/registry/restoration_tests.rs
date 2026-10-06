@@ -1,11 +1,10 @@
-//! Shared restoration placement, compile-context and settled-preview contracts.
+//! Shared restoration placement and compile-context contracts.
 use super::*;
 use crate::modules::{
     ActionInput, ActionPlan, LayerReport, ModuleDescriptor, PresenceModule, StageContext,
 };
 use crate::{
-    CompileStage, EffectDescriptor, EffectStage, FitSettle, Layer, Mask, Processing, Recipe, Stage,
-    ToolModule,
+    CompileStage, EffectDescriptor, EffectStage, Layer, Mask, Processing, Recipe, Stage, ToolModule,
 };
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
@@ -24,7 +23,6 @@ impl Probe {
                 title: "Restoration probe".into(),
                 effects: vec![EffectDescriptor {
                     maskable: true,
-                    fit_settle: FitSettle::Exact,
                     ..EffectDescriptor::new(EFFECT, EffectStage::Restoration)
                 }],
                 ..ModuleDescriptor::default()
@@ -89,22 +87,6 @@ fn restoration_stage_serializes_as_restoration() {
         json!("restoration")
     );
     assert_eq!(EffectStage::Restoration.as_str(), "restoration");
-}
-#[test]
-fn restoration_fit_settle_defaults_to_proxy_and_serializes_only_exact() {
-    let mut descriptor = EffectDescriptor::new(EFFECT, EffectStage::Restoration);
-    assert_eq!(descriptor.fit_settle, FitSettle::Proxy);
-    assert!(
-        serde_json::to_value(&descriptor)
-            .unwrap()
-            .get("fit_settle")
-            .is_none()
-    );
-    descriptor.fit_settle = FitSettle::Exact;
-    assert_eq!(
-        serde_json::to_value(&descriptor).unwrap()["fit_settle"],
-        json!("exact")
-    );
 }
 #[test]
 fn restoration_is_proxy_eligible() {
@@ -205,9 +187,9 @@ fn restoration_compile_stage_reaches_modules() {
             height: 65,
         })
         .unwrap();
-    let proxy_stage = exact.proxy_window(&registry, &recipe, fit);
+    let proxy_stage = exact.proxy_stage(&registry, &recipe, fit);
     let fit = proxy_stage.plan();
-    assert!(fit.window.is_some(), "Fit recipe has a cut source window");
+    assert!(fit.window.is_none(), "a proxy holds its whole stage");
     assert_eq!(
         *probe.seen.lock().unwrap().last().unwrap(),
         CompileStage::sampled(
@@ -229,64 +211,8 @@ fn restoration_compile_stage_reaches_modules() {
         .unwrap()
         .frame(crate::SnapshotId::new())
         .unwrap();
-    let requested = crate::Region {
-        x0: 80,
-        y0: 10,
-        width: 48,
-        height: 35,
-    };
-    let plan = exact
-        .plan_proxy_region(&registry, &recipe, requested)
-        .unwrap();
-    assert!(
-        plan.proxy.window.is_some(),
-        "half-detail viewport has a cut source window"
-    );
-    let expected = CompileStage::sampled(
-        Stage {
-            width: plan.proxy.width,
-            height: plan.proxy.height,
-        },
-        full,
-    );
-    assert_eq!(*probe.seen.lock().unwrap().last().unwrap(), expected);
-    let proxy = source.proxy(plan.proxy).unwrap();
-    exact
-        .render_proxy_region(
-            &registry,
-            proxy.input(),
-            &recipe,
-            plan,
-            crate::SnapshotId::new(),
-            &context,
-        )
-        .unwrap();
-    assert_eq!(*probe.seen.lock().unwrap().last().unwrap(), expected);
 }
-#[test]
-fn restoration_neutral_operation_does_not_settle_from_exact() {
-    let (registry, _) = registry();
-    let neutral = Recipe {
-        layers: vec![Layer::new(EFFECT, json!({}))],
-        ..Recipe::default()
-    };
-    assert!(
-        !registry
-            .compile(800, 600, &neutral)
-            .unwrap()
-            .settles_from_exact()
-    );
-    let recipe = Recipe {
-        layers: vec![restoration()],
-        ..Recipe::default()
-    };
-    assert!(
-        registry
-            .compile(800, 600, &recipe)
-            .unwrap()
-            .settles_from_exact()
-    );
-}
+
 #[test]
 fn restoration_and_spatial_reasons_are_reported_separately() {
     let (registry, _) = registry();
@@ -303,14 +229,13 @@ fn restoration_and_spatial_reasons_are_reported_separately() {
     assert!(approx.restoration && approx.spatial);
 }
 #[test]
-fn restoration_prefix_is_the_leading_source_pixel_restoration_run() {
+fn restoration_boundary_is_the_leading_source_pixel_restoration_run() {
     let (registry, _) = registry();
     let mut layers = vec![
         Layer::pixel(0, 0, [1, 2, 3]),
         restoration(),
         Layer::new(crate::BASIC_EFFECT, json!({"exposure":1.0})),
     ];
-    assert_eq!(registry.restoration_prefix(&layers), 2);
     assert_eq!(
         registry
             .compile(
@@ -326,7 +251,6 @@ fn restoration_prefix_is_the_leading_source_pixel_restoration_run() {
         Some(1)
     );
     layers.swap(0, 2);
-    assert_eq!(registry.restoration_prefix(&layers), 0);
     assert_eq!(
         registry
             .compile(

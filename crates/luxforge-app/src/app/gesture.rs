@@ -15,7 +15,7 @@
 use crate::{
     app::{
         Editor,
-        crop::CropGesture,
+        crop::{CropGesture, StageView},
         draft::{CoreDraft, Event, GestureId, Round, Step},
         message::{Message, draft::DraftMessage, preview::PreviewMessage},
         outcome::Outcome,
@@ -457,17 +457,66 @@ impl Editor {
         tasks::draft_begin_now(&self.owner, self.client, asset, action, &target)
     }
 
-    /// `draft.reapply`, synchronously ([`tasks::draft_reapply_now`]).
-    fn reapply_draft(&mut self, draft_id: &DraftId) -> Result<Draft, String> {
+    /// `draft.reapply`, synchronously unless it reads a pixel ([`tasks::draft_reapply_now`]).
+    fn reapply_draft(&mut self, draft_id: &DraftId) -> tasks::Now<Draft> {
         #[cfg(test)]
         if let Some(stand_in) = &mut self.stand_in {
-            return stand_in.reapply(
+            return tasks::Now::Answered(stand_in.reapply(
                 self.document.state.as_ref(),
                 self.gesture.as_deref(),
                 draft_id,
-            );
+            ));
         }
         tasks::draft_reapply_now(&self.owner, self.client, draft_id)
+    }
+
+    /// The rebase [`Step::Reapply`] asked for: answered in this update, or — when the rebased draft
+    /// reads a pixel, which the interface thread never waits for — sent again on the blocking pool
+    /// ([`tasks::draft_reapply_task`]), its answer arriving as [`DraftMessage::Reapplied`] while the
+    /// reapply stays in flight.
+    fn send_reapply(&mut self, draft_id: DraftId) -> Task<Message> {
+        match self.reapply_draft(&draft_id) {
+            tasks::Now::Answered(result) => self.reapplied(result),
+            tasks::Now::ReadsPixel => {
+                let Some(gesture) = self.core_gesture() else {
+                    return Task::none();
+                };
+                let (prefix, gesture_id) = (gesture.kind.prefix(), gesture.draft.gesture);
+                self.event(
+                    format_args!("{prefix}_reapply_reads_pixel"),
+                    || json!({"draft_id":draft_id.as_str()}),
+                );
+                let reapply = tasks::ReapplyRead {
+                    owner: self.owner.clone(),
+                    client: self.client,
+                    gesture: gesture_id,
+                    draft_id,
+                };
+                #[cfg(test)]
+                self.reads_waiting.reapplies.push(reapply.clone());
+                tasks::draft_reapply_task(reapply)
+            }
+        }
+    }
+
+    /// A `draft.reapply` that read a pixel off the owner answered ([`tasks::draft_reapply_task`]):
+    /// taken up as a synchronous one's answer is, by the gesture and core draft that sent it alone.
+    fn draft_reapplied_read(
+        &mut self,
+        gesture: GestureId,
+        draft: &DraftId,
+        result: Result<Box<Draft>, String>,
+    ) -> Task<Message> {
+        if self.core_gesture().is_none_or(|open| {
+            !open.draft.answers(gesture, draft) || open.draft.in_flight() != Some(Round::Reapply)
+        }) {
+            self.event(
+                "draft_reapply_dropped",
+                || json!({ "accepted": result.is_ok() }),
+            );
+            return Task::none();
+        }
+        self.reapplied(result.map(|draft| *draft))
     }
 
     /// End a core draft at the owner now ([`tasks::draft_cancel_now`]). While a photograph is open
@@ -479,7 +528,7 @@ impl Editor {
             .state
             .as_ref()
             .map(|state| (state.asset.id.clone(), self.displayed_entry()))
-            .map(|(asset, entry)| (asset, entry, self.proxy_bounds()));
+            .map(|(asset, entry)| (asset, entry, self.drawn()));
         let (cancelled, reseed) = self.cancel_request(draft_id, reseed);
         if let Err(error) = cancelled {
             self.event(
@@ -562,8 +611,6 @@ impl Editor {
             self.outcome(Outcome::DraftRefused);
             return Task::none();
         }
-        self.view_plan.quiet_since = None;
-        self.view_plan.quiet_settle_requested = true;
         self.view_plan.epoch = self.view_plan.epoch.saturating_add(1);
         self.view_plan.released_draft = self
             .core_gesture()
@@ -607,6 +654,16 @@ impl Editor {
             DraftMessage::Commit => self.release(),
             DraftMessage::Cancel => self.discard(),
             DraftMessage::Reapply => self.reapply(),
+            DraftMessage::Set {
+                gesture,
+                draft,
+                result,
+            } => self.draft_set_read(gesture, &draft, result),
+            DraftMessage::Reapplied {
+                gesture,
+                draft,
+                result,
+            } => self.draft_reapplied_read(gesture, &draft, result),
             DraftMessage::Committed {
                 gesture,
                 draft,
@@ -642,8 +699,13 @@ impl Editor {
         // Nothing the gesture asked for reaches the screen after this: its drafted frames are
         // stopped and held below the delivery floor, so the next frame presented is the committed
         // one read back below. The drafted pixels already on screen stay until it lands. A gesture
-        // that drafted nothing has nothing to hold back.
-        if gesture.draft.drafted() {
+        // that drafted nothing has nothing to hold back. Nor has a crop start whose input stage
+        // will not arrive: nothing of it was drawn and its stage's job has ended, so what the
+        // queue holds is the newer request that superseded the stage — the current state's
+        // frame, which must not be stopped.
+        let abandoned =
+            matches!(&gesture.kind, Kind::Crop(crop) if crop.stage == StageView::Abandoned);
+        if gesture.draft.drafted() && !abandoned {
             self.presentation.preview_generation = self.cancel_preview_queue();
         }
         match &gesture.kind {
@@ -683,10 +745,7 @@ impl Editor {
                 expected_revision,
             } => self.send_commit(draft_id, expected_revision),
             Step::Cancel(draft_id) => self.discarded(&draft_id),
-            Step::Reapply(draft_id) => {
-                let result = self.reapply_draft(&draft_id);
-                self.reapplied(result)
-            }
+            Step::Reapply(draft_id) => self.send_reapply(draft_id),
             Step::Conflicted => {
                 let revision = self.document.state.as_ref().map(|state| state.revision);
                 let Some(gesture) = self.core_gesture_mut() else {
@@ -728,12 +787,19 @@ impl Editor {
 
     /// The one `draft.set` the state machine asked for, with the one preview job for the fields it
     /// accepted when the gesture previews them. Synchronous on purpose: see [`tasks::draft_set_now`].
-    /// The answer is taken up here, in the update that produced the fields.
+    /// The answer is taken up here, in the update that produced the fields — unless the set reads a
+    /// pixel, which the interface thread never waits for: the owner says so at once, changing
+    /// nothing, and the same set goes to the blocking pool ([`tasks::draft_set_task`]), its answer
+    /// arriving as [`DraftMessage::Set`] while the gesture's set stays in flight.
     fn send_set(&mut self, draft_id: DraftId, fields: Value) -> Task<Message> {
         let Some(gesture) = self.core_gesture() else {
             return Task::none();
         };
-        let (prefix, asset) = (gesture.kind.prefix(), gesture.asset.clone());
+        let (prefix, asset, gesture_id) = (
+            gesture.kind.prefix(),
+            gesture.asset.clone(),
+            gesture.draft.gesture,
+        );
         let previews = gesture.kind.previews();
         self.event(
             format_args!("{prefix}_set"),
@@ -748,11 +814,67 @@ impl Editor {
             return self.draft_set(result);
         }
         let preview = previews.then(|| (asset, self.proxy_bounds()));
-        // The GPU preview is planned with the tick's job at Fit and at 100% or more, where the
-        // surface draws it.
+        // The GPU preview is planned with the tick's job at every zoom: a whole frame at the job's
+        // bounds at Fit and below 100%, the visible region at 100% or more.
         let gpu = self.gpu_ask();
-        let result = tasks::draft_set_now(&self.owner, self.client, draft_id, fields, preview, gpu);
-        self.draft_set(result)
+        // Only fields that ask for a colour limit can read a pixel, so only they are kept to send
+        // again: an ordinary tick's path is not copied.
+        let again =
+            luxforge_core::mask::commands::asks_colour_limit_value(&fields).then(|| fields.clone());
+        let set = tasks::draft_set_now(
+            &self.owner,
+            self.client,
+            draft_id.clone(),
+            fields,
+            preview.clone(),
+            gpu,
+        );
+        match (set, again) {
+            (tasks::SetNow::Answered(result), _) => self.draft_set(result),
+            (tasks::SetNow::ReadsPixel, Some(fields)) => {
+                self.event(
+                    format_args!("{prefix}_set_reads_pixel"),
+                    || json!({"draft_id":draft_id.as_str()}),
+                );
+                let set = tasks::SetRead {
+                    owner: self.owner.clone(),
+                    client: self.client,
+                    gesture: gesture_id,
+                    draft_id,
+                    fields,
+                    preview,
+                    gpu,
+                    queued: std::time::Instant::now(),
+                };
+                #[cfg(test)]
+                self.reads_waiting.sets.push(set.clone());
+                tasks::draft_set_task(set)
+            }
+            (tasks::SetNow::ReadsPixel, None) => self.draft_set(Err(
+                "the draft reads a pixel this gesture cannot send again".to_owned(),
+            )),
+        }
+    }
+
+    /// A `draft.set` that read a pixel off the owner answered ([`tasks::draft_set_task`]): taken up
+    /// as a synchronous set's answer is, by the gesture and core draft that sent it alone.
+    pub(crate) fn draft_set_read(
+        &mut self,
+        gesture: GestureId,
+        draft: &DraftId,
+        result: Result<Box<tasks::SetAnswer>, String>,
+    ) -> Task<Message> {
+        if self
+            .core_gesture()
+            .is_none_or(|open| !open.draft.answers(gesture, draft))
+        {
+            self.event(
+                "draft_set_dropped",
+                || json!({ "accepted": result.is_ok() }),
+            );
+            return Task::none();
+        }
+        self.draft_set(result.map(|answer| *answer))
     }
 
     /// One `draft.set` answered, with the preview of the fields it accepted when one was asked for.
@@ -760,9 +882,9 @@ impl Editor {
         &mut self,
         result: Result<(Draft, Option<PreviewJob>, RoundTrip), String>,
     ) -> Task<Message> {
-        // Only the gesture that sent it takes an answer up. The set runs synchronously, so no answer
-        // outlives its gesture today; this keeps that true whatever path an answer takes, because
-        // storing a discarded gesture's draft or queuing its frame would present what nobody holds.
+        // Only the gesture that sent it takes an answer up. A set that read a pixel answers after
+        // its update, and a gesture may have ended meanwhile: storing a discarded gesture's draft or
+        // queuing its frame would present what nobody holds.
         if self
             .core_gesture()
             .is_none_or(|gesture| gesture.draft.in_flight() != Some(Round::Set))
@@ -785,35 +907,31 @@ impl Editor {
                         self.note_view_motion();
                     }
                     // A tick the surface draws from the GPU plan the answer carries makes no
-                    // preview job and no upload ([`super::gpu_preview`]); any other takes the
-                    // CPU path as before.
-                    let (tick, boundary) = self.gpu_tick(&set, job.gpu.take());
+                    // preview job and no upload ([`super::gpu_preview`]); any other holds its
+                    // frame or has the reference draw it ([`super::motion`]). Its boundary is
+                    // derived from the job's source.
+                    self.gpu_hold_source(job.evaluation.source());
+                    let planned = job.gpu.is_some();
+                    let tick = self.gpu_tick(&set, job.gpu.take());
                     match tick {
                         super::gpu_preview::Tick::Gpu => {
+                            self.motion_drawn_on_gpu();
                             // The mask overlay's coverage follows the tick through its own
-                            // worker, as on the CPU path, over the frame on screen, whose
-                            // geometry a colour or mask draft does not change.
+                            // worker, over the frame on screen, whose geometry a colour or mask
+                            // draft does not change.
                             let content = self.presentation.presented_content;
                             self.request_mask_coverage(&job, content);
                             self.gpu_ticked(&set);
                             drawn_on_gpu = true;
                         }
                         super::gpu_preview::Tick::Cpu => {
-                            job.boundary = boundary;
-                            let boundary = job.boundary.is_some();
-                            let (generation, requested_at) = if self.log.diagnostics.is_some()
-                                && self.mask_gesture().is_some()
+                            if let Some((generation, requested_at)) =
+                                self.cpu_tick(&set, job, planned)
                             {
-                                self.request_mask_preview_timed(job)
-                            } else {
-                                (self.request_preview(job), None)
-                            };
-                            if boundary {
-                                self.gpu_boundary_requested(generation);
+                                self.gpu_cpu_tick(&set, generation);
+                                self.presentation.preview_generation = generation;
+                                self.set_previewed(set.draft_revision, round_trip, requested_at);
                             }
-                            self.gpu_cpu_tick(&set, generation);
-                            self.presentation.preview_generation = generation;
-                            self.set_previewed(set.draft_revision, round_trip, requested_at);
                         }
                     }
                 }
@@ -954,7 +1072,7 @@ impl Editor {
         self.event(format_args!("{prefix}_commit"),
             || json!({"draft_id":draft_id.as_str(),"request_id":mutation.request_id,"expected_revision":expected_revision}),
         );
-        let proxy = self.proxy_bounds();
+        let proxy = self.drawn();
         tasks::draft_commit_task(
             self.owner.clone(),
             self.client,
@@ -1058,19 +1176,18 @@ impl Editor {
         let asset = self.document.state.as_ref()?.asset.id.clone();
         let entry = self.displayed_entry();
         self.seed_values();
-        let proxy = self.proxy_bounds();
         Some(tasks::current_preview_task(
             self.owner.clone(),
             self.client,
             asset,
             entry,
-            proxy,
+            self.drawn(),
         ))
     }
 
-    /// The synchronous `draft.reapply` answered: the draft is based on the current revision again
-    /// and the fields this client set are re-sent in this same update, so the drafted preview
-    /// returns. A refusal keeps the draft conflicted and says why.
+    /// The `draft.reapply` answered: the draft is based on the current revision again and the
+    /// fields this client set are re-sent in this same update, so the drafted preview returns. A
+    /// refusal keeps the draft conflicted and says why.
     fn reapplied(&mut self, result: Result<Draft, String>) -> Task<Message> {
         if self.core_gesture().is_none() {
             return Task::none();
@@ -1122,7 +1239,7 @@ impl Editor {
 
 /// What a `draft.set` tick reads of the draft it answered with — its identity, revisions, target
 /// and conflict state — without the fields, which the session keeps.
-fn identity(answered: &Draft) -> Draft {
+pub(crate) fn identity(answered: &Draft) -> Draft {
     let Draft {
         draft_id,
         action,

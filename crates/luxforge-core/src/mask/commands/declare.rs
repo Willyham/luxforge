@@ -77,8 +77,10 @@ static DESCRIPTOR: LazyLock<ModuleDescriptor> = LazyLock::new(|| ModuleDescripto
                 SAMPLE_INPUT,
                 "Sample input",
                 "the pixel the operation this mask modulates receives, at one content position, \
-                    as linear-sRGB r, g and b. Read-only: it writes no history and emits no event. \
-                    It is where a canvas pick gets the colour a colour range's swatch is, because a \
+                    as linear-sRGB r, g and b, each an f32 value, with the renderer that read it, \
+                    {record: gpu or reference, reason}, the reason naming why the GPU did not; read \
+                    off the catalog owner by its tile service. Read-only: it writes no history and \
+                    emits no event. It is where a canvas pick gets the colour a colour range's swatch is, because a \
                     range selection is evaluated on the operation's input while the frame a client \
                     can see holds that operation's output — so a colour read from the picture would \
                     be a different colour. The position is a pixel of the stage that operation's \

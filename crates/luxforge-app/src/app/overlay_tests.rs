@@ -21,7 +21,6 @@ fn failed_clipping_derivation_marks_the_evidence_step_and_releases_capture() {
         shadows: false,
         highlights: true,
         approximate: false,
-        region: None,
     };
     editor.overlays.request = Some(request.clone());
     editor.overlay_ready(overlay::OverlayResult {

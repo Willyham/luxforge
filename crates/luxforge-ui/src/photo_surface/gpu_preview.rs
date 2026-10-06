@@ -76,6 +76,10 @@
 //! default handler would panic on. A lost device is noticed through its callback, an atomic flag,
 //! so nothing waits for a recovery.
 //!
+//! A boundary is uploaded from the CPU's texels, or derived on the GPU from the prepared source the
+//! pipeline holds for every surface ([`GpuSource`], [`GpuBoundary::derived`]): a window of it cut
+//! at full scale, or its area average at a proxy plan, by one fixed pass each ([`source`]).
+//!
 //! Shader compilation is checked without waiting: the assembled WGSL is validated with the `naga`
 //! that `wgpu` itself uses before a module is created, and pipeline creation runs inside error
 //! scopes whose answers wgpu's native backends give immediately; they are polled once and never
@@ -142,6 +146,13 @@ const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// The format the draw samples the output through: the sRGB-typed format the surface's photograph
 /// textures have when the renderer gamma corrects, so the codes draw as the CPU frame's do.
 const SAMPLED_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+/// What the output's texture is read back by: nothing on the desktop, which never reads a pixel
+/// back; a headless surface's copy of a tile's codes ([`headless::HeadlessSurface::tile`]).
+#[cfg(any(test, feature = "qualification"))]
+const OUTPUT_READ: wgpu::TextureUsages = wgpu::TextureUsages::COPY_SRC;
+#[cfg(not(any(test, feature = "qualification")))]
+const OUTPUT_READ: wgpu::TextureUsages = wgpu::TextureUsages::empty();
 
 /// The WGSL every assembled GPU-preview shader starts with; see the [module documentation](self).
 /// A program's own WGSL, appended to this, must validate on its own.
@@ -399,8 +410,12 @@ impl BoundaryFormat {
 /// whenever the texels do and never otherwise.
 #[derive(Clone)]
 pub struct GpuBoundary {
-    /// The texels, until the caller lets them go once the slot holds them ([`Self::resident`]).
+    /// The texels of a boundary handed whole ([`Self::new`]).
     texels: Option<Arc<dyn AsRef<[u8]> + Send + Sync>>,
+    /// Or, for a boundary derived on the GPU from the source the pipeline holds ([`Self::derived`]),
+    /// that source's version and the derivation: no texels on the CPU at all. Exactly one of the
+    /// two is held.
+    derived: Option<(u64, Derivation)>,
     width: u32,
     height: u32,
     version: u64,
@@ -415,6 +430,7 @@ impl std::fmt::Debug for GpuBoundary {
             .field("height", &self.height)
             .field("version", &self.version)
             .field("format", &self.format)
+            .field("derived", &self.derived.as_ref().map(|(source, _)| source))
             .finish()
     }
 }
@@ -434,11 +450,43 @@ impl GpuBoundary {
             .checked_mul(format.texel_bytes())?;
         (width > 0 && height > 0 && (*texels).as_ref().len() == expected).then(|| Self {
             texels: Some(texels),
+            derived: None,
             width,
             height,
             version,
             format,
         })
+    }
+
+    /// A boundary of `width` × `height` texels derived on the GPU from `source`, which the
+    /// pipeline must hold when a slot first draws it ([`PhotoSurface::gpu_source`]), as
+    /// `derivation` says: a window of it at full scale, or its area average at a proxy plan
+    /// (`docs/design/gpu-preview.md`, "The GPU source"). Its format is the source's: half floats
+    /// from a JPEG's codes, `f32` from a RAW's planes. Nothing is copied or uploaded: the slot's
+    /// boundary texture is written by one pass.
+    ///
+    /// [`PhotoSurface::gpu_source`]: super::PhotoSurface::gpu_source
+    pub fn derived(
+        source: &GpuSource,
+        derivation: Derivation,
+        width: u32,
+        height: u32,
+        version: u64,
+    ) -> Option<Self> {
+        (width > 0 && height > 0).then(|| Self {
+            texels: None,
+            derived: Some((source.version(), derivation)),
+            width,
+            height,
+            version,
+            format: source.kind().boundary(),
+        })
+    }
+
+    /// The source version and the derivation a derived boundary is drawn from, or `None` for a
+    /// boundary of texels.
+    pub fn derivation(&self) -> Option<&(u64, Derivation)> {
+        self.derived.as_ref()
     }
 
     /// A boundary of `width` × `height` texels of `format` from linear RGBA values in row order,
@@ -494,19 +542,8 @@ impl GpuBoundary {
         self.version
     }
 
-    /// This boundary with its texels let go: what a plan names once the surface's slot holds them
-    /// (its `gpu_ready_boundary` is this version), so the caller keeps no copy of them for the
-    /// rest of the gesture. The slot draws it from its own texture; a slot that no longer holds
-    /// it — released, or refitted to another shape — cannot, and the frame is the CPU's with
-    /// [`GpuFallback::BoundaryReleased`], for the caller to bring the texels again.
-    pub fn resident(&self) -> Self {
-        Self {
-            texels: None,
-            ..self.clone()
-        }
-    }
-
-    /// Whether the boundary still holds its texels, which a slot that does not hold them uploads.
+    /// Whether the boundary is handed as texels, which a slot that does not hold them uploads,
+    /// rather than derived on the GPU from the source ([`Self::derived`]).
     pub fn holds_texels(&self) -> bool {
         self.texels.is_some()
     }
@@ -529,26 +566,37 @@ impl TexelMap {
 }
 
 /// What the surface evaluates on the GPU: the held boundary, where its texels are in the stage,
-/// and the steps after it, in order.
+/// and the steps after it, in order; and the light links whose lights its steps read, which the
+/// slot runs before them ([`light`]).
 #[derive(Clone, Debug)]
 pub struct GpuPlan {
     pub boundary: GpuBoundary,
     pub texels: TexelMap,
     pub steps: Vec<GpuStep>,
-    /// At a percentage zoom, the rectangle of the output stage the plan's frame holds, drawn as a
-    /// region of the photograph; `None` for a whole frame, at Fit.
+    /// At a percentage zoom of 100% or more, the rectangle of the output stage the plan's frame
+    /// holds, drawn as a region of the photograph; `None` for a whole frame, at Fit and below 100%.
     pub region: Option<GpuRegion>,
+    /// The light links writing the slot's light planes its steps read ([`PlaneSize::Light`]), light
+    /// `k` the `k`-th: each computed from the source the pipeline holds before the steps run, and
+    /// again only when its content changes. Empty for a plan that reads no light.
+    pub lights: Vec<light::GpuLight>,
 }
 
-/// The rectangle of a plan's output stage its frame holds at a percentage zoom: the visible region
-/// at full scale. The last pass draws only these pixels, and the draw places them at the rectangle
-/// in the whole stage, as a region of the photograph is placed.
+/// The rectangle of a plan's output stage its frame holds at a percentage zoom of 100% or more:
+/// the visible region at full scale. The last pass draws only these pixels, and the draw places
+/// them at the rectangle in the whole stage, as a region of the photograph is placed. A reduced
+/// whole frame drawn at such a zoom — the softer drag frame, a stage the photograph's output
+/// reduced — is a region of its own stage holding all of it, placed over the photograph's
+/// full output stage, which it is magnified to fill.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GpuRegion {
-    /// `[x0, y0, x1, y1]` of the output stage, half-open.
+    /// `[x0, y0, x1, y1]` of the plan's output stage, half-open.
     pub rect: [u32; 4],
-    /// The whole output stage.
+    /// The plan's whole output stage.
     pub stage: (u32, u32),
+    /// The photograph's full output stage the frame is placed over: [`Self::stage`] for a region
+    /// at full scale, the full stage a reduced whole frame's is a reduction of.
+    pub full_stage: (u32, u32),
 }
 
 impl GpuRegion {
@@ -627,9 +675,14 @@ pub enum GpuFallback {
     /// The plan's boundary is still being uploaded, at most [`UPLOAD_PER_FRAME`] a frame: `uploaded`
     /// of its `bytes` so far. The slot is kept, and the frame that writes its last chunk draws it.
     BoundaryUploading { uploaded: u64, bytes: u64 },
-    /// The plan names a boundary whose texels its caller let go ([`GpuBoundary::resident`]), and
-    /// the slot no longer holds them.
-    BoundaryReleased,
+    /// The plan's boundary is derived from a source the pipeline is still uploading, at most
+    /// [`UPLOAD_PER_FRAME`] a frame: `uploaded` of its `bytes` so far. The frame that writes its
+    /// last rows draws the plan.
+    SourceUploading { uploaded: u64, bytes: u64 },
+    /// The plan's boundary is derived from a source the pipeline does not hold: none handed to a
+    /// surface this frame, another version, or one whose pixels its caller let go before it was
+    /// uploaded.
+    SourceMissing,
 }
 
 impl GpuFallback {
@@ -642,8 +695,9 @@ impl GpuFallback {
             Self::BudgetExceeded { .. } => "budget-exceeded",
             Self::TextureLimit { .. } => "texture-limit",
             Self::BufferLimit { .. } => "buffer-limit",
-            Self::BoundaryReleased => "boundary-released",
             Self::BoundaryUploading { .. } => "boundary-uploading",
+            Self::SourceUploading { .. } => "source-uploading",
+            Self::SourceMissing => "source-missing",
         }
     }
 }
@@ -661,6 +715,8 @@ pub(super) struct CompileFigures {
     pending: AtomicU64,
     /// The newest warm list's version the pipeline has queued, plus one; zero before any.
     warmed: AtomicU64,
+    /// The compile thread's warm-up running, or its last ([`compile::WarmUpFigures`]).
+    warm_up: std::sync::Mutex<Option<compile::WarmUpFigures>>,
 }
 
 impl CompileFigures {
@@ -671,6 +727,14 @@ impl CompileFigures {
         self.max_us.fetch_max(micros, Ordering::AcqRel);
         self.last_us.store(micros, Ordering::Release);
         self.leave(1);
+    }
+
+    /// The warm-up's figures as they stand now.
+    fn warm_up(&self, figures: compile::WarmUpFigures) {
+        *self
+            .warm_up
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(figures);
     }
 
     /// `count` sequences queued.
@@ -691,6 +755,10 @@ impl CompileFigures {
 /// What one pipeline counts of its GPU-preview work, beside its photo-texture figures.
 #[derive(Default)]
 pub(super) struct Figures {
+    /// What the stage's capability check answered ([`GpuStageState`]), and the device's lost flag,
+    /// which the stage's lost callback sets: both read live.
+    stage: stage::StageFigure,
+    lost: Arc<AtomicBool>,
     budget: AtomicU64,
     in_use: AtomicU64,
     peak: AtomicU64,
@@ -711,8 +779,11 @@ pub(super) struct Figures {
     block_compared: AtomicU64,
     #[cfg(test)]
     block_copied: AtomicU64,
-    /// Bytes of boundary texels written into wgpu's staging, over every frame.
+    /// Bytes of boundary texels written into wgpu's staging, over every frame, a source's rows
+    /// among them.
     staged: AtomicU64,
+    /// Boundaries derived on the GPU from the source the pipeline holds ([`source`]).
+    derived: AtomicU64,
     /// The most of a new boundary one frame uploads: [`UPLOAD_PER_FRAME`], or a test's.
     upload_per_frame: AtomicU64,
     /// Tests only: each link's passes start from a sentinel in every pool texture
@@ -722,6 +793,11 @@ pub(super) struct Figures {
 }
 
 impl Figures {
+    /// Whether the stage can draw at all on this pipeline's device, read live.
+    pub(super) fn stage_state(&self) -> GpuStageState {
+        self.stage.state(&self.lost)
+    }
+
     pub(super) fn budget(&self) -> u64 {
         self.budget.load(Ordering::Acquire)
     }
@@ -750,6 +826,10 @@ impl Figures {
         self.staged.load(Ordering::Acquire)
     }
 
+    pub(super) fn derived(&self) -> u64 {
+        self.derived.load(Ordering::Acquire)
+    }
+
     pub(super) fn compiles(&self) -> u64 {
         self.compiles.load(Ordering::Acquire)
     }
@@ -761,6 +841,15 @@ impl Figures {
             compile.max_us.load(Ordering::Acquire),
             compile.last_us.load(Ordering::Acquire),
         )
+    }
+
+    /// The compile thread's warm-up running, or its last.
+    pub(super) fn warm_up(&self) -> Option<compile::WarmUpFigures> {
+        *self
+            .compile
+            .warm_up
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Sequences queued or compiling, and the newest warm list's version queued.
@@ -833,6 +922,8 @@ enum Held {
     Planes(Box<SpatialSlot>),
     Link(Box<chain::LinkSlot>),
     Pool(Vec<spatial::PoolTexture>),
+    Source(Box<SourceSlot>),
+    Rest(Box<rest::RestParts>),
 }
 
 /// A GPU-preview resource on its way out, with its charge, which ends when the GPU is done with it,
@@ -877,6 +968,9 @@ pub(super) struct GpuSlot {
     target: wgpu::TextureView,
     words: Charged,
     blocks: Charged,
+    /// The words a derived boundary's pass reads: the source's map and the origin, and a
+    /// reduction's coverage tables ([`source`]). Created with the first derived boundary.
+    derivation: Option<Charged>,
     bindings: wgpu::BindGroup,
     /// The boundary texture, the output texture and its placement uniform.
     texture_bytes: u64,
@@ -1302,6 +1396,7 @@ impl GpuSlot {
         self.texture_bytes
             + self.words.bytes
             + self.blocks.bytes
+            + self.derivation.as_ref().map_or(0, |words| words.bytes)
             + self
                 .spatial
                 .as_ref()
@@ -1319,6 +1414,36 @@ impl GpuSlot {
             && self.uploading.is_none()
     }
 
+    /// Make the slot's derivation words hold `words`, a buffer charged before it is created and
+    /// grown as a bigger reduction's tables need, the old one retiring with its charge.
+    fn fit_derivation(
+        &mut self,
+        pipeline: &PhotoPipeline,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        words: &[u32],
+    ) -> Result<(), GpuFallback> {
+        let bytes = (words.len() * 4) as u64;
+        if self
+            .derivation
+            .as_ref()
+            .is_none_or(|charged| charged.bytes < bytes)
+        {
+            let capacity = buffer_capacity(device, bytes)?;
+            pipeline.figures.preview.charge(capacity)?;
+            let fresh = Charged {
+                buffer: storage_buffer(device, "luxforge.gpu_source.derivation", capacity),
+                bytes: capacity,
+            };
+            if let Some(old) = self.derivation.replace(fresh) {
+                pipeline.retire_preview(Held::Buffer(old.buffer), old.bytes);
+            }
+        }
+        let charged = self.derivation.as_ref().expect("the derivation's words");
+        queue.write_buffer(&charged.buffer, 0, &le_bytes(words));
+        Ok(())
+    }
+
     /// What the last link reads as its boundary: the last intermediate, or the boundary itself.
     fn last_input(&self) -> &wgpu::Texture {
         self.chain
@@ -1328,6 +1453,22 @@ impl GpuSlot {
 
     pub(super) fn output(&self) -> &Picture {
         &self.output
+    }
+
+    /// Forget what the slot holds of the plans it evaluated, keeping its textures: the next plan
+    /// is evaluated whole, every link, every spatial pass and the output, the pool's records of
+    /// who wrote each scratch plane reset, so nothing an earlier plan left is read by it. What a
+    /// picture at rest's tiles are drawn through, each a fresh evaluation.
+    pub(super) fn forget_evaluation(&mut self) {
+        self.evaluated = None;
+        self.evaluated_serial = None;
+        self.input_key = None;
+        for link in &mut self.chain {
+            link.forget(&mut self.pool);
+        }
+        if let Some(spatial) = self.spatial.as_mut() {
+            spatial.forget(&mut self.pool);
+        }
     }
 
     pub(super) fn frame_us(&self) -> u64 {
@@ -1422,6 +1563,17 @@ pub(super) struct GpuStage {
     warmed: Option<u64>,
     words: Vec<u32>,
     link_words: Vec<u32>,
+    /// The prepared source every derived boundary is drawn from, shared by every surface of the
+    /// pipeline ([`source`]), and the passes that derive one, made once.
+    source: Option<SourceSlot>,
+    layouts: Option<SourceLayouts>,
+    /// Whether a surface handed the source this frame; one no surface hands retires at the frame's
+    /// end. And the bytes of it written this frame, which every surface's `prepare` shares.
+    source_handed: bool,
+    source_written: u64,
+    /// The picture at rest's reduction and quantization, made the first time a surface is handed
+    /// one ([`rest`]), or why they could not be.
+    rest_passes: Option<Result<Arc<rest::RestPasses>, String>>,
 }
 
 /// Whether a device with `limits`, drawing to a target of `format`, can run the stage.
@@ -1472,20 +1624,32 @@ fn device_lost(lost: &AtomicBool) {
 
 impl GpuStage {
     /// The stage for a pipeline on `device`, drawing to `format`, counting into `figures`. Its lost
-    /// flag is the device's lost callback.
+    /// flag, which the device's lost callback sets, is the figures' own. `refused` is the launch's
+    /// refusal of the stage ([`refuse_gpu_stage`]): the capability check then answers unavailable
+    /// and nothing of the stage is created. What the check answered is published in `figures`, and
+    /// the desktop woken to read it.
     pub(super) fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         figures: &Figures,
+        refused: bool,
     ) -> Self {
         figures.budget.store(GPU_PREVIEW_BUDGET, Ordering::Release);
         figures
             .upload_per_frame
             .store(UPLOAD_PER_FRAME, Ordering::Release);
-        let lost = Arc::new(AtomicBool::new(false));
+        let lost = Arc::clone(&figures.lost);
         let signal = Arc::clone(&lost);
         device.set_device_lost_callback(move |_reason, _message| device_lost(&signal));
-        let support = supported(&device.limits(), format).then(|| Arc::new(Support::new(device)));
+        let support = (!refused && supported(&device.limits(), format))
+            .then(|| Arc::new(Support::new(device)));
+        figures.stage.checked(support.is_some(), refused);
+        // The derivation passes are fixed, so they are built with the stage, as the mip levels'
+        // pass is: the first boundary derived compiles nothing.
+        let layouts = support
+            .as_ref()
+            .and_then(|_| SourceLayouts::new(device).ok());
+        wake_surface();
         Self {
             support,
             lost,
@@ -1493,7 +1657,25 @@ impl GpuStage {
             warmed: None,
             words: Vec::new(),
             link_words: Vec::new(),
+            source: None,
+            layouts,
+            source_handed: false,
+            source_written: 0,
+            rest_passes: None,
         }
+    }
+
+    /// The picture at rest's passes, made on first use, or why there are none: a stage that cannot
+    /// run at all has none either.
+    fn rest_passes(
+        &mut self,
+        device: &wgpu::Device,
+    ) -> Option<&Result<Arc<rest::RestPasses>, String>> {
+        self.support.as_ref()?;
+        if self.rest_passes.is_none() {
+            self.rest_passes = Some(rest::RestPasses::new(device).map(Arc::new));
+        }
+        self.rest_passes.as_ref()
     }
 
     /// The ready pipeline for `steps`, or why the frame draws the CPU's: never compiled here, on
@@ -1538,10 +1720,18 @@ impl GpuStage {
         }
     }
 
-    /// Hand `sequences` the stage does not hold yet to the compile thread.
-    fn warm(&mut self, device: &wgpu::Device, sequences: &[compile::Sequence], figures: &Figures) {
+    /// Hand `sequences`, warm list `version`'s, its first `open` the open stack's, that the stage
+    /// does not hold yet to the compile thread.
+    fn warm(
+        &mut self,
+        device: &wgpu::Device,
+        sequences: &[compile::Sequence],
+        list: (u64, usize),
+        figures: &Figures,
+    ) {
         if let Some(support) = &self.support {
-            self.pipelines.warm(device, support, sequences, figures);
+            self.pipelines
+                .warm(device, support, sequences, list, figures);
         }
     }
 
@@ -2145,7 +2335,7 @@ impl PhotoPipeline {
             }
             return;
         };
-        let outcome = self.evaluate(surface, device, queue, plan, change);
+        let outcome = self.evaluate_lit(surface, device, queue, plan, change);
         // A sequence still compiling leaves the slot as it was, its boundary included, for the
         // frame that finds the pipeline ready, and a boundary still uploading leaves it for the
         // frame that writes the next chunks; any other fallback lets the slot go.
@@ -2172,15 +2362,36 @@ impl PhotoPipeline {
             && self.gpu.warmed != Some(warm.version())
         {
             self.gpu.warmed = Some(warm.version());
-            // Each link of each plan's chain is a sequence of its own.
-            let sequences: Vec<compile::Sequence> = warm
-                .sequences()
-                .iter()
-                .flat_map(|(steps, format)| {
-                    link_sequences(steps, *format).map(|(link, format)| (link.to_vec(), format))
-                })
-                .collect();
-            self.gpu.warm(device, &sequences, &self.figures.preview);
+            // Each link of each plan's chain is a sequence of its own; the open stack's plans' links
+            // come first, then the light links they compute, then the rest.
+            let lights = || {
+                warm.lights()
+                    .iter()
+                    .map(|steps| (steps.clone(), light::LIGHT_FORMAT))
+            };
+            let mut open = 0;
+            let mut sequences: Vec<compile::Sequence> = Vec::new();
+            if warm.open() == 0 {
+                sequences.extend(lights());
+                open = sequences.len();
+            }
+            for (index, (steps, format)) in warm.sequences().iter().enumerate() {
+                sequences.extend(
+                    link_sequences(steps, *format).map(|(link, format)| (link.to_vec(), format)),
+                );
+                if index + 1 == warm.open() {
+                    sequences.extend(lights());
+                }
+                if index < warm.open() {
+                    open = sequences.len();
+                }
+            }
+            self.gpu.warm(
+                device,
+                &sequences,
+                (warm.version(), open),
+                &self.figures.preview,
+            );
             self.figures
                 .preview
                 .compile
@@ -2189,10 +2400,95 @@ impl PhotoPipeline {
         }
     }
 
-    /// Retire `surface`'s GPU-preview slot, if it holds one.
+    /// Retire `surface`'s GPU-preview slot, if it holds one, and its light links.
     pub(super) fn release_gpu(&self, surface: &mut SurfaceSlots) {
         if let Some(slot) = surface.gpu.take() {
             self.retire_slot(slot);
+        }
+        self.retire_lights(&mut surface.gpu_lights, 0);
+    }
+
+    /// Make the pipeline hold `source`, which a surface hands this frame ([`source`]): another
+    /// version retires the one held, with its charge; a new one is charged and created, if it
+    /// still has its pixels; and the rows not written yet are, at most [`UPLOAD_PER_FRAME`] a
+    /// frame across every surface that hands it. An upload's start and its end each wake the
+    /// desktop once. A source the device cannot hold says why in the surface's diagnostics and
+    /// holds nothing; a boundary derived from it then falls back.
+    pub(super) fn fit_source(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        source: Option<&GpuSource>,
+    ) {
+        let Some(source) = source else {
+            return;
+        };
+        self.gpu.source_handed = true;
+        if self.gpu.support.is_none() || self.gpu.lost.load(Ordering::Acquire) {
+            return;
+        }
+        if let Some(held) = self.gpu.source.take_if(|held| !held.holds(source)) {
+            let bytes = held.bytes();
+            self.retire_preview(Held::Source(Box::new(held)), bytes);
+        }
+        if self.gpu.source.is_none() && source.holds_pixels() {
+            let Some(layouts) = self.gpu.layouts.as_ref() else {
+                // No derivation passes on this device: nothing could be derived from it.
+                self.figures.diagnostics().gpu_source_refused =
+                    Some((source.version(), GpuFallback::PipelineFailed));
+                return;
+            };
+            let preview = &self.figures.preview;
+            match SourceSlot::new(device, source, layouts, |bytes| preview.charge(bytes)) {
+                Ok(slot) => {
+                    self.gpu.source = Some(slot);
+                    wake_surface();
+                }
+                Err(fallback) => {
+                    self.figures.diagnostics().gpu_source_refused =
+                        Some((source.version(), fallback));
+                    return;
+                }
+            }
+        }
+        let Some(slot) = self.gpu.source.as_mut() else {
+            return;
+        };
+        if !slot.ready() {
+            let limit = self
+                .figures
+                .preview
+                .upload_per_frame
+                .load(Ordering::Acquire)
+                .saturating_sub(self.gpu.source_written);
+            if limit > 0 {
+                let written = slot.upload(queue, source, limit);
+                self.gpu.source_written += written;
+                self.figures
+                    .preview
+                    .staged
+                    .fetch_add(written, Ordering::AcqRel);
+                if slot.ready() {
+                    wake_surface();
+                }
+            }
+        }
+        let mut diagnostics = self.figures.diagnostics();
+        diagnostics.gpu_source = Some(slot.figures());
+        diagnostics.gpu_source_refused = None;
+    }
+
+    /// At the end of every frame: the source no surface handed retires, with its charge, and the
+    /// next frame's upload starts afresh.
+    pub(super) fn trim_source(&mut self) {
+        self.gpu.source_written = 0;
+        if std::mem::take(&mut self.gpu.source_handed) {
+            return;
+        }
+        if let Some(held) = self.gpu.source.take() {
+            let bytes = held.bytes();
+            self.retire_preview(Held::Source(Box::new(held)), bytes);
+            self.figures.diagnostics().gpu_source = None;
         }
     }
 
@@ -2302,14 +2598,30 @@ impl PhotoPipeline {
         let words: &[u32] = words;
         let word_bytes = (words.len() * 4) as u64;
         let block_bytes = (blocks::block_len(chain.last) * 4) as u64;
-        // A boundary whose texels were let go is drawn only from the slot that holds them.
-        if !plan.boundary.holds_texels()
-            && surface
+        let held = surface
+            .gpu
+            .as_ref()
+            .is_some_and(|slot| slot.holds(shape, plan.boundary.version));
+        // A derived boundary the slot does not hold yet is drawn from the source the pipeline
+        // holds, once all of it is uploaded, by the derivation's pass; nothing is allocated for it
+        // before then.
+        if let (Some((version, _)), false) = (&plan.boundary.derived, held) {
+            let source = self
                 .gpu
+                .source
                 .as_ref()
-                .is_none_or(|slot| !slot.holds(shape, plan.boundary.version))
-        {
-            return Err(GpuFallback::BoundaryReleased);
+                .filter(|source| source.version() == *version)
+                .ok_or(GpuFallback::SourceMissing)?;
+            if !source.ready() {
+                let figures = source.figures();
+                return Err(GpuFallback::SourceUploading {
+                    uploaded: figures.uploaded,
+                    bytes: figures.bytes,
+                });
+            }
+            if self.gpu.layouts.is_none() || source.kind().boundary() != plan.boundary.format {
+                return Err(GpuFallback::PipelineFailed);
+            }
         }
         if surface.gpu.as_ref().is_some_and(|slot| slot.shape != shape)
             && let Some(slot) = surface.gpu.take()
@@ -2332,8 +2644,7 @@ impl PhotoPipeline {
         slot.output.region_key = plan.region.map(|region| super::RegionKey {
             rect: region.rect,
             stage: region.stage,
-            full_stage: region.stage,
-            quality: crate::RegionQuality::Interactive,
+            full_stage: region.full_stage,
             content_id: 0,
             generation: 0,
         });
@@ -2403,31 +2714,71 @@ impl PhotoPipeline {
             changed = true;
         }
         if slot.boundary_version != Some(plan.boundary.version) {
-            // A frame's chunks of it, from the row the last frame reached.
-            let first = slot
-                .uploading
-                .filter(|(version, _)| *version == plan.boundary.version)
-                .map_or(0, |(_, row)| row);
-            let limit = self
-                .figures
-                .preview
-                .upload_per_frame
-                .load(Ordering::Acquire);
-            let (next, staged) = upload_rows(queue, &slot.boundary, &plan.boundary, first, limit);
-            self.figures
-                .preview
-                .staged
-                .fetch_add(staged, Ordering::AcqRel);
-            if next < plan.boundary.height {
-                slot.uploading = Some((plan.boundary.version, next));
-                let row_bytes =
-                    u64::from(plan.boundary.width) * plan.boundary.format.texel_bytes() as u64;
-                return Err(GpuFallback::BoundaryUploading {
-                    uploaded: u64::from(next) * row_bytes,
-                    bytes: plan.boundary.bytes(),
-                });
+            match &plan.boundary.derived {
+                // Derived from the source the pipeline holds, all of it uploaded (above): one pass
+                // writes the slot's boundary texture, submitted at once, ahead of the chain's, so
+                // the slot holds what it says it holds whatever this frame does next.
+                Some((_, derivation)) => {
+                    let (source, layouts) = self
+                        .gpu
+                        .source
+                        .as_ref()
+                        .zip(self.gpu.layouts.as_ref())
+                        .ok_or(GpuFallback::SourceMissing)?;
+                    let size = plan.boundary.size();
+                    let words = source
+                        .words(derivation, size)
+                        .ok_or(GpuFallback::PipelineFailed)?;
+                    slot.fit_derivation(self, device, queue, &words)?;
+                    let target = slot
+                        .boundary
+                        .create_view(&wgpu::TextureViewDescriptor::default());
+                    let mut derive =
+                        device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("luxforge.gpu_source.derive_encoder"),
+                        });
+                    source.encode(
+                        device,
+                        &mut derive,
+                        layouts,
+                        derivation,
+                        &slot.derivation.as_ref().expect("fitted").buffer,
+                        &target,
+                        size,
+                    );
+                    queue.submit([derive.finish()]);
+                    self.figures.preview.derived.fetch_add(1, Ordering::Relaxed);
+                    slot.uploading = None;
+                }
+                None => {
+                    // A frame's chunks of it, from the row the last frame reached.
+                    let first = slot
+                        .uploading
+                        .filter(|(version, _)| *version == plan.boundary.version)
+                        .map_or(0, |(_, row)| row);
+                    let limit = self
+                        .figures
+                        .preview
+                        .upload_per_frame
+                        .load(Ordering::Acquire);
+                    let (next, staged) =
+                        upload_rows(queue, &slot.boundary, &plan.boundary, first, limit);
+                    self.figures
+                        .preview
+                        .staged
+                        .fetch_add(staged, Ordering::AcqRel);
+                    if next < plan.boundary.height {
+                        slot.uploading = Some((plan.boundary.version, next));
+                        let row_bytes = u64::from(plan.boundary.width)
+                            * plan.boundary.format.texel_bytes() as u64;
+                        return Err(GpuFallback::BoundaryUploading {
+                            uploaded: u64::from(next) * row_bytes,
+                            bytes: plan.boundary.bytes(),
+                        });
+                    }
+                    slot.uploading = None;
+                }
             }
-            slot.uploading = None;
             slot.boundary_version = Some(plan.boundary.version);
             changed = true;
         }
@@ -2732,7 +3083,11 @@ impl PhotoPipeline {
                     "luxforge.gpu_preview.boundary",
                     (width, height),
                     shape.format.texture(),
-                    wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    // Uploaded from the CPU, or written by the pass that derives it from the
+                    // source the pipeline holds.
+                    wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_DST
+                        | wgpu::TextureUsages::RENDER_ATTACHMENT,
                     &[],
                 ),
                 None,
@@ -2744,7 +3099,9 @@ impl PhotoPipeline {
             "luxforge.gpu_preview.output",
             capacity,
             OUTPUT_FORMAT,
-            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | OUTPUT_READ,
             &[SAMPLED_FORMAT],
         );
         let target = output.create_view(&wgpu::TextureViewDescriptor::default());
@@ -2799,8 +3156,8 @@ impl PhotoPipeline {
             content_id: None,
             region_key: None,
             allocated_bytes: output_bytes,
-            // Evaluated at the boundary's own size, about the display's at Fit: never minified
-            // far enough to need a chain.
+            // Evaluated at the boundary's own size, about the displayed size at Fit and below 100%:
+            // never minified far enough to need a chain.
             mip_levels: 1,
             mip_bytes: 0,
             mips_current: false,
@@ -2840,6 +3197,7 @@ impl PhotoPipeline {
             target,
             words,
             blocks,
+            derivation: None,
             bindings,
             texture_bytes,
             written_words: Vec::new(),
@@ -3085,7 +3443,9 @@ impl PhotoPipeline {
         let scratch = match &held {
             Held::Slot(slot) => slot.pool.bytes(),
             Held::Pool(_) => bytes,
-            Held::Buffer(_) | Held::Planes(_) | Held::Link(_) => 0,
+            Held::Buffer(_) | Held::Planes(_) | Held::Link(_) | Held::Source(_) | Held::Rest(_) => {
+                0
+            }
         };
         if let Err(error) = self
             .retirement_sender
@@ -3164,19 +3524,24 @@ impl PhotoPipeline {
 /// `fit_pool`, `fit_link` and `fit_spatial` charge it: the chain's charge ([`chain_charge`]) —
 /// each earlier link's intermediate, every link's kept planes and parameters and the pool once —
 /// beside what needs the device: the boundary, the output in its size bucket and its placement
-/// uniform, and every link's words and blocks buffers at their capacities. For a report and the
-/// tests that hold it to the slot's own figure.
+/// uniform, and every link's words and blocks buffers at their capacities; and each light link the
+/// slot runs before them, which share one tile texture ([`light::lights_charge`]). For a report and the tests that hold it to the
+/// slot's own figure.
 #[cfg(any(test, feature = "qualification"))]
 pub(super) fn slot_charge(device: &wgpu::Device, plan: &GpuPlan) -> Result<u64, GpuFallback> {
     let shape = Shape::of(plan);
     let limit = device.limits().max_texture_dimension_2d;
+    let binding = u64::from(device.limits().max_storage_buffer_binding_size);
     let origin = (
         plan.texels.origin[0].max(0.0) as u32,
         plan.texels.origin[1].max(0.0) as u32,
     );
+    let lights = light::lights_charge(&plan.lights, shape.format, limit, binding)
+        .ok_or(GpuFallback::PipelineFailed)?;
     Ok(shape.texture_bytes(limit)
         + slot_buffers(device, plan)?.iter().sum::<u64>()
-        + chain_charge(&plan.steps, shape.boundary, origin, shape.format).total())
+        + chain_charge(&plan.steps, shape.boundary, origin, shape.format).total()
+        + lights)
 }
 
 /// Each link's words and blocks buffers together, at the capacities a slot holding `plan` gives
@@ -3305,8 +3670,14 @@ fn upload_rows(
 mod blocks;
 mod chain;
 mod compile;
+mod source;
 pub(super) use compile::GpuOptions;
-pub use compile::{GpuWarm, PIPELINE_CACHE};
+pub use source::{AxisCoverage, Derivation, GpuSource, Reduction, SourceFigures, SourceKind};
+use source::{Layouts as SourceLayouts, SourceSlot};
+mod stage;
+pub use compile::{GpuWarm, PIPELINE_CACHE, WarmUpFigures};
+pub(super) use stage::gpu_stage_refused;
+pub use stage::{GpuStageState, refuse_gpu_stage};
 mod tail;
 pub use tail::{GpuTail, OutputEncoding, install_output_encoding, output_encoding};
 mod mask;
@@ -3321,6 +3692,7 @@ pub use spatial::{
 };
 
 mod dissolve;
+pub mod light;
 pub use dissolve::{DISSOLVE_DURATION, Dissolve, DrawnDissolve};
 pub(crate) use dissolve::{DissolveFrame, dissolving, photo_uniform};
 
@@ -3329,7 +3701,18 @@ pub(crate) use timing::PassClock;
 
 mod clipping;
 pub use clipping::ClipMarks;
+pub mod histogram;
 
+mod rest;
+pub use rest::{
+    CountsOutcome, GpuRest, REST_TILES_PER_FRAME, REST_VIEW_PIXELS, RestFigures, RestReduction,
+    TickCounts,
+};
+pub(super) use rest::{RestCounts, RestSlot, TickCounted};
+pub mod tiles;
+
+#[cfg(any(test, feature = "qualification"))]
+pub mod headless;
 #[cfg(any(test, feature = "qualification"))]
 pub mod qualification;
 

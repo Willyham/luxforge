@@ -85,29 +85,31 @@ fn lf_tail_projective(pixel: vec2<f32>, words: u32, block: u32) -> vec2<f32> {
 ";
 
 /// The coordinate grid's bilinear interpolation at the pixel-edge coordinate `pixel`, as
-/// `CoordinateGrid::sample` computes it: the grid's origin, spacing, columns and rows after the
-/// tail's header, and its nodes in the block, `(u, v)` pairs row by row.
+/// `CoordinateGrid::sample` computes it: the grid's origin, a node of the stage's lattice of its
+/// spacing, the spacing, columns and rows after the tail's header, and its nodes in the block,
+/// `(u, v)` pairs row by row. The cell and the fraction across it come from the stage's lattice,
+/// never from where the grid starts, so every window of the stage interpolates a pixel alike.
 const GRID_SOURCE: &str = "
 fn lf_tail_grid_node(column: u32, row: u32, columns: u32, block: u32) -> vec2<f32> {
     let at = block + 2u * (row * columns + column);
     return vec2<f32>(lf_block_f32(at), lf_block_f32(at + 1u));
 }
 
-fn lf_tail_grid_cell(g: f32, count: u32) -> u32 {
-    return min(u32(max(floor(g), 0.0)), count - 2u);
+fn lf_tail_grid_cell(g: f32, first: f32, count: u32) -> u32 {
+    return min(u32(max(floor(g) - first, 0.0)), count - 2u);
 }
 
 fn lf_tail_grid(pixel: vec2<f32>, words: u32, block: u32) -> vec2<f32> {
-    let origin = vec2<f32>(lf_f32(words + 6u), lf_f32(words + 7u));
     let spacing = lf_f32(words + 8u);
+    let first = vec2<f32>(lf_f32(words + 6u), lf_f32(words + 7u)) / spacing;
     let columns = lf_word(words + 9u);
     let rows = lf_word(words + 10u);
-    let gx = (pixel.x - origin.x) / spacing;
-    let gy = (pixel.y - origin.y) / spacing;
-    let column = lf_tail_grid_cell(gx, columns);
-    let row = lf_tail_grid_cell(gy, rows);
-    let fx = gx - f32(column);
-    let fy = gy - f32(row);
+    let gx = pixel.x / spacing;
+    let gy = pixel.y / spacing;
+    let column = lf_tail_grid_cell(gx, first.x, columns);
+    let row = lf_tail_grid_cell(gy, first.y, rows);
+    let fx = gx - (first.x + f32(column));
+    let fy = gy - (first.y + f32(row));
     let a = lf_tail_grid_node(column, row, columns, block);
     let b = lf_tail_grid_node(column + 1u, row, columns, block);
     let c = lf_tail_grid_node(column, row + 1u, columns, block);
