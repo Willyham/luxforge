@@ -1,6 +1,6 @@
 # Detail
 
-Status: **implemented; quality qualification incomplete.** The four supplied photographs have been inspected at 100% and final size; unresolved synthetic gates, observed fine-detail loss and missing controlled captures remain in the [study](detail-study.md). Implementation is authorized by the owner. The owner delegated the module's choices on 2026-09-30 and decided four consequential questions the same day: the 16-bit hand-off on the JPEG path, the restoration-prefix proxy cache (superseded by the [GPU-first plan](gpu-first.md)), the bounded input-grid cache for value-based mask overlays and the off-owner mutation path. Two further defaults are proposals the plan runs on until the owner revises them ([below](#proposals-with-recorded-defaults)). [Task plan](../../tasks/editing/detail.json) · [decisions](../decisions.md#detail).
+Status: **implemented; quality qualification incomplete, and the owner closed it on 2026-10-06 as superseded by later performance work.** The four supplied photographs have been inspected at 100% and final size; unresolved synthetic gates, observed fine-detail loss and missing controlled captures remain in the [study](detail-study.md). Implementation is authorized by the owner. The owner delegated the module's choices on 2026-09-30 and decided four consequential questions the same day: the 16-bit hand-off on the JPEG path, the restoration-prefix proxy cache (superseded by the [GPU-first plan](gpu-first.md)), the bounded input-grid cache for value-based mask overlays and the off-owner mutation path. Two further defaults are proposals the plan runs on until the owner revises them ([below](#proposals-with-recorded-defaults)). [decisions](../decisions.md#detail).
 
 The planned panel is drawn on the [Detail board](develop-workspace/detail.png) (at 100%) and in its neutral, masked and Fit states on the [planned module panels](develop-workspace/planned-module-panels.png); [its own render](develop-workspace/modules/detail.png) shows the adjusted section. The boards are design references, not evidence of anything built.
 
@@ -193,20 +193,6 @@ Native presets capture, apply, export and import the patch through discovery, in
 
 One gesture commits one attributed action on release, key-up or Enter; Escape or focus loss cancels; a no-op adds no row; external changes keep the draft with Discard and Reapply. Resets, preset application, mask targeting and history labels use the same action path. Original has no Detail effect. Missing or disabled Detail keeps recipes and history and refuses affected render, analysis, sample and export rather than omitting processing.
 
-## Cross-plan rules
-
-Detail, Tone curve, Lens and Perspective share these host contracts:
-
-- **Order.** `linked_modules` and the panel: Crop, transform, straighten · Presets · (Pixel) · (RAW) · Basic · Tone curve · Detail · Presence · Colour mixer · Lens correction · Perspective · Vignette · (Controls). The registry array, its doc comment and the order test in `registry/tests.rs` cover this order.
-- **Compile context.** `CompileStage` is threaded through `ToolModule::compile`, `FieldPatch::compile` and `compile_bound`; stage-independent modules ignore its scale. Lens freezes a dimensionless scale in its payload and does not need it.
-- **Field patches.** `modules/field_patch.rs` supports Tone curve's curve values, Detail's restoration shape, Lens's geometry shape and non-presettable actions, with shared framework tests.
-- **Queries.** `Planned::Query` is the one route for pixel-reading queries, through a spatial prefix or not, read by the owner's tile service. `query.sample-curve` reads no pixels and stays an owner query. Lens warp locates (bounded mapping, no pixel) stay on the owner.
-- **Generated and registry files.** The descriptor snapshot `fixtures/modules/builtin-descriptors.json`, conformance `KNOWN`, smoke `SCENARIOS`, the `xtask/src/fixtures.rs` table and the reference crate's `lib.rs` and `tests/studies/main.rs` are regenerated or re-added after each rebase; the snapshot is never merged by hand.
-- **Render passes.** Detail uses `RenderPass::Spatial` (0.25 MP) until measured.
-- **Preview.** Detail's moving approximation and Lens's mapping identity on overlays both edit `app/preview.rs` and `ProxyApproximation`; combined tests cover both contracts.
-- **Measurements.** Timing runs only after all feature work, sequentially on a quiet host, never beside another plan's builds.
-- **Masked spatial cap.** `MAX_MASKED_SPATIAL_LAYERS = 16` is shared by masked Detail and masked Presence.
-
 ## Bounded implementation
 
 The module owns equations, fields and support declarations; the host owns placement, the compile context, workers, memory, masks, caches and preview presentation. `SpatialUnit`, the byte and linear pipelines and the shared Rayon gate are reused: no new rendering pipeline, per-tool executor or capabilities infrastructure.
@@ -222,8 +208,6 @@ The module owns equations, fields and support declarations; the host owns placem
 | Evidence | Exact independent fixtures, buffer-sharing and no-work neutral tests, cache-hit byte equality, owner-purity counters and finished-build 24/60 MP before/after measurements separating RSS, retained sources, CPU scratch, cache bytes, GPU residency and unmeasured backend staging |
 
 ## Verification and completion
-
-The [task plan](../../tasks/editing/detail.json) carries the executable acceptance.
 
 1. **Numerics before production.** The study freezes equations, mappings, proxy taps, halo and scratch formulae and tolerances against `luxforge-reference` (no production imports), with fixtures described in `fixtures/detail/{README.md, cases.json, measurements.json}` (image specs, not pixels), generated by `cargo test -p luxforge-reference --test studies -- --ignored generate_detail_fixtures` and reloaded by `detail_fixtures_match_reference` and `detail_measurements_match_reference`. Cases include tiny and odd images, borders and seams, impulses, slanted edges, gratings, neutral and saturated ramps, negative and HDR values, signal-dependent and correlated chroma noise, JPEG blocks and masks.
 2. **Quality gates** (provisional study gates, not photographic guarantees), at frozen moderate settings (luminance 40, colour 40, sharpening 40–50, radius 1.0):
