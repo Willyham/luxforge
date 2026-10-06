@@ -970,6 +970,8 @@ enum Held {
     Pool(Vec<spatial::PoolTexture>),
     Source(Box<SourceSlot>),
     Rest(Box<rest::RestParts>),
+    /// A staged picture at rest's stage textures.
+    Stage(Vec<wgpu::Texture>),
 }
 
 /// A GPU-preview resource on its way out, with its charge, which ends when the GPU is done with it,
@@ -3552,9 +3554,12 @@ impl PhotoPipeline {
         let scratch = match &held {
             Held::Slot(slot) => slot.pool.bytes(),
             Held::Pool(_) => bytes,
-            Held::Buffer(_) | Held::Planes(_) | Held::Link(_) | Held::Source(_) | Held::Rest(_) => {
-                0
-            }
+            Held::Buffer(_)
+            | Held::Planes(_)
+            | Held::Link(_)
+            | Held::Source(_)
+            | Held::Rest(_)
+            | Held::Stage(_) => 0,
         };
         if let Err(error) = self
             .retirement_sender
@@ -3815,7 +3820,7 @@ pub mod histogram;
 mod rest;
 pub use rest::{
     CountsOutcome, EvaluationFigures, GpuRest, REST_TILES_PER_FRAME, REST_VIEW_PIXELS, RestFigures,
-    RestReduction, TickCounts,
+    RestReduction, RestStages, RestSweep, TickCounts,
 };
 pub(super) use rest::{RestCounts, RestSlot, TickCounted};
 pub mod staged;
