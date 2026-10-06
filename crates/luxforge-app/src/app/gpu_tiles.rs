@@ -1400,10 +1400,11 @@ impl Worker {
         // their stage textures, charged before they are created, for as long as the stream is
         // drawn; any other is drawn chained.
         let staging = match &stream.sweep_sides {
-            Some(sides) => plan_stream_sweeps_at(&stream.stack, budget, sides)?,
-            None => plan_stream_sweeps(&stream.stack, budget)?,
+            _ if self.chains_streams() => None,
+            Some(sides) => Some(plan_stream_sweeps_at(&stream.stack, budget, sides)?),
+            None => Some(plan_stream_sweeps(&stream.stack, budget)?),
         };
-        if let GpuStaging::Staged(sweeps) = staging {
+        if let Some(GpuStaging::Staged(sweeps)) = staging {
             let last = sweeps.sweeps.last().expect("at least two sweeps");
             let mut plan = plan_stream(&stream.stack, last.side)?;
             plan.tiles = last.tiles.clone();
@@ -1438,6 +1439,14 @@ impl Worker {
             requested = charge;
         }
         Err(TileFallback::Budget { requested, budget })
+    }
+
+    /// Whether a test asked for every stream drawn chained.
+    fn chains_streams(&self) -> bool {
+        #[cfg(test)]
+        return self.shared.lock().hooks.chained;
+        #[cfg(not(test))]
+        false
     }
 
     /// The most the runner would hold for any one tile of `plan`, by its own charge, over its
@@ -1820,6 +1829,8 @@ struct Hooks {
     lose: bool,
     /// The sides streams are drawn at, in place of [`STREAM_TILE_SIDES`].
     sides: Option<Vec<u32>>,
+    /// Every later stream is drawn chained, whatever its stack.
+    chained: bool,
 }
 
 #[cfg(test)]
@@ -1885,5 +1896,10 @@ impl GpuTiles {
     /// Draw streams at `sides` in place of [`STREAM_TILE_SIDES`].
     pub(crate) fn draw_streams_at(&self, sides: Vec<u32>) {
         self.shared.lock().hooks.sides = Some(sides);
+    }
+
+    /// Draw every later stream chained, never in staged sweeps, or stop.
+    pub(crate) fn chain_streams(&self, chained: bool) {
+        self.shared.lock().hooks.chained = chained;
     }
 }
