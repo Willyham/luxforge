@@ -1441,6 +1441,7 @@ fn staged_against_chained(
         return None;
     };
     print_sweeps(what, planned);
+    eprintln!("  {what}: share {:?}", tiles.share);
     // What the planner says each drawing's tiles carry: their windows, and those times the links
     // each runs, a spatial operation's link and its colour operations after it.
     let staged_windows: u64 = planned
@@ -1533,7 +1534,8 @@ fn staged_against_chained(
 
 /// The Air 2S's masked stack — Detail, a global Presence and three masked Presence layers, before
 /// its lens profile — drawn in its four staged sweeps and chained, at Fit as the editor plans it:
-/// the same codes and counts. Prints what each drawing's tiles did.
+/// the same codes and counts. Prints what each drawing's tiles did. `LUXFORGE_GPU_CORPUS_SOURCES`
+/// names another RAW of the manifest in the Air 2S's place.
 /// `LUXFORGE_RAW_MANIFEST=MANIFEST cargo test --release -p luxforge-app
 /// gpu_rest_the_air_2s_masked_stack_staged_is_chained -- --ignored --nocapture`.
 #[test]
@@ -1568,7 +1570,11 @@ fn gpu_rest_the_air_2s_masked_stack_staged_is_chained() {
     );
     let source = found
         .iter()
-        .find(|source| source.id == "raw-air2s")
+        .find(|source| {
+            source.id
+                == std::env::var("LUXFORGE_GPU_CORPUS_SOURCES")
+                    .unwrap_or_else(|_| "raw-air2s".into())
+        })
         .expect("the Air 2S");
     let dir = luxforge_testbase::paths::temp_dir("gpu-rest-masked");
     let opened = Opened::new(source, &[], &dir.join("air2s.sqlite")).expect("the RAW opened");
