@@ -1764,16 +1764,29 @@ mod bench {
             .map_async(wgpu::MapMode::Read, move |result| {
                 let _ = sender.send(result);
             });
-        device
-            .poll(wgpu::PollType::Wait {
-                submission_index: Some(index),
+        // The bench's pipelines retire through workers that poll this device too, and wgpu calls a
+        // mapping's callback from whichever poll finds it ready: a worker's poll can take it up
+        // and call it only after this wait returns. So an unmapped readback, or a wait the driver
+        // times out on a loaded host, is waited again through the test base's one hang-bounded
+        // wait, as the headless surface's readback is; only a lost device or a failed mapping
+        // ends it.
+        luxforge_testbase::try_wait_for("a bench readback's mapping", || {
+            match device.poll(wgpu::PollType::Wait {
+                submission_index: Some(index.clone()),
                 timeout: None,
-            })
-            .map_err(|_| GpuFallback::DeviceLost)?;
-        match receiver.try_recv() {
-            Ok(Ok(())) => {}
-            _ => return Err(GpuFallback::DeviceLost),
-        }
+            }) {
+                Ok(_) | Err(wgpu::PollError::Timeout) => {}
+                Err(_) => return Some(Err(GpuFallback::DeviceLost)),
+            }
+            match receiver.try_recv() {
+                Ok(Ok(())) => Some(Ok(())),
+                Ok(Err(_)) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Some(Err(GpuFallback::DeviceLost))
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            }
+        })
+        .map_err(|_| GpuFallback::DeviceLost)??;
         let mapped = readback.slice(..).get_mapped_range();
         let mut texels = Vec::with_capacity((row * height) as usize);
         for line in mapped.chunks_exact(padded as usize) {
