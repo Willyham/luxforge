@@ -444,6 +444,45 @@
         {"api": {"method": "mask.create-radial", "params": {"x": 0.5, "y": 0.5, "radius_x": 0.28, "radius_y": 0.22, "angle": 18.0, "feather": 45.0}}},
         {"api": {"method": "edit.set-presence", "params": {"mask": {"name": "Mask 1"}, "texture": 50, "clarity": 50, "dehaze": 30}}}
       ]
+    },
+    {
+      "id": "detail-curve-lens-perspective",
+      "family": "detail",
+      "class": "spatial",
+      "description": "A RAW photograph's own lens profile (its first-open entry), Detail at the moderate parameter set, the Tone curve's S-curve and a Perspective warp: colour the host places after Detail and before two resamples, which runs on Detail's output before the tail.",
+      "sources": ["raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"section": {"module": "luxforge.lens", "expanded": true}},
+        {"api": {"method": "edit.set-detail", "params": {"luminance": 40, "colour": 40, "sharpening": 50, "radius": 1.0}}},
+        {"api": {"method": "edit.set-curve", "params": {"luminance": [[0.0, 0.0], [0.25, 0.2], [0.75, 0.8], [1.0, 1.0]]}}},
+        {"api": {"method": "edit.set-perspective", "params": {"horizontal": 20, "vertical": -10}}}
+      ]
+    },
+    {
+      "id": "detail-curve-lens-perspective-jpeg",
+      "family": "detail",
+      "class": "spatial",
+      "description": "A JPEG's detected lens profile, applied as the Lens section's Apply applies it, Detail at the moderate parameter set, the Tone curve's S-curve and a Perspective warp, on the zone plate that carries a camera and lens identity.",
+      "sources": ["lens-zone-plate"],
+      "steps": [
+        {"section": {"module": "luxforge.lens", "expanded": true}},
+        {"controls": {"gesture": "query-choice-apply", "action": "select-lens-profile"}},
+        {"api": {"method": "edit.set-detail", "params": {"luminance": 40, "colour": 40, "sharpening": 50, "radius": 1.0}}},
+        {"api": {"method": "edit.set-curve", "params": {"luminance": [[0.0, 0.0], [0.25, 0.2], [0.75, 0.8], [1.0, 1.0]]}}},
+        {"api": {"method": "edit.set-perspective", "params": {"horizontal": 20, "vertical": -10}}}
+      ]
+    },
+    {
+      "id": "detail-curve-straightened",
+      "family": "detail",
+      "class": "spatial",
+      "description": "Detail at the moderate parameter set, the Tone curve's S-curve and a straightened 16:9 crop: colour after Detail and before the crop's resample.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.set-detail", "params": {"luminance": 40, "colour": 40, "sharpening": 50, "radius": 1.0}}},
+        {"api": {"method": "edit.set-curve", "params": {"luminance": [[0.0, 0.0], [0.25, 0.2], [0.75, 0.8], [1.0, 1.0]]}}},
+        {"api": {"method": "edit.crop-fit", "params": {"aspect": "16:9", "angle": 7.0}}}
+      ]
     }
   ]
 }

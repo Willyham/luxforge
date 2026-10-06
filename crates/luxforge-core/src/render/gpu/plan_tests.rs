@@ -152,14 +152,15 @@ fn tolerance(plan: &GpuPlan, staged: bool) -> u8 {
     }
 }
 
-/// The plan's frame, from the CPU's boundary, against the CPU frame of the whole recipe.
-fn assert_draws_the_cpu_frame(
+/// The plan's frame, from the CPU's boundary, against the CPU frame of the whole recipe: the
+/// largest difference in output codes, and the tolerance the plan's shape allows.
+pub(super) fn cpu_frame_difference(
     registry: &ModuleRegistry,
     source: &SourceImage,
     recipe: &Recipe,
     plan: &GpuPlan,
     what: &str,
-) {
+) -> (u8, u8) {
     let cpu = render(registry, source, SnapshotId::new(), recipe).unwrap();
     let output = plan.geometry.output();
     assert_eq!(
@@ -179,9 +180,20 @@ fn assert_draws_the_cpu_frame(
         &compiled.spatial_operations(),
     )
     .unwrap();
-    let difference = largest_difference(&cpu.rgba, &gpu);
+    (largest_difference(&cpu.rgba, &gpu), tolerance(plan, staged))
+}
+
+/// The plan's frame, from the CPU's boundary, against the CPU frame of the whole recipe.
+pub(super) fn assert_draws_the_cpu_frame(
+    registry: &ModuleRegistry,
+    source: &SourceImage,
+    recipe: &Recipe,
+    plan: &GpuPlan,
+    what: &str,
+) {
+    let (difference, tolerance) = cpu_frame_difference(registry, source, recipe, plan, what);
     assert!(
-        difference <= tolerance(plan, staged),
+        difference <= tolerance,
         "{what}: the plan draws up to {difference} codes from the CPU frame"
     );
 }
@@ -802,7 +814,7 @@ fn masked_operations_carry_their_blend_and_draw_the_cpu_frame() {
 /// blue whose wraps put a hard edge between codes 255 and 0, where a blend in linear light turns a
 /// hundredth of a pixel into dozens of dark-tone codes: right for proving exact taps, wrong for a
 /// grid that is allowed a tenth of a pixel.
-fn smooth(width: u32, height: u32) -> SourceImage {
+pub(super) fn smooth(width: u32, height: u32) -> SourceImage {
     let mut rgba = Vec::with_capacity((width * height * 4) as usize);
     for y in 0..height {
         for x in 0..width {
@@ -1442,6 +1454,73 @@ fn chained_spatial_operations_draw_the_cpu_frame() {
         GpuPlanRequest::exact(0, stage(41, 29)).qualifying(),
     ));
     assert_eq!(plan.spatial.len(), 5);
+}
+
+/// The colour the host places after Detail and before the geometry — in Detail's own segment, which
+/// the CPU writes before the tail's resample — runs on Detail's output at the boundary's stage, as
+/// colour between two spatial operations does, before a lens and perspective warp or a
+/// straightened crop, and through a turn in that segment, which its units address the turned
+/// frame through and the tail carries. Each draws the CPU frame.
+#[test]
+fn colour_after_detail_runs_on_its_output_before_the_tail() {
+    let registry = ModuleRegistry::builtin();
+    let source = smooth(180, 120);
+    let detail = Layer::new(
+        crate::DETAIL_EFFECT,
+        json!({"sharpening": 40.0, "luminance": 20.0}),
+    );
+    let curve = Layer::new(
+        crate::CURVE_EFFECT,
+        json!({"luminance": [[0.0, 0.0], [0.25, 0.2], [0.75, 0.8], [1.0, 1.0]]}),
+    );
+    let perspective = Layer::new(
+        crate::PERSPECTIVE_EFFECT,
+        json!({"horizontal": 40, "vertical": -30}),
+    );
+    for (what, geometry) in [
+        (
+            "a lens and perspective warp",
+            vec![
+                crate::render::testing::frozen_lens(180, 120, 24.0),
+                perspective.clone(),
+            ],
+        ),
+        ("a straightened crop", vec![crop(180, 120, 3.0)]),
+        (
+            "a turn, perspective and a straightened crop",
+            vec![
+                turn(Transform::RotateRight),
+                perspective,
+                crop(120, 180, -4.0),
+            ],
+        ),
+    ] {
+        let recipe = colour_recipe(
+            [detail.clone(), curve.clone()]
+                .into_iter()
+                .chain(geometry)
+                .collect(),
+        );
+        let plan = planned(answer(
+            &registry,
+            &recipe,
+            GpuPlanRequest::exact(0, stage(180, 120)).from_source(),
+        ));
+        assert_eq!(plan.spatial.len(), 1, "{what}");
+        let after: Vec<usize> = plan.spatial[0].after.iter().map(|op| op.layer).collect();
+        assert_eq!(after, [1], "{what}: the curve runs on Detail's output");
+        assert!(plan.content.is_empty() && plan.output.is_empty(), "{what}");
+        assert!(
+            plan.geometry.clamps,
+            "{what}: the CPU quantizes before the resample"
+        );
+        assert_eq!(
+            plan.geometry.reads,
+            Region::whole(stage(180, 120)),
+            "{what}: the tail reads Detail's whole frame"
+        );
+        assert_draws_the_cpu_frame(&registry, &source, &recipe, &plan, what);
+    }
 }
 
 /// A plan's anchor rounds a window's origin to the least common multiple of every running pass's
