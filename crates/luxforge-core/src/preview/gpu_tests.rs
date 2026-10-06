@@ -94,7 +94,7 @@ fn draft_job_over(
     )
 }
 
-/// [`draft_job_over`] in `context`, whose estimate store its frames fill and its plans read.
+/// [`draft_job_over`] in `context`.
 fn draft_job_in(
     context: RenderContext,
     source: PreviewSource,
@@ -964,7 +964,7 @@ fn a_region_plan_reads_dehazes_light_from_the_whole_stage() {
 /// A drag reads the light the picture at rest draws with while it leaves the light's input as the
 /// committed stack holds it — a Presence drag, on a JPEG and on a RAW — and computes it every tick
 /// from the source through the drafted colour where a colour layer before it changes: a Basic drag
-/// under Presence. Planning reads no pixel and reduces nothing: the estimate store stays empty.
+/// under Presence. Planning reads no pixel and reduces nothing.
 #[test]
 fn a_drag_reads_the_light_at_rest_unless_a_colour_layer_before_it_changes() {
     let raw = PreviewSource::Raw {
@@ -1024,7 +1024,7 @@ fn a_drag_reads_the_light_at_rest_unless_a_colour_layer_before_it_changes() {
             light.layer == 1 && light.over_source() && light.content.len() == 1,
             "{name}: the drafted exposure before Presence, every tick"
         );
-        assert_eq!(context.estimates().len(), 0, "{name}: nothing reduced");
+        assert_eq!(context.reductions(), 0, "{name}: nothing reduced");
     }
 }
 
@@ -1566,7 +1566,7 @@ fn a_drag_after_presence_behind_detail_reads_the_light_at_rest() {
     );
     assert!(!plan.lights[0].over_source());
     assert!(preview.boundary.unwrap().window.is_some());
-    assert_eq!(context.estimates().len(), 0, "nothing reduced");
+    assert_eq!(context.reductions(), 0, "nothing reduced");
 }
 
 /// At Fit behind a straightened crop, whose proxy holds a window of its stage, a drag's light is
@@ -1643,7 +1643,7 @@ fn behind_a_windowed_fit_proxy_a_plan_reads_the_whole_stages_light() {
         panic!("one light");
     };
     assert!(light.stage == whole && light.over_source() && light.content.len() == 1);
-    assert_eq!(context.estimates().len(), 0, "planning reduces nothing");
+    assert_eq!(context.reductions(), 0, "planning reduces nothing");
 }
 
 /// The committed `layers` over [`source`], evaluated in `context`, as a displayed stack's job is.

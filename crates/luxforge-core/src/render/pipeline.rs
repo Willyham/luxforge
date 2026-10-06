@@ -443,66 +443,15 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     }
 
     /// The global estimates the boundary entering segment `index` reads
-    /// ([`super::Entry::globals`]), from the store or from one reduction of its input stage,
-    /// exactly as a frame of this compilation would resolve them; the store then holds them for
-    /// that frame. Empty when segment `index` enters through no boundary that reads one.
-    #[cfg(test)]
+    /// ([`super::Entry::globals`]): the ones it was handed, or one reduction of its input stage,
+    /// exactly as a frame of this compilation resolves them. Empty when segment `index` enters
+    /// through no boundary that reads one.
+    #[cfg(any(test, feature = "qualification"))]
     pub(crate) fn globals_of(&self, index: usize) -> Result<Vec<Option<Global>>, Error> {
         match &self.compiled.segments[index].entry {
             Some(entry) => entry.globals(self, index),
             None => Ok(Vec::new()),
         }
-    }
-
-    /// [`Self::globals_of`] from the estimate store alone, under the key a frame of this
-    /// compilation asks with: `None` when the store does not hold every one, which nothing here
-    /// reduces. `O(units)`, and reads no pixel.
-    #[cfg(any(test, feature = "qualification"))]
-    pub(crate) fn held_globals_of(&self, index: usize) -> Option<Vec<Option<Global>>> {
-        match &self.compiled.segments[index].entry {
-            Some(super::Entry::Spatial(entry)) => entry
-                .globals(
-                    &self.domain,
-                    self.context,
-                    self.spatial_stage(index),
-                    || Err(Error::internal("a held estimate is never reduced")),
-                )
-                .ok(),
-            _ => Some(Vec::new()),
-        }
-    }
-
-    /// Qualification only: hold `globals` in the estimate store under the keys a frame of this
-    /// compilation asks with for the spatial operation entering segment `index`, as a frame that
-    /// prepared them would. A key the store already holds keeps its estimate.
-    #[cfg(feature = "qualification")]
-    pub(crate) fn hold_globals(
-        &self,
-        index: usize,
-        globals: &[Option<Global>],
-    ) -> Result<(), Error> {
-        let Some(super::Entry::Spatial(entry)) = &self.compiled.segments[index].entry else {
-            return Err(Error::internal(format!(
-                "segment {index} enters through no spatial operation"
-            )));
-        };
-        let stage = self.spatial_stage(index);
-        let prefix = input_prefix_key(&self.domain, entry.prefix_hash());
-        for (unit, global) in entry.operation.units().iter().zip(globals) {
-            if let Some(estimate) = unit.estimate_key() {
-                self.context.estimates().remember(
-                    crate::render::context::EstimateKey {
-                        fingerprint: self.domain.fingerprint().to_owned(),
-                        prefix_hash: prefix.clone().into_owned(),
-                        width: stage.width,
-                        height: stage.height,
-                        estimate,
-                    },
-                    global.clone(),
-                );
-            }
-        }
-        Ok(())
     }
 
     /// The final spatial prefix on one output rectangle, through the render's own tile function.
@@ -854,7 +803,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         let fill = |region: Region, planes: &mut [f32]| {
             self.fill_rows(index - 1, region, planes, Parallelism::Serial)
         };
-        entry.globals(&self.domain, self.context, stage, || {
+        entry.globals(self.context, || {
             build_reduction_cancellable(stage, &self.cancel, fill)
         })
     }
@@ -967,12 +916,6 @@ impl SpatialEntry {
         Some((key, grid))
     }
 
-    /// The SHA-256 of the layers before this one, which a stored estimate's key names.
-    #[cfg(feature = "qualification")]
-    pub(super) fn prefix_hash(&self) -> &str {
-        &self.prefix_hash
-    }
-
     /// The rectangle of its `received` stage that producing `window` of it reads: `window` grown by
     /// the operation's summed halo and clamped to the stage. A GPU preview's spatial step
     /// evaluates every pixel of the window it holds at once, so a unit's value at a pixel inside
@@ -984,27 +927,18 @@ impl SpatialEntry {
         window.grown(self.operation.summed_halo(received), received)
     }
 
-    /// The global estimates this entry reads over `stage` in `domain`: the ones it was handed, or
-    /// else the store's, or one preparation from `reduce`'s reduction of the stage. A frame and a
-    /// point evaluation of the same recipe ask with the same key, so they use the same estimate.
-    fn globals<D: PixelDomain>(
+    /// The global estimates this entry reads: the ones it was handed, or else one preparation from
+    /// `reduce`'s reduction of its stage, which every frame and every point evaluation makes for
+    /// itself.
+    fn globals(
         &self,
-        domain: &D,
         context: &RenderContext,
-        stage: Stage,
         reduce: impl FnOnce() -> Result<Reduction, Error>,
     ) -> Result<Vec<Option<Global>>, Error> {
         if let Some(globals) = &self.globals {
             return Ok(globals.as_ref().clone());
         }
-        resolve_globals(
-            context,
-            &self.operation,
-            stage,
-            domain.fingerprint(),
-            &input_prefix_key(domain, &self.prefix_hash),
-            reduce,
-        )
+        resolve_globals(context, &self.operation, reduce)
     }
 }
 
@@ -1037,7 +971,7 @@ pub(super) fn spatial_entry<D: PixelDomain>(
 ) -> Result<D::SpatialFrame, Error> {
     let operation = &entry.operation;
     let plan = SpatialPlan::new(operation, stage, tiling)?;
-    let globals = entry.globals(domain, context, stage, || {
+    let globals = entry.globals(context, || {
         build_reduction_cancellable(stage, cancel, |region, planes| {
             fill(region, planes, Parallelism::Serial)
         })

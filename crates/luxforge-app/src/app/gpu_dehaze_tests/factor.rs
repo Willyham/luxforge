@@ -473,7 +473,7 @@ fn cell(
         if at.effect_id != PRESENCE_EFFECT {
             continue;
         }
-        if let Ok(Some(estimates)) = qualification::held_estimates(&exact, layer)
+        if let Ok(estimates) = qualification::frame_estimates(&exact, layer)
             && light(&estimates).is_some()
         {
             estimating.push(layer);

@@ -55,9 +55,6 @@ pub(super) const MAX_GLOBAL_BYTES: usize = 4096;
 /// The largest number of `f64` values that fits [`MAX_GLOBAL_BYTES`].
 pub(super) const MAX_GLOBAL_VALUES: usize = MAX_GLOBAL_BYTES / std::mem::size_of::<f64>();
 
-/// How many prepared global estimates the host keeps, evicted oldest first.
-pub(crate) const ESTIMATE_STORE_ENTRIES: usize = 8;
-
 /// The bytes the render context's store of reduced planes holds at most, across every entry
 /// (`render::reduced`). The largest entry, Dehaze's two planes over a 60 MP stage, is about 30 MB.
 pub(crate) const REDUCED_STORE_BYTES: u64 = 64 * 1024 * 1024;

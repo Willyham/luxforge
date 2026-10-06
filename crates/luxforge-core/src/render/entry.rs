@@ -1,7 +1,7 @@
 //! The one way into rendering.
 //!
 //! [`render`] compiles a recipe against one source for one phase and binds it to the
-//! [`RenderContext`] whose budgets and estimate store it reads. What it returns, a [`Render`],
+//! [`RenderContext`] whose budgets it reads. What it returns, a [`Render`],
 //! answers everything a caller asks of an evaluated stack from that one compilation: the whole
 //! frame, one pixel, a grid of pixels, the output stage and its geometry. Every export, preview
 //! phase, analysis, sample and draft evaluation enters here, whichever interpretation the source has:
@@ -585,11 +585,10 @@ impl<'a> Render<'a> {
     }
 
     /// The global estimates the spatial operation entering segment `index` reads, resolved as a
-    /// frame of this render resolves them: from the store, or from one reduction of that
-    /// operation's whole input stage, which the store then keeps for the frame. On a miss the
-    /// whole frames of the spatial segments before it are materialized to read that stage; with
-    /// none before it, none is.
-    #[cfg(test)]
+    /// frame of this render resolves them: the ones it was handed, or one reduction of that
+    /// operation's whole input stage, for which the whole frames of the spatial segments before it
+    /// are materialized; with none before it, none is.
+    #[cfg(any(test, feature = "qualification"))]
     pub(crate) fn spatial_globals(
         &self,
         index: usize,
@@ -599,25 +598,18 @@ impl<'a> Render<'a> {
             domain: D,
             index: usize,
         ) -> Result<Vec<Option<crate::modules::Global>>, Error> {
-            let compiled = Cow::Borrowed(&*render.compiled);
             let (tiling, cancel) = (render.options.tiling, &render.options.cancel);
-            // The store answers without a pixel read when it holds them, so the frames before
-            // the segment are materialized only for a miss.
-            let point = Evaluation::new(
-                domain,
-                compiled,
-                tiling,
-                SpatialMode::Point,
-                cancel,
-                render.context,
-            )?;
-            if !point.compiled.spatial_before(index) {
-                return point.globals_of(index);
+            if !render.compiled.spatial_before(index) {
+                return Evaluation::new(
+                    domain,
+                    Cow::Borrowed(&*render.compiled),
+                    tiling,
+                    SpatialMode::Point,
+                    cancel,
+                    render.context,
+                )?
+                .globals_of(index);
             }
-            if let Some(held) = point.held_globals_of(index) {
-                return Ok(held);
-            }
-            let Evaluation { domain, .. } = point;
             Evaluation::framed(
                 domain,
                 Cow::Borrowed(&*render.compiled),
@@ -637,40 +629,39 @@ impl<'a> Render<'a> {
         }
     }
 
-    /// [`Self::spatial_globals`] from the estimate store alone, under the key a frame of this render
-    /// asks with: `None` when the store does not hold every one, which this never reduces.
-    /// `O(units)`, and reads no pixel.
-    #[cfg(feature = "qualification")]
-    pub(crate) fn held_spatial_globals(
-        &self,
-        index: usize,
-    ) -> Result<Option<Vec<Option<crate::modules::Global>>>, Error> {
-        Ok(match self.source {
-            RenderSource::Byte(image) => self
-                .evaluation(Byte(image), SpatialMode::Point)?
-                .held_globals_of(index),
-            RenderSource::Linear { image, settings } => self
-                .evaluation(Linear::new(image, settings)?, SpatialMode::Point)?
-                .held_globals_of(index),
-        })
-    }
-
-    /// Qualification only: hold `globals` in this render's estimate store for the spatial
-    /// operation entering segment `index`, under the keys a frame of this render asks with.
+    /// Qualification only: hand the spatial operation entering segment `index` the estimates
+    /// `globals` names, one per unit in order, in place of the ones its frames would reduce: a unit
+    /// that declares no estimate key is handed none, and one past `globals` none either. Every
+    /// frame and read of this render from then on reads them.
     #[cfg(feature = "qualification")]
     pub(crate) fn hold_spatial_globals(
-        &self,
+        &mut self,
         index: usize,
         globals: &[Option<crate::modules::Global>],
     ) -> Result<(), Error> {
-        match self.source {
-            RenderSource::Byte(image) => self
-                .evaluation(Byte(image), SpatialMode::Point)?
-                .hold_globals(index, globals),
-            RenderSource::Linear { image, settings } => self
-                .evaluation(Linear::new(image, settings)?, SpatialMode::Point)?
-                .hold_globals(index, globals),
-        }
+        let Some(super::Entry::Spatial(entry)) = self
+            .compiled
+            .to_mut()
+            .segments
+            .get_mut(index)
+            .and_then(|segment| segment.entry.as_mut())
+        else {
+            return Err(Error::internal(format!(
+                "segment {index} enters through no spatial operation"
+            )));
+        };
+        let held = entry
+            .operation
+            .units()
+            .iter()
+            .enumerate()
+            .map(|(at, unit)| {
+                unit.estimate_key()
+                    .and_then(|_| globals.get(at).cloned().flatten())
+            })
+            .collect();
+        entry.globals = Some(std::sync::Arc::new(held));
+        Ok(())
     }
 
     /// Qualification only: the first spatial unit of this render's compilation that prepares a
