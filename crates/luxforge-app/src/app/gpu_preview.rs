@@ -879,6 +879,10 @@ pub(crate) struct GpuPreviews {
     /// The budget a test holds a region's boundary to, in place of the surface's.
     #[cfg(test)]
     pub(crate) budget: Option<u64>,
+    /// The figure a test asks the owner to plan a region's reduced stage beside it past, in place
+    /// of the core's ([`luxforge_core::REDUCED_AFTER_BYTES`]).
+    #[cfg(test)]
+    pub(crate) reduce_after: Option<u64>,
     /// What a test reports of the source the surface holds, which no test uploads.
     #[cfg(test)]
     pub(crate) source_figures: Option<surface::gpu_preview::SourceFigures>,
@@ -900,8 +904,10 @@ pub(crate) enum GpuAsk {
     /// whose bounds are the displayed size of the whole stage, the proxy the CPU path draws there.
     Fit,
     /// At a percentage zoom of 100% or more: this region of the output stage at full scale, drawn
-    /// at this many physical pixels an output pixel.
-    Region(Region, f64),
+    /// at this many physical pixels an output pixel, with its draft planned at the reduced stage
+    /// of the view's area too where the region's own figures pass these bytes
+    /// ([`luxforge_core::PreviewRequest::reduce_regions_after`]).
+    Region(Region, f64, u64),
 }
 
 /// Before a region's boundary is rendered, what the boundary alone takes and what the slot drawing
@@ -2350,7 +2356,21 @@ impl Editor {
             .and_then(|drag| drag.wanted.as_ref())
             .and_then(|wanted| wanted.key.region())
             .filter(|rect| super::preview::contains_region(*rect, wanted));
-        GpuAsk::Region(asked.unwrap_or(wanted), f64::from(value) / 100.0)
+        GpuAsk::Region(
+            asked.unwrap_or(wanted),
+            f64::from(value) / 100.0,
+            self.gpu_reduce_after(),
+        )
+    }
+
+    /// What a region's own figures pass before the owner plans its draft at the reduced stage of
+    /// the view's area too: the core's figure, or a test's.
+    fn gpu_reduce_after(&self) -> u64 {
+        #[cfg(test)]
+        if let Some(bytes) = self.gpu.reduce_after {
+            return bytes;
+        }
+        luxforge_core::REDUCED_AFTER_BYTES
     }
 
     /// Whether the open gesture's GPU frame is the view's motion frame: the surface draws its plan

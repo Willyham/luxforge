@@ -207,7 +207,8 @@ pub struct GpuPreview {
     /// made from, which holds the neutral layer a drafted layer's first commit would add, so the
     /// label travels with the answer rather than being read back from the committed stack's rows.
     pub layer: Option<String>,
-    /// Over a region at 100% or more whose plan's own figures pass [`REDUCED_AFTER_BYTES`]: the
+    /// Over a region at 100% or more whose plan's own figures pass the figure the caller names,
+    /// [`REDUCED_AFTER_BYTES`] by default ([`plan_preview_reducing`]): the
     /// same draft planned at the reduced stage of the view's area, the frame Fit draws at the
     /// view's size ([`GpuView::Fit`] at the region's displayed size). The desktop draws it scaled
     /// to the view, the softer drag frame, when the region's slot would pass the GPU-preview budget;
@@ -220,35 +221,6 @@ pub struct GpuPreview {
 /// which no region's slot, beside the largest source the budget holds, passes it. A constant and
 /// the plan: never the bytes in use.
 pub const REDUCED_AFTER_BYTES: u64 = 512 << 20;
-
-/// Qualification only: the figure a region plan passes before its draft is planned at the reduced
-/// stage too, in place of [`REDUCED_AFTER_BYTES`], so a test of a small photograph whose slot it
-/// holds to a small budget is handed the reduced plan. `u64::MAX` leaves the constant.
-#[cfg(feature = "qualification")]
-static REDUCED_AFTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
-
-/// Qualification only: plan the reduced stage beside every region plan past `bytes`, or past
-/// [`REDUCED_AFTER_BYTES`] again for `None`. Process-wide: a test that sets it plans more, never
-/// less, for every other test that runs beside it.
-#[cfg(feature = "qualification")]
-pub fn reduce_regions_after(bytes: Option<u64>) {
-    REDUCED_AFTER.store(
-        bytes.unwrap_or(u64::MAX),
-        std::sync::atomic::Ordering::Relaxed,
-    );
-}
-
-/// What a region plan passes before its draft is planned at the reduced stage too.
-fn reduced_after() -> u64 {
-    #[cfg(feature = "qualification")]
-    {
-        let bytes = REDUCED_AFTER.load(std::sync::atomic::Ordering::Relaxed);
-        if bytes != u64::MAX {
-            return bytes;
-        }
-    }
-    REDUCED_AFTER_BYTES
-}
 
 /// Whether a layer at `stage` has a GPU shape (`CompileStage::gpu_shape`): a colour or finish
 /// layer's every unit, or a restoration or spatial layer's.
@@ -704,10 +676,24 @@ pub(crate) fn output_window(compiled: &Compiled, full: Stage, segment: usize) ->
 /// reduced stage for the window, one for the plan, one at the whole stage for its lights and one
 /// more for each light the drag changes, those again for a region's reduced plan, and no pixel
 /// read.
+#[cfg(test)]
 pub(crate) fn plan_preview(
     evaluation: &Evaluation,
     draft: &Draft,
     view: GpuView,
+) -> Result<GpuPreview, Error> {
+    plan_preview_reducing(evaluation, draft, view, REDUCED_AFTER_BYTES)
+}
+
+/// [`plan_preview`], a region whose plan's own figures pass `reduce_after` bytes carrying its
+/// draft at the reduced stage of the view's area: what the owner plans with the figure the job's
+/// request names, [`REDUCED_AFTER_BYTES`] unless a test names a smaller one
+/// ([`crate::PreviewRequest::reduce_regions_after`]).
+pub(crate) fn plan_preview_reducing(
+    evaluation: &Evaluation,
+    draft: &Draft,
+    view: GpuView,
+    reduce_after: u64,
 ) -> Result<GpuPreview, Error> {
     let registry = evaluation.registry();
     let recipe = evaluation.recipe();
@@ -784,17 +770,18 @@ pub(crate) fn plan_preview(
         },
         Some(bytes),
     ) = (view, region_bytes(&preview))
-        && bytes > reduced_after()
+        && bytes > reduce_after
     {
         let side = |pixels: u32| (f64::from(pixels) * magnification).round().max(1.0) as u32;
         let bounds = ProxyBounds {
             width: side(rect.width),
             height: side(rect.height),
         };
-        preview.reduced = Some(Box::new(plan_preview(
+        preview.reduced = Some(Box::new(plan_preview_reducing(
             evaluation,
             draft,
             GpuView::Fit(bounds),
+            reduce_after,
         )?));
     }
     Ok(preview)
