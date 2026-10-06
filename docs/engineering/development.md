@@ -1236,12 +1236,23 @@ tick the GPU stage draws ([GPU previews](../design/gpu-preview.md)) is answered 
 and its step settles on that tick rather than on a CPU frame. A tick on the CPU path is answered by
 `slider_draft_preview`, which names the preview generation, after the `gpu_preview_tick` that says
 why it took that path (`boundary-pending` for a gesture's first tick when no resident boundary has its key, which asks for the boundary;
-`compiling`; ...). A CPU frame is presented by the `preview_displayed` of its generation,
+`compiling`; ...). A tick that holds its frame for a reason that passes (`gpu_preview_tick` with
+`path: "held"` and its `reason`) answers its set too, as a GPU input of its revision marked with the
+reason: it is presented by the surface's first draw of that revision's plan, a later `gpu` tick of
+the same revision answering no set, or, once the hold lasts, by its reference frame
+(`gpu_preview_reference`, then that generation's `preview_displayed`). A held input a later input
+superseded before either is reported, not failed; a set no tick answers still fails the run.
+`held_input_to_presented_frame` and `unheld_input_to_presented_frame` split the inputs by whether
+their tick held, `paths.held` counts the held inputs by reason and by how each ended (drawn on the
+GPU, presented by its reference, superseded) and `frames` names each one's `held` reason; the
+verdict is on all inputs. A CPU frame is presented by the `preview_displayed` of its generation,
 the update in which its raster became the photo surface's source. A GPU frame is presented by the
 surface's first draw of the plan tagged with the input's draft revision: the surface stamps each
 frame it first draws, and the desktop logs the stamp as `surface_frame_drawn` with the draw's own
 instant on the run's clock, its path, and its draft and revision or the generation of its CPU
-picture. Neither is display scanout: the figures are an upper bound on the editor's own work and a
+picture; a GPU frame's `evaluation` says what the evaluation in the frame that first drew it did
+(`refits`, `rebinds`, `links_run`, `spatial_passes`, `lights_encoded`, `lights_restored`,
+`window_texels`, `link_texels`), which a slow tick is attributed by. Neither is display scanout: the figures are an upper bound on the editor's own work and a
 lower bound on what an eye sees. `input_to_presented_frame` pools both paths, which
 `gpu_input_to_presented_frame` and `cpu_input_to_presented_frame` split; `input_to_drawn_frame`
 times both to the surface's first draw; `gpu_tick_to_drawn_frame` runs from the GPU tick's update to that draw.
@@ -1287,7 +1298,11 @@ while one still runs. An input sent in that window is contended (`frames[].conte
 `contended_input_to_presented_frame` is their figure; a run with none fails. The window spans the
 exports' encodes and writes as well as their tiles, and the exported files are removed after the
 run. How much of a drag the exports cover depends on the source's size, so `frames[].contended`
-says which inputs they covered. `--idle`, in drag mode, first closes the Performance section
+says which inputs they covered. Each export's `export_finished` event in the run's
+`events.jsonl` carries the tile worker's figures (`tiles`): beside its counts and bytes,
+`last_tile` and `tiles_total` split its tiles' time on the worker's thread into `light_ms`,
+`upload_ms`, `encode_ms`, `wait_ms` (the wait for its device, an upper bound on the GPU's work) and
+`read_ms`. `--idle`, in drag mode, first closes the Performance section
 after the release, whose one-second sampler would wake the editor, and runs an `idle` evidence step
 in the gesture's own launch: a 4-second settle for the release's dissolve and the picture at rest, then a 10-second window over which the surface's drawn frames, the views built and the
 process's own CPU time are counted (`idle_after_dissolve`, and its
