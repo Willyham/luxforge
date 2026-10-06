@@ -717,6 +717,9 @@ pub(super) struct CompileFigures {
     warmed: AtomicU64,
     /// The compile thread's warm-up running, or its last ([`compile::WarmUpFigures`]).
     warm_up: std::sync::Mutex<Option<compile::WarmUpFigures>>,
+    /// Whether a sequence is compiled and ready in the pipeline's cache, answered under its lock
+    /// without asking for anything; set when the compile thread starts.
+    ready: std::sync::Mutex<Option<compile::ReadyProbe>>,
 }
 
 impl CompileFigures {
@@ -735,6 +738,16 @@ impl CompileFigures {
             .warm_up
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(figures);
+    }
+
+    /// Whether `steps` writing `format` is compiled and ready in the pipeline's cache: `false`
+    /// before the compile thread starts, and for a sequence waiting, compiling, failed or unknown.
+    fn ready(&self, steps: &[GpuStep], format: wgpu::TextureFormat) -> bool {
+        self.ready
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|probe| probe(steps, format))
     }
 
     /// `count` sequences queued.
@@ -859,6 +872,19 @@ impl Figures {
             compile.pending.load(Ordering::Acquire),
             compile.warmed.load(Ordering::Acquire).checked_sub(1),
         )
+    }
+
+    /// Whether every program `plan` draws with is compiled and ready in the pipeline's cache —
+    /// each link of its chain and each light link it runs — so a frame of it draws with no compile
+    /// to wait for. Asks for nothing.
+    pub(super) fn programs_ready(&self, plan: &GpuPlan) -> bool {
+        let compile = &self.compile;
+        link_sequences(&plan.steps, plan.boundary.format())
+            .all(|(steps, format)| compile.ready(steps, format))
+            && plan
+                .lights
+                .iter()
+                .all(|light| compile.ready(&light.steps, light::LIGHT_FORMAT))
     }
 
     /// Charge `bytes` if they fit the budget beside everything charged already.
@@ -3729,6 +3755,7 @@ pub use rest::{
     RestReduction, TickCounts,
 };
 pub(super) use rest::{RestCounts, RestSlot, TickCounted};
+pub mod staged;
 pub mod tiles;
 
 #[cfg(any(test, feature = "qualification"))]

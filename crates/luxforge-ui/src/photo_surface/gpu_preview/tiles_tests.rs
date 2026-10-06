@@ -111,6 +111,20 @@ fn bits(values: &[[f32; 3]]) -> Vec<[u32; 3]> {
     values.iter().map(|value| value.map(f32::to_bits)).collect()
 }
 
+/// The bytes of the window of the source `runner` holds, checked against its figures: what it
+/// holds between runs is that window, its slot and the readback copies its tiles left.
+fn window_held(runner: &TileRunner) -> u64 {
+    let window = runner.window.as_ref().map_or(0, |(_, bytes)| *bytes);
+    let slot = runner.slot.as_ref().map_or(0, |slot| slot.bytes);
+    assert_eq!(runner.in_flight(), 0, "no tile in flight between runs");
+    assert_eq!(
+        runner.figures().in_use,
+        window + slot + runner.spare(),
+        "the window, the slot and the spare readback copies"
+    );
+    window
+}
+
 /// A runner holds a window of the source and cuts from it what the whole source cuts, bit for bit,
 /// codes and linear values alike: a JPEG's codes over a window away from every edge, and a RAW's
 /// planes, viewed from a crop window of them through every orientation. Each pixel is the
@@ -132,14 +146,14 @@ fn a_window_of_the_source_cuts_what_the_whole_source_cuts() {
     let whole = [0, 0, width, height];
     let from_whole = run_codes(&mut runner, &plan, &source, whole);
     assert_eq!(
-        runner.figures().in_use,
+        window_held(&runner),
         source.bytes(),
         "the whole source held"
     );
     let from_window = run_codes(&mut runner, &plan, &source, rect);
     assert_eq!(from_window, from_whole, "a JPEG's codes");
     assert_eq!(
-        runner.figures().in_use,
+        window_held(&runner),
         u64::from(rect[2] * rect[3] * 4),
         "the window's texels alone"
     );
@@ -205,7 +219,7 @@ fn a_window_of_the_source_cuts_what_the_whole_source_cuts() {
             "orientation {orientation}"
         );
         assert_eq!(
-            runner.figures().in_use,
+            window_held(&runner),
             u64::from(rect[2] * rect[3] * 12),
             "orientation {orientation}: the window's planes alone"
         );
@@ -241,8 +255,9 @@ fn a_window_of_the_source_cuts_what_the_whole_source_cuts() {
 /// A run whose charge passes [`GPU_TILE_BUDGET`] is refused with what it asked for, having created
 /// and compiled nothing — no window held, no sequence compiled, nothing ever charged — and the
 /// charge is the run's every texture and buffer: a whole 8192-pixel JPEG's window of codes, its
-/// boundary of half floats, its output's codes and their readback copy, and three buffers of the
-/// smallest size. A run within the budget then draws.
+/// boundary of half floats, its output and its readback copy, and three buffers of the
+/// smallest size; read back as linear values, its output and readback copy 16 bytes a texel each.
+/// A run within the budget then draws, and a second of the same window and shape reuses both.
 #[test]
 fn a_tile_runner_refuses_past_its_budget_before_creating_anything() {
     let test = "a_tile_runner_refuses_past_its_budget_before_creating_anything";
@@ -256,16 +271,16 @@ fn a_tile_runner_refuses_past_its_budget_before_creating_anything() {
     let whole = [0, 0, side, side];
     let plan = cut_plan(&source, (0, 0), (side, side), 1);
     let charge = runner
-        .charge(&plan, &source, whole, TileEnd::Codes)
+        .charge(&plan, &source, whole, TileEnd::Linear)
         .expect("a charge");
     let pixels = u64::from(side) * u64::from(side);
-    assert_eq!(charge, pixels * (4 + 8 + 4 + 4) + 3 * MIN_BUFFER);
+    assert_eq!(charge, pixels * (4 + 8 + 16 + 16) + 3 * MIN_BUFFER);
     if charge <= GPU_TILE_BUDGET {
         eprintln!("skipped: a device of {side} px textures holds no run past the budget");
         return;
     }
     assert_eq!(
-        runner.run(&plan, &source, whole, TileEnd::Codes),
+        runner.run(&plan, &source, whole, TileEnd::Linear),
         Err(TileFailure::Budget {
             requested: charge,
             budget: GPU_TILE_BUDGET,
@@ -295,9 +310,10 @@ fn a_tile_runner_refuses_past_its_budget_before_creating_anything() {
     assert_eq!(codes.len(), (SIDE * SIDE * 4) as usize);
     let figures = runner.figures();
     assert_eq!(
-        (figures.peak, figures.in_use, figures.compiles, figures.runs),
-        (charge, u64::from(SIDE * SIDE * 4), 1, 1)
+        (figures.peak, figures.compiles, figures.runs),
+        (charge, 1, 1)
     );
+    assert_eq!(window_held(&runner), u64::from(SIDE * SIDE * 4));
     // Where the tile's time went: its own times are the total's, a second tile's added to them.
     let first = figures.last;
     assert_eq!(figures.total, first, "one tile's times");
@@ -307,9 +323,101 @@ fn a_tile_runner_refuses_past_its_budget_before_creating_anything() {
     let mut both = first;
     both.add(&figures.last);
     assert_eq!(figures.total, both, "the tiles' times summed");
+    assert_eq!(
+        (figures.uploads, figures.slots),
+        (1, 1),
+        "the window and the slot held for the second tile of the same window and shape"
+    );
     eprintln!("{test}: first {first:?}, second {:?}", figures.last);
     runner.release();
     assert_eq!(runner.figures().in_use, 0);
+}
+
+/// Tiles submitted two at a time over one window read back, in any order, the bytes each draws on
+/// its own on a runner of its own, the window uploaded once and the slot created once for tiles of
+/// one shape and again for another; a third tile is refused while two are in flight, having
+/// created nothing; and abandoning the tiles in flight lets go of what they hold.
+#[test]
+fn tiles_in_flight_read_back_what_each_draws_alone() {
+    let test = "tiles_in_flight_read_back_what_each_draws_alone";
+    let (Some(mut runner), Some(mut alone)) = (runner(test), runner(test)) else {
+        return;
+    };
+    let (width, height) = (300u32, 200u32);
+    let source =
+        GpuSource::codes(1, Arc::new(codes(width, height)), width, height).expect("a source");
+    let band = [0, 40, width, 120];
+    let plans: Vec<GpuPlan> = [(0, 50), (64, 50), (128, 60), (200, 70)]
+        .into_iter()
+        .enumerate()
+        .map(|(at, origin)| {
+            let size = if at < 3 {
+                (SIDE, SIDE)
+            } else {
+                (SIDE / 2, SIDE)
+            };
+            cut_plan(&source, origin, size, at as u64 + 1)
+        })
+        .collect();
+    let expected: Vec<Vec<u8>> = plans
+        .iter()
+        .map(|plan| run_codes(&mut alone, plan, &source, band))
+        .collect();
+    let codes = |pixels| match pixels {
+        Ok(TilePixels::Codes(codes)) => codes,
+        other => panic!("{test}: {other:?}"),
+    };
+    let first = runner
+        .submit(&plans[0], &source, band, TileEnd::Codes)
+        .expect("the first tile");
+    let second = runner
+        .submit(&plans[1], &source, band, TileEnd::Codes)
+        .expect("the second tile");
+    assert_eq!(runner.in_flight(), 2);
+    let figures = runner.figures();
+    assert_eq!(
+        runner.submit(&plans[2], &source, band, TileEnd::Codes),
+        Err(TileFailure::PIPELINE_FAILED),
+        "a third tile waits for one of two in flight"
+    );
+    assert_eq!(runner.figures(), figures, "nothing created for it");
+    // Read back out of order: the second first, the first still the first's.
+    assert_eq!(codes(runner.finish(second)), expected[1]);
+    let third = runner
+        .submit(&plans[2], &source, band, TileEnd::Codes)
+        .expect("the third tile");
+    assert_eq!(codes(runner.finish(first)), expected[0]);
+    // Another shape refits the slot while the third is in flight.
+    let fourth = runner
+        .submit(&plans[3], &source, band, TileEnd::Codes)
+        .expect("the fourth tile");
+    assert_eq!(codes(runner.finish(third)), expected[2]);
+    assert_eq!(codes(runner.finish(fourth)), expected[3]);
+    assert_eq!(runner.finish(fourth), Err(TileFailure::PIPELINE_FAILED));
+    let figures = runner.figures();
+    assert_eq!(
+        (
+            figures.runs,
+            figures.uploads,
+            figures.slots,
+            figures.in_flight
+        ),
+        (4, 1, 2, 0),
+        "{figures:?}"
+    );
+    assert_eq!(window_held(&runner), u64::from(band[2] * band[3] * 4));
+    // Abandoned in flight: nothing they held stays.
+    runner
+        .submit(&plans[0], &source, band, TileEnd::Codes)
+        .expect("a tile");
+    runner.abandon();
+    runner.release();
+    assert_eq!(
+        (runner.in_flight(), runner.figures().in_use),
+        (0, 0),
+        "everything let go"
+    );
+    eprintln!("{test}: {figures:?}");
 }
 
 /// A device lost while the runner holds a window answers `device-lost` from then on, whether the

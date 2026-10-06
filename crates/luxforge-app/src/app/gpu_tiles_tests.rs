@@ -540,10 +540,12 @@ fn two_runs_are_byte_identical() {
 /// all three Presence fields, by its own charge over the core's plan of that stage, the tile in the
 /// stage's interior: its window the tile grown by every unit's halo and anchored to the plan, a
 /// codes read. An estimate from the figures the budget is charged, never a measurement: a
-/// 2048-pixel tile passes [`GPU_TILE_BUDGET`], and a 1024-pixel one fits it.
+/// 2048-pixel tile fits [`GPU_TILE_BUDGET`] less the reads' reserve with its whole band's window of
+/// the source held, the stage's width of the tile window's rows, which the worker uploads once for
+/// every tile of the band.
 #[test]
-fn a_60_megapixel_raw_through_detail_and_presence_fits_the_budget_in_1024_pixel_tiles_not_2048() {
-    let test = "a_60_megapixel_raw_through_detail_and_presence_fits_the_budget_in_1024_pixel_tiles_not_2048";
+fn a_60_megapixel_raw_through_detail_and_presence_fits_the_budget_in_2048_pixel_tiles() {
+    let test = "a_60_megapixel_raw_through_detail_and_presence_fits_the_budget_in_2048_pixel_tiles";
     let Some((backend, name)) = host_adapter(test) else {
         return;
     };
@@ -616,15 +618,18 @@ fn a_60_megapixel_raw_through_detail_and_presence_fits_the_budget_in_1024_pixel_
         let charge = runner
             .charge(&converted, &source, window, TileEnd::Codes)
             .expect("a charge");
+        // The band's window: the stage's width of the same rows, 12 bytes a texel of planes.
+        let band = charge + u64::from(stage.width - window[2]) * u64::from(window[3]) * 12;
         eprintln!(
-            "{test}: a {side}-pixel tile reads a {} x {} window and is charged {:.1} MB",
+            "{test}: a {side}-pixel tile reads a {} x {} window and is charged {:.1} MB, \
+             {:.1} MB with its band's window",
             window[2],
             window[3],
-            charge as f64 / 1e6
+            charge as f64 / 1e6,
+            band as f64 / 1e6
         );
-        charge
+        band
     };
     eprintln!("{test}: a summed halo of {halo} px, the anchor {anchor:?}");
-    assert!(charge(2048) > GPU_TILE_BUDGET);
-    assert!(charge(1024) <= GPU_TILE_BUDGET);
+    assert!(charge(2048) <= GPU_TILE_BUDGET - super::gpu_tiles::STREAM_READ_RESERVE);
 }

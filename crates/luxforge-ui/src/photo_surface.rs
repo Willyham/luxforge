@@ -331,6 +331,16 @@ pub fn gpu_stage() -> GpuStageState {
     process_figures().preview.stage_state()
 }
 
+/// Whether every program each of `plans` draws with is compiled and ready in the GPU stage's cache,
+/// so a frame of them draws at once: what decides whether an open's first picture is the GPU's
+/// (`docs/design/gpu-preview.md`, "Warming at launch and open"). `false` before the first
+/// photograph's surface has created the stage. Asks for no compile; read live, under the cache's
+/// lock.
+pub fn gpu_programs_ready<'a>(plans: impl IntoIterator<Item = &'a GpuPlan>) -> bool {
+    let preview = &process_figures().preview;
+    plans.into_iter().all(|plan| preview.programs_ready(plan))
+}
+
 /// The compile thread's warm-up running, or its last ([`WarmUpFigures`]), read live: one lock, no
 /// other diagnostic, so the desktop can follow it after every message.
 pub fn gpu_warm_up() -> Option<WarmUpFigures> {

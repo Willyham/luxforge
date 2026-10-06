@@ -192,6 +192,19 @@ pub(crate) fn real_photo_on(
     fixture: &std::path::Path,
     config: Config,
 ) -> (Editor, AssetId, luxforge_core::ClientId) {
+    let (editor, asset, agent, ()) = real_photo_prepared(owner, join, fixture, config, |_| ());
+    (editor, asset, agent)
+}
+
+/// [`real_photo_on`], with `prepare` run over the editor before the photograph is opened — what
+/// the surface reports, a log attached — and its answer.
+pub(crate) fn real_photo_prepared<T>(
+    owner: luxforge_core::OwnerHandle,
+    join: std::thread::JoinHandle<()>,
+    fixture: &std::path::Path,
+    config: Config,
+    prepare: impl FnOnce(&mut Editor) -> T,
+) -> (Editor, AssetId, luxforge_core::ClientId, T) {
     let agent = owner.register();
     let asset = import_and_adopt(&owner, agent, fixture);
     let (mut editor, _) = Editor::new(Boot {
@@ -204,6 +217,7 @@ pub(crate) fn real_photo_on(
         window: (1440.0, 900.0),
     });
     let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(descriptors()))));
+    let prepared = prepare(&mut editor);
     // Drawn where the editor draws it, as an open asks: at the display bounds, with the picture at
     // rest planned on the GPU at the view.
     let refreshed = crate::app::tasks::refresh(
@@ -223,7 +237,7 @@ pub(crate) fn real_photo_on(
         "{}",
         editor.status.text
     );
-    (editor, asset, agent)
+    (editor, asset, agent, prepared)
 }
 
 /// The loop timing's last derive as [`mark_no_derive`] leaves it: a value no derive reports.
