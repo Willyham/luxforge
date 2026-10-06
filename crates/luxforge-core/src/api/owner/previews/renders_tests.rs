@@ -10,15 +10,20 @@
 //! leaves, the render queue's bound, a backlog of renders never delaying an open photograph's
 //! Develop preview and, with the supplied RAW files, an edited Nikon Z 6 photograph.
 use crate::{
-    ApiRequest, ApiResponse, AssetId, EditorService, EntryId, PreviewQueue, ProxyBounds, SourceTag,
+    ApiRequest, ApiResponse, AssetId, EditorService, EntryId, HostConfig, ModuleRegistry,
+    PreviewQueue, ProxyBounds, SourceTag,
     api::owner::{ClientId, OwnerHandle, PreviewRequest},
     catalog_types::{AssetRowId, FileId, PreviewState, PreviewTier, ViewItem},
     editor::mutation,
     index::{IndexDb, index_dir},
     previews::{
         preview_cache::{add_file, camera_jpeg, decoded, header},
-        rendered::RENDERER_GENERATION,
+        rendered::{
+            RENDERER_GENERATION,
+            band_tiles::{BandTiles, Draw},
+        },
     },
+    tiles::{TileFallback, TileService, TileUnavailable},
 };
 use luxforge_testbase::{Gate, paths, wait_for, wait_until};
 use rusqlite::params;
@@ -86,6 +91,17 @@ impl Setup {
         sources: &[PathBuf],
         edit: impl Fn(&mut EditorService, &AssetId, usize),
     ) -> (Self, Vec<Photo>) {
+        Self::on(name, sources, edit, None)
+    }
+
+    /// [`Self::of`] on a host whose tile service is `tiles`, or none, whose owner draws with the
+    /// reference renderer's.
+    fn on(
+        name: &str,
+        sources: &[PathBuf],
+        edit: impl Fn(&mut EditorService, &AssetId, usize),
+        tiles: Option<Arc<dyn TileService>>,
+    ) -> (Self, Vec<Photo>) {
         let root = paths::temp_dir(name);
         let catalog = root.join("catalog.sqlite");
         let mut service = EditorService::open(&catalog).unwrap();
@@ -116,7 +132,15 @@ impl Setup {
         let catalog_id = service.catalog_id().to_owned();
         drop(service);
         let (index, _) = IndexDb::open(&index_dir(&catalog), &catalog_id).unwrap();
-        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let (owner, join) = OwnerHandle::start_with_host(
+            &catalog,
+            Arc::new(ModuleRegistry::builtin()),
+            HostConfig {
+                tiles,
+                ..HostConfig::unconfigured()
+            },
+        )
+        .unwrap();
         let client = owner.register();
         (
             Self {
@@ -826,7 +850,8 @@ fn another_generations_rows_are_discarded() {
                 .index
                 .connection()
                 .execute(
-                    "INSERT INTO photo_previews VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                    "INSERT INTO photo_previews VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,
+                         CASE ?9 WHEN 'rendered' THEN 'gpu' END, NULL)",
                     params![
                         asset.as_str(),
                         entry.as_str(),
@@ -1525,3 +1550,124 @@ fn a_supplied_raw_shows_its_camera_preview_then_renders_both_tiers() {
 
 #[path = "forget_tests.rs"]
 mod preview_forget;
+
+/// A photograph's tiers are drawn by the owner's tile service, on the render worker and never on
+/// the owner's thread: one stream for both tiers, each tier's preview and its row naming the GPU,
+/// and a later read answering the same from the row. A service that cannot draw names why, the
+/// reference drawing the tiers, and an owner with no GPU provider names the reference alone.
+#[test]
+fn a_photographs_tiers_are_drawn_by_the_tile_service_off_the_owner_thread() {
+    let source = [paths::fixture("s0/orientation-1.jpg")];
+    let edit = |service: &mut EditorService, asset: &AssetId, _: usize| {
+        service
+            .apply_action(
+                asset,
+                mutation(0, "basic"),
+                "set-basic",
+                json!({"exposure": 0.4}),
+            )
+            .unwrap();
+    };
+    let tiles = BandTiles::new(Draw::Bands(16));
+    let (setup, photos) = Setup::on(
+        "rendered-owner-tiles",
+        &source,
+        edit,
+        Some(Arc::clone(&tiles) as Arc<dyn TileService>),
+    );
+    let photo = &photos[0];
+    let grid = setup.read(photo, GRID, "visible");
+    let large = setup.read(photo, LARGE, "visible");
+    let gpu = json!({"record": "gpu", "reason": null});
+    for answer in [&grid, &large] {
+        let record = setup.settled(&answer["job_id"]);
+        assert_eq!(record["status"], "ready", "{record}");
+        assert_eq!(record["result"]["renderer"], gpu, "{record}");
+    }
+    assert_eq!(
+        setup.ready(photo, GRID)["renderer"],
+        gpu,
+        "answered from its row"
+    );
+    assert_eq!(setup.ready(photo, LARGE)["renderer"], gpu);
+    let threads = tiles.threads();
+    assert!(
+        !threads.is_empty() && threads.iter().all(|name| name == "luxforge-preview-render"),
+        "{threads:?}"
+    );
+    assert!(
+        !threads
+            .iter()
+            .any(|name| name == crate::api::owner::OWNER_THREAD)
+    );
+    let drawn: Vec<(Option<String>, Option<String>)> = setup
+        .index
+        .connection()
+        .prepare("SELECT drawn_by, drawn_reason FROM photo_previews WHERE asset_id = ?1")
+        .unwrap()
+        .query_map([photo.asset.as_str()], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(!drawn.is_empty());
+    assert!(
+        drawn.iter().all(|row| *row == (Some("gpu".into()), None)),
+        "{drawn:?}"
+    );
+
+    for (tiles, reason) in [
+        (
+            Some(BandTiles::new(Draw::Refuse(TileFallback::Unavailable(
+                TileUnavailable::Refused,
+            ))) as Arc<dyn TileService>),
+            json!("refused"),
+        ),
+        (None, Value::Null),
+    ] {
+        let (setup, photos) = Setup::on("rendered-owner-reference", &source, edit, tiles);
+        let preview = setup.ready(&photos[0], GRID);
+        assert_eq!(
+            preview["renderer"],
+            json!({"record": "reference", "reason": reason}),
+            "{preview}"
+        );
+    }
+}
+
+/// A tier cancelled while the tile service draws it writes nothing: its job ends `cancelled`, the
+/// stream ends between its bands, and neither a row nor a file of the tier is left.
+#[test]
+fn a_tier_cancelled_while_it_is_drawn_writes_nothing() {
+    let tiles = BandTiles::new(Draw::Bands(8));
+    tiles.gate.shut();
+    let (setup, photos) = Setup::on(
+        "rendered-owner-stream-cancel",
+        &[paths::fixture("s0/orientation-1.jpg")],
+        |_, _, _| {},
+        Some(Arc::clone(&tiles) as Arc<dyn TileService>),
+    );
+    let photo = &photos[0];
+    let read = setup.read(photo, GRID, "visible");
+    tiles.gate.wait_reached(1, "the stream");
+    let cancelled = setup.ok("job.cancel", json!({"job_id": read["job_id"]}));
+    assert_eq!(cancelled["status"], "cancelled");
+    tiles.gate.open();
+    // Renders run one at a time, so a render after it ends once the cancelled one has.
+    let after = setup.read(photo, LARGE, "visible");
+    assert_eq!(setup.settled(&after["job_id"])["status"], "ready");
+    assert!(
+        !setup.has_row(photo, &photo.entry, GRID, "rendered"),
+        "the cancelled tier wrote no row"
+    );
+    let photos_dir = setup.index.previews_dir().join("photos");
+    let grids: Vec<PathBuf> = fs::read_dir(&photos_dir)
+        .into_iter()
+        .flatten()
+        .flat_map(|shard| fs::read_dir(shard.unwrap().path()).unwrap())
+        .map(|file| file.unwrap().path())
+        // A rendered tier's file, `<asset>-<entry>-grid-r<generation>.jpg`; the camera preview
+        // shown meanwhile is `-grid-embedded.jpg`.
+        .filter(|path| path.to_string_lossy().contains("-grid-r"))
+        .collect();
+    assert!(grids.is_empty(), "no file of the cancelled tier: {grids:?}");
+}

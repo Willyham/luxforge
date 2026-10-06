@@ -764,14 +764,25 @@ pub struct BatchSettingsSkipped {
     pub settings: Vec<crate::SkippedSetting>,
 }
 
+/// A file a batch export wrote: the photograph, the file, and the renderer that rendered it, as
+/// `export.jpeg`'s result names it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BatchWritten {
+    pub asset_id: AssetId,
+    pub path: PathBuf,
+    pub renderer: super::RenderedBy,
+}
+
 /// A `batch.apply-preset` or `batch.export` job's result.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BatchReport {
     /// The photographs done: each its own history entry, or its own exported file.
     pub done: Vec<AssetId>,
+    /// The files a batch export wrote, in the order it wrote them, each with its renderer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub written: Vec<PathBuf>,
+    pub written: Vec<BatchWritten>,
     pub skipped: Vec<BatchSkip>,
     /// Photographs done without some of the preset's settings, with those settings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

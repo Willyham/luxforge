@@ -645,6 +645,7 @@ pub(super) fn dispatch(owner: &mut Owner) {
             current,
             control: task.control.clone(),
             budget: lane.budget,
+            tiles: Arc::clone(&owner.tiles),
             #[cfg(test)]
             hold: renders.hold.clone(),
         };

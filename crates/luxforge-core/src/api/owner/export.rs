@@ -246,7 +246,16 @@ impl ExportJob {
             &phase,
             &mut |fraction| control.set_progress(Some(fraction), ENCODING),
         )
+        .map(|written| written.result)
     }
+}
+
+/// A file [`write`] wrote: the answer `export.jpeg`'s job records, and the renderer it names, for
+/// `batch.export`'s report.
+pub(super) struct Written {
+    /// `{path, bytes, width, height, metadata, renderer}`.
+    pub(super) result: Value,
+    pub(super) renderer: Renderer,
 }
 
 /// How one export is written: its metadata and density, and whether it asked for the reference
@@ -263,7 +272,7 @@ pub(super) struct Options {
 /// One export's work once its entry is frozen, shared by `export.jpeg`'s job and each photograph of
 /// `batch.export`: render the entry, encode it into a temporary file beside `destination` and
 /// publish that under the destination's name without replacing anything, answering `{path, bytes,
-/// width, height, metadata, renderer}`.
+/// width, height, metadata, renderer}` with the renderer ([`Written`]).
 ///
 /// Unless the export asked for the reference renderer or the host has no GPU provider, `tiles`
 /// renders the output stage in bands that the encoder takes as they arrive; when the service says
@@ -284,7 +293,7 @@ pub(super) fn write(
     control: &JobControl,
     phase: &dyn Fn(&'static str) -> Result<(), Error>,
     encoded: &mut dyn FnMut(f64),
-) -> Result<Value, Error> {
+) -> Result<Written, Error> {
     phase(RENDERING)?;
     let ExportPlan {
         identity,
@@ -417,19 +426,22 @@ fn written(
     (width, height): (u32, u32),
     encoding: &Encoding<'_>,
     renderer: Renderer,
-) -> Result<Value, Error> {
+) -> Result<Written, Error> {
     let bytes = staged.publish()?;
     let metadata = if encoding.keep_metadata {
         encoding.capture.field_names()
     } else {
         Vec::new()
     };
-    Ok(json!({
-        "path": destination.path(),
-        "bytes": bytes,
-        "width": width,
-        "height": height,
-        "metadata": metadata,
-        "renderer": renderer,
-    }))
+    Ok(Written {
+        result: json!({
+            "path": destination.path(),
+            "bytes": bytes,
+            "width": width,
+            "height": height,
+            "metadata": metadata,
+            "renderer": renderer,
+        }),
+        renderer,
+    })
 }
