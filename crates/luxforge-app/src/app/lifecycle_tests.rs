@@ -1,5 +1,8 @@
 //! The registry a run serves and where the capability host keeps its state.
-use super::{gpu_tiles::GpuTiles, lifecycle::host_config};
+use super::{
+    gpu_tiles::{AdapterNaming, GpuTiles},
+    lifecycle::host_config,
+};
 use crate::Config;
 use luxforge_core::ModuleRegistry;
 use std::sync::Arc;
@@ -147,7 +150,11 @@ fn fallback_a_software_only_host_tells_the_owner_its_renderer_before_its_window_
     let unavailable = |reason| TileStatus::Reference(Some(TileFallback::Unavailable(reason)));
     let worker = GpuTiles::unavailable(TileUnavailable::NoAdapter);
     assert_eq!(worker.status(), unavailable(TileUnavailable::NoAdapter));
-    assert!(!worker.adopt_adapter("Vulkan", "llvmpipe (LLVM 19.1.7, 128 bits)"));
+    assert!(!worker.adopt_adapter(
+        "Vulkan",
+        "llvmpipe (LLVM 19.1.7, 128 bits)",
+        AdapterNaming::Window
+    ));
     assert_eq!(worker.status(), unavailable(TileUnavailable::NoAdapter));
     assert!(!worker.started());
     assert!(!evidence.exists(), "choosing creates nothing");
@@ -172,17 +179,126 @@ fn a_launch_hands_the_owner_its_tile_worker_which_waits_for_the_windows_adapter(
     let tiles = host.tiles.as_ref().expect("the launch's worker");
     assert_eq!(tiles.status(), unavailable(TileUnavailable::Pending));
     assert!(!worker.started(), "nothing starts before an export asks it");
-    assert!(worker.adopt_adapter("Metal", "Apple M4 Pro"));
+    assert!(worker.adopt_adapter("Metal", "Apple M4 Pro", AdapterNaming::Window));
     assert_eq!(tiles.status(), TileStatus::Gpu, "the owner's worker, named");
     assert!(
-        !worker.adopt_adapter("Vulkan", "llvmpipe"),
+        !worker.adopt_adapter("Vulkan", "llvmpipe", AdapterNaming::Window),
         "the adapter is named once"
     );
     assert!(!worker.started());
 
     let refused = GpuTiles::pending(true);
     assert_eq!(refused.status(), unavailable(TileUnavailable::Refused));
-    assert!(!refused.adopt_adapter("Metal", "Apple M4 Pro"));
+    assert!(!refused.adopt_adapter("Metal", "Apple M4 Pro", AdapterNaming::Window));
     assert_eq!(refused.status(), unavailable(TileUnavailable::Refused));
     assert!(!evidence.exists(), "choosing creates nothing");
+}
+
+/// One adapter as wgpu describes it: `device_type` `IntegratedGpu`, `DiscreteGpu` or `Cpu`.
+fn adapter(backend: &str, name: &str, device_type: &str) -> luxforge_ui::adapters::Adapter {
+    luxforge_ui::adapters::Adapter {
+        name: name.into(),
+        vendor: 0,
+        device: 0,
+        device_type: device_type.into(),
+        backend: backend.into(),
+        driver: String::new(),
+        driver_info: String::new(),
+    }
+}
+
+/// The adapter a launch names its tile worker before its window opens: the one hardware adapter,
+/// beside a software one too; none of several hardware adapters, which the window's request could
+/// land on either; for a launch drawing on the software adapter, the one there is, and none of
+/// two; and nothing for a launch that refused the GPU stage, `--no-gpu-render` or a software-only
+/// host not adopted, or for a host that offers nothing.
+#[test]
+fn a_launch_names_its_tile_workers_adapter_only_when_the_host_leaves_no_doubt() {
+    use super::renderer::launch_candidate;
+    use luxforge_ui::adapters::{LaunchRenderer, Refusal};
+    let m4 = adapter("Metal", "Apple M4 Pro", "IntegratedGpu");
+    let discrete = adapter("Vulkan", "NVIDIA GeForce RTX 4070", "DiscreteGpu");
+    let integrated = adapter("Vulkan", "Intel(R) UHD Graphics 770", "IntegratedGpu");
+    let lavapipe = adapter("Vulkan", "llvmpipe (LLVM 19.1.7, 128 bits)", "Cpu");
+    let warp = adapter("Dx12", "Microsoft Basic Render Driver", "Cpu");
+    let gpu = LaunchRenderer::Gpu { software: false };
+    let software = LaunchRenderer::Gpu { software: true };
+    let named = |launch, offered: &[luxforge_ui::adapters::Adapter]| {
+        launch_candidate(launch, offered).map(|adapter| adapter.name.clone())
+    };
+    assert_eq!(named(gpu, std::slice::from_ref(&m4)), Some(m4.name.clone()));
+    assert_eq!(
+        named(gpu, &[lavapipe.clone(), discrete.clone()]),
+        Some(discrete.name.clone()),
+        "a hardware adapter ranks before a software one"
+    );
+    assert_eq!(named(gpu, &[discrete.clone(), integrated]), None, "several");
+    assert_eq!(named(gpu, &[]), None);
+    assert_eq!(
+        named(software, std::slice::from_ref(&lavapipe)),
+        Some(lavapipe.name.clone())
+    );
+    assert_eq!(
+        named(software, &[lavapipe.clone(), warp]),
+        None,
+        "two software"
+    );
+    for refused in [
+        Refusal::Requested,
+        Refusal::SoftwareNotAdopted,
+        Refusal::NoAdapter,
+    ] {
+        assert_eq!(
+            named(
+                LaunchRenderer::Reference(refused),
+                &[m4.clone(), lavapipe.clone()]
+            ),
+            None,
+            "{refused:?}"
+        );
+    }
+}
+
+/// A worker the launch named is the GPU's at once; the window's naming of the same adapter confirms
+/// it and of another replaces it, the window's naming then being final. The launch's naming never
+/// replaces the window's, and a refused worker takes neither.
+#[test]
+fn the_windows_naming_follows_the_launchs() {
+    use luxforge_core::tiles::{TileService, TileStatus};
+    let named = |worker: &GpuTiles| worker.figures().named;
+
+    let confirmed = GpuTiles::pending(false);
+    assert!(confirmed.adopt_adapter("Metal", "Apple M4 Pro", AdapterNaming::Launch));
+    assert_eq!(
+        confirmed.status(),
+        TileStatus::Gpu,
+        "the GPU's before any photograph"
+    );
+    assert_eq!(named(&confirmed), Some(AdapterNaming::Launch));
+    assert_eq!(
+        confirmed.figures().record()["named"],
+        serde_json::json!("launch")
+    );
+    assert!(confirmed.adopt_adapter("Metal", "Apple M4 Pro", AdapterNaming::Window));
+    assert_eq!(named(&confirmed), Some(AdapterNaming::Window));
+    assert!(
+        !confirmed.adopt_adapter("Metal", "Apple M4 Pro", AdapterNaming::Window),
+        "the window names it once"
+    );
+
+    let replaced = GpuTiles::pending(false);
+    assert!(replaced.adopt_adapter("Vulkan", "Intel(R) UHD Graphics 770", AdapterNaming::Launch));
+    assert!(replaced.adopt_adapter("Vulkan", "NVIDIA GeForce RTX 4070", AdapterNaming::Window));
+    assert_eq!(named(&replaced), Some(AdapterNaming::Window));
+    assert_eq!(replaced.status(), TileStatus::Gpu);
+
+    let window_first = GpuTiles::pending(false);
+    assert!(window_first.adopt_adapter("Metal", "Apple M4 Pro", AdapterNaming::Window));
+    assert!(!window_first.adopt_adapter("Metal", "Apple M4 Pro", AdapterNaming::Launch));
+    assert_eq!(named(&window_first), Some(AdapterNaming::Window));
+
+    let refused = GpuTiles::pending(true);
+    assert!(!refused.adopt_adapter("Metal", "Apple M4 Pro", AdapterNaming::Launch));
+    assert_eq!(named(&refused), None);
+    assert!(!confirmed.started() && !replaced.started() && !refused.started());
 }

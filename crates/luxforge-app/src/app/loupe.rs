@@ -65,7 +65,15 @@ pub(crate) struct Loupe {
     pub(crate) frames: LoupeFrames,
     pub(crate) focus: FocusCheck,
     trace: Trace,
+    /// The keys pressed while the view was being read again, in order, which move the loupe once
+    /// the new view lands ([`Editor::loupe_replay_held`]): the owner refuses a selection that names
+    /// the view the desktop still shows once it has evaluated the next, so a key sent meanwhile
+    /// would be lost. At most [`MAX_HELD_KEYS`].
+    held: Vec<(Goto, Travel)>,
 }
+
+/// The most keys the loupe holds while the view is read again: a few frames of key repeat.
+const MAX_HELD_KEYS: usize = 16;
 
 /// What the loupe has reported to the evidence log: how many keys moved it, and the picture and
 /// the region it presented last, so each is reported once, when it changes. Kept whether or not a
@@ -296,6 +304,20 @@ impl Editor {
     /// moved to was already held at the size it is drawn at, so this update presents it.
     fn loupe_key(&mut self, goto: Goto, travel: Travel) {
         let pressed_ms = self.log_ms();
+        // While the view is being read again, the key waits for it: the selection it makes names
+        // the view, which the owner has moved past.
+        if self.loupe_open() && self.select.state.loading {
+            let held = &mut self.select.loupe.held;
+            if held.len() < MAX_HELD_KEYS {
+                held.push((goto, travel));
+            }
+            let count = held.len();
+            self.event(
+                "loupe_key_held",
+                || json!({"pressed_ms": pressed_ms, "held": count}),
+            );
+            return;
+        }
         let from = self.loupe_position();
         self.loupe_goto(goto, travel);
         self.select.loupe.trace.keys += 1;
@@ -317,6 +339,17 @@ impl Editor {
                 "pressed_ms": pressed_ms,
             })
         });
+    }
+
+    /// The view has been read again: the keys held meanwhile move the loupe, in order, over it.
+    /// Dropped when the view could not be read.
+    pub(crate) fn loupe_replay_held(&mut self, viewed: bool) {
+        let held = std::mem::take(&mut self.select.loupe.held);
+        if viewed {
+            for (goto, travel) in held {
+                self.loupe_key(goto, travel);
+            }
+        }
     }
 
     /// The milliseconds since the run started that every event is stamped with.
