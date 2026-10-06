@@ -94,6 +94,8 @@ pub(crate) struct Select {
     pub(crate) anchor: Option<u32>,
     /// The newest evaluation's number; an answer for any other is dropped.
     pub(crate) serial: u64,
+    /// When the newest evaluation was asked for, for its answer's event.
+    pub(crate) asked_at: Option<std::time::Instant>,
     /// `event.list`: one in flight, the newest search text waiting.
     pub(crate) events: Coalesce<String>,
     /// The events have been asked for since Select was first shown.
@@ -116,6 +118,9 @@ pub(crate) struct Select {
     /// The view on screen went stale while the card or folder being read waited to replace it: it
     /// is read again, quietly, only if the reading ends without replacing it.
     pub(crate) stale_while_reading: bool,
+    /// The last reading's job whose end Select put in words, cancelled or failed: long work leaves
+    /// it no sentence of its own, so the status bar says it once, whichever hears of it first.
+    pub(crate) worded: Option<String>,
     /// `card.list`, `volume.list` and `index.folders`: one read in flight, one waiting.
     pub(crate) disks: Coalesce<()>,
     /// A folder this desktop is adding: its `index.add-folder` in flight, then its first listing
@@ -198,9 +203,11 @@ impl Default for Select {
             facets_answered: 0,
             evidence_after: None,
             evidence_indexed: false,
+            asked_at: None,
             reread: Reread::Asked,
             reading: None,
             stale_while_reading: false,
+            worded: None,
             disks: Coalesce::default(),
             adding: None,
             counts: Coalesce::default(),
@@ -1007,9 +1014,11 @@ impl Editor {
             }
             Some("cancelled") => {
                 self.status.text = format!("Cancelled reading {name}");
+                self.select.worded = reading.job.clone();
                 self.reading_ended()
             }
             other => {
+                self.select.worded = reading.job.clone();
                 let reason = record["error"]["message"]
                     .as_str()
                     .map(str::to_owned)
@@ -1049,6 +1058,7 @@ impl Editor {
             state.facets = None;
         }
         self.select.serial += 1;
+        self.select.asked_at = Some(std::time::Instant::now());
         self.select.reread = Reread::Asked;
         // Whatever made the view stale, it is being read now.
         self.select.stale_while_reading = false;
@@ -1081,6 +1091,19 @@ impl Editor {
         match result {
             Ok(answer) => {
                 let (summary, session) = *answer;
+                let asked_ms = self
+                    .select
+                    .asked_at
+                    .map(|asked| asked.elapsed().as_secs_f64() * 1000.0);
+                self.event("select_viewed", || {
+                    json!({
+                        "serial": serial,
+                        "answered_ms": asked_ms,
+                        "count": summary.count,
+                        "moments": summary.groups.moments.len(),
+                        "index_revision": summary.index_revision,
+                    })
+                });
                 // Whether the active item was on screen, which decides whether the scroll follows
                 // it or stays where the person left it.
                 let active_shown = self.active_on_screen();
@@ -1153,8 +1176,10 @@ impl Editor {
                     self.select.scroll = 0.0;
                     self.select.anchor = None;
                 }
+                self.loupe_replay_held(true);
             }
             Err(error) => {
+                self.loupe_replay_held(false);
                 let state = &mut self.select.state;
                 state.summary = None;
                 state.rows.reset(0, 0);

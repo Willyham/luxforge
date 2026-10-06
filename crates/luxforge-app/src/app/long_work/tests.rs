@@ -590,3 +590,53 @@ fn a_late_terminal_reader_cannot_complete_a_different_first_look() {
     );
     finish(editor, catalog);
 }
+
+/// A card's or folder's reading for Select that is cancelled or fails is worded once, by Select:
+/// long work leaves its board entry no sentence, whether it hears of the end while Select still
+/// waits on the reading or after Select has worded it, so the status bar's sentence does not
+/// depend on which of the two hears first. Another job's end, and a reading's completion, keep
+/// long work's sentence.
+#[test]
+fn a_readings_end_is_worded_once_by_select() {
+    let (mut editor, catalog) = boot();
+    let ended = |job_id: &str, outcome| RecentActivity {
+        entry: luxforge_core::activity::ActivityEntry {
+            id: 9,
+            kind: "index.refresh".into(),
+            label: "Indexing".into(),
+            detail: Some("/Volumes/NIKON Z 8/DCIM".into()),
+            job_id: Some(job_id.into()),
+            ..Default::default()
+        },
+        outcome,
+        duration_ms: 4_000,
+        ended_ms_ago: 5,
+    };
+    let end = |editor: &mut Editor, job_id: &str, outcome| {
+        let _ = editor.update(Message::LongWork(LongWorkMessage::Ended {
+            job: Box::new(ended(job_id, outcome)),
+            result: Ok(json!({"status": "cancelled"})),
+        }));
+    };
+    editor.status.text = "Reading DCIM".into();
+    editor.select.reading = Some(Reading {
+        source: ReadSource::Folder(PathBuf::from("/Volumes/NIKON Z 8/DCIM")),
+        job: Some("job-7".into()),
+    });
+    end(&mut editor, "job-7", Ended::Cancelled);
+    assert_eq!(editor.status.text, "Reading DCIM", "heard before Select");
+    editor.select.reading = None;
+    editor.select.worded = Some("job-7".into());
+    editor.status.text = "Cancelled reading DCIM".into();
+    end(&mut editor, "job-7", Ended::Cancelled);
+    assert_eq!(
+        editor.status.text, "Cancelled reading DCIM",
+        "heard after Select"
+    );
+    end(&mut editor, "job-8", Ended::Cancelled);
+    assert_eq!(
+        editor.status.text,
+        "Cancelled indexing /Volumes/NIKON Z 8/DCIM"
+    );
+    finish(editor, catalog);
+}

@@ -336,7 +336,22 @@ impl Editor {
                 }
             }
             LongWorkMessage::Ended { job, result } => {
+                // A card's or folder's reading for Select, which words its own cancellation or
+                // failure, whichever of the two hears of the end first.
+                let reading = job.entry.job_id.as_deref().is_some_and(|ended| {
+                    let reading = self
+                        .select
+                        .reading
+                        .as_ref()
+                        .and_then(|at| at.job.as_deref());
+                    reading == Some(ended) || self.select.worded.as_deref() == Some(ended)
+                });
+                let worded_by_select =
+                    reading && job.outcome != luxforge_core::activity::Outcome::Completed;
                 let record = result.ok();
+                if worded_by_select {
+                    return Task::none();
+                }
                 if let Some(sentence) =
                     finished_sentence(&job, record.as_ref(), self.select.state.home.as_deref())
                 {
