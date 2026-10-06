@@ -413,8 +413,9 @@ pub struct GpuBoundary {
     /// The texels of a boundary handed whole ([`Self::new`]).
     texels: Option<Arc<dyn AsRef<[u8]> + Send + Sync>>,
     /// Or, for a boundary derived on the GPU from the source the pipeline holds ([`Self::derived`]),
-    /// that source's version and the derivation: no texels on the CPU at all. Exactly one of the
-    /// two is held.
+    /// that source's version and the derivation: no texels on the CPU at all. At most one of the
+    /// two is held; neither for a window of a staged sweep's stage ([`Self::staged`]), which its
+    /// caller copies into the slot's boundary texture once the slot is fitted.
     derived: Option<(u64, Derivation)>,
     width: u32,
     height: u32,
@@ -481,6 +482,25 @@ impl GpuBoundary {
             version,
             format: source.kind().boundary(),
         })
+    }
+
+    /// A boundary of `width` × `height` texels in `format` copied into the slot from a stage a
+    /// sweep of a picture at rest wrote ([`rest`]): no texels and no derivation, the slot fitted
+    /// for it first ([`PhotoPipeline::fit`]) and its texture written by its caller.
+    pub fn staged(width: u32, height: u32, version: u64, format: BoundaryFormat) -> Option<Self> {
+        (width > 0 && height > 0).then_some(Self {
+            texels: None,
+            derived: None,
+            width,
+            height,
+            version,
+            format,
+        })
+    }
+
+    /// Whether the boundary is a window of a staged sweep's stage ([`Self::staged`]).
+    pub fn is_staged(&self) -> bool {
+        self.texels.is_none() && self.derived.is_none()
     }
 
     /// The source version and the derivation a derived boundary is drawn from, or `None` for a
@@ -2529,6 +2549,35 @@ impl PhotoPipeline {
         plan: &GpuPlan,
         change: Option<GpuChange>,
     ) -> Result<u64, GpuFallback> {
+        self.evaluate_as(surface, device, queue, plan, change, false)
+    }
+
+    /// Fit `surface`'s slot to `plan` without evaluating it: the slot of its shape, the chain's
+    /// intermediates and the pool with its light planes; a boundary the slot does not hold yet is
+    /// not written. What a frame whose plan reads lights does before encoding them, so the light
+    /// planes exist and the chain then runs once, with them; and what a staged sweep's tile does
+    /// before copying its boundary in from the stage.
+    pub(super) fn fit(
+        &mut self,
+        surface: &mut SurfaceSlots,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        plan: &GpuPlan,
+    ) -> Result<(), GpuFallback> {
+        self.evaluate_as(surface, device, queue, plan, None, true)
+            .map(|_| ())
+    }
+
+    /// [`Self::evaluate`], or with `fit_only` [`Self::fit`].
+    fn evaluate_as(
+        &mut self,
+        surface: &mut SurfaceSlots,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        plan: &GpuPlan,
+        change: Option<GpuChange>,
+        fit_only: bool,
+    ) -> Result<u64, GpuFallback> {
         if self.gpu.support.is_none() {
             return Err(GpuFallback::NoAdapter);
         }
@@ -2591,6 +2640,7 @@ impl PhotoPipeline {
             &pipelines,
             (&mut words, &mut link_words),
             change,
+            fit_only,
         );
         self.gpu.words = words;
         self.gpu.link_words = link_words;
@@ -2611,6 +2661,7 @@ impl PhotoPipeline {
         pipelines: &[(Compiled, u64)],
         (words, link_words): (&mut Vec<u32>, &mut Vec<u32>),
         change: Option<GpuChange>,
+        fit_only: bool,
     ) -> Result<u64, GpuFallback> {
         let started = std::time::Instant::now();
         let chain = chain::chain(&plan.steps);
@@ -2738,6 +2789,11 @@ impl PhotoPipeline {
         )? {
             slot.evaluated = None;
         }
+        // Fitted: a fit alone writes nothing more, the boundary and every link left for the
+        // evaluation that follows it.
+        if fit_only {
+            return Ok(plan.boundary.version);
+        }
         let mut changed = slot.evaluated != Some(pipeline_id);
         if let Some(spatial) = slot.spatial.as_ref()
             && !spatial.bound(pipeline_id, &slot.pool)
@@ -2781,6 +2837,9 @@ impl PhotoPipeline {
                     self.figures.preview.derived.fetch_add(1, Ordering::Relaxed);
                     slot.uploading = None;
                 }
+                // A staged sweep's window is copied in by its caller once the slot is fitted
+                // ([`Self::fit`]); a slot that does not hold it cannot evaluate it.
+                None if plan.boundary.is_staged() => return Err(GpuFallback::PipelineFailed),
                 None => {
                     // A frame's chunks of it, from the row the last frame reached.
                     let first = slot
@@ -3218,11 +3277,15 @@ impl PhotoPipeline {
         };
         let bindings = self.program_bindings(device, &boundary, &words.buffer, &blocks.buffer);
         let intermediate = shape.intermediate.map(|format| {
+            // Copied from, where a staged sweep's last link writes its output through an identity
+            // tail, into the sweep's stage ([`rest`]).
             let texture = texture(
                 "luxforge.gpu_preview.intermediate",
                 (width, height),
                 format,
-                wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_SRC,
                 &[],
             );
             let target = texture.create_view(&wgpu::TextureViewDescriptor::default());
