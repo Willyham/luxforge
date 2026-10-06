@@ -12,7 +12,7 @@ Every change is measured against these.
 4. **Small core, deliberate extension points.** The core owns recipe transactions, history and undo, shared invariants and bounded services. Tool modules own their validation, controls and processing through those APIs. Prefer lazy, optional modules and measure before splitting the core into loadable binaries. External module loading is required later, not now.
 5. **Open source, first on the owner's Mac.** GPL-3.0-or-later project code and open-source dependencies. Target the owner's M4 MacBook Pro first; keep Windows and Linux portable, and distinguish VM or headless functional checks from native GPU evidence.
 6. **Prove it.** Claims about behavior come with evidence: exact-buffer tests for the reference renderer, reference-buffer tests within the declared tolerance for the GPU, correlated state, logs and captures for UI, and recorded measurements with their scope. A skipped check is not a pass.
-7. **Beautiful defaults, familiar feel.** A small, focused workspace with sensible defaults. Lightroom Library and Develop are a familiarity reference, not a feature checklist or a rendering target.
+7. **Beautiful defaults, familiar feel.** A small, focused workspace with sensible defaults. Lightroom Library and Develop are a familiarity reference, not a feature checklist or a rendering target; its sliders' responses are the exception, so a value does about what the same value does there ([Lightroom alignment](docs/design/lightroom-alignment.md), owner 2026-10-06).
 
 ## Current state
 
@@ -48,6 +48,7 @@ S0 through M4 are accepted, and the [Develop workspace](docs/design/develop-work
 | Develop screen layout, tool array, visual language and desktop architecture | [docs/design/develop-workspace.md](docs/design/develop-workspace.md) |
 | Masks: model, kinds, commands, and the Masks panel and next kinds (proposal) | [docs/design/masking.md](docs/design/masking.md), [docs/design/masking-workspace.md](docs/design/masking-workspace.md) |
 | AI editing: Remove, Select, generative fill and Replace, sky replacement on local models (decided 2026-10-05, planned) | [docs/design/ai-editing.md](docs/design/ai-editing.md) |
+| Lightroom catalog import and slider alignment (decided 2026-10-06, planned) | [docs/design/lightroom-import.md](docs/design/lightroom-import.md), [docs/design/lightroom-alignment.md](docs/design/lightroom-alignment.md) |
 | History graph, named versions | [docs/design/versions-and-lineage.md](docs/design/versions-and-lineage.md) |
 | Browse, pick, develop: the Select workspace, events, moments, picks, the catalog, filmstrip, Locate | [docs/design/catalog.md](docs/design/catalog.md) |
 | Specs: history, crop and export, recovery, performance | [docs/specs](docs/specs) |
