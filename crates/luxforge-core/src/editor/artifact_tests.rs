@@ -471,7 +471,16 @@ fn a_corrupt_artifact_is_refused_when_read_and_is_not_rewritten() {
     // preparation that reads it finds the hash wrong.
     let object = object_path(&root, &artifact);
     let damaged = tint_bytes([9.0, 9.0, 9.0]);
+    let modified = fs::metadata(&object).unwrap().modified().unwrap();
     fs::write(&object, &damaged).unwrap();
+    // A rapid same-size write can keep its timestamp on a coarse filesystem clock. This fixture
+    // exercises a changed signature, so make that change explicit without waiting for the clock.
+    File::options()
+        .write(true)
+        .open(&object)
+        .unwrap()
+        .set_modified(modified + std::time::Duration::from_secs(1))
+        .unwrap();
     let refused = service.render_current(&asset).unwrap_err();
     assert_eq!(
         refused.needs().unwrap().artifacts,
