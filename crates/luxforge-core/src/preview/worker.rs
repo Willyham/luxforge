@@ -86,13 +86,13 @@ enum ProxyStep {
 /// different proxies have different keys.
 ///
 /// Cost is `O(layers)`: `proxy_eligible` reads stages, the plan reads the output stage of the job's
-/// exact compilation, and the window compiles the stack once at the proxy stage, which the proxy
-/// frame then renders, to walk back what its output reads. None of them reads a pixel. It runs on
-/// the preview worker, as does building the proxy itself.
+/// exact compilation, and the proxy stage compiles the stack once, which the proxy frame then
+/// renders. None of them reads a pixel. It runs on the preview worker, as does building the proxy
+/// itself.
 fn plan_proxy(job: &PreviewJob, recipe: &Recipe, exact: &Result<Render<'_>, Error>) -> ProxyStep {
-    // A proxy is a moving frame's: a draft's tick the GPU does not draw, or a crop draft's input
-    // stage. A job at rest renders none: its picture is the GPU's, and the reference frame it hands
-    // over is its exact frame reduced to the view ([`view_frame`]).
+    // A proxy is a moving frame's: a drag in a session the GPU does not draw, or a crop draft's
+    // input stage. A job at rest renders none: the reference frame it hands over is its exact
+    // frame reduced to the view ([`view_frame`]).
     if job.intent != PreviewIntent::Interactive {
         return ProxyStep::Skipped;
     }

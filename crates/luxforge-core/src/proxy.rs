@@ -374,7 +374,7 @@ impl PreviewSource {
     }
 
     /// The same bounded proxy build, with a checkpoint in every horizontal and vertical row.
-    /// Interactive viewport jobs pass their `abandoned` token here, including cache misses.
+    /// Interactive jobs pass their `abandoned` token here, including cache misses.
     pub(crate) fn proxy_cancellable(
         &self,
         plan: ProxyPlan,
