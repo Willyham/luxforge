@@ -38,7 +38,7 @@ use super::{
 use luxforge_core::{
     AssetId, BASIC_EFFECT, BoundaryFormat, Cancel, ClientId, DETAIL_EFFECT, EffectStage, Error,
     Evaluation, GpuFallback, HostConfig, Layer, ModuleRegistry, OwnerHandle, PRESENCE_EFFECT,
-    PreviewSource, Recipe, Region, RenderContext, TilePlan, plan_read,
+    PreviewSource, Recipe, Region, RenderContext, TilePlan, plan_read, plan_stream_sweeps_at,
     tiles::{
         Answered, BandStream, EXPORT_BANDS_IN_FLIGHT, MaskInputMode, ReadAnswer, ReadPixels,
         ReadStage, ReadValues, ReferenceTiles, TileCall, TileFallback, TileService, TileStatus,
@@ -53,7 +53,7 @@ use luxforge_ui::{
         Derivation, GpuBoundary, GpuPlan, GpuSource,
         gpu_preview::{
             headless::HeadlessSurface,
-            tiles::{TileEnd, TilePixels, TileRunner},
+            tiles::{GPU_TILE_BUDGET, TileEnd, TilePixels, TileRunner},
         },
     },
 };
@@ -902,6 +902,168 @@ fn an_interactive_read_waits_behind_at_most_two_export_tiles() {
     drop(bands);
 }
 
+/// The stage of the staged streams' photograph: large enough that Presence's reach, which grows
+/// with the stage, passes the sweep split, so a stack of two Presence layers is drawn in sweeps.
+const STAGED: (u32, u32) = (1600, 1000);
+
+/// The side the staged streams' sweeps are drawn at: several tiles a sweep, each sweep's last row
+/// and column narrower.
+const STAGED_SIDE: u32 = 384;
+
+/// The photograph on either path at [`STAGED`]: detail at every scale, a JPEG's codes or a RAW's
+/// linear planes with values past white and below black.
+fn staged_source(format: BoundaryFormat) -> PreviewSource {
+    let (width, height) = STAGED;
+    let value = |x: u32, y: u32, channel: u32| {
+        let (x, y) = (f64::from(x), f64::from(y));
+        let wave = (x * 0.031 + y * 0.017 + f64::from(channel)).sin() * 0.3
+            + (x * 0.0023 - y * 0.0041 * f64::from(channel + 1)).cos() * 0.15;
+        (0.45 + wave + ((x * 7.0 + y * 3.0) % 11.0) / 60.0).clamp(0.0, 1.0)
+    };
+    match format {
+        BoundaryFormat::Half => {
+            let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+            for y in 0..height {
+                for x in 0..width {
+                    for channel in 0..3 {
+                        rgba.push((value(x, y, channel) * 255.0).round() as u8);
+                    }
+                    rgba.push(255);
+                }
+            }
+            PreviewSource::Jpeg(luxforge_core::SourceImage {
+                width,
+                height,
+                rgba: rgba.into(),
+                fingerprint: "sha256:gpu-staged".into(),
+                orientation: 1,
+                capture: Default::default(),
+            })
+        }
+        BoundaryFormat::Float => {
+            let mut planes = Vec::with_capacity((width * height * 3) as usize);
+            for channel in 0..3 {
+                for y in 0..height {
+                    for x in 0..width {
+                        planes.push((value(x, y, channel) * 1.4 - 0.05) as f32);
+                    }
+                }
+            }
+            PreviewSource::Raw {
+                image: luxforge_core::LinearImage::new(width, height, planes).expect("an image"),
+                settings: luxforge_core::LinearSettings::default(),
+            }
+        }
+    }
+}
+
+/// The stacks a stream draws in staged sweeps at [`STAGED`]: two Presence layers, the second
+/// masked by a radial, and the same before a lens warp.
+fn staged_families() -> Vec<(&'static str, Recipe)> {
+    use super::gpu_tiles_tests::{radial, recipe};
+    let presence = |values| Layer::new(PRESENCE_EFFECT, values);
+    let layers = vec![
+        presence(json!({"texture": 30.0, "clarity": 60.0, "dehaze": 30.0})),
+        presence(json!({"texture": 20.0, "clarity": 40.0})),
+    ];
+    let mut warped = layers.clone();
+    warped.push(luxforge_core::qualification::lens_layer(-0.06, STAGED));
+    vec![
+        (
+            "a masked Presence after Presence",
+            recipe(layers, vec![(1, radial())]),
+        ),
+        (
+            "the same before a lens warp",
+            recipe(warped, vec![(1, radial())]),
+        ),
+    ]
+}
+
+/// A stack whose layers together reach past the sweep split, streamed in staged sweeps — every
+/// sweep before the last drawn into the runner's stage textures, the last's tiles cut from them —
+/// is bit for bit the whole output stage the photo surface's own drawing draws as one chained
+/// region on another device of the same adapter, on both paths, the worker's scratch starting
+/// from NaN; twice on one worker it is the same bytes; and once it ends the runner holds no stage
+/// texture.
+#[test]
+fn a_staged_stream_is_the_whole_stage_render_bit_for_bit() {
+    let test = "a_staged_stream_is_the_whole_stage_render_bit_for_bit";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let window = adapters::open(&backend, &name)
+        .unwrap_or_else(|unopened| panic!("{test}: the surface's device: {unopened:?}"));
+    let mut surface = HeadlessSurface::new(&window.device, &window.queue);
+    let service = GpuTiles::new(Some((backend, name)), false);
+    service.poison(true);
+    service.draw_streams_at(vec![STAGED_SIDE]);
+    let client = clients(1)[0];
+    let budget = GPU_TILE_BUDGET - super::gpu_tiles::STREAM_READ_RESERVE;
+    let mut versions = 100;
+    for (format, path) in [
+        (BoundaryFormat::Half, "the byte path"),
+        (BoundaryFormat::Float, "the linear path"),
+    ] {
+        let source = staged_source(format);
+        versions += 1;
+        let gpu = gpu_source(versions, &source);
+        for (family, recipe) in staged_families() {
+            let what = format!("{family} on {path}");
+            let stack = stack(&source, &recipe);
+            let staging = plan_stream_sweeps_at(&stack, budget, &[STAGED_SIDE])
+                .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"));
+            let Some(sweeps) = staging.sweeps() else {
+                panic!("{what}: planned chained, {staging:?}");
+            };
+            let tiles: Vec<usize> = sweeps
+                .sweeps
+                .iter()
+                .map(|sweep| sweep.tiles.len())
+                .collect();
+            versions += 1;
+            let (plan, codes) =
+                drawn_whole(&mut surface, &gpu, &stack, ReadStage::Output, versions);
+            settle(&service, client);
+            let before = service.figures();
+            let stream = |service: &GpuTiles| {
+                let bands = service
+                    .stream(&stack, &Cancel::new())
+                    .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"));
+                assert_eq!(bands.answered(), &Answered::gpu(), "{what}");
+                stitched(bands, STAGED_SIDE)
+            };
+            let rgba = stream(&service);
+            assert_eq!(rgba.len(), codes.len() * 4, "{what}: the whole stage");
+            if let Some(difference) = first_difference(plan.size.width, &rgba, &codes.concat()) {
+                panic!("{what}: the staged stream against the surface's region: {difference}");
+            }
+            assert!(stream(&service) == rgba, "{what}: twice on one device");
+            settle(&service, client);
+            let after = service.figures();
+            assert_eq!(
+                after.staged - before.staged,
+                2,
+                "{what}: both streams staged"
+            );
+            assert_eq!(
+                (after.stage_bytes, after.in_use, after.in_flight),
+                (0, 0, 0),
+                "{what}: nothing held once it ends"
+            );
+            eprintln!(
+                "{test}: {what}: {} x {} in {} sweeps of {tiles:?} tiles, bit for bit the \
+                 surface's chained region; peak {} B",
+                plan.size.width,
+                plan.size.height,
+                sweeps.sweeps.len(),
+                after.peak
+            );
+        }
+    }
+}
+
 /// Every family on both paths streamed in tiles of [`SIDE`], the worker's scratch starting from
 /// NaN, two tiles in flight and each band's window of the source uploaded once: its bands,
 /// stitched, are bit for bit the whole output stage the photo surface's own drawing draws as one
@@ -1078,6 +1240,95 @@ fn a_cancelled_stream_stops_between_tiles_and_frees_its_slots() {
         "the worker holds nothing of a cancelled stream's stack"
     );
     eprintln!("{test}: {after:?}");
+}
+
+/// A staged stream drawing its first sweep into its stage textures holds them charged, keeps a read
+/// waiting behind at most two of its tiles — the step being taken and at most one in flight — and,
+/// cancelled, lets go of them with the rest of what its runner held.
+#[test]
+fn a_staged_stream_holds_reads_to_two_tiles_and_frees_its_stages_when_cancelled() {
+    let test = "a_staged_stream_holds_reads_to_two_tiles_and_frees_its_stages_when_cancelled";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let service = Arc::new(GpuTiles::new(Some((backend, name)), false));
+    service.draw_streams_at(vec![STAGED_SIDE]);
+    let client = clients(1)[0];
+    let (_, recipe) = staged_families().swap_remove(0);
+    let stack = stack(&staged_source(BoundaryFormat::Half), &recipe);
+    let cancel = Cancel::new();
+    let begin = shut();
+    service.hold_steps(Some(Arc::clone(&begin)));
+    let mut bands = service.stream(&stack, &cancel).expect("a stream");
+    wait_until("the worker held before the stream begins", || {
+        begin.holding()
+    });
+    let first = next_step(&service, &begin);
+    let second = next_step(&service, &first);
+    let drawing = service.figures();
+    assert_eq!(drawing.staged, 1, "the stream is staged");
+    assert!(
+        drawing.stage_bytes > 0 && drawing.in_use >= drawing.stage_bytes,
+        "its stage textures charged while it draws: {drawing:?}"
+    );
+    assert_eq!(drawing.bands, 0, "no band before the last sweep");
+
+    // A read submitted while the worker is held before the sweep's next step.
+    let (seen, noted) = mpsc::sync_channel(1);
+    let (done, finished) = mpsc::sync_channel(1);
+    let (observer, held) = (Arc::clone(&service), stack.clone());
+    service.submit(TileCall::caller(
+        client,
+        Cancel::new(),
+        move |tiles, cancel| {
+            let figures = observer.figures();
+            let _ = seen.send((figures.tiles, figures.in_flight, figures.stage_bytes));
+            let (stage, rect, values) = point(ReadStage::Output, 50, 60, ReadValues::Codes);
+            let answer = tiles.session(&held, cancel).read(stage, rect, values)?;
+            Ok(json!(answer.answered == Answered::gpu()))
+        },
+        move |result| {
+            let _ = done.send(result);
+        },
+    ));
+    service.hold_steps(None);
+    second.open();
+    let (tiles, in_flight, stage_bytes) = noted.recv_timeout(HANG).expect("the read begins");
+    assert!(
+        tiles <= drawing.tiles + 1 && in_flight <= 1,
+        "the read waited behind the step being taken and at most one tile in flight: {tiles} \
+         read back of {} before, {in_flight} in flight",
+        drawing.tiles
+    );
+    assert!(stage_bytes > 0, "the stages held across the read");
+    assert_eq!(
+        finished
+            .recv_timeout(HANG)
+            .expect("answered")
+            .expect("read"),
+        json!(true),
+        "the GPU drew the read"
+    );
+
+    // Cancelled wherever it has reached: its encoder takes no band, so it cannot have ended.
+    cancel.cancel();
+    let ended = loop {
+        match bands.next().expect("the end") {
+            Ok(_) => {}
+            Err(ended) => break ended,
+        }
+    };
+    assert_eq!(ended.kind.code(), "cancelled");
+    assert!(bands.next().is_none(), "nothing after the cancellation");
+    settle(&*service, client);
+    let after = service.figures();
+    assert_eq!(
+        (after.stage_bytes, after.in_use, after.in_flight),
+        (0, 0, 0),
+        "the stage textures let go with the rest"
+    );
+    eprintln!("{test}: {drawing:?} then {after:?}");
 }
 
 /// A stream whose device is lost before a tile ends naming `device-lost` in its error's data, the
@@ -1612,5 +1863,138 @@ fn the_windows_other_adapter_ends_a_stream_drawn_on_the_launchs() {
             assert_eq!(service.figures().status, TileStatus::Gpu);
         }
         assert_eq!(service.figures().named, Some(AdapterNaming::Window));
+    }
+}
+
+/// The runner's figures for exports of the measured stacks streamed staged and chained, each on a
+/// worker of its own, as an indication and not a timing run: the 60 MP drag stack, which plans one
+/// sweep and so streams chained either way, and the Air 2S's masked stack over the corpus RAW,
+/// before its lens profile, which plans staged sweeps. The two streams of each are byte-identical.
+/// `LUXFORGE_RAW_MANIFEST=MANIFEST cargo test --release -p luxforge-app
+/// a_measured_export_staged_is_chained -- --ignored --nocapture`.
+#[test]
+#[ignore = "the corpus RAWs: set LUXFORGE_RAW_MANIFEST to the private RAW manifest"]
+fn a_measured_export_staged_is_chained() {
+    use super::gpu_qualification::{Opened, corpus_sources};
+    use super::gpu_rest_tests::{committed, measured_stacks};
+    let test = "a_measured_export_staged_is_chained";
+    let Some(adapter) = host_adapter(test) else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let read = |path: std::path::PathBuf| -> Value {
+        serde_json::from_str(&std::fs::read_to_string(path).expect("readable")).expect("JSON")
+    };
+    let manifest = read(
+        std::env::var("LUXFORGE_RAW_MANIFEST")
+            .expect("a manifest")
+            .into(),
+    );
+    let corpus = read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/preview/corpus.json"),
+    );
+    let found = corpus_sources(
+        &corpus,
+        std::path::Path::new("/nonexistent"),
+        Some(&manifest),
+    );
+    let air = found
+        .iter()
+        .find(|source| source.id == "raw-air2s")
+        .expect("the Air 2S");
+    let dir = paths::temp_dir("gpu-tiles-measured");
+    let opened = Opened::new(air, &[], &dir.join("air2s.sqlite")).expect("the RAW opened");
+    let job = super::tasks::ready_preview_job(
+        &opened.owner,
+        luxforge_core::PreviewRequest::new(opened.client, opened.asset.clone()),
+    )
+    .expect("a job");
+    let mut stacks = measured_stacks();
+    let (_, _, masked) = stacks.swap_remove(1);
+    let (_, sixty, drag) = stacks.swap_remove(0);
+    let mut recipe = job.evaluation.recipe().clone();
+    let geometry = recipe
+        .layers
+        .iter()
+        .position(|layer| layer.effect_id.contains("lens"))
+        .unwrap_or(recipe.layers.len());
+    recipe.layers.splice(geometry..geometry, masked.layers);
+    recipe.masks.extend(masked.masks);
+    let measured = [
+        ("the 60 MP drag stack", committed(sixty, drag)),
+        (
+            "the Air 2S masked stack",
+            committed(job.evaluation.source().clone(), recipe),
+        ),
+    ];
+    let budget = GPU_TILE_BUDGET - super::gpu_tiles::STREAM_READ_RESERVE;
+    for (what, stack) in measured {
+        let staging = luxforge_core::plan_stream_sweeps(&stack, budget)
+            .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"));
+        match staging.sweeps() {
+            Some(sweeps) => eprintln!(
+                "{test}: {what}: {} sweeps of {:?} tiles at {:?} px, {} stage textures of {:.1} MB",
+                sweeps.sweeps.len(),
+                sweeps
+                    .sweeps
+                    .iter()
+                    .map(|sweep| sweep.tiles.len())
+                    .collect::<Vec<_>>(),
+                sweeps
+                    .sweeps
+                    .iter()
+                    .map(|sweep| sweep.side)
+                    .collect::<Vec<_>>(),
+                sweeps.textures,
+                sweeps.texture_bytes as f64 / 1e6
+            ),
+            None => eprintln!("{test}: {what}: chained, {staging:?}"),
+        }
+        let mut streamed = Vec::new();
+        for chained in [false, true] {
+            let service = GpuTiles::new(Some(adapter.clone()), false);
+            service.chain_streams(chained);
+            let client = clients(1)[0];
+            let started = std::time::Instant::now();
+            let mut rgba = Vec::new();
+            for band in service
+                .stream(&stack, &Cancel::new())
+                .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"))
+            {
+                rgba.extend(
+                    band.unwrap_or_else(|error| panic!("{what}: {error:?}"))
+                        .rgba,
+                );
+            }
+            let wall = started.elapsed();
+            settle(&service, client);
+            let figures = service.figures();
+            let total = figures.total;
+            eprintln!(
+                "{test}: {what}, {}: {} tiles, {} streamed staged, {:.0} ms wall; light {:.0} ms, \
+                 upload {:.0} ms, encode {:.0} ms, wait {:.0} ms, read {:.0} ms; peak {:.1} MB, \
+                 {} uploads, {} slots, {} compiles, {} lights",
+                if chained { "chained" } else { "as planned" },
+                figures.tiles,
+                figures.staged,
+                wall.as_secs_f64() * 1e3,
+                total.light_us as f64 / 1e3,
+                total.upload_us as f64 / 1e3,
+                total.encode_us as f64 / 1e3,
+                total.wait_us as f64 / 1e3,
+                total.read_us as f64 / 1e3,
+                figures.peak as f64 / 1e6,
+                figures.uploads,
+                figures.slots,
+                figures.compiles,
+                figures.lights
+            );
+            assert_eq!(figures.stage_bytes, 0, "{what}: no stage held once it ends");
+            streamed.push(rgba);
+        }
+        assert!(
+            streamed[0] == streamed[1],
+            "{what}: the streams as planned and chained differ"
+        );
     }
 }

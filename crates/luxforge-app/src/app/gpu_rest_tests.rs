@@ -215,7 +215,7 @@ fn gpu_rest_a_stage_in_tiles_is_the_stage_in_one_region_bit_for_bit() {
 }
 
 /// A committed evaluation of `recipe` over `source`, as a displayed stack's job is.
-fn committed(source: PreviewSource, recipe: Recipe) -> Evaluation {
+pub(super) fn committed(source: PreviewSource, recipe: Recipe) -> Evaluation {
     let asset = AssetId::new();
     let entry = HistoryEntry {
         id: EntryId::new(),
@@ -296,7 +296,7 @@ fn detail() -> Layer {
 /// The stacks the rest is measured on (`docs/specs/performance.md`, "GPU-first against the
 /// 2026-10-04 baseline"), each over a source of its photograph's size: the 60 MP drag stack, the
 /// Air 2S's masked stack and three-segment stack, and Detail alone on a 24 MP JPEG.
-fn measured_stacks() -> Vec<(&'static str, PreviewSource, Recipe)> {
+pub(super) fn measured_stacks() -> Vec<(&'static str, PreviewSource, Recipe)> {
     let presence = |fields: serde_json::Value| Layer::new(PRESENCE_EFFECT, fields);
     let full_presence = || presence(json!({"texture": 100.0, "clarity": 100.0, "dehaze": 100.0}));
     let masked_presence = || presence(json!({"clarity": 50.0, "texture": 40.0}));
