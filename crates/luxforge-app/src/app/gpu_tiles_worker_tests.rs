@@ -1865,3 +1865,136 @@ fn the_windows_other_adapter_ends_a_stream_drawn_on_the_launchs() {
         assert_eq!(service.figures().named, Some(AdapterNaming::Window));
     }
 }
+
+/// The runner's figures for exports of the measured stacks streamed staged and chained, each on a
+/// worker of its own, as an indication and not a timing run: the 60 MP drag stack, which plans one
+/// sweep and so streams chained either way, and the Air 2S's masked stack over the corpus RAW,
+/// before its lens profile, which plans staged sweeps. The two streams of each are byte-identical.
+/// `LUXFORGE_RAW_MANIFEST=MANIFEST cargo test --release -p luxforge-app
+/// a_measured_export_staged_is_chained -- --ignored --nocapture`.
+#[test]
+#[ignore = "the corpus RAWs: set LUXFORGE_RAW_MANIFEST to the private RAW manifest"]
+fn a_measured_export_staged_is_chained() {
+    use super::gpu_qualification::{Opened, corpus_sources};
+    use super::gpu_rest_tests::{committed, measured_stacks};
+    let test = "a_measured_export_staged_is_chained";
+    let Some(adapter) = host_adapter(test) else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let read = |path: std::path::PathBuf| -> Value {
+        serde_json::from_str(&std::fs::read_to_string(path).expect("readable")).expect("JSON")
+    };
+    let manifest = read(
+        std::env::var("LUXFORGE_RAW_MANIFEST")
+            .expect("a manifest")
+            .into(),
+    );
+    let corpus = read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/preview/corpus.json"),
+    );
+    let found = corpus_sources(
+        &corpus,
+        std::path::Path::new("/nonexistent"),
+        Some(&manifest),
+    );
+    let air = found
+        .iter()
+        .find(|source| source.id == "raw-air2s")
+        .expect("the Air 2S");
+    let dir = paths::temp_dir("gpu-tiles-measured");
+    let opened = Opened::new(air, &[], &dir.join("air2s.sqlite")).expect("the RAW opened");
+    let job = super::tasks::ready_preview_job(
+        &opened.owner,
+        luxforge_core::PreviewRequest::new(opened.client, opened.asset.clone()),
+    )
+    .expect("a job");
+    let mut stacks = measured_stacks();
+    let (_, _, masked) = stacks.swap_remove(1);
+    let (_, sixty, drag) = stacks.swap_remove(0);
+    let mut recipe = job.evaluation.recipe().clone();
+    let geometry = recipe
+        .layers
+        .iter()
+        .position(|layer| layer.effect_id.contains("lens"))
+        .unwrap_or(recipe.layers.len());
+    recipe.layers.splice(geometry..geometry, masked.layers);
+    recipe.masks.extend(masked.masks);
+    let measured = [
+        ("the 60 MP drag stack", committed(sixty, drag)),
+        (
+            "the Air 2S masked stack",
+            committed(job.evaluation.source().clone(), recipe),
+        ),
+    ];
+    let budget = GPU_TILE_BUDGET - super::gpu_tiles::STREAM_READ_RESERVE;
+    for (what, stack) in measured {
+        let staging = luxforge_core::plan_stream_sweeps(&stack, budget)
+            .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"));
+        match staging.sweeps() {
+            Some(sweeps) => eprintln!(
+                "{test}: {what}: {} sweeps of {:?} tiles at {:?} px, {} stage textures of {:.1} MB",
+                sweeps.sweeps.len(),
+                sweeps
+                    .sweeps
+                    .iter()
+                    .map(|sweep| sweep.tiles.len())
+                    .collect::<Vec<_>>(),
+                sweeps
+                    .sweeps
+                    .iter()
+                    .map(|sweep| sweep.side)
+                    .collect::<Vec<_>>(),
+                sweeps.textures,
+                sweeps.texture_bytes as f64 / 1e6
+            ),
+            None => eprintln!("{test}: {what}: chained, {staging:?}"),
+        }
+        let mut streamed = Vec::new();
+        for chained in [false, true] {
+            let service = GpuTiles::new(Some(adapter.clone()), false);
+            service.chain_streams(chained);
+            let client = clients(1)[0];
+            let started = std::time::Instant::now();
+            let mut rgba = Vec::new();
+            for band in service
+                .stream(&stack, &Cancel::new())
+                .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"))
+            {
+                rgba.extend(
+                    band.unwrap_or_else(|error| panic!("{what}: {error:?}"))
+                        .rgba,
+                );
+            }
+            let wall = started.elapsed();
+            settle(&service, client);
+            let figures = service.figures();
+            let total = figures.total;
+            eprintln!(
+                "{test}: {what}, {}: {} tiles, {} streamed staged, {:.0} ms wall; light {:.0} ms, \
+                 upload {:.0} ms, encode {:.0} ms, wait {:.0} ms, read {:.0} ms; peak {:.1} MB, \
+                 {} uploads, {} slots, {} compiles, {} lights",
+                if chained { "chained" } else { "as planned" },
+                figures.tiles,
+                figures.staged,
+                wall.as_secs_f64() * 1e3,
+                total.light_us as f64 / 1e3,
+                total.upload_us as f64 / 1e3,
+                total.encode_us as f64 / 1e3,
+                total.wait_us as f64 / 1e3,
+                total.read_us as f64 / 1e3,
+                figures.peak as f64 / 1e6,
+                figures.uploads,
+                figures.slots,
+                figures.compiles,
+                figures.lights
+            );
+            assert_eq!(figures.stage_bytes, 0, "{what}: no stage held once it ends");
+            streamed.push(rgba);
+        }
+        assert!(
+            streamed[0] == streamed[1],
+            "{what}: the streams as planned and chained differ"
+        );
+    }
+}
