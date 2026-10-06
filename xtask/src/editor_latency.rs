@@ -574,8 +574,8 @@ fn gesture_launch(
     }
 }
 
-/// `launch` refusing the GPU stage when `options` asks for the reference renderer's baseline
-/// (`--no-gpu-render`).
+/// `launch` refusing the GPU stage, the editor's own launch switch, when `options` asks for the
+/// reference renderer's baseline (`--reference-renderer`).
 fn rendered_by(launch: Launch, options: &Options) -> Launch {
     if options.no_gpu_render {
         launch.no_gpu_render()
@@ -2922,7 +2922,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     )?;
     ensure(
         !options.no_gpu_render || matches!(options.mode, Mode::Drag | Mode::Commit | Mode::Paint),
-        "--no-gpu-render measures a drag, a commit or a stroke; pass --mode drag, commit or paint",
+        "--reference-renderer measures a drag, a commit or a stroke; pass --mode drag, commit or paint",
     )?;
     if let Some(ms) = options.warm_ms {
         ensure(
@@ -3173,7 +3173,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
                             .as_deref()
                             .is_none_or(|reason| reason == "no-adapter")
                 }),
-            "--no-gpu-render left the GPU stage drawing, or a drained input drew another way",
+            "--reference-renderer left the GPU stage drawing, or a drained input drew another way",
         )?;
     }
     let unpreviewed = measured.iter().filter(|input| input.unpreviewed).count();
@@ -5628,7 +5628,7 @@ mod tests {
             commit,
             gesture_script(&idle, &field, SourceTag::Jpeg, &values, false)
         );
-        // `--no-gpu-render` adds no step: the launch refuses the GPU stage.
+        // `--reference-renderer` adds no step: the launch refuses the GPU stage.
         let off = Options {
             no_gpu_render: true,
             masks: 1,
